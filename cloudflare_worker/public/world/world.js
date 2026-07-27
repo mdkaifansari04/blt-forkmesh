@@ -18802,22 +18802,61 @@ class ForkMeshWorld extends HTMLElement {
     )}`;
   }
 
-  // One fetch at boot (and after each board tap) keeps the sign fresh without
-  // adding another polling loop; the endpoint is edge-cached server-side.
+  // One paired fetch at boot (and after each member-board tap) keeps both
+  // neighboring signs fresh without adding another polling loop. Both public
+  // endpoints are edge-cached server-side and fail independently.
   async loadReferralLeaderboard() {
-    if (!this.world?.updateReferralLeaderboard) return;
-    try {
-      const data = await this.fetchJSON("/api/referrals/leaderboard", {
+    if (
+      !this.world?.updateReferralLeaderboard &&
+      !this.world?.updateSiteReferrerLeaderboard
+    ) {
+      return;
+    }
+    const [memberResult, siteResult] = await Promise.allSettled([
+      this.fetchJSON("/api/referrals/leaderboard", {
         auth: false,
         timeout: 5000,
-      });
-      this.referralBoard = Array.isArray(data?.board) ? data.board : [];
-    } catch (_) {
+      }),
+      this.fetchJSON("/api/referrals/sites", {
+        auth: false,
+        timeout: 5000,
+      }),
+    ]);
+    if (memberResult.status === "fulfilled") {
+      this.referralBoard = Array.isArray(memberResult.value?.board)
+        ? memberResult.value.board
+        : [];
+    } else {
       this.referralBoard = Array.isArray(this.referralBoard)
         ? this.referralBoard
         : [];
     }
-    this.world.updateReferralLeaderboard(this.referralBoard, this.referralLink());
+    if (siteResult.status === "fulfilled") {
+      this.siteReferralBoard = Array.isArray(siteResult.value?.board)
+        ? siteResult.value.board
+        : [];
+      this.siteReferralTotals = {
+        sites: Math.max(0, Number(siteResult.value?.sites) || 0),
+        visits: Math.max(0, Number(siteResult.value?.visits) || 0),
+      };
+    } else {
+      this.siteReferralBoard = Array.isArray(this.siteReferralBoard)
+        ? this.siteReferralBoard
+        : [];
+      this.siteReferralTotals =
+        this.siteReferralTotals &&
+        typeof this.siteReferralTotals === "object"
+          ? this.siteReferralTotals
+          : { sites: 0, visits: 0 };
+    }
+    this.world.updateReferralLeaderboard?.(
+      this.referralBoard,
+      this.referralLink(),
+    );
+    this.world.updateSiteReferrerLeaderboard?.(
+      this.siteReferralBoard,
+      this.siteReferralTotals,
+    );
   }
 
   async copyReferralLink() {

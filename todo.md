@@ -61,7 +61,7 @@ task above so they stay recoverable until final verification.
 - [x] Session 398 — variable-based chat theme/cache-buster handling.
 - [x] Session 396 — node-install/provisioning behavior.
 - [x] Session 386 — website referral leaderboard.
-- [ ] Add a separate HTTP `Referer` leaderboard beside the existing referral leaderboard.
+- [x] Add a separate HTTP `Referer` leaderboard beside the existing referral leaderboard.
 - [x] Review, clean up, and merge mdkaifan's direct-chat pull request.
 - [x] Remove the direct-chat PR branch/worktree after its merge is verified.
 

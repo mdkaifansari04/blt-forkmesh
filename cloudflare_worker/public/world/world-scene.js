@@ -186,6 +186,10 @@ const MOVEMENT_KEYS = new Set([
 const ACTIVE_LEADERBOARD_POSITION = Object.freeze([-11.5, 0, 25]);
 // Beside the active leaderboard, just west of the arrival grid.
 const REFERRAL_LEADERBOARD_POSITION = Object.freeze([-13.5, 0, 30]);
+// The HTTP Referer board is a distinct, privacy-safe hostname leaderboard.
+// Keep it directly beside the member referral board so the two meanings are
+// visually related without mixing their unrelated counters.
+const SITE_REFERRER_LEADERBOARD_POSITION = Object.freeze([-19, 0, 30]);
 const SYSTEM_CAPACITY_PLATFORM_POSITION = Object.freeze([8, 0, -27]);
 const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0]);
 const ARRIVAL_GRID_BOUNDS = Object.freeze({
@@ -1619,6 +1623,115 @@ function makeReferralLeaderboardSign(THREE) {
   return sign;
 }
 
+function rankedSiteReferrerRows(rows = []) {
+  return (Array.isArray(rows) ? rows : [])
+    .filter(
+      (row) =>
+        String(row?.host || "").trim() && Number(row?.visits) > 0,
+    )
+    .sort((left, right) => {
+      const visitDifference =
+        (Number(right?.visits) || 0) - (Number(left?.visits) || 0);
+      if (visitDifference) return visitDifference;
+      return String(left?.host || "").localeCompare(
+        String(right?.host || ""),
+        undefined,
+        { sensitivity: "base" },
+      );
+    })
+    .slice(0, 5);
+}
+
+function siteReferrerLeaderboardTexture(THREE, rows = [], totals = {}) {
+  const ranked = rankedSiteReferrerRows(rows);
+  const siteCount = Math.max(0, Number(totals?.sites) || 0);
+  const visitCount = Math.max(0, Number(totals?.visits) || 0);
+  return canvasTexture(THREE, 768, 512, (context) => {
+    context.clearRect(0, 0, 768, 512);
+    roundedRect(context, 4, 4, 760, 504, 16);
+    context.fillStyle = "rgba(6,17,14,0.95)";
+    context.fill();
+    context.strokeStyle = "#77d9ff";
+    context.lineWidth = 5;
+    context.stroke();
+    context.textBaseline = "middle";
+    context.fillStyle = "#f1fff6";
+    context.font = '700 43px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText("HTTP REFERER LEADERBOARD", 38, 58);
+    context.fillStyle = "#77d9ff";
+    context.font = '400 19px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("EXTERNAL WEBSITES · HOSTNAMES ONLY", 38, 102);
+    ranked.forEach((row, index) => {
+      const top = 148 + index * 52;
+      const host = String(row.host).trim().slice(0, 30);
+      context.fillStyle = "#d9ffea";
+      context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(`${index + 1}. ${host}`, 38, top, 510);
+      context.fillStyle = "#9ef7c6";
+      context.font = '400 20px "ForkMesh Mono", ui-monospace, monospace';
+      const value = `${Number(row.visits) || 0} VISITS`;
+      context.fillText(value, 768 - 38 - context.measureText(value).width, top);
+    });
+    if (!ranked.length) {
+      context.fillStyle = "#91a39a";
+      context.font = '400 24px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO EXTERNAL REFERRERS COUNTED YET", 38, 200);
+    }
+    context.strokeStyle = "rgba(119,217,255,0.4)";
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(38, 418);
+    context.lineTo(730, 418);
+    context.stroke();
+    context.fillStyle = "#77d9ff";
+    context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(`${siteCount} SITES · ${visitCount} VISITS`, 38, 450);
+    context.fillStyle = "#91a39a";
+    context.font = '400 17px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "NO PATHS · NO VISITOR IDENTIFIERS",
+      38,
+      482,
+    );
+  });
+}
+
+function makeSiteReferrerLeaderboardSign(THREE) {
+  const sign = new THREE.Group();
+  sign.name = "world-site-referrer-leaderboard";
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(4.8, 0.25, 1.35),
+    makeMaterial(THREE, "#1a3032", { roughness: 0.8 }),
+  );
+  base.position.y = 0.13;
+  sign.add(base);
+  for (const x of [-1.72, 1.72]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.16, 3.7, 0.16),
+      makeMaterial(THREE, "#234d4a", { metalness: 0.22, roughness: 0.52 }),
+    );
+    post.position.set(x, 1.85, 0);
+    sign.add(post);
+  }
+  const board = new THREE.Mesh(
+    new THREE.BoxGeometry(3.72, 2.72, 0.12),
+    makeMaterial(THREE, "#071712", { roughness: 0.55 }),
+  );
+  board.position.set(0, 2.08, 0.08);
+  sign.add(board);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.52, 2.55),
+    new THREE.MeshBasicMaterial({
+      map: siteReferrerLeaderboardTexture(THREE),
+      transparent: true,
+    }),
+  );
+  face.position.set(0, 2.08, 0.151);
+  sign.add(face);
+  sign.userData.face = face;
+  return sign;
+}
+
 const OFFICE_MARKETING_TASK_LIMIT = 6;
 
 function boundedOfficeMarketingTaskText(value, maxLength, fallback = "") {
@@ -1785,7 +1898,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { task: "Integrate the remaining session branches", done: false },
   { task: "Delete merged session branches and worktrees", done: false },
   { task: "Restore the preserved user test changes", done: false },
-  { task: "Add the HTTP Referer leaderboard", done: false },
+  { task: "Add the HTTP Referer leaderboard", done: true },
   { task: "Review and merge mdkaifan direct chat", done: true },
   { task: "Remove the merged direct-chat branch", done: true },
   { task: "Run focused worker API tests", done: false },
@@ -8756,6 +8869,19 @@ export function createWorldScene({
   referralLeaderboardSign.userData.face.userData.interactive =
     "referral-leaderboard";
   interactive.push(referralLeaderboardSign.userData.face);
+  const siteReferrerLeaderboardSign = makeSiteReferrerLeaderboardSign(THREE);
+  siteReferrerLeaderboardSign.position.set(
+    ...SITE_REFERRER_LEADERBOARD_POSITION,
+  );
+  siteReferrerLeaderboardSign.rotation.y = Math.atan2(
+    -SITE_REFERRER_LEADERBOARD_POSITION[0],
+    -SITE_REFERRER_LEADERBOARD_POSITION[2],
+  );
+  world.add(siteReferrerLeaderboardSign);
+  registerMovableObject(
+    "site-referrer-leaderboard-sign",
+    siteReferrerLeaderboardSign,
+  );
 
   // Repaints the referral sign only when the ranked rows or the viewer's own
   // share link actually changed, mirroring the active-leaderboard swap.
@@ -8774,6 +8900,22 @@ export function createWorldScene({
     face.material.map = referralLeaderboardTexture(THREE, rows, viewerLink);
     face.material.needsUpdate = true;
     referralLeaderboardSign.userData.key = key;
+  }
+  function updateSiteReferrerLeaderboard(rows = [], totals = {}) {
+    const face = siteReferrerLeaderboardSign.userData.face;
+    const key = JSON.stringify([
+      rankedSiteReferrerRows(rows).map((row) => [
+        String(row?.host || ""),
+        Number(row?.visits) || 0,
+      ]),
+      Math.max(0, Number(totals?.sites) || 0),
+      Math.max(0, Number(totals?.visits) || 0),
+    ]);
+    if (!face || siteReferrerLeaderboardSign.userData.key === key) return;
+    face.material.map?.dispose?.();
+    face.material.map = siteReferrerLeaderboardTexture(THREE, rows, totals);
+    face.material.needsUpdate = true;
+    siteReferrerLeaderboardSign.userData.key = key;
   }
   const systemCapacityPlatform = createSystemCapacityPlatform(THREE);
   world.add(systemCapacityPlatform);
@@ -17932,6 +18074,7 @@ export function createWorldScene({
     updateArrivalStats,
     updateMemberLounge,
     updateReferralLeaderboard,
+    updateSiteReferrerLeaderboard,
     updateNetworkNodes,
     focusNetworkNode,
     updateFederatedInstances,

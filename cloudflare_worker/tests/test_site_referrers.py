@@ -20,6 +20,10 @@ REFERRALS_HTML = (
     ROOT / "public" / "referrals.html"
 ).read_text(encoding="utf-8")
 PRIVACY = (ROOT / "public" / "privacy.html").read_text(encoding="utf-8")
+WORLD = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
+SCENE = (
+    ROOT / "public" / "world" / "world-scene.js"
+).read_text(encoding="utf-8")
 
 BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36")
@@ -297,6 +301,31 @@ def test_surfaces_expose_the_board_and_the_privacy_contract():
     assert "await record_site_referral(self.env, request, url, status)" in ENTRY
 
 
+def test_world_has_a_separate_privacy_safe_http_referrer_board():
+    assert '"/api/referrals/sites"' in WORLD
+    assert "Promise.allSettled" in WORLD.split(
+        "async loadReferralLeaderboard()", 1
+    )[1].split("async copyReferralLink()", 1)[0]
+    assert "updateSiteReferrerLeaderboard" in WORLD
+    assert 'sign.name = "world-site-referrer-leaderboard"' in SCENE
+    assert (
+        'registerMovableObject(\n'
+        '    "site-referrer-leaderboard-sign"' in SCENE
+    )
+    assert "HTTP REFERER LEADERBOARD" in SCENE
+    assert "EXTERNAL WEBSITES · HOSTNAMES ONLY" in SCENE
+    assert "NO PATHS · NO VISITOR IDENTIFIERS" in SCENE
+    assert "updateSiteReferrerLeaderboard" in SCENE
+    assert (
+        "const SITE_REFERRER_LEADERBOARD_POSITION = "
+        "Object.freeze([-19, 0, 30]);" in SCENE
+    )
+    assert (
+        "const REFERRAL_LEADERBOARD_POSITION = "
+        "Object.freeze([-13.5, 0, 30]);" in SCENE
+    )
+
+
 if __name__ == "__main__":
     test_migration_is_host_counters_only_and_matches_lazy_schema()
     test_referrer_hosts_are_normalized_and_junk_is_dropped()
@@ -307,3 +336,4 @@ if __name__ == "__main__":
     test_leaderboard_ranks_by_visits_and_reports_totals()
     test_prune_keeps_the_busiest_hosts_so_referrer_spam_stays_bounded()
     test_surfaces_expose_the_board_and_the_privacy_contract()
+    test_world_has_a_separate_privacy_safe_http_referrer_board()
