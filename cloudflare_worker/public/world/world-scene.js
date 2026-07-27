@@ -6467,7 +6467,7 @@ const SYSTEM_STATUS_COLORS = Object.freeze({
   operational: "#198a43",
   degraded: "#a66f00",
   down: "#d92d3a",
-  unknown: "#d9dbe1",
+  unknown: "#d92d3a",
   future: "#f5f5f7",
 });
 

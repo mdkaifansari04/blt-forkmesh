@@ -12,6 +12,7 @@ import time
 import traceback
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from js import AbortSignal as JsAbortSignal
 from js import Date
 from js import Object
 from js import Request as JsRequest
@@ -733,6 +734,14 @@ def git_bytes_response(data, content_type):
 
 def to_js(value):
     return _to_js(value, dict_converter=Object.fromEntries)
+
+
+async def js_fetch_with_timeout(resource, init, timeout_seconds):
+    """Fetch with a Workers-native timeout and no nested Pyodide task."""
+    options = dict(init or {})
+    options["signal"] = JsAbortSignal.timeout(
+        max(1, int(float(timeout_seconds) * 1000)))
+    return await js_fetch(resource, to_js(options))
 
 
 def new_socket_id():
@@ -2378,17 +2387,17 @@ def _status_effective_hour(hour_ts, now, row):
         }
     missing = max(0, expected - checks)
     if checks <= 0:
-        status = "unknown"
+        status = "down"
     elif failures <= 0:
         status = "operational"
     elif failures >= checks:
         status = "down"
     else:
         status = "degraded"
-    if status == "unknown":
+    if checks <= 0:
         hour_reason = (
-            "No health samples were recorded this hour — the sampling cron "
-            "didn't run (monitoring gap), which is not evidence of an outage.")
+            "Monitoring failed: no health samples were recorded for this "
+            "elapsed hour.")
     elif status == "operational":
         hour_reason = None
     else:
@@ -2415,10 +2424,9 @@ def _status_minute(minute_ts, current_minute_ts, row):
         return {"minuteTs": minute_ts, "status": "future", "reason": None}
     if row is None:
         return {
-            "minuteTs": minute_ts, "status": "unknown",
-            "reason": "No health sample was recorded for this minute — the "
-                      "sampling cron didn't run (monitoring gap), which is "
-                      "not evidence of an outage.",
+            "minuteTs": minute_ts, "status": "down",
+            "reason": "Monitoring failed: no health sample was recorded for "
+                      "this elapsed minute.",
         }
     ok = bool(row.get("ok"))
     return {
@@ -2622,14 +2630,6 @@ async def record_status_sample(env):
         console.warn(
             "status mirror registry query failed: " + _safe_error_text(exc))
 
-    try:
-        await _record_status_monitor_transitions(
-            env, ok, reason, now, status_systems)
-    except Exception as exc:
-        console.warn(
-            "record_status_monitor_transitions failed: " +
-            _safe_error_text(exc))
-
     # One multi-row upsert per table (3 statements total) instead of the old
     # 3-statements-per-system loop (15): the per-minute cron runs in a Pyodide
     # worker where every awaited D1 round trip counts against tight per-
@@ -2678,6 +2678,15 @@ async def record_status_sample(env):
         "ok = excluded.ok, reason = excluded.reason",
         *minute_args,
     )
+    # Alerts are optional follow-up work. Persist the minute first so a slow
+    # mail provider or notification failure cannot erase public status data.
+    try:
+        await _record_status_monitor_transitions(
+            env, ok, reason, now, status_systems)
+    except Exception as exc:
+        console.warn(
+            "record_status_monitor_transitions failed: " +
+            _safe_error_text(exc))
     # Retention prunes only need to run occasionally, not 60x/hour: sweep on
     # the first sample of each hour.
     if now - hour_ts < STATUS_SAMPLE_WINDOW_MS:
@@ -2823,10 +2832,10 @@ async def status_history(env):
                     or "The latest reachability check failed")
                 reason_ts = latest_minute_ts
         elif latest_minute_row is not None:
-            status = "unknown"
+            status = "down"
             reason_text = (
-                "No health sample has been recorded in the last two minutes "
-                "— monitoring gap; current reachability is unknown.")
+                "Monitoring failed: no health sample has been recorded in the "
+                "last two minutes.")
             reason_ts = latest_minute_ts
         else:
             # Backward-compatible fallback for an existing deployment while
@@ -2849,14 +2858,15 @@ async def status_history(env):
                     reason_text = latest_hour.get("reason")
                     reason_ts = latest_hour.get("hourTs")
             elif latest_hour is not None:
-                status = "unknown"
+                status = "down"
                 reason_text = (
-                    "No health samples have been recorded since the sampling "
-                    "cron's last run — monitoring gap; the current state is "
-                    "unknown, not a confirmed outage.")
+                    "Monitoring failed: no recent health samples have been "
+                    "recorded.")
                 reason_ts = latest_hour.get("hourTs")
             else:
-                status = "unknown"
+                status = "down"
+                reason_text = (
+                    "Monitoring failed: no health samples have been recorded.")
         overall_uptime = (
             round(((total_checks - total_failures) / total_checks) * 100, 2)
             if total_checks else None
@@ -32964,10 +32974,8 @@ async def _https_mirror_proxy(
         if method == "POST":
             init["body"] = Uint8Array.new(_to_js(body))
         try:
-            upstream = await asyncio.wait_for(
-                js_fetch(JsRequest.new(target, to_js(init))),
-                timeout=HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
-            )
+            upstream = await js_fetch_with_timeout(
+                target, init, HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS)
             status = int(getattr(upstream, "status", 0) or 0)
         except Exception:
             status = 0

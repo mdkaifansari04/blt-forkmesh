@@ -253,7 +253,9 @@ def test_background_tasks_observe_exceptions_instead_of_default_handler():
         ENTRY_TEXT.index("async def _https_mirror_proxy"):
         ENTRY_TEXT.index("\n\nclass Default")
     ]
-    assert "await asyncio.wait_for(" in proxy
+    assert "await js_fetch_with_timeout(" in proxy
+    assert "await asyncio.wait_for(" not in proxy
+    assert "JsAbortSignal.timeout(" in ENTRY_TEXT
     assert "_stream_watchdog" not in ENTRY_TEXT
 
 
