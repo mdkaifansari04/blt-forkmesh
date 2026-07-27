@@ -3790,7 +3790,6 @@ class ForkMeshWorld extends HTMLElement {
     this.socialFeedsLoad = null;
     this.socialFeedsTimer = 0;
     this.socialFeedsRequestedAt = 0;
-    this.socialFeedsFetchedAt = 0;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -8177,7 +8176,6 @@ class ForkMeshWorld extends HTMLElement {
           throw new Error(`social posts returned ${response.status}`);
         }
         this.socialFeedsSnapshot = await response.json();
-        this.socialFeedsFetchedAt = Date.now();
         this.syncSocialBanners();
       } catch (_) {
         // Keep the previous snapshot — or the static signs — on failure.
@@ -8212,8 +8210,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   // Milliseconds since the newest post in a proxied feed, or null when the
-  // feed has no dated posts (unfetched, unavailable, or the blog's undated
-  // feature articles).
+  // feed has no dated posts (unfetched, unavailable, or an item that shipped
+  // without a date).
   socialNewestPostAgo(feed) {
     let latest = 0;
     for (const post of Array.isArray(feed?.posts) ? feed.posts : []) {
@@ -8221,15 +8219,6 @@ class ForkMeshWorld extends HTMLElement {
       if (at > latest) latest = at;
     }
     return latest ? Math.max(0, Date.now() - latest) : null;
-  }
-
-  // Age of the snapshot itself: the server stamps `now` when it builds the
-  // payload, so an edge-cached read still reports how old the data really
-  // is. Feeds the blog board's SYNCED plate.
-  socialSnapshotAge() {
-    const stamp =
-      Number(this.socialFeedsSnapshot?.now) || this.socialFeedsFetchedAt;
-    return stamp ? Math.max(0, Date.now() - stamp) : null;
   }
 
   syncSocialBannerTimers() {
@@ -8249,7 +8238,7 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.updateSocialBannerTimers?.({
       twitter: timers(this.socialNewestPostAgo(snapshot?.twitter)),
       reddit: timers(this.socialNewestPostAgo(snapshot?.reddit)),
-      blog: timers(this.socialSnapshotAge()),
+      blog: timers(this.socialNewestPostAgo(snapshot?.blog)),
     });
   }
 
@@ -8317,10 +8306,10 @@ class ForkMeshWorld extends HTMLElement {
           .filter(Boolean)
           .join(" · "),
       ),
-      // Blog items have no dates or counts: the meta line is the section +
-      // feature number the RSS category carries, the headline is the item
-      // title, and the board prints the item's description as preview text
-      // under its artwork.
+      // Blog items carry no counts: the meta line is the section + feature
+      // number the RSS category carries, the headline is the item title,
+      // and the board prints the item's description as preview text under
+      // its artwork. Their pubDate drives the stand's LAST POST plate.
       blog: bound(
         snapshot.blog,
         (post) => String(post?.meta || ""),
