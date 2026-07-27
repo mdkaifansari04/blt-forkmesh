@@ -28,7 +28,7 @@ ATOM_LINK = "{http://www.w3.org/2005/Atom}link"
 
 _CARD_HTML = (
     '<a class="blog1-card" href="/blog/desktop-node-mirrors/"'
-    ' data-section="mesh">'
+    ' data-published="2026-07-04" data-section="mesh">'
     '<img class="blog1-post-image blog1-has-art"'
     ' src="/assets/blog/features/desktop-node-mirrors.webp" alt="art">'
     '<div class="blog1-card-copy">'
@@ -56,6 +56,14 @@ def test_index_cards_parse_into_feed_entries():
     assert entry["url"] == "https://forkmesh.com/blog/desktop-node-mirrors/"
     assert entry["image"] == (
         "https://forkmesh.com/assets/blog/features/desktop-node-mirrors.webp")
+    # The card's publication day, read as midnight UTC.
+    assert entry["publishedMs"] == 1783123200000
+    # An undated or malformed card still parses; it just has no date.
+    undated = blog_feed.parse_blog_index(
+        _CARD_HTML.replace(' data-published="2026-07-04"', ""))
+    assert undated[0]["publishedMs"] == 0
+    assert blog_feed.parse_blog_index(
+        _CARD_HTML.replace("2026-07-04", "yesterday"))[0]["publishedMs"] == 0
     # Missing or unrecognizable markup degrades to an empty list.
     assert blog_feed.parse_blog_index(None) == []
     assert blog_feed.parse_blog_index("<html>no cards</html>") == []
@@ -77,6 +85,9 @@ def test_feed_document_is_well_formed_rss_with_preview_text_and_image():
     assert self_link.get("rel") == "self"
     assert channel.findtext("lastBuildDate") == (
         "Tue, 14 Nov 2023 22:13:20 GMT")
+    # The channel's pubDate is the newest item's: readers (and the world's
+    # blog board) take it as when the blog last posted.
+    assert channel.findtext("pubDate") == "Sat, 04 Jul 2026 00:00:00 GMT"
     items = channel.findall("item")
     assert len(items) == 1
     item = items[0]
@@ -86,6 +97,12 @@ def test_feed_document_is_well_formed_rss_with_preview_text_and_image():
     assert item.findtext("guid") == item.findtext("link")
     assert item.findtext("category") == (
         "Distributed hosting & more · Feature 01")
+    assert item.findtext("pubDate") == "Sat, 04 Jul 2026 00:00:00 GMT"
+    # An undated card ships without a pubDate rather than a fake one.
+    undated = ElementTree.fromstring(blog_feed.build_feed(
+        _CARD_HTML.replace(' data-published="2026-07-04"', "")))
+    assert undated.find("channel/pubDate") is None
+    assert undated.find("channel/item/pubDate") is None
     # The preview text every reader shows.
     assert item.findtext("description") == (
         "Actively mirrored repositories live on <b>independent</b> nodes.")
@@ -111,6 +128,8 @@ def test_feed_renders_every_shipped_blog_post():
                for entry in entries)
     assert all(entry["image"].startswith("https://forkmesh.com/assets/blog/")
                for entry in entries)
+    # Every shipped card is dated, so the feed always has a last-post stamp.
+    assert all(entry["publishedMs"] > 0 for entry in entries)
     channel = ElementTree.fromstring(
         blog_feed.render_rss(entries)).find("channel")
     assert len(channel.findall("item")) == len(entries)
@@ -126,6 +145,7 @@ def test_feed_parses_back_into_the_entries_it_rendered():
         assert after["category"] == before["category"]
         assert after["image"] == before["image"]
         assert after["url"] == before["url"]
+        assert after["publishedMs"] == before["publishedMs"]
     assert blog_feed.parse_rss("") == []
     assert blog_feed.parse_rss("<rss><channel/></rss>") == []
 

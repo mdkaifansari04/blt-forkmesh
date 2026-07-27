@@ -6182,6 +6182,12 @@ function mastodonCountdownTexture(
 const MASTODON_POST_FRESH_MS = 24 * 60 * 60 * 1000;
 const MASTODON_POST_STALE_MS = 72 * 60 * 60 * 1000;
 
+// The same cadence rule for the blog board, stretched to how often a feature
+// blog actually publishes: a post within the week is green, a quiet week
+// turns amber, and three silent weeks read as a stalled blog and go red.
+const BLOG_POST_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
+const BLOG_POST_STALE_MS = 21 * 24 * 60 * 60 * 1000;
+
 // Compact elapsed readout: minutes under an hour, hours under two days,
 // whole days beyond that.
 function mastodonLastPostClock(sinceMs) {
@@ -6206,9 +6212,9 @@ function mastodonLastPostColor(
 // The plate beside the sync clock: how long since @forkmesh last posted,
 // tinted green / amber / red by the cadence thresholds above so a glance at
 // the stand says whether it is time to post again. sinceMs of null (nothing
-// fetched yet) renders a neutral placeholder. The social banners reuse the
-// same plate with their own label and thresholds (the blog board has no
-// post dates, so its plate reads the snapshot age as "SYNCED").
+// fetched yet, or a feed with no dated posts) renders a neutral placeholder.
+// The social banners reuse the same plate with their own label and
+// thresholds.
 function mastodonLastPostTexture(
   THREE,
   sinceMs = null,
@@ -6472,9 +6478,10 @@ const REDDIT_BANNER_OPTIONS = Object.freeze({
 
 // The blog board continues the same ring past Reddit. Its posts come from
 // the blog's own RSS feed (/blog/rss.xml), so each card shows the item's
-// artwork and preview text. The articles carry no dates, so the staleness
-// plate reads how old the fetched snapshot is: green within a healthy sync
-// window, red once the feed looks stuck.
+// artwork and preview text. Feed items carry pubDate, so the plate at the
+// bottom of the board reads how long ago the newest article went up, tinted
+// by the same green / amber / red rule as the Mastodon kiosk's LAST POST
+// plate — only at a blog's slower cadence (a week fresh, three weeks stale).
 const BLOG_BANNER_OPTIONS = Object.freeze({
   id: "blog",
   position: [19.8, 0, -32.8],
@@ -6495,9 +6502,9 @@ const BLOG_BANNER_OPTIONS = Object.freeze({
   footer: "RSS FEED AT /BLOG/RSS.XML",
   url: "https://forkmesh.com/blog",
   staleness: {
-    label: "SYNCED",
-    freshMs: 15 * 60 * 1000,
-    staleMs: 60 * 60 * 1000,
+    label: "LAST POST",
+    freshMs: BLOG_POST_FRESH_MS,
+    staleMs: BLOG_POST_STALE_MS,
   },
 });
 
@@ -9540,18 +9547,21 @@ export function createWorldScene({
   // then continue from this pose around the same world-vertical axis.
   chromeCube.rotation.y = 0;
   // Only this outer mount animates. Its Y rotation is the single vertical
-  // spindle through the fountain; the inner mark remains architecturally
-  // upright so the top is horizontal and the F/M walls stay vertical.
+  // spindle through the fountain; the inner edge-balanced tilt never changes.
   const chromeMark = new THREE.Group();
   chromeMark.name = "forkmesh-reflective-fm-cube-fixed-tilt";
   chromeCube.add(chromeMark);
   const logoHalfSize = 2.92;
-  const logoSupportBaseY = 1.16;
-  const logoSupportTopY = 3.4;
-  const logoSupportHeight = logoSupportTopY - logoSupportBaseY;
-  chromeMark.quaternion.identity();
-  chromeMark.userData.logoUpright = true;
-  chromeCube.position.y = logoSupportTopY + logoHalfSize;
+  const logoSupportTopY = 2.4;
+  // Align the original lower body diagonal with world-down. The selected
+  // corner therefore remains exactly over the sole support while the outer
+  // mount spins around the world-vertical axis.
+  const logoLowerCorner = new THREE.Vector3(-1, -1, -1).normalize();
+  chromeMark.quaternion.setFromUnitVectors(
+    logoLowerCorner,
+    new THREE.Vector3(0, -1, 0),
+  );
+  chromeCube.position.y = logoSupportTopY + logoHalfSize * Math.sqrt(3);
   reflectionCamera.position.y = chromeCube.position.y;
   const logoPiece = (
     parent,
@@ -9733,21 +9743,19 @@ export function createWorldScene({
     chrome,
   );
   logoContactPoint.name = "forkmesh-reflective-fm-cube-contact-point";
-  logoContactPoint.position.set(0, -logoHalfSize, 2.68);
+  logoContactPoint.position.set(
+    -logoHalfSize,
+    -logoHalfSize,
+    -logoHalfSize,
+  );
   chromeMark.add(logoContactPoint);
   const logoSupport = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.28, 0.38, logoSupportHeight, 20),
+    new THREE.CylinderGeometry(0.2, 0.28, 1.28, 20),
     darkChrome,
   );
   logoSupport.name = "forkmesh-reflective-fm-cube-support";
-  // The sole pedestal meets the center of the lower F-side edge and turns
-  // with the yawing sculpture, so the visible contact never drifts away.
-  logoSupport.position.set(
-    0,
-    logoSupportBaseY + logoSupportHeight / 2 - chromeCube.position.y,
-    2.68,
-  );
-  chromeCube.add(logoSupport);
+  logoSupport.position.y = logoSupportTopY - 0.64;
+  logoFountain.add(logoSupport);
   logoFountain.add(chromeCube);
   for (const [x, y, z, intensity] of [
     [-7, 9, 5, 4.8],
