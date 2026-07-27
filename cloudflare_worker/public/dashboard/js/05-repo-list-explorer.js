@@ -372,7 +372,7 @@
                 <i data-lucide="${origin.isPrivate ? "lock" : "globe-2"}" class="h-3 w-3"></i>${escapeHtml(visibility)}
               </span>
               <span class="flex items-center gap-1 text-xs text-muted-foreground">
-                <i data-lucide="radio" class="w-3 h-3"></i>${nodeCount > 1 ? `${nodeCount} nodes` : (viaMirror ? "served by mirror" : live ? "live host" : "host offline")}
+                <i data-lucide="radio" class="w-3 h-3"></i>${nodeCount > 1 ? `${nodeCount} mirrors` : (viaMirror ? "served by mirror" : live ? "mirror online" : "mirror offline")}
               </span>
               <span class="text-xs text-muted-foreground font-mono">updated ${escapeHtml(formatDate(repo.updatedAt || repo.lastSync))}</span>
             </div>
@@ -1436,7 +1436,7 @@
     if (state.repoFileFinder.indexing) {
       status.textContent = "Indexing live mirror...";
     } else if (state.repoFileFinder.error && !state.repoFileFinder.files.length) {
-      status.textContent = "No live desktop host is available to index files.";
+      status.textContent = "No reachable mirror host is available to index files.";
     } else if (state.repoFileFinder.partial) {
       status.textContent = `Showing ${formatCount(matches.length)} matches from the first ${formatCount(state.repoFileFinder.files.length)} indexed files.`;
     } else {

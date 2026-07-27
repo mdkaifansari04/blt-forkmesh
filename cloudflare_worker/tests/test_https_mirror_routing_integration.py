@@ -62,7 +62,7 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
         "re": re,
         "MAX_BLOB_BATCH": 60,
         "REPOSITORY_METADATA_CACHE_PREFIX": (
-            "https://forkmesh.internal/repository-metadata/v1/"
+            "https://forkmesh.internal/repository-metadata/v2/"
         ),
     }
     exec(_function_source("repository_metadata_cache_key"), namespace)
@@ -136,9 +136,10 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
         proxy.index("repository_metadata_cache_get(metadata_cache_key)")
         < proxy.index("_https_mirror_candidates(")
     )
+    assert "if not bypass_cache:" in proxy
     assert (
         "repository_metadata_cache_put(\n"
-        "            metadata_cache_key, upstream, status)"
+        "                metadata_cache_key, upstream, status)"
     ) in proxy
     assert (
         'response_headers["X-ForkMesh-Served-By"] = endpoint["node"]'
