@@ -1803,6 +1803,185 @@ test("Office rooftop restores the full world zoom outside the elevator", async (
     space: "office-rooftop",
     zoom: 28,
   });
+
+  // Pull the orbit eye below its target to look sharply upward. It may retain
+  // full horizontal zoom, but it must never pass down through the roof slab.
+  const canvas = page.locator("[data-world-canvas-wrap] canvas");
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  const x = Math.round(box.x + box.width * 0.5);
+  await page.mouse.move(x, Math.round(box.y + box.height * 0.86));
+  await page.mouse.down();
+  await page.mouse.move(x, Math.round(box.y + box.height * 0.08), {
+    steps: 4,
+  });
+  await page.mouse.up();
+  await page.waitForTimeout(120);
+  const upward = await page.locator("forkmesh-world").evaluate((shell) => {
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const camera = interior.worldToLocal(shell.world.camera.position.clone());
+    const target = interior.worldToLocal(
+      shell.world.player.getWorldPosition(shell.world.player.position.clone())
+    );
+    return {
+      camera: camera.toArray(),
+      horizontalDistance: Math.hypot(
+        camera.x - target.x,
+        camera.z - target.z,
+      ),
+      zoom: shell.world.getCameraState().zoom,
+    };
+  });
+  expect(upward.camera[1]).toBeGreaterThanOrEqual(144.54);
+  expect(upward.horizontalDistance).toBeGreaterThan(400);
+  expect(upward.zoom).toBe(28);
+});
+
+test("Office rooftop has complete sittable patio furniture and a real source launcher", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.__officeLaptopOpened = [];
+    window.open = (...args) => {
+      window.__officeLaptopOpened.push(args);
+      return null;
+    };
+  });
+  await prepareWorldPage(page, "office-rooftop-patio");
+  await waitForWorld(page);
+  const patio = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setOfficeAccess({
+      authenticated: true,
+      account: "alice",
+      allowedFloorIds: ["lobby", "marketing", "rooftop"],
+    });
+    shell.world.enterOfficeLobby();
+    shell.world.enterOfficeLobby({ floorId: "rooftop" });
+    const scene = shell.world.scene;
+    const interior = scene.getObjectByName("forkmesh-office-interior");
+    const tables = [];
+    const chairs = [];
+    scene.traverse((object) => {
+      if (/^forkmesh-office-rooftop-table-\d+$/.test(object.name)) {
+        tables.push({
+          id: object.name,
+          legs: object.children.filter((child) =>
+            child.name.includes("-leg-")
+          ).length,
+        });
+      }
+      if (/^forkmesh-office-rooftop-chair-\d+$/.test(object.name)) {
+        chairs.push({
+          id: object.name,
+          legs: object.children.filter((child) =>
+            child.name.includes("-leg-")
+          ).length,
+          backs: object.children.filter((child) =>
+            child.name.endsWith("-back")
+          ).length,
+        });
+      }
+    });
+    const marketingRejected =
+      shell.world.sitOnOfficeChair("chair-1");
+    const sat = shell.world.sitOnOfficeChair("rooftop-chair-1");
+    const chair = scene.getObjectByName(
+      "forkmesh-office-rooftop-chair-1"
+    );
+    const seated = interior.worldToLocal(
+      shell.world.player.getWorldPosition(shell.world.player.position.clone())
+    );
+    const toTable = {
+      x: -40 - chair.position.x,
+      z: 8 - chair.position.z,
+    };
+    const length = Math.hypot(toTable.x, toTable.z) || 1;
+    const facingDot =
+      (-Math.sin(shell.world.player.rotation.y) * (toTable.x / length)) +
+      (-Math.cos(shell.world.player.rotation.y) * (toTable.z / length));
+    const stood = shell.world.sitOnOfficeChair("rooftop-chair-1");
+    shell.world.enterOfficeLobby({ floorId: "marketing" });
+    const rooftopRejected =
+      shell.world.sitOnOfficeChair("rooftop-chair-1");
+    shell.world.enterOfficeLobby({ floorId: "rooftop" });
+    return {
+      tables,
+      chairs,
+      marketingRejected,
+      rooftopRejected,
+      sat,
+      stood,
+      seated: seated.toArray(),
+      standingY: shell.world.player.position.y,
+      facingDot,
+      laptop: Boolean(scene.getObjectByName(
+        "forkmesh-office-rooftop-laptop"
+      )),
+      laptopBase: Boolean(scene.getObjectByName(
+        "forkmesh-office-rooftop-laptop-base"
+      )),
+      laptopScreen: Boolean(scene.getObjectByName(
+        "forkmesh-office-rooftop-laptop-screen"
+      )),
+      strayTelescope: Boolean(scene.getObjectByName("telescopeTube")),
+    };
+  });
+  expect(patio.tables).toHaveLength(3);
+  expect(patio.tables.every((table) => table.legs === 4)).toBe(true);
+  expect(patio.chairs).toHaveLength(12);
+  expect(patio.chairs.every((chair) =>
+    chair.legs === 4 && chair.backs === 1
+  )).toBe(true);
+  expect(patio).toMatchObject({
+    marketingRejected: false,
+    rooftopRejected: false,
+    sat: true,
+    stood: true,
+    standingY: 144.38,
+    laptop: true,
+    laptopBase: true,
+    laptopScreen: true,
+    strayTelescope: false,
+  });
+  expect(patio.seated[1]).toBeGreaterThan(144);
+  expect(patio.seated[1]).toBeLessThan(144.38);
+  expect(patio.facingDot).toBeGreaterThan(0.99);
+
+  const laptopPoint = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const interior = scene.getObjectByName("forkmesh-office-interior");
+    const screen = scene.getObjectByName(
+      "forkmesh-office-rooftop-laptop-screen"
+    );
+    const target = screen.getWorldPosition(screen.position.clone());
+    const camera = interior.localToWorld(
+      screen.position.clone().set(0, 149, 17)
+    );
+    shell.world.setPaused(true);
+    shell.world.camera.position.copy(camera);
+    shell.world.camera.lookAt(target);
+    shell.world.camera.updateMatrixWorld(true);
+    shell.world.renderer.render(scene, shell.world.camera);
+    const projected = target.clone().project(shell.world.camera);
+    const rect = shell.world.renderer.domElement.getBoundingClientRect();
+    return {
+      x: rect.left + (projected.x * 0.5 + 0.5) * rect.width,
+      y: rect.top + (-projected.y * 0.5 + 0.5) * rect.height,
+    };
+  });
+  await page.mouse.click(laptopPoint.x, laptopPoint.y);
+  await expect.poll(() =>
+    page.evaluate(() => window.__officeLaptopOpened)
+  ).toEqual([[
+    "/forkmesh/forkmesh/blob/cloudflare_worker/public/world/world-scene.js",
+    "_blank",
+    "noopener,noreferrer",
+  ]]);
+  await expect(page.locator("[data-world-toast]")).toContainText(
+    "Source edits stay in the desktop app or IDE extension"
+  );
 });
 
 test("leaving an Office meeting resumes at a walkable first-person pose", async ({
@@ -1925,6 +2104,10 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
     );
     const maya = scene.getObjectByName("avatar:office-greeter-maya");
     const noah = scene.getObjectByName("avatar:office-greeter-noah");
+    let noahCount = 0;
+    scene.traverse((object) => {
+      if (object.name === "avatar:office-greeter-noah") noahCount += 1;
+    });
     const chromeCube = scene.getObjectByName("forkmesh-reflective-fm-cube");
     const chromeMark = scene.getObjectByName(
       "forkmesh-reflective-fm-cube-fixed-tilt"
@@ -1985,8 +2168,9 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
       placards,
       reception: {
         desk: receptionDesk.position.toArray(),
-        maya: maya?.position.toArray(),
+        hasMaya: Boolean(maya),
         noah: noah?.position.toArray(),
+        noahCount,
       },
       logo: {
         verticalAxisOnly: {
@@ -2038,12 +2222,13 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   expect(state.boards.task).toEqual([-24, 22.4, -44.45]);
   expect(state.boards.guide).toEqual([24, 22.65, -44.44]);
   expect(state.boards.title[2]).toBeLessThan(-44);
-  expect(state.placards.length).toBeGreaterThanOrEqual(12);
+  expect(state.placards.length).toBeGreaterThanOrEqual(11);
   expect(state.placards.every((placard) => placard.mesh && !placard.sprite))
     .toBe(true);
   expect(state.reception.desk).toEqual([0, 1.05, -36.5]);
-  expect(state.reception.maya).toEqual([-7, 0.38, -40]);
-  expect(state.reception.noah).toEqual([7, 0.38, -40]);
+  expect(state.reception.hasMaya).toBe(false);
+  expect(state.reception.noah).toEqual([0, 0.38, -40]);
+  expect(state.reception.noahCount).toBe(1);
   expect(state.logo.verticalAxisOnly.x).toBeCloseTo(0, 7);
   expect(state.logo.verticalAxisOnly.z).toBeCloseTo(0, 7);
   expect(state.logo.fixedTiltQuaternion.some((value) => Math.abs(value) > 0.1))
@@ -2099,16 +2284,16 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
       "forkmesh-office-interior"
     );
     const cameraPosition = interior.localToWorld(
-      shell.world.camera.position.clone().set(-9, 11, 9)
+      shell.world.camera.position.clone().set(-15, 15, 1)
     );
     const target = interior.localToWorld(
-      shell.world.camera.position.clone().set(-18, 7.2, -2)
+      shell.world.camera.position.clone().set(-18, 7.5, -2)
     );
     shell.world.scene.getObjectByName(
       "forkmesh-reflective-fm-cube"
-    ).rotation.y = Math.PI;
+    ).rotation.y = 0;
     shell.world.setPaused(true);
-    shell.world.camera.fov = 50;
+    shell.world.camera.fov = 65;
     shell.world.camera.updateProjectionMatrix();
     shell.world.camera.position.copy(cameraPosition);
     shell.world.camera.lookAt(target);
@@ -2118,6 +2303,176 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
     path: "/tmp/forkmesh-office-logo.png",
     animations: "disabled",
   });
+});
+
+test("Noah greets desk approaches locally without per-frame bubble spam", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-noah-reception");
+  await waitForWorld(page);
+  const placeAtDeskDistance = async (localZ) =>
+    page.locator("forkmesh-world").evaluate((shell, z) => {
+      const interior = shell.world.scene.getObjectByName(
+        "forkmesh-office-interior"
+      );
+      const point = interior.localToWorld(
+        shell.world.player.position.clone().set(0, 0.38, z)
+      );
+      shell.world.player.parent.worldToLocal(point);
+      shell.world.player.position.copy(point);
+      shell.world.setPaused(false);
+    }, localZ);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.enterOfficeLobby();
+  });
+  await placeAtDeskDistance(-32);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      let count = 0;
+      shell.world.scene.traverse((object) => {
+        if (object.userData?.officeReceptionGreeting === true) count += 1;
+      });
+      return count;
+    })
+  ).toBe(1);
+
+  const first = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const noah = scene.getObjectByName("avatar:office-greeter-noah");
+    let bubble = null;
+    let noahCount = 0;
+    scene.traverse((object) => {
+      if (object.name === "avatar:office-greeter-noah") noahCount += 1;
+      if (object.userData?.officeReceptionGreeting === true) bubble = object;
+    });
+    return {
+      noahCount,
+      hasMaya: Boolean(scene.getObjectByName("avatar:office-greeter-maya")),
+      uuid: bubble?.uuid || "",
+      message: bubble?.userData?.message || "",
+      bubble: bubble?.position.toArray() || [],
+      noah: noah?.getWorldPosition(noah.position.clone()).toArray() || [],
+    };
+  });
+  expect(first.noahCount).toBe(1);
+  expect(first.hasMaya).toBe(false);
+  expect(first.message).toContain("lobby is open to everyone");
+  expect(first.message).toContain("Log in");
+  expect(first.message).toContain("restricted team floors");
+  expect(Math.abs(first.bubble[0] - first.noah[0])).toBeLessThan(0.05);
+  expect(Math.abs(first.bubble[2] - first.noah[2])).toBeLessThan(0.05);
+  expect(first.bubble[1]).toBeGreaterThan(first.noah[1]);
+
+  // Cross the hysteresis boundary and return during the cooldown. The existing
+  // local bubble remains; no new sprite/event is created on animation frames.
+  await placeAtDeskDistance(-27);
+  await page.waitForTimeout(100);
+  await placeAtDeskDistance(-32);
+  await page.waitForTimeout(180);
+  const second = await page.locator("forkmesh-world").evaluate((shell) => {
+    const bubbles = [];
+    shell.world.scene.traverse((object) => {
+      if (object.userData?.officeReceptionGreeting === true) {
+        bubbles.push(object.uuid);
+      }
+    });
+    return bubbles;
+  });
+  expect(second).toEqual([first.uuid]);
+});
+
+test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-fm-sculpture");
+  await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.enterOfficeLobby();
+  });
+  // Give the idle-only cube camera one opportunity to capture the live lobby.
+  await page.waitForTimeout(1200);
+  const logo = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const cube = scene.getObjectByName("forkmesh-reflective-fm-cube");
+    const mark = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube-fixed-tilt"
+    );
+    const panels = [];
+    const oldOverlays = [];
+    mark.traverse((object) => {
+      if (object.name.startsWith("forkmesh-reflective-fm-panel-")) {
+        panels.push({
+          name: object.name,
+          throughCutouts: Number(object.userData.logoThroughCutouts) || 0,
+          metalness: object.material.metalness,
+          roughness: object.material.roughness,
+          hasEnvironment: Boolean(object.material.envMap),
+        });
+      }
+      const geometry = object.geometry?.parameters;
+      if (
+        geometry?.radiusTop === 0.48 ||
+        (
+          geometry?.width === 0.3 &&
+          geometry?.height === 0.08
+        )
+      ) {
+        oldOverlays.push(object.name || object.geometry.type);
+      }
+    });
+    const support = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube-support"
+    );
+    const contact = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube-contact-point"
+    );
+    const contactWorld = contact.getWorldPosition(contact.position.clone());
+    const supportTop = support.localToWorld(
+      support.position.clone().set(
+        0,
+        support.geometry.parameters.height / 2,
+        0,
+      )
+    );
+    cube.rotation.y = 0;
+    const interior = scene.getObjectByName("forkmesh-office-interior");
+    shell.world.setPaused(true);
+    shell.world.camera.fov = 65;
+    shell.world.camera.updateProjectionMatrix();
+    shell.world.camera.position.copy(interior.localToWorld(
+      shell.world.camera.position.clone().set(-24, 15, 6)
+    ));
+    shell.world.camera.lookAt(interior.localToWorld(
+      shell.world.camera.position.clone().set(-18, 7.5, -2)
+    ));
+    shell.world.renderer.render(scene, shell.world.camera);
+    return {
+      panels,
+      oldOverlays,
+      outerTilt: [cube.rotation.x, cube.rotation.z],
+      fixedTilt: mark.quaternion.toArray(),
+      supportCount: support ? 1 : 0,
+      contactSupportDistance: contactWorld.distanceTo(supportTop),
+    };
+  });
+  await page.screenshot({
+    path: "/tmp/forkmesh-office-logo.png",
+    animations: "disabled",
+  });
+  expect(logo.panels).toHaveLength(2);
+  expect(logo.panels.every((panel) =>
+    panel.throughCutouts === 7 &&
+    panel.metalness === 1 &&
+    panel.roughness < 0.06 &&
+    panel.hasEnvironment
+  )).toBe(true);
+  expect(logo.oldOverlays).toEqual([]);
+  expect(logo.outerTilt[0]).toBeCloseTo(0, 7);
+  expect(logo.outerTilt[1]).toBeCloseTo(0, 7);
+  expect(logo.fixedTilt.some((value) => Math.abs(value) > 0.1)).toBe(true);
+  expect(logo.supportCount).toBe(1);
+  expect(logo.contactSupportDistance).toBeLessThan(0.03);
 });
 
 test("Office glass has one stable shell and one elevator-car layer", async ({
