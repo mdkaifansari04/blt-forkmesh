@@ -67,10 +67,11 @@ def test_office_scene_has_a_bounded_interactive_marketing_task_board():
         '"forkmesh-office-marketing-task-board-frame"',
         '"forkmesh-office-marketing-task-board-face"',
         "officeMarketingTaskBoard.position.set(",
-        "-OFFICE_WIDTH / 2 + 3.2,",
-        'officeFloorY("marketing") + 3.55,',
-        "-0.55,",
-        'officeMarketingTaskBoard.rotation.y = Math.PI / 2',
+        "-24,",
+        'officeFloorY("marketing") + 6.4,',
+        "-OFFICE_FRONT_Z + 0.55,",
+        "new THREE.BoxGeometry(18.5, 11.4, 0.18)",
+        "new THREE.PlaneGeometry(18.12, 11.02)",
         "officeMarketingTaskBoardFrame.userData.interactive =",
         "officeMarketingTaskBoardFace.userData.interactive =",
         'onOfficeTaskBoardSelect = () => {}',
@@ -86,6 +87,45 @@ def test_office_scene_has_a_bounded_interactive_marketing_task_board():
     assert "task.assignee,\n            24" in scene
     assert "task.status,\n            16" in scene
     assert "task.elapsed,\n            18" in scene
+
+
+def test_marketing_furniture_is_open_clickable_and_faces_the_table():
+    scene = source(SCENE)
+    for contract in (
+        'officeTable.name = "forkmesh-office-marketing-tabletop"',
+        'officeTable.position.set(0, officeFloorY("marketing") + 1.8, 0)',
+        'tableLeg.name = "forkmesh-office-marketing-table-leg"',
+        'tableLeg.position.set(x, officeFloorY("marketing") + 1.02, z)',
+        "chair.name = `forkmesh-office-${chairId}`",
+        "const yaw = Math.atan2(-x, -z)",
+        "back.position.set(0, 1.42, -0.48)",
+        "function sitOnOfficeChair(chairId)",
+        'officeCurrentFloorId !== "marketing"',
+        "applyOfficeChairSeatPose()",
+        'hit?.object?.userData?.interactive === "office-chair"',
+        "sitOnOfficeChair(hit.object.userData.officeChairId)",
+        "sitOnOfficeChair,",
+    ):
+        assert contract in scene
+    assert "officeTable.position.set(0, officeFloorY(\"marketing\") + 1.45" not in scene
+
+
+def test_all_office_labels_are_mounted_planes_instead_of_hovering_sprites():
+    scene = source(SCENE)
+    assert "function makeOfficeWallPlacard(" in scene
+    assert "placard.userData.officeWallMounted = true" in scene
+    for contract in (
+        "makeOfficeWallPlacard(",
+        "forkmesh-office-wall-placard-",
+        'officeRoomSign.name = "forkmesh-office-marketing-wall-title"',
+        'label.name = `forkmesh-office-reception-nameplate-${index + 1}`',
+    ):
+        assert contract in scene
+    office_build = scene[
+        scene.index("const officeFloorGroups ="):
+        scene.index("// One physical selector rides inside")
+    ]
+    assert "makeLabelSprite(" not in office_build
 
 
 def test_office_task_board_is_authorization_gated_and_selected_before_chairs():

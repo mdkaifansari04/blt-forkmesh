@@ -1596,6 +1596,29 @@ SCHEMA_STATEMENTS = [
             SELECT RAISE(
                 ABORT, 'world_office_marketing_checkin_catalog_full');
         END""",
+    # Shared Office lobby attendance board (migration 0085). Each visit is one
+    # row that is opened by an authenticated IN punch and closed in place by
+    # the matching OUT punch. The public account name is the only display
+    # value; no address, user-agent, session token, or device data is retained.
+    """CREATE TABLE IF NOT EXISTS world_office_attendance (
+        visit_id TEXT PRIMARY KEY CHECK (
+            length(visit_id) = 32
+            AND visit_id NOT GLOB '*[^0-9a-f]*'
+        ),
+        account_bi TEXT NOT NULL CHECK (
+            length(account_bi) = 64
+            AND account_bi NOT GLOB '*[^0-9a-f]*'
+        ),
+        account_name TEXT NOT NULL CHECK (
+            length(account_name) BETWEEN 1 AND 32
+        ),
+        in_at INTEGER NOT NULL CHECK (in_at > 0),
+        out_at INTEGER CHECK (out_at IS NULL OR out_at >= in_at))""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_world_office_attendance_open
+        ON world_office_attendance(account_bi)
+        WHERE out_at IS NULL""",
+    """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_recent
+        ON world_office_attendance(in_at DESC, visit_id DESC)""",
     # Evidence-reviewed contextual placements. The accounting table is
     # deliberately isolated from every wallet/reward ledger.
     """CREATE TABLE IF NOT EXISTS community_ad_instance_policy (

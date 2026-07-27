@@ -739,6 +739,12 @@ function publicIdentity(identity, settings) {
       ? Math.max(0, Number(identity.firstSeenMinutes) || 0)
       : 0,
     joinedAt: boundedJoinedAt(identity.joinedAt),
+    // The account's own total active time, from the signed activity ticket, so
+    // the player's chest badge wears the row every other member's does. It is
+    // scene-local: presence frames never carry it.
+    totalActiveMs: Number.isFinite(Number(identity.totalActiveMs))
+      ? Math.max(0, Number(identity.totalActiveMs))
+      : null,
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
     outfitColor:
@@ -3642,11 +3648,13 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
 
           <p class="world-setting-note">
             Browser and OS are detected locally. Country comes from a country-only
-            edge hint; ForkMesh World does not receive or
-            display your raw IP. Whatever these three toggles share is saved on
-            your account so your campfire bench still shows it while you are
-            away — switch one off and the saved copy is cleared. Movement is
-            coarse, ephemeral, and never includes
+            edge hint. Your own avatar may show you the edge-observed IP and
+            User-Agent on a private back plate for session awareness; other
+            visitors cannot see it, it is not stored or sent through World
+            sockets, and built-in screenshots hide it. Whatever the three
+            public identity toggles share is saved on your account so your
+            campfire bench still shows it while you are away — switch one off
+            and the saved copy is cleared. Movement is coarse, ephemeral, and never includes
             URLs, search terms, form contents, repository names, or wallet data.
           </p>
         </section>
@@ -3751,6 +3759,9 @@ class ForkMeshWorld extends HTMLElement {
     // next presence frame does not force another fetch (noteDirectoryMembers).
     this.unlistedDirectoryNames = new Set();
     this.worldClientProfileKey = "";
+    // Requester-only connection details never enter identity, presence,
+    // BroadcastChannel, browser storage, or analytics.
+    this.selfSecurityDetails = { ip: "", userAgent: "" };
     this.pendingKnocks = new Map();
     this.serverPeerId = "";
     this.sessionAuthenticated = false;
@@ -3762,6 +3773,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldActivityObservedAt = 0;
     this.worldActivityContinuation = "";
     this.worldActivityRenderedSecond = -1;
+    this.worldActivityRenderedMinute = -1;
     this.accountReturnFocus = null;
     this.officeMeeting = null;
     this.officeController = null;
@@ -3995,10 +4007,11 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   // The embedded /dashboard/chat iframe mirrors every live chat line to this
-  // page (dashboard-chat.js, emitWorldChatBubble). Float it above the
-  // speaker's avatar so nearby visitors see who is talking. Chat identity is
-  // separate from presence, so peers are matched by shared display name —
-  // best effort only, and unmatched senders simply show no bubble.
+  // page (dashboard-chat.js, emitWorldChatBubble). The public chat transport
+  // does not cryptographically bind its sender id to a World peer id, so only
+  // the browser's own line and ForkBot's fixed system identity may create
+  // avatar bubbles. Remote lines remain visible in CHAT without being able to
+  // impersonate a live avatar by copying its display name.
   handleWorldChatMessage = (event) => {
     if (this.destroyed || event.origin !== location.origin) return;
     const data = event.data;
@@ -4030,26 +4043,6 @@ class ForkMeshWorld extends HTMLElement {
       this.world?.showChatBubble?.("forkbot", text);
       return;
     }
-    for (const [id, peer] of this.remotePlayers) {
-      const peerName = String(peer?.name || "").trim().toLowerCase();
-      // The public room truncates asserted names to 16 characters, so a
-      // truncated sender may only be a prefix of the presence name.
-      if (
-        peerName === senderName ||
-        (senderName.length >= 16 && peerName.startsWith(senderName))
-      ) {
-        if (Date.now() < Number(peer.chatBubblesEnabledAt || 0)) return;
-        this.world?.showChatBubble?.(id, text);
-        if (FORKBOT_MENTION_RE.test(text)) {
-          this.world?.exciteForkbot?.(id, text);
-        }
-        return;
-      }
-    }
-    // No live peer with that name: a member talking from the website while
-    // their avatar sits on its campfire bench gets the bubble over the
-    // seated figure instead (world-scene showMemberChatBubble).
-    this.world?.showMemberChatBubble?.(sender, text);
   };
 
   // ForkBot walks over and welcomes a visitor the first time this browser
@@ -4537,6 +4530,7 @@ class ForkMeshWorld extends HTMLElement {
       });
       await Promise.allSettled([contextPromise, dataPromise]);
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
+      this.world.setSelfSecurityDetails?.(this.selfSecurityDetails);
       this.applyWorldLayoutEditor();
       this.world.updateNetworkNodes(
         liveNodeRecords(this.network, this.mirrorCatalogs),
@@ -4933,6 +4927,21 @@ class ForkMeshWorld extends HTMLElement {
       .trim()
       .toUpperCase()
       .slice(0, 2);
+    const securityDetails =
+      context?.securityDetails && typeof context.securityDetails === "object"
+        ? context.securityDetails
+        : {};
+    this.selfSecurityDetails = {
+      ip: String(securityDetails.ip || "").trim().slice(0, 64),
+      userAgent: String(
+        securityDetails.userAgent || securityDetails.agent || "",
+      )
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 256),
+    };
+    // A later context refresh can update the already-created local mesh.
+    this.world?.setSelfSecurityDetails?.(this.selfSecurityDetails);
     // A guest owns no account record, so the coarse country is remembered in
     // this browser: the flag survives a reload and an unreachable edge context
     // instead of silently dropping back to "no country".
@@ -15817,56 +15826,64 @@ class ForkMeshWorld extends HTMLElement {
     const world = this.world;
     const canvas = world?.renderer?.domElement;
     if (!canvas) return null;
+    // Raw IP/User-Agent details are self-only and intentionally omitted from
+    // built-in captures so sharing a normal World screenshot cannot leak them.
+    const securityBadgeWasVisible =
+      world.setSelfSecurityBadgeVisibility?.(false);
     try {
       // The renderer runs without preserveDrawingBuffer, so paint a fresh
       // frame and read it back synchronously before the buffer is cleared.
       world.renderer.render(world.scene, world.camera);
+      const root = this.$("[data-world-root]");
+      const canvasBounds = canvas.getBoundingClientRect();
+      // The HUD is DOM painted over the canvas, so the crop is clamped to the
+      // world root — everything the player sees, chrome included.
+      const bounds = root ? root.getBoundingClientRect() : canvasBounds;
+      const left = Math.max(rect.left, bounds.left);
+      const top = Math.max(rect.top, bounds.top);
+      const right = Math.min(rect.left + rect.width, bounds.right);
+      const bottom = Math.min(rect.top + rect.height, bounds.bottom);
+      if (right - left < 4 || bottom - top < 4) return null;
+      const scaleX = canvas.width / Math.max(1, canvasBounds.width);
+      const scaleY = canvas.height / Math.max(1, canvasBounds.height);
+      const shot = document.createElement("canvas");
+      shot.width = Math.max(1, Math.round((right - left) * scaleX));
+      shot.height = Math.max(1, Math.round((bottom - top) * scaleY));
+      const context = shot.getContext("2d");
+      if (!context) return null;
+      // Read the WebGL buffer back before anything awaits — the next paint
+      // clears it.
+      context.drawImage(
+        canvas,
+        0,
+        0,
+        canvas.width,
+        canvas.height,
+        (canvasBounds.left - left) * scaleX,
+        (canvasBounds.top - top) * scaleY,
+        canvasBounds.width * scaleX,
+        canvasBounds.height * scaleY,
+      );
+      if (root) {
+        const hud = await this.renderHudImage(root, bounds);
+        if (hud) {
+          context.drawImage(
+            hud,
+            (bounds.left - left) * scaleX,
+            (bounds.top - top) * scaleY,
+            bounds.width * scaleX,
+            bounds.height * scaleY,
+          );
+        }
+      }
+      return shot;
     } catch (_) {
       return null;
+    } finally {
+      world.setSelfSecurityBadgeVisibility?.(
+        securityBadgeWasVisible !== false,
+      );
     }
-    const root = this.$("[data-world-root]");
-    const canvasBounds = canvas.getBoundingClientRect();
-    // The HUD is DOM painted over the canvas, so the crop is clamped to the
-    // world root — everything the player sees, chrome included.
-    const bounds = root ? root.getBoundingClientRect() : canvasBounds;
-    const left = Math.max(rect.left, bounds.left);
-    const top = Math.max(rect.top, bounds.top);
-    const right = Math.min(rect.left + rect.width, bounds.right);
-    const bottom = Math.min(rect.top + rect.height, bounds.bottom);
-    if (right - left < 4 || bottom - top < 4) return null;
-    const scaleX = canvas.width / Math.max(1, canvasBounds.width);
-    const scaleY = canvas.height / Math.max(1, canvasBounds.height);
-    const shot = document.createElement("canvas");
-    shot.width = Math.max(1, Math.round((right - left) * scaleX));
-    shot.height = Math.max(1, Math.round((bottom - top) * scaleY));
-    const context = shot.getContext("2d");
-    if (!context) return null;
-    // Read the WebGL buffer back before anything awaits — the next paint
-    // clears it.
-    context.drawImage(
-      canvas,
-      0,
-      0,
-      canvas.width,
-      canvas.height,
-      (canvasBounds.left - left) * scaleX,
-      (canvasBounds.top - top) * scaleY,
-      canvasBounds.width * scaleX,
-      canvasBounds.height * scaleY,
-    );
-    if (root) {
-      const hud = await this.renderHudImage(root, bounds);
-      if (hud) {
-        context.drawImage(
-          hud,
-          (bounds.left - left) * scaleX,
-          (bounds.top - top) * scaleY,
-          bounds.width * scaleX,
-          bounds.height * scaleY,
-        );
-      }
-    }
-    return shot;
   }
 
   // Rasterizes the HUD layers (top bar, rails, labels, panels) so a capture
@@ -17110,6 +17127,10 @@ class ForkMeshWorld extends HTMLElement {
     this.worldActivityObservedAt = 0;
     this.worldActivityContinuation = "";
     this.worldActivityRenderedSecond = -1;
+    this.worldActivityRenderedMinute = -1;
+    // Signing out drops the account's active-time row off the player's own
+    // chest instead of freezing the last reading there.
+    if (this.identity) this.identity.totalActiveMs = null;
     this.syncMemberLounge();
   }
 
@@ -17192,6 +17213,7 @@ class ForkMeshWorld extends HTMLElement {
       ? ""
       : String(ticket.ticket || "");
     this.worldActivityRenderedSecond = -1;
+    this.worldActivityRenderedMinute = -1;
     this.syncCurrentWorldActivity();
     return true;
   }
@@ -17236,6 +17258,22 @@ class ForkMeshWorld extends HTMLElement {
     if (renderedSecond === this.worldActivityRenderedSecond) return;
     this.worldActivityRenderedSecond = renderedSecond;
     this.syncMemberLounge();
+    this.syncOwnBadgeActivity();
+  }
+
+  // The player's own chest carries the same "ACTIVE … IN WORLD" row every
+  // other member's does. The row reads whole minutes, so the badge canvas is
+  // repainted once a minute rather than on every one-second activity tick.
+  syncOwnBadgeActivity() {
+    if (!this.identity) return;
+    const total = this.currentWorldActivityMs();
+    const renderedMinute = this.sessionAuthenticated
+      ? Math.floor(total / 60000)
+      : -1;
+    if (renderedMinute === this.worldActivityRenderedMinute) return;
+    this.worldActivityRenderedMinute = renderedMinute;
+    this.identity.totalActiveMs = this.sessionAuthenticated ? total : null;
+    this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
   }
 
   pauseWorldActivity() {
@@ -17249,6 +17287,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldActivityBaseAt = 0;
     this.worldActivityContinuation = "";
     this.worldActivityRenderedSecond = -1;
+    this.worldActivityRenderedMinute = -1;
     this.syncMemberLounge();
 
     const session = validWorldSession();
@@ -17449,6 +17488,7 @@ class ForkMeshWorld extends HTMLElement {
       );
     });
     socket.addEventListener("message", (event) => {
+      if (this.socket !== socket) return;
       this.socketInboundFrames = incrementDiagnosticCounter(
         this.socketInboundFrames,
       );
@@ -17719,7 +17759,11 @@ class ForkMeshWorld extends HTMLElement {
     } else if (message.type === "move" && message.id) {
       const id = String(message.id);
       if (id !== this.serverPeerId) {
-        const current = this.remotePlayers.get(id) || remotePlayer({ id });
+        // A movement delta is meaningful only after this active socket has
+        // announced the peer in its welcome/join stream. Never resurrect an
+        // avatar from a late frame that followed its authoritative leave.
+        const current = this.remotePlayers.get(id);
+        if (!current) return;
         this.remotePlayers.set(id, {
           ...current,
           x: boundedPresenceNumber(message.x),
