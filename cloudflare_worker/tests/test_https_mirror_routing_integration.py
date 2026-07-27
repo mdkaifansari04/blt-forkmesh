@@ -62,7 +62,7 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
         "re": re,
         "MAX_BLOB_BATCH": 60,
         "REPOSITORY_METADATA_CACHE_PREFIX": (
-            "https://forkmesh.internal/repository-metadata/v1/"
+            "https://forkmesh.internal/repository-metadata/v2/"
         ),
     }
     exec(_function_source("repository_metadata_cache_key"), namespace)
@@ -136,9 +136,10 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
         proxy.index("repository_metadata_cache_get(metadata_cache_key)")
         < proxy.index("_https_mirror_candidates(")
     )
+    assert "if not bypass_cache:" in proxy
     assert (
         "repository_metadata_cache_put(\n"
-        "            metadata_cache_key, upstream, status)"
+        "                metadata_cache_key, upstream, status)"
     ) in proxy
     assert (
         'response_headers["X-ForkMesh-Served-By"] = endpoint["node"]'
@@ -235,15 +236,17 @@ def test_dns_over_https_requests_cloudflare_json_media_type(monkeypatch):
 def test_cron_verifies_fresh_forkmesh_proof_and_clears_failed_state():
     scheduled = _method_source("Default", "scheduled")
     health = _function_source("_https_mirror_health_one")
+    cron = _function_source("https_mirror_health_cron")
     failed = _function_source("_https_mirror_mark_failed")
     assert "https_mirror_health_cron" in scheduled
     assert "repository_health_challenge" in health
     assert "_https_mirror_cloudflare_dns_ok" in health
     assert "messageSha256" in health
     assert "ed25519_verify" in health
-    assert "hmac.compare_digest(refs_digest, expected_forkmesh_refs)" in health
+    assert "_https_mirror_refs_match" in health
     assert "HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS" in health
     assert "return forkmesh_active" in health
+    assert "_https_mirror_accepted_forkmesh_refs" in cron
     assert "forkmesh_active=0" in failed
     assert "healthy=0" in failed
 
@@ -324,6 +327,76 @@ def test_flagship_state_pin_falls_back_to_account_namespace_without_org_alias():
     assert looked_up == ["forkmesh/forkmesh"]
 
 
+def test_flagship_health_accepts_recent_source_pin_during_mirror_convergence():
+    namespace = {
+        "re": re,
+        "hmac": __import__("hmac"),
+    }
+    exec(_function_source("_https_mirror_refs_match"), namespace)
+    matches = namespace["_https_mirror_refs_match"]
+    current = "c" * 64
+    previous = "b" * 64
+
+    assert matches(current, frozenset({current, previous})) is True
+    assert matches(previous, frozenset({current, previous})) is True
+    assert matches("a" * 64, frozenset({current, previous})) is False
+    assert matches("not-a-digest", frozenset({current, previous})) is False
+
+
+def test_flagship_accepted_pins_include_bounded_source_history():
+    namespace = {
+        "re": re,
+        "STATE_PIN_HISTORY": 100,
+    }
+    exec(
+        _function_source("_https_mirror_accepted_forkmesh_refs"),
+        namespace,
+    )
+    current = "d" * 64
+    previous = "c" * 64
+    queries = []
+
+    async def org_repo_node(env, owner, repo):
+        assert (owner, repo) == ("forkmesh", "forkmesh")
+        return "source-node"
+
+    async def blind_index(env, value):
+        assert value == "source-node/forkmesh"
+        return "repo-bi"
+
+    async def d1_first(env, sql, *params):
+        queries.append((sql, params))
+        return {"data": "encrypted", "is_private": 0}
+
+    async def d1_all(env, sql, *params):
+        queries.append((sql, params))
+        return [
+            {"state_hash": previous},
+            {"state_hash": "invalid"},
+        ]
+
+    async def decrypt_row(env, value):
+        assert value == "encrypted"
+        return {
+            "visibility": "public",
+            "stateHash": current,
+        }
+
+    namespace.update({
+        "_org_repo_node": org_repo_node,
+        "blind_index": blind_index,
+        "d1_first": d1_first,
+        "d1_all": d1_all,
+        "decrypt_row": decrypt_row,
+        "clean_string": lambda value, limit: str(value or "")[:limit],
+    })
+    pins = asyncio.run(
+        namespace["_https_mirror_accepted_forkmesh_refs"](object()))
+
+    assert pins == frozenset({current, previous})
+    assert queries[1][1] == ("repo-bi", 100)
+
+
 def test_every_registered_mirror_can_refresh_its_exact_signed_health():
     events = []
     endpoint = {
@@ -339,9 +412,9 @@ def test_every_registered_mirror_can_refresh_its_exact_signed_health():
         assert params == ("mirror3",)
         return endpoint
 
-    async def expected_refs(env):
+    async def accepted_refs(env):
         events.append(("expected",))
-        return "c" * 64
+        return frozenset({"c" * 64})
 
     async def health_one(env, row, expected):
         events.append(("health", row, expected))
@@ -353,7 +426,7 @@ def test_every_registered_mirror_can_refresh_its_exact_signed_health():
         "valid_node_name": lambda value: bool(
             re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", value)),
         "d1_first": d1_first,
-        "_https_mirror_expected_forkmesh_refs": expected_refs,
+        "_https_mirror_accepted_forkmesh_refs": accepted_refs,
         "_https_mirror_health_one": health_one,
     }
     exec(
@@ -367,7 +440,7 @@ def test_every_registered_mirror_can_refresh_its_exact_signed_health():
     assert events == [
         ("lookup", ("mirror3",)),
         ("expected",),
-        ("health", endpoint, "c" * 64),
+        ("health", endpoint, frozenset({"c" * 64})),
     ]
 
 
@@ -385,8 +458,8 @@ def test_registered_health_refresh_stays_pending_on_missing_pin_or_failure():
             "public_key": "node-public-key",
         }
 
-    async def expected_refs(env):
-        return expected
+    async def accepted_refs(env):
+        return frozenset({expected}) if expected else frozenset()
 
     async def health_one(env, row, state_hash):
         health_calls.append((row, state_hash))
@@ -398,7 +471,7 @@ def test_registered_health_refresh_stays_pending_on_missing_pin_or_failure():
         "valid_node_name": lambda value: bool(
             re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", value)),
         "d1_first": d1_first,
-        "_https_mirror_expected_forkmesh_refs": expected_refs,
+        "_https_mirror_accepted_forkmesh_refs": accepted_refs,
         "_https_mirror_health_one": health_one,
     }
     exec(
@@ -774,19 +847,25 @@ def test_installer_candidates_are_fresh_https_proofs_not_host_sockets():
 
 def test_selection_is_public_group_scoped_fresh_integrity_and_abuse_gated():
     context = _function_source("_https_mirror_public_context")
+    hosted_route = _function_source("_hosted_repository_import_route")
     candidates = _function_source("_https_mirror_candidates")
     proof = _function_source("_https_mirror_repository_proof")
     edge = EDGE.read_text(encoding="utf-8")
     assert "_decrypted_public_catalog" in context
+    assert "_hosted_repository_import_route" in context
+    assert "status='actively_mirrored'" in hosted_route
+    assert 'mirror_owner in ("mirror2", "mirror3")' in hosted_route
     assert "visibility" in context
     assert "repo_mirror_same_group" in context
     assert "clone_state_pins" in context
+    assert '"currentNodes": current_nodes' in context
     assert "FROM org_repos" in context
     assert 'target.get("stateHash", "")' in context
     assert '"remote-clone"' in context
     assert "context[\"nodes\"]" in candidates
     assert "preferred_region" in candidates
     assert "select_endpoints" in candidates
+    assert 'context.get("currentNodes", set())' in candidates
     assert "ENDPOINT_STALE_MS" in edge
     assert "abuseBlocked" in edge
     assert "integrity" in edge
