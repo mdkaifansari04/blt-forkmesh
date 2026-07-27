@@ -1832,6 +1832,16 @@ private:
     // m_agentSessions.size().
     void updateAgentsNavBadge();
     void processAgentQueue();
+    // Re-drain the queue after a slot frees, coalesced onto the event loop and
+    // skipped unless something is queued AND there is room to start it.
+    void scheduleAgentQueuePump();
+    // How many sessions currently hold one of the maxRunningAgents() slots
+    // (adhoc #433): our own, unmerged, actively-executing ones.
+    int runningAgentCount() const;
+    // The running/waiting/queued sessions "Stop all" acts on, across all repos.
+    QList<int> stoppableAgentSessionIds() const;
+    // Stop every session above and clear the pending queue (adhoc #433).
+    void stopAllRunningAgents();
     // Returns the pooled runner currently executing sessionId, or nullptr.
     AgentRunner *runnerForSession(int sessionId) const;
     // Returns an idle pooled runner, creating (and wiring) a new one if needed.
@@ -4856,6 +4866,9 @@ private:
     QList<AgentRunner *> m_agentRunners;
     QList<AgentSession> m_agentSessions;
     QList<int> m_agentQueue;
+    // Guards scheduleAgentQueuePump()'s zero-timer against piling up one pump
+    // per status/reload hook in a burst.
+    bool m_agentQueuePumpScheduled = false;
     // True while runDeferredStartup() drains the sessions initAgents() re-queued
     // after an app restart: resumed runs must NOT jump to the Agents tab the way
     // a fresh user-driven start does. At startup that jump forced a full cold
@@ -5307,6 +5320,9 @@ private:
     // by path. Used by the quick-add image paste/attach path (issue #79).
     QString saveNewAgentPromptImage(const QImage &image);
     QPushButton *m_agentStopButton = nullptr;
+    // Above the session list: stop every running agent and cancel the queue
+    // (adhoc #433).
+    QPushButton *m_agentStopAllButton = nullptr;
     QPushButton *m_agentFixConflictsButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
