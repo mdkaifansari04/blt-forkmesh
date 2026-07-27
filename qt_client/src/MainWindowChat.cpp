@@ -3790,7 +3790,11 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *chromeRow = new QHBoxLayout(chrome);
     chromeRow->setContentsMargins(14, 0, 8, 0);
     chromeRow->setSpacing(8);
-    chromeRow->addWidget(appVersionLabel);
+    // The relay switcher (favicon + host dropdown) and its open-in-browser link
+    // now head the window-chrome line in place of the app-version label, which
+    // has moved down to the right-hand end of the row below (adhoc #407).
+    chromeRow->addWidget(m_relayMenuButton);
+    chromeRow->addWidget(m_relayOpenButton);
     chromeRow->addStretch();
 
     auto *searchCluster = new QWidget;
@@ -3851,10 +3855,8 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->setContentsMargins(16, 0, 16, 0);
     mainRow->setSpacing(8);
     // m_relayRadar (radar + latency) now lives on the window-chrome line, just
-    // left of the CPU/MEM/DISK sparklines (adhoc #87).
-    mainRow->addWidget(m_relayMenuButton);
-    mainRow->addWidget(m_relayOpenButton);
-    mainRow->addSpacing(10);
+    // left of the CPU/MEM/DISK sparklines (adhoc #87); the relay switcher and its
+    // link button moved up there too (adhoc #407), so this row starts at the node.
     mainRow->addWidget(m_nodeLabel);
     mainRow->addWidget(m_nodeMenuButton);
     mainRow->addSpacing(10);
@@ -3886,6 +3888,11 @@ QWidget *MainWindow::buildBreadcrumb()
     // Notification bell, tucked just left of the account avatar (adhoc #137).
     mainRow->addWidget(m_notificationButton);
     mainRow->addWidget(m_userAvatarNavButton);
+    // App version, moved off the window-chrome line so the relay switcher can head
+    // it; it now sits at the right-hand end of this row, under the stall/resource
+    // indicators (adhoc #407).
+    mainRow->addSpacing(10);
+    mainRow->addWidget(appVersionLabel);
     auto *mainRowHost = new QWidget;
     mainRowHost->setLayout(mainRow);
     mainRowHost->setMinimumWidth(0);
@@ -11115,7 +11122,13 @@ void MainWindow::createVultrMirrorFromForm()
     m_vultrProvisionActive = true;
     m_vultrPollCount = 0;
     m_vultrInstallAttempts = 0;
-    m_vultrInstallUseLocalBinary = false;
+    // A brand-new instance has nobody mirroring it and there may be no
+    // published release for its platform at all, so a relay download can only
+    // dead-end (adhoc #408). Whenever this app's own binary can run on the
+    // Debian x64 image the flow deploys, upload it straight over the SSH
+    // session from the very first attempt — that needs no prebuilt release.
+    m_vultrInstallUseLocalBinary = forkmesh::control::localBinaryRunsOnVultrMirror(
+        QSysInfo::kernelType(), QSysInfo::currentCpuArchitecture());
     m_vultrInstallAttemptLog.clear();
     m_vultrDnsHostname.clear();
     m_hostInstallAttemptBanner.clear();
@@ -11133,6 +11146,10 @@ void MainWindow::createVultrMirrorFromForm()
     if (storedKey)
         appendHostInstallLog(QStringLiteral(
             "Using the VULTR_API_KEY stored as a device variable.\n"));
+    if (m_vultrInstallUseLocalBinary)
+        appendHostInstallLog(QString::fromUtf8(
+            "This app's own binary will be uploaded over SSH, so the new "
+            "mirror needs no published release to install.\n"));
     if (m_vultrStatus)
         m_vultrStatus->setText(
             QString::fromUtf8("Preparing the managed SSH key\xE2\x80\xA6"));
@@ -11441,21 +11458,22 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                 .arg(ip, unroutable));
             return;
         }
-        // A brand-new instance has nobody mirroring it yet, so a relay
-        // download/clone (the default path) can never succeed no matter how
-        // many times it is retried the same way. Switch this and every later
-        // attempt this run to uploading this app's own release binary
-        // directly over the SSH session instead — that needs no online
-        // mirror at all — and retry right away rather than waiting out the
-        // "host not reachable yet" backoff below, since SSH clearly worked.
+        // A brand-new instance has nobody mirroring it yet and may have no
+        // published release for its platform, so a relay download/clone can
+        // never succeed no matter how many times it is retried the same way.
+        // Switch this and every later attempt this run to uploading this app's
+        // own release binary directly over the SSH session instead — that needs
+        // neither an online mirror nor a published release — and retry right
+        // away rather than waiting out the "host not reachable yet" backoff
+        // below, since SSH clearly worked.
         if (!m_vultrInstallUseLocalBinary && !isFinalAttempt &&
-            m_hostInstallRawTail.contains(
-                QStringLiteral("No online ForkMesh node"))) {
+            forkmesh::control::vultrInstallNeedsLocalBinary(
+                m_hostInstallRawTail)) {
             m_vultrInstallUseLocalBinary = true;
             if (m_vultrStatus)
                 m_vultrStatus->setText(QString::fromUtf8(
-                    "No online mirror to install from yet \xE2\x80\x94 "
-                    "retrying with this app's own release uploaded "
+                    "Nothing published to install from yet \xE2\x80\x94 "
+                    "retrying with this app's own binary uploaded "
                     "directly\xE2\x80\xA6"));
             QTimer::singleShot(2000, this, [this, node, ip, identityFile] {
                 startVultrHostInstall(node, ip, identityFile);
@@ -12059,6 +12077,9 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     if (!buildHostInstallCommand(ip, user, node, uploadBinary, reinstall,
                                  fromSource, false, &remoteCmd,
                                  &uploadBytes, &buildErr)) {
+        // Record it as this run's failure too, so a retry loop's attempt
+        // history says why the command could not even be built.
+        m_hostInstallLastFailure = buildErr;
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(buildErr);
         if (onFinished)
