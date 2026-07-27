@@ -1049,6 +1049,28 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAgentJailMemoryMbSetting, mb);
     });
 
+    // Cap on how many agents run at once (adhoc #433). Anything started past the
+    // cap waits in the queue with a clock icon and launches as slots free up, so
+    // assigning a batch of issues can't spawn a CLI per issue all at once.
+    auto *maxRunningAgentsEdit = new QLineEdit;
+    maxRunningAgentsEdit->setPlaceholderText(
+        QString::number(kDefaultMaxRunningAgents));
+    maxRunningAgentsEdit->setText(QString::number(maxRunningAgents()));
+    maxRunningAgentsEdit->setToolTip(
+        "How many agent sessions may run at the same time. Sessions started "
+        "beyond this stay queued and start automatically as running ones "
+        "finish. Defaults to 5.");
+    connect(maxRunningAgentsEdit, &QLineEdit::editingFinished, this,
+            [this, maxRunningAgentsEdit] {
+                const int limit = qMax(kMinMaxRunningAgents,
+                                       maxRunningAgentsEdit->text().toInt());
+                maxRunningAgentsEdit->setText(QString::number(limit));
+                QSettings().setValue(kMaxRunningAgentsSetting, limit);
+                // Raising the cap should start waiting sessions right away
+                // rather than at the next completion.
+                scheduleAgentQueuePump();
+            });
+
     m_codexApiKeyEdit = new QLineEdit;
     m_codexApiKeyEdit->setEchoMode(QLineEdit::Password);
     m_codexApiKeyEdit->setPlaceholderText("OPENAI_API_KEY");
@@ -1173,6 +1195,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->setLabelAlignment(Qt::AlignLeft);
     agentForm->setSpacing(8);
     agentForm->addRow("Default agent", m_defaultAgentProviderCombo);
+    agentForm->addRow("Max running agents", maxRunningAgentsEdit);
     agentForm->addRow("OpenAI API key", m_codexApiKeyEdit);
     agentForm->addRow("OpenAI Admin key", m_openAiAdminKeyEdit);
     agentForm->addRow("OpenAI model", m_codexModelEdit);
