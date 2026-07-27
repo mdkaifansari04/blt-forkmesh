@@ -324,7 +324,6 @@ def test_floor_projection_grants_defaults_plus_server_derived_team_floors():
     ]
     assert admitted["data"]["allowedFloorIds"] == [
         "lobby",
-        "marketing",
         "rooftop",
         "engineering",
         "security",
@@ -456,7 +455,6 @@ def test_floor_projection_rejects_other_org_aliases_and_orphan_grants():
     assert alice["data"]["teams"] == ["frontend"]
     assert alice["data"]["allowedFloorIds"] == [
         "lobby",
-        "marketing",
         "rooftop",
         "engineering",
     ]
@@ -467,7 +465,6 @@ def test_floor_projection_rejects_other_org_aliases_and_orphan_grants():
     assert bob["data"]["teams"] == []
     assert bob["data"]["allowedFloorIds"] == [
         "lobby",
-        "marketing",
         "rooftop",
     ]
     database.close()

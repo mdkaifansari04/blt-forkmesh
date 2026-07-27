@@ -3883,6 +3883,7 @@ class ForkMeshWorld extends HTMLElement {
     this.focusMusicError = "";
     this.soundEnabled = false;
     this.soundContext = null;
+    this.mobileMovementActive = false;
     this.joinSoundTimes = [];
     this.mediaSpaces = [];
     this.mediaRoom = normalizeMediaRoom(null);
@@ -4852,6 +4853,12 @@ class ForkMeshWorld extends HTMLElement {
   };
 
   syncViewportHeight = () => {
+    // Mobile browser chrome can resize visualViewport continuously while a
+    // thumbstick drag is in progress. Resizing the WebGL canvas on every one
+    // of those samples looks like the whole World is refreshing mid-walk.
+    // Hold the last stable viewport until the gesture ends, then reconcile it
+    // once without interrupting movement.
+    if (this.mobileMovementActive) return;
     const height = Math.max(
       240,
       Math.round(window.visualViewport?.height || window.innerHeight || 0),
@@ -6992,10 +6999,12 @@ class ForkMeshWorld extends HTMLElement {
       let activePointerId = null;
       const resetThumbstick = () => {
         activePointerId = null;
+        this.mobileMovementActive = false;
         thumbstick.dataset.active = "false";
         thumbstickHandle.style.setProperty("--thumb-x", "0px");
         thumbstickHandle.style.setProperty("--thumb-y", "0px");
         this.world?.setTouchMovement?.(0, 0);
+        this.syncViewportHeight();
       };
       const updateThumbstick = (event) => {
         const rect = thumbstick.getBoundingClientRect();
@@ -7035,6 +7044,7 @@ class ForkMeshWorld extends HTMLElement {
         if (activePointerId !== null) return;
         event.preventDefault();
         activePointerId = event.pointerId;
+        this.mobileMovementActive = true;
         thumbstick.setPointerCapture?.(event.pointerId);
         updateThumbstick(event);
       });
@@ -15238,6 +15248,12 @@ class ForkMeshWorld extends HTMLElement {
 
   async playFocusMusic({ autoplay = false } = {}) {
     const track = this.selectedFocusMusicTrack();
+    if (!this.soundEnabled) {
+      this.focusMusicError =
+        "Enable World sounds from the toolbar before starting focus music.";
+      this.renderFocusMusicPanel();
+      return;
+    }
     const AudioElement = window.Audio;
     if (!AudioElement) {
       this.focusMusicError = "Audio playback is unavailable in this browser.";
@@ -15359,6 +15375,10 @@ class ForkMeshWorld extends HTMLElement {
         : "";
     this.focusMusicAutoplayPending = false;
     this.stopRadio(false);
+    if (!this.soundEnabled) {
+      this.toast("Enable World sounds from the toolbar before playing the ForkMesh song.");
+      return;
+    }
     const song = RADIO_STATIONS.find((station) => station.id === "forkmesh-song");
     const AudioElement = window.Audio;
     if (!song || !AudioElement) {
@@ -15508,6 +15528,13 @@ class ForkMeshWorld extends HTMLElement {
   // consent gesture, so this path never starts on its own and never proxies a
   // third-party stream.
   async playHostedTrack(station, now) {
+    if (!this.soundEnabled) {
+      now.innerHTML = `
+        <span><strong>Sound is off</strong><small>Use the Sound button in the World toolbar first. Audio never starts automatically.</small></span>
+        <button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
+      this.toast("Enable World sounds from the toolbar before starting local audio.");
+      return;
+    }
     const AudioElement = window.Audio;
     if (!AudioElement) {
       now.innerHTML = `<span>Audio playback is unavailable in this browser.</span><button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
@@ -16407,16 +16434,16 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async toggleWorldSound() {
-    const button = this.$("[data-world-sound-toggle]");
-    const label = this.$("[data-world-sound-label]");
     if (this.soundEnabled) {
       this.soundEnabled = false;
+      // The toolbar control is the master switch, not only a switch for the
+      // short synthesized cues. Stop every local soundtrack as well.
+      this.focusMusicAutoplayPending = false;
+      this.stopRadio();
       const context = this.soundContext;
       this.soundContext = null;
       await context?.close?.().catch(() => {});
-      button?.setAttribute("aria-pressed", "false");
-      if (button) button.title = "Enable World sounds";
-      if (label) label.textContent = "Sound";
+      this.syncWorldSoundButton();
       this.toast("World sounds muted.");
       return;
     }
@@ -16431,16 +16458,29 @@ class ForkMeshWorld extends HTMLElement {
       this.soundContext = new AudioContext();
       await this.soundContext.resume();
       this.soundEnabled = true;
-      button?.setAttribute("aria-pressed", "true");
-      if (button) button.title = "Mute World sounds";
-      if (label) label.textContent = "Sound on";
+      this.syncWorldSoundButton();
       this.playCountryJoinSound("FM", true);
       this.toast("World sounds enabled. Join cues use short local tones.");
     } catch (_) {
       this.soundEnabled = false;
       this.soundContext = null;
+      this.syncWorldSoundButton();
       this.toast("World sounds could not be enabled.");
     }
+  }
+
+  syncWorldSoundButton() {
+    const button = this.$("[data-world-sound-toggle]");
+    const label = this.$("[data-world-sound-label]");
+    const enabled = this.soundEnabled === true;
+    button?.setAttribute("aria-pressed", String(enabled));
+    if (button) {
+      const action = enabled ? "Mute World sounds" : "Enable World sounds";
+      button.title = action;
+      button.setAttribute("aria-label", action);
+    }
+    if (label) label.textContent = enabled ? "Sound on" : "Sound";
+    return enabled;
   }
 
   closeScreenshotUI() {

@@ -69,6 +69,7 @@ body {
 body.world-active {
   min-height: 100svh;
   overflow: hidden;
+  overscroll-behavior: none;
   color: var(--world-copy);
 }
 
@@ -237,6 +238,7 @@ forkmesh-world {
   height: var(--world-viewport-height, 100dvh);
   min-height: 0;
   overflow: hidden;
+  overscroll-behavior: none;
   isolation: isolate;
   background: #081510;
   color: var(--world-copy);
@@ -5741,10 +5743,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     bottom: calc(var(--safe-bottom) + 68px);
   }
 
-  .world-map {
-    display: none;
-  }
-
   .world-community-placement,
   .world-fediverse-activity {
     display: none;
@@ -5913,7 +5911,19 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-right-rail {
-    display: none;
+    top: calc(var(--safe-top) + 54px);
+    right: var(--safe-right);
+    bottom: auto;
+    display: grid;
+    width: min(264px, calc(100vw - 28px));
+    max-height: calc(
+      var(--world-viewport-height, 100dvh) - var(--safe-top) - 118px
+    );
+    overflow: visible;
+  }
+
+  .world-right-rail .world-map {
+    pointer-events: auto;
   }
 
   .world-shirt-badge {

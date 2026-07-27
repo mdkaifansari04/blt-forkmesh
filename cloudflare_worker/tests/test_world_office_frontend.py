@@ -165,6 +165,20 @@ def test_entry_is_walk_through_for_everyone_and_the_keypad_protocol_is_absent():
     assert "must sign in before entering the tower" not in data
 
 
+def test_office_doorway_has_no_concrete_sill_or_raised_door_panels():
+    scene = source(SCENE_PATH)
+    office_start = scene.index("function createForkMeshOffice(")
+    office_end = scene.index("\nfunction ", office_start + 1)
+    office = scene[office_start:office_end]
+
+    assert "OFFICE_DOOR_SILL_Y" not in scene
+    assert "[-OFFICE_WIDTH / 2, -doorWidth / 2]" in office
+    assert "[doorWidth / 2, elevatorFacadeMinX]" in office
+    assert "doorHeight / 2," in office
+    assert "portalY >= 0.08" in scene
+    assert "portalY <= OFFICE_DOOR_HEIGHT - 0.08" in scene
+
+
 def test_entrance_uses_two_proximity_sliding_panels_without_a_hinged_door():
     scene = source(SCENE_PATH)
     for contract in (
@@ -378,12 +392,11 @@ def test_explicit_floor_refresh_updates_access_without_attendance_or_polling():
     assert payload["finalAccess"] == {
         "authenticated": True,
         "account": "alice",
-        "allowedFloorIds": [
-            "engineering",
-            "lobby",
-            "marketing",
-            "rooftop",
-        ],
+            "allowedFloorIds": [
+                "engineering",
+                "lobby",
+                "rooftop",
+            ],
     }
 
     office = source(OFFICE_PATH)
@@ -604,15 +617,15 @@ def test_lobby_camera_clamp_has_one_strict_open_door_portal():
     limit = function_body(scene, "officeCameraDistanceLimit")
 
     # Only an outward ray through the open lobby aperture may omit the front-Z
-    # face. Its real width and sill/lintel are checked at the front plane.
+    # face. Its real width, flush floor, and lintel are checked at the front plane.
     for contract in (
         "const rawFrontDistance =",
         "(OFFICE_FRONT_Z - localTarget.z) / frontDirection",
         'officeCurrentFloorId === "lobby"',
         "officeSlidingDoorOpen >= 0.9",
         "Math.abs(portalX) <= OFFICE_DOOR_WIDTH / 2 - 0.08",
-        "portalY >= OFFICE_DOOR_SILL_Y + 0.08",
-        "OFFICE_DOOR_SILL_Y + OFFICE_DOOR_HEIGHT - 0.08",
+        "portalY >= 0.08",
+        "portalY <= OFFICE_DOOR_HEIGHT - 0.08",
         'axis === "z"',
         "component > 0",
         "rayThroughOpenLobbyPortal",

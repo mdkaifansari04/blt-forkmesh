@@ -74,15 +74,15 @@ def test_tower_has_ten_floors_and_is_about_ten_times_the_old_width():
     public_floors = {
         floor["id"] for floor in result["floors"] if floor["publicForMembers"]
     }
-    assert public_floors == {"lobby", "marketing", "rooftop"}
+    assert public_floors == {"lobby", "rooftop"}
     restricted = [
         floor for floor in result["floors"] if not floor["publicForMembers"]
     ]
-    assert len(restricted) == 7
+    assert len(restricted) == 8
     assert all(floor["team"] for floor in restricted)
 
 
-def test_authenticated_members_get_three_default_floors_but_team_floors_stay_restricted():
+def test_authenticated_members_get_public_floors_but_team_floors_stay_restricted():
     result = run_tower_script(
         """
         const guest = tower.normalizeOfficeFloorAccess({
@@ -125,7 +125,7 @@ def test_authenticated_members_get_three_default_floors_but_team_floors_stay_res
 
     assert result["guestCanLobby"] is False
     assert result["guestCanEngineering"] is False
-    assert set(result["defaults"]) == {"lobby", "marketing", "rooftop"}
+    assert set(result["defaults"]) == {"lobby", "rooftop"}
     # Team names are display/context data. Only the server-provided floor
     # allowlist may unlock a restricted elevator button.
     assert result["teamHintCanEngineering"] is False

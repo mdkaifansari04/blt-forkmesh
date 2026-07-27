@@ -85,7 +85,6 @@ const REPOSITORY_FIRST_PERSON_PITCH = -0.08;
 const OFFICE_HEIGHT = OFFICE_FLOOR_HEIGHT;
 const OFFICE_INTERIOR_WALL_LIMIT = OFFICE_FRONT_Z - 0.54;
 const OFFICE_DOOR_HEIGHT = 4.4;
-const OFFICE_DOOR_SILL_Y = 0.34;
 const OFFICE_DOORWAY_ENTRY_Z =
   OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS;
 // Entry and exit cross the same physical plane. Separate thresholds used to
@@ -7155,8 +7154,12 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   }
 
   const frontZ = OFFICE_FRONT_Z - wallThickness / 2;
+  // Keep the entrance opening flush with the lobby floor. The old continuous
+  // 0.62-unit concrete base crossed the doorway and rendered as a shin-high
+  // ledge even while the movement code treated the opening as walkable.
   for (const [minX, maxX] of [
-    [-OFFICE_WIDTH / 2, elevatorFacadeMinX],
+    [-OFFICE_WIDTH / 2, -doorWidth / 2],
+    [doorWidth / 2, elevatorFacadeMinX],
     [elevatorFacadeMaxX, OFFICE_WIDTH / 2],
   ]) {
     addFacadeSegment(
@@ -7168,6 +7171,11 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
       frontZ,
       concrete,
     );
+  }
+  for (const [minX, maxX] of [
+    [-OFFICE_WIDTH / 2, elevatorFacadeMinX],
+    [elevatorFacadeMaxX, OFFICE_WIDTH / 2],
+  ]) {
     addFacadeSegment(
       minX,
       maxX,
@@ -7353,7 +7361,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
       `forkmesh-office-sliding-door-${side < 0 ? "left" : "right"}`;
     panel.position.set(
       side * doorClosedX,
-      doorHeight / 2 + OFFICE_DOOR_SILL_Y,
+      doorHeight / 2,
       0,
     );
     slidingDoors.add(panel);
@@ -12491,9 +12499,8 @@ export function createWorldScene({
       frontDirection > 1e-6 &&
       Number.isFinite(portalDistance) &&
       Math.abs(portalX) <= OFFICE_DOOR_WIDTH / 2 - 0.08 &&
-      portalY >= OFFICE_DOOR_SILL_Y + 0.08 &&
-      portalY <=
-        OFFICE_DOOR_SILL_Y + OFFICE_DOOR_HEIGHT - 0.08;
+      portalY >= 0.08 &&
+      portalY <= OFFICE_DOOR_HEIGHT - 0.08;
     const axes = [
       ["x", "minX", "maxX"],
       ["y", "minY", "maxY"],

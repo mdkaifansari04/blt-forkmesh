@@ -822,6 +822,39 @@ def test_join_cues_are_country_specific_local_opt_in_and_rate_limited():
     assert "speechSynthesis" not in cue
 
 
+def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
+    assert "if (this.mobileMovementActive) return;" in APP
+    assert "this.mobileMovementActive = true;" in APP
+    assert "this.mobileMovementActive = false;" in APP
+    assert "this.syncViewportHeight();" in APP
+    assert "overscroll-behavior: none;" in CSS
+    mobile = CSS[CSS.index("@media (max-width: 720px)"):]
+    assert ".world-right-rail {" in mobile
+    assert "display: grid;" in mobile
+    assert ".world-map {" not in CSS[
+        CSS.index("@media (max-width: 980px)"):
+        CSS.index("@media (max-width: 720px)")
+    ]
+
+
+def test_toolbar_sound_button_is_the_master_switch_for_all_local_audio():
+    toggle = APP[
+        APP.index("  async toggleWorldSound() {"):
+        APP.index("\n  syncWorldSoundButton()", APP.index("  async toggleWorldSound() {"))
+    ]
+    assert "this.stopRadio();" in toggle
+    assert "this.focusMusicAutoplayPending = false;" in toggle
+    assert toggle.count("this.syncWorldSoundButton();") >= 3
+    assert "if (!this.soundEnabled)" in APP[
+        APP.index("  async playFocusMusic("):
+        APP.index("\n  async toggleFocusMusicPause()", APP.index("  async playFocusMusic("))
+    ]
+    assert "if (!this.soundEnabled)" in APP[
+        APP.index("  async playHostedTrack("):
+        APP.index("\n  stopRadio(", APP.index("  async playHostedTrack("))
+    ]
+
+
 def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
     assert "data-world-office-enter" not in APP
     assert "data-world-office-prompt" not in APP

@@ -35,7 +35,6 @@ export const OFFICE_FLOORS = Object.freeze([
     level: 1,
     label: "Marketing",
     team: "marketing",
-    publicForMembers: true,
     description: "Campaign studio, task wall, and encrypted meeting table",
   }),
   Object.freeze({
@@ -103,6 +102,12 @@ export const OFFICE_FLOORS = Object.freeze([
 // unlock after the server accepts the membership change and /office/floors is
 // refreshed.
 export const OFFICE_FLOOR_TEAM_ALIASES = Object.freeze({
+  marketing: Object.freeze([
+    "marketing",
+    "growth",
+    "communications",
+    "comms",
+  ]),
   engineering: Object.freeze([
     "engineering",
     "engineers",
@@ -196,10 +201,9 @@ export function normalizeOfficeFloorAccess(payload = {}) {
       : [],
   );
   if (authenticated) {
-    // These are the three member-visible floors required by the physical
+    // These are the member-visible floors required by the physical
     // design. Restricted floor data remains server-authorized separately.
     supplied.add("lobby");
-    supplied.add("marketing");
     supplied.add("rooftop");
   }
   return {

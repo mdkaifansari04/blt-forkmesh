@@ -6321,6 +6321,9 @@ async def office_general_entry_handler(env, request):
 
 
 OFFICE_FLOOR_TEAM_ALIASES = {
+    "marketing": {
+        "marketing", "growth", "communications", "comms",
+    },
     "engineering": {
         "engineering", "engineers", "development", "developers",
         "platform", "frontend", "backend",
@@ -6422,7 +6425,7 @@ async def office_floor_access_handler(env, request):
         if slug
     })
     team_set = set(teams)
-    allowed = ["lobby", "marketing", "rooftop"]
+    allowed = ["lobby", "rooftop"]
     for floor_id, aliases in OFFICE_FLOOR_TEAM_ALIASES.items():
         if team_set.intersection(aliases):
             allowed.append(floor_id)
