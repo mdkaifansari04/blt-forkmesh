@@ -241,9 +241,20 @@ def test_user_agent_is_reduced_locally_to_generalized_badge_categories():
     assert "/CrOS/i.test(ua)" in DATA
     assert "/Linux/i.test(platform)" in DATA
     assert "navigator.userAgent" in DATA
-    assert "userAgent:" not in APP
     assert "presenceBrowser(" in APP
     assert "presenceOS(" in APP
+    context = APP[
+        APP.index("  async loadContext() {"):
+        APP.index("\n  async loadSatelliteSky()", APP.index("  async loadContext() {"))
+    ]
+    assert "context?.securityDetails" in context
+    assert "setSelfSecurityDetails" in context
+    presence = APP[
+        APP.index("  sendPresence(message) {"):
+        APP.index("\n  receivePresence(message)", APP.index("  sendPresence(message) {"))
+    ]
+    assert "securityDetails" not in presence
+    assert "selfSecurityDetails" not in presence
 
 
 def test_avatar_chest_activity_country_shirt_and_input_state_are_privacy_safe():
@@ -268,10 +279,12 @@ def test_avatar_chest_activity_country_shirt_and_input_state_are_privacy_safe():
     assert "firstVisitAge:" in APP
     assert "settings.privacy.activity && identity.inputActive === true" in APP
     assert "countryCode:" in APP
-    assert "userAgent:" not in APP
-    assert "url:" not in APP[APP.index("  sendPresence(message) {"):APP.index(
+    presence = APP[APP.index("  sendPresence(message) {"):APP.index(
         "\n  receivePresence(message)", APP.index("  sendPresence(message) {")
     )]
+    assert "userAgent" not in presence
+    assert "securityDetails" not in presence
+    assert "url:" not in presence
 
 
 def test_chest_badge_shows_client_categories_exact_ages_and_status_note():
@@ -284,10 +297,13 @@ def test_chest_badge_shows_client_categories_exact_ages_and_status_note():
         "`FIRST ${joined}`",
     ):
         assert contract in SCENE
-    # The badge shows the two coarse categories world-data.js derived; the raw
-    # user-agent string never reaches the scene.
+    # Public chest badges still show only coarse categories. Raw details are
+    # confined to the requester-only back plate and never enter an identity.
     assert "navigator.userAgent" not in SCENE
-    assert "userAgent" not in SCENE
+    assert "function avatarSecurityBadgeTexture" in SCENE
+    assert 'badge.name = "forkmesh-self-security-back-badge"' in SCENE
+    assert "setSelfSecurityBadgeVisibility" in SCENE
+    assert "HIDDEN FROM PEERS + SCREENSHOTS" in SCENE
     for contract in (
         "firstSeenMinutes:",
         "joinedAt:",
@@ -298,6 +314,36 @@ def test_chest_badge_shows_client_categories_exact_ages_and_status_note():
     assert '"firstSeenMinutes", "joinedAt",' in WORLD_PROTOCOL
     assert "def _bounded_first_seen_minutes(value, fallback):" in WORLD_PROTOCOL
     assert "def _bounded_joined_at(value, now, fallback):" in WORLD_PROTOCOL
+
+
+def test_chest_badge_shows_the_same_full_record_for_every_avatar():
+    # The world active-time row is an extra line, never a replacement for the
+    # activity·visits line, so no avatar's chest shows less than the badge
+    # knows about that visitor.
+    assert "const activeRow =" in SCENE
+    assert "IN WORLD`" in SCENE
+    assert "`${activity} · ${visits} PUBLIC URL VISITS`" in SCENE
+    assert "sharesActivity || !activeRow" in SCENE
+    # A live presence frame carries no joined date or active-time aggregate, so
+    # every avatar for a known account is filled in from the public directory:
+    # walking peers, office-meeting participants, and the visitor themselves.
+    for contract in (
+        "function withMemberFacts(identity)",
+        "const badgeIdentity = withMemberFacts({",
+        "const participantIdentity = withMemberFacts({",
+        "const badgeIdentity = withMemberFacts(identity);",
+        "memberFacts.clear();",
+    ):
+        assert contract in SCENE
+    # A guest can type any display name, so only a server-stamped account
+    # status may claim the record filed under it.
+    assert 'String(identity.accountStatus || "Guest") === "Guest"' in SCENE
+    # The visitor's own chest wears their live activity-ticket total, repainted
+    # once a minute rather than on every one-second tick.
+    assert "syncOwnBadgeActivity()" in APP
+    assert "this.syncOwnBadgeActivity();" in APP
+    assert "worldActivityRenderedMinute" in APP
+    assert "totalActiveMs: Number.isFinite(Number(identity.totalActiveMs))" in APP
 
 
 def test_chest_fediverse_tab_uses_public_profile_data_and_explicit_follow():
@@ -407,7 +453,7 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
     assert (
         'this.fetchJSON("/api/accounts/users", {\n        auth: false,' in APP
     )
-    assert "async refreshMemberDirectory()" in APP
+    assert "async refreshMemberDirectory(force = false, probed = [])" in APP
     assert 'type: "presence"' in APP
     assert "shareCountry: Boolean(this.settings.privacy.country)" in APP
     assert "shareName: Boolean(this.settings.privacy.name)" in APP
@@ -773,15 +819,15 @@ def test_join_cues_are_country_specific_local_opt_in_and_rate_limited():
 
 
 def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
-    assert "data-world-office-focus" in APP
-    assert "data-world-office-enter" in APP
+    assert "data-world-office-enter" not in APP
+    assert "data-world-office-prompt" not in APP
+    assert "data-world-office-fallback" in APP
     assert "data-world-office-chat" in APP
     assert "data-world-office-frame" in APP
-    assert "Visit ForkMesh Office" in APP
+    assert "Open accessible chat fallback" in APP
     assert "ForkMesh Office chat" in APP
     assert 'office: "visiting-office"' in APP
     assert "/chat?embed=office" not in APP
-    assert 'sandbox="allow-forms allow-same-origin allow-scripts"' in APP
     assert "allow-popups" not in APP
     # Two doors to the same encrypted chat: the spatial Office walk-in (above)
     # and the docked chat terminal panel. The Office deliberately does not
@@ -890,6 +936,11 @@ def test_world_receives_private_notifications_and_global_announcements():
     assert 'this.fetchJSON("/api/world/events"' in APP
     assert 'this.postJSON("/api/notifications"' in APP
     assert "data-world-notification-count" in APP
+    assert "data-world-notifications-open" in APP
+    assert "Show global and personal notifications" in APP
+    assert 'this.openLandmark("events")' in APP
+    assert 'id === "events"' in APP
+    assert 'label: "Notifications"' in APP
     assert "data-world-notifications-refresh" in APP
     assert "data-world-notifications-read" in APP
     assert "World announcement:" in APP
@@ -939,6 +990,13 @@ def test_repository_world_uses_authorized_https_metadata_and_size_aware_nodes():
     assert "updateRepositorySizeMap" in SCENE
     assert "new THREE.ExtrudeGeometry" in SCENE
     assert "active.sizes" in APP
+    assert "hydrateHostedRepositorySizeMaps" in APP
+    assert "repositorySizeTrees" in APP
+    assert "repository-mini-size-map:" in SCENE
+    assert 'record.source === "hosted-import"' in SCENE
+    assert 'repositoryIsland.name = "hosted-repository-island"' in SCENE
+    assert 'repositoryBridge.name = "hosted-repository-bridge"' in SCENE
+    assert "REPOSITORY_ISLAND_CENTER_X" in SCENE
     for entity in (
         "Contributor",
         "Issues",
@@ -1053,7 +1111,10 @@ def test_world_first_person_camera_has_accessible_toggle_and_scene_api():
         SCENE.index("\n  function focusRepositoryPortal(", scene_mode_start)
     ]
     assert 'player.visible = false' in scene_mode
-    assert 'player.visible = true' in scene_mode
+    # Third-person restores the shared World avatar everywhere except an Office
+    # meeting, where the local meeting participant is the visible camera target.
+    assert 'player.visible = officeSceneMode !== "meeting"' in scene_mode
+    assert "if (localParticipant) localParticipant.visible = true" in scene_mode
     assert "renderer.domElement.dataset.cameraMode = cameraMode" in scene_mode
 
     repository_entry_start = SCENE.index(
@@ -1160,10 +1221,20 @@ def test_flagship_graph_requires_commit_matched_tree_sizes_stats_and_entities():
     assert "this.loadRepositoryEntityRecords(base, commit, {" in fetch_map
     assert "privateRepository: catalogRecord?.isPrivate === true" in fetch_map
     assert "pullResult," in fetch_map
+    # Pull metadata is optional enrichment. It starts alongside the immutable
+    # size/stats requests so it cannot hold the first repository frame blank.
+    assert "const pullResultPromise =" in fetch_map
+    assert "const sizeRequest = this.fetchJSON(`${base}/sizes${ref}`" in fetch_map
     assert (
-        fetch_map.index("await this.loadRepositoryPullRecords(base)")
+        fetch_map.index("const pullResultPromise =")
         < fetch_map.index("await Promise.allSettled([")
     )
+    assert (
+        fetch_map.index("const sizeRequest =")
+        < fetch_map.index("await Promise.allSettled([")
+    )
+    assert "options.onTree?.(" in fetch_map
+    assert "options.onSizes?.(" in fetch_map
     assert "const REPOSITORY_METADATA_TIMEOUT_MS = 45 * 1000;" in APP
     assert fetch_map.count(
         'String(sizeResult.value?.commit || "").toLowerCase() === commit'
@@ -1196,6 +1267,7 @@ def test_flagship_graph_requires_commit_matched_tree_sizes_stats_and_entities():
     assert 'this.repositoryMapState = "unavailable"' in gate
     assert "updateRepositoryGraph?.([], [])" in gate
     assert "this.activeRepository = result.snapshot;" not in gate
+    assert "this.previewRepositoryMap(" in gate
 
 
 def test_repository_map_autoload_is_deduplicated_and_never_overrides_manual_choice():
@@ -1718,7 +1790,8 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
     for contract in (
         "PLAYER_MAX_SPEED",
         "PLAYER_ACCELERATION",
-        "keyboardMovementSpeed + PLAYER_ACCELERATION * moveAccelScale * delta",
+        "function movementSpeedForInput",
+        "PLAYER_ACCELERATION * moveAccelScale * Math.max(0, delta)",
         "keyboardMovementSpeed = baseMoveSpeed()",
         "function setMovementTuning",
         "setMovementTuning,",
@@ -1768,7 +1841,7 @@ def test_world_overview_zoom_keeps_the_finite_ground_inside_camera_depth():
 
 
 def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
-    assert "const WORLD_RADIUS = 72" in SCENE
+    assert "const WORLD_RADIUS = 174" in SCENE
     assert "const WORLD_GROUND_RADIUS = 88" in SCENE
     assert "electric-mesh-city-block-grid" not in SCENE
     assert "electricMeshConduit" not in SCENE
@@ -1855,7 +1928,11 @@ def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
     assert '"OUT AND ABOUT"' in SCENE
     assert "campfire.userData.seatByName" in SCENE
     assert "noteDirectoryMembers" in APP
-    assert "(count * CAMPFIRE_SEAT_SPACING) / (2 * Math.PI)" in SCENE
+    # The ring's arc carries the seats plus the walk-in gap (adhoc #430).
+    assert (
+        "(count * CAMPFIRE_SEAT_SPACING + CAMPFIRE_ENTRANCE_WIDTH) / (2 * Math.PI)"
+        in SCENE
+    )
     assert '"sitting around the campfire"' in SCENE
     # Figures and idle live avatars both face the pit at the circle's centre.
     # Avatar fronts face local -Z, so the inward heading is atan2(x, z) — the
@@ -1896,8 +1973,10 @@ def test_system_capacity_scene_combines_service_limits_and_database_rows():
     assert "system-capacity-metrics-unavailable" in SCENE
     assert "system-capacity-database-tables" in SCENE
     assert "Math.log1p(table.rowCount)" in SCENE
-    assert "rowCount > 1" in SCENE
-    assert ".slice(0, 128)" in SCENE
+    # Every table the Worker counted is drawn, empty ones included, up to the
+    # same ceiling the Worker itself enumerates.
+    assert "rowCount >= 0" in SCENE
+    assert ".slice(0, 256)" in SCENE
     assert "visibleTableCount" in SCENE
     assert "system-capacity-row-count:" in SCENE
     # The table name is printed on the bar's top face only; the old upright
@@ -1988,7 +2067,7 @@ def test_world_movement_speed_and_acceleration_are_locally_adjustable():
     assert "let moveSpeedScale = 1" in SCENE
     assert "let moveAccelScale = 1" in SCENE
     assert "PLAYER_MAX_SPEED * moveSpeedScale" in SCENE
-    assert "PLAYER_ACCELERATION * moveAccelScale * delta" in SCENE
+    assert "PLAYER_ACCELERATION * moveAccelScale * Math.max(0, delta)" in SCENE
     assert "moveAccelScale = Number.isFinite(numeric)" in SCENE
     # App renders local-controls sliders wired to persisted settings and pushes
     # the tuning (Infinity at the top acceleration position) into the scene.

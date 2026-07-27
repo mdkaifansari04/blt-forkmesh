@@ -65,6 +65,18 @@
             "status": "closed",
             "ts": 1784328627774,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "a65638cd-7d4e-4355-9ddf-31007f33318d",
+            "sig": "HYpqvoHCnOtyZlVBQi9bQzKRFNV-6jVPDlCMZPcSepq8UJOUky5kqbDKyiV935Lv2q-KQIyh2O4cl0-ElUOxDQ",
+            "ts": 1785100620475,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -77,6 +89,6 @@
     "startDate": 0,
     "status": "closed",
     "title": "fix the light / dark mode on the header and remove extra vertical info so the scrollbar is not needed",
-    "updatedAt": 1784328627774,
+    "updatedAt": 1785100620475,
     "votes": 0
 }

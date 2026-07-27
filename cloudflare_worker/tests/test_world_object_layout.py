@@ -317,6 +317,40 @@ def test_world_frontend_loads_applies_and_admin_locks_the_layout():
         assert '"%s"' % object_id in scene_js
 
 
+def test_layout_reads_retry_skip_the_cache_and_keep_the_last_save():
+    world_js = WORLD_JS.read_text(encoding="utf-8")
+    # Every read of the placement document goes through one helper: a dropped
+    # fetch (the abort timer shares the main thread the scene build is busy
+    # with) is retried instead of silently leaving the square in the layout it
+    # was authored with, and the read skips the HTTP cache so it can never be
+    # answered with a copy from before the last move.
+    assert "async fetchWorldLayout(attempts = 3)" in world_js
+    assert 'cache: "no-store",' in world_js
+    assert "if (attempt === attempts) return null;" in world_js
+    assert "const layoutPromise = this.fetchWorldLayout();" in world_js
+    assert "const layout = await this.fetchWorldLayout();" in world_js
+    assert world_js.count('this.fetchJSON("/api/world/layout"') == 1
+
+    # The document is edge-cached for a minute and a write only purges the colo
+    # that took it, so what a save returned stands in for any object the served
+    # copy has not caught up on yet. Both stamps come from the Worker, so the
+    # comparison never rides on the visitor's clock.
+    assert "this.rememberWorldLayout(result?.objects);" in world_js
+    assert "mergedWorldLayout(objects)" in world_js
+    assert (
+        "this.world?.applyWorldLayout?.(this.mergedWorldLayout(layout?.objects))"
+        in world_js)
+    assert (
+        "Number(entry?.updatedAt || 0) > Number(served?.updatedAt || 0)"
+        in world_js)
+    # The stand-in is a short-lived echo, not a second source of truth.
+    assert 'const WORLD_LAYOUT_ECHO_KEY = "forkmesh.world.layout.echo.v1";' \
+        in world_js
+    assert "const WORLD_LAYOUT_ECHO_TTL_MS = 10 * 60 * 1000;" in world_js
+    assert "age < WORLD_LAYOUT_ECHO_TTL_MS" in world_js
+    assert "window.localStorage.removeItem(WORLD_LAYOUT_ECHO_KEY);" in world_js
+
+
 def test_layout_editor_rotates_with_the_r_key_and_saves_the_heading():
     scene_js = WORLD_SCENE_JS.read_text(encoding="utf-8")
     # R (Shift+R for the other direction) turns the dragged or last-grabbed
@@ -346,7 +380,7 @@ def test_layout_editor_rotates_with_the_wheel_while_dragging():
     assert "rotateActiveLayoutObject(Math.sign(deltaPixels))" in scene_js
     wheel_grab = scene_js.index(
         "rotateActiveLayoutObject(Math.sign(deltaPixels))")
-    zoom = scene_js.index("setCameraZoom(currentZoom", wheel_grab)
+    zoom = scene_js.index("currentZoom * Math.exp(deltaPixels", wheel_grab)
     assert wheel_grab < zoom
     # A mid-drag turn folds its recentring shift into the drag offset so the
     # next pointer move does not snap the object back.

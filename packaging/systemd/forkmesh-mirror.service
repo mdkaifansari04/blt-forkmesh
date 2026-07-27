@@ -10,10 +10,12 @@ User=forkmesh-mirror
 Group=forkmesh-mirror
 UMask=0077
 Environment=TMPDIR=/var/lib/forkmesh-mirror/runtime-tmp
+ExecStartPre=/usr/bin/python3 -I /opt/forkmesh-mirror/mirror_gateway.py --cleanup-runtime /var/lib/forkmesh-mirror/runtime-tmp
 ExecStartPre=/usr/bin/python3 -I /opt/forkmesh-mirror/mirror_gateway.py --config /var/lib/forkmesh-mirror/gateway/mirror-gateway.json --check
 ExecStart=/usr/bin/python3 /opt/forkmesh-mirror/mirror_gateway.py --config /var/lib/forkmesh-mirror/gateway/mirror-gateway.json
 Restart=on-failure
 RestartSec=5s
+KillSignal=SIGINT
 TimeoutStartSec=10min
 TimeoutStopSec=30s
 NoNewPrivileges=true

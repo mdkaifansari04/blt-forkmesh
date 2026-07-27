@@ -253,7 +253,9 @@ def test_background_tasks_observe_exceptions_instead_of_default_handler():
         ENTRY_TEXT.index("async def _https_mirror_proxy"):
         ENTRY_TEXT.index("\n\nclass Default")
     ]
-    assert "await asyncio.wait_for(" in proxy
+    assert "await js_fetch_with_timeout(" in proxy
+    assert "await asyncio.wait_for(" not in proxy
+    assert "JsAbortSignal.timeout(" in ENTRY_TEXT
     assert "_stream_watchdog" not in ENTRY_TEXT
 
 
@@ -510,15 +512,17 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "case 1: // Commits list\n        loadCommits();" not in MAIN_WINDOW_ACTIONS_CPP_TEXT
 
 
-def test_worker_observability_is_enabled_at_full_sampling_in_wrangler():
-    # Observability is enabled and captures every invocation (full sampling),
-    # but only into the Cloudflare dashboard: the Sentry log/trace exports are
-    # off because they emitted an info event per D1 call, websocket wakeup, and
-    # request ("d1_run OK", "hibernatableWebSocket OK", ...) — adhoc #169.
+def test_worker_observability_stays_within_the_free_event_budget():
+    # Retain a useful diagnostic sample without letting routine invocations
+    # consume Cloudflare's 200k/day observability-event allowance. Sentry's
+    # explicit error path remains independent from this dashboard sample.
     observability = WRANGLER_DATA["observability"]
     assert observability["enabled"] is True
-    assert observability["head_sampling_rate"] == 1
-    assert observability["logs"]["head_sampling_rate"] == 1
+    assert 0 < observability["head_sampling_rate"] <= 0.05
+    assert (
+        observability["logs"]["head_sampling_rate"]
+        == observability["head_sampling_rate"]
+    )
     assert "destinations" not in observability["logs"]
     assert observability["logs"]["invocation_logs"] is False
     assert observability["traces"]["enabled"] is False
