@@ -216,6 +216,10 @@ def test_live_mirror_rows_show_node_version_under_name():
     assert "mirror.version || mirror.appVersion || mirror.clientVersion" in rows
     assert 'rawVersion[0].toLowerCase() === "v"' in rows
     assert "block min-w-0 truncate text-[10px] text-muted-foreground font-mono" in rows
+    # A machine cabinet/row is named by the node, never by the user account
+    # that owns its source publication.
+    assert "mirror.node || mirror.machineName || mirror.name" in rows
+    assert "mirror.owner || mirror.node" not in rows
 
 
 def test_live_mirror_rows_show_source_of_truth_and_integrity_pin():
@@ -233,6 +237,17 @@ def test_live_mirror_rows_show_source_of_truth_and_integrity_pin():
     ]
     assert "pickReferenceMirror(mirrors)" in summary
     assert "renderMirrorRow(mirror, servedBy, refMirror)" in summary
+
+
+def test_repo_commit_age_prefers_exact_signed_mirror_timestamp():
+    summary = DASHBOARD_JS[
+        DASHBOARD_JS.index("function updateRepoCommitSummary(commit, repo)")
+        : DASHBOARD_JS.index("function mdSafeUrl(")
+    ]
+    assert "matchingMirror" in summary
+    assert "mirror?.lastCommitAt" in summary
+    assert "mirrorCommit === hash.trim().toLowerCase()" in summary
+    assert "const date = exactMirrorDate" in summary
 
 
 def test_direct_https_mirror_reads_bypass_the_cached_fetchjson():

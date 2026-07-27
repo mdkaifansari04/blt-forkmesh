@@ -440,15 +440,19 @@ ensure_mirror_candidates() {
   CURRENT_STEP="mirror"
   say "Resolving an online ForkMesh mirror to clone from…"
   resolve_install_node
-  local _node
-  for _node in $FORKMESH_NODES; do
-    REPO_CANDIDATES+=("${FORKMESH_HOST%/}/${_node}/${FORKMESH_NAME}")
-  done
+  # Clone through the stable source-of-truth route. The Worker uses the ranked
+  # signed endpoint set above to select/fail over between mirror2, mirror3, ...
+  # internally. Building node-namespaced clone URLs here tied the repository
+  # pin to a mirror alias and could return 503 even while the canonical
+  # forkmesh/forkmesh route was healthy.
+  REPO_CANDIDATES+=(
+    "${FORKMESH_HOST%/}/forkmesh/${FORKMESH_NAME}"
+  )
   REPO="${REPO_CANDIDATES[0]}"
   say "Using mirror node: $FORKMESH_NODE"
-  if [ "${#REPO_CANDIDATES[@]}" -gt 1 ]; then
-    say "  ${#REPO_CANDIDATES[@]} online mirrors available; will fall back if one is unreachable: $FORKMESH_NODES"
-  fi
+  case "$FORKMESH_NODES" in
+    *" "*) say "  Mirror gateway will fail over across: $FORKMESH_NODES" ;;
+  esac
   diag mirror 1
 }
 
@@ -848,6 +852,20 @@ have_compiler() {
     || command -v g++ >/dev/null 2>&1 || command -v c++ >/dev/null 2>&1
 }
 
+have_qt6_dev() {
+  command -v pkg-config >/dev/null 2>&1 &&
+    pkg-config --exists Qt6Widgets Qt6Network Qt6Svg
+}
+
+have_openssl_dev() {
+  if command -v pkg-config >/dev/null 2>&1 &&
+     pkg-config --exists openssl; then
+    return 0
+  fi
+  [ -f /usr/include/openssl/ssl.h ] ||
+    [ -f /usr/local/include/openssl/ssl.h ]
+}
+
 # Prebuilt/uploaded binaries skip the source-build pipeline (and thus its Qt 6
 # dependency install), but the binary is dynamically linked against the Qt 6
 # runtime libraries (libQt6Widgets/Gui/Core/Network/Svg) and will not even start
@@ -1108,6 +1126,20 @@ install_prebuilt_release() {
   ensure_mirror_candidates
   local tmp repo sums manifest signature canon hash url bin got attempt attempt_url
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-prebuilt.XXXXXX" 2>/dev/null)" || return 1
+  # Standalone `curl | bash` installs need an independent trust anchor too.
+  # Materialize ForkMesh's release-only public key inside this private staging
+  # directory unless an administrator or authenticated controller supplied a
+  # different trust mechanism. The corresponding private key is never shipped.
+  if [ -z "$FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256" ] &&
+     [ -z "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" ]; then
+    FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE="$tmp/release-publisher.pem"
+    printf '%s\n' \
+      '-----BEGIN PUBLIC KEY-----' \
+      'MCowBQYDK2VwAyEAzpP+ej8bF0ArtCPV6DwSbhqqTeMJ5A0UtHlWE4lnTkc=' \
+      '-----END PUBLIC KEY-----' \
+      >"$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" || return 1
+    chmod 0600 "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" 2>/dev/null || true
+  fi
   sums=".forkmesh/releases/${RELEASE_CHANNEL}/SHASUMS256.txt"
   manifest=".forkmesh/releases/${RELEASE_CHANNEL}/release.json"
   signature=".forkmesh/releases/${RELEASE_CHANNEL}/release.json.sig"
@@ -1264,30 +1296,13 @@ if ! have_compiler; then
   fi
 fi
 
-# Qt 6 (Widgets, Network, Svg) and OpenSSL are required by CMake. Install the
-# dev packages up front. This is a hard requirement: if the package manager
-# can't provide them the build is guaranteed to fail at configure time with a
-# confusing "Could NOT find Qt6Svg" error, so fail here with a clear message
-# instead. The qt6 dev metapackages pull in the Svg/SvgWidgets components.
-if [ -n "$PM" ] && [ "${FORKMESH_NO_INSTALL_DEPS:-0}" != "1" ]; then
-  qt_pkgs="$(pkg_for qt)"
-  if [ -n "$qt_pkgs" ]; then
-    say "Installing Qt 6 dev libraries ($qt_pkgs)"
-    # shellcheck disable=SC2086
-    pm_install $qt_pkgs || die "Failed to install Qt 6 dev packages ($qt_pkgs) via $PM."
-  fi
-  ssl_pkgs="$(pkg_for openssl)"
-  if [ -n "$ssl_pkgs" ]; then
-    say "Installing OpenSSL dev libraries ($ssl_pkgs)"
-    # shellcheck disable=SC2086
-    pm_install $ssl_pkgs || die "Failed to install OpenSSL dev packages ($ssl_pkgs) via $PM."
-  fi
-else
-  say "ForkMesh requires Qt 6 (Widgets, Network, Svg) and OpenSSL."
-  say "  Debian/Ubuntu: sudo apt install qt6-base-dev qt6-svg-dev libssl-dev cmake g++"
-  say "  Fedora:        sudo dnf install qt6-qtbase-devel qt6-qtsvg-devel openssl-devel cmake gcc-c++"
-  say "  macOS:         brew install qt openssl@3 cmake"
-fi
+# Qt 6 (Widgets, Network, Svg) and OpenSSL are required by CMake. Probe them
+# before touching the package manager: repeatedly running `curl | bash` must
+# not demand sudo or reinstall large development packages on an already-ready
+# host. `ensure` still installs the known packages and fails clearly when a
+# component is genuinely absent.
+ensure qt have_qt6_dev
+ensure openssl have_openssl_dev
 # detail records which prerequisites had to be installed ("none" = all present),
 # so the funnel shows how often a machine already met the requirements.
 diag deps 1 "${DIAG_MISSING:-none}"

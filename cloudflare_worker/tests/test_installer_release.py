@@ -429,7 +429,7 @@ def test_commit_pinned_install_rejects_manifest_free_legacy_release():
     assert rc != 0
     assert installed is None
     assert blob_url is None
-    assert "no independent release trust anchor" in stderr.lower()
+    assert "signature is missing or invalid" in stderr.lower()
 
 
 def test_authenticated_candidate_is_never_executed(tmp_path):

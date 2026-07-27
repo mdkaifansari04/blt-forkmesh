@@ -12,7 +12,7 @@ const THREE_MODULE_PATH = path.resolve(
   "build",
   "three.module.min.js",
 );
-const OFFICE_ENTRANCE_POSITION = [45, 0.38, -20.8];
+const OFFICE_ENTRANCE_POSITION = [0, 0.38, -168.8];
 const OFFICE_ENTRY_TICKET = "playwright-office-entry-ticket";
 
 const REMOTE_PARTICIPANT = {
@@ -72,6 +72,12 @@ async function prepareMeetingWorld(page) {
       return seed / 0x1_0000_0000;
     };
     sessionStorage.setItem("forkmesh.world.guestId.v1", "office-meeting");
+    localStorage.setItem("forkmesh.session", JSON.stringify({
+      kind: "user",
+      nodeName: "alice",
+      email: "alice@example.test",
+      sessionToken: "alice-office-token",
+    }));
   });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.route(THREE_MODULE_URL, (route) => route.fulfill({
@@ -101,8 +107,13 @@ async function prepareMeetingWorld(page) {
         room: "world-general",
         passphrase: "playwright-office-meeting-passphrase",
       };
-    } else if (url.pathname === "/api/world/office/general/status") {
-      body = { ok: true, occupied: false };
+    } else if (url.pathname === "/api/world/office/floors") {
+      body = {
+        authenticated: true,
+        account: "alice",
+        allowedFloorIds: ["lobby", "marketing", "rooftop"],
+        teams: [],
+      };
     } else if (url.pathname === "/api/world/office/general/entry") {
       let requestBody = {};
       try {
@@ -153,7 +164,7 @@ async function prepareMeetingWorld(page) {
         participant: {
           ...REMOTE_PARTICIPANT,
           id: "participant-self",
-          name: "Guest 0001",
+          name: "Alice",
           pose: "seated",
           chairId: frame.chairId,
         },
@@ -190,23 +201,53 @@ async function prepareMeetingWorld(page) {
   };
 }
 
-test("visitors join a native Office meeting and sit after server approval", async ({ page }) => {
+async function waitForOfficeEntry(page) {
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate((shell) => ({
+      active: shell.officeController.active,
+      space: shell.world.getPosition().space,
+    }))
+  ).toEqual({
+    active: true,
+    space: "office-lobby",
+  });
+}
+
+async function walkIntoOffice(page) {
+  await page.locator("forkmesh-world").evaluate((shell, position) => {
+    shell.world.setPaused(false);
+    shell.world.player.position.set(...position);
+    shell.world.setControl("forward", true);
+  }, OFFICE_ENTRANCE_POSITION);
+  try {
+    await waitForOfficeEntry(page);
+  } finally {
+    await page.locator("forkmesh-world").evaluate((shell) => {
+      shell.world.setControl("forward", false);
+    });
+  }
+}
+
+async function joinGeneralOfficeMeeting(page) {
+  return page.locator("forkmesh-world").evaluate(
+    (shell) => shell.officeMeeting.joinRoom("general"),
+  );
+}
+
+test("signed-in visitors join a native Office meeting and sit after server approval", async ({ page }) => {
   const { meetingFrames, officeEntryRequests, generalAccessHeaders } =
     await prepareMeetingWorld(page);
-  await page.locator("forkmesh-world").evaluate((shell, position) => {
-    shell.world.player.position.set(...position);
-  }, OFFICE_ENTRANCE_POSITION);
-  await expect(page.locator("[data-world-office-enter]")).toBeVisible();
-  await page.keyboard.press("e");
+  await walkIntoOffice(page);
 
   const lobby = page.locator("[data-world-office-lobby]");
-  await expect(lobby).toBeVisible();
+  await expect(lobby).toBeHidden();
   await expect(page.locator(".world-quick-dock")).toBeHidden();
   await expect(page.locator("[data-world-office-frame]")).not.toHaveAttribute(
     "src",
     /.+/,
   );
-  await lobby.getByRole("button", { name: "Join #general" }).click();
+  expect(officeEntryRequests).toHaveLength(0);
+  expect(await joinGeneralOfficeMeeting(page)).toBe(true);
   expect(officeEntryRequests).toEqual([
     {
       method: "POST",
@@ -243,12 +284,8 @@ test("visitors join a native Office meeting and sit after server approval", asyn
 
 test("native Office messages, pasted images, and documents stay encrypted", async ({ page }) => {
   const { chatFrames, sendChatFrame } = await prepareMeetingWorld(page);
-  await page.locator("forkmesh-world").evaluate((shell, position) => {
-    shell.world.player.position.set(...position);
-  }, OFFICE_ENTRANCE_POSITION);
-  await expect(page.locator("[data-world-office-enter]")).toBeVisible();
-  await page.keyboard.press("e");
-  await page.getByRole("button", { name: "Join #general" }).click();
+  await walkIntoOffice(page);
+  expect(await joinGeneralOfficeMeeting(page)).toBe(true);
 
   const room = page.locator("[data-world-office-room]");
   const input = room.locator("[data-world-office-input]");
@@ -280,7 +317,7 @@ test("native Office messages, pasted images, and documents stay encrypted", asyn
     "Tampered avatar claim",
   );
   await expect(room.locator("[data-world-office-transcript]")).toContainText(
-    "Remote channel participant",
+    "Remote teammate",
   );
   await expect(page.locator('[data-world-office-bubble="participant-remote"]'))
     .toHaveCount(0);
@@ -319,14 +356,10 @@ test("native Office messages, pasted images, and documents stay encrypted", asyn
   expect(wire).not.toContain("meeting-notes.pdf");
 });
 
-test("meeting revocation clears the room and returns to the lobby", async ({ page }) => {
+test("meeting revocation clears the room and returns to the physical Marketing floor", async ({ page }) => {
   const { closeMeeting } = await prepareMeetingWorld(page);
-  await page.locator("forkmesh-world").evaluate((shell, position) => {
-    shell.world.player.position.set(...position);
-  }, OFFICE_ENTRANCE_POSITION);
-  await expect(page.locator("[data-world-office-enter]")).toBeVisible();
-  await page.keyboard.press("e");
-  await page.getByRole("button", { name: "Join #general" }).click();
+  await walkIntoOffice(page);
+  expect(await joinGeneralOfficeMeeting(page)).toBe(true);
   const room = page.locator("[data-world-office-room]");
   await expect(room).toBeVisible();
   await room.locator('[data-world-office-seat="chair-1"]').click();
@@ -334,10 +367,15 @@ test("meeting revocation clears the room and returns to the lobby", async ({ pag
 
   closeMeeting();
   await expect(room).toBeHidden();
-  await expect(page.locator("[data-world-office-lobby]")).toBeVisible();
+  await expect(page.locator("[data-world-office-lobby]")).toBeHidden();
   await expect(page.locator("[data-world-office-lobby-status]")).toContainText(
     "meeting ended",
   );
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getPosition().space,
+    )
+  ).toBe("office-marketing");
   await expect(room.locator("[data-world-office-participant]")).toHaveCount(0);
   await expect(page.locator("[data-world-office-bubble]")).toHaveCount(0);
 });
@@ -379,12 +417,8 @@ for (const viewport of [
     });
     const page = await context.newPage();
     await prepareMeetingWorld(page);
-    await page.locator("forkmesh-world").evaluate((shell, position) => {
-      shell.world.player.position.set(...position);
-    }, OFFICE_ENTRANCE_POSITION);
-    await expect(page.locator("[data-world-office-enter]")).toBeVisible();
-    await page.keyboard.press("e");
-    await page.getByRole("button", { name: "Join #general" }).click();
+    await walkIntoOffice(page);
+    expect(await joinGeneralOfficeMeeting(page)).toBe(true);
     const room = page.locator("[data-world-office-room]");
     const input = room.locator("[data-world-office-input]");
     await expect(input).toBeEnabled();

@@ -42,6 +42,7 @@ export const LANDMARKS = [
     bullets: [
       "One named bench per public registered account, kept for the whole session and left visibly empty while its owner is out walking the world.",
       "Guests, and members the directory has not caught up with, take the open benches the circle always keeps free.",
+      "The ring always leaves a doorway-wide gap facing the town, so anyone can walk in to the fire and back out without stepping over a bench.",
       "Private profiles and hidden-name visitors are never given a named bench.",
       "The seated pose is held until you move, so any movement key stands you back up.",
     ],
@@ -79,22 +80,23 @@ export const LANDMARKS = [
     eyebrow: "COLLABORATION / 10",
     icon: "⌁",
     color: "#9ef7c6",
-    position: [45, 0, -27],
+    position: [0, 0, -215],
     summary:
-      "Meet collaborators through ForkMesh's existing encrypted channel system.",
+      "A ten-story team campus connected to the World by a walkable bridge.",
     metaphor:
-      "An open office lobby where the chat terminal becomes available after deliberate entry.",
+      "A glass tower with a staffed lobby, team floors, an elevator, and a rooftop observatory.",
     reality:
-      "The office embeds the normal authorized chat client. Avatar position never grants room access or exposes private membership.",
-    status: "Encrypted chat available",
+      "Building admission requires an active account. Elevator grants come from server-verified organization team membership; avatar position never grants private data access.",
+    status: "Account-gated · team floors",
     statusTone: "live",
     bullets: [
-      "Guests can use only public World #general.",
-      "Registered users see only public and authorized private channels.",
+      "Guests can cross the bridge and visit the welcome desk, but must sign in before entering the tower.",
+      "Every registered user can visit the lobby, Marketing floor, and rooftop patio.",
+      "Restricted elevator buttons unlock only for verified members of that team.",
       "Messages, room keys, tokens, and attachments never enter world presence.",
-      "The hidden chat iframe disconnects after leaving the office.",
+      "The Office stays inside the same World scene, with physical floors, collision barriers, and no jumping.",
     ],
-    primary: { label: "Walk to the office", action: "office" },
+    primary: { label: "Cross the office bridge", action: "office" },
     secondary: { label: "Open full chat", href: "/chat" },
   },
 ];
@@ -123,7 +125,7 @@ export const TOUR_STEPS = [
   {
     landmark: "office",
     title: "Collaboration has a place",
-    copy: "Enter the Office deliberately to use the same encrypted, authorization-aware chat available outside the World.",
+    copy: "Cross the bridge into one continuous ten-story workplace. Login and team authorization still come from the normal account system.",
   },
 ];
 
