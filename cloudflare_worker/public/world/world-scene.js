@@ -9568,6 +9568,46 @@ export function createWorldScene({
     avatar.position.copy(worldPosition);
   }
 
+  function nearestOfficeWalkablePosition(floorId, localPosition) {
+    const origin = localPosition.clone();
+    if (
+      officeInteriorPointIsWalkable(
+        floorId,
+        origin.x,
+        origin.z,
+        OFFICE_AVATAR_RADIUS,
+      )
+    ) {
+      return origin;
+    }
+    // Meeting poses cluster around the Marketing table, which is intentionally
+    // collidable in the free-walking floor. Search outward in small rings so
+    // leaving a room resumes at the closest valid point instead of trapping
+    // the continuous player inside that table.
+    for (let distance = 0.75; distance <= 24; distance += 0.75) {
+      for (let index = 0; index < 24; index += 1) {
+        const angle = (index / 24) * Math.PI * 2;
+        const x = origin.x + Math.cos(angle) * distance;
+        const z = origin.z + Math.sin(angle) * distance;
+        if (
+          officeInteriorPointIsWalkable(
+            floorId,
+            x,
+            z,
+            OFFICE_AVATAR_RADIUS,
+          )
+        ) {
+          origin.x = x;
+          origin.z = z;
+          return origin;
+        }
+      }
+    }
+    origin.x = 12;
+    origin.z = -10;
+    return origin;
+  }
+
   function setMovementTuning(tuning = {}) {
     if (tuning.speed !== undefined) {
       const numeric = Number(tuning.speed);
@@ -10063,9 +10103,14 @@ export function createWorldScene({
       );
       applyOfficeAvatarLocalPosition(player, localPosition);
     } else if (meetingAvatar) {
-      const localPosition = officeAvatarLocalPosition(meetingAvatar);
+      const localPosition = nearestOfficeWalkablePosition(
+        destinationFloor.id,
+        officeAvatarLocalPosition(meetingAvatar),
+      );
       localPosition.y = currentFloorY;
       applyOfficeAvatarLocalPosition(player, localPosition);
+      setOfficeParticipants([]);
+      officeLocalParticipantId = "";
     } else {
       player.position.y = currentFloorY;
     }
@@ -10167,6 +10212,11 @@ export function createWorldScene({
       officeSceneMode === "meeting" &&
       (!officeLocalParticipantId ||
         !officeParticipants.has(officeLocalParticipantId));
+    const localParticipant =
+      officeParticipants.get(officeLocalParticipantId);
+    if (localParticipant && officeSceneMode === "meeting") {
+      localParticipant.visible = cameraMode !== "first-person";
+    }
   }
 
   function updateOfficeMarketingTasks(payload = {}) {

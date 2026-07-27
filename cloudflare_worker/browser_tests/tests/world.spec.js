@@ -1743,6 +1743,62 @@ test("Office entry preserves the live avatar and keeps zoom inside the tower", a
   expect(bounded.distance).toBeLessThan(10);
 });
 
+test("leaving an Office meeting resumes at a walkable first-person pose", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-meeting-walkable-handoff");
+  await waitForWorld(page);
+  const handoff = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setOfficeAccess({
+      authenticated: true,
+      account: "alice",
+      allowedFloorIds: ["marketing"],
+    });
+    shell.world.enterOfficeLobby();
+    shell.world.setCameraMode("first-person");
+    shell.world.enterOfficeMeeting({
+      roomName: "general",
+      participantId: "local-me",
+      participants: [{
+        id: "local-me",
+        name: "Alice",
+        x: 0,
+        z: 0,
+        yaw: 0,
+        pose: "standing",
+      }],
+    });
+    let localAvatar = null;
+    shell.world.scene.traverse((object) => {
+      if (object.userData?.id === "local-me") localAvatar = object;
+    });
+    const localAvatarVisible = localAvatar?.visible === true;
+    shell.world.enterOfficeLobby({ floorId: "marketing" });
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const playerLocal = interior.worldToLocal(
+      shell.world.player.getWorldPosition(shell.world.player.position.clone())
+    );
+    return {
+      localAvatarFound: Boolean(localAvatar),
+      localAvatarVisible,
+      playerLocal: playerLocal.toArray(),
+      cameraMode: shell.world.getCameraState().mode,
+      playerVisible: shell.world.player.visible,
+    };
+  });
+  expect(handoff.localAvatarFound).toBe(true);
+  expect(handoff.localAvatarVisible).toBe(false);
+  expect(
+    Math.abs(handoff.playerLocal[0]) > 9.46 ||
+      Math.abs(handoff.playerLocal[2]) > 7.46,
+  ).toBe(true);
+  expect(handoff.playerLocal[1]).toBeCloseTo(16.38, 3);
+  expect(handoff.cameraMode).toBe("first-person");
+  expect(handoff.playerVisible).toBe(false);
+});
+
 test("Office elevator exposes ten floors while enforcing team access", async ({
   page,
 }) => {

@@ -341,6 +341,19 @@ def test_office_walkers_share_world_movement_tuning_and_heading():
         assert heading.search(body), f"{name} uses a different avatar heading"
 
 
+def test_meeting_handoff_projects_the_live_player_out_of_collidable_furniture():
+    scene = source(SCENE_PATH)
+    enter = function_body(scene, "enterOfficeLobby")
+    nearest = function_body(scene, "nearestOfficeWalkablePosition")
+    participants = function_body(scene, "setOfficeParticipants")
+
+    assert "nearestOfficeWalkablePosition(" in enter
+    assert "setOfficeParticipants([])" in enter
+    assert "officeInteriorPointIsWalkable(" in nearest
+    assert "OFFICE_AVATAR_RADIUS" in nearest
+    assert "cameraMode !== \"first-person\"" in participants
+
+
 def test_office_third_person_camera_distance_is_bounded_by_local_geometry():
     scene = source(SCENE_PATH)
     limiter = function_body(scene, "officeCameraDistanceLimit")
