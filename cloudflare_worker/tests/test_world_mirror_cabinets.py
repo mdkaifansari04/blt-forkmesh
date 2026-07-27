@@ -188,7 +188,7 @@ def test_live_node_builder_uses_the_freshest_repository_state_per_node():
     assert [repo["name"] for repo in mirror2["repositories"]] == ["zeta", "alpha"]
 
 
-def test_live_node_builder_never_promotes_users_or_stale_names_to_cabinets():
+def test_live_node_builder_retains_offline_payload_rows_but_not_unrelated_names():
     script = f"""
       import {{ buildLiveMirrorNodes }} from {json.dumps(MODULE.as_uri())};
       const network = {{
@@ -233,23 +233,36 @@ def test_live_node_builder_never_promotes_users_or_stale_names_to_cabinets():
         capture_output=True,
     )
     nodes = json.loads(result.stdout)
-    assert {node["name"] for node in nodes} == {"forkmesh", "mirror2"}
-    assert all(node["online"] is True for node in nodes)
+    assert {node["name"] for node in nodes} == {
+        "forkmesh",
+        "mirror2",
+        "retired-node",
+    }
     assert all(node["name"] not in {"jett", "accidental-name"} for node in nodes)
+    online = [node for node in nodes if node["online"]]
+    assert {node["name"] for node in online} == {"forkmesh", "mirror2"}
     assert all(
         repo["status"] == "online"
-        for node in nodes
+        for node in online
         for repo in node["repositories"]
     )
+    retired = next(node for node in nodes if node["name"] == "retired-node")
+    assert retired["online"] is False
+    assert retired["healthy"] is False
+    assert retired["status"] == "offline"
+    assert retired["integrity"] == "unknown"
+    assert retired["cloneAvailable"] is False
+    assert retired["repositories"][0]["status"] == "offline"
 
 
 def test_world_fetches_the_flagship_mirror_snapshot_once_and_uses_cabinets():
-    # One bootstrap fetch plus one bounded visible-page HTTPS poller. This data
-    # never travels on the multiplayer socket.
+    # Bootstrap and the bounded visible-page fallback share one cached,
+    # single-flight/backoff helper. Push signals remain the instant path.
     assert APP.count('this.fetchJSON("/api/repo/forkmesh/forkmesh/mirrors"') == 1
-    assert '"/api/repo/forkmesh/forkmesh/mirrors",' in APP
-    assert "const MIRROR_STATUS_POLL_MS = 60 * 1000" in APP
-    assert "document.visibilityState !== \"visible\"" in APP
+    assert "this.fetchMirrorCatalog()" in APP
+    assert "this.fetchMirrorCatalog({ force })" in APP
+    assert "const MIRROR_STATUS_POLL_MS = 5 * 60 * 1000" in APP
+    assert "if (this.destroyed || document.hidden) return;" in APP
     assert "startMirrorPolling()" in APP
     assert "this.inflightRequests = new Map()" in APP
     assert "this.requestFailures = new Map()" in APP

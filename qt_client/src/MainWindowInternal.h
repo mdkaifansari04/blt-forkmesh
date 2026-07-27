@@ -428,9 +428,11 @@ constexpr int kPacmanAnchorRole = Qt::UserRole + 12;
 constexpr int kNodeLightRole = Qt::UserRole + 13;
 // Cadence on which a node re-fetches its mirrors from source (mirrors
 // m_mirrorSyncTimer, which adds ±15% jitter — the pie is an approximation);
-// a behind node is expected to catch up at the next tick. Only a safety net
-// now: push events notify mirror peers the moment the source moves.
-constexpr qint64 kMirrorSyncIntervalMs = 15LL * 60 * 1000;
+// a behind node is expected to catch up within roughly three minutes. This is
+// only the dropped-event safety net: push events still notify mirror peers the
+// moment the source moves.
+constexpr qint64 kMirrorSyncIntervalMs = 3LL * 60 * 1000;
+constexpr int kMirrorSyncJitterPercent = 15;
 
 // Extra labels this machine answers to when a workflow declares `runs-on:`
 // (free-form, comma/space separated — e.g. "ios, xcode, gpu"). The machine's

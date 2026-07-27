@@ -76,7 +76,10 @@ def test_task_polling_is_visibility_aware_and_adapts_after_leaving_the_office():
         tasks.index("  function schedulePoll() {"):
         tasks.index("\n  async function refresh(", tasks.index("  function schedulePoll() {"))
     ]
-    assert "document.hidden || (!officeActive && !opened)" in schedule
+    assert (
+        "document.hidden || (!officeActive && !opened && !personalView)"
+        in schedule
+    )
     assert "if (!document.hidden) await refresh({ quiet: true })" in schedule
     assert "function onVisibilityChange()" in schedule
     assert "void refresh({ quiet: true }).finally(schedulePoll)" in schedule

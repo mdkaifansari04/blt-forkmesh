@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Runtime contracts for the unified ten-storey World office campus."""
 
+import ast
 import json
 from pathlib import Path
 import subprocess
@@ -8,6 +9,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 TOWER_MODULE = ROOT / "public" / "world" / "world-office-tower.js"
+ENTRY_MODULE = ROOT / "src" / "entry.py"
 
 
 def run_tower_script(body):
@@ -24,6 +26,17 @@ def run_tower_script(body):
         capture_output=True,
     )
     return json.loads(result.stdout)
+
+
+def entry_constant(name):
+    tree = ast.parse(ENTRY_MODULE.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and any(getattr(target, "id", "") == name for target in node.targets)
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} not found")
 
 
 def test_tower_has_ten_floors_and_is_about_ten_times_the_old_width():
@@ -120,6 +133,47 @@ def test_authenticated_members_get_three_default_floors_but_team_floors_stay_res
     assert result["authorizedStillCannotSecurity"] is False
     assert result["unknownFloor"] is False
     assert result["account"] == "alice"
+
+
+def test_team_floor_explanations_match_every_server_alias_exactly():
+    server_aliases = entry_constant("OFFICE_FLOOR_TEAM_ALIASES")
+    result = run_tower_script(
+        """
+        const aliases = tower.OFFICE_FLOOR_TEAM_ALIASES;
+        const resolved = Object.fromEntries(
+          Object.entries(aliases).map(([floorId, teamAliases]) => [
+            floorId,
+            Object.fromEntries(
+              teamAliases.map((team) => [
+                team,
+                tower.officeFloorsForTeam(team).map((floor) => floor.id),
+              ]),
+            ),
+          ]),
+        );
+        process.stdout.write(JSON.stringify({
+          aliases,
+          resolved,
+          normalizedSecurity: tower.officeFloorsForTeam(
+            " Trust & Safety ",
+          ).map((floor) => floor.id),
+          unknown: tower.officeFloorsForTeam("not-a-real-team"),
+        }));
+        """
+    )
+
+    assert {
+        floor_id: set(aliases)
+        for floor_id, aliases in result["aliases"].items()
+    } == {
+        floor_id: set(aliases)
+        for floor_id, aliases in server_aliases.items()
+    }
+    for floor_id, aliases in result["resolved"].items():
+        assert aliases
+        assert all(resolved == [floor_id] for resolved in aliases.values())
+    assert result["normalizedSecurity"] == ["security"]
+    assert result["unknown"] == []
 
 
 def test_office_campus_surface_contains_the_island_and_bridge_but_not_water():

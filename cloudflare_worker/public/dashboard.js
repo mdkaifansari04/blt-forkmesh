@@ -1603,7 +1603,7 @@
             ${escapeHtml(session.deviceLabel || "Unknown device")}
             ${session.current ? '<span class="ml-2 rounded-full border border-emerald-500/50 px-2 py-0.5 text-[11px] text-emerald-300">This device</span>' : ""}
           </p>
-          <p class="mt-1 text-xs text-muted-foreground">Last active ${escapeHtml(formatTimeAgo(Number(session.lastSeenAt || 0)))} · signed in ${escapeHtml(formatDate(Number(session.createdAt || 0)))} · expires ${escapeHtml(formatDate(Number(session.expiresAt || 0)))}</p>
+          <p class="mt-1 text-xs text-muted-foreground">${escapeHtml(String(session.ipAddress || "address unavailable"))} · last active ${escapeHtml(formatTimeAgo(Number(session.lastSeenAt || 0)))} · signed in ${escapeHtml(formatDate(Number(session.createdAt || 0)))} · expires ${escapeHtml(formatDate(Number(session.expiresAt || 0)))}</p>
         </div>
         <button type="button" data-account-session-revoke="${escapeHtml(session.id || "")}" data-account-session-current="${session.current ? "true" : "false"}" class="inline-flex h-8 shrink-0 items-center justify-center rounded-md border border-red-500/50 px-3 text-xs font-semibold text-red-300 hover:bg-red-500/10">
           ${session.current ? "Sign out here" : "Sign out"}
@@ -5800,6 +5800,12 @@
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
       : `${repoPathUrl(state.selectedRepo)}/${tab}`);
+    // Mirror health loads once with the repository summary, then refreshes
+    // only when its own tab is actually opened (plus the bounded visible-tab
+    // fallback and coalesced socket signal below).
+    if (tab === "mirrors") {
+      void loadRepoMirrors(state.selectedRepo, { background: true });
+    }
     if (["commits", "issues", "projects", "pulls", "discussions", "releases", "insights", "sizemap", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
       if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
       state.loadedRepoTabs[tab] = true;
@@ -11613,8 +11619,22 @@
     window.lucide?.createIcons();
   }
 
-  async function loadRepoMirrors(repo) {
-    const background = arguments[1]?.background === true;
+  const REPO_MIRROR_MIN_REFRESH_MS = 30 * 1000;
+  let repoMirrorLoadedKey = "";
+  let repoMirrorLoadedAt = 0;
+
+  async function loadRepoMirrors(repo, options = {}) {
+    const background = options.background === true;
+    const force = options.force === true;
+    const key = repoKey(repo).toLowerCase();
+    if (
+      background &&
+      !force &&
+      key === repoMirrorLoadedKey &&
+      Date.now() - repoMirrorLoadedAt < REPO_MIRROR_MIN_REFRESH_MS
+    ) {
+      return false;
+    }
     const container = $("[data-repo-mirrors]");
     // Owner-only "ask a node to mirror your repo" control (issue #385).
     renderMirrorRequestForm(repo);
@@ -11622,6 +11642,8 @@
     try {
       const data = await fetchJson(`${repoApiBase(repo)}/mirrors`);
       const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
+      repoMirrorLoadedKey = key;
+      repoMirrorLoadedAt = Date.now();
       const mirrorCount = normalizedCount(data.summary?.mirrors) ?? mirrors.length;
       const onlineMirrors = mirrors.filter(
         (mirror) =>
@@ -11654,14 +11676,16 @@
       if (!mirrors.length) {
         if (container) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No mirrors reported yet.</div>';
         renderRepoLiveMirrorList([], state.repoServedBy);
-        return;
+        return true;
       }
       renderRepoMirrorLists(mirrors, state.repoServedBy);
+      return true;
     } catch (_) {
       if (!background) {
         if (container) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Mirror health is unavailable right now.</div>';
         renderRepoLiveMirrorList([], state.repoServedBy);
       }
+      return false;
     } finally {
       window.lucide?.createIcons();
     }
@@ -11673,27 +11697,38 @@
   // advances and each node pulls it. When one names the repo we're viewing,
   // re-fetch host health so the nodes visibly converge without a manual reload.
   let liveMirrorRefreshTimer = null;
-  let liveMirrorConfirmTimer = null;
   // Socket mirror signals refresh immediately. This is only a quiet fallback
-  // for dropped frames, so a five-second Worker request loop is unnecessary.
-  const REPO_MIRROR_POLL_MS = 30 * 1000;
+  // for dropped frames, and it runs only while the Mirrors tab is on screen.
+  const REPO_MIRROR_POLL_MS = 5 * 60 * 1000;
   let repoMirrorPollTimer = null;
+
+  function repoMirrorsTabVisible() {
+    const panel = document.querySelector(
+      '[data-dashboard-repo-tab-panel="mirrors"]',
+    );
+    return (
+      document.visibilityState === "visible" &&
+      state.activeRepoTab === "mirrors" &&
+      Boolean(panel && !panel.classList.contains("hidden"))
+    );
+  }
+
   function startRepoMirrorPolling() {
     if (repoMirrorPollTimer) return;
     repoMirrorPollTimer = window.setInterval(() => {
       const repo = state.selectedRepo;
-      if (
-        !repo ||
-        document.visibilityState !== "visible" ||
-        !document.querySelector("[data-repo-mirrors]")
-      ) return;
+      if (!repo || !repoMirrorsTabVisible()) return;
       void loadRepoMirrors(repo, { background: true });
     }, REPO_MIRROR_POLL_MS);
   }
+
   function refreshOpenRepoMirrors() {
     const repo = state.selectedRepo;
-    // Only meaningful while the Mirrors panel is actually mounted.
-    if (repo && document.querySelector("[data-repo-mirrors]")) loadRepoMirrors(repo);
+    // The panel is always mounted on repository pages, even when hidden.
+    // Refresh only when a visitor can see the result.
+    if (repo && repoMirrorsTabVisible()) {
+      void loadRepoMirrors(repo, { background: true, force: true });
+    }
   }
   function onLiveMirrorSignal(event) {
     const repo = state.selectedRepo;
@@ -11706,19 +11741,13 @@
     const name = String(repo.name || "").trim().toLowerCase();
     const tail = target.slice(target.lastIndexOf("/") + 1);
     if (target !== key && !(name && tail === name)) return;
-    // Trailing-coalesce a burst of per-node acks into a single refetch, then
-    // confirm once more after the publishing nodes' catalog records propagate
-    // (the /mirrors payload is catalog-derived and lags the room frame a beat).
+    // Trailing-coalesce a burst of per-node acks into one refetch. The
+    // five-minute visible-tab fallback catches a dropped/early signal without
+    // making a second unconditional confirmation request for every push.
     if (liveMirrorRefreshTimer) clearTimeout(liveMirrorRefreshTimer);
     liveMirrorRefreshTimer = setTimeout(() => {
       liveMirrorRefreshTimer = null;
       refreshOpenRepoMirrors();
-      if (!liveMirrorConfirmTimer) {
-        liveMirrorConfirmTimer = setTimeout(() => {
-          liveMirrorConfirmTimer = null;
-          refreshOpenRepoMirrors();
-        }, 5000);
-      }
     }, 1200);
   }
   window.addEventListener("forkmesh:mirror-signal", onLiveMirrorSignal);

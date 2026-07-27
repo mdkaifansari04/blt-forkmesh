@@ -32,6 +32,37 @@ function safeTaskId(value) {
   return /^[a-f0-9-]{16,64}$/.test(candidate) ? candidate : "";
 }
 
+function safeIssueHref(value) {
+  try {
+    const url = new URL(String(value || ""), window.location.origin);
+    if (
+      url.origin !== window.location.origin ||
+      !url.pathname.startsWith("/") ||
+      url.username ||
+      url.password
+    ) {
+      return "";
+    }
+    return `${url.pathname}${url.search}${url.hash}`.slice(0, 512);
+  } catch (_) {
+    return "";
+  }
+}
+
+function normalizedRecentIssue(issue) {
+  if (!issue || typeof issue !== "object") return null;
+  const id = text(issue.id, 160);
+  const title = text(issue.title, 160);
+  if (!id || !title) return null;
+  return {
+    id,
+    title,
+    repo: text(issue.repo, 128),
+    href: safeIssueHref(issue.href),
+    assignedAt: timestampMs(issue.assignedAt),
+  };
+}
+
 function timestampMs(value) {
   if (typeof value === "string" && value.trim() && !/^\d+$/.test(value.trim())) {
     const parsed = Date.parse(value);
@@ -113,10 +144,19 @@ export function createWorldOfficeTasksController({
     "[data-world-office-task-assignees]",
   );
   const checkin = root.querySelector("[data-world-office-task-checkin]");
+  // The same board is mirrored into the Local controls "Work" tab so an
+  // assignee can start and stop their own work without entering the Office.
+  const workList = root.querySelector("[data-world-work-list]");
+  const workStatus = root.querySelector("[data-world-work-status]");
+  const workTotal = root.querySelector("[data-world-work-total]");
+  const workActive = root.querySelector("[data-world-work-active]");
+  const workTracked = root.querySelector("[data-world-work-tracked]");
+  const workIssueList = root.querySelector("[data-world-work-issue-list]");
   const checkinCopy = root.querySelector(
     "[data-world-office-task-checkin-copy]",
   );
   let officeActive = false;
+  let personalView = false;
   let monitoring = false;
   let opened = false;
   let loading = false;
@@ -125,6 +165,7 @@ export function createWorldOfficeTasksController({
   let canManage = false;
   let authorized = false;
   let tasks = [];
+  let recentIssues = [];
   let assignable = [];
   let syncedAt = performance.now();
   let serverNowAtSync = Date.now();
@@ -136,10 +177,16 @@ export function createWorldOfficeTasksController({
   let checkinTaskId = "";
   let physicalTickBucket = -1;
 
+  function ownTasks() {
+    return tasks.filter((task) => task.assignee === actor);
+  }
+
   function ownActiveTasks() {
-    return tasks.filter(
-      (task) => task.status === "active" && task.assignee === actor,
-    );
+    return ownTasks().filter((task) => task.status === "active");
+  }
+
+  function keepMonitoring() {
+    return officeActive || personalView || ownActiveTasks().length > 0;
   }
 
   function currentElapsed(task) {
@@ -161,6 +208,44 @@ export function createWorldOfficeTasksController({
     else delete status.dataset.tone;
   }
 
+  function selfWorkState(state, message = "") {
+    // The owner-only plate on the back of your avatar carries the same work,
+    // narrowed to your assignments plus recent private assignment notices. It
+    // never enters a presence frame, socket, storage record, or analytics.
+    const own = ownTasks();
+    world.setSelfWorkBoard?.({
+      state:
+        ["ready", "loading"].includes(state) ||
+        (recentIssues.length && getSession()?.sessionToken)
+          ? state === "loading"
+            ? "loading"
+            : "ready"
+          : "locked",
+      message: text(message, 64),
+      total: own.length + recentIssues.length,
+      active: own.filter((task) => task.status === "active").length,
+      tracked: formatOfficeTaskElapsed(
+        own.reduce((sum, task) => sum + currentElapsed(task), 0),
+      ),
+      items: [
+        ...own.map((task) => ({
+          kind: "task",
+          title: task.title,
+          status: task.status,
+          elapsed: formatOfficeTaskElapsed(currentElapsed(task)),
+          checkin: checkinLabel(task.lastCheckin?.state),
+        })),
+        ...recentIssues.map((issue) => ({
+          kind: "issue",
+          title: issue.title,
+          status: "idle",
+          elapsed: "",
+          checkin: issue.repo,
+        })),
+      ].slice(0, 6),
+    });
+  }
+
   function physicalState(state, message = "") {
     world.updateOfficeMarketingTasks?.({
       authorized,
@@ -173,6 +258,7 @@ export function createWorldOfficeTasksController({
         elapsed: formatOfficeTaskElapsed(currentElapsed(task)),
       })),
     });
+    selfWorkState(state, message);
   }
 
   function checkinLabel(value) {
@@ -217,6 +303,29 @@ export function createWorldOfficeTasksController({
       </li>`;
   }
 
+  function issueHTML(issue) {
+    const link = issue.href
+      ? `<a class="world-work-issue-link" href="${escapeHTML(
+          issue.href,
+        )}">Open</a>`
+      : "";
+    return `
+      <li class="world-office-task world-work-issue" data-status="issue">
+        <div class="world-office-task-copy">
+          <span class="world-office-task-state" aria-hidden="true"></span>
+          <div>
+            <strong>${escapeHTML(issue.title)}</strong>
+            <small>${escapeHTML(
+              issue.repo
+                ? `${issue.repo} · recently assigned`
+                : "Recently assigned issue",
+            )}</small>
+          </div>
+        </div>
+        ${link}
+      </li>`;
+  }
+
   function render() {
     if (manager) manager.hidden = !canManage;
     if (assigneeOptions) {
@@ -244,6 +353,7 @@ export function createWorldOfficeTasksController({
       panel.dataset.open = String(opened);
       panel.setAttribute("aria-hidden", String(!opened));
     }
+    renderWorkPane();
     if (!loading) {
       setStatus(
         canManage
@@ -255,25 +365,69 @@ export function createWorldOfficeTasksController({
     }
   }
 
+  // Stats only. The per-second tick calls this instead of renderWorkPane so
+  // the row markup — and the Start/Stop button under the pointer — survives.
+  function updateWorkStats() {
+    const own = ownTasks();
+    if (workTotal) workTotal.textContent = String(own.length);
+    if (workActive) {
+      workActive.textContent = String(
+        own.filter((task) => task.status === "active").length,
+      );
+    }
+    if (workTracked) {
+      workTracked.textContent = formatOfficeTaskElapsed(
+        own.reduce((sum, task) => sum + currentElapsed(task), 0),
+      );
+    }
+    return own;
+  }
+
+  function renderWorkPane() {
+    const own = updateWorkStats();
+    if (workList) {
+      workList.innerHTML = loading
+        ? `<li class="world-office-task-empty">Loading your assigned work\u2026</li>`
+        : own.length
+          ? own.map(taskHTML).join("")
+          : `<li class="world-office-task-empty">${
+              authorized
+                ? "Nothing is assigned to you right now."
+                : "Sign in to load the work assigned to you."
+            }</li>`;
+    }
+    if (workStatus && !loading) {
+      workStatus.textContent = own.length
+        ? `${own.length} assigned \u00b7 ${
+            own.filter((task) => task.status === "active").length
+          } running`
+        : "";
+    }
+    if (workIssueList) {
+      workIssueList.innerHTML = recentIssues.length
+        ? recentIssues.map(issueHTML).join("")
+        : `<li class="world-office-task-empty">No recent issue assignments.</li>`;
+    }
+  }
+
   function updateElapsedLabels() {
     tasks.forEach((task) => {
       const elapsed = currentElapsed(task);
-      const node = root.querySelector(
-        `[data-world-office-task-elapsed="${task.id}"]`,
-      );
-      if (node) {
-        node.textContent = formatOfficeTaskElapsed(elapsed);
-        node.setAttribute("datetime", `PT${Math.floor(elapsed / 1000)}S`);
-      }
+      // The same row can be painted twice (Office board plus Work tab), so
+      // every matching clock is advanced, not just the first one found.
+      root
+        .querySelectorAll(`[data-world-office-task-elapsed="${task.id}"]`)
+        .forEach((node) => {
+          node.textContent = formatOfficeTaskElapsed(elapsed);
+          node.setAttribute("datetime", `PT${Math.floor(elapsed / 1000)}S`);
+        });
     });
+    if (personalView) updateWorkStats();
     const nextBucket = Math.floor(performance.now() / 5000);
-    if (
-      officeActive &&
-      ownActiveTasks().length &&
-      nextBucket !== physicalTickBucket
-    ) {
+    if (ownActiveTasks().length && nextBucket !== physicalTickBucket) {
       physicalTickBucket = nextBucket;
-      physicalState("ready");
+      if (officeActive) physicalState("ready");
+      else selfWorkState("ready");
     }
   }
 
@@ -335,7 +489,7 @@ export function createWorldOfficeTasksController({
     pollTimer = 0;
     if (!monitoring) return;
     const delay =
-      document.hidden || (!officeActive && !opened)
+      document.hidden || (!officeActive && !opened && !personalView)
         ? OFFICE_TASKS_BACKGROUND_POLL_MS
         : OFFICE_TASKS_POLL_MS;
     pollTimer = window.setTimeout(async () => {
@@ -402,7 +556,7 @@ export function createWorldOfficeTasksController({
         physicalState("ready");
         render();
         scheduleCheckin();
-        if (!officeActive && !ownActiveTasks().length) stopMonitoring();
+        if (!keepMonitoring()) stopMonitoring();
         return true;
       } catch (_) {
         tasks = [];
@@ -539,6 +693,58 @@ export function createWorldOfficeTasksController({
     tickTimer = 0;
   }
 
+  // The Local controls "Work" tab is reachable anywhere in the World, so it
+  // drives the same monitoring loop the Office board uses.
+  function setPersonalView(open) {
+    personalView = open === true;
+    if (!personalView) {
+      if (!keepMonitoring()) stopMonitoring();
+      return false;
+    }
+    monitoring = true;
+    if (!tickTimer) {
+      tickTimer = window.setInterval(updateElapsedLabels, OFFICE_TASKS_TICK_MS);
+    }
+    void refresh({ quiet: tasks.length > 0 });
+    schedulePoll();
+    return true;
+  }
+
+  // Populate the private avatar card once at World startup. An idle task list
+  // stops immediately after this request; only an actually running timer keeps
+  // the existing low-frequency reconciliation loop alive.
+  function prime() {
+    if (!getSession()?.sessionToken) {
+      selfWorkState("locked", "Sign in to load assigned work");
+      return false;
+    }
+    monitoring = true;
+    if (!tickTimer) {
+      tickTimer = window.setInterval(updateElapsedLabels, OFFICE_TASKS_TICK_MS);
+    }
+    void refresh({ quiet: false });
+    schedulePoll();
+    return true;
+  }
+
+  function setRecentIssues(items = []) {
+    const seen = new Set();
+    recentIssues = (Array.isArray(items) ? items : [])
+      .map(normalizedRecentIssue)
+      .filter((issue) => {
+        if (!issue || seen.has(issue.id)) return false;
+        seen.add(issue.id);
+        return true;
+      })
+      .slice(0, 6);
+    renderWorkPane();
+    selfWorkState(
+      authorized || recentIssues.length ? "ready" : "locked",
+      authorized ? "" : "Sign in to load assigned work",
+    );
+    return recentIssues.map((issue) => ({ ...issue }));
+  }
+
   function setActive(next) {
     officeActive = next === true;
     if (!officeActive) {
@@ -546,7 +752,7 @@ export function createWorldOfficeTasksController({
       // An assignee's active timer survives leaving the Office. Keep only its
       // low-frequency HTTPS poll and private check-in prompt alive; no task
       // data enters the Town presence socket.
-      if (!ownActiveTasks().length) stopMonitoring();
+      if (!keepMonitoring()) stopMonitoring();
       return;
     }
     monitoring = true;
@@ -587,6 +793,7 @@ export function createWorldOfficeTasksController({
   function destroy() {
     stopActiveForDeparture();
     officeActive = false;
+    personalView = false;
     stopMonitoring();
     document.removeEventListener("visibilitychange", onVisibilityChange);
     root.removeEventListener("click", onClick);
@@ -597,6 +804,8 @@ export function createWorldOfficeTasksController({
       message: "Organization access required",
       tasks: [],
     });
+    recentIssues = [];
+    selfWorkState("locked", "");
   }
 
   document.addEventListener("visibilitychange", onVisibilityChange);
@@ -608,8 +817,11 @@ export function createWorldOfficeTasksController({
     close,
     destroy,
     open,
+    prime,
     refresh,
     setActive,
+    setPersonalView,
+    setRecentIssues,
     showCheckin,
     stopActiveForDeparture,
   };

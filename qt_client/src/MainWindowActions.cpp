@@ -489,8 +489,8 @@ void MainWindow::scanActionSpool()
                 // MainWindow::syncRepository/onPeerMirrorUpdated). A push that
                 // lands directly on this served bare mirror never goes through
                 // syncRepository, so without this, peers would only notice at
-                // their next 15-minute auto-sync tick instead of converging in
-                // seconds.
+                // their next three-minute auto-sync tick instead of
+                // converging in seconds.
                 if (!r.previewOnly && m_backend)
                     m_backend->notifyMirrorUpdated(
                         catalogOwner(r) + "/" +
@@ -984,6 +984,7 @@ void MainWindow::refreshOpenRepoDetail()
     updateRepoActionMenus();
     updateRepoCodeSize();
     refreshRepoSyncIndicators();
+    refreshRepoChangeBadge(); // a sync/merge/commit moves the working tree too
     refreshRepoPinBanner(); // a sync may have advanced refs past the pinned hash
     m_treeLoadedForIndex = -1; // force the explorer tree to rebuild on next use
     if (m_filesStack && m_filesStack->currentIndex() == 2)

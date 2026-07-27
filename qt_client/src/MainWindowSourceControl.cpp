@@ -8,12 +8,17 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
+#include "PacmanProgress.h"
 
+#include <QAbstractTextDocumentLayout>
 #include <QCheckBox>
 #include <QLayout>
 #include <QFutureWatcher>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QTextBlock>
+#include <QTimer>
+#include <QUrl>
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
@@ -287,6 +292,12 @@ QWidget *MainWindow::buildSourceControlPanel()
     title->setObjectName("sectionLabel");
     m_scmCountLabel = new QLabel;
     m_scmCountLabel->setObjectName("statusLine");
+    // Read-through tally for the combined diff on the right (adhoc #399): every
+    // change lives in one scrollable view, and a file checks itself off once
+    // you've scrolled past its end, so this is the "how far in am I" counter.
+    m_scmViewedLabel = new QLabel;
+    m_scmViewedLabel->setObjectName("statusLine");
+    m_scmViewedLabel->setToolTip("Files you have scrolled all the way through");
 
     // Up/down step through the changed files without touching the tree directly,
     // so you can review each diff in turn from the keyboard or mouse.
@@ -308,7 +319,23 @@ QWidget *MainWindow::buildSourceControlPanel()
             [this] { refreshSourceControl(true); });
     addRefreshSpin(m_scmRefreshButton);
 
-    for (QPushButton *b : {m_scmPrevButton, m_scmNextButton, m_scmRefreshButton}) {
+    // Auto-mark-viewed toggle: while checked, a file whose end has scrolled into
+    // the diff viewport is checked off "Viewed" (and collapsed) on its own.
+    // Shares the PR review page's setting so the behaviour matches everywhere.
+    m_scmAutoViewedButton = new QPushButton;
+    m_scmAutoViewedButton->setCheckable(true);
+    m_scmAutoViewedButton->setChecked(autoMarkViewedOnScrollPref());
+    setOcticon(m_scmAutoViewedButton, "eye", 14);
+    m_scmAutoViewedButton->setToolTip(
+        "Automatically mark files as viewed while scrolling");
+    connect(m_scmAutoViewedButton, &QPushButton::clicked, this, [this](bool on) {
+        setAutoMarkViewedOnScrollPref(on);
+        if (on)
+            applyScmAutoMarkViewedOnScroll(); // catch up on where we already are
+    });
+
+    for (QPushButton *b : {m_scmPrevButton, m_scmNextButton, m_scmRefreshButton,
+                           m_scmAutoViewedButton}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -316,7 +343,9 @@ QWidget *MainWindow::buildSourceControlPanel()
 
     header->addWidget(title);
     header->addWidget(m_scmCountLabel);
+    header->addWidget(m_scmViewedLabel);
     header->addStretch();
+    header->addWidget(m_scmAutoViewedButton);
     header->addWidget(m_scmPrevButton);
     header->addWidget(m_scmNextButton);
     header->addWidget(m_scmRefreshButton);
@@ -356,6 +385,74 @@ QWidget *MainWindow::buildSourceControlPanel()
     return panel;
 }
 
+// Rows the changes panel shows for a `git status --porcelain=v1 -z` dump: one
+// per staged entry plus one per unstaged/untracked entry, so a file that is
+// both staged and further modified counts twice — exactly as it appears twice
+// in the tree. Must stay in step with the parse in refreshSourceControl()
+// below; this is the same total without building any rows, for the activity
+// rail's badge.
+static int scmChangeCount(const QByteArray &porcelain)
+{
+    int count = 0;
+    const QList<QByteArray> fields = porcelain.split('\0');
+    for (int i = 0; i < fields.size(); ++i) {
+        const QByteArray f = fields.at(i);
+        if (f.size() < 3)
+            continue; // "XY <path>"
+        const char x = f.at(0), y = f.at(1);
+        // Renames/copies carry the original path in the following NUL field.
+        if (x == 'R' || x == 'C')
+            ++i;
+        if (x == '?' && y == '?') {
+            ++count;
+            continue;
+        }
+        if (x != ' ')
+            ++count;
+        if (y != ' ')
+            ++count;
+    }
+    return count;
+}
+
+// Keep the activity rail's Git badge honest whichever repo tab is on screen.
+// refreshSourceControl() only runs when the changes panel is opened or the
+// window is re-activated with it already visible, so sitting on the Code tab —
+// or simply opening a repo — left the badge blank (or still showing the repo
+// we came from) while files sat uncommitted. This probe's only job is that
+// count, so it runs detached and is cheap enough for the poll in the
+// constructor to drive it while an agent edits the working tree underneath us.
+void MainWindow::refreshRepoChangeBadge()
+{
+    if (!m_railGitButton)
+        return;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || !repoHasWorkingTree()) {
+        m_railGitButton->setBadgeCount(0);
+        return;
+    }
+    const int forIndex = m_repoDetailIndex;
+    runGitDetached(dir,
+                   {QStringLiteral("status"), QStringLiteral("--porcelain=v1"),
+                    QStringLiteral("-z")},
+                   [this, forIndex, dir](bool ok, const QByteArray &out) {
+                       // The user can switch repos while git runs; a late reply
+                       // must not stamp the wrong repo's count on the badge.
+                       if (!ok || !m_railGitButton ||
+                           m_repoDetailIndex != forIndex)
+                           return;
+                       m_railGitButton->setBadgeCount(scmChangeCount(out));
+                       // Rebuild the panel only when it's on screen *and* the
+                       // tree actually moved: the rebuild drops the open diff
+                       // and the selection, so it must never run speculatively.
+                       // Same repo-keyed scan key refreshSourceControl() caches.
+                       const QByteArray scanKey = dir.toUtf8() + '\0' + out;
+                       if (scanKey != m_scmStatusCache && m_scmTree &&
+                           m_scmTree->isVisible())
+                           refreshSourceControl();
+                   });
+}
+
 void MainWindow::refreshSourceControl()
 {
     refreshSourceControl(/*force=*/false);
@@ -384,12 +481,23 @@ void MainWindow::refreshSourceControl(bool force)
 
     if (!canWrite) {
         m_scmStatusCache.clear();
-        m_scmDiffCache.clear();
+        m_scmPatchValid = false;
+        m_scmDiffRenderKey.clear();
+        m_scmSectionKeys.clear();
+        m_scmSectionAnchors.clear();
+        m_scmSectionPaths.clear();
+        m_scmStickyLabelHtml.clear();
+        m_scmFileTops.clear();
+        m_scmStickySection.clear();
+        if (m_scmStickyHeader)
+            m_scmStickyHeader->hide();
         m_scmTree->clear();
         if (m_scmDiff)
             m_scmDiff->clear();
         if (m_scmCountLabel)
             m_scmCountLabel->clear();
+        if (m_scmViewedLabel)
+            m_scmViewedLabel->clear();
         if (m_railGitButton)
             m_railGitButton->setBadgeCount(0);
         if (m_scmCommitButton)
@@ -411,10 +519,14 @@ void MainWindow::refreshSourceControl(bool force)
     // without it, every rescan would clear the tree (losing the open diff and the
     // selection) and flicker even when nothing moved. Manual refresh skips this
     // short-circuit via force=true.
-    if (!force && out == m_scmStatusCache && m_scmTree->topLevelItemCount() > 0)
+    // Keyed by repo as well as status output: two repos can produce byte-identical
+    // `git status`, and the short-circuit would then leave the previous repo's
+    // tree — and now its whole rendered diff — on screen.
+    const QByteArray scanKey = dir.toUtf8() + '\0' + out;
+    if (!force && scanKey == m_scmStatusCache && m_scmTree->topLevelItemCount() > 0)
         return;
-    m_scmStatusCache = out;
-    m_scmDiffCache.clear(); // the tree changed, so any cached diffs are stale
+    m_scmStatusCache = scanKey;
+    m_scmPatchValid = false; // the tree changed, so the combined patch is stale
 
     // Remember which file's diff is showing so the rebuild can restore it instead
     // of dropping the user back to a blank diff view.
@@ -426,8 +538,6 @@ void MainWindow::refreshSourceControl(bool force)
     }
 
     m_scmTree->clear();
-    if (m_scmDiff)
-        m_scmDiff->clear();
 
     struct Row {
         QString path;
@@ -598,8 +708,12 @@ void MainWindow::refreshSourceControl(bool force)
     // engine auto-fill the message from the changes (never the paid AI models).
     autoFillScmMessage();
 
-    // Re-select the file that was open before the rebuild (re-showing its diff) if
-    // it still has changes; otherwise leave the diff cleared.
+    // Re-render the whole change set into the diff pane on the right, so the
+    // review is one continuous scroll rather than a click per file (adhoc #399).
+    renderScmCombinedDiff();
+
+    // Re-select the file that was open before the rebuild (scrolling the combined
+    // diff back to it) if it still has changes.
     if (!prevPath.isEmpty()) {
         for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
             QTreeWidgetItem *grp = m_scmTree->topLevelItem(g);
@@ -615,115 +729,460 @@ void MainWindow::refreshSourceControl(bool force)
     }
 }
 
-void MainWindow::showScmDiff(const QString &path, bool staged, bool untracked)
+// QSettings context (see loadDiffViewed) for the working-tree diff. One shared
+// context for the whole change set — a path is "viewed" whether its staged or
+// its unstaged side is the one you scrolled through.
+QString MainWindow::scmViewedContext()
 {
-    if (!m_scmDiff)
-        return;
-    if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
-    // Cache the rendered HTML per file so re-clicking a file (or walking the list
-    // with the up/down buttons) is instant — the lag is the synchronous `git
-    // diff` + render, which we only want to pay once per file per rescan. The
-    // stylesheet carries the theme colors and is re-applied on every show, so a
-    // cached body still tracks the current theme. refreshSourceControl() clears
-    // this cache whenever the working tree changes.
-    const QString key =
-        QStringLiteral("%1|%2|%3").arg(int(staged)).arg(int(untracked)).arg(path);
-    auto cached = m_scmDiffCache.constFind(key);
-    if (cached != m_scmDiffCache.constEnd()) {
-        setDiffHtml(m_scmDiff, *cached);
-        return;
-    }
-    const QString dir = repoGitDir();
-    QByteArray out;
-    if (untracked)
-        out = gitCaptureStdout(dir, {"diff", "--no-index", "--", "/dev/null", path});
-    else if (staged)
-        out = gitCaptureStdout(dir, {"diff", "--cached", "--", path});
-    else
-        out = gitCaptureStdout(dir, {"diff", "--", path});
-    QList<DiffFileEntry> files;
-    QString html = renderDiffHtml(QString::fromUtf8(out), files, dir,
-                                  QString(), QString(), path,
-                                  QHash<QString, QString>());
-    if (html.isEmpty())
-        html = QStringLiteral("<p style='color:#8b949e'>(no diff)</p>");
-    m_scmDiffCache.insert(key, html);
-    setDiffHtml(m_scmDiff, html);
+    return QStringLiteral("worktree");
 }
 
-void MainWindow::showScmDiffAll(bool staged)
+// Sticky-header overlay and scroll wiring for the combined changes diff, built
+// once right after m_scmDiff is constructed (adhoc #399). Mirrors the PR review
+// page's header (adhoc #56) and adds a read percentage next to the chart.
+void MainWindow::setupScmDiffPane()
+{
+    if (!m_scmDiff || m_scmStickyHeader)
+        return;
+    m_scmDiff->setOpenExternalLinks(false);
+    m_scmDiff->setOpenLinks(false); // "viewed:" toggles are handled here
+    connect(m_scmDiff, &QTextBrowser::anchorClicked, this,
+            &MainWindow::onScmDiffAnchorClicked);
+
+    // Parented to the viewport so it floats over the text instead of scrolling
+    // away with the document.
+    m_scmStickyHeader = new QFrame(m_scmDiff->viewport());
+    m_scmStickyHeader->setObjectName("diffStickyHeader");
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    m_scmStickyHeader->setStyleSheet(
+        QStringLiteral("#diffStickyHeader{background:%1;border-bottom:1px solid %2;}"
+                       "#diffStickyHeader QLabel{background:transparent;color:%3;}"
+                       "#diffStickyHeader QPushButton{background:transparent;"
+                       "border:none;color:%3;font-size:11px;padding:2px 4px;}"
+                       "#diffStickyHeader QPushButton:hover{color:#3fb950;}")
+            .arg(dark ? "#161b22" : "#f6f8fa", dark ? "#30363d" : "#d0d7de",
+                 dark ? "#8b949e" : "#57606a"));
+    auto *sl = new QHBoxLayout(m_scmStickyHeader);
+    sl->setContentsMargins(10, 4, 8, 4);
+    sl->setSpacing(6);
+    m_scmStickyPath = new QLabel(m_scmStickyHeader);
+    m_scmStickyPath->setTextFormat(Qt::RichText);
+    m_scmStickyPath->setTextInteractionFlags(Qt::NoTextInteraction);
+    sl->addWidget(m_scmStickyPath, 1);
+    m_scmStickyPacman = new PacmanProgress(m_scmStickyHeader);
+    m_scmStickyPacman->setToolTip(
+        QStringLiteral("How much of this file you've scrolled through"));
+    sl->addWidget(m_scmStickyPacman, 0);
+    m_scmStickyPercent = new QLabel(m_scmStickyHeader);
+    m_scmStickyPercent->setToolTip(m_scmStickyPacman->toolTip());
+    sl->addWidget(m_scmStickyPercent, 0);
+    m_scmStickyViewed = new QPushButton(m_scmStickyHeader);
+    m_scmStickyViewed->setCursor(Qt::PointingHandCursor);
+    m_scmStickyViewed->setToolTip(QStringLiteral("Mark this file as viewed"));
+    connect(m_scmStickyViewed, &QPushButton::clicked, this, [this] {
+        const int idx = m_scmSectionKeys.indexOf(m_scmStickySection);
+        if (idx < 0)
+            return;
+        const QString path = m_scmSectionPaths.at(idx);
+        const QString ctx = scmViewedContext();
+        setDiffViewed(ctx, path, !loadDiffViewed(ctx).contains(path));
+        renderScmCombinedDiff();
+        scrollScmDiffToFile(path, m_scmSectionKeys.at(idx).startsWith(
+                                      QLatin1String("s|")));
+    });
+    sl->addWidget(m_scmStickyViewed, 0);
+    m_scmStickyHeader->hide();
+
+    // Re-rendering (which collapses newly-viewed files) is far too heavy for
+    // every pixel of a fast scroll, so wait for the scroll to settle first.
+    m_scmAutoViewedDebounce = new QTimer(this);
+    m_scmAutoViewedDebounce->setSingleShot(true);
+    m_scmAutoViewedDebounce->setInterval(400);
+    connect(m_scmAutoViewedDebounce, &QTimer::timeout, this,
+            &MainWindow::applyScmAutoMarkViewedOnScroll);
+    connect(m_scmDiff->verticalScrollBar(), &QScrollBar::valueChanged, this,
+            [this] {
+                updateScmDiffScrollState(); // cheap, every tick
+                if (m_scmAutoViewedButton && m_scmAutoViewedButton->isChecked())
+                    m_scmAutoViewedDebounce->start(); // heavy, debounced
+            });
+}
+
+// Render every working-tree change — staged, then unstaged, then untracked — as
+// one scrollable diff (adhoc #399), in the same order the tree lists them. The
+// raw patch is cached (m_scmPatchValid) so toggling a file's Viewed state
+// re-renders without re-running git, and an unchanged render is skipped outright
+// (laying out a large diff blocks the GUI thread).
+void MainWindow::renderScmCombinedDiff()
 {
     if (!m_scmDiff)
         return;
-    if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
     const QString dir = repoGitDir();
-    if (dir.isEmpty())
+    if (dir.isEmpty() || !repoHasWorkingTree())
         return;
 
-    QByteArray out;
-    if (staged) {
-        out = gitCaptureStdout(dir, {"diff", "--cached"});
-    } else {
-        out = gitCaptureStdout(dir, {"diff"});
+    if (!m_scmPatchValid) {
+        const QString stagedPatch =
+            QString::fromUtf8(gitCaptureStdout(dir, {"diff", "--cached"}));
+        QString rest = QString::fromUtf8(gitCaptureStdout(dir, {"diff"}));
         // `git diff` omits untracked files; append each as a /dev/null diff so
-        // "Open Changes" shows new files too, matching the per-file view.
+        // new files are reviewable in the same scroll.
         QByteArray others;
         runGitCapture(dir, {"ls-files", "--others", "--exclude-standard", "-z"},
                       &others, nullptr);
         for (const QByteArray &p : others.split('\0')) {
             if (p.isEmpty())
                 continue;
-            out += gitCaptureStdout(
-                dir, {"diff", "--no-index", "--", "/dev/null", QString::fromUtf8(p)});
+            rest += QString::fromUtf8(gitCaptureStdout(
+                dir, {"diff", "--no-index", "--", "/dev/null", QString::fromUtf8(p)}));
         }
+        // The renderer starts a new file at every line beginning "diff --git ",
+        // so counting them the same way tells us where the staged half ends
+        // (body lines are +/-/space-prefixed, so they can't be miscounted).
+        m_scmCombinedStagedFiles =
+            stagedPatch.count(QStringLiteral("\ndiff --git ")) +
+            (stagedPatch.startsWith(QLatin1String("diff --git ")) ? 1 : 0);
+        m_scmCombinedPatch = stagedPatch + rest;
+        m_scmPatchValid = true;
     }
 
     QList<DiffFileEntry> files;
-    QString html = renderDiffHtml(QString::fromUtf8(out), files, dir, QString(),
-                                  QString(), QString(), QHash<QString, QString>());
-    if (html.isEmpty())
-        html = QStringLiteral("<p style='color:#8b949e'>(no changes)</p>");
-    setDiffHtml(m_scmDiff, html);
+    const QString ctx = scmViewedContext();
+    const QSet<QString> viewed = loadDiffViewed(ctx);
+    const QString html =
+        renderDiffHtml(m_scmCombinedPatch, files, dir, QString(), QString(),
+                       QString(), QHash<QString, QString>(), viewed);
+
+    m_scmSectionKeys.clear();
+    m_scmSectionAnchors.clear();
+    m_scmSectionPaths.clear();
+    m_scmStickyLabelHtml.clear();
+    m_scmFileTops.clear(); // positions move on re-render; force a recompute
+    for (int i = 0; i < files.size(); ++i) {
+        const DiffFileEntry &f = files.at(i);
+        const QString key = (i < m_scmCombinedStagedFiles ? QStringLiteral("s|")
+                                                          : QStringLiteral("u|")) +
+                            f.path;
+        m_scmSectionKeys.append(key);
+        m_scmSectionAnchors.append(f.anchor);
+        m_scmSectionPaths.append(f.path);
+        m_scmStickyLabelHtml.insert(key, diffStickyLabelHtml(f));
+    }
+
+    // Forget Viewed marks for paths that no longer have changes (after a commit,
+    // say), so the next change set starts the tally from zero.
+    const QSet<QString> live(m_scmSectionPaths.begin(), m_scmSectionPaths.end());
+    for (const QString &p : viewed)
+        if (!live.contains(p))
+            setDiffViewed(ctx, p, false);
+    updateScmViewedCount();
+
+    const QString body =
+        html.isEmpty()
+            ? QStringLiteral("<p style='color:#8b949e'>(no working-tree changes)</p>")
+            : html;
+    const QString key =
+        diffStyleSheet(m_diffFontPt) + QLatin1Char('\x1f') + body;
+    if (key == m_scmDiffRenderKey)
+        return;
+    m_scmDiffRenderKey = key;
+    setDiffHtml(m_scmDiff, body);
+    // The document (and its layout) was replaced; re-read the file positions once
+    // the layout has settled.
+    m_scmStickySection.clear();
+    QTimer::singleShot(0, this, &MainWindow::updateScmDiffScrollState);
+}
+
+void MainWindow::showScmDiff(const QString &path, bool staged, bool untracked)
+{
+    Q_UNUSED(untracked);
+    if (!m_scmDiff || m_scmSuppressFileScroll)
+        return; // suppressed: the selection is following the scroll, not driving it
+    if (m_commitsStack)
+        m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
+    if (m_scmSectionKeys.isEmpty())
+        renderScmCombinedDiff();
+    scrollScmDiffToFile(path, staged);
+}
+
+// "Open all changes" on a group header: jump to the top of that group's half of
+// the combined diff.
+void MainWindow::showScmDiffAll(bool staged)
+{
+    if (!m_scmDiff)
+        return;
+    if (m_commitsStack)
+        m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
+    if (m_scmSectionKeys.isEmpty())
+        renderScmCombinedDiff();
+    const QString prefix = staged ? QStringLiteral("s|") : QStringLiteral("u|");
+    for (int i = 0; i < m_scmSectionKeys.size(); ++i) {
+        if (m_scmSectionKeys.at(i).startsWith(prefix)) {
+            m_scmDiff->scrollToAnchor(m_scmSectionAnchors.at(i));
+            updateScmDiffScrollState();
+            return;
+        }
+    }
+}
+
+// Scroll the combined diff so this file's section sits at the top. A path that is
+// both staged and further modified renders twice, so `staged` picks the side.
+void MainWindow::scrollScmDiffToFile(const QString &path, bool staged)
+{
+    if (!m_scmDiff)
+        return;
+    int idx = m_scmSectionKeys.indexOf(
+        (staged ? QStringLiteral("s|") : QStringLiteral("u|")) + path);
+    if (idx < 0)
+        idx = m_scmSectionPaths.indexOf(path); // only one side has a diff
+    if (idx < 0)
+        return;
+    m_scmDiff->scrollToAnchor(m_scmSectionAnchors.at(idx));
+    updateScmDiffScrollState();
+}
+
+// The changes-tree row for a path on the staged / unstaged side, or nullptr.
+QTreeWidgetItem *MainWindow::scmFindItem(const QString &path, bool staged) const
+{
+    if (!m_scmTree)
+        return nullptr;
+    for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *grp = m_scmTree->topLevelItem(g);
+        for (int c = 0; c < grp->childCount(); ++c) {
+            QTreeWidgetItem *item = grp->child(c);
+            if (item->data(0, Qt::UserRole).toString() == path &&
+                item->data(0, Qt::UserRole + 1).toBool() == staged)
+                return item;
+        }
+    }
+    return nullptr;
+}
+
+// Select a file in the changes tree *without* letting currentItemChanged scroll
+// the diff back to that file's header — here the selection follows the scroll.
+void MainWindow::selectScmFileInTree(const QString &path, bool staged)
+{
+    QTreeWidgetItem *item = scmFindItem(path, staged);
+    if (!item || m_scmTree->currentItem() == item)
+        return;
+    m_scmSuppressFileScroll = true;
+    m_scmTree->setCurrentItem(item);
+    m_scmTree->scrollToItem(item);
+    m_scmSuppressFileScroll = false;
+}
+
+// Pin the sticky header across the top of the changes diff viewport at its
+// natural height. Called on every scroll tick and on viewport resize.
+void MainWindow::layoutScmStickyHeader()
+{
+    if (!m_scmStickyHeader || !m_scmDiff)
+        return;
+    QWidget *vp = m_scmDiff->viewport();
+    m_scmStickyHeader->setGeometry(0, 0, vp->width(),
+                                   m_scmStickyHeader->sizeHint().height());
+}
+
+// Walk the rendered diff once and record each section header's absolute document
+// y-position. Locating an anchor scans the document, so doing it per file would
+// be O(files x doc); this collects them all in a single pass and the result is
+// cached until the next re-render (word-wrap is off, so a resize doesn't move
+// them).
+void MainWindow::computeScmFileTops()
+{
+    m_scmFileTops.assign(m_scmSectionAnchors.size(), -1);
+    if (!m_scmDiff || m_scmSectionAnchors.isEmpty())
+        return;
+    QScrollBar *vbar = m_scmDiff->verticalScrollBar();
+    const int viewTop = vbar ? vbar->value() : 0;
+    QHash<QString, int> anchorIndex;
+    for (int i = 0; i < m_scmSectionAnchors.size(); ++i)
+        if (!m_scmSectionAnchors.at(i).isEmpty())
+            anchorIndex.insert(m_scmSectionAnchors.at(i), i);
+    QTextDocument *doc = m_scmDiff->document();
+    for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const QTextFragment frag = it.fragment();
+            if (!frag.isValid() || !frag.charFormat().isAnchor())
+                continue;
+            for (const QString &name : frag.charFormat().anchorNames()) {
+                const auto ai = anchorIndex.constFind(name);
+                if (ai == anchorIndex.constEnd())
+                    continue;
+                QTextCursor cur(doc);
+                cur.setPosition(frag.position());
+                m_scmFileTops[ai.value()] = m_scmDiff->cursorRect(cur).top() + viewTop;
+            }
+        }
+    }
+}
+
+// Runs on every scroll tick of the combined diff (cheap; no re-render). Works out
+// which file sits at the top of the viewport, mirrors its header into the sticky
+// bar, advances the read-progress chart / percentage by how much of that file has
+// gone past, and selects the file in the tree so the list follows the scroll.
+void MainWindow::updateScmDiffScrollState()
+{
+    if (!m_scmDiff || !m_scmStickyHeader)
+        return;
+    if (m_scmSectionKeys.isEmpty()) {
+        m_scmStickyHeader->hide();
+        return;
+    }
+    QScrollBar *vbar = m_scmDiff->verticalScrollBar();
+    if (!vbar)
+        return;
+    const int viewTop = vbar->value();
+    const int viewBottom = viewTop + m_scmDiff->viewport()->height();
+    const int docHeight =
+        m_scmDiff->document()->documentLayout()->documentSize().height();
+    if (m_scmFileTops.size() != m_scmSectionKeys.size())
+        computeScmFileTops();
+
+    // The file at the top of the viewport is the first one whose section still
+    // reaches below the top edge.
+    int idx = -1, fileTop = 0, fileBottom = 0;
+    for (int i = 0; i < m_scmSectionKeys.size(); ++i) {
+        if (m_scmFileTops.at(i) < 0)
+            continue;
+        const int bottom = (i + 1 < m_scmFileTops.size() &&
+                            m_scmFileTops.at(i + 1) >= 0)
+                               ? m_scmFileTops.at(i + 1)
+                               : docHeight;
+        if (bottom > viewTop) {
+            idx = i;
+            fileTop = m_scmFileTops.at(i);
+            fileBottom = bottom;
+            break;
+        }
+    }
+    if (idx < 0) {
+        m_scmStickyHeader->hide();
+        return;
+    }
+
+    // How much of the file has been read: the fraction of its extent that has
+    // passed above the viewport's bottom edge, clamped to [0,1].
+    double progress = 1.0;
+    if (fileBottom > fileTop)
+        progress = double(viewBottom - fileTop) / double(fileBottom - fileTop);
+    progress = qBound(0.0, progress, 1.0);
+
+    const QString key = m_scmSectionKeys.at(idx);
+    const QString path = m_scmSectionPaths.at(idx);
+    const bool isViewed = loadDiffViewed(scmViewedContext()).contains(path);
+    if (key != m_scmStickySection) {
+        m_scmStickySection = key;
+        m_scmStickyPath->setText(m_scmStickyLabelHtml.value(key));
+        selectScmFileInTree(path, key.startsWith(QLatin1String("s|")));
+    }
+    m_scmStickyViewed->setText(isViewed ? QString::fromUtf8("\xE2\x98\x91 Viewed")
+                                        : QString::fromUtf8("\xE2\x98\x90 Viewed"));
+    // A finished / already-viewed file reads as done (full green circle);
+    // otherwise the chart tracks the scroll in blue and greens on arrival.
+    const double shown = isViewed ? 1.0 : progress;
+    m_scmStickyPacman->setColor(shown >= 0.999 ? QColor(0x3f, 0xb9, 0x50)
+                                               : QColor(0x58, 0xa6, 0xff));
+    m_scmStickyPacman->setProgress(shown);
+    m_scmStickyPercent->setText(QStringLiteral("%1%").arg(qRound(shown * 100.0)));
+
+    layoutScmStickyHeader();
+    m_scmStickyHeader->show();
+    m_scmStickyHeader->raise();
+}
+
+// Debounced off the diff scrollbar: check off every file the reviewer has
+// scrolled all the way through — its end has reached the viewport bottom — as
+// "Viewed", matching the read-progress chart, which fills to 100% on the same
+// threshold. Re-renders once for the whole batch (collapsing those files), then
+// restores the scroll to whichever file is still on screen, since collapsing
+// files above it shifts the document up.
+void MainWindow::applyScmAutoMarkViewedOnScroll()
+{
+    if (!m_scmAutoViewedButton || !m_scmAutoViewedButton->isChecked())
+        return;
+    if (!m_scmDiff || m_scmSectionKeys.isEmpty())
+        return;
+    QScrollBar *vbar = m_scmDiff->verticalScrollBar();
+    if (!vbar)
+        return;
+    const int viewBottom = vbar->value() + m_scmDiff->viewport()->height();
+    const int docHeight =
+        m_scmDiff->document()->documentLayout()->documentSize().height();
+    if (m_scmFileTops.size() != m_scmSectionKeys.size())
+        computeScmFileTops();
+
+    const QString ctx = scmViewedContext();
+    const QSet<QString> viewed = loadDiffViewed(ctx);
+    QString currentPath; // first file not yet fully scrolled through
+    bool currentStaged = false;
+    QStringList newlyViewed;
+    for (int i = 0; i < m_scmSectionKeys.size(); ++i) {
+        if (m_scmFileTops.at(i) < 0)
+            continue;
+        const int bottom = (i + 1 < m_scmFileTops.size() &&
+                            m_scmFileTops.at(i + 1) >= 0)
+                               ? m_scmFileTops.at(i + 1)
+                               : docHeight;
+        const QString path = m_scmSectionPaths.at(i);
+        if (bottom <= viewBottom) {
+            if (!viewed.contains(path) && !newlyViewed.contains(path))
+                newlyViewed << path;
+        } else if (currentPath.isEmpty()) {
+            currentPath = path;
+            currentStaged = m_scmSectionKeys.at(i).startsWith(QLatin1String("s|"));
+        }
+    }
+    if (newlyViewed.isEmpty())
+        return;
+    for (const QString &path : std::as_const(newlyViewed))
+        setDiffViewed(ctx, path, true);
+    renderScmCombinedDiff();
+    if (!currentPath.isEmpty())
+        scrollScmDiffToFile(currentPath, currentStaged);
+}
+
+// "N of M files viewed" above the changes tree.
+void MainWindow::updateScmViewedCount()
+{
+    if (!m_scmViewedLabel)
+        return;
+    const QSet<QString> paths(m_scmSectionPaths.begin(), m_scmSectionPaths.end());
+    if (paths.isEmpty()) {
+        m_scmViewedLabel->clear();
+        return;
+    }
+    const QSet<QString> viewed = loadDiffViewed(scmViewedContext());
+    int seen = 0;
+    for (const QString &p : paths)
+        if (viewed.contains(p))
+            ++seen;
+    m_scmViewedLabel->setText(
+        QStringLiteral("%1 of %2 files viewed").arg(seen).arg(paths.size()));
+}
+
+// Clicking the "Viewed" checkbox inside the combined diff.
+void MainWindow::onScmDiffAnchorClicked(const QUrl &url)
+{
+    if (url.scheme() != QLatin1String("viewed"))
+        return;
+    const QString path = url.path();
+    if (path.isEmpty())
+        return;
+    const QString ctx = scmViewedContext();
+    setDiffViewed(ctx, path, !loadDiffViewed(ctx).contains(path));
+    renderScmCombinedDiff();
+    // Keep the file that was toggled in view — collapsing it shifts everything
+    // below up, so an untouched scroll position would land somewhere random.
+    scrollScmDiffToFile(path, m_scmStickySection.startsWith(QLatin1String("s|")));
 }
 
 void MainWindow::scmSelectAdjacentChange(int delta)
 {
-    if (!m_scmTree)
-        return;
-
-    // Step through the open file's hunks first; only move to the next/previous
-    // file once we're already past its last/first hunk.
-    QTreeWidgetItem *current = m_scmTree->currentItem();
-    const bool fileOpen =
-        m_scmDiff && current &&
-        !current->data(0, Qt::UserRole).toString().isEmpty();
-    if (fileOpen && scmScrollToAdjacentHunk(delta))
-        return;
-
-    // Flatten the changed files (skipping the group headers) into visual order so
-    // the up/down buttons can step through every change regardless of grouping.
-    QList<QTreeWidgetItem *> files;
-    for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
-        QTreeWidgetItem *grp = m_scmTree->topLevelItem(g);
-        for (int c = 0; c < grp->childCount(); ++c)
-            files.append(grp->child(c));
-    }
-    if (files.isEmpty())
-        return;
-    const int cur = files.indexOf(current);
-    int next = cur < 0 ? (delta > 0 ? 0 : files.size() - 1) : cur + delta;
-    if (next < 0 || next >= files.size())
-        return; // clamp at the ends rather than wrapping
-    QTreeWidgetItem *target = files.at(next);
-    m_scmTree->setCurrentItem(target); // fires currentItemChanged -> showScmDiff
-    m_scmTree->scrollToItem(target);
-    // Entering the previous file from below: land on its last hunk so prev keeps
-    // walking changes upward. The next file opens scrolled to the top already, so
-    // its first hunk is in view.
-    if (delta < 0)
-        scmScrollToAdjacentHunk(-1, /*fromEnd=*/true);
+    // Every change shares one scrollable view, so stepping is just the next /
+    // previous hunk anywhere in the working tree — scmScrollToAdjacentHunk
+    // crosses file boundaries on its own, and the scroll drags the sticky header
+    // and the tree selection along with it.
+    scmScrollToAdjacentHunk(delta);
 }
 
 bool MainWindow::scmScrollToAdjacentHunk(int delta, bool fromEnd)
@@ -752,11 +1211,50 @@ bool MainWindow::scmScrollToAdjacentHunk(int delta, bool fromEnd)
 
 void MainWindow::scmStagePath(const QString &path)
 {
+    // Staging is usually the last thing you do with a file you've just read, so
+    // when the file being staged is the one on screen, move on to the next change
+    // instead of leaving the diff parked on a now-staged file (adhoc #399).
+    QString nextPath;
+    bool nextStaged = false;
+    if (m_scmTree) {
+        QList<QTreeWidgetItem *> files;
+        for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
+            QTreeWidgetItem *grp = m_scmTree->topLevelItem(g);
+            for (int c = 0; c < grp->childCount(); ++c)
+                files.append(grp->child(c));
+        }
+        QTreeWidgetItem *cur = m_scmTree->currentItem();
+        const int idx = cur ? files.indexOf(cur) : -1;
+        if (idx >= 0 && cur->data(0, Qt::UserRole).toString() == path &&
+            !cur->data(0, Qt::UserRole + 1).toBool()) {
+            // Prefer the next still-unstaged change; fall back to the row above
+            // when this was the last one in the list.
+            for (int i = idx + 1; i < files.size(); ++i) {
+                if (!files.at(i)->data(0, Qt::UserRole + 1).toBool()) {
+                    nextPath = files.at(i)->data(0, Qt::UserRole).toString();
+                    break;
+                }
+            }
+            if (nextPath.isEmpty() && idx > 0) {
+                nextPath = files.at(idx - 1)->data(0, Qt::UserRole).toString();
+                nextStaged = files.at(idx - 1)->data(0, Qt::UserRole + 1).toBool();
+            }
+        }
+    }
+
     const QString dir = repoGitDir();
     QString err;
     if (!runGitCapture(dir, {"add", "-A", "--", path}, nullptr, &err))
         QMessageBox::warning(this, "Stage", err.isEmpty() ? "git add failed." : err);
     refreshSourceControl();
+    if (!nextPath.isEmpty()) {
+        if (QTreeWidgetItem *item = scmFindItem(nextPath, nextStaged)) {
+            // Fires currentItemChanged -> showScmDiff, which scrolls the combined
+            // diff to that file.
+            m_scmTree->setCurrentItem(item);
+            m_scmTree->scrollToItem(item);
+        }
+    }
 }
 
 void MainWindow::scmUnstagePath(const QString &path)

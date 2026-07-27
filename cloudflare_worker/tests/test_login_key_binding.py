@@ -295,6 +295,7 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
                 lambda _request, desktop=False:
                 "Desktop node" if desktop else "Web browser"
             ),
+            "_account_session_client_ip": lambda _request: "203.0.113.9",
             "_account_session_token": _account_session_token,
             "_account_session_cookie": lambda _token: "account-session",
             "json_response": _json_response,
@@ -800,6 +801,7 @@ def test_concurrent_first_device_bind_allows_exactly_one_account_winner():
             lambda _request, desktop=False:
             "Desktop node" if desktop else "Web browser"
         ),
+        "_account_session_client_ip": lambda _request: "203.0.113.9",
         "_account_session_token": lambda _env, name: "session:" + name,
         "_account_session_cookie": lambda _token: "account",
         "json_response": _json_response,

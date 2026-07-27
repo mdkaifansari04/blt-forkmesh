@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Contracts for the World "Organize nodes" control and the pool rim title.
+"""Contracts for automatic World node placement and the pool rim title.
 
-The HUD button rings every live mirror-node cabinet around the reward pool and
-puts the fleet back in the server yard on a second press. The reward pool's own
-title is painted around the rim, so the repeat count and the type size have to
-leave a real gap between wraps instead of overlapping into one smear.
+Every live mirror-node cabinet is placed around the reward pool as part of the
+existing catalog update, with stable slots that do not jitter when health data
+reorders the payload. The reward pool's own title is painted around the rim, so
+the repeat count and type size must leave a gap between wraps.
 """
 
 import json
@@ -53,34 +53,45 @@ def _reward_circle_slots(count, centre_x=0.0, centre_z=0.0):
     return json.loads(completed.stdout)
 
 
-def test_hud_exposes_an_organize_nodes_button():
-    assert "data-world-organize-nodes" in APP
-    assert ">Organize nodes<" in APP
-    assert 'aria-pressed="false"' in APP
-    assert 'this.toggleOrganizedNodes();' in APP
-    assert "syncOrganizeNodesButton(state)" in APP
-    assert "organizeNetworkNodes()" in APP
-    # The label flips so a second press is legibly the way back.
-    assert 'organized ? "Node yard" : "Organize nodes"' in APP
+def test_manual_organize_nodes_control_is_removed():
+    assert "data-world-organize-nodes" not in APP
+    assert "Organize nodes" not in APP
+    assert "toggleOrganizedNodes" not in APP
+    assert "syncOrganizeNodesButton" not in APP
 
 
-def test_scene_exports_the_node_layout_controls():
-    assert "organizeNetworkNodes,\n    getNodeLayoutState," in SCENE
-    assert 'nodeLayoutMode = "yard"' in SCENE
-    assert 'nodeLayoutMode = next ? "reward-circle" : "yard"' in SCENE
-    # Toggling re-places the fleet from the retained list instead of waiting
-    # for the next network poll.
-    assert "lastNetworkNodes = Array.isArray(nodes) ? nodes : []" in SCENE
-    assert "updateNetworkNodes(lastNetworkNodes)" in SCENE
+def test_manual_node_layout_mode_and_scene_controls_are_removed():
+    assert "organizeNetworkNodes" not in SCENE
+    assert "getNodeLayoutState" not in SCENE
+    assert "nodeLayoutMode" not in SCENE
+    assert "lastNetworkNodes" not in SCENE
 
 
-def test_organized_nodes_ring_the_reward_pool_and_face_it():
+def test_live_nodes_are_automatically_ringed_and_face_the_reward_pool():
     assert 'const fountain = landmarkObjects.get("fountain")' in SCENE
-    assert "rewardCircleSlots(routingX, routingZ, usableNodes.length)" in SCENE
-    assert "const slot = circleSlots ? circleSlots[index] : serverSlots[index]" in SCENE
-    # An explicit viewer request outranks an administrator-locked placement for
-    # as long as the ring is switched on.
-    assert "if (rewardCircle) placeInSlot();" in SCENE
+    assert "const circleSlots = rewardCircleSlots(" in SCENE
+    assert "usableNodes.length," in SCENE
+    assert "const slot = circleSlots[index]" in SCENE
+    assert "cabinet.position.set(slot.x, 0.38, slot.z)" in SCENE
+    assert "routingX - slot.x" in SCENE
+    assert "routingZ - slot.z" in SCENE
+    assert "serverSlots" not in SCENE
+
+
+def test_node_slots_are_stable_and_not_overridden_by_saved_layout():
+    block = _function_source("updateNetworkNodes")
+    assert ".sort((left, right) => {" in block
+    assert "left.name.toLowerCase()" in block
+    assert "right.name.toLowerCase()" in block
+    assert ".filter(" in block
+    assert ".slice(0, 64)" in block
+    assert 'worldLayoutId("node-"' not in block
+    assert "registerMovableObject(" not in block
+    # Automatic placement piggybacks on the catalog update: it does not add
+    # another timer, request, or listener.
+    assert "fetch(" not in block
+    assert "setInterval(" not in block
+    assert "addEventListener(" not in block
 
 
 def test_reward_circle_slots_clear_the_pool_and_never_collide():
@@ -91,11 +102,17 @@ def test_reward_circle_slots_clear_the_pool_and_never_collide():
             radius = math.hypot(slot["x"], slot["z"])
             # Outside the 5.25 pool rim and the 6.4–8.5 tree circle.
             assert radius >= 9.5
+            # Outside the campfire's complete bench-and-walkway clearing.
+            assert math.hypot(slot["x"] - 8, slot["z"] - 8) >= 7.4
         for index, left in enumerate(slots):
             for right in slots[index + 1:]:
                 assert math.dist(
                     (left["x"], left["z"]), (right["x"], right["z"])
                 ) >= 2.9, count
+
+
+def test_reward_circle_slots_are_deterministic():
+    assert _reward_circle_slots(64) == _reward_circle_slots(64)
 
 
 def test_reward_circle_slots_follow_a_relocated_pool():

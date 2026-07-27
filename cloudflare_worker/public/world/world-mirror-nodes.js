@@ -187,10 +187,12 @@ function publicResourceRecord(record) {
 /**
  * Build the bounded, truthful records consumed by the 3D server cabinets.
  *
- * Cabinet membership comes only from online records in the public signed mirror
- * payload. The network overview contains repository-owner aggregates as well as
- * machines, so it may enrich a matching cabinet but must never create one.
- * Unknown and opted-out metrics remain null.
+ * Cabinet membership comes only from records in the public signed mirror
+ * payload. Offline, healing, and integrity-rejected records remain visible as
+ * clearly non-serving cabinets; otherwise a temporary route failure makes a
+ * real mirror appear to have never existed. The network overview contains
+ * repository-owner aggregates as well as machines, so it may enrich a matching
+ * cabinet but must never create one. Unknown and opted-out metrics remain null.
  */
 export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
   const details = Array.isArray(network?.leaderboards?.nodes)
@@ -207,31 +209,44 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
   const payloadList = Array.isArray(mirrorPayloads)
     ? mirrorPayloads
     : [mirrorPayloads];
-  const activeNodes = new Map();
+  const mirrorNodes = new Map();
   const repositoriesByNode = new Map();
   const mirrorByNode = new Map();
   payloadList.slice(0, 100).forEach((payload) => {
     if (!Array.isArray(payload?.mirrors)) return;
     payload.mirrors.slice(0, 100).forEach((mirror) => {
-      if (String(mirror?.status || "").toLowerCase() !== "online") return;
       // `node` is the canonical machine identity. `owner` can be a user or
       // repository account and is intentionally only a legacy fallback.
       const name = text(mirror?.node || mirror?.machineName, "", 80);
       if (!name) return;
       const key = name.toLowerCase();
-      activeNodes.set(key, name);
-      if (!mirrorByNode.has(key)) mirrorByNode.set(key, mirror);
+      mirrorNodes.set(key, name);
+      const previous = mirrorByNode.get(key);
+      if (
+        !previous ||
+        Number(String(mirror?.status || "").toLowerCase() === "online") >
+          Number(String(previous?.status || "").toLowerCase() === "online") ||
+        (
+          String(mirror?.status || "").toLowerCase() ===
+            String(previous?.status || "").toLowerCase() &&
+          repositoryRecency(mirror) > repositoryRecency(previous)
+        )
+      ) {
+        mirrorByNode.set(key, mirror);
+      }
       const items = repositoriesByNode.get(key) || [];
       items.push(publicRepositoryRecord(mirror, payload));
       repositoriesByNode.set(key, items);
     });
   });
 
-  const nodes = [...activeNodes.entries()]
+  const nodes = [...mirrorNodes.entries()]
     .map(([key, displayName]) => {
       const detail = detailByName.get(key) || {};
       const repositories = (repositoriesByNode.get(key) || [])
         .sort((left, right) =>
+          Number(right.status === "online") -
+            Number(left.status === "online") ||
           repositoryRecency(right) - repositoryRecency(left) ||
           `${left.owner}/${left.name}`.localeCompare(
             `${right.owner}/${right.name}`,
@@ -240,6 +255,13 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
         .slice(0, 32);
       const primary = repositories[0] || {};
       const hasPrimary = repositories.length > 0;
+      const online = repositories.some(
+        (repository) => repository.status === "online",
+      );
+      const healthy = repositories.some(
+        (repository) =>
+          repository.status === "online" && repository.integrity === "ok",
+      );
       const resources = publicResourceRecord({
         ...detail,
         ...(mirrorByNode.get(key) || {}),
@@ -250,16 +272,18 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
         // The machine's advertised node name — the display label for the
         // cabinet. The account (`name`) stays the identity/grouping key.
         machineName: primary.machineName || aggregate.machineName || null,
-        online: true,
-        healthy:
-          primary.status === "online" &&
-          primary.integrity === "ok",
-        status: primary.status || "online",
+        online,
+        healthy,
+        status: primary.status || "offline",
         integrity: primary.integrity || "unknown",
         activity: primary.activity || "unknown",
         activityUpdatedAt: primary.activityUpdatedAt || null,
-        cloneAvailable:
-          primary.cloneAvailable === true && primary.integrity === "ok",
+        cloneAvailable: repositories.some(
+          (repository) =>
+            repository.status === "online" &&
+            repository.cloneAvailable === true &&
+            repository.integrity === "ok",
+        ),
         behind: primary.behind === true,
         platform: text(primary.platform || detail?.platform, "", 24).toLowerCase(),
         version: text(primary.version || detail?.version, "", 32),
@@ -308,6 +332,7 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
   // rather than whichever repository happens to sort first by name.
   return nodes
     .sort((left, right) =>
+      Number(right.online === true) - Number(left.online === true) ||
       repositoryRecency(right) - repositoryRecency(left) ||
       left.name.localeCompare(right.name),
     )

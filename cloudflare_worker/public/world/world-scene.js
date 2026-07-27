@@ -297,6 +297,9 @@ const ACCOUNT_STATUS_ICONS = Object.freeze({
   "Verified bot": "⌘",
 });
 const WORLD_MODERATION_HANDLE_PATTERN = /^[a-f0-9]{64}$/;
+// Organization and account names share the node-name grammar the worker
+// enforces. The team plaque only ever carries names, never a session secret.
+const WORLD_ORG_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const REPOSITORY_SIZE_MAP_COLORS = Object.freeze([
   "#3987e5",
   "#199e70",
@@ -1933,6 +1936,90 @@ function createAvatarModerationControls(THREE, handles) {
   return group;
 }
 
+// The organization team plaque the app layer hands down for members of an
+// organization the viewer owns or administers. Everything here is a name the
+// roster already publishes to org members plus two counts; the plaque never
+// carries a role decision — the worker re-checks the caller's role on write.
+function sanitizedOrgTeamAssignment(remote) {
+  const peerId = String(remote?.id || "");
+  const assignment = remote?.orgTeam;
+  if (
+    !peerId ||
+    /^(?:inactive|local|node|bot):/.test(peerId) ||
+    remote?.persistedInactive === true ||
+    remote?.accountStatus === "Verified bot" ||
+    String(remote?.accountStatus || "Guest") === "Guest" ||
+    !assignment ||
+    typeof assignment !== "object" ||
+    Array.isArray(assignment)
+  ) {
+    return null;
+  }
+  const org = String(assignment.org || "").toLowerCase();
+  const member = String(assignment.member || "").toLowerCase();
+  if (
+    !WORLD_ORG_NAME_PATTERN.test(org) ||
+    !WORLD_ORG_NAME_PATTERN.test(member)
+  ) {
+    return null;
+  }
+  const total = Math.max(0, Math.min(99, Number(assignment.total) || 0));
+  if (!total) return null;
+  return {
+    org,
+    member,
+    assigned: Math.max(0, Math.min(total, Number(assignment.assigned) || 0)),
+    total,
+  };
+}
+
+function orgTeamControlTexture(THREE, title, subtitle) {
+  return canvasTexture(THREE, 512, 160, (context) => {
+    context.clearRect(0, 0, 512, 160);
+    roundedRect(context, 4, 4, 504, 152, 18);
+    context.fillStyle = "rgba(6,26,22,0.96)";
+    context.fill();
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 8;
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = "#eafff4";
+    context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(title, 256, 58, 456);
+    context.fillStyle = "#9ef7c6";
+    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(subtitle, 256, 113, 456);
+  });
+}
+
+function createAvatarOrgTeamControl(THREE, assignment) {
+  const group = new THREE.Group();
+  group.name = "forkmesh-world-org-team-control";
+  const control = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.02, 0.34),
+    new THREE.MeshBasicMaterial({
+      map: orgTeamControlTexture(
+        THREE,
+        "ASSIGN TEAMS",
+        `${assignment.org.toUpperCase()} · ${assignment.assigned}/${
+          assignment.total
+        } TEAMS`,
+      ),
+      transparent: false,
+      depthWrite: true,
+    }),
+  );
+  control.name = "world-org-team-control";
+  // Same back face as the moderation plaques: avatar fronts face -Z, so a
+  // single-sided plane at positive Z cannot be clicked through the chest.
+  control.position.set(0, 1.61, 0.321);
+  control.userData.worldOrgTeamControl = true;
+  control.renderOrder = 3;
+  group.add(control);
+  return group;
+}
+
 function makeMaterial(THREE, color, options = {}) {
   const parameters = {
     color,
@@ -2962,33 +3049,37 @@ function createAvatar(THREE, identity, options = {}) {
   return group;
 }
 
-function avatarSecurityBadgeTexture(THREE, details = {}) {
-  const ip = String(details.ip || "").trim().slice(0, 64);
-  const userAgent = String(details.userAgent || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 256);
-  const wrap = (text, width, rows) => {
-    const words = String(text || "").split(" ").filter(Boolean);
-    const lines = [];
-    let line = "";
-    words.forEach((word) => {
-      const chunks = [];
-      for (let at = 0; at < word.length; at += width) {
-        chunks.push(word.slice(at, at + width));
-      }
-      chunks.forEach((chunk) => {
-        const candidate = line ? `${line} ${chunk}` : chunk;
-        if (candidate.length > width && line) {
-          lines.push(line);
-          line = chunk;
-        } else {
-          line = candidate;
-        }
-      });
-    });
-    if (line) lines.push(line);
-    return lines.slice(0, rows);
+const WORK_BADGE_ROWS = 6;
+
+function normalizeSelfWorkBoard(board = {}) {
+  const state = ["locked", "loading", "ready"].includes(board?.state)
+    ? board.state
+    : "locked";
+  const items = Array.isArray(board?.items) ? board.items : [];
+  return {
+    state,
+    message: String(board?.message || "").replace(/\s+/g, " ").trim().slice(0, 64),
+    tracked: String(board?.tracked || "").trim().slice(0, 16),
+    items: items.slice(0, WORK_BADGE_ROWS).map((item) => ({
+      kind: item?.kind === "issue" ? "issue" : "task",
+      title: String(item?.title || "").replace(/\s+/g, " ").trim().slice(0, 64),
+      status: item?.status === "active" ? "active" : "idle",
+      elapsed: String(item?.elapsed || "").trim().slice(0, 12),
+      checkin: String(item?.checkin || "").trim().slice(0, 24),
+    })).filter((item) => item.title),
+    total: Math.max(0, Math.min(999, Number(board?.total) || 0)),
+    active: Math.max(0, Math.min(999, Number(board?.active) || 0)),
+  };
+}
+
+function avatarWorkBadgeTexture(THREE, board = {}) {
+  const snapshot = normalizeSelfWorkBoard(board);
+  const clip = (context, text, width) => {
+    let value = String(text || "");
+    while (value.length > 1 && context.measureText(value).width > width) {
+      value = value.slice(0, -1);
+    }
+    return value === String(text || "") ? value : value.slice(0, -1) + "\u2026";
   };
   return canvasTexture(THREE, 768, 960, (context) => {
     context.fillStyle = "#071714";
@@ -2999,28 +3090,93 @@ function avatarSecurityBadgeTexture(THREE, details = {}) {
     context.textAlign = "left";
     context.textBaseline = "middle";
     context.fillStyle = "#9ef7c6";
-    context.font = '900 58px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("YOUR SESSION", 44, 78);
+    context.font = '900 56px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("MY WORK", 44, 78);
     context.fillStyle = "#7fb9a5";
     context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("PRIVATE · SELF ONLY", 44, 132);
+    context.fillText("PRIVATE \u00b7 SELF ONLY", 44, 132);
 
+    if (snapshot.state !== "ready") {
+      context.fillStyle = snapshot.state === "loading" ? "#9ef7c6" : "#f7c96b";
+      context.font = '900 42px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        snapshot.state === "loading" ? "SYNCING\u2026" : "SIGN IN",
+        44,
+        260,
+      );
+      context.fillStyle = "#e9fff6";
+      context.font = '650 30px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        clip(context, snapshot.message || "No assigned work loaded.", 660),
+        44,
+        320,
+      );
+      context.fillStyle = "#7fb9a5";
+      context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("HIDDEN FROM PEERS + SCREENSHOTS", 44, 912);
+      return;
+    }
+
+    // Stats first: the plate is read at a glance while walking past a mirror,
+    // so the counters stay above the per-task rows.
     context.fillStyle = "#f7c96b";
     context.font = '900 38px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("EDGE IP", 44, 214);
+    context.fillText("ASSIGNED", 44, 214);
+    context.fillText("RUNNING", 300, 214);
+    context.fillText("TRACKED", 540, 214);
     context.fillStyle = "#ffffff";
-    context.font = '700 36px "ForkMesh Mono", ui-monospace, monospace';
-    wrap(ip || "UNAVAILABLE", 30, 3).forEach((line, index) => {
-      context.fillText(line, 44, 272 + index * 48);
-    });
+    context.font = '900 52px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(snapshot.total), 44, 274);
+    context.fillText(String(snapshot.active), 300, 274);
+    context.font = '900 40px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(snapshot.tracked || "0:00", 540, 274);
 
-    context.fillStyle = "#77d9ff";
-    context.font = '900 38px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("USER AGENT", 44, 432);
-    context.fillStyle = "#e9fff6";
-    context.font = '650 31px "ForkMesh Mono", ui-monospace, monospace';
-    wrap(userAgent || "UNAVAILABLE", 39, 8).forEach((line, index) => {
-      context.fillText(line, 44, 486 + index * 43);
+    context.strokeStyle = "rgba(158,247,198,0.3)";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(44, 322);
+    context.lineTo(724, 322);
+    context.stroke();
+
+    if (!snapshot.items.length) {
+      context.fillStyle = "#e9fff6";
+      context.font = '650 31px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NOTHING ASSIGNED TO YOU YET", 44, 392);
+    }
+    snapshot.items.forEach((item, index) => {
+      const top = 386 + index * 92;
+      context.fillStyle =
+        item.kind === "issue"
+          ? "#77d9ff"
+          : item.status === "active"
+            ? "#1f9c6a"
+            : "#3a4b45";
+      context.beginPath();
+      context.arc(60, top, 13, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = "#ffffff";
+      context.font = '700 32px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(clip(context, item.title, 500), 92, top - 12);
+      context.fillStyle =
+        item.kind === "issue"
+          ? "#77d9ff"
+          : item.status === "active"
+            ? "#9ef7c6"
+            : "#7fb9a5";
+      context.font = '650 26px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        clip(
+          context,
+          item.kind === "issue"
+            ? `ISSUE${item.checkin ? ` \u00b7 ${item.checkin}` : ""}`
+            : `${item.status === "active" ? "RUNNING" : "TO DO"} \u00b7 ${
+                item.elapsed || "0:00"
+              }${item.checkin ? ` \u00b7 ${item.checkin}` : ""}`,
+          580,
+        ),
+        92,
+        top + 24,
+      );
     });
 
     context.fillStyle = "#7fb9a5";
@@ -3029,15 +3185,11 @@ function avatarSecurityBadgeTexture(THREE, details = {}) {
   });
 }
 
-function setAvatarSecurityBadge(THREE, avatar, details, visible = true) {
+function setAvatarWorkBadge(THREE, avatar, board, visible = true) {
   if (!avatar?.userData) return null;
-  const ip = String(details?.ip || "").trim().slice(0, 64);
-  const userAgent = String(details?.userAgent || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 256);
-  let badge = avatar.userData.selfSecurityBadge;
-  if (!ip && !userAgent) {
+  const snapshot = normalizeSelfWorkBoard(board);
+  let badge = avatar.userData.selfWorkBadge;
+  if (snapshot.state === "locked" && !snapshot.items.length) {
     if (badge) badge.visible = false;
     return badge || null;
   }
@@ -3046,18 +3198,15 @@ function setAvatarSecurityBadge(THREE, avatar, details, visible = true) {
       new THREE.PlaneGeometry(1.06, 1.32),
       new THREE.MeshBasicMaterial({ toneMapped: false }),
     );
-    badge.name = "forkmesh-self-security-back-badge";
-    // Avatar fronts face -Z, so the owner-only security card sits on +Z.
+    badge.name = "forkmesh-self-work-back-badge";
+    // Avatar fronts face -Z, so the owner-only work board sits on +Z.
     badge.position.set(0, 2.22, 0.318);
     badge.renderOrder = 4;
     avatar.add(badge);
-    avatar.userData.selfSecurityBadge = badge;
+    avatar.userData.selfWorkBadge = badge;
   }
   const previous = badge.material.map;
-  badge.material.map = avatarSecurityBadgeTexture(THREE, {
-    ip,
-    userAgent,
-  });
+  badge.material.map = avatarWorkBadgeTexture(THREE, snapshot);
   badge.material.needsUpdate = true;
   badge.visible = visible === true;
   previous?.dispose?.();
@@ -3207,7 +3356,8 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
     if (
       !child.isMesh ||
       (antenna && antenna === child.parent) ||
-      child.userData?.worldModerationControl
+      child.userData?.worldModerationControl ||
+      child.userData?.worldOrgTeamControl
     ) return;
     const childMaterials = Array.isArray(child.material)
       ? child.material
@@ -7374,6 +7524,7 @@ export function createWorldScene({
   onRegionChange = () => {},
   onMovement = () => {},
   onModeration = () => {},
+  onOrgTeamAssign = () => {},
   onFediverseProfile = () => {},
   onFediverseFollow = () => {},
   onLayoutObjectMoved = () => {},
@@ -8565,6 +8716,8 @@ export function createWorldScene({
   const remoteLabels = new Map();
   const moderationActions = new WeakMap();
   const moderationControlKeys = new Map();
+  const orgTeamActions = new WeakMap();
+  const orgTeamControlKeys = new Map();
   // Badge plane and tab buttons -> the avatar they belong to, so one click
   // handler can switch chest tabs and hit the follow pill.
   const chestControls = new WeakMap();
@@ -9840,11 +9993,15 @@ export function createWorldScene({
     if (logoReflectionDirty && time >= logoReflectionEligibleAt) {
       const cubeWasVisible = chromeCube.visible;
       const playerWasVisible = player.visible;
+      const selfWorkBadge = player.userData?.selfWorkBadge;
+      const selfWorkBadgeWasVisible = selfWorkBadge?.visible;
       chromeCube.visible = false;
       // First-person mode normally hides the local body from the main camera.
       // The reflection camera is independent, so reveal it for this capture
-      // and restore the exact prior state immediately afterwards.
+      // while excluding its owner-only task plate. Restore both exact prior
+      // visibility states immediately afterwards.
       player.visible = true;
+      if (selfWorkBadge) selfWorkBadge.visible = false;
       // Movement and camera updates happen earlier in this frame. Commit the
       // avatar's latest pose before the six cube faces render so its mirror
       // image never trails one settled position behind.
@@ -9853,6 +10010,9 @@ export function createWorldScene({
       try {
         reflectionCamera.update(renderer, scene);
       } finally {
+        if (selfWorkBadge) {
+          selfWorkBadge.visible = selfWorkBadgeWasVisible;
+        }
         player.visible = playerWasVisible;
         chromeCube.visible = cubeWasVisible;
       }
@@ -10044,11 +10204,6 @@ export function createWorldScene({
   officeElevatorCar.add(elevatorPanel);
   const neighborhoodHomes = new Map();
   const nodeInfrastructure = new Map();
-  // Cabinets stand in the server yard by default; "Organize nodes" switches the
-  // fleet to rings around the reward pool. The last live list is kept so the
-  // switch can re-place the yard without waiting for the next network poll.
-  let nodeLayoutMode = "yard";
-  let lastNetworkNodes = [];
   const botAgents = new Map();
   const loungeMembers = new Map();
   // Public account facts the member directory publishes but a live presence
@@ -10151,8 +10306,8 @@ export function createWorldScene({
   let officeReceptionLastTipAt = -Infinity;
   let officeReceptionGuestTipIndex = 0;
   let officeReceptionMemberTipIndex = 0;
-  let selfSecurityDetails = { ip: "", userAgent: "" };
-  let selfSecurityBadgeVisible = true;
+  let selfWorkBoard = normalizeSelfWorkBoard({});
+  let selfWorkBadgeVisible = true;
   // main dropped its own selectedLandmark when the floating landmark labels went
   // away (adhoc #243); the Office still tracks it to frame the camera on entry.
   let selectedLandmark = "";
@@ -10349,50 +10504,30 @@ export function createWorldScene({
     return { ...officeFloorAccess };
   }
 
-  function setSelfSecurityDetails(details = {}) {
-    selfSecurityDetails = {
-      ip: String(details?.ip || "").trim().slice(0, 64),
-      userAgent: String(details?.userAgent || "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 256),
-    };
-    setAvatarSecurityBadge(
-      THREE,
-      player,
-      selfSecurityDetails,
-      selfSecurityBadgeVisible,
-    );
-    setAvatarSecurityBadge(
-      THREE,
-      officeLobbyPlayer,
-      selfSecurityDetails,
-      selfSecurityBadgeVisible,
-    );
-    const localParticipant =
-      officeParticipants.get(officeLocalParticipantId);
-    if (localParticipant) {
-      setAvatarSecurityBadge(
-        THREE,
-        localParticipant,
-        selfSecurityDetails,
-        selfSecurityBadgeVisible,
-      );
-    }
-    return { ...selfSecurityDetails };
-  }
-
-  function setSelfSecurityBadgeVisibility(visible = true) {
-    const previous = selfSecurityBadgeVisible;
-    selfSecurityBadgeVisible = visible === true;
+  function setSelfWorkBoard(board = {}) {
+    selfWorkBoard = normalizeSelfWorkBoard(board);
     [
       player,
       officeLobbyPlayer,
       officeParticipants.get(officeLocalParticipantId),
     ].forEach((avatar) => {
-      if (avatar?.userData?.selfSecurityBadge) {
-        avatar.userData.selfSecurityBadge.visible =
-          selfSecurityBadgeVisible;
+      if (avatar) {
+        setAvatarWorkBadge(THREE, avatar, selfWorkBoard, selfWorkBadgeVisible);
+      }
+    });
+    return { ...selfWorkBoard };
+  }
+
+  function setSelfWorkBadgeVisibility(visible = true) {
+    const previous = selfWorkBadgeVisible;
+    selfWorkBadgeVisible = visible === true;
+    [
+      player,
+      officeLobbyPlayer,
+      officeParticipants.get(officeLocalParticipantId),
+    ].forEach((avatar) => {
+      if (avatar?.userData?.selfWorkBadge) {
+        avatar.userData.selfWorkBadge.visible = selfWorkBadgeVisible;
       }
     });
     return previous;
@@ -11020,11 +11155,11 @@ export function createWorldScene({
         officeParticipantLabels.get(id).textContent = participantIdentity.name;
       }
       if (id === officeLocalParticipantId) {
-        setAvatarSecurityBadge(
+        setAvatarWorkBadge(
           THREE,
           avatar,
-          selfSecurityDetails,
-          selfSecurityBadgeVisible,
+          selfWorkBoard,
+          selfWorkBadgeVisible,
         );
       }
       applyOfficeParticipantPose(avatar, participant);
@@ -12697,6 +12832,60 @@ export function createWorldScene({
     moderationControlKeys.set(peerId, key);
   }
 
+  function removeRemoteOrgTeamControl(avatar, peerId) {
+    const controls = avatar?.userData?.orgTeamControls;
+    if (controls) {
+      controls.traverse((child) => {
+        orgTeamActions.delete(child);
+        const interactiveIndex = interactive.indexOf(child);
+        if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
+      });
+      avatar.remove(controls);
+      disposeObject3D(controls);
+      delete avatar.userData.orgTeamControls;
+    }
+    orgTeamControlKeys.delete(String(peerId || ""));
+  }
+
+  // The organization-admin counterpart of the moderation plaques: one plaque
+  // per member avatar, opening the team multi-select the app layer owns. The
+  // app only supplies `orgTeam` for members of an organization the viewer
+  // owns or administers, so a plain member never sees another back plaque.
+  function syncRemoteOrgTeamControl(avatar, remote) {
+    const peerId = String(remote?.id || "");
+    const name = String(remote?.name || "visitor").slice(0, 32);
+    const assignment = sanitizedOrgTeamAssignment(remote);
+    const key = JSON.stringify([
+      name,
+      assignment?.org || "",
+      assignment?.member || "",
+      assignment?.assigned ?? -1,
+      assignment?.total ?? -1,
+    ]);
+    if (
+      orgTeamControlKeys.get(peerId) === key &&
+      avatar?.userData?.orgTeamControls
+    ) {
+      return;
+    }
+    removeRemoteOrgTeamControl(avatar, peerId);
+    if (!assignment) return;
+
+    const controls = createAvatarOrgTeamControl(THREE, assignment);
+    controls.children.forEach((control) => {
+      orgTeamActions.set(control, {
+        org: assignment.org,
+        member: assignment.member,
+        peerId,
+        name,
+      });
+      interactive.push(control);
+    });
+    avatar.add(controls);
+    avatar.userData.orgTeamControls = controls;
+    orgTeamControlKeys.set(peerId, key);
+  }
+
   // Fill in the directory-only rows for an avatar's badge. A guest can type
   // any display name, so only a server-stamped account status may claim the
   // public record filed under that name.
@@ -12854,10 +13043,12 @@ export function createWorldScene({
         updatePlayerLabel(remoteLabels.get(remote.id), badgeIdentity);
       }
       syncRemoteModerationControls(avatar, remote);
+      syncRemoteOrgTeamControl(avatar, remote);
     });
     remotePlayers.forEach((avatar, id) => {
       if (seen.has(id)) return;
       removeRemoteModerationControls(avatar, id);
+      removeRemoteOrgTeamControl(avatar, id);
       unregisterAvatarChestControls(avatar);
       world.remove(avatar);
       avatar.traverse((child) => {
@@ -13193,54 +13384,49 @@ export function createWorldScene({
   }
 
   function updateNetworkNodes(nodes = []) {
-    lastNetworkNodes = Array.isArray(nodes) ? nodes : [];
-    const rewardCircle = nodeLayoutMode === "reward-circle";
     const fountain = landmarkObjects.get("fountain");
-    const routingX = rewardCircle
-      ? fountain?.position.x ?? 0
-      : SERVER_CABINET_YARD_ORIGIN[0];
-    const routingZ = rewardCircle
-      ? fountain?.position.z ?? 0
-      : SERVER_CABINET_YARD_ORIGIN[2];
-    // A dedicated 8×8 server yard keeps all 64 bounded live slots separate
-    // without requiring the retired routing-station landmark. Fill the inward
-    // slots first so a small healthy fleet stays closest to the Town Square.
-    const serverSlots = [];
-    for (let column = 0; column < 8; column += 1) {
-      for (let row = 0; row < 8; row += 1) {
-        const x = routingX + 9.5 + column * 3;
-        const z = routingZ - 10.5 + row * 3;
-        serverSlots.push({
-          x,
-          z,
-          distance: Math.hypot(x - routingX, z - routingZ),
-        });
-      }
-    }
-    serverSlots.sort(
-      (left, right) =>
-        left.distance - right.distance || left.z - right.z || left.x - right.x,
-    );
+    const fountainPosition = landmarkById("fountain").position;
+    const routingX = fountain?.position.x ?? fountainPosition[0];
+    const routingZ = fountain?.position.z ?? fountainPosition[2];
     const seen = new Set();
-    const takenLayoutIds = new Set();
     const removeCabinet = (cabinet) => {
       cabinet?.traverse?.((child) => {
         if (!child.userData?.nodeCabinet) return;
         const interactiveIndex = interactive.indexOf(child);
         if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
       });
-      forgetMovableObject(cabinet?.userData?.layoutId);
       world.remove(cabinet);
       disposeObject3D(cabinet);
     };
+    // Mirror health and response times can reorder the live payload without a
+    // membership change. A normalized name order keeps every surviving
+    // cabinet in the same slot, while a changed member list is laid out again
+    // immediately by this existing data-update path.
     const usableNodes = (Array.isArray(nodes) ? nodes : [])
-      .filter((node) => String(node?.name || node?.label || "").trim())
+      .map((node) => ({
+        node,
+        name: String(node?.name || node?.label || "").trim().slice(0, 80),
+      }))
+      .filter((entry) => entry.name)
+      .sort((left, right) => {
+        const leftKey = left.name.toLowerCase();
+        const rightKey = right.name.toLowerCase();
+        if (leftKey !== rightKey) return leftKey < rightKey ? -1 : 1;
+        if (left.name === right.name) return 0;
+        return left.name < right.name ? -1 : 1;
+      })
+      .filter(
+        (entry, index, entries) =>
+          index === 0 ||
+          entry.name.toLowerCase() !== entries[index - 1].name.toLowerCase(),
+      )
       .slice(0, 64);
-    const circleSlots = rewardCircle
-      ? rewardCircleSlots(routingX, routingZ, usableNodes.length)
-      : null;
-    usableNodes.forEach((node, index) => {
-      const nodeName = String(node.name || node.label).trim().slice(0, 80);
+    const circleSlots = rewardCircleSlots(
+      routingX,
+      routingZ,
+      usableNodes.length,
+    );
+    usableNodes.forEach(({ node, name: nodeName }, index) => {
       const id = `node:${nodeName.toLowerCase()}`;
       const dataKey = nodeDataKey({ ...node, name: nodeName });
       seen.add(id);
@@ -13279,29 +13465,14 @@ export function createWorldScene({
         }
         nodeInfrastructure.set(id, cabinet);
       }
-      const slot = circleSlots ? circleSlots[index] : serverSlots[index];
-      const placeInSlot = () => {
-        cabinet.position.set(slot.x, 0.38, slot.z);
-        // The front display faces inward so each cabinet remains individually
-        // readable from the surrounding walkway.
-        cabinet.rotation.y = Math.atan2(
-          routingX - slot.x,
-          routingZ - slot.z,
-        );
-      };
-      placeInSlot();
-      // The yard slot is only the default: registering the cabinet re-applies
-      // any administrator-locked position and turn on top of it, and it has to
-      // happen after the slot assignment above overwrites both.
-      const layoutId = worldLayoutId("node-", nodeName);
-      if (layoutId && !takenLayoutIds.has(layoutId)) {
-        takenLayoutIds.add(layoutId);
-        cabinet.userData.layoutBaseRotation = cabinet.rotation.y;
-        registerMovableObject(layoutId, cabinet);
-      }
-      // "Organize nodes" is an explicit viewer request, so it wins over a
-      // locked placement for as long as the ring stays switched on.
-      if (rewardCircle) placeInSlot();
+      const slot = circleSlots[index];
+      cabinet.position.set(slot.x, 0.38, slot.z);
+      // The front display faces inward so each cabinet remains individually
+      // readable from the surrounding walkway.
+      cabinet.rotation.y = Math.atan2(
+        routingX - slot.x,
+        routingZ - slot.z,
+      );
       const nextCommit = String(node?.commit || "");
       if (priorCommit && nextCommit && nextCommit !== priorCommit) {
         spawnPushSurge(cabinet.position);
@@ -13320,31 +13491,6 @@ export function createWorldScene({
       removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
-  }
-
-  // Arranges every live cabinet in even rings around the reward pool, or puts
-  // the fleet back in the server yard. Returns the resulting arrangement so the
-  // HUD button can label and announce itself from the real scene state.
-  function organizeNetworkNodes(organized) {
-    const next =
-      organized === undefined
-        ? nodeLayoutMode !== "reward-circle"
-        : Boolean(organized);
-    nodeLayoutMode = next ? "reward-circle" : "yard";
-    updateNetworkNodes(lastNetworkNodes);
-    return {
-      organized: next,
-      mode: nodeLayoutMode,
-      nodes: nodeInfrastructure.size,
-    };
-  }
-
-  function getNodeLayoutState() {
-    return {
-      organized: nodeLayoutMode === "reward-circle",
-      mode: nodeLayoutMode,
-      nodes: nodeInfrastructure.size,
-    };
   }
 
   function focusNetworkNode(name) {
@@ -15605,8 +15751,8 @@ export function createWorldScene({
   }
 
   // Freshly pushed code announces itself: a tall light column rises from the
-  // cabinet and a ground shockwave ring expands far past the server yard, so
-  // the arrival reads from anywhere in the town — not just beside the rack.
+  // cabinet and a ground shockwave expands beyond the reward-pool node rings,
+  // so the arrival reads from anywhere in the town — not just beside the rack.
   // Purely cosmetic and driven only by a verified commit change in the signed
   // mirror payload (see updateNetworkNodes), never by an unauthenticated frame.
   function spawnPushSurge(position) {
@@ -15666,7 +15812,7 @@ export function createWorldScene({
       Math.max(1, Number.isFinite(requested) ? requested : 1),
     );
     for (let index = 0; index < wanted; index += 1) {
-      // Bound a busy yard's burst to a fixed effect budget.
+      // Bound a busy fleet's burst to a fixed effect budget.
       if (serveFlights.length >= 12) return;
       const figure = createServedVisitorFigure(
         THREE,
@@ -16185,6 +16331,16 @@ export function createWorldScene({
       });
       return;
     }
+    const orgTeamAction = hit?.object ? orgTeamActions.get(hit.object) : null;
+    if (orgTeamAction) {
+      onOrgTeamAssign({
+        org: orgTeamAction.org,
+        member: orgTeamAction.member,
+        peerId: orgTeamAction.peerId,
+        name: orgTeamAction.name,
+      });
+      return;
+    }
     if (hit?.object?.userData?.campfireLog) {
       hit.object.userData.campfireCarried = true;
       hit.object.material.emissive?.set?.("#d88a43");
@@ -16501,21 +16657,6 @@ export function createWorldScene({
     // A dragged object saves on release; a parked one has no other trigger.
     if (!draggedLayoutObject) scheduleLayoutCommit(target);
     return true;
-  }
-
-  function forgetMovableObject(id) {
-    const key = String(id || "");
-    const object = movableWorldObjects.get(key);
-    if (!object) return;
-    if (draggedLayoutObject === object) draggedLayoutObject = null;
-    if (activeLayoutObject === object) activeLayoutObject = null;
-    const handle = layoutHandles.get(key);
-    if (handle) {
-      const index = interactive.indexOf(handle);
-      if (index >= 0) interactive.splice(index, 1);
-      layoutHandles.delete(key);
-    }
-    movableWorldObjects.delete(key);
   }
 
   function ensureLayoutHandles() {
@@ -17274,8 +17415,8 @@ export function createWorldScene({
     setOfficeFloorHandler,
     setOfficeAccess,
     setOfficeAttendance,
-    setSelfSecurityDetails,
-    setSelfSecurityBadgeVisibility,
+    setSelfWorkBoard,
+    setSelfWorkBadgeVisibility,
     travelToOfficeFloor,
     sitOnOfficeChair,
     setOfficeParticipants,
@@ -17323,8 +17464,6 @@ export function createWorldScene({
     updateMemberLounge,
     updateReferralLeaderboard,
     updateNetworkNodes,
-    organizeNetworkNodes,
-    getNodeLayoutState,
     focusNetworkNode,
     updateFederatedInstances,
     updateBots,

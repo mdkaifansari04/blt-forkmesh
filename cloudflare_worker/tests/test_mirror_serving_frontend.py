@@ -185,7 +185,7 @@ def test_repo_detail_reflects_mirror_serving():
     # The title-row badge keys off the group verdict. (The About rail's
     # Clone row and the header Data/Host chips were removed in the metadata
     # cleanup — this badge is the remaining availability surface.)
-    assert "viaMirror ? \"served by mirror\" : live ? \"host online\" : \"host offline\"" in detail
+    assert "viaMirror ? \"served by mirror\" : live ? \"mirror online\" : \"mirror offline\"" in detail
 
 
 def test_served_by_badge_includes_serving_node_counters():
@@ -200,7 +200,7 @@ def test_served_by_badge_includes_serving_node_counters():
     assert "`served by ${name}`, speed, servedMirrorStats(name)" in served_by
 
     mirrors = DASHBOARD_JS[
-        DASHBOARD_JS.index("async function loadRepoMirrors(repo)")
+        DASHBOARD_JS.index("async function loadRepoMirrors(repo, options = {})")
         : DASHBOARD_JS.index("function renderRepoRelease(")
     ]
     # The tree/blob request may set servedBy before /mirrors has loaded; after
@@ -233,10 +233,50 @@ def test_live_mirror_rows_show_source_of_truth_and_integrity_pin():
 
     summary = DASHBOARD_JS[
         DASHBOARD_JS.index("function renderRepoLiveMirrorList(")
-        : DASHBOARD_JS.index("async function loadRepoMirrors(repo)")
+        : DASHBOARD_JS.index("async function loadRepoMirrors(repo, options = {})")
     ]
     assert "pickReferenceMirror(mirrors)" in summary
     assert "renderMirrorRow(mirror, servedBy, refMirror)" in summary
+
+
+def test_dashboard_mirror_refresh_is_tab_visible_slow_and_push_coalesced():
+    polling = DASHBOARD_JS[
+        DASHBOARD_JS.index("const REPO_MIRROR_MIN_REFRESH_MS")
+        : DASHBOARD_JS.index("function renderRepoRelease(")
+    ]
+    assert "const REPO_MIRROR_MIN_REFRESH_MS = 30 * 1000" in polling
+    assert "const REPO_MIRROR_POLL_MS = 5 * 60 * 1000" in polling
+    assert "function repoMirrorsTabVisible()" in polling
+    assert 'document.visibilityState === "visible"' in polling
+    assert 'state.activeRepoTab === "mirrors"' in polling
+    assert '!panel.classList.contains("hidden")' in polling
+    poll_callback = polling[
+        polling.index("function startRepoMirrorPolling()")
+        : polling.index("function refreshOpenRepoMirrors()")
+    ]
+    assert "if (!repo || !repoMirrorsTabVisible()) return;" in poll_callback
+    assert "void loadRepoMirrors(repo, { background: true })" in poll_callback
+
+    signal = polling[
+        polling.index("function refreshOpenRepoMirrors()")
+        : polling.index(
+            'window.addEventListener("forkmesh:mirror-signal"',
+        )
+    ]
+    assert "repoMirrorsTabVisible()" in signal
+    assert "{ background: true, force: true }" in signal
+    assert "clearTimeout(liveMirrorRefreshTimer)" in signal
+    assert signal.count("refreshOpenRepoMirrors();") == 1
+    assert "liveMirrorConfirmTimer" not in polling
+    assert "5000" not in signal
+
+    tabs = DASHBOARD_JS[
+        DASHBOARD_JS.index("function activateRepoTab(tab)")
+        : DASHBOARD_JS.index("function repoPathParts(")
+    ]
+    assert 'if (tab === "mirrors")' in tabs
+    assert "void loadRepoMirrors(state.selectedRepo, { background: true })" \
+        in tabs
 
 
 def test_repo_commit_age_prefers_exact_signed_mirror_timestamp():

@@ -2096,6 +2096,46 @@ int main(int argc, char *argv[])
         }
     }
 
+    // adhoc #442: UI stalls are their own log category, and the chip row always
+    // offers a Stalls filter so a freeze can be pulled up on demand.
+    {
+        window.testResetNetworkLog();
+        window.testShowLogSection();
+        QApplication::processEvents();
+        check(window.testLogFilterChipLabels().contains(QStringLiteral("STALL")),
+              QStringLiteral("the log filter row offers a Stalls chip before any "
+                             "stall has been recorded"));
+
+        window.testSetLogFilter(QStringLiteral("STALL"));
+        QTextBrowser *logView = window.testNetworkLogView();
+        check(logView && logView->toPlainText().contains(
+                             QStringLiteral("No STALL events recorded")),
+              QStringLiteral("the Stalls filter says so when nothing stalled"));
+
+        window.testLogSystem(QStringLiteral("Pushed 2 commits to origin"));
+        window.testLogSystem(
+            QStringLiteral("UI stalled ~900 ms (event loop blocked) while "
+                           "git ls-tree (could not be avoided)"));
+        const QStringList stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) == QStringLiteral("STALL"),
+              QStringLiteral("a recorded UI stall badges as STALL, not ERROR, even "
+                             "when its blocking call reads like a failure"));
+        if (logView) {
+            const QString filtered = logView->toPlainText();
+            check(filtered.contains(QStringLiteral("UI stalled ~900 ms")) &&
+                      !filtered.contains(QStringLiteral("Pushed 2 commits")) &&
+                      !filtered.contains(QStringLiteral("No STALL events recorded")),
+                  QStringLiteral("the Stalls filter shows the stall and hides "
+                                 "unrelated log lines"));
+        }
+        window.testSetLogFilter(QString());
+        if (logView)
+            check(logView->toPlainText().contains(QStringLiteral("Pushed 2 commits")),
+                  QStringLiteral("clearing the filter restores every log line"));
+        window.testResetNetworkLog();
+    }
+
     stopChildProcesses(window);
     return failures == 0 ? 0 : 1;
 }

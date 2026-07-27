@@ -1191,6 +1191,12 @@
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
       : `${repoPathUrl(state.selectedRepo)}/${tab}`);
+    // Mirror health loads once with the repository summary, then refreshes
+    // only when its own tab is actually opened (plus the bounded visible-tab
+    // fallback and coalesced socket signal below).
+    if (tab === "mirrors") {
+      void loadRepoMirrors(state.selectedRepo, { background: true });
+    }
     if (["commits", "issues", "projects", "pulls", "discussions", "releases", "insights", "sizemap", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
       if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
       state.loadedRepoTabs[tab] = true;

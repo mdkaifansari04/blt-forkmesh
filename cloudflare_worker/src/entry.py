@@ -579,11 +579,11 @@ HOST_PRESENCE_REFRESH_MS = 60 * 1000
 # endpoint checks. This window intentionally matches the old presence headline
 # so the status page's semantics remain stable while its evidence gets stronger.
 HTTPS_MIRROR_STATUS_FRESH_MS = 10 * 60 * 1000
-# Registered desktop/headless node accounts that have not been seen for this
-# long are treated as abandoned: their physical node row and public repo catalog
-# namespace are pruned so old one-off registrations stop participating in
-# browse/clone routing. A node that returns after this window must register
-# again.
+# Registered desktop/headless node accounts older than this are no longer
+# considered live. Liveness is transient routing evidence, not a catalog
+# retention policy: owner-signed repository rows remain visible as offline.
+# Housekeeping may remove an old physical node row only when it has neither a
+# repository catalog row nor a registered direct-HTTPS endpoint.
 REGISTERED_NODE_ACTIVE_MS = 60 * 60 * 1000
 STALE_NODE_PURGE_INTERVAL_MS = 60 * 1000
 STALE_NODE_PURGE_BATCH = 100
@@ -4034,9 +4034,10 @@ def world_request_country(request):
 def world_context_handler(request):
     """Return the visitor's context and the shared world clock.
 
-    The raw connection card is returned only to the same request that supplied
-    it, under ``no-store``; it never enters public presence, a Durable Object,
-    persistence, analytics, or another visitor's response.
+    Nothing here identifies the requester: the coarse country hint and the
+    shared clock are all that leave the edge. Connection details belong to
+    account session management (``/api/accounts/sessions``), not to a payload
+    every guest receives.
     """
     if method_name(request) != "GET":
         return json_response(
@@ -4047,7 +4048,6 @@ def world_context_handler(request):
         )
     payload = world_protocol.context_payload(
         world_request_country(request), int(Date.now()), MAX_CONNECTIONS)
-    payload["securityDetails"] = _world_security_details(request)
     return json_response(
         payload,
         cache_control="no-store, max-age=0, must-revalidate",
@@ -6125,7 +6125,12 @@ def _office_team_slug(value):
 
 
 async def office_floor_access_handler(env, request):
-    """Return only the signed-in viewer's server-derived elevator grants."""
+    """Return only the signed-in viewer's server-derived elevator grants.
+
+    The shared tower belongs to one authoritative organization.  A matching
+    team name in a user-created organization must never unlock its floors, and
+    a stale ``org_team_members`` row must not survive deletion of any parent.
+    """
     if method_name(request) != "GET":
         return json_response(
             {"error": "method_not_allowed"},
@@ -6153,12 +6158,33 @@ async def office_floor_access_handler(env, request):
             cache_control="no-store, max-age=0, must-revalidate",
         )
     await ensure_schema(env)
-    rows = await d1_all(
-        env,
-        "SELECT DISTINCT team FROM org_team_members "
-        "WHERE member_bi=? ORDER BY team LIMIT 32",
-        str(account_bi),
+    office_org = str(
+        getattr(env, "OFFICE_MARKETING_ORG", "") or "forkmesh"
+    ).strip().lower()
+    office_org_bi, office_org_row = (
+        await _org_row(env, office_org)
+        if valid_node_name(office_org)
+        else ("", None)
     )
+    rows = []
+    if office_org_row:
+        rows = await d1_all(
+            env,
+            "SELECT DISTINCT tm.team AS team "
+            "FROM org_team_members tm "
+            "INNER JOIN orgs o ON o.org_bi=tm.org_bi "
+            "INNER JOIN org_members om "
+            "ON om.org_bi=tm.org_bi AND om.member_bi=tm.member_bi "
+            "INNER JOIN org_teams ot "
+            "ON ot.org_bi=tm.org_bi AND ot.team=tm.team "
+            "WHERE tm.org_bi=? AND o.name=? AND tm.member_bi=? "
+            "AND om.role IN ('owner','admin','member') "
+            "AND ot.permission IN ('read','write','maintain','admin') "
+            "ORDER BY tm.team LIMIT 50",
+            str(office_org_bi),
+            office_org,
+            str(account_bi),
+        )
     teams = sorted({
         slug
         for slug in (
@@ -7096,10 +7122,11 @@ async def active_registered_node_bis(env, now=None):
 
 
 async def _decrypted_public_catalog(env, now):
-    # Decrypted {key_bi, is_private, data} rows for every public repo owned by
-    # an active node, memoized per-isolate for PUBLIC_CATALOG_MEMO_TTL_MS — see
-    # the comment on _PUBLIC_CATALOG_MEMO for why this must not re-decrypt the
-    # whole catalog on every call.
+    # Decrypted {key_bi, is_private, data} rows for every retained public repo,
+    # memoized per-isolate for PUBLIC_CATALOG_MEMO_TTL_MS — see the comment on
+    # _PUBLIC_CATALOG_MEMO for why this must not re-decrypt the whole catalog on
+    # every call. Online/serving eligibility is checked separately from fresh
+    # signed endpoint evidence; an offline owner must not disappear here.
     cached = _PUBLIC_CATALOG_MEMO
     if cached["rows"] is not None and now - cached["ts"] < PUBLIC_CATALOG_MEMO_TTL_MS:
         return cached["rows"]
@@ -7123,15 +7150,9 @@ async def _decrypted_public_catalog(env, now):
         rows = await d1_all(
             env,
             "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
-        try:
-            active_nodes = await active_registered_node_bis(env, now)
-        except Exception:
-            active_nodes = None
         catalog_rows = []
         decrypted = {}
         for row in rows:
-            if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
-                continue
             blob = str(row.get("data") or "")
             rec = _CATALOG_ROW_DECRYPT_MEMO.get(blob)
             if not rec:
@@ -7160,11 +7181,11 @@ async def _decrypted_public_catalog(env, now):
 
 
 async def purge_stale_registered_nodes(env, force=False):
-    # Bound the registered-node table and public repo catalog to nodes that have
-    # been live in the last hour. This is intentionally NOT account deletion:
-    # accounts are credentials/ownership records. What gets pruned is the
-    # request-serving surface (nodes mirror rows + repo catalog namespace) that
-    # made old one-off registrations keep participating in browse/clone fanout.
+    # Remove expired transient presence and bound only truly orphaned physical
+    # node registrations. Repository catalog rows are durable owner-signed
+    # identity: temporary downtime must never cascade into namespace deletion.
+    # A stale node that still owns a repository or direct-HTTPS endpoint remains
+    # registered and is simply reported offline until fresh evidence returns.
     await ensure_schema(env)
     now = int(Date.now())
     if not force and now - int(_stale_node_purge.get("ts") or 0) < STALE_NODE_PURGE_INTERVAL_MS:
@@ -7180,9 +7201,18 @@ async def purge_stale_registered_nodes(env, force=False):
     active = await active_registered_node_bis(env, now)
     rows = await d1_all(
         env,
-        """SELECT node_bi, name FROM nodes
-           WHERE COALESCE(last_seen, 0) < ?
-           ORDER BY COALESCE(last_seen, 0) ASC
+        """SELECT n.node_bi, n.name FROM nodes n
+           WHERE COALESCE(n.last_seen, 0) < ?
+             AND NOT EXISTS (
+                 SELECT 1 FROM repositories r
+                  WHERE r.owner_bi = n.node_bi
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM mirror_https_endpoints e
+                  WHERE e.node_bi = n.node_bi
+                     OR lower(e.node_name) = lower(n.name)
+             )
+           ORDER BY COALESCE(n.last_seen, 0) ASC
            LIMIT ?""",
         cutoff, STALE_NODE_PURGE_BATCH,
     )
@@ -7191,9 +7221,7 @@ async def purge_stale_registered_nodes(env, force=False):
         node_bi = str(row.get("node_bi") or "")
         if not node_bi or node_bi in active:
             continue
-        name = clean_string(row.get("name", ""), MAX_NODE_NAME).lower()
         try:
-            await _delete_repo_namespace(env, node_bi, name)
             await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", node_bi)
             removed += 1
         except Exception:
@@ -7353,6 +7381,9 @@ SCHEMA_ALTER_STATEMENTS = [
     # Heading offset in radians for an administrator-locked scene object
     # (migration 0082). 0 keeps the object's authored rotation.
     "ALTER TABLE world_object_layout ADD COLUMN rotation REAL NOT NULL DEFAULT 0",
+    # Edge-observed sign-in address of each account session, shown only to the
+    # owner of that account in the World security tab and account settings.
+    "ALTER TABLE account_sessions ADD COLUMN client_ip TEXT NOT NULL DEFAULT ''",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
@@ -8933,8 +8964,8 @@ async def catalog_handler(env, request):
         # Best-effort D1 housekeeping (drop blocked phantoms, prune stale nodes)
         # only on the cheap, edge-cached anonymous miss. The response is already
         # correct without it — blocked entries are skipped by
-        # _is_blocked_catalog_identity and stale ones by the active-node filter
-        # below — and the staggered cron sweeps D1 on its own schedule. An
+        # _is_blocked_catalog_identity — and the staggered cron sweeps D1 on its
+        # own schedule. An
         # authenticated (per-viewer, never-cached) request must NOT run these:
         # replaying a burst of DELETEs plus host-offline notifications inline on
         # every catalog load held the single Worker event loop long enough for
@@ -8943,13 +8974,9 @@ async def catalog_handler(env, request):
         # staggered cron already runs purge_blocked_catalog (minute%15==9) and
         # purge_stale_registered_nodes (minute%15==4), and the response is
         # correct without them — blocked entries are skipped by
-        # _is_blocked_catalog_identity and stale ones by the active-node
-        # filter below. Running purges on every 10s cache miss helped melt
-        # the free plan during the 2026-07-11 overload.
-        try:
-            active_nodes = await active_registered_node_bis(env)
-        except Exception:
-            active_nodes = None
+        # _is_blocked_catalog_identity, while stale signed catalog entries stay
+        # visible with offline availability. Running purges on every 10s cache
+        # miss helped melt the free plan during the 2026-07-11 overload.
         # Public repos are listed for everyone; an authenticated viewer additionally
         # gets the private repos they own (matched by blind index) AND any private
         # repo another owner has shared with them (issue #9, via the repo_shares
@@ -9020,9 +9047,6 @@ async def catalog_handler(env, request):
                         )
                         if not shared:
                             continue
-                if active_nodes is not None:
-                    if str(owner_bi or "") not in active_nodes:
-                        continue
                 # Defense in depth: never surface a blocked identity even if a
                 # row slipped in before the purge ran.
                 if _is_blocked_catalog_identity(
@@ -10071,14 +10095,8 @@ async def repo_mirrors_handler(env, request, owner, repo):
         env,
         "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0"
     )
-    try:
-        active_nodes = await active_registered_node_bis(env)
-    except Exception:
-        active_nodes = None
     catalog_rows = []
     for row in rows:
-        if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
-            continue
         rec = await decrypt_row(env, row.get("data"))
         if not rec:
             continue
@@ -10092,15 +10110,40 @@ async def repo_mirrors_handler(env, request, owner, repo):
             "data": rec,
         })
 
-    presence_rows = await d1_all(env, "SELECT repo_bi, ts FROM host_presence")
-    presence = {
-        str(r.get("repo_bi")): int(r.get("ts") or 0)
-        for r in presence_rows
-        if r.get("repo_bi")
-    }
     now = int(Date.now())
-    presence = await hydrate_repo_group_live_hosts(
-        env, owner, repo, catalog_rows, presence, now)
+    # Repository bytes moved off the retired host WebSocket to signed direct
+    # HTTPS endpoints. Read the fresh endpoint leases once and map them onto
+    # this catalog group directly; the old hydrate path issued up to eight
+    # redundant per-owner D1 probes and memoized a transient zero for 30s,
+    # making a recovered mirror flicker offline after its signed lease was
+    # already healthy again.
+    endpoint_rows = await d1_all(
+        env,
+        """SELECT node_name,checked_at FROM mirror_https_endpoints
+            WHERE checked_at>=? AND forkmesh_verified_at>=?
+              AND healthy=1 AND forkmesh_active=1
+              AND integrity='ok' AND abuse_blocked=0""",
+        now - HTTPS_MIRROR_STATUS_FRESH_MS,
+        now - HTTPS_MIRROR_STATUS_FRESH_MS,
+    )
+    reachable_seen = {
+        clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower():
+        int(row.get("checked_at") or now)
+        for row in endpoint_rows or []
+        if valid_node_name(
+            clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower())
+    }
+    reachable_nodes = set(reachable_seen)
+    presence = {}
+    for row in catalog_rows:
+        record = row.get("data") or {}
+        node_name = clean_string(
+            record.get("machineName") or record.get("owner", ""),
+            MAX_NODE_NAME,
+        ).lower()
+        key = str(row.get("key_bi") or "")
+        if key and node_name in reachable_seen:
+            presence[key] = reachable_seen[node_name]
     first_rows = await d1_all(env, "SELECT repo_bi, ts FROM repo_first_hosted")
     first_hosted = {
         str(r.get("repo_bi")): int(r.get("ts") or 0)
@@ -10131,21 +10174,6 @@ async def repo_mirrors_handler(env, request, owner, repo):
         str(owner or "").strip().lower(),
         str(repo or "").strip().lower(),
     )
-    endpoint_rows = await d1_all(
-        env,
-        """SELECT node_name FROM mirror_https_endpoints
-            WHERE checked_at>=? AND forkmesh_verified_at>=?
-              AND healthy=1 AND forkmesh_active=1
-              AND integrity='ok' AND abuse_blocked=0""",
-        now - HTTPS_MIRROR_STATUS_FRESH_MS,
-        now - HTTPS_MIRROR_STATUS_FRESH_MS,
-    )
-    reachable_nodes = {
-        clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower()
-        for row in endpoint_rows or []
-        if valid_node_name(
-            clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower())
-    }
     payload = build_repo_mirrors_payload(
         owner,
         repo,
@@ -11413,7 +11441,8 @@ async def _clean_profile_links(env, rec, raw_links):
 
 
 async def _account_public_payload(
-        env, rec, session_token=None, session_device_label=""):
+        env, rec, session_token=None, session_device_label="",
+        session_client_ip=""):
     name = rec.get("name", "")
     solana = (rec.get("solana") or "").strip()
     has_payout = bool(solana and SOLANA_RE.match(solana))
@@ -11440,7 +11469,7 @@ async def _account_public_payload(
             session_token
             if session_token is not None
             else await _account_session_token(
-                env, name, session_device_label)
+                env, name, session_device_label, session_client_ip)
         ),
         "avatarPng": rec.get("avatar_png", ""),
         "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
@@ -11631,7 +11660,7 @@ def _account_session_token_digest(env, token):
     ).hexdigest()
 
 
-async def _account_session_token(env, name, device_label=""):
+async def _account_session_token(env, name, device_label="", client_ip=""):
     """Mint one random, server-revocable session; D1 stores no bearer token."""
     name = clean_string(name or "", MAX_NODE_NAME).lower()
     if not valid_node_name(name):
@@ -11664,7 +11693,8 @@ async def _account_session_token(env, name, device_label=""):
         env,
         "INSERT INTO account_sessions "
         "(session_id,account_bi,token_digest,created_at,last_seen_at,"
-        "expires_at,revoked_at,device_label) VALUES (?,?,?,?,?,?,0,?)",
+        "expires_at,revoked_at,device_label,client_ip) "
+        "VALUES (?,?,?,?,?,?,0,?,?)",
         session_id,
         account_bi,
         _account_session_token_digest(env, token),
@@ -11672,6 +11702,7 @@ async def _account_session_token(env, name, device_label=""):
         now,
         expires,
         clean_string(device_label or "", 80),
+        clean_string(client_ip or "", 64),
     )
     return token
 
@@ -11878,6 +11909,24 @@ def _generalized_client_category(request):
     return "other-client" if ua else ""
 
 
+def _account_session_client_ip(request):
+    """Canonicalize the edge-observed sign-in address for session management.
+
+    Only Cloudflare's edge-set header is accepted; X-Forwarded-For is client
+    controlled and is intentionally ignored. The value is stored against the
+    session row and returned exclusively to the account that owns it, so the
+    owner can tell an unfamiliar device apart before revoking it.
+    """
+    try:
+        raw = str(request.headers.get("cf-connecting-ip") or "")
+    except Exception:
+        return ""
+    try:
+        return str(ipaddress.ip_address(raw.strip().strip("[]")[:64]))[:64]
+    except (ValueError, TypeError):
+        return ""
+
+
 def _account_session_device_label(request, desktop=False):
     """Return a coarse owner-visible label without retaining a raw user agent."""
     if desktop:
@@ -11914,37 +11963,6 @@ async def _world_moderation_tokens(env, request, now=None):
     # tokens may be forwarded or persisted; public badge display continues to
     # use the existing generalized browser/OS allowlist.
     return tokens
-
-
-def _world_security_details(request):
-    """Return bounded self-only connection details for the context response.
-
-    The address is canonicalized as IPv4/IPv6 and the agent is restricted to
-    printable ASCII with collapsed whitespace. Only Cloudflare's edge-set
-    address header is accepted; X-Forwarded-For is intentionally ignored.
-    Neither value is written to D1, logs, tickets, public presence, Durable
-    Object state, or moderation records.
-    """
-    try:
-        raw_address = str(
-            request.headers.get("cf-connecting-ip") or "")
-    except Exception:
-        raw_address = ""
-    raw_address = raw_address.strip().strip("[]")[:64]
-    try:
-        address = str(ipaddress.ip_address(raw_address))
-    except (ValueError, TypeError):
-        address = ""
-    try:
-        raw_agent = str(request.headers.get("user-agent") or "")
-    except Exception:
-        raw_agent = ""
-    printable_agent = "".join(
-        character if 32 <= ord(character) <= 126 else " "
-        for character in raw_agent[:2048]
-    )
-    agent = " ".join(printable_agent.split())[:256]
-    return {"ip": address[:64], "agent": agent}
 
 
 async def _world_active_manual_block(env, tokens, now=None):
@@ -12386,7 +12404,8 @@ async def _account_signup(env, request):
         await _award_badge(env, name, name_bi, "first_100_users")
     payload = await _account_public_payload(
         env, rec,
-        session_device_label=_account_session_device_label(request))
+        session_device_label=_account_session_device_label(request),
+        session_client_ip=_account_session_client_ip(request))
     return json_response(
         payload,
         status=201,
@@ -12736,7 +12755,8 @@ async def _account_finalize(env, request):
     payload = await _account_public_payload(
         env, rec,
         session_device_label=_account_session_device_label(
-            request, desktop=bool(pubkey)))
+            request, desktop=bool(pubkey)),
+        session_client_ip=_account_session_client_ip(request))
     return json_response(
         payload,
         status=201,
@@ -13909,7 +13929,8 @@ async def _account_login(env, request):
         payload = await _account_public_payload(
             env, rec,
             session_device_label=_account_session_device_label(
-                request, desktop=True))
+                request, desktop=True),
+            session_client_ip=_account_session_client_ip(request))
         payload = _with_session_capabilities(
             payload, session_kind="desktop_node", device_kind=device_kind,
             key_matched=True, desktop_capable=desktop_capable,
@@ -13923,7 +13944,8 @@ async def _account_login(env, request):
 
     payload = await _account_public_payload(
         env, rec,
-        session_device_label=_account_session_device_label(request))
+        session_device_label=_account_session_device_label(request),
+        session_client_ip=_account_session_client_ip(request))
     payload = _with_session_capabilities(
         payload, session_kind="account", device_kind="web_or_mobile",
         key_matched=False, desktop_capable=False)
@@ -14057,7 +14079,12 @@ async def _account_last_seen(env, account_bi, floor_ts=0):
 
 
 async def _account_sessions(env, request, target_session_id=""):
-    """List or revoke this account's sessions without exposing client details."""
+    """List or revoke this account's own sessions.
+
+    The listing is strictly self-scoped: it is reachable only with a live
+    session token for the account whose rows it returns, so the sign-in address
+    on each row is visible to that owner alone.
+    """
     method = method_name(request)
     token, cookie_auth = _request_account_session_token(request, {})
     if (
@@ -14078,7 +14105,8 @@ async def _account_sessions(env, request, target_session_id=""):
     if method == "GET" and not target_session_id:
         rows = await d1_all(
             env,
-            "SELECT session_id,created_at,last_seen_at,expires_at,device_label "
+            "SELECT session_id,created_at,last_seen_at,expires_at,"
+            "device_label,client_ip "
             "FROM account_sessions WHERE account_bi=? AND revoked_at=0 "
             "AND expires_at>? ORDER BY last_seen_at DESC,created_at DESC "
             "LIMIT ?",
@@ -14095,6 +14123,7 @@ async def _account_sessions(env, request, target_session_id=""):
                     clean_string(row.get("device_label", ""), 80)
                     or "Unknown device"
                 ),
+                "ipAddress": clean_string(row.get("client_ip", ""), 64),
                 "createdAt": int(row.get("created_at") or 0),
                 "lastSeenAt": int(row.get("last_seen_at") or 0),
                 "expiresAt": int(row.get("expires_at") or 0),
@@ -14114,9 +14143,10 @@ async def _account_sessions(env, request, target_session_id=""):
                     **_account_email_activity(rec),
                 },
                 "privacyNotice": (
-                    "Only a broad device category and session timestamps are "
-                    "shown. ForkMesh does not expose IP addresses or raw user "
-                    "agents in session management."
+                    "Only you can see this list. Each row shows a broad device "
+                    "category, the address the sign-in came from, and session "
+                    "timestamps. Raw user agents are never stored, and no "
+                    "other account can read these rows."
                 ),
             },
             cache_control="no-store, max-age=0, must-revalidate",
@@ -14139,6 +14169,13 @@ async def _account_sessions(env, request, target_session_id=""):
         )
         audit_target = "all-other-devices"
         audit_scope = "others"
+    elif target_session_id == "all":
+        # "Log out everywhere" also drops the calling device, so a lost or
+        # shared browser can be cleared in one action.
+        await _account_revoke_sessions(env, account_bi)
+        revoke_current = True
+        audit_target = "all-devices"
+        audit_scope = "all"
     else:
         if not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", target_session_id):
             return json_response(
@@ -17720,11 +17757,24 @@ async def org_members_handler(env, request, org):
             "SELECT name, role, created_at FROM org_members WHERE org_bi=? "
             "ORDER BY created_at ASC",
             org_bi)
+        # Each member's team list rides along so a roster reader never has to
+        # fan out one request per team. This is the same org-internal layout
+        # the per-team member listing already shows any member.
+        team_rows = await d1_all(
+            env,
+            "SELECT name, team FROM org_team_members WHERE org_bi=? "
+            "ORDER BY team ASC",
+            org_bi)
+        teams_by_member = {}
+        for r in team_rows or []:
+            teams_by_member.setdefault(
+                str(r.get("name") or ""), []).append(str(r.get("team") or ""))
         return json_response({"ok": True, "visibility": access["offices"],
                               "members": [
             {"name": str(r.get("name") or ""),
              "role": str(r.get("role") or ""),
-             "since": int(r.get("created_at") or 0)}
+             "since": int(r.get("created_at") or 0),
+             "teams": teams_by_member.get(str(r.get("name") or ""), [])}
             for r in rows or []]}, cache_control="no-store")
     if method not in ("POST", "DELETE"):
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -31060,6 +31110,13 @@ HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS = frozenset({
 HTTPS_MIRROR_RETRY_STATUSES = frozenset({
     401, 403, 404, 408, 425, 429, 500, 502, 503, 504,
 })
+# A health endpoint's timeout/rate-limit/server failure is inconclusive: keep a
+# prior signed lease until its normal freshness deadline. Authentication and
+# missing-route responses are definitive for this public control endpoint and
+# therefore still fail closed immediately.
+HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES = frozenset({
+    408, 425, 429, 500, 502, 503, 504,
+})
 HTTPS_MIRROR_REPO_PROOF_TTL_MS = 60 * 1000
 HTTPS_MIRROR_REPO_PROOF_MEMO_MAX = 500
 _HTTPS_MIRROR_REPO_PROOF_MEMO = {}
@@ -31184,7 +31241,15 @@ async def _cloudflare_edge_range_documents():
 
 
 async def _https_mirror_cloudflare_dns_ok(base_url):
-    """Independently verify that an endpoint resolves to Cloudflare's edge."""
+    """Independently verify that an endpoint resolves to Cloudflare's edge.
+
+    ``None`` means the independent verifier itself was temporarily unavailable
+    (DoH/range-document timeout or malformed upstream response).  Callers that
+    establish a new endpoint still treat that as a rejection.  The recurring
+    health check can distinguish it from a definitive non-Cloudflare answer and
+    let an existing signed lease expire naturally instead of flickering offline
+    on one control-plane timeout.
+    """
     normalized = https_routing.normalize_base_url(base_url)
     try:
         hostname = urlparse(normalized).hostname or ""
@@ -31202,7 +31267,7 @@ async def _https_mirror_cloudflare_dns_ok(base_url):
         return bool(memo.get("ok"))
     cidr_documents = await _cloudflare_edge_range_documents()
     if not cidr_documents:
-        return False
+        return None
     payloads = []
     for record_type in ("A", "AAAA"):
         target = (
@@ -31218,11 +31283,11 @@ async def _https_mirror_cloudflare_dns_ok(base_url):
             "application/dns-json",
         )
         if status != 200 or not text:
-            return False
+            return None
         try:
             payloads.append(json.loads(text))
         except Exception:
-            return False
+            return None
     ok = https_routing.cloudflare_proxied_dns_answers(
         payloads, cidr_documents)
     _HTTPS_MIRROR_EDGE_DNS_MEMO[hostname] = {
@@ -31872,6 +31937,20 @@ async def _https_mirror_mark_failed(env, row, now):
     )
 
 
+async def _https_mirror_mark_transient(env, row, now):
+    # Record only the attempt time.  checked_at/forkmesh_verified_at remain the
+    # last successful signed proof, so routing naturally stops at the normal
+    # freshness deadline if the outage persists.  Keeping updated_at separate
+    # also lets oldest-attempt-first scheduling rotate past this endpoint.
+    await d1_run(
+        env,
+        """UPDATE mirror_https_endpoints
+              SET updated_at=?
+            WHERE node_bi=?""",
+        now, row.get("node_bi"),
+    )
+
+
 async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
     """Verify one fresh node-signed health and forkmesh/forkmesh proof."""
     now = int(Date.now())
@@ -31883,8 +31962,14 @@ async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
         or not valid_node_pubkey(public_key)
         or not base_url
         or public_key not in await _owner_signing_pubkeys(env, node)
-        or not await _https_mirror_cloudflare_dns_ok(base_url)
     ):
+        await _https_mirror_mark_failed(env, row, now)
+        return False
+    dns_ok = await _https_mirror_cloudflare_dns_ok(base_url)
+    if dns_ok is None:
+        await _https_mirror_mark_transient(env, row, now)
+        return False
+    if not dns_ok:
         await _https_mirror_mark_failed(env, row, now)
         return False
     nonce = _b64url_encode(_random_bytes(18))
@@ -31900,6 +31985,9 @@ async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
         HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS,
     )
     latency = max(0, min(60_000, int(Date.now()) - started))
+    if status == 0 or status in HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES:
+        await _https_mirror_mark_transient(env, row, now)
+        return False
     try:
         data = json.loads(text) if text else {}
     except Exception:
@@ -32019,12 +32107,21 @@ async def https_mirror_health_cron(env):
         env,
         """SELECT node_bi,node_name,base_url,public_key
              FROM mirror_https_endpoints
-            ORDER BY checked_at ASC,node_name ASC LIMIT ?""",
+            ORDER BY
+              CASE WHEN updated_at > checked_at
+                   THEN updated_at ELSE checked_at END ASC,
+              node_name ASC
+            LIMIT ?""",
         HTTPS_MIRROR_HEALTH_BATCH,
     )
     if not rows:
         return
     accepted = await _https_mirror_accepted_forkmesh_refs(env)
+    # A missing canonical state pin is a control-plane read failure, not proof
+    # that every independent mirror became invalid simultaneously.  Preserve
+    # their existing leases; the next minute retries the bounded batch.
+    if not accepted:
+        return
     # Keep the alarm runner on one Python task. Python fan-out/timeout wrappers
     # create nested Pyodide tasks which can poison a later scheduled wrapper
     # with "Cannot enter into task" after the invocation has already ended.
@@ -33690,9 +33787,9 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/send-notification-digests",
                     "send_notification_digests failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Stale-node purge bounds the serving surface to nodes live within the
-        # last hour; running it every 15 minutes still purges well inside that
-        # window (it used to run force=True every single minute).
+        # Stale-node housekeeping expires transient presence and removes only
+        # orphaned physical registrations. Repository/endpoint-backed nodes
+        # remain as offline catalog identity until fresh evidence returns.
         if minute % 15 == 4:
             try:
                 await purge_stale_registered_nodes(self.env, force=True)
@@ -35626,7 +35723,7 @@ class ForkMeshCronWatchdog(DurableObject):
             await self.ctx.storage.put("notified_state", "up")
 
         await self.ctx.storage.put("last_completion_at", now)
-        self.ctx.storage.setAlarm(now + CRON_WATCHDOG_GRACE_MS)
+        await self.ctx.storage.setAlarm(now + CRON_WATCHDOG_GRACE_MS)
         durable_object_traffic_note(self, messages=1)
         await durable_object_traffic_flush(self)
         return json_response({"ok": True})
@@ -35641,7 +35738,7 @@ class ForkMeshCronWatchdog(DurableObject):
         if now < deadline:
             # A heartbeat raced an already-dispatched alarm. Keep the newer
             # deadline instead of manufacturing an outage.
-            self.ctx.storage.setAlarm(deadline)
+            await self.ctx.storage.setAlarm(deadline)
             return
 
         outage_started_at = int(
@@ -35660,7 +35757,7 @@ class ForkMeshCronWatchdog(DurableObject):
                 return
         # Retry an unavailable email provider/admin-recipient lookup without
         # depending on the still-missing Cron Trigger.
-        self.ctx.storage.setAlarm(now + CRON_WATCHDOG_RETRY_MS)
+        await self.ctx.storage.setAlarm(now + CRON_WATCHDOG_RETRY_MS)
 
 
 class _CronJobEntrypoint:
@@ -35688,7 +35785,7 @@ class ForkMeshCronRunner(DurableObject):
             return json_response({"error": "not_found"}, status=404)
         now = int(Date.now())
         await self.ctx.storage.put("last_trigger_kick_at", now)
-        self.ctx.storage.setAlarm(now + CRON_RUNNER_KICK_DELAY_MS)
+        await self.ctx.storage.setAlarm(now + CRON_RUNNER_KICK_DELAY_MS)
         return json_response({"ok": True})
 
     async def alarm(self, alarm_info=None):
@@ -35700,7 +35797,7 @@ class ForkMeshCronRunner(DurableObject):
         )
         # Persist the successor before any D1, asset, network, or Python task
         # work. Even an uncatchable runtime/resource-limit kill leaves it armed.
-        self.ctx.storage.setAlarm(next_alarm)
+        await self.ctx.storage.setAlarm(next_alarm)
 
         completed_slot = int(
             await self.ctx.storage.get("last_completed_slot") or -1)

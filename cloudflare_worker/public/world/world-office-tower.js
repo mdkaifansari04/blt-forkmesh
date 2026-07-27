@@ -97,6 +97,61 @@ export const OFFICE_FLOORS = Object.freeze([
   }),
 ]);
 
+// Keep this list byte-for-byte aligned with entry.py's
+// OFFICE_FLOOR_TEAM_ALIASES. The Worker remains authoritative: this copy only
+// explains which elevator floor a website organization-team checkbox will
+// unlock after the server accepts the membership change and /office/floors is
+// refreshed.
+export const OFFICE_FLOOR_TEAM_ALIASES = Object.freeze({
+  engineering: Object.freeze([
+    "engineering",
+    "engineers",
+    "development",
+    "developers",
+    "platform",
+    "frontend",
+    "backend",
+  ]),
+  "product-design": Object.freeze([
+    "product-design",
+    "product",
+    "design",
+    "ux",
+    "ui-ux",
+  ]),
+  security: Object.freeze([
+    "security",
+    "security-team",
+    "trust-safety",
+    "trust-and-safety",
+  ]),
+  infrastructure: Object.freeze([
+    "infrastructure",
+    "infra",
+    "devops",
+    "site-reliability",
+    "sre",
+  ]),
+  community: Object.freeze([
+    "community",
+    "community-team",
+    "developer-relations",
+    "devrel",
+  ]),
+  partnerships: Object.freeze([
+    "partnerships",
+    "partnership",
+    "business-development",
+    "bizdev",
+  ]),
+  operations: Object.freeze([
+    "operations",
+    "ops",
+    "people-operations",
+    "finance-operations",
+  ]),
+});
+
 const OFFICE_FLOOR_BY_ID = new Map(
   OFFICE_FLOORS.map((floor) => [floor.id, floor]),
 );
@@ -111,6 +166,24 @@ export function officeFloorY(value) {
       ? OFFICE_FLOORS[Math.max(0, Math.min(OFFICE_FLOORS.length - 1, value))]
       : officeFloorById(value);
   return (floor?.level || 0) * OFFICE_FLOOR_HEIGHT;
+}
+
+export function officeTeamSlug(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 64);
+}
+
+export function officeFloorsForTeam(value) {
+  const team = officeTeamSlug(value);
+  if (!team) return [];
+  return OFFICE_FLOORS.filter((floor) =>
+    OFFICE_FLOOR_TEAM_ALIASES[floor.id]?.includes(team),
+  );
 }
 
 export function normalizeOfficeFloorAccess(payload = {}) {

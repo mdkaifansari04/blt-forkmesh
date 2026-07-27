@@ -4736,11 +4736,12 @@ void MainWindow::syncMirrorsBehindRoster()
 {
     // A peer just (re-)advertised its mirror set via hello. For every repo we
     // mirror, if any online peer advertises a commit our bare mirror does not
-    // contain, pull it now rather than waiting for the 15-minute auto-sync. This
-    // backstops notifyMirrorUpdated (which is ephemeral and missed if we were
-    // offline/just connected): the moment the roster shows the source moved, we
-    // converge. syncRepository fetches refs/heads/* + refs/tags/*, so issue/PR
-    // and commit-comment changes (which live on refs/heads) come along too.
+    // contain, pull it now rather than waiting for the three-minute auto-sync.
+    // This backstops notifyMirrorUpdated (which is ephemeral and missed if we
+    // were offline/just connected): the moment the roster shows the source
+    // moved, we converge. syncRepository fetches refs/heads/* + refs/tags/*,
+    // so issue/PR and commit-comment changes (which live on refs/heads) come
+    // along too.
     // Release artifact blobs are advertised separately from git refs; if a peer
     // has more CAS blobs than we do, pull those bytes even when the git mirror is
     // already current.
@@ -4815,7 +4816,7 @@ void MainWindow::propagateRepoUpdate(int index)
     // just-committed issue/PR lands in the mirror. On a detected change it
     // refreshes the open detail (updating the Issues/PR counts) and broadcasts
     // notifyMirrorUpdated, which mirroring peers act on via onPeerMirrorUpdated —
-    // converging everyone in seconds rather than at the next 15-minute tick.
+    // converging everyone in seconds rather than at the next three-minute tick.
     syncRepository(index, /*quiet=*/true);
     // The mirror fetch above is asynchronous; until it finishes our working copy
     // is ahead of the bare mirror we serve. Refresh the Mirror nodes panel now so
@@ -4887,11 +4888,11 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
     }
 
     // Converge promptly: pull the peer's advance into our own mirror now instead
-    // of waiting for the next 15-minute auto-sync. This fetches refs/heads/* and
-    // refs/tags/*, so issues and pull requests (which live on refs/heads) come
-    // along with the code. Quiet so it doesn't spam unless something changed. The
-    // sync's completion broadcasts notifyMirrorSynced, reporting back the moment
-    // the fetch lands the new commit.
+    // of waiting for the next three-minute auto-sync. This fetches
+    // refs/heads/* and refs/tags/*, so issues and pull requests (which live on
+    // refs/heads) come along with the code. Quiet so it doesn't spam unless
+    // something changed. The sync's completion broadcasts notifyMirrorSynced,
+    // reporting back the moment the fetch lands the new commit.
     if (!m_syncingRepos.contains(matchIndex))
         syncRepository(matchIndex, /*quiet=*/true);
     if (notifyEnabled(kMirrorUpdateAlertSetting) && m_trayIcon &&
@@ -6086,7 +6087,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
 // only reaches desktop peers in the live room; without this push the SSH-fed
 // mirrors sat frozen at whatever the owner last pushed by hand (adhoc #272).
 // Best-effort and fully async; runs after every successful mirror sync, so the
-// 15-minute auto-sync doubles as the self-heal for a push a gateway missed.
+// Three-minute auto-sync doubles as the self-heal for a push a gateway missed.
 void MainWindow::pushToSshMirrorRemotes(int index)
 {
     if (index < 0 || index >= m_repositories.size())

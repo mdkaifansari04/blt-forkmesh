@@ -1931,7 +1931,9 @@ SCHEMA_STATEMENTS = [
     # Revocable account sessions. The browser/desktop receives a random bearer
     # value; D1 keeps only its keyed digest and opaque id. Logout, password
     # reset, account disable/delete and identity-key rotation can therefore
-    # revoke immediately without storing a replayable credential.
+    # revoke immediately without storing a replayable credential. client_ip is
+    # the edge-observed sign-in address, returned only to the owner of the
+    # account it belongs to so a stolen device can be recognized and revoked.
     """CREATE TABLE IF NOT EXISTS account_sessions (
         session_id TEXT PRIMARY KEY,
         account_bi TEXT NOT NULL,
@@ -1940,7 +1942,8 @@ SCHEMA_STATEMENTS = [
         last_seen_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
         revoked_at INTEGER NOT NULL DEFAULT 0,
-        device_label TEXT NOT NULL DEFAULT '')""",
+        device_label TEXT NOT NULL DEFAULT '',
+        client_ip TEXT NOT NULL DEFAULT '')""",
     "CREATE INDEX IF NOT EXISTS idx_account_sessions_account "
     "ON account_sessions(account_bi, revoked_at, expires_at)",
     "CREATE INDEX IF NOT EXISTS idx_account_sessions_expiry "
