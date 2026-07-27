@@ -17720,11 +17720,24 @@ async def org_members_handler(env, request, org):
             "SELECT name, role, created_at FROM org_members WHERE org_bi=? "
             "ORDER BY created_at ASC",
             org_bi)
+        # Each member's team list rides along so a roster reader never has to
+        # fan out one request per team. This is the same org-internal layout
+        # the per-team member listing already shows any member.
+        team_rows = await d1_all(
+            env,
+            "SELECT name, team FROM org_team_members WHERE org_bi=? "
+            "ORDER BY team ASC",
+            org_bi)
+        teams_by_member = {}
+        for r in team_rows or []:
+            teams_by_member.setdefault(
+                str(r.get("name") or ""), []).append(str(r.get("team") or ""))
         return json_response({"ok": True, "visibility": access["offices"],
                               "members": [
             {"name": str(r.get("name") or ""),
              "role": str(r.get("role") or ""),
-             "since": int(r.get("created_at") or 0)}
+             "since": int(r.get("created_at") or 0),
+             "teams": teams_by_member.get(str(r.get("name") or ""), [])}
             for r in rows or []]}, cache_control="no-store")
     if method not in ("POST", "DELETE"):
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -35626,7 +35639,7 @@ class ForkMeshCronWatchdog(DurableObject):
             await self.ctx.storage.put("notified_state", "up")
 
         await self.ctx.storage.put("last_completion_at", now)
-        self.ctx.storage.setAlarm(now + CRON_WATCHDOG_GRACE_MS)
+        await self.ctx.storage.setAlarm(now + CRON_WATCHDOG_GRACE_MS)
         durable_object_traffic_note(self, messages=1)
         await durable_object_traffic_flush(self)
         return json_response({"ok": True})
@@ -35641,7 +35654,7 @@ class ForkMeshCronWatchdog(DurableObject):
         if now < deadline:
             # A heartbeat raced an already-dispatched alarm. Keep the newer
             # deadline instead of manufacturing an outage.
-            self.ctx.storage.setAlarm(deadline)
+            await self.ctx.storage.setAlarm(deadline)
             return
 
         outage_started_at = int(
@@ -35660,7 +35673,7 @@ class ForkMeshCronWatchdog(DurableObject):
                 return
         # Retry an unavailable email provider/admin-recipient lookup without
         # depending on the still-missing Cron Trigger.
-        self.ctx.storage.setAlarm(now + CRON_WATCHDOG_RETRY_MS)
+        await self.ctx.storage.setAlarm(now + CRON_WATCHDOG_RETRY_MS)
 
 
 class _CronJobEntrypoint:
@@ -35688,7 +35701,7 @@ class ForkMeshCronRunner(DurableObject):
             return json_response({"error": "not_found"}, status=404)
         now = int(Date.now())
         await self.ctx.storage.put("last_trigger_kick_at", now)
-        self.ctx.storage.setAlarm(now + CRON_RUNNER_KICK_DELAY_MS)
+        await self.ctx.storage.setAlarm(now + CRON_RUNNER_KICK_DELAY_MS)
         return json_response({"ok": True})
 
     async def alarm(self, alarm_info=None):
@@ -35700,7 +35713,7 @@ class ForkMeshCronRunner(DurableObject):
         )
         # Persist the successor before any D1, asset, network, or Python task
         # work. Even an uncatchable runtime/resource-limit kill leaves it armed.
-        self.ctx.storage.setAlarm(next_alarm)
+        await self.ctx.storage.setAlarm(next_alarm)
 
         completed_slot = int(
             await self.ctx.storage.get("last_completed_slot") or -1)

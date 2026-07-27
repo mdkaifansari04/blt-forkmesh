@@ -106,7 +106,7 @@ class _Storage:
     async def put(self, key, value):
         self.data[key] = value
 
-    def setAlarm(self, timestamp):
+    async def setAlarm(self, timestamp):
         self.alarm_at = int(timestamp)
 
 
