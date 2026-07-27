@@ -739,6 +739,12 @@ function publicIdentity(identity, settings) {
       ? Math.max(0, Number(identity.firstSeenMinutes) || 0)
       : 0,
     joinedAt: boundedJoinedAt(identity.joinedAt),
+    // The account's own total active time, from the signed activity ticket, so
+    // the player's chest badge wears the row every other member's does. It is
+    // scene-local: presence frames never carry it.
+    totalActiveMs: Number.isFinite(Number(identity.totalActiveMs))
+      ? Math.max(0, Number(identity.totalActiveMs))
+      : null,
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
     outfitColor:
@@ -3767,6 +3773,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldActivityObservedAt = 0;
     this.worldActivityContinuation = "";
     this.worldActivityRenderedSecond = -1;
+    this.worldActivityRenderedMinute = -1;
     this.accountReturnFocus = null;
     this.officeMeeting = null;
     this.officeController = null;
@@ -17120,6 +17127,10 @@ class ForkMeshWorld extends HTMLElement {
     this.worldActivityObservedAt = 0;
     this.worldActivityContinuation = "";
     this.worldActivityRenderedSecond = -1;
+    this.worldActivityRenderedMinute = -1;
+    // Signing out drops the account's active-time row off the player's own
+    // chest instead of freezing the last reading there.
+    if (this.identity) this.identity.totalActiveMs = null;
     this.syncMemberLounge();
   }
 
@@ -17202,6 +17213,7 @@ class ForkMeshWorld extends HTMLElement {
       ? ""
       : String(ticket.ticket || "");
     this.worldActivityRenderedSecond = -1;
+    this.worldActivityRenderedMinute = -1;
     this.syncCurrentWorldActivity();
     return true;
   }
@@ -17246,6 +17258,22 @@ class ForkMeshWorld extends HTMLElement {
     if (renderedSecond === this.worldActivityRenderedSecond) return;
     this.worldActivityRenderedSecond = renderedSecond;
     this.syncMemberLounge();
+    this.syncOwnBadgeActivity();
+  }
+
+  // The player's own chest carries the same "ACTIVE … IN WORLD" row every
+  // other member's does. The row reads whole minutes, so the badge canvas is
+  // repainted once a minute rather than on every one-second activity tick.
+  syncOwnBadgeActivity() {
+    if (!this.identity) return;
+    const total = this.currentWorldActivityMs();
+    const renderedMinute = this.sessionAuthenticated
+      ? Math.floor(total / 60000)
+      : -1;
+    if (renderedMinute === this.worldActivityRenderedMinute) return;
+    this.worldActivityRenderedMinute = renderedMinute;
+    this.identity.totalActiveMs = this.sessionAuthenticated ? total : null;
+    this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
   }
 
   pauseWorldActivity() {
@@ -17259,6 +17287,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldActivityBaseAt = 0;
     this.worldActivityContinuation = "";
     this.worldActivityRenderedSecond = -1;
+    this.worldActivityRenderedMinute = -1;
     this.syncMemberLounge();
 
     const session = validWorldSession();
