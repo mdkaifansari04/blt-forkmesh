@@ -9689,15 +9689,21 @@ export function createWorldScene({
     chrome,
   );
   logoContactPoint.name = "forkmesh-reflective-fm-cube-contact-point";
-  logoContactPoint.position.set(0, -logoHalfSize, 0);
+  logoContactPoint.position.set(0, -logoHalfSize, 2.68);
   chromeMark.add(logoContactPoint);
   const logoSupport = new THREE.Mesh(
     new THREE.CylinderGeometry(0.28, 0.38, logoSupportHeight, 20),
     darkChrome,
   );
   logoSupport.name = "forkmesh-reflective-fm-cube-support";
-  logoSupport.position.y = logoSupportBaseY + logoSupportHeight / 2;
-  logoFountain.add(logoSupport);
+  // The sole pedestal meets the center of the lower F-side edge and turns
+  // with the yawing sculpture, so the visible contact never drifts away.
+  logoSupport.position.set(
+    0,
+    logoSupportBaseY + logoSupportHeight / 2 - chromeCube.position.y,
+    2.68,
+  );
+  chromeCube.add(logoSupport);
   logoFountain.add(chromeCube);
   for (const [x, y, z, intensity] of [
     [-7, 9, 5, 4.8],

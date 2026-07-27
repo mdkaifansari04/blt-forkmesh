@@ -527,7 +527,8 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
         'logoFountain.name = "forkmesh-office-logo-fountain"',
         'chromeCube.name = "forkmesh-reflective-fm-cube"',
         'chromeMark.name = "forkmesh-reflective-fm-cube-fixed-tilt"',
-        "chromeMark.quaternion.setFromUnitVectors(",
+        "chromeMark.quaternion.identity()",
+        "chromeMark.userData.logoUpright = true",
         "addFLogoFace(2.68, 0)",
         "addFLogoFace(-2.68, Math.PI)",
         "addMLogoFace(2.68, Math.PI / 2)",
@@ -539,7 +540,7 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
         'logoSupport.name = "forkmesh-reflective-fm-cube-support"',
         "new THREE.WebGLCubeRenderTarget(",
         "new THREE.CubeCamera(",
-        "metalness: 1",
+        "metalness: 0.94",
         "chromeCube.rotation.y = time * 0.00022",
         "reflectionCamera.update(renderer, scene)",
     ):
@@ -563,9 +564,15 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
         scene.index("const chrome = new THREE.MeshPhysicalMaterial"):
         scene.index("const darkChrome")
     ]
-    assert 'color: "#aeb9c8"' in chrome_material
-    assert "metalness: 1" in chrome_material
+    assert 'color: "#dbe4ef"' in chrome_material
+    assert "metalness: 0.94" in chrome_material
     assert "envMap: reflectionTarget.texture" in chrome_material
+    assert "const logoLetterStroke = 1.04" in logo
+    assert "const logoPanelChrome = chrome.clone()" in scene
+    assert "logoPanelChrome.metalness = 0.8" in scene
+    assert "logoInnerFace," in logo
+    assert "chromeCube.add(logoSupport)" in logo
+    assert "chromeMark.quaternion.setFromUnitVectors(" not in logo
     animation = scene[
         scene.index("const logoReflectionSettleMs"):
         scene.index("// One physical selector rides inside")

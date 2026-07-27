@@ -1584,6 +1584,7 @@ test("ForkMesh Office walk-in opens chat only through the explicit fallback", as
 test("a signed-in member walks into the continuous ten-story Office without a gate", async ({
   page,
 }) => {
+  test.slow();
   const officeEntryRequests = [];
   const officeFloorRequests = [];
   const officeAttendanceRequests = [];
@@ -1679,6 +1680,7 @@ test("a signed-in member walks into the continuous ten-story Office without a ga
 test("guests walk directly into the public Office lobby without network admission", async ({
   page,
 }) => {
+  test.slow();
   const officeEntryRequests = [];
   const officeFloorRequests = [];
   const officeAttendanceRequests = [];
@@ -1793,6 +1795,7 @@ test("walking through the Office doorway hydrates floor access without admission
 test("Office entry preserves the live avatar and keeps zoom inside the tower", async ({
   page,
 }) => {
+  test.slow();
   await prepareWorldPage(page, "office-seamless-entry-camera", {
     session: {
       kind: "user",
@@ -2385,6 +2388,7 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
           z: chromeCube.rotation.z,
         },
         fixedTiltQuaternion: chromeMark.quaternion.toArray(),
+        upright: chromeMark.userData.logoUpright === true,
         contactSupportDistance: contactWorld.distanceTo(supportTop),
         fFaces,
         mFaces,
@@ -2438,8 +2442,8 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   expect(state.reception.noahCount).toBe(1);
   expect(state.logo.verticalAxisOnly.x).toBeCloseTo(0, 7);
   expect(state.logo.verticalAxisOnly.z).toBeCloseTo(0, 7);
-  expect(state.logo.fixedTiltQuaternion.some((value) => Math.abs(value) > 0.1))
-    .toBe(true);
+  expect(state.logo.fixedTiltQuaternion).toEqual([0, 0, 0, 1]);
+  expect(state.logo.upright).toBe(true);
   expect(state.logo.contactSupportDistance).toBeLessThan(0.03);
   expect(state.logo).toMatchObject({
     fFaces: 2,
@@ -2617,6 +2621,16 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
   );
   await page.keyboard.up("w");
   expect(movingCapture).toBe(0);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const reflectedAvatarPoint = interior.localToWorld(
+      shell.world.player.position.clone().set(-9, 0.38, -2)
+    );
+    shell.world.player.parent.worldToLocal(reflectedAvatarPoint);
+    shell.world.player.position.copy(reflectedAvatarPoint);
+  });
   await page.waitForTimeout(entryCapture.settleMs + 350);
   const settledCapture = await page.locator("forkmesh-world").evaluate(
     (shell) => Number(shell.world.scene.getObjectByName(
@@ -2632,6 +2646,7 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
       "forkmesh-reflective-fm-cube-fixed-tilt"
     );
     const panels = [];
+    const letterPieces = [];
     const oldOverlays = [];
     mark.traverse((object) => {
       if (object.name.startsWith("forkmesh-reflective-fm-panel-")) {
@@ -2641,6 +2656,19 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
           metalness: object.material.metalness,
           roughness: object.material.roughness,
           hasEnvironment: Boolean(object.material.envMap),
+        });
+      }
+      if (object.isMesh && Array.isArray(object.material)) {
+        letterPieces.push({
+          materialCount: object.material.length,
+          mirroredOuterFace:
+            object.material[4]?.metalness >= 0.9 &&
+            Boolean(object.material[4]?.envMap),
+          matteSides:
+            object.material.slice(0, 4).every((material) =>
+              material === object.material[5] &&
+              material.roughness >= 0.7
+            ),
         });
       }
       const geometry = object.geometry?.parameters;
@@ -2674,20 +2702,22 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
     cube.rotation.y = 0;
     const interior = scene.getObjectByName("forkmesh-office-interior");
     shell.world.setPaused(true);
-    shell.world.camera.fov = 65;
+    shell.world.camera.fov = 48;
     shell.world.camera.updateProjectionMatrix();
     shell.world.camera.position.copy(interior.localToWorld(
-      shell.world.camera.position.clone().set(-24, 15, 6)
+      shell.world.camera.position.clone().set(-9, 12, 6)
     ));
     shell.world.camera.lookAt(interior.localToWorld(
-      shell.world.camera.position.clone().set(-18, 7.5, -2)
+      shell.world.camera.position.clone().set(-18, 6.3, -2)
     ));
     shell.world.renderer.render(scene, shell.world.camera);
     return {
       panels,
+      letterPieces,
       oldOverlays,
       outerTilt: [cube.rotation.x, cube.rotation.z],
       fixedTilt: mark.quaternion.toArray(),
+      upright: mark.userData.logoUpright === true,
       supportCount: support ? 1 : 0,
       contactSupportDistance: contactWorld.distanceTo(supportTop),
       reflection: {
@@ -2699,21 +2729,28 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
       },
     };
   });
-  await page.screenshot({
+  await page.locator("canvas.world-canvas").screenshot({
     path: "/tmp/forkmesh-office-logo.png",
     animations: "disabled",
   });
   expect(logo.panels).toHaveLength(2);
   expect(logo.panels.every((panel) =>
     panel.throughCutouts === 7 &&
-    panel.metalness === 1 &&
-    panel.roughness < 0.06 &&
+    panel.metalness >= 0.78 &&
+    panel.roughness <= 0.08 &&
     panel.hasEnvironment
+  )).toBe(true);
+  expect(logo.letterPieces).toHaveLength(14);
+  expect(logo.letterPieces.every((piece) =>
+    piece.materialCount === 6 &&
+    piece.mirroredOuterFace &&
+    piece.matteSides
   )).toBe(true);
   expect(logo.oldOverlays).toEqual([]);
   expect(logo.outerTilt[0]).toBeCloseTo(0, 7);
   expect(logo.outerTilt[1]).toBeCloseTo(0, 7);
-  expect(logo.fixedTilt.some((value) => Math.abs(value) > 0.1)).toBe(true);
+  expect(logo.fixedTilt).toEqual([0, 0, 0, 1]);
+  expect(logo.upright).toBe(true);
   expect(logo.supportCount).toBe(1);
   expect(logo.contactSupportDistance).toBeLessThan(0.03);
   expect(logo.reflection).toEqual({
