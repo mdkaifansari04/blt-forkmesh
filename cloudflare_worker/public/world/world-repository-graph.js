@@ -17,6 +17,23 @@ function safeCount(value) {
     : 0;
 }
 
+function safeAvatarURL(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      String(value || "").length > 500
+    ) {
+      return "";
+    }
+    return url.href;
+  } catch (_) {
+    return "";
+  }
+}
+
 function safeRecord(record, kind) {
   const number = Number(record?.number);
   if (!Number.isSafeInteger(number) || number < 1 || number > 10_000_000) {
@@ -80,6 +97,9 @@ export function buildRepositoryGraphEntities(active = {}) {
         id: `contributor:${index}:${key.slice(0, 32)}`,
         kind: "contributor",
         label,
+        avatarUrl: safeAvatarURL(
+          candidate?.avatarUrl || candidate?.avatar,
+        ),
         detail: `${safeCount(candidate?.commits)} commit${
           safeCount(candidate?.commits) === 1 ? "" : "s"
         } in the commit-matched public statistics`,

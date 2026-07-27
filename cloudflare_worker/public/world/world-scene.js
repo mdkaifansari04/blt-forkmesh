@@ -1797,7 +1797,7 @@ function makeSiteReferrerLeaderboardSign(THREE) {
   return sign;
 }
 
-const OFFICE_MARKETING_TASK_LIMIT = 6;
+const OFFICE_MARKETING_TASK_LIMIT = 250;
 
 function boundedOfficeMarketingTaskText(value, maxLength, fallback = "") {
   const normalized = String(value ?? "")
@@ -1846,6 +1846,38 @@ function normalizeOfficeMarketingTasks(payload = {}) {
           ),
         }))
     : [];
+  const members = authorized
+    ? (Array.isArray(source.members) ? source.members : [])
+        .map((member) =>
+          boundedOfficeMarketingTaskText(member, 24).toLowerCase(),
+        )
+        .filter(Boolean)
+        .slice(0, 100)
+    : [];
+  const attendanceDays = authorized
+    ? (Array.isArray(source.attendanceDays) ? source.attendanceDays : [])
+        .filter((day) => day && typeof day === "object" && !Array.isArray(day))
+        .slice(-7)
+        .map((day) => ({
+          date: boundedOfficeMarketingTaskText(day.date, 10),
+          label: boundedOfficeMarketingTaskText(day.label, 16),
+          hours: (Array.isArray(day.hours) ? day.hours : [])
+            .filter(
+              (entry) =>
+                entry &&
+                typeof entry === "object" &&
+                !Array.isArray(entry),
+            )
+            .slice(0, 100)
+            .map((entry) => ({
+              member: boundedOfficeMarketingTaskText(
+                entry.member,
+                24,
+              ).toLowerCase(),
+              hours: Math.max(0, Math.min(24, Number(entry.hours) || 0)),
+            })),
+        }))
+    : [];
   const state =
     !authorized || requestedState === "locked"
       ? "locked"
@@ -1854,14 +1886,14 @@ function normalizeOfficeMarketingTasks(payload = {}) {
         : tasks.length
           ? "ready"
           : "empty";
-  return { authorized, state, tasks };
+  return { authorized, state, tasks, members, attendanceDays };
 }
 
 function officeMarketingTasksTexture(THREE, payload = {}) {
   const snapshot = normalizeOfficeMarketingTasks(payload);
-  return canvasTexture(THREE, 1024, 768, (context) => {
-    context.clearRect(0, 0, 1024, 768);
-    roundedRect(context, 5, 5, 1014, 758, 18);
+  return canvasTexture(THREE, 2048, 768, (context) => {
+    context.clearRect(0, 0, 2048, 768);
+    roundedRect(context, 5, 5, 2038, 758, 18);
     context.fillStyle = "rgba(5,17,14,0.97)";
     context.fill();
     context.strokeStyle = "#9ef7c6";
@@ -1872,15 +1904,19 @@ function officeMarketingTasksTexture(THREE, payload = {}) {
     context.textBaseline = "middle";
     context.fillStyle = "#f1fff6";
     context.font = '700 54px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText("MARKETING TASKS", 52, 64);
+    context.fillText("MARKETING TASKS · FULL WALL", 52, 64);
     context.fillStyle = "#9ef7c6";
     context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("AUTHORIZED OFFICE VIEW · SELECT BOARD FOR DETAILS", 52, 112);
+    context.fillText(
+      `${snapshot.tasks.length} TASK${snapshot.tasks.length === 1 ? "" : "S"} · LIVE ORGANIZATION VIEW`,
+      52,
+      112,
+    );
     context.strokeStyle = "rgba(158,247,198,0.28)";
     context.lineWidth = 2;
     context.beginPath();
     context.moveTo(52, 142);
-    context.lineTo(972, 142);
+    context.lineTo(1996, 142);
     context.stroke();
 
     if (snapshot.state !== "ready") {
@@ -1899,39 +1935,229 @@ function officeMarketingTasksTexture(THREE, payload = {}) {
       return;
     }
 
+    const rowsPerColumn = Math.min(8, Math.max(1, snapshot.tasks.length));
+    const columnCount = Math.max(
+      1,
+      Math.ceil(snapshot.tasks.length / rowsPerColumn),
+    );
+    const columnWidth = 1940 / columnCount;
+    const titleSize = Math.max(13, Math.min(27, columnWidth / 17));
+    const metaSize = Math.max(10, Math.min(19, columnWidth / 23));
     snapshot.tasks.forEach((task, index) => {
-      const top = 180 + index * 91;
+      const column = Math.floor(index / rowsPerColumn);
+      const row = index % rowsPerColumn;
+      const left = 42 + column * columnWidth;
+      const top = 180 + row * 70;
       context.fillStyle = index % 2
         ? "rgba(255,255,255,0.025)"
         : "rgba(158,247,198,0.045)";
-      roundedRect(context, 42, top - 30, 940, 80, 10);
+      roundedRect(
+        context,
+        left,
+        top - 27,
+        Math.max(24, columnWidth - 12),
+        62,
+        8,
+      );
       context.fill();
       context.fillStyle = "#d9ffea";
-      context.font = '700 27px "ForkMesh Favorit", system-ui, sans-serif';
-      context.fillText(task.title, 62, top - 4, 600);
+      context.font = `700 ${titleSize}px "ForkMesh Favorit", system-ui, sans-serif`;
+      context.fillText(
+        task.title,
+        left + 14,
+        top - 5,
+        Math.max(12, columnWidth - 112),
+      );
       context.fillStyle = "#91a39a";
-      context.font = '400 19px "ForkMesh Mono", ui-monospace, monospace';
+      context.font = `400 ${metaSize}px "ForkMesh Mono", ui-monospace, monospace`;
       context.fillText(
         `${task.assignee} · ${task.elapsed}`,
-        62,
-        top + 27,
-        600,
+        left + 14,
+        top + 20,
+        Math.max(12, columnWidth - 28),
       );
       context.textAlign = "right";
       context.fillStyle = "#9ef7c6";
-      context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(task.status.toUpperCase(), 954, top + 10, 260);
+      context.font = `700 ${Math.max(10, metaSize)}px "ForkMesh Mono", ui-monospace, monospace`;
+      context.fillText(
+        task.status.toUpperCase(),
+        left + columnWidth - 22,
+        top - 5,
+        Math.max(12, columnWidth * 0.28),
+      );
       context.textAlign = "left";
     });
   });
 }
 
 function officeMarketingTasksBlankTexture(THREE) {
-  return canvasTexture(THREE, 1024, 768, (context) => {
-    context.clearRect(0, 0, 1024, 768);
+  return canvasTexture(THREE, 2048, 768, (context) => {
+    context.clearRect(0, 0, 2048, 768);
     context.fillStyle = "rgba(5,17,14,0.97)";
-    context.fillRect(0, 0, 1024, 768);
+    context.fillRect(0, 0, 2048, 768);
   });
+}
+
+function officeMarketingDeskNameTexture(THREE, member) {
+  return canvasTexture(THREE, 768, 192, (context) => {
+    context.fillStyle = "#06150f";
+    context.fillRect(0, 0, 768, 192);
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 8;
+    context.strokeRect(6, 6, 756, 180);
+    context.fillStyle = "#dffff0";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '800 58px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(member || "MARKETING").toUpperCase(), 384, 82, 690);
+    context.fillStyle = "#7eb899";
+    context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("MARKETING · RESERVED DESK", 384, 145, 690);
+  });
+}
+
+function officeMarketingAttendanceTexture(THREE, snapshot) {
+  const members = snapshot.members || [];
+  const days = snapshot.attendanceDays || [];
+  return canvasTexture(THREE, 2048, 1024, (context) => {
+    context.fillStyle = "#06150f";
+    context.fillRect(0, 0, 2048, 1024);
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 14;
+    context.strokeRect(8, 8, 2032, 1008);
+    context.fillStyle = "#effff6";
+    context.font = '800 66px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("MARKETING · OFFICE HOURS", 56, 86);
+    context.fillStyle = "#80bda0";
+    context.font = '700 26px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("LAST 7 UTC DAYS · SERVER ATTENDANCE", 56, 132);
+    if (!members.length) {
+      context.fillStyle = "#91a39a";
+      context.font = '600 42px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO MARKETING MEMBERS ASSIGNED", 56, 250);
+      return;
+    }
+    const labelWidth = 360;
+    const dayWidth = (1940 - labelWidth) / Math.max(1, days.length);
+    context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
+    days.forEach((day, index) => {
+      context.fillStyle = "#9ef7c6";
+      context.textAlign = "center";
+      context.fillText(
+        day.label || day.date,
+        46 + labelWidth + index * dayWidth + dayWidth / 2,
+        190,
+        dayWidth - 12,
+      );
+    });
+    context.textAlign = "left";
+    const rowHeight = Math.min(94, 760 / Math.max(1, members.length));
+    members.forEach((member, row) => {
+      const y = 245 + row * rowHeight;
+      context.fillStyle =
+        row % 2 ? "rgba(255,255,255,0.025)" : "rgba(158,247,198,0.05)";
+      context.fillRect(40, y - rowHeight * 0.55, 1968, rowHeight * 0.84);
+      context.fillStyle = "#e8fff2";
+      context.font = `700 ${Math.max(17, Math.min(31, rowHeight * 0.34))}px "ForkMesh Mono", ui-monospace, monospace`;
+      context.fillText(member.toUpperCase(), 58, y, labelWidth - 32);
+      days.forEach((day, index) => {
+        const entry = day.hours?.find((item) => item.member === member);
+        context.fillStyle = Number(entry?.hours) > 0 ? "#9ef7c6" : "#668276";
+        context.textAlign = "center";
+        context.fillText(
+          `${Number(entry?.hours || 0).toFixed(1)}h`,
+          46 + labelWidth + index * dayWidth + dayWidth / 2,
+          y,
+        );
+      });
+      context.textAlign = "left";
+    });
+  });
+}
+
+function officeReclaimedWoodTexture(THREE) {
+  const texture = canvasTexture(THREE, 1024, 1024, (context) => {
+    context.fillStyle = "#68452f";
+    context.fillRect(0, 0, 1024, 1024);
+    const plankColors = ["#6e4931", "#82563a", "#5c3b2b", "#76503a"];
+    for (let plank = 0; plank < 10; plank += 1) {
+      const y = plank * 103;
+      context.fillStyle = plankColors[plank % plankColors.length];
+      context.fillRect(0, y, 1024, 100);
+      context.strokeStyle = "rgba(35,18,10,0.72)";
+      context.lineWidth = 5;
+      context.beginPath();
+      context.moveTo(0, y + 100);
+      context.lineTo(1024, y + 100);
+      context.stroke();
+      for (let grain = 0; grain < 16; grain += 1) {
+        const offset = (grain * 79 + plank * 37) % 1024;
+        context.strokeStyle =
+          grain % 3 ? "rgba(35,18,10,0.24)" : "rgba(220,157,98,0.18)";
+        context.lineWidth = 2 + (grain % 2);
+        context.beginPath();
+        context.moveTo(offset - 180, y + 18 + (grain % 5) * 14);
+        context.bezierCurveTo(
+          offset,
+          y + 4 + (grain % 4) * 17,
+          offset + 140,
+          y + 82 - (grain % 3) * 11,
+          offset + 310,
+          y + 40 + (grain % 4) * 13,
+        );
+        context.stroke();
+      }
+    }
+    // Chrome ForkMesh cube medallion: the branch graph is the cube's top face,
+    // with the F/M side reliefs retained from the supplied mark.
+    context.save();
+    context.translate(512, 512);
+    context.fillStyle = "#071018";
+    context.strokeStyle = "#dce8f7";
+    context.lineWidth = 15;
+    context.beginPath();
+    context.moveTo(0, -210);
+    context.lineTo(210, -90);
+    context.lineTo(210, 140);
+    context.lineTo(0, 260);
+    context.lineTo(-210, 140);
+    context.lineTo(-210, -90);
+    context.closePath();
+    context.fill();
+    context.stroke();
+    context.beginPath();
+    context.moveTo(-210, -90);
+    context.lineTo(0, 32);
+    context.lineTo(210, -90);
+    context.moveTo(0, 32);
+    context.lineTo(0, 260);
+    context.stroke();
+    context.fillStyle = "#f1f6ff";
+    context.font = '900 138px "ForkMesh Favorit", system-ui, sans-serif';
+    context.textAlign = "center";
+    context.fillText("F", -102, 110);
+    context.fillText("M", 105, 112);
+    context.strokeStyle = "#c7e8ff";
+    context.lineWidth = 18;
+    context.lineCap = "round";
+    context.beginPath();
+    context.moveTo(0, -152);
+    context.lineTo(0, -30);
+    context.moveTo(0, -92);
+    context.lineTo(-94, -38);
+    context.moveTo(0, -92);
+    context.lineTo(94, -38);
+    context.stroke();
+    for (const [x, y] of [[0, -152], [-94, -38], [94, -38], [0, -30]]) {
+      context.beginPath();
+      context.arc(x, y, 21, 0, Math.PI * 2);
+      context.fillStyle = "#f5fbff";
+      context.fill();
+    }
+    context.restore();
+  });
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
 }
 
 // Public build-progress wall in the Office lobby. This intentionally mirrors
@@ -1939,10 +2165,14 @@ function officeMarketingTasksBlankTexture(THREE) {
 // completed task moves to a varied slot on the right with a hand-drawn X.
 // Keep the ordering stable so a repaint never makes notes jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
-  { key: "task:referrer-full-url", task: "Show latest full HTTP referrer URLs", estimate: "in progress", done: false },
-  { key: "task:blog-board-reach", task: "Show every blog reach statistic", estimate: "in progress", done: false },
-  { key: "task:human-todo-board", task: "Bot-driven Human TODO board", estimate: "in progress", done: false },
+  { key: "task:mirror2-agent-claim", task: "Provision mirror2 agent auth + claim jobs", estimate: "human action", done: false },
   { key: "task:review-open-prs", task: "Review every open PR + disposition", estimate: "queued", done: false },
+  { key: "done:follower-orbit-visible", task: "Visible Mastodon follower orbit", estimate: "deployed", done: true },
+  { key: "done:bot-full-status", task: "Engineering bot status + controls", estimate: "deployed", done: true },
+  { key: "done:agent-diagnostics", task: "Stalled agent diagnostics → Human TODO", estimate: "deployed", done: true },
+  { key: "done:referrer-full-url", task: "Latest safe full referrer URLs", estimate: "deployed", done: true },
+  { key: "done:blog-board-reach", task: "Every blog reach statistic", estimate: "deployed", done: true },
+  { key: "done:human-todo-board", task: "Engineering Human TODO board", estimate: "deployed", done: true },
   { key: "done:infrastructure-capacity", task: "Capacity moved to Infrastructure", estimate: "deployed", done: true },
   { key: "done:local-console", task: "Opt-in local console observatory", estimate: "deployed", done: true },
   { key: "done:near-elevator", task: "Elevator moved beside entrance", estimate: "deployed", done: true },
@@ -2190,6 +2420,16 @@ function humanTodoItemsFromAgentSessions(sessions = []) {
           `${session?.provider === "codex" ? "Codex" : "Claude Code"} needs installation or login on ${session?.targetNode || "the mirror"}.`,
         "SETUP",
       );
+    }
+    const diagnostic =
+      session?.diagnostic && typeof session.diagnostic === "object"
+        ? session.diagnostic
+        : {};
+    if (
+      String(diagnostic.level || "").toLowerCase() === "attention" &&
+      String(diagnostic.message || "").trim()
+    ) {
+      add(session, diagnostic.message, "ATTENTION");
     }
     const error = String(session?.agentInfo?.lastError || "").trim();
     if (error) add(session, error, "ATTENTION");
@@ -5521,6 +5761,46 @@ function repositoryRecordPagerTexture(THREE, title, subtitle, color) {
   });
 }
 
+function repositoryIssueAgentProviderTexture(THREE, provider, active = false) {
+  const claude = provider === "claude-code";
+  const color = claude ? "#ef9f74" : "#8fffe0";
+  return canvasTexture(THREE, 256, 256, (context) => {
+    context.clearRect(0, 0, 256, 256);
+    context.beginPath();
+    context.arc(128, 128, 106, 0, Math.PI * 2);
+    context.fillStyle = active ? color : "#071b17";
+    context.fill();
+    context.lineWidth = active ? 18 : 12;
+    context.strokeStyle = color;
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = active ? "#07120e" : color;
+    context.font = '900 82px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(claude ? "✣" : "<>", 128, 120);
+    context.font = '800 28px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(claude ? "CLAUDE" : "CODEX", 128, 190);
+  });
+}
+
+function repositoryIssueAgentModelTexture(THREE, model, provider) {
+  const color = provider === "claude-code" ? "#ef9f74" : "#8fffe0";
+  return canvasTexture(THREE, 320, 144, (context) => {
+    context.clearRect(0, 0, 320, 144);
+    roundedRect(context, 5, 5, 310, 134, 28);
+    context.fillStyle = "#071b17";
+    context.fill();
+    context.lineWidth = 8;
+    context.strokeStyle = color;
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = color;
+    context.font = '900 42px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(model || "").toUpperCase().slice(0, 6), 160, 74);
+  });
+}
+
 function repositoryStarPlaneTexture(THREE, count, starred = false) {
   // A single, fixed upright plane avoids the chunky extruded-star silhouette
   // at close range. Its transparent texture preserves the actual star shape
@@ -5916,12 +6196,20 @@ function repositoryIssueCardTexture(THREE, issue) {
     context.textAlign = "right";
     context.fillStyle = accent;
     context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText((issue.state || "recorded").toUpperCase(), 980, 58);
+    context.fillText((issue.state || "recorded").toUpperCase(), 710, 58);
+    context.fillStyle = "rgba(143,255,224,0.07)";
+    context.fillRect(742, 18, 264, 264);
+    context.strokeStyle = "rgba(143,255,224,0.28)";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(742, 24);
+    context.lineTo(742, 276);
+    context.stroke();
     context.textAlign = "left";
     context.fillStyle = "#f1fff6";
     context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
-      String(issue.title || `Issue #${issue.number}`).slice(0, 43),
+      String(issue.title || `Issue #${issue.number}`).slice(0, 31),
       52,
       138,
     );
@@ -5939,7 +6227,7 @@ function repositoryIssueCardTexture(THREE, issue) {
     ]
       .filter(Boolean)
       .join(" · ");
-    context.fillText(meta.slice(0, 62), 52, 220);
+    context.fillText(meta.slice(0, 46), 52, 220);
     context.fillStyle = issue.metadataAvailable === false ? "#f0c66f" : "#70d99d";
     context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
@@ -6187,18 +6475,28 @@ function makeRepositoryFollowerIcon(THREE, follower) {
   const seed = repositoryFollowerSeed(follower);
   const accent =
     REPOSITORY_FOLLOWER_ACCENTS[seed % REPOSITORY_FOLLOWER_ACCENTS.length];
-  const icon = new THREE.Sprite(
-    new THREE.SpriteMaterial({
+  // Use the same fixed face-aligned plane geometry as the repository star.
+  // A Sprite nested under the rotated portal face was present in the scene but
+  // could disappear entirely at the elevated camera angles used for the
+  // sunburst. The plane remains a real circular portrait at every angle.
+  const icon = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
       map: repositoryFollowerIconTexture(THREE, follower, accent),
       transparent: true,
-      depthTest: true,
+      // These are UI-like identity badges pinned to the perimeter of a dense
+      // stack of file wedges. Letting the depth buffer participate caused the
+      // repository disk to erase the badges from common elevated camera
+      // angles even though their scene objects were present and visible.
+      depthTest: false,
       depthWrite: false,
+      side: THREE.DoubleSide,
       toneMapped: false,
     }),
   );
   icon.name = `repository-follower-icon:${follower.handle || follower.profileUrl}`;
-  icon.scale.set(0.82, 0.82, 1);
-  icon.renderOrder = 13;
+  icon.scale.set(1.14, 1.14, 1);
+  icon.renderOrder = 40;
   icon.userData.repositoryFollower = { ...follower };
   loadRepositoryFollowerAvatar(follower.avatar, (image) => {
     if (!icon.parent) return;
@@ -6208,6 +6506,109 @@ function makeRepositoryFollowerIcon(THREE, follower) {
     icon.material.needsUpdate = true;
   });
   return icon;
+}
+
+function repositoryContributorIconTexture(THREE, contributor, image = null) {
+  const label = String(contributor?.label || "Contributor").trim();
+  const initials = label
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || "")
+    .join("") || "C";
+  return canvasTexture(THREE, 192, 192, (context) => {
+    context.clearRect(0, 0, 192, 192);
+    if (image) {
+      context.save();
+      context.beginPath();
+      context.arc(96, 96, 78, 0, Math.PI * 2);
+      context.clip();
+      const ratio = Math.max(156 / image.width, 156 / image.height);
+      const width = image.width * ratio;
+      const height = image.height * ratio;
+      context.drawImage(image, 96 - width / 2, 96 - height / 2, width, height);
+      context.restore();
+    } else {
+      const seed = repositoryFollowerSeed({
+        handle: label,
+        name: label,
+      });
+      context.beginPath();
+      context.arc(96, 96, 78, 0, Math.PI * 2);
+      context.fillStyle =
+        REPOSITORY_FOLLOWER_ACCENTS[
+          seed % REPOSITORY_FOLLOWER_ACCENTS.length
+        ];
+      context.fill();
+      context.fillStyle = "#07120e";
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.font = '900 62px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(initials.slice(0, 2), 96, 99);
+    }
+    context.beginPath();
+    context.arc(96, 96, 84, 0, Math.PI * 2);
+    context.lineWidth = 12;
+    context.strokeStyle = "#9ef7c6";
+    context.stroke();
+  });
+}
+
+function makeRepositoryContributorIcon(THREE, contributor) {
+  const icon = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      map: repositoryContributorIconTexture(THREE, contributor),
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    }),
+  );
+  icon.name = `repository-contributor-icon:${contributor?.id || contributor?.label || ""}`;
+  icon.scale.set(0.64, 0.64, 1);
+  icon.renderOrder = 39;
+  icon.userData.landmark = "repositories";
+  icon.userData.graphNode = {
+    id: String(contributor?.id || "").slice(0, 96),
+    kind: "contributor",
+    label: String(contributor?.label || "Contributor").slice(0, 100),
+    detail: String(contributor?.detail || "").slice(0, 240),
+    href: "",
+  };
+  loadRepositoryFollowerAvatar(contributor?.avatarUrl, (image) => {
+    if (!icon.parent) return;
+    const next = repositoryContributorIconTexture(
+      THREE,
+      contributor,
+      image,
+    );
+    icon.material.map?.dispose?.();
+    icon.material.map = next;
+    icon.material.needsUpdate = true;
+  });
+  return icon;
+}
+
+function repositoryFollowButtonTexture(THREE, handle = "") {
+  return canvasTexture(THREE, 512, 224, (context) => {
+    context.clearRect(0, 0, 512, 224);
+    roundedRect(context, 12, 12, 488, 200, 74);
+    context.fillStyle = "#6364ff";
+    context.fill();
+    context.lineWidth = 12;
+    context.strokeStyle = "#b8b9ff";
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = "#ffffff";
+    context.font = '900 68px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("FOLLOW", 256, 88);
+    context.fillStyle = "#e8e8ff";
+    context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(handle || "ON MASTODON").slice(0, 34), 256, 154);
+  });
 }
 
 function makeRepositoryFollowerFigure(THREE, follower) {
@@ -10252,6 +10653,7 @@ export function createWorldScene({
   const agentBots = new Map();
   const agentBotStates = new Map();
   let agentBotAccessAllowed = false;
+  let repositoryIssueAgentPicker = null;
   for (const config of WORLD_AGENT_BOTS) {
     const avatar = new THREE.Group();
     avatar.name = `${config.id}-agent-droid`;
@@ -10963,17 +11365,40 @@ export function createWorldScene({
   }
 
   const officeTable = new THREE.Mesh(
-    new THREE.BoxGeometry(7.4, 0.34, 3.6),
-    makeMaterial(THREE, "#715238", { roughness: 0.66 }),
+    new THREE.CylinderGeometry(5.9, 5.65, 0.5, 48),
+    new THREE.MeshPhysicalMaterial({
+      color: "#ffffff",
+      map: officeReclaimedWoodTexture(THREE),
+      roughness: 0.48,
+      metalness: 0.04,
+      clearcoat: 0.72,
+      clearcoatRoughness: 0.16,
+    }),
   );
   officeTable.name = "forkmesh-office-marketing-tabletop";
   officeTable.position.set(0, officeFloorY("marketing") + 1.8, 0);
   officeInterior.add(officeTable);
-  for (const x of [-3, 3]) {
-    for (const z of [-1.2, 1.2]) {
+  const officeTableEpoxy = new THREE.Mesh(
+    new THREE.CylinderGeometry(2.28, 2.28, 0.09, 48),
+    new THREE.MeshPhysicalMaterial({
+      color: "#dff9ff",
+      transparent: true,
+      opacity: 0.3,
+      roughness: 0.03,
+      metalness: 0,
+      clearcoat: 1,
+      clearcoatRoughness: 0.015,
+      depthWrite: false,
+    }),
+  );
+  officeTableEpoxy.name = "forkmesh-office-marketing-logo-epoxy";
+  officeTableEpoxy.position.set(0, officeFloorY("marketing") + 2.095, 0);
+  officeInterior.add(officeTableEpoxy);
+  for (const x of [-2.5, 2.5]) {
+    for (const z of [-2.5, 2.5]) {
       const tableLeg = new THREE.Mesh(
-        new THREE.BoxGeometry(0.22, 1.2, 0.22),
-        makeMaterial(THREE, "#10231e", { metalness: 0.35 }),
+        new THREE.CylinderGeometry(0.19, 0.25, 1.3, 12),
+        makeMaterial(THREE, "#10231e", { metalness: 0.42 }),
       );
       tableLeg.name = "forkmesh-office-marketing-table-leg";
       tableLeg.position.set(x, officeFloorY("marketing") + 1.02, z);
@@ -11031,12 +11456,12 @@ export function createWorldScene({
   const officeMarketingTaskBoard = new THREE.Group();
   officeMarketingTaskBoard.name = "forkmesh-office-marketing-task-board";
   officeMarketingTaskBoard.position.set(
-    -24,
-    officeFloorY("marketing") + 6.4,
+    0,
+    officeFloorY("marketing") + 7.25,
     -OFFICE_FRONT_Z + 0.55,
   );
   const officeMarketingTaskBoardFrame = new THREE.Mesh(
-    new THREE.BoxGeometry(18.5, 11.4, 0.18),
+    new THREE.BoxGeometry(124, 13.8, 0.18),
     makeMaterial(THREE, "#315b52", {
       metalness: 0.34,
       roughness: 0.48,
@@ -11047,11 +11472,9 @@ export function createWorldScene({
   officeMarketingTaskBoardFrame.name =
     "forkmesh-office-marketing-task-board-frame";
   officeMarketingTaskBoardFrame.userData.officeFloorId = "marketing";
-  officeMarketingTaskBoardFrame.userData.interactive =
-    "office-marketing-task-board";
   officeMarketingTaskBoard.add(officeMarketingTaskBoardFrame);
   const officeMarketingTaskBoardFace = new THREE.Mesh(
-    new THREE.PlaneGeometry(18.12, 11.02),
+    new THREE.PlaneGeometry(123.4, 13.24),
     new THREE.MeshBasicMaterial({
       map: officeMarketingTasksBlankTexture(THREE),
     }),
@@ -11060,49 +11483,36 @@ export function createWorldScene({
     "forkmesh-office-marketing-task-board-face";
   officeMarketingTaskBoardFace.position.z = 0.101;
   officeMarketingTaskBoardFace.userData.officeFloorId = "marketing";
-  officeMarketingTaskBoardFace.userData.interactive =
-    "office-marketing-task-board";
   officeMarketingTaskBoard.add(officeMarketingTaskBoardFace);
   officeMarketingTaskBoard.userData.face = officeMarketingTaskBoardFace;
   officeMarketingTaskBoard.userData.taskState = "vacant";
   officeMarketingTaskBoard.userData.taskCount = 0;
-  interactive.push(
-    officeMarketingTaskBoardFrame,
-    officeMarketingTaskBoardFace,
-  );
   officeInterior.add(officeMarketingTaskBoard);
-  const officeGuideBoard = new THREE.Mesh(
-    new THREE.PlaneGeometry(18.5, 12.72),
+  // Marketing roster furniture is rebuilt from the authoritative team list.
+  // It never rides multiplayer presence and disappears when the room is empty.
+  const officeMarketingRosterGroup = new THREE.Group();
+  officeMarketingRosterGroup.name = "forkmesh-office-marketing-roster-desks";
+  officeInterior.add(officeMarketingRosterGroup);
+  const officeMarketingAttendanceBoard = new THREE.Mesh(
+    new THREE.PlaneGeometry(25, 12.5),
     new THREE.MeshBasicMaterial({
-      map: officeGuideBoardTexture(THREE),
+      map: officeMarketingAttendanceTexture(
+        THREE,
+        normalizeOfficeMarketingTasks({ authorized: false }),
+      ),
       toneMapped: false,
     }),
   );
-  officeGuideBoard.name = "forkmesh-office-guide-board";
-  officeGuideBoard.position.set(
-    24,
-    officeFloorY("marketing") + 6.65,
-    -OFFICE_FRONT_Z + 0.56,
+  officeMarketingAttendanceBoard.name =
+    "forkmesh-office-marketing-attendance-calendar";
+  officeMarketingAttendanceBoard.position.set(
+    OFFICE_WIDTH / 2 - 0.52,
+    officeFloorY("marketing") + 7,
+    -8,
   );
-  officeGuideBoard.userData.officeFloorId = "marketing";
-  officeGuideBoard.userData.interactive = "office-meeting-board";
-  interactive.push(officeGuideBoard);
-  officeInterior.add(officeGuideBoard);
-  const officeRoomSign = makeOfficeWallPlacard(
-    THREE,
-    "MARKETING STUDIO",
-    "campaigns · task wall · encrypted meeting",
-    "#9ef7c6",
-    28,
-    3.8,
-  );
-  officeRoomSign.name = "forkmesh-office-marketing-wall-title";
-  officeRoomSign.position.set(
-    0,
-    officeFloorY("marketing") + 13.25,
-    -OFFICE_FRONT_Z + 0.58,
-  );
-  officeInterior.add(officeRoomSign);
+  officeMarketingAttendanceBoard.rotation.y = -Math.PI / 2;
+  officeMarketingAttendanceBoard.userData.officeFloorId = "marketing";
+  officeInterior.add(officeMarketingAttendanceBoard);
   const officeLight = new THREE.PointLight("#ffd8a3", 5.5, 28, 1.6);
   officeLight.position.set(0, officeFloorY("marketing") + 6.2, 0);
   officeInterior.add(officeLight);
@@ -13122,6 +13532,68 @@ export function createWorldScene({
     );
   }
 
+  function rebuildOfficeMarketingRoster() {
+    officeMarketingRosterGroup.traverse((child) => {
+      if (!child.isMesh) return;
+      child.geometry?.dispose?.();
+      child.material?.map?.dispose?.();
+      child.material?.dispose?.();
+    });
+    officeMarketingRosterGroup.clear();
+    const members = officeMarketingTaskSnapshot.members || [];
+    const columns = Math.max(1, Math.min(12, members.length));
+    members.forEach((member, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      const desk = new THREE.Group();
+      desk.name = `forkmesh-office-marketing-desk:${member}`;
+      const desktop = new THREE.Mesh(
+        new THREE.BoxGeometry(7.4, 0.34, 3.6),
+        new THREE.MeshPhysicalMaterial({
+          color: "#76503a",
+          map: officeReclaimedWoodTexture(THREE),
+          roughness: 0.56,
+          clearcoat: 0.42,
+          clearcoatRoughness: 0.18,
+        }),
+      );
+      desktop.position.y = 1.7;
+      desk.add(desktop);
+      for (const x of [-3, 3]) {
+        const leg = new THREE.Mesh(
+          new THREE.BoxGeometry(0.22, 1.45, 2.4),
+          makeMaterial(THREE, "#10231e", { metalness: 0.38 }),
+        );
+        leg.position.set(x, 0.8, 0);
+        desk.add(leg);
+      }
+      const nameplate = new THREE.Mesh(
+        new THREE.PlaneGeometry(5.9, 1.46),
+        new THREE.MeshBasicMaterial({
+          map: officeMarketingDeskNameTexture(THREE, member),
+          toneMapped: false,
+        }),
+      );
+      nameplate.position.set(0, 1.2, 1.82);
+      desk.add(nameplate);
+      desk.position.set(
+        (column - (columns - 1) / 2) * 10.6,
+        officeFloorY("marketing"),
+        13 + row * 7.2,
+      );
+      desk.userData.officeFloorId = "marketing";
+      desk.traverse((child) => {
+        if (child.isMesh) child.userData.officeFloorId = "marketing";
+      });
+      officeMarketingRosterGroup.add(desk);
+    });
+    const previous = officeMarketingAttendanceBoard.material.map;
+    officeMarketingAttendanceBoard.material.map =
+      officeMarketingAttendanceTexture(THREE, officeMarketingTaskSnapshot);
+    officeMarketingAttendanceBoard.material.needsUpdate = true;
+    previous?.dispose?.();
+  }
+
   function renderOfficeMarketingTasks() {
     const occupied = officeMarketingRoomOccupied();
     const key = JSON.stringify({
@@ -13144,11 +13616,16 @@ export function createWorldScene({
     officeMarketingTaskBoard.userData.taskCount = occupied
       ? officeMarketingTaskSnapshot.tasks.length
       : 0;
+    officeMarketingRosterGroup.visible =
+      occupied && officeMarketingTaskSnapshot.authorized;
+    officeMarketingAttendanceBoard.visible =
+      occupied && officeMarketingTaskSnapshot.authorized;
     return officeMarketingTaskSnapshot;
   }
 
   function updateOfficeMarketingTasks(payload = {}) {
     officeMarketingTaskSnapshot = normalizeOfficeMarketingTasks(payload);
+    rebuildOfficeMarketingRoster();
     return renderOfficeMarketingTasks();
   }
 
@@ -14523,6 +15000,10 @@ export function createWorldScene({
       state.excitement = null;
       state.completion = null;
       state.target.copy(avatar.position);
+    }
+    const deskData = world.userData.repositoryRecordDeskData;
+    if (deskData) {
+      updateRepositoryRecordDesk(deskData.selection, deskData.records);
     }
     return agentBotAccessAllowed;
   }
@@ -16749,6 +17230,11 @@ export function createWorldScene({
           fediverseFollowerStatus: String(
             record.fediverseFollowerStatus || "idle",
           ).slice(0, 20),
+          fediverseHandle: String(record.fediverseHandle || "").slice(0, 120),
+          fediverseActorUrl: String(record.fediverseActorUrl || "").slice(
+            0,
+            500,
+          ),
           fediverseFollowers: Array.isArray(record.fediverseFollowers)
             ? record.fediverseFollowers.slice(0, REPOSITORY_FOLLOWERS_VISIBLE)
             : [],
@@ -16763,6 +17249,7 @@ export function createWorldScene({
         activeRepository?.repo || activeRepository?.name || "",
       ).toLocaleLowerCase()
     }`;
+    world.userData.repositoryActiveKey = activeKey;
     const catalogSignature = JSON.stringify([
       activeKey,
       records.map((record) => [
@@ -16777,6 +17264,8 @@ export function createWorldScene({
         record.starred,
         record.fediverseFollowerCount,
         record.fediverseFollowerStatus,
+        record.fediverseHandle,
+        record.fediverseActorUrl,
         record.sizeTree
           ? [
               String(record.sizeTree.commit || "").slice(0, 64),
@@ -17194,19 +17683,22 @@ export function createWorldScene({
         const followerStatus = String(record.fediverseFollowerStatus || "idle");
         const gallery = new THREE.Group();
         gallery.name = `repository-fediverse-follower-icons:${record.owner}/${record.name}`;
-        gallery.position.z = 0.46;
+        gallery.position.set(0, 0.55, 0.82);
         const visibleFollowers = followers.slice(
           0,
           REPOSITORY_FOLLOWERS_VISIBLE,
         );
         visibleFollowers.forEach((follower, followerIndex) => {
           const icon = makeRepositoryFollowerIcon(THREE, follower);
+          // A broad upper arc makes the large follower portraits an explicit
+          // OUTER social ring while keeping the stone plaque clear.
           const orbitAngle =
-            -Math.PI / 2 +
-            (followerIndex / Math.max(1, visibleFollowers.length)) *
+            Math.PI * 1.08 -
+            (followerIndex /
+              Math.max(1, visibleFollowers.length - 1)) *
               Math.PI *
-              2;
-          const orbitRadius = nodeRadius * 2.65;
+              1.16;
+          const orbitRadius = 3.65;
           icon.position.set(
             Math.cos(orbitAngle) * orbitRadius,
             Math.sin(orbitAngle) * orbitRadius,
@@ -17234,10 +17726,45 @@ export function createWorldScene({
         );
         caption.name = `repository-fediverse-follower-caption:${record.owner}/${record.name}`;
         caption.scale.set(2.8, 0.74, 1);
-        caption.position.set(0, -nodeRadius * 2.85, 0);
+        caption.position.set(0, -3.45, 0);
+        caption.material.depthTest = false;
+        caption.material.depthWrite = false;
+        caption.renderOrder = 39;
         gallery.add(caption);
-        face.add(gallery);
+        // The size-map view hides the original portal face. Keep the social
+        // ring on the persistent portal mount so real followers remain visible
+        // around the live file sunburst.
+        node.add(gallery);
         node.userData.fediverseFollowers = visibleFollowers;
+
+        if (record.fediverseActorUrl || record.fediverseHandle) {
+          const follow = new THREE.Mesh(
+            new THREE.PlaneGeometry(1.5, 0.66),
+            new THREE.MeshBasicMaterial({
+              map: repositoryFollowButtonTexture(
+                THREE,
+                record.fediverseHandle,
+              ),
+              transparent: true,
+              depthTest: false,
+              depthWrite: false,
+              side: THREE.DoubleSide,
+              toneMapped: false,
+            }),
+          );
+          follow.name = `repository-fediverse-follow:${record.owner}/${record.name}`;
+          follow.position.set(1.8, 5.18, 0.84);
+          follow.renderOrder = 42;
+          follow.userData.landmark = "repositories";
+          follow.userData.repositoryFediverseFollow = {
+            owner: record.owner,
+            name: record.name,
+            handle: String(record.fediverseHandle || "").slice(0, 120),
+            actorUrl: String(record.fediverseActorUrl || "").slice(0, 500),
+          };
+          node.add(follow);
+          interactive.push(follow);
+        }
       }
       node.userData.repositoryPortal = repositoryPortal;
       node.userData.repositoryFace = face;
@@ -17712,6 +18239,7 @@ export function createWorldScene({
     if (world.userData.repositoryRecordPageKey !== repositoryKey) {
       world.userData.repositoryRecordPageKey = repositoryKey;
       world.userData.repositoryRecordPages = { issue: 0, pull: 0 };
+      repositoryIssueAgentPicker = null;
     }
     const issues = (Array.isArray(records?.issues) ? records.issues : [])
       .map((record) => ({
@@ -17833,6 +18361,9 @@ export function createWorldScene({
       items.forEach((record, index) => {
         const column = Math.floor(index / rows);
         const row = index % rows;
+        const cardX = columns === 2 ? (column - 0.5) * 3.5 : 0;
+        const cardY =
+          groundY + 0.8 + boardHeight - 0.62 - row * 0.62;
         const card = new THREE.Mesh(
           new THREE.PlaneGeometry(3.28, 0.56),
           new THREE.MeshBasicMaterial({
@@ -17843,11 +18374,7 @@ export function createWorldScene({
           }),
         );
         card.name = `repository-${kind}-card:${record.number}`;
-        card.position.set(
-          columns === 2 ? (column - 0.5) * 3.5 : 0,
-          groundY + 0.8 + boardHeight - 0.62 - row * 0.62,
-          0.08,
-        );
+        card.position.set(cardX, cardY, 0.08);
         card.userData.landmark = "repositories";
         card.userData.repositoryRecordPageKind = kind;
         const page = {
@@ -17860,6 +18387,95 @@ export function createWorldScene({
         else card.userData.repositoryPullPage = page;
         desk.add(card);
         interactive.push(card);
+        if (isIssue && record.state === "open" && agentBotAccessAllowed) {
+          const selectedProvider =
+            repositoryIssueAgentPicker?.repositoryKey === repositoryKey &&
+            repositoryIssueAgentPicker?.number === record.number
+              ? repositoryIssueAgentPicker.provider
+              : "";
+          [
+            { provider: "claude-code", x: 1.14 },
+            { provider: "codex", x: 1.47 },
+          ].forEach(({ provider, x }) => {
+            const providerButton = new THREE.Mesh(
+              new THREE.PlaneGeometry(0.28, 0.28),
+              new THREE.MeshBasicMaterial({
+                map: repositoryIssueAgentProviderTexture(
+                  THREE,
+                  provider,
+                  selectedProvider === provider,
+                ),
+                transparent: true,
+                depthTest: false,
+                depthWrite: false,
+                toneMapped: false,
+              }),
+            );
+            providerButton.name =
+              `repository-issue-agent-provider:${record.number}:${provider}`;
+            providerButton.position.set(cardX + x, cardY + 0.1, 0.18);
+            providerButton.renderOrder = 45;
+            providerButton.userData.landmark = "repositories";
+            providerButton.userData.repositoryIssueAgentProvider = {
+              owner,
+              name,
+              number: record.number,
+              title: record.title,
+              provider,
+            };
+            desk.add(providerButton);
+            interactive.push(providerButton);
+          });
+          if (selectedProvider) {
+            const models =
+              selectedProvider === "claude-code"
+                ? ["haiku", "sonnet", "opus", "fable"]
+                : ["sol", "luna", "terra"];
+            const chipWidth = selectedProvider === "claude-code" ? 0.29 : 0.38;
+            const chipGap = 0.02;
+            const totalWidth =
+              models.length * chipWidth + (models.length - 1) * chipGap;
+            models.forEach((model, modelIndex) => {
+              const modelButton = new THREE.Mesh(
+                new THREE.PlaneGeometry(chipWidth, 0.15),
+                new THREE.MeshBasicMaterial({
+                  map: repositoryIssueAgentModelTexture(
+                    THREE,
+                    model,
+                    selectedProvider,
+                  ),
+                  transparent: true,
+                  depthTest: false,
+                  depthWrite: false,
+                  toneMapped: false,
+                }),
+              );
+              modelButton.name =
+                `repository-issue-agent-model:${record.number}:${selectedProvider}:${model}`;
+              modelButton.position.set(
+                cardX +
+                  0.84 +
+                  modelIndex * (chipWidth + chipGap) -
+                  totalWidth / 2 +
+                  chipWidth / 2,
+                cardY - 0.14,
+                0.2,
+              );
+              modelButton.renderOrder = 46;
+              modelButton.userData.landmark = "repositories";
+              modelButton.userData.repositoryIssueAgentAssignment = {
+                owner,
+                name,
+                number: record.number,
+                title: record.title,
+                provider: selectedProvider,
+                model,
+              };
+              desk.add(modelButton);
+              interactive.push(modelButton);
+            });
+          }
+        }
       });
       const caption = repositoryRecordCaptionSprite(
         THREE,
@@ -17982,6 +18598,29 @@ export function createWorldScene({
     });
   }
 
+  function setRepositoryIssueAgentPicker(picker = null) {
+    if (!agentBotAccessAllowed) return false;
+    const data = world.userData.repositoryRecordDeskData;
+    if (!data) return false;
+    const number = safeRecordNumber(picker?.number);
+    const provider = ["claude-code", "codex"].includes(picker?.provider)
+      ? picker.provider
+      : "";
+    const repositoryKey = `${String(picker?.owner || "").toLowerCase()}/${String(
+      picker?.name || "",
+    ).toLowerCase()}`;
+    repositoryIssueAgentPicker =
+      number && provider
+        ? {
+            repositoryKey,
+            number,
+            provider,
+          }
+        : null;
+    updateRepositoryRecordDesk(data.selection, data.records);
+    return true;
+  }
+
   function updateRepositoryGraph(entries = [], entities = []) {
     const district = landmarkObjects.get("repositories");
     const meshes = district?.userData?.fileMeshes || [];
@@ -17997,6 +18636,50 @@ export function createWorldScene({
           )
           .slice(0, 32)
       : [];
+    // Contributors occupy their own smaller INNER portrait ring on the
+    // selected repository face. This is deliberately separate from the large
+    // outer Mastodon-follower ring so the two relationships are immediately
+    // distinguishable.
+    const activePortal = repositoryPortals.get(
+      String(world.userData.repositoryActiveKey || ""),
+    )?.group;
+    const previousContributorOrbit =
+      activePortal?.getObjectByName?.("repository-contributor-inner-ring");
+    removeGeneratedLayer(
+      activePortal,
+      previousContributorOrbit,
+      interactive,
+    );
+    if (activePortal) {
+      const contributors = safeEntities
+        .filter((entity) => String(entity?.kind || "") === "contributor")
+        .slice(0, 8);
+      if (contributors.length) {
+        const contributorOrbit = new THREE.Group();
+        contributorOrbit.name = "repository-contributor-inner-ring";
+        contributorOrbit.position.set(0, 0.55, 0.8);
+        contributors.forEach((contributor, contributorIndex) => {
+          const icon = makeRepositoryContributorIcon(THREE, contributor);
+          const angle =
+            Math.PI * 1.04 -
+            (contributorIndex /
+              Math.max(1, contributors.length - 1)) *
+              Math.PI *
+              1.08;
+          const radius = 2.28;
+          icon.position.set(
+            Math.cos(angle) * radius,
+            Math.sin(angle) * radius,
+            0,
+          );
+          contributorOrbit.add(icon);
+          interactive.push(icon);
+        });
+        // Like the follower orbit, this must survive the portal-face swap that
+        // displays the repository size map.
+        activePortal.add(contributorOrbit);
+      }
+    }
     const maxSize = Math.max(
       1,
       ...safeEntries.map((entry) => Math.max(0, Number(entry?.size) || 0)),
@@ -19275,9 +19958,24 @@ export function createWorldScene({
         id === "repositories" && hit.object.userData.repositoryBase
           ? { ...hit.object.userData.repositoryBase }
           : null;
+      const repositoryFediverseFollow =
+        id === "repositories" &&
+        hit.object.userData.repositoryFediverseFollow
+          ? { ...hit.object.userData.repositoryFediverseFollow }
+          : null;
       const repositoryIssuePage =
         id === "repositories" && hit.object.userData.repositoryIssuePage
           ? { ...hit.object.userData.repositoryIssuePage }
+          : null;
+      const repositoryIssueAgentProvider =
+        id === "repositories" &&
+        hit.object.userData.repositoryIssueAgentProvider
+          ? { ...hit.object.userData.repositoryIssueAgentProvider }
+          : null;
+      const repositoryIssueAgentAssignment =
+        id === "repositories" &&
+        hit.object.userData.repositoryIssueAgentAssignment
+          ? { ...hit.object.userData.repositoryIssueAgentAssignment }
           : null;
       const repositoryPullPage =
         id === "repositories" && hit.object.userData.repositoryPullPage
@@ -19288,7 +19986,10 @@ export function createWorldScene({
         !repositorySizeNode &&
         !repositoryStar &&
         !repositoryBase &&
+        !repositoryFediverseFollow &&
         !repositoryIssuePage &&
+        !repositoryIssueAgentProvider &&
+        !repositoryIssueAgentAssignment &&
         !repositoryPullPage
       ) {
         focusLandmark(id);
@@ -19305,7 +20006,10 @@ export function createWorldScene({
         repositorySizeNode,
         repositoryStar,
         repositoryBase,
+        repositoryFediverseFollow,
         repositoryIssuePage,
+        repositoryIssueAgentProvider,
+        repositoryIssueAgentAssignment,
         repositoryPullPage,
         graphNode:
           id === "repositories" && hit.object.userData.graphNode
@@ -20404,6 +21108,7 @@ export function createWorldScene({
     updateRepositorySizeMap,
     updateRepositoryRecordDesk,
     setRepositoryIssuePageExpanded,
+    setRepositoryIssueAgentPicker,
     setRepositorySizeLoading,
     applyWorldLayout,
     setLayoutEditor,

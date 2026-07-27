@@ -278,6 +278,23 @@ def _normalize_origin(value: Any) -> str:
     return "https://" + parsed.hostname.lower()
 
 
+def _public_https_url(value: Any) -> str:
+    """Return one bounded, credential-free public image URL."""
+    raw = str(value or "").strip()
+    if not raw or len(raw) > 500:
+        return ""
+    parsed = urlsplit(raw)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+    ):
+        return ""
+    return raw
+
+
 def _is_loopback(value: str) -> bool:
     if value.lower() == "localhost":
         return True
@@ -2602,17 +2619,45 @@ class GitRepository:
             ["shortlog", "-nse", commit],
             max_output=2 * 1024 * 1024,
         )
+        contributor_avatars: dict[str, str] = {}
+        try:
+            info_raw = _run_git(
+                self.git_dir,
+                ["show", commit + ":.forkmesh/info.json"],
+                max_output=256 * 1024,
+            )
+            info = json.loads(info_raw.decode("utf-8"))
+            for item in (
+                info.get("contributors", [])
+                if isinstance(info, dict)
+                else []
+            )[:500]:
+                if not isinstance(item, dict):
+                    continue
+                name = str(
+                    item.get("name") or item.get("login") or ""
+                ).strip().casefold()
+                avatar = _public_https_url(
+                    item.get("avatarUrl") or item.get("avatar"))
+                if name and avatar:
+                    contributor_avatars[name] = avatar
+        except (GitError, UnicodeDecodeError, json.JSONDecodeError):
+            # Avatar metadata is optional. Git remains the contributor source
+            # of truth and every author still receives a deterministic circle.
+            pass
         contributors = []
         for row in shortlog.decode("utf-8", "replace").splitlines()[:500]:
             match = re.match(r"^\s*([0-9]+)\s+(.+?)(?:\s+<([^>]*)>)?\s*$", row)
             if match:
-                contributors.append(
-                    {
-                        "name": match.group(2),
-                        "email": match.group(3) or "",
-                        "commits": int(match.group(1)),
-                    }
-                )
+                name = match.group(2)
+                contributor = {
+                    "name": name,
+                    "commits": int(match.group(1)),
+                }
+                avatar = contributor_avatars.get(name.strip().casefold(), "")
+                if avatar:
+                    contributor["avatarUrl"] = avatar
+                contributors.append(contributor)
         return {
             "ok": True,
             "commit": commit,

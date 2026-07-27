@@ -34,8 +34,8 @@ def test_scene_builds_a_bounded_desk_from_verified_records_only():
     assert "fetch" not in DESK
     assert "localStorage" not in DESK
     assert "sessionStorage" not in DESK
-    assert ".slice(0, REPOSITORY_ISSUE_CARDS_VISIBLE)" in DESK
-    assert ".slice(0, REPOSITORY_PULL_CARDS_VISIBLE)" in DESK
+    assert "repositoryRecordPage(kind, allItems.length)" in DESK
+    assert "allItems.slice(pageInfo.start, pageInfo.end)" in DESK
 
 
 def test_issue_and_pull_cards_show_commit_pinned_metadata():
@@ -43,7 +43,7 @@ def test_issue_and_pull_cards_show_commit_pinned_metadata():
     assert "function repositoryPullCardTexture(" in SCENE
     for field in ("issue.title", "issue.author", "issue.labels",
                   "issue.assignees", "issue.metadataAvailable"):
-        assert field in SCENE
+        assert field.replace("pull.", "pull?.") in SCENE
     for field in ("pull.title", "pull.author", "pull.head", "pull.base",
                   "pull.createdAt", "pull.metadataAvailable"):
         assert field in SCENE
@@ -75,21 +75,33 @@ def test_pick_handler_reports_pages_without_stealing_landmark_focus():
     assert "!repositoryPullPage" in SCENE
 
 
-def test_shell_expands_issue_pages_and_opens_the_thread_on_second_click():
-    assert "this.toggleRepositoryIssuePage(meta.repositoryIssuePage)" in APP
-    toggle = APP[
-        APP.index("  toggleRepositoryIssuePage("):
+def test_open_issue_cards_have_engineering_agent_and_model_controls():
+    for marker in (
+        "repositoryIssueAgentProviderTexture",
+        "repositoryIssueAgentModelTexture",
+        "repositoryIssueAgentProvider",
+        "repositoryIssueAgentAssignment",
+        '["haiku", "sonnet", "opus", "fable"]',
+        '["sol", "luna", "terra"]',
+        "setRepositoryIssueAgentPicker",
+    ):
+        assert marker in SCENE
+    assert "selectRepositoryIssueAgentProvider" in APP
+    assert "assignRepositoryIssueToAgent" in APP
+    assert "Only Engineering team members can assign issues" in APP
+    assert "Haiku security review runs first" in APP
+
+
+def test_shell_opens_issue_cards_in_the_live_world_workbench():
+    assert "this.openRepositoryIssueWorkbench(meta.repositoryIssuePage)" in APP
+    workbench = APP[
+        APP.index("  openRepositoryIssueWorkbench("):
         APP.index("  selectRepositorySizeNode(")
     ]
-    # The page must belong to the active repository before anything happens.
-    assert "active.owner.toLocaleLowerCase()" in toggle
-    assert "active.repo.toLocaleLowerCase()" in toggle
-    assert "safePullNumber(page?.number)" in toggle
-    # First click expands in-scene; the second click opens the signed thread
-    # in a new tab with the same noopener discipline as the portal base link.
-    assert "setRepositoryIssuePageExpanded" in toggle
-    assert '/issues/${number}' in toggle
-    assert '"_blank", "noopener,noreferrer"' in toggle
+    assert "safePullNumber(page?.number)" in workbench
+    assert '/issues/${number}' in workbench
+    assert "data-world-issue-workbench" in workbench
+    assert "<iframe" in workbench
 
 
 def test_shell_routes_pull_cards_into_the_exact_ref_diff_review():

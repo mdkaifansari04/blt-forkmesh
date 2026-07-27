@@ -7827,6 +7827,23 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(actionsBtn);
+
+        auto *installAgentsBtn =
+            new QPushButton(QStringLiteral("Install Claude + Codex"));
+        installAgentsBtn->setObjectName(
+            QStringLiteral("hostInstallAgentClisButton"));
+        installAgentsBtn->setCursor(Qt::PointingHandCursor);
+        installAgentsBtn->setToolTip(QStringLiteral(
+            "Install the official user-scoped Claude Code and Codex CLI "
+            "binaries on this mirror over its pinned SSH connection. This "
+            "does not copy tokens or sign either provider in."));
+        setOcticon(installAgentsBtn, "terminal", 12);
+        connect(installAgentsBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] {
+                installAgentClisForHost(i);
+            });
+        });
+        cellRow->addWidget(installAgentsBtn);
         // Table-row sizing: the default QPushButton padding makes each of these
         // 35px tall, far more than a text row, so the view squashed the whole
         // action cell down to the item height and Qt silently dropped every
@@ -7864,6 +7881,110 @@ void MainWindow::refreshHostsTable()
         m_hostsNavButton->setText(hosts.isEmpty()
             ? QStringLiteral("Hosts")
             : QStringLiteral("Hosts (%1)").arg(hosts.size()));
+}
+
+void MainWindow::installAgentClisForHost(int row)
+{
+    if (m_hostAgentInstallProcess &&
+        m_hostAgentInstallProcess->state() != QProcess::NotRunning) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("A mirror agent-CLI install is already running."));
+        return;
+    }
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+    const auto cellText = [this, row](int column) {
+        const QTableWidgetItem *item = m_hostsTable->item(row, column);
+        return item ? item->text().trimmed() : QString();
+    };
+    const QString node = cellText(0);
+    const QString ip = cellText(1);
+    const QString user = cellText(2);
+    if (node.isEmpty() || ip.isEmpty() || user.isEmpty())
+        return;
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    QString pass;
+    for (const QJsonValue &value : hosts) {
+        const QJsonObject host = value.toObject();
+        if (host.value(QStringLiteral("name")).toString() == node &&
+            host.value(QStringLiteral("ip")).toString() == ip &&
+            host.value(QStringLiteral("user")).toString() == user) {
+            pass = m_hostSessionPasswords.value(
+                forkmesh::control::savedHostCredentialKey(node, ip, user));
+            break;
+        }
+    }
+    const QString remoteCmd = QStringLiteral(
+        "sh -lc 'set -eu; "
+        "echo \"Installing Claude Code from claude.ai...\"; "
+        "curl -fsSL https://claude.ai/install.sh | bash; "
+        "echo \"Installing Codex from chatgpt.com...\"; "
+        "curl -fsSL https://chatgpt.com/codex/install.sh | sh; "
+        "export PATH=\"$HOME/.local/bin:$HOME/.claude/bin:$PATH\"; "
+        "echo \"Claude Code:\"; "
+        "command -v claude; claude --version; "
+        "echo \"Codex:\"; "
+        "command -v codex; codex --version; "
+        "echo \"Installation complete. Provider login is still required on this mirror.\"'");
+    QString sshError;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostSshCommand(
+            ip, user, pass, remoteCmd, &sshError,
+            savedHostIdentityFile(node, ip, user));
+    if (ssh.program.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(sshError);
+        return;
+    }
+    if (m_hostInstallLog)
+        m_hostInstallLog->clear();
+    appendHostInstallLog(
+        QStringLiteral("Installing Claude Code and Codex on %1 (%2@%3)...\n")
+            .arg(node, user, ip));
+    if (m_hostInstallStatus)
+        m_hostInstallStatus->setText(
+            QStringLiteral("Installing agent CLIs on %1...").arg(node));
+    auto *proc = new QProcess(this);
+    m_hostAgentInstallProcess = proc;
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    proc->setProcessEnvironment(ssh.environment);
+    connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
+        appendHostInstallLog(QString::fromUtf8(proc->readAllStandardOutput()));
+    });
+    connect(proc, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart && m_hostInstallStatus) {
+            m_hostInstallStatus->setText(
+                QStringLiteral("Could not start the pinned SSH installer."));
+        }
+    });
+    connect(proc, &QProcess::finished, this,
+            [this, proc, node](int code, QProcess::ExitStatus status) {
+        if (m_hostAgentInstallProcess == proc)
+            m_hostAgentInstallProcess = nullptr;
+        const bool ok =
+            code == 0 && status == QProcess::NormalExit;
+        appendHostInstallLog(
+            ok ? QStringLiteral("\nAgent CLI installation finished.\n")
+               : QStringLiteral("\nAgent CLI installation failed (exit %1).\n")
+                     .arg(code));
+        if (m_hostInstallStatus) {
+            m_hostInstallStatus->setText(
+                ok
+                    ? QStringLiteral(
+                          "Claude Code and Codex are installed on %1. Sign in "
+                          "on that mirror before starting sessions.")
+                          .arg(node)
+                    : QStringLiteral(
+                          "Agent CLI installation failed on %1; see Live output.")
+                          .arg(node));
+        }
+        proc->deleteLater();
+    });
+    proc->start(ssh.program, ssh.arguments);
 }
 
 void MainWindow::configureHostActionsForSelection(int row)
