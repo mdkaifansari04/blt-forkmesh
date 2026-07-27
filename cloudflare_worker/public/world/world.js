@@ -3694,6 +3694,9 @@ class ForkMeshWorld extends HTMLElement {
     this.walletBadges = new Map();
     this.memberDirectory = [];
     this.memberDirectoryFetchedAt = 0;
+    // Lowercased names seated straight from a presence frame because they are
+    // newer than the last directory snapshot (see noteDirectoryMembers).
+    this.pendingDirectoryMembers = new Set();
     this.worldClientProfileKey = "";
     this.pendingKnocks = new Map();
     this.serverPeerId = "";
@@ -4571,6 +4574,9 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     void this.checkForWorldUpdate();
+    // The directory poll rides the events tick, which skips hidden tabs — so
+    // a tab coming back can be a full minute behind on the fire's total.
+    void this.refreshMemberDirectory();
     if (!this.socket) {
       this.refreshWorldTicket();
       this.connectPresence();
@@ -17569,15 +17575,24 @@ class ForkMeshWorld extends HTMLElement {
     });
     if (!added.length) return false;
     this.memberDirectory = [...this.memberDirectory, ...added];
-    void this.refreshMemberDirectory();
+    added.forEach((member) =>
+      this.pendingDirectoryMembers.add(member.name.toLowerCase()),
+    );
+    // A brand-new account is exactly the case the refresh throttle must not
+    // swallow: pull the directory straight away so the arrival's joined date
+    // and node count fill in behind the bench the count already grew for.
+    void this.refreshMemberDirectory(true);
     return true;
   }
 
   // Shares the edge-cached directory endpoint the chat roster uses. Throttled
-  // to its server-side TTL so a burst of arrivals still costs one request.
-  async refreshMemberDirectory() {
+  // to its server-side TTL so a burst of arrivals still costs one request; an
+  // account seen for the first time in a presence frame forces the fetch
+  // through, with a short floor so a wave of arrivals still collapses.
+  async refreshMemberDirectory(force = false) {
     const now = Date.now();
-    if (now - (this.memberDirectoryFetchedAt || 0) < 30000) return;
+    const throttle = force ? 3000 : 30000;
+    if (now - (this.memberDirectoryFetchedAt || 0) < throttle) return;
     this.memberDirectoryFetchedAt = now;
     try {
       const data = await this.fetchJSON("/api/accounts/users", {
@@ -17586,7 +17601,21 @@ class ForkMeshWorld extends HTMLElement {
       });
       const directory = normalizeMemberDirectory(data);
       if (!directory.length || this.destroyed) return;
-      this.memberDirectory = directory;
+      // The endpoint is edge-cached for its own TTL, so a snapshot taken
+      // moments after a signup can still be missing the account this refresh
+      // fired for. Keep the members already seated from presence frames
+      // rather than letting a stale snapshot drop them: the fire's total
+      // would count back down, and the next presence frame would re-add them
+      // and force yet another fetch.
+      const listed = new Set(directory.map((member) => member.name.toLowerCase()));
+      const pending = this.memberDirectory.filter((member) => {
+        const key = member.name.toLowerCase();
+        return this.pendingDirectoryMembers.has(key) && !listed.has(key);
+      });
+      this.pendingDirectoryMembers = new Set(
+        pending.map((member) => member.name.toLowerCase()),
+      );
+      this.memberDirectory = [...directory, ...pending];
       this.syncMemberLounge();
     } catch (_) {}
   }

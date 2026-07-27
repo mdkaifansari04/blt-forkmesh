@@ -269,6 +269,25 @@ def test_member_total_burns_as_a_number_in_the_fire():
     assert "if (memberCountShown === count) return;" in SCENE
 
 
+def test_member_total_tracks_arrivals_without_waiting_for_the_poll():
+    # adhoc #393: the count is repainted from every presence frame, so a new
+    # account is counted the moment it joins instead of at the next 60s tick.
+    note = APP.split("noteDirectoryMembers(names) {", 1)[1].split("\n  }", 1)[0]
+    assert "void this.refreshMemberDirectory(true);" in note
+    assert "this.pendingDirectoryMembers.add(member.name.toLowerCase())" in note
+    refresh = APP.split("async refreshMemberDirectory(force = false) {", 1)[1]
+    refresh = refresh.split("\n  }", 1)[0]
+    # The forced fetch bypasses the 30s throttle but still collapses a wave.
+    assert "const throttle = force ? 3000 : 30000;" in refresh
+    # A stale edge-cached snapshot must not drop members already seated from a
+    # presence frame, or the total would count back down.
+    assert "this.memberDirectory = [...directory, ...pending];" in refresh
+    assert "this.pendingDirectoryMembers.has(key) && !listed.has(key)" in refresh
+    # A tab coming back from hidden is up to a full tick behind.
+    visibility = APP.split("handleVisibility = () => {", 1)[1].split("\n  };", 1)[0]
+    assert "void this.refreshMemberDirectory();" in visibility
+
+
 def test_seated_members_get_a_chat_bubble_over_their_bench():
     # adhoc #363: a member talking in the website chat is usually not a live
     # world peer — their avatar is the figure sitting on their own campfire
