@@ -10898,7 +10898,7 @@ export function createWorldScene({
           : null;
       })
       .filter(Boolean)
-      .slice(0, 8);
+      .slice(0, 32);
     const tables = Array.isArray(metrics?.tables) ? metrics.tables : [];
     const safeTables = [
       ...new Map(
@@ -10906,9 +10906,11 @@ export function createWorldScene({
           .map((table) => {
             const name = String(table?.name || "").trim();
             const rowCount = Number(table?.rowCount);
+            // A table that holds nothing yet still gets a bar; it is part of
+            // the platform's shape and hiding it shrank the inventory.
             return /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(name) &&
               Number.isSafeInteger(rowCount) &&
-              rowCount > 1
+              rowCount >= 0
               ? [name, { name, rowCount }]
               : null;
           })
@@ -10920,7 +10922,7 @@ export function createWorldScene({
           right.rowCount - left.rowCount ||
           left.name.localeCompare(right.name),
       )
-      .slice(0, 128);
+      .slice(0, 256);
     const signature = JSON.stringify({
       objects: safeRecords,
       tables: safeTables,
@@ -11001,8 +11003,11 @@ export function createWorldScene({
       safeTables.forEach((table, index) => {
         const column = index % columns;
         const row = Math.floor(index / columns);
-        const normalized =
-          Math.log1p(table.rowCount) / Math.log1p(maxRows);
+        // An all-empty inventory has no scale to draw against; every bar then
+        // sits at its minimum height instead of collapsing to NaN geometry.
+        const normalized = maxRows
+          ? Math.log1p(table.rowCount) / Math.log1p(maxRows)
+          : 0;
         const height = 0.18 + normalized * 3.15;
         const bar = new THREE.Mesh(
           new THREE.BoxGeometry(barWidth, height, barWidth),
@@ -11073,7 +11078,12 @@ export function createWorldScene({
       }));
       object.userData.bytesRelayed = record.bytes;
 
-      const spacing = safeRecords.length > 5 ? 1.65 : 2.5;
+      // Plinths share the platform with the table bars, so a large binding
+      // list tightens its spacing rather than marching off the edge.
+      const spacing = Math.min(
+        safeRecords.length > 5 ? 1.65 : 2.5,
+        11.5 / Math.max(1, safeRecords.length - 1),
+      );
       object.position.set(
         (index - (safeRecords.length - 1) / 2) * spacing,
         0.38,

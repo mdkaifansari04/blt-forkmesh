@@ -1255,7 +1255,13 @@ def test_world_system_capacity_is_bounded_content_free_and_identifier_safe():
     exec(compile(module, str(ENTRY), "exec"), namespace)
     result = asyncio.run(namespace["_world_system_capacity"](object()))
 
-    assert result == [{"name": "accounts", "rowCount": 37}]
+    # Empty and single-row tables are part of the inventory; only an
+    # unrepresentable count, an unsafe name, or a vanished table is skipped.
+    assert result == [
+        {"name": "accounts", "rowCount": 37},
+        {"name": "one_row", "rowCount": 1},
+        {"name": "empty_table", "rowCount": 0},
+    ]
     assert set(result[0]) == {"name", "rowCount"}
     assert len(calls["list"]) == 1
     list_sql, list_args = calls["list"][0]

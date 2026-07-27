@@ -3049,11 +3049,24 @@ def durable_object_bindings(env):
     bound in wrangler.toml appears here on the next deploy. Namespaces are
     duck-typed — `idFromName` plus `newUniqueId` is unique to a
     DurableObjectNamespace among D1, KV, R2, AI, and assets bindings.
+
+    Key discovery is deliberately redundant. `Object.keys` only sees own
+    enumerable properties of a JavaScript environment, so a runtime that hides
+    its bindings behind a prototype, a non-enumerable descriptor, or a Python
+    wrapper reported *no* Durable Objects at all and the world fell back to the
+    two connections the browser can see for itself. Every source is merged and
+    each candidate is still duck-typed, so a wider sweep cannot invent one.
     """
-    try:
-        keys = [str(key) for key in Object.keys(env)]
-    except Exception:
-        return []
+    keys = []
+    for source in (
+        lambda: Object.keys(env),
+        lambda: Object.getOwnPropertyNames(env),
+        lambda: dir(env),
+    ):
+        try:
+            keys.extend(str(key) for key in source())
+        except Exception:
+            continue
     bindings = []
     for name in sorted(set(keys)):
         if not DURABLE_OBJECT_BINDING_RE.fullmatch(name):
@@ -3640,10 +3653,10 @@ async def _world_system_capacity(env):
             # A table can disappear during a rolling migration. Skip that
             # table rather than breaking the short-lived world ticket.
             continue
-        if (
-            row_count > 1
-            and row_count <= WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS
-        ):
+        # Every table is reported, including the empty and single-row ones:
+        # a table that holds nothing yet is part of the platform's shape, and
+        # hiding it made the inventory look far smaller than the database is.
+        if 0 <= row_count <= WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS:
             capacity.append({"name": name, "rowCount": row_count})
     return capacity
 
