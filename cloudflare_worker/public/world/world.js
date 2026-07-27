@@ -4453,7 +4453,7 @@ class ForkMeshWorld extends HTMLElement {
           // Open the real repository browser and keep write-capable work on
           // the owner device through desktop / IDE integration.
           window.open(
-            "/forkmesh/forkmesh",
+            "/forkmesh/forkmesh/blob/cloudflare_worker/public/world/world-scene.js",
             "_blank",
             "noopener,noreferrer",
           );
