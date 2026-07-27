@@ -4353,6 +4353,11 @@ WORLD_USER_ACTIVITY_MAX_GENERATION = 9_000_000_000_000_000
 WORLD_USER_ACTIVITY_HEADER = "x-forkmesh-world-activity"
 WORLD_USER_ACTIVITY_PUBLIC_BUCKET_MS = 60 * 1000
 WORLD_INACTIVE_RETAIN_MS = 30 * 24 * 60 * 60 * 1000
+# Private close code sent to the socket an account just replaced by signing in
+# somewhere else. It is a normal handover, not an error or a moderation action,
+# so the displaced browser stops its reconnect ladder instead of racing the
+# device the person is actually using.
+WORLD_ACCOUNT_TAKEOVER_CODE = 4009
 WORLD_MANUAL_BLOCK_MIN_MS = 60 * 1000
 WORLD_MANUAL_BLOCK_MAX_MS = 24 * 60 * 60 * 1000
 WORLD_MANUAL_BLOCK_DEFAULT_MS = 15 * 60 * 1000
@@ -36056,19 +36061,6 @@ class ForkMeshWorld(DurableObject):
         if not peer_id:
             return json_response({"error": "identity_unavailable"}, status=503)
         country_source = world_protocol.approximate_country_code(raw_country)
-        state = world_protocol.default_presence(peer_id, now)
-        blocked_slots = []
-        for peer in peers:
-            blocked_slots.append(_ws_attr(peer, "arrival_slot", -1))
-            if _ws_attr(peer, "space", "") == "town-square":
-                # A visitor who restored a saved spot onto an arrival cell
-                # blocks that cell even without a matching reservation.
-                blocked_slots.append(
-                    world_protocol.arrival_slot_near_position(
-                        _ws_attr(peer, "x", None), _ws_attr(peer, "z", None)))
-        arrival_slot = world_protocol.first_available_arrival_slot(
-            blocked_slots)
-        state.update(world_protocol.arrival_position(arrival_slot))
         trusted_claim = {}
         is_admin = False
         ticket_nonce = ""
@@ -36104,6 +36096,43 @@ class ForkMeshWorld(DurableObject):
                     ticket_nonce)
                 for peer in peers):
             return json_response({"error": "ticket_replayed"}, status=409)
+
+        # One account is one avatar. When the same signed-in person joins from
+        # a second device (or a second visible tab), their earlier socket is
+        # retired here instead of standing beside them as a twin: every viewer
+        # keeps seeing exactly one figure for that account, and it is the one
+        # the person is actually driving. Only the ticket-verified account name
+        # can fold two sockets together — a guest may type any display name, so
+        # guests are never combined and no unverified name can evict anyone.
+        account_key = world_protocol.account_presence_key(
+            trusted_claim.get("name", ""))
+        if account_key:
+            replaced = [
+                peer for peer in peers
+                if _ws_attr(peer, "account_key", "") == account_key
+            ]
+            for peer in replaced:
+                self._depart(
+                    peer, WORLD_ACCOUNT_TAKEOVER_CODE,
+                    "moved to your newest device")
+            if replaced:
+                # The retired sockets release their arrival cells and drop out
+                # of the newcomer's welcome snapshot.
+                peers = self._live_sockets()
+
+        state = world_protocol.default_presence(peer_id, now)
+        blocked_slots = []
+        for peer in peers:
+            blocked_slots.append(_ws_attr(peer, "arrival_slot", -1))
+            if _ws_attr(peer, "space", "") == "town-square":
+                # A visitor who restored a saved spot onto an arrival cell
+                # blocks that cell even without a matching reservation.
+                blocked_slots.append(
+                    world_protocol.arrival_slot_near_position(
+                        _ws_attr(peer, "x", None), _ws_attr(peer, "z", None)))
+        arrival_slot = world_protocol.first_available_arrival_slot(
+            blocked_slots)
+        state.update(world_protocol.arrival_position(arrival_slot))
         moderation_tokens = {}
         for target_type in ("ip", "agent"):
             try:
@@ -36282,6 +36311,12 @@ class ForkMeshWorld(DurableObject):
             # into name/operator-belt sharing.
             "trusted_name": trusted_fields["name"] if trusted_name else "",
             "trusted_node_count": trusted_fields["nodeCount"],
+            # The private "one account, one avatar" key. It never reaches a
+            # frame; it only lets a later connection from the same verified
+            # account retire this socket instead of standing beside it.
+            "account_key": (
+                world_protocol.account_presence_key(trusted_fields["name"])
+                if trusted_name else ""),
             # These opaque rotating subjects and authorization bit remain
             # private attachment data. Only `_presence_for_viewer` can project
             # the handles, and only to a server-verified administrator.

@@ -143,6 +143,10 @@ const POSITION_FLOORS = Object.freeze({
 const SOCKET_RETRY_MAX_MS = 20000;
 const SOCKET_STABLE_MS = 5000;
 const SOCKET_PEER_GRACE_MS = 8000;
+// The relay retired this socket because the same account joined from another
+// device. Reconnecting on the usual ladder would just bounce the avatar
+// between the two, so this browser waits for its owner to come back to it.
+const SOCKET_ACCOUNT_TAKEOVER_CODE = 4009;
 const SOCKET_BUFFER_HIGH_WATER_BYTES = 64 * 1024;
 const PRESENCE_PROFILE_DEBOUNCE_MS = 300;
 const MOVEMENT_SEND_INTERVAL_MS = 1000;
@@ -3958,6 +3962,9 @@ class ForkMeshWorld extends HTMLElement {
       : "";
     this.socket = null;
     this.presenceConnecting = false;
+    // Set once this account's avatar has been handed to a newer device. It
+    // parks the reconnect ladder until the visitor asks for it back here.
+    this.presenceTakenOver = false;
     this.socketRetry = 1000;
     this.socketTimer = 0;
     this.socketStableTimer = 0;
@@ -4115,8 +4122,15 @@ class ForkMeshWorld extends HTMLElement {
     return Array.from(this.querySelectorAll(selector));
   }
 
-  handlePublicInputActivity = () => {
+  handlePublicInputActivity = (event) => {
     if (this.destroyed || !this.identity) return;
+    // A click or keypress is this device asking for the account's avatar back
+    // after a newer device took it. Pointer movement alone is not an ask —
+    // otherwise a mouse drifting across an idle screen would tug the avatar
+    // away from the device its owner is actually using.
+    if (["pointerdown", "keydown"].includes(String(event?.type || ""))) {
+      this.reclaimPresenceHere();
+    }
     this.recordActivityArrival();
     if (this.focusMusicAutoplayPending) {
       this.focusMusicAutoplayPending = false;
@@ -4821,6 +4835,9 @@ class ForkMeshWorld extends HTMLElement {
     // socket is closed, so no arrival can force it — and accounts signed up
     // meanwhile are missing from the fire's total. Coming back is the cue.
     void this.refreshMemberDirectory();
+    // Coming back to this tab is itself the request to bring the account's
+    // one avatar here, so a takeover by another device stops holding it off.
+    this.reclaimPresenceHere();
     if (!this.socket) {
       this.refreshWorldTicket();
       this.connectPresence();
@@ -18075,8 +18092,31 @@ class ForkMeshWorld extends HTMLElement {
     }, WORLD_TICKET_REFRESH_MS);
   }
 
+  // The relay handed this account's single avatar to a newer device. Stand
+  // down quietly: no reconnect ladder, no error state, and no second figure
+  // in the world. The visitor's own next click, keypress, or return to this
+  // tab brings it back here.
+  handlePresenceTakeover() {
+    this.presenceTakenOver = true;
+    window.clearTimeout(this.socketTimer);
+    this.socketTimer = 0;
+    this.socketRetry = 1000;
+    this.setPresenceState("offline", "Active on your other device");
+    this.startPeerReconnectGrace();
+    this.toast(
+      "Your avatar moved to the device you just opened the World on. " +
+        "Click or press a key here to bring it back.",
+    );
+  }
+
+  reclaimPresenceHere() {
+    if (!this.presenceTakenOver) return;
+    this.presenceTakenOver = false;
+    void this.connectPresence();
+  }
+
   schedulePresenceReconnect() {
-    if (this.destroyed || document.hidden) return;
+    if (this.destroyed || document.hidden || this.presenceTakenOver) return;
     window.clearTimeout(this.socketTimer);
     const jitter = 0.75 + Math.random() * 0.5;
     const delay = Math.max(250, Math.round(this.socketRetry * jitter));
@@ -18113,6 +18153,7 @@ class ForkMeshWorld extends HTMLElement {
     if (
       this.destroyed ||
       document.hidden ||
+      this.presenceTakenOver ||
       this.presenceConnecting ||
       this.socket?.readyState === WebSocket.OPEN
     ) {
@@ -18194,7 +18235,7 @@ class ForkMeshWorld extends HTMLElement {
       }
       this.receivePresence(message);
     });
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (event) => {
       if (this.socket !== socket) return;
       this.presenceConnecting = false;
       this.socket = null;
@@ -18206,6 +18247,10 @@ class ForkMeshWorld extends HTMLElement {
       this.movementSendTimer = 0;
       this.pendingMovement = null;
       if (this.destroyed) return;
+      if (event?.code === SOCKET_ACCOUNT_TAKEOVER_CODE) {
+        this.handlePresenceTakeover();
+        return;
+      }
       this.setPresenceState("offline", "Local world");
       this.startPeerReconnectGrace();
       this.schedulePresenceReconnect();
