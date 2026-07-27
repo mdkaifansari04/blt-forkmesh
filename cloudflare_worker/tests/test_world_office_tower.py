@@ -320,13 +320,28 @@ def test_every_floor_has_collidable_obstacles_and_reachable_open_space():
           floors,
           expandedMarketingObstacle: tower.officePointHitsObstacle(
             "marketing",
-            9 + tower.OFFICE_AVATAR_RADIUS - 0.01,
+            3.9 + tower.OFFICE_AVATAR_RADIUS - 0.01,
             0,
           ),
           pastMarketingObstacle: tower.officePointHitsObstacle(
             "marketing",
-            9 + tower.OFFICE_AVATAR_RADIUS + 0.01,
+            3.9 + tower.OFFICE_AVATAR_RADIUS + 0.01,
             0,
+          ),
+          formerMarketingFenceOpen: tower.officeInteriorPointIsWalkable(
+            "marketing",
+            8,
+            0,
+          ),
+          receptionDeskBlocked: tower.officePointHitsObstacle(
+            "lobby",
+            0,
+            -36.5,
+          ),
+          formerReceptionFenceOpen: tower.officeInteriorPointIsWalkable(
+            "lobby",
+            23,
+            19.5,
           ),
         }));
         """
@@ -338,3 +353,6 @@ def test_every_floor_has_collidable_obstacles_and_reachable_open_space():
     assert all(floor["openSpaceWalkable"] for floor in result["floors"])
     assert result["expandedMarketingObstacle"] is True
     assert result["pastMarketingObstacle"] is False
+    assert result["formerMarketingFenceOpen"] is True
+    assert result["receptionDeskBlocked"] is True
+    assert result["formerReceptionFenceOpen"] is True

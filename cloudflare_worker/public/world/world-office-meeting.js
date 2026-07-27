@@ -449,20 +449,14 @@ export function createWorldOfficeMeeting({
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(messageId) || seenMessages.has(messageId)) {
       return;
     }
-    seenMessages.add(messageId);
     const participant = await verifiedBubbleParticipant(plain);
-    const senderParticipant = participants.get(
-      String(plain.senderId || "").slice(0, 64),
-    );
-    const claimedSender = String(plain.sender || "").trim().slice(0, 32);
-    // A verified proof wins; otherwise use the sender's currently joined room
-    // identity, then their bounded chat label. The generic fallback made every
-    // valid remote message read as an anonymous participant.
-    const sender =
-      participant?.name ||
-      senderParticipant?.name ||
-      claimedSender ||
-      "Office visitor";
+    // Only the ephemeral key published through the authoritative meeting
+    // socket may bind chat to an avatar. An arbitrary encrypted-room member
+    // cannot claim a live participant's senderId/name, reserve a message id,
+    // or place a bubble over somebody else's head.
+    if (!participant) return;
+    seenMessages.add(messageId);
+    const sender = participant.name;
     const text = String(plain.text || "").slice(0, MAX_MEETING_TEXT);
     const attachment = attachmentFromEntry(plain);
     const item = document.createElement("li");
@@ -777,6 +771,7 @@ export function createWorldOfficeMeeting({
     setRoomStatus("Joining meeting...");
     scene.enterOfficeMeeting({ roomName: room.name, participants: [] });
     meetingSocket.addEventListener("message", (event) => {
+      if (socket !== meetingSocket) return;
       let frame;
       try {
         frame = JSON.parse(event.data);
@@ -786,6 +781,7 @@ export function createWorldOfficeMeeting({
       receiveMeetingFrame(frame);
     });
     meetingSocket.addEventListener("open", () => {
+      if (socket !== meetingSocket) return;
       window.clearInterval(pingTimer);
       pingTimer = window.setInterval(() => sendMeeting({ type: "ping" }), OFFICE_PING_MS);
     });

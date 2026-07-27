@@ -1810,12 +1810,284 @@ test("leaving an Office meeting resumes at a walkable first-person pose", async 
   expect(handoff.localAvatarFound).toBe(true);
   expect(handoff.localAvatarVisible).toBe(false);
   expect(
-    Math.abs(handoff.playerLocal[0]) > 9.46 ||
-      Math.abs(handoff.playerLocal[2]) > 7.46,
+    Math.abs(handoff.playerLocal[0]) > 4.36 ||
+      Math.abs(handoff.playerLocal[2]) > 2.46,
   ).toBe(true);
   expect(handoff.playerLocal[1]).toBeCloseTo(16.38, 3);
   expect(handoff.cameraMode).toBe("first-person");
   expect(handoff.playerVisible).toBe(false);
+});
+
+test("Marketing studio furniture, wall features, reception, and open FM mark align", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-marketing-visual-alignment");
+  await waitForWorld(page);
+  const state = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setOfficeAccess({
+      authenticated: true,
+      account: "alice",
+      allowedFloorIds: ["lobby", "marketing"],
+    });
+    shell.world.enterOfficeLobby();
+    shell.world.enterOfficeLobby({ floorId: "marketing" });
+    const scene = shell.world.scene;
+    const interior = scene.getObjectByName("forkmesh-office-interior");
+    const tabletop = scene.getObjectByName(
+      "forkmesh-office-marketing-tabletop"
+    );
+    const legs = [];
+    const chairs = [];
+    scene.traverse((object) => {
+      if (object.name === "forkmesh-office-marketing-table-leg") {
+        legs.push(object);
+      }
+      if (/^forkmesh-office-chair-\d+$/.test(object.name)) {
+        const position = object.position;
+        const seatedYaw = object.rotation.y + Math.PI;
+        const length = Math.hypot(position.x, position.z) || 1;
+        chairs.push({
+          id: object.name,
+          backZ: object.getObjectByName(`${object.name}-back`)?.position.z,
+          inwardDot:
+            (-Math.sin(seatedYaw) * (-position.x / length)) +
+            (-Math.cos(seatedYaw) * (-position.z / length)),
+        });
+      }
+    });
+    const tableBottom =
+      tabletop.position.y - tabletop.geometry.parameters.height / 2;
+    const highestLegTop = Math.max(...legs.map(
+      (leg) => leg.position.y + leg.geometry.parameters.height / 2
+    ));
+    const taskBoard = scene.getObjectByName(
+      "forkmesh-office-marketing-task-board"
+    );
+    const guideBoard = scene.getObjectByName("forkmesh-office-guide-board");
+    const title = scene.getObjectByName(
+      "forkmesh-office-marketing-wall-title"
+    );
+    const placards = [];
+    scene.traverse((object) => {
+      if (object.userData?.officeWallMounted === true) {
+        placards.push({
+          name: object.name,
+          mesh: object.isMesh === true,
+          sprite: object.isSprite === true,
+        });
+      }
+    });
+    const receptionDesk = scene.getObjectByName(
+      "forkmesh-office-reception-desk"
+    );
+    const maya = scene.getObjectByName("avatar:office-greeter-maya");
+    const noah = scene.getObjectByName("avatar:office-greeter-noah");
+    const chromeCube = scene.getObjectByName("forkmesh-reflective-fm-cube");
+    const support = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube-support"
+    );
+    const solidBodies = [];
+    chromeCube.traverse((object) => {
+      const size = object.geometry?.parameters;
+      if (
+        object.isMesh &&
+        size?.width === 5.6 &&
+        size?.height === 5.6 &&
+        size?.depth === 5.6
+      ) {
+        solidBodies.push(object.name || "solid");
+      }
+    });
+    const sat = shell.world.sitOnOfficeChair("chair-1");
+    const seatedWorld = shell.world.player.getWorldPosition(
+      shell.world.player.position.clone()
+    );
+    const seatedLocal = interior.worldToLocal(seatedWorld).toArray();
+    const stood = shell.world.sitOnOfficeChair("chair-1");
+    return {
+      space: shell.world.getPosition().space,
+      tableBottom,
+      highestLegTop,
+      chairCount: chairs.length,
+      chairs,
+      boards: {
+        task: taskBoard.position.toArray(),
+        guide: guideBoard.position.toArray(),
+        title: title.position.toArray(),
+      },
+      placards,
+      reception: {
+        desk: receptionDesk.position.toArray(),
+        maya: maya?.position.toArray(),
+        noah: noah?.position.toArray(),
+      },
+      logo: {
+        edgeTilt: chromeCube.rotation.z,
+        fFaces: chromeCube.children.filter((object) =>
+          object.name.startsWith("forkmesh-reflective-f-face-")
+        ).length,
+        mFaces: chromeCube.children.filter((object) =>
+          object.name.startsWith("forkmesh-reflective-m-face-")
+        ).length,
+        supportCount: support ? 1 : 0,
+        solidBodies,
+      },
+      seating: {
+        sat,
+        stood,
+        seatedLocal,
+        standingY: shell.world.player.position.y,
+      },
+    };
+  });
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const cameraPosition = interior.localToWorld(
+      shell.world.camera.position.clone().set(0, 27, 37)
+    );
+    const target = interior.localToWorld(
+      shell.world.camera.position.clone().set(0, 21, -12)
+    );
+    shell.world.setPaused(true);
+    shell.world.camera.position.copy(cameraPosition);
+    shell.world.camera.lookAt(target);
+    shell.world.renderer.render(shell.world.scene, shell.world.camera);
+  });
+  await page.screenshot({
+    path: "/tmp/forkmesh-office-marketing.png",
+    animations: "disabled",
+  });
+
+  expect(state.space).toBe("office-marketing");
+  expect(state.tableBottom).toBeGreaterThanOrEqual(state.highestLegTop);
+  expect(state.chairCount).toBe(8);
+  expect(state.chairs.every((chair) => chair.backZ < 0)).toBe(true);
+  expect(state.chairs.every((chair) => chair.inwardDot > 0.99)).toBe(true);
+  expect(state.boards.task).toEqual([-24, 22.4, -44.45]);
+  expect(state.boards.guide).toEqual([24, 22.65, -44.44]);
+  expect(state.boards.title[2]).toBeLessThan(-44);
+  expect(state.placards.length).toBeGreaterThanOrEqual(12);
+  expect(state.placards.every((placard) => placard.mesh && !placard.sprite))
+    .toBe(true);
+  expect(state.reception.desk).toEqual([0, 1.05, -36.5]);
+  expect(state.reception.maya).toEqual([-7, 0.38, -40]);
+  expect(state.reception.noah).toEqual([7, 0.38, -40]);
+  expect(state.logo.edgeTilt).toBeCloseTo(Math.PI / 4, 5);
+  expect(state.logo).toMatchObject({
+    fFaces: 2,
+    mFaces: 2,
+    supportCount: 1,
+    solidBodies: [],
+  });
+  expect(state.seating).toMatchObject({
+    sat: true,
+    stood: true,
+    standingY: 16.38,
+  });
+  expect(state.seating.seatedLocal[0]).toBeCloseTo(-5.15, 2);
+  expect(state.seating.seatedLocal[2]).toBeCloseTo(0, 2);
+  expect(state.seating.seatedLocal[1]).toBeGreaterThan(16.38);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setPaused(false);
+    shell.world.enterOfficeLobby({ floorId: "lobby" });
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const cameraPosition = interior.localToWorld(
+      shell.world.camera.position.clone().set(0, 11, 36)
+    );
+    const target = interior.localToWorld(
+      shell.world.camera.position.clone().set(0, 5, -18)
+    );
+    shell.world.setPaused(true);
+    shell.world.camera.position.copy(cameraPosition);
+    shell.world.camera.lookAt(target);
+    shell.world.renderer.render(shell.world.scene, shell.world.camera);
+  });
+  await page.screenshot({
+    path: "/tmp/forkmesh-office-lobby.png",
+    animations: "disabled",
+  });
+});
+
+test("Office glass has one stable shell and one elevator-car layer", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-stable-glass");
+  await waitForWorld(page);
+  const glass = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const transparentMeshes = (root) => {
+      const meshes = [];
+      root?.traverse((object) => {
+        if (object.isMesh && object.material?.transparent) {
+          meshes.push(object);
+        }
+      });
+      return meshes;
+    };
+    const exterior = [];
+    scene.traverse((object) => {
+      if (
+        object.isMesh &&
+        object.userData?.landmark === "office" &&
+        object.material?.transparent
+      ) {
+        exterior.push(object);
+      }
+    });
+    const teamLayers = [
+      "marketing",
+      "engineering",
+      "product-design",
+      "security",
+      "infrastructure",
+      "community",
+      "partnerships",
+      "operations",
+    ].flatMap((floorId) => transparentMeshes(
+      scene.getObjectByName(`forkmesh-office-floor-${floorId}`)
+    ));
+    const rooftop = transparentMeshes(
+      scene.getObjectByName("forkmesh-office-floor-rooftop")
+    );
+    const shaft = transparentMeshes(
+      scene.getObjectByName("forkmesh-office-glass-elevator-shaft")
+    );
+    const car = transparentMeshes(
+      scene.getObjectByName("forkmesh-office-glass-elevator-car")
+    );
+    return {
+      exterior: {
+        count: exterior.length,
+        stable: exterior.every((mesh) =>
+          mesh.material.depthWrite === false &&
+          mesh.castShadow === false &&
+          mesh.receiveShadow === false
+        ),
+      },
+      teamLayerCount: teamLayers.length,
+      rooftop: {
+        count: rooftop.length,
+        stable: rooftop.every((mesh) => mesh.material.depthWrite === false),
+      },
+      shaftLayerCount: shaft.length,
+      car: {
+        count: car.length,
+        stable: car.every((mesh) =>
+          mesh.material.depthWrite === false && mesh.castShadow === false
+        ),
+      },
+    };
+  });
+  expect(glass.exterior.count).toBeGreaterThanOrEqual(20);
+  expect(glass.exterior.stable).toBe(true);
+  expect(glass.teamLayerCount).toBe(0);
+  expect(glass.rooftop).toEqual({ count: 5, stable: true });
+  expect(glass.shaftLayerCount).toBe(0);
+  expect(glass.car).toEqual({ count: 5, stable: true });
 });
 
 test("Office elevator exposes ten floors while enforcing team access", async ({

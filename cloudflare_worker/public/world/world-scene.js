@@ -1926,6 +1926,9 @@ function makeMaterial(THREE, color, options = {}) {
   // Three.js warns for explicitly supplied `undefined` enum values. Omit the
   // option entirely unless a caller intentionally selected a rendering side.
   if (options.side !== undefined) parameters.side = options.side;
+  if (options.depthWrite !== undefined) {
+    parameters.depthWrite = options.depthWrite;
+  }
   return new THREE.MeshStandardMaterial(parameters);
 }
 
@@ -2937,6 +2940,108 @@ function createAvatar(THREE, identity, options = {}) {
   syncAvatarWallet(THREE, group, identity);
   setShadows(group, true, true);
   return group;
+}
+
+function avatarSecurityBadgeTexture(THREE, details = {}) {
+  const ip = String(details.ip || "").trim().slice(0, 64);
+  const userAgent = String(details.userAgent || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 256);
+  const wrap = (text, width, rows) => {
+    const words = String(text || "").split(" ").filter(Boolean);
+    const lines = [];
+    let line = "";
+    words.forEach((word) => {
+      const chunks = [];
+      for (let at = 0; at < word.length; at += width) {
+        chunks.push(word.slice(at, at + width));
+      }
+      chunks.forEach((chunk) => {
+        const candidate = line ? `${line} ${chunk}` : chunk;
+        if (candidate.length > width && line) {
+          lines.push(line);
+          line = chunk;
+        } else {
+          line = candidate;
+        }
+      });
+    });
+    if (line) lines.push(line);
+    return lines.slice(0, rows);
+  };
+  return canvasTexture(THREE, 768, 960, (context) => {
+    context.fillStyle = "#071714";
+    context.fillRect(0, 0, 768, 960);
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 16;
+    context.strokeRect(10, 10, 748, 940);
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillStyle = "#9ef7c6";
+    context.font = '900 58px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("YOUR SESSION", 44, 78);
+    context.fillStyle = "#7fb9a5";
+    context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("PRIVATE · SELF ONLY", 44, 132);
+
+    context.fillStyle = "#f7c96b";
+    context.font = '900 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("EDGE IP", 44, 214);
+    context.fillStyle = "#ffffff";
+    context.font = '700 36px "ForkMesh Mono", ui-monospace, monospace';
+    wrap(ip || "UNAVAILABLE", 30, 3).forEach((line, index) => {
+      context.fillText(line, 44, 272 + index * 48);
+    });
+
+    context.fillStyle = "#77d9ff";
+    context.font = '900 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("USER AGENT", 44, 432);
+    context.fillStyle = "#e9fff6";
+    context.font = '650 31px "ForkMesh Mono", ui-monospace, monospace';
+    wrap(userAgent || "UNAVAILABLE", 39, 8).forEach((line, index) => {
+      context.fillText(line, 44, 486 + index * 43);
+    });
+
+    context.fillStyle = "#7fb9a5";
+    context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("HIDDEN FROM PEERS + SCREENSHOTS", 44, 912);
+  });
+}
+
+function setAvatarSecurityBadge(THREE, avatar, details, visible = true) {
+  if (!avatar?.userData) return null;
+  const ip = String(details?.ip || "").trim().slice(0, 64);
+  const userAgent = String(details?.userAgent || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 256);
+  let badge = avatar.userData.selfSecurityBadge;
+  if (!ip && !userAgent) {
+    if (badge) badge.visible = false;
+    return badge || null;
+  }
+  if (!badge) {
+    badge = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.06, 1.32),
+      new THREE.MeshBasicMaterial({ toneMapped: false }),
+    );
+    badge.name = "forkmesh-self-security-back-badge";
+    // Avatar fronts face -Z, so the owner-only security card sits on +Z.
+    badge.position.set(0, 2.22, 0.318);
+    badge.renderOrder = 4;
+    avatar.add(badge);
+    avatar.userData.selfSecurityBadge = badge;
+  }
+  const previous = badge.material.map;
+  badge.material.map = avatarSecurityBadgeTexture(THREE, {
+    ip,
+    userAgent,
+  });
+  badge.material.needsUpdate = true;
+  badge.visible = visible === true;
+  previous?.dispose?.();
+  return badge;
 }
 
 function applyOutfit(THREE, shirt, identity) {
@@ -6772,18 +6877,14 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   });
   const glass = makeMaterial(THREE, "#9ef7c6", {
     transparent: true,
-    opacity: 0.42,
-    metalness: 0.08,
-    roughness: 0.22,
-  });
-  const warm = makeMaterial(THREE, "#ffd18a", {
-    emissive: "#e28b35",
-    emissiveIntensity: 0.85,
-    roughness: 0.4,
+    opacity: 0.24,
+    metalness: 0,
+    roughness: 0.62,
+    depthWrite: false,
   });
   const doorMaterial = makeMaterial(THREE, "#245845", {
     metalness: 0.34,
-    roughness: 0.5,
+    roughness: 0.44,
   });
   const elevatorFacadeMinX =
     OFFICE_ELEVATOR_CENTER_X -
@@ -7026,37 +7127,49 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   sign.position.set(0, OFFICE_HEIGHT - 3, OFFICE_FRONT_Z + 0.24);
   group.add(sign);
 
-  const doorPivot = new THREE.Group();
-  doorPivot.name = "forkmesh-office-door-pivot";
-  doorPivot.position.set(-doorWidth / 2, 0, OFFICE_FRONT_Z + 0.03);
-  const door = new THREE.Mesh(
-    new THREE.BoxGeometry(doorWidth, doorHeight, 0.18),
-    doorMaterial,
-  );
-  door.name = "forkmesh-office-door";
-  door.position.set(doorWidth / 2, doorHeight / 2 + 0.34, 0);
-  door.userData.officeEnter = true;
-  doorPivot.add(door);
-  const handle = new THREE.Mesh(
-    new THREE.SphereGeometry(0.1, 12, 8),
-    warm,
-  );
-  handle.position.set(doorWidth - 0.28, doorHeight / 2 + 0.28, 0.12);
-  handle.userData.officeEnter = true;
-  doorPivot.add(handle);
-  group.add(doorPivot);
+  const slidingDoors = new THREE.Group();
+  slidingDoors.name = "forkmesh-office-sliding-doors";
+  slidingDoors.position.z = OFFICE_FRONT_Z + 0.03;
+  const doorPanelWidth = doorWidth / 2 - 0.08;
+  const doorClosedX = doorWidth / 4;
+  const doorOpenX = doorWidth / 2 + doorPanelWidth / 2 + 0.18;
+  const doorPanels = [-1, 1].map((side) => {
+    const panel = new THREE.Mesh(
+      new THREE.BoxGeometry(doorPanelWidth, doorHeight, 0.18),
+      doorMaterial,
+    );
+    panel.name =
+      `forkmesh-office-sliding-door-${side < 0 ? "left" : "right"}`;
+    panel.position.set(
+      side * doorClosedX,
+      doorHeight / 2 + 0.34,
+      0,
+    );
+    slidingDoors.add(panel);
+    return panel;
+  });
+  group.add(slidingDoors);
 
   group.position.set(...position);
   group.userData.landmark = "office";
-  group.userData.officeDoorPivot = doorPivot;
-  group.userData.officeDoor = door;
-  doorPivot.rotation.y = Math.PI / 2;
+  group.userData.officeSlidingDoors = slidingDoors;
+  group.userData.officeDoorPanels = doorPanels;
+  group.userData.officeDoorClosedX = doorClosedX;
+  group.userData.officeDoorOpenX = doorOpenX;
   group.traverse((child) => {
     if (!child.isMesh) return;
     child.userData.landmark = "office";
     interactive.push(child);
   });
   setShadows(group);
+  // Transparent walls are a view envelope, not shadow casters. Keeping them
+  // out of both the depth and shadow buffers prevents bright/dark popping as
+  // the camera crosses the tower while preserving the opaque frame.
+  group.traverse((child) => {
+    if (!child.isMesh || !child.material?.transparent) return;
+    child.castShadow = false;
+    child.receiveShadow = false;
+  });
   sign.castShadow = false;
   return group;
 }
@@ -8385,12 +8498,6 @@ export function createWorldScene({
     metalness: 0.18,
     roughness: 0.82,
   });
-  const officeFloorGlassMaterial = makeMaterial(THREE, "#b8fff0", {
-    transparent: true,
-    opacity: 0.2,
-    metalness: 0.08,
-    roughness: 0.12,
-  });
   const officeFloorAccent = makeMaterial(THREE, "#67efb1", {
     emissive: "#1a9a68",
     emissiveIntensity: 0.82,
@@ -8463,31 +8570,6 @@ export function createWorldScene({
     floorGroup.userData.officeFloorId = floor.id;
     addOfficeFloorSurface(floorGroup, officeFloorSlabMaterial);
     if (floor.id !== "rooftop") {
-      for (const x of [
-        -OFFICE_WIDTH / 2 + 0.26,
-        OFFICE_WIDTH / 2 - 0.26,
-      ]) {
-        const pane = new THREE.Mesh(
-          new THREE.BoxGeometry(0.18, OFFICE_FLOOR_HEIGHT - 0.7, OFFICE_DEPTH),
-          officeFloorGlassMaterial,
-        );
-        pane.position.set(x, OFFICE_FLOOR_HEIGHT / 2, 0);
-        floorGroup.add(pane);
-      }
-      const backPane = new THREE.Mesh(
-        new THREE.BoxGeometry(
-          OFFICE_WIDTH,
-          OFFICE_FLOOR_HEIGHT - 0.7,
-          0.18,
-        ),
-        officeFloorGlassMaterial,
-      );
-      backPane.position.set(
-        0,
-        OFFICE_FLOOR_HEIGHT / 2,
-        -OFFICE_FRONT_Z + 0.18,
-      );
-      floorGroup.add(backPane);
       for (let x = -72; x <= 72; x += 24) {
         const light = new THREE.Mesh(
           new THREE.BoxGeometry(12, 0.08, 0.28),
@@ -8659,9 +8741,10 @@ export function createWorldScene({
     const rooftop = officeFloorGroups.get("rooftop");
     const roofGlass = makeMaterial(THREE, "#d8ffff", {
       transparent: true,
-      opacity: 0.36,
-      metalness: 0.18,
-      roughness: 0.06,
+      opacity: 0.24,
+      metalness: 0,
+      roughness: 0.54,
+      depthWrite: false,
     });
     for (const [width, depth, x, z] of [
       [OFFICE_WIDTH, 0.22, 0, -OFFICE_DEPTH / 2 + 0.2],
@@ -8723,89 +8806,48 @@ export function createWorldScene({
     rooftop.add(telescope);
   }
   addOfficeFunFloorProps();
-  const officeBackWall = new THREE.Mesh(
-    new THREE.BoxGeometry(OFFICE_WIDTH, OFFICE_HEIGHT, 0.35),
-    officeFloorGlassMaterial,
-  );
-  officeBackWall.position.set(0, OFFICE_HEIGHT / 2, -OFFICE_FRONT_Z + 0.2);
-  officeInterior.add(officeBackWall);
-  for (const x of [
-    -OFFICE_WIDTH / 2 + 0.2,
-    OFFICE_WIDTH / 2 - 0.2,
-  ]) {
-    const wall = new THREE.Mesh(
-      new THREE.BoxGeometry(0.35, OFFICE_HEIGHT, OFFICE_DEPTH),
-      officeFloorGlassMaterial,
+  // The exterior tower already owns the curtain wall. A second interior shell
+  // sat almost coplanar with it and made the transparent panes flash as the
+  // depth buffer alternated between layers. Interior props now render through
+  // that single stable glass envelope.
+  const officeBuilding = landmarkObjects.get("office");
+  const officeSlidingDoorPanels =
+    officeBuilding?.userData?.officeDoorPanels || [];
+  const officeDoorClosedX =
+    Number(officeBuilding?.userData?.officeDoorClosedX) ||
+    OFFICE_DOOR_WIDTH / 4;
+  const officeDoorOpenX =
+    Number(officeBuilding?.userData?.officeDoorOpenX) ||
+    OFFICE_DOOR_WIDTH * 0.76;
+  let officeSlidingDoorOpen = 0;
+  animated.push((_time, delta = 0.016) => {
+    const localPosition = officeAvatarLocalPosition(
+      player,
+      new THREE.Vector3(),
     );
-    wall.position.set(x, OFFICE_HEIGHT / 2, 0);
-    officeInterior.add(wall);
-  }
-  for (const [minX, maxX] of [
-    [-OFFICE_WIDTH / 2, -OFFICE_DOOR_WIDTH / 2],
-    [OFFICE_DOOR_WIDTH / 2, elevatorCutMinX],
-    [elevatorCutMaxX, OFFICE_WIDTH / 2],
-  ]) {
-    const officeFrontPanelWidth = maxX - minX;
-    const wall = new THREE.Mesh(
-      new THREE.BoxGeometry(officeFrontPanelWidth, OFFICE_HEIGHT, 0.35),
-      officeFloorGlassMaterial,
-    );
-    wall.position.set(
-      (minX + maxX) / 2,
-      OFFICE_HEIGHT / 2,
-      OFFICE_FRONT_Z - 0.2,
-    );
-    officeInterior.add(wall);
-  }
-  const officeDoorOpeningHeight = 4.8;
-  const officeDoorHeaderHeight = OFFICE_HEIGHT - officeDoorOpeningHeight;
-  const officeDoorHeader = new THREE.Mesh(
-    new THREE.BoxGeometry(
-      OFFICE_DOOR_WIDTH,
-      officeDoorHeaderHeight,
-      0.35,
-    ),
-    officeFloorGlassMaterial,
-  );
-  officeDoorHeader.position.set(
-    0,
-    officeDoorOpeningHeight + officeDoorHeaderHeight / 2,
-    OFFICE_FRONT_Z - 0.2,
-  );
-  officeInterior.add(officeDoorHeader);
-  const officeInteriorDoorPivot = new THREE.Group();
-  officeInteriorDoorPivot.name = "forkmesh-office-interior-door-pivot";
-  officeInteriorDoorPivot.position.set(
-    -OFFICE_DOOR_WIDTH / 2,
-    0,
-    OFFICE_FRONT_Z - 0.38,
-  );
-  const officeInteriorDoor = new THREE.Mesh(
-    new THREE.BoxGeometry(OFFICE_DOOR_WIDTH, 4.4, 0.18),
-    makeMaterial(THREE, "#245845", {
-      metalness: 0.34,
-      roughness: 0.5,
-    }),
-  );
-  officeInteriorDoor.name = "forkmesh-office-interior-door";
-  officeInteriorDoor.position.set(OFFICE_DOOR_WIDTH / 2, 2.54, 0);
-  officeInteriorDoorPivot.add(officeInteriorDoor);
-  officeInteriorDoorPivot.rotation.y = Math.PI / 2;
-  officeInterior.add(officeInteriorDoorPivot);
-  const windowMaterial = makeMaterial(THREE, "#8eeac5", {
-    transparent: true,
-    opacity: 0.3,
-    emissive: "#1f8b65",
-    emissiveIntensity: 0.36,
+    const onEntranceFloor =
+      officeSceneMode === "town" ||
+      (officeSceneMode === "lobby" && officeCurrentFloorId === "lobby");
+    const approaching =
+      onEntranceFloor &&
+      Math.abs(localPosition.x) <= OFFICE_DOOR_WIDTH / 2 + 3.2 &&
+      Math.abs(localPosition.z - OFFICE_FRONT_Z) <= 7.5;
+    const target =
+      approaching || officeDoorwayEntryPending || officeExitPending ? 1 : 0;
+    const travel = Math.min(1, Math.max(0, Number(delta) || 0) * 5.8);
+    officeSlidingDoorOpen +=
+      (target - officeSlidingDoorOpen) * travel;
+    officeSlidingDoorPanels.forEach((panel, index) => {
+      const side = index === 0 ? -1 : 1;
+      panel.position.x =
+        side *
+        THREE.MathUtils.lerp(
+          officeDoorClosedX,
+          officeDoorOpenX,
+          officeSlidingDoorOpen,
+        );
+    });
   });
-  for (const x of [-5.5, -1.85, 1.85, 5.5]) {
-    const windowPane = new THREE.Mesh(
-      new THREE.BoxGeometry(2.7, 3.4, 0.08),
-      windowMaterial,
-    );
-    windowPane.position.set(x, 3.6, -OFFICE_FRONT_Z + 0.42);
-    officeInterior.add(windowPane);
-  }
   const officeTable = new THREE.Mesh(
     new THREE.BoxGeometry(7.4, 0.34, 3.6),
     makeMaterial(THREE, "#715238", { roughness: 0.66 }),
@@ -8828,17 +8870,18 @@ export function createWorldScene({
   // office floor (0.4), so their sitters' shins reach the floor unchanged.
   const OFFICE_CHAIR_SEAT_TOP_Y = 0.91;
   const chairTransforms = [
-    [-5.15, 0, Math.PI / 2],
-    [-2.35, -3.35, 0],
-    [0, -3.35, 0],
-    [2.35, -3.35, 0],
-    [5.15, 0, -Math.PI / 2],
-    [2.35, 3.35, Math.PI],
-    [0, 3.35, Math.PI],
-    [-2.35, 3.35, Math.PI],
+    [-5.15, 0],
+    [-2.35, -3.35],
+    [0, -3.35],
+    [2.35, -3.35],
+    [5.15, 0],
+    [2.35, 3.35],
+    [0, 3.35],
+    [-2.35, 3.35],
   ];
-  chairTransforms.forEach(([x, z, yaw], index) => {
+  chairTransforms.forEach(([x, z], index) => {
     const chairId = `chair-${index + 1}`;
+    const yaw = Math.atan2(-x, -z);
     const chair = new THREE.Group();
     chair.name = `forkmesh-office-${chairId}`;
     const seat = new THREE.Mesh(
@@ -9073,49 +9116,82 @@ export function createWorldScene({
   officeGreetingBoard.position.set(0, 6.25, -OFFICE_FRONT_Z + 0.5);
   officeInterior.add(officeGreetingBoard);
 
-  // Session-local time clock on the left side of the lobby. Its display is
-  // updated only on authenticated entry/exit; it is not public presence data.
+  // Shared, bounded time clock on the left lobby wall. Authenticated punches
+  // are server-timestamped; the public board exposes only the latest 20 visits.
   const officeAttendanceBoard = new THREE.Mesh(
-    new THREE.PlaneGeometry(20, 8),
+    new THREE.PlaneGeometry(27, 13.2),
     new THREE.MeshBasicMaterial({ toneMapped: false }),
   );
   officeAttendanceBoard.name = "forkmesh-office-attendance";
-  officeAttendanceBoard.position.set(-69, 4.7, 25);
+  officeAttendanceBoard.position.set(-84.5, 7.1, 18);
   officeAttendanceBoard.rotation.y = Math.PI / 2;
   officeInterior.add(officeAttendanceBoard);
 
   function officeAttendanceTexture(snapshot = {}) {
-    return canvasTexture(THREE, 800, 320, (context) => {
+    const visits = Array.isArray(snapshot?.visits)
+      ? snapshot.visits.slice(0, 20)
+      : [];
+    return canvasTexture(THREE, 1600, 800, (context) => {
       const format = (value) => {
         const timestamp = Number(value);
         return Number.isFinite(timestamp) && timestamp > 0
           ? new Date(timestamp).toLocaleString([], {
               month: "short",
               day: "numeric",
-              hour: "numeric",
+              hour: "2-digit",
               minute: "2-digit",
-              second: "2-digit",
             })
           : "—";
       };
       context.fillStyle = "#071714";
-      context.fillRect(0, 0, 800, 320);
+      context.fillRect(0, 0, 1600, 800);
       context.strokeStyle = "#79efb5";
-      context.lineWidth = 10;
-      context.strokeRect(6, 6, 788, 308);
+      context.lineWidth = 14;
+      context.strokeRect(8, 8, 1584, 784);
       context.fillStyle = "#9ef7c6";
-      context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("OFFICE TIME CLOCK", 36, 56);
-      context.fillStyle = "#e9fff6";
-      context.font = '700 31px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(`IN   ${format(snapshot.inAt)}`, 36, 132);
-      context.fillText(`OUT  ${format(snapshot.outAt)}`, 36, 194);
+      context.font = '900 48px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("OFFICE · LAST 20 VISITS", 42, 62);
+      context.fillStyle = "#79a996";
+      context.font = '800 27px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("USER", 42, 112);
+      context.fillText("IN", 570, 112);
+      context.fillText("OUT", 1080, 112);
+      context.strokeStyle = "rgba(121,239,181,0.28)";
+      context.lineWidth = 2;
+      context.beginPath();
+      context.moveTo(38, 130);
+      context.lineTo(1560, 130);
+      context.stroke();
+      context.font = '700 27px "ForkMesh Mono", ui-monospace, monospace';
+      visits.forEach((visit, index) => {
+        const y = 164 + index * 28;
+        if (index % 2 === 0) {
+          context.fillStyle = "rgba(158,247,198,0.045)";
+          context.fillRect(30, y - 20, 1530, 30);
+        }
+        context.fillStyle = "#e9fff6";
+        context.fillText(
+          String(visit?.account || "Contributor").slice(0, 25),
+          42,
+          y,
+        );
+        context.fillStyle = "#a9d7c4";
+        context.fillText(format(visit?.inAt), 570, y);
+        context.fillStyle = visit?.outAt ? "#a9d7c4" : "#f7c96b";
+        context.fillText(
+          visit?.outAt ? format(visit.outAt) : "IN BUILDING",
+          1080,
+          y,
+        );
+      });
       context.fillStyle = "#83bba7";
-      context.font = '500 23px "ForkMesh Mono", ui-monospace, monospace';
+      context.font = '650 25px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
-        String(snapshot.account || "Sign in to clock in").slice(0, 48),
-        36,
-        258,
+        visits.length
+          ? "One row per visit · authenticated punches only"
+          : "No recorded visits yet · signed-in members clock in automatically",
+        42,
+        760,
       );
     });
   }
@@ -9149,31 +9225,6 @@ export function createWorldScene({
   );
   logoWater.position.y = 1.12;
   logoFountain.add(logoWater);
-  const fountainJetMaterial = makeMaterial(THREE, "#c5f7ff", {
-    transparent: true,
-    opacity: 0.58,
-    emissive: "#67d9ff",
-    emissiveIntensity: 0.72,
-    metalness: 0.05,
-    roughness: 0.04,
-  });
-  const fountainJets = [];
-  for (const [x, z, tiltX, tiltZ] of [
-    [-3.4, 0, 0, -0.22],
-    [3.4, 0, 0, 0.22],
-    [0, -3.4, 0.22, 0],
-    [0, 3.4, -0.22, 0],
-  ]) {
-    const jet = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.07, 0.15, 4.5, 10),
-      fountainJetMaterial,
-    );
-    jet.position.set(x, 3.05, z);
-    jet.rotation.x = tiltX;
-    jet.rotation.z = tiltZ;
-    logoFountain.add(jet);
-    fountainJets.push(jet);
-  }
   const fountainGlow = new THREE.PointLight("#91eaff", 4.2, 25, 1.7);
   fountainGlow.position.set(0, 4.8, 0);
   logoFountain.add(fountainGlow);
@@ -9210,11 +9261,21 @@ export function createWorldScene({
   });
   const chromeCube = new THREE.Group();
   chromeCube.name = "forkmesh-reflective-fm-cube";
-  // The mark is an open sculpture, not a chrome box: paired F and M glyphs
-  // define four sides while the branch graph repeats across the top/bottom.
-  // The empty center stays visible as it slowly turns.
-  chromeCube.position.y = 5.5;
-  chromeCube.rotation.z = Math.PI / 4;
+  // Only this outer mount animates. Its Y rotation is the single vertical
+  // spindle through the fountain; the inner edge-balanced tilt never changes.
+  const chromeMark = new THREE.Group();
+  chromeMark.name = "forkmesh-reflective-fm-cube-fixed-tilt";
+  chromeCube.add(chromeMark);
+  const logoHalfSize = 2.92;
+  const logoSupportTopY = 2.4;
+  // Align one body diagonal with world-up. The selected lower corner therefore
+  // remains exactly over the single support even while the outer mount spins.
+  const logoLowerCorner = new THREE.Vector3(-1, -1, -1).normalize();
+  chromeMark.quaternion.setFromUnitVectors(
+    logoLowerCorner,
+    new THREE.Vector3(0, -1, 0),
+  );
+  chromeCube.position.y = logoSupportTopY + logoHalfSize * Math.sqrt(3);
   const logoPiece = (
     parent,
     width,
@@ -9237,44 +9298,95 @@ export function createWorldScene({
 
   const addFLogoFace = (z, rotationY) => {
     const face = new THREE.Group();
+    face.name =
+      `forkmesh-reflective-f-face-${z > 0 ? "front" : "back"}`;
     face.position.z = z;
     face.rotation.y = rotationY;
-    logoPiece(face, 0.5, 4.2, 0.38, -1.25, 0, 0);
-    logoPiece(face, 2.9, 0.5, 0.38, -0.05, 1.85, 0);
-    logoPiece(face, 2.35, 0.5, 0.38, -0.325, 0.2, 0);
-    chromeCube.add(face);
+    logoPiece(face, 0.82, 4.9, 0.48, -1.64, -0.04, 0);
+    logoPiece(face, 4.35, 0.82, 0.48, 0.12, 2.0, 0);
+    logoPiece(face, 3.45, 0.82, 0.48, -0.33, 0.22, 0);
+    chromeMark.add(face);
   };
-  addFLogoFace(2.8, 0);
-  addFLogoFace(-2.8, Math.PI);
+  addFLogoFace(2.68, 0);
+  addFLogoFace(-2.68, Math.PI);
 
   const addMLogoFace = (x, rotationY) => {
     const face = new THREE.Group();
+    face.name =
+      `forkmesh-reflective-m-face-${x > 0 ? "right" : "left"}`;
     face.position.x = x;
     face.rotation.y = rotationY;
-    logoPiece(face, 0.5, 4.2, 0.38, -1.45, 0, 0);
-    logoPiece(face, 0.5, 4.2, 0.38, 1.45, 0, 0);
+    logoPiece(face, 0.82, 4.9, 0.48, -1.72, -0.04, 0);
+    logoPiece(face, 0.82, 4.9, 0.48, 1.72, -0.04, 0);
     const addDiagonal = (fromX, fromY, toX, toY) => {
       const dx = toX - fromX;
       const dy = toY - fromY;
       logoPiece(
         face,
-        0.5,
+        0.82,
         Math.hypot(dx, dy),
-        0.38,
+        0.48,
         (fromX + toX) / 2,
         (fromY + toY) / 2,
         0,
         Math.atan2(-dx, dy),
       );
     };
-    addDiagonal(-1.45, 1.85, 0, 0.25);
-    addDiagonal(0, 0.25, 1.45, 1.85);
-    chromeCube.add(face);
+    addDiagonal(-1.72, 2.0, 0, 0.08);
+    addDiagonal(0, 0.08, 1.72, 2.0);
+    chromeMark.add(face);
   };
-  addMLogoFace(2.8, Math.PI / 2);
-  addMLogoFace(-2.8, -Math.PI / 2);
+  addMLogoFace(2.68, Math.PI / 2);
+  addMLogoFace(-2.68, -Math.PI / 2);
 
-  // Git-style branch networks form matching open top and bottom faces.
+  // Rounded mirrored top and bottom plates match the supplied cube silhouette.
+  // Dark inset branch graphs read like the reference's black cut-outs while
+  // the middle remains completely hollow between the four letter faces.
+  const logoPanelShape = new THREE.Shape();
+  const panelSize = 5.72;
+  const panelHalf = panelSize / 2;
+  const panelRadius = 0.34;
+  logoPanelShape.moveTo(-panelHalf + panelRadius, -panelHalf);
+  logoPanelShape.lineTo(panelHalf - panelRadius, -panelHalf);
+  logoPanelShape.quadraticCurveTo(
+    panelHalf,
+    -panelHalf,
+    panelHalf,
+    -panelHalf + panelRadius,
+  );
+  logoPanelShape.lineTo(panelHalf, panelHalf - panelRadius);
+  logoPanelShape.quadraticCurveTo(
+    panelHalf,
+    panelHalf,
+    panelHalf - panelRadius,
+    panelHalf,
+  );
+  logoPanelShape.lineTo(-panelHalf + panelRadius, panelHalf);
+  logoPanelShape.quadraticCurveTo(
+    -panelHalf,
+    panelHalf,
+    -panelHalf,
+    panelHalf - panelRadius,
+  );
+  logoPanelShape.lineTo(-panelHalf, -panelHalf + panelRadius);
+  logoPanelShape.quadraticCurveTo(
+    -panelHalf,
+    -panelHalf,
+    -panelHalf + panelRadius,
+    -panelHalf,
+  );
+  logoPanelShape.closePath();
+  const logoPanelGeometry = new THREE.ExtrudeGeometry(logoPanelShape, {
+    depth: 0.36,
+    steps: 1,
+    curveSegments: 16,
+    bevelEnabled: true,
+    bevelSegments: 2,
+    bevelSize: 0.08,
+    bevelThickness: 0.08,
+  });
+  logoPanelGeometry.translate(0, 0, -0.18);
+  logoPanelGeometry.rotateX(Math.PI / 2);
   const topNodes = [
     [-1.8, -1.3],
     [0, -1.8],
@@ -9286,49 +9398,73 @@ export function createWorldScene({
     [[0, -1.8], [1.7, -0.4]],
     [[0, -1.8], [0.2, 1.7]],
   ];
-  for (const faceY of [-2.8, 2.8]) {
+  for (const faceY of [-2.68, 2.68]) {
+    const outward = Math.sign(faceY);
+    const panel = new THREE.Mesh(logoPanelGeometry, chrome);
+    panel.name =
+      `forkmesh-reflective-fm-panel-${outward > 0 ? "top" : "bottom"}`;
+    panel.position.y = faceY;
+    chromeMark.add(panel);
     topNodes.forEach(([x, z]) => {
       const node = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.46, 0.46, 0.34, 24),
-        chrome,
+        new THREE.CylinderGeometry(0.48, 0.48, 0.08, 32),
+        darkChrome,
       );
-      node.position.set(x, faceY, z);
-      chromeCube.add(node);
+      node.position.set(x, faceY + outward * 0.25, z);
+      chromeMark.add(node);
     });
     topBranches.forEach(([[x1, z1], [x2, z2]]) => {
       const length = Math.hypot(x2 - x1, z2 - z1);
       const branch = new THREE.Mesh(
-        new THREE.BoxGeometry(0.3, 0.3, length),
-        chrome,
+        new THREE.BoxGeometry(0.3, 0.08, length),
+        darkChrome,
       );
-      branch.position.set((x1 + x2) / 2, faceY, (z1 + z2) / 2);
+      branch.position.set(
+        (x1 + x2) / 2,
+        faceY + outward * 0.25,
+        (z1 + z2) / 2,
+      );
       branch.rotation.y = Math.atan2(x2 - x1, z2 - z1);
-      chromeCube.add(branch);
+      chromeMark.add(branch);
     });
   }
+  const logoContactPoint = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.2, 0),
+    chrome,
+  );
+  logoContactPoint.name = "forkmesh-reflective-fm-cube-contact-point";
+  logoContactPoint.position.set(
+    -logoHalfSize,
+    -logoHalfSize,
+    -logoHalfSize,
+  );
+  chromeMark.add(logoContactPoint);
   const logoSupport = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.22, 0.3, 1.35, 20),
+    new THREE.CylinderGeometry(0.2, 0.28, 1.28, 20),
     darkChrome,
   );
   logoSupport.name = "forkmesh-reflective-fm-cube-support";
-  logoSupport.position.y = 1.72;
+  logoSupport.position.y = logoSupportTopY - 0.64;
   logoFountain.add(logoSupport);
   logoFountain.add(chromeCube);
   officeInterior.add(logoFountain);
   let lastLogoReflectionAt = 0;
+  let officeLobbyPlayerMoving = false;
   // One cube-map refresh renders the scene six times. The lobby itself is
-  // mostly static, so a measured cadence keeps the chrome sharp and still
-  // picks up nearby visitors without turning the fountain into a frame-rate
-  // tax on phones or integrated GPUs.
+  // mostly static, so refresh only while its visitor and camera are idle.
+  // Capturing on other floors or during a drag spends six full scene renders
+  // on an invisible sculpture and presents as a periodic movement hitch.
   const logoReflectionIntervalMs = compactRenderer ? 2500 : 1000;
   animated.push((time) => {
     chromeCube.rotation.y = time * 0.00022;
     logoWater.rotation.y = -time * 0.00012;
-    fountainJets.forEach((jet, index) => {
-      jet.scale.y = 0.94 + Math.sin(time * 0.003 + index * 1.2) * 0.055;
-    });
     if (
-      officeSceneMode !== "town" &&
+      officeSceneMode === "lobby" &&
+      officeCurrentFloorId === "lobby" &&
+      !officeElevatorRide &&
+      !officeLobbyPlayerMoving &&
+      primaryPointerId === null &&
+      !pinchActive &&
       time - lastLogoReflectionAt >= logoReflectionIntervalMs
     ) {
       lastLogoReflectionAt = time;
@@ -9353,11 +9489,12 @@ export function createWorldScene({
     metalness: 0.82,
     roughness: 0.2,
   });
-  const elevatorShaftGlass = makeMaterial(THREE, "#c9fff3", {
+  const elevatorCarGlass = makeMaterial(THREE, "#c9fff3", {
     transparent: true,
-    opacity: 0.16,
-    metalness: 0.16,
-    roughness: 0.08,
+    opacity: 0.13,
+    metalness: 0,
+    roughness: 0.5,
+    depthWrite: false,
   });
   for (const [x, z] of [
     [-5, -4],
@@ -9372,15 +9509,9 @@ export function createWorldScene({
     beam.position.set(x, OFFICE_TOWER_HEIGHT / 2, z);
     officeElevatorShaft.add(beam);
   }
-  for (const [geometry, x, z] of [
-    [new THREE.BoxGeometry(0.12, OFFICE_TOWER_HEIGHT, 7.8), -4.88, 0],
-    [new THREE.BoxGeometry(0.12, OFFICE_TOWER_HEIGHT, 7.8), 4.88, 0],
-    [new THREE.BoxGeometry(9.8, OFFICE_TOWER_HEIGHT, 0.12), 0, 3.88],
-  ]) {
-    const pane = new THREE.Mesh(geometry, elevatorShaftGlass);
-    pane.position.set(x, OFFICE_TOWER_HEIGHT / 2, z);
-    officeElevatorShaft.add(pane);
-  }
+  // The moving car supplies the only glass envelope. Full-height shaft panes
+  // created a second parallel layer a few inches away, so their transparent
+  // sort order changed whenever the rider turned the camera.
   officeInterior.add(officeElevatorShaft);
 
   const officeElevatorCar = new THREE.Group();
@@ -9410,7 +9541,7 @@ export function createWorldScene({
     [new THREE.BoxGeometry(0.14, 6.8, 7.25), 4.62, 0],
     [new THREE.BoxGeometry(9.25, 6.8, 0.14), 0, 3.55],
   ]) {
-    const pane = new THREE.Mesh(geometry, elevatorShaftGlass);
+    const pane = new THREE.Mesh(geometry, elevatorCarGlass);
     pane.position.set(x, 3.65, z);
     officeElevatorCar.add(pane);
   }
@@ -9419,9 +9550,10 @@ export function createWorldScene({
       new THREE.BoxGeometry(4.45, 6.65, 0.12),
       makeMaterial(THREE, "#d8fff6", {
         transparent: true,
-        opacity: 0.34,
-        metalness: 0.34,
-        roughness: 0.08,
+        opacity: 0.24,
+        metalness: 0,
+        roughness: 0.48,
+        depthWrite: false,
       }),
     );
     door.position.set(side * 4.36, 3.62, -3.56);
@@ -9454,8 +9586,18 @@ export function createWorldScene({
         context.textAlign = "center";
         context.textBaseline = "middle";
         context.font =
-          '900 64px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText(String(destination.level + 1), 96, 58);
+          '900 52px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(String(destination.level + 1), 96, 39);
+        context.fillStyle = "#b9f8da";
+        context.font =
+          '800 17px "ForkMesh Mono", ui-monospace, monospace';
+        const teamLabel = (
+          destination.team ||
+          (destination.id === "rooftop" ? "ROOF" : destination.label)
+        )
+          .replaceAll("-", " ")
+          .toUpperCase();
+        context.fillText(teamLabel, 96, 85, 172);
       });
       return [
         destination.id,
@@ -9485,8 +9627,15 @@ export function createWorldScene({
       elevatorButtonMaterials.get(destination.id),
     );
     const column = index % 2;
-    const row = Math.floor(index / 2);
-    button.position.set((column - 0.5) * 2.2, 1.65 - row * 0.78, 0.3);
+    const rowFromBottom = Math.floor(index / 2);
+    // Conventional lift ordering: floor 1 starts at the lower-left, rises
+    // left-to-right, and the rooftop ends at the top.
+    button.position.set(
+      (column - 0.5) * 2.2,
+      -1.65 + rowFromBottom * 0.78,
+      0.3,
+    );
+    button.name = `forkmesh-office-elevator-button-${destination.id}`;
     button.userData.interactive = "office-elevator-floor";
     button.userData.officeFloorId = destination.id;
     button.userData.officeFloorLevel = destination.level;
@@ -9592,7 +9741,9 @@ export function createWorldScene({
   let officeFloorAccess = normalizeOfficeFloorAccess();
   let officeFloorHandler = null;
   let officeElevatorRide = null;
-  let officeAttendance = { inAt: 0, outAt: 0, account: "" };
+  let officeAttendance = { visits: [] };
+  let selfSecurityDetails = { ip: "", userAgent: "" };
+  let selfSecurityBadgeVisible = true;
   // main dropped its own selectedLandmark when the floating landmark labels went
   // away (adhoc #243); the Office still tracks it to frame the camera on entry.
   let selectedLandmark = "";
@@ -9800,22 +9951,76 @@ export function createWorldScene({
     return { ...officeFloorAccess };
   }
 
-  function setOfficeAttendance(event = {}) {
-    const type = event?.type === "out" ? "out" : "in";
-    const timestamp = Math.max(0, Number(event?.at) || Date.now());
-    officeAttendance = {
-      ...officeAttendance,
-      account: String(
-        event?.account || officeAttendance.account || "",
-      ).slice(0, 64),
-      [type === "in" ? "inAt" : "outAt"]: timestamp,
+  function setSelfSecurityDetails(details = {}) {
+    selfSecurityDetails = {
+      ip: String(details?.ip || "").trim().slice(0, 64),
+      userAgent: String(details?.userAgent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 256),
     };
+    setAvatarSecurityBadge(
+      THREE,
+      player,
+      selfSecurityDetails,
+      selfSecurityBadgeVisible,
+    );
+    setAvatarSecurityBadge(
+      THREE,
+      officeLobbyPlayer,
+      selfSecurityDetails,
+      selfSecurityBadgeVisible,
+    );
+    const localParticipant =
+      officeParticipants.get(officeLocalParticipantId);
+    if (localParticipant) {
+      setAvatarSecurityBadge(
+        THREE,
+        localParticipant,
+        selfSecurityDetails,
+        selfSecurityBadgeVisible,
+      );
+    }
+    return { ...selfSecurityDetails };
+  }
+
+  function setSelfSecurityBadgeVisibility(visible = true) {
+    const previous = selfSecurityBadgeVisible;
+    selfSecurityBadgeVisible = visible === true;
+    [
+      player,
+      officeLobbyPlayer,
+      officeParticipants.get(officeLocalParticipantId),
+    ].forEach((avatar) => {
+      if (avatar?.userData?.selfSecurityBadge) {
+        avatar.userData.selfSecurityBadge.visible =
+          selfSecurityBadgeVisible;
+      }
+    });
+    return previous;
+  }
+
+  function setOfficeAttendance(event = {}) {
+    const visits = Array.isArray(event?.visits)
+      ? event.visits.slice(0, 20).map((visit) => ({
+          id: String(visit?.id || "").slice(0, 32),
+          account: String(visit?.account || "Contributor")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 32),
+          inAt: Math.max(0, Number(visit?.inAt) || 0),
+          outAt: Math.max(0, Number(visit?.outAt) || 0),
+        }))
+      : [];
+    officeAttendance = { visits };
     const previous = officeAttendanceBoard.material.map;
     officeAttendanceBoard.material.map =
       officeAttendanceTexture(officeAttendance);
     officeAttendanceBoard.material.needsUpdate = true;
     previous?.dispose?.();
-    return { ...officeAttendance };
+    return {
+      visits: officeAttendance.visits.map((visit) => ({ ...visit })),
+    };
   }
 
   function travelToOfficeFloor(floorId) {
@@ -10189,7 +10394,7 @@ export function createWorldScene({
     currentFloorY = officeFloorY(destinationFloor.id) + 0.38;
     cameraFocus = null;
     officeInterior.visible = true;
-    officeInteriorDoorPivot.rotation.y = Math.PI / 2;
+    officeSlidingDoorOpen = 1;
     if (enteringFromTown) {
       const localPosition = officeAvatarLocalPosition(
         player,
@@ -10355,6 +10560,14 @@ export function createWorldScene({
       } else if (avatar.userData.name !== participantIdentity.name) {
         updateAvatarBadge(THREE, avatar, participantIdentity, true);
         officeParticipantLabels.get(id).textContent = participantIdentity.name;
+      }
+      if (id === officeLocalParticipantId) {
+        setAvatarSecurityBadge(
+          THREE,
+          avatar,
+          selfSecurityDetails,
+          selfSecurityBadgeVisible,
+        );
       }
       applyOfficeParticipantPose(avatar, participant);
     });
@@ -10687,7 +10900,7 @@ export function createWorldScene({
       return travelToOfficeFloor("lobby");
     }
     officeExitPending = false;
-    officeInteriorDoorPivot.rotation.y = Math.PI / 2;
+    officeSlidingDoorOpen = 1;
     const avatar =
       officeSceneMode === "meeting"
         ? officeParticipants.get(officeLocalParticipantId)
@@ -10925,6 +11138,7 @@ export function createWorldScene({
   function walkOfficeLobbyPlayer(delta, time) {
     const avatar = player;
     if (officeElevatorRide) {
+      officeLobbyPlayerMoving = true;
       avatar.userData.leftArm.rotation.x = 0;
       avatar.userData.rightArm.rotation.x = 0;
       applyLegPitch(avatar, 0, 0);
@@ -10935,6 +11149,7 @@ export function createWorldScene({
     const movement = input.movement;
     if (officeChairSeat) {
       if (!movement.lengthSq() && !dashTarget && !jumpQueued) {
+        officeLobbyPlayerMoving = false;
         applyOfficeChairSeatPose();
         animateAvatarActivity(avatar, time, delta, reducedMotion);
         return;
@@ -10942,6 +11157,7 @@ export function createWorldScene({
       standUpFromOfficeChair();
     }
     const walking = movement.lengthSq() > 0;
+    officeLobbyPlayerMoving = walking;
     const movementSpeed = movementSpeedForInput(input, delta);
     if (walking) {
       const previousPosition = avatar.position.clone();
@@ -16326,6 +16542,8 @@ export function createWorldScene({
     setOfficeFloorHandler,
     setOfficeAccess,
     setOfficeAttendance,
+    setSelfSecurityDetails,
+    setSelfSecurityBadgeVisibility,
     travelToOfficeFloor,
     sitOnOfficeChair,
     setOfficeParticipants,
