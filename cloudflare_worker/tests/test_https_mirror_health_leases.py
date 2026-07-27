@@ -136,15 +136,18 @@ def test_cloudflare_dns_check_distinguishes_unavailable_from_rejected():
 
 
 @pytest.mark.parametrize(
-    ("dns_result", "fetch_result"),
+    ("dns_result", "fetch_result", "expected_marker"),
     [
-        (None, (200, "{}")),
-        (True, (0, "")),
-        (True, (503, "")),
+        (None, (200, "{}"), "transient"),
+        (True, (0, ""), "transient"),
+        (True, (503, ""), "transient"),
+        (True, (401, ""), "failed"),
+        (True, (403, ""), "failed"),
+        (True, (404, ""), "failed"),
     ],
 )
-def test_unavailable_health_probe_marks_transient_not_failed(
-        dns_result, fetch_result):
+def test_health_probe_distinguishes_transient_from_definitive_failures(
+        dns_result, fetch_result, expected_marker):
     events = []
 
     async def owner_signing_pubkeys(_env, _node):
@@ -184,7 +187,9 @@ def test_unavailable_health_probe_marks_transient_not_failed(
         "json": json,
         "HTTPS_MIRROR_MANIFEST_MAX_BYTES": 16_384,
         "HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS": 5,
-        "HTTPS_MIRROR_RETRY_STATUSES": {500, 502, 503, 504},
+        "HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES": {
+            408, 425, 429, 500, 502, 503, 504,
+        },
     }
     exec(_function_source("_https_mirror_health_one"), namespace)
 
@@ -200,8 +205,12 @@ def test_unavailable_health_probe_marks_transient_not_failed(
     ))
 
     assert active is False
-    assert events[-1] == "transient"
-    assert "failed" not in events
+    assert events[-1] == expected_marker
+    assert (
+        "failed" not in events
+        if expected_marker == "transient"
+        else "transient" not in events
+    )
     if dns_result is None:
         assert "fetch" not in events
     else:
@@ -291,4 +300,3 @@ def test_health_cron_schedules_by_latest_attempt_not_old_success():
     assert "updated_at" in sql
     assert "checked_at" in sql
     assert args == (2,)
-
