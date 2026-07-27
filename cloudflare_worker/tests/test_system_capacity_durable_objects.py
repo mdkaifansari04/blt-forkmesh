@@ -86,6 +86,39 @@ def test_bindings_are_discovered_from_the_environment_not_a_hardcoded_list():
     assert namespace["durable_object_bindings"](object()) == []
 
 
+def test_bindings_are_still_discovered_when_the_environment_hides_its_keys():
+    """A runtime whose env exposes nothing enumerable still reports objects.
+
+    `Object.keys` returning an empty list previously meant "no Durable
+    Objects", which silently reduced System Capacity to the two connections
+    the browser can observe by itself.
+    """
+    namespace_stub = SimpleNamespace(
+        idFromName=lambda name: name, newUniqueId=lambda: "id")
+
+    class HiddenEnv:
+        FORKMESH_WORLD = namespace_stub
+        FORKMESH_NODES = namespace_stub
+        NODE_NAME = "forkmesh-mainnode"
+
+    namespace = _load(
+        ("durable_object_bindings",),
+        {
+            "Object": SimpleNamespace(
+                keys=lambda _env: [],
+                getOwnPropertyNames=lambda _env: ["FORKMESH_NODES"],
+            ),
+            "re": re,
+            "DURABLE_OBJECT_BINDING_RE": re.compile(r"[A-Z][A-Z0-9_]{0,63}"),
+        },
+    )
+
+    # Own-property names and attribute discovery are merged, so a binding that
+    # is not an own enumerable key of the environment is still reported.
+    assert namespace["durable_object_bindings"](HiddenEnv()) == [
+        "FORKMESH_NODES", "FORKMESH_WORLD"]
+
+
 def test_binding_labels_are_derived_from_the_binding_name():
     namespace = _load(("durable_object_label",), {})
     label = namespace["durable_object_label"]

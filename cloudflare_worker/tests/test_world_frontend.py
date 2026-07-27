@@ -1973,8 +1973,10 @@ def test_system_capacity_scene_combines_service_limits_and_database_rows():
     assert "system-capacity-metrics-unavailable" in SCENE
     assert "system-capacity-database-tables" in SCENE
     assert "Math.log1p(table.rowCount)" in SCENE
-    assert "rowCount > 1" in SCENE
-    assert ".slice(0, 128)" in SCENE
+    # Every table the Worker counted is drawn, empty ones included, up to the
+    # same ceiling the Worker itself enumerates.
+    assert "rowCount >= 0" in SCENE
+    assert ".slice(0, 256)" in SCENE
     assert "visibleTableCount" in SCENE
     assert "system-capacity-row-count:" in SCENE
     # The table name is printed on the bar's top face only; the old upright
