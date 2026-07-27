@@ -2280,12 +2280,28 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
             job.value(QStringLiteral("provider")).toString();
         const QString prompt =
             job.value(QStringLiteral("prompt")).toString();
+        const QString requestedModel =
+            job.value(QStringLiteral("model")).toString().trimmed();
+        const int issueNumber =
+            job.value(QStringLiteral("issueNumber")).toInt();
+        const QSet<QString> allowedWebsiteModels = {
+            QStringLiteral("claude-haiku-4-5"),
+            QStringLiteral("claude-sonnet-4-6"),
+            QStringLiteral("claude-opus-4-8"),
+            QStringLiteral("claude-fable-5"),
+            QStringLiteral("gpt-5.6-sol"),
+            QStringLiteral("gpt-5.6-luna"),
+            QStringLiteral("gpt-5.6-terra"),
+        };
         const QJsonObject security =
             job.value(QStringLiteral("securityCheck")).toObject();
         if (jobId <= 0 || leaseId.isEmpty() || sessionId.isEmpty() ||
             prompt.trimmed().isEmpty() || prompt.size() > 8000 ||
             (provider != QLatin1String("claude-code") &&
              !agentIsCodexProvider(provider)) ||
+            (!requestedModel.isEmpty() &&
+             !allowedWebsiteModels.contains(requestedModel)) ||
+            issueNumber < 0 || issueNumber > 10000000 ||
             security.value(QStringLiteral("model")).toString() !=
                 QLatin1String("haiku") ||
             security.value(QStringLiteral("tools")).toBool(true) ||
@@ -2443,10 +2459,41 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
                     break;
                 }
             }
-            localAgentId = startAdHocAgentForRepo(
-                repoIndex, job.value(QStringLiteral("prompt")).toString(),
-                job.value(QStringLiteral("provider")).toString(),
-                /*createPr=*/true);
+            const QString provider =
+                job.value(QStringLiteral("provider")).toString();
+            const QString requestedModel =
+                job.value(QStringLiteral("model")).toString().trimmed();
+            const int issueNumber =
+                job.value(QStringLiteral("issueNumber")).toInt();
+            if (issueNumber > 0) {
+                const RepositoryRecord &localRepo = m_repositories.at(repoIndex);
+                const QList<Issue> issues =
+                    IssueStore(localRepo.localPath, localRepo.mirrorPath,
+                               &m_profileIdentity, m_userName)
+                        .loadAll();
+                const Issue *selectedIssue = nullptr;
+                for (const Issue &candidate : issues) {
+                    if (candidate.number == issueNumber) {
+                        selectedIssue = &candidate;
+                        break;
+                    }
+                }
+                if (!selectedIssue) {
+                    reportOrgAgentJob(
+                        repo, job, QStringLiteral("approved"),
+                        QStringLiteral("failed"), 0,
+                        QStringLiteral(
+                            "The commit-pinned issue record is unavailable on this mirror."));
+                    return;
+                }
+                localAgentId = startAgentForIssue(
+                    *selectedIssue, provider, /*createPr=*/true,
+                    /*quiet=*/true, requestedModel, &localRepo);
+            } else {
+                localAgentId = startAdHocAgentForRepo(
+                    repoIndex, job.value(QStringLiteral("prompt")).toString(),
+                    provider, /*createPr=*/true, requestedModel);
+            }
             if (localAgentId <= 0) {
                 reportOrgAgentJob(
                     repo, job, QStringLiteral("approved"),

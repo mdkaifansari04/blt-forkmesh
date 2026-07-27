@@ -3,6 +3,7 @@
 #include "../src/AccountCapability.h"
 #include "../src/AgentJail.h"
 #include "../src/AgentStore.h"
+#include "../src/BackgroundActivity.h"
 #include "../src/BackoffNetworkAccessManager.h"
 #include "../src/ChatHistoryLimits.h"
 #include "../src/ChatVisitorPresence.h"
@@ -6315,6 +6316,52 @@ int main(int argc, char *argv[])
                       "agent metadata excludes provider credential field %1")
                                  .arg(forbidden)));
         }
+    }
+
+    {
+        // Background-activity bus (adhoc #421): the footer strip is driven purely
+        // by these tickets, so a lost or double-retired one leaves a spinner
+        // running forever (or hides work that is still going).
+        QStringList seen;
+        forkmesh::BackgroundActivity::setListener(
+            [&seen](quint64 id, const QString &kind, const QString &detail,
+                    bool started) {
+                seen.append(QStringLiteral("%1:%2:%3:%4")
+                                .arg(started ? QStringLiteral("+")
+                                             : QStringLiteral("-"))
+                                .arg(id)
+                                .arg(kind, detail));
+            });
+        const quint64 first =
+            forkmesh::BackgroundActivity::begin(QStringLiteral("git"),
+                                                QStringLiteral("git log"));
+        const quint64 second =
+            forkmesh::BackgroundActivity::begin(QStringLiteral("net"));
+        check(first != second && first != 0 && second != 0,
+              "each background ticket gets its own non-zero id");
+        forkmesh::BackgroundActivity::end(first);
+        forkmesh::BackgroundActivity::end(second);
+        forkmesh::BackgroundActivity::end(0); // no-op guard for untracked work
+        check(seen == QStringList({QStringLiteral("+:%1:git:git log").arg(first),
+                                   QStringLiteral("+:%1:net:").arg(second),
+                                   QStringLiteral("-:%1::").arg(first),
+                                   QStringLiteral("-:%1::").arg(second)}),
+              "every begin/end pair reaches the listener exactly once, in order");
+
+        {
+            const forkmesh::BackgroundScope scope(QStringLiteral("scan"));
+            check(seen.size() == 5 && seen.last().startsWith(QLatin1Char('+')),
+                  "a background scope opens its ticket on construction");
+        }
+        check(seen.size() == 6 && seen.last().startsWith(QLatin1Char('-')),
+              "a background scope retires its ticket when it unwinds");
+
+        forkmesh::BackgroundActivity::setListener(nullptr);
+        forkmesh::BackgroundActivity::end(
+            forkmesh::BackgroundActivity::begin(QStringLiteral("git")));
+        check(seen.size() == 6,
+              "a detached bus drops announcements instead of calling a dead "
+              "listener");
     }
 
     if (failures) {

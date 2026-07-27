@@ -49,6 +49,11 @@ QString networkRequestEventFor(const QUrl &url)
 
 MainWindow::~MainWindow()
 {
+    // Detach the background-activity strip first: git reads and network replies
+    // keep announcing themselves during teardown below, and the listener holds
+    // a raw `this`.
+    forkmesh::BackgroundActivity::setListener(nullptr);
+
     // Revoke the browser's memory-only voice capability and stop any local
     // capture while MainWindow's voice state is still alive.
     if (m_worldSpeechBridge)

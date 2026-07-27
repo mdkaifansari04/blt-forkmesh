@@ -4936,6 +4936,8 @@ void MainWindow::aiReviewRunClaudeCode(const QString &prompt)
 
     aiReviewLog(QStringLiteral(
         "==> Running Claude Code over the pull request diff\xE2\x80\xA6\n"));
+    trackProcessActivity(process, QStringLiteral("review"),
+                         QStringLiteral("AI review of the pull request diff"));
 #ifdef Q_OS_WIN
     process->start(QStringLiteral("cmd"), {QStringLiteral("/c"), command});
 #else
@@ -5795,6 +5797,8 @@ void MainWindow::aiFixRunClaudeCode()
                                   "request's branch\xE2\x80\xA6\n")
                  : QStringLiteral(
                        "==> Running Claude Code over the conflict tree\xE2\x80\xA6\n"));
+    trackProcessActivity(process, QStringLiteral("agent"),
+                         QStringLiteral("Claude Code is editing the branch"));
 #ifdef Q_OS_WIN
     process->start(QStringLiteral("cmd"), {QStringLiteral("/c"), command});
 #else

@@ -39,6 +39,20 @@
 
 using namespace forkmesh::ui;
 
+namespace {
+// Background strip geometry (adhoc #421): five one-word rows are visible, the
+// sixth kind of work scrolls.
+constexpr int kBackgroundTaskVisibleRows = 5;
+constexpr int kBackgroundTaskRowSpacing = 3;
+// Work that finishes inside this window never gets a row. Almost every git read
+// lands well under it, so the strip shows genuinely slow jobs and no widget is
+// created (let alone destroyed) for the hundreds of fast ones.
+constexpr qint64 kBackgroundTaskShowAfterMs = 200;
+// Idle ticks kept before the spin timer stands down, so a burst of short jobs
+// doesn't start/stop it repeatedly.
+constexpr int kBackgroundTaskIdleTicksBeforeStop = 12;
+} // namespace
+
 // -------------------------------------------------------------- server rail
 
 void MainWindow::loadServers()
@@ -1082,16 +1096,17 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_footerUpdateLog->installEventFilter(this);
     positionFloatingLogButton();
 
-    // Slow cleanup is visible without taking over the app: this narrow queue sits
-    // exactly between the live log and the agent prompt, and disappears when its
-    // last job finishes.
+    // Background work is visible without taking over the app: this narrow strip
+    // sits exactly between the live log and the agent prompt, lists one spinner
+    // plus one-word tag per kind of job in flight, and disappears when the last
+    // one finishes. Five tags fit; past that the list scrolls (adhoc #421).
     m_backgroundQueue = new QFrame;
     m_backgroundQueue->setObjectName("backgroundTaskQueue");
     m_backgroundQueue->setFrameShape(QFrame::StyledPanel);
-    m_backgroundQueue->setFixedWidth(250);
+    m_backgroundQueue->setFixedWidth(132);
     auto *backgroundLayout = new QVBoxLayout(m_backgroundQueue);
-    backgroundLayout->setContentsMargins(10, 8, 10, 8);
-    backgroundLayout->setSpacing(5);
+    backgroundLayout->setContentsMargins(9, 6, 6, 6);
+    backgroundLayout->setSpacing(4);
     m_backgroundQueueTitle = new QLabel(QStringLiteral("Background"));
     m_backgroundQueueTitle->setObjectName("backgroundTaskQueueTitle");
     QFont backgroundTitleFont = m_backgroundQueueTitle->font();
@@ -1104,16 +1119,41 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_backgroundQueueRowsLayout =
         new QVBoxLayout(m_backgroundQueueRowsHost);
     m_backgroundQueueRowsLayout->setContentsMargins(0, 0, 0, 0);
-    m_backgroundQueueRowsLayout->setSpacing(4);
+    m_backgroundQueueRowsLayout->setSpacing(kBackgroundTaskRowSpacing);
     m_backgroundQueueRowsLayout->addStretch(1);
-    auto *backgroundScroll = new QScrollArea;
-    backgroundScroll->setObjectName("backgroundTaskQueueScroll");
-    backgroundScroll->setFrameShape(QFrame::NoFrame);
-    backgroundScroll->setWidgetResizable(true);
-    backgroundScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    backgroundScroll->setWidget(m_backgroundQueueRowsHost);
-    backgroundLayout->addWidget(backgroundScroll, 1);
+    m_backgroundQueueScroll = new QScrollArea;
+    m_backgroundQueueScroll->setObjectName("backgroundTaskQueueScroll");
+    m_backgroundQueueScroll->setFrameShape(QFrame::NoFrame);
+    m_backgroundQueueScroll->setWidgetResizable(true);
+    m_backgroundQueueScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_backgroundQueueScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_backgroundQueueScroll->setWidget(m_backgroundQueueRowsHost);
+    // Height for exactly kBackgroundTaskVisibleRows rows: the sixth kind of work
+    // pushes the list into its scrollbar instead of stretching the footer.
+    QFont backgroundRowFont = m_backgroundQueue->font();
+    backgroundRowFont.setPointSizeF(
+        qMax(7.5, backgroundRowFont.pointSizeF() - 1.0));
+    m_backgroundTaskRowHeight = QFontMetrics(backgroundRowFont).height() + 2;
+    m_backgroundQueueScroll->setMaximumHeight(
+        kBackgroundTaskVisibleRows * m_backgroundTaskRowHeight +
+        (kBackgroundTaskVisibleRows - 1) * kBackgroundTaskRowSpacing);
+    backgroundLayout->addWidget(m_backgroundQueueScroll, 1);
     m_backgroundQueue->hide();
+
+    // Every announcement in the process lands here. The hop through
+    // invokeMethod() is what lets tickets be opened off the GUI thread (mirror
+    // scans, contribution snapshots) while all queue state stays on one thread;
+    // posted events are dropped if the window dies first.
+    forkmesh::BackgroundActivity::setListener(
+        [this](quint64 id, const QString &kind, const QString &detail,
+               bool started) {
+            QMetaObject::invokeMethod(
+                this,
+                [this, id, kind, detail, started] {
+                    noteBackgroundActivity(id, kind, detail, started);
+                },
+                Qt::QueuedConnection);
+        });
 
     // Horizontal split: live-log strip, transient background queue, then prompt.
     auto *dockRow = new QHBoxLayout(dock);
@@ -1138,89 +1178,183 @@ QWidget *MainWindow::buildNetworkLogDock()
     return dock;
 }
 
-quint64 MainWindow::beginBackgroundTask(const QString &note)
+// One-word tag for the strip: callers may hand over a phrase, the row shows the
+// first word ("git", "net", "fork" …) and keeps the rest for the tooltip.
+QString MainWindow::backgroundTaskWord(const QString &kind)
 {
-    if (!m_backgroundQueueRowsLayout || !m_backgroundQueue)
-        return 0;
-    const quint64 id = m_nextBackgroundTaskId++;
-    auto *row = new QWidget(m_backgroundQueueRowsHost);
-    row->setObjectName("backgroundTaskRow");
-    auto *layout = new QHBoxLayout(row);
-    layout->setContentsMargins(0, 2, 0, 2);
-    layout->setSpacing(6);
-    auto *spinner = new QLabel(QString::fromUtf8("\xE2\xA0\x8B"));
-    spinner->setObjectName("backgroundTaskSpinner");
-    spinner->setStyleSheet(QStringLiteral("color:#3fb950;font-weight:700;"));
-    spinner->setFixedWidth(14);
-    auto *label = new QLabel(note.trimmed());
-    label->setObjectName("backgroundTaskNote");
-    label->setToolTip(note.trimmed());
-    label->setWordWrap(true);
-    QFont noteFont = label->font();
-    noteFont.setPointSizeF(qMax(7.0, noteFont.pointSizeF() - 1.0));
-    label->setFont(noteFont);
-    layout->addWidget(spinner, 0, Qt::AlignTop);
-    layout->addWidget(label, 1);
-    m_backgroundQueueRowsLayout->insertWidget(
-        qMax(0, m_backgroundQueueRowsLayout->count() - 1), row);
-    m_backgroundTaskRows.insert(id, row);
-    m_backgroundTaskSpinners.insert(id, spinner);
-    m_backgroundQueueTitle->setText(
-        QStringLiteral("Background \xC2\xB7 %1").arg(m_backgroundTaskRows.size()));
-    m_backgroundQueue->show();
-    if (!m_backgroundTaskSpinTimer) {
-        m_backgroundTaskSpinTimer = new QTimer(this);
-        m_backgroundTaskSpinTimer->setInterval(90);
-        connect(m_backgroundTaskSpinTimer, &QTimer::timeout, this, [this] {
-            static const QStringList frames{
-                QString::fromUtf8("\xE2\xA0\x8B"),
-                QString::fromUtf8("\xE2\xA0\x99"),
-                QString::fromUtf8("\xE2\xA0\xB9"),
-                QString::fromUtf8("\xE2\xA0\xB8"),
-                QString::fromUtf8("\xE2\xA0\xBC"),
-                QString::fromUtf8("\xE2\xA0\xB4"),
-                QString::fromUtf8("\xE2\xA0\xA6"),
-                QString::fromUtf8("\xE2\xA0\xA7"),
-                QString::fromUtf8("\xE2\xA0\x87"),
-                QString::fromUtf8("\xE2\xA0\x8F"),
-            };
-            m_backgroundTaskSpinFrame =
-                (m_backgroundTaskSpinFrame + 1) % frames.size();
-            for (QLabel *spinner : std::as_const(m_backgroundTaskSpinners)) {
-                if (spinner)
-                    spinner->setText(frames.at(m_backgroundTaskSpinFrame));
-            }
-        });
+    QString word;
+    for (const QChar ch : kind.simplified()) {
+        if (ch.isSpace())
+            break;
+        if (ch.isLetterOrNumber())
+            word.append(ch.toLower());
     }
-    if (!m_backgroundTaskSpinTimer->isActive())
-        m_backgroundTaskSpinTimer->start();
-    return id;
+    if (word.isEmpty())
+        word = QStringLiteral("work");
+    return word.left(10);
+}
+
+quint64 MainWindow::beginBackgroundTask(const QString &kind,
+                                        const QString &detail)
+{
+    // Route even in-window callers through the bus so there is exactly one path
+    // into the strip, whoever opened the ticket.
+    return forkmesh::BackgroundActivity::begin(kind, detail);
 }
 
 void MainWindow::finishBackgroundTask(quint64 id, bool success,
                                       const QString &detail)
 {
+    forkmesh::BackgroundActivity::end(id);
     if (!detail.trimmed().isEmpty())
         logSystem(QStringLiteral("Background: %1").arg(detail.trimmed()));
-    QWidget *row = m_backgroundTaskRows.take(id);
-    m_backgroundTaskSpinners.remove(id);
-    if (row)
-        row->deleteLater();
-    if (m_backgroundTaskRows.isEmpty()) {
-        if (m_backgroundTaskSpinTimer)
-            m_backgroundTaskSpinTimer->stop();
-        if (m_backgroundQueue)
-            m_backgroundQueue->hide();
-        if (m_backgroundQueueTitle)
-            m_backgroundQueueTitle->setText(QStringLiteral("Background"));
-    } else {
-        if (m_backgroundQueueTitle)
-            m_backgroundQueueTitle->setText(
-            QStringLiteral("Background \xC2\xB7 %1")
-                .arg(m_backgroundTaskRows.size()));
-    }
     if (!success && !detail.trimmed().isEmpty())
         flashMessage(detail.trimmed(), true);
+}
+
+// Ticket bookkeeping. Rows are *not* touched here: a job that finishes inside
+// kBackgroundTaskShowAfterMs must never create a widget, so the sweep below owns
+// what is on screen and this only maintains the counts it reads.
+void MainWindow::noteBackgroundActivity(quint64 id, const QString &kind,
+                                        const QString &detail, bool started)
+{
+    if (!m_backgroundQueue || !m_backgroundQueueRowsLayout)
+        return;
+    if (started) {
+        const QString word = backgroundTaskWord(kind);
+        m_backgroundTaskWords.insert(id, word);
+        const int count = m_backgroundTaskCounts.value(word) + 1;
+        m_backgroundTaskCounts.insert(word, count);
+        if (count == 1)
+            m_backgroundTaskSince.insert(word, QDateTime::currentMSecsSinceEpoch());
+        const QString note = detail.trimmed();
+        if (!note.isEmpty())
+            m_backgroundTaskDetails.insert(word, note);
+    } else {
+        const QString word = m_backgroundTaskWords.take(id);
+        if (word.isEmpty())
+            return;
+        const int count = m_backgroundTaskCounts.value(word) - 1;
+        if (count > 0) {
+            m_backgroundTaskCounts.insert(word, count);
+        } else {
+            m_backgroundTaskCounts.remove(word);
+            m_backgroundTaskSince.remove(word);
+            m_backgroundTaskDetails.remove(word);
+        }
+    }
+    if (!m_backgroundTaskSpinTimer) {
+        m_backgroundTaskSpinTimer = new QTimer(this);
+        m_backgroundTaskSpinTimer->setInterval(90);
+        connect(m_backgroundTaskSpinTimer, &QTimer::timeout, this,
+                &MainWindow::tickBackgroundQueue);
+    }
+    if (!m_backgroundTaskSpinTimer->isActive()) {
+        m_backgroundTaskIdleTicks = 0;
+        m_backgroundTaskSpinTimer->start();
+    }
+}
+
+// Advance the spinner glyphs and reconcile the visible rows with the open
+// tickets. Cheap: at most a handful of kinds are ever in flight at once.
+void MainWindow::tickBackgroundQueue()
+{
+    static const QStringList frames{
+        QString::fromUtf8("\xE2\xA0\x8B"), QString::fromUtf8("\xE2\xA0\x99"),
+        QString::fromUtf8("\xE2\xA0\xB9"), QString::fromUtf8("\xE2\xA0\xB8"),
+        QString::fromUtf8("\xE2\xA0\xBC"), QString::fromUtf8("\xE2\xA0\xB4"),
+        QString::fromUtf8("\xE2\xA0\xA6"), QString::fromUtf8("\xE2\xA0\xA7"),
+        QString::fromUtf8("\xE2\xA0\x87"), QString::fromUtf8("\xE2\xA0\x8F"),
+    };
+    if (!m_backgroundQueue || !m_backgroundQueueRowsLayout)
+        return;
+    m_backgroundTaskSpinFrame = (m_backgroundTaskSpinFrame + 1) % frames.size();
+    const QString glyph = frames.at(m_backgroundTaskSpinFrame);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+    // Retire rows whose last ticket closed.
+    const QStringList shown = m_backgroundTaskRows.keys();
+    for (const QString &word : shown) {
+        if (m_backgroundTaskCounts.contains(word))
+            continue;
+        if (QWidget *row = m_backgroundTaskRows.take(word)) {
+            // Drop it from the layout now: deleteLater() alone would leave the
+            // dead row occupying a slot until the next event-loop pass, and a
+            // fresh ticket for the same word would draw a second one beside it.
+            m_backgroundQueueRowsLayout->removeWidget(row);
+            row->hide();
+            row->deleteLater();
+        }
+        m_backgroundTaskSpinners.remove(word);
+        m_backgroundTaskLabels.remove(word);
+    }
+
+    // Add or refresh a row per kind that has outlived the show delay.
+    for (auto it = m_backgroundTaskCounts.constBegin();
+         it != m_backgroundTaskCounts.constEnd(); ++it) {
+        const QString &word = it.key();
+        if (now - m_backgroundTaskSince.value(word, now) <
+            kBackgroundTaskShowAfterMs)
+            continue;
+        QLabel *spinner = m_backgroundTaskSpinners.value(word);
+        QLabel *label = m_backgroundTaskLabels.value(word);
+        if (!spinner || !label) {
+            auto *row = new QWidget(m_backgroundQueueRowsHost);
+            row->setObjectName("backgroundTaskRow");
+            row->setFixedHeight(m_backgroundTaskRowHeight);
+            auto *layout = new QHBoxLayout(row);
+            layout->setContentsMargins(0, 0, 0, 0);
+            layout->setSpacing(6);
+            spinner = new QLabel(glyph);
+            spinner->setObjectName("backgroundTaskSpinner");
+            spinner->setStyleSheet(QStringLiteral("color:#3fb950;font-weight:700;"));
+            spinner->setFixedWidth(14);
+            label = new QLabel(word);
+            label->setObjectName("backgroundTaskNote");
+            QFont noteFont = label->font();
+            noteFont.setPointSizeF(qMax(7.5, noteFont.pointSizeF() - 1.0));
+            label->setFont(noteFont);
+            spinner->setFont(noteFont);
+            layout->addWidget(spinner, 0, Qt::AlignVCenter);
+            layout->addWidget(label, 1);
+            m_backgroundQueueRowsLayout->insertWidget(
+                qMax(0, m_backgroundQueueRowsLayout->count() - 1), row);
+            m_backgroundTaskRows.insert(word, row);
+            m_backgroundTaskSpinners.insert(word, spinner);
+            m_backgroundTaskLabels.insert(word, label);
+        }
+        spinner->setText(glyph);
+        const int count = it.value();
+        label->setText(count > 1 ? QStringLiteral("%1 %2%3")
+                                       .arg(word)
+                                       .arg(QChar(0x00D7))
+                                       .arg(count)
+                                 : word);
+        const QString note = m_backgroundTaskDetails.value(word);
+        label->setToolTip(note.isEmpty() ? word : note);
+    }
+
+    const int visible = m_backgroundTaskRows.size();
+    m_backgroundQueue->setVisible(visible > 0);
+    if (m_backgroundQueueTitle) {
+        m_backgroundQueueTitle->setText(
+            visible > 0 ? QStringLiteral("Background %1 %2")
+                              .arg(QChar(0x00B7))
+                              .arg(visible)
+                        : QStringLiteral("Background"));
+    }
+
+    // Stand the timer down once nothing is running and nothing is drawn, with a
+    // grace period so a stream of short jobs doesn't flap it.
+    if (m_backgroundTaskCounts.isEmpty() && visible == 0) {
+        if (++m_backgroundTaskIdleTicks >= kBackgroundTaskIdleTicksBeforeStop &&
+            m_backgroundTaskSpinTimer) {
+            m_backgroundTaskSpinTimer->stop();
+            m_backgroundTaskIdleTicks = 0;
+        }
+    } else {
+        m_backgroundTaskIdleTicks = 0;
+    }
 }
 
 // Footer slash-actions popup (adhoc #116): opened by the "/" box left of the
@@ -7693,6 +7827,23 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(actionsBtn);
+
+        auto *installAgentsBtn =
+            new QPushButton(QStringLiteral("Install Claude + Codex"));
+        installAgentsBtn->setObjectName(
+            QStringLiteral("hostInstallAgentClisButton"));
+        installAgentsBtn->setCursor(Qt::PointingHandCursor);
+        installAgentsBtn->setToolTip(QStringLiteral(
+            "Install the official user-scoped Claude Code and Codex CLI "
+            "binaries on this mirror over its pinned SSH connection. This "
+            "does not copy tokens or sign either provider in."));
+        setOcticon(installAgentsBtn, "terminal", 12);
+        connect(installAgentsBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] {
+                installAgentClisForHost(i);
+            });
+        });
+        cellRow->addWidget(installAgentsBtn);
         // Table-row sizing: the default QPushButton padding makes each of these
         // 35px tall, far more than a text row, so the view squashed the whole
         // action cell down to the item height and Qt silently dropped every
@@ -7730,6 +7881,110 @@ void MainWindow::refreshHostsTable()
         m_hostsNavButton->setText(hosts.isEmpty()
             ? QStringLiteral("Hosts")
             : QStringLiteral("Hosts (%1)").arg(hosts.size()));
+}
+
+void MainWindow::installAgentClisForHost(int row)
+{
+    if (m_hostAgentInstallProcess &&
+        m_hostAgentInstallProcess->state() != QProcess::NotRunning) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("A mirror agent-CLI install is already running."));
+        return;
+    }
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+    const auto cellText = [this, row](int column) {
+        const QTableWidgetItem *item = m_hostsTable->item(row, column);
+        return item ? item->text().trimmed() : QString();
+    };
+    const QString node = cellText(0);
+    const QString ip = cellText(1);
+    const QString user = cellText(2);
+    if (node.isEmpty() || ip.isEmpty() || user.isEmpty())
+        return;
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    QString pass;
+    for (const QJsonValue &value : hosts) {
+        const QJsonObject host = value.toObject();
+        if (host.value(QStringLiteral("name")).toString() == node &&
+            host.value(QStringLiteral("ip")).toString() == ip &&
+            host.value(QStringLiteral("user")).toString() == user) {
+            pass = m_hostSessionPasswords.value(
+                forkmesh::control::savedHostCredentialKey(node, ip, user));
+            break;
+        }
+    }
+    const QString remoteCmd = QStringLiteral(
+        "sh -lc 'set -eu; "
+        "echo \"Installing Claude Code from claude.ai...\"; "
+        "curl -fsSL https://claude.ai/install.sh | bash; "
+        "echo \"Installing Codex from chatgpt.com...\"; "
+        "curl -fsSL https://chatgpt.com/codex/install.sh | sh; "
+        "export PATH=\"$HOME/.local/bin:$HOME/.claude/bin:$PATH\"; "
+        "echo \"Claude Code:\"; "
+        "command -v claude; claude --version; "
+        "echo \"Codex:\"; "
+        "command -v codex; codex --version; "
+        "echo \"Installation complete. Provider login is still required on this mirror.\"'");
+    QString sshError;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostSshCommand(
+            ip, user, pass, remoteCmd, &sshError,
+            savedHostIdentityFile(node, ip, user));
+    if (ssh.program.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(sshError);
+        return;
+    }
+    if (m_hostInstallLog)
+        m_hostInstallLog->clear();
+    appendHostInstallLog(
+        QStringLiteral("Installing Claude Code and Codex on %1 (%2@%3)...\n")
+            .arg(node, user, ip));
+    if (m_hostInstallStatus)
+        m_hostInstallStatus->setText(
+            QStringLiteral("Installing agent CLIs on %1...").arg(node));
+    auto *proc = new QProcess(this);
+    m_hostAgentInstallProcess = proc;
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    proc->setProcessEnvironment(ssh.environment);
+    connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
+        appendHostInstallLog(QString::fromUtf8(proc->readAllStandardOutput()));
+    });
+    connect(proc, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart && m_hostInstallStatus) {
+            m_hostInstallStatus->setText(
+                QStringLiteral("Could not start the pinned SSH installer."));
+        }
+    });
+    connect(proc, &QProcess::finished, this,
+            [this, proc, node](int code, QProcess::ExitStatus status) {
+        if (m_hostAgentInstallProcess == proc)
+            m_hostAgentInstallProcess = nullptr;
+        const bool ok =
+            code == 0 && status == QProcess::NormalExit;
+        appendHostInstallLog(
+            ok ? QStringLiteral("\nAgent CLI installation finished.\n")
+               : QStringLiteral("\nAgent CLI installation failed (exit %1).\n")
+                     .arg(code));
+        if (m_hostInstallStatus) {
+            m_hostInstallStatus->setText(
+                ok
+                    ? QStringLiteral(
+                          "Claude Code and Codex are installed on %1. Sign in "
+                          "on that mirror before starting sessions.")
+                          .arg(node)
+                    : QStringLiteral(
+                          "Agent CLI installation failed on %1; see Live output.")
+                          .arg(node));
+        }
+        proc->deleteLater();
+    });
+    proc->start(ssh.program, ssh.arguments);
 }
 
 void MainWindow::configureHostActionsForSelection(int row)
