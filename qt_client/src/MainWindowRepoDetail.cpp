@@ -1494,6 +1494,10 @@ void MainWindow::openRepoDetail(int repoIndex)
     refreshRepoActions();
     updateActionsTabIndicator(); // reflect any in-flight runs for this repo
     refreshRepoPinBanner();      // warn if the relay's integrity pin is stale
+    // The rail's Git badge is visible from the first paint, so give it this
+    // repo's uncommitted count now instead of leaving the previous repo's
+    // number (or a blank icon) until the changes panel is first opened.
+    refreshRepoChangeBadge();
     m_repoDetailLoading = false;
 }
 
