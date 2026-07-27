@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785061246324,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "The member count is incorrectly increasing when a new member logs on, this issue needs to be investigated and resolved to ensure accurate member count tracking. This was discussed in the context of various features and updates, including the Codeberg importer and a potential handshake feature, but the member count issue appears to be a separate problem that requires attention.\n\n---\n_Filed by ForkBot at @jett's request via chat._",
+            "id": "forkbot-1785061246324",
+            "sig": "",
+            "title": "Incorrect Member Count Increment",
+            "ts": 1785061246324,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 533,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Incorrect Member Count Increment",
+    "updatedAt": 1785061246324,
+    "votes": 0
+}
