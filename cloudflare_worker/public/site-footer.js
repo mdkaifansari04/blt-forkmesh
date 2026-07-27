@@ -116,13 +116,19 @@
   // ForkMesh World band pinned to the very bottom of every page: a short intro
   // strip, then the live Town Square embedded edge-to-edge with no border
   // below it. The "full screen" link navigates the same window to /world/.
-  function renderWorldBand() {
+  // Pages without a footer (the auth pages) mount it standalone, which needs
+  // the extra class because the palette variables live on .forkmesh-footer.
+  function renderWorldBand(standalone) {
+    const titleId = standalone
+      ? "site-footer-world-title-standalone"
+      : "site-footer-world-title";
+
     return `
-      <section class="site-footer-world" aria-labelledby="site-footer-world-title">
+      <section class="site-footer-world${standalone ? " site-footer-world-standalone" : ""}" aria-labelledby="${titleId}">
         <div class="site-footer-world-intro">
           <div class="site-footer-world-heading">
             <p class="site-footer-world-kicker">ForkMesh World</p>
-            <h2 id="site-footer-world-title" class="site-footer-world-title">Step into the developer city</h2>
+            <h2 id="${titleId}" class="site-footer-world-title">Step into the developer city</h2>
             <p class="site-footer-world-copy">
               The multiplayer Town Square is one part of ForkMesh, not a
               replacement for the website. Explore it here, then keep browsing
@@ -219,14 +225,35 @@
       .forEach((host) => mountFooter(host));
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", mountFooters);
-  } else {
+  function mountWorldBand(host) {
+    const template = document.createElement("template");
+    template.innerHTML = renderWorldBand(true).trim();
+    host.replaceWith(template.content.firstElementChild);
+  }
+
+  // Standalone World band for pages that render no footer, such as the signup
+  // page a referral link lands on.
+  function mountWorldBands() {
+    document
+      .querySelectorAll("[data-forkmesh-world]")
+      .forEach((host) => mountWorldBand(host));
+  }
+
+  function mountAll() {
     mountFooters();
+    mountWorldBands();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", mountAll);
+  } else {
+    mountAll();
   }
 
   window.ForkMeshFooter = {
     renderFooter,
+    renderWorldBand,
     mountFooters,
+    mountWorldBands,
   };
 })();
