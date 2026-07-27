@@ -11122,7 +11122,13 @@ void MainWindow::createVultrMirrorFromForm()
     m_vultrProvisionActive = true;
     m_vultrPollCount = 0;
     m_vultrInstallAttempts = 0;
-    m_vultrInstallUseLocalBinary = false;
+    // A brand-new instance has nobody mirroring it and there may be no
+    // published release for its platform at all, so a relay download can only
+    // dead-end (adhoc #408). Whenever this app's own binary can run on the
+    // Debian x64 image the flow deploys, upload it straight over the SSH
+    // session from the very first attempt — that needs no prebuilt release.
+    m_vultrInstallUseLocalBinary = forkmesh::control::localBinaryRunsOnVultrMirror(
+        QSysInfo::kernelType(), QSysInfo::currentCpuArchitecture());
     m_vultrInstallAttemptLog.clear();
     m_vultrDnsHostname.clear();
     m_hostInstallAttemptBanner.clear();
@@ -11140,6 +11146,10 @@ void MainWindow::createVultrMirrorFromForm()
     if (storedKey)
         appendHostInstallLog(QStringLiteral(
             "Using the VULTR_API_KEY stored as a device variable.\n"));
+    if (m_vultrInstallUseLocalBinary)
+        appendHostInstallLog(QString::fromUtf8(
+            "This app's own binary will be uploaded over SSH, so the new "
+            "mirror needs no published release to install.\n"));
     if (m_vultrStatus)
         m_vultrStatus->setText(
             QString::fromUtf8("Preparing the managed SSH key\xE2\x80\xA6"));
@@ -11448,21 +11458,22 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                 .arg(ip, unroutable));
             return;
         }
-        // A brand-new instance has nobody mirroring it yet, so a relay
-        // download/clone (the default path) can never succeed no matter how
-        // many times it is retried the same way. Switch this and every later
-        // attempt this run to uploading this app's own release binary
-        // directly over the SSH session instead — that needs no online
-        // mirror at all — and retry right away rather than waiting out the
-        // "host not reachable yet" backoff below, since SSH clearly worked.
+        // A brand-new instance has nobody mirroring it yet and may have no
+        // published release for its platform, so a relay download/clone can
+        // never succeed no matter how many times it is retried the same way.
+        // Switch this and every later attempt this run to uploading this app's
+        // own release binary directly over the SSH session instead — that needs
+        // neither an online mirror nor a published release — and retry right
+        // away rather than waiting out the "host not reachable yet" backoff
+        // below, since SSH clearly worked.
         if (!m_vultrInstallUseLocalBinary && !isFinalAttempt &&
-            m_hostInstallRawTail.contains(
-                QStringLiteral("No online ForkMesh node"))) {
+            forkmesh::control::vultrInstallNeedsLocalBinary(
+                m_hostInstallRawTail)) {
             m_vultrInstallUseLocalBinary = true;
             if (m_vultrStatus)
                 m_vultrStatus->setText(QString::fromUtf8(
-                    "No online mirror to install from yet \xE2\x80\x94 "
-                    "retrying with this app's own release uploaded "
+                    "Nothing published to install from yet \xE2\x80\x94 "
+                    "retrying with this app's own binary uploaded "
                     "directly\xE2\x80\xA6"));
             QTimer::singleShot(2000, this, [this, node, ip, identityFile] {
                 startVultrHostInstall(node, ip, identityFile);
@@ -12066,6 +12077,9 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     if (!buildHostInstallCommand(ip, user, node, uploadBinary, reinstall,
                                  fromSource, false, &remoteCmd,
                                  &uploadBytes, &buildErr)) {
+        // Record it as this run's failure too, so a retry loop's attempt
+        // history says why the command could not even be built.
+        m_hostInstallLastFailure = buildErr;
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(buildErr);
         if (onFinished)

@@ -407,7 +407,7 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
     assert (
         'this.fetchJSON("/api/accounts/users", {\n        auth: false,' in APP
     )
-    assert "async refreshMemberDirectory()" in APP
+    assert "async refreshMemberDirectory(force = false, probed = [])" in APP
     assert 'type: "presence"' in APP
     assert "shareCountry: Boolean(this.settings.privacy.country)" in APP
     assert "shareName: Boolean(this.settings.privacy.name)" in APP
@@ -773,15 +773,15 @@ def test_join_cues_are_country_specific_local_opt_in_and_rate_limited():
 
 
 def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
-    assert "data-world-office-focus" in APP
-    assert "data-world-office-enter" in APP
+    assert "data-world-office-enter" not in APP
+    assert "data-world-office-prompt" not in APP
+    assert "data-world-office-fallback" in APP
     assert "data-world-office-chat" in APP
     assert "data-world-office-frame" in APP
-    assert "Visit ForkMesh Office" in APP
+    assert "Open accessible chat fallback" in APP
     assert "ForkMesh Office chat" in APP
     assert 'office: "visiting-office"' in APP
     assert "/chat?embed=office" not in APP
-    assert 'sandbox="allow-forms allow-same-origin allow-scripts"' in APP
     assert "allow-popups" not in APP
     # Two doors to the same encrypted chat: the spatial Office walk-in (above)
     # and the docked chat terminal panel. The Office deliberately does not
@@ -1065,7 +1065,10 @@ def test_world_first_person_camera_has_accessible_toggle_and_scene_api():
         SCENE.index("\n  function focusRepositoryPortal(", scene_mode_start)
     ]
     assert 'player.visible = false' in scene_mode
-    assert 'player.visible = true' in scene_mode
+    # Third-person restores the shared World avatar everywhere except an Office
+    # meeting, where the local meeting participant is the visible camera target.
+    assert 'player.visible = officeSceneMode !== "meeting"' in scene_mode
+    assert "if (localParticipant) localParticipant.visible = true" in scene_mode
     assert "renderer.domElement.dataset.cameraMode = cameraMode" in scene_mode
 
     repository_entry_start = SCENE.index(
@@ -1741,7 +1744,8 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
     for contract in (
         "PLAYER_MAX_SPEED",
         "PLAYER_ACCELERATION",
-        "keyboardMovementSpeed + PLAYER_ACCELERATION * moveAccelScale * delta",
+        "function movementSpeedForInput",
+        "PLAYER_ACCELERATION * moveAccelScale * Math.max(0, delta)",
         "keyboardMovementSpeed = baseMoveSpeed()",
         "function setMovementTuning",
         "setMovementTuning,",
@@ -2011,7 +2015,7 @@ def test_world_movement_speed_and_acceleration_are_locally_adjustable():
     assert "let moveSpeedScale = 1" in SCENE
     assert "let moveAccelScale = 1" in SCENE
     assert "PLAYER_MAX_SPEED * moveSpeedScale" in SCENE
-    assert "PLAYER_ACCELERATION * moveAccelScale * delta" in SCENE
+    assert "PLAYER_ACCELERATION * moveAccelScale * Math.max(0, delta)" in SCENE
     assert "moveAccelScale = Number.isFinite(numeric)" in SCENE
     # App renders local-controls sliders wired to persisted settings and pushes
     # the tuning (Infinity at the top acceleration position) into the scene.

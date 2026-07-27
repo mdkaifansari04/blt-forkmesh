@@ -12,7 +12,7 @@ const THREE_MODULE_PATH = path.resolve(
   "three.module.min.js",
 );
 const CHAT_HTML_PATH = path.resolve(__dirname, "..", "..", "public", "chat.html");
-const OFFICE_ENTRANCE_POSITION = [45, 0.38, -20.8];
+const OFFICE_ENTRANCE_POSITION = [0, 0.38, -168.8];
 const OFFICE_ENTRY_TICKET = "playwright-office-entry-ticket";
 
 const PRIVATE_SETTINGS = {
@@ -56,9 +56,9 @@ async function prepareWorldPage(
     ticketActivity = null,
     directoryUsers = [],
     systemCapacityTables = [],
-    officeOccupied = false,
-    officeEntryCode = "2468",
     officeEntryRequests = [],
+    officeFloorRequests = [],
+    officeFloorAccess = null,
     officeTaskFixture = null,
   } = {},
 ) {
@@ -556,12 +556,27 @@ async function prepareWorldPage(
         status = 405;
         body = { error: "method_not_allowed" };
       }
-    } else if (url.pathname === "/api/world/office/general/status") {
+    } else if (url.pathname === "/api/world/office/floors") {
+      officeFloorRequests.push({
+        method: route.request().method(),
+        url: route.request().url(),
+        headers: route.request().headers(),
+      });
       if (route.request().method() !== "GET") {
         status = 405;
-        body = { ok: false, error: "method_not_allowed" };
+        body = { error: "method_not_allowed" };
+      } else if (!session?.sessionToken) {
+        status = 401;
+        body = { error: "login_required" };
       } else {
-        body = { ok: true, occupied: Boolean(officeOccupied) };
+        body = {
+          ok: true,
+          authenticated: true,
+          account: String(session.nodeName || "").toLowerCase(),
+          allowedFloorIds: ["lobby", "marketing", "rooftop"],
+          teams: [],
+          ...(officeFloorAccess || {}),
+        };
       }
     } else if (url.pathname === "/api/world/office/general/entry") {
       let requestBody = {};
@@ -574,21 +589,18 @@ async function prepareWorldPage(
         headers: route.request().headers(),
         body: requestBody,
       });
-      const allowed =
-        route.request().method() === "POST" &&
-        (!officeOccupied || requestBody.code === officeEntryCode);
-      if (!allowed) {
-        status = route.request().method() === "POST" ? 403 : 405;
+      if (route.request().method() !== "POST") {
+        status = 405;
         body = {
           ok: false,
-          occupied: Boolean(officeOccupied),
-          error:
-            status === 403 ? "invalid_office_code" : "method_not_allowed",
+          error: "method_not_allowed",
         };
+      } else if (!session?.sessionToken) {
+        status = 401;
+        body = { ok: false, error: "login_required" };
       } else {
         body = {
           ok: true,
-          occupied: Boolean(officeOccupied),
           entryTicket: OFFICE_ENTRY_TICKET,
           expiresAt: FIXED_NOW + 60_000,
         };
@@ -1114,17 +1126,52 @@ async function moveToOfficeEntrance(page, { unpause = false } = {}) {
   );
 }
 
-async function officeFacadeState(page) {
+async function walkIntoOffice(page) {
+  await moveToOfficeEntrance(page, { unpause: true });
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setControl("forward", true);
+  });
+  try {
+    await waitForOfficeEntry(page);
+  } finally {
+    await page.locator("forkmesh-world").evaluate((shell) => {
+      shell.world.setControl("forward", false);
+    });
+  }
+}
+
+async function officeSceneState(page) {
   return page.locator("forkmesh-world").evaluate((shell) => {
     const door = shell.world.scene.getObjectByName(
       "forkmesh-office-door-pivot",
     );
-    const keypad = shell.world.scene.getObjectByName("forkmesh-office-keypad");
-    const statusLight = keypad?.children?.[1] || null;
+    const island = shell.world.scene.getObjectByName(
+      "forkmesh-office-island",
+    );
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior",
+    );
     return {
       doorRotation: Number((door?.rotation?.y || 0).toFixed(3)),
-      keypadColor: statusLight?.material?.color?.getHexString?.() || "",
+      hasKeypad: Boolean(
+        shell.world.scene.getObjectByName("forkmesh-office-keypad"),
+      ),
+      islandVisible: island?.visible === true,
+      interiorVisible: interior?.visible === true,
+      space: shell.world.getPosition().space,
     };
+  });
+}
+
+async function waitForOfficeEntry(page) {
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate((shell) => ({
+      active: shell.officeController.active,
+      space: shell.world.getPosition().space,
+    }))
+  ).toEqual({
+    active: true,
+    space: "office-lobby",
   });
 }
 
@@ -1434,7 +1481,7 @@ test("mobile World chat keeps its composer above the terminal bars", async ({
   );
 });
 
-test("ForkMesh Office opens encrypted chat only after explicit entry", async ({
+test("ForkMesh Office walk-in opens chat only through the explicit fallback", async ({
   page,
   context,
 }) => {
@@ -1448,6 +1495,12 @@ test("ForkMesh Office opens encrypted chat only after explicit entry", async ({
   );
   await prepareWorldPage(page, "world-chat", {
     chatPassphrase: passphrase,
+    session: {
+      kind: "user",
+      nodeName: "alice",
+      email: "alice@example.test",
+      sessionToken: "alice-office-token",
+    },
   });
   await waitForWorld(page);
 
@@ -1458,16 +1511,18 @@ test("ForkMesh Office opens encrypted chat only after explicit entry", async ({
   // approaching the Office does not open an additional Office chat transport.
   const globalChatSocketCount = chatSocketURLs.length;
   expect(globalChatSocketCount).toBeGreaterThanOrEqual(1);
-  await page.locator("[data-world-office-focus]").first().click();
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.focusLandmark("office");
+  });
   expect(chatSocketURLs).toHaveLength(globalChatSocketCount);
 
   await moveToOfficeEntrance(page);
-  const entry = page.locator("[data-world-office-enter]");
-  await expect(entry).toBeVisible();
+  await expect(page.locator("[data-world-office-prompt]")).toHaveCount(0);
   expect(chatSocketURLs).toHaveLength(globalChatSocketCount);
-  await page.evaluate(() => document.activeElement?.blur());
-  await page.keyboard.press("e");
-  await page.locator("[data-world-office-fallback]").click();
+  await walkIntoOffice(page);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.officeController.openFallback();
+  });
 
   const chat = page.locator("[data-world-office-chat]");
   await expect(chat).toBeVisible();
@@ -1491,193 +1546,628 @@ test("ForkMesh Office opens encrypted chat only after explicit entry", async ({
   expect(context.pages()).toHaveLength(pageCount);
 });
 
-test("an empty Office shows a green open door and admits without a code", async ({
+test("a signed-in member walks into the continuous ten-story Office without a gate", async ({
   page,
 }) => {
   const officeEntryRequests = [];
-  await prepareWorldPage(page, "office-empty-entry", {
-    officeOccupied: false,
+  const officeFloorRequests = [];
+  await prepareWorldPage(page, "office-member-entry", {
+    session: {
+      kind: "user",
+      nodeName: "alice",
+      email: "alice@example.test",
+      sessionToken: "alice-office-token",
+    },
     officeEntryRequests,
+    officeFloorRequests,
   });
   await waitForWorld(page);
   await moveToOfficeEntrance(page);
 
-  const prompt = page.locator("[data-world-office-prompt]");
-  await expect(prompt).toBeVisible();
-  await expect(prompt).toHaveAttribute("data-available", "true");
-  await expect(prompt).toHaveAttribute("data-occupied", "false");
-  await expect(prompt).toContainText("Office empty · door open");
-  await expect.poll(() => officeFacadeState(page)).toEqual({
+  await expect(page.locator("[data-world-office-prompt]")).toHaveCount(0);
+  await expect(page.locator("[data-world-office-enter]")).toHaveCount(0);
+  await expect.poll(() => officeSceneState(page)).toEqual({
     doorRotation: 1.571,
-    keypadColor: "63e6a5",
+    hasKeypad: false,
+    islandVisible: true,
+    interiorVisible: true,
+    space: "town-square",
   });
 
-  await prompt.getByRole("button", { name: /Enter ForkMesh Office/ }).click();
-  await expect(page.locator("[data-world-office-lobby]")).toBeVisible();
-  await expect(page.locator("[data-world-office-keypad]")).toBeHidden();
-  expect(officeEntryRequests).toHaveLength(1);
-  expect(officeEntryRequests[0]).toMatchObject({
-    method: "POST",
-    body: {},
-  });
-});
-
-test("the exterior keypad does not admit an empty Office", async ({ page }) => {
-  const officeEntryRequests = [];
-  await prepareWorldPage(page, "office-empty-exterior-keypad", {
-    officeOccupied: false,
-    officeEntryRequests,
-  });
-  await waitForWorld(page);
-  await moveToOfficeEntrance(page);
-  const result = await page.locator("forkmesh-world").evaluate(async (shell) =>
-    shell.officeController.enterOffice({ source: "keypad" })
-  );
-  expect(result).toBe(true);
+  await walkIntoOffice(page);
   await expect(page.locator("[data-world-office-lobby]")).toBeHidden();
-  const keypad = page.locator("[data-world-office-keypad]");
-  await expect(keypad).toBeVisible();
-  await expect(keypad.locator("#world-office-keypad-title")).toContainText(
-    "from inside",
-  );
-  await expect(keypad.locator("[data-world-office-keypad-input]")).toBeDisabled();
-  await expect(keypad.locator("[data-world-office-keypad-status]")).toContainText(
-    "No code is sent",
-  );
   expect(officeEntryRequests).toHaveLength(0);
+  await expect.poll(() => officeFloorRequests.length).toBe(1);
+  expect(officeFloorRequests).toEqual([
+    expect.objectContaining({
+      method: "GET",
+      headers: expect.objectContaining({
+        authorization: "Bearer alice-office-token",
+      }),
+    }),
+  ]);
+  await expect.poll(() => officeSceneState(page)).toEqual({
+    doorRotation: 1.571,
+    hasKeypad: false,
+    islandVisible: true,
+    interiorVisible: true,
+    space: "office-lobby",
+  });
 });
 
-test("walking through an empty Office doorway admits once without the prompt", async ({
+test("guests walk directly into the public Office lobby without network admission", async ({
   page,
 }) => {
   const officeEntryRequests = [];
+  const officeFloorRequests = [];
+  await prepareWorldPage(page, "office-guest-entry", {
+    officeEntryRequests,
+    officeFloorRequests,
+  });
+  await waitForWorld(page);
+  await walkIntoOffice(page);
+  await expect(page.locator("[data-world-office-lobby]")).toBeHidden();
+  await expect(page.locator("[data-world-office-prompt]")).toHaveCount(0);
+  await expect(page.locator("[data-world-login-form]")).toBeHidden();
+  expect(officeEntryRequests).toHaveLength(0);
+  expect(officeFloorRequests).toHaveLength(0);
+  expect(await officeSceneState(page)).toMatchObject({
+    hasKeypad: false,
+    space: "office-lobby",
+  });
+});
+
+test("walking through the Office doorway hydrates floor access without admission POST", async ({
+  page,
+}) => {
+  const officeEntryRequests = [];
+  const officeFloorRequests = [];
   await prepareWorldPage(page, "office-walk-in-entry", {
-    officeOccupied: false,
+    session: {
+      kind: "user",
+      nodeName: "alice",
+      email: "alice@example.test",
+      sessionToken: "alice-office-token",
+    },
     officeEntryRequests,
+    officeFloorRequests,
   });
   await waitForWorld(page);
-  await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.world.setPaused(false);
-    shell.world.player.position.set(45, 0.38, -20.15);
-    shell.world.setControl("forward", true);
-  });
-  try {
-    await expect(page.locator("[data-world-office-lobby]")).toBeVisible();
-  } finally {
-    await page.locator("forkmesh-world").evaluate((shell) => {
-      shell.world.setControl("forward", false);
-    });
-  }
-  await page.waitForTimeout(250);
-  expect(officeEntryRequests).toHaveLength(1);
-  expect(officeEntryRequests[0]).toMatchObject({
-    method: "POST",
-    body: {},
-  });
-});
-
-test("walking into an occupied Office stops at its keypad without posting", async ({
-  page,
-}) => {
-  const officeEntryRequests = [];
-  await prepareWorldPage(page, "office-walk-in-occupied", {
-    officeOccupied: true,
-    officeEntryRequests,
-  });
-  await waitForWorld(page);
-  await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.world.setPaused(false);
-    shell.world.player.position.set(45, 0.38, -20.15);
-    shell.world.setControl("forward", true);
-  });
-  const keypad = page.locator("[data-world-office-keypad]");
-  try {
-    await expect(keypad).toBeVisible();
-  } finally {
-    await page.locator("forkmesh-world").evaluate((shell) => {
-      shell.world.setControl("forward", false);
-    });
-  }
-  await expect(page.locator("[data-world-canvas-wrap] canvas")).toHaveAttribute(
-    "data-camera-mode",
-    "first-person",
-  );
-  await page.waitForTimeout(250);
+  await walkIntoOffice(page);
+  await expect.poll(() => officeFloorRequests.length).toBe(1);
   expect(officeEntryRequests).toHaveLength(0);
 });
 
-test("an occupied Office requires four digits without leaking them", async ({
+test("Office entry preserves the live avatar and keeps zoom inside the tower", async ({
   page,
 }) => {
-  const officeEntryRequests = [];
-  const worldFrames = [];
-  const officeCode = "2468";
-  await prepareWorldPage(page, "office-occupied-entry", {
-    officeOccupied: true,
-    officeEntryCode: officeCode,
-    officeEntryRequests,
-    worldSocketHandler: (socket, id) => {
-      socket.onMessage((raw) => worldFrames.push(String(raw)));
-      socket.send(JSON.stringify({ type: "welcome", id, peers: [] }));
+  await prepareWorldPage(page, "office-seamless-entry-camera", {
+    session: {
+      kind: "user",
+      nodeName: "alice",
+      email: "alice@example.test",
+      sessionToken: "alice-office-token",
     },
   });
   await waitForWorld(page);
-  await moveToOfficeEntrance(page);
-
-  const prompt = page.locator("[data-world-office-prompt]");
-  await expect(prompt).toBeVisible();
-  await expect(prompt).toHaveAttribute("data-available", "true");
-  await expect(prompt).toHaveAttribute("data-occupied", "true");
-  await expect(prompt).toContainText(
-    "Office occupied · four-digit code required",
-  );
-  await expect.poll(() => officeFacadeState(page)).toEqual({
-    doorRotation: 0,
-    keypadColor: "ff6f7f",
+  await moveToOfficeEntrance(page, { unpause: true });
+  const before = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setCameraZoom(0.9);
+    return {
+      uuid: shell.world.player.uuid,
+      camera: shell.world.getCameraState(),
+      position: shell.world.player.position.toArray(),
+    };
   });
 
-  await prompt.getByRole("button", { name: /Use Office keypad/ }).click();
-  const keypad = page.locator("[data-world-office-keypad]");
-  const input = keypad.locator("[data-world-office-keypad-input]");
-  await expect(keypad).toBeVisible();
-  expect(officeEntryRequests).toHaveLength(0);
-
-  await input.fill("1111");
-  await input.press("Enter");
-  await expect(keypad.locator("[data-world-office-keypad-status]")).toContainText(
-    "not accepted",
-  );
-  await expect(page.locator("[data-world-office-lobby]")).toBeHidden();
-  await expect(input).toHaveValue("");
-  expect(officeEntryRequests).toHaveLength(1);
-  expect(officeEntryRequests[0].body).toEqual({ code: "1111" });
-
-  await input.fill(officeCode);
-  await input.press("Enter");
-  await expect(page.locator("[data-world-office-lobby]")).toBeVisible();
-  await expect(keypad).toBeHidden();
-  expect(officeEntryRequests).toHaveLength(2);
-  expect(officeEntryRequests[1]).toMatchObject({
-    method: "POST",
-    body: { code: officeCode },
-  });
-  for (const request of officeEntryRequests) {
-    expect(request.url).not.toContain(String(request.body.code || ""));
-    expect(JSON.stringify(request.headers)).not.toContain(
-      String(request.body.code || ""),
+  await walkIntoOffice(page);
+  const after = await page.locator("forkmesh-world").evaluate((shell) => {
+    const clone = shell.world.scene.getObjectByName(
+      "forkmesh-office-lobby-player"
     );
-  }
+    return {
+      uuid: shell.world.player.uuid,
+      camera: shell.world.getCameraState(),
+      position: shell.world.player.position.toArray(),
+      playerVisible: shell.world.player.visible,
+      cloneVisible: clone?.visible === true,
+    };
+  });
+  expect(after.uuid).toBe(before.uuid);
+  expect(after.camera.mode).toBe(before.camera.mode);
+  expect(after.camera.yaw).toBeCloseTo(before.camera.yaw, 8);
+  expect(after.camera.pitch).toBeCloseTo(before.camera.pitch, 8);
+  expect(after.camera.zoom).toBeCloseTo(before.camera.zoom, 8);
+  expect(after.playerVisible).toBe(true);
+  expect(after.cloneVisible).toBe(false);
+  expect(
+    Math.hypot(
+      after.position[0] - before.position[0],
+      after.position[2] - before.position[2],
+    ),
+  ).toBeLessThan(6);
 
-  const browserState = await page.evaluate(() =>
-    JSON.stringify({
-      url: window.location.href,
-      localStorage: { ...localStorage },
-      sessionStorage: { ...sessionStorage },
-      html: document.documentElement.outerHTML,
-    }),
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setCameraZoom(28);
+  });
+  await page.waitForTimeout(700);
+  const bounded = await page.locator("forkmesh-world").evaluate((shell) => {
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const cameraLocal = interior.worldToLocal(
+      shell.world.camera.position.clone()
+    );
+    const playerLocal = interior.worldToLocal(
+      shell.world.player.getWorldPosition(shell.world.player.position.clone())
+    );
+    return {
+      camera: cameraLocal.toArray(),
+      player: playerLocal.toArray(),
+      distance: cameraLocal.distanceTo(playerLocal),
+      requestedZoom: shell.world.getCameraState().zoom,
+    };
+  });
+  expect(bounded.requestedZoom).toBe(28);
+  expect(bounded.camera[0]).toBeGreaterThan(-84.3);
+  expect(bounded.camera[0]).toBeLessThan(84.3);
+  expect(bounded.camera[1]).toBeGreaterThan(0.49);
+  expect(bounded.camera[1]).toBeLessThan(15.46);
+  expect(bounded.camera[2]).toBeGreaterThan(-44.3);
+  expect(bounded.camera[2]).toBeLessThan(44.8);
+  expect(bounded.distance).toBeLessThan(10);
+});
+
+test("Office rooftop restores the full world zoom outside the elevator", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-rooftop-full-zoom");
+  await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setOfficeAccess({
+      authenticated: true,
+      account: "alice",
+      allowedFloorIds: ["lobby", "rooftop"],
+    });
+    shell.world.enterOfficeLobby();
+    shell.world.enterOfficeLobby({ floorId: "rooftop" });
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const patioWorld = interior.localToWorld(
+      shell.world.player.position.clone().set(0, 144.38, 0)
+    );
+    shell.world.player.parent.worldToLocal(patioWorld);
+    shell.world.player.position.copy(patioWorld);
+    shell.world.setCameraZoom(28);
+    shell.world.setPaused(false);
+  });
+
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      const target = shell.world.player
+        .getWorldPosition(shell.world.player.position.clone());
+      target.y += 2.2;
+      return shell.world.camera.position.distanceTo(target);
+    })
+  ).toBeGreaterThan(700);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate((shell) => ({
+      space: shell.world.getPosition().space,
+      zoom: shell.world.getCameraState().zoom,
+    }))
+  ).toEqual({
+    space: "office-rooftop",
+    zoom: 28,
+  });
+});
+
+test("leaving an Office meeting resumes at a walkable first-person pose", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-meeting-walkable-handoff");
+  await waitForWorld(page);
+  const handoff = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setOfficeAccess({
+      authenticated: true,
+      account: "alice",
+      allowedFloorIds: ["marketing"],
+    });
+    shell.world.enterOfficeLobby();
+    shell.world.setCameraMode("first-person");
+    shell.world.enterOfficeMeeting({
+      roomName: "general",
+      participantId: "local-me",
+      participants: [{
+        id: "local-me",
+        name: "Alice",
+        x: 0,
+        z: 0,
+        yaw: 0,
+        pose: "standing",
+      }],
+    });
+    let localAvatar = null;
+    shell.world.scene.traverse((object) => {
+      if (object.userData?.id === "local-me") localAvatar = object;
+    });
+    const localAvatarVisible = localAvatar?.visible === true;
+    shell.world.enterOfficeLobby({ floorId: "marketing" });
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const playerLocal = interior.worldToLocal(
+      shell.world.player.getWorldPosition(shell.world.player.position.clone())
+    );
+    return {
+      localAvatarFound: Boolean(localAvatar),
+      localAvatarVisible,
+      playerLocal: playerLocal.toArray(),
+      cameraMode: shell.world.getCameraState().mode,
+      playerVisible: shell.world.player.visible,
+    };
+  });
+  expect(handoff.localAvatarFound).toBe(true);
+  expect(handoff.localAvatarVisible).toBe(false);
+  expect(
+    Math.abs(handoff.playerLocal[0]) > 4.36 ||
+      Math.abs(handoff.playerLocal[2]) > 2.46,
+  ).toBe(true);
+  expect(handoff.playerLocal[1]).toBeCloseTo(16.38, 3);
+  expect(handoff.cameraMode).toBe("first-person");
+  expect(handoff.playerVisible).toBe(false);
+});
+
+test("Marketing studio furniture, wall features, reception, and open FM mark align", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-marketing-visual-alignment");
+  await waitForWorld(page);
+  const state = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setOfficeAccess({
+      authenticated: true,
+      account: "alice",
+      allowedFloorIds: ["lobby", "marketing"],
+    });
+    shell.world.enterOfficeLobby();
+    shell.world.enterOfficeLobby({ floorId: "marketing" });
+    const scene = shell.world.scene;
+    const interior = scene.getObjectByName("forkmesh-office-interior");
+    const tabletop = scene.getObjectByName(
+      "forkmesh-office-marketing-tabletop"
+    );
+    const legs = [];
+    const chairs = [];
+    scene.traverse((object) => {
+      if (object.name === "forkmesh-office-marketing-table-leg") {
+        legs.push(object);
+      }
+      if (/^forkmesh-office-chair-\d+$/.test(object.name)) {
+        const position = object.position;
+        const seatedYaw = object.rotation.y + Math.PI;
+        const length = Math.hypot(position.x, position.z) || 1;
+        chairs.push({
+          id: object.name,
+          backZ: object.getObjectByName(`${object.name}-back`)?.position.z,
+          inwardDot:
+            (-Math.sin(seatedYaw) * (-position.x / length)) +
+            (-Math.cos(seatedYaw) * (-position.z / length)),
+        });
+      }
+    });
+    const tableBottom =
+      tabletop.position.y - tabletop.geometry.parameters.height / 2;
+    const highestLegTop = Math.max(...legs.map(
+      (leg) => leg.position.y + leg.geometry.parameters.height / 2
+    ));
+    const taskBoard = scene.getObjectByName(
+      "forkmesh-office-marketing-task-board"
+    );
+    const guideBoard = scene.getObjectByName("forkmesh-office-guide-board");
+    const title = scene.getObjectByName(
+      "forkmesh-office-marketing-wall-title"
+    );
+    const placards = [];
+    scene.traverse((object) => {
+      if (object.userData?.officeWallMounted === true) {
+        placards.push({
+          name: object.name,
+          mesh: object.isMesh === true,
+          sprite: object.isSprite === true,
+        });
+      }
+    });
+    const receptionDesk = scene.getObjectByName(
+      "forkmesh-office-reception-desk"
+    );
+    const maya = scene.getObjectByName("avatar:office-greeter-maya");
+    const noah = scene.getObjectByName("avatar:office-greeter-noah");
+    const chromeCube = scene.getObjectByName("forkmesh-reflective-fm-cube");
+    const support = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube-support"
+    );
+    const solidBodies = [];
+    chromeCube.traverse((object) => {
+      const size = object.geometry?.parameters;
+      if (
+        object.isMesh &&
+        size?.width === 5.6 &&
+        size?.height === 5.6 &&
+        size?.depth === 5.6
+      ) {
+        solidBodies.push(object.name || "solid");
+      }
+    });
+    const sat = shell.world.sitOnOfficeChair("chair-1");
+    const seatedWorld = shell.world.player.getWorldPosition(
+      shell.world.player.position.clone()
+    );
+    const seatedLocal = interior.worldToLocal(seatedWorld).toArray();
+    const stood = shell.world.sitOnOfficeChair("chair-1");
+    return {
+      space: shell.world.getPosition().space,
+      tableBottom,
+      highestLegTop,
+      chairCount: chairs.length,
+      chairs,
+      boards: {
+        task: taskBoard.position.toArray(),
+        guide: guideBoard.position.toArray(),
+        title: title.position.toArray(),
+      },
+      placards,
+      reception: {
+        desk: receptionDesk.position.toArray(),
+        maya: maya?.position.toArray(),
+        noah: noah?.position.toArray(),
+      },
+      logo: {
+        edgeTilt: chromeCube.rotation.z,
+        fFaces: chromeCube.children.filter((object) =>
+          object.name.startsWith("forkmesh-reflective-f-face-")
+        ).length,
+        mFaces: chromeCube.children.filter((object) =>
+          object.name.startsWith("forkmesh-reflective-m-face-")
+        ).length,
+        supportCount: support ? 1 : 0,
+        solidBodies,
+      },
+      seating: {
+        sat,
+        stood,
+        seatedLocal,
+        standingY: shell.world.player.position.y,
+      },
+    };
+  });
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const cameraPosition = interior.localToWorld(
+      shell.world.camera.position.clone().set(0, 27, 37)
+    );
+    const target = interior.localToWorld(
+      shell.world.camera.position.clone().set(0, 21, -12)
+    );
+    shell.world.setPaused(true);
+    shell.world.camera.position.copy(cameraPosition);
+    shell.world.camera.lookAt(target);
+    shell.world.renderer.render(shell.world.scene, shell.world.camera);
+  });
+  await page.screenshot({
+    path: "/tmp/forkmesh-office-marketing.png",
+    animations: "disabled",
+  });
+
+  expect(state.space).toBe("office-marketing");
+  expect(state.tableBottom).toBeGreaterThanOrEqual(state.highestLegTop);
+  expect(state.chairCount).toBe(8);
+  expect(state.chairs.every((chair) => chair.backZ < 0)).toBe(true);
+  expect(state.chairs.every((chair) => chair.inwardDot > 0.99)).toBe(true);
+  expect(state.boards.task).toEqual([-24, 22.4, -44.45]);
+  expect(state.boards.guide).toEqual([24, 22.65, -44.44]);
+  expect(state.boards.title[2]).toBeLessThan(-44);
+  expect(state.placards.length).toBeGreaterThanOrEqual(12);
+  expect(state.placards.every((placard) => placard.mesh && !placard.sprite))
+    .toBe(true);
+  expect(state.reception.desk).toEqual([0, 1.05, -36.5]);
+  expect(state.reception.maya).toEqual([-7, 0.38, -40]);
+  expect(state.reception.noah).toEqual([7, 0.38, -40]);
+  expect(state.logo.edgeTilt).toBeCloseTo(Math.PI / 4, 5);
+  expect(state.logo).toMatchObject({
+    fFaces: 2,
+    mFaces: 2,
+    supportCount: 1,
+    solidBodies: [],
+  });
+  expect(state.seating).toMatchObject({
+    sat: true,
+    stood: true,
+    standingY: 16.38,
+  });
+  expect(state.seating.seatedLocal[0]).toBeCloseTo(-5.15, 2);
+  expect(state.seating.seatedLocal[2]).toBeCloseTo(0, 2);
+  expect(state.seating.seatedLocal[1]).toBeGreaterThan(16.38);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setPaused(false);
+    shell.world.enterOfficeLobby({ floorId: "lobby" });
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const cameraPosition = interior.localToWorld(
+      shell.world.camera.position.clone().set(0, 11, 36)
+    );
+    const target = interior.localToWorld(
+      shell.world.camera.position.clone().set(0, 5, -18)
+    );
+    shell.world.setPaused(true);
+    shell.world.camera.position.copy(cameraPosition);
+    shell.world.camera.lookAt(target);
+    shell.world.renderer.render(shell.world.scene, shell.world.camera);
+  });
+  await page.screenshot({
+    path: "/tmp/forkmesh-office-lobby.png",
+    animations: "disabled",
+  });
+});
+
+test("Office elevator exposes ten floors while enforcing team access", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-elevator-access", {
+    session: {
+      kind: "user",
+      nodeName: "alice",
+      email: "alice@example.test",
+      sessionToken: "alice-office-token",
+    },
+    officeFloorAccess: {
+      allowedFloorIds: ["engineering"],
+      teams: ["engineering"],
+    },
+  });
+  await waitForWorld(page);
+  await walkIntoOffice(page);
+  await expect(page.locator("[data-world-office-lobby]")).toBeHidden();
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      let allowed = false;
+      shell.world.scene.traverse((object) => {
+        if (
+          object.userData?.officeFloorId === "engineering" &&
+          object.userData?.officeFloorAllowed === true
+        ) {
+          allowed = true;
+        }
+      });
+      return allowed;
+    })
+  ).toBe(true);
+
+  const access = await page.locator("forkmesh-world").evaluate((shell) => {
+    const destinations = new Map();
+    const scene = shell.world.scene;
+    const car = scene.getObjectByName("forkmesh-office-glass-elevator-car");
+    const shaft = scene.getObjectByName(
+      "forkmesh-office-glass-elevator-shaft"
+    );
+    const panel = scene.getObjectByName(
+      "forkmesh-office-elevator-cabin-panel"
+    );
+    const buttons = [];
+    const isDescendantOf = (object, ancestor) => {
+      for (let current = object?.parent; current; current = current.parent) {
+        if (current === ancestor) return true;
+      }
+      return false;
+    };
+    shell.world.scene.traverse((object) => {
+      if (object.userData?.interactive !== "office-elevator-floor") return;
+      buttons.push(object);
+      destinations.set(object.userData.officeFloorId, {
+        id: object.userData.officeFloorId,
+        level: object.userData.officeFloorLevel,
+        allowed: object.userData.officeFloorAllowed === true,
+      });
+    });
+    return {
+      destinations: [...destinations.values()].sort((left, right) =>
+        left.level - right.level
+      ),
+      buttonCount: buttons.length,
+      buttonsMoveWithCar:
+        Boolean(car) && buttons.every((button) => isDescendantOf(button, car)),
+      panelParent: panel?.parent?.name || "",
+      carPosition: car
+        ? { x: car.position.x, y: car.position.y, z: car.position.z }
+        : null,
+      shaftPosition: shaft
+        ? { x: shaft.position.x, y: shaft.position.y, z: shaft.position.z }
+        : null,
+    };
+  });
+  expect(access.destinations).toHaveLength(10);
+  expect(access.destinations.map((floor) => floor.id)).toEqual([
+    "lobby",
+    "marketing",
+    "engineering",
+    "product-design",
+    "security",
+    "infrastructure",
+    "community",
+    "partnerships",
+    "operations",
+    "rooftop",
+  ]);
+  expect(access.buttonCount).toBe(10);
+  expect(access.buttonsMoveWithCar).toBe(true);
+  expect(access.panelParent).toBe("forkmesh-office-glass-elevator-car");
+  expect(access.carPosition).toMatchObject({ x: 70, y: 0 });
+  expect(access.shaftPosition).toMatchObject({ x: 70, y: 0 });
+  expect(access.carPosition.z).toBeGreaterThanOrEqual(44.5);
+  expect(access.shaftPosition.z).toBeCloseTo(access.carPosition.z, 5);
+  expect(
+    Object.fromEntries(
+      access.destinations.map((floor) => [floor.id, floor.allowed])
+    ),
+  ).toMatchObject({
+    lobby: true,
+    marketing: true,
+    engineering: true,
+    security: false,
+    rooftop: true,
+  });
+
+  // Calling the controller from elsewhere on the floor must not teleport the
+  // avatar into the elevator. Only a visitor physically inside the cabin may
+  // start a ride.
+  const outsideCabin = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.travelToOfficeFloor("engineering")
   );
-  expect(browserState).not.toContain(officeCode);
-  expect(JSON.stringify(worldFrames)).not.toContain(officeCode);
+  expect(outsideCabin).toBe(false);
+
+  const cabinPosition = await page
+    .locator("forkmesh-world")
+    .evaluate((shell) => {
+      const scene = shell.world.scene;
+      const car = scene.getObjectByName("forkmesh-office-glass-elevator-car");
+      const avatar = shell.world.player;
+      car.updateWorldMatrix(true, false);
+      avatar.position.x = car.matrixWorld.elements[12] - 1.25;
+      avatar.position.z = car.matrixWorld.elements[14] - 1.25;
+      return { x: avatar.position.x, z: avatar.position.z };
+    });
+  const locked = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.travelToOfficeFloor("security")
+  );
+  expect(locked).toBe(false);
+  const travelled = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.travelToOfficeFloor("engineering")
+  );
+  expect(travelled).toBe(true);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate((shell) => ({
+      space: shell.world.getPosition().space,
+      avatar: (() => {
+        const object = shell.world.player;
+        return object
+          ? { x: object.position.x, y: object.position.y, z: object.position.z }
+          : null;
+      })(),
+      carHeight: shell.world.scene.getObjectByName(
+        "forkmesh-office-glass-elevator-car"
+      )?.position.y,
+    }))
+  ).toMatchObject({
+    space: "office-engineering",
+    avatar: {
+      x: cabinPosition.x,
+      y: 32.38,
+      z: cabinPosition.z,
+    },
+    carHeight: 32,
+  });
 });
 
 test("Office marketing tasks can be assigned, timed, and checked in privately", async ({
@@ -1781,7 +2271,7 @@ test("Office marketing tasks can be assigned, timed, and checked in privately", 
   expect(JSON.stringify(worldFrames)).not.toContain("Schedule community demo");
 });
 
-test("ForkMesh Office preserves registered channel authorization", async ({
+test("ForkMesh Office defers the channel directory until fallback is opened", async ({
   page,
 }) => {
   await page.routeWebSocket(
@@ -1817,13 +2307,14 @@ test("ForkMesh Office preserves registered channel authorization", async ({
     ],
   });
   await waitForWorld(page);
-  await moveToOfficeEntrance(page);
-  await page.locator("[data-world-office-enter]").click();
+  await walkIntoOffice(page);
   const nativeRooms = page.locator("[data-world-office-room-board]");
   await expect(nativeRooms).toContainText("#general");
-  await expect(nativeRooms).toContainText("#announcements");
-  await expect(nativeRooms).toContainText("#leadership");
-  await page.locator("[data-world-office-fallback]").click();
+  await expect(nativeRooms).not.toContainText("#announcements");
+  await expect(nativeRooms).not.toContainText("#leadership");
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.officeController.openFallback();
+  });
 
   const office = page.frameLocator("[data-world-office-frame]");
   await expect(office.locator("#chat-rooms")).toContainText("#general");
@@ -1852,15 +2343,13 @@ test("ForkMesh Office explains an expired authorized session", async ({
     chatChannelStatus: 401,
   });
   await waitForWorld(page);
-  await moveToOfficeEntrance(page);
-  await page.locator("[data-world-office-enter]").click();
+  await walkIntoOffice(page);
   await expect(page.locator("[data-world-office-room-board]")).toContainText(
     "#general",
   );
-  await expect(page.locator("[data-world-office-lobby-status]")).toContainText(
-    "Channels are temporarily unavailable",
-  );
-  await page.locator("[data-world-office-fallback]").click();
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.officeController.openFallback();
+  });
 
   const office = page.frameLocator("[data-world-office-frame]");
   await expect(office.locator("#chat-office-alert")).toContainText(
@@ -2013,9 +2502,8 @@ async function freezeWorld(page) {
 }
 
 async function openOfficeForVisual(page) {
-  await moveToOfficeEntrance(page, { unpause: true });
-  await page.locator("[data-world-office-enter]").click();
-  await expect(page.locator("[data-world-office-lobby]")).toBeVisible();
+  await walkIntoOffice(page);
+  await expect(page.locator("[data-world-office-lobby]")).toBeHidden();
   await page.locator("forkmesh-world").evaluate((shell) => {
     shell.world.setPaused(true);
   });
@@ -2608,7 +3096,7 @@ test("refresh from the Office restores the last Town Square location", async ({
     page.locator("forkmesh-world").evaluate(
       (shell) => shell.world.getPosition().space,
     ),
-  ).toBe("office");
+  ).toBe("office-lobby");
 
   await page.reload();
   await waitForWorldReady(page);
@@ -5506,6 +5994,12 @@ for (const viewport of [
     );
     await prepareWorldPage(page, `visual-${viewport.name}`, {
       chatPassphrase: `visual-${viewport.name}-office-passphrase`,
+      session: {
+        kind: "user",
+        nodeName: "visual-member",
+        email: "visual-member@example.test",
+        sessionToken: `visual-${viewport.name}-office-token`,
+      },
     });
     await waitForWorld(page);
     await freezeWorld(page);
@@ -5516,13 +6010,7 @@ for (const viewport of [
     });
     await openOfficeForVisual(page);
     const dock = page.locator("[data-world-office-lobby]");
-    const dockBox = await dock.boundingBox();
-    expect(dockBox).not.toBeNull();
-    if (viewport.options.viewport.width <= 720) {
-      expect(dockBox.height).toBeLessThanOrEqual(viewport.options.viewport.height);
-    } else {
-      expect(dockBox.width).toBeLessThanOrEqual(621);
-    }
+    await expect(dock).toBeHidden();
     await expect(page.locator("canvas.world-canvas")).toBeVisible();
     expect(await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -5536,7 +6024,7 @@ for (const viewport of [
   });
 }
 
-test("ForkMesh Office lobby stays bounded at 320 CSS pixels", async ({
+test("ForkMesh Office remains a continuous World at 320 CSS pixels", async ({
   browser,
 }) => {
   const context = await browser.newContext({
@@ -5551,13 +6039,17 @@ test("ForkMesh Office lobby stays bounded at 320 CSS pixels", async ({
   );
   await prepareWorldPage(page, "office-320", {
     chatPassphrase: "playwright-office-320-passphrase",
+    session: {
+      kind: "user",
+      nodeName: "alice",
+      email: "alice@example.test",
+      sessionToken: "alice-office-token",
+    },
   });
   await waitForWorld(page);
   await openOfficeForVisual(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(320);
-  const dockBox = await page.locator("[data-world-office-lobby]").boundingBox();
-  expect(dockBox).not.toBeNull();
-  expect(dockBox.width).toBeLessThanOrEqual(320);
-  expect(dockBox.height).toBeLessThanOrEqual(640);
+  await expect(page.locator("[data-world-office-lobby]")).toBeHidden();
+  await expect(page.locator("canvas.world-canvas")).toBeVisible();
   await context.close();
 });

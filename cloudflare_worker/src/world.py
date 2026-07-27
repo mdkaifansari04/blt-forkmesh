@@ -643,9 +643,10 @@ def sanitize_message(payload, current, now, country_source="",
         elif trusted_name:
             state["name"] = clean_display_name(
                 trusted_name, state.get("name") or "Contributor")
-        elif "name" in payload:
-            state["name"] = clean_display_name(
-                payload.get("name"), state.get("name") or "Guest")
+        # An anonymous socket never chooses an account-looking display name.
+        # Its server-generated Guest suffix is bound to this random peer id,
+        # so a second client cannot visually impersonate a signed-in avatar
+        # simply by copying the victim's name into a presence frame.
         if "browser" in payload:
             state["browser"] = _choice(
                 payload.get("browser"), WORLD_BROWSER_VALUES,

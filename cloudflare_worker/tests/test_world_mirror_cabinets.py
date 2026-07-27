@@ -248,9 +248,12 @@ def test_world_fetches_the_flagship_mirror_snapshot_once_and_uses_cabinets():
     # never travels on the multiplayer socket.
     assert APP.count('this.fetchJSON("/api/repo/forkmesh/forkmesh/mirrors"') == 1
     assert '"/api/repo/forkmesh/forkmesh/mirrors",' in APP
-    assert "const MIRROR_STATUS_POLL_MS = 5 * 1000" in APP
+    assert "const MIRROR_STATUS_POLL_MS = 60 * 1000" in APP
     assert "document.visibilityState !== \"visible\"" in APP
     assert "startMirrorPolling()" in APP
+    assert "this.inflightRequests = new Map()" in APP
+    assert "this.requestFailures = new Map()" in APP
+    assert "staleIfError: true" in APP
     assert "buildLiveMirrorNodes" in APP
     assert "this.mirrorCatalogs" in APP
     assert "function createMirrorServerCabinet" in SCENE
