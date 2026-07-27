@@ -164,6 +164,11 @@ const WORLD_REWARD_POLL_MS = 5 * 60 * 1000;
 const WORLD_MEDIA_PLAYBACK_POLL_MS = 15 * 1000;
 const WORLD_SOCKET_PING_MS = 40 * 1000;
 const WORLD_STATUS_POLL_MS = 5 * 60 * 1000;
+// The member directory is refreshed by arrivals rather than by a timer, so
+// the idle throttle is long; a new face at the fire forces it through, no
+// sooner than the endpoint's own edge-cache TTL.
+const WORLD_MEMBER_DIRECTORY_POLL_MS = 5 * 60 * 1000;
+const USERS_DIRECTORY_TTL_MS = 30 * 1000;
 const WORLD_MANUAL_BLOCK_DURATION_MS = 60 * 60 * 1000;
 const WORLD_SCORE_LOOP_MS = 4 * 60 * 60 * 1000;
 const DEFAULT_FOCUS_MUSIC_TRACK_ID = FOCUS_MUSIC_TRACKS[0].id;
@@ -3756,6 +3761,9 @@ class ForkMeshWorld extends HTMLElement {
     this.walletBadges = new Map();
     this.memberDirectory = [];
     this.memberDirectoryFetchedAt = 0;
+    // Lowercased names seated straight from a presence frame because they are
+    // newer than the last directory snapshot (see noteDirectoryMembers).
+    this.pendingDirectoryMembers = new Set();
     this.worldClientProfileKey = "";
     this.pendingKnocks = new Map();
     this.serverPeerId = "";
@@ -4648,6 +4656,10 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     void this.checkForWorldUpdate();
+    // Nothing refreshes the directory while a tab is hidden — its presence
+    // socket is closed, so no arrival can force it — and accounts signed up
+    // meanwhile are missing from the fire's total. Coming back is the cue.
+    void this.refreshMemberDirectory();
     if (!this.socket) {
       this.refreshWorldTicket();
       this.connectPresence();
@@ -18019,27 +18031,55 @@ class ForkMeshWorld extends HTMLElement {
     });
     if (!added.length) return false;
     this.memberDirectory = [...this.memberDirectory, ...added];
-    void this.refreshMemberDirectory();
+    added.forEach((member) =>
+      this.pendingDirectoryMembers.add(member.name.toLowerCase()),
+    );
+    // A brand-new account is exactly the case the refresh throttle must not
+    // swallow: pull the directory straight away so the arrival's joined date
+    // and node count fill in behind the bench the count already grew for.
+    void this.refreshMemberDirectory(true);
     return true;
   }
 
   // Shares the edge-cached directory endpoint the chat roster uses. Throttled
-  // to its server-side TTL so a burst of arrivals still costs one request.
-  async refreshMemberDirectory() {
+  // well past its server-side TTL so idle tabs cost nothing; an account seen
+  // for the first time in a presence frame forces a fresh snapshot, floored
+  // at the endpoint's own cache TTL because a fetch inside that window would
+  // only hand back the same edge-cached body.
+  async refreshMemberDirectory(force = false) {
     const now = Date.now();
-    if (now - (this.memberDirectoryFetchedAt || 0) < 5 * 60 * 1000) return;
+    const throttle = force
+      ? USERS_DIRECTORY_TTL_MS
+      : WORLD_MEMBER_DIRECTORY_POLL_MS;
+    if (now - (this.memberDirectoryFetchedAt || 0) < throttle) return;
     this.memberDirectoryFetchedAt = now;
     try {
       const data = await this.fetchJSON("/api/accounts/users", {
         auth: false,
         timeout: 5000,
-        maxAge: 5 * 60 * 1000,
+        // A forced refresh exists to pick up an account the snapshot in hand
+        // is too old to know about, so it must skip the client-side copy.
+        maxAge: force ? 0 : WORLD_MEMBER_DIRECTORY_POLL_MS,
         backoff: true,
         staleIfError: true,
       });
       const directory = normalizeMemberDirectory(data);
       if (!directory.length || this.destroyed) return;
-      this.memberDirectory = directory;
+      // The endpoint is edge-cached for its own TTL, so a snapshot taken
+      // moments after a signup can still be missing the account this refresh
+      // fired for. Keep the members already seated from presence frames
+      // rather than letting a stale snapshot drop them: the fire's total
+      // would count back down, and the next presence frame would re-add them
+      // and force yet another fetch.
+      const listed = new Set(directory.map((member) => member.name.toLowerCase()));
+      const pending = this.memberDirectory.filter((member) => {
+        const key = member.name.toLowerCase();
+        return this.pendingDirectoryMembers.has(key) && !listed.has(key);
+      });
+      this.pendingDirectoryMembers = new Set(
+        pending.map((member) => member.name.toLowerCase()),
+      );
+      this.memberDirectory = [...directory, ...pending];
       this.syncMemberLounge();
     } catch (_) {}
   }
