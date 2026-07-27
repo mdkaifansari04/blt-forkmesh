@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785000579284,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "Some users, such as mdkaifansari04, are reporting issues with moving around after recent remodeling changes. They are unable to navigate and attempting to refresh or log in again does not resolve the issue. Further investigation is needed to determine the cause and implement a fix to ensure smooth navigation for all users.\n\n---\n_Filed by ForkBot at @jett's request via chat._",
+            "id": "forkbot-1785000579284",
+            "sig": "",
+            "title": "Users unable to navigate the space",
+            "ts": 1785000579284,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 528,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Users unable to navigate the space",
+    "updatedAt": 1785000579284,
+    "votes": 0
+}
