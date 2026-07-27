@@ -1839,6 +1839,151 @@ test("Office rooftop restores the full world zoom outside the elevator", async (
   expect(upward.zoom).toBe(28);
 });
 
+test("Office rooftop has complete sittable patio furniture and a real source launcher", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.__officeLaptopOpened = [];
+    window.open = (...args) => {
+      window.__officeLaptopOpened.push(args);
+      return null;
+    };
+  });
+  await prepareWorldPage(page, "office-rooftop-patio");
+  await waitForWorld(page);
+  const patio = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setOfficeAccess({
+      authenticated: true,
+      account: "alice",
+      allowedFloorIds: ["lobby", "marketing", "rooftop"],
+    });
+    shell.world.enterOfficeLobby();
+    shell.world.enterOfficeLobby({ floorId: "rooftop" });
+    const scene = shell.world.scene;
+    const interior = scene.getObjectByName("forkmesh-office-interior");
+    const tables = [];
+    const chairs = [];
+    scene.traverse((object) => {
+      if (/^forkmesh-office-rooftop-table-\d+$/.test(object.name)) {
+        tables.push({
+          id: object.name,
+          legs: object.children.filter((child) =>
+            child.name.includes("-leg-")
+          ).length,
+        });
+      }
+      if (/^forkmesh-office-rooftop-chair-\d+$/.test(object.name)) {
+        chairs.push({
+          id: object.name,
+          legs: object.children.filter((child) =>
+            child.name.includes("-leg-")
+          ).length,
+          backs: object.children.filter((child) =>
+            child.name.endsWith("-back")
+          ).length,
+        });
+      }
+    });
+    const marketingRejected =
+      shell.world.sitOnOfficeChair("chair-1");
+    const sat = shell.world.sitOnOfficeChair("rooftop-chair-1");
+    const chair = scene.getObjectByName(
+      "forkmesh-office-rooftop-chair-1"
+    );
+    const seated = interior.worldToLocal(
+      shell.world.player.getWorldPosition(shell.world.player.position.clone())
+    );
+    const toTable = {
+      x: -40 - chair.position.x,
+      z: 8 - chair.position.z,
+    };
+    const length = Math.hypot(toTable.x, toTable.z) || 1;
+    const facingDot =
+      (-Math.sin(shell.world.player.rotation.y) * (toTable.x / length)) +
+      (-Math.cos(shell.world.player.rotation.y) * (toTable.z / length));
+    const stood = shell.world.sitOnOfficeChair("rooftop-chair-1");
+    shell.world.enterOfficeLobby({ floorId: "marketing" });
+    const rooftopRejected =
+      shell.world.sitOnOfficeChair("rooftop-chair-1");
+    shell.world.enterOfficeLobby({ floorId: "rooftop" });
+    return {
+      tables,
+      chairs,
+      marketingRejected,
+      rooftopRejected,
+      sat,
+      stood,
+      seated: seated.toArray(),
+      standingY: shell.world.player.position.y,
+      facingDot,
+      laptop: Boolean(scene.getObjectByName(
+        "forkmesh-office-rooftop-laptop"
+      )),
+      laptopBase: Boolean(scene.getObjectByName(
+        "forkmesh-office-rooftop-laptop-base"
+      )),
+      laptopScreen: Boolean(scene.getObjectByName(
+        "forkmesh-office-rooftop-laptop-screen"
+      )),
+      strayTelescope: Boolean(scene.getObjectByName("telescopeTube")),
+    };
+  });
+  expect(patio.tables).toHaveLength(3);
+  expect(patio.tables.every((table) => table.legs === 4)).toBe(true);
+  expect(patio.chairs).toHaveLength(12);
+  expect(patio.chairs.every((chair) =>
+    chair.legs === 4 && chair.backs === 1
+  )).toBe(true);
+  expect(patio).toMatchObject({
+    marketingRejected: false,
+    rooftopRejected: false,
+    sat: true,
+    stood: true,
+    standingY: 144.38,
+    laptop: true,
+    laptopBase: true,
+    laptopScreen: true,
+    strayTelescope: false,
+  });
+  expect(patio.seated[1]).toBeGreaterThan(144);
+  expect(patio.seated[1]).toBeLessThan(144.38);
+  expect(patio.facingDot).toBeGreaterThan(0.99);
+
+  const laptopPoint = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const interior = scene.getObjectByName("forkmesh-office-interior");
+    const screen = scene.getObjectByName(
+      "forkmesh-office-rooftop-laptop-screen"
+    );
+    const target = screen.getWorldPosition(screen.position.clone());
+    const camera = interior.localToWorld(
+      screen.position.clone().set(0, 149, 17)
+    );
+    shell.world.setPaused(true);
+    shell.world.camera.position.copy(camera);
+    shell.world.camera.lookAt(target);
+    shell.world.camera.updateMatrixWorld(true);
+    shell.world.renderer.render(scene, shell.world.camera);
+    const projected = target.clone().project(shell.world.camera);
+    const rect = shell.world.renderer.domElement.getBoundingClientRect();
+    return {
+      x: rect.left + (projected.x * 0.5 + 0.5) * rect.width,
+      y: rect.top + (-projected.y * 0.5 + 0.5) * rect.height,
+    };
+  });
+  await page.mouse.click(laptopPoint.x, laptopPoint.y);
+  await expect.poll(() =>
+    page.evaluate(() => window.__officeLaptopOpened)
+  ).toEqual([[
+    "/forkmesh/forkmesh/blob/cloudflare_worker/public/world/world-scene.js",
+    "_blank",
+    "noopener,noreferrer",
+  ]]);
+  await expect(page.locator("[data-world-toast]")).toContainText(
+    "Source edits stay in the desktop app or IDE extension"
+  );
+});
+
 test("leaving an Office meeting resumes at a walkable first-person pose", async ({
   page,
 }) => {
