@@ -267,8 +267,11 @@ export function createWorldOfficeController({
     return normalizeOfficeFloorAccess({});
   }
 
-  function completeOfficeEntry({ loadPublicAttendance = true } = {}) {
-    if (!world.enterOffice()) return false;
+  function completeOfficeEntry({
+    loadPublicAttendance = true,
+    source = "",
+  } = {}) {
+    if (!world.enterOffice({ source })) return false;
     authorizationGeneration += 1;
     setEntryPending(false);
     officeAccess = initialOfficeAccess();
@@ -377,10 +380,14 @@ export function createWorldOfficeController({
   async function enterOffice(entry = {}) {
     const doorwayEntry = entry?.source === "doorway";
     try {
-      if (proximity !== "nearby" || active) return false;
+      // The scene emits "doorway" only after its physical collider verifies a
+      // real threshold crossing. Do not reject a fast crossing merely because
+      // the later proximity tick still contains the previous frame.
+      if (active || (!doorwayEntry && proximity !== "nearby")) return false;
       const activeSession = authenticatedSession();
       const entered = completeOfficeEntry({
         loadPublicAttendance: !activeSession,
+        source: doorwayEntry ? "doorway" : "",
       });
       if (entered && activeSession) {
         // Physical admission never waits on the network. Signed-in visitors
