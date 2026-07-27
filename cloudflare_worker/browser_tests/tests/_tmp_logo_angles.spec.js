@@ -30,13 +30,12 @@ test("_tmp logo angles", async ({ page }) => {
   });
   await page.waitForTimeout(1400);
   const views = [
-    ["p", [-15, 15, 1], 0, 72],
-    ["q", [-15, 15, 1], 0.7, 72],
-    ["r", [-15, 15, 1], 1.05, 72],
-    ["s", [-15, 15, 1], 1.35, 72],
-    ["t", [-15, 15, 1], Math.PI / 2, 72],
-    ["u", [-15, 15, 1], 1.8, 72],
-    ["v", [-15, 15, 1], 2.1, 72],
+    ["w", [-10, 13, 6], 0, 50],
+    ["x", [-8, 14, 8], 0, 45],
+    ["y", [-12, 12, 4], 0, 55],
+    ["z", [-10, 14, -10], 0, 48],
+    ["aa", [-26, 13, 6], 0, 50],
+    ["ab", [-10, 11, 6], 0, 50],
   ];
   for (const [name, position, yaw, fov] of views) {
     await page.locator("forkmesh-world").evaluate(
@@ -52,7 +51,7 @@ test("_tmp logo angles", async ({ page }) => {
           shell.world.camera.position.clone().set(...spec.position)
         ));
         shell.world.camera.lookAt(interior.localToWorld(
-          shell.world.camera.position.clone().set(-18, 7.5, -2)
+          shell.world.camera.position.clone().set(-18, 5.3, -2)
         ));
         shell.world.renderer.render(scene, shell.world.camera);
       },

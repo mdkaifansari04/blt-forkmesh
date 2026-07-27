@@ -83,6 +83,10 @@ const REPOSITORY_FIRST_PERSON_PITCH = -0.08;
 const OFFICE_HEIGHT = OFFICE_FLOOR_HEIGHT;
 const OFFICE_INTERIOR_WALL_LIMIT = OFFICE_FRONT_Z - 0.54;
 const OFFICE_INTERIOR_EXIT_Z = OFFICE_FRONT_Z + 0.18;
+const OFFICE_DOOR_HEIGHT = 4.4;
+const OFFICE_DOOR_SILL_Y = 0.34;
+const OFFICE_DOORWAY_ENTRY_Z =
+  OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS;
 const OFFICE_ELEVATOR_HALF_WIDTH = 5;
 const OFFICE_ELEVATOR_HALF_DEPTH = 4;
 const OFFICE_ELEVATOR_CUT_MARGIN = 0.35;
@@ -6881,7 +6885,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const wallThickness = 0.35;
   const doorWidth = OFFICE_DOOR_WIDTH;
-  const doorHeight = 4.4;
+  const doorHeight = OFFICE_DOOR_HEIGHT;
   const rooftopY = officeFloorY("rooftop");
   const concrete = makeMaterial(THREE, "#18231f", {
     metalness: 0.08,
@@ -7161,7 +7165,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
       `forkmesh-office-sliding-door-${side < 0 ? "left" : "right"}`;
     panel.position.set(
       side * doorClosedX,
-      doorHeight / 2 + 0.34,
+      doorHeight / 2 + OFFICE_DOOR_SILL_Y,
       0,
     );
     slidingDoors.add(panel);
@@ -9456,13 +9460,15 @@ export function createWorldScene({
     // A neutral mid-silver base leaves headroom for the live cube map. Nearly
     // white metal clipped those reflected lobby greens and dark window bands
     // into a flat white surface under ACES tone mapping.
-    color: "#aeb9c8",
-    metalness: 1,
-    roughness: 0.045,
+    color: "#dbe4ef",
+    metalness: 0.94,
+    roughness: 0.055,
+    emissive: "#0b1417",
+    emissiveIntensity: 0.14,
     clearcoat: 1,
     clearcoatRoughness: 0.02,
     envMap: reflectionTarget.texture,
-    envMapIntensity: 1.65,
+    envMapIntensity: 1.45,
   });
   const darkChrome = new THREE.MeshPhysicalMaterial({
     color: "#05070b",
@@ -9483,20 +9489,16 @@ export function createWorldScene({
   // then continue from this pose around the same world-vertical axis.
   chromeCube.rotation.y = 0;
   // Only this outer mount animates. Its Y rotation is the single vertical
-  // spindle through the fountain; the inner edge-balanced tilt never changes.
+  // spindle through the fountain; the inner mark remains architecturally
+  // upright so the top is horizontal and the F/M walls stay vertical.
   const chromeMark = new THREE.Group();
   chromeMark.name = "forkmesh-reflective-fm-cube-fixed-tilt";
   chromeCube.add(chromeMark);
   const logoHalfSize = 2.92;
   const logoSupportTopY = 2.4;
-  // Align one body diagonal with world-up. The selected lower corner therefore
-  // remains exactly over the single support even while the outer mount spins.
-  const logoLowerCorner = new THREE.Vector3(-1, -1, -1).normalize();
-  chromeMark.quaternion.setFromUnitVectors(
-    logoLowerCorner,
-    new THREE.Vector3(0, -1, 0),
-  );
-  chromeCube.position.y = logoSupportTopY + logoHalfSize * Math.sqrt(3);
+  chromeMark.quaternion.identity();
+  chromeMark.userData.logoUpright = true;
+  chromeCube.position.y = logoSupportTopY + logoHalfSize;
   reflectionCamera.position.y = chromeCube.position.y;
   const logoPiece = (
     parent,
@@ -9672,11 +9674,7 @@ export function createWorldScene({
     chrome,
   );
   logoContactPoint.name = "forkmesh-reflective-fm-cube-contact-point";
-  logoContactPoint.position.set(
-    -logoHalfSize,
-    -logoHalfSize,
-    -logoHalfSize,
-  );
+  logoContactPoint.position.set(0, -logoHalfSize, 0);
   chromeMark.add(logoContactPoint);
   const logoSupport = new THREE.Mesh(
     new THREE.CylinderGeometry(0.2, 0.28, 1.28, 20),
@@ -10140,21 +10138,10 @@ export function createWorldScene({
   function officeAvatarLocalPosition(
     avatar,
     target = new THREE.Vector3(),
-    { entry = false } = {},
   ) {
     if (!avatar) return target.set(0, 0, 0);
     avatar.getWorldPosition(target);
     officeInterior.worldToLocal(target);
-    if (entry) {
-      // Admission may resolve one frame after the physical threshold crossing.
-      // Keep that live pose at the doorway instead of letting latency place the
-      // visitor beyond the front face before interior collision takes over.
-      const doorwayEdge = Math.min(
-        OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS,
-        OFFICE_INTERIOR_EXIT_Z,
-      );
-      target.z = Math.min(target.z, doorwayEdge);
-    }
     return target;
   }
 
@@ -10386,7 +10373,7 @@ export function createWorldScene({
     const previousX = previousPosition.x - office.position.x;
     const previousZ = previousPosition.z - office.position.z;
     const doorClearance = OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS;
-    const doorwayThreshold = OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS;
+    const doorwayThreshold = OFFICE_DOORWAY_ENTRY_Z;
     if (
       localZ > doorwayThreshold + 0.32 &&
       localZ > previousZ + 0.01
@@ -10479,8 +10466,10 @@ export function createWorldScene({
       position.z = OFFICE_INTERIOR_WALL_LIMIT;
       commitPosition();
     }
+    const movingOutward = position.z > previous.z + 1e-5;
     if (
       officeCurrentFloorId === "lobby" &&
+      movingOutward &&
       position.z >= OFFICE_INTERIOR_EXIT_Z &&
       Math.abs(position.x) <= doorClearance
     ) {
@@ -10497,7 +10486,7 @@ export function createWorldScene({
         officeCurrentFloorId === "lobby" &&
         Math.abs(x) <= doorClearance &&
         z >= OFFICE_INTERIOR_WALL_LIMIT &&
-        z <= OFFICE_INTERIOR_EXIT_Z;
+        z <= OFFICE_DOORWAY_ENTRY_Z + 0.08;
       return (
         inLobbyDoorway ||
         officeInteriorPointIsWalkable(
@@ -10707,20 +10696,11 @@ export function createWorldScene({
       const localPosition = officeAvatarLocalPosition(
         player,
         new THREE.Vector3(),
-        { entry: true },
       );
-      const doorClearance =
-        OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS - 0.08;
-      localPosition.x = clamp(
-        localPosition.x,
-        -doorClearance,
-        doorClearance,
-      );
+      // The town-wall crossing already verified that this is the physical
+      // doorway. Preserve its exact X/Z threshold pose across the mode handoff;
+      // subsequent lobby motion owns wall and outward-exit collision.
       localPosition.y = currentFloorY;
-      localPosition.z = Math.min(
-        localPosition.z,
-        OFFICE_INTERIOR_WALL_LIMIT - 0.72,
-      );
       applyOfficeAvatarLocalPosition(player, localPosition);
     } else if (meetingAvatar) {
       const localPosition = nearestOfficeWalkablePosition(
@@ -12194,6 +12174,34 @@ export function createWorldScene({
           minZ: -OFFICE_DEPTH / 2 + 0.72,
           maxZ: OFFICE_FRONT_Z - 0.72,
         };
+    const frontDirection = Number(direction.z) || 0;
+    const rawFrontDistance =
+      frontDirection > 1e-6
+        ? (OFFICE_FRONT_Z - localTarget.z) / frontDirection
+        : NaN;
+    const targetInDoorwayThreshold =
+      localTarget.z >= OFFICE_FRONT_Z &&
+      localTarget.z <= OFFICE_DOORWAY_ENTRY_Z + 0.08;
+    const portalDistance =
+      rawFrontDistance >= 0
+        ? rawFrontDistance
+        : targetInDoorwayThreshold
+          ? 0
+          : NaN;
+    const portalX =
+      localTarget.x + (Number(direction.x) || 0) * portalDistance;
+    const portalY =
+      localTarget.y + (Number(direction.y) || 0) * portalDistance;
+    const rayThroughOpenLobbyPortal =
+      !ridingElevator &&
+      officeCurrentFloorId === "lobby" &&
+      officeSlidingDoorOpen >= 0.9 &&
+      frontDirection > 1e-6 &&
+      Number.isFinite(portalDistance) &&
+      Math.abs(portalX) <= OFFICE_DOOR_WIDTH / 2 - 0.08 &&
+      portalY >= OFFICE_DOOR_SILL_Y + 0.08 &&
+      portalY <=
+        OFFICE_DOOR_SILL_Y + OFFICE_DOOR_HEIGHT - 0.08;
     const axes = [
       ["x", "minX", "maxX"],
       ["y", "minY", "maxY"],
@@ -12203,6 +12211,16 @@ export function createWorldScene({
     axes.forEach(([axis, minKey, maxKey]) => {
       const component = Number(direction[axis]) || 0;
       if (Math.abs(component) < 1e-6) return;
+      // The open front door is a real portal in the floor envelope. Only its
+      // Z face is omitted; side walls, floor/ceiling, rear wall, elevator, and
+      // every ray that misses the actual aperture retain the normal clamp.
+      if (
+        axis === "z" &&
+        component > 0 &&
+        rayThroughOpenLobbyPortal
+      ) {
+        return;
+      }
       const edge = component > 0 ? bounds[maxKey] : bounds[minKey];
       const distance = (edge - localTarget[axis]) / component;
       if (distance >= 0) boundaryDistance = Math.min(boundaryDistance, distance);
