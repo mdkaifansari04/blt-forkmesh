@@ -7,6 +7,7 @@ import base64
 import hmac
 from pathlib import Path
 import re
+import sqlite3
 import tomllib
 from types import SimpleNamespace
 
@@ -238,6 +239,9 @@ def _floor_access_handler():
     state = {
         "account_bi": "",
         "account": None,
+        "office_org_bi": "forkmesh-org-bi",
+        "office_org_row": {"name": "forkmesh"},
+        "organization_reads": [],
         "rows": [],
         "queries": [],
     }
@@ -247,6 +251,10 @@ def _floor_access_handler():
 
     async def ensure_schema(_env):
         return None
+
+    async def org_row(_env, org):
+        state["organization_reads"].append(org)
+        return state["office_org_bi"], state["office_org_row"]
 
     async def d1_all(_env, query, *params):
         state["queries"].append((query, params))
@@ -264,12 +272,16 @@ def _floor_access_handler():
         "MAX_NODE_NAME": 64,
         "_account_kind": lambda record: record.get("kind", ""),
         "_account_session_record": account_session,
+        "_org_row": org_row,
         "clean_string": lambda value, limit: str(value or "")[:limit],
         "d1_all": d1_all,
         "ensure_schema": ensure_schema,
         "json_response": json_response,
         "method_name": lambda request: request.method,
         "re": re,
+        "valid_node_name": lambda value: bool(
+            re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", str(value or ""))
+        ),
     }
     _compile(nodes, namespace)
     return namespace["office_floor_access_handler"], state
@@ -317,8 +329,147 @@ def test_floor_projection_grants_defaults_plus_server_derived_team_floors():
         "security",
     ]
     query, params = state["queries"][-1]
-    assert "FROM org_team_members" in query
-    assert params == ("b" * 64,)
+    assert "FROM org_team_members tm" in query
+    assert "INNER JOIN orgs o" in query
+    assert "INNER JOIN org_members om" in query
+    assert "INNER JOIN org_teams ot" in query
+    assert "tm.org_bi=?" in query
+    assert state["organization_reads"] == ["forkmesh"]
+    assert params == ("forkmesh-org-bi", "forkmesh", "b" * 64)
+
+
+def _database_floor_access_handler(database, state):
+    async def account_session(_env, _request):
+        return state["account_bi"], state["account"]
+
+    async def ensure_schema(_env):
+        return None
+
+    async def org_row(_env, org):
+        row = database.execute(
+            "SELECT org_bi,name FROM orgs WHERE name=?",
+            (org,),
+        ).fetchone()
+        return (
+            (str(row["org_bi"]), dict(row))
+            if row
+            else ("missing-org-bi", None)
+        )
+
+    async def d1_all(_env, query, *params):
+        return [
+            dict(row)
+            for row in database.execute(query, params).fetchall()
+        ]
+
+    def json_response(data, status=200, **_kwargs):
+        return {"status": status, "data": data}
+
+    namespace = {
+        "MAX_NODE_NAME": 64,
+        "_account_kind": lambda record: record.get("kind", ""),
+        "_account_session_record": account_session,
+        "_org_row": org_row,
+        "clean_string": lambda value, limit: str(value or "")[:limit],
+        "d1_all": d1_all,
+        "ensure_schema": ensure_schema,
+        "json_response": json_response,
+        "method_name": lambda request: request.method,
+        "re": re,
+        "valid_node_name": lambda value: bool(
+            re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", str(value or ""))
+        ),
+    }
+    _compile([
+        _top_level_assignment("OFFICE_FLOOR_TEAM_ALIASES"),
+        _top_level_node("_office_team_slug"),
+        _top_level_node("office_floor_access_handler"),
+    ], namespace)
+    return namespace["office_floor_access_handler"]
+
+
+def test_floor_projection_rejects_other_org_aliases_and_orphan_grants():
+    database = sqlite3.connect(":memory:")
+    database.row_factory = sqlite3.Row
+    database.executescript(
+        """
+        CREATE TABLE orgs (
+            org_bi TEXT PRIMARY KEY, name TEXT NOT NULL
+        );
+        CREATE TABLE org_members (
+            org_bi TEXT NOT NULL, member_bi TEXT NOT NULL,
+            role TEXT NOT NULL
+        );
+        CREATE TABLE org_teams (
+            org_bi TEXT NOT NULL, team TEXT NOT NULL,
+            permission TEXT NOT NULL
+        );
+        CREATE TABLE org_team_members (
+            org_bi TEXT NOT NULL, team TEXT NOT NULL,
+            member_bi TEXT NOT NULL
+        );
+        """
+    )
+    alice_bi = "a" * 64
+    bob_bi = "b" * 64
+    database.executemany(
+        "INSERT INTO orgs (org_bi,name) VALUES (?,?)",
+        (("official", "forkmesh"), ("self-created", "alice-labs")),
+    )
+    database.executemany(
+        "INSERT INTO org_members (org_bi,member_bi,role) VALUES (?,?,?)",
+        (
+            ("official", alice_bi, "member"),
+            ("self-created", alice_bi, "owner"),
+        ),
+    )
+    database.executemany(
+        "INSERT INTO org_teams (org_bi,team,permission) VALUES (?,?,?)",
+        (
+            ("official", "frontend", "read"),
+            ("official", "security", "read"),
+            ("self-created", "operations", "admin"),
+        ),
+    )
+    database.executemany(
+        "INSERT INTO org_team_members (org_bi,team,member_bi) VALUES (?,?,?)",
+        (
+            # The only valid authoritative grant.
+            ("official", "frontend", alice_bi),
+            # A fully live lookalike team in Alice's own organization.
+            ("self-created", "operations", alice_bi),
+            # Missing org_teams parent in the authoritative organization.
+            ("official", "community", alice_bi),
+            # Live team but missing org_members parent for Bob.
+            ("official", "security", bob_bi),
+        ),
+    )
+    state = {
+        "account_bi": alice_bi,
+        "account": {"name": "Alice", "status": "active", "kind": "user"},
+    }
+    handler = _database_floor_access_handler(database, state)
+    request = SimpleNamespace(method="GET")
+
+    alice = asyncio.run(handler(_Env(), request))
+    assert alice["data"]["teams"] == ["frontend"]
+    assert alice["data"]["allowedFloorIds"] == [
+        "lobby",
+        "marketing",
+        "rooftop",
+        "engineering",
+    ]
+
+    state["account_bi"] = bob_bi
+    state["account"] = {"name": "Bob", "status": "active", "kind": "user"}
+    bob = asyncio.run(handler(_Env(), request))
+    assert bob["data"]["teams"] == []
+    assert bob["data"]["allowedFloorIds"] == [
+        "lobby",
+        "marketing",
+        "rooftop",
+    ]
+    database.close()
 
 
 def _general_access_handler():

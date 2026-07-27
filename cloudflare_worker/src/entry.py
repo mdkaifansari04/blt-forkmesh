@@ -6125,7 +6125,12 @@ def _office_team_slug(value):
 
 
 async def office_floor_access_handler(env, request):
-    """Return only the signed-in viewer's server-derived elevator grants."""
+    """Return only the signed-in viewer's server-derived elevator grants.
+
+    The shared tower belongs to one authoritative organization.  A matching
+    team name in a user-created organization must never unlock its floors, and
+    a stale ``org_team_members`` row must not survive deletion of any parent.
+    """
     if method_name(request) != "GET":
         return json_response(
             {"error": "method_not_allowed"},
@@ -6153,12 +6158,33 @@ async def office_floor_access_handler(env, request):
             cache_control="no-store, max-age=0, must-revalidate",
         )
     await ensure_schema(env)
-    rows = await d1_all(
-        env,
-        "SELECT DISTINCT team FROM org_team_members "
-        "WHERE member_bi=? ORDER BY team LIMIT 32",
-        str(account_bi),
+    office_org = str(
+        getattr(env, "OFFICE_MARKETING_ORG", "") or "forkmesh"
+    ).strip().lower()
+    office_org_bi, office_org_row = (
+        await _org_row(env, office_org)
+        if valid_node_name(office_org)
+        else ("", None)
     )
+    rows = []
+    if office_org_row:
+        rows = await d1_all(
+            env,
+            "SELECT DISTINCT tm.team AS team "
+            "FROM org_team_members tm "
+            "INNER JOIN orgs o ON o.org_bi=tm.org_bi "
+            "INNER JOIN org_members om "
+            "ON om.org_bi=tm.org_bi AND om.member_bi=tm.member_bi "
+            "INNER JOIN org_teams ot "
+            "ON ot.org_bi=tm.org_bi AND ot.team=tm.team "
+            "WHERE tm.org_bi=? AND o.name=? AND tm.member_bi=? "
+            "AND om.role IN ('owner','admin','member') "
+            "AND ot.permission IN ('read','write','maintain','admin') "
+            "ORDER BY tm.team LIMIT 50",
+            str(office_org_bi),
+            office_org,
+            str(account_bi),
+        )
     teams = sorted({
         slug
         for slug in (
