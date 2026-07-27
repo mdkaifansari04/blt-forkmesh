@@ -100,6 +100,22 @@ const FORKBOT_GREETING_RANGE = 3.2;
 // If a visitor is out of reach (travelled to another space, moderation walls,
 // …) the greeting still fires from wherever ForkBot got to.
 const FORKBOT_GREETING_TIMEOUT_MS = 12000;
+// Noah speaks only on a genuine outside -> desk-side approach. The wider reset
+// radius adds hysteresis, while the cooldown prevents a visitor pacing on the
+// boundary from creating a new local bubble every frame.
+const OFFICE_RECEPTION_TALK_RANGE = 2.2;
+const OFFICE_RECEPTION_RESET_RANGE = 3.8;
+const OFFICE_RECEPTION_TALK_COOLDOWN_MS = 12000;
+const OFFICE_RECEPTION_GUEST_TIPS = Object.freeze([
+  "The lobby is open to everyone. Log in to use elevator buttons for restricted team floors.",
+  "Guests can browse public repository portals; log in before requesting access to restricted team floors.",
+  "Public mirrors keep source readable. Log in to unlock only the team floors granted to your account.",
+]);
+const OFFICE_RECEPTION_MEMBER_TIPS = Object.freeze([
+  "Elevator buttons reflect your server-verified team access; locked floors stay locked.",
+  "Repository portals show live mirrors, branches, issues, pull requests, and discussions.",
+  "The rooftop laptop opens the real ForkMesh source browser; source edits stay in the desktop or IDE extension.",
+]);
 // A chat mention (exciteForkbot) sends the droid rushing to the speaker at a
 // faster clip than its idle wander. The chest screen echoes the mention alone
 // for a beat before the thinking dots join it, and the wait for a reply is
@@ -7288,6 +7304,7 @@ export function createWorldScene({
   onOfficeEnter = () => {},
   onOfficeTaskBoardSelect = () => {},
   onOfficeMeetingBoardSelect = () => {},
+  onOfficeRooftopLaptopSelect = () => {},
   onWorldBulletinSelect = () => {},
   onMastodonBoardSelect = () => {},
   onMastodonOpenLink = () => {},
@@ -8844,7 +8861,7 @@ export function createWorldScene({
     Number(officeBuilding?.userData?.officeDoorOpenX) ||
     OFFICE_DOOR_WIDTH * 0.76;
   let officeSlidingDoorOpen = 0;
-  animated.push((_time, delta = 0.016) => {
+  function updateOfficeSlidingDoors(_time, delta = 0.016) {
     const localPosition = officeAvatarLocalPosition(
       player,
       new THREE.Vector3(),
@@ -8871,7 +8888,7 @@ export function createWorldScene({
           officeSlidingDoorOpen,
         );
     });
-  });
+  }
   const officeTable = new THREE.Mesh(
     new THREE.BoxGeometry(7.4, 0.34, 3.6),
     makeMaterial(THREE, "#715238", { roughness: 0.66 }),
@@ -9267,13 +9284,16 @@ export function createWorldScene({
   reflectionCamera.position.y = 5.1;
   logoFountain.add(reflectionCamera);
   const chrome = new THREE.MeshPhysicalMaterial({
-    color: "#dfe8f5",
+    // A neutral mid-silver base leaves headroom for the live cube map. Nearly
+    // white metal clipped those reflected lobby greens and dark window bands
+    // into a flat white surface under ACES tone mapping.
+    color: "#aeb9c8",
     metalness: 1,
-    roughness: 0.035,
+    roughness: 0.045,
     clearcoat: 1,
-    clearcoatRoughness: 0.025,
+    clearcoatRoughness: 0.02,
     envMap: reflectionTarget.texture,
-    envMapIntensity: 1.8,
+    envMapIntensity: 1.65,
   });
   const darkChrome = new THREE.MeshPhysicalMaterial({
     color: "#05070b",
@@ -9285,6 +9305,9 @@ export function createWorldScene({
   });
   const chromeCube = new THREE.Group();
   chromeCube.name = "forkmesh-reflective-fm-cube";
+  // The resting view presents the F/M corner together. Motion-enabled clients
+  // then continue from this pose around the same world-vertical axis.
+  chromeCube.rotation.y = 0;
   // Only this outer mount animates. Its Y rotation is the single vertical
   // spindle through the fountain; the inner edge-balanced tilt never changes.
   const chromeMark = new THREE.Group();
@@ -9300,6 +9323,7 @@ export function createWorldScene({
     new THREE.Vector3(0, -1, 0),
   );
   chromeCube.position.y = logoSupportTopY + logoHalfSize * Math.sqrt(3);
+  reflectionCamera.position.y = chromeCube.position.y;
   const logoPiece = (
     parent,
     width,
@@ -9364,8 +9388,10 @@ export function createWorldScene({
   addMLogoFace(-2.68, -Math.PI / 2);
 
   // Rounded mirrored top and bottom plates match the supplied cube silhouette.
-  // Dark inset branch graphs read like the reference's black cut-outs while
-  // the middle remains completely hollow between the four letter faces.
+  // The branch graph is built into the Shape as seven negative-space paths:
+  // four circular nodes and three connecting slots. Extruding that Shape
+  // leaves true holes through both chrome plates, including reflective inner
+  // bevels, instead of placing dark decals over otherwise solid metal.
   const logoPanelShape = new THREE.Shape();
   const panelSize = 5.72;
   const panelHalf = panelSize / 2;
@@ -9400,17 +9426,6 @@ export function createWorldScene({
     -panelHalf,
   );
   logoPanelShape.closePath();
-  const logoPanelGeometry = new THREE.ExtrudeGeometry(logoPanelShape, {
-    depth: 0.36,
-    steps: 1,
-    curveSegments: 16,
-    bevelEnabled: true,
-    bevelSegments: 2,
-    bevelSize: 0.08,
-    bevelThickness: 0.08,
-  });
-  logoPanelGeometry.translate(0, 0, -0.18);
-  logoPanelGeometry.rotateX(Math.PI / 2);
   const topNodes = [
     [-1.8, -1.3],
     [0, -1.8],
@@ -9422,35 +9437,55 @@ export function createWorldScene({
     [[0, -1.8], [1.7, -0.4]],
     [[0, -1.8], [0.2, 1.7]],
   ];
+  const logoNodeCutoutRadius = 0.5;
+  topNodes.forEach(([x, z]) => {
+    const hole = new THREE.Path();
+    hole.absarc(x, z, logoNodeCutoutRadius, 0, Math.PI * 2, false);
+    logoPanelShape.holes.push(hole);
+  });
+  topBranches.forEach(([[x1, z1], [x2, z2]]) => {
+    const dx = x2 - x1;
+    const dz = z2 - z1;
+    const length = Math.hypot(dx, dz);
+    const ux = dx / length;
+    const uz = dz / length;
+    const halfWidth = 0.16;
+    const nx = -uz * halfWidth;
+    const nz = ux * halfWidth;
+    // A hairline of chrome between independently triangulated holes avoids
+    // overlapping Shape holes (which Earcut cannot represent reliably) while
+    // remaining visually continuous beneath the panel's bevel.
+    const trim = logoNodeCutoutRadius + 0.018;
+    const sx = x1 + ux * trim;
+    const sz = z1 + uz * trim;
+    const ex = x2 - ux * trim;
+    const ez = z2 - uz * trim;
+    const hole = new THREE.Path();
+    hole.moveTo(sx + nx, sz + nz);
+    hole.lineTo(ex + nx, ez + nz);
+    hole.lineTo(ex - nx, ez - nz);
+    hole.lineTo(sx - nx, sz - nz);
+    hole.closePath();
+    logoPanelShape.holes.push(hole);
+  });
+  const logoPanelGeometry = new THREE.ExtrudeGeometry(logoPanelShape, {
+    depth: 0.36,
+    steps: 1,
+    curveSegments: 16,
+    bevelEnabled: true,
+    bevelSegments: 2,
+    bevelSize: 0.08,
+    bevelThickness: 0.08,
+  });
+  logoPanelGeometry.translate(0, 0, -0.18);
+  logoPanelGeometry.rotateX(Math.PI / 2);
   for (const faceY of [-2.68, 2.68]) {
-    const outward = Math.sign(faceY);
     const panel = new THREE.Mesh(logoPanelGeometry, chrome);
     panel.name =
-      `forkmesh-reflective-fm-panel-${outward > 0 ? "top" : "bottom"}`;
+      `forkmesh-reflective-fm-panel-${faceY > 0 ? "top" : "bottom"}`;
     panel.position.y = faceY;
+    panel.userData.logoThroughCutouts = logoPanelShape.holes.length;
     chromeMark.add(panel);
-    topNodes.forEach(([x, z]) => {
-      const node = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.48, 0.48, 0.08, 32),
-        darkChrome,
-      );
-      node.position.set(x, faceY + outward * 0.25, z);
-      chromeMark.add(node);
-    });
-    topBranches.forEach(([[x1, z1], [x2, z2]]) => {
-      const length = Math.hypot(x2 - x1, z2 - z1);
-      const branch = new THREE.Mesh(
-        new THREE.BoxGeometry(0.3, 0.08, length),
-        darkChrome,
-      );
-      branch.position.set(
-        (x1 + x2) / 2,
-        faceY + outward * 0.25,
-        (z1 + z2) / 2,
-      );
-      branch.rotation.y = Math.atan2(x2 - x1, z2 - z1);
-      chromeMark.add(branch);
-    });
   }
   const logoContactPoint = new THREE.Mesh(
     new THREE.OctahedronGeometry(0.2, 0),
@@ -9471,6 +9506,20 @@ export function createWorldScene({
   logoSupport.position.y = logoSupportTopY - 0.64;
   logoFountain.add(logoSupport);
   logoFountain.add(chromeCube);
+  for (const [x, y, z, intensity] of [
+    [-7, 9, 5, 4.8],
+    [6, 7, -5, 3.8],
+    [0, 12, 2, 3.2],
+  ]) {
+    const highlight = new THREE.PointLight(
+      x < 0 ? "#dff7ff" : "#ffffff",
+      intensity,
+      28,
+      1.45,
+    );
+    highlight.position.set(x, y, z);
+    logoFountain.add(highlight);
+  }
   officeInterior.add(logoFountain);
   let lastLogoReflectionAt = 0;
   let officeLobbyPlayerMoving = false;
@@ -9482,6 +9531,8 @@ export function createWorldScene({
   animated.push((time) => {
     chromeCube.rotation.y = time * 0.00022;
     logoWater.rotation.y = -time * 0.00012;
+  });
+  function updateOfficeLogoReflection(time) {
     if (
       officeSceneMode === "lobby" &&
       officeCurrentFloorId === "lobby" &&
@@ -9496,7 +9547,7 @@ export function createWorldScene({
       reflectionCamera.update(renderer, scene);
       chromeCube.visible = true;
     }
-  });
+  }
 
   // One physical selector rides inside the panoramic car. Access colors are
   // updated from the server-derived grant set; locked buttons stay visible
@@ -9663,6 +9714,13 @@ export function createWorldScene({
     button.userData.interactive = "office-elevator-floor";
     button.userData.officeFloorId = destination.id;
     button.userData.officeFloorLevel = destination.level;
+    button.userData.officeFloorNumber = destination.level + 1;
+    button.userData.officeFloorTeamLabel = (
+      destination.team ||
+      (destination.id === "rooftop" ? "ROOF" : destination.label)
+    )
+      .replaceAll("-", " ")
+      .toUpperCase();
     interactive.push(button);
     elevatorPanel.add(button);
     officeElevatorButtons.push(button);
@@ -10525,6 +10583,10 @@ export function createWorldScene({
   }
 
   function applyOfficeParticipantPose(avatar, participant) {
+    // The live meeting currently occupies the Marketing story. Keep this
+    // explicit so DOM labels can obey floor occlusion; unlike Three.js meshes,
+    // HTML overlays are not hidden by an opaque floor slab automatically.
+    avatar.userData.officeFloorId = "marketing";
     const seated = participant?.pose === "seated" && participant?.chairId;
     const chair = seated ? officeChairTransform(participant.chairId) : null;
     if (chair) {
@@ -16359,6 +16421,8 @@ export function createWorldScene({
       nearestLandmark();
       updateRepositoryPortalLabels();
     }
+    updateOfficeSlidingDoors(time, delta);
+    updateOfficeLogoReflection(time);
     if (!reducedMotion) {
       animated.forEach((callback) => callback(time, delta));
       animateWeather(weather.rain, time, delta, "rain");
@@ -16405,16 +16469,33 @@ export function createWorldScene({
         element.style.visibility = "hidden";
       });
       officeParticipants.forEach((avatar, id) => {
+        const participantFloorId =
+          String(avatar.userData?.officeFloorId || "marketing");
+        const sameVisibleFloor =
+          !officeElevatorRide &&
+          participantFloorId === officeCurrentFloorId;
+        const label = officeParticipantLabels.get(id);
+        const bubble = officeBubbles.get(id);
+        if (!sameVisibleFloor) {
+          if (label) {
+            label.style.opacity = "0";
+            label.style.visibility = "hidden";
+          }
+          if (bubble) {
+            bubble.style.opacity = "0";
+            bubble.style.visibility = "hidden";
+          }
+          return;
+        }
         updateScreenLabel(
           THREE,
           avatar,
-          officeParticipantLabels.get(id),
+          label,
           camera,
           rect.width,
           rect.height,
           4.2,
         );
-        const bubble = officeBubbles.get(id);
         if (bubble) {
           updateScreenLabel(
             THREE,
