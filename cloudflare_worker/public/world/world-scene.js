@@ -8077,6 +8077,21 @@ export function createWorldScene({
   const CAMPFIRE_CIRCLE_MIN_SEATS = 6;
   const CAMPFIRE_CIRCLE_MAX_SEATS = 96;
   const CAMPFIRE_SEAT_SPACING = 2.1;
+  // The ring never closes all the way round: a doorway-wide span of it is kept
+  // bench-free so visitors can walk straight in to the fire and back out again
+  // instead of climbing over the planks, however many members the circle has
+  // grown to. The radius reserves this arc alongside the seats, so widening the
+  // ring for a new account never eats the opening.
+  const CAMPFIRE_ENTRANCE_WIDTH = 3.4;
+  // On a small ring the raw arc would swallow a third of the circle; cap it so
+  // the seats still read as a ring rather than a horseshoe.
+  const CAMPFIRE_ENTRANCE_MAX_ANGLE = Math.PI / 3;
+  // The gap faces back toward the town centre, the side visitors arrive from,
+  // wherever the fire's landmark stands.
+  const CAMPFIRE_ENTRANCE_ANGLE = Math.atan2(
+    -campfire.position.z,
+    -campfire.position.x,
+  );
   function rebuildCampfireCircle(neededSeats) {
     const count = Math.max(
       CAMPFIRE_CIRCLE_MIN_SEATS,
@@ -8102,12 +8117,21 @@ export function createWorldScene({
     ring.name = "campfire-member-circle";
     const radius = Math.max(
       CAMPFIRE_BENCH_RADIUS,
-      (count * CAMPFIRE_SEAT_SPACING) / (2 * Math.PI),
+      (count * CAMPFIRE_SEAT_SPACING + CAMPFIRE_ENTRANCE_WIDTH) / (2 * Math.PI),
     );
+    // Benches spread over everything but the entrance arc, with half a bench
+    // gap of padding on each side of it, so the walkway stays clear and the
+    // always-open bench at the end of the ring sits right beside the opening.
+    const entranceAngle = Math.min(
+      CAMPFIRE_ENTRANCE_MAX_ANGLE,
+      CAMPFIRE_ENTRANCE_WIDTH / radius,
+    );
+    const seatStep = (Math.PI * 2 - entranceAngle) / count;
     const seatOffsets = [];
     const benches = [];
     for (let index = 0; index < count; index += 1) {
-      const angle = (index / count) * Math.PI * 2;
+      const angle =
+        CAMPFIRE_ENTRANCE_ANGLE + entranceAngle / 2 + (index + 0.5) * seatStep;
       const bench = new THREE.Group();
       bench.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
       // Long axis tangent to the ring so every bench fronts the flames.
