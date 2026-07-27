@@ -631,15 +631,18 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
     assert "if (source !== \"doorway\") cancelDash();" in prepare
     assert "if (!enteringFromTown) keyboardMovementSpeed = baseMoveSpeed();" \
         in enter
-    assert "player.position.z = office.position.z + doorwayThreshold" \
-        in town_collision
-    assert "const OFFICE_DOORWAY_APPROACH_Z = OFFICE_DOORWAY_ENTRY_Z + 0.9;" \
-        in scene
-    assert "const inDoorwayApproach =" in town_collision
-    assert "movingInward;" in town_collision
+    assert (
+        "player.position.z = office.position.z + doorwayThreshold"
+        not in town_collision
+    )
+    assert "const OFFICE_DOORWAY_PASSAGE_MIN_Z =" in scene
+    assert "const OFFICE_DOORWAY_INTERIOR_JOIN_Z =" in scene
+    assert "const inDoorwayPassage =" in town_collision
+    assert "const readyToCommitEntry =" in town_collision
+    assert "localZ <= OFFICE_DOORWAY_ENTRY_Z" in town_collision
     accepted_handoff = town_collision[
         town_collision.index('if (officeSceneMode !== "town")'):
-        town_collision.index("// Fail closed only")
+        town_collision.index("const previousX")
     ]
     assert "player.position.z =" not in accepted_handoff
     assert "cancelDash()" not in accepted_handoff
@@ -665,14 +668,21 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
         assert swap_or_snap not in enter
 
 
-def test_office_doorway_entry_and_exit_share_one_smooth_handoff_plane():
+def test_office_doorway_is_an_open_tunnel_with_full_body_entry_and_exit_planes():
     scene = source(SCENE_PATH)
     town_collision = function_body(scene, "constrainTownOfficeWalls")
     interior_collision = function_body(scene, "constrainOfficeInteriorWalls")
     leave = function_body(scene, "leaveOfficeInterior")
 
-    assert "const OFFICE_INTERIOR_EXIT_Z = OFFICE_DOORWAY_ENTRY_Z;" in scene
-    assert "if (!crossedDoorway)" in town_collision
+    assert "OFFICE_FRONT_Z - OFFICE_AVATAR_RADIUS - 0.06" in scene
+    assert "OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS + 0.06" in scene
+    assert "OFFICE_FRONT_Z - OFFICE_AVATAR_RADIUS - 0.7" in scene
+    assert "z >= OFFICE_DOORWAY_INTERIOR_JOIN_Z" in interior_collision
+    assert "if (inDoorwayPassage)" in town_collision
+    assert "return false;" in town_collision[
+        town_collision.index("if (inDoorwayPassage)"):
+        town_collision.index("const candidates")
+    ]
 
     exit_handoff = interior_collision[
         interior_collision.index(
@@ -690,6 +700,27 @@ def test_office_doorway_entry_and_exit_share_one_smooth_handoff_plane():
         leave.index("applyOfficeAvatarLocalPosition")
     ]
     assert "OFFICE_FRONT_Z + 0.82" in preserve
+
+
+def test_office_door_shows_background_access_hydration_without_gating_entry():
+    scene = source(SCENE_PATH)
+    office = source(OFFICE_PATH)
+    assert 'doorStatus.name = "forkmesh-office-door-status"' in scene
+    assert '"SYNCING ACCESS"' in scene
+    assert '"WALK RIGHT IN"' in scene
+    assert "function setOfficeDoorStatus(" in scene
+    assert 'world.setOfficeDoorStatus?.("syncing")' in office
+    assert (
+        'world.setOfficeDoorStatus?.(authorized ? "ready" : "open")'
+        in office
+    )
+    entry = office[
+        office.index("async function enterOffice(entry = {})"):
+        office.index("function completeOfficeExit()")
+    ]
+    assert entry.index("completeOfficeEntry({") < entry.index(
+        "void refreshOfficeAuthorization("
+    )
 
 
 def test_lobby_camera_clamp_has_one_strict_open_door_portal():
@@ -1152,7 +1183,8 @@ def test_walking_through_the_doorway_enters_immediately_and_hydrates_access():
     scene = source(SCENE_PATH)
     for contract in (
         "let officeDoorwayEntryPending = false;",
-        "const crossedDoorway =",
+        "const inDoorwayPassage =",
+        "const readyToCommitEntry =",
         "!officeDoorwayEntryPending",
         "officeDoorwayEntryPending = true;",
         'source: "doorway"',
@@ -1178,6 +1210,7 @@ def test_scene_returns_the_new_office_control_surface():
     returned = scene[scene.rindex("return {"):]
     for contract in (
         "setOfficeExitHandler",
+        "setOfficeDoorStatus",
         "setOfficeDoorwayEntryPending",
         "setOfficeFloorHandler",
         "setOfficeAccess",

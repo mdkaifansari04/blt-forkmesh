@@ -12,6 +12,7 @@ the implementation and its focused verification are complete.
 - [x] Make the walkway, bridge, and Office lobby meet at the same height with no gap.
 - [x] Make the sound button a real master on/off control for active playback.
 - [x] Verify the Office threshold geometry and sound toggle in the running world UI.
+- [x] Move Office entry fully inside the jamb, join the doorway to the lobby collider, and show background access loading.
 - [x] Route pending web issues to an eligible online repository mirror.
 - [x] Prevent duplicate issue intake when multiple mirrors are online.
 - [x] Sync mirror-created issues back to the repository source of truth.

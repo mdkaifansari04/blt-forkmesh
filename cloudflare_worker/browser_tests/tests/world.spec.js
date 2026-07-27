@@ -61,6 +61,7 @@ async function prepareWorldPage(
     officeAttendanceRequests = [],
     officeAttendanceFixture = null,
     officeFloorAccess = null,
+    officeFloorDelayMs = 0,
     officeTaskFixture = null,
     accountSessionFixture = null,
   } = {},
@@ -662,6 +663,11 @@ async function prepareWorldPage(
           teams: [],
           ...(officeFloorAccess || {}),
         };
+      }
+      if (Number(officeFloorDelayMs) > 0) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, Number(officeFloorDelayMs)),
+        );
       }
     } else if (url.pathname === "/api/world/office/general/entry") {
       let requestBody = {};
@@ -1919,6 +1925,116 @@ test("walking through the Office doorway hydrates floor access without admission
   await walkIntoOffice(page);
   await expect.poll(() => officeFloorRequests.length).toBe(1);
   expect(officeEntryRequests).toHaveLength(0);
+});
+
+test("Office doorway stays outside at the jamb and never blocks on access hydration", async ({
+  page,
+}) => {
+  test.slow();
+  const officeFloorRequests = [];
+  const officeAttendanceRequests = [];
+  await prepareWorldPage(page, "office-doorway-background-access", {
+    session: {
+      kind: "user",
+      nodeName: "alice",
+      email: "alice@example.test",
+      sessionToken: "alice-office-token",
+    },
+    officeFloorRequests,
+    officeAttendanceRequests,
+    officeFloorDelayMs: 5_000,
+  });
+  await waitForWorld(page);
+
+  const jambState = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setPaused(false);
+    const status = shell.world.scene.getObjectByName(
+      "forkmesh-office-door-status",
+    );
+    const doorway = status.getWorldPosition(status.position.clone());
+    // The avatar's center is just through the glass, but its full collision
+    // body has not cleared the inner jamb yet.
+    shell.world.player.position.set(doorway.x, 0.38, doorway.z - 0.26);
+    return {
+      active: shell.officeController.active,
+      space: shell.world.getPosition().space,
+      status: status.userData.officeDoorStatus,
+    };
+  });
+  expect(jambState).toEqual({
+    active: false,
+    space: "town-square",
+    status: "open",
+  });
+  await page.waitForTimeout(150);
+  expect(officeFloorRequests).toHaveLength(0);
+  expect(officeAttendanceRequests).toHaveLength(0);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setControl("forward", true);
+  });
+  try {
+    await waitForOfficeEntry(page);
+    await expect.poll(() => officeFloorRequests.length).toBe(1);
+    const whileSyncing = await page.locator("forkmesh-world").evaluate(
+      (shell) => {
+        const status = shell.world.scene.getObjectByName(
+          "forkmesh-office-door-status",
+        );
+        return {
+          position: shell.world.player.getWorldPosition(
+            shell.world.player.position.clone(),
+          ).z,
+          status: status.userData.officeDoorStatus,
+        };
+      },
+    );
+    expect(whileSyncing.status).toBe("syncing");
+
+    await page.waitForTimeout(250);
+    const movingPosition = await page.locator("forkmesh-world").evaluate(
+      (shell) =>
+        shell.world.player.getWorldPosition(
+          shell.world.player.position.clone(),
+        ).z,
+    );
+    expect(movingPosition).toBeLessThan(whileSyncing.position - 0.05);
+    expect(officeAttendanceRequests).toHaveLength(0);
+    await page.locator("forkmesh-world").evaluate((shell) => {
+      shell.world.setControl("forward", false);
+    });
+
+    await expect.poll(() =>
+      page.locator("forkmesh-world").evaluate((shell) =>
+        shell.world.scene.getObjectByName(
+          "forkmesh-office-door-status",
+        ).userData.officeDoorStatus
+      )
+    ).toBe("ready");
+    await expect.poll(() => officeAttendanceRequests.length).toBe(1);
+
+    await page.locator("forkmesh-world").evaluate((shell) => {
+      shell.world.setControl("back", true);
+    });
+    await expect.poll(() =>
+      page.locator("forkmesh-world").evaluate((shell) => ({
+        active: shell.officeController.active,
+        space: shell.world.getPosition().space,
+        status: shell.world.scene.getObjectByName(
+          "forkmesh-office-door-status",
+        ).userData.officeDoorStatus,
+      }))
+    ).toEqual({
+      active: false,
+      space: "town-square",
+      status: "open",
+    });
+  } finally {
+    await page.locator("forkmesh-world").evaluate((shell) => {
+      shell.world.setControl("forward", false);
+      shell.world.setControl("back", false);
+    });
+  }
 });
 
 test("Office doorway retries a rejected crossing without requiring backward movement", async ({

@@ -88,17 +88,24 @@ const OFFICE_HEIGHT = OFFICE_FLOOR_HEIGHT;
 const OFFICE_LOBBY_SURFACE_Y = 0.38;
 const OFFICE_INTERIOR_WALL_LIMIT = OFFICE_FRONT_Z - 0.54;
 const OFFICE_DOOR_HEIGHT = OFFICE_HEIGHT;
+// Commit entry only after the avatar's complete collision capsule has cleared
+// the inner face of the jamb. The old trigger sat outside the facade, which
+// counted visitors as indoors and switched colliders before physical entry.
 const OFFICE_DOORWAY_ENTRY_Z =
-  OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS;
-// Begin the continuous scene-mode handoff just outside the collision plane.
-// Waiting for the avatar center to hit one exact Z left a visible pause at low
-// walking speeds; an inward-only approach corridor makes the next frame belong
-// to the lobby before the tower shell can ever hold the player.
-const OFFICE_DOORWAY_APPROACH_Z = OFFICE_DOORWAY_ENTRY_Z + 0.9;
-// Entry and exit cross the same physical plane. Separate thresholds used to
-// snap the avatar first inward and then outward as the scene mode changed,
-// which felt like a bump even though the Office stays in the same world.
-const OFFICE_INTERIOR_EXIT_Z = OFFICE_DOORWAY_ENTRY_Z;
+  OFFICE_FRONT_Z - OFFICE_AVATAR_RADIUS - 0.06;
+// This open tunnel spans both sides of the facade and gives a rejected entry
+// callback several inward frames to retry without ever creating a wall.
+const OFFICE_DOORWAY_APPROACH_Z =
+  OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS + 0.9;
+const OFFICE_DOORWAY_PASSAGE_MIN_Z = OFFICE_DOORWAY_ENTRY_Z - 2;
+// The generic interior rectangle stops 0.65 units shy of the wall. Overlap
+// the doorway tunnel with that exact edge so there is no disconnected sliver
+// for the lobby collider to reject just after the entry handoff.
+const OFFICE_DOORWAY_INTERIOR_JOIN_Z =
+  OFFICE_FRONT_Z - OFFICE_AVATAR_RADIUS - 0.7;
+// Leaving is counted only after the whole avatar clears the outer jamb.
+const OFFICE_INTERIOR_EXIT_Z =
+  OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS + 0.06;
 const OFFICE_ELEVATOR_HALF_WIDTH = 5;
 const OFFICE_ELEVATOR_HALF_DEPTH = 4;
 const OFFICE_ELEVATOR_CUT_MARGIN = 0.35;
@@ -1876,6 +1883,7 @@ function officeMarketingTasksBlankTexture(THREE) {
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { task: "Build the in-world task bulletin", done: true },
   { task: "Make the Office doorway seamless", done: true },
+  { task: "Join the door tunnel to the lobby", done: true },
   { task: "Match the walkway and lobby height", done: true },
   { task: "Make the music button a real on/off switch", done: true },
   { task: "Let online mirrors collect pending issues", done: true },
@@ -7347,6 +7355,40 @@ function createSocialBanner(THREE, interactive, options) {
   return group;
 }
 
+function officeDoorStatusTexture(THREE, state = "open") {
+  const normalized =
+    state === "syncing" ? "syncing" : state === "ready" ? "ready" : "open";
+  const label =
+    normalized === "syncing"
+      ? "SYNCING ACCESS"
+      : normalized === "ready"
+        ? "ACCESS READY"
+        : "WALK RIGHT IN";
+  const accent = normalized === "syncing" ? "#77d9ff" : "#9ef7c6";
+  return canvasTexture(THREE, 768, 120, (context) => {
+    context.clearRect(0, 0, 768, 120);
+    roundedRect(context, 3, 3, 762, 114, 20);
+    context.fillStyle = "rgba(5,20,16,0.92)";
+    context.fill();
+    context.strokeStyle = accent;
+    context.lineWidth = 6;
+    context.stroke();
+    context.fillStyle = accent;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(label, 384, 61, 690);
+    if (normalized === "syncing") {
+      context.textAlign = "left";
+      for (let index = 0; index < 3; index += 1) {
+        context.beginPath();
+        context.arc(665 + index * 22, 61, 6, 0, Math.PI * 2);
+        context.fill();
+      }
+    }
+  });
+}
+
 function createForkMeshOffice(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const wallThickness = 0.35;
@@ -7648,12 +7690,31 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   });
   group.add(slidingDoors);
 
+  // A status panel rides on the glass but never participates in collision.
+  // Access hydration is intentionally background-only; this makes that
+  // network activity visible without turning the doorway into a loading gate.
+  const doorStatus = new THREE.Mesh(
+    new THREE.PlaneGeometry(4.6, 0.72),
+    new THREE.MeshBasicMaterial({
+      map: officeDoorStatusTexture(THREE, "open"),
+      transparent: true,
+      toneMapped: false,
+      depthWrite: false,
+    }),
+  );
+  doorStatus.name = "forkmesh-office-door-status";
+  doorStatus.position.set(0, 3.25, OFFICE_FRONT_Z + 0.17);
+  doorStatus.renderOrder = 4;
+  doorStatus.userData.officeDoorStatus = "open";
+  group.add(doorStatus);
+
   group.position.set(...position);
   group.userData.landmark = "office";
   group.userData.officeSlidingDoors = slidingDoors;
   group.userData.officeDoorPanels = doorPanels;
   group.userData.officeDoorClosedX = doorClosedX;
   group.userData.officeDoorOpenX = doorOpenX;
+  group.userData.officeDoorStatus = doorStatus;
   group.traverse((child) => {
     if (!child.isMesh) return;
     child.userData.landmark = "office";
@@ -7669,6 +7730,8 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     child.receiveShadow = false;
   });
   sign.castShadow = false;
+  doorStatus.castShadow = false;
+  doorStatus.receiveShadow = false;
   return group;
 }
 
@@ -9505,6 +9568,8 @@ export function createWorldScene({
   const officeBuilding = landmarkObjects.get("office");
   const officeSlidingDoorPanels =
     officeBuilding?.userData?.officeDoorPanels || [];
+  const officeDoorStatus =
+    officeBuilding?.userData?.officeDoorStatus || null;
   const officeDoorClosedX =
     Number(officeBuilding?.userData?.officeDoorClosedX) ||
     OFFICE_DOOR_WIDTH / 4;
@@ -9512,6 +9577,20 @@ export function createWorldScene({
     Number(officeBuilding?.userData?.officeDoorOpenX) ||
     OFFICE_DOOR_WIDTH * 0.76;
   let officeSlidingDoorOpen = 0;
+  function setOfficeDoorStatus(state = "open") {
+    if (!officeDoorStatus) return "open";
+    const normalized =
+      state === "syncing" ? "syncing" : state === "ready" ? "ready" : "open";
+    if (officeDoorStatus.userData.officeDoorStatus === normalized) {
+      return normalized;
+    }
+    const previous = officeDoorStatus.material.map;
+    officeDoorStatus.material.map = officeDoorStatusTexture(THREE, normalized);
+    officeDoorStatus.material.needsUpdate = true;
+    officeDoorStatus.userData.officeDoorStatus = normalized;
+    previous?.dispose?.();
+    return normalized;
+  }
   function updateOfficeSlidingDoors(_time, delta = 0.016) {
     const localPosition = officeAvatarLocalPosition(
       player,
@@ -9539,6 +9618,13 @@ export function createWorldScene({
           officeSlidingDoorOpen,
         );
     });
+    if (officeDoorStatus) {
+      const syncing =
+        officeDoorStatus.userData.officeDoorStatus === "syncing";
+      officeDoorStatus.material.opacity = syncing
+        ? 0.74 + (Math.sin(performance.now() * 0.009) + 1) * 0.13
+        : 1;
+    }
   }
 
   function officeReceptionDeskDistance(localPosition) {
@@ -11009,20 +11095,23 @@ export function createWorldScene({
     const previousZ = previousPosition.z - office.position.z;
     const doorClearance = OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS;
     const movingInward = localZ < previousZ - 1e-5;
-    const inDoorwayApproach =
+    const inDoorwayPassage =
       Math.abs(localX) <= doorClearance &&
-      previousZ >= OFFICE_FRONT_Z &&
       localZ <= OFFICE_DOORWAY_APPROACH_Z &&
+      localZ >= OFFICE_DOORWAY_PASSAGE_MIN_Z;
+    const readyToCommitEntry =
+      inDoorwayPassage &&
+      localZ <= OFFICE_DOORWAY_ENTRY_Z &&
       movingInward;
-    if (inDoorwayApproach && !officeDoorwayEntryPending) {
+    if (readyToCommitEntry && !officeDoorwayEntryPending) {
       officeDoorwayEntryPending = true;
       onOfficeEnter({
         source: "doorway",
       });
     }
     if (officeSceneMode !== "town") {
-      // The lobby now owns this same position and velocity before the physical
-      // facade boundary, so there is no collision frame or threshold pause.
+      // The lobby now owns this same position and velocity immediately after
+      // the full avatar clears the jamb, with no collision or threshold pause.
       return false;
     }
 
@@ -11033,30 +11122,11 @@ export function createWorldScene({
     }
 
     const previousX = previousPosition.x - office.position.x;
-    const doorwayThreshold = OFFICE_DOORWAY_ENTRY_Z;
-    const crossedDoorway =
-      Math.abs(localX) <= doorClearance &&
-      previousZ >= doorwayThreshold &&
-      localZ < doorwayThreshold;
-    // Crossing the threshold switches into the continuous lobby immediately.
-    // Pending prevents a held movement key from firing the controller more
-    // than once before that scene-mode handoff completes. Do not require a
-    // separate "armed" edge: if an entry callback is rejected or interrupted,
-    // the avatar remains on this plane and the next inward frame must retry
-    // without forcing the visitor to step backward and twitch across it again.
-    if (
-      Math.abs(localX) <= doorClearance &&
-      previousZ >= OFFICE_FRONT_Z
-    ) {
-      if (!crossedDoorway) {
-        // The open approach is real walkable space. Do not pull the avatar
-        // forward to the trigger plane before they have actually crossed it.
-        return false;
-      }
-      // Fail closed only if no controller accepted the crossing.
-      player.position.z = office.position.z + doorwayThreshold;
-      cancelDash();
-      return true;
+    // The doorway is a real open tunnel, not a collider with a callback carved
+    // into it. Movement continues on every frame while the synchronous mode
+    // handoff occurs; a transient rejection simply retries farther inside.
+    if (inDoorwayPassage) {
+      return false;
     }
 
     const candidates = [
@@ -11144,7 +11214,7 @@ export function createWorldScene({
       const inLobbyDoorway =
         officeCurrentFloorId === "lobby" &&
         Math.abs(x) <= doorClearance &&
-        z >= OFFICE_INTERIOR_WALL_LIMIT &&
+        z >= OFFICE_DOORWAY_INTERIOR_JOIN_Z &&
         z <= OFFICE_DOORWAY_APPROACH_Z + 0.08;
       return (
         inLobbyDoorway ||
@@ -11316,9 +11386,9 @@ export function createWorldScene({
   }
 
   function enterOffice({ source = "" } = {}) {
-    // A doorway callback is emitted only after the town collider verifies the
-    // avatar crossed the real opening. Trust that physical proof even when a
-    // fast dash reaches it one frame before nearestLandmark updates proximity.
+    // A doorway callback is emitted only after the town walker verifies the
+    // full avatar crossed the real opening. Trust that physical proof even when
+    // a fast dash reaches it one frame before nearestLandmark updates proximity.
     if (source !== "doorway" && officeZoneState !== "nearby") return false;
     selectedLandmark = "office";
     officeExitPending = false;
@@ -18045,6 +18115,7 @@ export function createWorldScene({
     beginOfficeExit,
     setOfficeExitHandler,
     setOfficeDoorwayEntryPending,
+    setOfficeDoorStatus,
     setOfficeFloorHandler,
     setOfficeAccess,
     setOfficeAttendance,

@@ -309,7 +309,9 @@ export function createWorldOfficeController({
       return false;
     }
     setEntryPending(true);
+    world.setOfficeDoorStatus?.("syncing");
     const refresh = (async () => {
+      let authorized = false;
       try {
         const floorAccess = await loadFloorAccess(activeSession);
         if (!active || generation !== authorizationGeneration) return false;
@@ -322,6 +324,7 @@ export function createWorldOfficeController({
             generation,
           });
         }
+        authorized = true;
         return true;
       } catch (_) {
         // A stale/invalid signed session remains a public-lobby visit. Load
@@ -336,7 +339,10 @@ export function createWorldOfficeController({
         }
         return false;
       } finally {
-        if (generation === authorizationGeneration) setEntryPending(false);
+        if (generation === authorizationGeneration) {
+          setEntryPending(false);
+          world.setOfficeDoorStatus?.(authorized ? "ready" : "open");
+        }
       }
     })();
     floorAuthorizationPromise = refresh;
@@ -423,15 +429,18 @@ export function createWorldOfficeController({
   async function enterOffice(entry = {}) {
     const doorwayEntry = entry?.source === "doorway";
     try {
-      // The scene emits "doorway" only after its physical collider verifies a
-      // real threshold crossing. Do not reject a fast crossing merely because
-      // the later proximity tick still contains the previous frame.
+      // The scene emits "doorway" only after the avatar fully clears the inner
+      // jamb. Do not reject a fast crossing merely because the later proximity
+      // tick still contains the previous frame.
       if (active || (!doorwayEntry && proximity !== "nearby")) return false;
       const activeSession = authenticatedSession();
       const entered = completeOfficeEntry({
         loadPublicAttendance: !activeSession,
         source: doorwayEntry ? "doorway" : "",
       });
+      if (entered && !activeSession) {
+        world.setOfficeDoorStatus?.("open");
+      }
       if (entered && activeSession) {
         // Physical admission never waits on the network. Signed-in visitors
         // receive team-floor and meeting permissions in the background.
@@ -460,6 +469,7 @@ export function createWorldOfficeController({
     officeAccess = normalizeOfficeFloorAccess({});
     attendanceAccount = "";
     world.setOfficeAccess?.(officeAccess);
+    world.setOfficeDoorStatus?.("open");
     authorizationGeneration += 1;
     setEntryPending(false);
     active = false;
@@ -553,6 +563,7 @@ export function createWorldOfficeController({
     authorizationGeneration += 1;
     setEntryPending(false);
     world.setOfficeAccess?.(officeAccess);
+    world.setOfficeDoorStatus?.("open");
     closeFallback({ restoreFocus: false });
     frame?.removeAttribute("src");
   }
