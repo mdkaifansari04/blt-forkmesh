@@ -11,6 +11,7 @@ const OFFICE_CHAT_PATH = "/chat?embed=office";
 const OFFICE_UNLOAD_DELAY_MS = 2000;
 const OFFICE_ENTRY_PATH = "/api/world/office/general/entry";
 const OFFICE_FLOORS_PATH = "/api/world/office/floors";
+const OFFICE_ATTENDANCE_PATH = "/api/world/office/attendance";
 
 export function nextOfficeZoneState(currentState, distance) {
   const threshold =
@@ -50,6 +51,7 @@ export function createWorldOfficeController({
   let officeEntryExpiresAt = 0;
   let officeAccess = normalizeOfficeFloorAccess({});
   let attendanceAccount = "";
+  let attendanceWrite = Promise.resolve();
 
   const resolvedChatURL = new URL(chatPath, window.location.origin);
   if (
@@ -191,13 +193,49 @@ export function createWorldOfficeController({
     return travelled !== undefined ? travelled : true;
   }
 
+  function applyAttendance(payload = {}) {
+    const visits = Array.isArray(payload?.visits)
+      ? payload.visits.slice(0, 20)
+      : [];
+    world.setOfficeAttendance?.({ visits });
+    return visits;
+  }
+
+  async function loadAttendance() {
+    if (typeof root.fetchJSON !== "function") return [];
+    try {
+      return applyAttendance(
+        await root.fetchJSON(OFFICE_ATTENDANCE_PATH, {
+          timeout: 6000,
+          cache: "no-store",
+        }),
+      );
+    } catch (_) {
+      return [];
+    }
+  }
+
   function recordAttendance(direction) {
-    if (!attendanceAccount) return;
-    world.setOfficeAttendance?.({
-      type: direction === "out" ? "out" : "in",
-      at: Date.now(),
-      account: attendanceAccount,
-    });
+    const account = String(attendanceAccount || "");
+    if (!account || typeof root.postJSON !== "function") {
+      return attendanceWrite;
+    }
+    const action = direction === "out" ? "out" : "in";
+    // Keep IN and OUT ordered if someone walks straight through the lobby.
+    // One compact POST per transition replaces browser-local clock state.
+    attendanceWrite = attendanceWrite
+      .catch(() => null)
+      .then(async () => {
+        const payload = await root.postJSON(
+          OFFICE_ATTENDANCE_PATH,
+          { action },
+          { timeout: 6000 },
+        );
+        applyAttendance(payload);
+        return payload;
+      })
+      .catch(() => null);
+    return attendanceWrite;
   }
 
   function initialOfficeAccess() {
@@ -220,6 +258,7 @@ export function createWorldOfficeController({
     exitPending = false;
     meeting.openLobby();
     tasks?.setActive?.(false);
+    void loadAttendance();
     return true;
   }
 
@@ -245,7 +284,7 @@ export function createWorldOfficeController({
       officeAccess = floorAccess;
       attendanceAccount = officeAccess.account;
       world.setOfficeAccess?.(officeAccess);
-      recordAttendance("in");
+      void recordAttendance("in");
       return true;
     } catch (_) {
       return false;
@@ -327,7 +366,7 @@ export function createWorldOfficeController({
     if (!active) return false;
     closeFallback({ restoreFocus: false });
     tasks?.setActive?.(false);
-    recordAttendance("out");
+    void recordAttendance("out");
     meeting.leaveOffice();
     meeting.setEntryTicket?.("", 0);
     officeEntryTicket = "";

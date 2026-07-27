@@ -157,6 +157,46 @@ def test_entry_is_walk_through_for_everyone_and_the_keypad_protocol_is_absent():
     assert "sessionStorage" not in office
 
 
+def test_entrance_uses_two_proximity_sliding_panels_without_a_hinged_door():
+    scene = source(SCENE_PATH)
+    for contract in (
+        'slidingDoors.name = "forkmesh-office-sliding-doors"',
+        "const doorPanels = [-1, 1].map((side) => {",
+        "officeSlidingDoorPanels.forEach((panel, index) => {",
+        "Math.abs(localPosition.z - OFFICE_FRONT_Z) <= 7.5",
+        "officeDoorwayEntryPending || officeExitPending",
+        "THREE.MathUtils.lerp(",
+    ):
+        assert contract in scene
+    assert "forkmesh-office-door-pivot" not in scene
+    assert "officeInteriorDoorPivot" not in scene
+
+
+def test_attendance_is_one_shared_last_twenty_row_ledger():
+    office = source(OFFICE_PATH)
+    scene = source(SCENE_PATH)
+    for contract in (
+        'const OFFICE_ATTENDANCE_PATH = "/api/world/office/attendance"',
+        "async function loadAttendance()",
+        "function recordAttendance(direction)",
+        "visits.slice(0, 20)",
+        "void loadAttendance()",
+        'const action = direction === "out" ? "out" : "in"',
+        "attendanceWrite = attendanceWrite",
+    ):
+        assert contract in office
+    for contract in (
+        "OFFICE · LAST 20 VISITS",
+        'context.fillText("USER"',
+        'context.fillText("IN"',
+        'context.fillText("OUT"',
+        "visit?.inAt",
+        "visit?.outAt",
+        "IN BUILDING",
+    ):
+        assert contract in scene
+
+
 def test_floor_access_is_loaded_once_and_only_server_grants_unlock_buttons():
     office = source(OFFICE_PATH)
     scene = source(SCENE_PATH)
@@ -200,6 +240,36 @@ def test_office_is_a_remote_island_reached_by_a_glass_bridge():
         "OFFICE_BRIDGE_WIDTH = 12",
     ):
         assert contract in tower
+
+
+def test_office_glass_uses_one_stable_non_depth_writing_envelope():
+    scene = source(SCENE_PATH)
+    material_helper = scene[
+        scene.index("function makeMaterial("):
+        scene.index("function setShadows(")
+    ]
+    exterior = scene[
+        scene.index('const glass = makeMaterial(THREE, "#9ef7c6"'):
+        scene.index("const doorMaterial = makeMaterial", scene.index(
+            'const glass = makeMaterial(THREE, "#9ef7c6"'
+        ))
+    ]
+    assert "parameters.depthWrite = options.depthWrite" in material_helper
+    for contract in (
+        "opacity: 0.24",
+        "metalness: 0",
+        "roughness: 0.62",
+        "depthWrite: false",
+    ):
+        assert contract in exterior
+    assert "officeFloorGlassMaterial" not in scene
+    assert (
+        "new THREE.BoxGeometry(0.18, OFFICE_FLOOR_HEIGHT - 0.7, OFFICE_DEPTH)"
+        not in scene
+    )
+    assert "child.material?.transparent" in scene
+    assert "child.castShadow = false" in scene
+    assert "child.receiveShadow = false" in scene
 
 
 def test_tower_is_ten_stories_and_about_ten_times_the_old_width():
@@ -396,14 +466,20 @@ def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
         "WELCOME · WALK RIGHT IN",
         "officeGreetingBoard.position.set(0, 6.25, -OFFICE_FRONT_Z + 0.5)",
         'officeAttendanceBoard.name = "forkmesh-office-attendance"',
+        "OFFICE · LAST 20 VISITS",
+        "visits.slice(0, 20)",
+        "IN BUILDING",
         "function setOfficeAttendance(event = {})",
         'logoFountain.name = "forkmesh-office-logo-fountain"',
         'chromeCube.name = "forkmesh-reflective-fm-cube"',
-        "chromeCube.rotation.z = Math.PI / 4",
-        "addFLogoFace(2.8, 0)",
-        "addFLogoFace(-2.8, Math.PI)",
-        "addMLogoFace(2.8, Math.PI / 2)",
-        "addMLogoFace(-2.8, -Math.PI / 2)",
+        'chromeMark.name = "forkmesh-reflective-fm-cube-fixed-tilt"',
+        "chromeMark.quaternion.setFromUnitVectors(",
+        "addFLogoFace(2.68, 0)",
+        "addFLogoFace(-2.68, Math.PI)",
+        "addMLogoFace(2.68, Math.PI / 2)",
+        "addMLogoFace(-2.68, -Math.PI / 2)",
+        "forkmesh-reflective-fm-panel-",
+        'logoContactPoint.name = "forkmesh-reflective-fm-cube-contact-point"',
         'logoSupport.name = "forkmesh-reflective-fm-cube-support"',
         "new THREE.WebGLCubeRenderTarget(",
         "new THREE.CubeCamera(",
@@ -418,6 +494,12 @@ def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
     ]
     assert "const cubeBody" not in logo
     assert "new THREE.BoxGeometry(5.6, 5.6, 5.6" not in logo
+    animation = scene[
+        scene.index("const logoReflectionIntervalMs"):
+        scene.index("// One physical selector rides inside")
+    ]
+    assert "chromeMark.rotation" not in animation
+    assert "chromeMark.quaternion" not in animation
 
 
 def test_elevator_animates_between_floors_and_emits_departure_and_arrival_audio():
@@ -436,12 +518,59 @@ def test_elevator_animates_between_floors_and_emits_departure_and_arrival_audio(
         assert contract in scene
 
 
+def test_elevator_has_one_stable_car_glass_layer_and_idle_lobby_reflections():
+    scene = source(SCENE_PATH)
+    elevator = scene[
+        scene.index('officeElevatorShaft.name = "forkmesh-office-glass-elevator-shaft"'):
+        scene.index("const elevatorPanelGeometry")
+    ]
+    reflection = scene[
+        scene.index("const logoReflectionIntervalMs"):
+        scene.index("// One physical selector rides inside")
+    ]
+    assert "const elevatorCarGlass = makeMaterial" in elevator
+    assert "elevatorShaftGlass" not in elevator
+    assert "new THREE.BoxGeometry(0.12, OFFICE_TOWER_HEIGHT" not in elevator
+    car_glass = elevator[
+        elevator.index("const elevatorCarGlass = makeMaterial"):
+        elevator.index("for (const [x, z] of")
+    ]
+    door_glass = elevator[
+        elevator.index('makeMaterial(THREE, "#d8fff6"'):
+        elevator.index("door.position.set")
+    ]
+    for material in (car_glass, door_glass):
+        assert "depthWrite: false" in material
+        assert "metalness: 0," in material
+    for contract in (
+        'officeSceneMode === "lobby"',
+        'officeCurrentFloorId === "lobby"',
+        "!officeElevatorRide",
+        "!officeLobbyPlayerMoving",
+        "primaryPointerId === null",
+        "!pinchActive",
+    ):
+        assert contract in reflection
+
+
 def test_rooftop_has_glass_safety_barriers_and_office_jumping_is_disabled():
     scene = source(SCENE_PATH)
     assert 'const rooftop = officeFloorGroups.get("rooftop")' in scene
     assert 'const roofGlass = makeMaterial(THREE, "#d8ffff"' in scene
     assert "transparent: true" in scene
-    assert "opacity: 0.36" in scene
+    roof_glass = scene[
+        scene.index('const roofGlass = makeMaterial(THREE, "#d8ffff"'):
+        scene.index("for (const [width, depth, x, z]", scene.index(
+            'const roofGlass = makeMaterial(THREE, "#d8ffff"'
+        ))
+    ]
+    for contract in (
+        "opacity: 0.24",
+        "metalness: 0",
+        "roughness: 0.54",
+        "depthWrite: false",
+    ):
+        assert contract in roof_glass
     assert "rooftop.add(barrier)" in scene
     jump = scene[
         scene.index('if (event.code === "Space")'):

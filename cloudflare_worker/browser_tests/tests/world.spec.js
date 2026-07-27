@@ -1883,11 +1883,23 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
     const maya = scene.getObjectByName("avatar:office-greeter-maya");
     const noah = scene.getObjectByName("avatar:office-greeter-noah");
     const chromeCube = scene.getObjectByName("forkmesh-reflective-fm-cube");
+    const chromeMark = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube-fixed-tilt"
+    );
     const support = scene.getObjectByName(
       "forkmesh-reflective-fm-cube-support"
     );
+    const contact = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube-contact-point"
+    );
     const solidBodies = [];
+    let fFaces = 0;
+    let mFaces = 0;
+    let panels = 0;
     chromeCube.traverse((object) => {
+      if (object.name.startsWith("forkmesh-reflective-f-face-")) fFaces += 1;
+      if (object.name.startsWith("forkmesh-reflective-m-face-")) mFaces += 1;
+      if (object.name.startsWith("forkmesh-reflective-fm-panel-")) panels += 1;
       const size = object.geometry?.parameters;
       if (
         object.isMesh &&
@@ -1898,6 +1910,14 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
         solidBodies.push(object.name || "solid");
       }
     });
+    const contactWorld = contact.getWorldPosition(contact.position.clone());
+    const supportTop = support.localToWorld(
+      support.position.clone().set(
+        0,
+        support.geometry.parameters.height / 2,
+        0,
+      )
+    );
     const sat = shell.world.sitOnOfficeChair("chair-1");
     const seatedWorld = shell.world.player.getWorldPosition(
       shell.world.player.position.clone()
@@ -1922,13 +1942,15 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
         noah: noah?.position.toArray(),
       },
       logo: {
-        edgeTilt: chromeCube.rotation.z,
-        fFaces: chromeCube.children.filter((object) =>
-          object.name.startsWith("forkmesh-reflective-f-face-")
-        ).length,
-        mFaces: chromeCube.children.filter((object) =>
-          object.name.startsWith("forkmesh-reflective-m-face-")
-        ).length,
+        verticalAxisOnly: {
+          x: chromeCube.rotation.x,
+          z: chromeCube.rotation.z,
+        },
+        fixedTiltQuaternion: chromeMark.quaternion.toArray(),
+        contactSupportDistance: contactWorld.distanceTo(supportTop),
+        fFaces,
+        mFaces,
+        panels,
         supportCount: support ? 1 : 0,
         solidBodies,
       },
@@ -1974,10 +1996,15 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   expect(state.reception.desk).toEqual([0, 1.05, -36.5]);
   expect(state.reception.maya).toEqual([-7, 0.38, -40]);
   expect(state.reception.noah).toEqual([7, 0.38, -40]);
-  expect(state.logo.edgeTilt).toBeCloseTo(Math.PI / 4, 5);
+  expect(state.logo.verticalAxisOnly.x).toBeCloseTo(0, 7);
+  expect(state.logo.verticalAxisOnly.z).toBeCloseTo(0, 7);
+  expect(state.logo.fixedTiltQuaternion.some((value) => Math.abs(value) > 0.1))
+    .toBe(true);
+  expect(state.logo.contactSupportDistance).toBeLessThan(0.03);
   expect(state.logo).toMatchObject({
     fFaces: 2,
     mFaces: 2,
+    panels: 2,
     supportCount: 1,
     solidBodies: [],
   });
@@ -1988,7 +2015,11 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   });
   expect(state.seating.seatedLocal[0]).toBeCloseTo(-5.15, 2);
   expect(state.seating.seatedLocal[2]).toBeCloseTo(0, 2);
-  expect(state.seating.seatedLocal[1]).toBeGreaterThan(16.38);
+  // Avatar origins sit below the seat because their hips are modeled above
+  // the origin; the rendered hips remain on the chair and the folded feet
+  // reach the floor.
+  expect(state.seating.seatedLocal[1]).toBeGreaterThan(15.5);
+  expect(state.seating.seatedLocal[1]).toBeLessThan(16.38);
   await page.locator("forkmesh-world").evaluate((shell) => {
     shell.world.setPaused(false);
     shell.world.enterOfficeLobby({ floorId: "lobby" });
@@ -2012,9 +2043,88 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   });
 });
 
+test("Office glass has one stable shell and one elevator-car layer", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-stable-glass");
+  await waitForWorld(page);
+  const glass = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const transparentMeshes = (root) => {
+      const meshes = [];
+      root?.traverse((object) => {
+        if (object.isMesh && object.material?.transparent) {
+          meshes.push(object);
+        }
+      });
+      return meshes;
+    };
+    const exterior = [];
+    scene.traverse((object) => {
+      if (
+        object.isMesh &&
+        object.userData?.landmark === "office" &&
+        object.material?.transparent
+      ) {
+        exterior.push(object);
+      }
+    });
+    const teamLayers = [
+      "marketing",
+      "engineering",
+      "product-design",
+      "security",
+      "infrastructure",
+      "community",
+      "partnerships",
+      "operations",
+    ].flatMap((floorId) => transparentMeshes(
+      scene.getObjectByName(`forkmesh-office-floor-${floorId}`)
+    ));
+    const rooftop = transparentMeshes(
+      scene.getObjectByName("forkmesh-office-floor-rooftop")
+    );
+    const shaft = transparentMeshes(
+      scene.getObjectByName("forkmesh-office-glass-elevator-shaft")
+    );
+    const car = transparentMeshes(
+      scene.getObjectByName("forkmesh-office-glass-elevator-car")
+    );
+    return {
+      exterior: {
+        count: exterior.length,
+        stable: exterior.every((mesh) =>
+          mesh.material.depthWrite === false &&
+          mesh.castShadow === false &&
+          mesh.receiveShadow === false
+        ),
+      },
+      teamLayerCount: teamLayers.length,
+      rooftop: {
+        count: rooftop.length,
+        stable: rooftop.every((mesh) => mesh.material.depthWrite === false),
+      },
+      shaftLayerCount: shaft.length,
+      car: {
+        count: car.length,
+        stable: car.every((mesh) =>
+          mesh.material.depthWrite === false && mesh.castShadow === false
+        ),
+      },
+    };
+  });
+  expect(glass.exterior.count).toBeGreaterThanOrEqual(20);
+  expect(glass.exterior.stable).toBe(true);
+  expect(glass.teamLayerCount).toBe(0);
+  expect(glass.rooftop).toEqual({ count: 5, stable: true });
+  expect(glass.shaftLayerCount).toBe(0);
+  expect(glass.car).toEqual({ count: 5, stable: true });
+});
+
 test("Office elevator exposes ten floors while enforcing team access", async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   await prepareWorldPage(page, "office-elevator-access", {
     session: {
       kind: "user",

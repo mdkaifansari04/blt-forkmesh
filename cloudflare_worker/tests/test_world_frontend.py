@@ -241,9 +241,20 @@ def test_user_agent_is_reduced_locally_to_generalized_badge_categories():
     assert "/CrOS/i.test(ua)" in DATA
     assert "/Linux/i.test(platform)" in DATA
     assert "navigator.userAgent" in DATA
-    assert "userAgent:" not in APP
     assert "presenceBrowser(" in APP
     assert "presenceOS(" in APP
+    context = APP[
+        APP.index("  async loadContext() {"):
+        APP.index("\n  async loadSatelliteSky()", APP.index("  async loadContext() {"))
+    ]
+    assert "context?.securityDetails" in context
+    assert "setSelfSecurityDetails" in context
+    presence = APP[
+        APP.index("  sendPresence(message) {"):
+        APP.index("\n  receivePresence(message)", APP.index("  sendPresence(message) {"))
+    ]
+    assert "securityDetails" not in presence
+    assert "selfSecurityDetails" not in presence
 
 
 def test_avatar_chest_activity_country_shirt_and_input_state_are_privacy_safe():
@@ -268,10 +279,12 @@ def test_avatar_chest_activity_country_shirt_and_input_state_are_privacy_safe():
     assert "firstVisitAge:" in APP
     assert "settings.privacy.activity && identity.inputActive === true" in APP
     assert "countryCode:" in APP
-    assert "userAgent:" not in APP
-    assert "url:" not in APP[APP.index("  sendPresence(message) {"):APP.index(
+    presence = APP[APP.index("  sendPresence(message) {"):APP.index(
         "\n  receivePresence(message)", APP.index("  sendPresence(message) {")
     )]
+    assert "userAgent" not in presence
+    assert "securityDetails" not in presence
+    assert "url:" not in presence
 
 
 def test_chest_badge_shows_client_categories_exact_ages_and_status_note():
@@ -284,10 +297,13 @@ def test_chest_badge_shows_client_categories_exact_ages_and_status_note():
         "`FIRST ${joined}`",
     ):
         assert contract in SCENE
-    # The badge shows the two coarse categories world-data.js derived; the raw
-    # user-agent string never reaches the scene.
+    # Public chest badges still show only coarse categories. Raw details are
+    # confined to the requester-only back plate and never enter an identity.
     assert "navigator.userAgent" not in SCENE
-    assert "userAgent" not in SCENE
+    assert "function avatarSecurityBadgeTexture" in SCENE
+    assert 'badge.name = "forkmesh-self-security-back-badge"' in SCENE
+    assert "setSelfSecurityBadgeVisibility" in SCENE
+    assert "HIDDEN FROM PEERS + SCREENSHOTS" in SCENE
     for contract in (
         "firstSeenMinutes:",
         "joinedAt:",
@@ -298,6 +314,36 @@ def test_chest_badge_shows_client_categories_exact_ages_and_status_note():
     assert '"firstSeenMinutes", "joinedAt",' in WORLD_PROTOCOL
     assert "def _bounded_first_seen_minutes(value, fallback):" in WORLD_PROTOCOL
     assert "def _bounded_joined_at(value, now, fallback):" in WORLD_PROTOCOL
+
+
+def test_chest_badge_shows_the_same_full_record_for_every_avatar():
+    # The world active-time row is an extra line, never a replacement for the
+    # activity·visits line, so no avatar's chest shows less than the badge
+    # knows about that visitor.
+    assert "const activeRow =" in SCENE
+    assert "IN WORLD`" in SCENE
+    assert "`${activity} · ${visits} PUBLIC URL VISITS`" in SCENE
+    assert "sharesActivity || !activeRow" in SCENE
+    # A live presence frame carries no joined date or active-time aggregate, so
+    # every avatar for a known account is filled in from the public directory:
+    # walking peers, office-meeting participants, and the visitor themselves.
+    for contract in (
+        "function withMemberFacts(identity)",
+        "const badgeIdentity = withMemberFacts({",
+        "const participantIdentity = withMemberFacts({",
+        "const badgeIdentity = withMemberFacts(identity);",
+        "memberFacts.clear();",
+    ):
+        assert contract in SCENE
+    # A guest can type any display name, so only a server-stamped account
+    # status may claim the record filed under it.
+    assert 'String(identity.accountStatus || "Guest") === "Guest"' in SCENE
+    # The visitor's own chest wears their live activity-ticket total, repainted
+    # once a minute rather than on every one-second tick.
+    assert "syncOwnBadgeActivity()" in APP
+    assert "this.syncOwnBadgeActivity();" in APP
+    assert "worldActivityRenderedMinute" in APP
+    assert "totalActiveMs: Number.isFinite(Number(identity.totalActiveMs))" in APP
 
 
 def test_chest_fediverse_tab_uses_public_profile_data_and_explicit_follow():
@@ -1882,7 +1928,11 @@ def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
     assert '"OUT AND ABOUT"' in SCENE
     assert "campfire.userData.seatByName" in SCENE
     assert "noteDirectoryMembers" in APP
-    assert "(count * CAMPFIRE_SEAT_SPACING) / (2 * Math.PI)" in SCENE
+    # The ring's arc carries the seats plus the walk-in gap (adhoc #430).
+    assert (
+        "(count * CAMPFIRE_SEAT_SPACING + CAMPFIRE_ENTRANCE_WIDTH) / (2 * Math.PI)"
+        in SCENE
+    )
     assert '"sitting around the campfire"' in SCENE
     # Figures and idle live avatars both face the pit at the circle's centre.
     # Avatar fronts face local -Z, so the inward heading is atan2(x, z) — the
@@ -1923,8 +1973,10 @@ def test_system_capacity_scene_combines_service_limits_and_database_rows():
     assert "system-capacity-metrics-unavailable" in SCENE
     assert "system-capacity-database-tables" in SCENE
     assert "Math.log1p(table.rowCount)" in SCENE
-    assert "rowCount > 1" in SCENE
-    assert ".slice(0, 128)" in SCENE
+    # Every table the Worker counted is drawn, empty ones included, up to the
+    # same ceiling the Worker itself enumerates.
+    assert "rowCount >= 0" in SCENE
+    assert ".slice(0, 256)" in SCENE
     assert "visibleTableCount" in SCENE
     assert "system-capacity-row-count:" in SCENE
     # The table name is printed on the bar's top face only; the old upright
