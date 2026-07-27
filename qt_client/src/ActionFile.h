@@ -27,6 +27,13 @@ struct ActionWorkflow {
     // so a mesh can pin tests to one machine, Cloudflare deploys to a mirror,
     // and an iOS build to a Mac.
     QStringList runsOn;
+    // Workflows that must already have succeeded for the same commit before this
+    // one may start (`needs:`, at the top level or on any job). An entry names
+    // another workflow by display name, repo-relative path, or file name;
+    // entries naming a job inside this same file are ignored, because our jobs
+    // are flattened into a single ordered step list. Lets a deploy trust the CI
+    // run instead of repeating its test suite.
+    QStringList needs;
     QList<ActionStep> steps;    // steps flattened across all jobs, in order
     bool valid = false;
     QString error;
@@ -57,6 +64,7 @@ struct ActionWorkflow {
 //   on: push | release | [release, workflow_dispatch] | block list
 //       # release = fires when a release tag is drafted; workflow_dispatch = manual
 //   runs-on: mac1 | [mirror2, linux] | block list   # optional node dedication
+//   needs: "CI tests" | [ci, deploy.yml] | block list  # optional run ordering
 //   env: { KEY: value, ... }
 //   jobs: { <job>: { runs-on: ..., steps: [ { name, run }, ... ] } }
 //   steps: [ ... ]          # flattened top-level form is also accepted

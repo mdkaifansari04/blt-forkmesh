@@ -327,6 +327,8 @@ def test_shared_solana_rpc_rejects_transaction_submission_methods():
         )
     ) is None
     assert "sendTransaction" not in SOLANA_TEXT
+    assert "AbortSignal.timeout(SOLANA_RPC_TIMEOUT_MS)" in SOLANA_TEXT
+    assert "asyncio.wait_for" not in SOLANA_TEXT
 
 
 def test_legacy_treasury_aliases_fail_closed_without_an_address():

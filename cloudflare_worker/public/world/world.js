@@ -3858,6 +3858,8 @@ class ForkMeshWorld extends HTMLElement {
     this.clockTimer = 0;
     this.distanceTimer = 0;
     this.toastTimer = 0;
+    this.toastPriority = 0;
+    this.toastLockUntil = 0;
     this.inactiveSyncTimer = 0;
     this.inputInactiveTimer = 0;
     this.lastInputInactiveScheduleAt = 0;
@@ -4446,6 +4448,25 @@ class ForkMeshWorld extends HTMLElement {
         },
         onOfficeMeetingBoardSelect: () => {
           void this.officeMeeting?.joinRoom?.("general");
+        },
+        onOfficeRooftopLaptopSelect: () => {
+          // ForkMesh does not expose a browser-side arbitrary source writer.
+          // Open the real repository browser and keep write-capable work on
+          // the owner device through desktop / IDE integration.
+          window.open(
+            "/forkmesh/forkmesh/blob/cloudflare_worker/public/world/world-scene.js",
+            "_blank",
+            "noopener,noreferrer",
+          );
+          this.toast(
+            this.sessionAuthenticated
+              ? "Opening the live ForkMesh source browser. Source edits stay in the desktop app or IDE extension."
+              : "Opening public ForkMesh source. Log in for account features. Source edits stay in the desktop app or IDE extension.",
+            // The same first click may satisfy the browser's pending music
+            // autoplay gesture. Keep that asynchronous playback notice from
+            // immediately replacing this interaction-specific explanation.
+            { priority: 1, lockMs: 1500 },
+          );
         },
         onWorldBulletinSelect: () => this.openLandmark("events"),
         onMastodonBoardSelect: () => this.openMastodonBoard(),
@@ -16442,14 +16463,21 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  toast(message) {
+  toast(message, { priority = 0, lockMs = 0 } = {}) {
     const element = this.$("[data-world-toast]");
     if (!element) return;
+    const now = performance.now();
+    const safePriority = Number.isFinite(priority) ? priority : 0;
+    if (now < this.toastLockUntil && safePriority < this.toastPriority) return;
     window.clearTimeout(this.toastTimer);
+    this.toastPriority = safePriority;
+    this.toastLockUntil = now + Math.max(0, Number(lockMs) || 0);
     element.textContent = message;
     element.dataset.open = "true";
     this.toastTimer = window.setTimeout(() => {
       element.dataset.open = "false";
+      this.toastPriority = 0;
+      this.toastLockUntil = 0;
     }, 4200);
   }
 

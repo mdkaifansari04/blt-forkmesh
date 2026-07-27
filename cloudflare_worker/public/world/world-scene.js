@@ -83,6 +83,10 @@ const REPOSITORY_FIRST_PERSON_PITCH = -0.08;
 const OFFICE_HEIGHT = OFFICE_FLOOR_HEIGHT;
 const OFFICE_INTERIOR_WALL_LIMIT = OFFICE_FRONT_Z - 0.54;
 const OFFICE_INTERIOR_EXIT_Z = OFFICE_FRONT_Z + 0.18;
+const OFFICE_DOOR_HEIGHT = 4.4;
+const OFFICE_DOOR_SILL_Y = 0.34;
+const OFFICE_DOORWAY_ENTRY_Z =
+  OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS;
 const OFFICE_ELEVATOR_HALF_WIDTH = 5;
 const OFFICE_ELEVATOR_HALF_DEPTH = 4;
 const OFFICE_ELEVATOR_CUT_MARGIN = 0.35;
@@ -3419,6 +3423,7 @@ function serverPanelTexture(THREE, node) {
       ? `${String(repo.owner).slice(0, 32)}/${String(repo.name).slice(0, 44)}`
       : "REPOSITORY NOT REPORTED";
   const commitSnapshot = mirrorCommitSnapshot(node, repo);
+  const syncAgo = mirrorCommitAgeLabel(node?.syncAgeMs);
   const commit = String(node?.commit || repo?.commit || "").toLowerCase();
   const shortCommit = /^[0-9a-f]{40,64}$/.test(commit)
     ? commit.slice(0, 12)
@@ -3475,7 +3480,7 @@ function serverPanelTexture(THREE, node) {
     context.font = '600 21px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#8ca99a";
     context.textAlign = "right";
-    context.fillText(activity || `SYNCED ${mirrorCommitAgeLabel(node?.syncAgeMs)}`, 966, 124);
+    context.fillText(activity || `SYNCED ${syncAgo}`, 966, 124);
     context.textAlign = "left";
 
     context.strokeStyle = "#294339";
@@ -3592,24 +3597,29 @@ function serverPanelTexture(THREE, node) {
     context.fillStyle = "#b4cabd";
     context.fillText(commitSnapshot.age, 598, 540);
 
+    // BRANCHES/PULL REQUESTS/ISSUES don't carry their own per-item
+    // timestamps, but they're read from the same signed snapshot as
+    // everything else on the card, so the record's own publish age
+    // (syncAgo) is an honest freshness stamp for them. COMMITS gets the
+    // precise last-commit age instead, since that's actually known.
     const rows = [
-      ["COMMITS", node?.commitCount],
-      ["BRANCHES", node?.branchCount],
-      ["PULL REQUESTS", node?.pullCount],
-      ["ISSUES", node?.issueCount],
-      ["DISCUSSIONS", node?.discussionCount],
-      ["ARTIFACTS", node?.artifactCount],
-      ["WORKTREES", node?.worktreeCount],
-      ["CLONES SERVED", node?.clonesServed],
-      ["WEB SERVED", node?.websiteServed],
-      ["REPO BYTES", compactMirrorBytes(node?.sizeBytes)],
+      ["COMMITS", node?.commitCount, commitSnapshot.age],
+      ["BRANCHES", node?.branchCount, syncAgo],
+      ["PULL REQUESTS", node?.pullCount, syncAgo],
+      ["ISSUES", node?.issueCount, syncAgo],
+      ["DISCUSSIONS", node?.discussionCount, null],
+      ["ARTIFACTS", node?.artifactCount, null],
+      ["WORKTREES", node?.worktreeCount, null],
+      ["CLONES SERVED", node?.clonesServed, null],
+      ["WEB SERVED", node?.websiteServed, null],
+      ["REPO BYTES", compactMirrorBytes(node?.sizeBytes), null],
     ];
-    context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
-    rows.forEach(([label, value], index) => {
+    rows.forEach(([label, value, age], index) => {
       const column = index % 2;
       const row = Math.floor(index / 2);
       const x = column === 0 ? 58 : 536;
       const y = 604 + row * 62;
+      context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
       context.fillStyle = "#8ca99a";
       context.fillText(label, x, y);
       context.textAlign = "right";
@@ -3617,8 +3627,13 @@ function serverPanelTexture(THREE, node) {
       context.fillText(
         typeof value === "string" ? value : compactMirrorCount(value),
         x + 414,
-        y,
+        age ? y - 9 : y,
       );
+      if (age) {
+        context.font = '600 15px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillStyle = "#6f8579";
+        context.fillText(age, x + 414, y + 15);
+      }
       context.textAlign = "left";
     });
 
@@ -6888,7 +6903,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const wallThickness = 0.35;
   const doorWidth = OFFICE_DOOR_WIDTH;
-  const doorHeight = 4.4;
+  const doorHeight = OFFICE_DOOR_HEIGHT;
   const rooftopY = officeFloorY("rooftop");
   const concrete = makeMaterial(THREE, "#18231f", {
     metalness: 0.08,
@@ -6905,9 +6920,12 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     roughness: 0.62,
     depthWrite: false,
   });
-  const doorMaterial = makeMaterial(THREE, "#245845", {
-    metalness: 0.34,
-    roughness: 0.44,
+  const doorMaterial = makeMaterial(THREE, "#c9fff3", {
+    transparent: true,
+    opacity: 0.3,
+    metalness: 0,
+    roughness: 0.38,
+    depthWrite: false,
   });
   const elevatorFacadeMinX =
     OFFICE_ELEVATOR_CENTER_X -
@@ -7165,7 +7183,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
       `forkmesh-office-sliding-door-${side < 0 ? "left" : "right"}`;
     panel.position.set(
       side * doorClosedX,
-      doorHeight / 2 + 0.34,
+      doorHeight / 2 + OFFICE_DOOR_SILL_Y,
       0,
     );
     slidingDoors.add(panel);
@@ -7298,6 +7316,21 @@ function updateScreenLabel(THREE, object, element, camera, width, height, yOffse
   if (!visible) return;
   element.style.left = `${(position.x * 0.5 + 0.5) * width}px`;
   element.style.top = `${(-position.y * 0.5 + 0.5) * height}px`;
+}
+
+export function officeAttendanceDurationLabel(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  const milliseconds = Number(value);
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
+  const totalMinutes = Math.floor(milliseconds / 60_000);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const totalHours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (totalHours < 24) {
+    return `${totalHours}h ${String(minutes).padStart(2, "0")}m`;
+  }
+  const days = Math.floor(totalHours / 24);
+  return `${days}d ${String(totalHours % 24).padStart(2, "0")}h`;
 }
 
 export function createWorldScene({
@@ -8821,37 +8854,153 @@ export function createWorldScene({
       );
       rooftop.add(barrier);
     }
-    for (const x of [-40, 0, 40]) {
-      const patioTable = new THREE.Mesh(
+    const patioWood = makeMaterial(THREE, "#8b6848", {
+      roughness: 0.7,
+    });
+    const patioFrame = makeMaterial(THREE, "#213b36", {
+      metalness: 0.45,
+      roughness: 0.44,
+    });
+    const patioSeat = makeMaterial(THREE, "#3f8369", {
+      roughness: 0.68,
+    });
+    for (const [tableIndex, x] of [-40, 0, 40].entries()) {
+      const patioTable = new THREE.Group();
+      patioTable.name = `forkmesh-office-rooftop-table-${tableIndex + 1}`;
+      patioTable.position.set(x, 0, 8);
+      const tabletop = new THREE.Mesh(
         new THREE.CylinderGeometry(3.1, 3.1, 0.34, 24),
-        makeMaterial(THREE, "#8b6848", { roughness: 0.7 }),
+        patioWood,
       );
-      patioTable.position.set(x, 1.45, 8);
+      tabletop.name =
+        `forkmesh-office-rooftop-tabletop-${tableIndex + 1}`;
+      tabletop.position.y = 2.68;
+      patioTable.add(tabletop);
+      for (const [legIndex, [legX, legZ]] of [
+        [-1.8, -1.8],
+        [-1.8, 1.8],
+        [1.8, -1.8],
+        [1.8, 1.8],
+      ].entries()) {
+        const leg = new THREE.Mesh(
+          new THREE.BoxGeometry(0.28, 2.5, 0.28),
+          patioFrame,
+        );
+        leg.name =
+          `forkmesh-office-rooftop-table-${tableIndex + 1}-leg-${legIndex + 1}`;
+        leg.position.set(legX, 1.25, legZ);
+        patioTable.add(leg);
+      }
       rooftop.add(patioTable);
       for (let index = 0; index < 4; index += 1) {
         const angle = index * Math.PI / 2;
+        const chairId = `rooftop-chair-${tableIndex * 4 + index + 1}`;
+        const chair = new THREE.Group();
+        chair.name = `forkmesh-office-${chairId}`;
+        const seatTopY = 1.42;
         const seat = new THREE.Mesh(
-          new THREE.BoxGeometry(2.2, 0.34, 2.2),
-          makeMaterial(THREE, "#3f8369", { roughness: 0.68 }),
+          new THREE.BoxGeometry(2.1, 0.22, 1.8),
+          patioSeat,
         );
-        seat.position.set(
+        seat.name = `forkmesh-office-${chairId}-seat`;
+        seat.position.y = seatTopY - 0.11;
+        chair.add(seat);
+        for (const [legIndex, [legX, legZ]] of [
+          [-0.78, -0.62],
+          [-0.78, 0.62],
+          [0.78, -0.62],
+          [0.78, 0.62],
+        ].entries()) {
+          const leg = new THREE.Mesh(
+            new THREE.BoxGeometry(0.2, 1.2, 0.2),
+            patioFrame,
+          );
+          leg.name =
+            `forkmesh-office-${chairId}-leg-${legIndex + 1}`;
+          leg.position.set(legX, 0.6, legZ);
+          chair.add(leg);
+        }
+        const back = new THREE.Mesh(
+          new THREE.BoxGeometry(2.1, 1.65, 0.2),
+          patioSeat,
+        );
+        back.name = `forkmesh-office-${chairId}-back`;
+        back.position.set(0, 2.08, -0.8);
+        chair.add(back);
+        chair.position.set(
           x + Math.cos(angle) * 5,
-          0.8,
+          0,
           8 + Math.sin(angle) * 5,
         );
-        rooftop.add(seat);
+        chair.rotation.y = Math.atan2(
+          -Math.cos(angle) * 5,
+          -Math.sin(angle) * 5,
+        );
+        chair.userData.officeChairId = chairId;
+        chair.userData.officeFloorId = "rooftop";
+        chair.userData.officeSeatTopY = seatTopY;
+        chair.traverse((child) => {
+          if (!child.isMesh) return;
+          child.userData.officeChairId = chairId;
+          child.userData.officeFloorId = "rooftop";
+          child.userData.interactive = "office-chair";
+          interactive.push(child);
+        });
+        officeChairs.set(chairId, chair);
+        rooftop.add(chair);
       }
     }
-    const telescope = new THREE.Group();
-    const telescopeTube = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.65, 0.9, 7, 18),
-      metal,
+
+    // This is a launcher for the real repository source surface, not a mock
+    // editor. The shell owns the fixed same-origin action and explains that
+    // write-capable source work remains in ForkMesh desktop / IDE integration.
+    const rooftopLaptop = new THREE.Group();
+    rooftopLaptop.name = "forkmesh-office-rooftop-laptop";
+    rooftopLaptop.position.set(0, 2.9, 8);
+    rooftopLaptop.userData.officeFloorId = "rooftop";
+    const laptopBase = new THREE.Mesh(
+      new THREE.BoxGeometry(2.8, 0.12, 1.8),
+      makeMaterial(THREE, "#151c24", {
+        metalness: 0.72,
+        roughness: 0.24,
+      }),
     );
-    telescopeTube.rotation.z = Math.PI / 2.7;
-    telescopeTube.position.y = 4.8;
-    telescope.add(telescopeTube);
-    telescope.position.set(58, 0, -24);
-    rooftop.add(telescope);
+    laptopBase.name = "forkmesh-office-rooftop-laptop-base";
+    laptopBase.position.z = -0.15;
+    rooftopLaptop.add(laptopBase);
+    const laptopScreen = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.52, 1.48),
+      new THREE.MeshBasicMaterial({
+        map: canvasTexture(THREE, 756, 444, (context) => {
+          context.fillStyle = "#071714";
+          context.fillRect(0, 0, 756, 444);
+          context.strokeStyle = "#9ef7c6";
+          context.lineWidth = 18;
+          context.strokeRect(12, 12, 732, 420);
+          context.fillStyle = "#eafff6";
+          context.font =
+            '800 48px "ForkMesh Mono", ui-monospace, monospace';
+          context.textAlign = "center";
+          context.fillText("FORKMESH SOURCE", 378, 190);
+          context.fillStyle = "#8ecdb6";
+          context.font =
+            '600 29px "ForkMesh Mono", ui-monospace, monospace';
+          context.fillText("CLICK TO OPEN REAL REPOSITORY", 378, 260);
+        }),
+        toneMapped: false,
+      }),
+    );
+    laptopScreen.name = "forkmesh-office-rooftop-laptop-screen";
+    laptopScreen.position.set(0, 0.86, 0.72);
+    laptopScreen.rotation.x = -0.16;
+    rooftopLaptop.add(laptopScreen);
+    rooftopLaptop.traverse((child) => {
+      if (!child.isMesh) return;
+      child.userData.officeFloorId = "rooftop";
+      child.userData.interactive = "office-rooftop-laptop";
+      interactive.push(child);
+    });
+    rooftop.add(rooftopLaptop);
   }
   addOfficeFunFloorProps();
   // The exterior tower already owns the curtain wall. A second interior shell
@@ -8896,6 +9045,69 @@ export function createWorldScene({
         );
     });
   }
+
+  function officeReceptionDeskDistance(localPosition) {
+    const x = Number(localPosition?.x) || 0;
+    const z = Number(localPosition?.z) || 0;
+    const distanceX = Math.max(0, Math.abs(x) - 15);
+    const distanceZ = Math.max(0, Math.abs(z + 36.5) - 2.5);
+    return Math.hypot(distanceX, distanceZ);
+  }
+
+  function updateOfficeReceptionGuide(time = performance.now()) {
+    const active =
+      officeSceneMode === "lobby" &&
+      officeCurrentFloorId === "lobby" &&
+      !officeElevatorRide;
+    if (!active) {
+      officeReceptionWasNear = false;
+      return false;
+    }
+    const distance = officeReceptionDeskDistance(
+      officeAvatarLocalPosition(player, new THREE.Vector3()),
+    );
+    if (distance > OFFICE_RECEPTION_RESET_RANGE) {
+      officeReceptionWasNear = false;
+      return false;
+    }
+    if (
+      distance > OFFICE_RECEPTION_TALK_RANGE ||
+      officeReceptionWasNear
+    ) {
+      return false;
+    }
+    officeReceptionWasNear = true;
+    const now = Number.isFinite(Number(time))
+      ? Number(time)
+      : performance.now();
+    if (
+      now - officeReceptionLastTipAt <
+      OFFICE_RECEPTION_TALK_COOLDOWN_MS
+    ) {
+      return false;
+    }
+    const authenticated = officeFloorAccess.authenticated === true;
+    const tips = authenticated
+      ? OFFICE_RECEPTION_MEMBER_TIPS
+      : OFFICE_RECEPTION_GUEST_TIPS;
+    const index = authenticated
+      ? officeReceptionMemberTipIndex
+      : officeReceptionGuestTipIndex;
+    const message = tips[index % tips.length];
+    if (authenticated) {
+      officeReceptionMemberTipIndex = (index + 1) % tips.length;
+    } else {
+      officeReceptionGuestTipIndex = (index + 1) % tips.length;
+    }
+    const shown = showAvatarChatBubble(
+      officeReceptionNoah,
+      message,
+      { officeReception: true },
+    );
+    if (shown) officeReceptionLastTipAt = now;
+    return shown;
+  }
+
   const officeTable = new THREE.Mesh(
     new THREE.BoxGeometry(7.4, 0.34, 3.6),
     makeMaterial(THREE, "#715238", { roughness: 0.66 }),
@@ -8950,9 +9162,12 @@ export function createWorldScene({
     chair.position.set(x, officeFloorY("marketing"), z);
     chair.rotation.y = yaw;
     chair.userData.officeChairId = chairId;
+    chair.userData.officeFloorId = "marketing";
+    chair.userData.officeSeatTopY = OFFICE_CHAIR_SEAT_TOP_Y;
     chair.traverse((child) => {
       if (!child.isMesh) return;
       child.userData.officeChairId = chairId;
+      child.userData.officeFloorId = "marketing";
       child.userData.interactive = "office-chair";
       interactive.push(child);
     });
@@ -8977,6 +9192,7 @@ export function createWorldScene({
   );
   officeMarketingTaskBoardFrame.name =
     "forkmesh-office-marketing-task-board-frame";
+  officeMarketingTaskBoardFrame.userData.officeFloorId = "marketing";
   officeMarketingTaskBoardFrame.userData.interactive =
     "office-marketing-task-board";
   officeMarketingTaskBoard.add(officeMarketingTaskBoardFrame);
@@ -8992,6 +9208,7 @@ export function createWorldScene({
   officeMarketingTaskBoardFace.name =
     "forkmesh-office-marketing-task-board-face";
   officeMarketingTaskBoardFace.position.z = 0.101;
+  officeMarketingTaskBoardFace.userData.officeFloorId = "marketing";
   officeMarketingTaskBoardFace.userData.interactive =
     "office-marketing-task-board";
   officeMarketingTaskBoard.add(officeMarketingTaskBoardFace);
@@ -9016,6 +9233,7 @@ export function createWorldScene({
     officeFloorY("marketing") + 6.65,
     -OFFICE_FRONT_Z + 0.56,
   );
+  officeGuideBoard.userData.officeFloorId = "marketing";
   officeGuideBoard.userData.interactive = "office-meeting-board";
   interactive.push(officeGuideBoard);
   officeInterior.add(officeGuideBoard);
@@ -9051,8 +9269,8 @@ export function createWorldScene({
   officeLobbyPlayer.visible = false;
   officeInterior.add(officeLobbyPlayer);
 
-  // Staffed reception: the figures are deliberately scene-native avatars so
-  // guests meet people at a desk instead of a modal login wall.
+  // Staffed reception: Noah is a scene-native avatar, so visitors meet one
+  // person at the far-wall desk instead of a modal login wall.
   const officeReception = new THREE.Group();
   officeReception.name = "forkmesh-office-reception";
   const receptionDesk = new THREE.Mesh(
@@ -9065,64 +9283,42 @@ export function createWorldScene({
   receptionDesk.name = "forkmesh-office-reception-desk";
   receptionDesk.position.set(0, 1.05, -36.5);
   officeReception.add(receptionDesk);
-  const receptionStaff = [
-    {
-      id: "office-greeter-maya",
-      name: "Maya · Welcome desk",
-      outfitColor: "aurora",
-      x: -7,
-    },
+  const officeReceptionNoah = createAvatar(
+    THREE,
     {
       id: "office-greeter-noah",
       name: "Noah · Welcome desk",
+      flag: "◌",
+      browser: "Office",
+      os: "Welcome desk",
+      status: "available",
+      accountStatus: "Supporting member",
+      nodes: [],
       outfitColor: "ocean",
-      x: 7,
     },
-  ];
-  receptionStaff.forEach((staff, index) => {
-    const avatar = createAvatar(
-      THREE,
-      {
-        id: staff.id,
-        name: staff.name,
-        flag: "◌",
-        browser: "Office",
-        os: "Welcome desk",
-        status: "available",
-        accountStatus: "Supporting member",
-        nodes: [],
-        outfitColor: staff.outfitColor,
-      },
-      { remote: true, scale: 0.94 },
-    );
-    avatar.position.set(staff.x, 0.38, -40);
-    avatar.rotation.y = Math.PI;
-    // Two distinct, low-poly hairstyles make the requested woman/man desk
-    // pairing legible without relying on private profile imagery.
-    const hair = new THREE.Mesh(
-      index === 0
-        ? new THREE.SphereGeometry(0.62, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.72)
-        : new THREE.BoxGeometry(1.05, 0.24, 0.86),
-      makeMaterial(THREE, index === 0 ? "#3a2118" : "#211b17", {
-        roughness: 0.82,
-      }),
-    );
-    hair.position.set(0, 3.88, index === 0 ? 0.02 : -0.08);
-    avatar.add(hair);
-    officeReception.add(avatar);
-    const label = makeOfficeWallPlacard(
-      THREE,
-      index === 0 ? "MAYA" : "NOAH",
-      index === 0 ? "WELCOME · ACCOUNT HELP" : "WELCOME · ELEVATOR HELP",
-      "#9ef7c6",
-      8.4,
-      1.35,
-    );
-    label.name = `forkmesh-office-reception-nameplate-${index + 1}`;
-    // Nameplates sit on the desk's front face instead of hovering over staff.
-    label.position.set(staff.x, 1.2, -33.94);
-    officeReception.add(label);
-  });
+    { remote: true, scale: 0.94 },
+  );
+  officeReceptionNoah.position.set(0, 0.38, -40);
+  officeReceptionNoah.rotation.y = Math.PI;
+  const noahHair = new THREE.Mesh(
+    new THREE.BoxGeometry(1.05, 0.24, 0.86),
+    makeMaterial(THREE, "#211b17", { roughness: 0.82 }),
+  );
+  noahHair.position.set(0, 3.88, -0.08);
+  officeReceptionNoah.add(noahHair);
+  officeReception.add(officeReceptionNoah);
+  const noahNameplate = makeOfficeWallPlacard(
+    THREE,
+    "NOAH",
+    "WELCOME · WORLD & REPOSITORY HELP",
+    "#9ef7c6",
+    11.2,
+    1.35,
+  );
+  noahNameplate.name = "forkmesh-office-reception-nameplate-noah";
+  // The nameplate sits on the desk's front face instead of hovering over Noah.
+  noahNameplate.position.set(0, 1.2, -33.94);
+  officeReception.add(noahNameplate);
   officeInterior.add(officeReception);
   for (const [x, z] of [
     [-52, 7],
@@ -9155,7 +9351,7 @@ export function createWorldScene({
         context.fillText("WELCOME · WALK RIGHT IN", 600, 92);
         context.fillStyle = "#8ecdb6";
         context.font = '600 30px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText("Maya and Noah are here to help", 600, 145);
+        context.fillText("Walk up to Noah for World and repository tips", 600, 145);
       }),
       toneMapped: false,
     }),
@@ -9175,10 +9371,11 @@ export function createWorldScene({
   officeAttendanceBoard.rotation.y = Math.PI / 2;
   officeInterior.add(officeAttendanceBoard);
 
-  function officeAttendanceTexture(snapshot = {}) {
+  function officeAttendanceTexture(snapshot = {}, openElapsedMs = 0) {
     const visits = Array.isArray(snapshot?.visits)
       ? snapshot.visits.slice(0, 20)
       : [];
+    const liveElapsedMs = Math.max(0, Number(openElapsedMs) || 0);
     return canvasTexture(THREE, 1600, 800, (context) => {
       const format = (value) => {
         const timestamp = Number(value);
@@ -9202,8 +9399,9 @@ export function createWorldScene({
       context.fillStyle = "#79a996";
       context.font = '800 27px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText("USER", 42, 112);
-      context.fillText("IN", 570, 112);
-      context.fillText("OUT", 1080, 112);
+      context.fillText("IN", 500, 112);
+      context.fillText("OUT", 900, 112);
+      context.fillText("TOTAL", 1350, 112);
       context.strokeStyle = "rgba(121,239,181,0.28)";
       context.lineWidth = 2;
       context.beginPath();
@@ -9219,16 +9417,27 @@ export function createWorldScene({
         }
         context.fillStyle = "#e9fff6";
         context.fillText(
-          String(visit?.account || "Contributor").slice(0, 25),
+          String(visit?.account || "Contributor").slice(0, 22),
           42,
           y,
         );
         context.fillStyle = "#a9d7c4";
-        context.fillText(format(visit?.inAt), 570, y);
+        context.fillText(format(visit?.inAt), 500, y);
         context.fillStyle = visit?.outAt ? "#a9d7c4" : "#f7c96b";
         context.fillText(
           visit?.outAt ? format(visit.outAt) : "IN BUILDING",
-          1080,
+          900,
+          y,
+        );
+        const durationMs =
+          visit?.durationMs === null || visit?.durationMs === undefined
+            ? null
+            : Number(visit.durationMs) +
+              (visit?.inAt && !visit?.outAt ? liveElapsedMs : 0);
+        context.fillStyle = visit?.outAt ? "#a9d7c4" : "#f7c96b";
+        context.fillText(
+          officeAttendanceDurationLabel(durationMs),
+          1350,
           y,
         );
       });
@@ -9283,24 +9492,34 @@ export function createWorldScene({
       minFilter: THREE.LinearMipmapLinearFilter,
     },
   );
+  // Be explicit about reflection rather than relying on the render target's
+  // library default. The same live cube map then drives the mirrored letters
+  // and panels without ever turning into a refracted/inside-out view.
+  reflectionTarget.texture.mapping = THREE.CubeReflectionMapping;
+  reflectionTarget.texture.name = "forkmesh-office-logo-live-reflection";
   const reflectionCamera = new THREE.CubeCamera(
     0.2,
     180,
     reflectionTarget,
   );
+  reflectionCamera.name = "forkmesh-office-logo-reflection-camera";
+  reflectionCamera.userData.logoCaptureCount = 0;
+  reflectionCamera.userData.logoCapturePolicy = "dirty-idle-once";
   reflectionCamera.position.y = 5.1;
   logoFountain.add(reflectionCamera);
   const chrome = new THREE.MeshPhysicalMaterial({
     // A neutral mid-silver base leaves headroom for the live cube map. Nearly
     // white metal clipped those reflected lobby greens and dark window bands
     // into a flat white surface under ACES tone mapping.
-    color: "#aeb9c8",
-    metalness: 1,
-    roughness: 0.045,
+    color: "#dbe4ef",
+    metalness: 0.94,
+    roughness: 0.055,
+    emissive: "#0b1417",
+    emissiveIntensity: 0.14,
     clearcoat: 1,
     clearcoatRoughness: 0.02,
     envMap: reflectionTarget.texture,
-    envMapIntensity: 1.65,
+    envMapIntensity: 1.45,
   });
   const darkChrome = new THREE.MeshPhysicalMaterial({
     color: "#05070b",
@@ -9310,6 +9529,18 @@ export function createWorldScene({
     envMap: reflectionTarget.texture,
     envMapIntensity: 1.5,
   });
+  const logoInnerFace = new THREE.MeshStandardMaterial({
+    color: "#030807",
+    metalness: 0.18,
+    roughness: 0.72,
+  });
+  const logoPanelChrome = chrome.clone();
+  logoPanelChrome.color.set("#f0f5ff");
+  logoPanelChrome.metalness = 0.8;
+  logoPanelChrome.roughness = 0.07;
+  logoPanelChrome.envMapIntensity = 1.3;
+  logoPanelChrome.emissive.set("#111c20");
+  logoPanelChrome.emissiveIntensity = 0.16;
   const chromeCube = new THREE.Group();
   chromeCube.name = "forkmesh-reflective-fm-cube";
   // The resting view presents the F/M corner together. Motion-enabled clients
@@ -9322,8 +9553,9 @@ export function createWorldScene({
   chromeCube.add(chromeMark);
   const logoHalfSize = 2.92;
   const logoSupportTopY = 2.4;
-  // Align one body diagonal with world-up. The selected lower corner therefore
-  // remains exactly over the single support even while the outer mount spins.
+  // Align the original lower body diagonal with world-down. The selected
+  // corner therefore remains exactly over the sole support while the outer
+  // mount spins around the world-vertical axis.
   const logoLowerCorner = new THREE.Vector3(-1, -1, -1).normalize();
   chromeMark.quaternion.setFromUnitVectors(
     logoLowerCorner,
@@ -9343,13 +9575,25 @@ export function createWorldScene({
   ) => {
     const piece = new THREE.Mesh(
       new THREE.BoxGeometry(width, height, depth),
-      chrome,
+      // Every face group is authored with local +Z pointing out of the cube.
+      // Only that public face is mirror-bright. Matte sides and inward backs
+      // keep the repeated opposite F/M marks from flashing through the hollow
+      // center as fragmented chrome strokes.
+      [
+        logoInnerFace,
+        logoInnerFace,
+        logoInnerFace,
+        logoInnerFace,
+        chrome,
+        logoInnerFace,
+      ],
     );
     piece.position.set(x, y, z);
     piece.rotation.z = rotationZ;
     parent.add(piece);
     return piece;
   };
+  const logoLetterStroke = 1.04;
 
   const addFLogoFace = (z, rotationY) => {
     const face = new THREE.Group();
@@ -9357,9 +9601,9 @@ export function createWorldScene({
       `forkmesh-reflective-f-face-${z > 0 ? "front" : "back"}`;
     face.position.z = z;
     face.rotation.y = rotationY;
-    logoPiece(face, 0.82, 4.9, 0.48, -1.64, -0.04, 0);
-    logoPiece(face, 4.35, 0.82, 0.48, 0.12, 2.0, 0);
-    logoPiece(face, 3.45, 0.82, 0.48, -0.33, 0.22, 0);
+    logoPiece(face, logoLetterStroke, 4.9, 0.48, -1.64, -0.04, 0);
+    logoPiece(face, 4.35, logoLetterStroke, 0.48, 0.12, 2.0, 0);
+    logoPiece(face, 3.45, logoLetterStroke, 0.48, -0.33, 0.22, 0);
     chromeMark.add(face);
   };
   addFLogoFace(2.68, 0);
@@ -9371,14 +9615,14 @@ export function createWorldScene({
       `forkmesh-reflective-m-face-${x > 0 ? "right" : "left"}`;
     face.position.x = x;
     face.rotation.y = rotationY;
-    logoPiece(face, 0.82, 4.9, 0.48, -1.72, -0.04, 0);
-    logoPiece(face, 0.82, 4.9, 0.48, 1.72, -0.04, 0);
+    logoPiece(face, logoLetterStroke, 4.9, 0.48, -1.72, -0.04, 0);
+    logoPiece(face, logoLetterStroke, 4.9, 0.48, 1.72, -0.04, 0);
     const addDiagonal = (fromX, fromY, toX, toY) => {
       const dx = toX - fromX;
       const dy = toY - fromY;
       logoPiece(
         face,
-        0.82,
+        logoLetterStroke,
         Math.hypot(dx, dy),
         0.48,
         (fromX + toX) / 2,
@@ -9487,7 +9731,7 @@ export function createWorldScene({
   logoPanelGeometry.translate(0, 0, -0.18);
   logoPanelGeometry.rotateX(Math.PI / 2);
   for (const faceY of [-2.68, 2.68]) {
-    const panel = new THREE.Mesh(logoPanelGeometry, chrome);
+    const panel = new THREE.Mesh(logoPanelGeometry, logoPanelChrome);
     panel.name =
       `forkmesh-reflective-fm-panel-${faceY > 0 ? "top" : "bottom"}`;
     panel.position.y = faceY;
@@ -9528,31 +9772,80 @@ export function createWorldScene({
     logoFountain.add(highlight);
   }
   officeInterior.add(logoFountain);
-  let lastLogoReflectionAt = 0;
   let officeLobbyPlayerMoving = false;
-  // One cube-map refresh renders the scene six times. The lobby itself is
-  // mostly static, so refresh only while its visitor and camera are idle.
-  // Capturing on other floors or during a drag spends six full scene renders
-  // on an invisible sculpture and presents as a periodic movement hitch.
-  const logoReflectionIntervalMs = compactRenderer ? 2500 : 1000;
+  let logoReflectionDirty = true;
+  let logoReflectionWasInLobby = false;
+  let logoReflectionWasBusy = false;
+  let logoReflectionEligibleAt = Infinity;
+  // One cube-map refresh renders the scene six times. Treat it as an idle
+  // snapshot, not a recurring animation: entry and motion only mark the map
+  // dirty, then one capture runs after the visitor has settled. This keeps the
+  // Office and the local avatar legible in the chrome without a one-second
+  // render spike or visible reflection flash while walking.
+  const logoReflectionSettleMs = compactRenderer ? 1400 : 900;
+  reflectionCamera.userData.logoCaptureSettleMs = logoReflectionSettleMs;
   animated.push((time) => {
     chromeCube.rotation.y = time * 0.00022;
     logoWater.rotation.y = -time * 0.00012;
   });
   function updateOfficeLogoReflection(time) {
-    if (
+    const inLobby =
       officeSceneMode === "lobby" &&
       officeCurrentFloorId === "lobby" &&
-      !officeElevatorRide &&
-      !officeLobbyPlayerMoving &&
-      primaryPointerId === null &&
-      !pinchActive &&
-      time - lastLogoReflectionAt >= logoReflectionIntervalMs
-    ) {
-      lastLogoReflectionAt = time;
+      !officeElevatorRide;
+    if (!inLobby) {
+      logoReflectionWasInLobby = false;
+      logoReflectionWasBusy = false;
+      logoReflectionDirty = true;
+      logoReflectionEligibleAt = Infinity;
+      return;
+    }
+    if (!logoReflectionWasInLobby) {
+      logoReflectionWasInLobby = true;
+      logoReflectionDirty = true;
+      logoReflectionEligibleAt = time + logoReflectionSettleMs;
+      return;
+    }
+    const busy =
+      officeLobbyPlayerMoving ||
+      primaryPointerId !== null ||
+      pinchActive;
+    if (busy) {
+      logoReflectionDirty = true;
+      logoReflectionWasBusy = true;
+      logoReflectionEligibleAt = time + logoReflectionSettleMs;
+      return;
+    }
+    if (logoReflectionWasBusy) {
+      logoReflectionWasBusy = false;
+      logoReflectionEligibleAt = time + logoReflectionSettleMs;
+      return;
+    }
+    if (logoReflectionDirty && time >= logoReflectionEligibleAt) {
+      const cubeWasVisible = chromeCube.visible;
+      const playerWasVisible = player.visible;
       chromeCube.visible = false;
-      reflectionCamera.update(renderer, scene);
-      chromeCube.visible = true;
+      // First-person mode normally hides the local body from the main camera.
+      // The reflection camera is independent, so reveal it for this capture
+      // and restore the exact prior state immediately afterwards.
+      player.visible = true;
+      // Movement and camera updates happen earlier in this frame. Commit the
+      // avatar's latest pose before the six cube faces render so its mirror
+      // image never trails one settled position behind.
+      player.updateWorldMatrix(true, true);
+      reflectionCamera.updateWorldMatrix(true, true);
+      try {
+        reflectionCamera.update(renderer, scene);
+      } finally {
+        player.visible = playerWasVisible;
+        chromeCube.visible = cubeWasVisible;
+      }
+      logoReflectionDirty = false;
+      logoReflectionEligibleAt = Infinity;
+      reflectionCamera.userData.logoCaptureCount += 1;
+      reflectionCamera.userData.logoCapturedPlayer = true;
+      reflectionCamera.userData.logoCapturedPlayerId =
+        String(player.userData?.id || player.name || "local-player");
     }
   }
 
@@ -9831,6 +10124,12 @@ export function createWorldScene({
   let officeFloorHandler = null;
   let officeElevatorRide = null;
   let officeAttendance = { visits: [] };
+  let officeAttendanceObservedAt = performance.now();
+  let officeAttendanceRenderedBucket = 0;
+  let officeReceptionWasNear = false;
+  let officeReceptionLastTipAt = -Infinity;
+  let officeReceptionGuestTipIndex = 0;
+  let officeReceptionMemberTipIndex = 0;
   let selfSecurityDetails = { ip: "", userAgent: "" };
   let selfSecurityBadgeVisible = true;
   // main dropped its own selectedLandmark when the floating landmark labels went
@@ -9921,21 +10220,10 @@ export function createWorldScene({
   function officeAvatarLocalPosition(
     avatar,
     target = new THREE.Vector3(),
-    { entry = false } = {},
   ) {
     if (!avatar) return target.set(0, 0, 0);
     avatar.getWorldPosition(target);
     officeInterior.worldToLocal(target);
-    if (entry) {
-      // Admission may resolve one frame after the physical threshold crossing.
-      // Keep that live pose at the doorway instead of letting latency place the
-      // visitor beyond the front face before interior collision takes over.
-      const doorwayEdge = Math.min(
-        OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS,
-        OFFICE_INTERIOR_EXIT_Z,
-      );
-      target.z = Math.min(target.z, doorwayEdge);
-    }
     return target;
   }
 
@@ -10090,18 +10378,46 @@ export function createWorldScene({
   }
 
   function setOfficeAttendance(event = {}) {
+    const receivedAt = performance.now();
+    const rawAsOfAt = Number(event?.asOfAt);
+    const asOfAt =
+      Number.isFinite(rawAsOfAt) && rawAsOfAt > 0
+        ? rawAsOfAt
+        : Date.now();
     const visits = Array.isArray(event?.visits)
-      ? event.visits.slice(0, 20).map((visit) => ({
-          id: String(visit?.id || "").slice(0, 32),
-          account: String(visit?.account || "Contributor")
-            .replace(/\s+/g, " ")
-            .trim()
-            .slice(0, 32),
-          inAt: Math.max(0, Number(visit?.inAt) || 0),
-          outAt: Math.max(0, Number(visit?.outAt) || 0),
-        }))
+      ? event.visits.slice(0, 20).map((visit) => {
+          const inAt = Math.max(0, Number(visit?.inAt) || 0);
+          const rawOutAt = Math.max(0, Number(visit?.outAt) || 0);
+          const outAt = inAt > 0 && rawOutAt >= inAt ? rawOutAt : 0;
+          const suppliedDuration = Number(visit?.durationMs);
+          const hasSuppliedDuration =
+            visit?.durationMs !== null &&
+            visit?.durationMs !== undefined &&
+            Number.isFinite(suppliedDuration) &&
+            suppliedDuration >= 0;
+          const durationMs =
+            inAt <= 0
+              ? null
+              : hasSuppliedDuration
+                ? suppliedDuration
+                : outAt
+                  ? outAt - inAt
+                  : Math.max(0, asOfAt - inAt);
+          return {
+            id: String(visit?.id || "").slice(0, 32),
+            account: String(visit?.account || "Contributor")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 32),
+            inAt,
+            outAt,
+            durationMs,
+          };
+        })
       : [];
-    officeAttendance = { visits };
+    officeAttendance = { visits, asOfAt };
+    officeAttendanceObservedAt = receivedAt;
+    officeAttendanceRenderedBucket = 0;
     const previous = officeAttendanceBoard.material.map;
     officeAttendanceBoard.material.map =
       officeAttendanceTexture(officeAttendance);
@@ -10110,6 +10426,26 @@ export function createWorldScene({
     return {
       visits: officeAttendance.visits.map((visit) => ({ ...visit })),
     };
+  }
+
+  function updateOfficeAttendanceClock(time) {
+    if (
+      officeSceneMode !== "lobby" ||
+      !officeAttendance.visits.some(
+        (visit) => visit.inAt > 0 && !visit.outAt,
+      )
+    ) {
+      return;
+    }
+    const elapsedMs = Math.max(0, time - officeAttendanceObservedAt);
+    const bucket = Math.floor(elapsedMs / 30_000);
+    if (bucket === officeAttendanceRenderedBucket) return;
+    officeAttendanceRenderedBucket = bucket;
+    const previous = officeAttendanceBoard.material.map;
+    officeAttendanceBoard.material.map =
+      officeAttendanceTexture(officeAttendance, elapsedMs);
+    officeAttendanceBoard.material.needsUpdate = true;
+    previous?.dispose?.();
   }
 
   function travelToOfficeFloor(floorId) {
@@ -10167,7 +10503,7 @@ export function createWorldScene({
     const previousX = previousPosition.x - office.position.x;
     const previousZ = previousPosition.z - office.position.z;
     const doorClearance = OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS;
-    const doorwayThreshold = OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS;
+    const doorwayThreshold = OFFICE_DOORWAY_ENTRY_Z;
     if (
       localZ > doorwayThreshold + 0.32 &&
       localZ > previousZ + 0.01
@@ -10260,8 +10596,10 @@ export function createWorldScene({
       position.z = OFFICE_INTERIOR_WALL_LIMIT;
       commitPosition();
     }
+    const movingOutward = position.z > previous.z + 1e-5;
     if (
       officeCurrentFloorId === "lobby" &&
+      movingOutward &&
       position.z >= OFFICE_INTERIOR_EXIT_Z &&
       Math.abs(position.x) <= doorClearance
     ) {
@@ -10278,7 +10616,7 @@ export function createWorldScene({
         officeCurrentFloorId === "lobby" &&
         Math.abs(x) <= doorClearance &&
         z >= OFFICE_INTERIOR_WALL_LIMIT &&
-        z <= OFFICE_INTERIOR_EXIT_Z;
+        z <= OFFICE_DOORWAY_ENTRY_Z + 0.08;
       return (
         inLobbyDoorway ||
         officeInteriorPointIsWalkable(
@@ -10488,20 +10826,11 @@ export function createWorldScene({
       const localPosition = officeAvatarLocalPosition(
         player,
         new THREE.Vector3(),
-        { entry: true },
       );
-      const doorClearance =
-        OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS - 0.08;
-      localPosition.x = clamp(
-        localPosition.x,
-        -doorClearance,
-        doorClearance,
-      );
+      // The town-wall crossing already verified that this is the physical
+      // doorway. Preserve its exact X/Z threshold pose across the mode handoff;
+      // subsequent lobby motion owns wall and outward-exit collision.
       localPosition.y = currentFloorY;
-      localPosition.z = Math.min(
-        localPosition.z,
-        OFFICE_INTERIOR_WALL_LIMIT - 0.72,
-      );
       applyOfficeAvatarLocalPosition(player, localPosition);
     } else if (meetingAvatar) {
       const localPosition = nearestOfficeWalkablePosition(
@@ -10532,6 +10861,10 @@ export function createWorldScene({
     return {
       position: chair.position.clone(),
       yaw: chair.rotation.y,
+      floorId: String(chair.userData.officeFloorId || "marketing"),
+      seatTopY:
+        Number(chair.userData.officeSeatTopY) ||
+        OFFICE_CHAIR_SEAT_TOP_Y,
     };
   }
 
@@ -10543,10 +10876,16 @@ export function createWorldScene({
     }
     const seatPoint = chair.getWorldPosition(new THREE.Vector3());
     player.parent?.worldToLocal?.(seatPoint);
+    const floorId = String(
+      chair.userData.officeFloorId || "marketing",
+    );
+    const seatTopY =
+      Number(chair.userData.officeSeatTopY) ||
+      OFFICE_CHAIR_SEAT_TOP_Y;
     player.position.set(
       seatPoint.x,
       seatedAvatarY(
-        officeFloorY("marketing") + OFFICE_CHAIR_SEAT_TOP_Y,
+        officeFloorY(floorId) + seatTopY,
         player.scale.x,
       ),
       seatPoint.z,
@@ -10568,10 +10907,12 @@ export function createWorldScene({
 
   function sitOnOfficeChair(chairId) {
     const normalized = String(chairId || "");
+    const chair = officeChairs.get(normalized);
     if (
       officeSceneMode !== "lobby" ||
-      officeCurrentFloorId !== "marketing" ||
-      !officeChairs.has(normalized)
+      !chair ||
+      String(chair.userData.officeFloorId || "marketing") !==
+        officeCurrentFloorId
     ) {
       return false;
     }
@@ -11249,10 +11590,10 @@ export function createWorldScene({
       }
       standUpFromOfficeChair();
     }
-    const walking = movement.lengthSq() > 0;
-    officeLobbyPlayerMoving = walking;
+    let walking = movement.lengthSq() > 0;
     const movementSpeed = movementSpeedForInput(input, delta);
     if (walking) {
+      cancelDash();
       const previousPosition = avatar.position.clone();
       avatar.position.addScaledVector(
         movement,
@@ -11265,7 +11606,32 @@ export function createWorldScene({
       ) {
         return;
       }
+    } else if (dashTarget) {
+      const previousPosition = avatar.position.clone();
+      const toTarget = new THREE.Vector3(
+        dashTarget.x - avatar.position.x,
+        0,
+        dashTarget.z - avatar.position.z,
+      );
+      const remaining = toTarget.length();
+      const step = PLAYER_DASH_SPEED * moveSpeedScale * delta;
+      if (remaining <= Math.max(step, PLAYER_DASH_ARRIVE_DISTANCE)) {
+        avatar.position.x = dashTarget.x;
+        avatar.position.z = dashTarget.z;
+        cancelDash();
+      } else {
+        toTarget.divideScalar(remaining);
+        avatar.position.x += toTarget.x * step;
+        avatar.position.z += toTarget.z * step;
+        avatar.rotation.y = Math.atan2(-toTarget.x, -toTarget.z);
+      }
+      avatar.position.y = officeFloorY(officeCurrentFloorId) + 0.38;
+      walking = true;
+      if (constrainOfficeInteriorWalls(avatar, previousPosition)) {
+        return;
+      }
     }
+    officeLobbyPlayerMoving = walking;
     const gait = walking ? Math.sin(time * 0.012) * 0.48 : 0;
     avatar.userData.leftArm.rotation.x = gait;
     avatar.userData.rightArm.rotation.x = -gait;
@@ -11938,6 +12304,34 @@ export function createWorldScene({
           minZ: -OFFICE_DEPTH / 2 + 0.72,
           maxZ: OFFICE_FRONT_Z - 0.72,
         };
+    const frontDirection = Number(direction.z) || 0;
+    const rawFrontDistance =
+      frontDirection > 1e-6
+        ? (OFFICE_FRONT_Z - localTarget.z) / frontDirection
+        : NaN;
+    const targetInDoorwayThreshold =
+      localTarget.z >= OFFICE_FRONT_Z &&
+      localTarget.z <= OFFICE_DOORWAY_ENTRY_Z + 0.08;
+    const portalDistance =
+      rawFrontDistance >= 0
+        ? rawFrontDistance
+        : targetInDoorwayThreshold
+          ? 0
+          : NaN;
+    const portalX =
+      localTarget.x + (Number(direction.x) || 0) * portalDistance;
+    const portalY =
+      localTarget.y + (Number(direction.y) || 0) * portalDistance;
+    const rayThroughOpenLobbyPortal =
+      !ridingElevator &&
+      officeCurrentFloorId === "lobby" &&
+      officeSlidingDoorOpen >= 0.9 &&
+      frontDirection > 1e-6 &&
+      Number.isFinite(portalDistance) &&
+      Math.abs(portalX) <= OFFICE_DOOR_WIDTH / 2 - 0.08 &&
+      portalY >= OFFICE_DOOR_SILL_Y + 0.08 &&
+      portalY <=
+        OFFICE_DOOR_SILL_Y + OFFICE_DOOR_HEIGHT - 0.08;
     const axes = [
       ["x", "minX", "maxX"],
       ["y", "minY", "maxY"],
@@ -11947,6 +12341,16 @@ export function createWorldScene({
     axes.forEach(([axis, minKey, maxKey]) => {
       const component = Number(direction[axis]) || 0;
       if (Math.abs(component) < 1e-6) return;
+      // The open front door is a real portal in the floor envelope. Only its
+      // Z face is omitted; side walls, floor/ceiling, rear wall, elevator, and
+      // every ray that misses the actual aperture retain the normal clamp.
+      if (
+        axis === "z" &&
+        component > 0 &&
+        rayThroughOpenLobbyPortal
+      ) {
+        return;
+      }
       const edge = component > 0 ? bounds[maxKey] : bounds[minKey];
       const distance = (edge - localTarget[axis]) / component;
       if (distance >= 0) boundaryDistance = Math.min(boundaryDistance, distance);
@@ -12014,8 +12418,41 @@ export function createWorldScene({
     const desired = target
       .clone()
       .addScaledVector(offsetDirection, distance);
+    const localTarget = officeInterior.worldToLocal(target.clone());
+    const rooftopPatioCamera =
+      officeSceneMode === "lobby" &&
+      officeCurrentFloorId === "rooftop" &&
+      !officeElevatorRide &&
+      !officeElevatorCabinContains(
+        localTarget.x,
+        localTarget.z,
+        0.08,
+      );
+    if (rooftopPatioCamera) {
+      // Looking upward puts an orbit camera below its eye target. Preserve the
+      // requested outward X/Z zoom, but keep that eye just above the roof slab
+      // instead of letting a steep pitch pass through the story below.
+      const localDesired = officeInterior.worldToLocal(desired.clone());
+      localDesired.y = Math.max(
+        localDesired.y,
+        officeFloorY("rooftop") + 0.55,
+      );
+      desired.copy(officeInterior.localToWorld(localDesired));
+    }
     if (reducedMotion) camera.position.copy(desired);
     else camera.position.lerp(desired, 1 - Math.pow(0.0008, delta));
+    if (rooftopPatioCamera) {
+      // Clamp the actual eased camera as well as its destination. Otherwise a
+      // prior below-slab frame could lerp through the roof on its way back up.
+      const localCamera = officeInterior.worldToLocal(
+        camera.position.clone(),
+      );
+      localCamera.y = Math.max(
+        localCamera.y,
+        officeFloorY("rooftop") + 0.55,
+      );
+      camera.position.copy(officeInterior.localToWorld(localCamera));
+    }
     if (officeElevatorRide) {
       // The cabin moves faster than a softly lerped orbit camera. Clamp the
       // eased result back inside its live glass envelope so the eye never
@@ -14977,21 +15414,9 @@ export function createWorldScene({
     });
   }
 
-  function showChatBubble(peerId, text, local = false) {
+  function showAvatarChatBubble(avatar, text, options = {}) {
     const message = String(text || "").replace(/\s+/g, " ").trim().slice(0, 140);
-    if (!message) return false;
-    const avatar =
-      local || peerId === identity.id
-        ? player
-        : peerId === FORKBOT_PEER_ID
-          ? forkbot
-          : remotePlayers.get(String(peerId || "")) ||
-            loungeMembers.get(String(peerId || ""));
-    if (!avatar) return false;
-    // ForkBot's own line is the reply the thinking dots were waiting for.
-    if (avatar === forkbot && forkbotExcitement) {
-      settleForkbot(performance.now());
-    }
+    if (!avatar || !message) return false;
     // One bubble per speaker: a rapid follow-up message replaces the first
     // instead of stacking on top of it.
     for (let index = emoteSprites.length - 1; index >= 0; index -= 1) {
@@ -15017,6 +15442,9 @@ export function createWorldScene({
     );
     sprite.renderOrder = 11;
     sprite.scale.set(6.6, 2.2, 1);
+    sprite.userData.message = message;
+    sprite.userData.officeReceptionGreeting =
+      options.officeReception === true;
     world.add(sprite);
     emoteSprites.push({
       sprite,
@@ -15030,6 +15458,22 @@ export function createWorldScene({
       fadeStart: 0.75,
     });
     return true;
+  }
+
+  function showChatBubble(peerId, text, local = false) {
+    const avatar =
+      local || peerId === identity.id
+        ? player
+        : peerId === FORKBOT_PEER_ID
+          ? forkbot
+          : remotePlayers.get(String(peerId || "")) ||
+            loungeMembers.get(String(peerId || ""));
+    if (!avatar) return false;
+    // ForkBot's own line is the reply the thinking dots were waiting for.
+    if (avatar === forkbot && forkbotExcitement) {
+      settleForkbot(performance.now());
+    }
+    return showAvatarChatBubble(avatar, text);
   }
 
   // A registered member who is not in the world as a live peer still sits on
@@ -15434,6 +15878,31 @@ export function createWorldScene({
     pointerLast.copy(currentPointer);
   }
 
+  function officeObjectMatchesCurrentFloor(object) {
+    if (!object || officeSceneMode === "town") return true;
+    // A car-mounted selector's floor id is its destination, not the story the
+    // mesh occupies. Keep every destination button clickable from the cabin;
+    // the server-derived allowed flag remains the authority on travel.
+    if (object.userData?.interactive === "office-elevator-floor") {
+      return true;
+    }
+    let current = object;
+    let floorId = "";
+    let insideOffice = false;
+    while (current) {
+      if (!floorId && current.userData?.officeFloorId) {
+        floorId = String(current.userData.officeFloorId);
+      }
+      if (current === officeInterior) {
+        insideOffice = true;
+        break;
+      }
+      current = current.parent;
+    }
+    if (!insideOffice) return false;
+    return !floorId || floorId === officeCurrentFloorId;
+  }
+
   function finishPointer(event, cancelled = false) {
     const wasPinching = pinchActive || touchPointers.size > 1;
     let remainingTouch = null;
@@ -15514,7 +15983,11 @@ export function createWorldScene({
     raycaster.setFromCamera(pointer, camera);
     const hit = raycaster
       .intersectObjects(interactive, false)
-      .find(({ object }) => objectIsEffectivelyVisible(object));
+      .find(
+        ({ object }) =>
+          objectIsEffectivelyVisible(object) &&
+          officeObjectMatchesCurrentFloor(object),
+      );
     if (
       officeSceneMode !== "town" &&
       hit?.object?.userData?.interactive === "office-marketing-task-board"
@@ -15584,12 +16057,15 @@ export function createWorldScene({
     if (hit?.object?.userData?.interactive === "office-chair") {
       if (officeSceneMode === "meeting") {
         onOfficeChairSelect(hit.object.userData.officeChairId);
-      } else if (
-        officeSceneMode === "lobby" &&
-        officeCurrentFloorId === "marketing"
-      ) {
+      } else if (officeSceneMode === "lobby") {
         sitOnOfficeChair(hit.object.userData.officeChairId);
       }
+      return;
+    }
+    if (
+      hit?.object?.userData?.interactive === "office-rooftop-laptop"
+    ) {
+      onOfficeRooftopLaptopSelect();
       return;
     }
     const chestControl = hit?.object ? chestControls.get(hit.object) : null;
@@ -15747,7 +16223,21 @@ export function createWorldScene({
     if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.z)) {
       return null;
     }
-    if (!worldWalkSurfaceContains(point.x, point.z)) return null;
+    if (officeSceneMode === "lobby") {
+      const localPoint = officeInterior.worldToLocal(point.clone());
+      if (
+        !officeInteriorPointIsWalkable(
+          officeCurrentFloorId,
+          localPoint.x,
+          localPoint.z,
+          OFFICE_AVATAR_RADIUS,
+        )
+      ) {
+        return null;
+      }
+    } else if (!worldWalkSurfaceContains(point.x, point.z)) {
+      return null;
+    }
     point.y = currentFloorY;
     return point;
   }
@@ -15983,11 +16473,26 @@ export function createWorldScene({
   function handleDoubleClick(event) {
     if (event.button !== undefined && event.button !== 0) return;
     if (lastGestureDragged) return;
-    if (officeSceneMode !== "town") return;
+    if (officeSceneMode === "meeting" || officeElevatorRide) return;
     // A quick double tap on a bench is still a request to sit on it, not to
     // dash to the patch of ground the bench happens to stand on.
     pointerCoordinates(event);
     raycaster.setFromCamera(pointer, camera);
+    if (officeSceneMode === "lobby") {
+      const officeHit = raycaster
+        .intersectObjects(interactive, false)
+        .find(
+          ({ object }) =>
+            objectIsEffectivelyVisible(object) &&
+            officeObjectMatchesCurrentFloor(object),
+        );
+      if (officeHit) {
+        // The two click events already performed the object interaction.
+        // Suppress only the follow-up dash through that same object/floor.
+        event.preventDefault();
+        return;
+      }
+    }
     const benchHit = raycaster
       .intersectObjects(interactive, false)
       .find(
@@ -16259,6 +16764,8 @@ export function createWorldScene({
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
     }
+    updateOfficeReceptionGuide(time);
+    updateOfficeAttendanceClock(time);
     // The Office is part of the same live World. Neighbours and ForkBot keep
     // animating while the local visitor is in the tower instead of freezing
     // the landscape visible through its glass walls.
@@ -16334,7 +16841,10 @@ export function createWorldScene({
         (performance.now() - flight.startedAt) / flight.duration,
       );
       const fadeStart = flight.fadeStart ?? 0.65;
-      flight.sprite.position.copy(flight.avatar.position);
+      // Most speakers are direct World children, while Noah is nested inside
+      // the translated Office reception group. World coordinates keep the
+      // shared talk-bubble UX attached correctly in both cases.
+      flight.avatar.getWorldPosition(flight.sprite.position);
       flight.sprite.position.y +=
         (flight.baseHeight ?? 4.7) + progress * (flight.rise ?? 1.1);
       flight.sprite.material.opacity =

@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
@@ -82,6 +83,67 @@ QByteArray reviewOnlyLegacyApprovals(const QByteArray &raw)
 }
 
 } // namespace
+
+bool ActionNeeds::matches(const QString &token, const QString &workflowName,
+                          const QString &workflowPath)
+{
+    const QString wanted = token.trimmed();
+    if (wanted.isEmpty())
+        return false;
+    const QFileInfo info(workflowPath);
+    const QStringList aliases{workflowName.trimmed(), workflowPath.trimmed(),
+                              info.fileName(), info.completeBaseName()};
+    for (const QString &alias : aliases)
+        if (!alias.isEmpty() &&
+            QString::compare(alias, wanted, Qt::CaseInsensitive) == 0)
+            return true;
+    return false;
+}
+
+ActionNeeds::State ActionNeeds::resolve(const ActionRun &run,
+                                        const QStringList &needs,
+                                        const QList<ActionRun> &history,
+                                        QString *detail)
+{
+    State state = State::Ready;
+    for (const QString &token : needs) {
+        // history is newest first, so the first match is the live run of that
+        // workflow for this commit (a re-run supersedes the older record).
+        const ActionRun *dependency = nullptr;
+        for (const ActionRun &candidate : history) {
+            if (candidate.id == run.id || candidate.owner != run.owner ||
+                candidate.name != run.name || candidate.commit != run.commit)
+                continue;
+            if (!matches(token, candidate.workflowName, candidate.workflowPath))
+                continue;
+            dependency = &candidate;
+            break;
+        }
+        if (!dependency)
+            continue; // not scheduled here; never a barrier
+        if (dependency->status == ActionStatus::Success)
+            continue;
+        const bool pending =
+            dependency->status == ActionStatus::Queued ||
+            dependency->status == ActionStatus::Running ||
+            dependency->status == ActionStatus::AwaitingApproval;
+        if (!pending) {
+            if (detail)
+                *detail = QStringLiteral("\"%1\" %2")
+                              .arg(dependency->workflowName,
+                                   dependency->status);
+            return State::Blocked; // can never become ready
+        }
+        if (state == State::Ready) {
+            state = State::Waiting;
+            if (detail)
+                *detail = QStringLiteral("\"%1\" is %2")
+                              .arg(dependency->workflowName,
+                                   dependency->status);
+        }
+    }
+    return state;
+}
 
 QString ActionRun::repoKey() const
 {

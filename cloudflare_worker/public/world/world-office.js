@@ -197,7 +197,11 @@ export function createWorldOfficeController({
     const visits = Array.isArray(payload?.visits)
       ? payload.visits.slice(0, 20)
       : [];
-    world.setOfficeAttendance?.({ visits });
+    const asOfAt = Number(payload?.asOfAt);
+    world.setOfficeAttendance?.({
+      visits,
+      ...(Number.isFinite(asOfAt) && asOfAt > 0 ? { asOfAt } : {}),
+    });
     return visits;
   }
 
@@ -215,7 +219,13 @@ export function createWorldOfficeController({
     }
   }
 
-  function recordAttendance(direction) {
+  function recordAttendance(
+    direction,
+    {
+      loadPublicFallback = false,
+      generation = authorizationGeneration,
+    } = {},
+  ) {
     const account = String(attendanceAccount || "");
     if (!account || typeof root.postJSON !== "function") {
       return attendanceWrite;
@@ -234,7 +244,20 @@ export function createWorldOfficeController({
         applyAttendance(payload);
         return payload;
       })
-      .catch(() => null);
+      .catch(async () => {
+        // A failed signed IN should still leave the public lobby's last-20
+        // ledger useful. This fallback is sequential, never concurrent with
+        // the authoritative POST response.
+        if (
+          loadPublicFallback &&
+          action === "in" &&
+          active &&
+          generation === authorizationGeneration
+        ) {
+          await loadAttendance();
+        }
+        return null;
+      });
     return attendanceWrite;
   }
 
@@ -244,7 +267,7 @@ export function createWorldOfficeController({
     return normalizeOfficeFloorAccess({});
   }
 
-  function completeOfficeEntry() {
+  function completeOfficeEntry({ loadPublicAttendance = true } = {}) {
     if (!world.enterOffice()) return false;
     authorizationGeneration += 1;
     setEntryPending(false);
@@ -258,7 +281,7 @@ export function createWorldOfficeController({
     exitPending = false;
     meeting.openLobby();
     tasks?.setActive?.(false);
-    void loadAttendance();
+    if (loadPublicAttendance) void loadAttendance();
     return true;
   }
 
@@ -284,9 +307,18 @@ export function createWorldOfficeController({
       officeAccess = floorAccess;
       attendanceAccount = officeAccess.account;
       world.setOfficeAccess?.(officeAccess);
-      void recordAttendance("in");
+      void recordAttendance("in", {
+        loadPublicFallback: true,
+        generation,
+      });
       return true;
     } catch (_) {
+      // A stale/invalid signed session remains a public-lobby visit. Load its
+      // read-only ledger only after authorization fails, avoiding the normal
+      // signed-entry GET/POST race and duplicate texture redraw.
+      if (active && generation === authorizationGeneration) {
+        void loadAttendance();
+      }
       return false;
     } finally {
       if (generation === authorizationGeneration) setEntryPending(false);
@@ -347,7 +379,9 @@ export function createWorldOfficeController({
     try {
       if (proximity !== "nearby" || active) return false;
       const activeSession = authenticatedSession();
-      const entered = completeOfficeEntry();
+      const entered = completeOfficeEntry({
+        loadPublicAttendance: !activeSession,
+      });
       if (entered && activeSession) {
         // Physical admission never waits on the network. Signed-in visitors
         // receive team-floor and meeting permissions in the background.
