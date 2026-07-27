@@ -129,6 +129,11 @@ ORG_REPOS_RE = re.compile(r"^/api/orgs/([^/]+)/repos$")
 # the isolated API module; the general ORG_RE cannot swallow this subresource.
 ORG_SUCCESSION_RE = re.compile(
     r"^/api/orgs/([^/]+)/succession(?:/([^/]+))?$")
+# Achievement badges: GET /api/badges is the public fixed catalog; GET on the
+# per-account resource lists what an account has earned (public), while
+# POST/DELETE grant or revoke a badge (platform-administrator session only).
+BADGES_RE = re.compile(r"^/api/badges$")
+BADGE_ACCOUNT_RE = re.compile(r"^/api/badges/([^/]+)$")
 # Organization-admin digest controls and previews for the org's linked public
 # repositories. These controls can suppress org-alias digests, but never
 # override the backing repository owner's federation switch.

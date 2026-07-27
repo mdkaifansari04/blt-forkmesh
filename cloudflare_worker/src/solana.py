@@ -12,7 +12,6 @@ from here). Amount formatting and the ``solana:`` pay-URI stay in ``entry``.
 """
 
 import base64
-import asyncio
 import json
 
 from js import Object
@@ -102,27 +101,29 @@ def _solana_endpoints(env):
 async def _solana_rpc(env, method, params):
     if method not in _SOLANA_READ_ONLY_METHODS:
         return None
+    from js import AbortSignal
     from js import fetch as js_fetch
     payload = json.dumps(
         {"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
     for endpoint in _solana_endpoints(env):
         try:
-            resp = await asyncio.wait_for(
-                js_fetch(
-                    endpoint,
-                    to_js({
-                        "method": "POST",
-                        "headers": {"content-type": "application/json",
-                                    "accept": "application/json"},
-                        "body": payload,
-                    }),
-                ),
-                timeout=SOLANA_RPC_TIMEOUT_MS / 1000,
+            resp = await js_fetch(
+                endpoint,
+                to_js({
+                    "method": "POST",
+                    "headers": {
+                        "content-type": "application/json",
+                        "accept": "application/json",
+                    },
+                    "body": payload,
+                    # A native signal bounds both headers and body without
+                    # creating a nested Pyodide asyncio task.
+                    "signal": AbortSignal.timeout(SOLANA_RPC_TIMEOUT_MS),
+                }),
             )
             if not (200 <= int(getattr(resp, "status", 0)) < 300):
                 continue
-            data = json.loads(await asyncio.wait_for(
-                resp.text(), timeout=SOLANA_RPC_TIMEOUT_MS / 1000))
+            data = json.loads(await resp.text())
         except Exception:
             continue
         # A well-formed JSON-RPC reply carries "result"; anything else (including

@@ -1124,6 +1124,33 @@ forkmesh-world {
   color: var(--world-copy);
 }
 
+/* Graded readings: green is healthy, orange is worth watching, red is too
+   high. Only the number is tinted so the surrounding text stays readable. */
+.world-diagnostics-value {
+  color: var(--world-copy);
+}
+
+.world-diagnostics-value[data-level="good"] {
+  color: var(--world-mint);
+}
+
+.world-diagnostics-value[data-level="caution"] {
+  color: var(--world-sun);
+}
+
+.world-diagnostics-value[data-level="high"] {
+  color: var(--world-danger);
+  font-weight: 600;
+}
+
+@media (prefers-contrast: more) {
+  .world-diagnostics-value[data-level="caution"],
+  .world-diagnostics-value[data-level="high"] {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+}
+
 /* Chat stays open above the DEBUG strip at the lower-right. */
 .world-chat-terminal {
   right: 0;

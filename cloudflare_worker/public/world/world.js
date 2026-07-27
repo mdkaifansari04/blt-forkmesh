@@ -192,6 +192,55 @@ const WORLD_MOVE_ACCEL_MAX = 1000;
 const WORLD_MOVE_ACCEL_DEFAULT = 100;
 const WORLD_DIAGNOSTICS_INTERVAL_MS = 1000;
 const WORLD_DIAGNOSTICS_COUNTER_MAX = 1_000_000_000;
+// Debug readings are graded green / orange / red so a glance separates a
+// healthy sample from one worth watching. The thresholds are local display
+// heuristics only; nothing about them is measured remotely or transmitted.
+const WORLD_DIAGNOSTICS_THRESHOLDS = {
+  fps: { caution: 50, high: 30, lowerIsWorse: true },
+  frameTimeMs: { caution: 20, high: 34 },
+  calls: { caution: 600, high: 1500 },
+  triangles: { caution: 400_000, high: 1_200_000 },
+  longFrames: { caution: 1, high: 5 },
+  longestFrameMs: { caution: 34, high: 100 },
+  pointerGapMs: { caution: 50, high: 120 },
+  reconnects: { caution: 1, high: 5 },
+  bufferedBytes: { caution: 16 * 1024, high: 256 * 1024 },
+  frameRate: { caution: 30, high: 90 },
+  coalesced: { caution: 30, high: 120 },
+  backpressure: { caution: 1, high: 5 },
+};
+
+// "good" | "caution" | "high" for one reading against its threshold pair.
+function diagnosticLevel(metric, value) {
+  const bounds = WORLD_DIAGNOSTICS_THRESHOLDS[metric];
+  const number = Number(value);
+  if (!bounds || !Number.isFinite(number)) return "good";
+  if (bounds.lowerIsWorse) {
+    if (number < bounds.high) return "high";
+    return number < bounds.caution ? "caution" : "good";
+  }
+  if (number >= bounds.high) return "high";
+  return number >= bounds.caution ? "caution" : "good";
+}
+
+// Graded readings are spans inside the existing text, so the surrounding
+// separators stay plain and the whole line still reads as one sentence.
+function diagnosticReading(text, level) {
+  return `<span class="world-diagnostics-value" data-level="${level}">${escapeHTML(
+    String(text),
+  )}</span>`;
+}
+
+function diagnosticMetric(metric, value, text) {
+  return diagnosticReading(text, diagnosticLevel(metric, value));
+}
+
+function diagnosticStateLevel(state) {
+  if (state === "online") return "good";
+  return ["connecting", "handshaking", "reconnecting"].includes(state)
+    ? "caution"
+    : "high";
+}
 const WORLD_PULL_MERGE_MAX_REQUESTS = 6;
 const WORLD_PULL_MERGE_POLL_MS = 400;
 const WORLD_PULL_MERGE_RESPONSE_MAX_BYTES = 16 * 1024;
@@ -3002,6 +3051,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button
               class="world-top-link"
               type="button"
+              data-world-organize-nodes
+              aria-pressed="false"
+              aria-label="Ring the live mirror nodes around the reward pool"
+              title="Ring the live mirror nodes around the reward pool"
+            >
+              <span aria-hidden="true">◎</span><span data-world-organize-nodes-label>Organize nodes</span>
+            </button>
+            <button
+              class="world-top-link"
+              type="button"
               data-world-screenshot
               title="Capture and annotate a screenshot"
             >
@@ -3755,6 +3814,10 @@ class ForkMeshWorld extends HTMLElement {
     this.visitorStats = null;
     this.activeFediverseMention = null;
     this.organizations = [];
+    // account name -> the team plaque worn on that member's avatar back,
+    // rebuilt whenever the organization spaces reload. Empty for viewers who
+    // do not own or administer any organization.
+    this.orgTeamIndex = new Map();
     this.activeOffice = null;
     this.events = [];
     this.eventsState = "loading";
@@ -3856,7 +3919,6 @@ class ForkMeshWorld extends HTMLElement {
     this.socialFeedsLoad = null;
     this.socialFeedsTimer = 0;
     this.socialFeedsRequestedAt = 0;
-    this.socialFeedsFetchedAt = 0;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -3925,6 +3987,8 @@ class ForkMeshWorld extends HTMLElement {
     this.clockTimer = 0;
     this.distanceTimer = 0;
     this.toastTimer = 0;
+    this.toastPriority = 0;
+    this.toastLockUntil = 0;
     this.inactiveSyncTimer = 0;
     this.inputInactiveTimer = 0;
     this.lastInputInactiveScheduleAt = 0;
@@ -4514,6 +4578,25 @@ class ForkMeshWorld extends HTMLElement {
         onOfficeMeetingBoardSelect: () => {
           void this.officeMeeting?.joinRoom?.("general");
         },
+        onOfficeRooftopLaptopSelect: () => {
+          // ForkMesh does not expose a browser-side arbitrary source writer.
+          // Open the real repository browser and keep write-capable work on
+          // the owner device through desktop / IDE integration.
+          window.open(
+            "/forkmesh/forkmesh/blob/cloudflare_worker/public/world/world-scene.js",
+            "_blank",
+            "noopener,noreferrer",
+          );
+          this.toast(
+            this.sessionAuthenticated
+              ? "Opening the live ForkMesh source browser. Source edits stay in the desktop app or IDE extension."
+              : "Opening public ForkMesh source. Log in for account features. Source edits stay in the desktop app or IDE extension.",
+            // The same first click may satisfy the browser's pending music
+            // autoplay gesture. Keep that asynchronous playback notice from
+            // immediately replacing this interaction-specific explanation.
+            { priority: 1, lockMs: 1500 },
+          );
+        },
         onWorldBulletinSelect: () => this.openLandmark("events"),
         onMastodonBoardSelect: () => this.openMastodonBoard(),
         onMastodonOpenLink: (url) => {
@@ -4547,6 +4630,7 @@ class ForkMeshWorld extends HTMLElement {
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
+        onOrgTeamAssign: (target) => this.openOrgTeamAssignment(target),
         onFediverseProfile: (target) =>
           void this.loadWorldFediverseProfile(target),
         onFediverseFollow: (target) =>
@@ -5341,6 +5425,7 @@ class ForkMeshWorld extends HTMLElement {
     if (this.organizations.length) {
       this.organizations = await this.loadOrganizationSpaces(this.organizations);
     }
+    this.rebuildOrgTeamIndex();
     this.securityScan =
       scanResult.status === "fulfilled" ? scanResult.value || null : null;
     this.fediverseDirectory =
@@ -5988,6 +6073,241 @@ class ForkMeshWorld extends HTMLElement {
     return spaces.filter((space) => space?.name || space?.org);
   }
 
+  // Organizations the viewer owns or administers, keyed by name.
+  managedOrganizations() {
+    return this.organizations.filter((organization) =>
+      ["owner", "admin"].includes(
+        String(
+          organization?.viewerRole || organization?.role || "",
+        ).toLowerCase(),
+      ),
+    );
+  }
+
+  managedOrganization(name) {
+    const org = String(name || "").trim().toLowerCase();
+    return (
+      this.managedOrganizations().find(
+        (organization) =>
+          sanitizePresenceText(
+            organization.name || organization.org,
+            "",
+            50,
+          ).toLowerCase() === org,
+      ) || null
+    );
+  }
+
+  // One plaque per member of an organization the viewer administers. Built
+  // once per organization reload rather than per presence frame: the roster is
+  // capped at 50 organizations x 40 members, and presence redraws are frequent.
+  rebuildOrgTeamIndex() {
+    const index = new Map();
+    this.managedOrganizations().forEach((organization) => {
+      const org = sanitizePresenceText(
+        organization.name || organization.org,
+        "",
+        50,
+      ).toLowerCase();
+      const teams = Array.isArray(organization.teamList)
+        ? organization.teamList
+        : [];
+      if (!org || !teams.length) return;
+      const teamNames = new Set(
+        teams.map((team) => String(team?.team || "").toLowerCase()),
+      );
+      (Array.isArray(organization.memberList)
+        ? organization.memberList
+        : []
+      ).forEach((member) => {
+        const account = String(member?.name || "").trim().toLowerCase();
+        if (!WORLD_ACCOUNT_NAME_RE.test(account) || index.has(account)) return;
+        const assigned = (Array.isArray(member?.teams) ? member.teams : [])
+          .map((team) => String(team || "").toLowerCase())
+          .filter((team) => teamNames.has(team));
+        index.set(account, {
+          org,
+          member: account,
+          assigned: assigned.length,
+          total: teamNames.size,
+        });
+      });
+    });
+    this.orgTeamIndex = index;
+  }
+
+  orgTeamAssignmentFor(name) {
+    const account = String(name || "").trim().toLowerCase();
+    if (!account) return null;
+    return this.orgTeamIndex.get(account) || null;
+  }
+
+  // Re-read one organization's roster and team layout after a team write so
+  // the plaque count and the organization panel reflect the same server state.
+  async refreshOrganizationTeams(name) {
+    const org = String(name || "").trim().toLowerCase();
+    const organization = this.managedOrganization(org);
+    if (!organization) return;
+    const root = `/api/orgs/${encodeURIComponent(org)}`;
+    const [members, teams] = await Promise.allSettled([
+      this.fetchJSON(`${root}/members`, { timeout: 5000, cache: "no-store" }),
+      this.fetchJSON(`${root}/teams`, { timeout: 5000, cache: "no-store" }),
+    ]);
+    if (this.destroyed) return;
+    if (members.status === "fulfilled" &&
+        Array.isArray(members.value?.members)) {
+      organization.memberList = members.value.members.slice(0, 40);
+    }
+    if (teams.status === "fulfilled" && Array.isArray(teams.value?.teams)) {
+      organization.teamList = teams.value.teams.slice(0, 40);
+    }
+    this.rebuildOrgTeamIndex();
+    this.renderPeers();
+  }
+
+  // The team plaque on a member's back opens this multi-select. Team
+  // membership is what raises a member's repository permission, which is what
+  // opens the organization's repository floors and personal offices in the
+  // World — so the dialog says so plainly. Only owners and administrators ever
+  // see the plaque, and the worker re-checks that role on every write.
+  openOrgTeamAssignment(target = {}) {
+    const org = String(target.org || "").trim().toLowerCase();
+    const member = String(target.member || target.name || "")
+      .trim()
+      .toLowerCase();
+    if (!this.sessionAuthenticated || !validWorldSession()) {
+      this.toast("Sign in as an organization administrator to assign teams.");
+      return;
+    }
+    const organization = this.managedOrganization(org);
+    if (!organization || !WORLD_ACCOUNT_NAME_RE.test(member)) {
+      this.toast("Organization administrator access is required.");
+      return;
+    }
+    const teams = (
+      Array.isArray(organization.teamList) ? organization.teamList : []
+    )
+      .map((team) => ({
+        team: String(team?.team || "").toLowerCase(),
+        permission: sanitizePresenceText(team?.permission, "read", 24),
+      }))
+      .filter((team) => team.team);
+    if (!teams.length) {
+      this.toast(
+        `${org} has no teams yet. Create one in organization settings.`,
+      );
+      return;
+    }
+    const roster = (
+      Array.isArray(organization.memberList) ? organization.memberList : []
+    ).find(
+      (entry) => String(entry?.name || "").trim().toLowerCase() === member,
+    );
+    const current = new Set(
+      (Array.isArray(roster?.teams) ? roster.teams : [])
+        .map((team) => String(team || "").toLowerCase())
+        .filter((team) => teams.some((option) => option.team === team)),
+    );
+    document.querySelector("[data-world-org-team-assignment]")?.remove();
+    const dialog = document.createElement("dialog");
+    dialog.dataset.worldOrgTeamAssignment = "true";
+    dialog.style.cssText =
+      "width:min(520px,calc(100vw - 28px));border:1px solid #9ef7c6;border-radius:18px;background:linear-gradient(155deg,#071611,#0b2525);color:#e9fff2;padding:0;box-shadow:0 28px 110px #000c";
+    dialog.innerHTML = `
+      <form style="padding:22px;display:grid;gap:16px">
+        <header>
+          <strong style="font-size:21px">Assign ${escapeHTML(
+            member,
+          )} to ${escapeHTML(org)} teams</strong>
+          <p style="margin:6px 0 0;color:#9eb6aa;font-size:13px;line-height:1.5">Hold ${
+            navigator.platform?.toLowerCase().includes("mac")
+              ? "Command"
+              : "Control"
+          } (or drag) to select more than one team. A team carries one repository permission over every repository linked to this organization, which is what opens the organization's repository floors and personal offices in the World.</p>
+        </header>
+        <label style="display:grid;gap:6px;font-size:12px">Teams
+          <select name="teams" multiple size="${Math.min(
+            8,
+            Math.max(3, teams.length),
+          )}" style="padding:10px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit;font:13px/1.6 ui-monospace,monospace">
+            ${teams
+              .map(
+                (team) =>
+                  `<option value="${escapeHTML(team.team)}"${
+                    current.has(team.team) ? " selected" : ""
+                  }>${escapeHTML(team.team)} · ${escapeHTML(
+                    team.permission,
+                  )}</option>`,
+              )
+              .join("")}
+          </select>
+        </label>
+        <output style="min-height:18px;color:#9ef7c6;font-size:12px" aria-live="polite"></output>
+        <footer style="display:flex;justify-content:flex-end;gap:8px">
+          <button type="button" data-world-org-team-cancel style="padding:9px 12px;border-radius:8px;border:1px solid #3a6655;background:#0b211b;color:inherit">Close</button>
+          <button type="submit" style="background:#9ef7c6;color:#071611;border:0;border-radius:8px;padding:9px 14px;font-weight:800">Save team access</button>
+        </footer>
+      </form>`;
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog
+      .querySelector("[data-world-org-team-cancel]")
+      ?.addEventListener("click", () => dialog.close());
+    dialog.querySelector("form")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const output = form.querySelector("output");
+      const submit = form.querySelector('[type="submit"]');
+      const selected = new Set(
+        [...form.elements.teams.selectedOptions].map((option) => option.value),
+      );
+      const added = [...selected].filter((team) => !current.has(team));
+      const removed = [...current].filter((team) => !selected.has(team));
+      if (!added.length && !removed.length) {
+        dialog.close();
+        return;
+      }
+      submit.disabled = true;
+      let failures = 0;
+      const root = `/api/orgs/${encodeURIComponent(org)}/teams`;
+      for (const team of [...added, ...removed]) {
+        const grant = added.includes(team);
+        output.textContent = `${grant ? "Adding" : "Removing"} ${member} ${
+          grant ? "to" : "from"
+        } ${team}…`;
+        try {
+          await this.postJSON(
+            `${root}/${encodeURIComponent(team)}/members`,
+            { member },
+            grant ? {} : { method: "DELETE" },
+          );
+        } catch (error) {
+          failures += 1;
+          output.textContent = `${team}: ${String(
+            error?.message || "request failed",
+          )}`;
+        }
+      }
+      await this.refreshOrganizationTeams(org);
+      submit.disabled = false;
+      if (failures) {
+        this.toast(
+          `${failures} team change${
+            failures === 1 ? " was" : "s were"
+          } not applied. Organization role checks are enforced by the server.`,
+        );
+        return;
+      }
+      dialog.close();
+      this.toast(
+        `${member} now holds ${selected.size} ${org} team${
+          selected.size === 1 ? "" : "s"
+        }. Repository floors and offices follow the team permission.`,
+      );
+    });
+    dialog.showModal();
+  }
+
   bindUI() {
     const chatTerminal = this.$("[data-world-chat-terminal]");
     chatTerminal?.addEventListener("toggle", () => {
@@ -6045,6 +6365,10 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-swing-dismount]")) {
         this.world?.dismountSwing?.();
+        return;
+      }
+      if (event.target.closest("[data-world-organize-nodes]")) {
+        this.toggleOrganizedNodes();
         return;
       }
       if (event.target.closest("[data-world-screenshot]")) {
@@ -8219,7 +8543,6 @@ class ForkMeshWorld extends HTMLElement {
           throw new Error(`social posts returned ${response.status}`);
         }
         this.socialFeedsSnapshot = await response.json();
-        this.socialFeedsFetchedAt = Date.now();
         this.syncSocialBanners();
       } catch (_) {
         // Keep the previous snapshot — or the static signs — on failure.
@@ -8254,8 +8577,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   // Milliseconds since the newest post in a proxied feed, or null when the
-  // feed has no dated posts (unfetched, unavailable, or the blog's undated
-  // feature articles).
+  // feed has no dated posts (unfetched, unavailable, or an item that shipped
+  // without a date).
   socialNewestPostAgo(feed) {
     let latest = 0;
     for (const post of Array.isArray(feed?.posts) ? feed.posts : []) {
@@ -8263,15 +8586,6 @@ class ForkMeshWorld extends HTMLElement {
       if (at > latest) latest = at;
     }
     return latest ? Math.max(0, Date.now() - latest) : null;
-  }
-
-  // Age of the snapshot itself: the server stamps `now` when it builds the
-  // payload, so an edge-cached read still reports how old the data really
-  // is. Feeds the blog board's SYNCED plate.
-  socialSnapshotAge() {
-    const stamp =
-      Number(this.socialFeedsSnapshot?.now) || this.socialFeedsFetchedAt;
-    return stamp ? Math.max(0, Date.now() - stamp) : null;
   }
 
   syncSocialBannerTimers() {
@@ -8291,7 +8605,7 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.updateSocialBannerTimers?.({
       twitter: timers(this.socialNewestPostAgo(snapshot?.twitter)),
       reddit: timers(this.socialNewestPostAgo(snapshot?.reddit)),
-      blog: timers(this.socialSnapshotAge()),
+      blog: timers(this.socialNewestPostAgo(snapshot?.blog)),
     });
   }
 
@@ -8359,10 +8673,10 @@ class ForkMeshWorld extends HTMLElement {
           .filter(Boolean)
           .join(" · "),
       ),
-      // Blog items have no dates or counts: the meta line is the section +
-      // feature number the RSS category carries, the headline is the item
-      // title, and the board prints the item's description as preview text
-      // under its artwork.
+      // Blog items carry no counts: the meta line is the section + feature
+      // number the RSS category carries, the headline is the item title,
+      // and the board prints the item's description as preview text under
+      // its artwork. Their pubDate drives the stand's LAST POST plate.
       blog: bound(
         snapshot.blog,
         (post) => String(post?.meta || ""),
@@ -15931,6 +16245,38 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
+  syncOrganizeNodesButton(state) {
+    const button = this.$("[data-world-organize-nodes]");
+    const label = this.$("[data-world-organize-nodes-label]");
+    const organized = Boolean(
+      state?.organized ?? this.world?.getNodeLayoutState?.().organized,
+    );
+    button?.setAttribute("aria-pressed", String(organized));
+    if (button) {
+      button.title = organized
+        ? "Send the mirror nodes back to the server yard"
+        : "Ring the live mirror nodes around the reward pool";
+      button.setAttribute("aria-label", button.title);
+    }
+    if (label) label.textContent = organized ? "Node yard" : "Organize nodes";
+    return organized;
+  }
+
+  toggleOrganizedNodes() {
+    if (!this.world?.organizeNetworkNodes) return;
+    const state = this.world.organizeNetworkNodes();
+    this.syncOrganizeNodesButton(state);
+    if (!state?.nodes) {
+      this.toast("No live mirror nodes are online to organize yet.");
+      return;
+    }
+    this.toast(
+      state.organized
+        ? `Organized ${state.nodes} node${state.nodes === 1 ? "" : "s"} in a ring around the reward pool.`
+        : `Returned ${state.nodes} node${state.nodes === 1 ? "" : "s"} to the server yard.`,
+    );
+  }
+
   async toggleWorldSound() {
     const button = this.$("[data-world-sound-toggle]");
     const label = this.$("[data-world-sound-label]");
@@ -16669,14 +17015,21 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  toast(message) {
+  toast(message, { priority = 0, lockMs = 0 } = {}) {
     const element = this.$("[data-world-toast]");
     if (!element) return;
+    const now = performance.now();
+    const safePriority = Number.isFinite(priority) ? priority : 0;
+    if (now < this.toastLockUntil && safePriority < this.toastPriority) return;
     window.clearTimeout(this.toastTimer);
+    this.toastPriority = safePriority;
+    this.toastLockUntil = now + Math.max(0, Number(lockMs) || 0);
     element.textContent = message;
     element.dataset.open = "true";
     this.toastTimer = window.setTimeout(() => {
       element.dataset.open = "false";
+      this.toastPriority = 0;
+      this.toastLockUntil = 0;
     }, 4200);
   }
 
@@ -16971,54 +17324,55 @@ class ForkMeshWorld extends HTMLElement {
       if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
       return `${Math.round(count)}`;
     };
-    const setCompactText = (selector, value) => {
+    const setCompactHTML = (selector, value) => {
       const element = this.$(selector);
-      if (element) element.textContent = value;
+      if (element) element.innerHTML = value;
     };
+    const unavailable = (label) => diagnosticReading(label, "high");
     const version = build.version
       ? `${/^v/i.test(build.version) ? "" : "v"}${build.version}`
       : "build pending";
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-renderer-compact]",
       renderer
         ? renderer.paused
-          ? "R paused"
-          : `R ${renderer.fps.toFixed(0)} FPS/${renderer.frameTimeMs.toFixed(1)} ms · ${formatCompactCount(renderer.calls)}c/${formatCompactCount(renderer.triangles)}△`
-        : "R unavailable",
+          ? `R ${diagnosticReading("paused", "caution")}`
+          : `R ${diagnosticMetric("fps", renderer.fps, `${renderer.fps.toFixed(0)} FPS`)}/${diagnosticMetric("frameTimeMs", renderer.frameTimeMs, `${renderer.frameTimeMs.toFixed(1)} ms`)} · ${diagnosticMetric("calls", renderer.calls, `${formatCompactCount(renderer.calls)}c`)}/${diagnosticMetric("triangles", renderer.triangles, `${formatCompactCount(renderer.triangles)}△`)}`
+        : `R ${unavailable("unavailable")}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-frame-compact]",
       renderer
-        ? `F ${formatCompactCount(renderer.longFrames)}L/${renderer.longestFrameMs.toFixed(0)}w`
-        : "F unavailable",
+        ? `F ${diagnosticMetric("longFrames", renderer.longFrames, `${formatCompactCount(renderer.longFrames)}L`)}/${diagnosticMetric("longestFrameMs", renderer.longestFrameMs, `${renderer.longestFrameMs.toFixed(0)}w`)}`
+        : `F ${unavailable("unavailable")}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-input-compact]",
       renderer
-        ? `I ${renderer.dragging ? "drag" : "idle"} · ${formatCompactCount(renderer.pointerMoves)}p/${renderer.pointerWorstGapMs.toFixed(0)}g · ${formatCompactCount(renderer.interactiveObjects)}i/${formatCompactCount(renderer.animations)}a @${renderer.pixelRatio.toFixed(1)}`
-        : "I unavailable",
+        ? `I ${renderer.dragging ? "drag" : "idle"} · ${formatCompactCount(renderer.pointerMoves)}p/${diagnosticMetric("pointerGapMs", renderer.pointerWorstGapMs, `${renderer.pointerWorstGapMs.toFixed(0)}g`)} · ${formatCompactCount(renderer.interactiveObjects)}i/${formatCompactCount(renderer.animations)}a @${renderer.pixelRatio.toFixed(1)}`
+        : `I ${unavailable("unavailable")}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-world-compact]",
       renderer
-        ? `W ${renderer.moving ? "move" : "still"} · ${renderer.cameraMode === "first-person" ? "1P" : "3P"} · ${renderer.space} · z${renderer.zoom.toFixed(1)}`
-        : "W unavailable",
+        ? `W ${renderer.moving ? "move" : "still"} · ${renderer.cameraMode === "first-person" ? "1P" : "3P"} · ${escapeHTML(renderer.space)} · z${renderer.zoom.toFixed(1)}`
+        : `W ${unavailable("unavailable")}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-connection-compact]",
-      `N ${connection.state} · ${connection.peers}p/${connection.reconnects}r/${formatCompactCount(connection.bufferedBytes)}B`,
+      `N ${diagnosticReading(connection.state, diagnosticStateLevel(connection.state))} · ${connection.peers}p/${diagnosticMetric("reconnects", connection.reconnects, `${connection.reconnects}r`)}/${diagnosticMetric("bufferedBytes", connection.bufferedBytes, `${formatCompactCount(connection.bufferedBytes)}B`)}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-traffic-compact]",
-      `IO ${formatCompactCount(traffic.inboundFrames)}↓@${formatRate(traffic.inboundRate)} · ${formatCompactCount(traffic.outboundFrames)}↑@${formatRate(traffic.outboundRate)}`,
+      `IO ${formatCompactCount(traffic.inboundFrames)}↓@${diagnosticMetric("frameRate", traffic.inboundRate, formatRate(traffic.inboundRate))} · ${formatCompactCount(traffic.outboundFrames)}↑@${diagnosticMetric("frameRate", traffic.outboundRate, formatRate(traffic.outboundRate))}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-queues-compact]",
-      `Q ${queues.movement[0] || "?"}/${queues.profile[0] || "?"} · ${queues.movementCoalesced}+${queues.profileCoalesced}c/${queues.backpressureEvents}bp`,
+      `Q ${queues.movement[0] || "?"}/${queues.profile[0] || "?"} · ${diagnosticMetric("coalesced", queues.movementCoalesced + queues.profileCoalesced, `${queues.movementCoalesced}+${queues.profileCoalesced}c`)}/${diagnosticMetric("backpressure", queues.backpressureEvents, `${queues.backpressureEvents}bp`)}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-build-compact]",
-      `B ${version}${build.revision ? `/${build.revision.slice(0, 7)}` : ""}`,
+      `B ${escapeHTML(version)}${build.revision ? `/${escapeHTML(build.revision.slice(0, 7))}` : ""}`,
     );
     const musicActive =
       music.state === "playing" || music.state === "paused";
@@ -17067,27 +17421,29 @@ class ForkMeshWorld extends HTMLElement {
     }
     const rendererDetail = this.$("[data-world-diagnostics-renderer]");
     if (rendererDetail) {
-      rendererDetail.textContent = renderer
-        ? `${renderer.paused ? "Paused" : `${renderer.fps.toFixed(1)} FPS · ${renderer.frameTimeMs.toFixed(1)} ms/frame`} · ${Math.round(renderer.calls).toLocaleString()} calls · ${Math.round(renderer.triangles).toLocaleString()} triangles`
-        : "WebGL renderer unavailable";
+      rendererDetail.innerHTML = renderer
+        ? `${renderer.paused ? diagnosticReading("Paused", "caution") : `${diagnosticMetric("fps", renderer.fps, `${renderer.fps.toFixed(1)} FPS`)} · ${diagnosticMetric("frameTimeMs", renderer.frameTimeMs, `${renderer.frameTimeMs.toFixed(1)} ms/frame`)}`} · ${diagnosticMetric("calls", renderer.calls, `${Math.round(renderer.calls).toLocaleString()} calls`)} · ${diagnosticMetric("triangles", renderer.triangles, `${Math.round(renderer.triangles).toLocaleString()} triangles`)}`
+        : unavailable("WebGL renderer unavailable");
     }
     const frameHealth = this.$("[data-world-diagnostics-frame-health]");
     if (frameHealth) {
-      frameHealth.textContent = renderer
-        ? `${Math.round(renderer.longFrames).toLocaleString()} long frames · ${renderer.longestFrameMs.toFixed(1)} ms worst in the last sample`
-        : "WebGL renderer unavailable";
+      frameHealth.innerHTML = renderer
+        ? `${diagnosticMetric("longFrames", renderer.longFrames, `${Math.round(renderer.longFrames).toLocaleString()} long frames`)} · ${diagnosticMetric("longestFrameMs", renderer.longestFrameMs, `${renderer.longestFrameMs.toFixed(1)} ms worst`)} in the last sample`
+        : unavailable("WebGL renderer unavailable");
     }
     const inputDetail = this.$("[data-world-diagnostics-input]");
     if (inputDetail) {
-      inputDetail.textContent = renderer
-        ? `${renderer.dragging ? "Dragging" : "Idle"} · ${Math.round(renderer.pointerMoves).toLocaleString()} pointer moves/s · ${renderer.pointerWorstGapMs.toFixed(1)} ms worst input gap · ${Math.round(renderer.interactiveObjects).toLocaleString()} interactives · ${Math.round(renderer.animations).toLocaleString()} animations · DPR ${renderer.pixelRatio.toFixed(2)}`
-        : "WebGL renderer unavailable";
+      inputDetail.innerHTML = renderer
+        ? `${renderer.dragging ? "Dragging" : "Idle"} · ${Math.round(renderer.pointerMoves).toLocaleString()} pointer moves/s · ${diagnosticMetric("pointerGapMs", renderer.pointerWorstGapMs, `${renderer.pointerWorstGapMs.toFixed(1)} ms worst input gap`)} · ${Math.round(renderer.interactiveObjects).toLocaleString()} interactives · ${Math.round(renderer.animations).toLocaleString()} animations · DPR ${renderer.pixelRatio.toFixed(2)}`
+        : unavailable("WebGL renderer unavailable");
     }
     const worldState = this.$("[data-world-diagnostics-world-state]");
     if (worldState) {
-      worldState.textContent = renderer
-        ? `${renderer.moving ? "Moving" : "Still"} · ${renderer.cameraMode} · ${renderer.space} · zoom ${renderer.zoom.toFixed(2)}`
-        : "World state unavailable";
+      worldState.innerHTML = renderer
+        ? escapeHTML(
+            `${renderer.moving ? "Moving" : "Still"} · ${renderer.cameraMode} · ${renderer.space} · zoom ${renderer.zoom.toFixed(2)}`,
+          )
+        : unavailable("World state unavailable");
     }
     const musicDetail = this.$("[data-world-diagnostics-music]");
     if (musicDetail) {
@@ -17100,21 +17456,23 @@ class ForkMeshWorld extends HTMLElement {
       "[data-world-diagnostics-connection]",
     );
     if (connectionDetail) {
-      connectionDetail.textContent = `${connection.state} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${connection.reconnects} reconnect attempts · ${Math.round(connection.bufferedBytes).toLocaleString()} buffered bytes`;
+      connectionDetail.innerHTML = `${diagnosticReading(connection.state, diagnosticStateLevel(connection.state))} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${diagnosticMetric("reconnects", connection.reconnects, `${connection.reconnects} reconnect attempts`)} · ${diagnosticMetric("bufferedBytes", connection.bufferedBytes, `${Math.round(connection.bufferedBytes).toLocaleString()} buffered bytes`)}`;
     }
     const trafficDetail = this.$("[data-world-diagnostics-traffic]");
     if (trafficDetail) {
-      trafficDetail.textContent = `Inbound ${Math.round(traffic.inboundFrames).toLocaleString()} (${formatRate(traffic.inboundRate)}) · outbound ${Math.round(traffic.outboundFrames).toLocaleString()} (${formatRate(traffic.outboundRate)})`;
+      trafficDetail.innerHTML = `Inbound ${Math.round(traffic.inboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.inboundRate, formatRate(traffic.inboundRate))}) · outbound ${Math.round(traffic.outboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.outboundRate, formatRate(traffic.outboundRate))})`;
     }
     const queueDetail = this.$("[data-world-diagnostics-queues]");
     if (queueDetail) {
-      queueDetail.textContent = `Movement ${queues.movement} (${queues.movementCoalesced} coalesced) · profile ${queues.profile} (${queues.profileCoalesced} coalesced) · ${queues.backpressureEvents} backpressure events`;
+      queueDetail.innerHTML = `Movement ${escapeHTML(queues.movement)} (${diagnosticMetric("coalesced", queues.movementCoalesced, `${queues.movementCoalesced} coalesced`)}) · profile ${escapeHTML(queues.profile)} (${diagnosticMetric("coalesced", queues.profileCoalesced, `${queues.profileCoalesced} coalesced`)}) · ${diagnosticMetric("backpressure", queues.backpressureEvents, `${queues.backpressureEvents} backpressure events`)}`;
     }
     const buildDetail = this.$("[data-world-diagnostics-build]");
     if (buildDetail) {
-      buildDetail.textContent = build.version
-        ? `${version}${build.revision ? ` · ${build.revision.slice(0, 12)}` : " · revision unavailable"}`
-        : "Version endpoint unavailable";
+      buildDetail.innerHTML = build.version
+        ? escapeHTML(
+            `${version}${build.revision ? ` · ${build.revision.slice(0, 12)}` : " · revision unavailable"}`,
+          )
+        : unavailable("Version endpoint unavailable");
     }
   }
 
@@ -18151,12 +18509,24 @@ class ForkMeshWorld extends HTMLElement {
       });
     }
     const players = [...combined.values()].map((player) => {
-      if (!player?.solana) return player;
-      const wallet = this.walletBadgeFor(player.solana);
+      // Only members of an organization this viewer owns or administers carry
+      // a team plaque; everyone else's back stays bare. A guest may type any
+      // display name, so an unverified name never resolves to a roster entry.
+      const orgTeam =
+        String(player?.accountStatus || "Guest") === "Guest"
+          ? null
+          : this.orgTeamAssignmentFor(player?.name);
+      const wallet = player?.solana ? this.walletBadgeFor(player.solana) : null;
+      if (!orgTeam && !wallet) return player;
       return {
         ...player,
-        walletSol: wallet?.sol ?? null,
-        walletTxBucket: wallet?.txBucket || "",
+        ...(wallet
+          ? {
+              walletSol: wallet?.sol ?? null,
+              walletTxBucket: wallet?.txBucket || "",
+            }
+          : {}),
+        ...(orgTeam ? { orgTeam } : {}),
       };
     });
     this.world?.setRemotePlayers(players);

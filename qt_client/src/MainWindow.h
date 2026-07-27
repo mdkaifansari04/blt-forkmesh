@@ -45,6 +45,13 @@ struct AgentDiffStat {
     // True when re-merging the base branch into this session's branch would
     // conflict (adhoc #229) — surfaced as a conflict marker in the agents list.
     bool conflicted = false;
+    // Working-copy state of the session's own worktree (adhoc #403), surfaced on
+    // the Status cell's branch chip: `worktree` is the dedicated checkout's path
+    // ("" when the session has none left), and `dirty` counts the entries
+    // `git status --porcelain` reports there (-1 when there was no worktree to
+    // ask, 0 when it is clean).
+    QString worktree;
+    int dirty = -1;
 };
 
 #include <QElapsedTimer>
@@ -275,7 +282,16 @@ public:
     {
         m_homeRoster.clear();
         m_removedPeerIds.clear();
+        m_peerLastSeenMs.clear();
     }
+    // Backdates every remembered sighting by `ageMs` so a test can exercise the
+    // idle-visitor sweep without waiting ten real minutes (adhoc #404).
+    void testAgePeerSightings(qint64 ageMs)
+    {
+        for (auto it = m_peerLastSeenMs.begin(); it != m_peerLastSeenMs.end(); ++it)
+            *it -= ageMs;
+    }
+    QList<MemberInfo> testHomeRoster() const { return m_homeRoster; }
     // Sets the live roster directly (skipping setRoster's side effects, e.g.
     // refreshRepositoryList's node-switcher bookkeeping) and rebuilds the Mirror
     // nodes panel, so a test can exercise loadMirrorNodesPanel's row-building
@@ -295,6 +311,19 @@ public:
     void testShowLogSection() { showSection(4); }
     void testShowHostsSection() { showSection(7); }
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
+    // Quick log filter (the chip row above the log): the chips currently offered,
+    // and clicking one by category ("" = All).
+    QStringList testLogFilterChipLabels() const;
+    void testSetLogFilter(const QString &category)
+    {
+        m_logFilter = category;
+        rebuildLogFilterButtons();
+        rebuildNetworkLogView();
+    }
+    QString testLogBadgeFor(const QString &storedLine) const
+    {
+        return logBadgeFor(storedLine);
+    }
     QTextBrowser *testNetworkLogView() const { return m_settingsLog; }
     void testScrollNetworkLogToTop() { onNetworkLogScrolled(0); }
     QStringList testQuickUpdatePullArguments(const QString &clientDir) const;
@@ -516,6 +545,10 @@ public:
         return markAgentSessionsMerged(0, branch);
     }
     QString testAgentStatusCellText(int sessionId) const;
+    // adhoc #403: the badge data the Status cell hands its branch chip, read back
+    // as "files|dirty|worktree", so a test can prove the chip's files-changed /
+    // uncommitted / worktree-present markers are fed from the session's diff stat.
+    QString testAgentStatusCellBadges(int sessionId, const AgentDiffStat &stat) const;
     bool testAgentSessionMerged(int sessionId) const;
 #endif
 
@@ -1832,6 +1865,16 @@ private:
     // m_agentSessions.size().
     void updateAgentsNavBadge();
     void processAgentQueue();
+    // Re-drain the queue after a slot frees, coalesced onto the event loop and
+    // skipped unless something is queued AND there is room to start it.
+    void scheduleAgentQueuePump();
+    // How many sessions currently hold one of the maxRunningAgents() slots
+    // (adhoc #433): our own, unmerged, actively-executing ones.
+    int runningAgentCount() const;
+    // The running/waiting/queued sessions "Stop all" acts on, across all repos.
+    QList<int> stoppableAgentSessionIds() const;
+    // Stop every session above and clear the pending queue (adhoc #433).
+    void stopAllRunningAgents();
     // Returns the pooled runner currently executing sessionId, or nullptr.
     AgentRunner *runnerForSession(int sessionId) const;
     // Returns an idle pooled runner, creating (and wiring) a new one if needed.
@@ -2021,6 +2064,11 @@ private:
     void approveSelectedRun();
     void rejectSelectedRun();
     ActionRun *findRun(int runId);
+    // Whether a queued run's `needs:` workflows have already succeeded for the
+    // same commit. Waiting runs stay queued; blocked ones are skipped.
+    ActionNeeds::State actionRunNeedsState(int runId, QString *detail);
+    // Log "waiting for X" once per queued run, not on every queue sweep.
+    void noteActionRunWaiting(int runId, const QString &detail);
     int repoIndexFor(const QString &owner, const QString &name) const;
     // Settings: global variables/secrets editor.
     void reloadVariablesTable();
@@ -2507,13 +2555,47 @@ private:
     // Shared commit body for both buttons above. Returns true once a commit lands
     // so "Commit & push" only pushes after a successful commit.
     bool performScmCommit();
+    // Bring a file's section of the combined working-tree diff into view.
     void showScmDiff(const QString &path, bool staged, bool untracked);
-    // "Open Changes" for a whole group: a combined diff of every staged (or every
-    // unstaged + untracked) file, rendered in the same diff pane as a single file.
+    // "Open Changes" for a whole group: jump the combined diff to the first
+    // staged (or first unstaged/untracked) file.
     void showScmDiffAll(bool staged);
-    // Walk the working-tree changes with the up/down buttons: step through the
-    // open file's hunks first and only move to the next (+1) / previous (-1)
-    // changed file once past the last/first hunk.
+    // Render every working-tree change into one scrollable diff (adhoc #399),
+    // caching the per-file anchors/labels the sticky header and the read-progress
+    // tracking need. Skips the (expensive) re-layout when nothing changed.
+    void renderScmCombinedDiff();
+    // Build the sticky header overlay + scroll wiring for the combined diff.
+    // Called once, right after m_scmDiff is constructed.
+    void setupScmDiffPane();
+    // Scroll the combined diff so this file's section sits at the top. Staged and
+    // unstaged copies of one path render as separate sections; `staged` picks it.
+    void scrollScmDiffToFile(const QString &path, bool staged);
+    // Follow the combined diff's scroll: keep the sticky header on the topmost
+    // visible file, advance its read-progress chart / percentage, and select that
+    // file in the tree. Cheap (no re-render); runs on every scroll tick.
+    void updateScmDiffScrollState();
+    // Position the sticky header across the top of the changes diff viewport.
+    void layoutScmStickyHeader();
+    // Walk the rendered combined diff once, caching each file header's absolute y
+    // into m_scmFileTops so the per-tick sticky update stays cheap.
+    void computeScmFileTops();
+    // Debounced off the changes diff scrollbar: check off every file that has been
+    // scrolled all the way through as "Viewed" and re-render (collapsing them).
+    void applyScmAutoMarkViewedOnScroll();
+    // Select a file in the changes tree without scrolling the diff back to it
+    // (used while the selection follows the scroll).
+    void selectScmFileInTree(const QString &path, bool staged);
+    // The changes-tree row for a path on the staged / unstaged side, or nullptr.
+    QTreeWidgetItem *scmFindItem(const QString &path, bool staged) const;
+    // Refresh the "N of M files viewed" counter above the changes tree.
+    void updateScmViewedCount();
+    // "viewed:" toggles inside the combined working-tree diff.
+    void onScmDiffAnchorClicked(const QUrl &url);
+    // QSettings context (see loadDiffViewed) for the working-tree diff.
+    static QString scmViewedContext();
+    // Walk the working-tree changes with the up/down buttons: every file shares
+    // one scrollable view, so this just jumps to the next (+1) / previous (-1)
+    // hunk, crossing file boundaries on its own.
     void scmSelectAdjacentChange(int delta);
     // Scroll the changes diff to the next (+1) / previous (-1) hunk. With fromEnd
     // the search starts at the bottom (used when entering a file from below).
@@ -3130,6 +3212,9 @@ private:
     // themselves mutating the document — clear()/insertHtml() can transiently
     // report the scrollbar at its minimum mid-edit.
     bool m_logViewMutating = false;
+    // True while the view is showing the "No X events recorded." placeholder for
+    // a filter that currently matches nothing (see rebuildNetworkLogView).
+    bool m_logFilterEmptyNotice = false;
     void loadOlderNetworkLogSegment();
     void onNetworkLogScrolled(int value);
     // Compact, centered success/failure banner shown in the top bar between the
@@ -4404,6 +4489,8 @@ private:
     QLineEdit *m_scmMessage = nullptr;
     QTextBrowser *m_scmDiff = nullptr;
     QLabel *m_scmCountLabel = nullptr;
+    QLabel *m_scmViewedLabel = nullptr;  // "3 of 26 files viewed"
+    QPushButton *m_scmAutoViewedButton = nullptr; // auto-mark-viewed-on-scroll
     QPushButton *m_scmGenerateButton = nullptr;
     QComboBox *m_scmGenModel = nullptr;       // AI model for inline generation
     QComboBox *m_scmGenKind = nullptr;        // "Commit message" vs "X post"
@@ -4425,10 +4512,30 @@ private:
     // Last `git status` output, so a focus/tab-click rescan can skip the (flickery)
     // full tree rebuild when nothing in the working tree actually changed.
     QByteArray m_scmStatusCache;
-    // Rendered per-file diff HTML, keyed by "staged|untracked|path", so clicking
-    // between files (or walking them with the up/down buttons) is instant after the
-    // first view. Cleared whenever the working tree is rescanned.
-    QHash<QString, QString> m_scmDiffCache;
+    // Combined working-tree diff (adhoc #399): every changed file lives in one
+    // scrollable view, so reviewing is a single scroll and each file checks itself
+    // off as "Viewed" once its end has passed the viewport bottom.
+    // Section key is "s|<path>" / "u|<path>" — a path modified *and* staged
+    // renders twice, once per side — in rendered (top-to-bottom) order.
+    QString m_scmCombinedPatch;      // cached raw patch behind the render
+    int m_scmCombinedStagedFiles = 0; // how many of its files are the staged half
+    bool m_scmPatchValid = false;    // false until the patch is (re-)read from git
+    QStringList m_scmSectionKeys;
+    QStringList m_scmSectionAnchors; // "file-N" per section, aligned to the keys
+    QStringList m_scmSectionPaths;   // repo-relative path per section
+    QList<int> m_scmFileTops;        // cached absolute y of each section header
+    QHash<QString, QString> m_scmStickyLabelHtml; // section key -> sticky label
+    QString m_scmDiffRenderKey;      // skip the re-layout when nothing changed
+    QFrame *m_scmStickyHeader = nullptr;
+    QLabel *m_scmStickyPath = nullptr;
+    PacmanProgress *m_scmStickyPacman = nullptr;
+    QLabel *m_scmStickyPercent = nullptr; // "42%" read-through of this file
+    QPushButton *m_scmStickyViewed = nullptr;
+    QString m_scmStickySection;      // section key shown in the sticky header
+    QTimer *m_scmAutoViewedDebounce = nullptr;
+    // Set while the tree selection is following the diff scroll, so
+    // currentItemChanged doesn't bounce the diff back to the file header.
+    bool m_scmSuppressFileScroll = false;
     // Commits tab: a stack flipping between the list and a per-commit diff view.
     QStackedWidget *m_commitsStack = nullptr;
     QLabel *m_commitTitle = nullptr;
@@ -4760,6 +4867,7 @@ private:
     QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
+    QSet<int> m_actionWaitingRuns;   // queued ids already logged as `needs:`-blocked
     // The encrypted mirror materialization a run is executing out of (see
     // pinActionMirror). Held until the run finishes so a concurrent re-seal
     // cannot delete the served mirror mid-build.
@@ -4859,6 +4967,9 @@ private:
     QList<AgentRunner *> m_agentRunners;
     QList<AgentSession> m_agentSessions;
     QList<int> m_agentQueue;
+    // Guards scheduleAgentQueuePump()'s zero-timer against piling up one pump
+    // per status/reload hook in a burst.
+    bool m_agentQueuePumpScheduled = false;
     // True while runDeferredStartup() drains the sessions initAgents() re-queued
     // after an app restart: resumed runs must NOT jump to the Agents tab the way
     // a fresh user-driven start does. At startup that jump forced a full cold
@@ -5310,6 +5421,9 @@ private:
     // by path. Used by the quick-add image paste/attach path (issue #79).
     QString saveNewAgentPromptImage(const QImage &image);
     QPushButton *m_agentStopButton = nullptr;
+    // Above the session list: stop every running agent and cancel the queue
+    // (adhoc #433).
+    QPushButton *m_agentStopAllButton = nullptr;
     QPushButton *m_agentFixConflictsButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
@@ -5694,6 +5808,12 @@ private:
     QTimer *m_chatDirectoryTimer = nullptr;
     bool m_chatDirectoryLoaded = false; // first fill done (may legitimately be empty)
     QSet<QString> m_removedPeerIds;  // IDs explicitly removed via removeChatMember
+    // When each roster peer was last seen live, so guests and World visitors
+    // (throwaway browser sessions) are forgotten after ChatVisitorPresence::
+    // kVisitorIdleMs of silence instead of being retained as dead offline rows
+    // the way a real node or account is (adhoc #404). Pruned to the current
+    // roster on every update, so it can't outgrow it.
+    QHash<QString, qint64> m_peerLastSeenMs;
     // True once this node has posted (or confirmed it already posted) its one-time
     // welcome greeting this run, so the per-roster check stays cheap (issue #192).
     bool m_welcomeAnnounced = false;

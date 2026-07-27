@@ -1,5 +1,12 @@
 name: Deploy Cloudflare Worker
 on: [push]
+# CI/CD gate: the Worker test suite "CI tests" already ran for this commit, so
+# wait for that run instead of repeating it here. The deploy starts only after
+# it succeeds; if it fails (or is rejected) this run is skipped and nothing
+# reaches Cloudflare. A commit where that workflow never ran on this node
+# (dedicated elsewhere, disabled, or absent) is not gated — there is no result
+# to wait for.
+needs: [.forkmesh/ci.yml]
 jobs:
   deploy:
     steps:
@@ -27,17 +34,6 @@ jobs:
             echo "Deploying; cloudflare_worker/ changes detected:"
             printf '%s\n' "$worker_changes"
           fi
-      # CI/CD gate: run the full Worker test suite first; a failure aborts before
-      # deploy. This catches static public-page contracts, endpoint AST contracts,
-      # and Sentry/error-handler regressions before they reach Cloudflare.
-      - name: Run Cloudflare Worker tests
-        run: |
-          [ -f .forkmesh-skip-deploy ] && exit 0
-          python3 -m venv .forkmesh-pytest-venv
-          # The mirror-identity / SSH post-receive tests sign fixtures with
-          # Ed25519 keys, so the suite needs `cryptography` alongside pytest.
-          .forkmesh-pytest-venv/bin/python -m pip install pytest cryptography
-          .forkmesh-pytest-venv/bin/python -m pytest -q cloudflare_worker/tests
       # .env.production is gitignored, so materialize it from this node's ForkMesh
       # Variables/Secrets (Settings -> Secrets & Coves). ForkMesh fills in the
       # ${{ vars.NAME }} references below from that store before running the step;

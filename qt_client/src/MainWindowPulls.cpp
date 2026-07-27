@@ -1868,7 +1868,7 @@ void MainWindow::adjustDiffFont(int delta)
             vbar->setValue(scroll);
     }
     m_pullDiffRenderKey.clear(); // the pull view's skip-relayout cache is now stale
-    m_scmDiffCache.clear();      // re-render any cached SCM diff at the new size
+    m_scmDiffRenderKey.clear();  // ditto for the working-tree changes diff
     // The re-scaled m_pullDiff got a fresh document too; rescan an open find
     // bar's matches against it (issue #333).
     if (m_pullDiffSearchBar && m_pullDiffSearchBar->isVisible())

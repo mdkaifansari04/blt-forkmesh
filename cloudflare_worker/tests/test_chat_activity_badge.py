@@ -10,7 +10,8 @@ people pane until they happened to speak in the room, and nothing outside
     decrypts anything, and edge-caches it.
   * The public user directory (/api/accounts/users) is edge-cached too — the
     chat page now polls it — and a successful signup invalidates both caches
-    so the new account is visible on the very next poll.
+    so the new account is visible on the very next poll. That cache is
+    edge-only: the response the browser receives is no-store (adhoc #434).
   * chat.js seeds/refreshes its roster from the directory and announces a
     freshly-created account in the log so the room can welcome them.
   * site-header.js renders a chat icon with an unread badge on every page
@@ -69,8 +70,22 @@ def test_chat_activity_is_edge_cached():
 
 def test_users_directory_is_edge_cached():
     source = _function_source("_account_users_directory")
-    assert "edge_cache_match(USERS_DIRECTORY_CACHE_KEY)" in source
-    assert "edge_cache_put(USERS_DIRECTORY_CACHE_KEY" in source
+    assert "_users_directory_cache_get()" in source
+    assert "edge_cache_put(" in source
+    assert "USERS_DIRECTORY_CACHE_KEY" in source
+
+
+def test_users_directory_is_never_browser_cached():
+    # The World campfire paints its member count from this body, so a browser
+    # copy left the fire stale until a hard refresh (adhoc #434). The edge
+    # copy still collapses origin work; the client bytes are no-store on both
+    # the cache-hit and the rebuild path.
+    assert re.search(
+        r'USERS_DIRECTORY_CLIENT_CACHE_CONTROL\s*=\s*"no-store,', ENTRY)
+    hit = _function_source("_users_directory_cache_get")
+    assert '"cache-control": USERS_DIRECTORY_CLIENT_CACHE_CONTROL' in hit
+    source = _function_source("_account_users_directory")
+    assert "cache_control=USERS_DIRECTORY_CLIENT_CACHE_CONTROL" in source
 
 
 def test_signup_invalidates_chat_caches():

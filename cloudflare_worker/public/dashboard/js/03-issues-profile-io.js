@@ -308,6 +308,43 @@
     return data;
   }
 
+  // Mirrors IssueStore::contentForSigning's "comment" case (body NUL
+  // attachments) and the desktop's inbox POST (verify_issue_event in the
+  // worker). Unlike a new issue's "open" event, a comment is signed against the
+  // issue's real number - the maintainer's node appends it to that issue when it
+  // drains the inbox (IssueStore::applyRemoteEvent).
+  async function submitWebIssueComment(repo, number, body) {
+    const { privateKey, pub } = await getWebIssueKey();
+    const ts = Math.floor(Date.now() / 1000);
+    const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
+    // comment event content = body \0 attachments(joined by ","; empty here)
+    const NUL = String.fromCharCode(0);
+    const contentHash = await sha256HexLower(cleanBody + NUL);
+    const canonical = `forkmesh-issue-event-v1\ncomment\n${number}\n${pub}\n${ts}\n${contentHash}`;
+    const sig = bytesToB64url(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, ISSUE_TEXT_ENCODER.encode(canonical)));
+    const event = {
+      type: "comment",
+      id: "comment-web-" + ts,
+      body: cleanBody,
+      attachments: [],
+      author: pub,
+      authorName: state.session?.nodeName || "",
+      ts,
+      sig,
+    };
+    const payload = { owner: repo.owner, repo: repo.name, number, event };
+    const response = await fetch(`${repoApiBase(repo)}/issues`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return data;
+  }
+
   // Mirrors DiscussionStore::contentForSigning's "comment" case (just the
   // reply body) and the desktop's discussion inbox POST (verify_discussion_event
   // in the worker). Replies are signed against the discussion's real number -
@@ -466,6 +503,60 @@
       throw new Error(data.error || `HTTP ${response.status}`);
     }
     return data;
+  }
+
+  async function handleIssueCommentSubmit(repo, form) {
+    if (!repo || !form) return;
+    const number = Number(form.dataset.repoIssueCommentNumber || 0);
+    const bodyInput = form.querySelector("[data-repo-issue-comment-body]");
+    const submit = form.querySelector("[data-repo-issue-comment-submit]");
+    const hint = form.querySelector("[data-repo-issue-comment-hint]");
+    const setHint = (text, tone) => {
+      if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      if (hint) hint.textContent = text;
+    };
+    const body = String(bodyInput?.value || "").trim();
+    if (!number) {
+      setHint("This issue hasn't finished loading yet.", "bad");
+      return;
+    }
+    if (!body) {
+      setHint("Write a comment before sending.", "bad");
+      bodyInput?.focus();
+      return;
+    }
+    if (submit) submit.disabled = true;
+    setHint("Signing and sending…");
+    try {
+      await submitWebIssueComment(repo, number, body);
+      // Show the comment straight away: it only reaches the mirror once the
+      // maintainer's node drains the inbox, so the timeline can't reload it yet.
+      const timeline = form.parentElement?.querySelector("[data-repo-issue-timeline]");
+      if (timeline) {
+        if (timeline.dataset.empty === "true") {
+          timeline.innerHTML = "";
+          timeline.dataset.empty = "false";
+          timeline.className = "border-t border-border";
+        }
+        timeline.insertAdjacentHTML("beforeend", renderIssueTimelineComment({
+          authorName: state.session?.nodeName || "you",
+          ts: Math.floor(Date.now() / 1000), body,
+        }));
+      }
+      if (bodyInput) bodyInput.value = "";
+      if (submit) submit.disabled = false;
+      setHint("Comment sent to the maintainer's inbox for review.", "good");
+    } catch (error) {
+      if (submit) submit.disabled = false;
+      const code = String(error?.message || "");
+      setHint(
+        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+          : code === "author_quota" ? "You've reached the submission limit for this repository."
+          : code === "issue_too_large" ? "The comment is too large - please shorten it."
+          : code === "bad_signature" ? "Could not verify the comment's signature."
+          : "Could not send the comment. Please try again.",
+        "bad");
+    }
   }
 
   async function handleDiscussionReplySubmit(repo, form) {

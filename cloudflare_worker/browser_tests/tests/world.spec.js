@@ -58,6 +58,8 @@ async function prepareWorldPage(
     systemCapacityTables = [],
     officeEntryRequests = [],
     officeFloorRequests = [],
+    officeAttendanceRequests = [],
+    officeAttendanceFixture = null,
     officeFloorAccess = null,
     officeTaskFixture = null,
     accountSessionFixture = null,
@@ -606,6 +608,35 @@ async function prepareWorldPage(
             );
           body = { ok: true, currentRevoked: revoked.current === true };
         }
+      } else {
+        status = 405;
+        body = { error: "method_not_allowed" };
+      }
+    } else if (url.pathname === "/api/world/office/attendance") {
+      let requestBody = {};
+      try {
+        requestBody = route.request().postDataJSON() || {};
+      } catch (_) {}
+      const method = route.request().method();
+      officeAttendanceRequests.push({
+        method,
+        headers: route.request().headers(),
+        body: requestBody,
+      });
+      if (method === "GET") {
+        body = {
+          ok: true,
+          visits: officeAttendanceFixture?.getVisits || [],
+        };
+      } else if (method === "POST" && session?.sessionToken) {
+        const visits =
+          requestBody.action === "out"
+            ? officeAttendanceFixture?.outVisits
+            : officeAttendanceFixture?.inVisits;
+        body = { ok: true, visits: visits || [] };
+      } else if (method === "POST") {
+        status = 401;
+        body = { error: "login_required" };
       } else {
         status = 405;
         body = { error: "method_not_allowed" };
@@ -1196,9 +1227,10 @@ async function walkIntoOffice(page) {
 
 async function officeSceneState(page) {
   return page.locator("forkmesh-world").evaluate((shell) => {
-    const door = shell.world.scene.getObjectByName(
-      "forkmesh-office-door-pivot",
-    );
+    const slidingDoorCount = [
+      "forkmesh-office-sliding-door-left",
+      "forkmesh-office-sliding-door-right",
+    ].filter((name) => shell.world.scene.getObjectByName(name)).length;
     const island = shell.world.scene.getObjectByName(
       "forkmesh-office-island",
     );
@@ -1206,7 +1238,10 @@ async function officeSceneState(page) {
       "forkmesh-office-interior",
     );
     return {
-      doorRotation: Number((door?.rotation?.y || 0).toFixed(3)),
+      slidingDoorCount,
+      hasHingedDoor: Boolean(
+        shell.world.scene.getObjectByName("forkmesh-office-door-pivot"),
+      ),
       hasKeypad: Boolean(
         shell.world.scene.getObjectByName("forkmesh-office-keypad"),
       ),
@@ -1603,8 +1638,16 @@ test("ForkMesh Office walk-in opens chat only through the explicit fallback", as
 test("a signed-in member walks into the continuous ten-story Office without a gate", async ({
   page,
 }) => {
+  test.slow();
   const officeEntryRequests = [];
   const officeFloorRequests = [];
+  const officeAttendanceRequests = [];
+  const signedVisit = {
+    id: "signed-in",
+    account: "alice",
+    inAt: FIXED_NOW,
+    outAt: 0,
+  };
   await prepareWorldPage(page, "office-member-entry", {
     session: {
       kind: "user",
@@ -1614,14 +1657,35 @@ test("a signed-in member walks into the continuous ten-story Office without a ga
     },
     officeEntryRequests,
     officeFloorRequests,
+    officeAttendanceRequests,
+    officeAttendanceFixture: {
+      getVisits: [{
+        id: "stale-get",
+        account: "stale",
+        inAt: FIXED_NOW - 60_000,
+        outAt: FIXED_NOW - 30_000,
+      }],
+      inVisits: [signedVisit],
+    },
   });
   await waitForWorld(page);
   await moveToOfficeEntrance(page);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const setAttendance = shell.world.setOfficeAttendance.bind(shell.world);
+    shell.__officeAttendanceSnapshots = [];
+    shell.world.setOfficeAttendance = (snapshot) => {
+      shell.__officeAttendanceSnapshots.push(
+        structuredClone(snapshot),
+      );
+      return setAttendance(snapshot);
+    };
+  });
 
   await expect(page.locator("[data-world-office-prompt]")).toHaveCount(0);
   await expect(page.locator("[data-world-office-enter]")).toHaveCount(0);
   await expect.poll(() => officeSceneState(page)).toEqual({
-    doorRotation: 1.571,
+    slidingDoorCount: 2,
+    hasHingedDoor: false,
     hasKeypad: false,
     islandVisible: true,
     interiorVisible: true,
@@ -1640,8 +1704,26 @@ test("a signed-in member walks into the continuous ten-story Office without a ga
       }),
     }),
   ]);
+  await expect.poll(() => officeAttendanceRequests.length).toBe(1);
+  expect(officeAttendanceRequests).toEqual([
+    expect.objectContaining({
+      method: "POST",
+      body: { action: "in" },
+      headers: expect.objectContaining({
+        authorization: "Bearer alice-office-token",
+      }),
+    }),
+  ]);
+  expect(officeAttendanceRequests.some(({ method }) => method === "GET"))
+    .toBe(false);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.__officeAttendanceSnapshots,
+    )
+  ).toEqual([{ visits: [signedVisit] }]);
   await expect.poll(() => officeSceneState(page)).toEqual({
-    doorRotation: 1.571,
+    slidingDoorCount: 2,
+    hasHingedDoor: false,
     hasKeypad: false,
     islandVisible: true,
     interiorVisible: true,
@@ -1652,21 +1734,128 @@ test("a signed-in member walks into the continuous ten-story Office without a ga
 test("guests walk directly into the public Office lobby without network admission", async ({
   page,
 }) => {
+  test.slow();
   const officeEntryRequests = [];
   const officeFloorRequests = [];
+  const officeAttendanceRequests = [];
+  const publicVisit = {
+    id: "public-last-visit",
+    account: "contributor",
+    inAt: FIXED_NOW - 120_000,
+    outAt: FIXED_NOW - 60_000,
+  };
   await prepareWorldPage(page, "office-guest-entry", {
     officeEntryRequests,
     officeFloorRequests,
+    officeAttendanceRequests,
+    officeAttendanceFixture: {
+      getVisits: [publicVisit],
+    },
   });
   await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const setAttendance = shell.world.setOfficeAttendance.bind(shell.world);
+    shell.__officeAttendanceSnapshots = [];
+    shell.world.setOfficeAttendance = (snapshot) => {
+      shell.__officeAttendanceSnapshots.push(
+        structuredClone(snapshot),
+      );
+      return setAttendance(snapshot);
+    };
+  });
   await walkIntoOffice(page);
   await expect(page.locator("[data-world-office-lobby]")).toBeHidden();
   await expect(page.locator("[data-world-office-prompt]")).toHaveCount(0);
   await expect(page.locator("[data-world-login-form]")).toBeHidden();
   expect(officeEntryRequests).toHaveLength(0);
   expect(officeFloorRequests).toHaveLength(0);
+  await expect.poll(() => officeAttendanceRequests.length).toBe(1);
+  expect(officeAttendanceRequests).toEqual([
+    expect.objectContaining({
+      method: "GET",
+    }),
+  ]);
+  expect(officeAttendanceRequests.some(({ method }) => method === "POST"))
+    .toBe(false);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.__officeAttendanceSnapshots,
+    )
+  ).toEqual([{ visits: [publicVisit] }]);
   expect(await officeSceneState(page)).toMatchObject({
+    slidingDoorCount: 2,
+    hasHingedDoor: false,
     hasKeypad: false,
+    space: "office-lobby",
+  });
+});
+
+test("Office entrance doors slide apart on approach and close after departure", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-sliding-doors");
+  await waitForWorld(page);
+  const positions = () =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      const left = shell.world.scene.getObjectByName(
+        "forkmesh-office-sliding-door-left"
+      );
+      const right = shell.world.scene.getObjectByName(
+        "forkmesh-office-sliding-door-right"
+      );
+      return {
+        left: Number(left?.position.x || 0),
+        right: Number(right?.position.x || 0),
+      };
+    });
+  const closed = await positions();
+  expect(closed.left).toBeLessThan(0);
+  expect(closed.right).toBeGreaterThan(0);
+
+  await moveToOfficeEntrance(page, { unpause: true });
+  await expect.poll(async () => Math.abs((await positions()).right))
+    .toBeGreaterThan(Math.abs(closed.right) + 1);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.player.position.set(0, 0.38, 0);
+  });
+  await expect.poll(async () => {
+    const next = await positions();
+    return Math.abs(next.right - closed.right);
+  }).toBeLessThan(0.08);
+});
+
+test("a first-frame doorway crossing enters before proximity catches up", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-first-frame-entry");
+  await waitForWorld(page);
+
+  const entry = await page.locator("forkmesh-world").evaluate(async (shell) => {
+    // Freeze between the doorway collision and the later proximity ticker,
+    // matching a fast dash/double-click arrival in that first frame.
+    shell.world.setPaused(true);
+    shell.world.player.position.set(0, 0.38, -169.53);
+    const proximityBefore = shell.officeController.proximity;
+    const nonDoorwayEntered = await shell.officeController.enterOffice({
+      source: "door",
+    });
+    const entered = await shell.officeController.enterOffice({
+      source: "doorway",
+    });
+    return {
+      proximityBefore,
+      nonDoorwayEntered,
+      entered,
+      active: shell.officeController.active,
+      space: shell.world.getPosition().space,
+    };
+  });
+  expect(entry).toEqual({
+    proximityBefore: "distant",
+    nonDoorwayEntered: false,
+    entered: true,
+    active: true,
     space: "office-lobby",
   });
 });
@@ -1695,6 +1884,7 @@ test("walking through the Office doorway hydrates floor access without admission
 test("Office entry preserves the live avatar and keeps zoom inside the tower", async ({
   page,
 }) => {
+  test.slow();
   await prepareWorldPage(page, "office-seamless-entry-camera", {
     session: {
       kind: "user",
@@ -1707,6 +1897,33 @@ test("Office entry preserves the live avatar and keeps zoom inside the tower", a
   await moveToOfficeEntrance(page, { unpause: true });
   const before = await page.locator("forkmesh-world").evaluate((shell) => {
     shell.world.setCameraZoom(0.9);
+    const originalEnterOffice =
+      shell.officeController.enterOffice.bind(shell.officeController);
+    const sample = () => {
+      const interior = shell.world.scene.getObjectByName(
+        "forkmesh-office-interior"
+      );
+      const playerWorld = shell.world.player.getWorldPosition(
+        shell.world.player.position.clone()
+      );
+      const target = playerWorld.clone();
+      target.y += 2.2;
+      return {
+        uuid: shell.world.player.uuid,
+        local: interior.worldToLocal(playerWorld).toArray(),
+        cameraDistance: shell.world.camera.position.distanceTo(target),
+      };
+    };
+    shell.__officeThresholdHandoff = null;
+    shell.officeController.enterOffice = (...args) => {
+      const thresholdBefore = sample();
+      const result = originalEnterOffice(...args);
+      shell.__officeThresholdHandoff = {
+        before: thresholdBefore,
+        after: sample(),
+      };
+      return result;
+    };
     return {
       uuid: shell.world.player.uuid,
       camera: shell.world.getCameraState(),
@@ -1715,16 +1932,29 @@ test("Office entry preserves the live avatar and keeps zoom inside the tower", a
   });
 
   await walkIntoOffice(page);
+  await page.waitForTimeout(100);
   const after = await page.locator("forkmesh-world").evaluate((shell) => {
     const clone = shell.world.scene.getObjectByName(
       "forkmesh-office-lobby-player"
     );
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const target = shell.world.player.getWorldPosition(
+      shell.world.player.position.clone()
+    );
+    target.y += 2.2;
     return {
       uuid: shell.world.player.uuid,
       camera: shell.world.getCameraState(),
       position: shell.world.player.position.toArray(),
       playerVisible: shell.world.player.visible,
       cloneVisible: clone?.visible === true,
+      handoff: shell.__officeThresholdHandoff,
+      cameraLocal: interior.worldToLocal(
+        shell.world.camera.position.clone()
+      ).toArray(),
+      cameraDistance: shell.world.camera.position.distanceTo(target),
     };
   });
   expect(after.uuid).toBe(before.uuid);
@@ -1734,6 +1964,17 @@ test("Office entry preserves the live avatar and keeps zoom inside the tower", a
   expect(after.camera.zoom).toBeCloseTo(before.camera.zoom, 8);
   expect(after.playerVisible).toBe(true);
   expect(after.cloneVisible).toBe(false);
+  expect(after.handoff.before.uuid).toBe(before.uuid);
+  expect(after.handoff.after.uuid).toBe(before.uuid);
+  expect(after.handoff.before.local[2]).toBeCloseTo(45.46, 2);
+  expect(after.handoff.after.local[0])
+    .toBeCloseTo(after.handoff.before.local[0], 7);
+  expect(after.handoff.after.local[2])
+    .toBeCloseTo(after.handoff.before.local[2], 7);
+  expect(after.cameraLocal[2]).toBeGreaterThan(45);
+  expect(after.cameraDistance).toBeGreaterThan(10);
+  expect(after.cameraDistance)
+    .toBeGreaterThan(after.handoff.before.cameraDistance * 0.45);
   expect(
     Math.hypot(
       after.position[0] - before.position[0],
@@ -1741,7 +1982,53 @@ test("Office entry preserves the live avatar and keeps zoom inside the tower", a
     ),
   ).toBeLessThan(6);
 
+  // From just inside the same doorway, offset the target far enough that the
+  // default orbit ray crosses the front plane beside the opening. It must hit
+  // the facade clamp rather than inheriting the centered portal exception.
   await page.locator("forkmesh-world").evaluate((shell) => {
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const point = interior.localToWorld(
+      shell.world.player.position.clone().set(4, 0.38, 43.7)
+    );
+    shell.world.player.parent.worldToLocal(point);
+    shell.world.player.position.copy(point);
+    shell.world.setCameraZoom(0.9);
+  });
+  await page.waitForTimeout(100);
+  const facadeClamped = await page.locator("forkmesh-world").evaluate(
+    (shell) => {
+      const interior = shell.world.scene.getObjectByName(
+        "forkmesh-office-interior"
+      );
+      const camera = interior.worldToLocal(
+        shell.world.camera.position.clone()
+      );
+      const player = interior.worldToLocal(
+        shell.world.player.getWorldPosition(
+          shell.world.player.position.clone()
+        )
+      );
+      player.y += 2.2;
+      return {
+        camera: camera.toArray(),
+        distance: camera.distanceTo(player),
+      };
+    },
+  );
+  expect(facadeClamped.camera[2]).toBeLessThan(44.8);
+  expect(facadeClamped.distance).toBeLessThan(2);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const point = interior.localToWorld(
+      shell.world.player.position.clone().set(0, 0.38, 0)
+    );
+    shell.world.player.parent.worldToLocal(point);
+    shell.world.player.position.copy(point);
     shell.world.setCameraZoom(28);
   });
   await page.waitForTimeout(700);
@@ -1769,7 +2056,8 @@ test("Office entry preserves the live avatar and keeps zoom inside the tower", a
   expect(bounded.camera[1]).toBeLessThan(15.46);
   expect(bounded.camera[2]).toBeGreaterThan(-44.3);
   expect(bounded.camera[2]).toBeLessThan(44.8);
-  expect(bounded.distance).toBeLessThan(10);
+  expect(bounded.distance).toBeGreaterThan(10);
+  expect(bounded.distance).toBeLessThan(30);
 });
 
 test("Office rooftop restores the full world zoom outside the elevator", async ({
@@ -1814,6 +2102,185 @@ test("Office rooftop restores the full world zoom outside the elevator", async (
     space: "office-rooftop",
     zoom: 28,
   });
+
+  // Pull the orbit eye below its target to look sharply upward. It may retain
+  // full horizontal zoom, but it must never pass down through the roof slab.
+  const canvas = page.locator("[data-world-canvas-wrap] canvas");
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  const x = Math.round(box.x + box.width * 0.5);
+  await page.mouse.move(x, Math.round(box.y + box.height * 0.86));
+  await page.mouse.down();
+  await page.mouse.move(x, Math.round(box.y + box.height * 0.08), {
+    steps: 4,
+  });
+  await page.mouse.up();
+  await page.waitForTimeout(120);
+  const upward = await page.locator("forkmesh-world").evaluate((shell) => {
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const camera = interior.worldToLocal(shell.world.camera.position.clone());
+    const target = interior.worldToLocal(
+      shell.world.player.getWorldPosition(shell.world.player.position.clone())
+    );
+    return {
+      camera: camera.toArray(),
+      horizontalDistance: Math.hypot(
+        camera.x - target.x,
+        camera.z - target.z,
+      ),
+      zoom: shell.world.getCameraState().zoom,
+    };
+  });
+  expect(upward.camera[1]).toBeGreaterThanOrEqual(144.54);
+  expect(upward.horizontalDistance).toBeGreaterThan(400);
+  expect(upward.zoom).toBe(28);
+});
+
+test("Office rooftop has complete sittable patio furniture and a real source launcher", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.__officeLaptopOpened = [];
+    window.open = (...args) => {
+      window.__officeLaptopOpened.push(args);
+      return null;
+    };
+  });
+  await prepareWorldPage(page, "office-rooftop-patio");
+  await waitForWorld(page);
+  const patio = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setOfficeAccess({
+      authenticated: true,
+      account: "alice",
+      allowedFloorIds: ["lobby", "marketing", "rooftop"],
+    });
+    shell.world.enterOfficeLobby();
+    shell.world.enterOfficeLobby({ floorId: "rooftop" });
+    const scene = shell.world.scene;
+    const interior = scene.getObjectByName("forkmesh-office-interior");
+    const tables = [];
+    const chairs = [];
+    scene.traverse((object) => {
+      if (/^forkmesh-office-rooftop-table-\d+$/.test(object.name)) {
+        tables.push({
+          id: object.name,
+          legs: object.children.filter((child) =>
+            child.name.includes("-leg-")
+          ).length,
+        });
+      }
+      if (/^forkmesh-office-rooftop-chair-\d+$/.test(object.name)) {
+        chairs.push({
+          id: object.name,
+          legs: object.children.filter((child) =>
+            child.name.includes("-leg-")
+          ).length,
+          backs: object.children.filter((child) =>
+            child.name.endsWith("-back")
+          ).length,
+        });
+      }
+    });
+    const marketingRejected =
+      shell.world.sitOnOfficeChair("chair-1");
+    const sat = shell.world.sitOnOfficeChair("rooftop-chair-1");
+    const chair = scene.getObjectByName(
+      "forkmesh-office-rooftop-chair-1"
+    );
+    const seated = interior.worldToLocal(
+      shell.world.player.getWorldPosition(shell.world.player.position.clone())
+    );
+    const toTable = {
+      x: -40 - chair.position.x,
+      z: 8 - chair.position.z,
+    };
+    const length = Math.hypot(toTable.x, toTable.z) || 1;
+    const facingDot =
+      (-Math.sin(shell.world.player.rotation.y) * (toTable.x / length)) +
+      (-Math.cos(shell.world.player.rotation.y) * (toTable.z / length));
+    const stood = shell.world.sitOnOfficeChair("rooftop-chair-1");
+    shell.world.enterOfficeLobby({ floorId: "marketing" });
+    const rooftopRejected =
+      shell.world.sitOnOfficeChair("rooftop-chair-1");
+    shell.world.enterOfficeLobby({ floorId: "rooftop" });
+    return {
+      tables,
+      chairs,
+      marketingRejected,
+      rooftopRejected,
+      sat,
+      stood,
+      seated: seated.toArray(),
+      standingY: shell.world.player.position.y,
+      facingDot,
+      laptop: Boolean(scene.getObjectByName(
+        "forkmesh-office-rooftop-laptop"
+      )),
+      laptopBase: Boolean(scene.getObjectByName(
+        "forkmesh-office-rooftop-laptop-base"
+      )),
+      laptopScreen: Boolean(scene.getObjectByName(
+        "forkmesh-office-rooftop-laptop-screen"
+      )),
+      strayTelescope: Boolean(scene.getObjectByName("telescopeTube")),
+    };
+  });
+  expect(patio.tables).toHaveLength(3);
+  expect(patio.tables.every((table) => table.legs === 4)).toBe(true);
+  expect(patio.chairs).toHaveLength(12);
+  expect(patio.chairs.every((chair) =>
+    chair.legs === 4 && chair.backs === 1
+  )).toBe(true);
+  expect(patio).toMatchObject({
+    marketingRejected: false,
+    rooftopRejected: false,
+    sat: true,
+    stood: true,
+    standingY: 144.38,
+    laptop: true,
+    laptopBase: true,
+    laptopScreen: true,
+    strayTelescope: false,
+  });
+  expect(patio.seated[1]).toBeGreaterThan(144);
+  expect(patio.seated[1]).toBeLessThan(144.38);
+  expect(patio.facingDot).toBeGreaterThan(0.99);
+
+  const laptopPoint = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const interior = scene.getObjectByName("forkmesh-office-interior");
+    const screen = scene.getObjectByName(
+      "forkmesh-office-rooftop-laptop-screen"
+    );
+    const target = screen.getWorldPosition(screen.position.clone());
+    const camera = interior.localToWorld(
+      screen.position.clone().set(0, 149, 17)
+    );
+    shell.world.setPaused(true);
+    shell.world.camera.position.copy(camera);
+    shell.world.camera.lookAt(target);
+    shell.world.camera.updateMatrixWorld(true);
+    shell.world.renderer.render(scene, shell.world.camera);
+    const projected = target.clone().project(shell.world.camera);
+    const rect = shell.world.renderer.domElement.getBoundingClientRect();
+    return {
+      x: rect.left + (projected.x * 0.5 + 0.5) * rect.width,
+      y: rect.top + (-projected.y * 0.5 + 0.5) * rect.height,
+    };
+  });
+  await page.mouse.click(laptopPoint.x, laptopPoint.y);
+  await expect.poll(() =>
+    page.evaluate(() => window.__officeLaptopOpened)
+  ).toEqual([[
+    "/forkmesh/forkmesh/blob/cloudflare_worker/public/world/world-scene.js",
+    "_blank",
+    "noopener,noreferrer",
+  ]]);
+  await expect(page.locator("[data-world-toast]")).toContainText(
+    "Source edits stay in the desktop app or IDE extension"
+  );
 });
 
 test("leaving an Office meeting resumes at a walkable first-person pose", async ({
@@ -1936,6 +2403,10 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
     );
     const maya = scene.getObjectByName("avatar:office-greeter-maya");
     const noah = scene.getObjectByName("avatar:office-greeter-noah");
+    let noahCount = 0;
+    scene.traverse((object) => {
+      if (object.name === "avatar:office-greeter-noah") noahCount += 1;
+    });
     const chromeCube = scene.getObjectByName("forkmesh-reflective-fm-cube");
     const chromeMark = scene.getObjectByName(
       "forkmesh-reflective-fm-cube-fixed-tilt"
@@ -1950,10 +2421,14 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
     let fFaces = 0;
     let mFaces = 0;
     let panels = 0;
+    const throughCutouts = [];
     chromeCube.traverse((object) => {
       if (object.name.startsWith("forkmesh-reflective-f-face-")) fFaces += 1;
       if (object.name.startsWith("forkmesh-reflective-m-face-")) mFaces += 1;
-      if (object.name.startsWith("forkmesh-reflective-fm-panel-")) panels += 1;
+      if (object.name.startsWith("forkmesh-reflective-fm-panel-")) {
+        panels += 1;
+        throughCutouts.push(Number(object.userData.logoThroughCutouts) || 0);
+      }
       const size = object.geometry?.parameters;
       if (
         object.isMesh &&
@@ -1992,8 +2467,9 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
       placards,
       reception: {
         desk: receptionDesk.position.toArray(),
-        maya: maya?.position.toArray(),
+        hasMaya: Boolean(maya),
         noah: noah?.position.toArray(),
+        noahCount,
       },
       logo: {
         verticalAxisOnly: {
@@ -2005,6 +2481,7 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
         fFaces,
         mFaces,
         panels,
+        throughCutouts: throughCutouts.sort((left, right) => left - right),
         supportCount: support ? 1 : 0,
         solidBodies,
       },
@@ -2044,21 +2521,24 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   expect(state.boards.task).toEqual([-24, 22.4, -44.45]);
   expect(state.boards.guide).toEqual([24, 22.65, -44.44]);
   expect(state.boards.title[2]).toBeLessThan(-44);
-  expect(state.placards.length).toBeGreaterThanOrEqual(12);
+  expect(state.placards.length).toBeGreaterThanOrEqual(11);
   expect(state.placards.every((placard) => placard.mesh && !placard.sprite))
     .toBe(true);
   expect(state.reception.desk).toEqual([0, 1.05, -36.5]);
-  expect(state.reception.maya).toEqual([-7, 0.38, -40]);
-  expect(state.reception.noah).toEqual([7, 0.38, -40]);
+  expect(state.reception.hasMaya).toBe(false);
+  expect(state.reception.noah).toEqual([0, 0.38, -40]);
+  expect(state.reception.noahCount).toBe(1);
   expect(state.logo.verticalAxisOnly.x).toBeCloseTo(0, 7);
   expect(state.logo.verticalAxisOnly.z).toBeCloseTo(0, 7);
-  expect(state.logo.fixedTiltQuaternion.some((value) => Math.abs(value) > 0.1))
-    .toBe(true);
+  expect(state.logo.fixedTiltQuaternion.some(
+    (value) => Math.abs(value) > 0.1
+  )).toBe(true);
   expect(state.logo.contactSupportDistance).toBeLessThan(0.03);
   expect(state.logo).toMatchObject({
     fFaces: 2,
     mFaces: 2,
     panels: 2,
+    throughCutouts: [7, 7],
     supportCount: 1,
     solidBodies: [],
   });
@@ -2094,6 +2574,333 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   await page.screenshot({
     path: "/tmp/forkmesh-office-lobby.png",
     animations: "disabled",
+  });
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setPaused(false);
+  });
+  await page.waitForTimeout(1200);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const cameraPosition = interior.localToWorld(
+      shell.world.camera.position.clone().set(-15, 15, 1)
+    );
+    const target = interior.localToWorld(
+      shell.world.camera.position.clone().set(-18, 7.5, -2)
+    );
+    shell.world.scene.getObjectByName(
+      "forkmesh-reflective-fm-cube"
+    ).rotation.y = 0;
+    shell.world.setPaused(true);
+    shell.world.camera.fov = 65;
+    shell.world.camera.updateProjectionMatrix();
+    shell.world.camera.position.copy(cameraPosition);
+    shell.world.camera.lookAt(target);
+    shell.world.renderer.render(shell.world.scene, shell.world.camera);
+  });
+  await page.locator("canvas.world-canvas").screenshot({
+    path: "/tmp/forkmesh-office-logo.png",
+    animations: "disabled",
+  });
+});
+
+test("Noah greets desk approaches locally without per-frame bubble spam", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-noah-reception");
+  await waitForWorld(page);
+  const placeAtDeskDistance = async (localZ) =>
+    page.locator("forkmesh-world").evaluate((shell, z) => {
+      const interior = shell.world.scene.getObjectByName(
+        "forkmesh-office-interior"
+      );
+      const point = interior.localToWorld(
+        shell.world.player.position.clone().set(0, 0.38, z)
+      );
+      shell.world.player.parent.worldToLocal(point);
+      shell.world.player.position.copy(point);
+      shell.world.setPaused(false);
+    }, localZ);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.enterOfficeLobby();
+  });
+  await placeAtDeskDistance(-32);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      let count = 0;
+      shell.world.scene.traverse((object) => {
+        if (object.userData?.officeReceptionGreeting === true) count += 1;
+      });
+      return count;
+    })
+  ).toBe(1);
+
+  const first = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const noah = scene.getObjectByName("avatar:office-greeter-noah");
+    let bubble = null;
+    let noahCount = 0;
+    scene.traverse((object) => {
+      if (object.name === "avatar:office-greeter-noah") noahCount += 1;
+      if (object.userData?.officeReceptionGreeting === true) bubble = object;
+    });
+    return {
+      noahCount,
+      hasMaya: Boolean(scene.getObjectByName("avatar:office-greeter-maya")),
+      uuid: bubble?.uuid || "",
+      message: bubble?.userData?.message || "",
+      bubble: bubble?.position.toArray() || [],
+      noah: noah?.getWorldPosition(noah.position.clone()).toArray() || [],
+    };
+  });
+  expect(first.noahCount).toBe(1);
+  expect(first.hasMaya).toBe(false);
+  expect(first.message).toContain("lobby is open to everyone");
+  expect(first.message).toContain("Log in");
+  expect(first.message).toContain("restricted team floors");
+  expect(Math.abs(first.bubble[0] - first.noah[0])).toBeLessThan(0.05);
+  expect(Math.abs(first.bubble[2] - first.noah[2])).toBeLessThan(0.05);
+  expect(first.bubble[1]).toBeGreaterThan(first.noah[1]);
+
+  // Cross the hysteresis boundary and return during the cooldown. The existing
+  // local bubble remains; no new sprite/event is created on animation frames.
+  await placeAtDeskDistance(-27);
+  await page.waitForTimeout(100);
+  await placeAtDeskDistance(-32);
+  await page.waitForTimeout(180);
+  const second = await page.locator("forkmesh-world").evaluate((shell) => {
+    const bubbles = [];
+    shell.world.scene.traverse((object) => {
+      if (object.userData?.officeReceptionGreeting === true) {
+        bubbles.push(object.uuid);
+      }
+    });
+    return bubbles;
+  });
+  expect(second).toEqual([first.uuid]);
+});
+
+test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await prepareWorldPage(page, "office-fm-sculpture");
+  await waitForWorld(page);
+  const entryCapture = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const renderer = shell.world.renderer;
+    const reflection = shell.world.scene.getObjectByName(
+      "forkmesh-office-logo-reflection-camera"
+    );
+    const chromeCube = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube"
+    );
+    const localPlayer = shell.world.player;
+    const originalRender = renderer.render;
+    const renderStates = [];
+    renderer.render = function renderWithLogoReflectionAudit(
+      renderedScene,
+      renderedCamera,
+    ) {
+      if (renderedCamera?.parent === reflection) {
+        let visibleAvatarMeshes = 0;
+        localPlayer.traverse((object) => {
+          if (!object.isMesh || !object.visible) return;
+          let ancestor = object.parent;
+          while (ancestor && ancestor !== localPlayer) {
+            if (!ancestor.visible) return;
+            ancestor = ancestor.parent;
+          }
+          visibleAvatarMeshes += 1;
+        });
+        renderStates.push({
+          playerVisible: localPlayer.visible,
+          visibleAvatarMeshes,
+          sculptureVisible: chromeCube.visible,
+        });
+      }
+      return originalRender.call(this, renderedScene, renderedCamera);
+    };
+    reflection.userData.testLogoReflectionRenderStates = renderStates;
+    reflection.userData.testLogoReflectionRestore = () => {
+      renderer.render = originalRender;
+    };
+    shell.world.enterOfficeLobby();
+    return {
+      count: Number(reflection?.userData?.logoCaptureCount) || 0,
+      settleMs: Number(reflection?.userData?.logoCaptureSettleMs) || 900,
+    };
+  });
+  expect(entryCapture.count).toBe(0);
+  // Motion keeps the six-face cube render deferred. Once movement stops, one
+  // settled capture includes the live avatar; continued idling does not loop.
+  await page.keyboard.down("w");
+  await page.waitForTimeout(250);
+  const movingCapture = await page.locator("forkmesh-world").evaluate((shell) =>
+    Number(shell.world.scene.getObjectByName(
+      "forkmesh-office-logo-reflection-camera"
+    )?.userData?.logoCaptureCount) || 0
+  );
+  await page.keyboard.up("w");
+  expect(movingCapture).toBe(0);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const reflectedAvatarPoint = interior.localToWorld(
+      shell.world.player.position.clone().set(-9, 0.38, -2)
+    );
+    shell.world.player.parent.worldToLocal(reflectedAvatarPoint);
+    shell.world.player.position.copy(reflectedAvatarPoint);
+  });
+  await page.waitForTimeout(entryCapture.settleMs + 350);
+  const settledCapture = await page.locator("forkmesh-world").evaluate(
+    (shell) => {
+      const reflection = shell.world.scene.getObjectByName(
+        "forkmesh-office-logo-reflection-camera"
+      );
+      const states = [
+        ...(reflection?.userData?.testLogoReflectionRenderStates || []),
+      ];
+      reflection?.userData?.testLogoReflectionRestore?.();
+      delete reflection?.userData?.testLogoReflectionRenderStates;
+      delete reflection?.userData?.testLogoReflectionRestore;
+      return {
+        count: Number(reflection?.userData?.logoCaptureCount) || 0,
+        states,
+        playerRestored:
+          shell.world.player.visible ===
+          (shell.world.getCameraState().mode !== "first-person"),
+      };
+    }
+  );
+  expect(settledCapture.count).toBe(1);
+  expect(settledCapture.states).toHaveLength(6);
+  expect(settledCapture.states.every((state) =>
+    state.playerVisible &&
+    state.visibleAvatarMeshes >= 10 &&
+    !state.sculptureVisible
+  )).toBe(true);
+  expect(settledCapture.playerRestored).toBe(true);
+  await page.waitForTimeout(entryCapture.settleMs + 200);
+  const logo = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const cube = scene.getObjectByName("forkmesh-reflective-fm-cube");
+    const mark = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube-fixed-tilt"
+    );
+    const panels = [];
+    const letterPieces = [];
+    const oldOverlays = [];
+    mark.traverse((object) => {
+      if (object.name.startsWith("forkmesh-reflective-fm-panel-")) {
+        panels.push({
+          name: object.name,
+          throughCutouts: Number(object.userData.logoThroughCutouts) || 0,
+          metalness: object.material.metalness,
+          roughness: object.material.roughness,
+          hasEnvironment: Boolean(object.material.envMap),
+        });
+      }
+      if (object.isMesh && Array.isArray(object.material)) {
+        letterPieces.push({
+          materialCount: object.material.length,
+          mirroredOuterFace:
+            object.material[4]?.metalness >= 0.9 &&
+            Boolean(object.material[4]?.envMap),
+          matteSides:
+            object.material.slice(0, 4).every((material) =>
+              material === object.material[5] &&
+              material.roughness >= 0.7
+            ),
+        });
+      }
+      const geometry = object.geometry?.parameters;
+      if (
+        geometry?.radiusTop === 0.48 ||
+        (
+          geometry?.width === 0.3 &&
+          geometry?.height === 0.08
+        )
+      ) {
+        oldOverlays.push(object.name || object.geometry.type);
+      }
+    });
+    const support = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube-support"
+    );
+    const contact = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube-contact-point"
+    );
+    const reflection = scene.getObjectByName(
+      "forkmesh-office-logo-reflection-camera"
+    );
+    const contactWorld = contact.getWorldPosition(contact.position.clone());
+    const supportTop = support.localToWorld(
+      support.position.clone().set(
+        0,
+        support.geometry.parameters.height / 2,
+        0,
+      )
+    );
+    cube.rotation.y = 0;
+    const interior = scene.getObjectByName("forkmesh-office-interior");
+    shell.world.setPaused(true);
+    shell.world.camera.fov = 48;
+    shell.world.camera.updateProjectionMatrix();
+    shell.world.camera.position.copy(interior.localToWorld(
+      shell.world.camera.position.clone().set(-9, 12, 6)
+    ));
+    shell.world.camera.lookAt(interior.localToWorld(
+      shell.world.camera.position.clone().set(-18, 6.3, -2)
+    ));
+    shell.world.renderer.render(scene, shell.world.camera);
+    return {
+      panels,
+      letterPieces,
+      oldOverlays,
+      outerTilt: [cube.rotation.x, cube.rotation.z],
+      fixedTilt: mark.quaternion.toArray(),
+      supportCount: support ? 1 : 0,
+      contactSupportDistance: contactWorld.distanceTo(supportTop),
+      reflection: {
+        captureCount:
+          Number(reflection?.userData?.logoCaptureCount) || 0,
+        capturePolicy: reflection?.userData?.logoCapturePolicy || "",
+        capturedPlayer:
+          reflection?.userData?.logoCapturedPlayer === true,
+      },
+    };
+  });
+  await page.locator("canvas.world-canvas").screenshot({
+    path: "/tmp/forkmesh-office-logo.png",
+    animations: "disabled",
+  });
+  expect(logo.panels).toHaveLength(2);
+  expect(logo.panels.every((panel) =>
+    panel.throughCutouts === 7 &&
+    panel.metalness >= 0.78 &&
+    panel.roughness <= 0.08 &&
+    panel.hasEnvironment
+  )).toBe(true);
+  expect(logo.letterPieces).toHaveLength(14);
+  expect(logo.letterPieces.every((piece) =>
+    piece.materialCount === 6 &&
+    piece.mirroredOuterFace &&
+    piece.matteSides
+  )).toBe(true);
+  expect(logo.oldOverlays).toEqual([]);
+  expect(logo.outerTilt[0]).toBeCloseTo(0, 7);
+  expect(logo.outerTilt[1]).toBeCloseTo(0, 7);
+  expect(logo.fixedTilt.some((value) => Math.abs(value) > 0.1)).toBe(true);
+  expect(logo.supportCount).toBe(1);
+  expect(logo.contactSupportDistance).toBeLessThan(0.03);
+  expect(logo.reflection).toEqual({
+    captureCount: 1,
+    capturePolicy: "dirty-idle-once",
+    capturedPlayer: true,
   });
 });
 
@@ -2144,6 +2951,10 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
     const car = transparentMeshes(
       scene.getObjectByName("forkmesh-office-glass-elevator-car")
     );
+    const doors = [
+      "forkmesh-office-sliding-door-left",
+      "forkmesh-office-sliding-door-right",
+    ].map((name) => scene.getObjectByName(name));
     return {
       exterior: {
         count: exterior.length,
@@ -2165,6 +2976,17 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
           mesh.material.depthWrite === false && mesh.castShadow === false
         ),
       },
+      doors: {
+        count: doors.filter(Boolean).length,
+        stable: doors.every((mesh) =>
+          mesh?.material?.transparent === true &&
+          mesh.material.opacity === 0.3 &&
+          mesh.material.metalness === 0 &&
+          mesh.material.depthWrite === false &&
+          mesh.castShadow === false &&
+          mesh.receiveShadow === false
+        ),
+      },
     };
   });
   expect(glass.exterior.count).toBeGreaterThanOrEqual(20);
@@ -2173,12 +2995,13 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
   expect(glass.rooftop).toEqual({ count: 5, stable: true });
   expect(glass.shaftLayerCount).toBe(0);
   expect(glass.car).toEqual({ count: 5, stable: true });
+  expect(glass.doors).toEqual({ count: 2, stable: true });
 });
 
 test("Office elevator exposes ten floors while enforcing team access", async ({
   page,
 }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(120_000);
   await prepareWorldPage(page, "office-elevator-access", {
     session: {
       kind: "user",
@@ -2232,7 +3055,10 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
       destinations.set(object.userData.officeFloorId, {
         id: object.userData.officeFloorId,
         level: object.userData.officeFloorLevel,
+        number: object.userData.officeFloorNumber,
+        teamLabel: object.userData.officeFloorTeamLabel,
         allowed: object.userData.officeFloorAllowed === true,
+        y: Number(object.position.y.toFixed(2)),
       });
     });
     return {
@@ -2265,6 +3091,15 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
     "rooftop",
   ]);
   expect(access.buttonCount).toBe(10);
+  expect(access.destinations.map((floor) => floor.number)).toEqual([
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+  ]);
+  expect(access.destinations[0].teamLabel).toBe("LOBBY");
+  expect(access.destinations[2].teamLabel).toBe("ENGINEERING");
+  expect(access.destinations[9].teamLabel).toBe("ROOF");
+  expect(access.destinations[0].y).toBe(access.destinations[1].y);
+  expect(access.destinations[1].y).toBeLessThan(access.destinations[2].y);
+  expect(access.destinations[2].y).toBeLessThan(access.destinations[9].y);
   expect(access.buttonsMoveWithCar).toBe(true);
   expect(access.panelParent).toBe("forkmesh-office-glass-elevator-car");
   expect(access.carPosition).toMatchObject({ x: 70, y: 0 });
