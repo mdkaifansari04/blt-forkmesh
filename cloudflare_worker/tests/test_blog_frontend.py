@@ -123,6 +123,44 @@ def test_feature_blog_posts_have_images_and_article_shells():
         assert marker in html
 
 
+def test_every_blog_post_carries_fillable_social_permalinks():
+    posts = sorted((PUBLIC / "blog").glob("*/index.html"))
+
+    assert len(posts) == 73
+    for post in posts:
+        html = _read(post)
+        for marker in (
+            '<link rel="stylesheet" href="/blog-social.css">',
+            '<script src="/blog-social.js" defer></script>',
+            "<section data-blog-social",
+            'data-reddit=""',
+            'data-mastodon=""',
+            'data-twitter=""',
+        ):
+            assert marker in html, post
+
+
+def test_blog_social_renderer_shows_unfilled_networks_as_empty():
+    script = _read(PUBLIC / "blog-social.js")
+    styles = _read(PUBLIC / "blog-social.css")
+
+    for marker in (
+        '{ key: "reddit", label: "Reddit" }',
+        '{ key: "mastodon", label: "Mastodon" }',
+        '{ key: "twitter", label: "X (Twitter)" }',
+        'const EMPTY_LABEL = "Not posted yet";',
+        # A blank attribute — and anything that is not an http(s) permalink —
+        # renders as the empty slot instead of becoming an anchor.
+        'return /^https?:\\/\\//i.test(raw) ? raw : "";',
+        'empty.className = "blog-social-empty";',
+        'link.rel = "noopener noreferrer me";',
+    ):
+        assert marker in script
+
+    assert ".blog-social-item.is-empty" in styles
+    assert ".blog-social-empty" in styles
+
+
 def test_feature_blog_images_exist_for_each_generated_post():
     posts = _feature_post_paths()
     images = sorted(FEATURE_IMAGES.glob("*.webp"))
@@ -211,6 +249,8 @@ if __name__ == "__main__":
     test_blog_page_footer_keeps_only_twitter_social_link()
     test_blog_page_indexes_every_feature_post()
     test_feature_blog_posts_have_images_and_article_shells()
+    test_every_blog_post_carries_fillable_social_permalinks()
+    test_blog_social_renderer_shows_unfilled_networks_as_empty()
     test_feature_blog_images_exist_for_each_generated_post()
     test_blog_page_search_opens_dialog()
     test_blog_page_uses_landing_green_accent_for_primary_art()
