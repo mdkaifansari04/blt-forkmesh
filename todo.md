@@ -5,9 +5,13 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
-- [ ] Show the latest actual safe full referring URL beneath each hostname on the in-world HTTP referrer board.
-- [ ] Show all available blog-board reach stats: total views, approximate unique views, referrer-site count, referred visits, and network distribution.
-- [ ] Add an Engineering-only Human TODO board beside the repository work boards, populated from actionable Claude/Codex session signals.
+- [x] Keep Mastodon follower avatars visibly orbiting the selected repository file circle at every normal camera angle.
+- [x] Make clicking the Claude or Codex world bot open its complete Engineering-only live status, work, transcript, runtime, and prompt controls.
+- [x] Surface stalled mirror-agent diagnostics as actionable notes on the Engineering-only Human TODO board.
+- [ ] Provision a supported headless Claude credential on `mirror2` and confirm its Qt node claims website agent jobs; never relay a personal OAuth credential through the Worker.
+- [x] Show the latest actual safe full referring URL beneath each hostname on the in-world HTTP referrer board.
+- [x] Show all available blog-board reach stats: total views, approximate unique views, referrer-site count, referred visits, and network distribution.
+- [x] Add an Engineering-only Human TODO board beside the repository work boards, populated from actionable Claude/Codex session signals.
 - [ ] Review every currently open pull request and record an evidence-backed disposition for each, beyond the automated board status/score.
 - [x] Stop signed-in mobile World movement from triggering a native page refresh or reconnect position rollback.
 - [x] Move the complete Office elevator shaft into the first bay right of the entrance.

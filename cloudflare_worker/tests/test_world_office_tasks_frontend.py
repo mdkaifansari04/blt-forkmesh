@@ -143,12 +143,13 @@ def test_only_assignees_receive_start_stop_and_checkin_controls():
     assert "showCheckin" in tasks
 
 
-def test_manager_assignment_control_renders_every_returned_active_user():
+def test_manager_assignment_control_renders_only_returned_marketing_members():
     tasks = source(TASKS)
     world = source(WORLD)
     assert "<select" in world
     assert "data-world-office-task-assignees" in world
-    assert ".slice(0, 1000)" in tasks
+    assert "Select a Marketing team member" in tasks
+    assert "marketingMembers" in tasks
     assert "<option value=" in tasks
     assert "<datalist" not in world
 
@@ -197,5 +198,8 @@ def test_physical_board_displays_bounded_authorized_summaries_only():
     scene = source(SCENE)
     assert "normalizeOfficeMarketingTasks(payload)" in scene
     assert "const authorized = source.authorized === true" in scene
-    assert "const OFFICE_MARKETING_TASK_LIMIT = 6" in scene
+    assert "const OFFICE_MARKETING_TASK_LIMIT = 250" in scene
     assert "task.elapsed" in scene
+    assert "officeMarketingRosterGroup" in scene
+    assert "officeMarketingAttendanceTexture" in scene
+    assert "officeReclaimedWoodTexture" in scene

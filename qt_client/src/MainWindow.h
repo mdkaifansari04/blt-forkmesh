@@ -1151,6 +1151,10 @@ private:
     // only in a bounded JSON stdin payload; they are never saved in QSettings
     // or placed in process arguments/logs.
     void configureHostActionsForSelection(int row);
+    // Install the official user-scoped Claude Code and Codex CLI binaries on
+    // one selected mirror over its existing TOFU-pinned SSH connection.
+    // Authentication is intentionally separate and never copied by this action.
+    void installAgentClisForHost(int row);
     void runHostActionsConfiguration(
         forkmesh::control::MirrorActionsConfigurationRequest request,
         const QString &sshPassword);
@@ -3821,6 +3825,7 @@ private:
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QProcess *m_hostLogProcess = nullptr;     // running ssh log-tail session, if any
     QProcess *m_hostActionsProcess = nullptr; // one-shot stdin-only Actions config
+    QProcess *m_hostAgentInstallProcess = nullptr; // Claude/Codex CLI install
     QProcess *m_hostDiskProcess = nullptr;    // running ssh size-map read, if any
     // One-click Vultr mirror provisioning (adhoc #315). The API key is read
     // from the field (or a stored VULTR_API_KEY device variable) per run and

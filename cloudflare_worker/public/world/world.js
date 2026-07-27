@@ -3726,7 +3726,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                   name="assignee"
                   required
                 >
-                  <option value="">Select an active ForkMesh user</option>
+                  <option value="">Select a Marketing team member</option>
                 </select>
               </label>
               <button type="submit">Add task</button>
@@ -4323,6 +4323,7 @@ class ForkMeshWorld extends HTMLElement {
     this.pullViewedFiles = new Map();
     this.pullReviewScrollCleanup = null;
     this.expandedRepositoryIssuePage = 0;
+    this.repositoryIssueAgentAssignments = new Set();
     this.securityTriage = null;
     this.remotePlayers = new Map();
     this.localPeers = new Map();
@@ -5100,8 +5101,26 @@ class ForkMeshWorld extends HTMLElement {
             void this.toggleRepositoryStar(meta.repositoryStar);
             return;
           }
+          if (id === "repositories" && meta.repositoryFediverseFollow) {
+            void this.followRepositoryOnFediverse(
+              meta.repositoryFediverseFollow,
+            );
+            return;
+          }
           if (id === "repositories" && meta.repositorySizeNode) {
             this.selectRepositorySizeNode(meta.repositorySizeNode);
+            return;
+          }
+          if (id === "repositories" && meta.repositoryIssueAgentProvider) {
+            this.selectRepositoryIssueAgentProvider(
+              meta.repositoryIssueAgentProvider,
+            );
+            return;
+          }
+          if (id === "repositories" && meta.repositoryIssueAgentAssignment) {
+            void this.assignRepositoryIssueToAgent(
+              meta.repositoryIssueAgentAssignment,
+            );
             return;
           }
           if (id === "repositories" && meta.repositoryIssuePage) {
@@ -5128,9 +5147,9 @@ class ForkMeshWorld extends HTMLElement {
         onOfficeEnter: (entry = {}) => {
           this.officeController?.enterOffice?.(entry);
         },
-        onOfficeTaskBoardSelect: () => {
-          this.officeTasks?.open();
-        },
+        // The physical wall is now the complete Marketing task view. Selecting
+        // it no longer covers the room with the legacy task drawer.
+        onOfficeTaskBoardSelect: () => {},
         onOfficeMeetingBoardSelect: () => {
           void this.officeMeeting?.joinRoom?.("general");
         },
@@ -5186,7 +5205,7 @@ class ForkMeshWorld extends HTMLElement {
           const name = String(botId || "").toLowerCase() === "codex"
             ? "codex"
             : "claude";
-          this.openChatTerminal(`@${name} `);
+          this.openAgentBotDetail(name);
         },
         onPlayForkmeshSong: () => {
           void this.playForkmeshSong();
@@ -9597,7 +9616,7 @@ class ForkMeshWorld extends HTMLElement {
       : base;
   }
 
-  mirrorNodeAgentSessionsHTML(node) {
+  mirrorNodeAgentSessionsHTML(node, options = {}) {
     const requiredTeam = escapeHTML(
       this.orgAgentAccess?.requiredTeam || "engineering",
     );
@@ -9617,10 +9636,19 @@ class ForkMeshWorld extends HTMLElement {
     const nodeName = String(node?.name || node?.machineName || "")
       .trim()
       .toLowerCase();
+    const providerFilter = ["claude-code", "codex"].includes(
+      String(options?.provider || ""),
+    )
+      ? String(options.provider)
+      : "";
+    const allNodes = options?.allNodes === true;
     const sessions = this.orgAgentSessions
       .filter(
         (session) =>
-          String(session?.targetNode || "").trim().toLowerCase() === nodeName,
+          (allNodes ||
+            String(session?.targetNode || "").trim().toLowerCase() ===
+              nodeName) &&
+          (!providerFilter || session?.provider === providerFilter),
       )
       .slice(0, 50);
     const date = (value) => {
@@ -9669,10 +9697,27 @@ class ForkMeshWorld extends HTMLElement {
             <strong>${escapeHTML(
               session?.title || `${session?.provider || "Agent"} session`,
             )}</strong>
-            <span>${escapeHTML(session?.status || "unknown")} · ${escapeHTML(
+            <span>${escapeHTML(
+              session?.displayStatus || session?.status || "unknown",
+            )} · ${escapeHTML(
               session?.provider === "codex" ? "Codex" : "Claude Code",
             )}</span>
           </summary>
+          ${
+            session?.diagnostic?.message
+              ? `<div class="world-notice ${
+                  session.diagnostic.level === "attention"
+                    ? "world-notice-warning"
+                    : "world-notice-safe"
+                }"><strong>${escapeHTML(
+                  session.diagnostic.level === "attention"
+                    ? "Action needed"
+                    : "Session status",
+                )}</strong><span>${escapeHTML(
+                  session.diagnostic.message,
+                )}</span></div>`
+              : ""
+          }
           ${
             availability.message
               ? `<div class="world-notice ${
@@ -9700,9 +9745,22 @@ class ForkMeshWorld extends HTMLElement {
             <div><dt>Haiku gate</dt><dd>${escapeHTML(
               session?.security?.state || "pending",
             )}${session?.security?.reason ? ` · ${escapeHTML(session.security.reason)}` : ""}</dd></div>
-            <div><dt>Model</dt><dd>${escapeHTML(
-              info.model || "Provider default",
+            <div><dt>Target mirror</dt><dd>${escapeHTML(
+              session?.targetNode || "Not assigned",
             )}</dd></div>
+            <div><dt>Credential source</dt><dd>${escapeHTML(
+              availability.credentialSource || "Not reported",
+            )}</dd></div>
+            <div><dt>Model</dt><dd>${escapeHTML(
+              info.model ||
+                session?.requestedModel ||
+                "Provider default",
+            )}</dd></div>
+            <div><dt>Issue</dt><dd>${
+              Number(session?.issueNumber) > 0
+                ? `#${Number(session.issueNumber)}`
+                : "Ad-hoc task"
+            }</dd></div>
             <div><dt>Permission mode</dt><dd>${escapeHTML(
               info.mode || "Node default",
             )}</dd></div>
@@ -9784,9 +9842,24 @@ class ForkMeshWorld extends HTMLElement {
     }).join("");
     return `
       <section class="world-feature-card" data-world-mirror-agent-workspace>
-        <h3>Engineering agent workspace</h3>
+        <h3>${
+          providerFilter
+            ? `${providerFilter === "codex" ? "Codex" : "Claude Code"} engineering workspace`
+            : "Engineering agent workspace"
+        }</h3>
         <p>Full mirror-reported session detail, transcript, and prompt controls. Every new prompt is re-checked by the tool-free Haiku gate.</p>
-        <form class="world-agent-prompt-form" data-world-agent-start>
+        ${
+          allNodes && providerFilter
+            ? `<div class="world-detail-actions">
+                <button class="world-primary-action" type="button" data-world-agent-open-chat="${
+                  providerFilter === "codex" ? "@codex " : "@claude "
+                }">Open ${providerFilter === "codex" ? "Codex" : "Claude"} chat</button>
+              </div>`
+            : ""
+        }
+        ${
+          nodeName
+            ? `<form class="world-agent-prompt-form" data-world-agent-start>
           <label>Start a session on ${escapeHTML(nodeName || "this mirror")}
             <textarea name="prompt" maxlength="8000" required rows="3" placeholder="Describe the repository task…"></textarea>
           </label>
@@ -9795,9 +9868,17 @@ class ForkMeshWorld extends HTMLElement {
             <button class="world-secondary-action" type="submit" name="provider" value="codex">Start Codex</button>
           </div>
           <span data-world-agent-form-status></span>
-        </form>
+        </form>`
+            : ""
+        }
         <div class="world-agent-session-list">
-          ${sessionHTML || '<p class="world-empty-state">No agent prompt sessions are assigned to this mirror yet.</p>'}
+          ${sessionHTML || `<p class="world-empty-state">No ${
+            providerFilter
+              ? providerFilter === "codex"
+                ? "Codex"
+                : "Claude Code"
+              : "agent prompt"
+          } sessions are available here yet.</p>`}
         </div>
       </section>`;
   }
@@ -9805,6 +9886,13 @@ class ForkMeshWorld extends HTMLElement {
   wireMirrorNodeAgentWorkspace(node) {
     const workspace = this.$("[data-world-mirror-agent-workspace]");
     if (!workspace || this.orgAgentAccess?.state !== "allowed") return;
+    workspace
+      .querySelector("[data-world-agent-open-chat]")
+      ?.addEventListener("click", (event) => {
+        this.openChatTerminal(
+          String(event.currentTarget.dataset.worldAgentOpenChat || ""),
+        );
+      });
     const send = async (form, endpoint, extra = {}) => {
       const prompt = String(new FormData(form).get("prompt") || "").trim();
       if (!prompt) return;
@@ -10046,6 +10134,46 @@ class ForkMeshWorld extends HTMLElement {
       </div>`;
     this.showDetailOverlay(detail, backdrop, { returnFocus });
     this.wireMirrorNodeAgentWorkspace(node);
+  }
+
+  openAgentBotDetail(botId, { returnFocus = null } = {}) {
+    if (this.orgAgentAccess?.state !== "allowed") {
+      this.toast(
+        "Claude and Codex status is available only to the Engineering team.",
+      );
+      return;
+    }
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop) return;
+    const provider =
+      String(botId || "").toLowerCase() === "codex"
+        ? "codex"
+        : "claude-code";
+    const label = provider === "codex" ? "Codex" : "Claude Code";
+    detail.dataset.openLandmark = "agent-bot";
+    detail.dataset.agentProvider = provider;
+    detail.style.setProperty(
+      "--detail-color",
+      provider === "codex" ? "#8fffe0" : "#ffb37f",
+    );
+    detail.innerHTML = `
+      <header class="world-detail-header">
+        <div>
+          <p class="world-eyebrow">ENGINEERING AGENT / LIVE SESSION STATUS</p>
+          <h2 id="world-detail-title">${label}</h2>
+        </div>
+        <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close ${label} details">×</button>
+      </header>
+      <div class="world-detail-scroll">
+        <p class="world-detail-summary">What ${label} is working on across eligible mirrors, with the complete authorized runtime and transcript data reported by Qt.</p>
+        ${this.mirrorNodeAgentSessionsHTML(
+          {},
+          { provider, allNodes: true },
+        )}
+      </div>`;
+    this.showDetailOverlay(detail, backdrop, { returnFocus });
+    this.wireMirrorNodeAgentWorkspace({});
   }
 
   async fetchMastodonJSON(url) {
@@ -13694,6 +13822,14 @@ class ForkMeshWorld extends HTMLElement {
         typeof nextState?.federates === "boolean"
           ? nextState.federates
           : previous.federates === true,
+      handle: sanitizeNotificationText(
+        nextState?.handle || previous.handle,
+        "",
+        120,
+      ),
+      actorUrl:
+        safePublicHTTPSURL(nextState?.actorUrl) ||
+        safePublicHTTPSURL(previous.actorUrl),
       followers: Array.isArray(nextState?.followers)
         ? nextState.followers
         : Array.isArray(previous.followers)
@@ -13749,6 +13885,8 @@ class ForkMeshWorld extends HTMLElement {
             ? reported
             : followers.length,
         federates: fediverse.enabled === true,
+        handle: fediverse.handle,
+        actorUrl: fediverse.actorUrl,
         followers,
       });
       this.refreshRepositoryFollowerUI();
@@ -13760,6 +13898,69 @@ class ForkMeshWorld extends HTMLElement {
       this.refreshRepositoryFollowerUI();
       return state;
     }
+  }
+
+  async followRepositoryOnFediverse(repository = {}) {
+    const handle = sanitizeNotificationText(
+      repository?.handle,
+      "",
+      120,
+    );
+    const actorUrl = safePublicHTTPSURL(repository?.actorUrl);
+    if (!handle && !actorUrl) {
+      this.toast("This repository has not published a fediverse actor yet.");
+      return false;
+    }
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop) return false;
+    detail.dataset.openLandmark = "repository-follow";
+    detail.style.setProperty("--detail-color", "#8c8dff");
+    detail.innerHTML = `
+      <header class="world-detail-header">
+        <div>
+          <p class="world-eyebrow">MASTODON / ACTIVITYPUB</p>
+          <h2 id="world-detail-title">Follow this repository</h2>
+        </div>
+        <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close follow instructions">×</button>
+      </header>
+      <div class="world-detail-scroll">
+        <section class="world-feature-card">
+          <h3>${escapeHTML(handle || "Repository actor")}</h3>
+          <p>Search for this complete handle from your Mastodon app, then press Follow. The outer portrait ring updates from the repository actor’s real ActivityPub followers.</p>
+          <div class="world-detail-actions">
+            ${
+              handle
+                ? '<button class="world-primary-action" type="button" data-world-copy-repository-handle>Copy Mastodon handle</button>'
+                : ""
+            }
+            ${
+              actorUrl
+                ? `<a class="world-secondary-action" href="${escapeHTML(
+                    actorUrl,
+                  )}" target="_blank" rel="noopener noreferrer">Open actor record ↗</a>`
+                : ""
+            }
+          </div>
+          <p class="world-empty-state" data-world-follow-status></p>
+        </section>
+      </div>`;
+    this.showDetailOverlay(detail, backdrop);
+    detail
+      .querySelector("[data-world-copy-repository-handle]")
+      ?.addEventListener("click", async () => {
+        const status = detail.querySelector("[data-world-follow-status]");
+        try {
+          await navigator.clipboard.writeText(handle);
+          if (status) {
+            status.textContent =
+              "Copied. Paste it into Mastodon search and choose Follow.";
+          }
+        } catch (_) {
+          if (status) status.textContent = handle;
+        }
+      });
+    return true;
   }
 
   refreshRepositoryFollowerUI() {
@@ -14170,6 +14371,8 @@ class ForkMeshWorld extends HTMLElement {
           ? followers.count
           : null,
         fediverseFollowerStatus: followers?.status || "idle",
+        fediverseHandle: followers?.handle || "",
+        fediverseActorUrl: followers?.actorUrl || "",
         fediverseFollowers: Array.isArray(followers?.followers)
           ? followers.followers
           : [],
@@ -14206,6 +14409,10 @@ class ForkMeshWorld extends HTMLElement {
         : records[recordIndex].fediverseFollowerCount,
       fediverseFollowerStatus:
         followers?.status || records[recordIndex].fediverseFollowerStatus,
+      fediverseHandle:
+        followers?.handle || records[recordIndex].fediverseHandle || "",
+      fediverseActorUrl:
+        followers?.actorUrl || records[recordIndex].fediverseActorUrl || "",
       fediverseFollowers: Array.isArray(followers?.followers)
         ? followers.followers
         : records[recordIndex].fediverseFollowers,
@@ -14288,6 +14495,108 @@ class ForkMeshWorld extends HTMLElement {
     this.toast(
       `Issue #${number}${page?.state ? ` (${page.state})` : ""}: click the expanded page to open the full thread.`,
     );
+  }
+
+  selectRepositoryIssueAgentProvider(issue = {}) {
+    if (this.orgAgentAccess?.state !== "allowed") {
+      this.toast(
+        "Only Engineering team members can assign issues to Claude or Codex.",
+      );
+      return false;
+    }
+    const provider = ["claude-code", "codex"].includes(issue?.provider)
+      ? issue.provider
+      : "";
+    const number = safePullNumber(issue?.number);
+    if (!provider || !number) return false;
+    this.world?.setRepositoryIssueAgentPicker?.({
+      owner: issue.owner,
+      name: issue.name,
+      number,
+      provider,
+    });
+    this.toast(
+      `Choose a ${provider === "codex" ? "Codex" : "Claude"} model for issue #${number}.`,
+    );
+    return true;
+  }
+
+  async assignRepositoryIssueToAgent(issue = {}) {
+    if (this.orgAgentAccess?.state !== "allowed") {
+      this.toast(
+        "Only Engineering team members can assign issues to Claude or Codex.",
+      );
+      return false;
+    }
+    const owner = sanitizePresenceText(issue?.owner, "", 40).toLowerCase();
+    const name = sanitizePresenceText(issue?.name, "", 60).toLowerCase();
+    const number = safePullNumber(issue?.number);
+    const title = sanitizeNotificationText(
+      issue?.title,
+      `Issue #${number || ""}`,
+      160,
+    );
+    const provider = ["claude-code", "codex"].includes(issue?.provider)
+      ? issue.provider
+      : "";
+    const allowedModels =
+      provider === "claude-code"
+        ? new Set(["haiku", "sonnet", "opus", "fable"])
+        : new Set(["sol", "luna", "terra"]);
+    const model = String(issue?.model || "").toLowerCase();
+    if (
+      owner !== "forkmesh" ||
+      name !== "forkmesh" ||
+      !number ||
+      !provider ||
+      !allowedModels.has(model)
+    ) {
+      this.toast("That issue-agent assignment is not valid.");
+      return false;
+    }
+    const assignmentKey = `${owner}/${name}#${number}:${provider}:${model}`;
+    if (this.repositoryIssueAgentAssignments.has(assignmentKey)) return false;
+    this.repositoryIssueAgentAssignments.add(assignmentKey);
+    this.toast(
+      `Assigning issue #${number} to ${
+        provider === "codex" ? "Codex" : "Claude"
+      } · ${model}…`,
+    );
+    try {
+      await this.postJSON(
+        this.organizationAgentEndpoint(),
+        {
+          provider,
+          model,
+          issueNumber: number,
+          taskKey: `issue:${owner}/${name}#${number}`,
+          title: `Issue #${number}: ${title}`,
+          prompt:
+            `Resolve ForkMesh issue #${number}: ${title}\n\n` +
+            `Read the commit-pinned issue record and its comments, implement a secure focused fix, run the relevant tests, and create a pull request that references and closes issue #${number}.`,
+        },
+        { timeout: 12_000 },
+      );
+      this.world?.setRepositoryIssueAgentPicker?.(null);
+      await this.refreshOrgAgentBots();
+      this.toast(
+        `Issue #${number} queued for ${
+          provider === "codex" ? "Codex" : "Claude"
+        } · ${model}; Haiku security review runs first.`,
+      );
+      return true;
+    } catch (error) {
+      this.toast(
+        String(error?.message || "") === "no_eligible_headless_mirror"
+          ? "No eligible headless mirror is online for this assignment."
+          : `Could not assign issue #${number}: ${String(
+              error?.message || "unknown error",
+            )}`,
+      );
+      return false;
+    } finally {
+      this.repositoryIssueAgentAssignments.delete(assignmentKey);
+    }
   }
 
   openRepositoryIssueWorkbench(page) {

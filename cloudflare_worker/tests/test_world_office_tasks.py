@@ -130,6 +130,32 @@ class FakeRuntime:
             name for name, user in self.users.items() if user["active"]
         )
 
+    async def marketing_members(self, _org_bi):
+        return [
+            {"bi": self.users[name]["bi"], "name": name}
+            for name in ("bob", "carol")
+        ]
+
+    async def marketing_member(self, org_bi, name):
+        return next(
+            (
+                member
+                for member in await self.marketing_members(org_bi)
+                if member["name"] == name
+            ),
+            None,
+        )
+
+    async def marketing_attendance(self, members, _now):
+        return [{
+            "date": "2036-07-18",
+            "label": "FRI 07/18",
+            "hours": [
+                {"member": member["name"], "hours": 1.25}
+                for member in members
+            ],
+        }]
+
     async def seal(self, value):
         return "sealed:" + base64.urlsafe_b64encode(
             json.dumps(value, sort_keys=True).encode()).decode()
@@ -234,7 +260,12 @@ async def test_org_authorization_manager_roles_and_filtered_reads():
     }
     assert "members" in manager_list["data"]
     assert "inactive" not in manager_list["data"]["members"]
-    assert "eve" in manager_list["data"]["members"]
+    assert manager_list["data"]["members"] == ["bob", "carol"]
+    assert manager_list["data"]["marketingMembers"] == ["bob", "carol"]
+    assert manager_list["data"]["attendanceDays"][0]["hours"][0] == {
+        "member": "bob",
+        "hours": 1.25,
+    }
 
     bob_list = await tasks_api.handle(
         runtime.use("GET", "bob"), tasks_api.PREFIX)
@@ -246,32 +277,17 @@ async def test_org_authorization_manager_roles_and_filtered_reads():
 
     inactive_assignee = await create_task(runtime, "inactive")
     assert inactive_assignee["status"] == 400
-    assert inactive_assignee["data"]["error"] == "assignee_not_active_user"
+    assert inactive_assignee["data"]["error"] == (
+        "assignee_not_marketing_member"
+    )
 
     external_task = await create_task(runtime, "eve", "External assignment")
-    assert external_task["status"] == 201
+    assert external_task["status"] == 400
+    assert external_task["data"]["error"] == "assignee_not_marketing_member"
     external_view = await tasks_api.handle(
         runtime.use("GET", "eve"), tasks_api.PREFIX)
     assert external_view["status"] == 200
-    assert [task["assignee"] for task in external_view["data"]["tasks"]] == [
-        "eve"
-    ]
-    external_id = external_task["data"]["task"]["id"]
-    external_start = await tasks_api.handle(
-        runtime.use("POST", "eve", {}),
-        f"{tasks_api.PREFIX}/{external_id}/start",
-    )
-    assert external_start["status"] == 200
-    external_checkin = await tasks_api.handle(
-        runtime.use("POST", "eve", {"state": "going_well"}),
-        f"{tasks_api.PREFIX}/{external_id}/checkin",
-    )
-    assert external_checkin["status"] == 200
-    external_stop = await tasks_api.handle(
-        runtime.use("POST", "eve", {}),
-        f"{tasks_api.PREFIX}/stop-active",
-    )
-    assert external_stop["data"]["stopped"] is True
+    assert external_view["data"]["tasks"] == []
     external_manage = await tasks_api.handle(
         runtime.use("POST", "eve", {
             "title": "No management bypass",

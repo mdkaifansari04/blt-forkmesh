@@ -7853,6 +7853,121 @@ class _OfficeMarketingTasksRuntime:
                 members.append(name)
         return members
 
+    async def marketing_members(self, org_bi):
+        """Return active users on an authoritative Marketing floor team."""
+        rows = await d1_all(
+            self.env,
+            "SELECT DISTINCT tm.member_bi AS member_bi,tm.name AS name,"
+            "tm.team AS team "
+            "FROM org_team_members tm "
+            "INNER JOIN org_members om "
+            "ON om.org_bi=tm.org_bi AND om.member_bi=tm.member_bi "
+            "INNER JOIN org_teams ot "
+            "ON ot.org_bi=tm.org_bi AND ot.team=tm.team "
+            "WHERE tm.org_bi=? "
+            "AND om.role IN ('owner','admin','member') "
+            "AND ot.permission IN ('read','write','maintain','admin') "
+            "ORDER BY tm.name COLLATE NOCASE LIMIT 1000",
+            str(org_bi or ""),
+        )
+        aliases = OFFICE_FLOOR_TEAM_ALIASES["marketing"]
+        members = []
+        seen = set()
+        for row in rows or []:
+            if _office_team_slug(row.get("team")) not in aliases:
+                continue
+            name = clean_string(
+                row.get("name") or "", MAX_NODE_NAME
+            ).strip().lower()
+            member = await self.active_user(name)
+            if not member or name in seen:
+                continue
+            seen.add(name)
+            members.append(member)
+        return members
+
+    async def marketing_member(self, org_bi, name):
+        requested = clean_string(
+            name or "", MAX_NODE_NAME
+        ).strip().lower()
+        if not requested:
+            return None
+        for member in await self.marketing_members(org_bi):
+            if str(member.get("name") or "").lower() == requested:
+                return member
+        return None
+
+    async def marketing_attendance(self, members, now):
+        """Aggregate the last seven UTC calendar days for Marketing desks."""
+        day_ms = 24 * 60 * 60 * 1000
+        now = max(0, int(now or 0))
+        today = now // day_ms
+        first_day = max(0, today - 6)
+        start_ms = first_day * day_ms
+        totals = {}
+        valid_members = []
+        for member in members or []:
+            account_bi = str((member or {}).get("bi") or "")
+            name = clean_string(
+                (member or {}).get("name") or "", MAX_NODE_NAME
+            ).strip().lower()
+            if not account_bi or not name:
+                continue
+            valid_members.append(name)
+            rows = await d1_all(
+                self.env,
+                "SELECT in_at,out_at,last_seen_at "
+                "FROM world_office_attendance "
+                "WHERE account_bi=? "
+                "AND in_at<? "
+                "AND COALESCE(out_at,NULLIF(last_seen_at,0),?)>=? "
+                "ORDER BY in_at ASC LIMIT 500",
+                account_bi,
+                now + 1,
+                now,
+                start_ms,
+            )
+            for row in rows or []:
+                entered = max(start_ms, int(row.get("in_at") or 0))
+                exited = row.get("out_at")
+                if exited is None:
+                    exited = min(
+                        now,
+                        max(
+                            entered,
+                            int(row.get("last_seen_at") or now),
+                        ),
+                    )
+                exited = min(now, max(entered, int(exited or entered)))
+                cursor = entered
+                while cursor < exited:
+                    bucket = cursor // day_ms
+                    boundary = (bucket + 1) * day_ms
+                    portion = min(exited, boundary) - cursor
+                    totals[(name, bucket)] = (
+                        totals.get((name, bucket), 0) + portion
+                    )
+                    cursor += portion
+        days = []
+        for bucket in range(first_day, today + 1):
+            stamp = time.gmtime(bucket * 24 * 60 * 60)
+            days.append({
+                "date": time.strftime("%Y-%m-%d", stamp),
+                "label": time.strftime("%a %m/%d", stamp).upper(),
+                "hours": [
+                    {
+                        "member": name,
+                        "hours": round(
+                            totals.get((name, bucket), 0) / 3600000, 2),
+                    }
+                    for name in valid_members
+                ],
+            })
+        return days
+
+    async def blind(self, value):
+        return await blind_index(self.env, str(value or ""))
+
     async def seal(self, value):
         return await encrypt_row(self.env, value)
 
@@ -30079,6 +30194,19 @@ async def agents_ack_handler(env, request, owner, repo):
 # rest session/job tables, are visible only to current org members, and execute
 # only after the selected mirror runs a tool-free Claude Haiku safety preflight.
 ORG_AGENT_PROVIDERS = ("claude-code", "codex")
+ORG_AGENT_MODEL_ALIASES = {
+    "claude-code": {
+        "haiku": "claude-haiku-4-5",
+        "sonnet": "claude-sonnet-4-6",
+        "opus": "claude-opus-4-8",
+        "fable": "claude-fable-5",
+    },
+    "codex": {
+        "sol": "gpt-5.6-sol",
+        "luna": "gpt-5.6-luna",
+        "terra": "gpt-5.6-terra",
+    },
+}
 ORG_AGENT_SESSION_STATUSES = (
     "security_pending", "queued", "running", "completed", "failed", "rejected",
 )
@@ -30304,6 +30432,9 @@ def _org_agent_session_projection(row, record):
         "completedAt": int(row.get("completed_at") or 0),
         "localAgentId": int(record.get("localAgentId") or 0),
         "taskKey": clean_string(record.get("taskKey"), 96),
+        "issueNumber": max(0, min(
+            int(record.get("issueNumber") or 0), 10_000_000)),
+        "requestedModel": clean_string(record.get("requestedModel"), 60),
         "history": history[-ORG_AGENT_MAX_HISTORY:],
         "security": record.get("security") or {},
         "agentInfo": agent_info,
@@ -30374,6 +30505,10 @@ async def org_agent_bots_handler(env, request, org, repo):
             "requiredTeam": "engineering",
             "engineeringAccess": True,
             "providers": list(ORG_AGENT_PROVIDERS),
+            "models": {
+                provider: list(ORG_AGENT_MODEL_ALIASES[provider].keys())
+                for provider in ORG_AGENT_PROVIDERS
+            },
             "sessions": sessions,
             "privacyBoundary": "organization-members-encrypted-at-rest",
             "securityGate": "claude-haiku-tool-free-fail-closed",
@@ -30383,6 +30518,10 @@ async def org_agent_bots_handler(env, request, org, repo):
     prompt = clean_string(data.get("prompt"), ORG_AGENT_MAX_PROMPT).strip()
     if provider not in ORG_AGENT_PROVIDERS:
         return json_response({"error": "invalid_provider"}, status=400)
+    model_alias = clean_string(data.get("model"), 30).strip().lower()
+    model = ORG_AGENT_MODEL_ALIASES.get(provider, {}).get(model_alias)
+    if model_alias and not model:
+        return json_response({"error": "invalid_model"}, status=400)
     if not prompt:
         return json_response({"error": "prompt_required"}, status=400)
     preferred_node = clean_string(
@@ -30404,6 +30543,16 @@ async def org_agent_bots_handler(env, request, org, repo):
         task_key,
     ):
         return json_response({"error": "invalid_task_key"}, status=400)
+    try:
+        issue_number = int(data.get("issueNumber") or 0)
+    except (TypeError, ValueError):
+        issue_number = 0
+    if issue_number < 0 or issue_number > 10_000_000:
+        return json_response({"error": "invalid_issue_number"}, status=400)
+    if issue_number and task_key != (
+        "issue:%s/%s#%d" % (context["org"], context["repo"], issue_number)
+    ):
+        return json_response({"error": "invalid_issue_task_key"}, status=400)
     title = clean_string(
         data.get("title") or prompt.split("\n", 1)[0], 160).strip()
     record = {
@@ -30416,6 +30565,9 @@ async def org_agent_bots_handler(env, request, org, repo):
         "createdBy": context["actor"],
         "localAgentId": 0,
         "taskKey": task_key,
+        "issueNumber": issue_number,
+        "requestedModel": model or "",
+        "requestedModelAlias": model_alias,
         "security": {"state": "pending", "model": "haiku"},
         "history": [{
             "role": "user",
@@ -30434,6 +30586,8 @@ async def org_agent_bots_handler(env, request, org, repo):
         "provider": provider,
         "prompt": prompt,
         "taskKey": task_key,
+        "issueNumber": issue_number,
+        "model": model or "",
         "requestedBy": context["actor"],
         "securityCheck": {
             "provider": "claude-code",
@@ -30463,7 +30617,12 @@ async def org_agent_bots_handler(env, request, org, repo):
         env, context["actor"], "organization.agent_start",
         "organization_agent", context["org"] + "/" + context["repo"] +
         "/" + session_id, "success",
-        {"provider": provider, "targetNode": target_node})
+        {
+            "provider": provider,
+            "model": model or "provider-default",
+            "issueNumber": issue_number,
+            "targetNode": target_node,
+        })
     await notify_repo_host(env, target_node, context["repo"], "org-agents")
     return json_response({
         "ok": True,
