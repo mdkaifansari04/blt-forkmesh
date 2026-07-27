@@ -163,7 +163,7 @@ def test_floor_access_is_loaded_once_and_only_server_grants_unlock_buttons():
     for contract in (
         "async function loadFloorAccess(activeSession)",
         "const payload = await root.fetchJSON(OFFICE_FLOORS_PATH",
-        "officeAccess = floorResult.value",
+        "officeAccess = floorAccess",
         "world.setOfficeAccess?.(officeAccess)",
         "generation !== authorizationGeneration",
         "canAccessOfficeFloor(officeAccess, floorId)",

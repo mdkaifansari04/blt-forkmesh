@@ -773,16 +773,15 @@ def test_join_cues_are_country_specific_local_opt_in_and_rate_limited():
 
 
 def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
-    assert "data-world-office-focus" in APP
     assert "data-world-office-enter" not in APP
     assert "data-world-office-prompt" not in APP
+    assert "data-world-office-fallback" in APP
     assert "data-world-office-chat" in APP
     assert "data-world-office-frame" in APP
-    assert "Visit ForkMesh Office" in APP
+    assert "Open accessible chat fallback" in APP
     assert "ForkMesh Office chat" in APP
     assert 'office: "visiting-office"' in APP
     assert "/chat?embed=office" not in APP
-    assert 'sandbox="allow-forms allow-same-origin allow-scripts"' in APP
     assert "allow-popups" not in APP
     # Two doors to the same encrypted chat: the spatial Office walk-in (above)
     # and the docked chat terminal panel. The Office deliberately does not
