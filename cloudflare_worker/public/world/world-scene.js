@@ -9472,6 +9472,11 @@ export function createWorldScene({
     envMap: reflectionTarget.texture,
     envMapIntensity: 1.5,
   });
+  const logoInnerFace = new THREE.MeshStandardMaterial({
+    color: "#030807",
+    metalness: 0.18,
+    roughness: 0.72,
+  });
   const chromeCube = new THREE.Group();
   chromeCube.name = "forkmesh-reflective-fm-cube";
   // The resting view presents the F/M corner together. Motion-enabled clients
@@ -9505,13 +9510,19 @@ export function createWorldScene({
   ) => {
     const piece = new THREE.Mesh(
       new THREE.BoxGeometry(width, height, depth),
-      chrome,
+      // Every face group is authored with local +Z pointing out of the cube.
+      // Keep that public letter face and its beveled-looking edges mirrored,
+      // while the inward -Z face stays matte. Opposite repeated F/M marks no
+      // longer reflect through the hollow center and visually fragment the
+      // readable adjacent letters.
+      [chrome, chrome, chrome, chrome, chrome, logoInnerFace],
     );
     piece.position.set(x, y, z);
     piece.rotation.z = rotationZ;
     parent.add(piece);
     return piece;
   };
+  const logoLetterStroke = 1.04;
 
   const addFLogoFace = (z, rotationY) => {
     const face = new THREE.Group();
@@ -9519,9 +9530,9 @@ export function createWorldScene({
       `forkmesh-reflective-f-face-${z > 0 ? "front" : "back"}`;
     face.position.z = z;
     face.rotation.y = rotationY;
-    logoPiece(face, 0.82, 4.9, 0.48, -1.64, -0.04, 0);
-    logoPiece(face, 4.35, 0.82, 0.48, 0.12, 2.0, 0);
-    logoPiece(face, 3.45, 0.82, 0.48, -0.33, 0.22, 0);
+    logoPiece(face, logoLetterStroke, 4.9, 0.48, -1.64, -0.04, 0);
+    logoPiece(face, 4.35, logoLetterStroke, 0.48, 0.12, 2.0, 0);
+    logoPiece(face, 3.45, logoLetterStroke, 0.48, -0.33, 0.22, 0);
     chromeMark.add(face);
   };
   addFLogoFace(2.68, 0);
@@ -9533,14 +9544,14 @@ export function createWorldScene({
       `forkmesh-reflective-m-face-${x > 0 ? "right" : "left"}`;
     face.position.x = x;
     face.rotation.y = rotationY;
-    logoPiece(face, 0.82, 4.9, 0.48, -1.72, -0.04, 0);
-    logoPiece(face, 0.82, 4.9, 0.48, 1.72, -0.04, 0);
+    logoPiece(face, logoLetterStroke, 4.9, 0.48, -1.72, -0.04, 0);
+    logoPiece(face, logoLetterStroke, 4.9, 0.48, 1.72, -0.04, 0);
     const addDiagonal = (fromX, fromY, toX, toY) => {
       const dx = toX - fromX;
       const dy = toY - fromY;
       logoPiece(
         face,
-        0.82,
+        logoLetterStroke,
         Math.hypot(dx, dy),
         0.48,
         (fromX + toX) / 2,
