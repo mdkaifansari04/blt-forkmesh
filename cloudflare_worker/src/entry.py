@@ -92,6 +92,10 @@ CHAT_CHANNEL_DO_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/v([1-9][0-9]*)/(ws|revoke)$")
 OFFICE_MEETING_TICKET_TTL_MS = 60 * 1000
 OFFICE_ENTRY_TICKET_TTL_MS = 5 * 60 * 1000
+# Revalidate an Office socket's exact revocable account session at most once
+# per interval. Movement and presence frames inside the interval stay entirely
+# inside the Durable Object, avoiding a D1 read for every animation update.
+OFFICE_ACCESS_RECHECK_MS = 30 * 1000
 OFFICE_CHANNEL_WS_RE = re.compile(
     r"^/api/world/office/channels/([0-9a-f]{32})/ws/?$")
 OFFICE_INTERNAL_RE = re.compile(
@@ -758,9 +762,11 @@ def new_socket_id():
 
 def new_world_peer_id():
     # World ids are random per connection and deliberately contain no account,
-    # node, address, timestamp, or device identifier.
-    rnd = js_crypto.getRandomValues(Uint8Array.new(8))
-    return "".join("%02x" % int(rnd[index]) for index in range(8))
+    # node, address, timestamp, or device identifier. Use the full 128-bit
+    # peer-id allowance so even a long-lived room cannot plausibly collide two
+    # controllers and merge their movement streams.
+    rnd = js_crypto.getRandomValues(Uint8Array.new(16))
+    return "".join("%02x" % int(rnd[index]) for index in range(16))
 
 
 def _ws_attachment(ws):
@@ -3981,11 +3987,11 @@ def world_request_country(request):
 
 
 def world_context_handler(request):
-    """Return the visitor's coarse country code and the shared world clock.
+    """Return the visitor's context and the shared world clock.
 
-    This endpoint reads only ``request.cf.country`` (or ``cf-ipcountry`` in
-    local/dev environments). It never reads or returns an IP address,
-    user-agent, precise location, account, repository, or wallet information.
+    The raw connection card is returned only to the same request that supplied
+    it, under ``no-store``; it never enters public presence, a Durable Object,
+    persistence, analytics, or another visitor's response.
     """
     if method_name(request) != "GET":
         return json_response(
@@ -3994,9 +4000,11 @@ def world_context_handler(request):
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"allow": "GET"},
         )
+    payload = world_protocol.context_payload(
+        world_request_country(request), int(Date.now()), MAX_CONNECTIONS)
+    payload["securityDetails"] = _world_security_details(request)
     return json_response(
-        world_protocol.context_payload(
-            world_request_country(request), int(Date.now()), MAX_CONNECTIONS),
+        payload,
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
     )
@@ -4043,7 +4051,8 @@ async def world_durable_object_request(
 
     The general tunnel helper forwards Authorization and User-Agent because Git
     hosts need them. World presence does not. It receives only WebSocket
-    handshake headers plus the already-sanitized, approximate country code.
+    handshake headers plus the already-sanitized, approximate country code and
+    opaque moderation subjects.
     """
     headers = {}
     for name in (
@@ -4074,6 +4083,9 @@ async def world_durable_object_request(
             # The Durable Object uses it only to tailor moderation handles to
             # an administrator's socket; it is not public presence metadata.
             "isAdmin": claim.get("isAdmin") is True,
+            # One live use per signed ticket prevents a copied socket URL from
+            # creating a second verified-looking avatar in this room.
+            "ticketNonce": str(claim.get("ticketNonce") or ""),
         }
         encoded_claim = base64.urlsafe_b64encode(
             json.dumps(private_claim, separators=(",", ":")).encode()
@@ -4113,10 +4125,12 @@ async def office_durable_object_request(request, claims, target_url=None):
         "scope": str((claims or {}).get("scope") or ""),
         "version": int((claims or {}).get("version") or 0),
         "account_bi": str((claims or {}).get("account_bi") or ""),
+        "session_id": str((claims or {}).get("session_id") or ""),
         "name": world_protocol.clean_display_name(
             (claims or {}).get("name"), "Guest"),
         "accountStatus": str(
             (claims or {}).get("accountStatus") or "Guest"),
+        "nonce": str((claims or {}).get("nonce") or ""),
     }
     encoded_claim = base64.urlsafe_b64encode(
         json.dumps(safe_claim, separators=(",", ":")).encode()
@@ -4214,6 +4228,10 @@ def _world_ticket_decode(env, ticket):
     # `isAdmin` is accepted only from the HMAC-authenticated ticket body. It is
     # never accepted from a browser presence frame.
     public["isAdmin"] = claim.get("isAdmin") is True
+    nonce = str(claim.get("nonce") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,32}", nonce):
+        return None
+    public["ticketNonce"] = nonce
     return public
 
 
@@ -4565,6 +4583,7 @@ async def world_ticket_handler(env, request):
         "issuedAt": now,
         "expiresAt": now + WORLD_TICKET_TTL_MS,
         "activityGeneration": activity["generation"],
+        "nonce": new_world_peer_id(),
     }
     response_data = {
         "ok": True,
@@ -5521,7 +5540,8 @@ def _office_entry_ticket_claims(env, token):
     }
 
 
-def _office_meeting_ticket(env, scope, key_version, account_bi="", name=""):
+def _office_meeting_ticket(
+        env, scope, key_version, account_bi="", name="", session_id=""):
     """Issue a short-lived claim for one authorized spatial meeting."""
     scope = str(scope or "").strip()
     if scope != "world-general" and not re.fullmatch(
@@ -5536,6 +5556,9 @@ def _office_meeting_ticket(env, scope, key_version, account_bi="", name=""):
     account_bi = str(account_bi or "").strip()
     if account_bi and not re.fullmatch(r"[0-9a-f]{64}", account_bi):
         raise ValueError("invalid_office_account")
+    session_id = str(session_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", session_id):
+        raise ValueError("invalid_office_session")
     name = str(name or "").strip()
     if len(name) > 64 or any(ord(ch) < 32 for ch in name):
         raise ValueError("invalid_office_name")
@@ -5543,16 +5566,17 @@ def _office_meeting_ticket(env, scope, key_version, account_bi="", name=""):
     expires = int(Date.now()) + OFFICE_MEETING_TICKET_TTL_MS
     nonce = new_world_peer_id()
     canonical = ".".join((
-        "v1",
+        "v2",
         scope,
         str(key_version),
         account_bi or "-",
+        session_id,
         encoded_name or "-",
         str(expires),
         nonce,
     ))
     signature = hmac.new(
-        (_require_data_secret(env) + ":office-meeting-ticket-v1").encode(),
+        (_require_data_secret(env) + ":office-meeting-ticket-v2").encode(),
         canonical.encode(),
         "sha256",
     ).hexdigest()
@@ -5562,17 +5586,19 @@ def _office_meeting_ticket(env, scope, key_version, account_bi="", name=""):
 def _office_meeting_ticket_claims(env, token):
     """Verify and decode one Office meeting claim without side effects."""
     parts = str(token or "").split(".")
-    if len(parts) != 8:
+    if len(parts) != 9:
         return None
-    (version_tag, scope, version_raw, account_raw, name_raw, expires_raw,
-     nonce, signature) = parts
-    if version_tag != "v1":
+    (version_tag, scope, version_raw, account_raw, session_id, name_raw,
+     expires_raw, nonce, signature) = parts
+    if version_tag != "v2":
         return None
     if scope != "world-general" and not re.fullmatch(
             r"[0-9a-f]{32}", scope):
         return None
     account_bi = "" if account_raw == "-" else account_raw
     if account_bi and not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", session_id):
         return None
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,32}", nonce):
         return None
@@ -5591,9 +5617,9 @@ def _office_meeting_ticket_claims(env, token):
         or expires - now > OFFICE_MEETING_TICKET_TTL_MS
     ):
         return None
-    canonical = ".".join(parts[:7])
+    canonical = ".".join(parts[:8])
     expected = hmac.new(
-        (_require_data_secret(env) + ":office-meeting-ticket-v1").encode(),
+        (_require_data_secret(env) + ":office-meeting-ticket-v2").encode(),
         canonical.encode(),
         "sha256",
     ).hexdigest()
@@ -5611,6 +5637,7 @@ def _office_meeting_ticket_claims(env, token):
         "scope": scope,
         "version": key_version,
         "account_bi": account_bi,
+        "session_id": session_id,
         "name": name,
         "expires": expires,
         "nonce": nonce,
@@ -5757,6 +5784,152 @@ async def _chat_channel_socket_handler(env, request, channel_id):
     return json_response(
         {"error": "unavailable"}, status=503,
         extra_headers=EXPECTED_DEGRADED_HEADERS)
+
+
+def _office_attendance_visit(row):
+    """Project one D1 attendance row into a bounded public lobby record."""
+    if not isinstance(row, dict):
+        return None
+    visit_id = str(row.get("visit_id") or "")
+    if not re.fullmatch(r"[0-9a-f]{32}", visit_id):
+        return None
+    account = world_protocol.clean_display_name(
+        row.get("account_name"), "Contributor")
+    try:
+        in_at = int(row.get("in_at") or 0)
+        raw_out_at = row.get("out_at")
+        out_at = None if raw_out_at is None else int(raw_out_at)
+    except (TypeError, ValueError):
+        return None
+    max_safe_integer = 9007199254740991
+    if in_at <= 0 or in_at > max_safe_integer:
+        return None
+    if (
+        out_at is not None
+        and (out_at < in_at or out_at > max_safe_integer)
+    ):
+        return None
+    return {
+        "id": visit_id,
+        "account": account,
+        "inAt": in_at,
+        "outAt": out_at,
+    }
+
+
+async def _office_attendance_recent(env):
+    rows = await d1_all(
+        env,
+        "SELECT visit_id, account_name, in_at, out_at "
+        "FROM world_office_attendance "
+        "ORDER BY in_at DESC, visit_id DESC LIMIT 20",
+    )
+    visits = []
+    for row in rows or []:
+        visit = _office_attendance_visit(row)
+        if visit is not None:
+            visits.append(visit)
+    return visits
+
+
+async def office_attendance_handler(env, request):
+    """Read the shared lobby board or punch an authenticated visit IN/OUT."""
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={
+                "allow": "GET, POST",
+                "x-content-type-options": "nosniff",
+            },
+        )
+    if method == "GET":
+        await ensure_schema(env)
+        return json_response(
+            {"ok": True, "visits": await _office_attendance_recent(env)},
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
+        )
+
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response(
+            {"error": "invalid_json"},
+            status=400,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
+        )
+    if not isinstance(data, dict):
+        return json_response(
+            {"error": "invalid_json"},
+            status=400,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
+        )
+    try:
+        account_bi, account = await _account_session_record(
+            env, request, data)
+    except Exception:
+        account_bi, account = "", None
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", str(account_bi or ""))
+        or not account
+        or account.get("status") != "active"
+        or _account_kind(account) != "user"
+    ):
+        return json_response(
+            {"error": "login_required"},
+            status=401,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
+        )
+    action = str(data.get("action") or "").strip().lower()
+    if action not in ("in", "out"):
+        return json_response(
+            {"error": "invalid_action"},
+            status=400,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
+        )
+
+    await ensure_schema(env)
+    now = int(Date.now())
+    if action == "in":
+        # The partial unique index on open visits makes repeated/concurrent
+        # background authorization requests converge on the same visit.
+        await d1_run(
+            env,
+            "INSERT OR IGNORE INTO world_office_attendance "
+            "(visit_id, account_bi, account_name, in_at, out_at) "
+            "VALUES (?, ?, ?, ?, NULL)",
+            new_world_peer_id(),
+            str(account_bi),
+            world_protocol.clean_display_name(
+                account.get("name"), "Contributor"),
+            now,
+        )
+    else:
+        # Close, in place, only this account's newest open visit. Repeated OUT
+        # requests are harmless because the row no longer matches out_at NULL.
+        await d1_run(
+            env,
+            "UPDATE world_office_attendance SET out_at=? "
+            "WHERE visit_id=("
+            "SELECT visit_id FROM world_office_attendance "
+            "WHERE account_bi=? AND out_at IS NULL "
+            "ORDER BY in_at DESC, visit_id DESC LIMIT 1"
+            ") AND out_at IS NULL",
+            now,
+            str(account_bi),
+        )
+    return json_response(
+        {"ok": True, "visits": await _office_attendance_recent(env)},
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
 
 
 async def office_general_status_handler(env, request):
@@ -5948,12 +6121,14 @@ async def office_general_access_handler(env, request):
         )
     try:
         account_bi, record = await _account_session_record(env, request)
+        session_id = _request_account_session_id(request)
         entry_claims = _office_entry_ticket_claims(
             env, request.headers.get("x-forkmesh-office-entry") or "")
     except Exception:
-        account_bi, record, entry_claims = "", None, None
+        account_bi, record, session_id, entry_claims = "", None, "", None
     if (
         not re.fullmatch(r"[0-9a-f]{64}", str(account_bi or ""))
+        or not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", session_id)
         or not record
         or record.get("status") != "active"
         or _account_kind(record) != "user"
@@ -5973,7 +6148,7 @@ async def office_general_access_handler(env, request):
     name = world_protocol.clean_display_name(
         record.get("name"), "Contributor")
     token = _office_meeting_ticket(
-        env, "world-general", 1, str(account_bi), name)
+        env, "world-general", 1, str(account_bi), name, session_id)
     claims = _office_meeting_ticket_claims(env, token) or {}
     return json_response(
         {
@@ -6035,6 +6210,21 @@ async def _office_general_socket_handler(env, request):
             r"[0-9a-f]{64}", str(claims.get("account_bi") or ""))
     ):
         return _private_replica_not_found()
+    try:
+        session_account_bi, _session_record = (
+            await _account_session_record(env, request))
+        session_id = _request_account_session_id(request)
+    except Exception:
+        session_account_bi, session_id = "", ""
+    if (
+        not hmac.compare_digest(
+            str(session_account_bi or ""),
+            str(claims.get("account_bi") or ""))
+        or not hmac.compare_digest(
+            str(session_id or ""),
+            str(claims.get("session_id") or ""))
+    ):
+        return _private_replica_not_found()
     claims["accountStatus"] = "Registered"
     return await _forward_office_socket(
         env,
@@ -6060,6 +6250,21 @@ async def _office_channel_socket_handler(env, request, channel_id):
         if len(ticket_values) == 1 else None
     )
     if not claims or claims["scope"] != channel_id:
+        return _private_replica_not_found()
+    try:
+        session_account_bi, _session_record = (
+            await _account_session_record(env, request))
+        session_id = _request_account_session_id(request)
+    except Exception:
+        session_account_bi, session_id = "", ""
+    if (
+        not hmac.compare_digest(
+            str(session_account_bi or ""),
+            str(claims.get("account_bi") or ""))
+        or not hmac.compare_digest(
+            str(session_id or ""),
+            str(claims.get("session_id") or ""))
+    ):
         return _private_replica_not_found()
     try:
         await ensure_schema(env)
@@ -6549,8 +6754,9 @@ class _ChatChannelsRuntime(_WorldCommunityRuntime):
         )
         ticket = _chat_channel_ticket(
             self.env, channel_id, key_version, account_bi)
+        session_id = _request_account_session_id(self.request)
         meeting_ticket = _office_meeting_ticket(
-            self.env, channel_id, key_version, account_bi, actor)
+            self.env, channel_id, key_version, account_bi, actor, session_id)
         return {
             "room": room,
             "passphrase": await _chat_channel_passphrase(
@@ -11414,6 +11620,22 @@ def _request_account_session_token(request, payload=None):
     return token, cookie_auth
 
 
+def _request_account_session_id(request, payload=None):
+    """Return the opaque id carried by this request's account-session token.
+
+    Callers must first validate the token through ``_account_session_record``.
+    Parsing the already-validated request again avoids a second D1 lookup while
+    still binding a short-lived Office ticket to the exact revocable session.
+    """
+    try:
+        token, _cookie_auth = _request_account_session_token(request, payload)
+    except Exception:
+        return ""
+    match = ACCOUNT_SESSION_TOKEN_RE.fullmatch(
+        clean_string(token or "", 512).strip())
+    return match.group(1) if match else ""
+
+
 async def _account_session_lookup(env, token, touch=True):
     match = ACCOUNT_SESSION_TOKEN_RE.fullmatch(
         clean_string(token or "", 512).strip())
@@ -11586,6 +11808,37 @@ async def _world_moderation_tokens(env, request, now=None):
     # tokens may be forwarded or persisted; public badge display continues to
     # use the existing generalized browser/OS allowlist.
     return tokens
+
+
+def _world_security_details(request):
+    """Return bounded self-only connection details for the context response.
+
+    The address is canonicalized as IPv4/IPv6 and the agent is restricted to
+    printable ASCII with collapsed whitespace. Only Cloudflare's edge-set
+    address header is accepted; X-Forwarded-For is intentionally ignored.
+    Neither value is written to D1, logs, tickets, public presence, Durable
+    Object state, or moderation records.
+    """
+    try:
+        raw_address = str(
+            request.headers.get("cf-connecting-ip") or "")
+    except Exception:
+        raw_address = ""
+    raw_address = raw_address.strip().strip("[]")[:64]
+    try:
+        address = str(ipaddress.ip_address(raw_address))
+    except (ValueError, TypeError):
+        address = ""
+    try:
+        raw_agent = str(request.headers.get("user-agent") or "")
+    except Exception:
+        raw_agent = ""
+    printable_agent = "".join(
+        character if 32 <= ord(character) <= 126 else " "
+        for character in raw_agent[:2048]
+    )
+    agent = " ".join(printable_agent.split())[:256]
+    return {"ip": address[:64], "agent": agent}
 
 
 async def _world_active_manual_block(env, tokens, now=None):
@@ -33774,6 +34027,11 @@ class Default(WorkerEntrypoint):
                 self.env, request, url.path)
 
         if url.path in (
+                "/api/world/office/attendance",
+                "/api/world/office/attendance/"):
+            return await office_attendance_handler(self.env, request)
+
+        if url.path in (
                 "/api/world/office/general/status",
                 "/api/world/office/general/status/"):
             return await office_general_status_handler(self.env, request)
@@ -33818,6 +34076,37 @@ class Default(WorkerEntrypoint):
                 _world_ticket_decode(self.env, ticket_values[0])
                 if len(ticket_values) == 1 else None
             )
+            if ticket_values and not trusted_claim:
+                return json_response(
+                    {"error": "invalid_world_session"},
+                    status=401,
+                    cache_control="no-store, max-age=0, must-revalidate",
+                )
+            if trusted_claim:
+                try:
+                    _account_bi, session_record = (
+                        await _account_session_record(
+                            self.env, request))
+                    session_name = world_protocol.clean_display_name(
+                        (session_record or {}).get("name"), "")
+                    ticket_name = world_protocol.clean_display_name(
+                        trusted_claim.get("name"), "")
+                except Exception:
+                    session_record = None
+                    session_name = ""
+                    ticket_name = ""
+                if (
+                    not session_record
+                    or not session_name
+                    or not hmac.compare_digest(
+                        session_name.lower(), ticket_name.lower())
+                ):
+                    return json_response(
+                        {"error": "invalid_world_session"},
+                        status=401,
+                        cache_control=(
+                            "no-store, max-age=0, must-revalidate"),
+                    )
             moderation_tokens = await _world_moderation_tokens(
                 self.env, request)
             active_block = await _world_active_manual_block(
@@ -35159,7 +35448,20 @@ class ForkMeshWorld(DurableObject):
             raw_country = request.headers.get("x-forkmesh-country") or ""
         except Exception:
             raw_country = ""
-        peer_id = new_world_peer_id()
+        live_ids = {
+            str(_ws_attr(peer, "id", "") or "") for peer in peers
+        }
+        peer_id = ""
+        for _attempt in range(4):
+            candidate = new_world_peer_id()
+            if (
+                re.fullmatch(r"[A-Za-z0-9_-]{1,32}", candidate or "")
+                and candidate not in live_ids
+            ):
+                peer_id = candidate
+                break
+        if not peer_id:
+            return json_response({"error": "identity_unavailable"}, status=503)
         country_source = world_protocol.approximate_country_code(raw_country)
         state = world_protocol.default_presence(peer_id, now)
         blocked_slots = []
@@ -35176,6 +35478,7 @@ class ForkMeshWorld(DurableObject):
         state.update(world_protocol.arrival_position(arrival_slot))
         trusted_claim = {}
         is_admin = False
+        ticket_nonce = ""
         try:
             encoded_claim = (
                 request.headers.get("x-forkmesh-world-claim") or "")
@@ -35186,14 +35489,28 @@ class ForkMeshWorld(DurableObject):
                 candidate = json.loads(
                     base64.urlsafe_b64decode(padded).decode())
                 if isinstance(candidate, dict):
-                    trusted_claim = world_protocol.trusted_presence_claim(
-                        candidate.get("name", ""),
-                        candidate.get("accountStatus", "Guest"),
-                        candidate.get("nodeCount", 0))
-                    is_admin = candidate.get("isAdmin") is True
+                    candidate_nonce = str(
+                        candidate.get("ticketNonce") or "")
+                    if re.fullmatch(
+                            r"[A-Za-z0-9_-]{8,32}", candidate_nonce):
+                        trusted_claim = (
+                            world_protocol.trusted_presence_claim(
+                                candidate.get("name", ""),
+                                candidate.get(
+                                    "accountStatus", "Guest"),
+                                candidate.get("nodeCount", 0)))
+                        is_admin = candidate.get("isAdmin") is True
+                        ticket_nonce = candidate_nonce
         except Exception:
             trusted_claim = {}
             is_admin = False
+            ticket_nonce = ""
+        if ticket_nonce and any(
+                hmac.compare_digest(
+                    str(_ws_attr(peer, "ticket_nonce", "") or ""),
+                    ticket_nonce)
+                for peer in peers):
+            return json_response({"error": "ticket_replayed"}, status=409)
         moderation_tokens = {}
         for target_type in ("ip", "agent"):
             try:
@@ -35217,7 +35534,8 @@ class ForkMeshWorld(DurableObject):
             trusted_node_count=trusted_claim.get("nodeCount", 0),
             arrival_slot=arrival_slot, is_admin=is_admin,
             ip_token=moderation_tokens["ip"],
-            agent_token=moderation_tokens["agent"])
+            agent_token=moderation_tokens["agent"],
+            ticket_nonce=ticket_nonce)
 
         # The only snapshot is the state of sockets alive right now. It is sent
         # directly from runtime attachments and is never persisted or replayed.
@@ -35334,7 +35652,7 @@ class ForkMeshWorld(DurableObject):
                          departed=False, country_source=None,
                          trusted_name=None, trusted_node_count=None,
                          pending_knocks=None, arrival_slot=None, is_admin=None,
-                         ip_token=None, agent_token=None):
+                         ip_token=None, agent_token=None, ticket_nonce=None):
         if country_source is None:
             country_source = _ws_attr(ws, "country_source", "")
         if trusted_name is None:
@@ -35351,6 +35669,8 @@ class ForkMeshWorld(DurableObject):
             ip_token = _ws_attr(ws, "ip_token", "")
         if agent_token is None:
             agent_token = _ws_attr(ws, "agent_token", "")
+        if ticket_nonce is None:
+            ticket_nonce = _ws_attr(ws, "ticket_nonce", "")
         pending_knocks = [
             str(peer_id)
             for peer_id in list(pending_knocks or [])[-8:]
@@ -35381,6 +35701,12 @@ class ForkMeshWorld(DurableObject):
                 str(agent_token)
                 if re.fullmatch(r"[a-f0-9]{64}", str(agent_token or ""))
                 else ""),
+            "ticket_nonce": (
+                str(ticket_nonce)
+                if re.fullmatch(
+                    r"[A-Za-z0-9_-]{8,32}",
+                    str(ticket_nonce or ""))
+                else ""),
             # One-use, live-socket-only consent requests. They are never
             # persisted, broadcast, or exposed in the public presence record.
             "pending_knocks": pending_knocks,
@@ -35399,7 +35725,8 @@ class ForkMeshWorld(DurableObject):
 
     def _presence_for_viewer(self, viewer, subject):
         public = world_protocol.public_presence(self._socket_state(subject))
-        if not bool(_ws_attr(viewer, "is_admin", False)):
+        is_admin = bool(_ws_attr(viewer, "is_admin", False))
+        if not is_admin:
             return public
         handles = {}
         for target_type in ("ip", "agent"):
@@ -35495,6 +35822,9 @@ class ForkMeshWorld(DurableObject):
         return allowed
 
     async def webSocketMessage(self, ws, message):
+        if bool(_ws_attr(ws, "departed", False)):
+            self._safe_close(ws, 1000, "")
+            return
         if not isinstance(message, str):
             self._safe_close(ws, 1003, "text frames only")
             return
@@ -35730,8 +36060,28 @@ class ForkMeshOfficeRoom(DurableObject):
         peers = self._live_sockets(cleanup=True)
         if len(peers) >= world_protocol.OFFICE_MAX_CONNECTIONS:
             return json_response({"error": "room_full"}, status=429)
+        ticket_nonce = str(claim.get("nonce") or "")
+        if any(
+                hmac.compare_digest(
+                    str(_ws_attr(peer, "ticket_nonce", "") or ""),
+                    ticket_nonce)
+                for peer in peers):
+            return json_response({"error": "ticket_replayed"}, status=409)
 
-        participant_id = new_world_peer_id()
+        live_ids = {
+            str(_ws_attr(peer, "id", "") or "") for peer in peers
+        }
+        participant_id = ""
+        for _attempt in range(4):
+            candidate = new_world_peer_id()
+            if (
+                re.fullmatch(r"[A-Za-z0-9_-]{1,32}", candidate or "")
+                and candidate not in live_ids
+            ):
+                participant_id = candidate
+                break
+        if not participant_id:
+            return json_response({"error": "identity_unavailable"}, status=503)
         state = world_protocol.default_office_presence(participant_id, now)
         sanitized = world_protocol.sanitize_office_message(
             {"type": "presence"},
@@ -35751,10 +36101,13 @@ class ForkMeshOfficeRoom(DurableObject):
             rate_start=now,
             rate_count=0,
             account_bi=claim.get("account_bi", ""),
+            session_id=claim.get("session_id", ""),
             scope=scope,
             version=int(version_raw),
             trusted_name=claim.get("name", ""),
             trusted_status=claim.get("accountStatus", "Guest"),
+            ticket_nonce=ticket_nonce,
+            auth_checked_at=now,
         )
         self._safe_send(server, {
             "type": "welcome",
@@ -35790,6 +36143,9 @@ class ForkMeshOfficeRoom(DurableObject):
         account_bi = str(claim.get("account_bi") or "")
         if not re.fullmatch(r"[0-9a-f]{64}", account_bi):
             return None
+        session_id = str(claim.get("session_id") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", session_id):
+            return None
         try:
             version = int(claim.get("version") or 0)
         except (TypeError, ValueError):
@@ -35801,12 +36157,17 @@ class ForkMeshOfficeRoom(DurableObject):
             claim.get("accountStatus", "Guest"),
             0,
         )
+        nonce = str(claim.get("nonce") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,32}", nonce):
+            return None
         return {
             "scope": scope,
             "version": version,
             "account_bi": account_bi,
+            "session_id": session_id,
             "name": trusted["name"] if claim.get("name") else "",
             "accountStatus": trusted["accountStatus"],
+            "nonce": nonce,
         }
 
     def _socket_state(self, ws):
@@ -35816,10 +36177,14 @@ class ForkMeshOfficeRoom(DurableObject):
         }
 
     def _save_socket(self, ws, state, last, rate_start, rate_count,
-                     departed=False, account_bi=None, scope=None, version=None,
-                     trusted_name=None, trusted_status=None):
+                     departed=False, account_bi=None, session_id=None,
+                     scope=None, version=None,
+                     trusted_name=None, trusted_status=None,
+                     ticket_nonce=None, auth_checked_at=None):
         if account_bi is None:
             account_bi = _ws_attr(ws, "account_bi", "")
+        if session_id is None:
+            session_id = _ws_attr(ws, "session_id", "")
         if scope is None:
             scope = _ws_attr(ws, "scope", "")
         if version is None:
@@ -35828,13 +36193,29 @@ class ForkMeshOfficeRoom(DurableObject):
             trusted_name = _ws_attr(ws, "trusted_name", "")
         if trusted_status is None:
             trusted_status = _ws_attr(ws, "trusted_status", "Guest")
+        if ticket_nonce is None:
+            ticket_nonce = _ws_attr(ws, "ticket_nonce", "")
+        if auth_checked_at is None:
+            auth_checked_at = _ws_attr(ws, "auth_checked_at", 0)
         record = {
             **world_protocol.public_office_presence(state),
             "account_bi": str(account_bi or ""),
+            "session_id": (
+                str(session_id)
+                if re.fullmatch(
+                    r"[A-Za-z0-9_-]{24,64}", str(session_id or ""))
+                else ""),
             "scope": str(scope or ""),
             "version": int(version or 0),
             "trusted_name": str(trusted_name or ""),
             "trusted_status": str(trusted_status or "Guest"),
+            "ticket_nonce": (
+                str(ticket_nonce)
+                if re.fullmatch(
+                    r"[A-Za-z0-9_-]{8,32}",
+                    str(ticket_nonce or ""))
+                else ""),
+            "auth_checked_at": int(auth_checked_at or 0),
             "last": int(last or 0),
             "rl_start": int(rate_start or 0),
             "rl_count": int(rate_count or 0),
@@ -35911,17 +36292,58 @@ class ForkMeshOfficeRoom(DurableObject):
         self._broadcast_count = count
         return allowed
 
-    async def _access_current(self, ws):
+    def _access_recheck_due(self, ws, now):
+        try:
+            checked_at = int(_ws_attr(ws, "auth_checked_at", 0) or 0)
+            now = int(now)
+        except (TypeError, ValueError):
+            return True
+        return (
+            checked_at <= 0
+            or now < checked_at
+            or now - checked_at >= OFFICE_ACCESS_RECHECK_MS
+        )
+
+    async def _access_current_if_due(
+            self, ws, state, now, rate_start, rate_count):
+        """Revalidate once per bounded interval and persist the check time."""
+        if not self._access_recheck_due(ws, now):
+            return True
+        if not await self._access_current(ws, now):
+            self._depart(ws, 1008, "room access revoked")
+            return False
+        self._save_socket(
+            ws,
+            state,
+            last=_ws_attr(ws, "last", 0),
+            rate_start=rate_start,
+            rate_count=rate_count,
+            departed=bool(_ws_attr(ws, "departed", False)),
+            auth_checked_at=now,
+        )
+        return True
+
+    async def _access_current(self, ws, now=None):
         account_bi = str(_ws_attr(ws, "account_bi", "") or "")
+        session_id = str(_ws_attr(ws, "session_id", "") or "")
         scope = str(_ws_attr(ws, "scope", "") or "")
         version = int(_ws_attr(ws, "version", 0) or 0)
-        if not account_bi:
+        now = int(Date.now()) if now is None else int(now)
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", account_bi)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", session_id)
+        ):
             return False
         try:
             account = await d1_first(
                 self.env,
-                "SELECT data,is_admin FROM users WHERE user_bi=?",
+                "SELECT u.data,u.is_admin FROM account_sessions s "
+                "JOIN users u ON u.user_bi=s.account_bi "
+                "WHERE s.session_id=? AND s.account_bi=? "
+                "AND s.revoked_at=0 AND s.expires_at>?",
+                session_id,
                 account_bi,
+                now,
             )
             if not account:
                 return False
@@ -35965,6 +36387,9 @@ class ForkMeshOfficeRoom(DurableObject):
             return False
 
     async def webSocketMessage(self, ws, message):
+        if bool(_ws_attr(ws, "departed", False)):
+            self._safe_close(ws, 1000, "")
+            return
         if not isinstance(message, str):
             self._safe_close(ws, 1003, "text frames only")
             return
@@ -35987,8 +36412,8 @@ class ForkMeshOfficeRoom(DurableObject):
         if not allowed:
             self._safe_close(ws, 1008, "rate limit")
             return
-        if not await self._access_current(ws):
-            self._depart(ws, 1008, "room access revoked")
+        if not await self._access_current_if_due(
+                ws, state, now, rate_start, rate_count):
             return
         self._live_sockets(cleanup=True)
         try:

@@ -4,6 +4,7 @@
 import ast
 import asyncio
 import importlib.util
+import ipaddress
 import json
 import re
 import tomllib
@@ -72,6 +73,7 @@ class _Headers:
 def _load_context_handler(now=17_500_000):
     nodes = [
         _top_level_node("world_request_country"),
+        _top_level_node("_world_security_details"),
         _top_level_node("world_context_handler"),
     ]
     module = ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[]))
@@ -89,6 +91,7 @@ def _load_context_handler(now=17_500_000):
         "method_name": lambda request: str(request.method).upper(),
         "json_response": json_response,
         "world_protocol": world,
+        "ipaddress": ipaddress,
         "Date": SimpleNamespace(now=lambda: now),
         "MAX_CONNECTIONS": 128,
     }
@@ -100,7 +103,7 @@ def test_context_returns_only_country_and_shared_clock_fields():
     now = 91_234_567
     headers = _Headers(
         {"cf-ipcountry": "us"},
-        allowed={"cf-ipcountry"},
+        allowed={"cf-ipcountry", "cf-connecting-ip", "user-agent"},
     )
     request = SimpleNamespace(method="GET", headers=headers)
     response = _load_context_handler(now)(request)
@@ -115,11 +118,21 @@ def test_context_returns_only_country_and_shared_clock_fields():
         "worldConnections": 64,
         "worldMessagesPerSecond": 4,
         "chatConnections": 128,
+        "securityDetails": {"ip": "", "agent": ""},
     }
-    assert headers.read == ["cf-ipcountry"]
+    assert headers.read == [
+        "cf-ipcountry",
+        "cf-connecting-ip",
+        "user-agent",
+    ]
     assert response["cache_control"] == "no-store, max-age=0, must-revalidate"
     assert response["headers"]["x-content-type-options"] == "nosniff"
-    serialized = repr(response["data"]).lower()
+    public_context = {
+        key: value
+        for key, value in response["data"].items()
+        if key != "securityDetails"
+    }
+    serialized = repr(public_context).lower()
     for forbidden in ("ip", "user-agent", "useragent", "latitude", "longitude",
                       "repo", "wallet", "url"):
         assert forbidden not in serialized
@@ -137,7 +150,7 @@ def test_context_rejects_non_get_without_reading_headers():
 def test_context_prefers_trusted_request_cf_country_without_header_read():
     headers = _Headers(
         {"cf-ipcountry": "GB"},
-        allowed=set(),
+        allowed={"cf-connecting-ip", "user-agent"},
     )
     request = SimpleNamespace(
         method="GET",
@@ -146,7 +159,29 @@ def test_context_prefers_trusted_request_cf_country_without_header_read():
     )
     response = _load_context_handler()(request)
     assert response["data"]["countryCode"] == "JP"
-    assert headers.read == []
+    assert headers.read == ["cf-connecting-ip", "user-agent"]
+
+
+def test_context_reflects_only_edge_ip_and_agent_to_the_same_no_store_request():
+    headers = _Headers(
+        {
+            "cf-ipcountry": "US",
+            "cf-connecting-ip": "2001:0db8::0001",
+            "user-agent": "  Example Browser/7.2\tLinux  ",
+            "x-forwarded-for": "198.51.100.88",
+        },
+        allowed={"cf-ipcountry", "cf-connecting-ip", "user-agent"},
+    )
+    response = _load_context_handler()(SimpleNamespace(
+        method="GET",
+        headers=headers,
+    ))
+    assert response["data"]["securityDetails"] == {
+        "ip": "2001:db8::1",
+        "agent": "Example Browser/7.2 Linux",
+    }
+    assert "x-forwarded-for" not in headers.read
+    assert response["cache_control"] == "no-store, max-age=0, must-revalidate"
 
 
 def test_country_code_is_coarse_and_rejects_cloudflare_sentinels():
@@ -734,7 +769,9 @@ def test_name_and_identity_badge_fields_are_privacy_controlled_not_claims():
         "paid": True,
         "email": "alice@example.test",
     }, current, 2000)
-    assert named["name"] == "Alice"
+    # Anonymous display names stay server-generated so a guest cannot create a
+    # moving lookalike of a signed-in account.
+    assert named["name"] == "Guest peer"
     assert named["status"] == "available"
     assert named["accountStatus"] == "Guest"
     assert named["nodeCount"] == 0
@@ -1325,6 +1362,7 @@ def test_world_ticket_capacity_is_queried_and_returned_only_for_admins():
             "_world_ticket_encode": lambda _env, _claim: "signed-ticket",
             "_world_system_capacity": system_capacity,
             "_world_durable_objects": durable_objects,
+            "new_world_peer_id": lambda: "a" * 32,
         }
         node = _top_level_node("world_ticket_handler")
         module = ast.fix_missing_locations(

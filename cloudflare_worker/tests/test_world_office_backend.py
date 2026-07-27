@@ -16,6 +16,7 @@ ENTRY = ROOT / "src" / "entry.py"
 WRANGLER = ROOT / "wrangler.toml"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 PARSED_ENTRY = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+SESSION_ID = "session_binding_0123456789abcdef"
 
 
 def _top_level_node(name):
@@ -358,9 +359,11 @@ def _general_access_handler():
     namespace = {
         "_account_kind": lambda record: record.get("kind", ""),
         "_account_session_record": account_session,
+        "_request_account_session_id": lambda _request: SESSION_ID,
         "_office_entry_ticket_claims": entry_claims,
         "_office_meeting_ticket": (
-            lambda _env, _scope, _version, _account, _name: "meeting-proof"
+            lambda _env, _scope, _version, _account, _name, _session:
+                "meeting-proof"
         ),
         "_office_meeting_ticket_claims": (
             lambda _env, _token: {"expires": 1_800_000_060_000}
@@ -404,13 +407,14 @@ def test_meeting_ticket_is_short_lived_tamper_evident_and_account_bound():
     namespace, clock = _ticket_helpers()
     account_bi = "c" * 64
     token = namespace["_office_meeting_ticket"](
-        _Env(), "world-general", 1, account_bi, "Alice")
+        _Env(), "world-general", 1, account_bi, "Alice", SESSION_ID)
     claims = namespace["_office_meeting_ticket_claims"](_Env(), token)
 
     assert claims == {
         "scope": "world-general",
         "version": 1,
         "account_bi": account_bi,
+        "session_id": SESSION_ID,
         "name": "Alice",
         "expires": clock[0] + 60 * 1000,
         "nonce": "0123456789abcdef",
@@ -424,15 +428,16 @@ def test_meeting_ticket_is_short_lived_tamper_evident_and_account_bound():
 
 def test_meeting_ticket_rejects_unbounded_or_malformed_claims():
     namespace, _clock = _ticket_helpers()
-    for scope, version, account_bi, name in (
-        ("private-name", 1, "a" * 64, "Alice"),
-        ("world-general", 0, "a" * 64, "Alice"),
-        ("a" * 32, 1, "not-a-blind-index", "Alice"),
-        ("world-general", 1, "a" * 64, "x" * 80),
+    for scope, version, account_bi, name, session_id in (
+        ("private-name", 1, "a" * 64, "Alice", SESSION_ID),
+        ("world-general", 0, "a" * 64, "Alice", SESSION_ID),
+        ("a" * 32, 1, "not-a-blind-index", "Alice", SESSION_ID),
+        ("world-general", 1, "a" * 64, "x" * 80, SESSION_ID),
+        ("world-general", 1, "a" * 64, "Alice", "short"),
     ):
         try:
             namespace["_office_meeting_ticket"](
-                _Env(), scope, version, account_bi, name)
+                _Env(), scope, version, account_bi, name, session_id)
         except ValueError:
             continue
         raise AssertionError("invalid Office ticket input must fail closed")
@@ -460,6 +465,8 @@ def test_socket_routes_authorize_before_durable_object_lookup():
     general = ast.unparse(_top_level_node("_office_general_socket_handler"))
     assert "_office_meeting_ticket_claims" in general
     assert "world_websocket_origin_allowed" in general
+    assert "_request_account_session_id" in general
+    assert "claims.get('session_id')" in general
     assert "[0-9a-f]{64}" in general
     assert general.index("_office_meeting_ticket_claims") < general.index(
         "_forward_office_socket")
@@ -471,6 +478,8 @@ def test_socket_routes_authorize_before_durable_object_lookup():
     assert channel.index("chat_channel_members") < forward_at
     assert "_office_meeting_ticket_claims" in channel
     assert "world_websocket_origin_allowed" in channel
+    assert "_request_account_session_id" in channel
+    assert "claims.get('session_id')" in channel
 
     forward = ast.unparse(_top_level_node("_forward_office_socket"))
     assert "FORKMESH_OFFICE_ROOM.idFromName" in forward
@@ -480,6 +489,7 @@ def test_office_internal_upgrade_strips_browser_credentials_and_query():
     source = ast.unparse(
         _top_level_node("office_durable_object_request")).lower()
     assert "x-forkmesh-office-claim" in source
+    assert "'session_id'" in source
     assert "source_url.path" in source
     assert "source_url.query" not in source
     for forbidden in (
@@ -524,7 +534,13 @@ def test_office_room_uses_hibernation_attachments_and_revalidates_accounts():
         "webSocketClose",
         "webSocketError",
         "account_bi",
-        "FROM users WHERE user_bi=?",
+        "session_id",
+        "auth_checked_at",
+        "OFFICE_ACCESS_RECHECK_MS",
+        "FROM account_sessions s",
+        "JOIN users u ON u.user_bi=s.account_bi",
+        "s.revoked_at=0",
+        "s.expires_at>?",
         "_account_kind(account_record) != 'user'",
         "room access revoked",
     ):
@@ -541,6 +557,144 @@ def test_office_room_uses_hibernation_attachments_and_revalidates_accounts():
         "codeConfigured",
     ):
         assert forbidden not in source
+
+
+def test_office_access_revalidation_skips_frames_inside_cadence_and_persists():
+    namespace = {
+        "DurableObject": object,
+        "OFFICE_ACCESS_RECHECK_MS": 30_000,
+        "_ws_attr": lambda ws, name, default=None: getattr(
+            ws.attachment, name, default),
+    }
+    _compile([_top_level_node("ForkMeshOfficeRoom")], namespace)
+    room = namespace["ForkMeshOfficeRoom"]()
+    socket = SimpleNamespace(
+        attachment=SimpleNamespace(
+            auth_checked_at=1_000,
+            departed=False,
+            last=1_000,
+        ),
+    )
+    checks = []
+    departures = []
+
+    async def access_current(_ws, now=None):
+        checks.append(now)
+        return True
+
+    def save_socket(ws, _state, **values):
+        if "auth_checked_at" in values:
+            ws.attachment.auth_checked_at = values["auth_checked_at"]
+
+    room._access_current = access_current
+    room._save_socket = save_socket
+    room._depart = lambda *_args: departures.append(_args)
+
+    assert asyncio.run(room._access_current_if_due(
+        socket, {}, 30_999, 30_000, 1)) is True
+    assert checks == []
+    assert socket.attachment.auth_checked_at == 1_000
+
+    assert asyncio.run(room._access_current_if_due(
+        socket, {}, 31_000, 31_000, 1)) is True
+    assert checks == [31_000]
+    assert socket.attachment.auth_checked_at == 31_000
+    assert departures == []
+
+    # The persisted timestamp survives subsequent attachment reads and keeps
+    # every movement frame inside the next interval off D1.
+    assert asyncio.run(room._access_current_if_due(
+        socket, {}, 60_999, 60_000, 2)) is True
+    assert checks == [31_000]
+
+
+def test_office_access_revalidation_disconnects_when_due_session_is_revoked():
+    namespace = {
+        "DurableObject": object,
+        "OFFICE_ACCESS_RECHECK_MS": 30_000,
+        "_ws_attr": lambda ws, name, default=None: getattr(
+            ws.attachment, name, default),
+    }
+    _compile([_top_level_node("ForkMeshOfficeRoom")], namespace)
+    room = namespace["ForkMeshOfficeRoom"]()
+    socket = SimpleNamespace(
+        attachment=SimpleNamespace(
+            auth_checked_at=1_000,
+            departed=False,
+            last=1_000,
+        ),
+    )
+    checks = []
+    departures = []
+
+    async def revoked_session(_ws, now=None):
+        checks.append(now)
+        return False
+
+    room._access_current = revoked_session
+    room._save_socket = lambda *_args, **_kwargs: None
+    room._depart = lambda *_args: departures.append(_args)
+
+    assert asyncio.run(room._access_current_if_due(
+        socket, {}, 31_000, 31_000, 1)) is False
+    assert checks == [31_000]
+    assert len(departures) == 1
+    assert departures[0][1:] == (1008, "room access revoked")
+
+
+def test_office_access_query_binds_exact_live_session_and_expiry():
+    queries = []
+    active = {"value": True}
+
+    async def d1_first(_env, sql, *args):
+        queries.append((sql, args))
+        if "FROM account_sessions s" in sql and active["value"]:
+            return {
+                "data": {
+                    "status": "active",
+                    "kind": "user",
+                },
+                "is_admin": 0,
+            }
+        return None
+
+    async def decrypt_row(_env, value):
+        return value
+
+    namespace = {
+        "DurableObject": object,
+        "Date": SimpleNamespace(now=lambda: 90_000),
+        "_ws_attr": lambda ws, name, default=None: getattr(
+            ws.attachment, name, default),
+        "_account_kind": lambda record: record.get("kind", ""),
+        "d1_first": d1_first,
+        "decrypt_row": decrypt_row,
+        "re": re,
+    }
+    _compile([_top_level_node("ForkMeshOfficeRoom")], namespace)
+    room = namespace["ForkMeshOfficeRoom"]()
+    room.env = object()
+    socket = SimpleNamespace(
+        attachment=SimpleNamespace(
+            account_bi="a" * 64,
+            session_id=SESSION_ID,
+            scope="world-general",
+            version=1,
+        ),
+    )
+
+    assert asyncio.run(room._access_current(socket, 90_000)) is True
+    assert len(queries) == 1
+    sql, params = queries[-1]
+    assert "s.session_id=?" in sql
+    assert "s.account_bi=?" in sql
+    assert "s.revoked_at=0" in sql
+    assert "s.expires_at>?" in sql
+    assert params == (SESSION_ID, "a" * 64, 90_000)
+
+    active["value"] = False
+    assert asyncio.run(room._access_current(socket, 120_000)) is False
+    assert queries[-1][1] == (SESSION_ID, "a" * 64, 120_000)
 
 
 def test_durable_object_internal_actions_are_only_websocket_and_revoke():

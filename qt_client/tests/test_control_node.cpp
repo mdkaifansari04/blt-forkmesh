@@ -975,6 +975,37 @@ int main(int argc, char **argv)
               forkmesh::control::vultrApiKeyFromVariables({}).isEmpty(),
           "the stored VULTR_API_KEY device variable is resolved case-insensitively");
 
+    // --- Installing a fresh mirror without a published release (adhoc #408) -
+    check(forkmesh::control::localBinaryRunsOnVultrMirror(
+              QStringLiteral("linux"), QStringLiteral("x86_64")) &&
+              forkmesh::control::localBinaryRunsOnVultrMirror(
+                  QStringLiteral("Linux"), QStringLiteral("amd64")) &&
+              !forkmesh::control::localBinaryRunsOnVultrMirror(
+                  QStringLiteral("linux"), QStringLiteral("arm64")) &&
+              !forkmesh::control::localBinaryRunsOnVultrMirror(
+                  QStringLiteral("darwin"), QStringLiteral("x86_64")) &&
+              !forkmesh::control::localBinaryRunsOnVultrMirror(
+                  QStringLiteral("winnt"), QStringLiteral("x86_64")),
+          "only a linux/x86_64 controller uploads its own binary to the "
+          "Debian x64 instance the flow deploys");
+
+    check(forkmesh::control::vultrInstallNeedsLocalBinary(QStringLiteral(
+              "Error: No online ForkMesh node is currently mirroring "
+              "'forkmesh'.")) &&
+              forkmesh::control::vultrInstallNeedsLocalBinary(QStringLiteral(
+                  "Error: No prebuilt ForkMesh binary is published for "
+                  "linux/x86_64, and falling back to a source build is "
+                  "disabled (FORKMESH_NO_SOURCE_FALLBACK=1, the default on "
+                  "headless Linux).")) &&
+              forkmesh::control::vultrInstallNeedsLocalBinary(QStringLiteral(
+                  "Error: No prebuilt ForkMesh release passed independent "
+                  "manifest authentication and SHA-256 verification.")) &&
+              !forkmesh::control::vultrInstallNeedsLocalBinary(QStringLiteral(
+                  "ssh: connect to host 203.0.113.10 port 22: Connection "
+                  "refused")),
+          "an install that found nothing to download escalates to the "
+          "direct upload, an unreachable host does not");
+
     // --- Cloudflare DNS for a fresh Vultr mirror (adhoc #331) --------------
     QMap<QString, QString> zoneVariables;
     zoneVariables.insert(QStringLiteral("cloudflare_zone"),
