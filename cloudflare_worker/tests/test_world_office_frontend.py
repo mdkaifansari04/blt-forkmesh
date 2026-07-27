@@ -12,6 +12,7 @@ OFFICE_PATH = ROOT / "public" / "world" / "world-office.js"
 SCENE_PATH = ROOT / "public" / "world" / "world-scene.js"
 TOWER_PATH = ROOT / "public" / "world" / "world-office-tower.js"
 WORLD_PATH = ROOT / "public" / "world" / "world.js"
+DATA_PATH = ROOT / "public" / "world" / "world-data.js"
 
 
 def source(path):
@@ -132,6 +133,7 @@ def test_entry_is_walk_through_for_everyone_and_the_keypad_protocol_is_absent():
     office = source(OFFICE_PATH)
     world = source(WORLD_PATH)
     scene = source(SCENE_PATH)
+    data = source(DATA_PATH)
     for contract in (
         'const OFFICE_ENTRY_PATH = "/api/world/office/general/entry"',
         'const OFFICE_FLOORS_PATH = "/api/world/office/floors"',
@@ -156,6 +158,11 @@ def test_entry_is_walk_through_for_everyone_and_the_keypad_protocol_is_absent():
     assert "window.prompt" not in office
     assert "localStorage" not in office
     assert "sessionStorage" not in office
+    assert "Building admission is open to every visitor." in data
+    assert "Everyone, including guests, can cross the bridge and enter the lobby." \
+        in data
+    assert "Building admission requires an active account." not in data
+    assert "must sign in before entering the tower" not in data
 
 
 def test_entrance_uses_two_proximity_sliding_panels_without_a_hinged_door():
@@ -506,6 +513,7 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
     prepare = function_body(scene, "enterOffice")
     enter = function_body(scene, "enterOfficeLobby")
     local_position = function_body(scene, "officeAvatarLocalPosition")
+    town_collision = function_body(scene, "constrainTownOfficeWalls")
 
     # Admission must not stage a second teleport before the lobby handoff.
     for hard_snap in (
@@ -530,6 +538,17 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
     assert "localPosition.x =" not in threshold_handoff
     assert "localPosition.z =" not in threshold_handoff
     assert "OFFICE_INTERIOR_WALL_LIMIT - 0.72" not in enter
+    assert "if (source !== \"doorway\") cancelDash();" in prepare
+    assert "if (!enteringFromTown) keyboardMovementSpeed = baseMoveSpeed();" \
+        in enter
+    assert "player.position.z = office.position.z + doorwayThreshold" \
+        in town_collision
+    accepted_handoff = town_collision[
+        town_collision.index('if (officeSceneMode !== "town")'):
+        town_collision.index("// Fail closed only")
+    ]
+    assert "player.position.z =" not in accepted_handoff
+    assert "cancelDash()" not in accepted_handoff
 
     collision = function_body(scene, "constrainOfficeInteriorWalls")
     assert "const movingOutward =" in collision
@@ -550,6 +569,34 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
         "camera.lookAt",
     ):
         assert swap_or_snap not in enter
+
+
+def test_office_doorway_entry_and_exit_share_one_smooth_handoff_plane():
+    scene = source(SCENE_PATH)
+    town_collision = function_body(scene, "constrainTownOfficeWalls")
+    interior_collision = function_body(scene, "constrainOfficeInteriorWalls")
+    leave = function_body(scene, "leaveOfficeInterior")
+
+    assert "const OFFICE_INTERIOR_EXIT_Z = OFFICE_DOORWAY_ENTRY_Z;" in scene
+    assert "if (!crossedDoorway)" in town_collision
+
+    exit_handoff = interior_collision[
+        interior_collision.index(
+            'if (officeSceneMode !== "lobby")',
+            interior_collision.index("position.z >= OFFICE_INTERIOR_EXIT_Z"),
+        ):
+        interior_collision.index("// A missing/rejected controller")
+    ]
+    assert "position.z =" not in exit_handoff
+    assert "commitPosition()" not in exit_handoff
+
+    assert "const crossedLobbyDoorway =" in leave
+    preserve = leave[
+        leave.index("if (!crossedLobbyDoorway)"):
+        leave.index("applyOfficeAvatarLocalPosition")
+    ]
+    assert "OFFICE_FRONT_Z + 0.82" in preserve
+    assert "officeDoorwayEntryArmed = true" in leave
 
 
 def test_lobby_camera_clamp_has_one_strict_open_door_portal():

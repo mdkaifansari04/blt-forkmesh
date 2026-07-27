@@ -86,11 +86,11 @@ export const LANDMARKS = [
     metaphor:
       "A glass tower with a staffed lobby, team floors, an elevator, and a rooftop observatory.",
     reality:
-      "Building admission requires an active account. Elevator grants come from server-verified organization team membership; avatar position never grants private data access.",
-    status: "Account-gated · team floors",
+      "Building admission is open to every visitor. Elevator grants come from server-verified organization team membership; avatar position never grants private data access.",
+    status: "Open lobby · team floors",
     statusTone: "live",
     bullets: [
-      "Guests can cross the bridge and visit the welcome desk, but must sign in before entering the tower.",
+      "Everyone, including guests, can cross the bridge and enter the lobby. Signing in is required only for authenticated meetings and restricted team floors.",
       "Every registered user can visit the lobby, Marketing floor, and rooftop patio.",
       "Restricted elevator buttons unlock only for verified members of that team.",
       "Messages, room keys, tokens, and attachments never enter world presence.",

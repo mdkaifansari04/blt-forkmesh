@@ -18774,6 +18774,11 @@ class ForkMeshWorld extends HTMLElement {
     this.world.updateMemberLounge(
       this.memberDirectory.map((member) => ({
         ...member,
+        // This assignment was derived from the authenticated viewer's
+        // owner/admin organization roster. Hand it to the directory figure
+        // too, so an administrator can manage a member who is offline just as
+        // they can manage the same member's live presence avatar.
+        orgTeam: this.orgTeamAssignmentFor(member.name),
         away: present.has(member.name.toLowerCase()),
       })),
       this.memberDirectory.length,

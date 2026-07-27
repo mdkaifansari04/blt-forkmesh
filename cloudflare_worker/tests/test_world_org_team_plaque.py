@@ -2,19 +2,21 @@
 """Organization team assignment from the back of a World avatar (adhoc #438).
 
 An organization owner or administrator sees one extra plaque on the back of
-every avatar belonging to a member of an organization they manage. Opening it
-shows accessible checkboxes for that organization's teams; saving writes the same
-/api/orgs/<org>/teams/<team>/members grants the settings page makes, and team
-permission is what opens the organization's repository floors and offices.
+every campfire avatar belonging to a member of an organization they manage,
+whether that member is currently logged in or represented by their directory
+figure. Opening it shows accessible checkboxes for that organization's teams;
+saving writes the same /api/orgs/<org>/teams/<team>/members grants the settings
+page makes, and team permission is what opens the organization's repository
+floors and offices.
 
 These tests pin:
 
   * GET /api/orgs/<org>/members carries each member's team list (one roster
     read instead of one request per team) and the anonymous public-redacted
     branch still exposes no names and no teams;
-  * the scene renders the plaque on the avatar BACK (positive Z, single sided),
-    only for live registered members, never for guests, bots, or the persisted
-    inactive/local/node peer ids, and registers/cleans it up like the existing
+  * the scene renders the plaque on the avatar BACK (positive Z, single sided)
+    for live, inactive, and directory-seated registered members, never for
+    guests, bots, or node peers, and registers/cleans it up like the existing
     moderation plaques;
   * the plaque texture carries names and counts only — never a session token;
   * the app layer builds the plaque only for organizations whose viewerRole is
@@ -198,12 +200,11 @@ def test_team_member_writes_stay_owner_admin_only():
 
 # --- The plaque on the avatar back -------------------------------------------
 
-def test_team_plaque_rides_the_avatar_back_for_live_members_only():
+def test_team_plaque_rides_live_and_offline_member_avatar_backs():
     for contract in (
         "const WORLD_ORG_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/",
         "function sanitizedOrgTeamAssignment(remote)",
-        "/^(?:inactive|local|node|bot):/",
-        "remote?.persistedInactive === true",
+        "/^(?:node|bot):/",
         'remote?.accountStatus === "Verified bot"',
         'String(remote?.accountStatus || "Guest") === "Guest"',
         "function createAvatarOrgTeamControl",
@@ -219,8 +220,26 @@ def test_team_plaque_rides_the_avatar_back_for_live_members_only():
         "disposeObject3D(controls)",
         "syncRemoteOrgTeamControl(avatar, remote)",
         "removeRemoteOrgTeamControl(avatar, id)",
+        "syncRemoteOrgTeamControl(figure, {",
+        "orgTeam: member?.orgTeam",
     ):
         assert contract in SCENE, contract
+
+    sanitizer = SCENE[
+        SCENE.index("function sanitizedOrgTeamAssignment(remote)"):
+        SCENE.index("function orgTeamControlTexture")
+    ]
+    # These are real registered accounts rendered from server-backed presence
+    # or the public users directory, so being offline/local is not a reason to
+    # remove an organization administrator's control.
+    assert "persistedInactive" not in sanitizer
+    assert "inactive|local" not in sanitizer
+
+    lounge = SCENE[
+        SCENE.index("  function updateMemberLounge("):
+        SCENE.index("  function visitNeighborhoodHome(")
+    ]
+    assert lounge.count("removeRemoteOrgTeamControl(figure, id)") >= 1
 
     click = SCENE[
         SCENE.index("const orgTeamAction = hit?.object"):
@@ -262,6 +281,16 @@ def test_only_org_owners_and_admins_build_the_plaque():
     assert "orgTeam ? { orgTeam } : {}" in APP
     assert "onOrgTeamAssign: (target) => this.openOrgTeamAssignment(target)" \
         in APP
+
+
+def test_campfire_directory_hands_offline_members_the_same_assignment():
+    lounge = APP[
+        APP.index("  syncMemberLounge() {"):
+        APP.index("  destroy() {", APP.index("  syncMemberLounge() {"))
+    ]
+    assert "this.memberDirectory.map((member) => ({" in lounge
+    assert "orgTeam: this.orgTeamAssignmentFor(member.name)" in lounge
+    assert "away: present.has(member.name.toLowerCase())" in lounge
 
 
 def test_assignment_dialog_uses_checkboxes_and_diffs_into_team_writes():

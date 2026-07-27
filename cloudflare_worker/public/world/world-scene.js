@@ -82,11 +82,14 @@ const REPOSITORY_FIRST_PERSON_DISTANCE = 5.5;
 const REPOSITORY_FIRST_PERSON_PITCH = -0.08;
 const OFFICE_HEIGHT = OFFICE_FLOOR_HEIGHT;
 const OFFICE_INTERIOR_WALL_LIMIT = OFFICE_FRONT_Z - 0.54;
-const OFFICE_INTERIOR_EXIT_Z = OFFICE_FRONT_Z + 0.18;
 const OFFICE_DOOR_HEIGHT = 4.4;
 const OFFICE_DOOR_SILL_Y = 0.34;
 const OFFICE_DOORWAY_ENTRY_Z =
   OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS;
+// Entry and exit cross the same physical plane. Separate thresholds used to
+// snap the avatar first inward and then outward as the scene mode changed,
+// which felt like a bump even though the Office stays in the same world.
+const OFFICE_INTERIOR_EXIT_Z = OFFICE_DOORWAY_ENTRY_Z;
 const OFFICE_ELEVATOR_HALF_WIDTH = 5;
 const OFFICE_ELEVATOR_HALF_DEPTH = 4;
 const OFFICE_ELEVATOR_CUT_MARGIN = 0.35;
@@ -1945,8 +1948,7 @@ function sanitizedOrgTeamAssignment(remote) {
   const assignment = remote?.orgTeam;
   if (
     !peerId ||
-    /^(?:inactive|local|node|bot):/.test(peerId) ||
-    remote?.persistedInactive === true ||
+    /^(?:node|bot):/.test(peerId) ||
     remote?.accountStatus === "Verified bot" ||
     String(remote?.accountStatus || "Guest") === "Guest" ||
     !assignment ||
@@ -10684,10 +10686,12 @@ export function createWorldScene({
       Math.abs(localX) <= doorClearance &&
       previousZ >= OFFICE_FRONT_Z
     ) {
-      player.position.z = office.position.z + doorwayThreshold;
-      cancelDash();
+      if (!crossedDoorway) {
+        // The open approach is real walkable space. Do not pull the avatar
+        // forward to the trigger plane before they have actually crossed it.
+        return false;
+      }
       if (
-        crossedDoorway &&
         officeDoorwayEntryArmed &&
         !officeDoorwayEntryPending
       ) {
@@ -10697,6 +10701,14 @@ export function createWorldScene({
           source: "doorway",
         });
       }
+      if (officeSceneMode !== "town") {
+        // The controller completed its synchronous scene-mode handoff. Keep
+        // the exact attempted position and any active dash/held-key speed.
+        return false;
+      }
+      // Fail closed only if no controller accepted the crossing.
+      player.position.z = office.position.z + doorwayThreshold;
+      cancelDash();
       return true;
     }
 
@@ -10766,12 +10778,19 @@ export function createWorldScene({
       position.z >= OFFICE_INTERIOR_EXIT_Z &&
       Math.abs(position.x) <= doorClearance
     ) {
-      position.z = OFFICE_INTERIOR_EXIT_Z;
-      commitPosition();
       if (!officeExitPending && officeExitHandler) {
         officeExitPending = true;
         officeExitHandler();
       }
+      if (officeSceneMode !== "lobby") {
+        // The exit handoff completed. The town walker inherits this exact
+        // doorway pose and velocity instead of being teleported outward.
+        return false;
+      }
+      // A missing/rejected controller must not let the avatar walk through
+      // the tower shell.
+      position.z = OFFICE_INTERIOR_EXIT_Z;
+      commitPosition();
       return true;
     }
     const walkableAt = (x, z) => {
@@ -10958,7 +10977,7 @@ export function createWorldScene({
     officeExitPending = false;
     officeDoorwayEntryPending = false;
     cameraFocus = null;
-    cancelDash();
+    if (source !== "doorway") cancelDash();
     return true;
   }
 
@@ -11016,7 +11035,7 @@ export function createWorldScene({
     officeLobbyPlayer.visible = false;
     player.visible = cameraMode !== "first-person";
     lastPosition.copy(player.position);
-    keyboardMovementSpeed = baseMoveSpeed();
+    if (!enteringFromTown) keyboardMovementSpeed = baseMoveSpeed();
     officeExitPending = false;
     return true;
   }
@@ -11457,6 +11476,12 @@ export function createWorldScene({
   function leaveOfficeInterior() {
     standUpFromOfficeChair();
     const localPosition = officeAvatarLocalPosition(player);
+    const crossedLobbyDoorway =
+      officeSceneMode === "lobby" &&
+      officeCurrentFloorId === "lobby" &&
+      Math.abs(localPosition.x) <=
+        OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS &&
+      localPosition.z >= OFFICE_INTERIOR_EXIT_Z;
     officeSceneMode = "town";
     officeCurrentFloorId = "lobby";
     officeElevatorRide = null;
@@ -11467,13 +11492,18 @@ export function createWorldScene({
       OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS,
     );
     localPosition.y = 0.38;
-    localPosition.z = Math.max(localPosition.z, OFFICE_FRONT_Z + 0.82);
+    if (!crossedLobbyDoorway) {
+      // Non-spatial teardown (for example page destruction) still needs a
+      // safe outdoor position. A real doorway exit keeps its exact Z.
+      localPosition.z = Math.max(localPosition.z, OFFICE_FRONT_Z + 0.82);
+    }
     applyOfficeAvatarLocalPosition(player, localPosition);
     lastPosition.copy(player.position);
     officeLocalParticipantId = "";
     officeWasMoving = false;
     officeExitPending = false;
     officeDoorwayEntryPending = false;
+    officeDoorwayEntryArmed = true;
     officeLobbyPlayer.visible = false;
     player.visible = cameraMode !== "first-person";
     cameraFocus = null;
@@ -12858,6 +12888,9 @@ export function createWorldScene({
   // per member avatar, opening the team multi-select the app layer owns. The
   // app only supplies `orgTeam` for members of an organization the viewer
   // owns or administers, so a plain member never sees another back plaque.
+  // Registered inactive and same-browser peers are intentionally accepted:
+  // login state does not change organization membership, and every write is
+  // re-authorized by the worker.
   function syncRemoteOrgTeamControl(avatar, remote) {
     const peerId = String(remote?.id || "");
     const name = String(remote?.name || "visitor").slice(0, 32);
@@ -13235,6 +13268,7 @@ export function createWorldScene({
         if (member.away === true) {
           const parked = loungeMembers.get(id);
           if (parked) {
+            removeRemoteOrgTeamControl(parked, id);
             unregisterAvatarChestControls(parked);
             world.remove(parked);
             disposeObject3D(parked);
@@ -13301,6 +13335,16 @@ export function createWorldScene({
           accountStatus: "Registered",
           activityBucket: member.activityBucket || "",
         });
+        // Directory figures stand in for registered accounts that are not
+        // currently present. Give them the same viewer-local organization
+        // control as a live avatar so admins can assign teams independent of
+        // whether the target member is logged in.
+        syncRemoteOrgTeamControl(figure, {
+          id,
+          name,
+          accountStatus: "Registered",
+          orgTeam: member?.orgTeam,
+        });
         const seat = seats[index % Math.max(1, seats.length)];
         figure.position.copy(campfire.position);
         if (seat) figure.position.add(seat);
@@ -13323,6 +13367,7 @@ export function createWorldScene({
     campfire.userData.memberFigureCount = Math.min(roster.length, seats.length);
     loungeMembers.forEach((figure, id) => {
       if (seen.has(id)) return;
+      removeRemoteOrgTeamControl(figure, id);
       unregisterAvatarChestControls(figure);
       world.remove(figure);
       disposeObject3D(figure);
