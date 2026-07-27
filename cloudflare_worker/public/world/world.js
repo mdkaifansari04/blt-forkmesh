@@ -42,6 +42,7 @@ import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
 import { createWorldOfficeController } from "./world-office.js";
 import { createWorldOfficeMeeting } from "./world-office-meeting.js";
 import { createWorldOfficeTasksController } from "./world-office-tasks.js";
+import { officeFloorsForTeam } from "./world-office-tower.js";
 import {
   CAMPFIRE_SEATED_ACTIVITY,
   SWING_RIDING_ACTIVITY,
@@ -6165,7 +6166,7 @@ class ForkMeshWorld extends HTMLElement {
     this.renderPeers();
   }
 
-  // The team plaque on a member's back opens this multi-select. Team
+  // The team plaque on a member's back opens accessible checkboxes. Team
   // membership is what raises a member's repository permission, which is what
   // opens the organization's repository floors and personal offices in the
   // World — so the dialog says so plainly. Only owners and administrators ever
@@ -6190,6 +6191,7 @@ class ForkMeshWorld extends HTMLElement {
       .map((team) => ({
         team: String(team?.team || "").toLowerCase(),
         permission: sanitizePresenceText(team?.permission, "read", 24),
+        floors: officeFloorsForTeam(team?.team).map((floor) => floor.label),
       }))
       .filter((team) => team.team);
     if (!teams.length) {
@@ -6219,29 +6221,35 @@ class ForkMeshWorld extends HTMLElement {
           <strong style="font-size:21px">Assign ${escapeHTML(
             member,
           )} to ${escapeHTML(org)} teams</strong>
-          <p style="margin:6px 0 0;color:#9eb6aa;font-size:13px;line-height:1.5">Hold ${
-            navigator.platform?.toLowerCase().includes("mac")
-              ? "Command"
-              : "Control"
-          } (or drag) to select more than one team. A team carries one repository permission over every repository linked to this organization, which is what opens the organization's repository floors and personal offices in the World.</p>
+          <p style="margin:6px 0 0;color:#9eb6aa;font-size:13px;line-height:1.5">These are the same organization teams managed in the ForkMesh website organization settings. Changes here update that same membership. A team carries one repository permission over every linked repository and may also unlock an Office elevator floor.</p>
         </header>
-        <label style="display:grid;gap:6px;font-size:12px">Teams
-          <select name="teams" multiple size="${Math.min(
-            8,
-            Math.max(3, teams.length),
-          )}" style="padding:10px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit;font:13px/1.6 ui-monospace,monospace">
+        <fieldset style="display:grid;gap:8px;padding:12px;border-radius:9px;border:1px solid #3a6655;background:#071a16">
+          <legend style="padding:0 5px;font-size:12px;font-weight:800;color:#eafff4">Teams</legend>
+          <div style="display:grid;gap:8px;max-height:320px;overflow:auto">
             ${teams
               .map(
                 (team) =>
-                  `<option value="${escapeHTML(team.team)}"${
-                    current.has(team.team) ? " selected" : ""
-                  }>${escapeHTML(team.team)} · ${escapeHTML(
-                    team.permission,
-                  )}</option>`,
+                  `<label style="display:grid;grid-template-columns:auto 1fr;align-items:start;gap:10px;padding:9px;border:1px solid #23483b;border-radius:8px;cursor:pointer">
+                    <input type="checkbox" name="teams" value="${escapeHTML(
+                      team.team,
+                    )}" ${current.has(team.team) ? "checked" : ""} style="margin-top:3px;accent-color:#9ef7c6">
+                    <span style="display:grid;gap:3px">
+                      <strong style="font:800 13px/1.3 ui-monospace,monospace">${escapeHTML(
+                        team.team,
+                      )} · ${escapeHTML(team.permission)}</strong>
+                      <small style="color:#9eb6aa;font:12px/1.4 ui-monospace,monospace">${
+                        team.floors.length
+                          ? `Unlocks Office elevator ${
+                              team.floors.length === 1 ? "floor" : "floors"
+                            }: ${escapeHTML(team.floors.join(", "))}`
+                          : "No additional Office elevator floor"
+                      }</small>
+                    </span>
+                  </label>`,
               )
               .join("")}
-          </select>
-        </label>
+          </div>
+        </fieldset>
         <output style="min-height:18px;color:#9ef7c6;font-size:12px" aria-live="polite"></output>
         <footer style="display:flex;justify-content:flex-end;gap:8px">
           <button type="button" data-world-org-team-cancel style="padding:9px 12px;border-radius:8px;border:1px solid #3a6655;background:#0b211b;color:inherit">Close</button>
@@ -6259,7 +6267,9 @@ class ForkMeshWorld extends HTMLElement {
       const output = form.querySelector("output");
       const submit = form.querySelector('[type="submit"]');
       const selected = new Set(
-        [...form.elements.teams.selectedOptions].map((option) => option.value),
+        [...form.querySelectorAll('input[name="teams"]:checked')].map(
+          (checkbox) => checkbox.value,
+        ),
       );
       const added = [...selected].filter((team) => !current.has(team));
       const removed = [...current].filter((team) => !selected.has(team));
@@ -6269,6 +6279,7 @@ class ForkMeshWorld extends HTMLElement {
       }
       submit.disabled = true;
       let failures = 0;
+      let savedChanges = 0;
       const root = `/api/orgs/${encodeURIComponent(org)}/teams`;
       for (const team of [...added, ...removed]) {
         const grant = added.includes(team);
@@ -6281,6 +6292,7 @@ class ForkMeshWorld extends HTMLElement {
             { member },
             grant ? {} : { method: "DELETE" },
           );
+          savedChanges += 1;
         } catch (error) {
           failures += 1;
           output.textContent = `${team}: ${String(
@@ -6289,6 +6301,12 @@ class ForkMeshWorld extends HTMLElement {
         }
       }
       await this.refreshOrganizationTeams(org);
+      if (
+        savedChanges > 0 &&
+        member === String(validWorldSession()?.nodeName || "").toLowerCase()
+      ) {
+        await this.officeController?.refreshAuthorization?.();
+      }
       submit.disabled = false;
       if (failures) {
         this.toast(
