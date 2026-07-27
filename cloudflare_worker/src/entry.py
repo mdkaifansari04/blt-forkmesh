@@ -28069,6 +28069,7 @@ async def sync_handler(env, request):
     # NOT deleted here — the node acks a merged inbox with its per-repo DELETE.
     marks = ",".join("?" for _ in repo_bis)
     by_repo = {}      # repo_bi -> {topic: [decrypted rows...]}
+    merge_sync_by_repo = {}  # repo_bi -> published exact-OID merge receipts
     drain_ids = {}    # repo_bi -> {table: [row ids read]}, for exact deletes
     if repo_bis:
         now = int(Date.now())
@@ -28143,6 +28144,58 @@ async def sync_handler(env, request):
                             and owner_crypto is None)):
                     drain_ids.setdefault(r.get("repo_bi"), {}) \
                         .setdefault(table, []).append(r.get("drain_id"))
+        # A merge performed while the source-of-truth node was offline is a
+        # durable relay job, not an ordinary PR event. Carry its exact,
+        # already-validated public object IDs in the same signed sync response
+        # so the owner node can reconcile the published mirror state later.
+        # The selected mirror, actor, paths, and credentials never leave D1.
+        merge_rows = await d1_all(
+            env,
+            "SELECT repo_bi,request_id,pull_number,result,updated_at "
+            "FROM repo_merge_jobs "
+            f"WHERE repo_bi IN ({marks}) AND status='succeeded' "
+            "AND expires_at>? ORDER BY updated_at ASC",
+            *repo_bis, now,
+        )
+        for merge_row in merge_rows or []:
+            try:
+                result = json.loads(str(merge_row.get("result") or ""))
+            except Exception:
+                continue
+            request_id = clean_string(
+                merge_row.get("request_id", ""), 80).strip()
+            fields = {
+                key: str(result.get(key) or "").strip().lower()
+                for key in (
+                    "baseBefore", "head", "pullsBefore",
+                    "baseAfter", "pullsAfter",
+                )
+            }
+            try:
+                pull_number = int(merge_row.get("pull_number") or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if (
+                result.get("ok") is not True
+                or result.get("status") != "merged"
+                or result.get("published") is not True
+                or str(result.get("requestId") or "") != request_id
+                or not HTTPS_MIRROR_MERGE_REQUEST_RE.fullmatch(request_id)
+                or not 1 <= pull_number <= 999999999
+                or any(
+                    not re.fullmatch(
+                        r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid)
+                    for oid in fields.values()
+                )
+                or len({len(oid) for oid in fields.values()}) != 1
+            ):
+                continue
+            merge_sync_by_repo.setdefault(
+                merge_row.get("repo_bi"), []).append({
+                    "requestId": request_id,
+                    "pullNumber": pull_number,
+                    **fields,
+                })
     repos = []
     for row in rows:
         rec = await decrypt_row(env, row["data"])
@@ -28162,6 +28215,7 @@ async def sync_handler(env, request):
             "pulls": pending.get("pulls", []),
             "discussions": pending.get("discussions", []),
             "commits": pending.get("commits", []),
+            "mirrorMerges": merge_sync_by_repo.get(repo_bi, []),
         }
         # Drain-on-read deletes target the EXACT rows this request read (by
         # id), never the whole repo_bi: a prompt/About edit inserted while
@@ -34222,6 +34276,11 @@ async def repository_pull_merge_handler(
         "success" if terminal == "succeeded" else "failed",
         {"pullNumber": int(pull_number),
          "reason": str(result.get("error") or "")})
+    if terminal == "succeeded":
+        # Wake the source node immediately. Its next signed /api/sync response
+        # now includes the exact published receipt from repo_merge_jobs.
+        await notify_repo_host(
+            env, context["owner"], context["repo"], "mirror_merge")
     return _https_mirror_merge_response(result)
 
 

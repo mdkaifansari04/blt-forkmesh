@@ -20,7 +20,7 @@ the implementation and its focused verification are complete.
 - [x] Let reviewers mark individual files as viewed and persist that state.
 - [x] Let a reviewer approve a pull request.
 - [x] Let an organization owner merge an approved pull request into an eligible mirror.
-- [ ] Queue the mirror merge for later synchronization to the source of truth.
+- [x] Queue the mirror merge for later synchronization to the source of truth.
 - [x] Keep mirror merge owner-only until group permissions are available.
 - [x] Add focused authorization, concurrency, persistence, and UI tests.
 
@@ -34,7 +34,7 @@ the implementation and its focused verification are complete.
 - [x] Point the dashboard globe link to `/world`.
 - [x] Allow organization admins to assign user groups, including for offline users.
 - [x] Put each seated user's group control on their back.
-- [ ] Finish reviewing and integrating the remaining session branches from the supplied list.
+- [x] Finish reviewing and integrating the remaining session branches from the supplied list.
 - [ ] Delete merged session branches and worktrees after verification.
 - [ ] Restore the preserved pre-existing user test changes from `stash@{0}`.
 

@@ -208,6 +208,8 @@ def test_worker_route_auth_idempotency_and_no_failover_contracts():
     assert "merge_node_unavailable" in handler
     assert "An uncertain transport result never fails over" in handler
     assert "_https_mirror_merge_proxy(" in handler
+    assert 'notify_repo_host(' in handler
+    assert '"mirror_merge"' in handler
 
 
 def test_mirror_merge_authorization_is_org_owner_only():
