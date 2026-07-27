@@ -13,6 +13,7 @@ OFFICE = PUBLIC / "world-office.js"
 SCENE = PUBLIC / "world-scene.js"
 WORLD = PUBLIC / "world.js"
 CSS = PUBLIC / "world.css"
+WORLD_PROTOCOL = ROOT / "src" / "world.py"
 
 
 def source(path):
@@ -65,8 +66,12 @@ def test_office_scene_has_a_bounded_interactive_marketing_task_board():
         'officeMarketingTaskBoard.name = "forkmesh-office-marketing-task-board"',
         '"forkmesh-office-marketing-task-board-frame"',
         '"forkmesh-office-marketing-task-board-face"',
-        'officeMarketingTaskBoard.position.set(-8.02, 3.55, -0.55)',
-        'officeMarketingTaskBoard.rotation.y = Math.PI / 2',
+        "officeMarketingTaskBoard.position.set(",
+        "-24,",
+        'officeFloorY("marketing") + 6.4,',
+        "-OFFICE_FRONT_Z + 0.55,",
+        "new THREE.BoxGeometry(18.5, 11.4, 0.18)",
+        "new THREE.PlaneGeometry(18.12, 11.02)",
         "officeMarketingTaskBoardFrame.userData.interactive =",
         "officeMarketingTaskBoardFace.userData.interactive =",
         'onOfficeTaskBoardSelect = () => {}',
@@ -82,6 +87,45 @@ def test_office_scene_has_a_bounded_interactive_marketing_task_board():
     assert "task.assignee,\n            24" in scene
     assert "task.status,\n            16" in scene
     assert "task.elapsed,\n            18" in scene
+
+
+def test_marketing_furniture_is_open_clickable_and_faces_the_table():
+    scene = source(SCENE)
+    for contract in (
+        'officeTable.name = "forkmesh-office-marketing-tabletop"',
+        'officeTable.position.set(0, officeFloorY("marketing") + 1.8, 0)',
+        'tableLeg.name = "forkmesh-office-marketing-table-leg"',
+        'tableLeg.position.set(x, officeFloorY("marketing") + 1.02, z)',
+        "chair.name = `forkmesh-office-${chairId}`",
+        "const yaw = Math.atan2(-x, -z)",
+        "back.position.set(0, 1.42, -0.48)",
+        "function sitOnOfficeChair(chairId)",
+        'officeCurrentFloorId !== "marketing"',
+        "applyOfficeChairSeatPose()",
+        'hit?.object?.userData?.interactive === "office-chair"',
+        "sitOnOfficeChair(hit.object.userData.officeChairId)",
+        "sitOnOfficeChair,",
+    ):
+        assert contract in scene
+    assert "officeTable.position.set(0, officeFloorY(\"marketing\") + 1.45" not in scene
+
+
+def test_all_office_labels_are_mounted_planes_instead_of_hovering_sprites():
+    scene = source(SCENE)
+    assert "function makeOfficeWallPlacard(" in scene
+    assert "placard.userData.officeWallMounted = true" in scene
+    for contract in (
+        "makeOfficeWallPlacard(",
+        "forkmesh-office-wall-placard-",
+        'officeRoomSign.name = "forkmesh-office-marketing-wall-title"',
+        'label.name = `forkmesh-office-reception-nameplate-${index + 1}`',
+    ):
+        assert contract in scene
+    office_build = scene[
+        scene.index("const officeFloorGroups ="):
+        scene.index("// One physical selector rides inside")
+    ]
+    assert "makeLabelSprite(" not in office_build
 
 
 def test_office_task_board_is_authorization_gated_and_selected_before_chairs():
@@ -184,20 +228,26 @@ def test_general_meeting_access_uses_only_the_short_lived_memory_ticket_header()
     assert "sessionStorage" not in meeting
 
 
-def test_native_office_entry_ticket_is_wired_before_the_lobby_opens():
+def test_native_office_entry_ticket_is_minted_lazily_for_meetings():
     office = source(OFFICE)
+    meeting = source(MEETING)
     world = source(WORLD)
-    assert "meeting.setEntryTicket?.(entryTicket, expiresAt)" in office
-    assert office.index(
-        "meeting.setEntryTicket?.(entryTicket, expiresAt)"
-    ) < office.index("meeting.openLobby()")
-    for contract in (
-        "data-world-office-keypad",
-        "data-world-office-keypad-status",
-        "data-world-office-keypad-submit",
-        'aria-label="Four-digit Office code"',
-    ):
-        assert contract in world
+    ticket_wiring = (
+        "meeting.setEntryTicket?.(officeEntryTicket, officeEntryExpiresAt)"
+    )
+    assert ticket_wiring in office
+    assert "async function authorizeMeeting()" in office
+    assert "const entered = completeOfficeEntry()" in office
+    assert "setEntryTicketProvider" in world
+    assert "let entryTicketProvider = null" in meeting
+    assert "await entryTicketProvider()" in meeting
+    assert meeting.index("await entryTicketProvider()") < meeting.index(
+        "meetingBinding = await createMeetingBinding()"
+    )
+    assert 'const OFFICE_ENTRY_PATH = "/api/world/office/general/entry"' in office
+    assert "if (!activeSession) return greetGuest()" not in office
+    assert "world-office-keypad" not in world.lower()
+    assert "four-digit office code" not in world.lower()
 
 
 def test_office_movement_queue_is_latest_wins_bounded_and_backpressure_safe():
@@ -311,3 +361,14 @@ def test_office_movement_queue_does_not_throttle_presence_or_ping_frames():
     ]
     assert "movementQueue.queue({" in movement
     assert "sendMeeting({" not in movement
+
+
+def test_idle_meeting_keepalive_halves_durable_object_wakeups_with_stale_margin():
+    meeting = source(MEETING)
+    protocol = source(WORLD_PROTOCOL)
+    assert "const OFFICE_PING_MS = 40000" in meeting
+    assert "OFFICE_CLIENT_STALE_MS = 90 * 1000" in protocol
+    assert (
+        "window.setInterval(() => sendMeeting({ type: \"ping\" }), "
+        "OFFICE_PING_MS)"
+    ) in meeting

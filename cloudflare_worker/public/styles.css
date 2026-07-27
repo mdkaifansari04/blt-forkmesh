@@ -2550,7 +2550,7 @@ button.issue-row {
 .status-dot.is-operational { background: var(--accent-bright); }
 .status-dot.is-degraded { background: var(--warning); }
 .status-dot.is-down { background: var(--danger); }
-.status-dot.is-unknown { background: var(--border); }
+.status-dot.is-unknown { background: var(--danger); }
 
 .status-row-meta,
 .status-row-metrics {
@@ -2606,11 +2606,10 @@ button.issue-row {
   border-color: color-mix(in srgb, var(--danger) 35%, transparent);
 }
 
-/* "Unknown" is a monitoring gap, not an incident — neutral, not alarming. */
 .status-row-reason.is-unknown {
-  background: color-mix(in srgb, var(--border) 30%, transparent);
-  border-color: var(--border);
-  color: var(--muted);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  color: var(--danger);
 }
 
 .status-days {
@@ -2647,7 +2646,7 @@ button.issue-row {
 .status-day:not(.has-hours).is-operational { background: var(--accent-bright); }
 .status-day:not(.has-hours).is-degraded { background: var(--warning); }
 .status-day:not(.has-hours).is-down { background: var(--danger); }
-.status-day:not(.has-hours).is-unknown { background: var(--border); }
+.status-day:not(.has-hours).is-unknown { background: var(--danger); }
 
 .status-day.is-partial {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 18%, transparent);
@@ -2730,7 +2729,7 @@ button.issue-row {
 .status-minute-slice.is-down { background: var(--danger); }
 .status-hour-slice.is-unknown,
 .status-day-hour.is-unknown,
-.status-minute-slice.is-unknown { background: var(--border); }
+.status-minute-slice.is-unknown { background: var(--danger); }
 
 /* Hours/minutes later today that simply haven't happened yet — visually
    hollow so a partial day/hour never reads as a completed, fully-green/orange

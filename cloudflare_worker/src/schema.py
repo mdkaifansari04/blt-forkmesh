@@ -1596,6 +1596,29 @@ SCHEMA_STATEMENTS = [
             SELECT RAISE(
                 ABORT, 'world_office_marketing_checkin_catalog_full');
         END""",
+    # Shared Office lobby attendance board (migration 0085). Each visit is one
+    # row that is opened by an authenticated IN punch and closed in place by
+    # the matching OUT punch. The public account name is the only display
+    # value; no address, user-agent, session token, or device data is retained.
+    """CREATE TABLE IF NOT EXISTS world_office_attendance (
+        visit_id TEXT PRIMARY KEY CHECK (
+            length(visit_id) = 32
+            AND visit_id NOT GLOB '*[^0-9a-f]*'
+        ),
+        account_bi TEXT NOT NULL CHECK (
+            length(account_bi) = 64
+            AND account_bi NOT GLOB '*[^0-9a-f]*'
+        ),
+        account_name TEXT NOT NULL CHECK (
+            length(account_name) BETWEEN 1 AND 32
+        ),
+        in_at INTEGER NOT NULL CHECK (in_at > 0),
+        out_at INTEGER CHECK (out_at IS NULL OR out_at >= in_at))""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_world_office_attendance_open
+        ON world_office_attendance(account_bi)
+        WHERE out_at IS NULL""",
+    """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_recent
+        ON world_office_attendance(in_at DESC, visit_id DESC)""",
     # Evidence-reviewed contextual placements. The accounting table is
     # deliberately isolated from every wallet/reward ledger.
     """CREATE TABLE IF NOT EXISTS community_ad_instance_policy (
@@ -1949,6 +1972,26 @@ SCHEMA_STATEMENTS = [
         rotation REAL NOT NULL DEFAULT 0,
         updated_by_bi TEXT NOT NULL,
         updated_at INTEGER NOT NULL)""",
+    # One public, last-known-good CelesTrak VISUAL OMM snapshot. A scheduled
+    # refresh owns all upstream traffic; visitor reads never fetch CelesTrak.
+    # This row contains no visitor location, account, session, or wallet data.
+    """CREATE TABLE IF NOT EXISTS world_satellite_snapshot (
+        snapshot_id INTEGER PRIMARY KEY CHECK (snapshot_id = 1),
+        data TEXT NOT NULL CHECK (
+            length(data) > 0 AND length(data) <= 524288
+        ),
+        digest TEXT NOT NULL CHECK (
+            length(digest) = 64
+            AND digest NOT GLOB '*[^0-9a-f]*'
+        ),
+        fetched_at INTEGER NOT NULL CHECK (fetched_at > 0),
+        source_epoch TEXT NOT NULL,
+        last_attempt_at INTEGER NOT NULL CHECK (last_attempt_at > 0),
+        last_status INTEGER NOT NULL DEFAULT 200 CHECK (
+            last_status >= 0 AND last_status <= 599
+        ),
+        last_error TEXT NOT NULL DEFAULT ''
+            CHECK (length(last_error) <= 240))""",
     # Referral-program counters, one row per referring account. referrer_bi is
     # the account blind index and name is the plaintext public username (the
     # same identity already shown on the profile page and leaderboards). Only

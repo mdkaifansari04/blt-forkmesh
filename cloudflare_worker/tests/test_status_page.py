@@ -526,18 +526,54 @@ def _run_history(rows, hour_rows=(), minute_rows=()):
     return captured
 
 
-def test_no_data_is_unknown_not_fabricated_downtime():
-    # A missing sample means the sampling cron didn't run (monitoring gap) —
-    # it is NOT evidence of an outage. Counting gaps as downtime is what used
-    # to show every system with the same fabricated ~50% uptime while the
-    # site was actually up, so with no data at all the honest answer is
-    # "unknown" with no uptime number, not 0%.
+def test_no_data_is_a_red_monitoring_failure_without_fabricated_uptime():
+    # Missing expected samples mean the monitoring system failed. Render that
+    # state red/down, while keeping the uptime value unset because no service
+    # probe actually ran.
     out = _run_history([])
     by_id = {s["id"]: s for s in out["systems"]}
-    assert by_id["website"]["status"] == "unknown"
+    assert by_id["website"]["status"] == "down"
     assert by_id["website"]["uptimePct"] is None
     assert by_id["website"]["uptime24hPct"] is None
     assert len(by_id["website"]["days"]) == 30
+
+
+def test_world_status_projection_keeps_visual_windows_without_nested_history():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    hour_rows = [
+        {
+            "hour_ts": cur_hour,
+            "system": "website",
+            "checks": 60,
+            "failures": 1,
+            "reason": "one failed check",
+        },
+    ]
+    minute_rows = [
+        {
+            "minute_ts": (_Clock.value // 60000) * 60000,
+            "system": "website",
+            "ok": 1,
+            "reason": None,
+        },
+    ]
+    extra, captured = _history_env(
+        [{"day_ts": cur_day, "system": "website", "checks": 60, "failures": 1}],
+        hour_rows,
+        minute_rows,
+    )
+    g = _load("status_history", extra_globals=extra)
+    asyncio.run(g["status_history"](object(), "world"))
+
+    website = next(
+        system for system in captured["systems"] if system["id"] == "website")
+    assert len(website["days"]) == 30
+    assert all("hours" not in day for day in website["days"])
+    assert website["days"][-1]["status"] == "degraded"
+    assert len(website["hours"]) == 24
+    assert len(website["minutes"]) == 60
+    assert "checkDescription" not in website
 
 
 def test_all_checks_passing_today_is_operational():
@@ -676,16 +712,15 @@ def test_hours_breakdown_present_for_today_with_reason_on_degraded_hour():
     assert this_hour["reason"] == "500 on /api/x: boom"
 
 
-def test_hour_with_no_checks_is_unknown_and_explains_the_monitoring_gap():
+def test_hour_with_no_checks_is_down_and_explains_monitoring_failure():
     cur_day = (_Clock.value // DAY_MS) * DAY_MS
     out = _run_history([], hour_rows=())
     by_id = {s["id"]: s for s in out["systems"]}
     today = next(d for d in by_id["website"]["days"] if d["dayTs"] == cur_day)
     elapsed = [h for h in today["hours"] if h["expectedChecks"]]
     assert elapsed
-    assert all(h["status"] == "unknown" for h in elapsed)
-    assert all("monitoring gap" in h["reason"] for h in elapsed)
-    assert all("not evidence of an outage" in h["reason"] for h in elapsed)
+    assert all(h["status"] == "down" for h in elapsed)
+    assert all("Monitoring failed" in h["reason"] for h in elapsed)
     assert all(h["missingChecks"] == h["expectedChecks"] for h in elapsed)
 
 
@@ -711,10 +746,7 @@ def test_uptime_counts_only_recorded_samples_and_reports_coverage():
     assert api["coverage24hPct"] < 100.0
 
 
-def test_stale_samples_flip_the_badge_to_unknown_not_a_stale_status():
-    # The newest recorded sample is hours old: claiming "operational" (or
-    # "down") from stale data would be false info — the badge must say the
-    # current state is unknown and why.
+def test_stale_samples_flip_the_badge_to_monitoring_failure():
     cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
     stale_hour = cur_hour - 5 * HOUR_MS
     hour_rows = [
@@ -724,8 +756,8 @@ def test_stale_samples_flip_the_badge_to_unknown_not_a_stale_status():
     out = _run_history([], hour_rows)
     by_id = {s["id"]: s for s in out["systems"]}
     website = by_id["website"]
-    assert website["status"] == "unknown"
-    assert "monitoring gap" in website["reason"]
+    assert website["status"] == "down"
+    assert "Monitoring failed" in website["reason"]
     assert website["reasonTs"] == stale_hour
     # The stale-but-recorded samples still count toward uptime honestly.
     assert website["uptime24hPct"] == 100.0
@@ -809,10 +841,10 @@ def test_minute_with_no_row_is_future_only_for_the_current_bucket():
     # The newest bucket (this minute) simply hasn't been sampled by the cron
     # yet — that's not evidence of an outage.
     assert minutes[-1]["status"] == "future"
-    # Every older bucket with no row is a monitoring gap (the sampling cron
-    # didn't run), shown as "unknown" — never fabricated into downtime.
-    assert all(m["status"] == "unknown" for m in minutes[:-1])
-    assert all("monitoring gap" in m["reason"] for m in minutes[:-1])
+    # Every older bucket was expected to have data and is therefore a red
+    # monitoring failure.
+    assert all(m["status"] == "down" for m in minutes[:-1])
+    assert all("Monitoring failed" in m["reason"] for m in minutes[:-1])
 
 
 def test_minute_row_reflects_ok_and_carries_its_failure_reason():
@@ -897,7 +929,7 @@ def test_latest_failing_minute_is_down_even_if_hour_is_mostly_green():
     assert system["reasonTs"] == cur_minute
 
 
-def test_stale_latest_minute_reports_unknown_not_online():
+def test_stale_latest_minute_reports_monitoring_failure_not_online():
     cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
     minute_rows = [
         {"minute_ts": cur_minute - 3 * MINUTE_MS, "system": "git_hosting",
@@ -905,7 +937,7 @@ def test_stale_latest_minute_reports_unknown_not_online():
     ]
     out = _run_history([], minute_rows=minute_rows)
     system = next(s for s in out["systems"] if s["id"] == "git_hosting")
-    assert system["status"] == "unknown"
+    assert system["status"] == "down"
     assert "last two minutes" in system["reason"]
 
 
