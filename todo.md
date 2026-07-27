@@ -62,8 +62,8 @@ task above so they stay recoverable until final verification.
 - [x] Session 396 — node-install/provisioning behavior.
 - [x] Session 386 — website referral leaderboard.
 - [ ] Add a separate HTTP `Referer` leaderboard beside the existing referral leaderboard.
-- [ ] Review, clean up, and merge mdkaifan's direct-chat pull request.
-- [ ] Remove the direct-chat PR branch/worktree after its merge is verified.
+- [x] Review, clean up, and merge mdkaifan's direct-chat pull request.
+- [x] Remove the direct-chat PR branch/worktree after its merge is verified.
 
 ## Final verification
 
