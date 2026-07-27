@@ -4260,6 +4260,20 @@ private:
     // showBranchDiff/renderBranchScopeDiff shelled git on the GUI thread).
     int m_branchScopeLoadGen = 0;
     int m_branchScopeDiffGen = 0;
+    // Branch merge-conflict probes. `git merge-tree` costs ~0.5-1s per branch on a
+    // busy repo, so running one per row inline froze the branches panel for
+    // seconds on every rebuild — and one lands after every delete/merge/pull
+    // (adhoc #416). The rows paint immediately without the flag and the probes run
+    // on a worker thread instead; each verdict is memoised by the exact commit
+    // pair it merged (key "<git dir>\n<base sha>\n<branch sha>"), so later
+    // rebuilds and the detail pane reuse it rather than re-shelling git.
+    QHash<QString, bool> m_branchConflictCache;
+    QSet<QString> m_branchConflictProbes; // branches a worker is probing right now
+    // Probe the given branches (pairs of branch name + cache key) for conflicts
+    // with `base` off the GUI thread, painting each verdict into the table when
+    // it lands.
+    void startBranchConflictProbes(const QString &dir, const QString &base,
+                                   const QList<QPair<QString, QString>> &probes);
     // The last patch rendered into the branch-diff pane (with its empty-state
     // message), cached so the per-file "Viewed" toggle can re-render synchronously
     // — the toggle changes only the viewed set, not the patch, so it must not pay
