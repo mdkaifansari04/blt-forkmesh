@@ -479,6 +479,8 @@ def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
         "addMLogoFace(2.68, Math.PI / 2)",
         "addMLogoFace(-2.68, -Math.PI / 2)",
         "forkmesh-reflective-fm-panel-",
+        "logoPanelShape.holes.push(hole)",
+        "panel.userData.logoThroughCutouts = logoPanelShape.holes.length",
         'logoContactPoint.name = "forkmesh-reflective-fm-cube-contact-point"',
         'logoSupport.name = "forkmesh-reflective-fm-cube-support"',
         "new THREE.WebGLCubeRenderTarget(",
@@ -494,6 +496,20 @@ def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
     ]
     assert "const cubeBody" not in logo
     assert "new THREE.BoxGeometry(5.6, 5.6, 5.6" not in logo
+    panels = logo[
+        logo.index("// Rounded mirrored top and bottom plates"):
+        logo.index("const logoContactPoint")
+    ]
+    assert panels.count("logoPanelShape.holes.push(hole)") == 2
+    assert "new THREE.CylinderGeometry(0.48" not in panels
+    assert "new THREE.BoxGeometry(0.3, 0.08" not in panels
+    chrome_material = scene[
+        scene.index("const chrome = new THREE.MeshPhysicalMaterial"):
+        scene.index("const darkChrome")
+    ]
+    assert 'color: "#aeb9c8"' in chrome_material
+    assert "metalness: 1" in chrome_material
+    assert "envMap: reflectionTarget.texture" in chrome_material
     animation = scene[
         scene.index("const logoReflectionIntervalMs"):
         scene.index("// One physical selector rides inside")
