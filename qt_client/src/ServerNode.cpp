@@ -1,5 +1,6 @@
 #include "ForkMeshVersion.h"
 #include "ChatHistoryLimits.h"
+#include "ChatVisitorPresence.h"
 #include "ServerNode.h"
 #include "SystemStats.h"
 
@@ -2048,7 +2049,14 @@ void ServerNode::reapStalePeers()
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     for (auto it = m_peers.begin(); it != m_peers.end();) {
-        if (now - it->lastSeenMs > kPeerReapMs) {
+        // A guest or World visitor is a browser tab that will never come back
+        // under the same id, so it is erased after ten idle minutes rather than
+        // held for the full hour a real node gets (adhoc #404).
+        const qint64 reapAfter =
+            ChatVisitorPresence::isTransientVisitor(it->accountKind, it->name)
+                ? ChatVisitorPresence::kVisitorIdleMs
+                : kPeerReapMs;
+        if (now - it->lastSeenMs > reapAfter) {
             m_lastHelloReplyMs.remove(it.key());
             it = m_peers.erase(it);
         } else {

@@ -8,6 +8,8 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 
+#include "ChatVisitorPresence.h"
+
 #include <QDesktopServices>
 #include <QUrl>
 
@@ -481,6 +483,19 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
             freshNames.insert(m.name);
     }
 
+    // Remember when each peer was last seen live, so a transient visitor can be
+    // aged out below. Keyed by id, falling back to the name for a peer that
+    // somehow has none.
+    const auto peerKey = [](const MemberInfo &m) {
+        return m.id.isEmpty() ? m.name.trimmed().toLower() : m.id;
+    };
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    for (const MemberInfo &m : members) {
+        const QString key = peerKey(m);
+        if (!key.isEmpty() && m.online)
+            m_peerLastSeenMs.insert(key, nowMs);
+    }
+
     // Merge fresh (online) members with previously-known nodes that dropped out
     // of the roster, so the Node dropdown keeps them selectable when offline.
     // Skip nodes that were explicitly removed via removeChatMember.
@@ -494,11 +509,37 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
             (!prev.id.isEmpty() && freshIds.contains(prev.id)) ||
             (!prev.name.isEmpty() && freshNames.contains(prev.name));
         if (!stillPresent) {
+            // Guests and World visitors are browser tabs, not nodes: retaining
+            // them offline forever filled the users column with dozens of dead
+            // "Guest ####" rows, so forget them once they have gone quiet for
+            // the idle window (adhoc #404). A visitor we have no sighting for
+            // yet starts its clock now.
+            if (ChatVisitorPresence::isTransientVisitor(prev.accountKind,
+                                                        prev.name)) {
+                const QString key = peerKey(prev);
+                const qint64 lastSeen = m_peerLastSeenMs.value(key, 0);
+                if (lastSeen <= 0)
+                    m_peerLastSeenMs.insert(key, nowMs);
+                else if (ChatVisitorPresence::visitorIsIdle(lastSeen, nowMs))
+                    continue;
+            }
             MemberInfo offline = prev;
             offline.online = false;
             newRoster.append(offline);
         }
     }
+
+    // Keep the sighting map bounded to peers the roster still carries: every
+    // visitor id we ever saw would otherwise stay in it for the whole run.
+    QHash<QString, qint64> keptSightings;
+    keptSightings.reserve(newRoster.size());
+    for (const MemberInfo &m : std::as_const(newRoster)) {
+        const QString key = peerKey(m);
+        const auto it = m_peerLastSeenMs.constFind(key);
+        if (it != m_peerLastSeenMs.constEnd())
+            keptSightings.insert(key, *it);
+    }
+    m_peerLastSeenMs = keptSightings;
 
     // #33: optionally pop a desktop notification when another node comes online.
     // Capture who was online before this update (m_homeRoster still holds the

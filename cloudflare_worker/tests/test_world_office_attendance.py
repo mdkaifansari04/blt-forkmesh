@@ -203,6 +203,7 @@ def test_get_returns_only_the_newest_twenty_bounded_public_visits():
         "no-store, max-age=0, must-revalidate")
     visits = response["payload"]["visits"]
     assert response["payload"]["ok"] is True
+    assert response["payload"]["asOfAt"] == _Clock.value
     assert len(visits) == 20
     assert [visit["inAt"] for visit in visits] == sorted(
         (visit["inAt"] for visit in visits), reverse=True)
@@ -211,9 +212,12 @@ def test_get_returns_only_the_newest_twenty_bounded_public_visits():
         "account": "visitor-24",
         "inAt": 1_700_000_000_024,
         "outAt": 1_700_000_000_025,
+        "durationMs": 1,
     }
     assert all(
-        set(visit) == {"id", "account", "inAt", "outAt"}
+        set(visit) == {
+            "id", "account", "inAt", "outAt", "durationMs",
+        }
         for visit in visits
     )
 
@@ -235,7 +239,10 @@ def test_repeated_in_opens_one_visit_and_out_closes_that_same_row_once():
     assert rows[0]["account_bi"] == "a" * 64
     assert rows[0]["account_name"] == "Alicescript"
     assert rows[0]["out_at"] is None
-    assert first["payload"]["visits"] == duplicate["payload"]["visits"]
+    assert first["payload"]["visits"][0]["id"] == (
+        duplicate["payload"]["visits"][0]["id"])
+    assert first["payload"]["visits"][0]["durationMs"] == 0
+    assert duplicate["payload"]["visits"][0]["durationMs"] == 500
     assert state["session_payloads"][0]["account"] == "forged-user"
 
     _Clock.value += 500
@@ -249,6 +256,50 @@ def test_repeated_in_opens_one_visit_and_out_closes_that_same_row_once():
     assert row["out_at"] == checked_out_at
     assert checked_out["payload"]["visits"] == repeated_out["payload"]["visits"]
     assert checked_out["payload"]["visits"][0]["outAt"] == checked_out_at
+    assert checked_out["payload"]["visits"][0]["durationMs"] == 1_000
+
+
+def test_duration_is_server_timed_and_malformed_rows_are_bounded():
+    handler, database, _state = _runtime()
+    database.executemany(
+        "INSERT INTO world_office_attendance "
+        "(visit_id,account_bi,account_name,in_at,out_at) "
+        "VALUES (?,?,?,?,?)",
+        [
+            (
+                "1" * 32,
+                "1" * 64,
+                "closed",
+                _Clock.value - 125_000,
+                _Clock.value - 5_000,
+            ),
+            (
+                "2" * 32,
+                "2" * 64,
+                "open",
+                _Clock.value - 65_000,
+                None,
+            ),
+            (
+                "3" * 32,
+                "3" * 64,
+                "future-clock",
+                _Clock.value + 30_000,
+                None,
+            ),
+        ],
+    )
+    database.commit()
+
+    response = _run(handler(None, _Request(method="GET")))
+    visits = {
+        visit["account"]: visit for visit in response["payload"]["visits"]
+    }
+
+    assert response["payload"]["asOfAt"] == _Clock.value
+    assert visits["closed"]["durationMs"] == 120_000
+    assert visits["open"]["durationMs"] == 65_000
+    assert visits["future-clock"]["durationMs"] == 0
 
 
 def test_only_active_user_sessions_can_punch_and_actions_are_validated():

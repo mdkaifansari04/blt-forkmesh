@@ -219,10 +219,12 @@ const FLOOR_OBSTACLES = Object.freeze({
     Object.freeze({ type: "rect", minX: -38, maxX: 38, minZ: -8, maxZ: 8 }),
   ]),
   rooftop: Object.freeze([
-    Object.freeze({ type: "circle", x: 58, z: -24, radius: 4 }),
-    Object.freeze({ type: "circle", x: -40, z: 8, radius: 6 }),
-    Object.freeze({ type: "circle", x: 0, z: 8, radius: 6 }),
-    Object.freeze({ type: "circle", x: 40, z: 8, radius: 6 }),
+    // Keep only the table footprints solid. The former six-unit circles also
+    // swallowed every chair at radius five, so sitting or standing trapped a
+    // visitor inside an invisible collider.
+    Object.freeze({ type: "circle", x: -40, z: 8, radius: 3.5 }),
+    Object.freeze({ type: "circle", x: 0, z: 8, radius: 3.5 }),
+    Object.freeze({ type: "circle", x: 40, z: 8, radius: 3.5 }),
   ]),
 });
 
