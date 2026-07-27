@@ -1921,6 +1921,42 @@ test("walking through the Office doorway hydrates floor access without admission
   expect(officeEntryRequests).toHaveLength(0);
 });
 
+test("Office doorway retries a rejected crossing without requiring backward movement", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-doorway-no-twitch");
+  await waitForWorld(page);
+  await moveToOfficeEntrance(page, { unpause: true });
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const original =
+      shell.officeController.enterOffice.bind(shell.officeController);
+    shell.__officeEntryAttempts = 0;
+    shell.officeController.enterOffice = async (entry = {}) => {
+      shell.__officeEntryAttempts += 1;
+      if (shell.__officeEntryAttempts === 1) {
+        // Match a transient rejected/interrupted handoff. The controller's
+        // normal finally path clears pending; movement remains inward.
+        shell.world.setOfficeDoorwayEntryPending(false);
+        return false;
+      }
+      return original(entry);
+    };
+    shell.world.setControl("forward", true);
+  });
+  try {
+    await waitForOfficeEntry(page);
+    const result = await page.locator("forkmesh-world").evaluate((shell) => ({
+      attempts: shell.__officeEntryAttempts,
+      space: shell.world.getPosition().space,
+    }));
+    expect(result).toEqual({ attempts: 2, space: "office-lobby" });
+  } finally {
+    await page.locator("forkmesh-world").evaluate((shell) => {
+      shell.world.setControl("forward", false);
+    });
+  }
+});
+
 test("Office entry preserves the live avatar and keeps zoom inside the tower", async ({
   page,
 }) => {

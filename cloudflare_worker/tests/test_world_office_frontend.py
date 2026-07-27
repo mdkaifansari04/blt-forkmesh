@@ -685,7 +685,6 @@ def test_office_doorway_entry_and_exit_share_one_smooth_handoff_plane():
         leave.index("applyOfficeAvatarLocalPosition")
     ]
     assert "OFFICE_FRONT_Z + 0.82" in preserve
-    assert "officeDoorwayEntryArmed = true" in leave
 
 
 def test_lobby_camera_clamp_has_one_strict_open_door_portal():
@@ -1148,17 +1147,15 @@ def test_walking_through_the_doorway_enters_immediately_and_hydrates_access():
     scene = source(SCENE_PATH)
     for contract in (
         "let officeDoorwayEntryPending = false;",
-        "let officeDoorwayEntryArmed = true;",
         "const crossedDoorway =",
-        "officeDoorwayEntryArmed &&",
         "!officeDoorwayEntryPending",
-        "officeDoorwayEntryArmed = false;",
         "officeDoorwayEntryPending = true;",
         'source: "doorway"',
         "function setOfficeDoorwayEntryPending(pending = false)",
         "setOfficeDoorwayEntryPending,",
     ):
         assert contract in scene
+    assert "officeDoorwayEntryArmed" not in scene
     entry = office[
         office.index("async function enterOffice(entry = {})"):
         office.index("function completeOfficeExit()")

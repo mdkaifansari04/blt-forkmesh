@@ -10348,7 +10348,6 @@ export function createWorldScene({
   let officeWasMoving = false;
   let officeExitPending = false;
   let officeDoorwayEntryPending = false;
-  let officeDoorwayEntryArmed = true;
   let officeExitHandler = null;
   const weather = createWeather(THREE, scene);
 
@@ -10692,19 +10691,16 @@ export function createWorldScene({
     const previousZ = previousPosition.z - office.position.z;
     const doorClearance = OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS;
     const doorwayThreshold = OFFICE_DOORWAY_ENTRY_Z;
-    if (
-      localZ > doorwayThreshold + 0.32 &&
-      localZ > previousZ + 0.01
-    ) {
-      officeDoorwayEntryArmed = true;
-    }
     const crossedDoorway =
       Math.abs(localX) <= doorClearance &&
       previousZ >= doorwayThreshold &&
       localZ < doorwayThreshold;
     // Crossing the threshold switches into the continuous lobby immediately.
-    // The armed/pending pair prevents a held movement key from firing the
-    // controller more than once before that scene-mode handoff completes.
+    // Pending prevents a held movement key from firing the controller more
+    // than once before that scene-mode handoff completes. Do not require a
+    // separate "armed" edge: if an entry callback is rejected or interrupted,
+    // the avatar remains on this plane and the next inward frame must retry
+    // without forcing the visitor to step backward and twitch across it again.
     if (
       Math.abs(localX) <= doorClearance &&
       previousZ >= OFFICE_FRONT_Z
@@ -10714,11 +10710,7 @@ export function createWorldScene({
         // forward to the trigger plane before they have actually crossed it.
         return false;
       }
-      if (
-        officeDoorwayEntryArmed &&
-        !officeDoorwayEntryPending
-      ) {
-        officeDoorwayEntryArmed = false;
+      if (!officeDoorwayEntryPending) {
         officeDoorwayEntryPending = true;
         onOfficeEnter({
           source: "doorway",
@@ -11556,7 +11548,6 @@ export function createWorldScene({
     officeWasMoving = false;
     officeExitPending = false;
     officeDoorwayEntryPending = false;
-    officeDoorwayEntryArmed = true;
     officeLobbyPlayer.visible = false;
     player.visible = cameraMode !== "first-person";
     cameraFocus = null;
