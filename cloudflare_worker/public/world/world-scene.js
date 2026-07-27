@@ -7300,6 +7300,21 @@ function updateScreenLabel(THREE, object, element, camera, width, height, yOffse
   element.style.top = `${(-position.y * 0.5 + 0.5) * height}px`;
 }
 
+export function officeAttendanceDurationLabel(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  const milliseconds = Number(value);
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
+  const totalMinutes = Math.floor(milliseconds / 60_000);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const totalHours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (totalHours < 24) {
+    return `${totalHours}h ${String(minutes).padStart(2, "0")}m`;
+  }
+  const days = Math.floor(totalHours / 24);
+  return `${days}d ${String(totalHours % 24).padStart(2, "0")}h`;
+}
+
 export function createWorldScene({
   THREE,
   container,
@@ -9337,21 +9352,6 @@ export function createWorldScene({
   officeAttendanceBoard.position.set(-84.5, 7.1, 18);
   officeAttendanceBoard.rotation.y = Math.PI / 2;
   officeInterior.add(officeAttendanceBoard);
-
-  function officeAttendanceDurationLabel(value) {
-    if (value === null || value === undefined || value === "") return "—";
-    const milliseconds = Number(value);
-    if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
-    const totalMinutes = Math.floor(milliseconds / 60_000);
-    if (totalMinutes < 60) return `${totalMinutes}m`;
-    const totalHours = Math.floor(totalMinutes / 60);
-    const minutes = totalMinutes % 60;
-    if (totalHours < 24) {
-      return `${totalHours}h ${String(minutes).padStart(2, "0")}m`;
-    }
-    const days = Math.floor(totalHours / 24);
-    return `${days}d ${String(totalHours % 24).padStart(2, "0")}h`;
-  }
 
   function officeAttendanceTexture(snapshot = {}, openElapsedMs = 0) {
     const visits = Array.isArray(snapshot?.visits)

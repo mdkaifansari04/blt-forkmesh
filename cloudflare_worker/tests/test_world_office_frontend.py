@@ -218,6 +218,32 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
         assert contract in scene
 
 
+def test_attendance_duration_labels_are_compact_and_reject_bad_values():
+    script = f"""
+      import {{ officeAttendanceDurationLabel }} from {
+          json.dumps(SCENE_PATH.as_uri())
+      };
+      process.stdout.write(JSON.stringify([
+        officeAttendanceDurationLabel(null),
+        officeAttendanceDurationLabel(-1),
+        officeAttendanceDurationLabel(0),
+        officeAttendanceDurationLabel(59_999),
+        officeAttendanceDurationLabel(60_000),
+        officeAttendanceDurationLabel(3_720_000),
+        officeAttendanceDurationLabel(90_000_000),
+      ]));
+    """
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert json.loads(result.stdout) == [
+        "—", "—", "0m", "0m", "1m", "1h 02m", "1d 01h",
+    ]
+
+
 def test_floor_access_is_loaded_once_and_only_server_grants_unlock_buttons():
     office = source(OFFICE_PATH)
     scene = source(SCENE_PATH)

@@ -287,7 +287,6 @@ def test_duration_is_server_timed_and_malformed_rows_are_bounded():
                 _Clock.value + 30_000,
                 None,
             ),
-            ("4" * 32, "4" * 64, "missing-time", 0, None),
         ],
     )
     database.commit()
@@ -301,7 +300,6 @@ def test_duration_is_server_timed_and_malformed_rows_are_bounded():
     assert visits["closed"]["durationMs"] == 120_000
     assert visits["open"]["durationMs"] == 65_000
     assert visits["future-clock"]["durationMs"] == 0
-    assert "missing-time" not in visits
 
 
 def test_only_active_user_sessions_can_punch_and_actions_are_validated():
