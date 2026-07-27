@@ -320,6 +320,30 @@ ActionWorkflow ActionFile::parse(const QString &relPath, const QString &content)
     };
     addRunsOn(root.child(QStringLiteral("runs-on")));
 
+    // Job ids in this same file: a GitHub-style `needs: build` between two jobs
+    // orders work we already flatten into one step list, so those entries must
+    // not be mistaken for a dependency on another workflow.
+    QStringList jobIds;
+    if (const Node *jobs = root.child(QStringLiteral("jobs")))
+        if (jobs->type == Node::Map)
+            for (auto it = jobs->map.constBegin(); it != jobs->map.constEnd(); ++it)
+                jobIds.append(it.key().trimmed());
+    const auto addNeeds = [&wf, &jobIds](const Node *node) {
+        for (const QString &raw : scalarOrList(node)) {
+            const QString token = raw.trimmed();
+            if (token.isEmpty())
+                continue;
+            bool sameFileJob = false;
+            for (const QString &job : jobIds)
+                if (QString::compare(job, token, Qt::CaseInsensitive) == 0)
+                    sameFileJob = true;
+            if (sameFileJob || wf.needs.contains(token))
+                continue;
+            wf.needs.append(token);
+        }
+    };
+    addNeeds(root.child(QStringLiteral("needs")));
+
     if (const Node *env = root.child(QStringLiteral("env")))
         if (env->type == Node::Map)
             for (auto it = env->map.constBegin(); it != env->map.constEnd(); ++it)
@@ -331,6 +355,7 @@ ActionWorkflow ActionFile::parse(const QString &relPath, const QString &content)
         if (jobs->type == Node::Map)
             for (auto it = jobs->map.constBegin(); it != jobs->map.constEnd(); ++it) {
                 addRunsOn(it.value().child(QStringLiteral("runs-on")));
+                addNeeds(it.value().child(QStringLiteral("needs")));
                 collectSteps(it.value().child(QStringLiteral("steps")), wf.steps);
             }
 

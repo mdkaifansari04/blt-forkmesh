@@ -214,10 +214,12 @@ def test_dns_over_https_requests_cloudflare_json_media_type(monkeypatch):
         calls.append((url, options))
         return Response()
 
-    monkeypatch.setitem(sys.modules, "js", SimpleNamespace(fetch=fetch))
+    async def fetch_with_timeout(url, options, timeout):
+        assert timeout == 5
+        return await fetch(url, options)
+
     namespace = {
-        "asyncio": asyncio,
-        "to_js": lambda value: value,
+        "js_fetch_with_timeout": fetch_with_timeout,
     }
     exec(_function_source("_https_mirror_fetch_text"), namespace)
     result = asyncio.run(namespace["_https_mirror_fetch_text"](
@@ -234,7 +236,7 @@ def test_dns_over_https_requests_cloudflare_json_media_type(monkeypatch):
 
 
 def test_cron_verifies_fresh_forkmesh_proof_and_clears_failed_state():
-    scheduled = _method_source("Default", "scheduled")
+    scheduled = _method_source("Default", "_run_scheduled_jobs")
     health = _function_source("_https_mirror_health_one")
     cron = _function_source("https_mirror_health_cron")
     failed = _function_source("_https_mirror_mark_failed")
@@ -247,6 +249,8 @@ def test_cron_verifies_fresh_forkmesh_proof_and_clears_failed_state():
     assert "HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS" in health
     assert "return forkmesh_active" in health
     assert "_https_mirror_accepted_forkmesh_refs" in cron
+    assert "asyncio.gather" not in cron
+    assert "for row in rows" in cron
     assert "forkmesh_active=0" in failed
     assert "healthy=0" in failed
 
