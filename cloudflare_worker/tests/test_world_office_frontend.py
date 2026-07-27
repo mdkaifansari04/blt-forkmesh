@@ -168,6 +168,18 @@ def test_entrance_uses_two_proximity_sliding_panels_without_a_hinged_door():
         "THREE.MathUtils.lerp(",
     ):
         assert contract in scene
+    door_material = scene[
+        scene.index('const doorMaterial = makeMaterial(THREE, "#c9fff3"'):
+        scene.index("const elevatorFacadeMinX")
+    ]
+    for contract in (
+        "transparent: true",
+        "opacity: 0.3",
+        "metalness: 0",
+        "roughness: 0.38",
+        "depthWrite: false",
+    ):
+        assert contract in door_material
     assert "forkmesh-office-door-pivot" not in scene
     assert "officeInteriorDoorPivot" not in scene
 
@@ -495,7 +507,7 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
     assert "maya and noah" not in scene.lower()
     logo = scene[
         scene.index('chromeCube.name = "forkmesh-reflective-fm-cube"'):
-        scene.index("let lastLogoReflectionAt")
+        scene.index("let officeLobbyPlayerMoving")
     ]
     assert "const cubeBody" not in logo
     assert "new THREE.BoxGeometry(5.6, 5.6, 5.6" not in logo
@@ -514,11 +526,21 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
     assert "metalness: 1" in chrome_material
     assert "envMap: reflectionTarget.texture" in chrome_material
     animation = scene[
-        scene.index("const logoReflectionIntervalMs"):
+        scene.index("const logoReflectionSettleMs"):
         scene.index("// One physical selector rides inside")
     ]
     assert "chromeMark.rotation" not in animation
     assert "chromeMark.quaternion" not in animation
+    assert "logoReflectionIntervalMs" not in animation
+    for contract in (
+        'reflectionCamera.userData.logoCapturePolicy = "dirty-idle-once"',
+        "logoReflectionDirty && time >= logoReflectionEligibleAt",
+        "logoReflectionEligibleAt = time + logoReflectionSettleMs",
+        "player.visible = true",
+        "player.visible = playerWasVisible",
+        "reflectionCamera.userData.logoCaptureCount += 1",
+    ):
+        assert contract in scene
 
 
 def test_noah_reuses_local_chat_bubbles_with_hysteresis_and_no_frame_spam():
@@ -682,7 +704,7 @@ def test_elevator_has_one_stable_car_glass_layer_and_idle_lobby_reflections():
         scene.index("const elevatorPanelGeometry")
     ]
     reflection = scene[
-        scene.index("const logoReflectionIntervalMs"):
+        scene.index("let logoReflectionDirty"):
         scene.index("// One physical selector rides inside")
     ]
     assert "const elevatorCarGlass = makeMaterial" in elevator
@@ -703,11 +725,15 @@ def test_elevator_has_one_stable_car_glass_layer_and_idle_lobby_reflections():
         'officeSceneMode === "lobby"',
         'officeCurrentFloorId === "lobby"',
         "!officeElevatorRide",
-        "!officeLobbyPlayerMoving",
-        "primaryPointerId === null",
-        "!pinchActive",
+        "officeLobbyPlayerMoving ||",
+        "primaryPointerId !== null",
+        "pinchActive",
+        "logoReflectionDirty = true",
+        "logoReflectionWasBusy = true",
+        "logoReflectionDirty = false",
     ):
         assert contract in reflection
+    assert "logoReflectionIntervalMs" not in reflection
 
 
 def test_rooftop_has_glass_safety_barriers_and_office_jumping_is_disabled():

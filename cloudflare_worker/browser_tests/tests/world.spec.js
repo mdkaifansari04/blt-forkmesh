@@ -2385,13 +2385,39 @@ test("Noah greets desk approaches locally without per-frame bubble spam", async 
 test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   await prepareWorldPage(page, "office-fm-sculpture");
   await waitForWorld(page);
-  await page.locator("forkmesh-world").evaluate((shell) => {
+  const entryCapture = await page.locator("forkmesh-world").evaluate((shell) => {
     shell.world.enterOfficeLobby();
+    const reflection = shell.world.scene.getObjectByName(
+      "forkmesh-office-logo-reflection-camera"
+    );
+    return {
+      count: Number(reflection?.userData?.logoCaptureCount) || 0,
+      settleMs: Number(reflection?.userData?.logoCaptureSettleMs) || 900,
+    };
   });
-  // Give the idle-only cube camera one opportunity to capture the live lobby.
-  await page.waitForTimeout(1200);
+  expect(entryCapture.count).toBe(0);
+  // Motion keeps the six-face cube render deferred. Once movement stops, one
+  // settled capture includes the live avatar; continued idling does not loop.
+  await page.keyboard.down("w");
+  await page.waitForTimeout(250);
+  const movingCapture = await page.locator("forkmesh-world").evaluate((shell) =>
+    Number(shell.world.scene.getObjectByName(
+      "forkmesh-office-logo-reflection-camera"
+    )?.userData?.logoCaptureCount) || 0
+  );
+  await page.keyboard.up("w");
+  expect(movingCapture).toBe(0);
+  await page.waitForTimeout(entryCapture.settleMs + 350);
+  const settledCapture = await page.locator("forkmesh-world").evaluate(
+    (shell) => Number(shell.world.scene.getObjectByName(
+      "forkmesh-office-logo-reflection-camera"
+    )?.userData?.logoCaptureCount) || 0
+  );
+  expect(settledCapture).toBe(1);
+  await page.waitForTimeout(entryCapture.settleMs + 200);
   const logo = await page.locator("forkmesh-world").evaluate((shell) => {
     const scene = shell.world.scene;
     const cube = scene.getObjectByName("forkmesh-reflective-fm-cube");
@@ -2427,6 +2453,9 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
     const contact = scene.getObjectByName(
       "forkmesh-reflective-fm-cube-contact-point"
     );
+    const reflection = scene.getObjectByName(
+      "forkmesh-office-logo-reflection-camera"
+    );
     const contactWorld = contact.getWorldPosition(contact.position.clone());
     const supportTop = support.localToWorld(
       support.position.clone().set(
@@ -2454,6 +2483,13 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
       fixedTilt: mark.quaternion.toArray(),
       supportCount: support ? 1 : 0,
       contactSupportDistance: contactWorld.distanceTo(supportTop),
+      reflection: {
+        captureCount:
+          Number(reflection?.userData?.logoCaptureCount) || 0,
+        capturePolicy: reflection?.userData?.logoCapturePolicy || "",
+        capturedPlayer:
+          reflection?.userData?.logoCapturedPlayer === true,
+      },
     };
   });
   await page.screenshot({
@@ -2473,6 +2509,11 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
   expect(logo.fixedTilt.some((value) => Math.abs(value) > 0.1)).toBe(true);
   expect(logo.supportCount).toBe(1);
   expect(logo.contactSupportDistance).toBeLessThan(0.03);
+  expect(logo.reflection).toEqual({
+    captureCount: 1,
+    capturePolicy: "dirty-idle-once",
+    capturedPlayer: true,
+  });
 });
 
 test("Office glass has one stable shell and one elevator-car layer", async ({
@@ -2522,6 +2563,10 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
     const car = transparentMeshes(
       scene.getObjectByName("forkmesh-office-glass-elevator-car")
     );
+    const doors = [
+      "forkmesh-office-sliding-door-left",
+      "forkmesh-office-sliding-door-right",
+    ].map((name) => scene.getObjectByName(name));
     return {
       exterior: {
         count: exterior.length,
@@ -2543,6 +2588,17 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
           mesh.material.depthWrite === false && mesh.castShadow === false
         ),
       },
+      doors: {
+        count: doors.filter(Boolean).length,
+        stable: doors.every((mesh) =>
+          mesh?.material?.transparent === true &&
+          mesh.material.opacity === 0.3 &&
+          mesh.material.metalness === 0 &&
+          mesh.material.depthWrite === false &&
+          mesh.castShadow === false &&
+          mesh.receiveShadow === false
+        ),
+      },
     };
   });
   expect(glass.exterior.count).toBeGreaterThanOrEqual(20);
@@ -2551,6 +2607,7 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
   expect(glass.rooftop).toEqual({ count: 5, stable: true });
   expect(glass.shaftLayerCount).toBe(0);
   expect(glass.car).toEqual({ count: 5, stable: true });
+  expect(glass.doors).toEqual({ count: 2, stable: true });
 });
 
 test("Office elevator exposes ten floors while enforcing team access", async ({
@@ -2652,8 +2709,9 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
   expect(access.destinations[0].teamLabel).toBe("LOBBY");
   expect(access.destinations[2].teamLabel).toBe("ENGINEERING");
   expect(access.destinations[9].teamLabel).toBe("ROOF");
-  expect(access.destinations[0].y).toBeLessThan(access.destinations[1].y);
-  expect(access.destinations[1].y).toBeLessThan(access.destinations[9].y);
+  expect(access.destinations[0].y).toBe(access.destinations[1].y);
+  expect(access.destinations[1].y).toBeLessThan(access.destinations[2].y);
+  expect(access.destinations[2].y).toBeLessThan(access.destinations[9].y);
   expect(access.buttonsMoveWithCar).toBe(true);
   expect(access.panelParent).toBe("forkmesh-office-glass-elevator-car");
   expect(access.carPosition).toMatchObject({ x: 70, y: 0 });

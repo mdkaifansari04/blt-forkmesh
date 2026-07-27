@@ -6898,9 +6898,12 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     roughness: 0.62,
     depthWrite: false,
   });
-  const doorMaterial = makeMaterial(THREE, "#245845", {
-    metalness: 0.34,
-    roughness: 0.44,
+  const doorMaterial = makeMaterial(THREE, "#c9fff3", {
+    transparent: true,
+    opacity: 0.3,
+    metalness: 0,
+    roughness: 0.38,
+    depthWrite: false,
   });
   const elevatorFacadeMinX =
     OFFICE_ELEVATOR_CENTER_X -
@@ -9444,6 +9447,9 @@ export function createWorldScene({
     180,
     reflectionTarget,
   );
+  reflectionCamera.name = "forkmesh-office-logo-reflection-camera";
+  reflectionCamera.userData.logoCaptureCount = 0;
+  reflectionCamera.userData.logoCapturePolicy = "dirty-idle-once";
   reflectionCamera.position.y = 5.1;
   logoFountain.add(reflectionCamera);
   const chrome = new THREE.MeshPhysicalMaterial({
@@ -9684,31 +9690,73 @@ export function createWorldScene({
     logoFountain.add(highlight);
   }
   officeInterior.add(logoFountain);
-  let lastLogoReflectionAt = 0;
   let officeLobbyPlayerMoving = false;
-  // One cube-map refresh renders the scene six times. The lobby itself is
-  // mostly static, so refresh only while its visitor and camera are idle.
-  // Capturing on other floors or during a drag spends six full scene renders
-  // on an invisible sculpture and presents as a periodic movement hitch.
-  const logoReflectionIntervalMs = compactRenderer ? 2500 : 1000;
+  let logoReflectionDirty = true;
+  let logoReflectionWasInLobby = false;
+  let logoReflectionWasBusy = false;
+  let logoReflectionEligibleAt = Infinity;
+  // One cube-map refresh renders the scene six times. Treat it as an idle
+  // snapshot, not a recurring animation: entry and motion only mark the map
+  // dirty, then one capture runs after the visitor has settled. This keeps the
+  // Office and the local avatar legible in the chrome without a one-second
+  // render spike or visible reflection flash while walking.
+  const logoReflectionSettleMs = compactRenderer ? 1400 : 900;
+  reflectionCamera.userData.logoCaptureSettleMs = logoReflectionSettleMs;
   animated.push((time) => {
     chromeCube.rotation.y = time * 0.00022;
     logoWater.rotation.y = -time * 0.00012;
   });
   function updateOfficeLogoReflection(time) {
-    if (
+    const inLobby =
       officeSceneMode === "lobby" &&
       officeCurrentFloorId === "lobby" &&
-      !officeElevatorRide &&
-      !officeLobbyPlayerMoving &&
-      primaryPointerId === null &&
-      !pinchActive &&
-      time - lastLogoReflectionAt >= logoReflectionIntervalMs
-    ) {
-      lastLogoReflectionAt = time;
+      !officeElevatorRide;
+    if (!inLobby) {
+      logoReflectionWasInLobby = false;
+      logoReflectionWasBusy = false;
+      logoReflectionDirty = true;
+      logoReflectionEligibleAt = Infinity;
+      return;
+    }
+    if (!logoReflectionWasInLobby) {
+      logoReflectionWasInLobby = true;
+      logoReflectionDirty = true;
+      logoReflectionEligibleAt = time + logoReflectionSettleMs;
+      return;
+    }
+    const busy =
+      officeLobbyPlayerMoving ||
+      primaryPointerId !== null ||
+      pinchActive;
+    if (busy) {
+      logoReflectionDirty = true;
+      logoReflectionWasBusy = true;
+      logoReflectionEligibleAt = time + logoReflectionSettleMs;
+      return;
+    }
+    if (logoReflectionWasBusy) {
+      logoReflectionWasBusy = false;
+      logoReflectionEligibleAt = time + logoReflectionSettleMs;
+      return;
+    }
+    if (logoReflectionDirty && time >= logoReflectionEligibleAt) {
+      const cubeWasVisible = chromeCube.visible;
+      const playerWasVisible = player.visible;
       chromeCube.visible = false;
-      reflectionCamera.update(renderer, scene);
-      chromeCube.visible = true;
+      // First-person mode normally hides the local body from the main camera.
+      // The reflection camera is independent, so reveal it for this capture
+      // and restore the exact prior state immediately afterwards.
+      player.visible = true;
+      try {
+        reflectionCamera.update(renderer, scene);
+      } finally {
+        player.visible = playerWasVisible;
+        chromeCube.visible = cubeWasVisible;
+      }
+      logoReflectionDirty = false;
+      logoReflectionEligibleAt = Infinity;
+      reflectionCamera.userData.logoCaptureCount += 1;
+      reflectionCamera.userData.logoCapturedPlayer = true;
     }
   }
 
