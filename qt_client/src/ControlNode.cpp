@@ -1845,6 +1845,21 @@ QJsonObject latestVultrDebianOs(const QJsonArray &osList)
     return best;
 }
 
+bool localBinaryRunsOnVultrMirror(const QString &kernelType,
+                                  const QString &cpuArch)
+{
+    // The installer accepts an uploaded binary only when the uploader's
+    // declared OS/arch match the target, and every mirror we create is x64
+    // Debian — so an upload is worth streaming exactly when this app is a
+    // linux/x86_64 build. Anything else (macOS, Windows, arm64) would be
+    // rejected remotely and fall back to the relay download anyway.
+    const QString os = kernelType.trimmed().toLower();
+    QString arch = cpuArch.trimmed().toLower();
+    if (arch == QLatin1String("amd64") || arch == QLatin1String("x64"))
+        arch = QStringLiteral("x86_64");
+    return os == QLatin1String("linux") && arch == QLatin1String("x86_64");
+}
+
 QJsonObject vultrInstanceCreatePayload(const QString &nodeName,
                                        const QString &planId,
                                        const QString &regionId,
@@ -1930,16 +1945,6 @@ QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables)
                                            QStringLiteral("VULTR_TOKEN"),
                                            QStringLiteral("VULTR_KEY"),
                                        });
-}
-
-bool localBinaryRunsOnVultrMirror(const QString &kernelType,
-                                  const QString &cpuArchitecture)
-{
-    if (kernelType.trimmed().toLower() != QLatin1String("linux"))
-        return false;
-    const QString arch = cpuArchitecture.trimmed().toLower();
-    return arch == QLatin1String("x86_64") || arch == QLatin1String("amd64") ||
-           arch == QLatin1String("x64");
 }
 
 bool vultrInstallNeedsLocalBinary(const QString &installOutput)

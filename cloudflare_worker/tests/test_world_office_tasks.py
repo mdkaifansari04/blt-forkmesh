@@ -435,6 +435,62 @@ async def test_world_exit_stop_active_is_server_timed_idempotent_and_private():
 
 
 @run_async_test
+async def test_assignee_or_manager_can_complete_and_only_manager_can_delete():
+    runtime = FakeRuntime()
+    created = await create_task(runtime, "bob", "Finish and retain")
+    task_id = created["data"]["task"]["id"]
+    started = await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.PREFIX}/{task_id}/start",
+    )
+    assert started["status"] == 200
+    runtime.now_ms += 7_500
+
+    outsider_done = await tasks_api.handle(
+        runtime.use("POST", "carol", {}),
+        f"{tasks_api.PREFIX}/{task_id}/complete",
+    )
+    assert outsider_done["status"] == 403
+    completed = await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.PREFIX}/{task_id}/complete",
+    )
+    assert completed["status"] == 200
+    assert completed["data"]["task"]["status"] == "done"
+    assert completed["data"]["task"]["elapsedMs"] == 7_500
+    assert completed["data"]["task"]["completedAt"] == runtime.now_ms
+
+    restart = await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.PREFIX}/{task_id}/start",
+    )
+    assert restart["status"] == 409
+    assert restart["data"]["error"] == "task_completed"
+
+    member_delete = await tasks_api.handle(
+        runtime.use("DELETE", "bob", {}),
+        f"{tasks_api.PREFIX}/{task_id}",
+    )
+    assert member_delete["status"] == 403
+    deleted = await tasks_api.handle(
+        runtime.use("DELETE", "mary", {}),
+        f"{tasks_api.PREFIX}/{task_id}",
+    )
+    assert deleted["status"] == 200
+    assert deleted["data"]["deleted"] is True
+    assert await runtime.d1_first(
+        "SELECT task_id FROM world_office_marketing_tasks WHERE task_id=?",
+        task_id,
+    ) is None
+    assert {
+        item["action"] for item in runtime.audits
+    }.issuperset({
+        "office.marketing_task_completed",
+        "office.marketing_task_deleted",
+    })
+
+
+@run_async_test
 async def test_encrypted_copy_same_origin_reassignment_and_metadata_only_audit():
     runtime = FakeRuntime()
     denied_origin = await tasks_api.handle(

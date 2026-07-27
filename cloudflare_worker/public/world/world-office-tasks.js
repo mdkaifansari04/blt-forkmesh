@@ -77,7 +77,9 @@ function normalizedTask(task) {
   const id = safeTaskId(task.id);
   const title = text(task.title);
   const assignee = text(task.assignee, 64).toLowerCase();
-  const status = task.status === "active" ? "active" : "idle";
+  const status = ["active", "done"].includes(task.status)
+    ? task.status
+    : "idle";
   if (!id || !title || !assignee) return null;
   return {
     id,
@@ -271,15 +273,17 @@ export function createWorldOfficeTasksController({
   function taskHTML(task) {
     const own = task.assignee === actor;
     const activeTask = task.status === "active";
+    const doneTask = task.status === "done";
     const checkinState = checkinLabel(task.lastCheckin?.state);
     return `
-      <li class="world-office-task" data-status="${activeTask ? "active" : "idle"}">
+      <li class="world-office-task" data-status="${doneTask ? "done" : activeTask ? "active" : "idle"}">
         <div class="world-office-task-copy">
           <span class="world-office-task-state" aria-hidden="true"></span>
           <div>
             <strong>${escapeHTML(task.title)}</strong>
             <small>
               @${escapeHTML(task.assignee)}
+              ${doneTask ? " · done" : ""}
               ${checkinState ? ` · last check-in: ${escapeHTML(checkinState)}` : ""}
             </small>
           </div>
@@ -290,13 +294,34 @@ export function createWorldOfficeTasksController({
             datetime="PT${Math.floor(currentElapsed(task) / 1000)}S"
           >${formatOfficeTaskElapsed(currentElapsed(task))}</time>
           ${
-            own
+            own && !doneTask
               ? `<button
                   type="button"
                   data-world-office-task-action="${activeTask ? "stop" : "start"}"
                   data-world-office-task-id="${task.id}"
                   ${busyTaskId === task.id ? "disabled" : ""}
                 >${activeTask ? "Stop" : "Start"}</button>`
+              : ""
+          }
+          ${
+            (own || canManage) && !doneTask
+              ? `<button
+                  type="button"
+                  data-world-office-task-action="complete"
+                  data-world-office-task-id="${task.id}"
+                  ${busyTaskId === task.id ? "disabled" : ""}
+                >Done</button>`
+              : ""
+          }
+          ${
+            canManage
+              ? `<button
+                  type="button"
+                  class="world-office-task-delete"
+                  data-world-office-task-action="delete"
+                  data-world-office-task-id="${task.id}"
+                  ${busyTaskId === task.id ? "disabled" : ""}
+                >Delete</button>`
               : ""
           }
         </div>
@@ -579,13 +604,13 @@ export function createWorldOfficeTasksController({
     return refreshPromise;
   }
 
-  async function mutate(path, body, taskId = "") {
+  async function mutate(path, body, taskId = "", options = {}) {
     if (typeof postJSON !== "function") return false;
     busyTaskId = safeTaskId(taskId);
     render();
     let errorMessage = "";
     try {
-      await postJSON(path, body, { timeout: 10_000 });
+      await postJSON(path, body, { timeout: 10_000, ...options });
       await refresh({ quiet: true });
       return true;
     } catch (error) {
@@ -652,14 +677,33 @@ export function createWorldOfficeTasksController({
     if (!actionButton) return;
     const action = actionButton.dataset.worldOfficeTaskAction;
     const id = safeTaskId(actionButton.dataset.worldOfficeTaskId);
-    if (!id || !["start", "stop"].includes(action)) return;
+    if (!id || !["start", "stop", "complete", "delete"].includes(action)) {
+      return;
+    }
+    if (
+      action === "delete" &&
+      !window.confirm("Delete this task and its private check-in history?")
+    ) {
+      return;
+    }
     const saved = await mutate(
-      `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}/${action}`,
+      action === "delete"
+        ? `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}`
+        : `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}/${action}`,
       {},
       id,
+      action === "delete" ? { method: "DELETE" } : {},
     );
     if (saved) {
-      toast(action === "start" ? "Task timer started." : "Task timer stopped.");
+      toast(
+        action === "start"
+          ? "Task timer started."
+          : action === "stop"
+            ? "Task timer stopped."
+            : action === "complete"
+              ? "Task marked done."
+              : "Task deleted.",
+      );
     }
   }
 

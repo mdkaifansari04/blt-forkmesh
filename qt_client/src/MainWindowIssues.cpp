@@ -4706,17 +4706,6 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         cycleNavSolanaCurrency();
         return true;
     }
-    // Click a growing action-strip box (or its timer) to jump straight to that
-    // run's live output. The labels carry the run id as a dynamic property.
-    if (event->type() == QEvent::MouseButtonRelease) {
-        if (auto *w = qobject_cast<QWidget *>(obj)) {
-            const QVariant runId = w->property("actionRunId");
-            if (runId.isValid()) {
-                openActionRunFromNotification(runId.toInt());
-                return true;
-            }
-        }
-    }
     // Click a row (or effort dot) in the footer slash-actions popup (adhoc
     // #116): every activatable widget in that popup carries a "slashKind"
     // dynamic property, dispatched generically in activateSlashActionRow.
@@ -7386,41 +7375,74 @@ void MainWindow::syncIssuesInbox()
 
 void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
 {
-    // Only the owner (a writable working-tree copy) can read and merge the inbox.
+    // The source of truth writes into its normal working copy. A public mirror
+    // with no checkout uses a short-lived linked worktree below, commits onto
+    // the served branch, and acknowledges with ?mirror=1 so the relay keeps the
+    // same row queued for the owner.
     const RepositoryRecord writable = writableRecordFor(repo);
+    bool ownerIntake = false;
     {
         IssueStore probe(writable.localPath, writable.mirrorPath, &m_profileIdentity,
                          m_userName);
-        if (!probe.canWrite())
-            return;
+        ownerIntake = probe.canWrite();
     }
-    if (!hasOwnerSigningCapability(repo.owner))
+    const QString mirrorPath = repo.mirrorPath.trimmed();
+    const bool mirrorIntake =
+        !ownerIntake && !repo.previewOnly && !repo.isPrivate &&
+        repo.publishToNetwork && !mirrorPath.isEmpty() &&
+        QDir(mirrorPath).exists();
+    if (!ownerIntake && !mirrorIntake)
+        return;
+    if (!hasOwnerSigningCapability())
+        return;
+
+    // Owners may sign a public organization alias. Mirrors instead identify
+    // the account-bound node whose signed HTTPS endpoint is in this repo's
+    // integrity-approved mirror group.
+    const QString signer = mirrorIntake
+        ? accountOwner().trimmed().toLower()
+        : repoSegment(repo.owner, QStringLiteral("owner"));
+    if (signer.isEmpty() || !hasOwnerSigningCapability(signer))
         return;
 
     QUrl url = issuesApiUrl(repo);
     // Auto-polls back off exponentially while the relay is failing (offline /
     // HTTP 429); a manual "Sync inbox" (interactive) always tries immediately.
-    const QString backoffKey = url.toString();
+    const QString intakeKey =
+        repo.owner.trimmed().toLower() + QLatin1Char('/') +
+        repo.name.trimmed().toLower();
+    const QString backoffKey =
+        url.toString() +
+        (mirrorIntake ? QStringLiteral("|mirror:") + signer : QString());
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     if (!interactive && !m_pollBackoff.ready(backoffKey, nowMs))
         return;
+    if (mirrorIntake) {
+        if (m_mirrorIssueIntakeInFlight.contains(intakeKey))
+            return;
+        m_mirrorIssueIntakeInFlight.insert(intakeKey);
+    }
 
-    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
     const QString ts = QString::number(nowMs);
     const QByteArray canonical =
-        ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
+        ("forkmesh-issues-pull-v1\n" + signer + "\n" + ts).toUtf8();
     const QString sig = m_profileIdentity.signData(canonical);
 
     QUrlQuery query;
-    query.addQueryItem("owner", owner);
+    query.addQueryItem("owner", signer);
     query.addQueryItem("ts", ts);
     query.addQueryItem("sig", sig);
+    if (mirrorIntake)
+        query.addQueryItem(QStringLiteral("mirror"), QStringLiteral("1"));
     url.setQuery(query);
 
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, repo, interactive, backoffKey] {
+            [this, reply, repo, interactive, backoffKey, intakeKey,
+             mirrorIntake, signer] {
         reply->deleteLater();
+        if (mirrorIntake)
+            m_mirrorIssueIntakeInFlight.remove(intakeKey);
         if (reply->error() != QNetworkReply::NoError) {
             m_pollBackoff.noteFailure(backoffKey,
                                       QDateTime::currentMSecsSinceEpoch());
@@ -7431,13 +7453,100 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
             return;
         }
         m_pollBackoff.noteSuccess(backoffKey);
-        applyIssuesInboxPayload(repo,
-                                QJsonDocument::fromJson(reply->readAll())
-                                    .object()
-                                    .value("pending")
-                                    .toArray(),
-                                interactive);
+        const QJsonArray pending =
+            QJsonDocument::fromJson(reply->readAll())
+                .object()
+                .value("pending")
+                .toArray();
+        if (!mirrorIntake) {
+            applyIssuesInboxPayload(repo, pending, interactive);
+            return;
+        }
+        if (pending.isEmpty()) {
+            if (interactive)
+                setIssueInlineNotice("No pending submissions.");
+            return;
+        }
+
+        // A linked worktree makes IssueStore's existing signature validation,
+        // numbering, attachment bounds, and one-commit-per-event behavior the
+        // only materialization path. It is removed before the next mirror fetch
+        // so Git never has to update a branch checked out elsewhere.
+        QTemporaryDir worktree(
+            QDir::tempPath() + QStringLiteral(
+                "/forkmesh-mirror-issues-XXXXXX"));
+        const QString branch = mirrorHeadBranch(repo.mirrorPath);
+        QString gitError;
+        if (!worktree.isValid() || branch.isEmpty() ||
+            !runGitCapture(
+                repo.mirrorPath,
+                {QStringLiteral("worktree"), QStringLiteral("add"),
+                 QStringLiteral("--force"), worktree.path(), branch},
+                nullptr, &gitError)) {
+            m_pollBackoff.noteFailure(
+                backoffKey, QDateTime::currentMSecsSinceEpoch());
+            logSystem(
+                QStringLiteral("Mirror issue intake could not open %1/%2: %3")
+                    .arg(repo.owner, repo.name,
+                         gitError.trimmed().right(240)));
+            if (interactive)
+                setIssueInlineNotice(
+                    "Could not prepare the mirror issue worktree.", true);
+            return;
+        }
+        const QString author =
+            chatDisplayName().trimmed().isEmpty()
+                ? signer
+                : chatDisplayName().trimmed();
+        runGitCapture(worktree.path(),
+                      {QStringLiteral("config"), QStringLiteral("user.name"),
+                       author.left(80)},
+                      nullptr, nullptr);
+        runGitCapture(
+            worktree.path(),
+            {QStringLiteral("config"), QStringLiteral("user.email"),
+             signer.left(63) +
+                 QStringLiteral("@users.noreply.forkmesh.com")},
+            nullptr, nullptr);
+
+        RepositoryRecord materialized = repo;
+        materialized.localPath = worktree.path();
+        applyIssuesInboxPayload(
+            materialized, pending, interactive, /*mirrorIntake=*/true);
+        runGitCapture(
+            repo.mirrorPath,
+            {QStringLiteral("worktree"), QStringLiteral("remove"),
+             QStringLiteral("--force"), worktree.path()},
+            nullptr, nullptr);
+        runGitCapture(repo.mirrorPath,
+                      {QStringLiteral("worktree"), QStringLiteral("prune")},
+                      nullptr, nullptr);
     });
+}
+
+void MainWindow::pollMirrorIssueInboxes()
+{
+    if (!m_networkAccess || !hasOwnerSigningCapability(accountOwner()))
+        return;
+    QSet<QString> seen;
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (repo.previewOnly || repo.isPrivate || !repo.publishToNetwork ||
+            repo.mirrorPath.trimmed().isEmpty() ||
+            !QDir(repo.mirrorPath).exists())
+            continue;
+        const RepositoryRecord writable = writableRecordFor(repo);
+        IssueStore probe(writable.localPath, writable.mirrorPath,
+                         &m_profileIdentity, m_userName);
+        if (probe.canWrite())
+            continue;
+        const QString key =
+            repo.owner.trimmed().toLower() + QLatin1Char('/') +
+            repo.name.trimmed().toLower();
+        if (seen.contains(key))
+            continue;
+        seen.insert(key);
+        drainIssuesInboxFor(repo, /*interactive=*/false);
+    }
 }
 
 // Merge pending issue submissions into the local store, ack the inbox, and
@@ -7445,9 +7554,10 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
 // drain reply or the repo's slice of the consolidated GET /api/sync response.
 void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
                                          const QJsonArray &pending,
-                                         bool interactive)
+                                         bool interactive,
+                                         bool mirrorIntake)
 {
-    if (!hasOwnerSigningCapability(repo.owner))
+    if (!hasOwnerSigningCapability())
         return;
     if (pending.isEmpty()) {
         if (interactive)
@@ -7532,11 +7642,6 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
             // confirm below if the matching open event is actually present.
             fediverseMaterializations.append(
                 FediverseMaterialization{mentionId, ev.id, inboxId});
-        } else if (!inboxId.isEmpty()) {
-            // Preserve the established inbox-drain behavior for ordinary
-            // submissions. Manually reviewed fediverse rows use the stricter
-            // commit lookup above because their public lifecycle depends on it.
-            drainedIds << inboxId;
         }
         const QString titleIfNew = item.value("titleIfNew").toString();
         const QJsonObject metaObj = item.value("meta").toObject();
@@ -7562,6 +7667,13 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
         }
         if (store.applyRemoteEvent(number, ev, titleIfNew, nullptr, meta,
                                    attachmentData)) {
+            // Acknowledge only after IssueStore committed (or confirmed the
+            // event was already committed). A failed write must retain its
+            // lease for another attempt instead of disappearing from the
+            // source queue or being falsely marked visible on a mirror.
+            if (!validMentionId && !inboxId.isEmpty() &&
+                !drainedIds.contains(inboxId))
+                drainedIds << inboxId;
             ++merged;
             const QString who =
                 ev.authorName.isEmpty() ? ev.author.left(8) : ev.authorName;
@@ -7615,10 +7727,15 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
     // the ack entirely when none carried an id (nothing to clear).
     if (!drainedIds.isEmpty()) {
         QUrl ackUrl = issuesApiUrl(repo);
-        QUrlQuery ackQuery =
-            signedInboxQuery(repoSegment(repo.owner, QStringLiteral("owner")));
+        const QString ackSigner = mirrorIntake
+            ? accountOwner().trimmed().toLower()
+            : repoSegment(repo.owner, QStringLiteral("owner"));
+        QUrlQuery ackQuery = signedInboxQuery(ackSigner);
+        if (mirrorIntake)
+            ackQuery.addQueryItem(
+                QStringLiteral("mirror"), QStringLiteral("1"));
         ackQuery.addQueryItem("ids", drainedIds.join(QStringLiteral(",")));
-        if (!materialized.isEmpty())
+        if (!mirrorIntake && !materialized.isEmpty())
             ackQuery.addQueryItem(
                 QStringLiteral("materialized"),
                 materialized.join(QStringLiteral(",")));
@@ -7636,7 +7753,8 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
     // (see agentRequests above) to get the real, post-merge issue number.
     // repoHint keeps this pointed at repo/store above regardless of what the
     // Issues tab currently shows (adhoc #105).
-    if (!agentRequests.isEmpty() || !commentAgentRequests.isEmpty()) {
+    if (!mirrorIntake &&
+        (!agentRequests.isEmpty() || !commentAgentRequests.isEmpty())) {
         const QList<Issue> mergedIssues = store.loadAll();
         // A redelivered inbox item (e.g. the previous drain's ack delete
         // failed after a successful merge) would otherwise start a second
@@ -7702,16 +7820,22 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
     if (merged > 0) {
         propagateRepoUpdate(repoIndexFor(repo.owner, repo.name));
         // An inbound issue/comment may @mention the owner running this node.
-        scanRepoMentionsFor(writable);
+        if (!mirrorIntake)
+            scanRepoMentionsFor(writable);
     }
     if (interactive)
         setIssueInlineNotice(
-            QStringLiteral("Merged %1 submission(s) into .forkmesh/issues/.")
-                .arg(merged));
+            mirrorIntake
+                ? QStringLiteral(
+                      "Materialized %1 submission(s) on this mirror.")
+                      .arg(merged)
+                : QStringLiteral(
+                      "Merged %1 submission(s) into .forkmesh/issues/.")
+                      .arg(merged));
 
     // Notify on new issues filed by other nodes (the source of truth should
     // see incoming issues) and on inbound comments — interactive or not.
-    if (newIssues > 0) {
+    if (!mirrorIntake && newIssues > 0) {
         const QString body =
             newIssues == 1
                 ? QStringLiteral("%1 filed a new issue on %2/%3: %4")
@@ -7737,7 +7861,7 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
             m_trayIcon->showMessage("ForkMesh — new issue", body,
                                     QSystemTrayIcon::Information, 6000);
     }
-    if (comments > 0) {
+    if (!mirrorIntake && comments > 0) {
         QString body;
         if (comments == 1) {
             body = QStringLiteral("%1 commented on %2/%3 issue #%4")

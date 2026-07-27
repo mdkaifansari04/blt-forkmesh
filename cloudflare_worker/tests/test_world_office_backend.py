@@ -10,6 +10,7 @@ import re
 import sqlite3
 import tomllib
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -321,9 +322,9 @@ def test_floor_projection_grants_defaults_plus_server_derived_team_floors():
         "trust-safety",
         "unmapped-team",
     ]
+    # An account on no marketing team is not admitted to the Marketing floor.
     assert admitted["data"]["allowedFloorIds"] == [
         "lobby",
-        "marketing",
         "rooftop",
         "engineering",
         "security",
@@ -455,7 +456,6 @@ def test_floor_projection_rejects_other_org_aliases_and_orphan_grants():
     assert alice["data"]["teams"] == ["frontend"]
     assert alice["data"]["allowedFloorIds"] == [
         "lobby",
-        "marketing",
         "rooftop",
         "engineering",
     ]
@@ -466,10 +466,25 @@ def test_floor_projection_rejects_other_org_aliases_and_orphan_grants():
     assert bob["data"]["teams"] == []
     assert bob["data"]["allowedFloorIds"] == [
         "lobby",
-        "marketing",
         "rooftop",
     ]
     database.close()
+
+
+def test_marketing_floor_is_granted_only_to_the_marketing_team():
+    handler, state = _floor_access_handler()
+    request = SimpleNamespace(method="GET")
+    state["account_bi"] = "c" * 64
+    state["account"] = {"name": "Mallory", "status": "active", "kind": "user"}
+
+    state["rows"] = [{"team": "Community"}]
+    outsider = asyncio.run(handler(_Env(), request))
+    assert "marketing" not in outsider["data"]["allowedFloorIds"]
+
+    for team in ("Marketing", "growth", "Brand"):
+        state["rows"] = [{"team": team}]
+        member = asyncio.run(handler(_Env(), request))
+        assert "marketing" in member["data"]["allowedFloorIds"]
 
 
 def _general_access_handler():
@@ -855,3 +870,130 @@ def test_durable_object_internal_actions_are_only_websocket_and_revoke():
     for retired in ("status", "entry", "code"):
         assert f"|{retired}" not in regex_source
         assert f"{retired}|" not in regex_source
+
+
+def _takeover_room():
+    """A room instance with only the collaborators the join path needs."""
+    import importlib.util
+
+    world_spec = importlib.util.spec_from_file_location(
+        "forkmesh_world_protocol_office", ROOT / "src" / "world.py")
+    world_protocol = importlib.util.module_from_spec(world_spec)
+    world_spec.loader.exec_module(world_protocol)
+
+    counter = {"n": 0}
+
+    def new_world_peer_id():
+        counter["n"] += 1
+        return "part%04d" % counter["n"]
+
+    class _Socket:
+        def __init__(self):
+            self.sent = []
+
+    class _Pair:
+        @staticmethod
+        def new():
+            client, server = _Socket(), _Socket()
+            return SimpleNamespace(object_values=lambda: (client, server))
+
+    live = []
+    namespace = {
+        "DurableObject": object,
+        "OFFICE_INTERNAL_RE": re.compile(
+            r"^/api/world/office/(world-general|[0-9a-f]{32})/"
+            r"v([1-9][0-9]*)/(ws|revoke)$"),
+        "WORLD_ACCOUNT_TAKEOVER_CODE": 4009,
+        "world_protocol": world_protocol,
+        "hmac": hmac,
+        "re": re,
+        "Date": SimpleNamespace(now=lambda: 50_000),
+        "urlparse": urlparse,
+        "method_name": lambda request: "GET",
+        "json_response": lambda data, status=200, **_kw: SimpleNamespace(
+            status=status, data=data),
+        "new_world_peer_id": new_world_peer_id,
+        "WebSocketPair": _Pair,
+        "to_js": lambda value: value,
+        "JsResponse": SimpleNamespace(
+            new=lambda *_a, **_kw: SimpleNamespace(status=101)),
+        "_ws_attr": lambda ws, name, default=None: getattr(
+            ws.attachment, name, default),
+    }
+    _compile([_top_level_node("ForkMeshOfficeRoom")], namespace)
+    room = namespace["ForkMeshOfficeRoom"]()
+    departures = []
+
+    def depart(ws, code, reason):
+        departures.append((ws, code, reason))
+        live.remove(ws)
+
+    room._live_sockets = lambda cleanup=False: list(live)
+    room._depart = depart
+    room._save_socket = lambda ws, state, **values: setattr(
+        ws, "attachment", SimpleNamespace(**{**values, "id": state["id"]}))
+    room._safe_send = lambda ws, frame: ws.sent.append(frame)
+    room._broadcast = lambda *_a, **_kw: None
+    room._socket_state = lambda ws: world_protocol.default_office_presence(
+        getattr(ws.attachment, "id", "peer"), 1_000)
+    room.ctx = SimpleNamespace(
+        acceptWebSocket=lambda ws, _tags=None: live.append(ws))
+    room._claim = lambda request: request.claim
+    room.departures = departures
+    room.live = live
+    return room
+
+
+def _office_ws_request(account_bi, nonce):
+    return SimpleNamespace(
+        url="https://forkmesh.example/api/world/office/world-general/v1/ws",
+        headers=SimpleNamespace(get=lambda name: "websocket"),
+        claim={
+            "scope": "world-general",
+            "version": 1,
+            "nonce": nonce,
+            "account_bi": account_bi,
+            "session_id": SESSION_ID,
+            "name": "jett",
+            "accountStatus": "Registered",
+        },
+    )
+
+
+def test_second_device_replaces_the_same_member_in_a_meeting_room():
+    jett = "a" * 64
+    nova = "b" * 64
+    room = _takeover_room()
+
+    asyncio.run(room.fetch(_office_ws_request(nova, "nonce-nova-1111")))
+    other_member = room.live[-1]
+    asyncio.run(room.fetch(_office_ws_request(jett, "nonce-jett-1111")))
+    first_device = room.live[-1]
+
+    asyncio.run(room.fetch(_office_ws_request(jett, "nonce-jett-2222")))
+    second_device = room.live[-1]
+
+    # The member's earlier device is retired with the shared handover code,
+    # and nobody else in the room is disturbed.
+    assert [(ws, code) for ws, code, _reason in room.departures] == [
+        (first_device, 4009)]
+    assert other_member in room.live
+    assert first_device not in room.live
+
+    # The newest device sees one row per person, not a twin of itself.
+    welcome = second_device.sent[0]
+    assert welcome["type"] == "welcome"
+    assert len(welcome["participants"]) == 1
+
+
+def test_meeting_takeover_uses_the_account_binding_not_a_typed_name():
+    source = ast.unparse(_top_level_node("ForkMeshOfficeRoom"))
+    assert "WORLD_ACCOUNT_TAKEOVER_CODE" in source
+    assert (
+        "hmac.compare_digest(str(_ws_attr(peer, 'account_bi', '') or ''), "
+        "account_bi)") in source
+    meeting_js = (
+        ROOT / "public" / "world" / "world-office-meeting.js"
+    ).read_text(encoding="utf-8")
+    assert "const OFFICE_ACCOUNT_TAKEOVER_CODE = 4009;" in meeting_js
+    assert "event?.code === OFFICE_ACCOUNT_TAKEOVER_CODE" in meeting_js

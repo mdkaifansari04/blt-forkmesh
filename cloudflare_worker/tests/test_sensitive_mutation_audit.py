@@ -344,7 +344,9 @@ def test_all_organization_privilege_mutators_emit_audit_outcomes():
             assert action in source
 
 
-def _catalog_delete_handler(*, authorized=True, fail_mutation=False):
+def _catalog_delete_handler(
+        *, authorized=True, fail_mutation=False, session_actor="",
+        session_owns=False):
     audits, audit = _audit_recorder()
     writes = []
 
@@ -363,6 +365,10 @@ def _catalog_delete_handler(*, authorized=True, fail_mutation=False):
         "urlparse": urlparse,
         "safe_segment": lambda value: str(value or ""),
         "clean_string": _clean_string,
+        "_authed_account_name": (
+            lambda env, request: _text_result(session_actor)),
+        "_account_owns_node": (
+            lambda env, actor, owner: _bool_result(session_owns)),
         "Date": _Date,
         "LOGIN_MAX_SKEW_MS": 300_000,
         "blind_index": lambda env, value: _text_result("bi:" + value),
@@ -430,6 +436,34 @@ def test_repository_delete_audits_success_denial_and_failure():
     assert audits[-1]["action"] == "repository.delete"
     assert audits[-1]["outcome"] == "failed"
     assert set(audits[-1]["details"]) == {"reason"}
+
+
+def test_repository_delete_accepts_only_the_owning_web_session():
+    handler, audits, writes = _catalog_delete_handler(
+        session_actor="alice-user",
+        session_owns=True,
+        authorized=False,
+    )
+    request = _Request(
+        {},
+        path="/api/repositories?owner=alice&name=private-project",
+        method="DELETE",
+    )
+    response = _run(handler(None, request))
+    assert response["status"] == 200
+    assert writes
+    assert audits[-1]["outcome"] == "success"
+
+    handler, audits, writes = _catalog_delete_handler(
+        session_actor="mallory",
+        session_owns=False,
+    )
+    response = _run(handler(None, request))
+    assert response["status"] == 403
+    assert response["payload"]["error"] == "not_authorized"
+    assert writes == []
+    assert audits[-1]["actor"] == "mallory"
+    assert audits[-1]["outcome"] == "denied"
 
 
 def _shares_handler(*, authorized=True, fail_mutation=False):

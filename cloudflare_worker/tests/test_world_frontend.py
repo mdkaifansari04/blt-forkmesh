@@ -538,10 +538,12 @@ def test_world_welcome_relocates_a_restored_spawn_blocked_by_a_visitor():
     for contract in (
         "const ARRIVAL_CLEARANCE = 0.9",
         "const spawnBlocked =",
+        "this.initialPresenceWelcomePending &&",
         'ownSpace === "town-square"',
         "player.space === ownSpace",
         ") < ARRIVAL_CLEARANCE",
         "(!this.spawnSelected || spawnBlocked)",
+        "this.initialPresenceWelcomePending = false;",
     ):
         assert contract in APP
     assert "arrival_slot_near_position" in ENTRY
@@ -594,7 +596,9 @@ def test_avatar_faces_keyboard_travel_direction_without_an_entry_gate():
     assert "data-world-arrival-dismiss" not in APP
     assert "world-arrival-card" not in APP
     assert "Entering ForkMesh World" not in APP
-    assert "data-world-loading" not in APP
+    assert "data-world-loading" in APP
+    assert 'loading.dataset.ready = "true"' in APP
+    assert "initialWorldLayout: mergedInitialLayout" in APP
     assert ".world-loading-screen" not in CSS
 
 
@@ -820,6 +824,79 @@ def test_join_cues_are_country_specific_local_opt_in_and_rate_limited():
     assert "if (!this.soundEnabled || !context" in cue
     assert "countryCode" in cue
     assert "speechSynthesis" not in cue
+
+
+def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
+    assert "if (this.mobileMovementActive) return;" in APP
+    assert "this.mobileMovementActive = true;" in APP
+    assert "this.mobileMovementActive = false;" in APP
+    assert "this.syncViewportHeight();" in APP
+    assert "overscroll-behavior: none;" in CSS
+    assert "position: fixed;" in CSS[
+        CSS.index("body.world-active {"):
+        CSS.index("}", CSS.index("body.world-active {"))
+    ]
+    assert 'this.addEventListener("touchmove", this.blockWorldPullToRefresh' in APP
+    pull_guard = APP[
+        APP.index("  blockWorldPullToRefresh ="):
+        APP.index("\n  syncViewportHeight =", APP.index("  blockWorldPullToRefresh ="))
+    ]
+    assert "event.preventDefault();" in pull_guard
+    assert "[data-world-thumbstick]" in pull_guard
+    assert "[data-world-canvas-wrap]" in pull_guard
+    mobile = CSS[CSS.index("@media (max-width: 720px)"):]
+    assert ".world-right-rail {" in mobile
+    assert "display: grid;" in mobile
+    assert ".world-map {" not in CSS[
+        CSS.index("@media (max-width: 980px)"):
+        CSS.index("@media (max-width: 720px)")
+    ]
+
+
+def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
+    for contract in (
+        'const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1."',
+        "const SAVED_VIEWS_MAX = 4;",
+        "function normalizedSavedWorldView(record)",
+        "data-world-save-view",
+        "data-world-saved-view-list",
+        "captureSavedViewThumbnail()",
+        'thumbnail.toDataURL("image/webp", 0.62)',
+        "saveCurrentWorldView()",
+        "editSavedWorldView(id)",
+        "restoreSavedWorldView(id)",
+        "this.officeController?.restoreSavedView?.(view)",
+    ):
+        assert contract in APP
+    for contract in (
+        "function getSavedViewState()",
+        "function restoreSavedViewState(view = {})",
+        "floorId: officeCurrentFloorId",
+        "camera: cameraState",
+        "getSavedViewState,",
+        "restoreSavedViewState,",
+    ):
+        assert contract in SCENE
+    assert ".world-saved-views {" in CSS
+    assert ".world-saved-view img," in CSS
+
+
+def test_toolbar_sound_button_is_the_master_switch_for_all_local_audio():
+    toggle = APP[
+        APP.index("  async toggleWorldSound() {"):
+        APP.index("\n  syncWorldSoundButton()", APP.index("  async toggleWorldSound() {"))
+    ]
+    assert "this.stopRadio();" in toggle
+    assert "this.focusMusicAutoplayPending = false;" in toggle
+    assert toggle.count("this.syncWorldSoundButton();") >= 3
+    assert "if (!this.soundEnabled)" in APP[
+        APP.index("  async playFocusMusic("):
+        APP.index("\n  async toggleFocusMusicPause()", APP.index("  async playFocusMusic("))
+    ]
+    assert "if (!this.soundEnabled)" in APP[
+        APP.index("  async playHostedTrack("):
+        APP.index("\n  stopRadio(", APP.index("  async playHostedTrack("))
+    ]
 
 
 def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
@@ -1109,7 +1186,9 @@ def test_world_first_person_camera_has_accessible_toggle_and_scene_api():
     ):
         assert contract in sync
 
-    scene_mode_start = SCENE.index("  function setCameraMode(mode) {")
+    scene_mode_start = SCENE.index(
+        '  function setCameraMode(mode, reason = "request") {',
+    )
     scene_mode = SCENE[
         scene_mode_start:
         SCENE.index("\n  function focusRepositoryPortal(", scene_mode_start)
@@ -1119,30 +1198,47 @@ def test_world_first_person_camera_has_accessible_toggle_and_scene_api():
     # meeting, where the local meeting participant is the visible camera target.
     assert 'player.visible = officeSceneMode !== "meeting"' in scene_mode
     assert "if (localParticipant) localParticipant.visible = true" in scene_mode
+    assert "firstPersonZoom = 1;" in scene_mode
     assert "renderer.domElement.dataset.cameraMode = cameraMode" in scene_mode
+    assert "onCameraMode({ mode: cameraMode, reason })" in scene_mode
 
-    repository_entry_start = SCENE.index(
-        "  function enterRepositoryFirstPerson(",
-    )
-    repository_entry = SCENE[
-        repository_entry_start:
-        SCENE.index("\n  function clearFocus()", repository_entry_start)
-    ]
-    assert 'setCameraMode("first-person")' in repository_entry
-    assert "player.position.set(" in repository_entry
-    assert "onMovement({" in repository_entry
-
+    # Visiting a repository sunburst frames it from the orbital camera; only
+    # the camera button puts the visitor inside the avatar's head.
     reveal_start = APP.index("  revealRepositoryScene() {")
     reveal = APP[
         reveal_start:
         APP.index("\n  selectRepositoryPortal(", reveal_start)
     ]
-    assert "this.world?.enterRepositoryFirstPerson?.(" in reveal
+    assert "enterRepositoryFirstPerson" not in APP
+    assert "enterRepositoryFirstPerson" not in SCENE
     assert 'this.world?.setCameraMode?.("third-person")' in reveal
+    assert "this.world?.focusRepositoryPortal?.(" in reveal
     assert "this.syncWorldCameraModeButton();" in reveal
-    assert "enterRepositoryFirstPerson," in SCENE
     assert "setCameraMode," in SCENE
     assert "getCameraState:" in SCENE
+
+
+def test_world_first_person_zoom_out_falls_back_to_third_person():
+    zoom_start = SCENE.index("  function setCameraZoom(value) {")
+    zoom = SCENE[
+        zoom_start:
+        SCENE.index("\n  function touchDistance()", zoom_start)
+    ]
+    assert "next < FIRST_PERSON_ZOOM_MIN" in zoom
+    assert "firstPersonZoom <= FIRST_PERSON_ZOOM_MIN" in zoom
+    assert 'setCameraMode("third-person", "zoom-out")' in zoom
+    assert "pinchStartZoom = cameraZoom;" in zoom
+    assert "const FIRST_PERSON_ZOOM_MIN = 0.25;" in SCENE
+    assert "const FIRST_PERSON_ZOOM_MAX = 5;" in SCENE
+
+    handler_start = APP.index("  handleWorldCameraMode(state) {")
+    handler = APP[
+        handler_start:
+        APP.index("\n  toggleWorldCameraMode()", handler_start)
+    ]
+    assert "this.syncWorldCameraModeButton();" in handler
+    assert 'state?.reason === "zoom-out"' in handler
+    assert "onCameraMode: (state) => this.handleWorldCameraMode(state)" in APP
 
 
 def test_world_autoloads_the_live_catalog_attested_flagship_repository_map():
@@ -1179,6 +1275,49 @@ def test_world_autoloads_the_live_catalog_attested_flagship_repository_map():
     assert "!record?.archived" in catalog
     assert "record?.commit" in catalog
     assert "record?.stateHash" in catalog
+
+
+def test_flagship_portal_retries_until_the_default_repository_is_open():
+    # The alias pin needs the repository catalog and the mirror snapshot to
+    # agree. Both are re-read after entry, so the automatic load is retried
+    # from the freshest pair instead of only the boot snapshot.
+    reconcile = APP[
+        APP.index("  reconcileRepositoryAliasCatalog() {"):
+        APP.index(
+            "\n  async retryFlagshipPortal() {",
+            APP.index("  reconcileRepositoryAliasCatalog() {"),
+        )
+    ]
+    assert "reconcileRepositoryAliases(\n      this.rawNativeRepositories," in reconcile
+    assert "this.mirrorCatalogs," in reconcile
+    assert "if (signature === this.repositoryAliasSignature) return false;" in reconcile
+
+    retry = APP[
+        APP.index("  async retryFlagshipPortal() {"):
+        APP.index(
+            "\n  syncRepositoryScene() {",
+            APP.index("  async retryFlagshipPortal() {"),
+        )
+    ]
+    # Never override a visitor's own choice, and never poll without a bound.
+    assert "this.repositoryManualSelection ||" in retry
+    assert "this.activeRepository ||" in retry
+    assert "this.flagshipPortalRetries >= FLAGSHIP_PORTAL_RETRY_LIMIT" in retry
+    assert 'this.fetchJSON("/api/repositories"' in retry
+    assert "if (records.length) this.rawNativeRepositories = records;" in retry
+    assert "void this.autoLoadFlagshipRepositoryMap();" in retry
+    assert "const FLAGSHIP_PORTAL_RETRY_LIMIT = 20;" in APP
+
+    # The retry rides the existing import poll rather than adding a timer.
+    poll = APP[
+        APP.index("  startRepositoryImportPolling() {"):
+        APP.index(
+            "\n  updateLocation(",
+            APP.index("  startRepositoryImportPolling() {"),
+        )
+    ]
+    assert "await this.retryFlagshipPortal();" in poll
+    assert "REPOSITORY_IMPORT_POLL_MS" in poll
 
 
 def test_login_and_signup_stay_inside_the_world_and_out_of_presence():
@@ -1886,7 +2025,7 @@ def test_world_has_no_pale_plaza_and_places_trees_deterministically_clear_of_use
     assert "deterministicFraction(`tree-radius:${landmark.id}:${treeIndex}`)" in SCENE
     assert "pointInsideBounds(x, z, ARRIVAL_GRID_BOUNDS)" in SCENE
     assert "pointInsideBounds(x, z, cabinetBounds)" in SCENE
-    assert "pointInsideBounds(x, z, durableBounds)" in SCENE
+    assert "const durableBounds" not in SCENE
     assert "TREE_MIN_SPACING" in SCENE
     assert "const radius = 20 + (index % 7) * 2.25" not in SCENE
 
@@ -1976,6 +2115,9 @@ def test_system_capacity_scene_combines_service_limits_and_database_rows():
     assert "configuredLimit: metric.limit" in SCENE
     assert "system-capacity-metrics-unavailable" in SCENE
     assert "system-capacity-database-tables" in SCENE
+    assert 'systemCapacityPlatform.userData.officeFloorId = "infrastructure"' in SCENE
+    assert "infrastructureFloor.add(systemCapacityPlatform);" in SCENE
+    assert 'registerMovableObject("system-capacity-platform"' not in SCENE
     assert "Math.log1p(table.rowCount)" in SCENE
     # Every table the Worker counted is drawn, empty ones included, up to the
     # same ceiling the Worker itself enumerates.
@@ -1986,6 +2128,23 @@ def test_system_capacity_scene_combines_service_limits_and_database_rows():
     # The table name is printed on the bar's top face only; the old upright
     # label behind each bar was removed.
     assert "system-capacity-table-name:" not in SCENE
+
+
+def test_infrastructure_floor_has_opt_in_local_redacted_console_display():
+    assert '"forkmesh-infrastructure-local-console"' in SCENE
+    assert '"infrastructure-console-switch"' in SCENE
+    assert '`LOCAL CONSOLE · ${enabled ? "STREAMING" : "OFF"}`' in SCENE
+    assert "THIS SCREEN ONLY · BOUNDED + REDACTED · NOT SENT OR SAVED" in SCENE
+    assert "setInfrastructureConsoleLogs" in SCENE
+    assert "setInfrastructureConsoleEnabled(enabled)" in APP
+    assert "createInfrastructureConsoleCapture" in APP
+    assert "sanitizeInfrastructureConsoleText" in APP
+    assert 'window.addEventListener("unhandledrejection"' in APP
+    assert 'window.removeEventListener("unhandledrejection"' in APP
+    assert "this.infrastructureConsoleCapture.stop();" in APP
+    assert "INFRASTRUCTURE_CONSOLE_MAX_ENTRIES = 40" in APP
+    assert "Bearer [redacted]" in APP
+    assert "[redacted-jwt]" in APP
     assert "metricsAvailable" in SCENE
     assert "metricsSignature" in SCENE
     assert "metricsSignature === signature" in SCENE
@@ -2397,29 +2556,30 @@ def test_world_guests_chat_under_the_name_their_avatar_wears():
     assert "`guest:${guestId()}`" in APP
 
 
-def test_world_updates_arrive_via_a_gentle_in_place_reload():
-    # A deploy flips BUILD_REV on /api/version. The world notices on a slow
-    # watcher, flushes the player's position, and reloads once behind a toast,
-    # so the new build appears in place without anyone touching refresh.
+def test_world_updates_apply_layout_live_and_ask_before_code_refresh():
+    # Layout is data and can be applied to the active scene. A deployed code
+    # revision instead raises an explicit refresh action and never reloads the
+    # visitor out from under an active walk.
     assert "const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;" in APP
     assert "startUpdateWatch()" in APP
+    assert "startWorldLayoutWatch()" in APP
+    assert "this.applyFetchedWorldLayout(layout);" in APP
     assert "async checkForWorldUpdate()" in APP
-    assert (
-        "window.setTimeout(() => location.reload(), "
-        "WORLD_UPDATE_RELOAD_DELAY_MS)" in APP
-    )
-    # Gentle means the position survives: it is flushed before the reload so
-    # the restored spawn puts the player exactly where they were.
-    assert "this.captureWorldPosition(true);\n    this.toast(" in APP
-    # Bounded: hidden tabs never poll, visibility bursts are throttled to one
-    # request per minute, and one reload per revision prevents reload loops
-    # behind a stale cache.
+    update = APP[
+        APP.index("  async checkForWorldUpdate()"):
+        APP.index("\n  startDiagnostics()", APP.index("  async checkForWorldUpdate()"))
+    ]
+    assert 'this.$("[data-world-update-notice]")' in update
+    assert "location.reload()" not in update
+    assert "WORLD_UPDATE_RELOAD_DELAY_MS" not in APP
+    assert "data-world-update-refresh" in APP
+    assert "refreshWorldForUpdate" in APP
+    # Bounded: hidden tabs never poll and visibility bursts are throttled.
     assert (
         "if (this.destroyed || this.updateReloadPending || document.hidden) "
         "return;" in APP
     )
     assert "const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;" in APP
-    assert "sessionStorage.getItem(WORLD_UPDATE_RELOADED_REV_KEY)" in APP
     assert "window.clearInterval(this.updateCheckTimer);" in APP
 
 

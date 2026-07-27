@@ -200,6 +200,42 @@ def normalize_blog_feed(xml):
     return posts
 
 
+def normalize_blog_distribution(html):
+    """Read one post's explicit social permalink slots.
+
+    A blank slot means "not posted yet"; a missing/unreadable section means
+    unknown. Only http(s) values are returned, matching blog-social.js.
+    """
+    match = re.search(
+        r"<section\b[^>]*\bdata-blog-social\b(?P<attrs>[^>]*)>",
+        str(html or ""),
+        re.IGNORECASE,
+    )
+    if not match:
+        return {"known": False, "networks": []}
+    attrs = match.group("attrs")
+    networks = []
+    for key, label in (
+        ("mastodon", "Mastodon"),
+        ("twitter", "X"),
+        ("reddit", "Reddit"),
+    ):
+        value = re.search(
+            r"\bdata-%s\s*=\s*([\"'])(.*?)\1" % key,
+            attrs,
+            re.IGNORECASE | re.DOTALL,
+        )
+        raw = _clean_text(value.group(2), 300) if value else ""
+        url = raw if re.match(r"^https?://", raw, re.IGNORECASE) else ""
+        networks.append({
+            "id": key,
+            "label": label,
+            "posted": bool(url),
+            "url": url,
+        })
+    return {"known": True, "networks": networks}
+
+
 def social_posts_payload(now, twitter_posts, reddit_posts, blog_posts,
                          twitter_ok, reddit_ok, blog_ok):
     """One public payload for all three banners; states let a banner keep

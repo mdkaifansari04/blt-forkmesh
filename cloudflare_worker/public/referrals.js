@@ -1,5 +1,6 @@
 (() => {
   const boardRoot = () => document.getElementById("referral-board");
+  const siteBoardRoot = () => document.getElementById("site-referral-board");
   const linkRoot = () => document.getElementById("referral-link-area");
 
   // Same acceptance rule as site-header.js: only real user accounts (never
@@ -97,6 +98,64 @@
     }
   }
 
+  // Referring hostnames come from other people's Referer headers, so they are
+  // rendered as plain text - never as a link the board could be spammed into
+  // handing out.
+  function renderSiteBoard(rows) {
+    const root = siteBoardRoot();
+    if (!root) return;
+    root.innerHTML = "";
+    if (!rows.length) {
+      const empty = document.createElement("div");
+      empty.className = "board-empty";
+      empty.textContent = "No website referrals counted yet.";
+      root.appendChild(empty);
+      return;
+    }
+    rows.forEach((row, i) => {
+      const r = document.createElement("div");
+      r.className = "board-row";
+      const rank = document.createElement("span");
+      rank.className = "board-rank";
+      rank.textContent = `${i + 1}`;
+      const label = document.createElement("span");
+      label.className = "board-name";
+      label.textContent = String(row.host || "");
+      const value = document.createElement("span");
+      value.className = "board-value";
+      value.textContent = plural(Number(row.visits) || 0, "visit");
+      r.append(rank, label, value);
+      root.appendChild(r);
+    });
+  }
+
+  function renderSiteSummary(data) {
+    const sub = document.getElementById("site-board-sub");
+    if (!sub) return;
+    const sites = Number(data.sites) || 0;
+    const visits = Number(data.visits) || 0;
+    sub.textContent = sites
+      ? `${plural(sites, "site")} · ${plural(visits, "visit")} · top 10 by visits`
+      : "Which sites link visitors to ForkMesh · top 10 by visits";
+  }
+
+  async function loadSiteBoard() {
+    const root = siteBoardRoot();
+    if (!root) return;
+    try {
+      const res = await fetch("/api/referrals/sites", {
+        headers: { accept: "application/json" },
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      renderSiteBoard(Array.isArray(data.board) ? data.board : []);
+      renderSiteSummary(data);
+    } catch (_) {
+      root.innerHTML =
+        '<div class="board-empty">The referring-site board is unavailable right now.</div>';
+    }
+  }
+
   function renderLinkArea() {
     const root = linkRoot();
     if (!root) return;
@@ -134,11 +193,15 @@
   function boot() {
     renderLinkArea();
     if (location.protocol === "file:") {
+      const preview = '<div class="board-empty">Preview only.</div>';
       const root = boardRoot();
-      if (root) root.innerHTML = '<div class="board-empty">Preview only.</div>';
+      if (root) root.innerHTML = preview;
+      const sites = siteBoardRoot();
+      if (sites) sites.innerHTML = preview;
       return;
     }
     loadBoard();
+    loadSiteBoard();
   }
 
   window.addEventListener("storage", (event) => {

@@ -462,11 +462,14 @@ QWidget *MainWindow::buildPullsTab()
     auto *diffZoomIn = new QPushButton(QStringLiteral("+"));
     diffZoomIn->setToolTip("Larger diff text");
     connect(diffZoomIn, &QPushButton::clicked, this, [this] { adjustDiffFont(1); });
-    // Auto-mark-viewed toggle: while checked, files scrolled entirely above the
-    // diff viewport get checked off "Viewed" without hand-clicking each one.
+    // Files are marked viewed automatically once their end reaches the viewport.
+    // Keep the preference object for existing settings compatibility, but the PR
+    // review page now consistently follows the requested read-as-you-scroll
+    // behavior instead of making it contingent on a toolbar toggle.
     m_pullAutoViewedButton = new QPushButton;
     m_pullAutoViewedButton->setCheckable(true);
-    m_pullAutoViewedButton->setChecked(autoMarkViewedOnScrollPref());
+    m_pullAutoViewedButton->setChecked(true);
+    m_pullAutoViewedButton->hide();
     setOcticon(m_pullAutoViewedButton, "eye", 14);
     m_pullAutoViewedButton->setToolTip(
         "Automatically mark files as viewed while scrolling");
@@ -489,7 +492,6 @@ QWidget *MainWindow::buildPullsTab()
     filesHeader->addStretch();
     filesHeader->addWidget(diffZoomOut);
     filesHeader->addWidget(diffZoomIn);
-    filesHeader->addWidget(m_pullAutoViewedButton);
     filesHeader->addWidget(m_pullPrevButton);
     filesHeader->addWidget(m_pullNextButton);
 
@@ -550,6 +552,12 @@ QWidget *MainWindow::buildPullsTab()
         m_pullStickyPacman->setToolTip(
             QStringLiteral("How much of this file you've scrolled through"));
         sl->addWidget(m_pullStickyPacman, 0);
+        m_pullStickyPercent = new QLabel(QStringLiteral("0% read"),
+                                         m_pullStickyHeader);
+        m_pullStickyPercent->setObjectName("hintLabel");
+        m_pullStickyPercent->setMinimumWidth(52);
+        m_pullStickyPercent->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        sl->addWidget(m_pullStickyPercent, 0);
         m_pullStickyViewed = new QPushButton(m_pullStickyHeader);
         m_pullStickyViewed->setCursor(Qt::PointingHandCursor);
         m_pullStickyViewed->setToolTip(QStringLiteral("Mark this file as viewed"));
@@ -582,8 +590,7 @@ QWidget *MainWindow::buildPullsTab()
                 // selection so they track the scroll smoothly.
                 updatePullDiffScrollState();
                 // Heavy, debounced: collapse fully-seen files into "Viewed".
-                if (m_pullAutoViewedButton && m_pullAutoViewedButton->isChecked())
-                    m_pullAutoViewedDebounce->start();
+                m_pullAutoViewedDebounce->start();
             });
 
     auto *diffSplit = new QSplitter(Qt::Horizontal);
@@ -1657,8 +1664,8 @@ void MainWindow::showPull(int number)
             PullBadgeWidget::FileEntry entry;
             entry.path = it.key();
             for (const QString &line : it.value().split('\n')) {
-                if (line.startsWith(QLatin1String("+++")) ||
-                    line.startsWith(QLatin1String("---")))
+                if (line.startsWith(QLatin1String("+++ ")) ||
+                    line.startsWith(QLatin1String("--- ")))
                     continue;
                 if (line.startsWith(QLatin1Char('+')))
                     ++entry.adds;
@@ -1762,28 +1769,6 @@ void MainWindow::switchToPullTab(int pullNumber)
 // Property holding a diff view's last-set source HTML, so a font-size change can
 // re-render it in place at the new size without re-running its renderer (#254).
 static const char *kDiffSourceProp = "fm_diffSource";
-static const char *kLongDiffFullHtmlProp = "fm_longDiffFullHtml";
-// Above this many HTML chars the diff renders as a "hidden for speed" notice
-// with a click-through unless the long-diffs pref is on. The stall log showed
-// setHtml's synchronous rich-text layout blocking the GUI >500ms from roughly
-// 300k chars up (repeatedly at 500–900k under the old 900k cap), so the cap
-// sits where rendering still feels instant.
-constexpr qsizetype kLongDiffAutoRenderHtmlChars = 300'000;
-
-QString longDiffNoticeHtml(qsizetype chars)
-{
-    const double mib = double(chars) / (1024.0 * 1024.0);
-    return QStringLiteral(
-               "<div style='margin:14px; padding:14px; border:1px solid #30363d; "
-               "border-radius:6px; background:#161b22; color:#8b949e'>"
-               "<div style='color:#f2cc60; font-weight:700'>Diff hidden for speed</div>"
-               "<div style='margin-top:6px'>This diff renders to about %1 MiB of HTML. "
-               "Enable long diffs in Settings to render these automatically, or "
-               "<a href='fm-show-full-diff:current' style='color:#58a6ff; "
-               "text-decoration:none'>show the full diff now</a>.</div>"
-               "</div>")
-        .arg(QString::number(mib, 'f', mib < 10.0 ? 1 : 0));
-}
 
 // Track a diff viewer for the shared text-size zoom: the +/- buttons and
 // Ctrl+wheel re-render every registered view at the new size (issue #254).
@@ -1800,48 +1785,54 @@ void MainWindow::registerDiffView(QTextEdit *view)
     // running past the right edge behind a horizontal scrollbar.
     view->setLineWrapMode(QTextEdit::WidgetWidth);
     view->viewport()->installEventFilter(this); // Ctrl+wheel, see eventFilter
-    if (auto *browser = qobject_cast<QTextBrowser *>(view)) {
+    if (auto *browser = qobject_cast<QTextBrowser *>(view))
         browser->setOpenLinks(false);
-        connect(browser, &QTextBrowser::anchorClicked, this,
-                [this, browser](const QUrl &url) {
-                    if (url.scheme() != QLatin1String("fm-show-full-diff"))
-                        return;
-                    const QString full =
-                        browser->property(kLongDiffFullHtmlProp).toString();
-                    if (!full.isEmpty())
-                        setDiffHtml(browser, full, /*forceLongDiff=*/true);
-                });
-    }
+    // Whatever this view derives from the *complete* document (file positions for
+    // the sticky headers, search matches) has to be recomputed once a streamed
+    // diff has finished filling in behind the visible window (adhoc #421).
+    addDiffStreamFinishedHook(view, [this, view] { onDiffStreamFinished(view); });
     connect(view, &QObject::destroyed, this, [this](QObject *o) {
-        m_diffViews.removeAll(static_cast<QTextEdit *>(o));
+        auto *dead = static_cast<QTextEdit *>(o);
+        m_diffViews.removeAll(dead);
+        m_diffRestoreScroll.remove(dead);
     });
 }
 
 // Set a diff viewer's HTML, remembering the source so adjustDiffFont can later
 // re-render it at a new text size. Use this for every diff viewer's content so
-// the zoom works everywhere (issue #254).
-void MainWindow::setDiffHtml(QTextEdit *view, const QString &html,
-                             bool forceLongDiff)
+// the zoom works everywhere (issue #254). The layout is progressive: the visible
+// window is rendered now and the rest streams in, so even a multi-megabyte diff
+// shows immediately without blocking the GUI thread (adhoc #421).
+void MainWindow::setDiffHtml(QTextEdit *view, const QString &html)
 {
     if (!view)
         return;
-    const bool hideLongDiff =
-        !forceLongDiff && !longDiffsPref() &&
-        html.size() > kLongDiffAutoRenderHtmlChars;
-    const QString shown =
-        hideLongDiff ? longDiffNoticeHtml(html.size()) : html;
-    view->setProperty(kLongDiffFullHtmlProp, hideLongDiff ? html : QString());
-    // Rich-text parse + layout runs synchronously on the GUI thread and is the
-    // slow half of showing a diff; name it so a stall report points here instead
-    // of an anonymous harfbuzz/QTextDocumentLayout backtrace.
-    BlockingCallScope crumb(QStringLiteral("diff html layout (%1 chars, %2)")
-                                .arg(shown.size())
-                                .arg(view->objectName().isEmpty()
-                                         ? QStringLiteral("unnamed view")
-                                         : view->objectName()));
-    view->setProperty(kDiffSourceProp, shown);
-    view->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
-    view->setHtml(shown);
+    view->setProperty(kDiffSourceProp, html);
+    renderDiffStreamed(view, html, diffStyleSheet(m_diffFontPt));
+}
+
+// A diff view's document is complete (nothing left streaming): refresh the state
+// that is read out of the whole document rather than just what is on screen.
+void MainWindow::onDiffStreamFinished(QTextEdit *view)
+{
+    if (!view)
+        return;
+    // A zoom re-render restores the reader's place once the diff is back.
+    const auto scroll = m_diffRestoreScroll.find(view);
+    if (scroll != m_diffRestoreScroll.end()) {
+        if (QScrollBar *vbar = view->verticalScrollBar())
+            vbar->setValue(qMin(*scroll, vbar->maximum()));
+        m_diffRestoreScroll.erase(scroll);
+    }
+    if (view == m_pullDiff) {
+        m_pullFileTops.clear(); // file positions moved as the rest landed
+        m_pullStickyFile.clear();
+        if (m_pullDiffSearchBar && m_pullDiffSearchBar->isVisible())
+            pullDiffSearchRecompute();
+        updatePullDiffScrollState();
+    } else if (view == m_branchDiffView) {
+        rebuildBranchDiffSpans();
+    }
 }
 
 // +/- or Ctrl+wheel zoom: change the diff text size and re-render every diff
@@ -1853,7 +1844,6 @@ void MainWindow::adjustDiffFont(int delta)
         return;
     m_diffFontPt = next;
     QSettings().setValue(kDiffFontPtSetting, m_diffFontPt);
-    const QString css = diffStyleSheet(m_diffFontPt);
     for (QTextEdit *view : m_diffViews) {
         if (!view || view->document()->isEmpty())
             continue;
@@ -1862,10 +1852,14 @@ void MainWindow::adjustDiffFont(int delta)
             continue; // plain text (e.g. "(no changes)") -- nothing to re-scale
         QScrollBar *vbar = view->verticalScrollBar();
         const int scroll = vbar ? vbar->value() : 0;
-        view->document()->setDefaultStyleSheet(css);
-        view->setHtml(src);
+        // Re-render through the streaming path: a big diff re-lays out in the
+        // background, so the reader's place is restored from the finished hook
+        // (the document is still filling in right after the first paint).
+        if (scroll > 0)
+            m_diffRestoreScroll.insert(view, scroll);
+        setDiffHtml(view, src);
         if (vbar)
-            vbar->setValue(scroll);
+            vbar->setValue(qMin(scroll, vbar->maximum()));
     }
     m_pullDiffRenderKey.clear(); // the pull view's skip-relayout cache is now stale
     m_scmDiffRenderKey.clear();  // ditto for the working-tree changes diff
@@ -2049,6 +2043,9 @@ void MainWindow::scrollPullDiffToFile(const QString &filePath)
     const QString anchor = m_pullFileAnchors.value(filePath);
     if (anchor.isEmpty())
         return;
+    // The file may still be queued behind the visible window on a big diff; its
+    // anchor only exists once the rest has landed (adhoc #421).
+    flushDiffStream(m_pullDiff);
     m_pullDiff->scrollToAnchor(anchor);
 }
 
@@ -2198,8 +2195,22 @@ void MainWindow::updatePullDiffScrollState()
                                      ? QColor(0x3f, 0xb9, 0x50)
                                      : QColor(0x58, 0xa6, 0xff));
     m_pullStickyPacman->setProgress(isViewed ? 1.0 : progress);
+    if (m_pullStickyPercent) {
+        const int percent =
+            isViewed ? 100 : qBound(0, qRound(progress * 100.0), 100);
+        m_pullStickyPercent->setText(
+            QStringLiteral("%1% read").arg(percent));
+    }
 
     layoutPullStickyHeader();
+    // Do not cover the real per-file header while it is still visible. This is
+    // what produced the doubled filename/Viewed controls in the old top bar.
+    // The compact sticky bar takes over only after the natural header scrolls
+    // away.
+    if (viewTop <= fileTop + m_pullStickyHeader->sizeHint().height()) {
+        m_pullStickyHeader->hide();
+        return;
+    }
     m_pullStickyHeader->show();
     m_pullStickyHeader->raise();
 }
@@ -2214,8 +2225,6 @@ void MainWindow::updatePullDiffScrollState()
 // files above it shifts the document up.
 void MainWindow::applyAutoMarkViewedOnScroll()
 {
-    if (!m_pullAutoViewedButton || !m_pullAutoViewedButton->isChecked())
-        return;
     if (!m_pullDiff || m_currentPullNumber < 0 || m_pullFileOrder.isEmpty())
         return;
     QScrollBar *vbar = m_pullDiff->verticalScrollBar();
@@ -2285,6 +2294,8 @@ bool MainWindow::pullScrollToAdjacentHunk(int delta)
     QScrollBar *vbar = m_pullDiff->verticalScrollBar();
     if (!vbar)
         return false;
+    // Next/Prev reaches past the visible window, so land the whole diff first.
+    flushDiffStream(m_pullDiff);
     // Walk every hunk header — each renders as "@@ -old +new @@ …", so the
     // "@@ -" prefix occurs once per hunk — and jump to the nearest one strictly
     // below (next) or above (prev) the current scroll position. Anchoring on the
@@ -2382,6 +2393,8 @@ void MainWindow::pullDiffSearchRecompute()
     const QString term =
         m_pullDiffSearchInput ? m_pullDiffSearchInput->text() : QString();
     if (!term.isEmpty()) {
+        // Search covers the whole PR, not just the rendered window (adhoc #421).
+        flushDiffStream(m_pullDiff);
         QTextCursor cur = m_pullDiff->document()->find(term);
         while (!cur.isNull()) {
             m_pullDiffSearchMatches.append(cur);
@@ -5264,7 +5277,10 @@ void MainWindow::fixCurrentPullFindingsWithAgent()
     }
 
     // Open the PR's branch with the PR applied; the store carries that state
-    // across the async run, so it lives on the heap until finish/fail.
+    // across the async run, so it lives on the heap until finish/fail. The edit
+    // normally lands in a scratch worktree on the PR's branch (adhoc #437), so
+    // the agent runs there rather than in the user's checkout — which may be
+    // dirty or on another branch.
     auto *store = new PullStore(pullStoreForCurrentRepo());
     QString error;
     if (!store->startPullAgentEdit(number, &error)) {
@@ -5272,6 +5288,7 @@ void MainWindow::fixCurrentPullFindingsWithAgent()
         QMessageBox::warning(this, "Fix all with AI", error);
         return;
     }
+    const QString editTree = store->agentEditWorkTree();
 
     AgentSession session;
     session.owner = repo.owner;
@@ -5301,7 +5318,7 @@ void MainWindow::fixCurrentPullFindingsWithAgent()
     m_aiFix->repoIndex = m_repoDetailIndex;
     m_aiFix->sessionId = session.id;
     m_aiFix->provider = QStringLiteral("claude-code");
-    m_aiFix->workTree = workTree;
+    m_aiFix->workTree = editTree.isEmpty() ? workTree : editTree;
     m_aiFix->files = paths;
     m_aiFix->claudeCode = true;
     m_aiFix->agentEdit = true;
@@ -5386,7 +5403,8 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
     QStringList conflicted;
     bool resolvedClean = false;
     QString error;
-    if (!store->startConflictMerge(number, &conflicted, &resolvedClean, &error)) {
+    if (!store->startConflictAgentEdit(
+            number, &conflicted, &resolvedClean, &error)) {
         delete store;
         QMessageBox::warning(this, "Fix conflicts", error);
         return;
@@ -5425,7 +5443,7 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
     m_aiFix->provider = provider;
     m_aiFix->model = model;
     m_aiFix->apiKey = apiKey;
-    m_aiFix->workTree = workTree;
+    m_aiFix->workTree = store->agentEditWorkTree();
     m_aiFix->files = conflicted;
     m_aiFix->claudeCode = claudeCode;
 
@@ -7727,6 +7745,10 @@ void MainWindow::performRelaySync()
 {
     if (!m_networkAccess)
         return;
+    // A mirror account owns no source repository rows in /api/sync, but it can
+    // securely materialize public issue leases for repos it currently serves.
+    // Run that independent intake on the same push/fallback cadence.
+    pollMirrorIssueInboxes();
     const QString account = m_accountName.isEmpty()
         ? QSettings().value(kAccountNameSetting).toString().trimmed()
         : m_accountName;

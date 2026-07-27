@@ -277,8 +277,21 @@ void MainWindow::fetchFaviconForHost(const QString &host)
 void MainWindow::fetchFaviconFromUrl(const QString &host, const QUrl &url)
 {
     if (host.isEmpty() || m_faviconCache.contains(host) ||
-        m_faviconFetching.contains(host))
+        m_faviconFetching.contains(host) || m_faviconMissing.contains(host))
         return;
+
+    // Hosts with a hardcoded mark (api.anthropic.com and friends) never hit the
+    // network: they answer 404 for /favicon.ico, which showed up in the log as
+    // an error line per request (adhoc #436).
+    // Cached like a downloaded icon (but never written to the disk cache) so the
+    // breadcrumb rail and both log views pick it up the same way; no breadcrumb
+    // rebuild from here, since this runs while a log line is being rendered.
+    const QPixmap builtin = builtinFavicon(host);
+    if (!builtin.isNull()) {
+        m_faviconCache.insert(host, builtin);
+        refreshLogFavicon(host);
+        return;
+    }
 
     // Reuse a previously downloaded icon on disk before hitting the network,
     // so a host seen in a past session doesn't re-fetch on every launch.
@@ -298,11 +311,17 @@ void MainWindow::fetchFaviconFromUrl(const QString &host, const QUrl &url)
     connect(reply, &QNetworkReply::finished, this, [this, reply, host] {
         reply->deleteLater();
         m_faviconFetching.remove(host);
-        if (reply->error() != QNetworkReply::NoError)
+        // Remember hosts that have no usable favicon so the next log line from
+        // the same host doesn't fire another doomed request.
+        if (reply->error() != QNetworkReply::NoError) {
+            m_faviconMissing.insert(host);
             return;
+        }
         QPixmap pix;
-        if (!pix.loadFromData(reply->readAll()) || pix.isNull())
+        if (!pix.loadFromData(reply->readAll()) || pix.isNull()) {
+            m_faviconMissing.insert(host);
             return;
+        }
         if (pix.width() > 64)
             pix = pix.scaled(64, 64, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         m_faviconCache.insert(host, pix);
@@ -400,11 +419,10 @@ QWidget *MainWindow::buildChatPage()
     return page;
 }
 
-// How many lines of prior history to seed the always-on footer log with on
-// startup. Bounded well below kNetworkLogLimit so the corner widget (unlike the
+// kFooterLogSeedLines (MainWindowInternal.h) bounds both the startup seed and
+// the live buffer: well below kNetworkLogLimit so the corner widget (unlike the
 // full Log tab, which defers its own render until first visit) stays cheap to
 // populate on every launch while still giving a real scrollback to search.
-constexpr int kFooterLogSeedLines = 300;
 
 QWidget *MainWindow::buildNetworkLogDock()
 {
@@ -987,15 +1005,18 @@ QWidget *MainWindow::buildNetworkLogDock()
     // beside it) and streams every network/update line, oldest at top, newest
     // at bottom — the scrollbar lets you scroll back through history to search
     // it instead of only ever seeing the latest line (adhoc #211).
-    m_footerUpdateLog = new QPlainTextEdit;
+    m_footerUpdateLog = new QTextEdit;
     m_footerUpdateLog->setObjectName("footerUpdateLog");
     m_footerUpdateLog->setReadOnly(true);
     m_footerUpdateLog->setFrameShape(QFrame::NoFrame);
+    // Tight paragraph metrics so the rich-text strip still reads as a dense log
+    // tail rather than a spaced-out document.
+    m_footerUpdateLog->document()->setDocumentMargin(0);
     // Don't wrap (adhoc #133): a long line clips at the right edge instead of
     // reflowing onto extra rows, so every entry stays one row tall and the strip
     // reads like a dense log tail. The full text is still reachable — hovering a
     // line shows it in a tooltip and clicking opens the full Log view at it.
-    m_footerUpdateLog->setLineWrapMode(QPlainTextEdit::NoWrap);
+    m_footerUpdateLog->setLineWrapMode(QTextEdit::NoWrap);
     m_footerUpdateLog->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_footerUpdateLog->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_footerUpdateLog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -1010,19 +1031,36 @@ QWidget *MainWindow::buildNetworkLogDock()
     // would otherwise flip the cursor back to an I-beam over the text.
     m_footerUpdateLog->viewport()->setCursor(Qt::PointingHandCursor);
     m_footerUpdateLog->viewport()->installEventFilter(this);
-    // Bound the live buffer the same way the seed below is bounded, so it can't
-    // grow without limit over a long-running session.
-    m_footerUpdateLog->setMaximumBlockCount(kFooterLogSeedLines);
+    // The live buffer is bounded the same way the seed below is, so it can't
+    // grow without limit over a long-running session. QTextEdit has no
+    // setMaximumBlockCount, so setFooterUpdateLine() drops the oldest block
+    // itself once the strip is full.
     styleFooterUpdateLog();
     // Seed the always-on strip with recent history (or a ready placeholder) so
     // it's already scrollable on first paint; logSystem() then streams every new
     // event onto it. Keep the full dated lines so timestamps show.
     if (!m_networkLog.isEmpty()) {
         const int from = qMax(0, m_networkLog.size() - kFooterLogSeedLines);
-        // Render each seed line through setFooterUpdateLine() so history gets the
-        // same colored badges as live lines instead of raw plain text (adhoc #19).
-        for (int i = from; i < m_networkLog.size(); ++i)
-            setFooterUpdateLine(m_networkLog.at(i));
+        // Render seed history with the same colored badges (and favicons) as live
+        // lines instead of raw plain text (adhoc #19), but as a single setHtml()
+        // pass — 300 individual appends would re-lay out the document each time,
+        // on the startup path.
+        QString seedHtml;
+        QStringList seedLines; // the raw lines, one per rendered block
+        for (int i = from; i < m_networkLog.size(); ++i) {
+            const QString clean = m_networkLog.at(i).trimmed();
+            if (clean.isEmpty())
+                continue;
+            seedHtml += QStringLiteral("<div>%1</div>").arg(footerLogLineHtml(clean));
+            seedLines << clean;
+        }
+        m_footerUpdateLog->setHtml(seedHtml);
+        // Stamp each block with its raw line so hover tooltips and click-to-open
+        // work on seeded history exactly as they do on live lines.
+        int seedIndex = 0;
+        for (QTextBlock b = m_footerUpdateLog->document()->firstBlock();
+             b.isValid() && seedIndex < seedLines.size(); b = b.next(), ++seedIndex)
+            b.setUserData(new FooterLogLineData(seedLines.at(seedIndex)));
         m_footerUpdateLog->verticalScrollBar()->setValue(
             m_footerUpdateLog->verticalScrollBar()->maximum());
     } else {
@@ -1044,11 +1082,45 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_footerUpdateLog->installEventFilter(this);
     positionFloatingLogButton();
 
-    // Horizontal split: live-log strip on the left half, prompt card on the right.
+    // Slow cleanup is visible without taking over the app: this narrow queue sits
+    // exactly between the live log and the agent prompt, and disappears when its
+    // last job finishes.
+    m_backgroundQueue = new QFrame;
+    m_backgroundQueue->setObjectName("backgroundTaskQueue");
+    m_backgroundQueue->setFrameShape(QFrame::StyledPanel);
+    m_backgroundQueue->setFixedWidth(250);
+    auto *backgroundLayout = new QVBoxLayout(m_backgroundQueue);
+    backgroundLayout->setContentsMargins(10, 8, 10, 8);
+    backgroundLayout->setSpacing(5);
+    m_backgroundQueueTitle = new QLabel(QStringLiteral("Background"));
+    m_backgroundQueueTitle->setObjectName("backgroundTaskQueueTitle");
+    QFont backgroundTitleFont = m_backgroundQueueTitle->font();
+    backgroundTitleFont.setBold(true);
+    backgroundTitleFont.setPointSizeF(
+        qMax(8.0, backgroundTitleFont.pointSizeF() - 1.0));
+    m_backgroundQueueTitle->setFont(backgroundTitleFont);
+    backgroundLayout->addWidget(m_backgroundQueueTitle);
+    m_backgroundQueueRowsHost = new QWidget;
+    m_backgroundQueueRowsLayout =
+        new QVBoxLayout(m_backgroundQueueRowsHost);
+    m_backgroundQueueRowsLayout->setContentsMargins(0, 0, 0, 0);
+    m_backgroundQueueRowsLayout->setSpacing(4);
+    m_backgroundQueueRowsLayout->addStretch(1);
+    auto *backgroundScroll = new QScrollArea;
+    backgroundScroll->setObjectName("backgroundTaskQueueScroll");
+    backgroundScroll->setFrameShape(QFrame::NoFrame);
+    backgroundScroll->setWidgetResizable(true);
+    backgroundScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    backgroundScroll->setWidget(m_backgroundQueueRowsHost);
+    backgroundLayout->addWidget(backgroundScroll, 1);
+    m_backgroundQueue->hide();
+
+    // Horizontal split: live-log strip, transient background queue, then prompt.
     auto *dockRow = new QHBoxLayout(dock);
     dockRow->setContentsMargins(0, 0, 0, 0);
     dockRow->setSpacing(0);
     dockRow->addWidget(m_footerUpdateLog, 1);
+    dockRow->addWidget(m_backgroundQueue, 0);
     dockRow->addWidget(card, 1);
 
     // Pin the footer to just the compact card's height (adhoc #107): margins +
@@ -1064,6 +1136,91 @@ QWidget *MainWindow::buildNetworkLogDock()
     // since QPlainTextEdit has no returnPressed signal.
     updateVoiceInputButton();
     return dock;
+}
+
+quint64 MainWindow::beginBackgroundTask(const QString &note)
+{
+    if (!m_backgroundQueueRowsLayout || !m_backgroundQueue)
+        return 0;
+    const quint64 id = m_nextBackgroundTaskId++;
+    auto *row = new QWidget(m_backgroundQueueRowsHost);
+    row->setObjectName("backgroundTaskRow");
+    auto *layout = new QHBoxLayout(row);
+    layout->setContentsMargins(0, 2, 0, 2);
+    layout->setSpacing(6);
+    auto *spinner = new QLabel(QString::fromUtf8("\xE2\xA0\x8B"));
+    spinner->setObjectName("backgroundTaskSpinner");
+    spinner->setStyleSheet(QStringLiteral("color:#3fb950;font-weight:700;"));
+    spinner->setFixedWidth(14);
+    auto *label = new QLabel(note.trimmed());
+    label->setObjectName("backgroundTaskNote");
+    label->setToolTip(note.trimmed());
+    label->setWordWrap(true);
+    QFont noteFont = label->font();
+    noteFont.setPointSizeF(qMax(7.0, noteFont.pointSizeF() - 1.0));
+    label->setFont(noteFont);
+    layout->addWidget(spinner, 0, Qt::AlignTop);
+    layout->addWidget(label, 1);
+    m_backgroundQueueRowsLayout->insertWidget(
+        qMax(0, m_backgroundQueueRowsLayout->count() - 1), row);
+    m_backgroundTaskRows.insert(id, row);
+    m_backgroundTaskSpinners.insert(id, spinner);
+    m_backgroundQueueTitle->setText(
+        QStringLiteral("Background \xC2\xB7 %1").arg(m_backgroundTaskRows.size()));
+    m_backgroundQueue->show();
+    if (!m_backgroundTaskSpinTimer) {
+        m_backgroundTaskSpinTimer = new QTimer(this);
+        m_backgroundTaskSpinTimer->setInterval(90);
+        connect(m_backgroundTaskSpinTimer, &QTimer::timeout, this, [this] {
+            static const QStringList frames{
+                QString::fromUtf8("\xE2\xA0\x8B"),
+                QString::fromUtf8("\xE2\xA0\x99"),
+                QString::fromUtf8("\xE2\xA0\xB9"),
+                QString::fromUtf8("\xE2\xA0\xB8"),
+                QString::fromUtf8("\xE2\xA0\xBC"),
+                QString::fromUtf8("\xE2\xA0\xB4"),
+                QString::fromUtf8("\xE2\xA0\xA6"),
+                QString::fromUtf8("\xE2\xA0\xA7"),
+                QString::fromUtf8("\xE2\xA0\x87"),
+                QString::fromUtf8("\xE2\xA0\x8F"),
+            };
+            m_backgroundTaskSpinFrame =
+                (m_backgroundTaskSpinFrame + 1) % frames.size();
+            for (QLabel *spinner : std::as_const(m_backgroundTaskSpinners)) {
+                if (spinner)
+                    spinner->setText(frames.at(m_backgroundTaskSpinFrame));
+            }
+        });
+    }
+    if (!m_backgroundTaskSpinTimer->isActive())
+        m_backgroundTaskSpinTimer->start();
+    return id;
+}
+
+void MainWindow::finishBackgroundTask(quint64 id, bool success,
+                                      const QString &detail)
+{
+    if (!detail.trimmed().isEmpty())
+        logSystem(QStringLiteral("Background: %1").arg(detail.trimmed()));
+    QWidget *row = m_backgroundTaskRows.take(id);
+    m_backgroundTaskSpinners.remove(id);
+    if (row)
+        row->deleteLater();
+    if (m_backgroundTaskRows.isEmpty()) {
+        if (m_backgroundTaskSpinTimer)
+            m_backgroundTaskSpinTimer->stop();
+        if (m_backgroundQueue)
+            m_backgroundQueue->hide();
+        if (m_backgroundQueueTitle)
+            m_backgroundQueueTitle->setText(QStringLiteral("Background"));
+    } else {
+        if (m_backgroundQueueTitle)
+            m_backgroundQueueTitle->setText(
+            QStringLiteral("Background \xC2\xB7 %1")
+                .arg(m_backgroundTaskRows.size()));
+    }
+    if (!success && !detail.trimmed().isEmpty())
+        flashMessage(detail.trimmed(), true);
 }
 
 // Footer slash-actions popup (adhoc #116): opened by the "/" box left of the
@@ -11125,13 +11282,19 @@ void MainWindow::createVultrMirrorFromForm()
     m_vultrProvisionActive = true;
     m_vultrPollCount = 0;
     m_vultrInstallAttempts = 0;
-    // A brand-new instance has nobody mirroring it and there may be no
-    // published release for its platform at all, so a relay download can only
-    // dead-end (adhoc #408). Whenever this app's own binary can run on the
-    // Debian x64 image the flow deploys, upload it straight over the SSH
-    // session from the very first attempt — that needs no prebuilt release.
-    m_vultrInstallUseLocalBinary = forkmesh::control::localBinaryRunsOnVultrMirror(
-        QSysInfo::kernelType(), QSysInfo::currentCpuArchitecture());
+    // A brand-new instance is nobody's mirror yet, so the installer's default
+    // relay-download path has no online node to clone from and dies with "No
+    // online ForkMesh node is currently mirroring 'forkmesh'". Start straight
+    // in direct-upload mode whenever this app's own binary can run on the
+    // instance we are about to create (always x64 Debian) — that needs no
+    // online mirror at all. The failure-driven switch below stays as the
+    // fallback for the platforms an upload cannot serve. An unreadable own
+    // binary would fail every attempt before SSH is even reached, so it also
+    // keeps the download path.
+    m_vultrInstallUseLocalBinary =
+         forkmesh::control::localBinaryRunsOnVultrMirror(
+             QSysInfo::kernelType(), QSysInfo::currentCpuArchitecture()) &&
+         QFileInfo(QCoreApplication::applicationFilePath()).isReadable();
     m_vultrInstallAttemptLog.clear();
     m_vultrDnsHostname.clear();
     m_hostInstallAttemptBanner.clear();
@@ -11417,7 +11580,10 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
     if (m_vultrStatus)
         m_vultrStatus->setText(
             QString::fromUtf8(
-                "Installing ForkMesh (attempt %1 of %2)\xE2\x80\xA6")
+                m_vultrInstallUseLocalBinary
+                    ? "Installing ForkMesh (attempt %1 of %2) \xE2\x80\x94 "
+                      "uploading this app's release directly\xE2\x80\xA6"
+                    : "Installing ForkMesh (attempt %1 of %2)\xE2\x80\xA6")
                 .arg(m_vultrInstallAttempts)
                 .arg(kMaxInstallAttempts));
     // A fresh instance often refuses SSH for a short while after Vultr

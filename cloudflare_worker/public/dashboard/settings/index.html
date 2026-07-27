@@ -683,8 +683,8 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=d5022354692b" defer></script>
-    <script src="/dashboard-chat.js?v=ba55a8f051a4" defer></script>
+    <script src="/dashboard.js?v=eded2bc9aebb" defer></script>
+    <script src="/dashboard-chat.js?v=6e83b7d22f1c" defer></script>
   </head>
   <body class="bg-background text-foreground" data-page="settings">
     <div data-dashboard-root data-dashboard-section="profile" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
@@ -742,7 +742,7 @@
 
         <div class="flex items-center gap-1.5">
           <a
-            href="/"
+            href="/world"
             class="hidden h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors sm:inline-flex"
             title="Open ForkMesh World"
             aria-label="Open ForkMesh World"
@@ -1435,14 +1435,6 @@
                         </button>
                       </div>
                       <p data-appearance-theme-status aria-live="polite" class="min-h-4 text-xs text-muted-foreground">Dark mode is active.</p>
-                      <label class="flex items-start gap-3 rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
-                        <input data-long-diff-toggle type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
-                        <span>
-                          <span class="block font-semibold text-foreground">Render long diffs automatically</span>
-                          <span class="mt-1 block leading-5">Off by default so commit and PR pages stay snappy. Hidden diffs still include a Show full diff button.</span>
-                          <span data-long-diff-status class="mt-1 block text-xs text-muted-foreground">Large diffs stay collapsed until you open them.</span>
-                        </span>
-                      </label>
                     </div>
                   </section>
 

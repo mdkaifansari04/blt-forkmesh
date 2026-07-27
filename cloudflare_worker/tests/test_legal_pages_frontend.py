@@ -21,7 +21,7 @@ def test_legal_pages_use_404_style_simple_nav_only_docs_blog_login():
         body = html[html.index("<body") :]
 
         assert 'href="/site-header.css"' in html
-        assert 'src="/site-header.js"' in html
+        assert 'src="/site-header.js?v=' in html
         assert '<div data-forkmesh-header="simple"></div>' in body
         assert 'class="site-header"' not in html
         assert 'class="global-nav"' not in html
@@ -39,7 +39,7 @@ def test_legal_pages_include_standard_footer_mount():
 
         for marker in (
             'href="/site-footer.css"',
-            'src="/site-footer.js"',
+            'src="/site-footer.js?v=',
             '<div data-forkmesh-footer="standard"></div>',
         ):
             assert marker in html

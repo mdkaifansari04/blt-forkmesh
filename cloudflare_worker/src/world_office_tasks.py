@@ -27,7 +27,7 @@ MAX_ELAPSED_MS = 10 * 365 * 24 * 60 * 60 * 1000
 CHECKIN_MIN_MS = 4 * 60 * 1000
 CHECKIN_MAX_MS = 9 * 60 * 1000
 
-TASK_STATES = frozenset({"idle", "active"})
+TASK_STATES = frozenset({"idle", "active", "done"})
 CHECKIN_STATES = frozenset({"going_well", "blocked", "needs_help"})
 PERMISSION_RANK = {
     "read": 0,
@@ -83,7 +83,8 @@ def _route(path):
     task_id = parts[0].lower()
     if len(parts) == 1:
         return ("task", task_id, "")
-    if len(parts) == 2 and parts[1] in ("start", "stop", "checkin"):
+    if len(parts) == 2 and parts[1] in (
+            "start", "stop", "checkin", "complete"):
         return ("action", task_id, parts[1])
     return None
 
@@ -175,7 +176,11 @@ async def _project_task(runtime, row, now, checkin=None):
         return None
     if not isinstance(data, dict):
         return None
-    state = str(row.get("status") or "")
+    state = (
+        "done"
+        if int(row.get("completed_at") or 0) > 0
+        else str(row.get("status") or "")
+    )
     if state not in TASK_STATES:
         return None
     started_at = int(row.get("started_at") or 0) if state == "active" else 0
@@ -196,6 +201,7 @@ async def _project_task(runtime, row, now, checkin=None):
         ),
         "createdAt": int(row.get("created_at") or 0),
         "updatedAt": int(row.get("updated_at") or 0),
+        "completedAt": int(row.get("completed_at") or 0),
         "lastCheckin": await _project_checkin(runtime, checkin),
     }
 
@@ -373,6 +379,9 @@ async def _update(
     if not member:
         return _response(
             runtime, {"error": "assignee_not_active_user"}, status=400)
+    if int(row.get("completed_at") or 0) > 0:
+        return _response(
+            runtime, {"error": "completed_task_cannot_be_updated"}, status=409)
     if str(row.get("status") or "") == "active":
         return _response(
             runtime, {"error": "active_task_cannot_be_updated"}, status=409)
@@ -414,6 +423,8 @@ async def _start(
         runtime, org_bi, account_bi, actor, task_id, row, now):
     if str(row.get("assignee_bi") or "") != account_bi:
         return _response(runtime, {"error": "assignee_only"}, status=403)
+    if int(row.get("completed_at") or 0) > 0:
+        return _response(runtime, {"error": "task_completed"}, status=409)
     if str(row.get("status") or "") == "active":
         return await _task_response(runtime, row, now)
     existing = await runtime.d1_first(
@@ -503,6 +514,78 @@ async def _stop(
     )
     return await _task_response(
         runtime, await _task(runtime, org_bi, task_id), now)
+
+
+async def _complete(
+        runtime, org_bi, account_bi, actor, task_id, row, can_manage, now):
+    """Finish assigned work while retaining its time and encrypted history."""
+    if (
+        not can_manage
+        and str(row.get("assignee_bi") or "") != account_bi
+    ):
+        return _response(runtime, {"error": "assignee_or_manager_only"}, status=403)
+    if int(row.get("completed_at") or 0) > 0:
+        return await _task_response(runtime, row, now)
+    started_at = int(row.get("started_at") or 0)
+    addition = (
+        max(0, int(now) - started_at)
+        if str(row.get("status") or "") == "active" and started_at
+        else 0
+    )
+    elapsed = min(
+        MAX_ELAPSED_MS,
+        max(0, int(row.get("elapsed_ms") or 0)) + addition,
+    )
+    await runtime.d1_run(
+        "UPDATE world_office_marketing_tasks SET "
+        "status='idle',active_assignee_bi='',elapsed_ms=?,started_at=0,"
+        "next_checkin_at=0,completed_at=?,updated_at=? "
+        "WHERE org_bi=? AND task_id=? AND completed_at=0",
+        elapsed,
+        now,
+        now,
+        org_bi,
+        task_id,
+    )
+    changed = await _task(runtime, org_bi, task_id)
+    if not changed or int(changed.get("completed_at") or 0) <= 0:
+        return _response(runtime, {"error": "task_state_conflict"}, status=409)
+    await runtime.audit(
+        actor,
+        "office.marketing_task_completed",
+        "office_task",
+        task_id,
+        details={"state": "done"},
+    )
+    return await _task_response(runtime, changed, now)
+
+
+async def _delete(runtime, org_bi, actor, task_id, can_manage):
+    if not can_manage:
+        return _response(runtime, {"error": "forbidden"}, status=403)
+    await runtime.d1_run(
+        "DELETE FROM world_office_marketing_checkins "
+        "WHERE org_bi=? AND task_id=?",
+        org_bi,
+        task_id,
+    )
+    await runtime.d1_run(
+        "DELETE FROM world_office_marketing_tasks "
+        "WHERE org_bi=? AND task_id=?",
+        org_bi,
+        task_id,
+    )
+    remaining = await _task(runtime, org_bi, task_id)
+    if remaining:
+        return _response(runtime, {"error": "task_delete_conflict"}, status=409)
+    await runtime.audit(
+        actor,
+        "office.marketing_task_deleted",
+        "office_task",
+        task_id,
+        details={"state": "deleted"},
+    )
+    return _response(runtime, {"ok": True, "deleted": True, "id": task_id})
 
 
 async def _stop_active(runtime, org_bi, account_bi, actor, now):
@@ -653,7 +736,7 @@ async def handle(runtime, path):
         if route[0] == "collection"
         else ("POST",)
         if route[0] == "stop-active"
-        else ("GET", "PATCH")
+        else ("GET", "PATCH", "DELETE")
         if route[0] == "task"
         else ("POST",)
     )
@@ -708,6 +791,9 @@ async def handle(runtime, path):
                 return _response(
                     runtime, {"error": "task_not_found"}, status=404)
             return await _task_response(runtime, row, now)
+        if method == "DELETE":
+            return await _delete(
+                runtime, org_bi, actor, task_id, can_manage)
         return await _update(
             runtime, org_bi, actor, task_id, data, can_manage, now)
     if action == "start":
@@ -716,5 +802,8 @@ async def handle(runtime, path):
     if action == "stop":
         return await _stop(
             runtime, org_bi, account_bi, actor, task_id, row, now)
+    if action == "complete":
+        return await _complete(
+            runtime, org_bi, account_bi, actor, task_id, row, can_manage, now)
     return await _checkin(
         runtime, org_bi, account_bi, actor, task_id, row, data, now)

@@ -96,6 +96,7 @@ def test_world_has_entry_points_from_qt_flutter_and_dashboard():
     assert "worldUriForServerUrl" in settings
     assert "relay.userInfo.isNotEmpty" in settings
     assert 'title="Open ForkMesh World"' in header
+    assert 'href="/world"' in header
     assert "/ /index.html 200" in redirects
     index = (
         ROOT / "cloudflare_worker" / "public" / "index.html"

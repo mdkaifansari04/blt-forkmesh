@@ -57,6 +57,15 @@ def test_capture_composites_the_hud_over_the_rendered_frame():
     assert "readAsDataURL" in APP
 
 
+def test_hud_raster_stays_transparent_over_the_rendered_frame():
+    # .fm-world paints an opaque backdrop behind the canvas. The HUD layer is
+    # drawn on top of the WebGL readback, so the clone must drop that fill or
+    # the capture returns chrome on a flat colour with no game world.
+    assert "background: #081510" in CSS
+    assert 'clone.style.background = "transparent"' in APP
+    assert 'clone.style.backgroundColor = "transparent"' in APP
+
+
 def test_annotator_matches_the_desktop_markup_toolset():
     # Same tools, palette, and affordances as the desktop
     # Screenshot & Markup window.

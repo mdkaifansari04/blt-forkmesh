@@ -57,9 +57,21 @@ def _load_watchdog():
     async def _repository_monitor_admin_emails(_env):
         return ["admin@example.test"]
 
+    async def _status_alert_emails_enabled(_env):
+        return namespace["_alerts_enabled"]
+
     async def _send_email(_env, email, subject, text, html):
         sends.append((email, subject, text, html))
         return True
+
+    async def _cloudflare_attention_log_tail(_env, _now):
+        return "[999] ERROR scheduled simulated bounded log"
+
+    def _attention_email_with_logs(text, html, log_tail):
+        return (
+            text + "\n\nCloudflare logs · prior 2 minutes\n" + log_tail,
+            html + "Cloudflare logs · prior 2 minutes" + log_tail,
+        )
 
     def _flagship_monitor_duration(milliseconds):
         return "%d minutes" % (int(milliseconds) // 60_000)
@@ -79,7 +91,13 @@ def _load_watchdog():
         "urlparse": urlparse,
         "_repository_monitor_admin_emails":
             _repository_monitor_admin_emails,
+        "_status_alert_emails_enabled": _status_alert_emails_enabled,
+        # The flagship repo's admin switch, off in production until an org
+        # admin opts in. The transition tests below exercise the on path.
+        "_alerts_enabled": True,
         "_send_email": _send_email,
+        "_cloudflare_attention_log_tail": _cloudflare_attention_log_tail,
+        "_attention_email_with_logs": _attention_email_with_logs,
         "_flagship_monitor_duration": _flagship_monitor_duration,
         "_html_escape": _html_escape,
         "_forkmesh_email_card_html": _forkmesh_email_card_html,
@@ -132,6 +150,8 @@ def test_watchdog_alerts_once_and_recovers_once():
     asyncio.run(watchdog.alarm())
     assert len(ns["_sends"]) == 1
     assert ns["_sends"][0][1].startswith("[ForkMesh outage]")
+    assert "Cloudflare logs · prior 2 minutes" in ns["_sends"][0][2]
+    assert "simulated bounded log" in ns["_sends"][0][2]
     assert storage.data["notified_state"] == "down"
     asyncio.run(watchdog.alarm())
     assert len(ns["_sends"]) == 1
@@ -141,6 +161,7 @@ def test_watchdog_alerts_once_and_recovers_once():
     asyncio.run(watchdog.fetch(request))
     assert len(ns["_sends"]) == 2
     assert ns["_sends"][1][1].startswith("[ForkMesh recovered]")
+    assert "Cloudflare logs" not in ns["_sends"][1][2]
     assert storage.data["notified_state"] == "up"
     assert storage.data["outage_started_at"] == 0
     asyncio.run(watchdog.fetch(request))
@@ -180,6 +201,44 @@ def test_watchdog_rearms_when_alert_delivery_is_unavailable():
     assert storage.data.get("notified_state") != "down"
     assert storage.alarm_at == Date.value + retry
     assert ns["_sends"] == []
+
+
+def test_watchdog_sends_nothing_while_alert_mail_is_switched_off():
+    ns = _load_watchdog()
+    ns["_alerts_enabled"] = False
+    storage = _Storage()
+    ctx = SimpleNamespace(storage=storage)
+    watchdog = ns["ForkMeshCronWatchdog"](ctx, object())
+    request = SimpleNamespace(
+        url="https://forkmesh.internal/cron-watchdog/completed")
+    Date = ns["Date"]
+    grace = ns["CRON_WATCHDOG_GRACE_MS"]
+    retry = ns["CRON_WATCHDOG_RETRY_MS"]
+    storage.data["last_completion_at"] = Date.value - grace
+
+    # A suppressed outage still settles the transition: rearming the retry
+    # alarm would spin forever on a send that is never going to happen.
+    asyncio.run(watchdog.alarm())
+    assert ns["_sends"] == []
+    assert storage.data["notified_state"] == "down"
+    assert storage.alarm_at != Date.value + retry
+
+    # The later recovery is suppressed too, and clears the outage state.
+    asyncio.run(watchdog.fetch(request))
+    assert ns["_sends"] == []
+    assert storage.data["notified_state"] == "up"
+    assert storage.data["outage_started_at"] == 0
+
+
+def test_status_alert_mail_is_off_until_a_repo_admin_enables_it():
+    # Defaults must stay off: the switch is opt-in, per repository, and the
+    # two send paths both consult it.
+    defaults = ENTRY_TEXT.split("REPO_ALERT_SETTING_DEFAULTS = {", 1)[1] \
+        .split("}", 1)[0]
+    assert '"statusEmails": False' in defaults
+    assert ENTRY_TEXT.count("await _status_alert_emails_enabled(env)") == 2
+    assert "CREATE TABLE IF NOT EXISTS repo_alert_settings" in (
+        ROOT / "src" / "schema.py").read_text(encoding="utf-8")
 
 
 def test_cron_runtime_and_durable_object_are_wired():

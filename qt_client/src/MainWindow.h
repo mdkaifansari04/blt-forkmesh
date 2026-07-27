@@ -102,6 +102,7 @@ class ClaudeTranscriptView;
 class RepoHost;
 class NodeEventSocket;
 class WorldSpeechBridge;
+class OfficeChannelMirror;
 class PrivateMirrorMaterialization;
 class ActionRunner;
 class QButtonGroup;
@@ -325,6 +326,11 @@ public:
         return logBadgeFor(storedLine);
     }
     QTextBrowser *testNetworkLogView() const { return m_settingsLog; }
+    QTextEdit *testFooterLogView() const { return m_footerUpdateLog; }
+    bool testFaviconCached(const QString &host) const
+    {
+        return m_faviconCache.contains(host);
+    }
     void testScrollNetworkLogToTop() { onNetworkLogScrolled(0); }
     QStringList testQuickUpdatePullArguments(const QString &clientDir) const;
     // Issue #214: the ordered "Build & preview" command pipeline — checkout into a
@@ -741,6 +747,13 @@ private:
     // longer a public constant baked into the client. Cached in m_roomPassphrase
     // and passed to ServerNode; empty falls back to the legacy app key.
     void fetchRoomPassphrase();
+    // Start (once the account identity is known) the read-only poll that brings
+    // the World virtual office's channel conversations into the chat sidebar.
+    // The office's #general room needs nothing here: it is the same mainnode
+    // room this client already joins, so it lands in #general.
+    void startOfficeChannelMirror();
+    // True for a conversation this client can read but never publish into.
+    bool isReadOnlyConversation(const QString &conversation) const;
     void showAdminVerifyDialog();
     bool adminVerifyEmail(const QString &target);
     void verifyWallet();
@@ -802,6 +815,10 @@ private:
     // Mirror the newest update/rebuild log line onto the footer one-liner so the
     // live progress is visible at the bottom of the app without the full window.
     void setFooterUpdateLine(const QString &line);
+    // The rendered HTML for one footer-strip line (favicon, time, badge, body).
+    // Shared by the live append and the startup seed, which builds its whole
+    // block of lines in one pass.
+    QString footerLogLineHtml(const QString &clean);
     // (Re)apply the always-on footer log line's inline stylesheet for the active
     // theme, tinting the text by the current line's tone. Called on theme switch.
     void styleFooterUpdateLog();
@@ -919,6 +936,11 @@ private:
     void updateNodeOnlineControls();
     // Bottom quick-add issue bar (the network log now lives in its own section).
     QWidget *buildNetworkLogDock();
+    // Compact footer queue between the live log and agent prompt. It exists
+    // only while slow cleanup is running and gives each job a spinner + note.
+    quint64 beginBackgroundTask(const QString &note);
+    void finishBackgroundTask(quint64 id, bool success,
+                              const QString &detail = QString());
     // Refresh the footer's centered git-identity label for the open repo.
     void updateFooterGitIdentity();
     // Live CPU/memory readout + UI-stall watchdog (footer diagnostics).
@@ -957,8 +979,10 @@ private:
     void fetchFaviconFromUrl(const QString &host, const QUrl &url);
     QPixmap faviconFor(const ServerConfig &server) const;
     // Network-log favicons (adhoc #190): show each request's site icon inline.
-    QString logFaviconTag(const QString &message);
-    void registerLogFaviconResource(const QString &host);
+    // Both log views (the full Log tab and the footer strip) render the tag, so
+    // the icon resource is registered per target document (adhoc #436).
+    QString logFaviconTag(const QString &message, QTextEdit *view);
+    void registerLogFaviconResource(const QString &host, QTextEdit *view);
     void refreshLogFavicon(const QString &host);
     QWidget *buildHomeSection();
     // Node profile: full-page centered section (index 10 in m_sectionStack).
@@ -1445,9 +1469,13 @@ private:
     // +/- buttons and watches its viewport for Ctrl+wheel (issue #254).
     void registerDiffView(QTextEdit *view);
     // Set a diff viewer's HTML, remembering the source so a later font-size
-    // change can re-render it in place without re-running its renderer.
-    void setDiffHtml(QTextEdit *view, const QString &html,
-                     bool forceLongDiff = false);
+    // change can re-render it in place without re-running its renderer. Renders
+    // progressively (renderDiffStreamed): the visible window first, the rest off
+    // the event loop, so no diff ever blocks the GUI thread (adhoc #421).
+    void setDiffHtml(QTextEdit *view, const QString &html);
+    // Hook run when a diff view's streamed document is complete; refreshes the
+    // state derived from the whole document (sticky file positions, search).
+    void onDiffStreamFinished(QTextEdit *view);
     // Scroll the Files-changed diff to the next/previous change relative to what
     // is currently on screen. delta is +1 (next) or -1 (prev).
     void pullSelectAdjacentChange(int delta);
@@ -1733,12 +1761,6 @@ private:
     // Issues heading row and persist the running state so the loop resumes
     // after a restart (adhoc #130, #125, #354).
     void updateIssueLooperButton();
-    // Anchor the live mirror-activity dot strip just above the Mirror nodes tab
-    // (adhoc #197).
-    void positionMirrorActivityStrip();
-    // Anchor the current-release pill just above the Releases tab (adhoc #69),
-    // mirroring positionMirrorActivityStrip over Mirror nodes.
-    void positionReleaseStrip();
     void persistLooperState();
     void maybeRestoreIssueLooper();
     void continueSelectedAgentSession();
@@ -1787,7 +1809,11 @@ private:
     // gone; false (after flashing why) when it can't go yet — a running agent
     // still stopping, or no host write access to clear the issue. External
     // (watch-only) sessions aren't handled here.
-    bool deleteStoredAgentSession(int sessionId);
+    bool deleteStoredAgentSession(int sessionId, bool cleanupWorktree = true);
+    // Agent-detail "Delete all": remove the session from the UI/store first,
+    // then clean its worktree, branch, and linked issues asynchronously.
+    void deleteWorktreeBranchAndAgentInBackground(
+        const QString &worktreePath, const QString &branch);
     // Delete everything an agent left behind in one action: its worktree folder,
     // its branch, and the stored agent session(s) that ran on it. Used by the
     // Worktrees-tab "Delete" buttons and the agent detail's "Delete all".
@@ -2282,11 +2308,6 @@ private:
     // "viewed" toggles; `emptyMessage` shows when the patch has no changes.
     void renderBranchDiffPatch(const QString &patch, const QString &emptyMessage,
                                const QString &viewedContext);
-    // Stream the next batch of queued per-file diff blocks into the branch diff
-    // view off the event loop (progressive render of a large commit/branch diff,
-    // adhoc #51). `gen` is the render generation it belongs to: a stale batch from
-    // a superseded scope selection bails. Reschedules itself until drained.
-    void appendBranchDiffBlocks(int gen);
     // Rebuild the sticky-bar file-span map from whatever is currently in the
     // branch diff document (called once a streamed render has fully landed).
     void rebuildBranchDiffSpans();
@@ -2660,12 +2681,8 @@ private:
     void refreshCommitTableStatusGlyphs();
     // Spin the Actions tab label while a run for the open repo is active.
     void updateActionsTabIndicator();
-    // Lazily build the floating strip and place it just above the Actions tab.
-    void ensureActionStrip();
-    void positionActionStrip();  // size/pin the strip above the Actions tab
-    void updateActionStrip();    // build/show/hide the boxes for in-flight runs
-    // Previous finished run's duration for the same workflow, the estimate each
-    // strip box counts down against (0 = no prior run to estimate from).
+    // Previous finished run's duration for the same workflow, shown beside a
+    // queued/running run (0 = no prior run to estimate from).
     qint64 estimatedRunDurationMs(const ActionRun &run) const;
     // Keep the running-session spinner timer alive/dead for the Agents table
     // (adhoc #178 removed the Agents tab and its floating spinner overlay, but
@@ -3024,6 +3041,22 @@ private:
     // node's agent sessions.
     void drainAgentPrompts();
     void drainAgentPromptsFor(RepositoryRecord repo);
+    // Organization-member Claude/Codex jobs are a distinct, encrypted-at-rest
+    // channel. This mirror runs a tool-free Haiku preflight and executes only
+    // an exact ALLOW verdict; owner-only E2EE prompts above remain unchanged.
+    void drainOrgAgentJobsFor(RepositoryRecord repo);
+    void applyOrgAgentJobsPayload(const RepositoryRecord &repo,
+                                  const QJsonArray &jobs);
+    void runOrgAgentSafetyCheck(const RepositoryRecord &repo,
+                                const QJsonObject &job);
+    void reportOrgAgentJob(const RepositoryRecord &repo,
+                           const QJsonObject &job,
+                           const QString &securityVerdict,
+                           const QString &status,
+                           int localAgentId = 0,
+                           const QString &reason = QString(),
+                           const QString &result = QString());
+    void reportCompletedOrgAgentJobs();
     // Deliver one queued website prompt to the matching session via
     // sendPromptToAgentSession (steers it live, or resumes it if stopped), or
     // log + drop it if no local session with that id exists.
@@ -3078,11 +3111,12 @@ private:
                                const QStringList &attachmentPlaceholders = {},
                                std::function<void(bool ok, const QString &error)> onDone = {});
     void syncIssuesInbox();
-    // Drain one repo's issue/pull inbox (owner-only). `interactive` shows inline
-    // notices/dialogs (manual "Sync inbox"); when false it's a silent background
-    // poll that only speaks up (notification + list refresh) when something new
-    // arrives. Repo is taken by value so the async reply can't dangle.
+    // Drain one repo's issue inbox. Owners consume their queue; eligible public
+    // mirrors materialize it without consuming the source-of-truth delivery.
+    // `interactive` shows inline notices for a manual "Sync inbox". Repo is
+    // taken by value so the async reply can't dangle.
     void drainIssuesInboxFor(RepositoryRecord repo, bool interactive);
+    void pollMirrorIssueInboxes();
     void drainPullsInboxFor(RepositoryRecord repo, bool interactive);
     // Notify the local user when they're @mentioned in one of this repo's issues
     // or pull requests. Each node scans its own synced copy, so the mentioned
@@ -3109,7 +3143,8 @@ private:
     // reply) into the local stores, ack the inbox, and raise notifications.
     // Shared by the drain* fetchers and the /api/sync dispatcher.
     void applyIssuesInboxPayload(const RepositoryRecord &repo,
-                                 const QJsonArray &pending, bool interactive);
+                                 const QJsonArray &pending, bool interactive,
+                                 bool mirrorIntake = false);
     void applyPullsInboxPayload(const RepositoryRecord &repo,
                                 const QJsonArray &pending, bool interactive);
     void applyDiscussionsInboxPayload(const RepositoryRecord &repo,
@@ -3498,6 +3533,7 @@ private:
     int m_activeServer = 0;
     QHash<QString, QPixmap> m_faviconCache; // host -> favicon
     QSet<QString> m_faviconFetching;        // hosts with an in-flight favicon GET
+    QSet<QString> m_faviconMissing;         // hosts whose favicon GET failed once
 
     // Optional public payout-address banner (hidden outside explicit settings).
     QWidget *m_solanaBanner = nullptr;
@@ -3613,8 +3649,19 @@ private:
     // Scrollable live log pinned to the bottom of the window: shows as many recent
     // lines as fit tall, with a scrollbar so earlier history can be scrolled back
     // to. Streams every logSystem()/appendUpdateLog() line, including the
-    // session-start/session-end/rebuild markers.
-    QPlainTextEdit *m_footerUpdateLog = nullptr;
+    // session-start/session-end/rebuild markers. A QTextEdit (not the plain
+    // variant) so each line can lead with the site favicon <img> the full Log
+    // view uses — QPlainTextEdit drops images (adhoc #436).
+    QTextEdit *m_footerUpdateLog = nullptr;
+    QFrame *m_backgroundQueue = nullptr;
+    QLabel *m_backgroundQueueTitle = nullptr;
+    QWidget *m_backgroundQueueRowsHost = nullptr;
+    QVBoxLayout *m_backgroundQueueRowsLayout = nullptr;
+    QHash<quint64, QWidget *> m_backgroundTaskRows;
+    QHash<quint64, QLabel *> m_backgroundTaskSpinners;
+    QTimer *m_backgroundTaskSpinTimer = nullptr;
+    quint64 m_nextBackgroundTaskId = 1;
+    int m_backgroundTaskSpinFrame = 0;
     // Set while a root-launched "Update, rebuild & restart" is running so build
     // steps and the relaunch run as this non-root user. Empty = run in-process.
     QString m_updateAsUser;
@@ -3953,6 +4000,7 @@ private:
     // legacy per-topic polling until the app talks to an upgraded relay again.
     bool m_relaySyncSupported = true;
     bool m_relaySyncInFlight = false;
+    QSet<QString> m_mirrorIssueIntakeInFlight;
     QTimer *m_autoUpdateTimer = nullptr; // periodic check for maybeAutoUpdate()
     bool m_autoUpdateChecking = false;   // a background "git fetch" check is in flight
 
@@ -4077,6 +4125,7 @@ private:
     // existing local Whisper/Parakeet pipeline feed transcript text back without
     // adding any browser audio transport.
     WorldSpeechBridge *m_worldSpeechBridge = nullptr;
+    OfficeChannelMirror *m_officeChannelMirror = nullptr;
     QLineEdit *m_worldSpeechOriginEdit = nullptr;
     QLineEdit *m_worldSpeechPairCodeEdit = nullptr;
     QLabel *m_worldSpeechStatusLabel = nullptr;
@@ -4178,12 +4227,6 @@ private:
     QPushButton *m_repoPullsTab = nullptr;
     QPushButton *m_repoDiscussionsTab = nullptr;
     QPushButton *m_repoActionsTab = nullptr;
-    // Floating strip of thin bars above the Actions tab — one per in-flight run,
-    // each labelled with the workflow name and growing to the right the longer
-    // its run has been going. Hidden when nothing is running.
-    QWidget *m_actionStrip = nullptr;
-    QVBoxLayout *m_actionStripCol = nullptr;
-    QList<int> m_actionStripIds; // running run ids currently shown (skip rebuilds)
     QPushButton *m_repoMirrorsTab = nullptr; // handle for the Mirror nodes (N) badge
     QPushButton *m_repoReleasesTab = nullptr; // handle for the Releases (N) badge
     QPushButton *m_repoBranchesTab = nullptr; // handle for the Branches (N) badge
@@ -4260,6 +4303,20 @@ private:
     // showBranchDiff/renderBranchScopeDiff shelled git on the GUI thread).
     int m_branchScopeLoadGen = 0;
     int m_branchScopeDiffGen = 0;
+    // Branch merge-conflict probes. `git merge-tree` costs ~0.5-1s per branch on a
+    // busy repo, so running one per row inline froze the branches panel for
+    // seconds on every rebuild — and one lands after every delete/merge/pull
+    // (adhoc #416). The rows paint immediately without the flag and the probes run
+    // on a worker thread instead; each verdict is memoised by the exact commit
+    // pair it merged (key "<git dir>\n<base sha>\n<branch sha>"), so later
+    // rebuilds and the detail pane reuse it rather than re-shelling git.
+    QHash<QString, bool> m_branchConflictCache;
+    QSet<QString> m_branchConflictProbes; // branches a worker is probing right now
+    // Probe the given branches (pairs of branch name + cache key) for conflicts
+    // with `base` off the GUI thread, painting each verdict into the table when
+    // it lands.
+    void startBranchConflictProbes(const QString &dir, const QString &base,
+                                   const QList<QPair<QString, QString>> &probes);
     // The last patch rendered into the branch-diff pane (with its empty-state
     // message), cached so the per-file "Viewed" toggle can re-render synchronously
     // — the toggle changes only the viewed set, not the patch, so it must not pay
@@ -4274,17 +4331,10 @@ private:
     QString m_branchDiffViewedContext;
     QLabel *m_branchDiffSticky = nullptr;
     QList<QPair<int, QString>> m_branchDiffFileSpans;
-    // Progressive-render state for a large branch/commit diff: it is split into
-    // per-file HTML blocks and appended a batch at a time off the event loop so
-    // the GUI thread never blocks laying it all out at once (adhoc #51; same
-    // freeze the cap in issue #187 guarded against). m_branchDiffRenderGen is
-    // bumped on every render so a queued batch from a superseded scope selection
-    // bails instead of writing into the now-current diff. m_branchDiffFilePaths
-    // holds the ordered file paths so the sticky-bar span map can be rebuilt once
-    // the whole diff has landed.
-    QStringList m_branchDiffPendingBlocks;
+    // Ordered file paths of the diff currently in the branch view, so the
+    // sticky-bar span map can be rebuilt once the whole diff has landed (the
+    // render is progressive — see renderDiffStreamed, adhoc #51/#421).
     QStringList m_branchDiffFilePaths;
-    int m_branchDiffRenderGen = 0;
     QPushButton *m_branchesDeleteSelBtn = nullptr;
     // Detail-pane action bar above the branch diff: acts on the selected branch
     // (m_branchDiffBranch), mirroring the worktrees tab. Their enabled/tooltip
@@ -4317,13 +4367,6 @@ private:
     QTableWidget *m_mirrorNodesTable = nullptr;
     QLabel *m_mirrorNodesSummary = nullptr;
     QCheckBox *m_mirrorNodesOnlineOnlyCheck = nullptr;
-    // Live activity strip floating just above the Mirror nodes tab: a dot per
-    // active node that flashes green when it serves a clone, orange when it
-    // serves browsing. Held as a QWidget* (concrete MirrorActivityStrip is
-    // private to MainWindow.cpp). m_mirrorActivityStripTimer keeps it anchored
-    // over the tab as the window reflows (mirrors the looper toggle, adhoc #197).
-    QWidget *m_mirrorActivityStrip = nullptr;
-    QTimer *m_mirrorActivityStripTimer = nullptr;
     // Animates the spinning caution/error status lights in the Mirror nodes
     // table (adhoc #230); only ticks while at least one row's light spins.
     QTimer *m_nodeLightTimer = nullptr;
@@ -4338,12 +4381,6 @@ private:
     // lookup doesn't re-shell `git show` on every roster-driven rebuild. Only
     // used for peers that don't advertise the identity themselves.
     QHash<QString, CommitIdentity> m_commitIdentityCache;
-    // Current-release pill floating just above the Releases tab (adhoc #69):
-    // shows the newest tag so the current release is visible from any tab. Its
-    // text is set from the tag scan; m_releaseStripTimer keeps it anchored as the
-    // window reflows (mirrors the mirror-activity strip).
-    QLabel *m_releaseStrip = nullptr;
-    QTimer *m_releaseStripTimer = nullptr;
     // "Reset integrity pin" action, shown in the Mirror nodes header only when
     // this node is the source of truth (the owner holding the working copy).
     QPushButton *m_mirrorResetPinButton = nullptr;
@@ -4766,6 +4803,7 @@ private:
     QFrame *m_pullStickyHeader = nullptr;
     QLabel *m_pullStickyPath = nullptr;
     PacmanProgress *m_pullStickyPacman = nullptr;
+    QLabel *m_pullStickyPercent = nullptr;
     QPushButton *m_pullStickyViewed = nullptr;
     QString m_pullStickyFile; // file path currently shown in the sticky header
     // path -> compact rich-text label (icon + dir/name + +/-) for that header.
@@ -4780,6 +4818,10 @@ private:
     // Every diff viewer registered for shared text-size zoom (issue #254), so a
     // +/- click or Ctrl+wheel can re-render them all at the new size.
     QList<QTextEdit *> m_diffViews;
+    // Scroll position to put back once a zoom re-render's streamed diff is
+    // complete: right after the first paint the document is still short, so the
+    // reader's place would clamp away (adhoc #421).
+    QHash<QTextEdit *, int> m_diffRestoreScroll;
     QPushButton *m_pullSplitButton = nullptr; // toggle unified <-> side-by-side
     QListWidget *m_pullCommitsList = nullptr;  // commits that make up the PR
     // PR detail sub-tabs: Conversation / Commits / Checks / Files changed /
@@ -4895,7 +4937,6 @@ private:
     QListWidget *m_actionWorkflowList = nullptr; // available actions (left column)
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
-    QTimer *m_actionStripTimer = nullptr;        // grows the Actions strip while running
     // Coalesces push-driven refreshOpenRepoDetail() calls: a burst of pushes
     // (a sync, an agent committing) otherwise re-runs the whole heavyweight
     // refresh — git log, per-PR apply checks, branch reload — once per event,
@@ -5165,6 +5206,10 @@ private:
     // an idempotent key/policy registration before retrying.
     QSet<QString> m_agentE2EEReady;
     QSet<QString> m_agentE2EEInFlight;
+    QSet<QString> m_orgAgentJobsInFlight;
+    // local AgentSession id -> start-job transport needed to publish terminal
+    // status through the same authenticated lease after the run finishes.
+    QHash<int, QJsonObject> m_orgAgentBindings;
     // Each running CLI session has its own worktree, transport, and buffered
     // events, so output never leaks across providers or sessions.
     QHash<int, ClaudeStreamSession *> m_streamSessions;
@@ -5755,6 +5800,9 @@ private:
     QString m_profileSolanaValue;
 
     QStringList m_channels;
+    // Read-only mirrors of the World virtual office's channel rooms, merged
+    // into the sidebar beside the mesh rooms (adhoc #412).
+    QStringList m_officeConversations;
     // Invite-only rooms this node owns or was invited to. Badged in the sidebar
     // and persisted so they reappear after a reconnect (the backend clears its
     // channel set each session). See promptAddPrivateChannel / inviteToChannel.

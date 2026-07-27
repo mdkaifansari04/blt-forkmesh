@@ -18,7 +18,9 @@ CREATE TABLE IF NOT EXISTS world_office_marketing_tasks (
   elapsed_ms           INTEGER NOT NULL DEFAULT 0 CHECK (elapsed_ms >= 0),
   started_at           INTEGER NOT NULL DEFAULT 0 CHECK (started_at >= 0),
   next_checkin_at      INTEGER NOT NULL DEFAULT 0
-                         CHECK (next_checkin_at >= 0)
+                         CHECK (next_checkin_at >= 0),
+  completed_at         INTEGER NOT NULL DEFAULT 0
+                         CHECK (completed_at >= 0)
 );
 
 CREATE INDEX IF NOT EXISTS idx_world_office_marketing_tasks_org

@@ -78,7 +78,7 @@ def test_blog_page_mounts_the_universal_site_header():
     html = _read(BLOG_PAGE)
 
     assert 'href="/site-header.css"' in html
-    assert 'src="/site-header.js"' in html
+    assert 'src="/site-header.js?v=' in html
     assert '<div data-forkmesh-header="simple"></div>' in html
     assert 'class="blog1-topbar"' not in html
     assert "Sign Up / Log In" not in html
@@ -98,10 +98,11 @@ def test_blog_page_indexes_every_feature_post():
     html = _read(BLOG_PAGE)
     posts = _feature_post_paths()
 
-    assert len(posts) == 72
-    assert html.count('class="blog1-card" href="/blog/') == 72
-    assert html.count('class="blog1-search-result" href="/blog/') == 72
-    assert html.count('data-blog-search-text=') == 72
+    assert len(posts) == 73
+    assert html.count('class="blog1-card" href="/blog/') == 73
+    assert html.count('class="blog1-search-result" href="/blog/') == 73
+    assert html.count('data-blog-search-text=') == 73
+    assert 'href="/blog/building-forkmesh-in-the-open/"' in html
     assert 'href="/blog/desktop-node-mirrors/"' in html
     assert 'href="/blog/status-blog-and-changelog/"' in html
     assert "Every ForkMesh feature now has a short technical post" in html
@@ -126,12 +127,12 @@ def test_feature_blog_posts_have_images_and_article_shells():
 def test_every_blog_post_carries_fillable_social_permalinks():
     posts = sorted((PUBLIC / "blog").glob("*/index.html"))
 
-    assert len(posts) == 73
+    assert len(posts) == 74
     for post in posts:
         html = _read(post)
         for marker in (
             '<link rel="stylesheet" href="/blog-social.css">',
-            '<script src="/blog-social.js" defer></script>',
+            '<script src="/blog-social.js?v=' ,
             "<section data-blog-social",
             'data-reddit=""',
             'data-mastodon=""',
@@ -165,7 +166,7 @@ def test_feature_blog_images_exist_for_each_generated_post():
     posts = _feature_post_paths()
     images = sorted(FEATURE_IMAGES.glob("*.webp"))
 
-    assert len(images) == 72
+    assert len(images) == 73
     for post in posts:
         slug = post.parent.name
         assert FEATURE_IMAGES.joinpath(slug + ".webp").is_file()

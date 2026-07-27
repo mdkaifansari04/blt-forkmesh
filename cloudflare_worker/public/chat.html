@@ -13,7 +13,7 @@
     <meta name="description" content="Join ForkMesh authenticated shared-key chat rooms. Default keys are relay-derived and relay-readable." />
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
-    <meta name="theme-color" content="#090909" />
+    <meta name="theme-color" content="#020408" />
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
@@ -21,7 +21,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
     <link rel="manifest" href="/favicon/site.webmanifest" />
     <link rel="stylesheet" href="/site-header.css" />
-    <script src="/site-header.js" defer></script>
+    <script src="/site-header.js?v=5b600387dab6" defer></script>
     <script>
       (() => {
         const keys = ["forkmesh.dashboard.theme", "forkmesh.theme"];
@@ -31,7 +31,7 @@
         } catch (_) {}
         document.documentElement.classList.toggle("dark", theme !== "light");
         document.documentElement.style.colorScheme = theme;
-        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#f6f8fb" : "#090909");
+        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#f6f8fa" : "#020408");
       })();
     </script>
     <style>
@@ -168,7 +168,8 @@
 
       #chat-channel-manage { font-size: 12px; }
 
-      #chat-channel-dialog {
+      #chat-channel-dialog,
+      #chat-direct-dialog {
         width: min(520px, calc(100vw - 32px));
         max-height: min(720px, calc(100vh - 32px));
         margin: auto;
@@ -181,7 +182,8 @@
         box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
       }
 
-      #chat-channel-dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
+      #chat-channel-dialog::backdrop,
+      #chat-direct-dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
 
       .chat-channel-dialog-body {
         display: grid;
@@ -217,8 +219,7 @@
       .chat-channel-section h3 { margin: 0; font-size: 14px; }
       .chat-channel-form { display: flex; gap: 8px; }
       .chat-channel-form input,
-      .chat-channel-create-form input,
-      .chat-channel-create-form select {
+      #chat-direct-search {
         flex: 1;
         width: 100%;
         min-width: 0;
@@ -231,12 +232,10 @@
         outline: none;
       }
       .chat-channel-form input:focus,
-      .chat-channel-create-form input:focus,
-      .chat-channel-create-form select:focus {
+      #chat-direct-search:focus {
         border-color: var(--accent);
       }
       .chat-channel-form button,
-      .chat-channel-create-form button,
       .chat-member-remove {
         min-height: 36px;
         padding: 0 12px;
@@ -248,95 +247,6 @@
         cursor: pointer;
       }
 
-      .chat-channel-create-form {
-        display: grid;
-        gap: 12px;
-      }
-
-      .chat-channel-create-fields {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 148px;
-        gap: 10px;
-      }
-
-      .chat-channel-field {
-        display: grid;
-        min-width: 0;
-        gap: 6px;
-      }
-
-      .chat-channel-field > label,
-      .chat-channel-picker-head label {
-        color: var(--muted);
-        font-size: 12px;
-        font-weight: 700;
-      }
-
-      .chat-channel-initial-members {
-        display: grid;
-        gap: 9px;
-        min-width: 0;
-        padding: 11px;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        background: color-mix(in srgb, var(--surface2) 78%, transparent);
-      }
-
-      .chat-channel-picker-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-      }
-
-      #chat-channel-selected-count,
-      #chat-channel-user-empty {
-        color: var(--muted);
-        font-size: 11px;
-      }
-
-      #chat-channel-user-options {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 3px 12px;
-        max-height: 176px;
-        overflow-y: auto;
-      }
-
-      .chat-channel-user-option {
-        display: flex;
-        align-items: center;
-        min-width: 0;
-        gap: 7px;
-        padding: 6px 4px;
-        border-radius: 6px;
-        color: var(--fg);
-        font-size: 12px;
-        cursor: pointer;
-      }
-
-      .chat-channel-user-option:hover,
-      .chat-channel-user-option:focus-within {
-        background: var(--surface);
-      }
-
-      .chat-channel-user-option input {
-        width: 15px;
-        height: 15px;
-        margin: 0;
-        accent-color: var(--accent);
-      }
-
-      .chat-channel-user-option span {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      #chat-channel-user-empty { margin: 0; }
-
-      .chat-channel-create-submit { justify-self: start; }
 
       .chat-channel-heading {
         display: flex;
@@ -353,7 +263,8 @@
         letter-spacing: 0.08em;
       }
 
-      #chat-channel-error {
+      #chat-channel-error,
+      #chat-direct-error {
         min-height: 17px;
         margin: 0;
         color: #f85149;
@@ -388,6 +299,93 @@
         display: flex;
         flex-direction: column;
         gap: 2px;
+      }
+
+      .chat-direct-section {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        border-top: 1px solid var(--border);
+      }
+
+      #chat-direct-list {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 0 8px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      #chat-direct-more {
+        flex: 0 0 auto;
+        margin: 0 8px 10px;
+        min-height: 32px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+        font: inherit;
+        font-size: 12px;
+      }
+
+      #chat-direct-more:hover,
+      #chat-direct-more:focus-visible {
+        border-color: var(--accent);
+        color: var(--fg);
+        outline: none;
+      }
+
+      .chat-direct-row .chat-avatar {
+        width: 22px;
+        height: 22px;
+        margin: 0;
+        font-size: 10px;
+      }
+
+      #chat-direct-options {
+        display: grid;
+        gap: 4px;
+        max-height: 320px;
+        overflow-y: auto;
+      }
+
+      .chat-direct-option {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        gap: 10px;
+        width: 100%;
+        padding: 9px 10px;
+        border: none;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--fg);
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .chat-direct-option:hover,
+      .chat-direct-option:focus-visible {
+        background: var(--surface2);
+        outline: 1px solid var(--accent);
+      }
+
+      .chat-direct-option span:last-child {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #chat-direct-empty {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
       }
 
       .chat-room {
@@ -968,6 +966,8 @@
       }
 
       .chat-person {
+        flex: 1;
+        min-width: 0;
         display: flex;
         align-items: center;
         gap: 9px;
@@ -979,6 +979,33 @@
 
       .chat-person:hover { background: var(--surface2); }
       a.chat-person:hover .chat-person-name { text-decoration: underline; text-underline-offset: 2px; }
+
+      .chat-person-row {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        gap: 3px;
+      }
+
+      .chat-person-message {
+        flex: 0 0 auto;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 1px solid transparent;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+      }
+
+      .chat-person-message:hover,
+      .chat-person-message:focus-visible {
+        border-color: var(--border);
+        background: var(--surface2);
+        color: var(--fg);
+        outline: none;
+      }
 
       .chat-person .chat-avatar { width: 26px; height: 26px; font-size: 12px; margin: 0; }
 
@@ -1064,6 +1091,7 @@
       html[data-chat-embed="office"] .chat-e2e-note { display: none; }
       html[data-chat-embed="office"] .chat-admin-action { display: none; }
       html[data-chat-embed="office"] #chat-channel-dialog { display: none; }
+      html[data-chat-embed="office"] #chat-direct-dialog { display: none; }
 
       html[data-chat-embed="office"] .chat-rooms-pane,
       html[data-chat-embed="office"] .chat-main-pane,
@@ -1098,13 +1126,33 @@
       @media (max-width: 680px) {
         .chat-panes { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
         .chat-rooms-pane {
-          flex-direction: row;
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr);
+          grid-template-rows: auto auto;
           align-items: center;
           border-right: none;
           border-bottom: 1px solid var(--border);
         }
         .chat-rooms-pane .chat-pane-title { padding: 10px 12px; }
-        #chat-rooms { flex-direction: row; overflow-x: auto; overflow-y: hidden; padding: 6px 8px; }
+        #chat-rooms,
+        #chat-direct-list {
+          min-width: 0;
+          width: 100%;
+          flex-direction: row;
+          overflow-x: auto;
+          overflow-y: hidden;
+          padding: 6px 8px;
+        }
+        .chat-direct-section {
+          grid-column: 1 / -1;
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr);
+          min-width: 0;
+          align-items: center;
+          border-top: 1px solid var(--border);
+          border-left: none;
+        }
+        .chat-direct-section .chat-pane-title { padding: 10px 8px; }
         .chat-room { width: auto; white-space: nowrap; }
         .chat-name-wrap { display: none; }
         .chat-main-head { gap: 8px; padding: 8px 12px; }
@@ -1129,13 +1177,9 @@
 
       @media (max-width: 480px) {
         .chat-channel-dialog-body { padding: 14px; }
-        .chat-channel-create-fields,
-        #chat-channel-user-options {
-          grid-template-columns: minmax(0, 1fr);
-        }
-        .chat-channel-create-submit { width: 100%; }
       }
     </style>
+    <link rel="stylesheet" href="/chat.css?v=1b509ed32df6" />
   </head>
   <body>
     <div class="chat-shell">
@@ -1145,15 +1189,30 @@
         <div data-forkmesh-header="simple"></div>
       </div>
 
-      <div class="chat-panes">
+      <section class="chat-workbench" aria-label="Community chat workspace">
+        <div class="chat-panes">
+
+        <div id="chat-drop-overlay" class="chat-drop-overlay" aria-hidden="true" hidden>
+          <div>
+            <strong>Drop files to share</strong>
+            <span>Images and documents up to 1 MiB each</span>
+          </div>
+        </div>
 
         <!-- left: rooms -->
         <aside class="chat-rooms-pane" aria-label="Rooms">
           <div class="chat-pane-title chat-pane-title-row">
             <span>Rooms</span>
-            <button id="chat-channel-create" class="chat-admin-action" type="button" aria-label="Create channel" title="Create channel" hidden>+</button>
           </div>
           <div id="chat-rooms"></div>
+          <section id="chat-direct-section" class="chat-direct-section" aria-labelledby="chat-direct-title" hidden>
+            <div class="chat-pane-title chat-pane-title-row">
+              <span id="chat-direct-title">Direct messages</span>
+              <button id="chat-direct-create" class="chat-admin-action" type="button" aria-label="New direct message" title="New direct message">+</button>
+            </div>
+            <div id="chat-direct-list"></div>
+            <button id="chat-direct-more" type="button" hidden>Load older conversations</button>
+          </section>
         </aside>
 
         <!-- middle: conversation -->
@@ -1166,12 +1225,8 @@
             <div class="chat-main-controls">
               <button id="chat-channel-manage" class="chat-admin-action" type="button" hidden>Members</button>
               <a id="chat-office-manage" href="/chat" target="_top" hidden>Manage channels in full chat</a>
+              <input id="chat-name" type="hidden" />
               <span id="chat-status">Waiting to connect…</span>
-              <div class="chat-name-wrap">
-                <label class="chat-name-label" for="chat-name">Name</label>
-                <input id="chat-name" type="text" maxlength="32" placeholder="web-guest" autocomplete="off" spellcheck="false" />
-              </div>
-              <button id="chat-clear" type="button">Clear</button>
             </div>
           </div>
 
@@ -1194,35 +1249,96 @@
             <input
               id="chat-attachment-input"
               type="file"
+              multiple
               aria-label="Choose image or document"
             />
-            <button
-              id="chat-attachment-button"
-              type="button"
-              aria-label="Attach image or document"
-              title="Attach image or document (up to 1 MiB)"
-            >
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
-              </svg>
-            </button>
             <span id="chat-attachment-feedback" role="status" aria-live="polite"></span>
-            <input
-              id="chat-input"
-              type="text"
-              placeholder="Message #general…"
-              maxlength="16000"
-              autocomplete="off"
-              spellcheck="true"
-              aria-label="Message input"
-            />
-            <button id="chat-send" type="button" aria-label="Send message">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="22" y1="2" x2="11" y2="13"></line>
-                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-              </svg>
-              Send
-            </button>
+            <div class="chat-format-toolbar" role="toolbar" aria-label="Message formatting">
+              <button type="button" data-format="bold" aria-label="Bold" title="Bold"><strong>B</strong></button>
+              <button type="button" data-format="italic" aria-label="Italic" title="Italic"><em>I</em></button>
+              <button type="button" data-format="underline" aria-label="Underline" title="Underline"><u>U</u></button>
+              <button type="button" data-format="strike" aria-label="Strikethrough" title="Strikethrough"><s>S</s></button>
+              <span class="chat-format-divider" role="separator" aria-hidden="true"></span>
+              <button type="button" data-format="link" aria-label="Link" title="Link">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M10 13a5 5 0 0 0 7.07.07l2-2a5 5 0 0 0-7.07-7.07l-1.15 1.15"></path>
+                  <path d="M14 11a5 5 0 0 0-7.07-.07l-2 2A5 5 0 0 0 12 20l1.15-1.15"></path>
+                </svg>
+              </button>
+              <button type="button" data-format="bullet" aria-label="Bulleted list" title="Bulleted list">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                  <circle cx="5" cy="6" r="1.25" fill="currentColor" stroke="none"></circle>
+                  <circle cx="5" cy="12" r="1.25" fill="currentColor" stroke="none"></circle>
+                  <circle cx="5" cy="18" r="1.25" fill="currentColor" stroke="none"></circle>
+                  <path d="M10 6h9M10 12h9M10 18h9"></path>
+                </svg>
+              </button>
+              <button type="button" data-format="number" aria-label="Numbered list" title="Numbered list">
+                <svg width="18" height="17" viewBox="0 0 26 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                  <path d="M11 6h11M11 12h11M11 18h11"></path>
+                  <path d="M4 5h1v4M3.5 9h3M3.5 13.5c.5-.7 2.5-.5 2.5.5 0 1-2.5 2.5-2.5 4h3M3.5 21h3M3.5 18.5c.2-.8 2.6-.9 2.6.3 0 1.5-2.5 1.1-2.5 2.2 0 1.1 2.4 1 2.9.1"></path>
+                </svg>
+              </button>
+              <button type="button" data-format="quote" aria-label="Quote" title="Quote">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                  <path d="M6 7v10M10 7v10M6 7h4M6 17h4"></path>
+                  <path d="M15 9h4M15 15h4M15 9v6"></path>
+                </svg>
+              </button>
+              <span class="chat-format-divider" role="separator" aria-hidden="true"></span>
+              <button type="button" data-format="code" aria-label="Inline code" title="Inline code"><span aria-hidden="true">&lt;/&gt;</span></button>
+            </div>
+            <div id="chat-composer-attachments" class="chat-composer-attachments" aria-live="polite" aria-label="Staged attachments"></div>
+            <div class="chat-composer-main">
+              <textarea
+                id="chat-input"
+                rows="1"
+                placeholder="Message #general…"
+                maxlength="16000"
+                autocomplete="off"
+                spellcheck="true"
+                aria-label="Message input"
+              ></textarea>
+            </div>
+            <div id="chat-composer-emoji-menu" class="chat-composer-emoji-menu" role="menu" aria-label="Choose an emoji" hidden>
+              <button type="button" role="menuitem" data-composer-emoji="👍" aria-label="👍">👍</button>
+              <button type="button" role="menuitem" data-composer-emoji="❤️" aria-label="❤️">❤️</button>
+              <button type="button" role="menuitem" data-composer-emoji="😂" aria-label="😂">😂</button>
+              <button type="button" role="menuitem" data-composer-emoji="🎉" aria-label="🎉">🎉</button>
+              <button type="button" role="menuitem" data-composer-emoji="👀" aria-label="👀">👀</button>
+              <button type="button" role="menuitem" data-composer-emoji="🚀" aria-label="🚀">🚀</button>
+            </div>
+            <div class="chat-composer-foot">
+              <div class="chat-composer-actions">
+                <button
+                  id="chat-attachment-button"
+                  type="button"
+                  aria-label="Attach image or document"
+                  title="Attach image, video, or document (up to 1 MiB)"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                    <path d="M12 5v14M5 12h14"></path>
+                  </svg>
+                </button>
+                <button id="chat-emoji-button" type="button" aria-label="Insert emoji" title="Insert emoji" aria-haspopup="menu" aria-expanded="false" aria-controls="chat-composer-emoji-menu">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9"></circle>
+                    <path d="M8 14s1.5 2 4 2 4-2 4-2"></path>
+                    <path d="M9 9h.01M15 9h.01"></path>
+                  </svg>
+                </button>
+                <button id="chat-mention-button" type="button" aria-label="Mention someone" title="Mention someone">
+                  <span aria-hidden="true">@</span>
+                </button>
+              </div>
+              <span class="chat-composer-hint">Shift + Enter for a new line</span>
+              <button id="chat-send" type="button" aria-label="Send message">
+                Send
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M7 17 17 7M7 7h10v10"></path>
+                </svg>
+              </button>
+            </div>
           </div>
 
           <div class="chat-e2e-note">
@@ -1230,13 +1346,38 @@
           </div>
         </main>
 
-        <!-- right: people -->
-        <aside class="chat-people-pane" aria-label="People">
-          <div class="chat-pane-title" id="chat-people-title">People</div>
-          <div id="chat-people"></div>
+        <!-- right: people and message threads -->
+        <aside class="chat-people-pane chat-context-pane" aria-label="People and threads">
+          <section class="chat-people-view" data-chat-context="people">
+            <div class="chat-pane-title" id="chat-people-title">People</div>
+            <div id="chat-people"></div>
+          </section>
+          <section class="chat-thread-view" data-chat-context="thread" aria-labelledby="chat-thread-title" hidden>
+            <div class="chat-thread-head">
+              <div>
+                <h2 id="chat-thread-title">Thread</h2>
+                <span id="chat-thread-count">0 replies</span>
+              </div>
+              <button id="chat-thread-close" type="button" aria-label="Close thread" title="Close thread">×</button>
+            </div>
+            <div class="chat-thread-content">
+              <div id="chat-thread-root"></div>
+              <div id="chat-thread-replies" class="chat-thread-replies" aria-live="polite"></div>
+            </div>
+            <div class="chat-thread-composer">
+              <input id="chat-thread-attachment-input" type="file" multiple aria-label="Choose image, video, or document" />
+              <div id="chat-thread-attachments" class="chat-composer-attachments" aria-live="polite" aria-label="Staged thread attachments"></div>
+              <div class="chat-thread-composer-row">
+                <button id="chat-thread-attachment-button" type="button" aria-label="Attach image, video, or document" title="Attach image, video, or document (up to 1 MiB)">+</button>
+                <textarea id="chat-thread-input" rows="1" maxlength="16000" placeholder="Reply in thread…" aria-label="Reply in thread"></textarea>
+                <button id="chat-thread-send" type="button">Reply</button>
+              </div>
+            </div>
+          </section>
         </aside>
 
-      </div>
+        </div>
+      </section>
 
       <dialog id="chat-channel-dialog" aria-labelledby="chat-channel-dialog-title">
         <div class="chat-channel-dialog-body">
@@ -1245,35 +1386,6 @@
             <button id="chat-channel-dialog-close" type="button" aria-label="Close channel manager">×</button>
           </div>
           <p id="chat-channel-error" role="alert" aria-live="polite"></p>
-          <section class="chat-channel-section" aria-labelledby="chat-channel-create-title">
-            <h3 id="chat-channel-create-title">Create a channel</h3>
-            <form id="chat-channel-create-form" class="chat-channel-create-form">
-              <div class="chat-channel-create-fields">
-                <div class="chat-channel-field">
-                  <label for="chat-channel-name">Channel name</label>
-                  <input id="chat-channel-name" name="channel" maxlength="40" pattern="[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?" placeholder="release-team" aria-label="Channel name" required />
-                </div>
-                <div class="chat-channel-field">
-                  <label for="chat-channel-visibility">Visibility</label>
-                  <select id="chat-channel-visibility" name="visibility" aria-describedby="chat-channel-visibility-help">
-                    <option value="private" selected>Private</option>
-                    <option value="public">Public</option>
-                  </select>
-                </div>
-              </div>
-              <p id="chat-channel-visibility-help" class="chat-attachment-meta">Public channels are available to every registered user.</p>
-              <div id="chat-channel-initial-members" class="chat-channel-initial-members">
-                <div class="chat-channel-picker-head">
-                  <label for="chat-channel-user-search">Add registered users</label>
-                  <span id="chat-channel-selected-count">0 selected</span>
-                </div>
-                <input id="chat-channel-user-search" type="search" autocomplete="off" placeholder="Search usernames" aria-label="Search registered users" />
-                <div id="chat-channel-user-options" role="group" aria-label="Registered users"></div>
-                <p id="chat-channel-user-empty" aria-live="polite">Loading registered users...</p>
-              </div>
-              <button class="chat-channel-create-submit" type="submit">Create channel</button>
-            </form>
-          </section>
           <section id="chat-channel-members-section" class="chat-channel-section" aria-labelledby="chat-channel-members-title" hidden>
             <h3 id="chat-channel-members-title">Members</h3>
             <form id="chat-channel-invite-form" class="chat-channel-form">
@@ -1283,6 +1395,30 @@
             <div id="chat-channel-members" aria-live="polite"></div>
           </section>
         </div>
+      </dialog>
+
+      <dialog id="chat-direct-dialog" aria-labelledby="chat-direct-dialog-title">
+        <div class="chat-channel-dialog-body">
+          <div class="chat-channel-dialog-head">
+            <h2 id="chat-direct-dialog-title">New direct message</h2>
+            <button id="chat-direct-dialog-close" type="button" aria-label="Close direct message picker">×</button>
+          </div>
+          <p id="chat-direct-error" role="alert" aria-live="polite"></p>
+          <input id="chat-direct-search" type="search" autocomplete="off" placeholder="Search people" aria-label="Search people to message" />
+          <div id="chat-direct-options" role="group" aria-label="People available to message"></div>
+          <p id="chat-direct-empty" aria-live="polite">Loading registered users...</p>
+        </div>
+      </dialog>
+
+      <dialog id="chat-delete-dialog" aria-labelledby="chat-delete-title">
+        <form method="dialog" class="chat-delete-dialog-body">
+          <h2 id="chat-delete-title">Delete message?</h2>
+          <p>This removes the message for everyone in this channel.</p>
+          <div class="chat-delete-actions">
+            <button id="chat-delete-cancel" type="submit" value="cancel">Cancel</button>
+            <button id="chat-delete-confirm" type="submit" value="confirm">Delete permanently</button>
+          </div>
+        </form>
       </dialog>
     </div>
     <script type="module" src="/chat.js"></script>

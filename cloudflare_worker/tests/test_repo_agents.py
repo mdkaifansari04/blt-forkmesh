@@ -50,6 +50,7 @@ FUNCS = {
     "agents_handler", "agents_list_handler", "agents_prompt_handler",
     "agents_transcript_handler", "agents_ack_handler",
     "_clean_agent_session", "_authorize_owner",
+    "_authorized_owner_signing_key",
     "_verify_owner_signature", "_owner_signing_pubkeys",
     "_authorize_owner_account", "_owner_pubkey", "_login_locked_until",
     "_login_record_fail", "_login_clear", "method_name", "clean_string",

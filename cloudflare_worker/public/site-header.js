@@ -117,6 +117,11 @@
       </a>
       <span class="fm-header-context"></span>
       <div class="fm-header-right">
+        <a class="fm-header-world" href="/world" title="Open ForkMesh World">
+          <span aria-hidden="true">◉</span>
+          <strong>World</strong>
+          <span class="fm-header-world-count" aria-label="member count">— members</span>
+        </a>
         <a class="fm-header-payout" href="/mirror-payouts" title="Mirror reward settings" aria-label="Mirror reward settings">
           <img src="/assets/sol.png" alt="" aria-hidden="true" />
           <span>Mirror rewards</span>
@@ -158,21 +163,100 @@
     }
   }
 
+  function clearSignedInBrowserState() {
+    const preserved = new Set([
+      "forkmesh.analyticsConsent.v1",
+      "forkmesh.dashboard.theme",
+      "forkmesh.theme",
+    ]);
+    try {
+      localStorage.removeItem("forkmesh.session");
+      for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+        const key = localStorage.key(index);
+        if (key?.startsWith("forkmesh.") && !preserved.has(key)) {
+          localStorage.removeItem(key);
+        }
+      }
+      for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
+        const key = sessionStorage.key(index);
+        if (key?.startsWith("forkmesh.")) sessionStorage.removeItem(key);
+      }
+      document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
+      document.cookie = "forkmesh_account=; Path=/; Max-Age=0; SameSite=Strict";
+      document.cookie = "forkmesh_admin=; Path=/; Max-Age=0; SameSite=Lax";
+      try {
+        new BroadcastChannel("forkmesh.session").postMessage({
+          type: "signed-out",
+        });
+      } catch (_) {}
+    } catch (_) {}
+    if (!("caches" in window)) return Promise.resolve();
+    return caches.keys()
+      .then((names) => Promise.all(names.map((name) => caches.delete(name))))
+      .catch(() => {});
+  }
+
   function logout() {
+    let serverLogout = Promise.resolve();
     try {
       // Server-side logout first: only the Worker can clear the HttpOnly
       // forkmesh_admin cookie, and skipping this left the admin page readable
       // after a marketing-page logout. Same call as the dashboard logout in
       // dashboard/js/02-helpers.js — every web logout goes through this one
       // endpoint.
-      fetch("/api/accounts/logout", { method: "POST", keepalive: true }).catch(() => {});
-      localStorage.removeItem("forkmesh.session");
+      serverLogout = fetch("/api/accounts/logout", { method: "POST", keepalive: true }).catch(() => {});
     } catch (_) {}
-    // Clear the presence cookie too — the Worker 302s / to the dashboard while
-    // it is set, so a logout from a marketing page must drop it or the
-    // homepage would keep redirecting.
-    document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
-    location.reload();
+    const cleanup = clearSignedInBrowserState();
+    let redirected = false;
+    const finish = () => {
+      if (redirected) return;
+      redirected = true;
+      location.replace("/");
+    };
+    Promise.allSettled([serverLogout, cleanup]).then(finish);
+    window.setTimeout(finish, 1200);
+  }
+
+  function startSessionWatch(renderAccountAreas) {
+    let checking = false;
+    const validate = async () => {
+      if (checking || document.hidden || !readSession()) return;
+      checking = true;
+      try {
+        const session = readSession();
+        const token = String(session?.sessionToken || "");
+        const response = await fetch("/api/accounts/sessions", {
+          headers: {
+            accept: "application/json",
+            ...(token && token !== "cookie"
+              ? { authorization: `Bearer ${token}` }
+              : {}),
+          },
+          credentials: "same-origin",
+          cache: "no-store",
+        });
+        if (response.status === 401) logout();
+      } catch (_) {
+        // Network loss is not a logout. Only the session API's 401 is.
+      } finally {
+        checking = false;
+      }
+    };
+    window.setInterval(validate, 20_000);
+    window.addEventListener("focus", validate);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) void validate();
+    });
+    try {
+      const channel = new BroadcastChannel("forkmesh.session");
+      channel.addEventListener("message", (event) => {
+        if (event.data?.type !== "signed-out" || !readSession()) return;
+        clearSignedInBrowserState().finally(() => {
+          renderAccountAreas();
+          location.replace("/");
+        });
+      });
+    } catch (_) {}
   }
 
   function makeAccountAvatar(session) {
@@ -368,9 +452,15 @@
 
   async function renderChatBadge(header) {
     const badge = header.querySelector(".fm-header-chat-badge");
-    if (!badge || location.protocol === "file:") return;
+    const worldCount = header.querySelector(".fm-header-world-count");
+    if ((!badge && !worldCount) || location.protocol === "file:") return;
     const activity = await fetchChatActivity();
     if (!activity) return;
+    if (worldCount) {
+      const count = Math.max(0, Number(activity.userCount) || 0);
+      worldCount.textContent =
+        `${count.toLocaleString()} ${count === 1 ? "member" : "members"}`;
+    }
     const path = location.pathname.replace(/\.html$/, "").replace(/\/$/, "") || "/";
     let seen = null;
     try {
@@ -408,6 +498,7 @@
                        { stacked: true });
     };
     renderAccountAreas();
+    startSessionWatch(renderAccountAreas);
     // Keep every open section in agreement about the login state: a login or
     // logout in another tab (dashboard, chat, home, …) fires a storage event
     // here, so this header flips between Sign Up / Log In and the account chip

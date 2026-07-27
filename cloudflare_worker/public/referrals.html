@@ -19,7 +19,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
     <link rel="manifest" href="/favicon/site.webmanifest" />
     <link rel="stylesheet" href="/styles.css" />
-    <script src="/referrals.js" defer></script>
+    <script src="/referrals.js?v=36b025eb86b0" defer></script>
     <style>
       .referrals-page {
         max-width: 860px;
@@ -106,6 +106,12 @@
         color: var(--muted);
         padding: 16px 0;
       }
+      .board-note {
+        margin: 12px 0 0;
+        color: var(--muted-2);
+        font-size: 12px;
+        line-height: 1.5;
+      }
       .referral-link-row {
         display: flex;
         gap: 10px;
@@ -148,9 +154,9 @@
       }
     </style>
     <link rel="stylesheet" href="/site-header.css" />
-    <script src="/site-header.js" defer></script>
+    <script src="/site-header.js?v=5b600387dab6" defer></script>
     <link rel="stylesheet" href="/site-footer.css" />
-    <script src="/site-footer.js" defer></script>
+    <script src="/site-footer.js?v=acdada792fa2" defer></script>
   </head>
   <body>
     <div data-forkmesh-header="simple"></div>
@@ -172,6 +178,22 @@
         <div id="referral-board" aria-live="polite">
           <div class="board-empty"><span class="fm-spinner" aria-hidden="true"></span>Loading leaderboard…</div>
         </div>
+      </section>
+
+      <section class="referrals-card" aria-labelledby="site-board-title">
+        <h2 id="site-board-title">Top referring websites</h2>
+        <p class="board-sub" id="site-board-sub">
+          Which sites link visitors to ForkMesh · top 10 by visits
+        </p>
+        <div id="site-referral-board" aria-live="polite">
+          <div class="board-empty"><span class="fm-spinner" aria-hidden="true"></span>Loading referring sites…</div>
+        </div>
+        <p class="board-note">
+          Each aggregate hostname row also keeps its latest bounded referring
+          page URL. Credentials and fragments are removed and sensitive query
+          values are redacted; no visitor, IP address, user agent, or landing
+          page is stored.
+        </p>
       </section>
 
       <section class="referrals-card" aria-labelledby="referral-link-title">

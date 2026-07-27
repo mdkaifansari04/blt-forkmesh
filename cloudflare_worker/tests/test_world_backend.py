@@ -3,6 +3,8 @@
 
 import ast
 import asyncio
+import base64
+import hmac
 import importlib.util
 import ipaddress
 import json
@@ -21,7 +23,11 @@ STATIC_ROUTES = ROOT / "src" / "static_routes.py"
 REDIRECTS = ROOT / "public" / "_redirects"
 SCHEMA = ROOT / "src" / "schema.py"
 INACTIVE_MIGRATION = ROOT / "migrations" / "0051_world_presence_spaces.sql"
+WORLD_JS = ROOT / "public" / "world" / "world.js"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+# Private handover close code: one account keeps one avatar, and the newest
+# device drives it. Kept in lockstep with entry.py and world.js.
+WORLD_ACCOUNT_TAKEOVER_CODE = 4009
 
 spec = importlib.util.spec_from_file_location("forkmesh_world_protocol", WORLD_PATH)
 world = importlib.util.module_from_spec(spec)
@@ -539,6 +545,7 @@ def _world_fetch_runtime(now=50_000):
         def __init__(self):
             self.attachment = None
             self.sent = []
+            self.closes = []
 
         def serializeAttachment(self, attachment):
             self.attachment = SimpleNamespace(**attachment)
@@ -550,7 +557,7 @@ def _world_fetch_runtime(now=50_000):
             self.sent.append(json.loads(message))
 
         def close(self, code=1000, reason=""):
-            pass
+            self.closes.append((code, reason))
 
     class _Ctx:
         def __init__(self):
@@ -581,6 +588,9 @@ def _world_fetch_runtime(now=50_000):
         "world_protocol": world,
         "to_js": lambda value: value,
         "json": json,
+        "base64": base64,
+        "hmac": hmac,
+        "WORLD_ACCOUNT_TAKEOVER_CODE": WORLD_ACCOUNT_TAKEOVER_CODE,
         "re": re,
         "urlparse": urlparse,
         "new_world_peer_id": peer_id,
@@ -628,6 +638,118 @@ class _FetchRequest:
         @staticmethod
         def get(name):
             return "websocket" if str(name).lower() == "upgrade" else None
+
+
+def _signed_in_request(account, nonce, account_status="Registered"):
+    """A relay-verified account claim, as the outer Worker forwards it."""
+    claim = base64.urlsafe_b64encode(json.dumps({
+        "name": account,
+        "accountStatus": account_status,
+        "nodeCount": 0,
+        "ticketNonce": nonce,
+    }).encode()).decode().rstrip("=")
+
+    class _Request:
+        url = "https://forkmesh.example/api/world/ws"
+
+        class headers:
+            @staticmethod
+            def get(name):
+                key = str(name).lower()
+                if key == "upgrade":
+                    return "websocket"
+                if key == "x-forkmesh-world-claim":
+                    return claim
+                return None
+
+    return _Request()
+
+
+def test_account_presence_key_folds_only_verified_names():
+    assert world.account_presence_key("Jett") == "jett"
+    assert world.account_presence_key("JETT") == world.account_presence_key(
+        "jett")
+    assert world.account_presence_key("jett") != world.account_presence_key(
+        "jetta")
+    # No verified account behind the socket: guests are never combined, and a
+    # name that only survives sanitizing as a generic fallback folds nothing.
+    assert world.account_presence_key("") == ""
+    assert world.account_presence_key(None) == ""
+    assert world.account_presence_key("<<<>>>") == ""
+    assert world.account_presence_key("  ") == ""
+    # Surrounding whitespace is not a different person.
+    assert world.account_presence_key(" jett ") == "jett"
+
+
+def test_second_device_takes_over_the_one_avatar_for_the_same_account():
+    instance, clock = _world_fetch_runtime()
+    asyncio.run(instance.fetch(_FetchRequest()))
+    onlooker = instance.ctx.sockets[-1]
+
+    clock["now"] += 15_000
+    asyncio.run(instance.fetch(_signed_in_request("jett", "nonce-aaaa1111")))
+    first = instance.ctx.sockets[-1]
+    assert first.attachment.account_key == "jett"
+    # The private fold key stays out of every frame the world ever sends.
+    assert "account_key" not in json.dumps(first.sent + onlooker.sent)
+
+    clock["now"] += 15_000
+    asyncio.run(instance.fetch(_signed_in_request("JETT", "nonce-bbbb2222")))
+    second = instance.ctx.sockets[-1]
+    assert second is not first
+
+    # The earlier device is retired with the handover code, and the onlooker
+    # is told to drop that avatar rather than being left with two "jett"s.
+    assert first.closes[0] == (
+        WORLD_ACCOUNT_TAKEOVER_CODE, "moved to your newest device")
+    assert first.attachment.departed is True
+    leaves = [frame for frame in onlooker.sent if frame["type"] == "leave"]
+    assert leaves == [{"type": "leave", "id": first.attachment.id}]
+    joins = [frame for frame in onlooker.sent if frame["type"] == "join"]
+    assert [frame["peer"]["id"] for frame in joins] == [
+        first.attachment.id, second.attachment.id]
+
+    # The newest device's own snapshot holds the onlooker and no retired twin,
+    # and it reuses the arrival cell the replaced socket just released.
+    welcome = second.sent[0]
+    assert [peer["id"] for peer in welcome["peers"]] == [onlooker.attachment.id]
+    assert (welcome["self"]["x"], welcome["self"]["z"]) == (-6.3, 30.0)
+
+
+def test_takeover_never_combines_guests_or_other_accounts():
+    instance, clock = _world_fetch_runtime()
+    asyncio.run(instance.fetch(_FetchRequest()))
+    guest = instance.ctx.sockets[-1]
+    assert guest.attachment.account_key == ""
+
+    clock["now"] += 15_000
+    asyncio.run(instance.fetch(_signed_in_request("jett", "nonce-aaaa1111")))
+    signed_in = instance.ctx.sockets[-1]
+
+    clock["now"] += 15_000
+    asyncio.run(instance.fetch(_FetchRequest()))
+    clock["now"] += 15_000
+    asyncio.run(instance.fetch(_signed_in_request("nova", "nonce-cccc3333")))
+
+    # A second guest cannot evict the first, and one account cannot evict
+    # another: only the same verified account folds onto one avatar.
+    assert guest.closes == []
+    assert signed_in.closes == []
+    assert len(instance.ctx.sockets[-1].sent[0]["peers"]) == 3
+
+
+def test_takeover_close_code_is_shared_by_the_relay_and_the_browser():
+    assert "WORLD_ACCOUNT_TAKEOVER_CODE = %d" % WORLD_ACCOUNT_TAKEOVER_CODE \
+        in ENTRY_TEXT
+    world_js = WORLD_JS.read_text(encoding="utf-8")
+    assert "const SOCKET_ACCOUNT_TAKEOVER_CODE = %d;" % (
+        WORLD_ACCOUNT_TAKEOVER_CODE) in world_js
+    # The displaced browser stands down instead of racing the newest device.
+    assert "handlePresenceTakeover()" in world_js
+    assert "reclaimPresenceHere()" in world_js
+    assert (
+        "if (this.destroyed || document.hidden || this.presenceTakenOver) "
+        "return;") in world_js
 
 
 def test_connects_land_in_open_grid_cells_never_on_a_standing_visitor():

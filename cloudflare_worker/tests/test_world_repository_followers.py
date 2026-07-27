@@ -283,23 +283,25 @@ def test_star_draws_the_stored_total_in_black():
     assert "measureText(value).width" in body
 
 
-def test_follower_gallery_seats_real_followers_facing_the_circle():
+def test_follower_gallery_orbits_real_follower_icons_around_file_circle():
     gallery = SCENE.split(
         "// Who follows this repository over ActivityPub", 1)
     assert len(gallery) == 2
     body = gallery[1][:3200]
-    assert "repository-fediverse-followers:" in body
+    assert "repository-fediverse-follower-icons:" in body
     assert "record.fediverseFollowers" in body
-    # Seated on the ground under the circle (the plinth ends at -2.38), inside
-    # the ring, turned back around to look up at it.
-    assert "-2.53" in body
-    assert "figure.rotation.y = Math.PI;" in body
+    assert "makeRepositoryFollowerIcon(THREE, follower)" in body
+    assert "orbitRadius = nodeRadius * 2.05" in body
+    assert "face.add(gallery)" in body
+    # Followers are social records, not in-world physical visitors.
+    assert "makeRepositoryFollowerFigure" not in body
+    assert "figure.rotation.y" not in body
     # The caption reports the authoritative total and says when it is showing
     # only part of it.
     assert "FEDIVERSE ${" in body
-    assert "SHOWING ${seated.length}" in body
+    assert "SHOWING ${visibleFollowers.length}" in body
     assert "NOBODY FOLLOWS THIS REPOSITORY YET" in body
-    # Only the selected public repository draws a crowd.
+    # Only the selected public repository draws the icon orbit.
     assert "isActive && !record.isPrivate" in body
 
 
@@ -322,6 +324,6 @@ def test_remote_avatar_load_is_anonymous_and_optional():
     assert "image.referrerPolicy = \"no-referrer\"" in body
     # A server without CORS headers simply leaves the generated initials plate.
     assert "image.onerror" in body
-    figure = SCENE.split("function makeRepositoryFollowerFigure(", 1)[1][:3200]
-    # A card detached by a catalog rebuild is dropped, never repainted.
-    assert "if (!card.parent) return;" in figure
+    icon = SCENE.split("function makeRepositoryFollowerIcon(", 1)[1][:1600]
+    # An icon detached by a catalog rebuild is dropped, never repainted.
+    assert "if (!icon.parent) return;" in icon

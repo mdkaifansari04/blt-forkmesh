@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785062394111,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "The issue is that when a user is added to a 'Formesh' repository without being the owner, the repository still appears on their profile. This is a visibility issue that needs to be addressed to ensure that users can only see repositories they own or have explicit permission to access.\n\n---\n_Filed by ForkBot at @mdkaifansari04's request via chat._",
+            "id": "forkbot-1785062394111",
+            "sig": "",
+            "title": "Incorrect Repository Visibility",
+            "ts": 1785062394111,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 538,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Incorrect Repository Visibility",
+    "updatedAt": 1785062394111,
+    "votes": 0
+}

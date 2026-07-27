@@ -312,9 +312,17 @@ def test_world_frontend_loads_applies_and_admin_locks_the_layout():
     assert "OctahedronGeometry(0.09" in scene_js
     for object_id in (
         "world-bulletin", "arrival-box", "mastodon-kiosk", "campfire",
-        "active-leaderboard-sign", "system-capacity-platform",
+        "active-leaderboard-sign",
     ):
         assert '"%s"' % object_id in scene_js
+    assert (
+        'registerMovableObject("system-capacity-platform"'
+        not in scene_js
+    )
+    assert (
+        "infrastructureFloor.add(systemCapacityPlatform);"
+        in scene_js
+    )
 
 
 def test_layout_reads_retry_skip_the_cache_and_keep_the_last_save():
@@ -337,9 +345,9 @@ def test_layout_reads_retry_skip_the_cache_and_keep_the_last_save():
     # comparison never rides on the visitor's clock.
     assert "this.rememberWorldLayout(result?.objects);" in world_js
     assert "mergedWorldLayout(objects)" in world_js
-    assert (
-        "this.world?.applyWorldLayout?.(this.mergedWorldLayout(layout?.objects))"
-        in world_js)
+    assert "this.applyFetchedWorldLayout(layout);" in world_js
+    assert "startWorldLayoutWatch()" in world_js
+    assert "WORLD_LAYOUT_LIVE_REFRESH_MS = 60 * 1000" in world_js
     assert (
         "Number(entry?.updatedAt || 0) > Number(served?.updatedAt || 0)"
         in world_js)

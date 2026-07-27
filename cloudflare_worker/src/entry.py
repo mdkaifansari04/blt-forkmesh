@@ -6,11 +6,20 @@ import hmac
 import io
 import ipaddress
 import json
+import math
 import re
 import struct
 import time
 import traceback
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import (
+    parse_qs,
+    parse_qsl,
+    quote,
+    unquote,
+    urlencode,
+    urlparse,
+    urlunparse,
+)
 
 from js import AbortSignal as JsAbortSignal
 from js import Date
@@ -86,6 +95,9 @@ CRON_RUNNER_ALARM_OFFSET_MS = 1500
 # Native AbortSignal timeouts do not create nested Pyodide asyncio tasks. Keep
 # every cron-reachable control-plane request well inside a minute.
 CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS = 12
+CLOUDFLARE_ATTENTION_LOG_WINDOW_MS = 2 * 60 * 1000
+CLOUDFLARE_ATTENTION_LOG_LIMIT = 50
+CLOUDFLARE_ATTENTION_LOG_MAX_CHARS = 12 * 1024
 # Retained chat history (encrypted) so late-joining nodes see some backlog.
 CHAT_HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000  # keep the last 7 days
 CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
@@ -100,6 +112,10 @@ CHAT_HISTORY_INGRESS_MAX_BYTES = 8 * 1024 * 1024
 CHAT_CHANNEL_TICKET_TTL_MS = 60 * 1000
 CHAT_CHANNEL_DO_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/v([1-9][0-9]*)/(ws|revoke)$")
+CHAT_DIRECT_TICKET_TTL_MS = 60 * 1000
+CHAT_DIRECT_MESSAGE_DO_RE = re.compile(
+    r"^/api/chat/direct-messages/([0-9a-f]{32})/"
+    r"v([1-9][0-9]*)/(ws|revoke)$")
 OFFICE_MEETING_TICKET_TTL_MS = 60 * 1000
 OFFICE_ENTRY_TICKET_TTL_MS = 5 * 60 * 1000
 # Revalidate an Office socket's exact revocable account session at most once
@@ -150,6 +166,10 @@ MAX_FILES = 5000
 # of un-merged submissions a repo's inbox will hold.
 MAX_ISSUE_BYTES = 64 * 1024
 MAX_PENDING_ISSUES = 500
+# A mirror gets a bounded window to commit and acknowledge the exact issue
+# rows it read. If that device disappears, another authorized online mirror
+# can reclaim them without operator intervention.
+ISSUE_INBOX_CLAIM_TTL_MS = 5 * 60 * 1000
 # Screenshots a node with no write access attaches to an issue/comment ride
 # along as base64 bytes in the inbox item (it has no working tree to copy them
 # into — see the desktop's IssueStore::readAttachmentsForRemoteSubmit); capped
@@ -302,7 +322,13 @@ from urls import (  # noqa: E402
     CHAT_CHANNELS_RE,
     CHAT_CHANNEL_MEMBERS_RE,
     CHAT_CHANNEL_ROOM_ACCESS_RE,
+    CHAT_CHANNEL_HISTORY_RE,
     CHAT_CHANNEL_WS_RE,
+    CHAT_DIRECT_MESSAGES_RE,
+    CHAT_DIRECT_MESSAGE_USERS_RE,
+    CHAT_DIRECT_MESSAGE_ROOM_ACCESS_RE,
+    CHAT_DIRECT_MESSAGE_READ_RE,
+    CHAT_DIRECT_MESSAGE_WS_RE,
     REPO_ISSUES_RE,
     REPO_PULLS_RE,
     REPO_PULL_MERGE_RE,
@@ -323,6 +349,10 @@ from urls import (  # noqa: E402
     REPO_AGENTS_ACK_RE,
     REPO_AGENTS_PROMPT_RE,
     REPO_AGENTS_TRANSCRIPT_RE,
+    ORG_AGENT_BOTS_RE,
+    ORG_AGENT_BOT_RE,
+    REPO_ORG_AGENT_JOBS_RE,
+    REPO_ORG_AGENT_JOB_RESULT_RE,
     REPO_PRIVACY_RE,
     PRIVATE_REPLICA_ACCESS_RE,
     REPO_HOST_RE,
@@ -526,9 +556,13 @@ import world_workshops  # noqa: E402
 # It never receives platform-admin authorization or an Office Durable Object,
 # and its human-readable task/check-in data is encrypted at rest.
 import world_office_tasks  # noqa: E402
+import world_build_board  # noqa: E402
 # Private administrator-created channel policy is kept in a pure module and
 # receives only this Worker's narrow session, crypto, D1, and audit adapter.
 import chat_channels_api  # noqa: E402
+# Direct messages have a stricter participant-only authorization policy and
+# therefore use a separate pure API module instead of channel admin semantics.
+import chat_direct_messages_api  # noqa: E402
 # Pull-request badge (adhoc #44/#83): a pure, js-free generator for the visual
 # "fingerprint" attached to federated PR-opened notes. The federated copy is a
 # square PNG — fediverse clients won't preview an SVG attachment.
@@ -1214,6 +1248,24 @@ async def notify_repo_host(env, owner, repo, topic):
         pass
 
 
+async def notify_repo_mirrors(env, owner, repo, topic):
+    """Wake every integrity-approved public mirror after an issue arrives."""
+    try:
+        context = await _https_mirror_public_context(env, owner, repo)
+    except Exception:
+        context = None
+    if not context:
+        return
+    source_owner = str(owner or "").strip().lower()
+    for node in sorted({
+        str(value or "").strip().lower()
+        for value in context.get("nodes", set())
+    }):
+        if not valid_node_name(node) or node == source_owner:
+            continue
+        await notify_repo_host(env, node, repo, topic)
+
+
 async def node_events_handler(env, request):
     # GET /api/nodes/events?owner=&ts=&sig= (WebSocket upgrade only) — a
     # desktop/headless node's live event channel. Auth reuses the same signed
@@ -1821,6 +1873,7 @@ async def network_overview(env):
 STATUS_SYSTEMS = [
     ("website", "Website"),
     ("api", "API"),
+    ("errors", "Worker errors"),
     ("database", "Database"),
     ("flagship_repository", "forkmesh/forkmesh repository page"),
     ("installer", "Installer delivery"),
@@ -1844,6 +1897,11 @@ STATUS_SYSTEM_CHECKS = {
         "direct-mirror content paths (release blobs, repo browse, git clone) "
         "are excluded — those mean an upstream mirror is unavailable, which "
         "the Git hosting network check tracks instead."),
+    "errors": (
+        "Scans the last minute of the Worker error log for any unexpected "
+        "page, API, realtime, or Durable Object failure. Expected degraded "
+        "direct-mirror 502/503/504 responses are excluded. Passes only when "
+        "no qualifying error was recorded."),
     "database": (
         "Runs a real SELECT round trip against the D1 database once a "
         "minute. Passes when the query returns a row; fails on any query "
@@ -1891,6 +1949,9 @@ FLAGSHIP_REPOSITORY_URL = "https://forkmesh.com/forkmesh/forkmesh"
 FLAGSHIP_MONITOR_ID = "forkmesh/forkmesh"
 INSTALLER_MONITOR_ID = "installer-delivery"
 INSTALLER_CHECK_INTERVAL_MS = 10 * 60 * 1000
+# Worker/static activation can briefly interrupt the flagship's mirror-routed
+# tree and blob reads. Do not turn that expected handoff into an outage.
+STATUS_DEPLOY_GRACE_MS = 5 * 60 * 1000
 
 STATUS_MONITOR_GUIDANCE = {
     "website": (
@@ -1901,6 +1962,11 @@ STATUS_MONITOR_GUIDANCE = {
         "Cloudflare Worker API logs, especially the path named in the reason",
         "Replay the failing API request, inspect its D1 or upstream call, and "
         "fix or roll back the responsible handler."),
+    "errors": (
+        "the first qualifying entry in Cloudflare Worker and ForkMesh error "
+        "logs, including its route and status",
+        "Inspect the first error and its bounded two-minute log context, then "
+        "fix the shared cause or the specific subsystem it names."),
     "database": (
         "Cloudflare D1 health, bindings, migrations, and query errors",
         "Confirm the production D1 binding and quota, then repair the failed "
@@ -1946,6 +2012,15 @@ def _flagship_monitor_duration(milliseconds):
         (" %d minute%s" % (
             remainder, "" if remainder == 1 else "s")) if remainder else "",
     )
+
+
+def _deployment_status_grace_active(env, now):
+    try:
+        deployed_at = int(getattr(env, "DEPLOYED_AT_MS", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    age = int(now) - deployed_at
+    return deployed_at > 0 and 0 <= age < STATUS_DEPLOY_GRACE_MS
 
 
 async def _routed_repository_read(
@@ -2213,6 +2288,65 @@ async def _installer_delivery_status(env, now):
     return is_up, reason
 
 
+# Per-repository operational-alert switches the repo's org admin manages from
+# the same About/settings form as the fediverse switches. Everything defaults
+# to OFF: a deployment (and every repository that has no row) mails nobody
+# until an admin explicitly opts in, so nobody inherits the alert pager.
+REPO_ALERT_SETTING_DEFAULTS = {
+    # "[ForkMesh outage]" / "[ForkMesh recovered]" mail for the systems on
+    # /status and the independent cron watchdog. One switch covers both
+    # directions: a recovery notice only makes sense to whoever got the outage.
+    "statusEmails": False,
+}
+
+
+async def _repo_alert_settings_bi(env, owner, repo):
+    # Same keying rules as _ap_repo_settings_bi (distinct namespace, both
+    # halves lowercased, org aliases resolved to the backing node) so the row
+    # an admin writes under the org name is the row the send path reads.
+    alias_owner = globals().get("_ap_org_alias_owner")
+    if callable(alias_owner):
+        owner = await alias_owner(env, owner, repo)
+    return await blind_index(
+        env, "repo-alert-settings:%s/%s" % (
+            str(owner or "").strip().lower(),
+            str(repo or "").strip().lower()))
+
+
+async def _repo_alert_settings_get(env, owner, repo):
+    settings = dict(REPO_ALERT_SETTING_DEFAULTS)
+    try:
+        row = await d1_first(
+            env, "SELECT data FROM repo_alert_settings WHERE repo_bi=?",
+            await _repo_alert_settings_bi(env, owner, repo))
+    except BaseException:
+        # A lazily-ensured DB without the table reads as "all off", which is
+        # the safe direction: no mail rather than unsuppressable mail.
+        return settings
+    if row:
+        try:
+            stored = json.loads(row.get("data") or "{}")
+        except Exception:
+            stored = {}
+        if isinstance(stored, dict):
+            for key in REPO_ALERT_SETTING_DEFAULTS:
+                if key in stored:
+                    settings[key] = bool(stored[key])
+    return settings
+
+
+async def _status_alert_emails_enabled(env):
+    """Has the flagship repository's org admin opted into outage mail?
+
+    The /status systems and the cron watchdog are properties of the whole
+    deployment, so they hang off the flagship repository's settings — the one
+    repo whose org admin also administers the relay.
+    """
+    owner, _, repo = FLAGSHIP_MONITOR_ID.partition("/")
+    settings = await _repo_alert_settings_get(env, owner, repo)
+    return bool(settings["statusEmails"])
+
+
 async def _repository_monitor_admin_emails(env):
     recipients = {
         value.strip().lower()
@@ -2232,6 +2366,161 @@ async def _repository_monitor_admin_emails(env):
         except Exception:
             continue
     return sorted(recipients)
+
+
+def _sanitize_attention_log_text(value, maximum=600):
+    """Bound and redact an operator-only log excerpt before it enters email."""
+    if isinstance(value, (dict, list)):
+        try:
+            value = json.dumps(
+                value, sort_keys=True, separators=(",", ":"))
+        except Exception:
+            value = ""
+    text = "".join(
+        character if character.isprintable() else " "
+        for character in str(value or ""))
+    # URLs retain the useful route but never a query/fragment carrying a token.
+    text = re.sub(r"(https?://[^\s?#]+)[?#][^\s]*", r"\1?[redacted]", text)
+    text = re.sub(
+        r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]+",
+        r"\1 [redacted]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(authorization|cookie|set-cookie|password|passwd|secret|"
+        r"api[_ -]?key|access[_ -]?token|refresh[_ -]?token)"
+        r"\s*[:=]\s*[^\s,;]+",
+        r"\1=[redacted]",
+        text,
+    )
+    return " ".join(text.split()).strip()[:max(0, int(maximum))]
+
+
+async def _cloudflare_attention_log_tail(env, now):
+    """Return a safe two-minute Workers Logs excerpt or a useful placeholder."""
+    account_id = clean_string(
+        getattr(env, "WORKERS_OBSERVABILITY_ACCOUNT_ID", ""), 64).strip()
+    token = clean_string(
+        getattr(env, "WORKERS_OBSERVABILITY_API_TOKEN", ""), 512).strip()
+    service = clean_string(
+        getattr(env, "WORKERS_OBSERVABILITY_SERVICE", "")
+        or "forkmesh-relay", 128).strip()
+    if not account_id or not token:
+        return (
+            "Cloudflare logs unavailable: configure the separately scoped "
+            "Workers Observability credentials.")
+    end = max(0, int(now))
+    start = max(0, end - CLOUDFLARE_ATTENTION_LOG_WINDOW_MS)
+    url = (
+        "https://api.cloudflare.com/client/v4/accounts/" +
+        quote(account_id, safe="") +
+        "/workers/observability/telemetry/query")
+    query = {
+        "queryId": "forkmesh-attention-email",
+        "timeframe": {"from": start, "to": end},
+        "view": "events",
+        "limit": CLOUDFLARE_ATTENTION_LOG_LIMIT,
+        "dry": True,
+        "parameters": {
+            "datasets": ["cloudflare-workers"],
+            "filterCombination": "and",
+            "filters": [{
+                "kind": "filter",
+                "key": "$metadata.service",
+                "operation": "eq",
+                "type": "string",
+                "value": service,
+            }],
+            "limit": CLOUDFLARE_ATTENTION_LOG_LIMIT,
+        },
+    }
+    try:
+        response = await js_fetch_with_timeout(
+            url,
+            {
+                "method": "POST",
+                "headers": {
+                    "accept": "application/json",
+                    "authorization": "Bearer " + token,
+                    "content-type": "application/json",
+                },
+                "body": json.dumps(query, separators=(",", ":")),
+                "redirect": "error",
+            },
+            8,
+        )
+        if int(getattr(response, "status", 0) or 0) != 200:
+            raise RuntimeError("observability query failed")
+        payload = json.loads(await response.text())
+        result = payload.get("result") if isinstance(payload, dict) else {}
+        event_result = result.get("events") if isinstance(result, dict) else {}
+        events = (
+            event_result.get("events")
+            if isinstance(event_result, dict) else [])
+        if not isinstance(events, list):
+            events = []
+    except BaseException:
+        return (
+            "Cloudflare logs unavailable: the bounded Observability query "
+            "did not complete. The health alert was still delivered.")
+
+    rows = []
+    for event in events[:CLOUDFLARE_ATTENTION_LOG_LIMIT]:
+        if not isinstance(event, dict):
+            continue
+        metadata = (
+            event.get("$metadata")
+            if isinstance(event.get("$metadata"), dict) else {})
+        workers = (
+            event.get("$workers")
+            if isinstance(event.get("$workers"), dict) else {})
+        timestamp = max(0, int(event.get("timestamp") or 0))
+        level = _sanitize_attention_log_text(
+            metadata.get("level") or "log", 16).upper()
+        origin = _sanitize_attention_log_text(
+            metadata.get("origin") or workers.get("eventType") or "", 32)
+        message = _sanitize_attention_log_text(
+            metadata.get("message")
+            or metadata.get("error")
+            or workers.get("outcome")
+            or event.get("source"),
+            600,
+        )
+        if not message:
+            continue
+        rows.append((timestamp, "[%d] %s%s %s" % (
+            timestamp,
+            level or "LOG",
+            (" " + origin) if origin else "",
+            message,
+        )))
+    rows.sort(key=lambda item: item[0])
+    if not rows:
+        return (
+            "No sampled Cloudflare Worker log events were returned for the "
+            "two minutes preceding this alert.")
+    output = "\n".join(row[1] for row in rows)
+    return output[:CLOUDFLARE_ATTENTION_LOG_MAX_CHARS]
+
+
+def _attention_email_with_logs(text, html, log_tail):
+    heading = "Cloudflare logs · prior 2 minutes"
+    safe_tail = str(log_tail or "No log excerpt was available.")
+    log_html = (
+        "<div class=\"fm-item\" style=\"border:1px solid #d4d4d8;"
+        "border-radius:8px;background:#fafafa;padding:14px;"
+        "margin:0 0 18px\"><p class=\"fm-item-title\" style=\"margin:0 0 8px;"
+        "color:#18181b;font-size:14px;font-weight:800\">" +
+        _html_escape(heading) +
+        "</p><pre style=\"margin:0;white-space:pre-wrap;overflow-wrap:anywhere;"
+        "color:#3f3f46;font:12px/1.45 ui-monospace,monospace\">" +
+        _html_escape(safe_tail) + "</pre></div>"
+    )
+    closing = "</div></div></body></html>"
+    rendered_html = (
+        html.replace(closing, log_html + closing, 1)
+        if closing in html else html + log_html)
+    return text + "\n\n" + heading + "\n" + safe_tail, rendered_html
 
 
 def _cron_watchdog_email_content(recovered, outage_started_at, now):
@@ -2293,6 +2582,14 @@ def _cron_watchdog_email_content(recovered, outage_started_at, now):
 
 async def _send_cron_watchdog_email(
         env, recovered, outage_started_at, now):
+    # Suppressed reports delivered: the caller must record the transition and
+    # stop re-arming its retry alarm, otherwise turning the setting off would
+    # leave the watchdog retrying a send it will never make.
+    try:
+        if not await _status_alert_emails_enabled(env):
+            return True
+    except BaseException:
+        return True
     try:
         recipients = await _repository_monitor_admin_emails(env)
     except BaseException:
@@ -2301,6 +2598,9 @@ async def _send_cron_watchdog_email(
         return False
     subject, text, html = _cron_watchdog_email_content(
         recovered, outage_started_at, now)
+    if not recovered:
+        log_tail = await _cloudflare_attention_log_tail(env, now)
+        text, html = _attention_email_with_logs(text, html, log_tail)
     delivered = True
     for email in recipients:
         try:
@@ -2354,6 +2654,8 @@ async def _record_status_monitor_transitions(
             int(row.get("changed_at") or now) if row else int(now))
         prior_outage = (
             int(row.get("outage_started_at") or 0) if row else 0)
+        prior_notified = (
+            str(row.get("notified_state") or "") if row else "")
         changed = not row or previous_up != is_up
         changed_at = int(now) if changed else previous_changed_at
         outage_started_at = (
@@ -2362,8 +2664,29 @@ async def _record_status_monitor_transitions(
         notified = (
             ("up" if is_up else "") if not row else
             "" if previous_up != is_up else
-            str(row.get("notified_state") or ""))
-        if notified != state:
+            prior_notified)
+        should_notify = notified != state
+        if system_id == "flagship_repository":
+            if (
+                not is_up
+                and int(now) - int(outage_started_at)
+                < STATUS_DEPLOY_GRACE_MS
+            ):
+                # Wait for a sustained failure. This also protects the handoff
+                # from the retiring Worker version, which cannot see the new
+                # deployment timestamp yet.
+                should_notify = False
+            elif (
+                is_up
+                and row
+                and not previous_up
+                and prior_notified != "down"
+            ):
+                # A probe that recovered inside the grace window never paged,
+                # so it must not send a confusing recovery-only email.
+                notified = "up"
+                should_notify = False
+        if should_notify:
             pending.append({
                 "system": system_id, "label": label, "state": state,
                 "is_up": is_up, "reason": clean_string(
@@ -2392,9 +2715,17 @@ async def _record_status_monitor_transitions(
     )
     if not pending:
         return
+    # notified_state is deliberately left untouched while alert mail is off:
+    # whatever is red when an admin turns it on gets one email then, instead
+    # of the switch silently swallowing the transition that is still current.
+    if not await _status_alert_emails_enabled(env):
+        return
     recipients = await _repository_monitor_admin_emails(env)
     if not recipients:
         return
+    attention_log_tail = None
+    if any(not alert["is_up"] for alert in pending):
+        attention_log_tail = await _cloudflare_attention_log_tail(env, now)
     for alert in pending:
         system_id = alert["system"]
         label = alert["label"]
@@ -2457,6 +2788,9 @@ async def _record_status_monitor_transitions(
             "font-size:12px\"><a class=\"fm-link\" style=\"color:#15803d\" "
             "href=\"https://forkmesh.com/status\">Open ForkMesh status</a>"
             "</p>")
+        if not alert["is_up"]:
+            text, html = _attention_email_with_logs(
+                text, html, attention_log_tail)
         delivered = True
         for email in recipients:
             delivered = bool(await _send_email(
@@ -2580,13 +2914,22 @@ async def record_status_sample(env):
 
     try:
         repository_ok, repository_reason = await _flagship_repository_probe(env)
+        if (
+            not repository_ok
+            and _deployment_status_grace_active(env, now)
+        ):
+            repository_ok = True
+            repository_reason = ""
         ok["flagship_repository"] = repository_ok
         if not repository_ok:
             reason["flagship_repository"] = repository_reason
     except Exception as exc:
-        ok["flagship_repository"] = False
-        reason["flagship_repository"] = (
-            "Repository availability probe failed: " + str(exc)[:160])
+        if _deployment_status_grace_active(env, now):
+            ok["flagship_repository"] = True
+        else:
+            ok["flagship_repository"] = False
+            reason["flagship_repository"] = (
+                "Repository availability probe failed: " + str(exc)[:160])
 
     try:
         installer_ok, installer_reason = await _installer_delivery_status(
@@ -2624,9 +2967,11 @@ async def record_status_sample(env):
             env, "SELECT path, status, message FROM error_log WHERE ts >= ?",
             now - STATUS_SAMPLE_WINDOW_MS,
         )
-        failed = {"website": False, "api": False, "realtime": False, "durable_objects": False}
-        first_hit = {"website": None, "api": None, "realtime": None, "durable_objects": None}
-        hit_count = {"website": 0, "api": 0, "realtime": 0, "durable_objects": 0}
+        buckets = (
+            "website", "api", "errors", "realtime", "durable_objects")
+        failed = {bucket: False for bucket in buckets}
+        first_hit = {bucket: None for bucket in buckets}
+        hit_count = {bucket: 0 for bucket in buckets}
         for row in rows:
             path = str(row.get("path") or "")
             message = str(row.get("message") or "")
@@ -2658,6 +3003,11 @@ async def record_status_sample(env):
                     RELEASE_BLOB_RE.match(path) or REPO_HOST_RE.match(path) or
                     GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)):
                 continue
+            failed["errors"] = True
+            hit_count["errors"] += 1
+            if first_hit["errors"] is None:
+                first_hit["errors"] = (
+                    row.get("status"), path, message.strip())
             if (path.rstrip("/") == "/api/world/ws" or
                     ROOM_RE.match(path) or REPO_ROOM_RE.match(path) or
                     GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)):
@@ -2672,9 +3022,10 @@ async def record_status_sample(env):
                 first_hit[bucket] = (row.get("status"), path, message.strip())
         ok["website"] = not failed["website"]
         ok["api"] = not failed["api"]
+        ok["errors"] = not failed["errors"]
         ok["realtime"] = not failed["realtime"]
         ok["durable_objects"] = not failed["durable_objects"]
-        for bucket in ("website", "api", "realtime", "durable_objects"):
+        for bucket in buckets:
             if failed[bucket] and first_hit[bucket]:
                 status_code, path, message = first_hit[bucket]
                 text = (str(status_code) + " on " + path) if status_code else path
@@ -2686,7 +3037,8 @@ async def record_status_sample(env):
     except Exception:
         # A query hiccup here is not itself evidence of an outage — don't
         # fabricate a false incident from it.
-        ok["website"] = ok["api"] = ok["realtime"] = ok["durable_objects"] = True
+        ok["website"] = ok["api"] = ok["errors"] = True
+        ok["realtime"] = ok["durable_objects"] = True
 
     # Each registered mirror that has supplied a valid ForkMesh repository
     # proof gets its own /status row. This registry contains cryptographically
@@ -3667,6 +4019,329 @@ async def referral_leaderboard(env):
     return resp
 
 
+# --- Inbound website referrals ------------------------------------------------
+# Which other websites link people here. Counted from the Referer header of
+# ordinary page loads as one aggregate row per hostname. The latest bounded
+# referring URL is retained for the public board, with credentials/fragments
+# removed and sensitive query values redacted. No visitor record, IP, user
+# agent, or ForkMesh landing path is retained.
+SITE_REFERRER_LEADERBOARD_CACHE_KEY = (
+    "https://forkmesh.internal/api/referrals/sites"
+)
+SITE_REFERRER_LEADERBOARD_TTL = 60  # seconds per colo; counters tolerate lag
+SITE_REFERRER_LEADERBOARD_LIMIT = 10
+# Referer is attacker-controlled (classic analytics referrer spam), so the
+# table is capped: the hourly prune keeps the busiest hosts and drops the long
+# tail a spammer would grow. Existing hosts keep counting either way.
+SITE_REFERRER_RETAIN_HOSTS = 500
+MAX_SITE_REFERRER_HOST = 100
+MAX_SITE_REFERRER_URL = 1024
+SITE_REFERRER_REDACTED_QUERY_KEYS = frozenset({
+    "access_token", "api_key", "apikey", "auth", "authorization", "code",
+    "credential", "email", "key", "password", "secret", "session",
+    "sessionid", "sig", "signature", "token",
+})
+
+_SITE_REFERRER_HOST_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
+
+# Names that are this instance itself, a sibling service, or a dev host: an
+# internal hop is not another website sending us a visitor.
+SITE_REFERRER_SELF_HOSTS = frozenset({
+    "forkmesh.com", "b.forkmesh.com", "forkmesh.internal", "localhost",
+})
+
+
+def _site_referrer_host(referer, self_host=""):
+    """Referring hostname to count for one request, or "" to count nothing.
+
+    Deliberately strict: only http(s) URLs with a real multi-label hostname
+    count, so IP literals, intranet names, and junk headers never reach the
+    board. ``www.`` is folded away so one site is one row.
+    """
+    raw = str(referer or "").strip()[:512]
+    if "://" not in raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+        host = str(parsed.hostname or "")
+    except Exception:
+        return ""
+    if parsed.scheme not in ("http", "https"):
+        return ""
+    host = host.strip().lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host or len(host) > MAX_SITE_REFERRER_HOST:
+        return ""
+    if not _SITE_REFERRER_HOST_RE.match(host):
+        return ""  # single-label names, IPv6 literals, credentials, junk
+    if host.replace(".", "").isdigit():
+        return ""  # bare IPv4 literal
+    if host.endswith(".local") or host.endswith(".internal"):
+        return ""
+    if host in SITE_REFERRER_SELF_HOSTS:
+        return ""
+    own = str(self_host or "").strip().lower().rstrip(".")
+    if own.startswith("www."):
+        own = own[4:]
+    if own and (host == own or host.endswith("." + own)
+                or own.endswith("." + host)):
+        return ""  # this deployment, a sibling subdomain, or its parent zone
+    return host
+
+
+def _site_referrer_url(referer, expected_host):
+    """A bounded public referring URL for ``expected_host``, or ``""``.
+
+    Referer is attacker-controlled and can contain secrets in query values.
+    Preserve the real page path and ordinary query values, but remove
+    credentials/fragments and replace common secret-bearing values before
+    anything reaches D1 or the public API.
+    """
+    raw = str(referer or "").strip()[:MAX_SITE_REFERRER_URL * 2]
+    host = str(expected_host or "").strip().lower()
+    try:
+        parsed = urlparse(raw)
+        candidate_host = str(parsed.hostname or "").lower().rstrip(".")
+        if candidate_host.startswith("www."):
+            candidate_host = candidate_host[4:]
+        if (
+            parsed.scheme not in ("http", "https")
+            or candidate_host != host
+            or parsed.username
+            or parsed.password
+        ):
+            return ""
+        # Non-default ports make an origin materially different and are not
+        # accepted by the public hostname board.
+        port = parsed.port
+        if port is not None and not (
+            (parsed.scheme == "https" and port == 443)
+            or (parsed.scheme == "http" and port == 80)
+        ):
+            return ""
+        safe_query = urlencode([
+            (
+                str(key)[:120],
+                "[redacted]"
+                if str(key).lower() in SITE_REFERRER_REDACTED_QUERY_KEYS
+                else str(value)[:300],
+            )
+            for key, value in parse_qsl(
+                parsed.query, keep_blank_values=True, max_num_fields=40)
+        ], doseq=True)
+        value = urlunparse((
+            parsed.scheme,
+            host,
+            parsed.path or "/",
+            parsed.params,
+            safe_query,
+            "",  # fragments are client-local and never needed on this board
+        ))
+        return value[:MAX_SITE_REFERRER_URL]
+    except Exception:
+        return ""
+
+
+def _is_page_navigation(request):
+    """True for a top-level HTML page load, not an asset or subresource."""
+    try:
+        headers = request.headers
+        dest = str(headers.get("sec-fetch-dest") or "").strip().lower()
+        mode = str(headers.get("sec-fetch-mode") or "").strip().lower()
+        accept = str(headers.get("accept") or "").lower()
+    except Exception:
+        return False
+    # The Sec-Fetch-* pair is absent on older browsers; Accept alone then
+    # decides, which is the same signal the rest of the site uses.
+    if dest and dest != "document":
+        return False
+    if mode and mode != "navigate":
+        return False
+    return "text/html" in accept
+
+
+async def record_site_referral(env, request, url, status):
+    """Count one visit that another website sent us. Best-effort: never
+    raises, because a counter must not break or fail a page load."""
+    try:
+        if int(status or 0) != 200 or method_name(request) != "GET":
+            return
+        if not _is_page_navigation(request):
+            return
+        if _is_link_preview_agent(request):
+            return  # unfurlers re-fetch shared links; that is not a visit
+        host = _site_referrer_host(
+            request.headers.get("referer"), getattr(url, "hostname", "") or "")
+        if not host:
+            return
+        referrer_url = _site_referrer_url(
+            request.headers.get("referer"), host)
+        if not referrer_url:
+            return
+        await ensure_schema(env)
+        now = int(Date.now())
+        await d1_run(
+            env,
+            "INSERT INTO site_referrers "
+            "(host, visits, first_ts, last_ts, last_url) "
+            "VALUES (?,1,?,?,?) "
+            "ON CONFLICT(host) DO UPDATE SET visits=visits+1, "
+            "last_ts=excluded.last_ts,last_url=excluded.last_url",
+            host, now, now, referrer_url)
+    except Exception:
+        pass
+
+
+async def site_referrer_leaderboard(env):
+    cached = await edge_cache_match(SITE_REFERRER_LEADERBOARD_CACHE_KEY)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    rows = await d1_all(
+        env,
+        "SELECT host, visits, last_ts, last_url FROM site_referrers "
+        "WHERE visits > 0 "
+        "ORDER BY visits DESC, last_ts DESC, host LIMIT ?",
+        SITE_REFERRER_LEADERBOARD_LIMIT)
+    board = [
+        {"host": clean_string(r.get("host", ""), MAX_SITE_REFERRER_HOST),
+         "url": clean_string(r.get("last_url", ""), MAX_SITE_REFERRER_URL),
+         "visits": int(r.get("visits") or 0),
+         "lastTs": int(r.get("last_ts") or 0)}
+        for r in rows if r.get("host")
+    ]
+    totals = await d1_first(
+        env,
+        "SELECT COUNT(*) AS hosts, SUM(visits) AS visits FROM site_referrers "
+        "WHERE visits > 0") or {}
+    resp = json_response(
+        {"ok": True, "board": board,
+         "sites": int(totals.get("hosts") or 0),
+         "visits": int(totals.get("visits") or 0)},
+        cache_seconds=SITE_REFERRER_LEADERBOARD_TTL)
+    await edge_cache_put(SITE_REFERRER_LEADERBOARD_CACHE_KEY, resp)
+    return resp
+
+
+async def prune_site_referrers(env):
+    """Keep the board bounded: the busiest hosts stay, the long tail goes."""
+    await ensure_schema(env)
+    await d1_run(
+        env,
+        "DELETE FROM site_referrers WHERE host NOT IN ("
+        "SELECT host FROM site_referrers "
+        "ORDER BY visits DESC, last_ts DESC LIMIT ?)",
+        SITE_REFERRER_RETAIN_HOSTS)
+
+
+# Per-post blog reach stays aggregate-only. A 64-register HLL is enough for a
+# readable approximate count while fixing each post's uniqueness footprint at
+# 64 rows. The transient edge address/coarse client category is HMACed with a
+# slug-specific domain; neither input nor digest is retained.
+BLOG_POST_PATH_RE = re.compile(r"^/blog/([a-z0-9][a-z0-9-]{0,79})/?$")
+BLOG_POST_UNIQUE_PRECISION = 6
+BLOG_POST_REFERRER_LIMIT = 10
+
+
+async def record_blog_visit(env, request, url, status):
+    try:
+        if int(status or 0) != 200 or method_name(request) != "GET":
+            return
+        match = BLOG_POST_PATH_RE.match(str(getattr(url, "path", "") or ""))
+        if not match or not _is_page_navigation(request):
+            return
+        if _is_link_preview_agent(request):
+            return
+        slug = match.group(1)
+        now = int(Date.now())
+        await ensure_schema(env)
+        await d1_run(
+            env,
+            "INSERT INTO blog_post_metrics (slug,views,updated_at) "
+            "VALUES (?,1,?) ON CONFLICT(slug) DO UPDATE SET "
+            "views=views+1,updated_at=excluded.updated_at",
+            slug, now)
+
+        address = world_visitor_metrics.canonical_edge_address(
+            request.headers.get("cf-connecting-ip") or "")
+        category = world_visitor_metrics.generalized_user_agent(
+            str(request.headers.get("user-agent") or "")[:2048])
+        if address:
+            token = await blind_index(
+                env,
+                "blog-post-unique-v1:%s\n%s\n%s"
+                % (slug, address, category))
+            register_id, rank = world_visitor_metrics.hll_register(
+                token, precision=BLOG_POST_UNIQUE_PRECISION)
+            await d1_run(
+                env,
+                "INSERT INTO blog_post_unique_hll "
+                "(slug,register_id,rank) VALUES (?,?,?) "
+                "ON CONFLICT(slug,register_id) DO UPDATE SET "
+                "rank=MAX(blog_post_unique_hll.rank,excluded.rank)",
+                slug, register_id, rank)
+
+        host = _site_referrer_host(
+            request.headers.get("referer"),
+            getattr(url, "hostname", "") or "")
+        if host:
+            await d1_run(
+                env,
+                "INSERT INTO blog_post_referrers "
+                "(slug,host,visits,last_ts) VALUES (?,?,1,?) "
+                "ON CONFLICT(slug,host) DO UPDATE SET "
+                "visits=visits+1,last_ts=excluded.last_ts",
+                slug, host, now)
+    except Exception:
+        # Reach counters are never allowed to delay or break a blog response.
+        pass
+
+
+async def blog_post_metrics(env, slug):
+    slug = str(slug or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", slug):
+        return json_response({"error": "not_found"}, status=404)
+    await ensure_schema(env)
+    totals = await d1_first(
+        env,
+        "SELECT views FROM blog_post_metrics WHERE slug=?",
+        slug) or {}
+    registers = await d1_all(
+        env,
+        "SELECT register_id,rank FROM blog_post_unique_hll WHERE slug=?",
+        slug)
+    referrers = await d1_all(
+        env,
+        "SELECT host,visits,last_ts FROM blog_post_referrers "
+        "WHERE slug=? AND visits>0 "
+        "ORDER BY visits DESC,last_ts DESC,host LIMIT ?",
+        slug, BLOG_POST_REFERRER_LIMIT)
+    board = [
+        {
+            "host": clean_string(row.get("host", ""), MAX_SITE_REFERRER_HOST),
+            "url": "https://" + clean_string(
+                row.get("host", ""), MAX_SITE_REFERRER_HOST) + "/",
+            "visits": int(row.get("visits") or 0),
+            "lastTs": int(row.get("last_ts") or 0),
+        }
+        for row in referrers if row.get("host")
+    ]
+    return json_response(
+        {
+            "ok": True,
+            "slug": slug,
+            "views": int(totals.get("views") or 0),
+            "uniqueViews": world_visitor_metrics.hll_estimate(
+                registers, precision=BLOG_POST_UNIQUE_PRECISION),
+            "approximateUnique": True,
+            "referrers": board,
+        },
+        cache_control="no-store, max-age=0")
+
+
 def _short_wallet(addr):
     addr = (addr or "").strip()
     if len(addr) <= 10:
@@ -4201,6 +4876,11 @@ WORLD_USER_ACTIVITY_MAX_GENERATION = 9_000_000_000_000_000
 WORLD_USER_ACTIVITY_HEADER = "x-forkmesh-world-activity"
 WORLD_USER_ACTIVITY_PUBLIC_BUCKET_MS = 60 * 1000
 WORLD_INACTIVE_RETAIN_MS = 30 * 24 * 60 * 60 * 1000
+# Private close code sent to the socket an account just replaced by signing in
+# somewhere else. It is a normal handover, not an error or a moderation action,
+# so the displaced browser stops its reconnect ladder instead of racing the
+# device the person is actually using.
+WORLD_ACCOUNT_TAKEOVER_CODE = 4009
 WORLD_MANUAL_BLOCK_MIN_MS = 60 * 1000
 WORLD_MANUAL_BLOCK_MAX_MS = 24 * 60 * 60 * 1000
 WORLD_MANUAL_BLOCK_DEFAULT_MS = 15 * 60 * 1000
@@ -5216,6 +5896,60 @@ async def _blog_feed_published_document(env, request):
     return await _blog_feed_document(env, request)
 
 
+async def _blog_post_distribution(env, request, post):
+    """Read one same-origin post's explicit social permalink slots."""
+    try:
+        path = urlparse(str((post or {}).get("url") or "")).path
+        match = re.fullmatch(r"/blog/([a-z0-9-]{1,100})/?", path)
+        if not match:
+            return {"known": False, "networks": []}
+        origin = urlparse(request.url)
+        asset_url = (
+            origin.scheme + "://" + origin.netloc + "/blog/"
+            + match.group(1) + "/index.html"
+        )
+        response = await env.ASSETS.fetch(asset_url)
+        if int(getattr(response, "status", 0)) != 200:
+            return {"known": False, "networks": []}
+        return world_social_feeds.normalize_blog_distribution(
+            str(await response.text()))
+    except Exception:
+        return {"known": False, "networks": []}
+
+
+async def _blog_post_reach_summary(env, post):
+    """Aggregate reach fields already available on each public blog post."""
+    try:
+        path = urlparse(str((post or {}).get("url") or "")).path
+        match = re.fullmatch(r"/blog/([a-z0-9-]{1,100})/?", path)
+        if not match:
+            return {}
+        slug = match.group(1)
+        totals = await d1_first(
+            env,
+            "SELECT views FROM blog_post_metrics WHERE slug=?",
+            slug) or {}
+        registers = await d1_all(
+            env,
+            "SELECT register_id,rank FROM blog_post_unique_hll WHERE slug=?",
+            slug)
+        referrers = await d1_first(
+            env,
+            "SELECT COUNT(*) AS sites,SUM(visits) AS visits "
+            "FROM blog_post_referrers WHERE slug=? AND visits>0",
+            slug) or {}
+        return {
+            "views": int(totals.get("views") or 0),
+            "uniqueViews": world_visitor_metrics.hll_estimate(
+                registers, precision=BLOG_POST_UNIQUE_PRECISION),
+            "approximateUnique": True,
+            "referrerSites": int(referrers.get("sites") or 0),
+            "referrerVisits": int(referrers.get("visits") or 0),
+        }
+    except Exception:
+        return {}
+
+
 async def blog_rss_handler(env, request):
     """GET /blog/rss.xml — the public feed for the blog.
 
@@ -5308,6 +6042,25 @@ async def world_social_posts_handler(env, request):
         blog_rss = await _blog_feed_published_document(env, request)
         if blog_rss:
             blog_posts = world_social_feeds.normalize_blog_feed(blog_rss)
+            distributions = await asyncio.gather(*(
+                _blog_post_distribution(env, request, post)
+                for post in blog_posts
+            ), return_exceptions=True)
+            reach_summaries = await asyncio.gather(*(
+                _blog_post_reach_summary(env, post)
+                for post in blog_posts
+            ), return_exceptions=True)
+            for index, distribution in enumerate(distributions):
+                blog_posts[index]["distribution"] = (
+                    distribution
+                    if isinstance(distribution, dict)
+                    else {"known": False, "networks": []}
+                )
+                blog_posts[index]["reach"] = (
+                    reach_summaries[index]
+                    if isinstance(reach_summaries[index], dict)
+                    else {}
+                )
             blog_ok = bool(blog_posts)
     except Exception:
         blog_posts, blog_ok = [], False
@@ -5488,9 +6241,21 @@ async def world_satellites_handler(env, request):
             raise world_satellites.SatelliteDataError(
                 "satellite_snapshot_digest_mismatch")
     except world_satellites.SatelliteDataError:
+        # Orbit data is optional scenery. A fresh deployment may legitimately
+        # wait for its first scheduled CelesTrak refresh, and a corrupt cached
+        # snapshot must still fail closed, but neither condition should turn the
+        # World's normal GET into a noisy 503. Serve a bounded empty snapshot;
+        # deterministic stars and planets remain visible until cron seeds D1.
         response = json_response(
-            {"ok": False, "status": "warming", "satellites": []},
-            status=503,
+            {
+                "ok": True,
+                "status": "warming",
+                "schemaVersion": 1,
+                "sourceEpoch": 0,
+                "fetchedAt": 0,
+                "recordCount": 0,
+                "satellites": [],
+            },
             cache_control=(
                 "public, max-age=60, stale-while-revalidate=300"),
             extra_headers={
@@ -5524,6 +6289,38 @@ async def _chat_channel_passphrase(env, channel_id, key_version):
     digest = await js_crypto.subtle.digest(
         "SHA-256", _to_js(secret.encode()))
     return bytes(Uint8Array.new(digest).to_py()).hex()
+
+
+async def _chat_direct_passphrase(env, conversation_id, key_version):
+    secret = (
+        _require_data_secret(env)
+        + ":chat-direct-passphrase-v1:"
+        + str(conversation_id)
+        + ":v"
+        + str(int(key_version))
+    )
+    digest = await js_crypto.subtle.digest(
+        "SHA-256", _to_js(secret.encode()))
+    return bytes(Uint8Array.new(digest).to_py()).hex()
+
+
+async def _chat_direct_message_retained(
+        env, conversation_id, account_bi, retained_at):
+    await _contribution_run_batch(env, [
+        (
+            "UPDATE chat_direct_conversations "
+            "SET updated_at=?,message_count=message_count+1 "
+            "WHERE conversation_id=?",
+            (retained_at, conversation_id),
+        ),
+        (
+            "UPDATE chat_direct_participants "
+            "SET last_read_count=(SELECT message_count "
+            "FROM chat_direct_conversations WHERE conversation_id=?) "
+            "WHERE conversation_id=? AND participant_bi=?",
+            (conversation_id, conversation_id, account_bi),
+        ),
+    ])
 
 
 def _office_entry_ticket(env, account_bi):
@@ -5837,6 +6634,26 @@ async def _chat_channel_socket_handler(env, request, channel_id):
         extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
+OFFICE_ATTENDANCE_LIVE_TTL_MS = 75 * 1000
+OFFICE_ATTENDANCE_FLOOR_LABELS = {
+    "lobby": "Lobby",
+    "marketing": "Marketing",
+    "engineering": "Engineering",
+    "product-design": "Product & Design",
+    "security": "Security",
+    "infrastructure": "Infrastructure",
+    "community": "Community",
+    "partnerships": "Partnerships",
+    "operations": "Operations",
+    "rooftop": "Rooftop",
+}
+
+
+def _office_attendance_floor(value):
+    floor_id = str(value or "").strip().lower()
+    return floor_id if floor_id in OFFICE_ATTENDANCE_FLOOR_LABELS else ""
+
+
 def _office_attendance_visit(row, observed_at=None):
     """Project one D1 attendance row into a bounded public lobby record."""
     if not isinstance(row, dict):
@@ -5874,6 +6691,12 @@ def _office_attendance_visit(row, observed_at=None):
         "inAt": in_at,
         "outAt": out_at,
         "durationMs": duration_end - in_at,
+        "floor": (
+            OFFICE_ATTENDANCE_FLOOR_LABELS.get(
+                str(row.get("floor_id") or "").strip().lower(), "")
+            if out_at is None
+            else ""
+        ),
     }
 
 
@@ -5883,9 +6706,22 @@ async def _office_attendance_recent(env, observed_at=None):
             Date.now() if observed_at is None else observed_at)
     except (TypeError, ValueError):
         observed_at = 0
+    # An OUT request can be interrupted by navigation or a lost connection.
+    # A bounded server heartbeat is the live-presence source of truth: expire
+    # those abandoned rows before projecting the public board.
+    live_cutoff = observed_at - OFFICE_ATTENDANCE_LIVE_TTL_MS
+    await d1_run(
+        env,
+        "UPDATE world_office_attendance "
+        "SET out_at=MAX(in_at,COALESCE(NULLIF(last_seen_at,0),in_at)), "
+        "floor_id='' "
+        "WHERE out_at IS NULL "
+        "AND COALESCE(NULLIF(last_seen_at,0),in_at)<?",
+        live_cutoff,
+    )
     rows = await d1_all(
         env,
-        "SELECT visit_id, account_name, in_at, out_at "
+        "SELECT visit_id, account_name, in_at, out_at, floor_id "
         "FROM world_office_attendance "
         "ORDER BY in_at DESC, visit_id DESC LIMIT 20",
     )
@@ -5895,6 +6731,143 @@ async def _office_attendance_recent(env, observed_at=None):
         if visit is not None:
             visits.append(visit)
     return visits
+
+
+def _chat_direct_ticket(env, conversation_id, key_version, account_bi):
+    expires = int(Date.now()) + CHAT_DIRECT_TICKET_TTL_MS
+    canonical = ".".join((
+        "v1",
+        str(conversation_id),
+        str(int(key_version)),
+        str(account_bi),
+        str(expires),
+    ))
+    signature = hmac.new(
+        (_require_data_secret(env) + ":chat-direct-ticket-v1").encode(),
+        canonical.encode(),
+        "sha256",
+    ).hexdigest()
+    return canonical + "." + signature
+
+
+def _chat_direct_ticket_claims(env, token):
+    parts = str(token or "").split(".")
+    if len(parts) != 6:
+        return None
+    version_tag, conversation_id, version_raw, account_bi, expires_raw, signature = (
+        parts
+    )
+    if (
+        version_tag != "v1"
+        or not re.fullmatch(r"[0-9a-f]{32}", conversation_id)
+        or not re.fullmatch(r"[0-9a-f]{64}", account_bi)
+    ):
+        return None
+    try:
+        key_version = int(version_raw)
+        expires = int(expires_raw)
+    except (TypeError, ValueError):
+        return None
+    now = int(Date.now())
+    if (
+        key_version < 1
+        or expires <= now
+        or expires - now > CHAT_DIRECT_TICKET_TTL_MS
+    ):
+        return None
+    canonical = ".".join(parts[:5])
+    expected = hmac.new(
+        (_require_data_secret(env) + ":chat-direct-ticket-v1").encode(),
+        canonical.encode(),
+        "sha256",
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    return {
+        "conversation_id": conversation_id,
+        "key_version": key_version,
+        "account_bi": account_bi,
+    }
+
+
+async def _chat_direct_socket_handler(env, request, conversation_id):
+    if (
+        method_name(request) != "GET"
+        or (request.headers.get("upgrade") or "").lower() != "websocket"
+    ):
+        return _private_replica_not_found()
+    url = urlparse(request.url)
+    ticket_values = parse_qs(
+        url.query, keep_blank_values=False).get("ticket") or []
+    claims = (
+        _chat_direct_ticket_claims(env, ticket_values[0])
+        if len(ticket_values) == 1 else None
+    )
+    if not claims or claims["conversation_id"] != conversation_id:
+        return _private_replica_not_found()
+    try:
+        await ensure_schema(env)
+        conversation = await d1_first(
+            env,
+            "SELECT data,key_version FROM chat_direct_conversations "
+            "WHERE conversation_id=?",
+            conversation_id,
+        )
+        if (
+            not conversation
+            or int(conversation.get("key_version") or 0)
+                != int(claims["key_version"])
+        ):
+            return _private_replica_not_found()
+        record = await decrypt_row(env, conversation.get("data"))
+        if not isinstance(record, dict):
+            return _private_replica_not_found()
+        account = await d1_first(
+            env,
+            "SELECT data,is_admin FROM users WHERE user_bi=?",
+            claims["account_bi"],
+        )
+        if not account:
+            return _private_replica_not_found()
+        account_record = await decrypt_row(env, account.get("data"))
+        if (
+            not account_record
+            or account_record.get("status") != "active"
+            or _account_kind(account_record) != "user"
+        ):
+            return _private_replica_not_found()
+        participant = await d1_first(
+            env,
+            "SELECT 1 AS allowed FROM chat_direct_participants "
+            "WHERE conversation_id=? AND participant_bi=?",
+            conversation_id,
+            claims["account_bi"],
+        )
+        if not participant:
+            return _private_replica_not_found()
+    except Exception:
+        return _private_replica_not_found()
+
+    room_name = (
+        "chat-direct:" + conversation_id + ":v"
+        + str(claims["key_version"])
+    )
+    room_id = env.FORKMESH_MAINNODE_ROOM.idFromName(room_name)
+    target_url = (
+        url.scheme + "://" + url.netloc + "/api/chat/direct-messages/"
+        + conversation_id + "/v" + str(claims["key_version"])
+        + "/ws?account=" + quote(claims["account_bi"], safe="")
+    )
+    last_error = None
+    for _attempt in range(2):
+        room_object = env.FORKMESH_MAINNODE_ROOM.get(room_id)
+        try:
+            return await room_object.fetch(
+                await durable_object_request(request, target_url=target_url))
+        except Exception as error:
+            last_error = error
+    await log_durable_object_abort(env, request, url.path, last_error)
+    return json_response({"error": "unavailable"}, status=503)
 
 
 async def office_attendance_handler(env, request):
@@ -5957,7 +6930,7 @@ async def office_attendance_handler(env, request):
             extra_headers={"x-content-type-options": "nosniff"},
         )
     action = str(data.get("action") or "").strip().lower()
-    if action not in ("in", "out"):
+    if action not in ("in", "heartbeat", "out"):
         return json_response(
             {"error": "invalid_action"},
             status=400,
@@ -5967,31 +6940,59 @@ async def office_attendance_handler(env, request):
 
     await ensure_schema(env)
     now = int(Date.now())
+    floor_id = _office_attendance_floor(data.get("floor"))
+    initial_floor_id = floor_id or "lobby"
     if action == "in":
         # The partial unique index on open visits makes repeated/concurrent
         # background authorization requests converge on the same visit.
         await d1_run(
             env,
             "INSERT OR IGNORE INTO world_office_attendance "
-            "(visit_id, account_bi, account_name, in_at, out_at) "
-            "VALUES (?, ?, ?, ?, NULL)",
+            "(visit_id, account_bi, account_name, in_at, out_at, "
+            "last_seen_at, floor_id) "
+            "VALUES (?, ?, ?, ?, NULL, ?, ?)",
             new_world_peer_id(),
             str(account_bi),
             world_protocol.clean_display_name(
                 account.get("name"), "Contributor"),
             now,
+            now,
+            initial_floor_id,
+        )
+        await d1_run(
+            env,
+            "UPDATE world_office_attendance "
+            "SET last_seen_at=?, "
+            "floor_id=CASE WHEN ?<>'' THEN ? ELSE floor_id END "
+            "WHERE account_bi=? AND out_at IS NULL",
+            now,
+            floor_id,
+            floor_id,
+            str(account_bi),
+        )
+    elif action == "heartbeat":
+        await d1_run(
+            env,
+            "UPDATE world_office_attendance "
+            "SET last_seen_at=?, floor_id=? "
+            "WHERE account_bi=? AND out_at IS NULL",
+            now,
+            initial_floor_id,
+            str(account_bi),
         )
     else:
         # Close, in place, only this account's newest open visit. Repeated OUT
         # requests are harmless because the row no longer matches out_at NULL.
         await d1_run(
             env,
-            "UPDATE world_office_attendance SET out_at=? "
+            "UPDATE world_office_attendance "
+            "SET out_at=?, last_seen_at=?, floor_id='' "
             "WHERE visit_id=("
             "SELECT visit_id FROM world_office_attendance "
             "WHERE account_bi=? AND out_at IS NULL "
             "ORDER BY in_at DESC, visit_id DESC LIMIT 1"
             ") AND out_at IS NULL",
+            now,
             now,
             str(account_bi),
         )
@@ -6092,6 +7093,10 @@ async def office_general_entry_handler(env, request):
 
 
 OFFICE_FLOOR_TEAM_ALIASES = {
+    "marketing": {
+        "marketing", "marketing-team", "growth", "brand", "comms",
+        "communications",
+    },
     "engineering": {
         "engineering", "engineers", "development", "developers",
         "platform", "frontend", "backend",
@@ -6193,7 +7198,10 @@ async def office_floor_access_handler(env, request):
         if slug
     })
     team_set = set(teams)
-    allowed = ["lobby", "marketing", "rooftop"]
+    # Only the lobby and the rooftop patio are common floors. Marketing is a
+    # department story like every other one: it is granted below solely when
+    # this account actually belongs to that team.
+    allowed = ["lobby", "rooftop"]
     for floor_id, aliases in OFFICE_FLOOR_TEAM_ALIASES.items():
         if team_set.intersection(aliases):
             allowed.append(floor_id)
@@ -6451,6 +7459,32 @@ async def _revoke_chat_channel_room(env, channel_id, key_version):
     if last_error is not None:
         raise last_error
     raise RuntimeError("chat_channel_revoke_failed")
+
+
+async def _revoke_chat_direct_room(env, conversation_id, key_version):
+    room_name = (
+        "chat-direct:" + str(conversation_id)
+        + ":v" + str(int(key_version))
+    )
+    room_id = env.FORKMESH_MAINNODE_ROOM.idFromName(room_name)
+    target_url = (
+        "https://forkmesh.internal/api/chat/direct-messages/"
+        + str(conversation_id) + "/v" + str(int(key_version)) + "/revoke"
+    )
+    last_error = None
+    for _attempt in range(2):
+        room_object = env.FORKMESH_MAINNODE_ROOM.get(room_id)
+        try:
+            request = JsRequest.new(
+                target_url, to_js({"method": "POST"}))
+            response = await room_object.fetch(request)
+            if int(getattr(response, "status", 200) or 200) < 400:
+                return
+        except Exception as error:
+            last_error = error
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("chat_direct_revoke_failed")
 
 
 async def _revoke_office_channel_room(env, channel_id, key_version):
@@ -6848,6 +7882,15 @@ class _OfficeMarketingTasksRuntime:
 
 
 class _ChatChannelsRuntime(_WorldCommunityRuntime):
+    async def session(self, data=None):
+        account_bi, record = await super().session(data)
+        if account_bi and record:
+            return account_bi, record
+        # Desktop clients authenticate with their account key, not a session
+        # token, so the World office's channel rooms can also be read from the
+        # Qt app (see _chat_channel_signed_session for the read-only bound).
+        return await _chat_channel_signed_session(self.env, self.request)
+
     async def room_access(self, channel_id, key_version, account_bi, actor):
         room = (
             "chat-channel:" + str(channel_id) + ":v" + str(int(key_version))
@@ -6877,6 +7920,82 @@ class _ChatChannelsRuntime(_WorldCommunityRuntime):
         await _revoke_office_channel_room(
             self.env, channel_id, key_version)
 
+    async def channel_passphrase(self, channel_id, key_version):
+        return await _chat_channel_passphrase(
+            self.env, channel_id, key_version)
+
+    async def history(self, channel_id, key_version, since_ts=0):
+        return await chat_history_since(
+            self.env,
+            "chat-channel:" + str(channel_id) + ":v" + str(int(key_version)),
+            since_ts,
+        )
+
+
+class _ChatDirectMessagesRuntime(_WorldCommunityRuntime):
+    async def search_accounts(self, query, limit):
+        value = clean_string(query or "", MAX_NODE_NAME).strip().lower()
+        if not value:
+            return []
+        escaped = (
+            value.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        prefix = escaped + "%"
+        contains = "%" + escaped + "%"
+        rows = await d1_all(
+            self.env,
+            "SELECT data,username FROM users "
+            "WHERE username LIKE ? ESCAPE '\\' "
+            "ORDER BY CASE WHEN username=? THEN 0 "
+            "WHEN username LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END,"
+            "username COLLATE NOCASE LIMIT ?",
+            contains,
+            value,
+            prefix,
+            max(int(limit) * 5, int(limit)),
+        )
+        names = []
+        for row in rows or []:
+            try:
+                record = await decrypt_row(self.env, row.get("data"))
+            except Exception:
+                record = None
+            name = clean_string(
+                (record or {}).get("name") or row.get("username") or "",
+                MAX_NODE_NAME,
+            ).strip().lower()
+            if (
+                record
+                and record.get("status") == "active"
+                and _account_kind(record) == "user"
+                and valid_node_name(name)
+                and name not in names
+            ):
+                names.append(name)
+                if len(names) >= int(limit):
+                    break
+        return names
+
+    async def room_access(
+            self, conversation_id, key_version, account_bi):
+        room = (
+            "chat-direct:" + str(conversation_id)
+            + ":v" + str(int(key_version))
+        )
+        ticket = _chat_direct_ticket(
+            self.env, conversation_id, key_version, account_bi)
+        return {
+            "room": room,
+            "passphrase": await _chat_direct_passphrase(
+                self.env, conversation_id, key_version),
+            "webSocketUrl": (
+                "/api/chat/direct-messages/" + str(conversation_id)
+                + "/ws?ticket=" + quote(ticket, safe="")
+            ),
+        }
+
 
 async def world_fediverse_directory_handler(env, request, path):
     return await world_community_api.handle_fediverse(
@@ -6903,6 +8022,235 @@ async def world_office_marketing_tasks_handler(env, request, path):
         _OfficeMarketingTasksRuntime(env, request), path)
 
 
+async def world_build_board_handler(env, request, path):
+    runtime = _OfficeMarketingTasksRuntime(env, request)
+    # Reject unauthorized mutations before touching a repository mirror. A
+    # forged POST must not turn the issue list into a gateway-probing primitive.
+    if method_name(request) == "POST":
+        account_bi, record = await runtime.session({})
+        actor = clean_string(
+            (record or {}).get("name") or "", MAX_NODE_NAME
+        ).strip().lower()
+        org_bi, organization = await runtime.organization()
+        role, permission = (
+            await runtime.membership(org_bi, actor)
+            if account_bi and actor and org_bi and organization
+            else ("", "")
+        )
+        if (
+            not account_bi
+            or not actor
+            or (
+                role not in ("owner", "admin")
+                and permission not in ("maintain", "admin")
+            )
+        ):
+            return await world_build_board.handle(runtime, path, [])
+    return await world_build_board.handle(runtime, path, [])
+
+
+WORLD_PREFERENCES_MAX_BYTES = 320 * 1024
+WORLD_PREFERENCES_MAX_VIEWS = 4
+WORLD_PREFERENCES_PRIVACY_KEYS = (
+    "name", "country", "browser", "os", "activity", "inactivity",
+    "localTime", "nodes",
+)
+
+
+def _world_preference_timestamp(value, now):
+    try:
+        value = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return value if 0 <= value <= now + 5 * 60 * 1000 else 0
+
+
+def _clean_world_settings(raw):
+    source = raw if isinstance(raw, dict) else {}
+    result = {}
+    string_limits = {
+        "theme": 24,
+        "focusMusicTrackId": 80,
+        "availability": 20,
+        "activityCategory": 48,
+        "publicDoor": 12,
+        "statusEmoji": 48,
+        "statusNote": 40,
+        "outfitColor": 32,
+        "outfitStyle": 32,
+    }
+    for key, limit in string_limits.items():
+        if key in source:
+            result[key] = clean_string(source.get(key), limit)
+    number_bounds = {
+        "lightLevel": (40, 140),
+        "moveSpeed": (50, 300),
+        "moveAccel": (25, 1000),
+        "focusMusicVolume": (0, 100),
+    }
+    for key, bounds in number_bounds.items():
+        try:
+            value = int(round(float(source.get(key))))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        result[key] = max(bounds[0], min(bounds[1], value))
+    for key in (
+        "focusMusicMuted", "faceImage", "labels", "reducedData",
+        "debugPanel",
+    ):
+        if key in source:
+            result[key] = bool(source.get(key))
+    privacy = source.get("privacy")
+    if isinstance(privacy, dict):
+        result["privacy"] = {
+            key: bool(privacy.get(key))
+            for key in WORLD_PREFERENCES_PRIVACY_KEYS
+            if key in privacy
+        }
+    return result
+
+
+def _clean_world_saved_view(raw, now):
+    if not isinstance(raw, dict):
+        return None
+    view_id = clean_string(raw.get("id"), 40)
+    label = clean_string(raw.get("label"), 14)
+    if (
+        not re.fullmatch(r"[a-z0-9-]{8,40}", view_id)
+        or not label
+        or not re.fullmatch(r"[\w _-]{1,14}", label, re.UNICODE)
+    ):
+        return None
+    office = raw.get("office") is True
+    floor_id = clean_string(raw.get("floorId"), 30)
+    space = clean_string(raw.get("space"), 32)
+    if office and not re.fullmatch(r"[a-z0-9-]{1,30}", floor_id):
+        return None
+    camera = raw.get("camera") if isinstance(raw.get("camera"), dict) else {}
+    try:
+        x = float(raw.get("x"))
+        y = float(raw.get("y"))
+        z = float(raw.get("z"))
+        heading = float(raw.get("heading"))
+        yaw = float(camera.get("yaw"))
+        pitch = float(camera.get("pitch"))
+        zoom = float(camera.get("zoom"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        any(not math.isfinite(value) for value in (
+            x, y, z, heading, yaw, pitch, zoom))
+        or abs(x) > 100 or abs(y) > 100 or abs(z) > 100
+        or abs(heading) > math.pi or abs(yaw) > math.pi * 2
+        or abs(pitch) > math.pi / 2 or not 0.2 <= zoom <= 8
+    ):
+        return None
+    thumbnail = clean_string(raw.get("thumbnail"), 48000)
+    if not re.fullmatch(
+            r"data:image/webp;base64,[A-Za-z0-9+/=]+", thumbnail):
+        thumbnail = ""
+    return {
+        "id": view_id,
+        "label": label,
+        "office": office,
+        "floorId": floor_id if office else "",
+        "space": "town-square" if office else space,
+        "x": x,
+        "y": y,
+        "z": z,
+        "heading": heading,
+        "camera": {
+            "mode": (
+                "first-person"
+                if camera.get("mode") == "first-person"
+                else "third-person"
+            ),
+            "yaw": yaw,
+            "pitch": pitch,
+            "zoom": zoom,
+        },
+        "thumbnail": thumbnail,
+        "updatedAt": _world_preference_timestamp(
+            raw.get("updatedAt"), now),
+    }
+
+
+def _clean_world_preferences(raw, now):
+    source = raw if isinstance(raw, dict) else {}
+    views = []
+    seen = set()
+    for item in source.get("savedViews", []) if isinstance(
+            source.get("savedViews"), list) else []:
+        view = _clean_world_saved_view(item, now)
+        if not view or view["id"] in seen:
+            continue
+        seen.add(view["id"])
+        views.append(view)
+    views.sort(key=lambda item: item["updatedAt"], reverse=True)
+    return {
+        "settings": _clean_world_settings(source.get("settings")),
+        "settingsUpdatedAt": _world_preference_timestamp(
+            source.get("settingsUpdatedAt"), now),
+        "savedViews": views[:WORLD_PREFERENCES_MAX_VIEWS],
+        "updatedAt": _world_preference_timestamp(
+            source.get("updatedAt"), now),
+    }
+
+
+async def world_preferences_handler(env, request):
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    data = {}
+    if method == "POST":
+        if not _request_same_origin(request):
+            return json_response({"error": "origin_not_allowed"}, status=403)
+        try:
+            data = await bounded_json_request(
+                request, WORLD_PREFERENCES_MAX_BYTES)
+        except RequestBodyTooLarge:
+            return json_response({"error": "payload_too_large"}, status=413)
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+    account_bi, rec = await _account_session_record(env, request, data)
+    if not account_bi or not rec:
+        return json_response({"error": "invalid_session"}, status=401)
+    now = int(Date.now())
+    stored = _clean_world_preferences(
+        rec.get("world_preferences"), now)
+    if method == "POST":
+        incoming = _clean_world_preferences(data, now)
+        settings = stored["settings"]
+        settings_updated_at = stored["settingsUpdatedAt"]
+        if incoming["settingsUpdatedAt"] >= settings_updated_at:
+            settings = incoming["settings"]
+            settings_updated_at = incoming["settingsUpdatedAt"]
+        by_id = {view["id"]: view for view in stored["savedViews"]}
+        for view in incoming["savedViews"]:
+            previous = by_id.get(view["id"])
+            if not previous or view["updatedAt"] >= previous["updatedAt"]:
+                by_id[view["id"]] = view
+        views = sorted(
+            by_id.values(),
+            key=lambda item: item["updatedAt"],
+            reverse=True,
+        )[:WORLD_PREFERENCES_MAX_VIEWS]
+        stored = {
+            "settings": settings,
+            "settingsUpdatedAt": settings_updated_at,
+            "savedViews": views,
+            "updatedAt": now,
+        }
+        rec["world_preferences"] = stored
+        await _save_account(env, account_bi, rec)
+    return json_response({
+        "ok": True,
+        **stored,
+        "storage": "account-encrypted",
+    }, cache_control="no-store")
+
+
 async def world_community_ads_handler(env, request, path):
     return await community_ads_api.handle(
         _WorldCommunityRuntime(env, request), path)
@@ -6924,6 +8272,27 @@ async def cleanup_world_media_records(env):
 
 
 def room_key_from_path(pathname, account_bi=""):
+    direct_pattern = globals().get("CHAT_DIRECT_MESSAGE_DO_RE")
+    match = direct_pattern.match(pathname) if direct_pattern else None
+    if match and match.group(3) == "ws":
+        conversation_id = match.group(1)
+        direct_version = int(match.group(2))
+        info = {
+            "key": (
+                "chat-direct:" + conversation_id + ":v"
+                + str(direct_version)
+            ),
+            "owner": "",
+            "repo": "",
+            "room": conversation_id,
+            "compat": False,
+            "direct_id": conversation_id,
+            "direct_version": direct_version,
+        }
+        if re.fullmatch(r"[0-9a-f]{64}", str(account_bi or "")):
+            info["account_bi"] = str(account_bi)
+        return info
+
     match = CHAT_CHANNEL_DO_RE.match(pathname)
     if match and match.group(3) == "ws":
         channel_id = match.group(1)
@@ -7349,6 +8718,18 @@ SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
          'active', 'edited', 'tombstoned', 'moderated',
          'awaiting-redelivery'
        ))""",
+    # Direct-message lazy upgrades must precede SCHEMA_STATEMENTS: that list
+    # creates indexes/triggers over these columns, and CREATE TABLE IF NOT
+    # EXISTS cannot add them to a database that predates migration 0084.
+    """ALTER TABLE chat_direct_conversations
+       ADD COLUMN message_count INTEGER NOT NULL DEFAULT 0
+       CHECK (message_count >= 0)""",
+    """ALTER TABLE chat_direct_participants
+       ADD COLUMN last_read_count INTEGER NOT NULL DEFAULT 0
+       CHECK (last_read_count >= 0)""",
+    """ALTER TABLE chat_direct_participants
+       ADD COLUMN initiated INTEGER NOT NULL DEFAULT 0
+       CHECK (initiated IN (0, 1))""",
 ]
 
 # Post-CREATE column additions for tables that predate them. Idempotent: a
@@ -7360,6 +8741,35 @@ SCHEMA_ALTER_STATEMENTS = [
     # row, so a per-author quota can be enforced with a COUNT instead of
     # decrypting every pending row.
     "ALTER TABLE issue_inbox ADD COLUMN submitter_bi TEXT",
+    # Mirror drain leases. Deploy migrations add their compound index; the
+    # lazy compatibility path stays correct with the existing repo index.
+    "ALTER TABLE issue_inbox ADD COLUMN claimed_by_bi TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE issue_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE issue_inbox ADD COLUMN mirrored_by_bi TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE issue_inbox ADD COLUMN mirrored_at INTEGER NOT NULL DEFAULT 0",
+    # Completed Office tasks retain their encrypted copy, accumulated time,
+    # and audit history while remaining impossible to restart.
+    """ALTER TABLE world_office_marketing_tasks
+       ADD COLUMN completed_at INTEGER NOT NULL DEFAULT 0
+       CHECK (completed_at >= 0)""",
+    """CREATE INDEX IF NOT EXISTS idx_world_office_marketing_tasks_completion
+       ON world_office_marketing_tasks(
+           org_bi, completed_at, updated_at DESC)""",
+    # A bounded heartbeat closes interrupted Office visits and carries only the
+    # public floor label used by the lobby board.
+    """ALTER TABLE world_office_attendance
+       ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0
+       CHECK (last_seen_at >= 0)""",
+    """ALTER TABLE world_office_attendance
+       ADD COLUMN floor_id TEXT NOT NULL DEFAULT ''
+       CHECK (length(floor_id) <= 32)""",
+    """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_live
+       ON world_office_attendance(out_at, last_seen_at DESC)""",
+    # Assigned issue titles are already public repository metadata; retain a
+    # bounded copy so the build-board card survives the recent-issues window.
+    """ALTER TABLE world_build_board_items
+       ADD COLUMN title TEXT NOT NULL DEFAULT ''
+       CHECK (length(title) <= 160)""",
     "ALTER TABLE pull_inbox ADD COLUMN submitter_bi TEXT",
     "ALTER TABLE commit_inbox ADD COLUMN submitter_bi TEXT",
     "ALTER TABLE discussion_inbox ADD COLUMN submitter_bi TEXT",
@@ -7695,6 +9105,56 @@ async def _room_key_requester(env, request, owner, repo):
         if await ed25519_verify(pubkey, sig, legacy):
             return node
     return ""
+
+
+# Canonical prefixes a desktop client signs with its account's Ed25519 key to
+# read the chat-channel API without a browser session token (the Qt app holds
+# keys, not sessions). Each proof names the exact resource it opens.
+CHAT_CHANNEL_LIST_PROOF = "forkmesh-chat-channels-v1"
+CHAT_CHANNEL_ACCESS_PROOF = "forkmesh-chat-channel-access-v1"
+CHAT_CHANNEL_HISTORY_PROOF = "forkmesh-chat-channel-history-v1"
+
+
+async def _chat_channel_signed_session(env, request):
+    # Resolve the account behind a key-signed chat-channel read. Reads only: a
+    # signature never creates, joins, or moderates a channel. The account must
+    # still be an active user, and every channel-scoped authorization
+    # (membership/visibility/admin) is applied by the API exactly as it is for
+    # a session-token caller.
+    if method_name(request) != "GET":
+        return "", None
+    url = urlparse(request.url)
+    params = parse_qs(url.query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return "", None
+    access = CHAT_CHANNEL_ROOM_ACCESS_RE.match(url.path)
+    history = CHAT_CHANNEL_HISTORY_RE.match(url.path)
+    if access or history:
+        canonical = (
+            (CHAT_CHANNEL_ACCESS_PROOF if access else CHAT_CHANNEL_HISTORY_PROOF)
+            + "\n" + node + "\n" + (access or history).group(1) + "\n" + str(ts)
+        ).encode()
+    elif CHAT_CHANNELS_RE.match(url.path):
+        canonical = (
+            CHAT_CHANNEL_LIST_PROOF + "\n" + node + "\n" + str(ts)
+        ).encode()
+    else:
+        return "", None
+    pubkey = await _owner_pubkey(env, node)
+    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+        return "", None
+    account_bi, record = await _account_row(env, node)
+    if (
+        not account_bi
+        or not record
+        or record.get("status") != "active"
+        or _account_kind(record) != "user"
+    ):
+        return "", None
+    return account_bi, record
 
 
 async def _room_key_authorized(env, request):
@@ -9390,14 +10850,36 @@ async def catalog_handler(env, request):
         ts = clean_string(params.get("ts", [""])[0], 20)
         sig = clean_string(params.get("sig", [""])[0], 200)
         audit_target = owner + "/" + name if owner and name else ""
-        if not owner or not name or not ts or not sig:
-            return json_response({"error": "owner_name_ts_sig_required"}, status=400)
-        try:
-            skew = abs(int(Date.now()) - int(ts))
-        except (TypeError, ValueError):
-            skew = LOGIN_MAX_SKEW_MS + 1
-        if skew > LOGIN_MAX_SKEW_MS:
-            return json_response({"error": "stale_request"}, status=401)
+        if not owner or not name:
+            return json_response({"error": "owner_name_required"}, status=400)
+
+        # The desktop still signs the catalog-delete canonical with the
+        # repository owner's Ed25519 key. The web Settings tab has no access to
+        # that private key, so it instead proves the logged-in account session
+        # and the same account->node ownership relationship used by About
+        # editing. A valid session for some other account is never a substitute
+        # for the signature.
+        session_actor = await _authed_account_name(env, request)
+        session_authorized = bool(
+            session_actor
+            and await _account_owns_node(env, session_actor, owner)
+        )
+        if not session_authorized:
+            if session_actor and (not ts or not sig):
+                await _audit_sensitive_action(
+                    env, session_actor, "repository.delete", "repository",
+                    audit_target, "denied", {"reason": "not_authorized"})
+                return json_response(
+                    {"error": "not_authorized"}, status=403)
+            if not ts or not sig:
+                return json_response(
+                    {"error": "owner_name_ts_sig_required"}, status=400)
+            try:
+                skew = abs(int(Date.now()) - int(ts))
+            except (TypeError, ValueError):
+                skew = LOGIN_MAX_SKEW_MS + 1
+            if skew > LOGIN_MAX_SKEW_MS:
+                return json_response({"error": "stale_request"}, status=401)
 
         key_bi = await blind_index(env, owner + "/" + name)
         try:
@@ -9422,33 +10904,38 @@ async def catalog_handler(env, request):
                 env, owner, "repository.delete", "repository",
                 audit_target, "failed", {"reason": "record_unreadable"})
             return json_response({"error": "catalog_record_unreadable"}, status=500)
-        try:
-            owner_pub = await _owner_pubkey(env, owner)
-        except Exception:
-            await _audit_sensitive_action(
-                env, owner, "repository.delete", "repository",
-                audit_target, "failed", {"reason": "identity_lookup_error"})
-            raise
-        if not owner_pub:
-            await _audit_sensitive_action(
-                env, owner, "repository.delete", "repository",
-                audit_target, "denied", {"reason": "account_required"})
-            return json_response({"error": "account_required"}, status=403)
-        canonical = ("forkmesh-catalog-delete-v1\n" + owner + "\n" + name +
-                     "\n" + ts).encode()
-        try:
-            authorized = await _verify_owner_signature(
-                env, owner, sig, canonical)
-        except Exception:
-            await _audit_sensitive_action(
-                env, owner, "repository.delete", "repository",
-                audit_target, "failed", {"reason": "signature_check_error"})
-            raise
-        if not authorized:
-            await _audit_sensitive_action(
-                env, owner, "repository.delete", "repository",
-                audit_target, "denied", {"reason": "bad_signature"})
-            return json_response({"error": "bad_signature"}, status=401)
+        if not session_authorized:
+            try:
+                owner_pub = await _owner_pubkey(env, owner)
+            except Exception:
+                await _audit_sensitive_action(
+                    env, owner, "repository.delete", "repository",
+                    audit_target, "failed", {"reason": "identity_lookup_error"})
+                raise
+            if not owner_pub:
+                await _audit_sensitive_action(
+                    env, owner, "repository.delete", "repository",
+                    audit_target, "denied", {"reason": "account_required"})
+                return json_response(
+                    {"error": "account_required"}, status=403)
+            canonical = (
+                "forkmesh-catalog-delete-v1\n" + owner + "\n" + name +
+                "\n" + ts
+            ).encode()
+            try:
+                authorized = await _verify_owner_signature(
+                    env, owner, sig, canonical)
+            except Exception:
+                await _audit_sensitive_action(
+                    env, owner, "repository.delete", "repository",
+                    audit_target, "failed",
+                    {"reason": "signature_check_error"})
+                raise
+            if not authorized:
+                await _audit_sensitive_action(
+                    env, owner, "repository.delete", "repository",
+                    audit_target, "denied", {"reason": "bad_signature"})
+                return json_response({"error": "bad_signature"}, status=401)
         # Deleting a single repo must purge it as completely as the
         # whole-account teardown does, or leftover scoped state (inboxes,
         # host presence, agent state, bounties, chat history) keeps the repo
@@ -9836,6 +11323,10 @@ async def _repo_about_public(env, request, owner, repo):
             "followersList": followers_list,
             "settings": ap_settings,
         },
+        # Admin-only switches, echoed so the settings form can seed itself and
+        # round-trip an untouched save. Booleans about who gets operational
+        # mail — no address or recipient is exposed here.
+        "alerts": await _repo_alert_settings_get(env, owner, repo),
     }, cache_control="public, max-age=30")
 
 
@@ -10004,6 +11495,26 @@ async def repo_about_handler(env, request, owner, repo):
                     "_ap_purge_repo_digest_queues")
                 if callable(purge_digests):
                     await purge_digests(env, owner, repo)
+    # Per-repo operational-alert switches ride the same save (an `alerts`
+    # object, like `fediverse`). The About handler already proves the caller
+    # administers this repo's owner account, which is exactly the "org admin"
+    # gate these switches need. Absent = unchanged; unchanged writes nothing.
+    alert_settings = None
+    alerts_data = data.get("alerts")
+    if isinstance(alerts_data, dict):
+        current_alerts = await _repo_alert_settings_get(env, owner, repo)
+        alert_settings = dict(current_alerts)
+        for key in REPO_ALERT_SETTING_DEFAULTS:
+            if key in alerts_data:
+                alert_settings[key] = bool(alerts_data.get(key))
+        if alert_settings != current_alerts:
+            await d1_run(
+                env,
+                "INSERT INTO repo_alert_settings (repo_bi, data, updated_at)"
+                " VALUES (?,?,?) ON CONFLICT(repo_bi) DO UPDATE SET"
+                " data=excluded.data, updated_at=excluded.updated_at",
+                await _repo_alert_settings_bi(env, owner, repo),
+                json.dumps(alert_settings), int(Date.now()))
     if text_changed:
         # Queue the edit for the owner's desktop node, which writes it into the
         # repo's committed .forkmesh/info.json (the same file the desktop app's
@@ -10049,6 +11560,8 @@ async def repo_about_handler(env, request, owner, repo):
     }
     if ap_settings is not None:
         result["fediverse"] = {"settings": ap_settings}
+    if alert_settings is not None:
+        result["alerts"] = alert_settings
     return json_response(result)
 
 
@@ -10119,19 +11632,46 @@ async def repo_mirrors_handler(env, request, owner, repo):
     # already healthy again.
     endpoint_rows = await d1_all(
         env,
-        """SELECT node_name,checked_at FROM mirror_https_endpoints
-            WHERE checked_at>=? AND forkmesh_verified_at>=?
-              AND healthy=1 AND forkmesh_active=1
-              AND integrity='ok' AND abuse_blocked=0""",
-        now - HTTPS_MIRROR_STATUS_FRESH_MS,
-        now - HTTPS_MIRROR_STATUS_FRESH_MS,
+        """SELECT node_name,base_url,checked_at,latency_ms,region,healthy,
+                  integrity,abuse_blocked,forkmesh_verified_at,
+                  forkmesh_operations_json,forkmesh_active
+             FROM mirror_https_endpoints""",
     )
-    reachable_seen = {
-        clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower():
-        int(row.get("checked_at") or now)
+    endpoint_by_node = {
+        clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower(): row
         for row in endpoint_rows or []
         if valid_node_name(
             clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower())
+    }
+    reachable_seen = {
+        node_name: int(row.get("checked_at") or now)
+        for node_name, row in endpoint_by_node.items()
+        if (
+            int(row.get("checked_at") or 0)
+            >= now - HTTPS_MIRROR_STATUS_FRESH_MS
+            and (
+                # Older rows/tests predate signed endpoint attestation. The
+                # database migration backfills every security column
+                # together, so an entirely absent set is a legacy fresh
+                # presence row; a partially populated row must still satisfy
+                # every modern integrity gate.
+                not any(
+                    key in row
+                    for key in (
+                        "forkmesh_verified_at", "healthy",
+                        "forkmesh_active", "integrity", "abuse_blocked",
+                    )
+                )
+                or (
+                    int(row.get("forkmesh_verified_at") or 0)
+                    >= now - HTTPS_MIRROR_STATUS_FRESH_MS
+                    and bool(int(row.get("healthy") or 0))
+                    and bool(int(row.get("forkmesh_active") or 0))
+                    and str(row.get("integrity") or "") == "ok"
+                    and not bool(int(row.get("abuse_blocked") or 0))
+                )
+            )
+        )
     }
     reachable_nodes = set(reachable_seen)
     presence = {}
@@ -10197,9 +11737,33 @@ async def repo_mirrors_handler(env, request, owner, repo):
     # here so every surface — web repo page and the desktop Mirror nodes panel —
     # shows the human owner without each publisher having to know it.
     for mirror in payload.get("mirrors", []):
+        node_name = str(mirror.get("node") or "").strip().lower()
+        endpoint = endpoint_by_node.get(node_name) or {}
+        try:
+            operations = json.loads(
+                str(endpoint.get("forkmesh_operations_json") or "[]"))
+        except Exception:
+            operations = []
+        if not isinstance(operations, list):
+            operations = []
+        mirror.update({
+            "endpoint": str(endpoint.get("base_url") or ""),
+            "checkedAt": int(endpoint.get("checked_at") or 0),
+            "latencyMs": max(0, int(endpoint.get("latency_ms") or 0)),
+            "region": clean_string(endpoint.get("region", ""), 40),
+            "endpointHealthy": bool(int(endpoint.get("healthy") or 0)),
+            "endpointIntegrity": str(
+                endpoint.get("integrity") or "unknown"),
+            "endpointFresh": bool(node_name in reachable_seen),
+            "abuseBlocked": bool(int(endpoint.get("abuse_blocked") or 0)),
+            "operations": [
+                clean_string(value, 40)
+                for value in operations[:32]
+                if isinstance(value, str)
+            ],
+        })
         if mirror.get("ownerUser"):
             continue
-        node_name = str(mirror.get("node") or "").strip().lower()
         if not node_name:
             continue
         try:
@@ -10328,6 +11892,8 @@ async def _mirror_account_identity_tables(env, name_bi, rec, email_bi=None,
     if kind == "user":
         if email_bi is None and rec.get("email"):
             email_bi = await blind_index(env, clean_string(rec.get("email", ""), 254).lower())
+        if js_nullish(ip_bi):
+            ip_bi = ""
         enc_user = await encrypt_row(env, rec)
         await d1_run(
             env,
@@ -10338,7 +11904,7 @@ async def _mirror_account_identity_tables(env, name_bi, rec, email_bi=None,
                  email_bi=COALESCE(excluded.email_bi, users.email_bi),
                  username=excluded.username,
                  is_admin=CASE WHEN ? THEN excluded.is_admin ELSE users.is_admin END,
-                 ip_bi=COALESCE(excluded.ip_bi, users.ip_bi)""",
+                 ip_bi=COALESCE(NULLIF(excluded.ip_bi, ''), users.ip_bi)""",
             name_bi, enc_user, email_bi, name,
             int(is_admin or 0), ip_bi, 1 if is_admin is not None else 0)
     else:
@@ -10849,6 +12415,40 @@ async def _delete_chat_channel_memberships(env, member_bi):
         )
 
 
+async def _delete_chat_direct_conversations(env, participant_bi):
+    rows = await d1_all(
+        env,
+        "SELECT c.conversation_id,c.key_version "
+        "FROM chat_direct_participants p "
+        "JOIN chat_direct_conversations c "
+        "ON c.conversation_id=p.conversation_id "
+        "WHERE p.participant_bi=?",
+        participant_bi,
+    )
+    for row in rows:
+        conversation_id = str(row.get("conversation_id") or "")
+        key_version = int(row.get("key_version") or 1)
+        if not conversation_id:
+            continue
+        await _revoke_chat_direct_room(
+            env, conversation_id, key_version)
+        await d1_run(
+            env,
+            "DELETE FROM chat_direct_participants WHERE conversation_id=?",
+            conversation_id,
+        )
+        await d1_run(
+            env,
+            "DELETE FROM chat_direct_conversations WHERE conversation_id=?",
+            conversation_id,
+        )
+        await d1_run(
+            env,
+            "DELETE FROM chat_history WHERE room_key=?",
+            "chat-direct:" + conversation_id + ":v" + str(key_version),
+        )
+
+
 async def _move_chat_channel_memberships(
         env, old_member_bi, new_member_bi, new_name):
     if old_member_bi == new_member_bi:
@@ -11007,6 +12607,10 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
         env, name_bi, old_name, new_name_bi, new_name)
     await _move_chat_channel_memberships(
         env, name_bi, new_name_bi, new_name)
+    # A username move changes the participant blind index and pair identity.
+    # Close old DM rooms instead of leaving orphaned membership or silently
+    # merging conversations under a different account identity.
+    await _delete_chat_direct_conversations(env, name_bi)
     await d1_run(
         env, "UPDATE account_presence SET name_bi=? WHERE name_bi=?",
         new_name_bi, name_bi)
@@ -11165,6 +12769,7 @@ async def _delete_account_namespace(env, name_bi, rec):
     await d1_run(
         env, "DELETE FROM account_sessions WHERE account_bi=?", name_bi)
     await _delete_chat_channel_memberships(env, name_bi)
+    await _delete_chat_direct_conversations(env, name_bi)
     if email:
         email_bi = await blind_index(env, email)
         await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
@@ -24324,25 +25929,33 @@ async def _verify_owner_signature(env, owner, sig, canonical):
     return False
 
 
-async def _authorize_owner(env, request, owner):
+async def _authorized_owner_signing_key(env, request, owner):
     if not owner:
-        return False
+        return ""
     params = parse_qs(urlparse(request.url).query)
     ts = params.get("ts", [""])[0]
     sig = params.get("sig", [""])[0]
     if not ts or not sig:
-        return False
+        return ""
     try:
         skew = abs(int(Date.now()) - int(ts))
     except (TypeError, ValueError):
-        return False
+        return ""
     if skew > LOGIN_MAX_SKEW_MS:
-        return False
+        return ""
     canonical = ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).encode()
-    return await _verify_owner_signature(env, owner, sig, canonical)
+    for public_key in await _owner_signing_pubkeys(env, owner):
+        if await ed25519_verify(public_key, sig, canonical):
+            return public_key
+    return ""
 
 
-async def _authorize_repo_inbox_owner(env, request, owner, repo):
+async def _authorize_owner(env, request, owner):
+    return bool(await _authorized_owner_signing_key(
+        env, request, owner))
+
+
+async def _authorized_repo_inbox_signing_key(env, request, owner, repo):
     """Authorize a repository inbox drain without losing organization context.
 
     Organization repository URLs are rewritten to their backing node before
@@ -24355,15 +25968,17 @@ async def _authorize_repo_inbox_owner(env, request, owner, repo):
     Private repositories deliberately stay on the direct owner-key path:
     organization membership alone is never a plaintext/private-inbox grant.
     """
-    if await _authorize_owner(env, request, owner):
-        return True
+    direct_key = await _authorized_owner_signing_key(
+        env, request, owner)
+    if direct_key:
+        return direct_key
     try:
         original_url = urlparse(request.url)
         match = REPO_API_PREFIX_RE.match(original_url.path)
     except Exception:
-        return False
+        return ""
     if not match:
-        return False
+        return ""
     alias_owner = (safe_segment(match.group(1)) or "").lower()
     alias_repo = (safe_segment(match.group(2)) or "").lower()
     owner_l = str(owner or "").strip().lower()
@@ -24374,13 +25989,13 @@ async def _authorize_repo_inbox_owner(env, request, owner, repo):
         or alias_repo != repo_l
         or await _repo_is_private(env, owner_l, repo_l)
     ):
-        return False
+        return ""
 
     # Re-check the durable link instead of trusting the short-lived alias memo:
     # revoking/unlinking an organization must revoke drain authority at once.
     org_bi, org_row = await _org_row(env, alias_owner)
     if not org_row:
-        return False
+        return ""
     linked = await d1_first(
         env,
         "SELECT 1 AS ok FROM org_repos "
@@ -24388,19 +26003,19 @@ async def _authorize_repo_inbox_owner(env, request, owner, repo):
         org_bi, repo_l, owner_l,
     )
     if not linked:
-        return False
+        return ""
 
     params = parse_qs(original_url.query)
     ts = params.get("ts", [""])[0]
     sig = params.get("sig", [""])[0]
     if not ts or not sig:
-        return False
+        return ""
     try:
         skew = abs(int(Date.now()) - int(ts))
     except (TypeError, ValueError):
-        return False
+        return ""
     if skew > LOGIN_MAX_SKEW_MS:
-        return False
+        return ""
     canonical = (
         "forkmesh-issues-pull-v1\n" + alias_owner + "\n" + ts
     ).encode()
@@ -24417,14 +26032,17 @@ async def _authorize_repo_inbox_owner(env, request, owner, repo):
         account = clean_string(
             member.get("name") or "", MAX_NODE_NAME
         ).strip().lower()
-        if (
-            valid_node_name(account)
-            and await _verify_owner_signature(
-                env, account, sig, canonical
-            )
-        ):
-            return True
-    return False
+        if not valid_node_name(account):
+            continue
+        for public_key in await _owner_signing_pubkeys(env, account):
+            if await ed25519_verify(public_key, sig, canonical):
+                return public_key
+    return ""
+
+
+async def _authorize_repo_inbox_owner(env, request, owner, repo):
+    return bool(await _authorized_repo_inbox_signing_key(
+        env, request, owner, repo))
 
 
 async def _authorize_owner_account(env, owner, data, request=None,
@@ -26727,7 +28345,122 @@ def _drain_ids_from_request(request):
     return ids
 
 
-async def _drain_issue_inbox(env, request, repo_bi):
+async def _authorized_mirror_issue_signing_key(env, request, owner, repo):
+    """Authorize one fresh direct-HTTPS node that mirrors this public repo.
+
+    The caller signs with the account-bound key registered for its endpoint.
+    Repository membership comes from the same owner-pinned public mirror group
+    used by direct reads, so merely being an online ForkMesh node is not enough.
+    """
+    if await _repo_is_private(env, owner, repo):
+        return "", ""
+    params = parse_qs(urlparse(request.url).query)
+    signer = safe_segment(params.get("owner", [""])[0])
+    ts = params.get("ts", [""])[0]
+    sig = params.get("sig", [""])[0]
+    if not signer or not ts or not sig:
+        return "", ""
+    try:
+        if abs(int(Date.now()) - int(ts)) > LOGIN_MAX_SKEW_MS:
+            return "", ""
+    except (TypeError, ValueError):
+        return "", ""
+    try:
+        original = REPO_API_PREFIX_RE.match(urlparse(request.url).path)
+        public_owner = (
+            safe_segment(original.group(1)) if original else owner)
+        public_repo = (
+            safe_segment(original.group(2)) if original else repo)
+        context = await _https_mirror_public_context(
+            env, public_owner, public_repo)
+    except Exception:
+        context = None
+    if not context:
+        return "", ""
+    allowed_nodes = {
+        str(value or "").strip().lower()
+        for value in context.get("nodes", set())
+    }
+    now = int(Date.now())
+    rows = await d1_all(
+        env,
+        """SELECT node_name,public_key FROM mirror_https_endpoints
+            WHERE checked_at>=? AND forkmesh_verified_at>=?
+              AND healthy=1 AND forkmesh_active=1
+              AND integrity='ok' AND abuse_blocked=0""",
+        now - HTTPS_MIRROR_STATUS_FRESH_MS,
+        now - HTTPS_MIRROR_STATUS_FRESH_MS,
+    )
+    canonical = (
+        "forkmesh-issues-pull-v1\n" + signer + "\n" + ts
+    ).encode()
+    for row in rows or []:
+        node = clean_string(
+            row.get("node_name", ""), MAX_NODE_NAME).strip().lower()
+        public_key = clean_string(row.get("public_key", ""), 160).strip()
+        if (
+            node not in allowed_nodes
+            or not valid_node_pubkey(public_key)
+            or public_key not in await _owner_signing_pubkeys(env, node)
+        ):
+            continue
+        if await ed25519_verify(public_key, sig, canonical):
+            return public_key, node
+    return "", ""
+
+
+async def _claim_issue_inbox(
+        env, repo_bi, signing_key, mirror_only=False):
+    """Lease every currently available row to one authorized desktop device.
+
+    The UPDATE predicate makes competing drains converge on one winner per row:
+    once one device writes its opaque claimant index, another device cannot
+    overwrite it until the bounded lease expires.
+    """
+    if not signing_key:
+        return ""
+    claimant_bi = await blind_index(
+        env, "issue-inbox-claim:" + signing_key)
+    now = int(Date.now())
+    mirror_clause = " AND mirrored_at=0" if mirror_only else ""
+    await d1_run(
+        env,
+        "UPDATE issue_inbox SET claimed_by_bi=?, claim_expires_at=? "
+        "WHERE repo_bi=? AND (claimed_by_bi='' OR claim_expires_at<=? "
+        "OR claimed_by_bi=?)" + mirror_clause,
+        claimant_bi, now + ISSUE_INBOX_CLAIM_TTL_MS, repo_bi, now,
+        claimant_bi,
+    )
+    return claimant_bi
+
+
+async def _materialize_issue_inbox_on_mirror(
+        env, request, repo_bi, claimant_bi, mirror_node):
+    """Mark exact rows visible on one mirror without consuming owner delivery."""
+    ids = _drain_ids_from_request(request)
+    if not ids or not claimant_bi or not mirror_node:
+        return 0
+    marks = ",".join("?" for _ in ids)
+    mirror_bi = await blind_index(env, "issue-mirror:" + mirror_node)
+    row = await d1_first(
+        env,
+        "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=? "
+        "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0" % marks,
+        repo_bi, *ids, claimant_bi,
+    )
+    count = int((row or {}).get("c") or 0)
+    if count:
+        await d1_run(
+            env,
+            "UPDATE issue_inbox SET mirrored_by_bi=?,mirrored_at=?,"
+            "claimed_by_bi='',claim_expires_at=0 WHERE repo_bi=? "
+            "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0" % marks,
+            mirror_bi, int(Date.now()), repo_bi, *ids, claimant_bi,
+        )
+    return count
+
+
+async def _drain_issue_inbox(env, request, repo_bi, claimant_bi=""):
     """Ack (delete) the exact issue-inbox rows named by ?ids=, returning how many
     were removed, and record the drain in inbox_drain_log. Rows the node did not
     ack (including a submission that arrived after it read the queue) are left
@@ -26736,16 +28469,25 @@ async def _drain_issue_inbox(env, request, repo_bi):
     if not ids:
         return 0
     marks = ",".join("?" for _ in ids)
+    claim_clause = " AND claimed_by_bi=?" if claimant_bi else ""
+    args = (repo_bi, *ids, *([claimant_bi] if claimant_bi else []))
     row = await d1_first(
         env,
         "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=? "
-        "AND id IN (%s)" % marks,
-        repo_bi, *ids)
+        "AND id IN (%s)" % marks + claim_clause,
+        *args)
     removed = int(row.get("c", 0)) if row else 0
-    await d1_run(
-        env,
-        "DELETE FROM issue_inbox WHERE repo_bi=? AND id IN (%s)" % marks,
-        repo_bi, *ids)
+    if claimant_bi:
+        await d1_run(
+            env,
+            "DELETE FROM issue_inbox WHERE repo_bi=? AND id IN (%s) "
+            "AND claimed_by_bi=?" % marks,
+            *args)
+    else:
+        await d1_run(
+            env,
+            "DELETE FROM issue_inbox WHERE repo_bi=? AND id IN (%s)" % marks,
+            repo_bi, *ids)
     await _log_inbox_drain(env, repo_bi, "issues", removed)
     return removed
 
@@ -26902,6 +28644,7 @@ async def issues_handler(env, request, owner, repo):
         await _best_effort_inbox_side_effect(
             subscribe_thread(env, owner, repo, "issue", number, actor))
         await notify_repo_host(env, owner, repo, "issues")
+        await notify_repo_mirrors(env, owner, repo, "issues")
         # Fediverse: announce content events (opens/comments — never labels or
         # status flips) to any followers of the repo/author actors.
         if event.get("type") in ("open", "comment"):
@@ -26912,11 +28655,28 @@ async def issues_handler(env, request, owner, repo):
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
-        if not await _authorize_owner(env, request, owner):
+        mirror_intake = (
+            parse_qs(urlparse(request.url).query).get("mirror", [""])[0]
+            == "1")
+        mirror_node = ""
+        if mirror_intake:
+            signing_key, mirror_node = (
+                await _authorized_mirror_issue_signing_key(
+                    env, request, owner, repo))
+        else:
+            signing_key = await _authorized_repo_inbox_signing_key(
+                env, request, owner, repo)
+        if not signing_key:
             return json_response({"error": "unauthorized"}, status=401)
+        claimant_bi = await _claim_issue_inbox(
+            env, repo_bi, signing_key, mirror_only=mirror_intake)
+        mirror_filter = " AND mirrored_at=0" if mirror_intake else ""
         rows = await d1_all(
-            env, "SELECT id, data FROM issue_inbox WHERE repo_bi=? ORDER BY id ASC",
-            repo_bi,
+            env,
+            "SELECT id, data FROM issue_inbox "
+            "WHERE repo_bi=? AND claimed_by_bi=?" + mirror_filter
+            + " ORDER BY id ASC",
+            repo_bi, claimant_bi,
         )
         pending = []
         for r in rows:
@@ -26929,14 +28689,42 @@ async def issues_handler(env, request, owner, repo):
                 # drain removes nothing.
                 rec["id"] = r.get("id")
                 pending.append(rec)
-        return json_response({"ok": True, "pending": pending})
+        return json_response({
+            "ok": True,
+            "pending": pending,
+            "mirrorIntake": mirror_intake,
+            "mirror": mirror_node,
+        })
 
     if method == "DELETE":
-        if not await _authorize_owner(env, request, owner):
+        mirror_intake = (
+            parse_qs(urlparse(request.url).query).get("mirror", [""])[0]
+            == "1")
+        mirror_node = ""
+        if mirror_intake:
+            signing_key, mirror_node = (
+                await _authorized_mirror_issue_signing_key(
+                    env, request, owner, repo))
+        else:
+            signing_key = await _authorized_repo_inbox_signing_key(
+                env, request, owner, repo)
+        if not signing_key:
             return json_response({"error": "unauthorized"}, status=401)
+        claimant_bi = await blind_index(
+            env, "issue-inbox-claim:" + signing_key)
+        if mirror_intake:
+            materialized = await _materialize_issue_inbox_on_mirror(
+                env, request, repo_bi, claimant_bi, mirror_node)
+            return json_response({
+                "ok": True,
+                "drained": 0,
+                "materialized": materialized,
+                "retainedForSource": True,
+            })
         materialized = await _confirm_fediverse_issue_materializations(
             env, request)
-        removed = await _drain_issue_inbox(env, request, repo_bi)
+        removed = await _drain_issue_inbox(
+            env, request, repo_bi, claimant_bi)
         return json_response({
             "ok": True,
             "drained": removed,
@@ -27264,7 +29052,8 @@ async def repo_pending_counts_handler(env, request, owner, repo):
     repo_bi = await blind_index(env, owner + "/" + repo)
     rows = await d1_all(
         env,
-        "SELECT 'issues' AS k, COUNT(*) AS c FROM issue_inbox WHERE repo_bi=? "
+        "SELECT 'issues' AS k, COUNT(*) AS c FROM issue_inbox "
+        "WHERE repo_bi=? AND mirrored_at=0 "
         "UNION ALL SELECT 'pulls', COUNT(*) FROM pull_inbox WHERE repo_bi=? "
         "UNION ALL SELECT 'discussions', COUNT(*) FROM discussion_inbox WHERE repo_bi=? "
         "UNION ALL SELECT 'commits', COUNT(*) FROM commit_inbox WHERE repo_bi=?",
@@ -27296,8 +29085,12 @@ async def sync_handler(env, request):
         return json_response({"error": "method_not_allowed"}, status=405)
     params = parse_qs(urlparse(request.url).query)
     owner = safe_segment(params.get("owner", [""])[0])
-    if not await _authorize_owner(env, request, owner):
+    signing_key = await _authorized_owner_signing_key(
+        env, request, owner)
+    if not signing_key:
         return json_response({"error": "unauthorized"}, status=401)
+    issue_claimant_bi = await blind_index(
+        env, "issue-inbox-claim:" + signing_key)
     owner_bi = await blind_index(env, owner)
     rows = await d1_all(
         env, "SELECT key_bi, data FROM repositories WHERE owner_bi=?", owner_bi)
@@ -27310,8 +29103,18 @@ async def sync_handler(env, request):
     # NOT deleted here — the node acks a merged inbox with its per-repo DELETE.
     marks = ",".join("?" for _ in repo_bis)
     by_repo = {}      # repo_bi -> {topic: [decrypted rows...]}
+    merge_sync_by_repo = {}  # repo_bi -> published exact-OID merge receipts
     drain_ids = {}    # repo_bi -> {table: [row ids read]}, for exact deletes
     if repo_bis:
+        now = int(Date.now())
+        await d1_run(
+            env,
+            "UPDATE issue_inbox SET claimed_by_bi=?, claim_expires_at=? "
+            f"WHERE repo_bi IN ({marks}) AND "
+            "(claimed_by_bi='' OR claim_expires_at<=? OR claimed_by_bi=?)",
+            issue_claimant_bi, now + ISSUE_INBOX_CLAIM_TTL_MS,
+            *repo_bis, now, issue_claimant_bi,
+        )
         for topic, table, ordered in (
                 ("issues", "issue_inbox", True),
                 ("pulls", "pull_inbox", True),
@@ -27321,11 +29124,14 @@ async def sync_handler(env, request):
                 ("aboutUpdate", "about_inbox", False)):
             order = " ORDER BY id ASC" if ordered else ""
             id_col = "rowid AS drain_id" if table == "about_inbox" else "id AS drain_id"
+            claim_filter = (
+                " AND claimed_by_bi=?" if table == "issue_inbox" else "")
             table_rows = await d1_all(
                 env,
                 f"SELECT repo_bi, data, {id_col} FROM {table}"
-                f" WHERE repo_bi IN ({marks})" + order,
-                *repo_bis)
+                f" WHERE repo_bi IN ({marks})" + claim_filter + order,
+                *repo_bis,
+                *([issue_claimant_bi] if table == "issue_inbox" else []))
             for r in table_rows or []:
                 owner_crypto = globals().get("security_control")
                 sealed = (
@@ -27372,6 +29178,58 @@ async def sync_handler(env, request):
                             and owner_crypto is None)):
                     drain_ids.setdefault(r.get("repo_bi"), {}) \
                         .setdefault(table, []).append(r.get("drain_id"))
+        # A merge performed while the source-of-truth node was offline is a
+        # durable relay job, not an ordinary PR event. Carry its exact,
+        # already-validated public object IDs in the same signed sync response
+        # so the owner node can reconcile the published mirror state later.
+        # The selected mirror, actor, paths, and credentials never leave D1.
+        merge_rows = await d1_all(
+            env,
+            "SELECT repo_bi,request_id,pull_number,result,updated_at "
+            "FROM repo_merge_jobs "
+            f"WHERE repo_bi IN ({marks}) AND status='succeeded' "
+            "AND expires_at>? ORDER BY updated_at ASC",
+            *repo_bis, now,
+        )
+        for merge_row in merge_rows or []:
+            try:
+                result = json.loads(str(merge_row.get("result") or ""))
+            except Exception:
+                continue
+            request_id = clean_string(
+                merge_row.get("request_id", ""), 80).strip()
+            fields = {
+                key: str(result.get(key) or "").strip().lower()
+                for key in (
+                    "baseBefore", "head", "pullsBefore",
+                    "baseAfter", "pullsAfter",
+                )
+            }
+            try:
+                pull_number = int(merge_row.get("pull_number") or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if (
+                result.get("ok") is not True
+                or result.get("status") != "merged"
+                or result.get("published") is not True
+                or str(result.get("requestId") or "") != request_id
+                or not HTTPS_MIRROR_MERGE_REQUEST_RE.fullmatch(request_id)
+                or not 1 <= pull_number <= 999999999
+                or any(
+                    not re.fullmatch(
+                        r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid)
+                    for oid in fields.values()
+                )
+                or len({len(oid) for oid in fields.values()}) != 1
+            ):
+                continue
+            merge_sync_by_repo.setdefault(
+                merge_row.get("repo_bi"), []).append({
+                    "requestId": request_id,
+                    "pullNumber": pull_number,
+                    **fields,
+                })
     repos = []
     for row in rows:
         rec = await decrypt_row(env, row["data"])
@@ -27391,6 +29249,7 @@ async def sync_handler(env, request):
             "pulls": pending.get("pulls", []),
             "discussions": pending.get("discussions", []),
             "commits": pending.get("commits", []),
+            "mirrorMerges": merge_sync_by_repo.get(repo_bi, []),
         }
         # Drain-on-read deletes target the EXACT rows this request read (by
         # id), never the whole repo_bi: a prompt/About edit inserted while
@@ -28211,6 +30070,678 @@ async def agents_ack_handler(env, request, owner, repo):
             repo_bi, *sealed_ids,
         )
     return json_response({"ok": True, "acknowledged": len(sealed_ids)})
+
+
+# --- Organization-scoped Claude/Codex bots ---------------------------------
+#
+# This is intentionally NOT an authorization shortcut into repo_agents. Those
+# rows remain owner-device E2EE. Organization bots have their own encrypted-at-
+# rest session/job tables, are visible only to current org members, and execute
+# only after the selected mirror runs a tool-free Claude Haiku safety preflight.
+ORG_AGENT_PROVIDERS = ("claude-code", "codex")
+ORG_AGENT_SESSION_STATUSES = (
+    "security_pending", "queued", "running", "completed", "failed", "rejected",
+)
+ORG_AGENT_MAX_PROMPT = 8000
+ORG_AGENT_MAX_SESSIONS = 50
+ORG_AGENT_MAX_HISTORY = 80
+ORG_AGENT_JOB_LEASE_MS = 2 * 60 * 1000
+
+
+async def _org_agent_member_context(env, request, org, repo, data=None):
+    org = clean_string(org, MAX_NODE_NAME).strip().lower()
+    repo = clean_string(repo, MAX_REPO_SEGMENT).strip().lower()
+    if not valid_node_name(org) or not safe_segment(repo):
+        return None, json_response({"error": "not_found"}, status=404)
+    org_bi, org_row = await _org_row(env, org)
+    if not org_row:
+        return None, json_response({"error": "not_found"}, status=404)
+    account_bi, account = await _account_session_record(
+        env, request, data if isinstance(data, dict) else None)
+    actor = clean_string(
+        (account or {}).get("name"), MAX_NODE_NAME).strip().lower()
+    if not account_bi or not actor:
+        return None, json_response({"error": "invalid_session"}, status=401)
+    role = await _org_role(env, org_bi, actor)
+    if role not in ORG_ROLES:
+        return None, json_response({"error": "forbidden"}, status=403)
+    engineering = await d1_first(
+        env,
+        "SELECT 1 AS one FROM org_team_members "
+        "WHERE org_bi=? AND team='engineering' AND member_bi=?",
+        org_bi, str(account_bi),
+    )
+    if not engineering:
+        return None, json_response(
+            {
+                "error": "engineering_team_required",
+                "requiredTeam": "engineering",
+            },
+            status=403,
+            cache_control="no-store",
+        )
+    linked = await d1_first(
+        env,
+        "SELECT node_owner FROM org_repos WHERE org_bi=? AND repo=?",
+        org_bi, repo,
+    )
+    node_owner = clean_string(
+        (linked or {}).get("node_owner"), MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(node_owner):
+        return None, json_response({"error": "repository_not_linked"}, status=404)
+    return {
+        "org": org,
+        "orgBi": org_bi,
+        "repo": repo,
+        "nodeOwner": node_owner,
+        "accountBi": str(account_bi),
+        "actor": actor,
+        "role": role,
+    }, None
+
+
+async def _org_agent_target_mirror(env, context, preferred_node=""):
+    mirror_context = await _https_mirror_public_context(
+        env, context["nodeOwner"], context["repo"])
+    if not mirror_context:
+        return ""
+    candidates = await _https_mirror_candidates(env, mirror_context, "")
+    source = context["nodeOwner"].lower()
+    preferred = clean_string(
+        preferred_node, MAX_NODE_NAME).strip().lower()
+    eligible = []
+    for candidate in candidates or []:
+        node = clean_string(
+            candidate.get("node"), MAX_NODE_NAME).strip().lower()
+        if valid_node_name(node) and node != source:
+            eligible.append(node)
+    if preferred:
+        return preferred if preferred in eligible else ""
+    if eligible:
+        return eligible[0]
+    # A source node is not described as a headless mirror. Fail closed rather
+    # than silently running an org member's prompt on a different trust class.
+    return ""
+
+
+def _org_agent_info_projection(value):
+    value = value if isinstance(value, dict) else {}
+    text_fields = {
+        "owner": MAX_NODE_NAME,
+        "repository": MAX_REPO_SEGMENT,
+        "provider": 40,
+        "model": 120,
+        "mode": 80,
+        "status": 32,
+        "branchName": 240,
+        "baseRef": 64,
+        "baseBranch": 240,
+        "lastError": 1000,
+    }
+    output = {
+        key: clean_string(value.get(key), maximum)
+        for key, maximum in text_fields.items()
+    }
+    for key in (
+        "issueNumber", "prNumber", "promptTokens", "completionTokens",
+        "totalTokens", "contextTokens", "contextWindow", "maxOutputTokens",
+        "estimatedCredits", "numTurns", "durationMs", "createdAt",
+        "startedAt", "finishedAt", "mergedAt",
+    ):
+        try:
+            number = int(value.get(key) or 0)
+        except (TypeError, ValueError):
+            number = 0
+        output[key] = max(0, min(number, 2 ** 53 - 1))
+    try:
+        cost = float(value.get("costUsd") or 0)
+    except (TypeError, ValueError):
+        cost = 0
+    output["costUsd"] = max(0, min(cost, 1_000_000))
+    output["createPr"] = value.get("createPr") is True
+    output["merged"] = value.get("merged") is True
+    return output
+
+
+def _org_agent_availability_projection(value):
+    value = value if isinstance(value, dict) else {}
+    login_state = clean_string(value.get("loginState"), 20).lower()
+    if login_state not in ("available", "missing", "unknown"):
+        login_state = "unknown"
+    return {
+        "provider": clean_string(value.get("provider"), 40),
+        "binaryFound": value.get("binaryFound") is True,
+        "loginState": login_state,
+        "message": clean_string(value.get("message"), 400),
+        "credentialSource": clean_string(
+            value.get("credentialSource"), 60),
+    }
+
+
+def _org_agent_session_projection(row, record):
+    history = (
+        record.get("history") if isinstance(record.get("history"), list) else []
+    )
+    status = str(row.get("status") or "")
+    updated_at = int(row.get("updated_at") or 0)
+    age_ms = max(0, int(Date.now()) - updated_at) if updated_at else 0
+    availability = _org_agent_availability_projection(
+        record.get("availability"))
+    agent_info = _org_agent_info_projection(record.get("agentInfo"))
+    diagnostic = {
+        "code": "waiting_for_mirror",
+        "level": "pending",
+        "message": "Waiting for the selected mirror to claim this job.",
+    }
+    if (
+        status == "security_pending"
+        and int(record.get("localAgentId") or 0) <= 0
+        and not availability.get("message")
+        and age_ms >= 90 * 1000
+    ):
+        diagnostic = {
+            "code": "mirror_not_claiming_jobs",
+            "level": "attention",
+            "message": (
+                "The selected mirror has not claimed this job. Confirm its Qt "
+                "app is running, this repository is published locally, "
+                "website agent publishing is enabled, and the node can sign "
+                "for the mirror account."
+            ),
+        }
+    elif (
+        availability.get("binaryFound") is False
+        or availability.get("loginState") == "missing"
+    ):
+        diagnostic = {
+            "code": (
+                "provider_binary_missing"
+                if availability.get("binaryFound") is False
+                else "provider_credential_missing"
+            ),
+            "level": "attention",
+            "message": availability.get("message") or (
+                "The selected mirror is missing the provider runtime or "
+                "supported headless authorization."
+            ),
+        }
+    elif status in ("failed", "rejected"):
+        diagnostic = {
+            "code": "agent_" + status,
+            "level": "attention",
+            "message": (
+                agent_info.get("lastError")
+                or str((record.get("security") or {}).get("reason") or "")
+                or "The mirror reported that this session needs attention."
+            ),
+        }
+    elif status in ("running", "queued", "completed"):
+        diagnostic = {
+            "code": status,
+            "level": "ok" if status == "completed" else "active",
+            "message": {
+                "running": "The mirror is running this agent session.",
+                "queued": "The mirror accepted the job and is preparing it.",
+                "completed": "The mirror completed this agent session.",
+            }[status],
+        }
+    return {
+        "id": str(row.get("session_id") or ""),
+        "org": str(record.get("org") or ""),
+        "repo": str(row.get("repo") or ""),
+        "provider": str(row.get("provider") or ""),
+        "status": status,
+        "displayStatus": (
+            "attention"
+            if diagnostic.get("level") == "attention"
+            else status
+        ),
+        "targetNode": str(row.get("target_node") or ""),
+        "title": clean_string(record.get("title"), 160),
+        "createdBy": clean_string(record.get("createdBy"), MAX_NODE_NAME),
+        "createdAt": int(row.get("created_at") or 0),
+        "updatedAt": updated_at,
+        "completedAt": int(row.get("completed_at") or 0),
+        "localAgentId": int(record.get("localAgentId") or 0),
+        "taskKey": clean_string(record.get("taskKey"), 96),
+        "history": history[-ORG_AGENT_MAX_HISTORY:],
+        "security": record.get("security") or {},
+        "agentInfo": agent_info,
+        "availability": availability,
+        "diagnostic": diagnostic,
+    }
+
+
+async def _org_agent_session_row(env, context, session_id):
+    row = await d1_first(
+        env,
+        "SELECT session_id,org_bi,repo,target_node,provider,status,data,"
+        "created_at,updated_at,completed_at FROM org_agent_sessions "
+        "WHERE session_id=? AND org_bi=? AND repo=?",
+        session_id, context["orgBi"], context["repo"],
+    )
+    if not row:
+        return None, None
+    record = await decrypt_row(env, row.get("data"))
+    if (
+        not isinstance(record, dict)
+        or str(record.get("org") or "").lower() != context["org"]
+        or str(record.get("repo") or "").lower() != context["repo"]
+    ):
+        return None, None
+    return row, record
+
+
+async def org_agent_bots_handler(env, request, org, repo):
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    data = {}
+    if method == "POST":
+        if not _request_same_origin(request):
+            return json_response({"error": "origin_not_allowed"}, status=403)
+        try:
+            data = await bounded_json_request(request)
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+    context, error = await _org_agent_member_context(
+        env, request, org, repo, data)
+    if error:
+        return error
+    if method == "GET":
+        rows = await d1_all(
+            env,
+            "SELECT session_id,org_bi,repo,target_node,provider,status,data,"
+            "created_at,updated_at,completed_at FROM org_agent_sessions "
+            "WHERE org_bi=? AND repo=? ORDER BY updated_at DESC LIMIT ?",
+            context["orgBi"], context["repo"], ORG_AGENT_MAX_SESSIONS,
+        )
+        sessions = []
+        for row in rows or []:
+            record = await decrypt_row(env, row.get("data"))
+            if (
+                isinstance(record, dict)
+                and str(record.get("org") or "").lower() == context["org"]
+                and str(record.get("repo") or "").lower() == context["repo"]
+            ):
+                sessions.append(_org_agent_session_projection(row, record))
+        return json_response({
+            "ok": True,
+            "organization": context["org"],
+            "repository": context["repo"],
+            "memberRole": context["role"],
+            "requiredTeam": "engineering",
+            "engineeringAccess": True,
+            "providers": list(ORG_AGENT_PROVIDERS),
+            "sessions": sessions,
+            "privacyBoundary": "organization-members-encrypted-at-rest",
+            "securityGate": "claude-haiku-tool-free-fail-closed",
+        }, cache_control="no-store")
+
+    provider = clean_string(data.get("provider"), 40).strip().lower()
+    prompt = clean_string(data.get("prompt"), ORG_AGENT_MAX_PROMPT).strip()
+    if provider not in ORG_AGENT_PROVIDERS:
+        return json_response({"error": "invalid_provider"}, status=400)
+    if not prompt:
+        return json_response({"error": "prompt_required"}, status=400)
+    preferred_node = clean_string(
+        data.get("targetNode"), MAX_NODE_NAME).strip().lower()
+    if preferred_node and not valid_node_name(preferred_node):
+        return json_response({"error": "invalid_target_node"}, status=400)
+    target_node = await _org_agent_target_mirror(
+        env, context, preferred_node)
+    if not target_node:
+        return json_response(
+            {"error": "no_eligible_headless_mirror"}, status=503,
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
+    now = int(Date.now())
+    session_id = _ap_uuid()
+    task_key = clean_string(data.get("taskKey"), 96).strip()
+    if task_key and not re.fullmatch(
+        r"(?:task:[a-z0-9-]{1,48}|"
+        r"issue:[a-z0-9-]{1,40}/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})",
+        task_key,
+    ):
+        return json_response({"error": "invalid_task_key"}, status=400)
+    title = clean_string(
+        data.get("title") or prompt.split("\n", 1)[0], 160).strip()
+    record = {
+        "org": context["org"],
+        "repo": context["repo"],
+        "nodeOwner": context["nodeOwner"],
+        "targetNode": target_node,
+        "provider": provider,
+        "title": title,
+        "createdBy": context["actor"],
+        "localAgentId": 0,
+        "taskKey": task_key,
+        "security": {"state": "pending", "model": "haiku"},
+        "history": [{
+            "role": "user",
+            "author": context["actor"],
+            "text": prompt,
+            "at": now,
+            "state": "security_pending",
+        }],
+    }
+    job = {
+        "kind": "start",
+        "sessionId": session_id,
+        "organization": context["org"],
+        "repositoryOwner": target_node,
+        "repositoryName": context["repo"],
+        "provider": provider,
+        "prompt": prompt,
+        "taskKey": task_key,
+        "requestedBy": context["actor"],
+        "securityCheck": {
+            "provider": "claude-code",
+            "model": "haiku",
+            "tools": False,
+            "failClosed": True,
+        },
+    }
+    await d1_run(
+        env,
+        "INSERT INTO org_agent_sessions "
+        "(session_id,org_bi,repo,target_node,provider,status,created_by_bi,"
+        "data,created_at,updated_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,0)",
+        session_id, context["orgBi"], context["repo"], target_node, provider,
+        "security_pending", context["accountBi"],
+        await encrypt_row(env, record), now, now,
+    )
+    await d1_run(
+        env,
+        "INSERT INTO org_agent_jobs "
+        "(session_id,org_bi,target_node,repo,provider,status,lease_id,data,"
+        "created_at,updated_at) VALUES (?,?,?,?,?,'queued','',?,?,?)",
+        session_id, context["orgBi"], target_node, context["repo"], provider,
+        await encrypt_row(env, job), now, now,
+    )
+    await _audit_sensitive_action(
+        env, context["actor"], "organization.agent_start",
+        "organization_agent", context["org"] + "/" + context["repo"] +
+        "/" + session_id, "success",
+        {"provider": provider, "targetNode": target_node})
+    await notify_repo_host(env, target_node, context["repo"], "org-agents")
+    return json_response({
+        "ok": True,
+        "session": _org_agent_session_projection({
+            "session_id": session_id,
+            "repo": context["repo"],
+            "target_node": target_node,
+            "provider": provider,
+            "status": "security_pending",
+            "created_at": now,
+            "updated_at": now,
+            "completed_at": 0,
+        }, record),
+    }, status=202, cache_control="no-store")
+
+
+async def org_agent_bot_handler(env, request, org, repo, session_id):
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    data = {}
+    if method == "POST":
+        if not _request_same_origin(request):
+            return json_response({"error": "origin_not_allowed"}, status=403)
+        try:
+            data = await bounded_json_request(request)
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+    context, error = await _org_agent_member_context(
+        env, request, org, repo, data)
+    if error:
+        return error
+    row, record = await _org_agent_session_row(
+        env, context, clean_string(session_id, 64))
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    if method == "GET":
+        return json_response({
+            "ok": True,
+            "session": _org_agent_session_projection(row, record),
+        }, cache_control="no-store")
+    if str(row.get("status") or "") not in ("running", "queued"):
+        return json_response({"error": "session_not_promptable"}, status=409)
+    local_agent_id = int(record.get("localAgentId") or 0)
+    if local_agent_id <= 0:
+        return json_response({"error": "agent_not_ready"}, status=409)
+    prompt = clean_string(data.get("prompt"), ORG_AGENT_MAX_PROMPT).strip()
+    if not prompt:
+        return json_response({"error": "prompt_required"}, status=400)
+    now = int(Date.now())
+    history = record.get("history")
+    if not isinstance(history, list):
+        history = []
+    history.append({
+        "role": "user",
+        "author": context["actor"],
+        "text": prompt,
+        "at": now,
+        "state": "security_pending",
+    })
+    record["history"] = history[-ORG_AGENT_MAX_HISTORY:]
+    record["security"] = {"state": "pending", "model": "haiku"}
+    job = {
+        "kind": "steer",
+        "sessionId": str(row.get("session_id") or ""),
+        "organization": context["org"],
+        "repositoryOwner": str(row.get("target_node") or ""),
+        "repositoryName": context["repo"],
+        "provider": str(row.get("provider") or ""),
+        "prompt": prompt,
+        "localAgentId": local_agent_id,
+        "taskKey": clean_string(record.get("taskKey"), 96),
+        "requestedBy": context["actor"],
+        "securityCheck": {
+            "provider": "claude-code",
+            "model": "haiku",
+            "tools": False,
+            "failClosed": True,
+        },
+    }
+    await d1_run(
+        env,
+        "UPDATE org_agent_sessions SET status='security_pending',data=?,"
+        "updated_at=? WHERE session_id=? AND org_bi=?",
+        await encrypt_row(env, record), now, row["session_id"], context["orgBi"],
+    )
+    await d1_run(
+        env,
+        "INSERT INTO org_agent_jobs "
+        "(session_id,org_bi,target_node,repo,provider,status,lease_id,data,"
+        "created_at,updated_at) VALUES (?,?,?,?,?,'queued','',?,?,?)",
+        row["session_id"], context["orgBi"], row["target_node"],
+        context["repo"], row["provider"], await encrypt_row(env, job), now, now,
+    )
+    await _audit_sensitive_action(
+        env, context["actor"], "organization.agent_prompt",
+        "organization_agent", context["org"] + "/" + context["repo"] +
+        "/" + row["session_id"], "success")
+    await notify_repo_host(
+        env, row["target_node"], context["repo"], "org-agents")
+    return json_response({"ok": True, "status": "security_pending"},
+                         status=202, cache_control="no-store")
+
+
+async def repo_org_agent_jobs_handler(env, request, owner, repo):
+    await ensure_schema(env)
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if not await _authorize_owner(env, request, owner):
+        return json_response({"error": "unauthorized"}, status=401)
+    owner = clean_string(owner, MAX_NODE_NAME).strip().lower()
+    repo = clean_string(repo, MAX_REPO_SEGMENT).strip().lower()
+    now = int(Date.now())
+    await d1_run(
+        env,
+        "UPDATE org_agent_jobs SET status='queued',lease_id='',updated_at=? "
+        "WHERE target_node=? AND repo=? AND status='leased' AND updated_at<?",
+        now, owner, repo, now - ORG_AGENT_JOB_LEASE_MS,
+    )
+    rows = await d1_all(
+        env,
+        "SELECT id,session_id,data FROM org_agent_jobs "
+        "WHERE target_node=? AND repo=? AND status='queued' ORDER BY id LIMIT 8",
+        owner, repo,
+    )
+    jobs = []
+    for row in rows or []:
+        job_id = int(row.get("id") or 0)
+        record = await decrypt_row(env, row.get("data"))
+        if not job_id or not isinstance(record, dict):
+            continue
+        lease_id = _ap_uuid()
+        await d1_run(
+            env,
+            "UPDATE org_agent_jobs SET status='leased',lease_id=?,updated_at=? "
+            "WHERE id=? AND target_node=? AND status='queued'",
+            lease_id, now, job_id, owner,
+        )
+        jobs.append({
+            "jobId": job_id,
+            "leaseId": lease_id,
+            **record,
+        })
+    return json_response({
+        "ok": True,
+        "jobs": jobs,
+        "securityGate": "claude-haiku-tool-free-fail-closed",
+    }, cache_control="no-store")
+
+
+async def repo_org_agent_job_result_handler(
+        env, request, owner, repo, job_id):
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if not await _authorize_owner(env, request, owner):
+        return json_response({"error": "unauthorized"}, status=401)
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    owner = clean_string(owner, MAX_NODE_NAME).strip().lower()
+    repo = clean_string(repo, MAX_REPO_SEGMENT).strip().lower()
+    lease_id = clean_string(data.get("leaseId"), 64)
+    row = await d1_first(
+        env,
+        "SELECT id,session_id,org_bi,provider,data FROM org_agent_jobs "
+        "WHERE id=? AND target_node=? AND repo=? "
+        "AND status IN ('leased','running') "
+        "AND lease_id=?",
+        int(job_id), owner, repo, lease_id,
+    )
+    if not row:
+        return json_response({"error": "lease_not_found"}, status=409)
+    job = await decrypt_row(env, row.get("data"))
+    session_row = await d1_first(
+        env,
+        "SELECT session_id,status,created_by_bi,data FROM org_agent_sessions "
+        "WHERE session_id=? AND org_bi=? AND target_node=?",
+        row["session_id"], row["org_bi"], owner,
+    )
+    session = (
+        await decrypt_row(env, session_row.get("data"))
+        if session_row else None)
+    if not isinstance(job, dict) or not isinstance(session, dict):
+        return json_response({"error": "invalid_job_state"}, status=409)
+    verdict = clean_string(data.get("securityVerdict"), 20).lower()
+    run_status = clean_string(data.get("status"), 20).lower()
+    if verdict not in ("approved", "rejected"):
+        verdict = "rejected"
+    if run_status not in ("running", "completed", "failed", "rejected"):
+        run_status = "rejected"
+    # Exact fail-closed coupling: a run cannot become active unless the node
+    # reports that its tool-free Haiku preflight approved this exact leased job.
+    if verdict != "approved" and run_status != "rejected":
+        run_status = "rejected"
+    now = int(Date.now())
+    session["security"] = {
+        "state": verdict,
+        "model": "haiku",
+        "reason": clean_string(data.get("securityReason"), 240),
+        "at": now,
+    }
+    local_agent_id = int(data.get("localAgentId") or 0)
+    if verdict == "approved" and local_agent_id > 0:
+        session["localAgentId"] = local_agent_id
+    if isinstance(data.get("agentInfo"), dict):
+        session["agentInfo"] = _org_agent_info_projection(
+            data.get("agentInfo"))
+    if isinstance(data.get("availability"), dict):
+        session["availability"] = _org_agent_availability_projection(
+            data.get("availability"))
+    history = session.get("history")
+    if not isinstance(history, list):
+        history = []
+    result_text = clean_string(
+        data.get("result") or data.get("transcript"), MAX_AGENT_TRANSCRIPT)
+    history.append({
+        "role": "assistant" if verdict == "approved" else "security",
+        "author": str(row.get("provider") or "agent"),
+        "text": result_text or (
+            "Prompt approved by Haiku and dispatched."
+            if verdict == "approved"
+            else "Prompt rejected by the Haiku security preflight."
+        ),
+        "at": now,
+        "state": run_status,
+    })
+    session["history"] = history[-ORG_AGENT_MAX_HISTORY:]
+    completed_at = now if run_status in ("completed", "failed", "rejected") else 0
+    await d1_run(
+        env,
+        "UPDATE org_agent_sessions SET status=?,data=?,updated_at=?,"
+        "completed_at=? WHERE session_id=? AND org_bi=?",
+        run_status, await encrypt_row(env, session), now, completed_at,
+        row["session_id"], row["org_bi"],
+    )
+    keep_running = (
+        str(job.get("kind") or "") == "start"
+        and verdict == "approved"
+        and run_status == "running"
+    )
+    await d1_run(
+        env,
+        "UPDATE org_agent_jobs SET status=?,updated_at=? "
+        "WHERE id=? AND lease_id=?",
+        "running" if keep_running else "done", now, int(job_id), lease_id,
+    )
+    task_key = clean_string(session.get("taskKey"), 96)
+    if (
+        str(row.get("provider") or "") == "codex"
+        and run_status == "completed"
+        and re.fullmatch(
+            r"(?:task:[a-z0-9-]{1,48}|"
+            r"issue:[a-z0-9-]{1,40}/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})",
+            task_key,
+        )
+    ):
+        board_kind = "issue" if task_key.startswith("issue:") else "task"
+        await d1_run(
+            env,
+            "INSERT INTO world_build_board_items "
+            "(item_key,kind,owner,repo,issue_number,title,priority,"
+            "updated_by_bi,updated_at,completed_at,completed_by_bi) "
+            "VALUES (?,?, '', '',0,'',64,?,?,?,?) "
+            "ON CONFLICT(item_key) DO UPDATE SET completed_at=excluded.completed_at,"
+            "completed_by_bi=excluded.completed_by_bi,"
+            "updated_by_bi=excluded.updated_by_bi,updated_at=excluded.updated_at",
+            task_key, board_kind, session_row.get("created_by_bi") or "",
+            now, now, session_row.get("created_by_bi") or "",
+        )
+    await _audit_sensitive_action(
+        env, owner, "organization.agent_job_result", "organization_agent",
+        str(row["session_id"]), "success",
+        {"securityVerdict": verdict, "status": run_status})
+    return json_response({"ok": True, "status": run_status},
+                         cache_control="no-store")
 
 
 # --- Error log + admin dashboard -------------------------------------------
@@ -33139,6 +35670,48 @@ async def repository_actions_status_handler(env, request, owner, repo):
         cache_control="no-store")
 
 
+async def _organization_owner_can_merge_repo(
+        env, request, canonical_owner, repo, actor):
+    """Require the signed-in actor to own the org alias in the original URL.
+
+    The internal router has already rewritten /api/repo/<org>/<repo> to the
+    backing node namespace. Merge-via-mirror is intentionally narrower than
+    ordinary team write access until group merge policy exists: direct node
+    URLs, organization admins, maintainers, and writers all fail closed.
+    """
+    if not actor:
+        return False
+    try:
+        original = urlparse(request.url)
+        match = REPO_API_PREFIX_RE.match(original.path)
+    except Exception:
+        return False
+    if not match:
+        return False
+    alias_owner = (safe_segment(match.group(1)) or "").strip().lower()
+    alias_repo = (safe_segment(match.group(2)) or "").strip().lower()
+    canonical_owner = str(canonical_owner or "").strip().lower()
+    repo = str(repo or "").strip().lower()
+    if (
+        not alias_owner
+        or alias_owner == canonical_owner
+        or alias_repo != repo
+    ):
+        return False
+    org_bi, org_row = await _org_row(env, alias_owner)
+    if not org_row:
+        return False
+    linked = await d1_first(
+        env,
+        "SELECT 1 AS ok FROM org_repos "
+        "WHERE org_bi=? AND repo=? AND node_owner=?",
+        org_bi, repo, canonical_owner,
+    )
+    if not linked:
+        return False
+    return await _org_role(env, org_bi, actor) == "owner"
+
+
 def _https_mirror_merge_response(value):
     status = str((value or {}).get("status") or "")
     if status == "processing":
@@ -33250,12 +35823,8 @@ async def repository_pull_merge_handler(
     if not actor:
         return json_response({"error": "invalid_session"}, status=401)
     try:
-        authorized = bool(
-            actor == context["owner"]
-            or await _account_owns_node(env, actor, context["owner"])
-            or await _org_write_allowed(
-                env, context["owner"], context["repo"], actor)
-        )
+        authorized = await _organization_owner_can_merge_repo(
+            env, request, context["owner"], context["repo"], actor)
     except Exception:
         authorized = False
     target = context["owner"] + "/" + context["repo"]
@@ -33413,6 +35982,11 @@ async def repository_pull_merge_handler(
         "success" if terminal == "succeeded" else "failed",
         {"pullNumber": int(pull_number),
          "reason": str(result.get("error") or "")})
+    if terminal == "succeeded":
+        # Wake the source node immediately. Its next signed /api/sync response
+        # now includes the exact published receipt from repo_merge_jobs.
+        await notify_repo_host(
+            env, context["owner"], context["repo"], "mirror_merge")
     return _https_mirror_merge_response(result)
 
 
@@ -33842,6 +36416,17 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/purge-stale-account-devices",
                     "purge_stale_account_devices failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
+        # Hourly: bound the inbound-website board. Referer headers are
+        # attacker-controlled, so the long tail a spammer could grow is
+        # dropped and only the busiest hosts are retained.
+        if minute % 60 == 17:
+            try:
+                await prune_site_referrers(self.env)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/prune-site-referrers",
+                    "prune_site_referrers failed: " + _safe_error_text(error),
+                    error=error, failures=cron_failures)
         # Hourly organization-succession warning pass. It reads only the
         # configured owner's generalized activity maximum and emits at most one
         # deduplicated warning per inactivity deadline. It never opens a grace
@@ -33941,6 +36526,14 @@ class Default(WorkerEntrypoint):
             status = int(getattr(response, "status", 200) or 200)
         except Exception:
             status = 200
+        # Credit the website that sent this visitor. Gated to served page
+        # navigations carrying an external Referer, so the extra D1 write only
+        # happens on the rare request that is actually an inbound referral.
+        await record_site_referral(self.env, request, url, status)
+        # Blog reach is recorded from the same successfully served top-level
+        # navigation. It stores totals, a fixed aggregate HLL projection and
+        # per-post referring-host counters only.
+        await record_blog_visit(self.env, request, url, status)
         if status >= 500:
             # An offline node's content being re-requested (502/503/504 on a
             # tunnel path) is expected in a P2P network — host_presence and
@@ -34374,6 +36967,15 @@ class Default(WorkerEntrypoint):
                 self.env, request, url.path)
 
         if url.path in (
+                "/api/world/build-board", "/api/world/build-board/"):
+            return await world_build_board_handler(
+                self.env, request, url.path)
+
+        if url.path in (
+                "/api/world/preferences", "/api/world/preferences/"):
+            return await world_preferences_handler(self.env, request)
+
+        if url.path in (
                 "/api/world/office/attendance",
                 "/api/world/office/attendance/"):
             return await office_attendance_handler(self.env, request)
@@ -34515,6 +37117,20 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/referrals/leaderboard", "/api/referrals/leaderboard/"):
             return await referral_leaderboard(self.env)
 
+        # Inbound website board (visits per referring hostname) for the
+        # /referrals page.
+        if url.path in ("/api/referrals/sites", "/api/referrals/sites/"):
+            return await site_referrer_leaderboard(self.env)
+
+        blog_metrics_prefix = "/api/blog/metrics/"
+        if url.path.startswith(blog_metrics_prefix):
+            slug = unquote(url.path[len(blog_metrics_prefix):]).strip("/")
+            if method_name(request) != "GET":
+                return json_response(
+                    {"error": "method_not_allowed"}, status=405,
+                    extra_headers={"allow": "GET"})
+            return await blog_post_metrics(self.env, slug)
+
         # Rendered share-link card (og:image of the /r/<name> preview page).
         referral_card_match = REFERRAL_CARD_RE.match(url.path)
         if referral_card_match:
@@ -34635,9 +37251,25 @@ class Default(WorkerEntrypoint):
             CHAT_CHANNELS_RE.match(url.path)
             or CHAT_CHANNEL_MEMBERS_RE.match(url.path)
             or CHAT_CHANNEL_ROOM_ACCESS_RE.match(url.path)
+            or CHAT_CHANNEL_HISTORY_RE.match(url.path)
         ):
             return await chat_channels_api.handle(
                 _ChatChannelsRuntime(self.env, request), url.path)
+
+        # Direct messages never inherit platform-administrator channel access.
+        # Both HTTP room access and WebSocket admission check participant rows.
+        chat_direct_socket = CHAT_DIRECT_MESSAGE_WS_RE.match(url.path)
+        if chat_direct_socket:
+            return await _chat_direct_socket_handler(
+                self.env, request, chat_direct_socket.group(1))
+        if (
+            CHAT_DIRECT_MESSAGES_RE.match(url.path)
+            or CHAT_DIRECT_MESSAGE_USERS_RE.match(url.path)
+            or CHAT_DIRECT_MESSAGE_ROOM_ACCESS_RE.match(url.path)
+            or CHAT_DIRECT_MESSAGE_READ_RE.match(url.path)
+        ):
+            return await chat_direct_messages_api.handle(
+                _ChatDirectMessagesRuntime(self.env, request), url.path)
 
         # Chat-triggered Cloudflare AI interface. Clients forward explicit
         # "forkbot ..." mentions here; the Worker queues compatible issue-inbox
@@ -35050,6 +37682,45 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await repo_privacy_handler(
+                self.env, request, owner, repo)
+
+        org_agent_bot_match = ORG_AGENT_BOT_RE.match(url.path)
+        if org_agent_bot_match:
+            org = safe_segment(org_agent_bot_match.group(1))
+            repo = safe_segment(org_agent_bot_match.group(2))
+            session_id = safe_segment(org_agent_bot_match.group(3))
+            if not org or not repo or not session_id:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_agent_bot_handler(
+                self.env, request, org, repo, session_id)
+
+        org_agent_bots_match = ORG_AGENT_BOTS_RE.match(url.path)
+        if org_agent_bots_match:
+            org = safe_segment(org_agent_bots_match.group(1))
+            repo = safe_segment(org_agent_bots_match.group(2))
+            if not org or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_agent_bots_handler(
+                self.env, request, org, repo)
+
+        org_agent_job_result_match = REPO_ORG_AGENT_JOB_RESULT_RE.match(
+            url.path)
+        if org_agent_job_result_match:
+            owner = safe_segment(org_agent_job_result_match.group(1))
+            repo = safe_segment(org_agent_job_result_match.group(2))
+            job_id = org_agent_job_result_match.group(3)
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_org_agent_job_result_handler(
+                self.env, request, owner, repo, job_id)
+
+        org_agent_jobs_match = REPO_ORG_AGENT_JOBS_RE.match(url.path)
+        if org_agent_jobs_match:
+            owner = safe_segment(org_agent_jobs_match.group(1))
+            repo = safe_segment(org_agent_jobs_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_org_agent_jobs_handler(
                 self.env, request, owner, repo)
 
         agents_list_match = REPO_AGENTS_LIST_RE.match(url.path)
@@ -35634,6 +38305,28 @@ async def chat_history_recent(env, room_key):
     return [str(r["body"]) for r in rows]
 
 
+async def chat_history_since(env, room_key, since_ts=0):
+    # The same retained (encrypted) frames chat_history_recent replays to a
+    # joining socket, but stamped with their store time and filtered to what
+    # landed after `since_ts`, so an HTTP client can poll a room incrementally.
+    await ensure_schema(env)
+    try:
+        since = int(since_ts or 0)
+    except (TypeError, ValueError):
+        since = 0
+    cutoff = max(since, int(Date.now()) - CHAT_HISTORY_RETAIN_MS)
+    rows = await d1_all(
+        env,
+        "SELECT ts,body FROM chat_history WHERE room_key=? AND ts>? "
+        "ORDER BY ts ASC, msg_id ASC LIMIT ?",
+        room_key, cutoff, CHAT_HISTORY_MAX_PER_ROOM,
+    )
+    return [
+        {"ts": int(r["ts"]), "body": str(r["body"])}
+        for r in rows
+    ]
+
+
 async def chat_history_store(env, room_key, msg_id, ts, body):
     await ensure_schema(env)
     await d1_run(
@@ -35884,19 +38577,6 @@ class ForkMeshWorld(DurableObject):
         if not peer_id:
             return json_response({"error": "identity_unavailable"}, status=503)
         country_source = world_protocol.approximate_country_code(raw_country)
-        state = world_protocol.default_presence(peer_id, now)
-        blocked_slots = []
-        for peer in peers:
-            blocked_slots.append(_ws_attr(peer, "arrival_slot", -1))
-            if _ws_attr(peer, "space", "") == "town-square":
-                # A visitor who restored a saved spot onto an arrival cell
-                # blocks that cell even without a matching reservation.
-                blocked_slots.append(
-                    world_protocol.arrival_slot_near_position(
-                        _ws_attr(peer, "x", None), _ws_attr(peer, "z", None)))
-        arrival_slot = world_protocol.first_available_arrival_slot(
-            blocked_slots)
-        state.update(world_protocol.arrival_position(arrival_slot))
         trusted_claim = {}
         is_admin = False
         ticket_nonce = ""
@@ -35932,6 +38612,43 @@ class ForkMeshWorld(DurableObject):
                     ticket_nonce)
                 for peer in peers):
             return json_response({"error": "ticket_replayed"}, status=409)
+
+        # One account is one avatar. When the same signed-in person joins from
+        # a second device (or a second visible tab), their earlier socket is
+        # retired here instead of standing beside them as a twin: every viewer
+        # keeps seeing exactly one figure for that account, and it is the one
+        # the person is actually driving. Only the ticket-verified account name
+        # can fold two sockets together — a guest may type any display name, so
+        # guests are never combined and no unverified name can evict anyone.
+        account_key = world_protocol.account_presence_key(
+            trusted_claim.get("name", ""))
+        if account_key:
+            replaced = [
+                peer for peer in peers
+                if _ws_attr(peer, "account_key", "") == account_key
+            ]
+            for peer in replaced:
+                self._depart(
+                    peer, WORLD_ACCOUNT_TAKEOVER_CODE,
+                    "moved to your newest device")
+            if replaced:
+                # The retired sockets release their arrival cells and drop out
+                # of the newcomer's welcome snapshot.
+                peers = self._live_sockets()
+
+        state = world_protocol.default_presence(peer_id, now)
+        blocked_slots = []
+        for peer in peers:
+            blocked_slots.append(_ws_attr(peer, "arrival_slot", -1))
+            if _ws_attr(peer, "space", "") == "town-square":
+                # A visitor who restored a saved spot onto an arrival cell
+                # blocks that cell even without a matching reservation.
+                blocked_slots.append(
+                    world_protocol.arrival_slot_near_position(
+                        _ws_attr(peer, "x", None), _ws_attr(peer, "z", None)))
+        arrival_slot = world_protocol.first_available_arrival_slot(
+            blocked_slots)
+        state.update(world_protocol.arrival_position(arrival_slot))
         moderation_tokens = {}
         for target_type in ("ip", "agent"):
             try:
@@ -36110,6 +38827,12 @@ class ForkMeshWorld(DurableObject):
             # into name/operator-belt sharing.
             "trusted_name": trusted_fields["name"] if trusted_name else "",
             "trusted_node_count": trusted_fields["nodeCount"],
+            # The private "one account, one avatar" key. It never reaches a
+            # frame; it only lets a later connection from the same verified
+            # account retire this socket instead of standing beside it.
+            "account_key": (
+                world_protocol.account_presence_key(trusted_fields["name"])
+                if trusted_name else ""),
             # These opaque rotating subjects and authorization bit remain
             # private attachment data. Only `_presence_for_viewer` can project
             # the handles, and only to a server-verified administrator.
@@ -36488,6 +39211,27 @@ class ForkMeshOfficeRoom(DurableObject):
                     ticket_nonce)
                 for peer in peers):
             return json_response({"error": "ticket_replayed"}, status=409)
+
+        # One account is one person in the room, exactly as in the Town Square
+        # (see ForkMeshWorld). A member who opens this meeting on a second
+        # device replaces their earlier socket instead of occupying two chairs
+        # and two rows of "In this room". The fold key is the account binding
+        # the room ticket was minted against, never a typed name.
+        account_bi = str(claim.get("account_bi") or "")
+        if re.fullmatch(r"[0-9a-f]{64}", account_bi):
+            replaced = [
+                peer for peer in peers
+                if hmac.compare_digest(
+                    str(_ws_attr(peer, "account_bi", "") or ""), account_bi)
+            ]
+            for peer in replaced:
+                self._depart(
+                    peer, WORLD_ACCOUNT_TAKEOVER_CODE,
+                    "moved to your newest device")
+            if replaced:
+                # The retired sockets release their seats and drop out of the
+                # newcomer's participant snapshot.
+                peers = self._live_sockets()
 
         live_ids = {
             str(_ws_attr(peer, "id", "") or "") for peer in peers
@@ -36976,7 +39720,10 @@ class ForkMeshRoom(DurableObject):
     async def fetch(self, request):
         parsed_url = urlparse(request.url)
         path = parsed_url.path
-        private_path = CHAT_CHANNEL_DO_RE.match(path)
+        private_path = (
+            CHAT_CHANNEL_DO_RE.match(path)
+            or CHAT_DIRECT_MESSAGE_DO_RE.match(path)
+        )
         if (
             private_path
             and private_path.group(3) == "revoke"
@@ -37013,6 +39760,8 @@ class ForkMeshRoom(DurableObject):
             "id": new_socket_id(), "room": room_key,
             "channel_id": (info or {}).get("channel_id", ""),
             "channel_version": (info or {}).get("channel_version", 0),
+            "direct_id": (info or {}).get("direct_id", ""),
+            "direct_version": (info or {}).get("direct_version", 0),
             "account_bi": (info or {}).get("account_bi", ""),
             "last": int(Date.now()),
         }))
@@ -37079,6 +39828,8 @@ class ForkMeshRoom(DurableObject):
                 "id": _ws_attr(ws, "id"), "room": _ws_attr(ws, "room"),
                 "channel_id": _ws_attr(ws, "channel_id", ""),
                 "channel_version": _ws_attr(ws, "channel_version", 0),
+                "direct_id": _ws_attr(ws, "direct_id", ""),
+                "direct_version": _ws_attr(ws, "direct_version", 0),
                 "account_bi": _ws_attr(ws, "account_bi", ""),
                 "last": now, "rl_start": start, "rl_count": count,
             }))
@@ -37140,10 +39891,70 @@ class ForkMeshRoom(DurableObject):
             msg_id = (await sha256_hex(message))[:40]
             await chat_history_store(self.env, room_key, msg_id,
                                      int(Date.now()), message)
+            direct_id = str(_ws_attr(ws, "direct_id", "") or "")
+            account_bi = str(_ws_attr(ws, "account_bi", "") or "")
+            if (
+                re.fullmatch(r"[0-9a-f]{32}", direct_id)
+                and re.fullmatch(r"[0-9a-f]{64}", account_bi)
+            ):
+                await _chat_direct_message_retained(
+                    self.env, direct_id, account_bi, int(Date.now()))
         except Exception:
             pass
 
     async def _private_room_current(self, ws):
+        direct_id = _ws_attr(ws, "direct_id", "")
+        if direct_id:
+            try:
+                direct_version = int(
+                    _ws_attr(ws, "direct_version", 0) or 0)
+                account_bi = str(_ws_attr(ws, "account_bi", "") or "")
+                if not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+                    return False
+                await ensure_schema(self.env)
+                conversation = await d1_first(
+                    self.env,
+                    "SELECT data,key_version "
+                    "FROM chat_direct_conversations "
+                    "WHERE conversation_id=?",
+                    direct_id,
+                )
+                if (
+                    not conversation
+                    or int(conversation.get("key_version") or 0)
+                        != direct_version
+                ):
+                    return False
+                record = await decrypt_row(
+                    self.env, conversation.get("data"))
+                if not isinstance(record, dict):
+                    return False
+                account = await d1_first(
+                    self.env,
+                    "SELECT data,is_admin FROM users WHERE user_bi=?",
+                    account_bi,
+                )
+                if not account:
+                    return False
+                account_record = await decrypt_row(
+                    self.env, account.get("data"))
+                if (
+                    not account_record
+                    or account_record.get("status") != "active"
+                    or _account_kind(account_record) != "user"
+                ):
+                    return False
+                participant = await d1_first(
+                    self.env,
+                    "SELECT 1 AS allowed FROM chat_direct_participants "
+                    "WHERE conversation_id=? AND participant_bi=?",
+                    direct_id,
+                    account_bi,
+                )
+                return bool(participant)
+            except Exception:
+                return False
+
         channel_id = _ws_attr(ws, "channel_id", "")
         if not channel_id:
             return True

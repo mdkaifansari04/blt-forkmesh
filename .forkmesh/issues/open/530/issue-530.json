@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785048842377,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "The user is requesting to relocate the settings gear for repositories on the ForkMesh website to be next to the agents tab, as discussed in the context of supporting repository imports and considering storage and CPU requirements for nodes.\n\n---\n_Filed by ForkBot at @jett's request via chat._",
+            "id": "forkbot-1785048842377",
+            "sig": "",
+            "title": "Move Repository Settings Gear on Website",
+            "ts": 1785048842377,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 530,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Move Repository Settings Gear on Website",
+    "updatedAt": 1785048842377,
+    "votes": 0
+}

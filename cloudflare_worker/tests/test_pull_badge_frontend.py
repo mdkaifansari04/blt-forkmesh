@@ -20,10 +20,9 @@ def test_badge_tab_button_rendered_for_pulls():
     assert 'data-lucide="fingerprint"' in DASHBOARD_JS[tab:tab + 300]
 
 
-def test_badge_panel_section_and_tab_scroll_target():
-    assert "data-repo-record-badge-panel" in DASHBOARD_JS
-    # The tab click handler must know where to scroll for the badge tab.
-    assert 'badge: "[data-repo-record-badge-panel]"' in DASHBOARD_JS
+def test_badge_panel_is_an_isolated_tab_section():
+    assert 'data-repo-record-panel="badge"' in DASHBOARD_JS
+    assert "panel.dataset.repoRecordPanel !== tab" in DASHBOARD_JS
 
 
 def test_badge_renderer_shape():

@@ -4640,7 +4640,7 @@ int main(int argc, char *argv[])
         PullStore pulls(tmp.path(), QString(), &identity, "tester");
         const int pn = pulls.createPull(
             "A change", "Body", "main", "feature",
-            "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+hi\n",
+            "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n---flag\n+hi\n",
             QString(), /*branchBacked=*/false, &err);
         check(pn == 1, "createPull returns the first PR number");
         check(pulls.addComment(pn, "first comment", &err), "PR addComment succeeds");
@@ -4694,6 +4694,9 @@ int main(int argc, char *argv[])
         check(!loadedPulls.isEmpty() &&
                   loadedPulls.first().reviewSummary() == "approved",
               "PR review summary folds to approved");
+        check(!loadedPulls.isEmpty() && loadedPulls.first().additions == 1 &&
+                  loadedPulls.first().deletions == 1,
+              "PR stats count removed content beginning with two hyphens");
 
         // A browser-created pull carries portable, signed change bytes rather
         // than only mutable branch names. Exercise the exact Worker -> Qt wire
@@ -5125,24 +5128,41 @@ int main(int argc, char *argv[])
                                             "feat-ai", QString(), QString(),
                                             /*branchBacked=*/true, &err);
             check(an > 0, "createPull stores the agent-editable PR");
+
+            // The user's own checkout is dirty and sitting on the base branch —
+            // neither must matter (adhoc #437): the edit runs in a scratch
+            // worktree checked out at the PR's branch.
+            writeFile("local-wip.txt", "uncommitted work\n");
             check(pulls.startPullAgentEdit(an, &err),
-                  "startPullAgentEdit opens the PR's branch");
+                  "startPullAgentEdit opens the PR's branch with a dirty base tree");
+            const QString editDir = pulls.agentEditWorkTree();
+            check(!editDir.isEmpty() && QFile::exists(editDir + "/ai1.txt"),
+                  "the agent edits in a worktree holding the PR's branch content");
             check(QString::fromUtf8(
                       gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed()) ==
-                      QLatin1String("feat-ai"),
-                  "the PR's branch is left checked out for the agent");
-            writeFile("ai1.txt", "fixed draft\n");
-            writeFile("ai2.txt", "brand new\n");
+                      baseBranch,
+                  "the user's checkout stays on its own branch during an agent edit");
+            check(QFile::exists(tmp.path() + "/local-wip.txt"),
+                  "the user's uncommitted work is untouched by an agent edit");
+            check(writeTestFile(editDir + "/ai1.txt", QByteArray("fixed draft\n")) &&
+                      writeTestFile(editDir + "/ai2.txt", QByteArray("brand new\n")),
+                  "write the agent's edits into the edit worktree");
             check(pulls.finishPullAgentEdit(
                       an, QStringLiteral("pull #%1: apply AI review fixes").arg(an),
                       &err),
                   "finishPullAgentEdit commits the edits and finalizes");
+            check(pulls.agentEditWorkTree().isEmpty() && !QFile::exists(editDir),
+                  "the edit worktree is torn down once the fixes are committed");
             check(QString::fromUtf8(
                       gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed()) ==
                       baseBranch,
-                  "finishing an agent edit returns to the original branch");
+                  "finishing an agent edit leaves the user's checkout where it was");
             check(!pulls.conflictMergeInProgress(),
                   "no am session is left open after an agent edit");
+            check(QString::fromUtf8(gitOutput({"log", "--format=%s", "-1", "feat-ai"})
+                                        .trimmed()) ==
+                      QStringLiteral("pull #%1: apply AI review fixes").arg(an),
+                  "the fixes land on the PR's own branch");
             PullRequest edited;
             for (const PullRequest &p : pulls.loadAll())
                 if (p.number == an)
@@ -5152,17 +5172,123 @@ int main(int argc, char *argv[])
             check(edited.patch.contains("fixed draft") &&
                       edited.patch.contains("ai2.txt"),
                   "the PR's patch regenerates with every agent-edited file");
+            check(!edited.patch.contains("local-wip.txt"),
+                  "the base tree's uncommitted files stay out of the PR");
 
-            // An agent run that changes nothing must refuse to commit and
-            // restore the original branch (the work branch tears down).
+            // An agent run that changes nothing must refuse to commit, drop its
+            // worktree, and leave the PR's branch exactly where it was.
+            const QString beforeNoOp =
+                QString::fromUtf8(gitOutput({"rev-parse", "feat-ai"}).trimmed());
             check(pulls.startPullAgentEdit(an, &err),
                   "a second agent-edit session opens on the same PR");
+            const QString noOpDir = pulls.agentEditWorkTree();
             check(!pulls.finishPullAgentEdit(an, QStringLiteral("no-op"), &err),
                   "an agent session with no changes refuses to commit");
-            check(QString::fromUtf8(
-                      gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed()) ==
-                      baseBranch,
-                  "a no-op agent edit restores the original branch");
+            check(!noOpDir.isEmpty() && !QFile::exists(noOpDir),
+                  "a no-op agent edit tears its worktree down");
+            check(QString::fromUtf8(gitOutput({"rev-parse", "feat-ai"}).trimmed()) ==
+                      beforeNoOp,
+                  "a no-op agent edit leaves the PR's branch untouched");
+            // A stored-patch PR has no branch to edit at, so the scratch
+            // worktree starts at the base and replays the patch there — again
+            // without needing the user's checkout to be clean.
+            check(writeTestFile(tmp.path() + "/ap1.txt", "v1\n"),
+                  "write patch-PR fixture file");
+            git({"add", "ap1.txt"});
+            git({"commit", "-q", "-m", "add ap1"});
+            const QString patchAp =
+                "diff --git a/ap1.txt b/ap1.txt\n"
+                "index 000..111 100644\n--- a/ap1.txt\n+++ b/ap1.txt\n"
+                "@@ -1 +1 @@\n-v1\n+v2\n";
+            const int pn = pulls.createPull("Patch backed", "body", baseBranch,
+                                            "feat-ai-patch", patchAp, QString(),
+                                            /*branchBacked=*/false, &err);
+            check(pn > 0, "createPull stores the patch-backed PR");
+            check(pulls.startPullAgentEdit(pn, &err),
+                  "startPullAgentEdit replays a patch-backed PR into its worktree");
+            const QString patchDir = pulls.agentEditWorkTree();
+            QFile replayed(patchDir + "/ap1.txt");
+            check(!patchDir.isEmpty() && replayed.open(QIODevice::ReadOnly) &&
+                      replayed.readAll() == QByteArray("v2\n"),
+                  "the replayed patch is what the agent edits");
+            replayed.close();
+            check(writeTestFile(patchDir + "/ap1.txt", QByteArray("v3\n")),
+                  "write the agent's edit to the replayed patch");
+            check(pulls.finishPullAgentEdit(pn, QStringLiteral("pull: fix"), &err),
+                  "finishPullAgentEdit commits a patch-backed PR's edits");
+            PullRequest patched;
+            for (const PullRequest &p : pulls.loadAll())
+                if (p.number == pn)
+                    patched = p;
+            check(patched.patch.contains("+v3"),
+                  "the patch-backed PR's diff picks up the agent's edit");
+
+            // Conflict fixing uses the same isolation guarantee. Build a PR
+            // whose branch and current base changed the same line, then leave
+            // both tracked and untracked work in the user's checkout.
+            check(writeTestFile(tmp.path() + "/agent-conflict.txt",
+                                QByteArray("shared\n")),
+                  "write the conflict-agent base fixture");
+            git({"add", "agent-conflict.txt"});
+            git({"commit", "-q", "-m", "add conflict-agent fixture"});
+            git({"checkout", "-q", "-b", "feat-agent-conflict"});
+            check(writeTestFile(tmp.path() + "/agent-conflict.txt",
+                                QByteArray("from pull\n")),
+                  "write the conflict-agent pull side");
+            git({"add", "agent-conflict.txt"});
+            git({"commit", "-q", "-m", "change conflict-agent fixture in pull"});
+            git({"checkout", "-q", baseBranch});
+            check(writeTestFile(tmp.path() + "/agent-conflict.txt",
+                                QByteArray("from base\n")),
+                  "write the conflict-agent base side");
+            git({"add", "agent-conflict.txt"});
+            git({"commit", "-q", "-m", "change conflict-agent fixture on base"});
+            const int cn = pulls.createPull(
+                "Agent conflict", "body", baseBranch, "feat-agent-conflict",
+                QString(), QString(), /*branchBacked=*/true, &err);
+            check(cn > 0, "createPull stores the conflict-agent PR");
+            check(writeTestFile(tmp.path() + "/ap1.txt",
+                                QByteArray("uncommitted local edit\n")),
+                  "leave a tracked user edit before conflict-agent work");
+            QStringList conflictFiles;
+            bool conflictClean = false;
+            check(pulls.startConflictAgentEdit(
+                      cn, &conflictFiles, &conflictClean, &err),
+                  "conflict agent starts while the user's tree is dirty");
+            const QString conflictDir = pulls.agentEditWorkTree();
+            check(!conflictClean && !conflictDir.isEmpty() &&
+                      conflictFiles.contains("agent-conflict.txt"),
+                  "the agent receives conflict markers in its scratch worktree");
+            QFile localDirty(tmp.path() + "/ap1.txt");
+            check(localDirty.open(QIODevice::ReadOnly) &&
+                      localDirty.readAll() == QByteArray("uncommitted local edit\n"),
+                  "starting conflict resolution leaves tracked local work untouched");
+            localDirty.close();
+            check(writeTestFile(conflictDir + "/agent-conflict.txt",
+                                QByteArray("resolved by agent\n")),
+                  "resolve the conflict inside the scratch worktree");
+            check(pulls.finishConflictMerge(cn, &err),
+                  "finishConflictMerge commits the isolated agent resolution");
+            check(pulls.agentEditWorkTree().isEmpty() &&
+                      !QFile::exists(conflictDir),
+                  "finishing conflict resolution removes its scratch worktree");
+            check(localDirty.open(QIODevice::ReadOnly) &&
+                      localDirty.readAll() == QByteArray("uncommitted local edit\n"),
+                  "finishing conflict resolution leaves tracked local work untouched");
+            localDirty.close();
+            PullRequest conflictResolved;
+            for (const PullRequest &p : pulls.loadAll())
+                if (p.number == cn)
+                    conflictResolved = p;
+            check(conflictResolved.status == "open" &&
+                      conflictResolved.head ==
+                          QStringLiteral("pull/%1-agent-fix").arg(cn) &&
+                      conflictResolved.patch.contains("resolved by agent"),
+                  "the resolved PR stays open on its isolated agent-fix branch");
+
+            // Leave the tree clean again for the tests that follow.
+            git({"checkout", "--", "ap1.txt"});
+            QFile::remove(tmp.path() + "/local-wip.txt");
         }
 
         // --- A branch-backed PR survives a corrupt stored blob by rebuilding

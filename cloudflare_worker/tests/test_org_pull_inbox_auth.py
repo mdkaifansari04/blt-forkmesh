@@ -13,16 +13,25 @@ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 QT_PULLS = (
     ROOT.parent / "qt_client" / "src" / "MainWindowPulls.cpp"
 ).read_text(encoding="utf-8")
+QT_ISSUES = (
+    ROOT.parent / "qt_client" / "src" / "MainWindowIssues.cpp"
+).read_text(encoding="utf-8")
 
 
 def _load(name, extra_globals):
     tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    dependencies = {
+        "_authorize_repo_inbox_owner": {
+            "_authorize_repo_inbox_owner",
+            "_authorized_repo_inbox_signing_key",
+        },
+    }.get(name, {name})
     selected = [
         node for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == name
+        and node.name in dependencies
     ]
-    assert len(selected) == 1
+    assert {node.name for node in selected} == dependencies
     module = ast.fix_missing_locations(
         ast.Module(body=selected, type_ignores=[]))
     namespace = dict(extra_globals)
@@ -50,8 +59,8 @@ class _Request:
 def _runtime(*, direct=False, private=False, linked=True, members=None):
     calls = {"verified": [], "links": 0, "members": 0}
 
-    async def authorize_owner(_env, _request, _owner):
-        return direct
+    async def authorized_owner_key(_env, _request, _owner):
+        return "direct-key" if direct else ""
 
     async def repo_is_private(_env, owner, repo):
         assert (owner, repo) == ("mirror2", "forkmesh")
@@ -74,7 +83,11 @@ def _runtime(*, direct=False, private=False, linked=True, members=None):
         calls["members"] += 1
         return list(members or [])
 
-    async def verify_owner(_env, account, sig, canonical):
+    async def owner_signing_pubkeys(_env, account):
+        return ["key:" + account]
+
+    async def ed25519_verify(public_key, sig, canonical):
+        account = public_key.removeprefix("key:")
         calls["verified"].append(
             (account, sig, canonical.decode("utf-8")))
         return account == "jett"
@@ -84,12 +97,13 @@ def _runtime(*, direct=False, private=False, linked=True, members=None):
         return value if value and "/" not in value else None
 
     return {
-        "_authorize_owner": authorize_owner,
+        "_authorized_owner_signing_key": authorized_owner_key,
         "_repo_is_private": repo_is_private,
         "_org_row": org_row,
         "d1_first": d1_first,
         "d1_all": d1_all,
-        "_verify_owner_signature": verify_owner,
+        "_owner_signing_pubkeys": owner_signing_pubkeys,
+        "ed25519_verify": ed25519_verify,
         "REPO_API_PREFIX_RE": __import__(
             "re").compile(r"^/api/repo/([^/]+)/([^/]+)(?:/|$)"),
         "safe_segment": safe_segment,
@@ -172,6 +186,30 @@ def test_pull_handler_uses_repo_aware_gate_for_read_and_ack():
     source = ast.get_source_segment(ENTRY_TEXT, handler)
     assert source.count("_authorize_repo_inbox_owner(") == 2
     assert source.count("_authorize_owner(env, request, owner)") == 0
+
+
+def test_issue_handler_uses_repo_aware_leased_gate_for_read_and_ack():
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    handler = next(
+        node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "issues_handler"
+    )
+    source = ast.get_source_segment(ENTRY_TEXT, handler)
+    assert source.count("_authorized_repo_inbox_signing_key(") == 2
+    assert "_claim_issue_inbox(" in source
+    assert "claimed_by_bi=?" in source
+
+    drain = QT_ISSUES.split(
+        "void MainWindow::drainIssuesInboxFor", 1)[1].split(
+            "void MainWindow::applyIssuesInboxPayload", 1)[0]
+    apply = QT_ISSUES.split(
+        "void MainWindow::applyIssuesInboxPayload", 1)[1].split(
+            "void MainWindow::updateIssueVoteState", 1)[0]
+    assert "hasOwnerSigningCapability()" in drain
+    assert "hasOwnerSigningCapability(repo.owner)" not in drain
+    assert "hasOwnerSigningCapability()" in apply
+    assert "hasOwnerSigningCapability(repo.owner)" not in apply
 
 
 def test_qt_pull_drain_signs_org_alias_but_keeps_server_authoritative():

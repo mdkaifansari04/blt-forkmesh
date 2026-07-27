@@ -159,6 +159,12 @@ public:
     // and drop the throwaway branch.
     bool startConflictMerge(int number, QStringList *conflicted,
                             bool *resolvedClean, QString *error = nullptr);
+    // Agent-driven conflict resolution always runs in a detached scratch
+    // worktree. Unlike the interactive flow above, this never asks the user to
+    // commit or stash unrelated work and never falls back to their checkout.
+    bool startConflictAgentEdit(int number, QStringList *conflicted,
+                                bool *resolvedClean,
+                                QString *error = nullptr);
     bool finishConflictMerge(int number, QString *error = nullptr);
     // Tears down any in-progress PR-branch operation (resolve or edit): aborts a
     // pending `git am`, returns to the original branch, and drops the work branch.
@@ -184,15 +190,24 @@ public:
     // open and mergeable. On failure the caller should abortConflictMerge().
     bool deletePullFile(int number, const QString &relPath, QString *error = nullptr);
     // Multi-file agent edit on the PR's branch (adhoc #82): startPullAgentEdit
-    // checks out the PR's branch with the PR applied (clean tree and a
-    // conflict-free PR required) and leaves it checked out so an agent can edit
-    // any number of files in the working tree. finishPullAgentEdit stages
-    // everything, commits it on the branch, returns to the original branch and
+    // opens the PR's branch so an agent can edit any number of files, and
+    // finishPullAgentEdit stages everything, commits it on the branch and
     // regenerates the PR's patch — the PR stays open and mergeable. Cancel with
-    // abortConflictMerge to discard the edits and drop the branch.
+    // abortConflictMerge to discard the edits.
+    //
+    // The edit happens in a throwaway linked worktree checked out at the PR's
+    // own branch (adhoc #437), so it neither needs nor disturbs the user's
+    // checkout: the base branch may be dirty or sitting anywhere. Call
+    // agentEditWorkTree() after a successful start to learn which directory the
+    // agent must run in — it is empty only for the legacy in-tree fallback
+    // (taken when git cannot hand out a worktree), which does need a clean tree
+    // and a conflict-free PR.
     bool startPullAgentEdit(int number, QString *error = nullptr);
     bool finishPullAgentEdit(int number, const QString &commitMsg,
                              QString *error = nullptr);
+    // Directory an in-progress agent edit must run in: the scratch worktree when
+    // one is open, otherwise empty (the edit is in the main working tree).
+    QString agentEditWorkTree() const;
     // Build a minimal mbox (single commit) from a flat patch so `git am` can
     // apply it and credit the PR author. Public for testing.
     static QString syntheticMbox(const PullRequest &pr);
@@ -264,6 +279,17 @@ private:
                          QString *error);
     bool finalizeOnPullBranch(int number, const QString &commitMsg,
                               QString *error);
+    // Open (and later drop) the scratch worktree an agent edit runs in. begin
+    // returns false with *error set when the pull request itself rules the edit
+    // out (missing, closed, conflicting) and false with *error empty when git
+    // simply could not provide a worktree — the caller then falls back to the
+    // in-tree replay.
+    bool beginPullEditWorkTree(int number, QString *error);
+    bool beginPullConflictWorkTree(int number, QStringList *conflicted,
+                                   bool *cleanApply, QString *error);
+    void discardPullEditWorkTree();
+    // Land the scratch worktree's (detached) commit on the PR's branch.
+    bool moveBranchToEditTip(QString *error);
 
     QString pullsDir() const;
     QString pullDir(int number) const;
@@ -303,4 +329,9 @@ private:
     QString m_amBranch;
     QString m_amBase;
     QString m_amRestoreRef;
+    // Scratch linked worktree an agent edit is running in (adhoc #437); empty
+    // when the edit happens in the main working tree. m_amBranch/m_amBase carry
+    // the PR's branch and base exactly as in the in-tree path, but nothing is
+    // checked out in the user's tree, so m_amRestoreRef stays empty.
+    QString m_editWorkTree;
 };

@@ -932,7 +932,9 @@ def test_repo_mirrors_handler_applies_linked_org_integrity_anchor():
     } == {
         "mirror2": "ok",
         "mirror3": "ok",
-        "jett": "rejected",
+        # The appointed backing endpoint is live, so an out-of-pin local
+        # publisher is visibly auto-healing instead of permanently rejected.
+        "jett": "healing",
     }
     assert any("FROM org_repos" in call for call in calls)
 

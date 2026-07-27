@@ -55,7 +55,7 @@ def test_shared_simple_header_mounts_on_requested_pages():
         body = html[html.index("<body") :]
 
         assert 'href="/site-header.css"' in html, f"{page.name} missing header CSS"
-        assert 'src="/site-header.js"' in html, f"{page.name} missing header JS"
+        assert 'src="/site-header.js?v=' in html, f"{page.name} missing header JS"
         assert '<div data-forkmesh-header="simple"></div>' in body
 
         assert 'class="site-header"' not in body
@@ -118,7 +118,7 @@ def test_universal_header_mounts_on_every_page_except_home():
     for page in UNIVERSAL_HEADER_PAGES:
         html = _read(page)
         assert 'href="/site-header.css"' in html, f"{page.name} missing header CSS"
-        assert 'src="/site-header.js"' in html, f"{page.name} missing header JS"
+        assert 'src="/site-header.js?v=' in html, f"{page.name} missing header JS"
         assert '<div data-forkmesh-header="simple"></div>' in html, page.name
 
     home = _read(PUBLIC / "index.html")
@@ -278,7 +278,7 @@ def test_blog_posts_mount_universal_header():
     for page in posts:
         html = _read(page)
         assert 'href="/site-header.css"' in html, f"{page} missing header CSS"
-        assert 'src="/site-header.js"' in html, f"{page} missing header JS"
+        assert 'src="/site-header.js?v=' in html, f"{page} missing header JS"
         assert '<div data-forkmesh-header="simple"></div>' in html, page
         assert '<header class="top">' not in html, page
         assert 'class="global-nav"' not in html, page

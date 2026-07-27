@@ -36,6 +36,12 @@ def _write_if_changed(rel, text):
     return True
 
 
+def site_page_assets():
+    """Authored (non-dashboard) HTML documents, ``public/``-relative."""
+    return dashboard_shell.stamped_site_pages(
+        p.relative_to(PUBLIC).as_posix() for p in PUBLIC.rglob("*.html"))
+
+
 def main():
     dashboard_js = dashboard_bundle.compose_from_reader(_read)
     # Content-hash every cache-busted bundle into its <script> ?v= query so a
@@ -49,6 +55,10 @@ def main():
             dashboard_shell.compose_page_from_reader(_read, page_id), versions)
         for page_id, meta in dashboard_shell.PAGES.items()
     }
+    # Same version map for the standalone site pages, so one bundle edit rotates
+    # its ?v= everywhere it is referenced instead of per-page hand bumps.
+    for rel in site_page_assets():
+        outputs[rel] = dashboard_shell.stamp_asset_versions(_read(rel), versions)
     outputs["dashboard.js"] = dashboard_js
     changed = [rel for rel, text in sorted(outputs.items()) if _write_if_changed(rel, text)]
     # The pre-split SPA duplicate: /dashboard.html routes are gone, the per-page

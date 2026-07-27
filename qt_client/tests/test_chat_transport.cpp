@@ -1,4 +1,6 @@
 #include "MainnodeRoom.h"
+#include "OfficeChannelMirror.h"
+#include "RoomCrypto.h"
 #include "ServerNode.h"
 
 #include <QCoreApplication>
@@ -243,6 +245,84 @@ void testDeterministicRecovery()
           "intentional shutdown suppresses reconnects");
 }
 
+
+// The World office's channel rooms reach the desktop as read-only mirrors: the
+// relay hands over the room's still-encrypted backlog, and this client opens it
+// with the room key. Pin the proof strings the account key signs (the Worker
+// verifies the same bytes), the conversation naming, and the fact that a frame
+// the office wrote decrypts into a desktop chat row.
+void testOfficeChannelMirror()
+{
+    using namespace forkmesh::office;
+
+    check(conversationForChannel(QStringLiteral("design")) ==
+              QStringLiteral("#office/design"),
+          "office rooms are namespaced so they can't merge with a mesh room");
+    check(conversationForChannel(QStringLiteral("  ")).isEmpty(),
+          "a nameless office room has no conversation");
+    check(isOfficeConversation(QStringLiteral("#office/design")) &&
+              !isOfficeConversation(QStringLiteral("#general")),
+          "only office mirrors are recognized as office conversations");
+
+    check(channelListProof(QStringLiteral("ada"), QStringLiteral("17")) ==
+              QByteArray("forkmesh-chat-channels-v1\nada\n17"),
+          "channel-list proof matches CHAT_CHANNEL_LIST_PROOF");
+    check(channelHistoryProof(QStringLiteral("ada"), QString(32, 'a'),
+                              QStringLiteral("17")) ==
+              QByteArray("forkmesh-chat-channel-history-v1\nada\n") +
+                  QByteArray(32, 'a') + QByteArray("\n17"),
+          "channel-history proof matches CHAT_CHANNEL_HISTORY_PROOF");
+
+    const QString room = QStringLiteral("chat-channel:") + QString(32, 'b') +
+                         QStringLiteral(":v1");
+    const RoomCrypto crypto(room, QStringLiteral("room-passphrase"));
+    check(crypto.isValid(), "office room key derives from room + passphrase");
+
+    QJsonObject spoken{{"type", "chat"},
+                       {"id", "office-message-1"},
+                       {"senderId", "office-participant"},
+                       {"sender", "ada"},
+                       {"accountKind", "user"},
+                       {"channel", "#design"},
+                       {"text", "standing by the whiteboard"},
+                       {"ts", double(QDateTime::currentMSecsSinceEpoch())}};
+    spoken.insert(QStringLiteral("meetingProof"),
+                  QJsonObject{{"participantId", "office-participant"}});
+    const QJsonObject envelope = crypto.encryptObject(spoken);
+    const QJsonObject plain = crypto.decryptObject(envelope);
+
+    ChatMessage message;
+    check(chatMessageFromPlain(plain, QStringLiteral("#office/design"),
+                               QStringLiteral("this-node"), &message),
+          "an office chat frame becomes a desktop chat message");
+    check(message.text == QStringLiteral("standing by the whiteboard") &&
+              message.senderName == QStringLiteral("ada") &&
+              message.conversation == QStringLiteral("#office/design") &&
+              !message.self,
+          "the mirrored row keeps the office author, text, and room");
+
+    ChatMessage self;
+    check(chatMessageFromPlain(plain, QStringLiteral("#office/design"),
+                               QStringLiteral("office-participant"), &self) &&
+              self.self,
+          "our own office message is marked as ours");
+
+    ChatMessage ignored;
+    QJsonObject presence = spoken;
+    presence.insert(QStringLiteral("type"), QStringLiteral("hello"));
+    check(!chatMessageFromPlain(presence, QStringLiteral("#office/design"),
+                                QString(), &ignored),
+          "office presence frames are not chat rows");
+    QJsonObject empty = spoken;
+    empty.insert(QStringLiteral("text"), QString());
+    check(!chatMessageFromPlain(empty, QStringLiteral("#office/design"),
+                                QString(), &ignored),
+          "an empty office frame with no attachment is dropped");
+    check(!chatMessageFromPlain(QJsonObject(), QStringLiteral("#office/design"),
+                                QString(), &ignored),
+          "a frame that failed to decrypt is dropped");
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -254,6 +334,7 @@ int main(int argc, char **argv)
 
     testSavedRoomMigration();
     testDeterministicRecovery();
+    testOfficeChannelMirror();
     if (failures == 0)
         std::puts("All chat transport tests passed.");
     return failures == 0 ? 0 : 1;

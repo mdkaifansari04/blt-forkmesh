@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1784958804397,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "The user is requesting a message board to display recent global messages, similar to the conversation log shown in the recent conversation, which includes messages from multiple users such as jett, World Guest 6650, and World Guest fb9d. The message board should be able to display a list of recent messages, including the user who sent the message and the content of the message. This would allow users to easily view and engage with recent conversations in the global chat.\n\n---\n_Filed by ForkBot at @world visitor · jett's request via chat._",
+            "id": "forkbot-1784958804397",
+            "sig": "",
+            "title": "Message Board Request",
+            "ts": 1784958804397,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 527,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Message Board Request",
+    "updatedAt": 1784958804397,
+    "votes": 0
+}

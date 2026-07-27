@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785049029416,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "Add a wave button.\n\n---\n_Filed by ForkBot at @jett's request via chat._",
+            "id": "forkbot-1785049029416",
+            "sig": "",
+            "title": "Add wave button",
+            "ts": 1785049029416,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 532,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Add wave button",
+    "updatedAt": 1785049029416,
+    "votes": 0
+}

@@ -867,7 +867,7 @@ def test_dashboard_has_scoped_light_dark_appearance_controls():
         assert theme_key in site_header_js
     for docs_page in (PUBLIC / "docs.html", PUBLIC / "docs" / "index.html"):
         docs = _read(docs_page)
-        assert 'src="/site-header.js"' in docs
+        assert 'src="/site-header.js?v=' in docs
         assert 'id="theme-toggle"' not in docs
         assert "function applyTheme" not in docs
         assert "localStorage" not in docs
@@ -1150,6 +1150,39 @@ def test_dashboard_about_rail_only_shows_on_code_tab():
     assert 'contentGrid?.classList.toggle("lg:grid-cols-[minmax(0,1fr)_18rem]", showAbout);' in tab_state
     assert 'contentGrid?.classList.toggle("lg:grid-cols-1", !showAbout);' in tab_state
     assert 'about?.classList.toggle("hidden", !showAbout);' in tab_state
+
+
+def test_repository_settings_move_out_of_about_and_add_owner_delete():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    render = dashboard_js[
+        dashboard_js.index("function renderRepoDetail(repo)")
+        : dashboard_js.index("\n  function renderRepoCodeButton")
+    ]
+    about_form = render[
+        render.index('<form data-repo-about-form')
+        : render.index("</form>", render.index('<form data-repo-about-form'))
+    ]
+    settings_panel = render[
+        render.index('data-dashboard-repo-tab-panel="settings"')
+        : render.index('detail.innerHTML = `')
+    ]
+
+    assert 'settings: { label: "Settings", icon: "settings"' in render
+    assert '...(canSeeAgentsTab ? ["agents"] : []), ...(canSeeSettingsTab ? ["settings"] : [])' in render
+    assert 'data-lucide="pencil"' in render
+    assert 'data-lucide="settings" class="h-3.5 w-3.5"></i></button>' not in render
+    assert "data-repo-ap-federate" not in about_form
+    assert "data-repo-alert-status-emails" not in about_form
+    assert "data-repo-settings-form" in settings_panel
+    assert "Daily digest preview" in settings_panel
+    assert "data-repo-delete" in settings_panel
+    assert "Delete repository" in settings_panel
+
+    assert "function saveRepoSettingsFromWeb(" in dashboard_js
+    assert "function deleteRepoFromWeb(" in dashboard_js
+    assert 'method: "DELETE"' in dashboard_js
+    assert "Type ${expected} to confirm repository deletion." in dashboard_js
+    assert 'location.assign("/dashboard/repos")' in dashboard_js
 
 
 def test_dashboard_repository_detail_view_uses_full_width_container():
@@ -1545,16 +1578,14 @@ def test_dashboard_pull_detail_reads_committed_patch_for_files_changed():
         'async function loadRepoPullPatch(repo, number, metadataCommit = "")',
         "function parsePatchStats(patch)",
         "function renderRepoPullFiles(files)",
-        "function renderRepoPullPatch(patch, key = \"\")",
+        "function renderRepoPullPatch(patch)",
         "data-repo-pull-files",
         "data-repo-pull-patch",
         "pulls/${number}/changes.patch",
         "ref: commit,",
         "? await loadRepoPullPatch(repo, number, pullMetadataCommit)",
         "renderRepoPullFiles(pullPatch.files)",
-        "renderRepoPullPatch(pullPatch.patch, `pull:${repoKey(repo)}:${number}`)",
-        "data-show-full-diff",
-        "DASHBOARD_LONG_DIFFS_KEY",
+        "renderRepoPullPatch(pullPatch.patch)",
     ):
         assert marker in dashboard_js
 
@@ -1611,16 +1642,14 @@ def test_dashboard_commit_history_opens_live_commit_detail_not_inbox_route():
     for marker in (
         "async function loadRepoCommitDetail(repo, hash)",
         "function renderRepoCommitDetail(repo, data)",
-        "function renderRepoCommitDiff(diff, imageDiffs, key = \"\")",
+        "function renderRepoCommitDiff(diff, imageDiffs)",
         "function renderRepoCommitFiles(files)",
         "fetchRepoJson(repoLiveUrl(repo, \"commit\", { path: hash }))",
         "data-repo-commit-detail",
         "data-repo-commit-back",
         "data-repo-commit-files",
         "data-repo-commit-diff",
-        "renderRepoCommitDiff(data.diff, data.imageDiffs, `commit:${repoKey(repo)}:${hash}`)",
-        "Diff hidden for speed",
-        "data-long-diff-toggle",
+        "renderRepoCommitDiff(data.diff, data.imageDiffs)",
         "loadRepoCommitDetail(state.selectedRepo, commitButton.dataset.dashboardCommitHash || \"\")",
     ):
         assert marker in dashboard_js

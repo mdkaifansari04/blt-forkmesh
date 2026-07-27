@@ -859,8 +859,8 @@ void PullStore::computeStats(PullRequest &pr)
             patch.sliced(start, (nl < 0 ? patch.size() : nl) - start);
         if (line.startsWith(QLatin1String("diff --git ")))
             ++files;
-        else if (line.startsWith(QLatin1String("+++")) ||
-                 line.startsWith(QLatin1String("---"))) {
+        else if (line.startsWith(QLatin1String("+++ ")) ||
+                 line.startsWith(QLatin1String("--- "))) {
             // file-header line, not a +/- content line
         } else if (line.startsWith(u'+'))
             ++add;
@@ -1802,7 +1802,9 @@ static QStringList unmergedFiles(const QString &workTree)
 
 bool PullStore::conflictMergeInProgress() const
 {
-    return !m_workTree.isEmpty() && !amStateDir(m_workTree).isEmpty();
+    return (!m_workTree.isEmpty() && !amStateDir(m_workTree).isEmpty()) ||
+           (!m_editWorkTree.isEmpty() &&
+            !amStateDir(m_editWorkTree).isEmpty());
 }
 
 // Check out a fresh work-branch for the PR (its named head, or pull/<N>, started
@@ -1989,6 +1991,22 @@ bool PullStore::startConflictMerge(int number, QStringList *conflicted,
     return true; // conflicts left in the tree for the caller to resolve
 }
 
+bool PullStore::startConflictAgentEdit(int number, QStringList *conflicted,
+                                       bool *resolvedClean, QString *error)
+{
+    if (resolvedClean)
+        *resolvedClean = false;
+    bool clean = false;
+    if (!beginPullConflictWorkTree(number, conflicted, &clean, error))
+        return false;
+    if (clean) {
+        if (resolvedClean)
+            *resolvedClean = true;
+        return finishConflictMerge(number, error);
+    }
+    return true;
+}
+
 bool PullStore::startPullFileEdit(int number, const QString &relPath,
                                   QString *content, QString *error)
 {
@@ -2058,8 +2076,231 @@ bool PullStore::finishPullFileEdit(int number, const QString &relPath,
         error);
 }
 
+QString PullStore::agentEditWorkTree() const
+{
+    return m_editWorkTree;
+}
+
+// Check the pull request's branch out in a throwaway linked worktree so an agent
+// can edit it without the user's own checkout being involved at all (adhoc
+// #437): it may be dirty, mid-rebase, or sitting on another branch. A
+// branch-backed PR is edited at its real branch tip (its commits *are* the pull
+// request); anything else is replayed onto the base with `git am`, the same way
+// the in-tree path does it. The worktree is detached so it never collides with a
+// branch that is checked out elsewhere.
+bool PullStore::beginPullEditWorkTree(int number, QString *error)
+{
+    discardPullEditWorkTree();
+    if (!canWrite())
+        return false; // caller falls back and reports the missing working tree
+    PullRequest pr;
+    if (!readPull(number, pr)) {
+        if (error)
+            *error = QStringLiteral("Pull request #%1 not found.").arg(number);
+        return false;
+    }
+    if (pr.status != "open") {
+        if (error)
+            *error = QStringLiteral("This pull request is already %1.").arg(pr.status);
+        return false;
+    }
+
+    const QString baseRef = pr.base.trimmed();
+    QString baseSha = resolvedCommitOid(m_workTree, baseRef);
+    if (baseSha.isEmpty())
+        baseSha = resolvedCommitOid(m_workTree, QStringLiteral("HEAD"));
+    if (baseSha.isEmpty())
+        return false; // nothing to branch from here — let the caller fall back
+
+    // The PR's own branch when it names one that lives here; a cross-node
+    // "<node>:<branch>" label or a collision with the base means a synthesized
+    // pull/<N> instead (never the base itself — that would defeat the isolation).
+    QString branchName = pr.head.trimmed();
+    if (branchName.contains(QLatin1Char(':')) || branchName == baseRef)
+        branchName.clear();
+    QString headSha;
+    if (!branchName.isEmpty() && pr.branchBacked)
+        headSha = resolvedCommitOid(m_workTree, "refs/heads/" + branchName);
+    if (branchName.isEmpty())
+        branchName = QStringLiteral("pull/%1").arg(number);
+
+    const QString dir = QDir::temp().filePath(
+        QStringLiteral("forkmesh-pr-edit-%1-%2")
+            .arg(number)
+            .arg(QDateTime::currentMSecsSinceEpoch()));
+    if (!runGit(m_workTree, {"worktree", "add", "--detach", dir,
+                             headSha.isEmpty() ? baseSha : headSha})) {
+        runGit(m_workTree, {"worktree", "prune"}, nullptr, nullptr);
+        QDir(dir).removeRecursively();
+        return false; // no worktree available — fall back to the in-tree replay
+    }
+    m_editWorkTree = dir;
+
+    if (headSha.isEmpty()) {
+        // Replay the PR onto the base inside the scratch worktree. Conflicts
+        // belong to the resolve flow, so anything short of a clean apply is torn
+        // down here.
+        const QString mboxPath =
+            QDir::temp().filePath(QStringLiteral("forkmesh-pr-edit-%1.mbox").arg(number));
+        const bool wrote = writeTextFile(
+            mboxPath, pr.commits.isEmpty() ? syntheticMbox(pr) : pr.commits, nullptr);
+        const bool applied = wrote && runGit(dir, {"am", "--3way", mboxPath});
+        QFile::remove(mboxPath);
+        if (!applied) {
+            const bool conflicted = !unmergedFiles(dir).isEmpty();
+            discardPullEditWorkTree();
+            if (error)
+                *error = conflicted
+                             ? QStringLiteral("This pull request has conflicts - use "
+                                              "\"Resolve conflicts\" first.")
+                             : QStringLiteral("The pull request could not be "
+                                              "applied to its base.");
+            return false;
+        }
+    }
+
+    m_amBranch = branchName;
+    m_amBase = baseSha;
+    m_amRestoreRef.clear(); // nothing was checked out in the user's tree
+    return true;
+}
+
+// Replay a PR onto its current base in a detached worktree, leaving any
+// conflict markers there for an agent. This deliberately has no in-tree
+// fallback: a user's unrelated tracked/untracked changes must never block or be
+// swept into an automated PR fix.
+bool PullStore::beginPullConflictWorkTree(int number, QStringList *conflicted,
+                                          bool *cleanApply, QString *error)
+{
+    if (conflicted)
+        conflicted->clear();
+    if (cleanApply)
+        *cleanApply = false;
+    discardPullEditWorkTree();
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("Conflict fixing needs a local working tree.");
+        return false;
+    }
+    if (conflictMergeInProgress()) {
+        if (error)
+            *error = QStringLiteral("Another pull-request operation is already in "
+                                    "progress; finish or cancel it first.");
+        return false;
+    }
+
+    PullRequest pr;
+    if (!readPull(number, pr)) {
+        if (error)
+            *error = QStringLiteral("Pull request #%1 not found.").arg(number);
+        return false;
+    }
+    if (pr.status != "open") {
+        if (error)
+            *error = QStringLiteral("This pull request is already %1.").arg(pr.status);
+        return false;
+    }
+
+    QString baseSha = resolvedCommitOid(m_workTree, pr.base.trimmed());
+    if (baseSha.isEmpty())
+        baseSha = resolvedCommitOid(m_workTree, QStringLiteral("HEAD"));
+    if (baseSha.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Could not resolve the pull request base.");
+        return false;
+    }
+
+    const QString dir = QDir::temp().filePath(
+        QStringLiteral("forkmesh-pr-conflict-%1-%2")
+            .arg(number)
+            .arg(QDateTime::currentMSecsSinceEpoch()));
+    QString err;
+    if (!runGit(m_workTree,
+                {"worktree", "add", "--detach", dir, baseSha},
+                nullptr, &err)) {
+        runGit(m_workTree, {"worktree", "prune"}, nullptr, nullptr);
+        QDir(dir).removeRecursively();
+        if (error)
+            *error = QStringLiteral(
+                         "Could not create an isolated worktree for the agent: %1")
+                         .arg(err);
+        return false;
+    }
+    m_editWorkTree = dir;
+    // Always land agent conflict fixes on a dedicated branch. This avoids
+    // trying to move a PR head branch that may itself be checked out beside
+    // unrelated local changes.
+    m_amBranch = QStringLiteral("pull/%1-agent-fix").arg(number);
+    m_amBase = baseSha;
+    m_amRestoreRef.clear();
+
+    const QString mboxPath = QDir::temp().filePath(
+        QStringLiteral("forkmesh-pr-conflict-%1.mbox").arg(number));
+    if (!writeTextFile(mboxPath,
+                       pr.commits.isEmpty() ? syntheticMbox(pr) : pr.commits,
+                       error)) {
+        abortConflictMerge();
+        return false;
+    }
+
+    QProcess git;
+    git.start("git", {"-C", dir, "am", "--3way", mboxPath});
+    git.waitForFinished(60000);
+    QFile::remove(mboxPath);
+    const bool ok =
+        git.exitStatus() == QProcess::NormalExit && git.exitCode() == 0;
+    if (ok) {
+        if (cleanApply)
+            *cleanApply = true;
+        return true;
+    }
+
+    const QStringList files = unmergedFiles(dir);
+    if (amStateDir(dir).isEmpty() || files.isEmpty()) {
+        const QString detail =
+            QString::fromUtf8(git.readAllStandardError()).trimmed().left(300);
+        abortConflictMerge();
+        if (error)
+            *error = QStringLiteral("The pull request could not be applied in "
+                                    "the agent worktree: %1")
+                         .arg(detail.isEmpty()
+                                  ? QStringLiteral("patch did not apply")
+                                  : detail);
+        return false;
+    }
+    if (conflicted)
+        *conflicted = files;
+    return true;
+}
+
+void PullStore::discardPullEditWorkTree()
+{
+    if (m_editWorkTree.isEmpty())
+        return;
+    const QString dir = m_editWorkTree;
+    m_editWorkTree.clear();
+    if (!amStateDir(dir).isEmpty())
+        runGit(dir, {"am", "--abort"}, nullptr, nullptr);
+    runGit(m_workTree, {"worktree", "remove", "--force", dir}, nullptr, nullptr);
+    QDir(dir).removeRecursively();
+    runGit(m_workTree, {"worktree", "prune"}, nullptr, nullptr);
+}
+
 bool PullStore::startPullAgentEdit(int number, QString *error)
 {
+    // Preferred path: edit in a scratch worktree on the PR's own branch, which
+    // works whatever state the user's checkout is in (adhoc #437). An empty
+    // error there means git could not hand out a worktree, not that the pull
+    // request is unfit — so fall through to the in-tree replay below.
+    QString worktreeError;
+    if (beginPullEditWorkTree(number, &worktreeError))
+        return true;
+    if (!worktreeError.isEmpty()) {
+        if (error)
+            *error = worktreeError;
+        return false;
+    }
+
     QStringList conflicted;
     bool clean = false;
     if (!beginPullBranch(number, &conflicted, &clean, error))
@@ -2084,14 +2325,17 @@ bool PullStore::finishPullAgentEdit(int number, const QString &commitMsg,
             *error = QStringLiteral("Editing needs a local working tree.");
         return false;
     }
+    // The edits are wherever the agent ran: the scratch worktree, or the main
+    // tree when the in-tree fallback was taken.
+    const QString dir = m_editWorkTree.isEmpty() ? m_workTree : m_editWorkTree;
     QString err;
-    if (!runGit(m_workTree, {"add", "-A"}, nullptr, &err)) {
+    if (!runGit(dir, {"add", "-A"}, nullptr, &err)) {
         if (error)
             *error = "git add failed: " + err;
         return false;
     }
     QByteArray staged;
-    runGit(m_workTree, {"diff", "--cached", "--name-only"}, &staged);
+    runGit(dir, {"diff", "--cached", "--name-only"}, &staged);
     if (staged.trimmed().isEmpty()) {
         // The agent changed nothing — tear the work branch down.
         abortConflictMerge();
@@ -2099,12 +2343,46 @@ bool PullStore::finishPullAgentEdit(int number, const QString &commitMsg,
             *error = QStringLiteral("No changes to commit.");
         return false;
     }
-    if (!runGit(m_workTree, {"commit", "-m", commitMsg}, nullptr, &err)) {
+    if (!runGit(dir, {"commit", "-m", commitMsg}, nullptr, &err)) {
         if (error)
             *error = "git commit failed: " + err;
         return false;
     }
+    if (!m_editWorkTree.isEmpty() && !moveBranchToEditTip(error))
+        return false;
     return finalizeOnPullBranch(number, commitMsg, error);
+}
+
+// The scratch worktree commits on a detached HEAD; land that commit on the PR's
+// branch so the branch (and with it a branch-backed PR) carries the fixes. A
+// leftover agent worktree holding the branch is released and retried; the user's
+// own checkout sitting on it is fast-forwarded instead.
+bool PullStore::moveBranchToEditTip(QString *error)
+{
+    const QString tip = resolvedCommitOid(m_editWorkTree, QStringLiteral("HEAD"));
+    if (tip.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Could not read the edited commit.");
+        return false;
+    }
+    QString err;
+    if (runGit(m_workTree, {"branch", "-f", m_amBranch, tip}, nullptr, &err))
+        return true;
+    if (releaseWorktreeHoldingBranch(m_workTree, m_amBranch) &&
+        runGit(m_workTree, {"branch", "-f", m_amBranch, tip}, nullptr, &err))
+        return true;
+    // Still refused: the branch is checked out in the user's own tree. A
+    // fast-forward moves it there without touching their uncommitted work.
+    QByteArray current;
+    runGit(m_workTree, {"rev-parse", "--abbrev-ref", "HEAD"}, &current, nullptr);
+    if (QString::fromUtf8(current).trimmed() == m_amBranch &&
+        runGit(m_workTree, {"merge", "--ff-only", tip}, nullptr, &err))
+        return true;
+    discardPullEditWorkTree();
+    if (error)
+        *error = QStringLiteral("The fixes could not be put on %1: %2")
+                     .arg(m_amBranch, err);
+    return false;
 }
 
 bool PullStore::deletePullFile(int number, const QString &relPath, QString *error)
@@ -2222,6 +2500,7 @@ bool PullStore::finalizeOnPullBranch(int number, const QString &commitMsg,
     computeStats(pr);
     if (!writePull(pr, error))
         return false;
+    discardPullEditWorkTree(); // no-op unless an agent edit ran in a scratch tree
     m_amBranch.clear();
     m_amBase.clear();
     m_amRestoreRef.clear();
@@ -2241,9 +2520,10 @@ bool PullStore::finishConflictMerge(int number, QString *error)
             *error = QStringLiteral("Merging needs a local working tree.");
         return false;
     }
+    const QString dir = m_editWorkTree.isEmpty() ? m_workTree : m_editWorkTree;
     // Refuse to commit a tree that still carries conflict markers.
-    for (const QString &rel : unmergedFiles(m_workTree)) {
-        QFile f(m_workTree + "/" + rel);
+    for (const QString &rel : unmergedFiles(dir)) {
+        QFile f(dir + "/" + rel);
         if (!f.open(QIODevice::ReadOnly))
             continue;
         const QString text = QString::fromUtf8(f.readAll());
@@ -2257,19 +2537,21 @@ bool PullStore::finishConflictMerge(int number, QString *error)
         }
     }
     QString err;
-    if (!runGit(m_workTree, {"add", "-A"}, nullptr, &err)) {
+    if (!runGit(dir, {"add", "-A"}, nullptr, &err)) {
         if (error)
             *error = "git add failed: " + err;
         return false;
     }
     // Complete the replay only if an am session is actually open (a clean apply
     // in startConflictMerge already committed it).
-    if (!amStateDir(m_workTree).isEmpty() &&
-        !runGit(m_workTree, {"am", "--continue"}, nullptr, &err)) {
+    if (!amStateDir(dir).isEmpty() &&
+        !runGit(dir, {"am", "--continue"}, nullptr, &err)) {
         if (error)
             *error = "Could not complete the merge: " + err;
         return false;
     }
+    if (!m_editWorkTree.isEmpty() && !moveBranchToEditTip(error))
+        return false;
     // The resolution now lives on m_amBranch. Return to the original branch,
     // regenerate the PR from it, and leave it open — the base branch only gets
     // the refreshed pulls/ metadata; merging stays the owner's separate step.
@@ -2285,6 +2567,17 @@ void PullStore::abortConflictMerge()
 {
     if (m_workTree.isEmpty())
         return;
+    if (!m_editWorkTree.isEmpty()) {
+        // Agent edit in a scratch worktree: nothing was checked out in the user's
+        // tree and the PR's branch was never moved, so dropping the worktree
+        // undoes the whole thing. Never delete m_amBranch here — unlike the
+        // in-tree path it is the PR's real branch, not a throwaway.
+        discardPullEditWorkTree();
+        m_amBranch.clear();
+        m_amBase.clear();
+        m_amRestoreRef.clear();
+        return;
+    }
     if (!amStateDir(m_workTree).isEmpty())
         runGit(m_workTree, {"am", "--abort"}, nullptr, nullptr);
     // Return to the branch we started from and drop the throwaway PR branch so a

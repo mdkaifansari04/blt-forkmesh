@@ -15,8 +15,8 @@
   };
 
   applyDashboardTheme(readDashboardTheme());
-  renderLongDiffPreference();
   if (initSharedChrome()) {
+    startAccountSessionWatch();
     (PAGE_INITS[currentPage()] || initHomePage)();
     initPageHistory();
   }

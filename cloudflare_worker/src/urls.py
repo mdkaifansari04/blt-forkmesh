@@ -25,8 +25,24 @@ CHAT_CHANNEL_MEMBERS_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/members/?$")
 CHAT_CHANNEL_ROOM_ACCESS_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/room-access/?$")
+# Retained (still-encrypted) backlog of one channel room. Desktop clients hold
+# no WebSocket into these rooms, so they replay the World office's channel chat
+# over this read-only poll instead.
+CHAT_CHANNEL_HISTORY_RE = re.compile(
+    r"^/api/chat/channels/([0-9a-f]{32})/history/?$")
 CHAT_CHANNEL_WS_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/ws/?$")
+# One-to-one direct messages use opaque conversation identifiers and a
+# participant-only authorization policy with no administrator bypass.
+CHAT_DIRECT_MESSAGES_RE = re.compile(r"^/api/chat/direct-messages/?$")
+CHAT_DIRECT_MESSAGE_USERS_RE = re.compile(
+    r"^/api/chat/direct-messages/users/?$")
+CHAT_DIRECT_MESSAGE_ROOM_ACCESS_RE = re.compile(
+    r"^/api/chat/direct-messages/([0-9a-f]{32})/room-access/?$")
+CHAT_DIRECT_MESSAGE_READ_RE = re.compile(
+    r"^/api/chat/direct-messages/([0-9a-f]{32})/read/?$")
+CHAT_DIRECT_MESSAGE_WS_RE = re.compile(
+    r"^/api/chat/direct-messages/([0-9a-f]{32})/ws/?$")
 # Issue inbox: signed submissions from people without write access to the repo.
 REPO_ISSUES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/issues$")
 # Pull-request inbox: signed PR submissions from any node.
@@ -86,6 +102,17 @@ REPO_AGENTS_PROMPT_RE = re.compile(
 # device holding the hybrid private key can decrypt it.
 REPO_AGENTS_TRANSCRIPT_RE = re.compile(
     r"^/api/repo/([^/]+)/([^/]+)/agents/([^/]+)/transcript$")
+# Organization-member coding bots. The organization routes retain the public
+# org alias for membership checks; mirror jobs use the selected node namespace
+# and owner signatures.
+ORG_AGENT_BOTS_RE = re.compile(
+    r"^/api/orgs/([^/]+)/repos/([^/]+)/agent-bots$")
+ORG_AGENT_BOT_RE = re.compile(
+    r"^/api/orgs/([^/]+)/repos/([^/]+)/agent-bots/([^/]+)$")
+REPO_ORG_AGENT_JOBS_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/org-agent-jobs$")
+REPO_ORG_AGENT_JOB_RESULT_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/org-agent-jobs/([1-9][0-9]{0,18})/result$")
 # Owner-only encryption policy and recipient-key registration for private
 # repository/agent data. The relay stores public bundles and opaque envelopes,
 # never recipient private keys.

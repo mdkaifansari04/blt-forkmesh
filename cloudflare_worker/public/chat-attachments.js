@@ -4,6 +4,13 @@ export const MAX_ATTACHMENT_BYTES = 1024 * 1024;
 export const MAX_ATTACHMENT_NAME = 180;
 export const MAX_ATTACHMENT_MIME = 100;
 
+export function attachmentFiles(value, limit = 4) {
+  const maximum = Math.max(0, Number(limit) || 0);
+  return Array.from(value || [])
+    .filter((file) => typeof File !== "undefined" && file instanceof File)
+    .slice(0, maximum);
+}
+
 export function safeAttachmentName(value) {
   const parts = String(value || "")
     .replace(/\\/g, "/")

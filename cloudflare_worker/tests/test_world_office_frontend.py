@@ -12,6 +12,7 @@ OFFICE_PATH = ROOT / "public" / "world" / "world-office.js"
 SCENE_PATH = ROOT / "public" / "world" / "world-scene.js"
 TOWER_PATH = ROOT / "public" / "world" / "world-office-tower.js"
 WORLD_PATH = ROOT / "public" / "world" / "world.js"
+DATA_PATH = ROOT / "public" / "world" / "world-data.js"
 
 
 def source(path):
@@ -132,6 +133,7 @@ def test_entry_is_walk_through_for_everyone_and_the_keypad_protocol_is_absent():
     office = source(OFFICE_PATH)
     world = source(WORLD_PATH)
     scene = source(SCENE_PATH)
+    data = source(DATA_PATH)
     for contract in (
         'const OFFICE_ENTRY_PATH = "/api/world/office/general/entry"',
         'const OFFICE_FLOORS_PATH = "/api/world/office/floors"',
@@ -156,6 +158,26 @@ def test_entry_is_walk_through_for_everyone_and_the_keypad_protocol_is_absent():
     assert "window.prompt" not in office
     assert "localStorage" not in office
     assert "sessionStorage" not in office
+    assert "Building admission is open to every visitor." in data
+    assert "Everyone, including guests, can cross the bridge and enter the lobby." \
+        in data
+    assert "Building admission requires an active account." not in data
+    assert "must sign in before entering the tower" not in data
+
+
+def test_office_doorway_has_no_concrete_sill_or_raised_door_panels():
+    scene = source(SCENE_PATH)
+    office_start = scene.index("function createForkMeshOffice(")
+    office_end = scene.index("\nfunction ", office_start + 1)
+    office = scene[office_start:office_end]
+
+    assert "OFFICE_DOOR_SILL_Y" not in scene
+    assert "const OFFICE_DOOR_HEIGHT = OFFICE_HEIGHT;" in scene
+    assert "[-OFFICE_WIDTH / 2, -doorWidth / 2]" in office
+    assert "[doorWidth / 2, elevatorFacadeMinX]" in office
+    assert "doorHeight / 2," in office
+    assert "portalY >= 0.08" in scene
+    assert "portalY <= OFFICE_DOOR_HEIGHT - 0.08" in scene
 
 
 def test_entrance_uses_two_proximity_sliding_panels_without_a_hinged_door():
@@ -197,7 +219,7 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
         "loadPublicAttendance: !activeSession",
         "loadPublicFallback = true",
         "generation === authorizationGeneration",
-        'const action = direction === "out" ? "out" : "in"',
+        'direction === "heartbeat"',
         "attendanceWrite = attendanceWrite",
     ):
         assert contract in office
@@ -206,6 +228,7 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
         'context.fillText("USER"',
         'context.fillText("IN"',
         'context.fillText("OUT"',
+        'context.fillText("FLOOR"',
         'context.fillText("TOTAL"',
         "visit?.inAt",
         "visit?.outAt",
@@ -214,8 +237,17 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
         "updateOfficeAttendanceClock",
         "Math.floor(elapsedMs / 30_000)",
         "IN BUILDING",
+        'String(visit?.floor || "Lobby")',
     ):
         assert contract in scene
+    for contract in (
+        "OFFICE_ATTENDANCE_HEARTBEAT_MS = 30_000",
+        'direction === "heartbeat"',
+        "{ action, floor: attendanceFloorId }",
+        "startAttendanceHeartbeat()",
+        "stopAttendanceHeartbeat()",
+    ):
+        assert contract in office
 
 
 def test_attendance_duration_labels_are_compact_and_reject_bad_values():
@@ -371,18 +403,92 @@ def test_explicit_floor_refresh_updates_access_without_attendance_or_polling():
     assert payload["finalAccess"] == {
         "authenticated": True,
         "account": "alice",
-        "allowedFloorIds": [
-            "engineering",
-            "lobby",
-            "marketing",
-            "rooftop",
-        ],
+            "allowedFloorIds": [
+                "engineering",
+                "lobby",
+                "rooftop",
+            ],
     }
 
     office = source(OFFICE_PATH)
     refresh = function_body(office, "refreshAuthorization")
     assert "setInterval" not in refresh
     assert "recordAttendance" not in refresh
+def test_marketing_is_a_team_floor_reached_only_through_a_server_grant():
+    tower = source(TOWER_PATH)
+    scene = source(SCENE_PATH)
+    access = function_body(tower, "normalizeOfficeFloorAccess")
+    assert 'supplied.add("lobby")' in access
+    assert 'supplied.add("rooftop")' in access
+    # Signing in must not hand out the Marketing studio. Only the server's
+    # team-derived allowlist may add that floor.
+    assert 'supplied.add("marketing")' not in access
+    marketing_floor = tower[tower.index('id: "marketing"'):]
+    marketing_floor = marketing_floor[:marketing_floor.index("}),")]
+    assert "publicForMembers" not in marketing_floor
+    # The meeting table is the other door onto that storey.
+    meeting = function_body(scene, "enterOfficeMeeting")
+    assert 'canAccessOfficeFloor(officeFloorAccess, "marketing")' in meeting
+    board = scene[scene.index('=== "office-meeting-board"'):]
+    board = board[:board.index("onOfficeMeetingBoardSelect()")]
+    assert 'officeCurrentFloorId === "marketing"' in board
+
+
+def test_an_arrival_cell_never_drops_a_visitor_off_their_office_floor():
+    scene = source(SCENE_PATH)
+    app = source(WORLD_PATH)
+    spawn = function_body(scene, "setSpawn")
+    # Arrival cells are outdoor ground spots. Applying one to a visitor riding
+    # the tower teleported them from their storey down onto the lobby slab.
+    guard = 'if (officeSceneMode !== "town") return false;'
+    assert guard in spawn
+    assert spawn.index(guard) < spawn.index("player.position.set(")
+    assert "return true;" in spawn
+    welcome = app[app.index("const spawnBlocked ="):]
+    welcome = welcome[:welcome.index("window.clearTimeout(this.peerGraceTimer)")]
+    assert "this.initialPresenceWelcomePending &&" in welcome
+    assert "const relocated = this.world?.setSpawn?.({" in welcome
+    assert "if (relocated !== false) {" in welcome
+    assert welcome.index("const relocated") < welcome.index("this.currentSpace =")
+
+
+def test_saved_office_views_use_normal_attendance_entry_and_exit():
+    office = source(OFFICE_PATH)
+    restore = function_body(office, "restoreSavedView")
+    assert 'source: "saved-view"' in restore
+    assert "refreshOfficeAuthorization(" in restore
+    assert 'recordEntry: true' in restore
+    assert "world.leaveOfficeInterior?.();" in restore
+    assert "completeOfficeExit();" in restore
+    assert "world.restoreSavedViewState?.(view)" in restore
+    scene = source(SCENE_PATH)
+    enter = function_body(scene, "enterOffice")
+    assert '["doorway", "saved-view"].includes(source)' in enter
+
+
+def test_town_camera_cannot_orbit_through_the_ground():
+    scene = source(SCENE_PATH)
+    limiter = function_body(scene, "groundCameraDistanceLimit")
+    assert 'officeSceneMode !== "town"' in limiter
+    assert "headroom / -rise" in limiter
+    update = function_body(scene, "updateCamera")
+    assert "groundCameraDistanceLimit(" in update
+    assert "WORLD_GROUND_Y + CAMERA_GROUND_CLEARANCE" in update
+
+
+def test_marketing_task_board_is_blank_while_the_room_is_empty():
+    scene = source(SCENE_PATH)
+    blank = function_body(scene, "officeMarketingTasksBlankTexture")
+    assert "fillRect(0, 0, 1024, 768)" in blank
+    occupancy = function_body(scene, "officeMarketingRoomOccupied")
+    assert "officeParticipants.size > 0" in occupancy
+    assert 'officeCurrentFloorId === "marketing"' in occupancy
+    render = function_body(scene, "renderOfficeMarketingTasks")
+    assert "officeMarketingTasksBlankTexture(THREE)" in render
+    assert '? officeMarketingTaskSnapshot.state' in render
+    assert ': "vacant"' in render
+    update = function_body(scene, "updateOfficeMarketingTasks")
+    assert "officeMarketingTaskSnapshot = normalizeOfficeMarketingTasks(payload)" in update
 
 
 def test_office_is_a_remote_island_reached_by_a_glass_bridge():
@@ -404,6 +510,22 @@ def test_office_is_a_remote_island_reached_by_a_glass_bridge():
         "OFFICE_BRIDGE_WIDTH = 12",
     ):
         assert contract in tower
+
+
+def test_office_walkway_meets_the_lobby_without_a_gap_or_step():
+    scene = source(SCENE_PATH)
+    assert "const OFFICE_LOBBY_SURFACE_Y = 0.38;" in scene
+    assert "const officeEntranceZ =" in scene
+    assert "Math.abs(officeEntranceZ - OFFICE_BRIDGE_END_Z)" in scene
+    assert "(OFFICE_BRIDGE_END_Z + officeEntranceZ) / 2" in scene
+    assert "officeBridgeDeck.position.y = OFFICE_LOBBY_SURFACE_Y - 0.15" in scene
+    assert "approachDeck.position.y = OFFICE_LOBBY_SURFACE_Y - 0.09" in scene
+    assert 'officeBridgeDeck.name = "forkmesh-office-bridge-deck"' in scene
+    assert (
+        'approachDeck.name = "forkmesh-office-island-approach-deck"' in scene
+    )
+    floor_surface = function_body(scene, "addOfficeFloorSurface")
+    assert "OFFICE_LOBBY_SURFACE_Y / 2" in floor_surface
 
 
 def test_office_glass_uses_one_stable_non_depth_writing_envelope():
@@ -506,6 +628,7 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
     prepare = function_body(scene, "enterOffice")
     enter = function_body(scene, "enterOfficeLobby")
     local_position = function_body(scene, "officeAvatarLocalPosition")
+    town_collision = function_body(scene, "constrainTownOfficeWalls")
 
     # Admission must not stage a second teleport before the lobby handoff.
     for hard_snap in (
@@ -530,11 +653,29 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
     assert "localPosition.x =" not in threshold_handoff
     assert "localPosition.z =" not in threshold_handoff
     assert "OFFICE_INTERIOR_WALL_LIMIT - 0.72" not in enter
+    assert "if (source !== \"doorway\") cancelDash();" in prepare
+    assert "if (!enteringFromTown) keyboardMovementSpeed = baseMoveSpeed();" \
+        in enter
+    assert (
+        "player.position.z = office.position.z + doorwayThreshold"
+        not in town_collision
+    )
+    assert "const OFFICE_DOORWAY_PASSAGE_MIN_Z =" in scene
+    assert "const OFFICE_DOORWAY_INTERIOR_JOIN_Z =" in scene
+    assert "const inDoorwayPassage =" in town_collision
+    assert "const readyToCommitEntry =" in town_collision
+    assert "localZ <= OFFICE_DOORWAY_ENTRY_Z" in town_collision
+    accepted_handoff = town_collision[
+        town_collision.index('if (officeSceneMode !== "town")'):
+        town_collision.index("const previousX")
+    ]
+    assert "player.position.z =" not in accepted_handoff
+    assert "cancelDash()" not in accepted_handoff
 
     collision = function_body(scene, "constrainOfficeInteriorWalls")
     assert "const movingOutward =" in collision
     assert "movingOutward &&" in collision
-    assert "z <= OFFICE_DOORWAY_ENTRY_Z + 0.08" in collision
+    assert "z <= OFFICE_DOORWAY_APPROACH_Z + 0.08" in collision
 
     # Entry continues with the same player object. A second local avatar, a
     # forced camera mode, or rewritten orbit state would read as a scene cut.
@@ -552,20 +693,77 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
         assert swap_or_snap not in enter
 
 
+def test_office_doorway_is_an_open_tunnel_with_full_body_entry_and_exit_planes():
+    scene = source(SCENE_PATH)
+    town_collision = function_body(scene, "constrainTownOfficeWalls")
+    interior_collision = function_body(scene, "constrainOfficeInteriorWalls")
+    leave = function_body(scene, "leaveOfficeInterior")
+
+    assert "OFFICE_FRONT_Z - OFFICE_AVATAR_RADIUS - 0.06" in scene
+    assert "OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS + 0.06" in scene
+    assert "OFFICE_FRONT_Z - OFFICE_AVATAR_RADIUS - 0.7" in scene
+    assert "z >= OFFICE_DOORWAY_INTERIOR_JOIN_Z" in interior_collision
+    assert "if (inDoorwayPassage)" in town_collision
+    assert "return false;" in town_collision[
+        town_collision.index("if (inDoorwayPassage)"):
+        town_collision.index("const candidates")
+    ]
+
+    exit_handoff = interior_collision[
+        interior_collision.index(
+            'if (officeSceneMode !== "lobby")',
+            interior_collision.index("position.z >= OFFICE_INTERIOR_EXIT_Z"),
+        ):
+        interior_collision.index("// A missing/rejected controller")
+    ]
+    assert "position.z =" not in exit_handoff
+    assert "commitPosition()" not in exit_handoff
+
+    assert "const crossedLobbyDoorway =" in leave
+    preserve = leave[
+        leave.index("if (!crossedLobbyDoorway)"):
+        leave.index("applyOfficeAvatarLocalPosition")
+    ]
+    assert "OFFICE_FRONT_Z + 0.82" in preserve
+
+
+def test_office_door_shows_background_access_hydration_without_gating_entry():
+    scene = source(SCENE_PATH)
+    office = source(OFFICE_PATH)
+    assert 'doorStatus.name = "forkmesh-office-door-status"' in scene
+    assert '"SYNCING ACCESS"' in scene
+    assert '"WALK RIGHT IN"' not in scene
+    assert "doorStatus.visible = false" in scene
+    assert 'officeDoorStatus.visible = normalized !== "open"' in scene
+    assert "function setOfficeDoorStatus(" in scene
+    assert 'world.setOfficeDoorStatus?.("syncing")' in office
+    assert (
+        'world.setOfficeDoorStatus?.(authorized ? "ready" : "open")'
+        in office
+    )
+    entry = office[
+        office.index("async function enterOffice(entry = {})"):
+        office.index("function completeOfficeExit()")
+    ]
+    assert entry.index("completeOfficeEntry({") < entry.index(
+        "void refreshOfficeAuthorization("
+    )
+
+
 def test_lobby_camera_clamp_has_one_strict_open_door_portal():
     scene = source(SCENE_PATH)
     limit = function_body(scene, "officeCameraDistanceLimit")
 
     # Only an outward ray through the open lobby aperture may omit the front-Z
-    # face. Its real width and sill/lintel are checked at the front plane.
+    # face. Its real width, flush floor, and lintel are checked at the front plane.
     for contract in (
         "const rawFrontDistance =",
         "(OFFICE_FRONT_Z - localTarget.z) / frontDirection",
         'officeCurrentFloorId === "lobby"',
         "officeSlidingDoorOpen >= 0.9",
         "Math.abs(portalX) <= OFFICE_DOOR_WIDTH / 2 - 0.08",
-        "portalY >= OFFICE_DOOR_SILL_Y + 0.08",
-        "OFFICE_DOOR_SILL_Y + OFFICE_DOOR_HEIGHT - 0.08",
+        "portalY >= 0.08",
+        "portalY <= OFFICE_DOOR_HEIGHT - 0.08",
         'axis === "z"',
         "component > 0",
         "rayThroughOpenLobbyPortal",
@@ -665,7 +863,6 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
         "officeReceptionNoah.rotation.y = Math.PI",
         'noahNameplate.name = "forkmesh-office-reception-nameplate-noah"',
         "Walk up to Noah for World and repository tips",
-        "WELCOME · WALK RIGHT IN",
         "officeGreetingBoard.position.set(0, 6.25, -OFFICE_FRONT_Z + 0.5)",
         'officeAttendanceBoard.name = "forkmesh-office-attendance"',
         "OFFICE · LAST 20 VISITS",
@@ -1012,17 +1209,16 @@ def test_walking_through_the_doorway_enters_immediately_and_hydrates_access():
     scene = source(SCENE_PATH)
     for contract in (
         "let officeDoorwayEntryPending = false;",
-        "let officeDoorwayEntryArmed = true;",
-        "const crossedDoorway =",
-        "officeDoorwayEntryArmed &&",
+        "const inDoorwayPassage =",
+        "const readyToCommitEntry =",
         "!officeDoorwayEntryPending",
-        "officeDoorwayEntryArmed = false;",
         "officeDoorwayEntryPending = true;",
         'source: "doorway"',
         "function setOfficeDoorwayEntryPending(pending = false)",
         "setOfficeDoorwayEntryPending,",
     ):
         assert contract in scene
+    assert "officeDoorwayEntryArmed" not in scene
     entry = office[
         office.index("async function enterOffice(entry = {})"):
         office.index("function completeOfficeExit()")
@@ -1040,6 +1236,7 @@ def test_scene_returns_the_new_office_control_surface():
     returned = scene[scene.rindex("return {"):]
     for contract in (
         "setOfficeExitHandler",
+        "setOfficeDoorStatus",
         "setOfficeDoorwayEntryPending",
         "setOfficeFloorHandler",
         "setOfficeAccess",

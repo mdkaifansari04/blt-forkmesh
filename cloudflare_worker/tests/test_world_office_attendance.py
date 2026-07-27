@@ -13,11 +13,15 @@ ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 SCHEMA = ROOT / "src" / "schema.py"
 MIGRATION = ROOT / "migrations" / "0085_world_office_attendance.sql"
+LIVE_MIGRATION = (
+    ROOT / "migrations" / "0090_world_office_live_attendance.sql"
+)
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 
 
 def _load_handler(extra_globals):
     names = {
+        "_office_attendance_floor",
         "_office_attendance_visit",
         "_office_attendance_recent",
         "office_attendance_handler",
@@ -74,6 +78,7 @@ def _runtime():
     database = sqlite3.connect(":memory:")
     database.row_factory = sqlite3.Row
     database.executescript(MIGRATION.read_text(encoding="utf-8"))
+    database.executescript(LIVE_MIGRATION.read_text(encoding="utf-8"))
     state = {
         "account_bi": "",
         "account": None,
@@ -108,6 +113,19 @@ def _runtime():
 
     handler = _load_handler({
         "Date": _Clock,
+        "OFFICE_ATTENDANCE_FLOOR_LABELS": {
+            "lobby": "Lobby",
+            "marketing": "Marketing",
+            "engineering": "Engineering",
+            "product-design": "Product & Design",
+            "security": "Security",
+            "infrastructure": "Infrastructure",
+            "community": "Community",
+            "partnerships": "Partnerships",
+            "operations": "Operations",
+            "rooftop": "Rooftop",
+        },
+        "OFFICE_ATTENDANCE_LIVE_TTL_MS": 75_000,
         "_account_kind": lambda account: account.get("kind", ""),
         "_account_session_record": account_session,
         "bounded_json_request": bounded_json_request,
@@ -139,8 +157,9 @@ def _sign_in(state, account_bi="a" * 64, name="alice"):
 
 def test_schema_and_idempotent_migration_store_only_bounded_visit_fields():
     migration = MIGRATION.read_text(encoding="utf-8")
+    live_migration = LIVE_MIGRATION.read_text(encoding="utf-8")
     schema = SCHEMA.read_text(encoding="utf-8")
-    for source in (migration, schema):
+    for source in (migration + live_migration, schema):
         assert "CREATE TABLE IF NOT EXISTS world_office_attendance" in source
         assert "idx_world_office_attendance_open" in source
         assert "WHERE out_at IS NULL" in source
@@ -149,12 +168,14 @@ def test_schema_and_idempotent_migration_store_only_bounded_visit_fields():
     database = sqlite3.connect(":memory:")
     database.executescript(migration)
     database.executescript(migration)
+    database.executescript(live_migration)
     columns = {
         row[1] for row in database.execute(
             "PRAGMA table_info(world_office_attendance)")
     }
     assert columns == {
         "visit_id", "account_bi", "account_name", "in_at", "out_at",
+        "last_seen_at", "floor_id",
     }
     assert not columns.intersection({
         "ip", "ip_address", "user_agent", "ua", "session", "session_token",
@@ -213,10 +234,12 @@ def test_get_returns_only_the_newest_twenty_bounded_public_visits():
         "inAt": 1_700_000_000_024,
         "outAt": 1_700_000_000_025,
         "durationMs": 1,
+        "floor": "",
     }
     assert all(
         set(visit) == {
             "id", "account", "inAt", "outAt", "durationMs",
+            "floor",
         }
         for visit in visits
     )
@@ -229,6 +252,7 @@ def test_repeated_in_opens_one_visit_and_out_closes_that_same_row_once():
     first = _run(handler(None, _Request({
         "action": "in",
         "account": "forged-user",
+        "floor": "engineering",
     })))
     _Clock.value += 500
     duplicate = _run(handler(None, _Request({"action": "IN"})))
@@ -239,6 +263,7 @@ def test_repeated_in_opens_one_visit_and_out_closes_that_same_row_once():
     assert rows[0]["account_bi"] == "a" * 64
     assert rows[0]["account_name"] == "Alicescript"
     assert rows[0]["out_at"] is None
+    assert rows[0]["floor_id"] == "engineering"
     assert first["payload"]["visits"][0]["id"] == (
         duplicate["payload"]["visits"][0]["id"])
     assert first["payload"]["visits"][0]["durationMs"] == 0
@@ -257,6 +282,36 @@ def test_repeated_in_opens_one_visit_and_out_closes_that_same_row_once():
     assert checked_out["payload"]["visits"] == repeated_out["payload"]["visits"]
     assert checked_out["payload"]["visits"][0]["outAt"] == checked_out_at
     assert checked_out["payload"]["visits"][0]["durationMs"] == 1_000
+    assert checked_out["payload"]["visits"][0]["floor"] == ""
+
+
+def test_stale_open_visit_is_closed_and_live_floor_tracks_heartbeat():
+    handler, database, state = _runtime()
+    _sign_in(state, name="Alice")
+
+    entered = _run(handler(None, _Request({
+        "action": "in",
+        "floor": "engineering",
+    })))
+    assert entered["payload"]["visits"][0]["outAt"] is None
+    assert entered["payload"]["visits"][0]["floor"] == "Engineering"
+
+    _Clock.value += 30_000
+    heartbeat = _run(handler(None, _Request({
+        "action": "heartbeat",
+        "floor": "product-design",
+    })))
+    assert heartbeat["payload"]["visits"][0]["floor"] == "Product & Design"
+
+    _Clock.value += 75_001
+    stale = _run(handler(None, _Request(method="GET")))
+    visit = stale["payload"]["visits"][0]
+    assert visit["outAt"] == _Clock.value - 75_001
+    assert visit["floor"] == ""
+    assert database.execute(
+        "SELECT COUNT(*) FROM world_office_attendance "
+        "WHERE out_at IS NULL"
+    ).fetchone()[0] == 0
 
 
 def test_duration_is_server_timed_and_malformed_rows_are_bounded():

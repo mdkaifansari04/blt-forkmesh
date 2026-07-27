@@ -592,15 +592,18 @@ def test_public_handler_serves_d1_snapshot_then_edge_cache_without_fetch():
     assert harness.fetches == []
 
 
-def test_public_handler_fails_closed_for_missing_or_tampered_snapshot():
+def test_public_handler_returns_empty_degraded_sky_for_missing_or_tampered_snapshot():
     harness = EntryHarness(row=None)
     namespace = _entry_namespace(harness)
     handler = namespace["world_satellites_handler"]
     response = asyncio.run(
         handler(object(), SimpleNamespace(method="GET"))
     )
-    assert response["status"] == 503
+    assert response["status"] == 200
+    assert response["data"]["ok"] is True
     assert response["data"]["status"] == "warming"
+    assert response["data"]["recordCount"] == 0
+    assert response["data"]["satellites"] == []
     assert response["headers"]["x-forkmesh-expected-degraded"] == "1"
     assert harness.fetches == []
 
@@ -613,7 +616,8 @@ def test_public_handler_fails_closed_for_missing_or_tampered_snapshot():
     response = asyncio.run(
         handler(object(), SimpleNamespace(method="GET"))
     )
-    assert response["status"] == 503
+    assert response["status"] == 200
+    assert response["data"]["satellites"] == []
     assert harness.fetches == []
 
     denied = asyncio.run(
