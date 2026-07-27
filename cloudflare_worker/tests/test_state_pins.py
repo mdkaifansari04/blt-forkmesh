@@ -163,6 +163,8 @@ def test_publish_records_source_pins_into_history():
     text = _entry_text()
     assert "INSERT INTO repo_state_history" in text
     assert "record.get(\"source\") == \"local-node\"" in text
+    assert "prior_state_hash" in text
+    assert "history_states" in text
     assert "STATE_PIN_HISTORY" in text
     # Renaming an account carries its attested history to the new namespace.
     assert "UPDATE repo_state_history SET key_bi=" in text

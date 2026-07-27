@@ -117,13 +117,9 @@ def test_digest_html_escapes_the_actor_name():
     assert "&lt;script&gt;" in html
 
 
-def test_digest_html_is_dark_only():
-    # The card is dark, always: painted with inline dark styles AND declared
-    # dark-only via <meta name="color-scheme" content="dark">, so clients
-    # neither auto-invert it nor repaint it to a light theme. An earlier
-    # "light dark" + prefers-color-scheme:light override rendered the card
-    # glaringly white in readers whose dark theme doesn't set the OS
-    # prefers-color-scheme (e.g. Gmail's dark theme), so it was removed.
+def test_digest_html_follows_native_light_or_dark_mode():
+    # Light is the safe inline fallback; capable readers use the native dark
+    # preference without auto-inverting the brand colors.
     ns = _load()
     _subject, _text, html = ns["_notification_digest_email"]("alice", [{
         "kind": "mention",
@@ -134,11 +130,10 @@ def test_digest_html_is_dark_only():
         "ts": 1783607520000,
         "meta": {"number": 7},
     }])
-    assert 'name="color-scheme" content="dark"' in html
-    assert 'name="supported-color-schemes" content="dark"' in html
-    # No light-mode override may reintroduce a white background.
-    assert "prefers-color-scheme" not in html
-    assert "#ffffff" not in html
+    assert 'name="color-scheme" content="light dark"' in html
+    assert 'name="supported-color-schemes" content="light dark"' in html
+    assert "prefers-color-scheme:dark" in html
+    assert "#ffffff" in html
     assert 'class="fm-card"' in html
     assert "background:#090909" in html
 
