@@ -92,6 +92,10 @@ CHAT_CHANNEL_DO_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/v([1-9][0-9]*)/(ws|revoke)$")
 OFFICE_MEETING_TICKET_TTL_MS = 60 * 1000
 OFFICE_ENTRY_TICKET_TTL_MS = 5 * 60 * 1000
+# Revalidate an Office socket's exact revocable account session at most once
+# per interval. Movement and presence frames inside the interval stay entirely
+# inside the Durable Object, avoiding a D1 read for every animation update.
+OFFICE_ACCESS_RECHECK_MS = 30 * 1000
 OFFICE_CHANNEL_WS_RE = re.compile(
     r"^/api/world/office/channels/([0-9a-f]{32})/ws/?$")
 OFFICE_INTERNAL_RE = re.compile(
@@ -4121,6 +4125,7 @@ async def office_durable_object_request(request, claims, target_url=None):
         "scope": str((claims or {}).get("scope") or ""),
         "version": int((claims or {}).get("version") or 0),
         "account_bi": str((claims or {}).get("account_bi") or ""),
+        "session_id": str((claims or {}).get("session_id") or ""),
         "name": world_protocol.clean_display_name(
             (claims or {}).get("name"), "Guest"),
         "accountStatus": str(
@@ -5535,7 +5540,8 @@ def _office_entry_ticket_claims(env, token):
     }
 
 
-def _office_meeting_ticket(env, scope, key_version, account_bi="", name=""):
+def _office_meeting_ticket(
+        env, scope, key_version, account_bi="", name="", session_id=""):
     """Issue a short-lived claim for one authorized spatial meeting."""
     scope = str(scope or "").strip()
     if scope != "world-general" and not re.fullmatch(
@@ -5550,6 +5556,9 @@ def _office_meeting_ticket(env, scope, key_version, account_bi="", name=""):
     account_bi = str(account_bi or "").strip()
     if account_bi and not re.fullmatch(r"[0-9a-f]{64}", account_bi):
         raise ValueError("invalid_office_account")
+    session_id = str(session_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", session_id):
+        raise ValueError("invalid_office_session")
     name = str(name or "").strip()
     if len(name) > 64 or any(ord(ch) < 32 for ch in name):
         raise ValueError("invalid_office_name")
@@ -5557,16 +5566,17 @@ def _office_meeting_ticket(env, scope, key_version, account_bi="", name=""):
     expires = int(Date.now()) + OFFICE_MEETING_TICKET_TTL_MS
     nonce = new_world_peer_id()
     canonical = ".".join((
-        "v1",
+        "v2",
         scope,
         str(key_version),
         account_bi or "-",
+        session_id,
         encoded_name or "-",
         str(expires),
         nonce,
     ))
     signature = hmac.new(
-        (_require_data_secret(env) + ":office-meeting-ticket-v1").encode(),
+        (_require_data_secret(env) + ":office-meeting-ticket-v2").encode(),
         canonical.encode(),
         "sha256",
     ).hexdigest()
@@ -5576,17 +5586,19 @@ def _office_meeting_ticket(env, scope, key_version, account_bi="", name=""):
 def _office_meeting_ticket_claims(env, token):
     """Verify and decode one Office meeting claim without side effects."""
     parts = str(token or "").split(".")
-    if len(parts) != 8:
+    if len(parts) != 9:
         return None
-    (version_tag, scope, version_raw, account_raw, name_raw, expires_raw,
-     nonce, signature) = parts
-    if version_tag != "v1":
+    (version_tag, scope, version_raw, account_raw, session_id, name_raw,
+     expires_raw, nonce, signature) = parts
+    if version_tag != "v2":
         return None
     if scope != "world-general" and not re.fullmatch(
             r"[0-9a-f]{32}", scope):
         return None
     account_bi = "" if account_raw == "-" else account_raw
     if account_bi and not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", session_id):
         return None
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,32}", nonce):
         return None
@@ -5605,9 +5617,9 @@ def _office_meeting_ticket_claims(env, token):
         or expires - now > OFFICE_MEETING_TICKET_TTL_MS
     ):
         return None
-    canonical = ".".join(parts[:7])
+    canonical = ".".join(parts[:8])
     expected = hmac.new(
-        (_require_data_secret(env) + ":office-meeting-ticket-v1").encode(),
+        (_require_data_secret(env) + ":office-meeting-ticket-v2").encode(),
         canonical.encode(),
         "sha256",
     ).hexdigest()
@@ -5625,6 +5637,7 @@ def _office_meeting_ticket_claims(env, token):
         "scope": scope,
         "version": key_version,
         "account_bi": account_bi,
+        "session_id": session_id,
         "name": name,
         "expires": expires,
         "nonce": nonce,

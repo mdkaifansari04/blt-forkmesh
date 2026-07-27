@@ -1910,6 +1910,9 @@ function makeMaterial(THREE, color, options = {}) {
   // Three.js warns for explicitly supplied `undefined` enum values. Omit the
   // option entirely unless a caller intentionally selected a rendering side.
   if (options.side !== undefined) parameters.side = options.side;
+  if (options.depthWrite !== undefined) {
+    parameters.depthWrite = options.depthWrite;
+  }
   return new THREE.MeshStandardMaterial(parameters);
 }
 
@@ -6756,9 +6759,10 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   });
   const glass = makeMaterial(THREE, "#9ef7c6", {
     transparent: true,
-    opacity: 0.42,
-    metalness: 0.08,
-    roughness: 0.22,
+    opacity: 0.24,
+    metalness: 0,
+    roughness: 0.62,
+    depthWrite: false,
   });
   const doorMaterial = makeMaterial(THREE, "#245845", {
     metalness: 0.34,
@@ -7040,6 +7044,14 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     interactive.push(child);
   });
   setShadows(group);
+  // Transparent walls are a view envelope, not shadow casters. Keeping them
+  // out of both the depth and shadow buffers prevents bright/dark popping as
+  // the camera crosses the tower while preserving the opaque frame.
+  group.traverse((child) => {
+    if (!child.isMesh || !child.material?.transparent) return;
+    child.castShadow = false;
+    child.receiveShadow = false;
+  });
   sign.castShadow = false;
   return group;
 }
@@ -8368,12 +8380,6 @@ export function createWorldScene({
     metalness: 0.18,
     roughness: 0.82,
   });
-  const officeFloorGlassMaterial = makeMaterial(THREE, "#b8fff0", {
-    transparent: true,
-    opacity: 0.2,
-    metalness: 0.08,
-    roughness: 0.12,
-  });
   const officeFloorAccent = makeMaterial(THREE, "#67efb1", {
     emissive: "#1a9a68",
     emissiveIntensity: 0.82,
@@ -8446,31 +8452,6 @@ export function createWorldScene({
     floorGroup.userData.officeFloorId = floor.id;
     addOfficeFloorSurface(floorGroup, officeFloorSlabMaterial);
     if (floor.id !== "rooftop") {
-      for (const x of [
-        -OFFICE_WIDTH / 2 + 0.26,
-        OFFICE_WIDTH / 2 - 0.26,
-      ]) {
-        const pane = new THREE.Mesh(
-          new THREE.BoxGeometry(0.18, OFFICE_FLOOR_HEIGHT - 0.7, OFFICE_DEPTH),
-          officeFloorGlassMaterial,
-        );
-        pane.position.set(x, OFFICE_FLOOR_HEIGHT / 2, 0);
-        floorGroup.add(pane);
-      }
-      const backPane = new THREE.Mesh(
-        new THREE.BoxGeometry(
-          OFFICE_WIDTH,
-          OFFICE_FLOOR_HEIGHT - 0.7,
-          0.18,
-        ),
-        officeFloorGlassMaterial,
-      );
-      backPane.position.set(
-        0,
-        OFFICE_FLOOR_HEIGHT / 2,
-        -OFFICE_FRONT_Z + 0.18,
-      );
-      floorGroup.add(backPane);
       for (let x = -72; x <= 72; x += 24) {
         const light = new THREE.Mesh(
           new THREE.BoxGeometry(12, 0.08, 0.28),
@@ -8642,9 +8623,10 @@ export function createWorldScene({
     const rooftop = officeFloorGroups.get("rooftop");
     const roofGlass = makeMaterial(THREE, "#d8ffff", {
       transparent: true,
-      opacity: 0.36,
-      metalness: 0.18,
-      roughness: 0.06,
+      opacity: 0.24,
+      metalness: 0,
+      roughness: 0.54,
+      depthWrite: false,
     });
     for (const [width, depth, x, z] of [
       [OFFICE_WIDTH, 0.22, 0, -OFFICE_DEPTH / 2 + 0.2],
@@ -9246,16 +9228,22 @@ export function createWorldScene({
   logoFountain.add(chromeCube);
   officeInterior.add(logoFountain);
   let lastLogoReflectionAt = 0;
+  let officeLobbyPlayerMoving = false;
   // One cube-map refresh renders the scene six times. The lobby itself is
-  // mostly static, so a measured cadence keeps the chrome sharp and still
-  // picks up nearby visitors without turning the fountain into a frame-rate
-  // tax on phones or integrated GPUs.
+  // mostly static, so refresh only while its visitor and camera are idle.
+  // Capturing on other floors or during a drag spends six full scene renders
+  // on an invisible sculpture and presents as a periodic movement hitch.
   const logoReflectionIntervalMs = compactRenderer ? 2500 : 1000;
   animated.push((time) => {
     chromeCube.rotation.y = time * 0.00022;
     logoWater.rotation.y = -time * 0.00012;
     if (
-      officeSceneMode !== "town" &&
+      officeSceneMode === "lobby" &&
+      officeCurrentFloorId === "lobby" &&
+      !officeElevatorRide &&
+      !officeLobbyPlayerMoving &&
+      primaryPointerId === null &&
+      !pinchActive &&
       time - lastLogoReflectionAt >= logoReflectionIntervalMs
     ) {
       lastLogoReflectionAt = time;
@@ -9280,11 +9268,12 @@ export function createWorldScene({
     metalness: 0.82,
     roughness: 0.2,
   });
-  const elevatorShaftGlass = makeMaterial(THREE, "#c9fff3", {
+  const elevatorCarGlass = makeMaterial(THREE, "#c9fff3", {
     transparent: true,
-    opacity: 0.16,
-    metalness: 0.16,
-    roughness: 0.08,
+    opacity: 0.13,
+    metalness: 0,
+    roughness: 0.5,
+    depthWrite: false,
   });
   for (const [x, z] of [
     [-5, -4],
@@ -9299,15 +9288,9 @@ export function createWorldScene({
     beam.position.set(x, OFFICE_TOWER_HEIGHT / 2, z);
     officeElevatorShaft.add(beam);
   }
-  for (const [geometry, x, z] of [
-    [new THREE.BoxGeometry(0.12, OFFICE_TOWER_HEIGHT, 7.8), -4.88, 0],
-    [new THREE.BoxGeometry(0.12, OFFICE_TOWER_HEIGHT, 7.8), 4.88, 0],
-    [new THREE.BoxGeometry(9.8, OFFICE_TOWER_HEIGHT, 0.12), 0, 3.88],
-  ]) {
-    const pane = new THREE.Mesh(geometry, elevatorShaftGlass);
-    pane.position.set(x, OFFICE_TOWER_HEIGHT / 2, z);
-    officeElevatorShaft.add(pane);
-  }
+  // The moving car supplies the only glass envelope. Full-height shaft panes
+  // created a second parallel layer a few inches away, so their transparent
+  // sort order changed whenever the rider turned the camera.
   officeInterior.add(officeElevatorShaft);
 
   const officeElevatorCar = new THREE.Group();
@@ -9337,7 +9320,7 @@ export function createWorldScene({
     [new THREE.BoxGeometry(0.14, 6.8, 7.25), 4.62, 0],
     [new THREE.BoxGeometry(9.25, 6.8, 0.14), 0, 3.55],
   ]) {
-    const pane = new THREE.Mesh(geometry, elevatorShaftGlass);
+    const pane = new THREE.Mesh(geometry, elevatorCarGlass);
     pane.position.set(x, 3.65, z);
     officeElevatorCar.add(pane);
   }
@@ -9346,9 +9329,10 @@ export function createWorldScene({
       new THREE.BoxGeometry(4.45, 6.65, 0.12),
       makeMaterial(THREE, "#d8fff6", {
         transparent: true,
-        opacity: 0.34,
-        metalness: 0.34,
-        roughness: 0.08,
+        opacity: 0.24,
+        metalness: 0,
+        roughness: 0.48,
+        depthWrite: false,
       }),
     );
     door.position.set(side * 4.36, 3.62, -3.56);
@@ -10860,6 +10844,7 @@ export function createWorldScene({
   function walkOfficeLobbyPlayer(delta, time) {
     const avatar = player;
     if (officeElevatorRide) {
+      officeLobbyPlayerMoving = true;
       avatar.userData.leftArm.rotation.x = 0;
       avatar.userData.rightArm.rotation.x = 0;
       applyLegPitch(avatar, 0, 0);
@@ -10870,6 +10855,7 @@ export function createWorldScene({
     const movement = input.movement;
     if (officeChairSeat) {
       if (!movement.lengthSq() && !dashTarget && !jumpQueued) {
+        officeLobbyPlayerMoving = false;
         applyOfficeChairSeatPose();
         animateAvatarActivity(avatar, time, delta, reducedMotion);
         return;
@@ -10877,6 +10863,7 @@ export function createWorldScene({
       standUpFromOfficeChair();
     }
     const walking = movement.lengthSq() > 0;
+    officeLobbyPlayerMoving = walking;
     const movementSpeed = movementSpeedForInput(input, delta);
     if (walking) {
       const previousPosition = avatar.position.clone();
