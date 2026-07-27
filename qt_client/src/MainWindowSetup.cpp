@@ -3314,7 +3314,7 @@ QString MainWindow::footerLogLineHtml(const QString &clean)
                 "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
                 "<span style='color:#1f2328'>%3</span>")
                 .arg(accent, badge.leftJustified(7).toHtmlEscaped(),
-                     message.toHtmlEscaped());
+                     forkmesh::colorizeBackgroundMarker(message.toHtmlEscaped()));
     return html;
 }
 
