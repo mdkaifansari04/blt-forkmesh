@@ -297,6 +297,9 @@ const ACCOUNT_STATUS_ICONS = Object.freeze({
   "Verified bot": "⌘",
 });
 const WORLD_MODERATION_HANDLE_PATTERN = /^[a-f0-9]{64}$/;
+// Organization and account names share the node-name grammar the worker
+// enforces. The team plaque only ever carries names, never a session secret.
+const WORLD_ORG_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const REPOSITORY_SIZE_MAP_COLORS = Object.freeze([
   "#3987e5",
   "#199e70",
@@ -1933,6 +1936,90 @@ function createAvatarModerationControls(THREE, handles) {
   return group;
 }
 
+// The organization team plaque the app layer hands down for members of an
+// organization the viewer owns or administers. Everything here is a name the
+// roster already publishes to org members plus two counts; the plaque never
+// carries a role decision — the worker re-checks the caller's role on write.
+function sanitizedOrgTeamAssignment(remote) {
+  const peerId = String(remote?.id || "");
+  const assignment = remote?.orgTeam;
+  if (
+    !peerId ||
+    /^(?:inactive|local|node|bot):/.test(peerId) ||
+    remote?.persistedInactive === true ||
+    remote?.accountStatus === "Verified bot" ||
+    String(remote?.accountStatus || "Guest") === "Guest" ||
+    !assignment ||
+    typeof assignment !== "object" ||
+    Array.isArray(assignment)
+  ) {
+    return null;
+  }
+  const org = String(assignment.org || "").toLowerCase();
+  const member = String(assignment.member || "").toLowerCase();
+  if (
+    !WORLD_ORG_NAME_PATTERN.test(org) ||
+    !WORLD_ORG_NAME_PATTERN.test(member)
+  ) {
+    return null;
+  }
+  const total = Math.max(0, Math.min(99, Number(assignment.total) || 0));
+  if (!total) return null;
+  return {
+    org,
+    member,
+    assigned: Math.max(0, Math.min(total, Number(assignment.assigned) || 0)),
+    total,
+  };
+}
+
+function orgTeamControlTexture(THREE, title, subtitle) {
+  return canvasTexture(THREE, 512, 160, (context) => {
+    context.clearRect(0, 0, 512, 160);
+    roundedRect(context, 4, 4, 504, 152, 18);
+    context.fillStyle = "rgba(6,26,22,0.96)";
+    context.fill();
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 8;
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = "#eafff4";
+    context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(title, 256, 58, 456);
+    context.fillStyle = "#9ef7c6";
+    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(subtitle, 256, 113, 456);
+  });
+}
+
+function createAvatarOrgTeamControl(THREE, assignment) {
+  const group = new THREE.Group();
+  group.name = "forkmesh-world-org-team-control";
+  const control = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.02, 0.34),
+    new THREE.MeshBasicMaterial({
+      map: orgTeamControlTexture(
+        THREE,
+        "ASSIGN TEAMS",
+        `${assignment.org.toUpperCase()} · ${assignment.assigned}/${
+          assignment.total
+        } TEAMS`,
+      ),
+      transparent: false,
+      depthWrite: true,
+    }),
+  );
+  control.name = "world-org-team-control";
+  // Same back face as the moderation plaques: avatar fronts face -Z, so a
+  // single-sided plane at positive Z cannot be clicked through the chest.
+  control.position.set(0, 1.61, 0.321);
+  control.userData.worldOrgTeamControl = true;
+  control.renderOrder = 3;
+  group.add(control);
+  return group;
+}
+
 function makeMaterial(THREE, color, options = {}) {
   const parameters = {
     color,
@@ -3207,7 +3294,8 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
     if (
       !child.isMesh ||
       (antenna && antenna === child.parent) ||
-      child.userData?.worldModerationControl
+      child.userData?.worldModerationControl ||
+      child.userData?.worldOrgTeamControl
     ) return;
     const childMaterials = Array.isArray(child.material)
       ? child.material
@@ -7325,6 +7413,7 @@ export function createWorldScene({
   onRegionChange = () => {},
   onMovement = () => {},
   onModeration = () => {},
+  onOrgTeamAssign = () => {},
   onFediverseProfile = () => {},
   onFediverseFollow = () => {},
   onLayoutObjectMoved = () => {},
@@ -8516,6 +8605,8 @@ export function createWorldScene({
   const remoteLabels = new Map();
   const moderationActions = new WeakMap();
   const moderationControlKeys = new Map();
+  const orgTeamActions = new WeakMap();
+  const orgTeamControlKeys = new Map();
   // Badge plane and tab buttons -> the avatar they belong to, so one click
   // handler can switch chest tabs and hit the follow pill.
   const chestControls = new WeakMap();
@@ -12564,6 +12655,60 @@ export function createWorldScene({
     moderationControlKeys.set(peerId, key);
   }
 
+  function removeRemoteOrgTeamControl(avatar, peerId) {
+    const controls = avatar?.userData?.orgTeamControls;
+    if (controls) {
+      controls.traverse((child) => {
+        orgTeamActions.delete(child);
+        const interactiveIndex = interactive.indexOf(child);
+        if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
+      });
+      avatar.remove(controls);
+      disposeObject3D(controls);
+      delete avatar.userData.orgTeamControls;
+    }
+    orgTeamControlKeys.delete(String(peerId || ""));
+  }
+
+  // The organization-admin counterpart of the moderation plaques: one plaque
+  // per member avatar, opening the team multi-select the app layer owns. The
+  // app only supplies `orgTeam` for members of an organization the viewer
+  // owns or administers, so a plain member never sees another back plaque.
+  function syncRemoteOrgTeamControl(avatar, remote) {
+    const peerId = String(remote?.id || "");
+    const name = String(remote?.name || "visitor").slice(0, 32);
+    const assignment = sanitizedOrgTeamAssignment(remote);
+    const key = JSON.stringify([
+      name,
+      assignment?.org || "",
+      assignment?.member || "",
+      assignment?.assigned ?? -1,
+      assignment?.total ?? -1,
+    ]);
+    if (
+      orgTeamControlKeys.get(peerId) === key &&
+      avatar?.userData?.orgTeamControls
+    ) {
+      return;
+    }
+    removeRemoteOrgTeamControl(avatar, peerId);
+    if (!assignment) return;
+
+    const controls = createAvatarOrgTeamControl(THREE, assignment);
+    controls.children.forEach((control) => {
+      orgTeamActions.set(control, {
+        org: assignment.org,
+        member: assignment.member,
+        peerId,
+        name,
+      });
+      interactive.push(control);
+    });
+    avatar.add(controls);
+    avatar.userData.orgTeamControls = controls;
+    orgTeamControlKeys.set(peerId, key);
+  }
+
   // Fill in the directory-only rows for an avatar's badge. A guest can type
   // any display name, so only a server-stamped account status may claim the
   // public record filed under that name.
@@ -12721,10 +12866,12 @@ export function createWorldScene({
         updatePlayerLabel(remoteLabels.get(remote.id), badgeIdentity);
       }
       syncRemoteModerationControls(avatar, remote);
+      syncRemoteOrgTeamControl(avatar, remote);
     });
     remotePlayers.forEach((avatar, id) => {
       if (seen.has(id)) return;
       removeRemoteModerationControls(avatar, id);
+      removeRemoteOrgTeamControl(avatar, id);
       unregisterAvatarChestControls(avatar);
       world.remove(avatar);
       avatar.traverse((child) => {
@@ -15973,6 +16120,16 @@ export function createWorldScene({
         handle: moderationAction.handle,
         peerId: moderationAction.peerId,
         name: moderationAction.name,
+      });
+      return;
+    }
+    const orgTeamAction = hit?.object ? orgTeamActions.get(hit.object) : null;
+    if (orgTeamAction) {
+      onOrgTeamAssign({
+        org: orgTeamAction.org,
+        member: orgTeamAction.member,
+        peerId: orgTeamAction.peerId,
+        name: orgTeamAction.name,
       });
       return;
     }

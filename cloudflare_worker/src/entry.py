@@ -17666,11 +17666,24 @@ async def org_members_handler(env, request, org):
             "SELECT name, role, created_at FROM org_members WHERE org_bi=? "
             "ORDER BY created_at ASC",
             org_bi)
+        # Each member's team list rides along so a roster reader never has to
+        # fan out one request per team. This is the same org-internal layout
+        # the per-team member listing already shows any member.
+        team_rows = await d1_all(
+            env,
+            "SELECT name, team FROM org_team_members WHERE org_bi=? "
+            "ORDER BY team ASC",
+            org_bi)
+        teams_by_member = {}
+        for r in team_rows or []:
+            teams_by_member.setdefault(
+                str(r.get("name") or ""), []).append(str(r.get("team") or ""))
         return json_response({"ok": True, "visibility": access["offices"],
                               "members": [
             {"name": str(r.get("name") or ""),
              "role": str(r.get("role") or ""),
-             "since": int(r.get("created_at") or 0)}
+             "since": int(r.get("created_at") or 0),
+             "teams": teams_by_member.get(str(r.get("name") or ""), [])}
             for r in rows or []]}, cache_control="no-store")
     if method not in ("POST", "DELETE"):
         return json_response({"error": "method_not_allowed"}, status=405)
