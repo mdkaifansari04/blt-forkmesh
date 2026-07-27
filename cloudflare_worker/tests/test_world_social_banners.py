@@ -62,6 +62,23 @@ def test_banner_faces_repaint_from_the_proxy_snapshot():
     assert 'feed.state === "ready"' in scene
 
 
+def test_repository_status_board_reuses_the_social_sign_format_near_the_office():
+    scene = _source(SCENE_PATH)
+    world = _source(WORLD_PATH)
+    assert 'id: "status"' in scene
+    assert 'title: "SYSTEM STATUS"' in scene
+    assert 'host: "forkmesh.com/status"' in scene
+    assert 'url: "/status"' in scene
+    assert '"flagship_repository"' in scene
+    assert '"LAST 60 MINUTES"' in scene
+    assert '"LAST 24 HOURS"' in scene
+    assert '"LAST 30 DAYS"' in scene
+    assert 'registerMovableObject("status-banner", statusBanner);' in scene
+    assert "updateSystemStatusBoard," in scene
+    assert 'this.fetchJSON("/api/status"' in world
+    assert "this.world?.updateSystemStatusBoard?.(payload)" in world
+
+
 def test_world_fetches_the_proxy_without_credentials_on_a_timer():
     world = _source(WORLD_PATH)
     assert 'const SOCIAL_POSTS_URL = "/api/world/social-posts";' in world

@@ -116,6 +116,10 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
 
     async def noop(*_a, **_k):
         return None
+    async def repository_probe(_env):
+        return True, ""
+    async def installer_status(_env, _now):
+        return True, ""
 
     extra = {
         "Date": _Clock,
@@ -123,6 +127,9 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
         "d1_first": d1_first,
         "d1_all": d1_all,
         "d1_run": d1_run,
+        "_flagship_repository_probe": repository_probe,
+        "_record_status_monitor_transitions": noop,
+        "_installer_delivery_status": installer_status,
     }
     return extra, inserted, hourly, minutely
 
@@ -145,7 +152,8 @@ def _run_sample(error_paths=(), host_online=True, db_ok=True, error_rows=None):
 def test_all_systems_recorded_ok_with_no_errors_and_a_live_https_mirror():
     results, reasons, _minutes = _run_sample(error_paths=[], host_online=True, db_ok=True)
     assert set(results) == {
-        "website", "api", "database", "git_hosting", "realtime", "durable_objects",
+        "website", "api", "database", "flagship_repository",
+        "installer", "git_hosting", "realtime", "durable_objects",
     }
     assert all(failure == 0 for failure in results.values())
     assert all(reason is None for reason in reasons.values())
@@ -994,7 +1002,34 @@ def test_current_snapshot_survives_a_failing_read():
     assert out["current"]["catalogRepos"] is None
     assert out["current"]["onlineNodes"] == 0
     # systems still rendered despite the failed metric
-    assert len(out["systems"]) == 6
+    assert len(out["systems"]) == 8
+
+
+def test_flagship_repository_monitor_is_public_and_deduplicates_email_states():
+    assert '("flagship_repository", "forkmesh/forkmesh repository page")' in ENTRY_TEXT
+    assert "FLAGSHIP_REPOSITORY_URL = \"https://forkmesh.com/forkmesh/forkmesh\"" in ENTRY_TEXT
+    assert 'str(item.get("name") or "").lower() == "readme.md"' in ENTRY_TEXT
+    assert "Repository page shell did not load" in ENTRY_TEXT
+    assert "await org_alias_rewrite(env, request, route_url)" in ENTRY_TEXT
+    assert "Root repository tree did not contain README.md" in ENTRY_TEXT
+    assert "README.md body did not load" in ENTRY_TEXT
+    assert "repository_monitor_state" in ENTRY_TEXT
+    assert "notified_state" in ENTRY_TEXT
+    assert "[ForkMesh outage]" in ENTRY_TEXT
+    assert "[ForkMesh recovered]" in ENTRY_TEXT
+    assert "is passing again after " in ENTRY_TEXT
+    assert "Suggested first step" in ENTRY_TEXT
+    assert "WHERE monitor_id LIKE 'status:%'" in ENTRY_TEXT
+
+
+def test_installer_delivery_is_checked_every_ten_minutes_and_public():
+    assert '("installer", "Installer delivery")' in ENTRY_TEXT
+    assert "INSTALLER_CHECK_INTERVAL_MS = 10 * 60 * 1000" in ENTRY_TEXT
+    assert "async def _installer_delivery_probe" in ENTRY_TEXT
+    assert '"release.json", "release.json.sig", "SHASUMS256.txt"' in ENTRY_TEXT
+    assert "releases/blob/sha256/" in ENTRY_TEXT
+    assert "Cloudflare cannot execute Bash" in ENTRY_TEXT
+    assert "source-build fallback" in ENTRY_TEXT
 
 
 def test_status_page_renders_current_state_grid():

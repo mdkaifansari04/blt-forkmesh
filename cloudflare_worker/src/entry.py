@@ -48,8 +48,8 @@ ROOM_MSG_MAX_PER_WINDOW = 20
 # and forwarding to it instead of letting ghost peers inflate the roster.
 ROOM_CLIENT_STALE_MS = 3 * 60 * 1000
 # Catalog write throttle per owner, and a hard cap on records an owner may hold.
-CATALOG_WRITE_COOLDOWN_MS = 5 * 1000
-CATALOG_MAX_RECORDS_PER_OWNER = 50
+CATALOG_WRITE_COOLDOWN_MS = 500
+CATALOG_MAX_RECORDS_PER_OWNER = 100
 # Per-repository control-channel request rate limit. Repository bytes use the
 # direct-HTTPS gateway and never consume this socket budget.
 HOST_RATE_WINDOW_MS = 10 * 1000
@@ -222,6 +222,7 @@ NOTIFICATION_KINDS = frozenset({
     "mirror_request",
     "pending_reward",
     "org_succession",
+    "repository_hosted",
 })
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
@@ -903,10 +904,14 @@ async def edge_cache_delete(cache_key):
 # this TTL is only a backstop that lets a colo re-fetch if a state-hash update is
 # ever missed. See git_advert_cache_key and Default._clone_advert_cache_key.
 GIT_ADVERT_CACHE_TTL = 300
-REPOSITORY_METADATA_CACHE_TTL = 300
+# Repository pages are an operational view, so do not let a healthy node's
+# prior branch head mask a just-synchronized commit for five minutes. The
+# attested-state cache key remains the primary invalidation mechanism; this
+# short backstop bounds freshness even if a catalog pin update is delayed.
+REPOSITORY_METADATA_CACHE_TTL = 30
 REPOSITORY_METADATA_CACHE_MAX_BYTES = 8 * 1024 * 1024
 REPOSITORY_METADATA_CACHE_PREFIX = (
-    "https://forkmesh.internal/repository-metadata/v1/"
+    "https://forkmesh.internal/repository-metadata/v2/"
 )
 
 
@@ -1782,6 +1787,8 @@ STATUS_SYSTEMS = [
     ("website", "Website"),
     ("api", "API"),
     ("database", "Database"),
+    ("flagship_repository", "forkmesh/forkmesh repository page"),
+    ("installer", "Installer delivery"),
     ("git_hosting", "Git hosting network"),
     ("realtime", "Realtime sync (chat & tunnels)"),
     ("durable_objects", "Durable Objects (free-tier duration limit)"),
@@ -1806,6 +1813,18 @@ STATUS_SYSTEM_CHECKS = {
         "Runs a real SELECT round trip against the D1 database once a "
         "minute. Passes when the query returns a row; fails on any query "
         "error."),
+    "flagship_repository": (
+        "Loads https://forkmesh.com/forkmesh/forkmesh once a minute, then "
+        "loads the root repository tree and README.md blob through the same "
+        "public API used by the page. Passes only when the page shell renders, "
+        "the root tree contains README.md, and the README body is readable."),
+    "installer": (
+        "Every 10 minutes, loads install.sh, asks the live install-source "
+        "selector for a reachable mirror, and validates either the signed "
+        "Linux x86_64 prebuilt chain or the source-build fallback the installer "
+        "uses when no prebuilt is reachable. Cloudflare cannot execute Bash, so "
+        "this verifies its hosted inputs and fallback rather than claiming the "
+        "Worker ran the installer."),
     "git_hosting": (
         "Checks for at least one account-bound direct HTTPS endpoint with a "
         "signed, integrity-matching ForkMesh repository proof observed within "
@@ -1831,6 +1850,478 @@ STATUS_MINUTES_SHOWN = 60  # width of the per-minute strip on /status
 # Kept a little past what's shown so a slow reader's page load always has a
 # full 60 buckets to render even a few minutes after the newest cron tick.
 STATUS_MINUTE_RETAIN_MS = 90 * 60 * 1000
+FLAGSHIP_REPOSITORY_URL = "https://forkmesh.com/forkmesh/forkmesh"
+FLAGSHIP_MONITOR_ID = "forkmesh/forkmesh"
+INSTALLER_MONITOR_ID = "installer-delivery"
+INSTALLER_CHECK_INTERVAL_MS = 10 * 60 * 1000
+
+STATUS_MONITOR_GUIDANCE = {
+    "website": (
+        "Cloudflare Worker logs and the most recent production deployment",
+        "Check the failing page route in Worker logs, then fix or roll back "
+        "the first deployment that introduced its 5xx response."),
+    "api": (
+        "Cloudflare Worker API logs, especially the path named in the reason",
+        "Replay the failing API request, inspect its D1 or upstream call, and "
+        "fix or roll back the responsible handler."),
+    "database": (
+        "Cloudflare D1 health, bindings, migrations, and query errors",
+        "Confirm the production D1 binding and quota, then repair the failed "
+        "migration or query before retrying the health check."),
+    "flagship_repository": (
+        "the forkmesh/forkmesh mirror endpoints, repository integrity pins, "
+        "and root-tree/README responses",
+        "Verify two signed mirror proofs agree with the source revision, "
+        "publish that integrity transition, and confirm README.md loads."),
+    "installer": (
+        "/api/install-source and the latest signed release manifest, "
+        "signature, checksums, and content-addressed release blob",
+        "Republish the release metadata with the trusted release key, sync "
+        "its blob to a reachable mirror, and rerun the installer probe."),
+    "git_hosting": (
+        "direct mirror HTTPS health proofs, DNS/tunnel reachability, and "
+        "repository integrity pins",
+        "Restore at least one signed, account-bound mirror endpoint and "
+        "confirm its active integrity digest matches the source history."),
+    "realtime": (
+        "Cloudflare Durable Object, WebSocket, room, and smart-HTTP logs",
+        "Inspect the first failing realtime route, restore its Durable Object "
+        "or tunnel, and replay the request."),
+    "durable_objects": (
+        "Cloudflare Durable Object logs and duration-limit usage",
+        "Reduce or split the long-running operation, or move it to an "
+        "execution plan with sufficient duration before retrying."),
+}
+
+
+def _flagship_monitor_duration(milliseconds):
+    seconds = max(0, int(milliseconds or 0) // 1000)
+    if seconds < 60:
+        return "%d second%s" % (seconds, "" if seconds == 1 else "s")
+    minutes = seconds // 60
+    if minutes < 60:
+        return "%d minute%s" % (minutes, "" if minutes == 1 else "s")
+    hours = minutes // 60
+    remainder = minutes % 60
+    return "%d hour%s%s" % (
+        hours,
+        "" if hours == 1 else "s",
+        (" %d minute%s" % (
+            remainder, "" if remainder == 1 else "s")) if remainder else "",
+    )
+
+
+async def _routed_repository_read(
+        env, url, operation, release_sha="", bypass_cache=False):
+    request = JsRequest.new(url)
+    route_url = urlparse(request.url)
+    aliased = await org_alias_rewrite(env, request, route_url)
+    if aliased is not None:
+        request, route_url = aliased
+    route = (
+        RELEASE_BLOB_RE.match(route_url.path)
+        if operation == "release-blob"
+        else REPO_HOST_RE.match(route_url.path)
+    )
+    if not route:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    return await _https_mirror_proxy(
+        env, request, safe_segment(route.group(1)),
+        safe_segment(route.group(2)), operation,
+        release_sha=release_sha, bypass_cache=bypass_cache)
+
+
+async def _flagship_repository_probe(env):
+    """Exercise the same shell and routed node reads the public URL renders."""
+
+    async def bounded_response(response, maximum):
+        status = int(getattr(response, "status", 0) or 0)
+        try:
+            announced = int(response.headers.get("content-length") or 0)
+        except Exception:
+            announced = 0
+        if announced > maximum:
+            return status, ""
+        body = str(await response.text())
+        return (
+            (status, body)
+            if len(body.encode("utf-8")) <= maximum
+            else (status, "")
+        )
+
+    # Scheduled Workers cannot hairpin through their own public hostname
+    # reliably (Cloudflare returns a synthetic 404/52x before the request
+    # reaches the Worker). Read the same static shell from the bound asset
+    # service and invoke the same authenticated mirror router used by the
+    # public tree/blob endpoints. Repository bytes still come from active
+    # nodes; none are substituted from D1 or a Worker-side copy.
+    shell_response = await env.ASSETS.fetch(JsRequest.new(
+        "https://forkmesh.internal/dashboard/repo.html"))
+    shell_status, shell_text = await bounded_response(
+        shell_response, 512 * 1024)
+    if shell_status != 200 or 'data-page="repo"' not in shell_text:
+        return False, "Repository page shell did not load (HTTP %d)" % shell_status
+
+    tree_response = await _routed_repository_read(
+        env,
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/tree?path=",
+        "tree", bypass_cache=True)
+    tree_status, tree_text = await bounded_response(
+        tree_response, 2 * 1024 * 1024)
+    try:
+        tree_data = json.loads(tree_text)
+    except Exception:
+        tree_data = {}
+    entries = tree_data.get("entries") if isinstance(tree_data, dict) else []
+    has_readme = any(
+        isinstance(item, dict)
+        and str(item.get("name") or "").lower() == "readme.md"
+        and str(item.get("type") or "").lower() == "blob"
+        for item in (entries if isinstance(entries, list) else [])
+    )
+    if tree_status != 200:
+        return False, "Root repository tree failed (HTTP %d)" % tree_status
+    if tree_data.get("ok") is not True:
+        return False, "Root repository tree returned an invalid response"
+    if not has_readme:
+        names = ",".join(
+            clean_string(item.get("name", ""), 40)
+            for item in entries[:8] if isinstance(item, dict))
+        return False, (
+            "Root repository tree did not contain README.md"
+            + (": " + names if names else ""))
+
+    blob_response = await _routed_repository_read(
+        env,
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+        "blob?path=README.md",
+        "blob", bypass_cache=True)
+    blob_status, blob_text = await bounded_response(
+        blob_response, 512 * 1024)
+    try:
+        blob_data = json.loads(blob_text)
+    except Exception:
+        blob_data = {}
+    if (
+        blob_status != 200
+        or not isinstance(blob_data, dict)
+        or blob_data.get("ok") is not True
+        or not str(blob_data.get("content") or "").strip()
+    ):
+        return False, "README.md body did not load"
+    return True, ""
+
+
+async def _installer_delivery_probe(env):
+    """Verify every hosted input used by curl install.sh | bash."""
+
+    async def response_text(response, maximum):
+        status = int(getattr(response, "status", 0) or 0)
+        text = str(await response.text())
+        if len(text.encode("utf-8")) > maximum:
+            return status, ""
+        return status, text
+
+    shell = await env.ASSETS.fetch(JsRequest.new(
+        "https://forkmesh.internal/install.sh"))
+    shell_status, shell_text = await response_text(shell, 512 * 1024)
+    if (
+        shell_status != 200
+        or not shell_text.startswith("#!/usr/bin/env bash")
+        or "INSTALLER_VERSION=" not in shell_text
+        or "/api/install-source" not in shell_text
+    ):
+        return False, "install.sh did not load as a valid ForkMesh installer"
+
+    source_response = await install_source(env)
+    source_status, source_text = await response_text(
+        source_response, 128 * 1024)
+    try:
+        source_data = json.loads(source_text)
+    except Exception:
+        source_data = {}
+    if (
+        source_status != 200
+        or not isinstance(source_data, dict)
+        or source_data.get("ok") is not True
+        or not source_data.get("nodes")
+    ):
+        return False, "No reachable mirror is available to the installer"
+
+    async def source_fallback():
+        # `install.sh` deliberately falls back to a source build when a
+        # platform binary is unpublished or temporarily unavailable. Validate
+        # the essential build inputs through the same live mirror router so the
+        # status row tracks whether the documented one-liner still has a viable
+        # path, not whether its optional fast path is populated.
+        required = {
+            "qt_client/CMakeLists.txt": "project(ForkMesh",
+            "qt_client/src/main.cpp": "#include <QApplication>",
+        }
+        for path, marker in required.items():
+            response = await _routed_repository_read(
+                env,
+                "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+                "blob?path=" + quote(path),
+                "blob",
+                bypass_cache=True,
+            )
+            status, raw = await response_text(response, 1024 * 1024)
+            try:
+                body = json.loads(raw)
+            except Exception:
+                body = {}
+            content = (
+                str(body.get("content") or "")
+                if isinstance(body, dict) else "")
+            if status != 200 or body.get("ok") is not True or marker not in content:
+                return False, "source-build input is unavailable: " + path
+        return True, ""
+
+    async def fallback_or_failure(prebuilt_reason):
+        fallback_ok, fallback_reason = await source_fallback()
+        if fallback_ok:
+            return True, ""
+        return False, (
+            prebuilt_reason + "; installer " + fallback_reason)
+
+    release_files = {}
+    for filename in (
+            "release.json", "release.json.sig", "SHASUMS256.txt"):
+        response = await _routed_repository_read(
+            env,
+            "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+            "blob?path=.forkmesh/releases/latest/" + filename,
+            "blob",
+            bypass_cache=True,
+        )
+        status, raw = await response_text(response, 512 * 1024)
+        try:
+            body = json.loads(raw)
+        except Exception:
+            body = {}
+        content = str(body.get("content") or "") if isinstance(body, dict) else ""
+        if status != 200 or body.get("ok") is not True or not content:
+            return await fallback_or_failure(
+                "Installer release metadata is unavailable: " + filename)
+        release_files[filename] = content
+
+    try:
+        manifest = json.loads(release_files["release.json"])
+    except Exception:
+        manifest = {}
+    assets = manifest.get("assets") if isinstance(manifest, dict) else []
+    linux_asset = next((
+        asset for asset in (assets if isinstance(assets, list) else [])
+        if isinstance(asset, dict)
+        and asset.get("os") == "linux"
+        and asset.get("arch") == "x86_64"
+    ), None)
+    digest = str((linux_asset or {}).get("blob_sha256") or "").lower()
+    checksum_line = digest + "  " + str((linux_asset or {}).get("name") or "")
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", digest)
+        or checksum_line not in release_files["SHASUMS256.txt"]
+        or not release_files["release.json.sig"].strip()
+    ):
+        return await fallback_or_failure(
+            "Installer release metadata is incomplete or inconsistent")
+
+    release_response = await _routed_repository_read(
+        env,
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+        "releases/blob/sha256/" + digest,
+        "release-blob",
+        release_sha=digest,
+        bypass_cache=True,
+    )
+    if int(getattr(release_response, "status", 0) or 0) != 200:
+        return await fallback_or_failure(
+            "Installer release binary is unreachable")
+    return True, ""
+
+
+async def _installer_delivery_status(env, now):
+    row = await d1_first(
+        env,
+        "SELECT is_up,reason,checked_at FROM repository_monitor_state "
+        "WHERE monitor_id=?",
+        INSTALLER_MONITOR_ID,
+    )
+    if (
+        row
+        and int(row.get("checked_at") or 0) > 0
+        and now - int(row.get("checked_at") or 0) < INSTALLER_CHECK_INTERVAL_MS
+    ):
+        return bool(row.get("is_up")), str(row.get("reason") or "")
+    is_up, reason = await _installer_delivery_probe(env)
+    await d1_run(
+        env,
+        """INSERT INTO repository_monitor_state
+             (monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,
+              notified_state)
+           VALUES (?,?,?,?,?,?,?)
+           ON CONFLICT(monitor_id) DO UPDATE SET
+             is_up=excluded.is_up,
+             changed_at=CASE
+               WHEN repository_monitor_state.is_up!=excluded.is_up
+               THEN excluded.checked_at
+               ELSE repository_monitor_state.changed_at END,
+             checked_at=excluded.checked_at,
+             reason=excluded.reason""",
+        INSTALLER_MONITOR_ID, 1 if is_up else 0, now,
+        0 if is_up else now, now, reason, "",
+    )
+    return is_up, reason
+
+
+async def _repository_monitor_admin_emails(env):
+    recipients = {
+        value.strip().lower()
+        for value in str(
+            getattr(env, "ADMIN_ALERT_EMAILS", "") or ""
+        ).split(",")
+        if "@" in value
+    }
+    rows = await d1_all(
+        env, "SELECT data FROM users WHERE is_admin=1 LIMIT 20")
+    for row in rows or []:
+        try:
+            record = await decrypt_row(env, row.get("data", "")) or {}
+            email = clean_string(record.get("email", ""), 254).strip().lower()
+            if email and "@" in email and record.get("email_verified") is True:
+                recipients.add(email)
+        except Exception:
+            continue
+    return sorted(recipients)
+
+
+async def _record_status_monitor_transitions(env, ok, reason, now):
+    """Deduplicate outage/recovery mail for every system shown on /status."""
+    rows = await d1_all(
+        env,
+        "SELECT monitor_id,is_up,changed_at,outage_started_at,notified_state "
+        "FROM repository_monitor_state WHERE monitor_id LIKE 'status:%'",
+    )
+    prior = {str(row.get("monitor_id") or ""): row for row in (rows or [])}
+    pending = []
+    values = []
+    for system_id, label in STATUS_SYSTEMS:
+        monitor_id = "status:" + system_id
+        is_up = bool(ok.get(system_id, True))
+        state = "up" if is_up else "down"
+        row = prior.get(monitor_id)
+        previous_up = bool(row.get("is_up")) if row else True
+        previous_changed_at = (
+            int(row.get("changed_at") or now) if row else int(now))
+        prior_outage = (
+            int(row.get("outage_started_at") or 0) if row else 0)
+        changed = not row or previous_up != is_up
+        changed_at = int(now) if changed else previous_changed_at
+        outage_started_at = (
+            0 if is_up else int(now) if not row or previous_up
+            else prior_outage or previous_changed_at)
+        notified = (
+            ("up" if is_up else "") if not row else
+            "" if previous_up != is_up else
+            str(row.get("notified_state") or ""))
+        if notified != state:
+            pending.append({
+                "system": system_id, "label": label, "state": state,
+                "is_up": is_up, "reason": clean_string(
+                    reason.get(system_id, "") or "", 240),
+                "outage_started_at": outage_started_at,
+                "previous_changed_at": previous_changed_at,
+            })
+        values.extend([
+            monitor_id, 1 if is_up else 0, changed_at, outage_started_at,
+            int(now), clean_string(reason.get(system_id, "") or "", 240),
+            notified,
+        ])
+
+    n = len(STATUS_SYSTEMS)
+    await d1_run(
+        env,
+        "INSERT INTO repository_monitor_state "
+        "(monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,"
+        "notified_state) VALUES " + ", ".join(["(?,?,?,?,?,?,?)"] * n) + " "
+        "ON CONFLICT(monitor_id) DO UPDATE SET "
+        "is_up=excluded.is_up,changed_at=excluded.changed_at,"
+        "outage_started_at=excluded.outage_started_at,"
+        "checked_at=excluded.checked_at,reason=excluded.reason,"
+        "notified_state=excluded.notified_state",
+        *values,
+    )
+    if not pending:
+        return
+    recipients = await _repository_monitor_admin_emails(env)
+    if not recipients:
+        return
+    for alert in pending:
+        system_id = alert["system"]
+        label = alert["label"]
+        where, fix = STATUS_MONITOR_GUIDANCE.get(
+            system_id, ("Cloudflare Worker logs", "Inspect the failing check."))
+        if alert["is_up"]:
+            duration = _flagship_monitor_duration(
+                int(now) - (
+                    alert["outage_started_at"] or
+                    alert["previous_changed_at"]))
+            subject = "[ForkMesh recovered] " + label + " is green"
+            lead = label + " is passing again after " + duration + "."
+            text = (
+                lead + "\n\nThe current /status probe is green.\n\n"
+                "Status: https://forkmesh.com/status")
+            heading = label + " recovered"
+            body = (
+                "<div class=\"fm-item\" style=\"border:1px solid #d4d4d8;"
+                "border-radius:8px;background:#fafafa;padding:14px;"
+                "margin:0 0 18px\"><p class=\"fm-item-title\" style=\"margin:0;"
+                "color:#18181b;font-size:14px;font-weight:800\">Outage "
+                "duration</p><p class=\"fm-item-body\" style=\"margin:6px 0 0;"
+                "color:#3f3f46;font-size:14px\">" +
+                _html_escape(duration) + "</p></div>")
+        else:
+            observed = alert["reason"] or "The current health check failed."
+            subject = "[ForkMesh outage] " + label + " is not green"
+            lead = label + " failed its /status health check."
+            text = (
+                lead + "\n\nObserved: " + observed + "\n\nLook here: " +
+                where + "\n\nSuggested first step: " + fix +
+                "\n\nA recovery email will be sent when this check is green "
+                "again.\n\nStatus: https://forkmesh.com/status")
+            heading = label + " needs attention"
+            body = (
+                "<div class=\"fm-item\" style=\"border:1px solid #d4d4d8;"
+                "border-radius:8px;background:#fafafa;padding:14px;"
+                "margin:0 0 12px\"><p class=\"fm-item-title\" style=\"margin:0;"
+                "color:#18181b;font-size:14px;font-weight:800\">Observed</p>"
+                "<p class=\"fm-item-body\" style=\"margin:6px 0 0;color:#3f3f46;"
+                "font-size:14px\">" + _html_escape(observed) + "</p></div>"
+                "<p class=\"fm-text\" style=\"margin:0 0 8px;color:#3f3f46;"
+                "font-size:14px\"><strong>Look here:</strong> " +
+                _html_escape(where) + "</p><p class=\"fm-text\" style=\"margin:"
+                "0 0 18px;color:#3f3f46;font-size:14px\"><strong>Suggested "
+                "first step:</strong> " + _html_escape(fix) + "</p>")
+        html = _forkmesh_email_card_html(
+            _html_escape(heading), _html_escape(lead), body,
+            "<p class=\"fm-muted\" style=\"margin:20px 0 0;color:#71717a;"
+            "font-size:12px\"><a class=\"fm-link\" style=\"color:#15803d\" "
+            "href=\"https://forkmesh.com/status\">Open ForkMesh status</a>"
+            "</p>")
+        delivered = True
+        for email in recipients:
+            delivered = bool(await _send_email(
+                env, email, subject, text, html)) and delivered
+        if delivered:
+            await d1_run(
+                env,
+                "UPDATE repository_monitor_state SET notified_state=? "
+                "WHERE monitor_id=? AND is_up=?",
+                alert["state"], "status:" + system_id,
+                1 if alert["is_up"] else 0,
+            )
 
 
 def _status_expected_checks_for_hour(hour_ts, now):
@@ -1942,6 +2433,27 @@ async def record_status_sample(env):
         reason["database"] = "Database query failed: " + str(exc)[:160]
 
     try:
+        repository_ok, repository_reason = await _flagship_repository_probe(env)
+        ok["flagship_repository"] = repository_ok
+        if not repository_ok:
+            reason["flagship_repository"] = repository_reason
+    except Exception as exc:
+        ok["flagship_repository"] = False
+        reason["flagship_repository"] = (
+            "Repository availability probe failed: " + str(exc)[:160])
+
+    try:
+        installer_ok, installer_reason = await _installer_delivery_status(
+            env, now)
+        ok["installer"] = installer_ok
+        if not installer_ok:
+            reason["installer"] = installer_reason
+    except Exception as exc:
+        ok["installer"] = False
+        reason["installer"] = (
+            "Installer delivery probe failed: " + str(exc)[:160])
+
+    try:
         cutoff = now - HTTPS_MIRROR_STATUS_FRESH_MS
         row = await d1_first(
             env,
@@ -2029,6 +2541,13 @@ async def record_status_sample(env):
         # A query hiccup here is not itself evidence of an outage — don't
         # fabricate a false incident from it.
         ok["website"] = ok["api"] = ok["realtime"] = ok["durable_objects"] = True
+
+    try:
+        await _record_status_monitor_transitions(env, ok, reason, now)
+    except Exception as exc:
+        console.warn(
+            "record_status_monitor_transitions failed: " +
+            _safe_error_text(exc))
 
     # One multi-row upsert per table (3 statements total) instead of the old
     # 3-statements-per-system loop (15): the per-minute cron runs in a Pyodide
@@ -8339,11 +8858,19 @@ async def catalog_handler(env, request):
             env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
         exists = prior_row is not None
         prior_commit = ""
+        prior_state_hash = ""
         # Reject rollbacks: a replayed older record must not be able to repin an
         # earlier (validly-signed) repo state and downgrade the served refs.
         if exists:
             prior = await decrypt_row(env, prior_row["data"]) or {}
             prior_commit = clean_string(prior.get("commit", ""), 64)
+            candidate_prior_state = clean_string(
+                prior.get("stateHash", ""), 64).strip().lower()
+            if (
+                    (prior.get("source") or "local-node") == "local-node"
+                    and re.fullmatch(
+                        r"[0-9a-f]{64}", candidate_prior_state)):
+                prior_state_hash = candidate_prior_state
             try:
                 if int(record["updatedAt"]) < int(prior.get("updatedAt", 0) or 0):
                     return json_response({"error": "stale_update"}, status=409)
@@ -8383,13 +8910,28 @@ async def catalog_handler(env, request):
         # must never fail the publish itself.
         if state_hash and record.get("source") == "local-node":
             try:
-                await d1_run(
-                    env,
-                    "INSERT INTO repo_state_history (key_bi, state_hash, ts) "
-                    "VALUES (?,?,?) ON CONFLICT(key_bi, state_hash) "
-                    "DO UPDATE SET ts=excluded.ts",
-                    key_bi, state_hash.strip().lower(), int(Date.now()),
-                )
+                # Preserve the state being replaced explicitly. Older releases
+                # wrote history best-effort after replacing the catalog row, so
+                # an upgraded repository can otherwise lose its only
+                # last-known-good handoff pin on the first new publication.
+                # The previous record was already owner-signature-verified when
+                # accepted; remote-clone self-pins never enter this path.
+                history_states = [
+                    digest for digest in (
+                        prior_state_hash,
+                        state_hash.strip().lower(),
+                    )
+                    if digest
+                ]
+                for digest in dict.fromkeys(history_states):
+                    await d1_run(
+                        env,
+                        "INSERT INTO repo_state_history "
+                        "(key_bi, state_hash, ts) VALUES (?,?,?) "
+                        "ON CONFLICT(key_bi, state_hash) "
+                        "DO UPDATE SET ts=excluded.ts",
+                        key_bi, digest, int(Date.now()),
+                    )
                 await d1_run(
                     env,
                     "DELETE FROM repo_state_history WHERE key_bi=? "
@@ -8422,6 +8964,16 @@ async def catalog_handler(env, request):
         # never rolls back an otherwise valid catalog publication.
         await _https_mirror_refresh_catalog_publisher_health(env, record)
         await purge_catalog_related_caches()
+        if (
+                record["visibility"] == "public"
+                and record.get("source") == "remote-clone"):
+            try:
+                await _promote_hosted_repository_import(env, record)
+            except Exception:
+                # Import metadata and its notification are useful secondary
+                # effects. The signed native catalog is still authoritative
+                # and must not be rolled back if this bounded linkage fails.
+                pass
         # A public record whose advertised head moved means freshly pushed code
         # just landed on this mirror node. Announce it to the live World room —
         # after the cache purge above, so a viewer's immediate refresh reads
@@ -8499,7 +9051,8 @@ async def catalog_handler(env, request):
         canonical = ("forkmesh-catalog-delete-v1\n" + owner + "\n" + name +
                      "\n" + ts).encode()
         try:
-            authorized = await ed25519_verify(owner_pub, sig, canonical)
+            authorized = await _verify_owner_signature(
+                env, owner, sig, canonical)
         except Exception:
             await _audit_sensitive_action(
                 env, owner, "repository.delete", "repository",
@@ -8601,7 +9154,49 @@ def _native_repository_logo_record(record, owner, repo):
         "metadata": metadata,
         # Missing or malformed visibility stays private/fail-closed.
         "isPrivate": source.get("visibility") != "public",
+        "commit": clean_string(source.get("commit", ""), 64).lower(),
     }
+
+
+def _committed_repository_logo_url(record, owner, repo):
+    """Return the immutable raw URL for a conventional root project logo."""
+    source = record if isinstance(record, dict) else {}
+    if source.get("isPrivate", source.get("visibility") != "public"):
+        return ""
+    commit = clean_string(source.get("commit", ""), 64).strip().lower()
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit):
+        return ""
+    metadata = source.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = source.get("logoMetadata")
+    file_structure = (
+        metadata.get("fileStructure")
+        if isinstance(metadata, dict) else None
+    )
+    if not isinstance(file_structure, list):
+        return ""
+    files = {
+        str(path or "").strip().lower(): str(path or "").strip()
+        for path in file_structure
+        if (
+            isinstance(path, str)
+            and "/" not in path.strip().rstrip("/")
+        )
+    }
+    path = next(
+        (
+            files[name]
+            for name in ("logo.png", "logo.webp", "logo.jpg", "logo.jpeg")
+            if name in files
+        ),
+        "",
+    )
+    if not path:
+        return ""
+    return (
+        "/api/repo/%s/%s/raw?path=%s&ref=%s"
+        % (quote(owner), quote(repo), quote(path), quote(commit))
+    )
 
 
 async def _native_repository_logo_context(env, request, owner, repo):
@@ -8635,12 +9230,28 @@ async def native_repository_logo_handler(
     if not suggestions:
         if method_name(request) != "GET":
             return json_response({"error": "method_not_allowed"}, status=405)
+        committed_logo_url = _committed_repository_logo_url(
+            record, owner, repo)
         params = parse_qs(urlparse(request.url).query)
         if params.get("image", [""])[0] == "1":
+            if committed_logo_url:
+                return Response("", status=302, headers={
+                    "location": committed_logo_url,
+                    "cache-control": "public, max-age=300",
+                })
             logo = await service._official_logo(env, repository_id)
             logo = logo or repository_import.deterministic_logo(record)
             return _repository_logo_image_response(
                 logo, public=not bool(record.get("isPrivate")))
+        if committed_logo_url:
+            return json_response({
+                "ok": True,
+                "repositoryId": repository_id,
+                "logo": {
+                    "dataUrl": committed_logo_url,
+                    "source": "repository",
+                },
+            }, cache_control="no-store")
         response = await service.logo_for_record(env, repository_id, record)
         return response
 
@@ -8763,7 +9374,12 @@ async def _repo_about_public(env, request, owner, repo):
             logo_record)
         resolved_logo = approved_logo or generated_logo
     if not logo_url:
-        logo_url = str(resolved_logo.get("dataUrl") or "")
+        committed_logo_resolver = globals().get(
+            "_committed_repository_logo_url")
+        logo_url = (
+            committed_logo_resolver(rec, display_owner, repo)
+            if callable(committed_logo_resolver) else ""
+        ) or str(resolved_logo.get("dataUrl") or "")
     followers = 0
     followers_list = []
     fedi_enabled = await _ap_enabled(env)
@@ -9136,12 +9752,13 @@ async def repo_mirrors_handler(env, request, owner, repo):
     history = {}
     group_keys = [str(r.get("key_bi") or "") for r in catalog_rows
                   if r.get("key_bi")]
-    if group_keys:
+    for offset in range(0, len(group_keys), 80):
+        key_batch = group_keys[offset:offset + 80]
         hist_rows = await d1_all(
             env,
             "SELECT key_bi, state_hash FROM repo_state_history"
-            " WHERE key_bi IN (%s)" % ",".join("?" for _ in group_keys),
-            *group_keys)
+            " WHERE key_bi IN (%s)" % ",".join("?" for _ in key_batch),
+            *key_batch)
         for r in hist_rows:
             history.setdefault(str(r.get("key_bi") or ""), []).append(
                 r.get("state_hash"))
@@ -9152,6 +9769,21 @@ async def repo_mirrors_handler(env, request, owner, repo):
         str(owner or "").strip().lower(),
         str(repo or "").strip().lower(),
     )
+    endpoint_rows = await d1_all(
+        env,
+        """SELECT node_name FROM mirror_https_endpoints
+            WHERE checked_at>=? AND forkmesh_verified_at>=?
+              AND healthy=1 AND forkmesh_active=1
+              AND integrity='ok' AND abuse_blocked=0""",
+        now - HTTPS_MIRROR_STATUS_FRESH_MS,
+        now - HTTPS_MIRROR_STATUS_FRESH_MS,
+    )
+    reachable_nodes = {
+        clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower()
+        for row in endpoint_rows or []
+        if valid_node_name(
+            clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower())
+    }
     payload = build_repo_mirrors_payload(
         owner,
         repo,
@@ -9163,6 +9795,7 @@ async def repo_mirrors_handler(env, request, owner, repo):
         5 * 1000,
         history,
         linked_canonical=bool(linked_row),
+        reachable_nodes=reachable_nodes,
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
@@ -9564,7 +10197,17 @@ async def _repo_is_private(env, owner, repo):
             "SELECT is_private, data FROM repositories WHERE key_bi=?",
             key_bi,
         )
-        if not row or int(row.get("is_private", 1) or 0) != 0:
+        if not row:
+            hosted_resolver = globals().get(
+                "_hosted_repository_import_route")
+            hosted_route = (
+                await hosted_resolver(env, owner, repo)
+                if callable(hosted_resolver) else None)
+            if hosted_route and tuple(hosted_route) != (owner, repo):
+                return await _repo_is_private(
+                    env, hosted_route[0], hosted_route[1])
+            return True
+        if int(row.get("is_private", 1) or 0) != 0:
             return True
         # Migration 0011 historically defaulted existing rows to public.
         # Validate that the signed encrypted record itself explicitly says
@@ -17644,7 +18287,7 @@ def _account_email_activity(rec):
     }
 
 
-# --- External GitHub/GitLab metadata imports --------------------------------
+# --- External GitHub/GitLab/Codeberg metadata imports -----------------------
 #
 # Provider imports live in a separate D1 namespace from the mirror catalog.
 # repository_imports.py owns the provider-neutral policy/service layer; these
@@ -17666,6 +18309,12 @@ async def _repository_provider_fetch(env, provider, path, token=""):
         headers["x-github-api-version"] = "2026-03-10"
         if token:
             headers["authorization"] = "Bearer " + token
+    elif provider == "codeberg":
+        # Codeberg runs Forgejo's Gitea-compatible API. Its access token is
+        # request-scoped exactly like the other provider credentials and is
+        # never persisted or forwarded across a redirect.
+        if token:
+            headers["authorization"] = "token " + token
     elif token:
         # GitLab personal/project access tokens are scoped request credentials.
         # They are never included in a record, log, exception, or D1 write.
@@ -17743,6 +18392,44 @@ async def _repository_import_moderator(env, actor):
             or await _has_role(env, actor, "moderator"))
     except Exception:
         return False
+
+
+async def _repository_import_target_owner(env, actor, target):
+    actor = clean_string(actor, MAX_NODE_NAME).strip().lower()
+    target = clean_string(target, MAX_NODE_NAME).strip().lower() or actor
+    if not actor or not target:
+        return None
+    if target == actor:
+        return {
+            "name": actor,
+            "kind": "user",
+            "ownerBi": await blind_index(env, actor),
+        }
+    org_bi, row = await _org_row(env, target)
+    if not row or await _org_role(env, org_bi, actor) not in (
+            "owner", "admin"):
+        return None
+    return {
+        "name": str(row.get("name") or target).lower(),
+        "kind": "organization",
+        "ownerBi": org_bi,
+    }
+
+
+async def _repository_import_can_manage_owner(env, actor, owner_bi):
+    actor = clean_string(actor, MAX_NODE_NAME).strip().lower()
+    owner_bi = str(owner_bi or "")
+    if not actor or not owner_bi:
+        return False
+    actor_bi = await blind_index(env, actor)
+    if hmac.compare_digest(actor_bi, owner_bi):
+        return True
+    row = await d1_first(
+        env,
+        "SELECT role FROM org_members WHERE org_bi=? AND member_bi=?",
+        owner_bi, actor_bi,
+    )
+    return str((row or {}).get("role") or "") in ("owner", "admin")
 
 
 async def _repository_import_mirror_status(
@@ -17824,6 +18511,8 @@ def _repository_import_service():
         "invitation_token": _repository_invitation_token,
         "operator_eligible": _repository_import_operator_eligible,
         "is_moderator": _repository_import_moderator,
+        "target_owner": _repository_import_target_owner,
+        "can_manage_owner": _repository_import_can_manage_owner,
         "mirror_status": _repository_import_mirror_status,
         "public_origin": _public_base_url,
         "now_ms": lambda: int(Date.now()),
@@ -23216,6 +23905,73 @@ async def enqueue_notification(env, recipient, kind, title, body="", repo="",
     return True
 
 
+async def _promote_hosted_repository_import(env, catalog_record):
+    """Link one verified mirror catalog to its public provider import."""
+    mirror_owner = clean_string(
+        catalog_record.get("owner"), MAX_NODE_NAME).lower()
+    repository_name = safe_segment(clean_string(
+        catalog_record.get("name"), MAX_REPO_SEGMENT))
+    if mirror_owner not in ("mirror2", "mirror3") or not repository_name:
+        return False
+    rows = await d1_all(
+        env,
+        "SELECT id, data FROM repository_imports "
+        "WHERE provider='codeberg' AND is_private=0 "
+        "AND status NOT IN ('actively_mirrored','archived') "
+        "ORDER BY updated_at DESC LIMIT ?",
+        repository_import.MAX_PUBLIC_IMPORTS,
+    )
+    for row in rows or []:
+        record = await decrypt_row(env, row.get("data"))
+        if (
+                not isinstance(record, dict)
+                or clean_string(record.get("name"), 100).casefold()
+                != repository_name.casefold()):
+            continue
+        target_owner = clean_string(
+            record.get("targetOwner"), MAX_NODE_NAME).lower()
+        if not valid_node_name(target_owner):
+            continue
+        now = int(Date.now())
+        record["status"] = "actively_mirrored"
+        record["statusLabel"] = "Actively mirrored"
+        record["mirrored"] = True
+        record["sourceCodeFetched"] = True
+        record["mirror"] = {
+            "owner": mirror_owner,
+            "name": repository_name,
+            "live": True,
+        }
+        record["mirrorNotice"] = (
+            "The full Git repository is hosted and served by ForkMesh.")
+        record["updatedAt"] = now
+        await d1_run(
+            env,
+            "UPDATE repository_imports SET status=?, data=?, updated_at=? "
+            "WHERE id=?",
+            "actively_mirrored", await encrypt_row(env, record), now,
+            str(row.get("id") or ""),
+        )
+        await enqueue_notification(
+            env,
+            target_owner,
+            "repository_hosted",
+            repository_name + " is now fully hosted by ForkMesh",
+            body=(
+                "The Codeberg import is synced, cloneable through ForkMesh, "
+                "and available as a size map in the World."),
+            repo=target_owner + "/" + repository_name,
+            href="/" + target_owner + "/" + repository_name,
+            actor=mirror_owner,
+            source="repository_import",
+            dedupe="repository-hosted:" + str(row.get("id") or ""),
+            ts=now,
+            meta={"importId": str(row.get("id") or "")},
+        )
+        return True
+    return False
+
+
 async def notify_mentions(env, owner, repo, actor, title, body, href, source,
                           number=0):
     # number is optional (0 = not a numbered item, e.g. a brand-new PR before
@@ -23811,32 +24567,33 @@ async def send_general_chat_digests(env):
 
 
 def _forkmesh_email_card_html(heading, intro_html, body_html, footer_html=""):
-    # The card is dark, always. It is painted with inline dark styles AND
-    # declares itself dark-only via <meta name="color-scheme" content="dark">,
-    # so mail clients neither auto-invert it (the way they darken plain light
-    # emails in dark mode) nor repaint it to a light theme. An earlier version
-    # advertised "light dark" with a prefers-color-scheme:light override, but
-    # that override fired in readers whose dark theme doesn't set the OS
-    # prefers-color-scheme (e.g. Gmail's dark theme), leaving ForkMesh mail
-    # glaringly white while every other email showed dark. Forcing dark keeps
-    # the brand card consistent with the rest of a dark inbox.
+    # Inline light colors are the reliable fallback for older mail clients;
+    # clients that honor the native setting apply the dark override below.
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        "<meta name=\"color-scheme\" content=\"dark\">"
-        "<meta name=\"supported-color-schemes\" content=\"dark\">"
+        "<meta name=\"color-scheme\" content=\"light dark\">"
+        "<meta name=\"supported-color-schemes\" content=\"light dark\">"
+        "<style>:root{color-scheme:light dark;supported-color-schemes:light dark}"
+        "@media (prefers-color-scheme:dark){body,.fm-bg{background:#090909!important;"
+        "color:#f5f5f5!important}.fm-card{background:#141416!important;"
+        "border-color:#313134!important}.fm-h1,.fm-strong,.fm-item-title{"
+        "color:#f5f5f5!important}.fm-text,.fm-item-body{color:#d4d4d8!important}"
+        ".fm-brand,.fm-muted{color:#a3a3a3!important}.fm-item{background:#0f0f11"
+        "!important;border-color:#313134!important}.fm-link{color:#4ade80!important}}"
+        "</style>"
         "</head>"
-        "<body style=\"margin:0;padding:0;background:#090909\">"
-        "<div class=\"fm-bg\" style=\"margin:0;padding:28px 16px;background:#090909;"
+        "<body style=\"margin:0;padding:0;background:#f4f4f5\">"
+        "<div class=\"fm-bg\" style=\"margin:0;padding:28px 16px;background:#f4f4f5;"
         "font-family:'ForkMesh Lato',-apple-system,BlinkMacSystemFont,"
-        "Segoe UI,Helvetica,Arial,sans-serif;color:#f5f5f5;line-height:1.55\">"
-        "<div class=\"fm-card\" style=\"max-width:560px;margin:0 auto;border:1px solid #313134;"
-        "border-radius:8px;background:#141416;padding:24px\">"
-        "<p class=\"fm-brand\" style=\"margin:0 0 22px;color:#a3a3a3;font-size:13px;"
+        "Segoe UI,Helvetica,Arial,sans-serif;color:#18181b;line-height:1.55\">"
+        "<div class=\"fm-card\" style=\"max-width:560px;margin:0 auto;border:1px solid #d4d4d8;"
+        "border-radius:8px;background:#ffffff;padding:24px\">"
+        "<p class=\"fm-brand\" style=\"margin:0 0 22px;color:#52525b;font-size:13px;"
         "letter-spacing:0;font-weight:700\">ForkMesh</p>"
-        "<h1 class=\"fm-h1\" style=\"margin:0 0 14px;color:#f5f5f5;font-size:24px;"
+        "<h1 class=\"fm-h1\" style=\"margin:0 0 14px;color:#18181b;font-size:24px;"
         "line-height:1.25;font-weight:800\">" + heading + "</h1>"
-        "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#d4d4d8;font-size:15px\">" +
+        "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#3f3f46;font-size:15px\">" +
         intro_html + "</p>" + body_html +
         (footer_html if footer_html else "") +
         "</div></div></body></html>")
@@ -30404,6 +31161,65 @@ async def _https_mirror_expected_forkmesh_refs(env):
         return ""
 
 
+async def _https_mirror_accepted_forkmesh_refs(env):
+    """Current and recent source-attested states accepted during convergence.
+
+    The source publication and a mirror refresh cannot commit atomically across
+    independent machines.  Keep the direct-HTTPS lease valid while a healthy
+    mirror still serves a recent state that the source genuinely signed; an
+    unknown state remains rejected by the health challenge.
+    """
+    try:
+        owner = await _org_repo_node(env, "forkmesh", "forkmesh") or "forkmesh"
+        key_bi = await blind_index(env, owner + "/forkmesh")
+        row = await d1_first(
+            env,
+            "SELECT data,is_private FROM repositories WHERE key_bi=?",
+            key_bi,
+        )
+        if not row or int(row.get("is_private", 1) or 0) != 0:
+            return frozenset()
+        record = await decrypt_row(env, row.get("data"))
+        if not record or record.get("visibility") != "public":
+            return frozenset()
+        pins = set()
+        current = clean_string(record.get("stateHash", ""), 64).lower()
+        if re.fullmatch(r"[0-9a-f]{64}", current):
+            pins.add(current)
+        history = await d1_all(
+            env,
+            "SELECT state_hash FROM repo_state_history WHERE key_bi=? "
+            "ORDER BY ts DESC LIMIT ?",
+            key_bi,
+            STATE_PIN_HISTORY,
+        )
+        for item in history or []:
+            digest = clean_string(
+                item.get("state_hash", ""), 64).strip().lower()
+            if re.fullmatch(r"[0-9a-f]{64}", digest):
+                pins.add(digest)
+        return frozenset(pins)
+    except Exception:
+        return frozenset()
+
+
+def _https_mirror_refs_match(refs_digest, accepted_refs):
+    """Compare a proof with a bounded set of exact source-signed ref states."""
+    digest = str(refs_digest or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return False
+    candidates = (
+        (accepted_refs,)
+        if isinstance(accepted_refs, str)
+        else (accepted_refs or ())
+    )
+    return any(
+        re.fullmatch(r"[0-9a-f]{64}", str(item or "").strip().lower())
+        and hmac.compare_digest(digest, str(item).strip().lower())
+        for item in candidates
+    )
+
+
 async def _https_mirror_refresh_registered_health(env, node):
     """Best-effort activation for one exact registered endpoint.
 
@@ -30424,10 +31240,10 @@ async def _https_mirror_refresh_registered_health(env, node):
         )
         if not row:
             return False
-        expected = await _https_mirror_expected_forkmesh_refs(env)
-        if not expected:
+        accepted = await _https_mirror_accepted_forkmesh_refs(env)
+        if not accepted:
             return False
-        return bool(await _https_mirror_health_one(env, row, expected))
+        return bool(await _https_mirror_health_one(env, row, accepted))
     except Exception:
         # Registration remains safely pending. A transient control-plane fetch
         # failure must not roll back its authenticated endpoint record.
@@ -30483,7 +31299,7 @@ async def _https_mirror_mark_failed(env, row, now):
     )
 
 
-async def _https_mirror_health_one(env, row, expected_forkmesh_refs):
+async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
     """Verify one fresh node-signed health and forkmesh/forkmesh proof."""
     now = int(Date.now())
     node = clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower()
@@ -30580,8 +31396,8 @@ async def _https_mirror_health_one(env, row, expected_forkmesh_refs):
         general_healthy
         and available
         and proof_integrity == "ok"
-        and expected_forkmesh_refs
-        and hmac.compare_digest(refs_digest, expected_forkmesh_refs)
+        and _https_mirror_refs_match(
+            refs_digest, accepted_forkmesh_refs)
         and HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS.issubset(
             set(operations))
     )
@@ -30635,9 +31451,9 @@ async def https_mirror_health_cron(env):
     )
     if not rows:
         return
-    expected = await _https_mirror_expected_forkmesh_refs(env)
+    accepted = await _https_mirror_accepted_forkmesh_refs(env)
     await asyncio.gather(
-        *[_https_mirror_health_one(env, row, expected) for row in rows],
+        *[_https_mirror_health_one(env, row, accepted) for row in rows],
         return_exceptions=True,
     )
 
@@ -30840,6 +31656,42 @@ async def _https_mirror_private_proxy(env, request, private_record):
         cache_control="no-store")
 
 
+async def _hosted_repository_import_route(env, owner, repo):
+    """Resolve one public logical import name to its physical mirror catalog."""
+    owner_l = clean_string(owner, MAX_NODE_NAME).strip().lower()
+    repo_l = clean_string(repo, MAX_REPO_SEGMENT).strip().lower()
+    if not valid_node_name(owner_l) or not safe_segment(repo_l):
+        return None
+    rows = await d1_all(
+        env,
+        "SELECT data FROM repository_imports "
+        "WHERE is_private=0 AND status='actively_mirrored' "
+        "ORDER BY updated_at DESC LIMIT ?",
+        repository_import.MAX_PUBLIC_IMPORTS,
+    )
+    for row in rows or []:
+        record = await decrypt_row(env, row.get("data"))
+        if not isinstance(record, dict):
+            continue
+        target_owner = clean_string(
+            record.get("targetOwner"), MAX_NODE_NAME).strip().lower()
+        name = clean_string(
+            record.get("name"), MAX_REPO_SEGMENT).strip().lower()
+        if target_owner != owner_l or name != repo_l:
+            continue
+        mirror = record.get("mirror") or {}
+        mirror_owner = clean_string(
+            mirror.get("owner"), MAX_NODE_NAME).strip().lower()
+        mirror_name = clean_string(
+            mirror.get("name"), MAX_REPO_SEGMENT).strip()
+        if (
+                mirror_owner in ("mirror2", "mirror3")
+                and valid_node_name(mirror_owner)
+                and safe_segment(mirror_name)):
+            return mirror_owner, mirror_name
+    return None
+
+
 async def _https_mirror_public_context(env, owner, repo):
     """Return canonical public repo identity and integrity-approved node set."""
     owner_l = clean_string(owner, MAX_NODE_NAME).strip().lower()
@@ -30871,7 +31723,21 @@ async def _https_mirror_public_context(env, owner, repo):
                 target_row = row
                 break
         if not target_row:
-            return None
+            hosted_route = await _hosted_repository_import_route(
+                env, owner_l, repo_l)
+            if hosted_route:
+                hosted_owner, hosted_repo = hosted_route
+                for row in rows:
+                    record = row.get("data") or {}
+                    if (
+                            str(record.get("owner") or "").lower()
+                            == hosted_owner
+                            and str(record.get("name") or "").lower()
+                            == hosted_repo.lower()):
+                        target_row = row
+                        break
+            if not target_row:
+                return None
         target = target_row["data"]
         members = [
             row for row in rows
@@ -30882,13 +31748,14 @@ async def _https_mirror_public_context(env, owner, repo):
             for row in members if row.get("key_bi")
         ]
         history = {}
-        if group_keys:
+        for offset in range(0, len(group_keys), 80):
+            key_batch = group_keys[offset:offset + 80]
             history_rows = await d1_all(
                 env,
                 "SELECT key_bi,state_hash FROM repo_state_history"
                 " WHERE key_bi IN (%s)"
-                % ",".join("?" for _ in group_keys),
-                *group_keys,
+                % ",".join("?" for _ in key_batch),
+                *key_batch,
             )
             for item in history_rows or []:
                 history.setdefault(
@@ -30914,10 +31781,12 @@ async def _https_mirror_public_context(env, owner, repo):
             == "remote-clone"
         ):
             pins = set()
+            current_pins = set()
             target_state = clean_string(
                 target.get("stateHash", ""), 64).lower()
             if re.fullmatch(r"[0-9a-f]{64}", target_state):
                 pins.add(target_state)
+                current_pins.add(target_state)
             for state in history.get(
                     str(target_row.get("key_bi") or ""), []):
                 state = clean_string(state, 64).lower()
@@ -30927,12 +31796,24 @@ async def _https_mirror_public_context(env, owner, repo):
         else:
             pins = clone_state_pins(
                 target, target_row.get("key_bi"), members, history)
+            current_pins = set()
+            for row in members:
+                record = row.get("data") or {}
+                state = clean_string(
+                    record.get("stateHash", ""), 64).lower()
+                if (
+                    str(record.get("source") or "local-node")
+                    == "local-node"
+                    and re.fullmatch(r"[0-9a-f]{64}", state)
+                ):
+                    current_pins.add(state)
         # Direct routing never uses the legacy unpinned fail-open behavior. An
         # owner must publish an authenticated refs digest before a remote
         # endpoint can advertise or resolve that repository.
         if not pins:
             return None
         allowed = set()
+        current_nodes = set()
         source = None
         for row in members:
             record = row.get("data") or {}
@@ -30944,6 +31825,8 @@ async def _https_mirror_public_context(env, owner, repo):
             if pins and state not in pins:
                 continue
             allowed.add(node)
+            if state in current_pins:
+                current_nodes.add(node)
             if (
                 source is None
                 and str(record.get("source") or "local-node")
@@ -30966,8 +31849,13 @@ async def _https_mirror_public_context(env, owner, repo):
             "owner": canonical_owner,
             "repo": canonical_repo,
             "nodes": allowed,
+            # Ordinary reads prefer the newest source generation. Recent
+            # signed generations remain available strictly as failover while
+            # their nodes converge.
+            "currentNodes": current_nodes,
             "pins": set(pins),
-            "repoBi": await blind_index(env, owner_l + "/" + repo_l),
+            "repoBi": await blind_index(
+                env, canonical_owner + "/" + canonical_repo.lower()),
         }
     except Exception:
         return None
@@ -31010,6 +31898,17 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
         preferred_region=preferred_region,
         cursor=int((cursor_row or {}).get("cursor") or 0),
     )
+    current_nodes = {
+        str(node or "").lower()
+        for node in context.get("currentNodes", set())
+    }
+    if current_nodes:
+        selected.sort(
+            key=lambda item: (
+                0 if str(item.get("node") or "").lower()
+                in current_nodes else 1
+            )
+        )
     sticky = str(sticky or "").lower()
     if sticky:
         selected.sort(key=lambda item: 0 if item["node"] == sticky else 1)
@@ -31843,7 +32742,7 @@ async def repository_pull_merge_handler(
 
 
 async def _https_mirror_proxy(
-        env, request, owner, repo, operation, release_sha=""):
+        env, request, owner, repo, operation, release_sha="", bypass_cache=False):
     """Stream a public read through healthy endpoints under the original URL."""
     context = await _https_mirror_public_context(env, owner, repo)
     if context is None:
@@ -31889,7 +32788,9 @@ async def _https_mirror_proxy(
         repository_metadata_cache_key(context, operation, query)
         if method == "GET" else ""
     )
-    cached_metadata = await repository_metadata_cache_get(metadata_cache_key)
+    cached_metadata = (
+        await repository_metadata_cache_get(metadata_cache_key)
+        if not bypass_cache else None)
     if cached_metadata is not None:
         return cached_metadata
     body = b""
@@ -32022,8 +32923,9 @@ async def _https_mirror_proxy(
         response_headers["X-ForkMesh-Served-By"] = endpoint["node"]
         await _https_mirror_route_advance(
             env, context, endpoint["node"], operation)
-        await repository_metadata_cache_put(
-            metadata_cache_key, upstream, status)
+        if not bypass_cache:
+            await repository_metadata_cache_put(
+                metadata_cache_key, upstream, status)
         # The private endpoint origin remains masked. The public node identity
         # above is bounded routing provenance; repository bytes still stream
         # without being materialized by the Worker.
