@@ -4217,6 +4217,9 @@ private:
     QComboBox *m_branchFixModelCombo = nullptr;
     QPushButton *m_branchPrButton = nullptr;    // "Create PR" from the branch
     QPushButton *m_branchMergeButton = nullptr; // "Merge to main"
+    // "Merge & delete all": the same merge, then tears down everything the branch
+    // owned — its agent session(s), the branch itself and its worktree (adhoc #428).
+    QPushButton *m_branchMergeDeleteButton = nullptr;
     QTableWidget *m_releasesTable = nullptr;
     QLabel *m_releasesSummary = nullptr;
     QTableWidget *m_artifactsTable = nullptr;
