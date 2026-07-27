@@ -70,6 +70,12 @@ SENTRY_CLIENT = "forkmesh-cloudflare-python/1.0"
 SENTRY_CRON_MONITOR_SLUG = "forkmesh-relay"
 SENTRY_CRON_CHECKIN_MARGIN_MINUTES = 1
 SENTRY_CRON_MAX_RUNTIME_MINUTES = 5
+# The completion heartbeat is written after every successful cron invocation.
+# Three missed one-minute ticks are enough to alert without treating normal
+# trigger jitter or a deploy handoff as an outage.
+CRON_WATCHDOG_GRACE_MS = 3 * 60 * 1000
+CRON_WATCHDOG_RETRY_MS = 5 * 60 * 1000
+CRON_WATCHDOG_NAME = "scheduled-completion-v1"
 # Retained chat history (encrypted) so late-joining nodes see some backlog.
 CHAT_HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000  # keep the last 7 days
 CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
@@ -2203,6 +2209,94 @@ async def _repository_monitor_admin_emails(env):
         except Exception:
             continue
     return sorted(recipients)
+
+
+def _cron_watchdog_email_content(recovered, outage_started_at, now):
+    duration = _flagship_monitor_duration(
+        max(0, int(now) - int(outage_started_at or now)))
+    if recovered:
+        subject = "[ForkMesh recovered] Scheduled jobs are completing again"
+        lead = (
+            "The every-minute ForkMesh cron completed successfully again "
+            "after " + duration + ".")
+        text = (
+            lead + "\n\nThe independent cron watchdog received a new "
+            "completion heartbeat. Scheduled maintenance and status sampling "
+            "have recovered.\n\nStatus: https://forkmesh.com/status")
+        heading = "Scheduled jobs recovered"
+        body = (
+            "<div class=\"fm-item\" style=\"border:1px solid #d4d4d8;"
+            "border-radius:8px;background:#fafafa;padding:14px;"
+            "margin:0 0 18px\"><p class=\"fm-item-title\" style=\"margin:0;"
+            "color:#18181b;font-size:14px;font-weight:800\">Interruption "
+            "duration</p><p class=\"fm-item-body\" style=\"margin:6px 0 0;"
+            "color:#3f3f46;font-size:14px\">" +
+            _html_escape(duration) + "</p></div>")
+    else:
+        subject = "[ForkMesh outage] Scheduled jobs stopped completing"
+        lead = (
+            "The every-minute ForkMesh cron has missed its completion "
+            "heartbeat for " + duration + ".")
+        text = (
+            lead + "\n\nObserved: no successful cron completion heartbeat was "
+            "received within the three-minute watchdog window.\n\nLook here: "
+            "Cloudflare Worker Cron Trigger and Python Worker exception logs."
+            "\n\nSuggested first step: inspect the latest scheduled invocation "
+            "for a Pyodide/asyncio exception or an invocation limit, then "
+            "confirm status samples resume.\n\nA recovery email will be sent "
+            "after the next completed tick.\n\nStatus: "
+            "https://forkmesh.com/status")
+        heading = "Scheduled jobs need attention"
+        body = (
+            "<div class=\"fm-item\" style=\"border:1px solid #d4d4d8;"
+            "border-radius:8px;background:#fafafa;padding:14px;"
+            "margin:0 0 12px\"><p class=\"fm-item-title\" style=\"margin:0;"
+            "color:#18181b;font-size:14px;font-weight:800\">Observed</p>"
+            "<p class=\"fm-item-body\" style=\"margin:6px 0 0;color:#3f3f46;"
+            "font-size:14px\">No completed cron tick arrived within the "
+            "three-minute watchdog window.</p></div>"
+            "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#3f3f46;"
+            "font-size:14px\"><strong>Suggested first step:</strong> Inspect "
+            "the Cloudflare scheduled-invocation logs, then confirm status "
+            "samples resume.</p>")
+    html = _forkmesh_email_card_html(
+        _html_escape(heading), _html_escape(lead), body,
+        "<p class=\"fm-muted\" style=\"margin:20px 0 0;color:#71717a;"
+        "font-size:12px\"><a class=\"fm-link\" style=\"color:#15803d\" "
+        "href=\"https://forkmesh.com/status\">Open ForkMesh status</a>"
+        "</p>")
+    return subject, text, html
+
+
+async def _send_cron_watchdog_email(
+        env, recovered, outage_started_at, now):
+    try:
+        recipients = await _repository_monitor_admin_emails(env)
+    except BaseException:
+        return False
+    if not recipients:
+        return False
+    subject, text, html = _cron_watchdog_email_content(
+        recovered, outage_started_at, now)
+    delivered = True
+    for email in recipients:
+        try:
+            sent = bool(await _send_email(
+                env, email, subject, text, html))
+        except BaseException:
+            sent = False
+        delivered = sent and delivered
+    return delivered
+
+
+async def _cron_watchdog_completion(env):
+    """Best-effort completion heartbeat to the independent alarm watchdog."""
+    watchdog_id = env.FORKMESH_CRON_WATCHDOG.idFromName(CRON_WATCHDOG_NAME)
+    watchdog = env.FORKMESH_CRON_WATCHDOG.get(watchdog_id)
+    response = await watchdog.fetch(
+        "https://forkmesh.internal/cron-watchdog/completed")
+    if int(getattr(response, "status", 0) or 0) != 200:
+        raise RuntimeError("cron watchdog rejected completion heartbeat")
 
 
 async def _record_status_monitor_transitions(
@@ -33149,6 +33243,19 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/feedback-emails",
                     "_send_feedback_emails failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
+        # Arm the independent liveness alarm only after the complete scheduled
+        # handler reached its end. If Pyodide re-enters the event loop, the
+        # platform kills the invocation, or a future uncaught exception escapes,
+        # no heartbeat lands and the Durable Object can alert without relying on
+        # this broken Cron Trigger to detect its own failure. The next completed
+        # tick sends the one-time recovery message.
+        try:
+            await _cron_watchdog_completion(self.env)
+        except BaseException as error:
+            await log_cron_error(
+                self.env, "/cron/watchdog-completion",
+                "cron watchdog completion failed: " + _safe_error_text(error),
+                error=error, failures=cron_failures)
         # Closing check-in for the same check_in_id sent above, so Sentry
         # resolves the "in_progress" marker to a final ok/error result.
         # Sentry cron monitor disabled for now (commented out on request);
@@ -34888,6 +34995,80 @@ async def chat_history_prune_expired(env):
     await ensure_schema(env)
     cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
     await d1_run(env, "DELETE FROM chat_history WHERE ts<?", cutoff)
+
+
+class ForkMeshCronWatchdog(DurableObject):
+    """Alarm-backed observer for successful every-minute cron completions.
+
+    A Cron Trigger cannot report that it stopped firing: its own code is no
+    longer running. This singleton Durable Object receives a heartbeat only at
+    the end of a completed tick and moves its alarm three minutes forward.
+    When that independent alarm expires it sends one outage email; the first
+    later completion sends one recovery email. Durable Object event
+    serialization also keeps the transition and email deduplication races out
+    of the stateless Python Worker isolate.
+    """
+
+    traffic_binding = "FORKMESH_CRON_WATCHDOG"
+
+    async def fetch(self, request):
+        if urlparse(request.url).path != "/cron-watchdog/completed":
+            return json_response({"error": "not_found"}, status=404)
+        now = int(Date.now())
+        outage_started_at = int(
+            await self.ctx.storage.get("outage_started_at") or 0)
+        notified_state = str(
+            await self.ctx.storage.get("notified_state") or "")
+
+        # Only send "recovered" if recipients previously received "outage".
+        # If the provider is temporarily unavailable, leave the state intact;
+        # the next minute's completion heartbeat retries without duplicating a
+        # successful transition.
+        if outage_started_at and notified_state == "down":
+            if await _send_cron_watchdog_email(
+                    self.env, True, outage_started_at, now):
+                await self.ctx.storage.put("outage_started_at", 0)
+                await self.ctx.storage.put("notified_state", "up")
+        elif outage_started_at:
+            await self.ctx.storage.put("outage_started_at", 0)
+            await self.ctx.storage.put("notified_state", "up")
+
+        await self.ctx.storage.put("last_completion_at", now)
+        self.ctx.storage.setAlarm(now + CRON_WATCHDOG_GRACE_MS)
+        durable_object_traffic_note(self, messages=1)
+        await durable_object_traffic_flush(self)
+        return json_response({"ok": True})
+
+    async def alarm(self, alarm_info=None):
+        now = int(Date.now())
+        last_completion_at = int(
+            await self.ctx.storage.get("last_completion_at") or 0)
+        if not last_completion_at:
+            return
+        deadline = last_completion_at + CRON_WATCHDOG_GRACE_MS
+        if now < deadline:
+            # A heartbeat raced an already-dispatched alarm. Keep the newer
+            # deadline instead of manufacturing an outage.
+            self.ctx.storage.setAlarm(deadline)
+            return
+
+        outage_started_at = int(
+            await self.ctx.storage.get("outage_started_at") or 0)
+        if not outage_started_at:
+            outage_started_at = deadline
+            await self.ctx.storage.put(
+                "outage_started_at", outage_started_at)
+        notified_state = str(
+            await self.ctx.storage.get("notified_state") or "")
+        if notified_state != "down":
+            delivered = await _send_cron_watchdog_email(
+                self.env, False, outage_started_at, now)
+            if delivered:
+                await self.ctx.storage.put("notified_state", "down")
+                return
+        # Retry an unavailable email provider/admin-recipient lookup without
+        # depending on the still-missing Cron Trigger.
+        self.ctx.storage.setAlarm(now + CRON_WATCHDOG_RETRY_MS)
 
 
 class ForkMeshWorld(DurableObject):

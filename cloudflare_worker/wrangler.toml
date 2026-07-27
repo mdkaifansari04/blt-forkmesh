@@ -1,7 +1,10 @@
 name = "forkmesh-relay"
 main = "src/entry.py"
 compatibility_flags = [ "python_workers", "disable_python_external_sdk" ]
-compatibility_date = "2026-06-14"
+# Keep the Python/Pyodide runtime on Cloudflare's current snapshot. The older
+# 2026-06-14 snapshot could re-enter one scheduled wrapper task while another
+# request wrapper was executing ("Cannot enter into task ...").
+compatibility_date = "2026-07-23"
 
 # Runs automatically before every deploy: applies the D1 schema (idempotent).
 [build]
@@ -174,6 +177,10 @@ class_name = "ForkMeshOfficeRoom"
 name = "FORKMESH_NODES"
 class_name = "ForkMeshNodes"
 
+[[durable_objects.bindings]]
+name = "FORKMESH_CRON_WATCHDOG"
+class_name = "ForkMeshCronWatchdog"
+
 # Persistent storage: repo catalog, accounts, and the issue/pull inboxes.
 # Create once with:  uvx --from workers-py pywrangler d1 create forkmesh
 # then paste the printed database_id below.
@@ -215,6 +222,10 @@ class_name = "ForkMeshOfficeRoom"
 [[env.dev.durable_objects.bindings]]
 name = "FORKMESH_NODES"
 class_name = "ForkMeshNodes"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_CRON_WATCHDOG"
+class_name = "ForkMeshCronWatchdog"
 
 [[migrations]]
 tag = "v1"
@@ -278,6 +289,13 @@ tag = "v12"
 # tunnel, it never carries repository bytes — see ForkMeshNodes in entry.py).
 # Live sockets are runtime state; SQLite registration is still required.
 new_sqlite_classes = ["ForkMeshNodes"]
+
+[[migrations]]
+tag = "v13"
+# A single alarm-backed object watches successful cron completions. Its alarm
+# runs independently of the Cron Trigger, so it can email administrators when
+# the trigger stops completing and again after the first successful recovery.
+new_sqlite_classes = ["ForkMeshCronWatchdog"]
 
 
 [observability]

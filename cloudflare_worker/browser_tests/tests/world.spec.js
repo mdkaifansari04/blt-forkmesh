@@ -1662,6 +1662,87 @@ test("walking through the Office doorway authenticates with exactly one POST", a
   expect(officeFloorRequests).toHaveLength(1);
 });
 
+test("Office entry preserves the live avatar and keeps zoom inside the tower", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-seamless-entry-camera", {
+    session: {
+      kind: "user",
+      nodeName: "alice",
+      email: "alice@example.test",
+      sessionToken: "alice-office-token",
+    },
+  });
+  await waitForWorld(page);
+  await moveToOfficeEntrance(page, { unpause: true });
+  const before = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setCameraZoom(0.9);
+    return {
+      uuid: shell.world.player.uuid,
+      camera: shell.world.getCameraState(),
+      position: shell.world.player.position.toArray(),
+    };
+  });
+
+  await page.locator("[data-world-office-enter]").click();
+  await waitForOfficeEntry(page);
+  const after = await page.locator("forkmesh-world").evaluate((shell) => {
+    const clone = shell.world.scene.getObjectByName(
+      "forkmesh-office-lobby-player"
+    );
+    return {
+      uuid: shell.world.player.uuid,
+      camera: shell.world.getCameraState(),
+      position: shell.world.player.position.toArray(),
+      playerVisible: shell.world.player.visible,
+      cloneVisible: clone?.visible === true,
+    };
+  });
+  expect(after.uuid).toBe(before.uuid);
+  expect(after.camera.mode).toBe(before.camera.mode);
+  expect(after.camera.yaw).toBeCloseTo(before.camera.yaw, 8);
+  expect(after.camera.pitch).toBeCloseTo(before.camera.pitch, 8);
+  expect(after.camera.zoom).toBeCloseTo(before.camera.zoom, 8);
+  expect(after.playerVisible).toBe(true);
+  expect(after.cloneVisible).toBe(false);
+  expect(
+    Math.hypot(
+      after.position[0] - before.position[0],
+      after.position[2] - before.position[2],
+    ),
+  ).toBeLessThan(5);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setCameraZoom(28);
+  });
+  await page.waitForTimeout(700);
+  const bounded = await page.locator("forkmesh-world").evaluate((shell) => {
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const cameraLocal = interior.worldToLocal(
+      shell.world.camera.position.clone()
+    );
+    const playerLocal = interior.worldToLocal(
+      shell.world.player.getWorldPosition(shell.world.player.position.clone())
+    );
+    return {
+      camera: cameraLocal.toArray(),
+      player: playerLocal.toArray(),
+      distance: cameraLocal.distanceTo(playerLocal),
+      requestedZoom: shell.world.getCameraState().zoom,
+    };
+  });
+  expect(bounded.requestedZoom).toBe(28);
+  expect(bounded.camera[0]).toBeGreaterThan(-84.3);
+  expect(bounded.camera[0]).toBeLessThan(84.3);
+  expect(bounded.camera[1]).toBeGreaterThan(0.49);
+  expect(bounded.camera[1]).toBeLessThan(15.46);
+  expect(bounded.camera[2]).toBeGreaterThan(-44.3);
+  expect(bounded.camera[2]).toBeLessThan(44.8);
+  expect(bounded.distance).toBeLessThan(10);
+});
+
 test("Office elevator exposes ten floors while enforcing team access", async ({
   page,
 }) => {
@@ -1685,20 +1766,48 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
 
   const access = await page.locator("forkmesh-world").evaluate((shell) => {
     const destinations = new Map();
+    const scene = shell.world.scene;
+    const car = scene.getObjectByName("forkmesh-office-glass-elevator-car");
+    const shaft = scene.getObjectByName(
+      "forkmesh-office-glass-elevator-shaft"
+    );
+    const panel = scene.getObjectByName(
+      "forkmesh-office-elevator-cabin-panel"
+    );
+    const buttons = [];
+    const isDescendantOf = (object, ancestor) => {
+      for (let current = object?.parent; current; current = current.parent) {
+        if (current === ancestor) return true;
+      }
+      return false;
+    };
     shell.world.scene.traverse((object) => {
       if (object.userData?.interactive !== "office-elevator-floor") return;
+      buttons.push(object);
       destinations.set(object.userData.officeFloorId, {
         id: object.userData.officeFloorId,
         level: object.userData.officeFloorLevel,
         allowed: object.userData.officeFloorAllowed === true,
       });
     });
-    return [...destinations.values()].sort((left, right) =>
-      left.level - right.level
-    );
+    return {
+      destinations: [...destinations.values()].sort((left, right) =>
+        left.level - right.level
+      ),
+      buttonCount: buttons.length,
+      buttonsMoveWithCar:
+        Boolean(car) && buttons.every((button) => isDescendantOf(button, car)),
+      panelParent: panel?.parent?.name || "",
+      carPosition: car
+        ? { x: car.position.x, y: car.position.y, z: car.position.z }
+        : null,
+      shaftPosition: shaft
+        ? { x: shaft.position.x, y: shaft.position.y, z: shaft.position.z }
+        : null,
+    };
   });
-  expect(access).toHaveLength(10);
-  expect(access.map((floor) => floor.id)).toEqual([
+  expect(access.destinations).toHaveLength(10);
+  expect(access.destinations.map((floor) => floor.id)).toEqual([
     "lobby",
     "marketing",
     "engineering",
@@ -1710,8 +1819,17 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
     "operations",
     "rooftop",
   ]);
+  expect(access.buttonCount).toBe(10);
+  expect(access.buttonsMoveWithCar).toBe(true);
+  expect(access.panelParent).toBe("forkmesh-office-glass-elevator-car");
+  expect(access.carPosition).toMatchObject({ x: 70, y: 0 });
+  expect(access.shaftPosition).toMatchObject({ x: 70, y: 0 });
+  expect(access.carPosition.z).toBeGreaterThanOrEqual(44.5);
+  expect(access.shaftPosition.z).toBeCloseTo(access.carPosition.z, 5);
   expect(
-    Object.fromEntries(access.map((floor) => [floor.id, floor.allowed])),
+    Object.fromEntries(
+      access.destinations.map((floor) => [floor.id, floor.allowed])
+    ),
   ).toMatchObject({
     lobby: true,
     marketing: true,
@@ -1720,6 +1838,25 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
     rooftop: true,
   });
 
+  // Calling the controller from elsewhere on the floor must not teleport the
+  // avatar into the elevator. Only a visitor physically inside the cabin may
+  // start a ride.
+  const outsideCabin = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.travelToOfficeFloor("engineering")
+  );
+  expect(outsideCabin).toBe(false);
+
+  const cabinPosition = await page
+    .locator("forkmesh-world")
+    .evaluate((shell) => {
+      const scene = shell.world.scene;
+      const car = scene.getObjectByName("forkmesh-office-glass-elevator-car");
+      const avatar = shell.world.player;
+      car.updateWorldMatrix(true, false);
+      avatar.position.x = car.matrixWorld.elements[12] - 1.25;
+      avatar.position.z = car.matrixWorld.elements[14] - 1.25;
+      return { x: avatar.position.x, z: avatar.position.z };
+    });
   const locked = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.world.travelToOfficeFloor("security")
   );
@@ -1731,13 +1868,24 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
   await expect.poll(() =>
     page.locator("forkmesh-world").evaluate((shell) => ({
       space: shell.world.getPosition().space,
-      height: shell.world.scene.getObjectByName(
-        "forkmesh-office-lobby-player",
+      avatar: (() => {
+        const object = shell.world.player;
+        return object
+          ? { x: object.position.x, y: object.position.y, z: object.position.z }
+          : null;
+      })(),
+      carHeight: shell.world.scene.getObjectByName(
+        "forkmesh-office-glass-elevator-car"
       )?.position.y,
     }))
   ).toMatchObject({
     space: "office-engineering",
-    height: 16.38,
+    avatar: {
+      x: cabinPosition.x,
+      y: 32.38,
+      z: cabinPosition.z,
+    },
+    carHeight: 32,
   });
 });
 

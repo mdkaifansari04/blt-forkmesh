@@ -33,6 +33,7 @@ def test_tower_has_ten_floors_and_is_about_ten_times_the_old_width():
         process.stdout.write(JSON.stringify({
           count: tower.OFFICE_FLOOR_COUNT,
           width: tower.OFFICE_WIDTH,
+          floorHeight: tower.OFFICE_FLOOR_HEIGHT,
           oldWidthRatio: tower.OFFICE_WIDTH / 17,
           towerHeight: tower.OFFICE_TOWER_HEIGHT,
           floors: tower.OFFICE_FLOORS.map((floor) => ({
@@ -51,9 +52,10 @@ def test_tower_has_ten_floors_and_is_about_ten_times_the_old_width():
     assert [floor["level"] for floor in result["floors"]] == list(range(10))
     assert len({floor["id"] for floor in result["floors"]}) == 10
     assert 9 <= result["oldWidthRatio"] <= 11
-    assert result["towerHeight"] == 10 * 8
+    assert result["floorHeight"] == 16
+    assert result["towerHeight"] == 10 * 16
     assert [floor["y"] for floor in result["floors"]] == [
-        level * 8 for level in range(10)
+        level * 16 for level in range(10)
     ]
 
     public_floors = {
@@ -202,6 +204,80 @@ def test_office_interior_bounds_reserve_avatar_clearance_from_every_wall():
     assert result["outsideX"] is False
     assert result["outsideZ"] is False
     assert result["invalid"] is False
+
+
+def test_front_elevator_cabin_and_approach_are_walkable_but_glass_sides_are_solid():
+    result = run_tower_script(
+        """
+        const radius = tower.OFFICE_AVATAR_RADIUS;
+        const centerX = tower.OFFICE_ELEVATOR_CENTER_X;
+        const centerZ = tower.OFFICE_ELEVATOR_CENTER_Z;
+        process.stdout.write(JSON.stringify({
+          centerX,
+          centerZ,
+          frontZ: tower.OFFICE_FRONT_Z,
+          cabinCenter: tower.officeElevatorCabinContains(
+            centerX,
+            centerZ,
+            radius,
+          ),
+          cabinCenterWalkable: tower.officeInteriorPointIsWalkable(
+            "lobby",
+            centerX,
+            centerZ,
+            radius,
+          ),
+          interiorApproachWalkable: tower.officeInteriorPointIsWalkable(
+            "lobby",
+            centerX,
+            centerZ - 5,
+            radius,
+          ),
+          rearDoorOpen: !tower.officePointHitsObstacle(
+            "lobby",
+            centerX,
+            centerZ - 4,
+            radius,
+          ),
+          leftGlassBlocked: tower.officePointHitsObstacle(
+            "lobby",
+            centerX - 5,
+            centerZ,
+            radius,
+          ),
+          rightGlassBlocked: tower.officePointHitsObstacle(
+            "lobby",
+            centerX + 5,
+            centerZ,
+            radius,
+          ),
+          outwardGlassBlocked: tower.officePointHitsObstacle(
+            "lobby",
+            centerX,
+            centerZ + 4,
+            radius,
+          ),
+          pastCabin: tower.officeElevatorCabinContains(
+            centerX,
+            centerZ + 5,
+            radius,
+          ),
+        }));
+        """
+    )
+
+    assert result["centerX"] == 70
+    # Centering the eight-unit-deep cabin on the facade leaves half of it
+    # outdoors while its rear door opens onto the office floor.
+    assert result["centerZ"] >= result["frontZ"] - 0.5
+    assert result["cabinCenter"] is True
+    assert result["cabinCenterWalkable"] is True
+    assert result["interiorApproachWalkable"] is True
+    assert result["rearDoorOpen"] is True
+    assert result["leftGlassBlocked"] is True
+    assert result["rightGlassBlocked"] is True
+    assert result["outwardGlassBlocked"] is True
+    assert result["pastCabin"] is False
 
 
 def test_every_floor_has_collidable_obstacles_and_reachable_open_space():
