@@ -283,6 +283,11 @@
                   <pre data-repo-digest-preview class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 font-mono text-[10px] leading-4 text-foreground">Loading preview…</pre>
                 </div>
               </fieldset>
+              <fieldset class="grid gap-1.5 rounded-md border border-border p-2 text-[11px] text-muted-foreground">
+                <legend class="px-1 text-[10px] font-semibold uppercase tracking-wide">Operational alerts</legend>
+                <label class="inline-flex items-start gap-1.5"><input data-repo-alert-status-emails type="checkbox" class="mt-0.5 h-3 w-3" />Email this organization's administrators when a ForkMesh system check fails, and again when it recovers</label>
+                <p class="leading-4">Off by default. Nobody receives outage or recovery mail until an organization administrator turns this on.</p>
+              </fieldset>
               <p class="text-[10px] leading-4 text-muted-foreground">Saved to the relay now and written into the repo's committed <span class="font-mono">.forkmesh/info.json</span> (what the desktop app shows) the next time the owner's node syncs.</p>
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <span data-repo-about-status class="text-[11px] text-muted-foreground"></span>
@@ -2130,6 +2135,10 @@
             acceptComments: Boolean(aboutForm.querySelector("[data-repo-ap-comments]")?.checked),
           };
         }
+        // Same deal for the admin-only operational-alert switches: the worker
+        // defaults them off, so an untouched (unchecked) form keeps them off.
+        const alertBox = aboutForm.querySelector("[data-repo-alert-status-emails]");
+        if (alertBox) media.alerts = { statusEmails: alertBox.checked };
         const body = await saveRepoAboutFromWeb(state.selectedRepo, description, media);
         applyRepoAboutDescription(state.selectedRepo, body.description ?? description);
         applyRepoAboutWebsite(website);

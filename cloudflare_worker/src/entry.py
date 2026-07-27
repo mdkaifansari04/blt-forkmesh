@@ -2213,6 +2213,65 @@ async def _installer_delivery_status(env, now):
     return is_up, reason
 
 
+# Per-repository operational-alert switches the repo's org admin manages from
+# the same About/settings form as the fediverse switches. Everything defaults
+# to OFF: a deployment (and every repository that has no row) mails nobody
+# until an admin explicitly opts in, so nobody inherits the alert pager.
+REPO_ALERT_SETTING_DEFAULTS = {
+    # "[ForkMesh outage]" / "[ForkMesh recovered]" mail for the systems on
+    # /status and the independent cron watchdog. One switch covers both
+    # directions: a recovery notice only makes sense to whoever got the outage.
+    "statusEmails": False,
+}
+
+
+async def _repo_alert_settings_bi(env, owner, repo):
+    # Same keying rules as _ap_repo_settings_bi (distinct namespace, both
+    # halves lowercased, org aliases resolved to the backing node) so the row
+    # an admin writes under the org name is the row the send path reads.
+    alias_owner = globals().get("_ap_org_alias_owner")
+    if callable(alias_owner):
+        owner = await alias_owner(env, owner, repo)
+    return await blind_index(
+        env, "repo-alert-settings:%s/%s" % (
+            str(owner or "").strip().lower(),
+            str(repo or "").strip().lower()))
+
+
+async def _repo_alert_settings_get(env, owner, repo):
+    settings = dict(REPO_ALERT_SETTING_DEFAULTS)
+    try:
+        row = await d1_first(
+            env, "SELECT data FROM repo_alert_settings WHERE repo_bi=?",
+            await _repo_alert_settings_bi(env, owner, repo))
+    except BaseException:
+        # A lazily-ensured DB without the table reads as "all off", which is
+        # the safe direction: no mail rather than unsuppressable mail.
+        return settings
+    if row:
+        try:
+            stored = json.loads(row.get("data") or "{}")
+        except Exception:
+            stored = {}
+        if isinstance(stored, dict):
+            for key in REPO_ALERT_SETTING_DEFAULTS:
+                if key in stored:
+                    settings[key] = bool(stored[key])
+    return settings
+
+
+async def _status_alert_emails_enabled(env):
+    """Has the flagship repository's org admin opted into outage mail?
+
+    The /status systems and the cron watchdog are properties of the whole
+    deployment, so they hang off the flagship repository's settings — the one
+    repo whose org admin also administers the relay.
+    """
+    owner, _, repo = FLAGSHIP_MONITOR_ID.partition("/")
+    settings = await _repo_alert_settings_get(env, owner, repo)
+    return bool(settings["statusEmails"])
+
+
 async def _repository_monitor_admin_emails(env):
     recipients = {
         value.strip().lower()
@@ -2293,6 +2352,14 @@ def _cron_watchdog_email_content(recovered, outage_started_at, now):
 
 async def _send_cron_watchdog_email(
         env, recovered, outage_started_at, now):
+    # Suppressed reports delivered: the caller must record the transition and
+    # stop re-arming its retry alarm, otherwise turning the setting off would
+    # leave the watchdog retrying a send it will never make.
+    try:
+        if not await _status_alert_emails_enabled(env):
+            return True
+    except BaseException:
+        return True
     try:
         recipients = await _repository_monitor_admin_emails(env)
     except BaseException:
@@ -2391,6 +2458,11 @@ async def _record_status_monitor_transitions(
         *values,
     )
     if not pending:
+        return
+    # notified_state is deliberately left untouched while alert mail is off:
+    # whatever is red when an admin turns it on gets one email then, instead
+    # of the switch silently swallowing the transition that is still current.
+    if not await _status_alert_emails_enabled(env):
         return
     recipients = await _repository_monitor_admin_emails(env)
     if not recipients:
@@ -9993,6 +10065,10 @@ async def _repo_about_public(env, request, owner, repo):
             "followersList": followers_list,
             "settings": ap_settings,
         },
+        # Admin-only switches, echoed so the settings form can seed itself and
+        # round-trip an untouched save. Booleans about who gets operational
+        # mail — no address or recipient is exposed here.
+        "alerts": await _repo_alert_settings_get(env, owner, repo),
     }, cache_control="public, max-age=30")
 
 
@@ -10161,6 +10237,26 @@ async def repo_about_handler(env, request, owner, repo):
                     "_ap_purge_repo_digest_queues")
                 if callable(purge_digests):
                     await purge_digests(env, owner, repo)
+    # Per-repo operational-alert switches ride the same save (an `alerts`
+    # object, like `fediverse`). The About handler already proves the caller
+    # administers this repo's owner account, which is exactly the "org admin"
+    # gate these switches need. Absent = unchanged; unchanged writes nothing.
+    alert_settings = None
+    alerts_data = data.get("alerts")
+    if isinstance(alerts_data, dict):
+        current_alerts = await _repo_alert_settings_get(env, owner, repo)
+        alert_settings = dict(current_alerts)
+        for key in REPO_ALERT_SETTING_DEFAULTS:
+            if key in alerts_data:
+                alert_settings[key] = bool(alerts_data.get(key))
+        if alert_settings != current_alerts:
+            await d1_run(
+                env,
+                "INSERT INTO repo_alert_settings (repo_bi, data, updated_at)"
+                " VALUES (?,?,?) ON CONFLICT(repo_bi) DO UPDATE SET"
+                " data=excluded.data, updated_at=excluded.updated_at",
+                await _repo_alert_settings_bi(env, owner, repo),
+                json.dumps(alert_settings), int(Date.now()))
     if text_changed:
         # Queue the edit for the owner's desktop node, which writes it into the
         # repo's committed .forkmesh/info.json (the same file the desktop app's
@@ -10206,6 +10302,8 @@ async def repo_about_handler(env, request, owner, repo):
     }
     if ap_settings is not None:
         result["fediverse"] = {"settings": ap_settings}
+    if alert_settings is not None:
+        result["alerts"] = alert_settings
     return json_response(result)
 
 

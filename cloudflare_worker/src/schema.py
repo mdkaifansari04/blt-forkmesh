@@ -761,6 +761,17 @@ SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS ap_repo_settings (
         repo_bi TEXT PRIMARY KEY, data TEXT NOT NULL,
         updated_at INTEGER NOT NULL)""",
+    # Per-repo operational-alert switches (migration 0086), managed by the
+    # org admin from the same repo About/settings form as the fediverse
+    # switches: statusEmails turns the "[ForkMesh outage]" /
+    # "[ForkMesh recovered]" status and cron-watchdog mail on. repo_bi =
+    # blind_index("repo-alert-settings:<owner>/<repo>") with both halves
+    # lowercased; data is plaintext JSON of booleans (same operational-config
+    # trust level as ap_repo_settings). A missing row means "all off" — a
+    # deployment mails nobody until an admin opts in.
+    """CREATE TABLE IF NOT EXISTS repo_alert_settings (
+        repo_bi TEXT PRIMARY KEY, data TEXT NOT NULL,
+        updated_at INTEGER NOT NULL)""",
     # Encrypted, bounded automatic-update queues (migration 0046). Human
     # repository/org names and event metadata live only inside `data`;
     # scope_bi is a blind index. next_ts/last_published_at are operational
