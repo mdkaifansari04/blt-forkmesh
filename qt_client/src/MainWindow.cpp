@@ -374,15 +374,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // owner's repo as it updates. Push events are the primary signal now —
     // since bf6323d0 mirror peers are notified the instant a push lands on the
     // source's bare mirror — so this timer is only a safety net for dropped
-    // events. 15 minutes (kMirrorSyncIntervalMs) with ±15% jitter so a fleet
-    // of nodes doesn't fetch from the relay in lockstep, and gated on relay
-    // health (autoSyncMirrorsIfRelayHealthy) because the git subprocesses
-    // never pass through BackoffNetworkAccessManager's 429 cooldown. A first
-    // pass runs shortly after startup to catch up on pushes missed offline.
+    // events. Three minutes (kMirrorSyncIntervalMs) with ±15% jitter keeps the
+    // dropped-event recovery window short without making a fleet fetch in
+    // lockstep. The existing per-repository in-flight guard prevents a timer
+    // tick from duplicating an immediate push/roster-driven sync, and the job
+    // remains gated on relay health (autoSyncMirrorsIfRelayHealthy) because
+    // the git subprocesses never pass through BackoffNetworkAccessManager's
+    // 429 cooldown. A first pass runs shortly after startup to catch up on
+    // pushes missed offline.
     m_mirrorSyncTimer = new QTimer(this);
     connect(m_mirrorSyncTimer, &QTimer::timeout, this,
             &MainWindow::autoSyncMirrorsIfRelayHealthy);
-    const int mirrorJitterSpanMs = int(kMirrorSyncIntervalMs * 15 / 100);
+    const int mirrorJitterSpanMs =
+        int(kMirrorSyncIntervalMs * kMirrorSyncJitterPercent / 100);
     m_mirrorSyncTimer->start(int(kMirrorSyncIntervalMs) +
                              QRandomGenerator::global()->bounded(
                                  -mirrorJitterSpanMs, mirrorJitterSpanMs + 1));

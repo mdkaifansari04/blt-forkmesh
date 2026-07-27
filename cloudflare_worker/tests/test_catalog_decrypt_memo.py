@@ -46,7 +46,9 @@ def _make_env(rows, decrypt_calls):
         return list(rows)
 
     async def active_registered_node_bis(env, now=None):
-        return None  # no active-node filter: every row is considered
+        # Durable catalog retention must not depend on this empty live set.
+        # Before the regression fix every row below was filtered out.
+        return set()
 
     async def decrypt_row(env, stored, key=None):
         decrypt_calls.append(stored)

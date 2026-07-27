@@ -159,7 +159,7 @@ const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
 const WORLD_UPDATE_RELOAD_DELAY_MS = 1400;
 const WORLD_UPDATE_RELOADED_REV_KEY = "forkmesh.world.updateReloadedRev.v1";
 const WORLD_NOTIFICATION_POLL_MS = 60 * 1000;
-const MIRROR_STATUS_POLL_MS = 60 * 1000;
+const MIRROR_STATUS_POLL_MS = 5 * 60 * 1000;
 const WORLD_EVENT_POLL_MS = 3 * 60 * 1000;
 const WORLD_REWARD_POLL_MS = 5 * 60 * 1000;
 const WORLD_MEDIA_PLAYBACK_POLL_MS = 15 * 1000;
@@ -5211,6 +5211,16 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  async fetchMirrorCatalog({ force = false } = {}) {
+    return this.fetchJSON("/api/repo/forkmesh/forkmesh/mirrors", {
+      auth: false,
+      timeout: 5000,
+      maxAge: force ? 0 : MIRROR_STATUS_POLL_MS - 5000,
+      backoff: true,
+      staleIfError: true,
+    });
+  }
+
   async loadWorldData() {
     const session = validWorldSession();
     const hasSession = this.sessionAuthenticated && Boolean(session);
@@ -5239,11 +5249,7 @@ class ForkMeshWorld extends HTMLElement {
     ] =
       await Promise.allSettled([
         this.fetchJSON("/api/network/overview", { auth: false }),
-        this.fetchJSON("/api/repo/forkmesh/forkmesh/mirrors", {
-          auth: false,
-          timeout: 5000,
-          cache: "no-store",
-        }),
+        this.fetchMirrorCatalog(),
         this.fetchJSON("/api/world/instances", {
           auth: false,
           timeout: 5000,
@@ -7893,16 +7899,7 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async refreshMirrorCatalogs({ force = false } = {}) {
-    const payload = await this.fetchJSON(
-      "/api/repo/forkmesh/forkmesh/mirrors",
-      {
-        auth: false,
-        timeout: 5000,
-        maxAge: force ? 0 : MIRROR_STATUS_POLL_MS - 5000,
-        backoff: true,
-        staleIfError: true,
-      },
-    );
+    const payload = await this.fetchMirrorCatalog({ force });
     this.mirrorCatalogs = [
       {
         ...payload,
@@ -7917,7 +7914,7 @@ class ForkMeshWorld extends HTMLElement {
   startMirrorPolling() {
     window.clearInterval(this.mirrorTimer);
     this.mirrorTimer = window.setInterval(() => {
-      if (this.destroyed || document.visibilityState !== "visible") return;
+      if (this.destroyed || document.hidden) return;
       void this.refreshMirrorCatalogs().catch(() => {
         // Preserve the last verified snapshot during a transient HTTPS failure.
       });

@@ -6474,7 +6474,7 @@ void MainWindow::submitCommitComment()
         }
         // Push the new comment into the bare mirror and tell mirroring peers
         // right away (like issue/PR comments do) so it converges in seconds
-        // instead of at the next 15-minute auto-sync. Resolve the writable
+        // instead of at the next three-minute auto-sync. Resolve the writable
         // repo's own index — the open detail may be a read-only preview of a
         // repo we actually host under a different entry.
         const int srcIndex = repoIndexFor(rec.owner, rec.name);

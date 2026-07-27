@@ -1,16 +1,15 @@
 """GET /api/repositories must not run the catalog-wide D1 housekeeping sweeps
 inline on ANY request path.
 
-Those sweeps (purge_blocked_catalog / purge_stale_registered_nodes) issue a
-burst of DELETEs plus host-offline notifications. They already run on their own
-staggered cron (minute%15==9 / minute%15==4), and the response is correct
-without them (blocked entries are dropped by _is_blocked_catalog_identity and
-stale ones by the active-node filter). Running them on every request held the
-single Worker event loop long enough that the runtime canceled the request as
-hung ("Cannot enter into task ..."), and on the 10s-cached anonymous miss they
-re-ran every 10s per colo — a real contributor to the 2026-07-11 free-plan
-1102 overload. So neither the authenticated nor the anonymous path runs them
-now; the cron is the only sweeper.
+Those sweeps already run on their own staggered cron (minute%15==9 /
+minute%15==4), and the response is correct without them: blocked entries are
+dropped by _is_blocked_catalog_identity, while stale signed catalog rows remain
+visible with offline availability. Running housekeeping on every request held
+the single Worker event loop long enough that the runtime canceled the request
+as hung ("Cannot enter into task ..."), and on the 10s-cached anonymous miss it
+re-ran every 10s per colo — a real contributor to the 2026-07-11 free-plan 1102
+overload. Neither authenticated nor anonymous requests run it now; cron owns
+housekeeping.
 """
 
 import ast

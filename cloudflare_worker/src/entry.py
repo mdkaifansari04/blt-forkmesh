@@ -579,11 +579,11 @@ HOST_PRESENCE_REFRESH_MS = 60 * 1000
 # endpoint checks. This window intentionally matches the old presence headline
 # so the status page's semantics remain stable while its evidence gets stronger.
 HTTPS_MIRROR_STATUS_FRESH_MS = 10 * 60 * 1000
-# Registered desktop/headless node accounts that have not been seen for this
-# long are treated as abandoned: their physical node row and public repo catalog
-# namespace are pruned so old one-off registrations stop participating in
-# browse/clone routing. A node that returns after this window must register
-# again.
+# Registered desktop/headless node accounts older than this are no longer
+# considered live. Liveness is transient routing evidence, not a catalog
+# retention policy: owner-signed repository rows remain visible as offline.
+# Housekeeping may remove an old physical node row only when it has neither a
+# repository catalog row nor a registered direct-HTTPS endpoint.
 REGISTERED_NODE_ACTIVE_MS = 60 * 60 * 1000
 STALE_NODE_PURGE_INTERVAL_MS = 60 * 1000
 STALE_NODE_PURGE_BATCH = 100
@@ -7122,10 +7122,11 @@ async def active_registered_node_bis(env, now=None):
 
 
 async def _decrypted_public_catalog(env, now):
-    # Decrypted {key_bi, is_private, data} rows for every public repo owned by
-    # an active node, memoized per-isolate for PUBLIC_CATALOG_MEMO_TTL_MS — see
-    # the comment on _PUBLIC_CATALOG_MEMO for why this must not re-decrypt the
-    # whole catalog on every call.
+    # Decrypted {key_bi, is_private, data} rows for every retained public repo,
+    # memoized per-isolate for PUBLIC_CATALOG_MEMO_TTL_MS — see the comment on
+    # _PUBLIC_CATALOG_MEMO for why this must not re-decrypt the whole catalog on
+    # every call. Online/serving eligibility is checked separately from fresh
+    # signed endpoint evidence; an offline owner must not disappear here.
     cached = _PUBLIC_CATALOG_MEMO
     if cached["rows"] is not None and now - cached["ts"] < PUBLIC_CATALOG_MEMO_TTL_MS:
         return cached["rows"]
@@ -7149,15 +7150,9 @@ async def _decrypted_public_catalog(env, now):
         rows = await d1_all(
             env,
             "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
-        try:
-            active_nodes = await active_registered_node_bis(env, now)
-        except Exception:
-            active_nodes = None
         catalog_rows = []
         decrypted = {}
         for row in rows:
-            if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
-                continue
             blob = str(row.get("data") or "")
             rec = _CATALOG_ROW_DECRYPT_MEMO.get(blob)
             if not rec:
@@ -7186,11 +7181,11 @@ async def _decrypted_public_catalog(env, now):
 
 
 async def purge_stale_registered_nodes(env, force=False):
-    # Bound the registered-node table and public repo catalog to nodes that have
-    # been live in the last hour. This is intentionally NOT account deletion:
-    # accounts are credentials/ownership records. What gets pruned is the
-    # request-serving surface (nodes mirror rows + repo catalog namespace) that
-    # made old one-off registrations keep participating in browse/clone fanout.
+    # Remove expired transient presence and bound only truly orphaned physical
+    # node registrations. Repository catalog rows are durable owner-signed
+    # identity: temporary downtime must never cascade into namespace deletion.
+    # A stale node that still owns a repository or direct-HTTPS endpoint remains
+    # registered and is simply reported offline until fresh evidence returns.
     await ensure_schema(env)
     now = int(Date.now())
     if not force and now - int(_stale_node_purge.get("ts") or 0) < STALE_NODE_PURGE_INTERVAL_MS:
@@ -7206,9 +7201,18 @@ async def purge_stale_registered_nodes(env, force=False):
     active = await active_registered_node_bis(env, now)
     rows = await d1_all(
         env,
-        """SELECT node_bi, name FROM nodes
-           WHERE COALESCE(last_seen, 0) < ?
-           ORDER BY COALESCE(last_seen, 0) ASC
+        """SELECT n.node_bi, n.name FROM nodes n
+           WHERE COALESCE(n.last_seen, 0) < ?
+             AND NOT EXISTS (
+                 SELECT 1 FROM repositories r
+                  WHERE r.owner_bi = n.node_bi
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM mirror_https_endpoints e
+                  WHERE e.node_bi = n.node_bi
+                     OR lower(e.node_name) = lower(n.name)
+             )
+           ORDER BY COALESCE(n.last_seen, 0) ASC
            LIMIT ?""",
         cutoff, STALE_NODE_PURGE_BATCH,
     )
@@ -7217,9 +7221,7 @@ async def purge_stale_registered_nodes(env, force=False):
         node_bi = str(row.get("node_bi") or "")
         if not node_bi or node_bi in active:
             continue
-        name = clean_string(row.get("name", ""), MAX_NODE_NAME).lower()
         try:
-            await _delete_repo_namespace(env, node_bi, name)
             await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", node_bi)
             removed += 1
         except Exception:
@@ -8962,8 +8964,8 @@ async def catalog_handler(env, request):
         # Best-effort D1 housekeeping (drop blocked phantoms, prune stale nodes)
         # only on the cheap, edge-cached anonymous miss. The response is already
         # correct without it — blocked entries are skipped by
-        # _is_blocked_catalog_identity and stale ones by the active-node filter
-        # below — and the staggered cron sweeps D1 on its own schedule. An
+        # _is_blocked_catalog_identity — and the staggered cron sweeps D1 on its
+        # own schedule. An
         # authenticated (per-viewer, never-cached) request must NOT run these:
         # replaying a burst of DELETEs plus host-offline notifications inline on
         # every catalog load held the single Worker event loop long enough for
@@ -8972,13 +8974,9 @@ async def catalog_handler(env, request):
         # staggered cron already runs purge_blocked_catalog (minute%15==9) and
         # purge_stale_registered_nodes (minute%15==4), and the response is
         # correct without them — blocked entries are skipped by
-        # _is_blocked_catalog_identity and stale ones by the active-node
-        # filter below. Running purges on every 10s cache miss helped melt
-        # the free plan during the 2026-07-11 overload.
-        try:
-            active_nodes = await active_registered_node_bis(env)
-        except Exception:
-            active_nodes = None
+        # _is_blocked_catalog_identity, while stale signed catalog entries stay
+        # visible with offline availability. Running purges on every 10s cache
+        # miss helped melt the free plan during the 2026-07-11 overload.
         # Public repos are listed for everyone; an authenticated viewer additionally
         # gets the private repos they own (matched by blind index) AND any private
         # repo another owner has shared with them (issue #9, via the repo_shares
@@ -9049,9 +9047,6 @@ async def catalog_handler(env, request):
                         )
                         if not shared:
                             continue
-                if active_nodes is not None:
-                    if str(owner_bi or "") not in active_nodes:
-                        continue
                 # Defense in depth: never surface a blocked identity even if a
                 # row slipped in before the purge ran.
                 if _is_blocked_catalog_identity(
@@ -10100,14 +10095,8 @@ async def repo_mirrors_handler(env, request, owner, repo):
         env,
         "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0"
     )
-    try:
-        active_nodes = await active_registered_node_bis(env)
-    except Exception:
-        active_nodes = None
     catalog_rows = []
     for row in rows:
-        if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
-            continue
         rec = await decrypt_row(env, row.get("data"))
         if not rec:
             continue
@@ -31235,7 +31224,15 @@ async def _cloudflare_edge_range_documents():
 
 
 async def _https_mirror_cloudflare_dns_ok(base_url):
-    """Independently verify that an endpoint resolves to Cloudflare's edge."""
+    """Independently verify that an endpoint resolves to Cloudflare's edge.
+
+    ``None`` means the independent verifier itself was temporarily unavailable
+    (DoH/range-document timeout or malformed upstream response).  Callers that
+    establish a new endpoint still treat that as a rejection.  The recurring
+    health check can distinguish it from a definitive non-Cloudflare answer and
+    let an existing signed lease expire naturally instead of flickering offline
+    on one control-plane timeout.
+    """
     normalized = https_routing.normalize_base_url(base_url)
     try:
         hostname = urlparse(normalized).hostname or ""
@@ -31253,7 +31250,7 @@ async def _https_mirror_cloudflare_dns_ok(base_url):
         return bool(memo.get("ok"))
     cidr_documents = await _cloudflare_edge_range_documents()
     if not cidr_documents:
-        return False
+        return None
     payloads = []
     for record_type in ("A", "AAAA"):
         target = (
@@ -31269,11 +31266,11 @@ async def _https_mirror_cloudflare_dns_ok(base_url):
             "application/dns-json",
         )
         if status != 200 or not text:
-            return False
+            return None
         try:
             payloads.append(json.loads(text))
         except Exception:
-            return False
+            return None
     ok = https_routing.cloudflare_proxied_dns_answers(
         payloads, cidr_documents)
     _HTTPS_MIRROR_EDGE_DNS_MEMO[hostname] = {
@@ -31923,6 +31920,20 @@ async def _https_mirror_mark_failed(env, row, now):
     )
 
 
+async def _https_mirror_mark_transient(env, row, now):
+    # Record only the attempt time.  checked_at/forkmesh_verified_at remain the
+    # last successful signed proof, so routing naturally stops at the normal
+    # freshness deadline if the outage persists.  Keeping updated_at separate
+    # also lets oldest-attempt-first scheduling rotate past this endpoint.
+    await d1_run(
+        env,
+        """UPDATE mirror_https_endpoints
+              SET updated_at=?
+            WHERE node_bi=?""",
+        now, row.get("node_bi"),
+    )
+
+
 async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
     """Verify one fresh node-signed health and forkmesh/forkmesh proof."""
     now = int(Date.now())
@@ -31934,8 +31945,14 @@ async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
         or not valid_node_pubkey(public_key)
         or not base_url
         or public_key not in await _owner_signing_pubkeys(env, node)
-        or not await _https_mirror_cloudflare_dns_ok(base_url)
     ):
+        await _https_mirror_mark_failed(env, row, now)
+        return False
+    dns_ok = await _https_mirror_cloudflare_dns_ok(base_url)
+    if dns_ok is None:
+        await _https_mirror_mark_transient(env, row, now)
+        return False
+    if not dns_ok:
         await _https_mirror_mark_failed(env, row, now)
         return False
     nonce = _b64url_encode(_random_bytes(18))
@@ -31951,6 +31968,9 @@ async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
         HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS,
     )
     latency = max(0, min(60_000, int(Date.now()) - started))
+    if status == 0 or status in HTTPS_MIRROR_RETRY_STATUSES:
+        await _https_mirror_mark_transient(env, row, now)
+        return False
     try:
         data = json.loads(text) if text else {}
     except Exception:
@@ -32070,12 +32090,21 @@ async def https_mirror_health_cron(env):
         env,
         """SELECT node_bi,node_name,base_url,public_key
              FROM mirror_https_endpoints
-            ORDER BY checked_at ASC,node_name ASC LIMIT ?""",
+            ORDER BY
+              CASE WHEN updated_at > checked_at
+                   THEN updated_at ELSE checked_at END ASC,
+              node_name ASC
+            LIMIT ?""",
         HTTPS_MIRROR_HEALTH_BATCH,
     )
     if not rows:
         return
     accepted = await _https_mirror_accepted_forkmesh_refs(env)
+    # A missing canonical state pin is a control-plane read failure, not proof
+    # that every independent mirror became invalid simultaneously.  Preserve
+    # their existing leases; the next minute retries the bounded batch.
+    if not accepted:
+        return
     # Keep the alarm runner on one Python task. Python fan-out/timeout wrappers
     # create nested Pyodide tasks which can poison a later scheduled wrapper
     # with "Cannot enter into task" after the invocation has already ended.
@@ -33741,9 +33770,9 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/send-notification-digests",
                     "send_notification_digests failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Stale-node purge bounds the serving surface to nodes live within the
-        # last hour; running it every 15 minutes still purges well inside that
-        # window (it used to run force=True every single minute).
+        # Stale-node housekeeping expires transient presence and removes only
+        # orphaned physical registrations. Repository/endpoint-backed nodes
+        # remain as offline catalog identity until fresh evidence returns.
         if minute % 15 == 4:
             try:
                 await purge_stale_registered_nodes(self.env, force=True)

@@ -3400,7 +3400,7 @@ private:
     void syncMirrorsBehindRoster();
     // After a local change to a repo (new/updated issue, PR, comment, merge),
     // push it to the bare mirror and tell peers immediately instead of waiting
-    // for the 15-minute auto-sync, so counts and content converge right away.
+    // for the three-minute auto-sync, so counts and content converge right away.
     void propagateRepoUpdate(int index);
     // A peer announced it refreshed "owner/name" from source; notify if we
     // mirror the same repo. `commit` is the new HEAD it advanced to.

@@ -732,7 +732,7 @@ def _response(data, status=200, **_kwargs):
 
 def _load_handler(
     *, rows, presence=None, first_hosted=None, live_hosts=None,
-    linked_canonical=False,
+    linked_canonical=False, endpoint_nodes=None,
 ):
     calls = []
 
@@ -748,6 +748,8 @@ def _load_handler(
         if "FROM repo_first_hosted" in sql:
             return first_hosted or []
         if "FROM mirror_https_endpoints" in sql:
+            if endpoint_nodes is not None:
+                return [{"node_name": node} for node in endpoint_nodes]
             return [
                 {
                     "node_name": (
@@ -780,6 +782,11 @@ def _load_handler(
     async def edge_cache_put(_key, _response):
         calls.append("edge_cache_put")
 
+    async def active_registered_node_bis(_env):
+        # Mirror membership is durable even when the live-node set is empty.
+        # Fresh endpoint/presence evidence below still controls online status.
+        return set()
+
     namespace = {
         "Date": _Clock,
         "HOST_PRESENCE_STALE_MS": 600_000,
@@ -793,6 +800,7 @@ def _load_handler(
         "LIVE_HOST_PROBE_MEMO_TTL_MS": 30_000,
         "HYDRATE_PROBE_MAX": 8,
         "ensure_schema": ensure_schema,
+        "active_registered_node_bis": active_registered_node_bis,
         "d1_all": d1_all,
         "d1_first": d1_first,
         "decrypt_row": decrypt_row,
@@ -852,6 +860,45 @@ def test_repo_mirrors_handler_get_returns_public_mirrors_payload():
     # its clone-integrity verdict.
     assert any("FROM repo_state_history" in call for call in calls)
     assert all("integrity" in mirror for mirror in response["data"]["mirrors"])
+
+
+def test_repo_mirrors_handler_keeps_inactive_rows_visible_offline():
+    handler, _calls = _load_handler(
+        rows=[
+            {
+                "key_bi": "a",
+                "owner_bi": "owner:mainnode",
+                "data": _row(
+                    "a", "mainnode", "forkmesh", root="abc"
+                )["data"],
+            },
+            {
+                "key_bi": "b",
+                "owner_bi": "owner:backup",
+                "data": _row(
+                    "b", "backup", "forkmesh", root="abc",
+                    source="remote-clone",
+                )["data"],
+            },
+        ],
+        presence=[],
+        endpoint_nodes=[],
+    )
+
+    response = asyncio.run(
+        handler(object(), _Request("GET"), "mainnode", "forkmesh")
+    )
+
+    assert response["status"] == 200
+    assert response["data"]["summary"]["mirrors"] == 2
+    assert {
+        mirror["node"]: mirror["status"]
+        for mirror in response["data"]["mirrors"]
+    } == {"backup": "offline", "mainnode": "offline"}
+    assert all(
+        mirror["cloneAvailable"] is False
+        for mirror in response["data"]["mirrors"]
+    )
 
 
 def test_repo_mirrors_handler_applies_linked_org_integrity_anchor():
