@@ -35914,20 +35914,41 @@ class ForkMeshWorld(DurableObject):
 
         # The only snapshot is the state of sockets alive right now. It is sent
         # directly from runtime attachments and is never persisted or replayed.
-        snapshot = [
-            self._presence_for_viewer(server, peer)
-            for peer in peers
-        ]
+        # Sockets sharing one account's avatar collapse to a single entry, and
+        # this connection's own body never appears in its peer list.
+        snapshot = []
+        seen_ids = {peer_id}
+        for peer in peers:
+            other_id = str(_ws_attr(peer, "id", "") or "")
+            if other_id in seen_ids:
+                continue
+            seen_ids.add(other_id)
+            snapshot.append(self._presence_for_viewer(server, peer))
+        devices = len(linked_peers) + 1
         self._safe_send(server, {
             "type": "welcome",
             "id": peer_id,
             "self": world_protocol.public_presence(state),
             "peers": snapshot,
+            # A linked device adopts the avatar that is already standing in the
+            # room rather than picking its own restored spot.
+            "linked": bool(linked_peers),
+            "devices": devices,
         })
-        self._broadcast({
-            "type": "join",
-            "peer": world_protocol.public_presence(state),
-        }, exclude_id=peer_id, budgeted=True, moderation_subject=server)
+        if linked_peers:
+            # The room already sees this account, so no join frame is sent.
+            # Only the account's own devices learn that they are now one body.
+            for peer in linked_peers:
+                self._safe_send(peer, {
+                    "type": "sync",
+                    "peer": world_protocol.public_presence(state),
+                    "devices": devices,
+                })
+        else:
+            self._broadcast({
+                "type": "join",
+                "peer": world_protocol.public_presence(state),
+            }, exclude_id=peer_id, budgeted=True, moderation_subject=server)
 
         return JsResponse.new(
             None, to_js({"status": 101, "webSocket": client}))
@@ -36151,13 +36172,62 @@ class ForkMeshWorld(DurableObject):
 
         # Tell remaining clients to remove stale avatars immediately. Marking
         # the socket departed before close prevents webSocketClose from sending
-        # the same leave twice.
+        # the same leave twice. An avatar another device of the same account
+        # still holds is never removed from the room.
         if cleanup and stale_ids:
+            held_ids = {str(_ws_attr(peer, "id", "") or "") for peer in live}
             for stale_id in stale_ids:
+                if str(stale_id) in held_ids:
+                    continue
                 frame = {"type": "leave", "id": stale_id}
                 for peer in live:
                     self._safe_send(peer, frame)
         return live
+
+    def _linked_sockets(self, ws, sockets=None):
+        """Return this account's other live devices sharing one avatar.
+
+        Live sockets are told apart by their single-use ticket nonce, so a
+        socket is never mistaken for itself across hibernation handles.
+        """
+        peer_id = str(_ws_attr(ws, "id", "") or "")
+        if not peer_id:
+            return []
+        nonce = str(_ws_attr(ws, "ticket_nonce", "") or "")
+        linked = []
+        for socket in (self._live_sockets() if sockets is None else sockets):
+            if str(_ws_attr(socket, "id", "") or "") != peer_id:
+                continue
+            other = str(_ws_attr(socket, "ticket_nonce", "") or "")
+            if nonce and other and hmac.compare_digest(other, nonce):
+                continue
+            linked.append(socket)
+        return linked
+
+    def _mirror_to_linked_devices(self, ws, state):
+        """Publish one account's new shared state to its other devices.
+
+        Each linked socket keeps the same public presence in its attachment so
+        any device may take over movement, and every device redraws the one
+        avatar the room can see.
+        """
+        linked = self._linked_sockets(ws)
+        if not linked:
+            return
+        public = world_protocol.public_presence(state)
+        for peer in linked:
+            self._save_attachment(
+                peer, state,
+                last=_ws_attr(peer, "last", 0),
+                rate_start=_ws_attr(peer, "rl_start", 0),
+                rate_count=_ws_attr(peer, "rl_count", 0),
+                departed=bool(_ws_attr(peer, "departed", False)),
+            )
+            self._safe_send(peer, {
+                "type": "sync",
+                "peer": public,
+                "devices": len(linked) + 1,
+            })
 
     def _rate_step(self, ws, state, now):
         allowed, start, count = world_protocol.advance_rate_window(
@@ -36335,6 +36405,9 @@ class ForkMeshWorld(DurableObject):
             }
         else:
             frame = world_protocol.movement_delta(state)
+        # Other devices of this account share the avatar id, so the outward
+        # broadcast excludes them. They receive the full shared state instead.
+        self._mirror_to_linked_devices(ws, state)
         self._broadcast(
             frame, exclude_id=state.get("id"), budgeted=True,
             moderation_subject=ws if kind == "presence" else None)
@@ -36356,13 +36429,27 @@ class ForkMeshWorld(DurableObject):
     def _depart(self, ws, code, reason):
         peer_id = _ws_attr(ws, "id")
         departed = bool(_ws_attr(ws, "departed", False))
+        linked = self._linked_sockets(ws) if peer_id and not departed else []
         self._mark_departed(ws)
         self._safe_close(ws, code, reason)
-        if peer_id and not departed:
-            self._broadcast(
-                {"type": "leave", "id": peer_id},
-                exclude_id=peer_id,
-            )
+        if not (peer_id and not departed):
+            return
+        if linked:
+            # Another device still stands in this account's avatar. Nobody in
+            # the room sees a leave; the remaining devices only recount.
+            public = world_protocol.public_presence(
+                self._socket_state(linked[0]))
+            for peer in linked:
+                self._safe_send(peer, {
+                    "type": "sync",
+                    "peer": public,
+                    "devices": len(linked),
+                })
+            return
+        self._broadcast(
+            {"type": "leave", "id": peer_id},
+            exclude_id=peer_id,
+        )
 
     def _broadcast(self, frame, exclude_id=None, budgeted=False,
                    moderation_subject=None):

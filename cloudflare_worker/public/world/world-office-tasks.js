@@ -32,6 +32,37 @@ function safeTaskId(value) {
   return /^[a-f0-9-]{16,64}$/.test(candidate) ? candidate : "";
 }
 
+function safeIssueHref(value) {
+  try {
+    const url = new URL(String(value || ""), window.location.origin);
+    if (
+      url.origin !== window.location.origin ||
+      !url.pathname.startsWith("/") ||
+      url.username ||
+      url.password
+    ) {
+      return "";
+    }
+    return `${url.pathname}${url.search}${url.hash}`.slice(0, 512);
+  } catch (_) {
+    return "";
+  }
+}
+
+function normalizedRecentIssue(issue) {
+  if (!issue || typeof issue !== "object") return null;
+  const id = text(issue.id, 160);
+  const title = text(issue.title, 160);
+  if (!id || !title) return null;
+  return {
+    id,
+    title,
+    repo: text(issue.repo, 128),
+    href: safeIssueHref(issue.href),
+    assignedAt: timestampMs(issue.assignedAt),
+  };
+}
+
 function timestampMs(value) {
   if (typeof value === "string" && value.trim() && !/^\d+$/.test(value.trim())) {
     const parsed = Date.parse(value);
@@ -120,6 +151,7 @@ export function createWorldOfficeTasksController({
   const workTotal = root.querySelector("[data-world-work-total]");
   const workActive = root.querySelector("[data-world-work-active]");
   const workTracked = root.querySelector("[data-world-work-tracked]");
+  const workIssueList = root.querySelector("[data-world-work-issue-list]");
   const checkinCopy = root.querySelector(
     "[data-world-office-task-checkin-copy]",
   );
@@ -133,6 +165,7 @@ export function createWorldOfficeTasksController({
   let canManage = false;
   let authorized = false;
   let tasks = [];
+  let recentIssues = [];
   let assignable = [];
   let syncedAt = performance.now();
   let serverNowAtSync = Date.now();
@@ -175,6 +208,44 @@ export function createWorldOfficeTasksController({
     else delete status.dataset.tone;
   }
 
+  function selfWorkState(state, message = "") {
+    // The owner-only plate on the back of your avatar carries the same work,
+    // narrowed to your assignments plus recent private assignment notices. It
+    // never enters a presence frame, socket, storage record, or analytics.
+    const own = ownTasks();
+    world.setSelfWorkBoard?.({
+      state:
+        ["ready", "loading"].includes(state) ||
+        (recentIssues.length && getSession()?.sessionToken)
+          ? state === "loading"
+            ? "loading"
+            : "ready"
+          : "locked",
+      message: text(message, 64),
+      total: own.length + recentIssues.length,
+      active: own.filter((task) => task.status === "active").length,
+      tracked: formatOfficeTaskElapsed(
+        own.reduce((sum, task) => sum + currentElapsed(task), 0),
+      ),
+      items: [
+        ...own.map((task) => ({
+          kind: "task",
+          title: task.title,
+          status: task.status,
+          elapsed: formatOfficeTaskElapsed(currentElapsed(task)),
+          checkin: checkinLabel(task.lastCheckin?.state),
+        })),
+        ...recentIssues.map((issue) => ({
+          kind: "issue",
+          title: issue.title,
+          status: "idle",
+          elapsed: "",
+          checkin: issue.repo,
+        })),
+      ].slice(0, 6),
+    });
+  }
+
   function physicalState(state, message = "") {
     world.updateOfficeMarketingTasks?.({
       authorized,
@@ -187,24 +258,7 @@ export function createWorldOfficeTasksController({
         elapsed: formatOfficeTaskElapsed(currentElapsed(task)),
       })),
     });
-    // The owner-only plate on the back of your avatar carries the same work,
-    // narrowed to your assignments. It never enters a presence frame.
-    const own = ownTasks();
-    world.setSelfWorkBoard?.({
-      state: ["ready", "loading"].includes(state) ? state : "locked",
-      message: text(message, 64),
-      total: own.length,
-      active: own.filter((task) => task.status === "active").length,
-      tracked: formatOfficeTaskElapsed(
-        own.reduce((sum, task) => sum + currentElapsed(task), 0),
-      ),
-      items: own.slice(0, 6).map((task) => ({
-        title: task.title,
-        status: task.status,
-        elapsed: formatOfficeTaskElapsed(currentElapsed(task)),
-        checkin: checkinLabel(task.lastCheckin?.state),
-      })),
-    });
+    selfWorkState(state, message);
   }
 
   function checkinLabel(value) {
@@ -246,6 +300,29 @@ export function createWorldOfficeTasksController({
               : ""
           }
         </div>
+      </li>`;
+  }
+
+  function issueHTML(issue) {
+    const link = issue.href
+      ? `<a class="world-work-issue-link" href="${escapeHTML(
+          issue.href,
+        )}">Open</a>`
+      : "";
+    return `
+      <li class="world-office-task world-work-issue" data-status="issue">
+        <div class="world-office-task-copy">
+          <span class="world-office-task-state" aria-hidden="true"></span>
+          <div>
+            <strong>${escapeHTML(issue.title)}</strong>
+            <small>${escapeHTML(
+              issue.repo
+                ? `${issue.repo} · recently assigned`
+                : "Recently assigned issue",
+            )}</small>
+          </div>
+        </div>
+        ${link}
       </li>`;
   }
 
@@ -326,6 +403,11 @@ export function createWorldOfficeTasksController({
           } running`
         : "";
     }
+    if (workIssueList) {
+      workIssueList.innerHTML = recentIssues.length
+        ? recentIssues.map(issueHTML).join("")
+        : `<li class="world-office-task-empty">No recent issue assignments.</li>`;
+    }
   }
 
   function updateElapsedLabels() {
@@ -342,13 +424,10 @@ export function createWorldOfficeTasksController({
     });
     if (personalView) updateWorkStats();
     const nextBucket = Math.floor(performance.now() / 5000);
-    if (
-      officeActive &&
-      ownActiveTasks().length &&
-      nextBucket !== physicalTickBucket
-    ) {
+    if (ownActiveTasks().length && nextBucket !== physicalTickBucket) {
       physicalTickBucket = nextBucket;
-      physicalState("ready");
+      if (officeActive) physicalState("ready");
+      else selfWorkState("ready");
     }
   }
 
@@ -631,6 +710,41 @@ export function createWorldOfficeTasksController({
     return true;
   }
 
+  // Populate the private avatar card once at World startup. An idle task list
+  // stops immediately after this request; only an actually running timer keeps
+  // the existing low-frequency reconciliation loop alive.
+  function prime() {
+    if (!getSession()?.sessionToken) {
+      selfWorkState("locked", "Sign in to load assigned work");
+      return false;
+    }
+    monitoring = true;
+    if (!tickTimer) {
+      tickTimer = window.setInterval(updateElapsedLabels, OFFICE_TASKS_TICK_MS);
+    }
+    void refresh({ quiet: false });
+    schedulePoll();
+    return true;
+  }
+
+  function setRecentIssues(items = []) {
+    const seen = new Set();
+    recentIssues = (Array.isArray(items) ? items : [])
+      .map(normalizedRecentIssue)
+      .filter((issue) => {
+        if (!issue || seen.has(issue.id)) return false;
+        seen.add(issue.id);
+        return true;
+      })
+      .slice(0, 6);
+    renderWorkPane();
+    selfWorkState(
+      authorized || recentIssues.length ? "ready" : "locked",
+      authorized ? "" : "Sign in to load assigned work",
+    );
+    return recentIssues.map((issue) => ({ ...issue }));
+  }
+
   function setActive(next) {
     officeActive = next === true;
     if (!officeActive) {
@@ -690,6 +804,8 @@ export function createWorldOfficeTasksController({
       message: "Organization access required",
       tasks: [],
     });
+    recentIssues = [];
+    selfWorkState("locked", "");
   }
 
   document.addEventListener("visibilitychange", onVisibilityChange);
@@ -701,9 +817,11 @@ export function createWorldOfficeTasksController({
     close,
     destroy,
     open,
+    prime,
     refresh,
     setActive,
     setPersonalView,
+    setRecentIssues,
     showCheckin,
     stopActiveForDeparture,
   };

@@ -5175,6 +5175,39 @@ forkmesh-world.world-office-active .world-quick-dock {
   padding: 0;
 }
 
+.world-work-issue-heading {
+  margin: 18px 0 8px;
+  color: var(--world-muted);
+  font: 700 0.58rem/1.35 "ForkMesh Mono", monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.world-work-issue[data-status="issue"] {
+  border-color: rgb(119 217 255 / 0.28);
+}
+
+.world-work-issue[data-status="issue"] .world-office-task-state {
+  background: #77d9ff;
+  box-shadow: 0 0 10px rgb(119 217 255 / 0.45);
+}
+
+.world-work-issue-link {
+  flex: 0 0 auto;
+  border: 1px solid var(--world-line-strong);
+  color: var(--world-mint);
+  padding: 8px 10px;
+  font: 700 0.58rem/1 "ForkMesh Mono", monospace;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.world-work-issue-link:hover,
+.world-work-issue-link:focus-visible {
+  border-color: var(--world-mint);
+  outline: none;
+}
+
 .world-session-list {
   display: grid;
   gap: 8px;

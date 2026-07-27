@@ -3061,6 +3061,7 @@ function normalizeSelfWorkBoard(board = {}) {
     message: String(board?.message || "").replace(/\s+/g, " ").trim().slice(0, 64),
     tracked: String(board?.tracked || "").trim().slice(0, 16),
     items: items.slice(0, WORK_BADGE_ROWS).map((item) => ({
+      kind: item?.kind === "issue" ? "issue" : "task",
       title: String(item?.title || "").replace(/\s+/g, " ").trim().slice(0, 64),
       status: item?.status === "active" ? "active" : "idle",
       elapsed: String(item?.elapsed || "").trim().slice(0, 12),
@@ -3144,20 +3145,33 @@ function avatarWorkBadgeTexture(THREE, board = {}) {
     }
     snapshot.items.forEach((item, index) => {
       const top = 386 + index * 92;
-      context.fillStyle = item.status === "active" ? "#1f9c6a" : "#3a4b45";
+      context.fillStyle =
+        item.kind === "issue"
+          ? "#77d9ff"
+          : item.status === "active"
+            ? "#1f9c6a"
+            : "#3a4b45";
       context.beginPath();
       context.arc(60, top, 13, 0, Math.PI * 2);
       context.fill();
       context.fillStyle = "#ffffff";
       context.font = '700 32px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(clip(context, item.title, 500), 92, top - 12);
-      context.fillStyle = item.status === "active" ? "#9ef7c6" : "#7fb9a5";
+      context.fillStyle =
+        item.kind === "issue"
+          ? "#77d9ff"
+          : item.status === "active"
+            ? "#9ef7c6"
+            : "#7fb9a5";
       context.font = '650 26px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
         clip(
           context,
-          `${item.status === "active" ? "RUNNING" : "STOPPED"} \u00b7 ${item.elapsed || "0:00"}` +
-            (item.checkin ? ` \u00b7 ${item.checkin}` : ""),
+          item.kind === "issue"
+            ? `ISSUE${item.checkin ? ` \u00b7 ${item.checkin}` : ""}`
+            : `${item.status === "active" ? "RUNNING" : "TO DO"} \u00b7 ${
+                item.elapsed || "0:00"
+              }${item.checkin ? ` \u00b7 ${item.checkin}` : ""}`,
           580,
         ),
         92,

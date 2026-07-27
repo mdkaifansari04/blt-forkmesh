@@ -2741,11 +2741,31 @@ function normalizeWorldNotifications(payload) {
       if (!/^[A-Za-z0-9_-]{16,160}$/.test(id)) return null;
       const title = sanitizeNotificationText(item?.title, "Notification", 160);
       if (!title) return null;
+      const repoCandidate = String(item?.repo || "")
+        .trim()
+        .toLowerCase()
+        .slice(0, 128);
+      const repoParts = repoCandidate.split("/");
+      const repo =
+        repoParts.length === 2 &&
+        WORLD_ACCOUNT_NAME_RE.test(repoParts[0]) &&
+        /^[a-z0-9][a-z0-9._-]{0,99}$/.test(repoParts[1])
+          ? repoCandidate
+          : "";
+      const rawNumber = Number(item?.meta?.number);
+      const number =
+        Number.isSafeInteger(rawNumber) &&
+        rawNumber > 0 &&
+        rawNumber <= 1_000_000_000
+          ? rawNumber
+          : 0;
       return {
         id,
         kind: sanitizeNotificationText(item?.kind, "Update", 40),
         title,
         body: sanitizeNotificationText(item?.body, "", 500),
+        repo,
+        number,
         href: safeNotificationURL(item?.href),
         ts: Math.max(0, Number(item?.ts) || 0),
         readAt: Math.max(0, Number(item?.readAt) || 0),
@@ -3568,10 +3588,15 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 <li class="world-office-task-empty">Sign in to load the work assigned to you.</li>
               </ol>
               <p class="world-office-panel-status" data-world-work-status role="status" aria-live="polite"></p>
+              <p class="world-work-issue-heading">Recent issue assignments</p>
+              <ol class="world-office-task-list" data-world-work-issue-list aria-label="Issues recently assigned to you">
+                <li class="world-office-task-empty">No recent issue assignments.</li>
+              </ol>
               <small>
                 Starting or stopping a task is timed on the server. The same
-                totals ride the private board on the back of your own avatar;
-                nobody else can read it and built-in screenshots hide it.
+                tasks and recent issue assignments ride the private board on
+                the back of your own avatar; nobody else can read it and
+                built-in screenshots hide it.
               </small>
             </fieldset>
           </div>
@@ -3886,9 +3911,6 @@ class ForkMeshWorld extends HTMLElement {
     // next presence frame does not force another fetch (noteDirectoryMembers).
     this.unlistedDirectoryNames = new Set();
     this.worldClientProfileKey = "";
-    // Requester-only assigned-work board for the private avatar back plate.
-    // It never enters identity, presence, BroadcastChannel, or analytics.
-    this.selfWorkBoard = { state: "locked", message: "", items: [] };
     this.worldSessions = [];
     this.worldSessionsLoadedAt = 0;
     this.settingsTab = "view";
@@ -4662,6 +4684,7 @@ class ForkMeshWorld extends HTMLElement {
         getSession: readSession,
         toast: (message) => this.toast(message),
       });
+      this.syncRecentIssueAssignments();
       this.officeController = createWorldOfficeController({
         root: this,
         world: this.world,
@@ -4681,7 +4704,8 @@ class ForkMeshWorld extends HTMLElement {
       });
       await Promise.allSettled([contextPromise, dataPromise]);
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
-      this.world.setSelfWorkBoard?.(this.selfWorkBoard);
+      this.syncRecentIssueAssignments();
+      this.officeTasks?.prime?.();
       this.applyWorldLayoutEditor();
       this.world.updateNetworkNodes(
         liveNodeRecords(this.network, this.mirrorCatalogs),
@@ -5404,6 +5428,7 @@ class ForkMeshWorld extends HTMLElement {
       this.notificationsState = hasSession ? "unavailable" : "signed-out";
     }
     this.updateNotificationBadge();
+    this.syncRecentIssueAssignments();
     this.buildDiagnostics =
       versionResult.status === "fulfilled"
         ? normalizeBuildDiagnostics(versionResult.value)
@@ -10453,6 +10478,45 @@ class ForkMeshWorld extends HTMLElement {
     if (announcements.length) this.toast(announcements.join(" · "));
   }
 
+  recentIssueAssignments() {
+    const seen = new Set();
+    return this.notifications
+      .filter(
+        (item) =>
+          String(item?.kind || "").trim().toLowerCase() === "issue_assigned",
+      )
+      .map((item) => {
+        const key =
+          item.repo && item.number
+            ? `${item.repo}#${item.number}`
+            : String(item.id || "");
+        if (!key || seen.has(key)) return null;
+        seen.add(key);
+        return {
+          id: String(item.id || ""),
+          title: sanitizeNotificationText(
+            item.body || item.title,
+            "Assigned issue",
+            160,
+          ),
+          repo: [
+            String(item.repo || ""),
+            item.number ? `#${item.number}` : "",
+          ]
+            .filter(Boolean)
+            .join(" "),
+          href: safeNotificationURL(item.href),
+          assignedAt: Math.max(0, Number(item.ts) || 0),
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 6);
+  }
+
+  syncRecentIssueAssignments() {
+    this.officeTasks?.setRecentIssues?.(this.recentIssueAssignments());
+  }
+
   async refreshPersonalNotifications(
     render = false,
     { digestOnly = false } = {},
@@ -10466,6 +10530,7 @@ class ForkMeshWorld extends HTMLElement {
       this.notificationToken = "";
       this.seenNotifications.clear();
       this.updateNotificationBadge();
+      this.syncRecentIssueAssignments();
       if (render || this.isEventsPanelOpen()) this.refreshOpenEventsPanel();
       return;
     }
@@ -10520,6 +10585,7 @@ class ForkMeshWorld extends HTMLElement {
       }
     }
     this.updateNotificationBadge();
+    this.syncRecentIssueAssignments();
     this.announceWorldNotifications();
     if (render || this.isEventsPanelOpen()) this.refreshOpenEventsPanel();
   }
