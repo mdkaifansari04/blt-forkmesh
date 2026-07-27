@@ -91,7 +91,7 @@ export const LANDMARKS = [
     statusTone: "live",
     bullets: [
       "Everyone, including guests, can cross the bridge and enter the lobby. Signing in is required only for authenticated meetings and restricted team floors.",
-      "Every registered user can visit the lobby, Marketing floor, and rooftop patio.",
+      "Every registered user can visit the lobby and rooftop patio; Marketing unlocks for verified members of that team.",
       "Restricted elevator buttons unlock only for verified members of that team.",
       "Messages, room keys, tokens, and attachments never enter world presence.",
       "The Office stays inside the same World scene, with physical floors, collision barriers, and no jumping.",

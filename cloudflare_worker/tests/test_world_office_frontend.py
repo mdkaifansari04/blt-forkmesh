@@ -486,6 +486,18 @@ def test_office_is_a_remote_island_reached_by_a_glass_bridge():
         assert contract in tower
 
 
+def test_office_walkway_meets_the_lobby_without_a_gap_or_step():
+    scene = source(SCENE_PATH)
+    assert "const OFFICE_LOBBY_SURFACE_Y = 0.38;" in scene
+    assert "const officeEntranceZ =" in scene
+    assert "Math.abs(officeEntranceZ - OFFICE_BRIDGE_END_Z)" in scene
+    assert "(OFFICE_BRIDGE_END_Z + officeEntranceZ) / 2" in scene
+    assert "officeBridgeDeck.position.y = OFFICE_LOBBY_SURFACE_Y - 0.15" in scene
+    assert "approachDeck.position.y = OFFICE_LOBBY_SURFACE_Y - 0.09" in scene
+    floor_surface = function_body(scene, "addOfficeFloorSurface")
+    assert "OFFICE_LOBBY_SURFACE_Y / 2" in floor_surface
+
+
 def test_office_glass_uses_one_stable_non_depth_writing_envelope():
     scene = source(SCENE_PATH)
     material_helper = scene[

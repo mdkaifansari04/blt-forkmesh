@@ -85,6 +85,7 @@ const FIRST_PERSON_PITCH_MAX = Math.PI / 2 - 0.01;
 const REPOSITORY_FIRST_PERSON_DISTANCE = 5.5;
 const REPOSITORY_FIRST_PERSON_PITCH = -0.08;
 const OFFICE_HEIGHT = OFFICE_FLOOR_HEIGHT;
+const OFFICE_LOBBY_SURFACE_Y = 0.38;
 const OFFICE_INTERIOR_WALL_LIMIT = OFFICE_FRONT_Z - 0.54;
 const OFFICE_DOOR_HEIGHT = 4.4;
 const OFFICE_DOORWAY_ENTRY_Z =
@@ -7846,7 +7847,7 @@ export function createWorldScene({
       roughness: 0.35,
     }),
   );
-  officeBridgeDeck.position.y = 0.14;
+  officeBridgeDeck.position.y = OFFICE_LOBBY_SURFACE_Y - 0.15;
   officeBridgeDeck.receiveShadow = true;
   officeBridgeDeck.userData.ground = true;
   officeBridge.add(officeBridgeDeck);
@@ -7864,25 +7865,20 @@ export function createWorldScene({
       new THREE.BoxGeometry(0.18, 2.4, officeBridgeLength),
       bridgeGlass,
     );
-    rail.position.set(x, 1.35, 0);
+    rail.position.set(x, OFFICE_LOBBY_SURFACE_Y + 1.2, 0);
     officeBridge.add(rail);
   }
   world.add(officeBridge);
+  const officeEntranceZ =
+    OFFICE_ISLAND_CENTER[2] + OFFICE_FRONT_Z;
   const officeApproachLength =
-    Math.abs(
-      OFFICE_ISLAND_CENTER[2] +
-        OFFICE_FRONT_Z -
-        OFFICE_BRIDGE_END_Z,
-    ) - 1.5;
+    Math.abs(officeEntranceZ - OFFICE_BRIDGE_END_Z);
   const officeApproach = new THREE.Group();
   officeApproach.name = "forkmesh-office-island-approach";
   officeApproach.position.set(
     OFFICE_ISLAND_CENTER[0],
     0,
-    (OFFICE_BRIDGE_END_Z +
-      OFFICE_ISLAND_CENTER[2] +
-      OFFICE_FRONT_Z) /
-      2,
+    (OFFICE_BRIDGE_END_Z + officeEntranceZ) / 2,
   );
   const approachDeck = new THREE.Mesh(
     new THREE.BoxGeometry(
@@ -7895,7 +7891,10 @@ export function createWorldScene({
       roughness: 0.62,
     }),
   );
-  approachDeck.position.y = 0.09;
+  // The bridge, approach, and lobby slab all terminate at the same plane.
+  // Computing the approach directly to the facade removes the old 0.75-unit
+  // void and matching its top to the slab removes the visible doorway step.
+  approachDeck.position.y = OFFICE_LOBBY_SURFACE_Y - 0.09;
   approachDeck.receiveShadow = true;
   approachDeck.userData.ground = true;
   officeApproach.add(approachDeck);
@@ -7912,7 +7911,7 @@ export function createWorldScene({
         roughness: 0.28,
       }),
     );
-    guideLight.position.set(x, 0.22, 0);
+    guideLight.position.set(x, OFFICE_LOBBY_SURFACE_Y + 0.03, 0);
     officeApproach.add(guideLight);
   }
   world.add(officeApproach);
@@ -8823,7 +8822,7 @@ export function createWorldScene({
       const slab = new THREE.Mesh(
         new THREE.BoxGeometry(
           segment.maxX - segment.minX,
-          0.38,
+          OFFICE_LOBBY_SURFACE_Y,
           segment.maxZ - segment.minZ,
         ),
         material,
@@ -8833,7 +8832,7 @@ export function createWorldScene({
         `${parent.userData.officeFloorId || "lobby"}-${index + 1}`;
       slab.position.set(
         (segment.minX + segment.maxX) / 2,
-        0.19,
+        OFFICE_LOBBY_SURFACE_Y / 2,
         (segment.minZ + segment.maxZ) / 2,
       );
       slab.receiveShadow = true;
