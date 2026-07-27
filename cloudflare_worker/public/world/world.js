@@ -3751,6 +3751,9 @@ class ForkMeshWorld extends HTMLElement {
     // next presence frame does not force another fetch (noteDirectoryMembers).
     this.unlistedDirectoryNames = new Set();
     this.worldClientProfileKey = "";
+    // Requester-only connection details never enter identity, presence,
+    // BroadcastChannel, browser storage, or analytics.
+    this.selfSecurityDetails = { ip: "", userAgent: "" };
     this.pendingKnocks = new Map();
     this.serverPeerId = "";
     this.sessionAuthenticated = false;
@@ -4914,6 +4917,19 @@ class ForkMeshWorld extends HTMLElement {
       .trim()
       .toUpperCase()
       .slice(0, 2);
+    const securityDetails =
+      context?.securityDetails && typeof context.securityDetails === "object"
+        ? context.securityDetails
+        : {};
+    this.selfSecurityDetails = {
+      ip: String(securityDetails.ip || "").trim().slice(0, 64),
+      userAgent: String(securityDetails.userAgent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 256),
+    };
+    // A later context refresh can update the already-created local mesh.
+    this.world?.setSelfSecurityDetails?.(this.selfSecurityDetails);
     // A guest owns no account record, so the coarse country is remembered in
     // this browser: the flag survives a reload and an unreachable edge context
     // instead of silently dropping back to "no country".

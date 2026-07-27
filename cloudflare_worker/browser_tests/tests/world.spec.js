@@ -2012,6 +2012,84 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   });
 });
 
+test("Office glass has one stable shell and one elevator-car layer", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-stable-glass");
+  await waitForWorld(page);
+  const glass = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const transparentMeshes = (root) => {
+      const meshes = [];
+      root?.traverse((object) => {
+        if (object.isMesh && object.material?.transparent) {
+          meshes.push(object);
+        }
+      });
+      return meshes;
+    };
+    const exterior = [];
+    scene.traverse((object) => {
+      if (
+        object.isMesh &&
+        object.userData?.landmark === "office" &&
+        object.material?.transparent
+      ) {
+        exterior.push(object);
+      }
+    });
+    const teamLayers = [
+      "marketing",
+      "engineering",
+      "product-design",
+      "security",
+      "infrastructure",
+      "community",
+      "partnerships",
+      "operations",
+    ].flatMap((floorId) => transparentMeshes(
+      scene.getObjectByName(`forkmesh-office-floor-${floorId}`)
+    ));
+    const rooftop = transparentMeshes(
+      scene.getObjectByName("forkmesh-office-floor-rooftop")
+    );
+    const shaft = transparentMeshes(
+      scene.getObjectByName("forkmesh-office-glass-elevator-shaft")
+    );
+    const car = transparentMeshes(
+      scene.getObjectByName("forkmesh-office-glass-elevator-car")
+    );
+    return {
+      exterior: {
+        count: exterior.length,
+        stable: exterior.every((mesh) =>
+          mesh.material.depthWrite === false &&
+          mesh.castShadow === false &&
+          mesh.receiveShadow === false
+        ),
+      },
+      teamLayerCount: teamLayers.length,
+      rooftop: {
+        count: rooftop.length,
+        stable: rooftop.every((mesh) => mesh.material.depthWrite === false),
+      },
+      shaftLayerCount: shaft.length,
+      car: {
+        count: car.length,
+        stable: car.every((mesh) =>
+          mesh.material.depthWrite === false && mesh.castShadow === false
+        ),
+      },
+    };
+  });
+  expect(glass.exterior.count).toBeGreaterThanOrEqual(20);
+  expect(glass.exterior.stable).toBe(true);
+  expect(glass.teamLayerCount).toBe(0);
+  expect(glass.rooftop).toEqual({ count: 5, stable: true });
+  expect(glass.shaftLayerCount).toBe(0);
+  expect(glass.car).toEqual({ count: 5, stable: true });
+});
+
 test("Office elevator exposes ten floors while enforcing team access", async ({
   page,
 }) => {

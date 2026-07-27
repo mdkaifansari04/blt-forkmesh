@@ -5975,12 +5975,14 @@ async def office_general_access_handler(env, request):
         )
     try:
         account_bi, record = await _account_session_record(env, request)
+        session_id = _request_account_session_id(request)
         entry_claims = _office_entry_ticket_claims(
             env, request.headers.get("x-forkmesh-office-entry") or "")
     except Exception:
-        account_bi, record, entry_claims = "", None, None
+        account_bi, record, session_id, entry_claims = "", None, "", None
     if (
         not re.fullmatch(r"[0-9a-f]{64}", str(account_bi or ""))
+        or not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", session_id)
         or not record
         or record.get("status") != "active"
         or _account_kind(record) != "user"
@@ -6000,7 +6002,7 @@ async def office_general_access_handler(env, request):
     name = world_protocol.clean_display_name(
         record.get("name"), "Contributor")
     token = _office_meeting_ticket(
-        env, "world-general", 1, str(account_bi), name)
+        env, "world-general", 1, str(account_bi), name, session_id)
     claims = _office_meeting_ticket_claims(env, token) or {}
     return json_response(
         {
@@ -6065,11 +6067,17 @@ async def _office_general_socket_handler(env, request):
     try:
         session_account_bi, _session_record = (
             await _account_session_record(env, request))
+        session_id = _request_account_session_id(request)
     except Exception:
-        session_account_bi = ""
-    if not hmac.compare_digest(
+        session_account_bi, session_id = "", ""
+    if (
+        not hmac.compare_digest(
             str(session_account_bi or ""),
-            str(claims.get("account_bi") or "")):
+            str(claims.get("account_bi") or ""))
+        or not hmac.compare_digest(
+            str(session_id or ""),
+            str(claims.get("session_id") or ""))
+    ):
         return _private_replica_not_found()
     claims["accountStatus"] = "Registered"
     return await _forward_office_socket(
@@ -6100,11 +6108,17 @@ async def _office_channel_socket_handler(env, request, channel_id):
     try:
         session_account_bi, _session_record = (
             await _account_session_record(env, request))
+        session_id = _request_account_session_id(request)
     except Exception:
-        session_account_bi = ""
-    if not hmac.compare_digest(
+        session_account_bi, session_id = "", ""
+    if (
+        not hmac.compare_digest(
             str(session_account_bi or ""),
-            str(claims.get("account_bi") or "")):
+            str(claims.get("account_bi") or ""))
+        or not hmac.compare_digest(
+            str(session_id or ""),
+            str(claims.get("session_id") or ""))
+    ):
         return _private_replica_not_found()
     try:
         await ensure_schema(env)
@@ -6594,8 +6608,9 @@ class _ChatChannelsRuntime(_WorldCommunityRuntime):
         )
         ticket = _chat_channel_ticket(
             self.env, channel_id, key_version, account_bi)
+        session_id = _request_account_session_id(self.request)
         meeting_ticket = _office_meeting_ticket(
-            self.env, channel_id, key_version, account_bi, actor)
+            self.env, channel_id, key_version, account_bi, actor, session_id)
         return {
             "room": room,
             "passphrase": await _chat_channel_passphrase(
@@ -11457,6 +11472,22 @@ def _request_account_session_token(request, payload=None):
             _cookie_value(request, ACCOUNT_SESSION_COOKIE), 512
         ).strip()
     return token, cookie_auth
+
+
+def _request_account_session_id(request, payload=None):
+    """Return the opaque id carried by this request's account-session token.
+
+    Callers must first validate the token through ``_account_session_record``.
+    Parsing the already-validated request again avoids a second D1 lookup while
+    still binding a short-lived Office ticket to the exact revocable session.
+    """
+    try:
+        token, _cookie_auth = _request_account_session_token(request, payload)
+    except Exception:
+        return ""
+    match = ACCOUNT_SESSION_TOKEN_RE.fullmatch(
+        clean_string(token or "", 512).strip())
+    return match.group(1) if match else ""
 
 
 async def _account_session_lookup(env, token, touch=True):
@@ -35919,11 +35950,13 @@ class ForkMeshOfficeRoom(DurableObject):
             rate_start=now,
             rate_count=0,
             account_bi=claim.get("account_bi", ""),
+            session_id=claim.get("session_id", ""),
             scope=scope,
             version=int(version_raw),
             trusted_name=claim.get("name", ""),
             trusted_status=claim.get("accountStatus", "Guest"),
             ticket_nonce=ticket_nonce,
+            auth_checked_at=now,
         )
         self._safe_send(server, {
             "type": "welcome",
@@ -35959,6 +35992,9 @@ class ForkMeshOfficeRoom(DurableObject):
         account_bi = str(claim.get("account_bi") or "")
         if not re.fullmatch(r"[0-9a-f]{64}", account_bi):
             return None
+        session_id = str(claim.get("session_id") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", session_id):
+            return None
         try:
             version = int(claim.get("version") or 0)
         except (TypeError, ValueError):
@@ -35977,6 +36013,7 @@ class ForkMeshOfficeRoom(DurableObject):
             "scope": scope,
             "version": version,
             "account_bi": account_bi,
+            "session_id": session_id,
             "name": trusted["name"] if claim.get("name") else "",
             "accountStatus": trusted["accountStatus"],
             "nonce": nonce,
@@ -35989,11 +36026,14 @@ class ForkMeshOfficeRoom(DurableObject):
         }
 
     def _save_socket(self, ws, state, last, rate_start, rate_count,
-                     departed=False, account_bi=None, scope=None, version=None,
+                     departed=False, account_bi=None, session_id=None,
+                     scope=None, version=None,
                      trusted_name=None, trusted_status=None,
-                     ticket_nonce=None):
+                     ticket_nonce=None, auth_checked_at=None):
         if account_bi is None:
             account_bi = _ws_attr(ws, "account_bi", "")
+        if session_id is None:
+            session_id = _ws_attr(ws, "session_id", "")
         if scope is None:
             scope = _ws_attr(ws, "scope", "")
         if version is None:
@@ -36004,9 +36044,16 @@ class ForkMeshOfficeRoom(DurableObject):
             trusted_status = _ws_attr(ws, "trusted_status", "Guest")
         if ticket_nonce is None:
             ticket_nonce = _ws_attr(ws, "ticket_nonce", "")
+        if auth_checked_at is None:
+            auth_checked_at = _ws_attr(ws, "auth_checked_at", 0)
         record = {
             **world_protocol.public_office_presence(state),
             "account_bi": str(account_bi or ""),
+            "session_id": (
+                str(session_id)
+                if re.fullmatch(
+                    r"[A-Za-z0-9_-]{24,64}", str(session_id or ""))
+                else ""),
             "scope": str(scope or ""),
             "version": int(version or 0),
             "trusted_name": str(trusted_name or ""),
@@ -36017,6 +36064,7 @@ class ForkMeshOfficeRoom(DurableObject):
                     r"[A-Za-z0-9_-]{8,32}",
                     str(ticket_nonce or ""))
                 else ""),
+            "auth_checked_at": int(auth_checked_at or 0),
             "last": int(last or 0),
             "rl_start": int(rate_start or 0),
             "rl_count": int(rate_count or 0),
