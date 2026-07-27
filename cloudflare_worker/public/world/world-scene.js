@@ -9122,9 +9122,12 @@ export function createWorldScene({
     chair.position.set(x, officeFloorY("marketing"), z);
     chair.rotation.y = yaw;
     chair.userData.officeChairId = chairId;
+    chair.userData.officeFloorId = "marketing";
+    chair.userData.officeSeatTopY = OFFICE_CHAIR_SEAT_TOP_Y;
     chair.traverse((child) => {
       if (!child.isMesh) return;
       child.userData.officeChairId = chairId;
+      child.userData.officeFloorId = "marketing";
       child.userData.interactive = "office-chair";
       interactive.push(child);
     });
@@ -10686,6 +10689,10 @@ export function createWorldScene({
     return {
       position: chair.position.clone(),
       yaw: chair.rotation.y,
+      floorId: String(chair.userData.officeFloorId || "marketing"),
+      seatTopY:
+        Number(chair.userData.officeSeatTopY) ||
+        OFFICE_CHAIR_SEAT_TOP_Y,
     };
   }
 
@@ -10697,10 +10704,16 @@ export function createWorldScene({
     }
     const seatPoint = chair.getWorldPosition(new THREE.Vector3());
     player.parent?.worldToLocal?.(seatPoint);
+    const floorId = String(
+      chair.userData.officeFloorId || "marketing",
+    );
+    const seatTopY =
+      Number(chair.userData.officeSeatTopY) ||
+      OFFICE_CHAIR_SEAT_TOP_Y;
     player.position.set(
       seatPoint.x,
       seatedAvatarY(
-        officeFloorY("marketing") + OFFICE_CHAIR_SEAT_TOP_Y,
+        officeFloorY(floorId) + seatTopY,
         player.scale.x,
       ),
       seatPoint.z,
@@ -10722,10 +10735,12 @@ export function createWorldScene({
 
   function sitOnOfficeChair(chairId) {
     const normalized = String(chairId || "");
+    const chair = officeChairs.get(normalized);
     if (
       officeSceneMode !== "lobby" ||
-      officeCurrentFloorId !== "marketing" ||
-      !officeChairs.has(normalized)
+      !chair ||
+      String(chair.userData.officeFloorId || "marketing") !==
+        officeCurrentFloorId
     ) {
       return false;
     }
@@ -15745,12 +15760,15 @@ export function createWorldScene({
     if (hit?.object?.userData?.interactive === "office-chair") {
       if (officeSceneMode === "meeting") {
         onOfficeChairSelect(hit.object.userData.officeChairId);
-      } else if (
-        officeSceneMode === "lobby" &&
-        officeCurrentFloorId === "marketing"
-      ) {
+      } else if (officeSceneMode === "lobby") {
         sitOnOfficeChair(hit.object.userData.officeChairId);
       }
+      return;
+    }
+    if (
+      hit?.object?.userData?.interactive === "office-rooftop-laptop"
+    ) {
+      onOfficeRooftopLaptopSelect();
       return;
     }
     const chestControl = hit?.object ? chestControls.get(hit.object) : null;
