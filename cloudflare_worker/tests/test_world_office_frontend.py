@@ -103,7 +103,7 @@ def test_office_controller_exposes_deliberate_entry_and_exit_lifecycle():
         "function completeOfficeExit",
         "function destroy",
         'world.focusLandmark("office")',
-        "world.enterOffice()",
+        "world.enterOffice({ source })",
         "world.beginOfficeExit?.()",
         "world.setOfficeExitHandler?.(completeOfficeExit)",
     ):
@@ -206,11 +206,42 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
         'context.fillText("USER"',
         'context.fillText("IN"',
         'context.fillText("OUT"',
+        'context.fillText("TOTAL"',
         "visit?.inAt",
         "visit?.outAt",
+        "visit?.durationMs",
+        "officeAttendanceDurationLabel",
+        "updateOfficeAttendanceClock",
+        "Math.floor(elapsedMs / 30_000)",
         "IN BUILDING",
     ):
         assert contract in scene
+
+
+def test_attendance_duration_labels_are_compact_and_reject_bad_values():
+    script = f"""
+      import {{ officeAttendanceDurationLabel }} from {
+          json.dumps(SCENE_PATH.as_uri())
+      };
+      process.stdout.write(JSON.stringify([
+        officeAttendanceDurationLabel(null),
+        officeAttendanceDurationLabel(-1),
+        officeAttendanceDurationLabel(0),
+        officeAttendanceDurationLabel(59_999),
+        officeAttendanceDurationLabel(60_000),
+        officeAttendanceDurationLabel(3_720_000),
+        officeAttendanceDurationLabel(90_000_000),
+      ]));
+    """
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert json.loads(result.stdout) == [
+        "—", "—", "0m", "0m", "1m", "1h 02m", "1d 01h",
+    ]
 
 
 def test_floor_access_is_loaded_once_and_only_server_grants_unlock_buttons():
@@ -527,8 +558,9 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
         'logoFountain.name = "forkmesh-office-logo-fountain"',
         'chromeCube.name = "forkmesh-reflective-fm-cube"',
         'chromeMark.name = "forkmesh-reflective-fm-cube-fixed-tilt"',
-        "chromeMark.quaternion.identity()",
-        "chromeMark.userData.logoUpright = true",
+        "const logoLowerCorner = new THREE.Vector3(-1, -1, -1).normalize()",
+        "chromeMark.quaternion.setFromUnitVectors(",
+        "logoHalfSize * Math.sqrt(3)",
         "addFLogoFace(2.68, 0)",
         "addFLogoFace(-2.68, Math.PI)",
         "addMLogoFace(2.68, Math.PI / 2)",
@@ -540,6 +572,7 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
         'logoSupport.name = "forkmesh-reflective-fm-cube-support"',
         "new THREE.WebGLCubeRenderTarget(",
         "new THREE.CubeCamera(",
+        "reflectionTarget.texture.mapping = THREE.CubeReflectionMapping",
         "metalness: 0.94",
         "chromeCube.rotation.y = time * 0.00022",
         "reflectionCamera.update(renderer, scene)",
@@ -571,8 +604,8 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
     assert "const logoPanelChrome = chrome.clone()" in scene
     assert "logoPanelChrome.metalness = 0.8" in scene
     assert "logoInnerFace," in logo
-    assert "chromeCube.add(logoSupport)" in logo
-    assert "chromeMark.quaternion.setFromUnitVectors(" not in logo
+    assert "logoFountain.add(logoSupport)" in logo
+    assert "chromeMark.quaternion.identity()" not in logo
     animation = scene[
         scene.index("const logoReflectionSettleMs"):
         scene.index("// One physical selector rides inside")
@@ -585,8 +618,11 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
         "logoReflectionDirty && time >= logoReflectionEligibleAt",
         "logoReflectionEligibleAt = time + logoReflectionSettleMs",
         "player.visible = true",
+        "player.updateWorldMatrix(true, true)",
+        "reflectionCamera.updateWorldMatrix(true, true)",
         "player.visible = playerWasVisible",
         "reflectionCamera.userData.logoCaptureCount += 1",
+        "reflectionCamera.userData.logoCapturedPlayerId",
     ):
         assert contract in scene
 

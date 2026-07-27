@@ -16,7 +16,8 @@ testable without the Cloudflare/Pyodide runtime.
 """
 
 import re
-from email.utils import formatdate
+from datetime import datetime, timezone
+from email.utils import formatdate, parsedate_to_datetime
 from html import unescape as _unescape
 
 
@@ -41,9 +42,12 @@ MAX_CATEGORY = 120
 
 # One feature card on the static blog index. The cards are uniform generated
 # markup: anchor, artwork, meta line, title, then the blurb. The image is
-# optional so a card that ships without art still becomes a feed item.
+# optional so a card that ships without art still becomes a feed item, and
+# data-published (the post's publication day) is optional so an undated card
+# still parses — it simply ships without a pubDate.
 _CARD_RE = re.compile(
-    r'<a class="blog1-card" href="(?P<href>/blog/[^"]+)"[^>]*>'
+    r'<a class="blog1-card" href="(?P<href>/blog/[^"]+)"'
+    r'(?:\s+data-published="(?P<published>[^"]*)")?[^>]*>'
     r'\s*(?:<img[^>]*class="blog1-post-image[^"]*"[^>]*'
     r'src="(?P<image>[^"]*)"[^>]*>)?'
     r'.*?<p class="blog1-card-meta">(?P<meta>.*?)</p>'
@@ -81,6 +85,26 @@ def _absolute(url):
     return ""
 
 
+def published_ms(value):
+    """Epoch milliseconds for a card's ``data-published`` day, or 0.
+
+    Cards stamp the publication day (``YYYY-MM-DD``); the feed needs an
+    instant, so the day is read as midnight UTC. Anything else — a missing
+    attribute, a malformed day — is "unknown" rather than an error, and the
+    item then ships without a pubDate.
+    """
+    match = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", str(value or "").strip())
+    if not match:
+        return 0
+    try:
+        stamp = datetime(
+            int(match.group(1)), int(match.group(2)), int(match.group(3)),
+            tzinfo=timezone.utc)
+    except ValueError:
+        return 0
+    return int(stamp.timestamp() * 1000)
+
+
 def image_mime_type(url):
     lowered = str(url or "").lower().split("?")[0]
     for suffix, mime in _IMAGE_TYPES:
@@ -114,6 +138,7 @@ def parse_blog_index(html):
             "category": _text(match.group("meta"), MAX_CATEGORY),
             "image": _absolute(match.group("image")),
             "url": _absolute(href),
+            "publishedMs": published_ms(match.group("published")),
         })
         if len(entries) >= FEED_LIMIT:
             break
@@ -134,6 +159,11 @@ def _item_xml(entry):
     ]
     if category:
         parts.append("      <category>%s</category>" % escape_xml(category))
+    stamp = int(entry.get("publishedMs") or 0)
+    if stamp > 0:
+        parts.append(
+            "      <pubDate>%s</pubDate>"
+            % formatdate(stamp / 1000.0, usegmt=True))
     parts.append("      <description>%s</description>" % summary)
     if image:
         safe = escape_xml(image)
@@ -168,16 +198,21 @@ def _item_xml(entry):
 def render_rss(entries, built_ms=0):
     """Render the RSS 2.0 document for parsed index entries.
 
-    The static feature posts carry no publication dates, so items ship
-    without pubDate and the channel's lastBuildDate stamps the read.
+    Each dated entry ships its own pubDate, the channel's pubDate is the
+    newest of them (readers and the world's blog board take that as "last
+    posted"), and lastBuildDate stamps the read.
     """
     try:
         stamp = float(built_ms) / 1000.0
     except (TypeError, ValueError):
         stamp = 0.0
     built = formatdate(stamp if stamp > 0 else None, usegmt=True)
-    items = [_item_xml(entry) for entry in (entries or [])
-             if isinstance(entry, dict)]
+    dated = [entry for entry in (entries or []) if isinstance(entry, dict)]
+    items = [_item_xml(entry) for entry in dated]
+    newest = max([int(entry.get("publishedMs") or 0) for entry in dated] or [0])
+    channel_published = (
+        "    <pubDate>%s</pubDate>" % formatdate(newest / 1000.0, usegmt=True)
+        if newest > 0 else "")
     return "\n".join([
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"'
@@ -188,6 +223,7 @@ def render_rss(entries, built_ms=0):
         "    <link>%s</link>" % escape_xml(BLOG_URL),
         "    <description>%s</description>" % escape_xml(FEED_DESCRIPTION),
         "    <language>%s</language>" % FEED_LANGUAGE,
+        channel_published,
         "    <lastBuildDate>%s</lastBuildDate>" % built,
         "    <generator>ForkMesh</generator>",
         '    <atom:link href="%s" rel="self" type="application/rss+xml"/>'
@@ -220,6 +256,17 @@ def _tag_text(item, tag):
     return _text(match.group(1), MAX_SUMMARY)
 
 
+def _rfc822_ms(value):
+    """Epoch milliseconds for a feed pubDate, or 0 when it is unreadable."""
+    raw = str(value or "").strip()
+    if not raw:
+        return 0
+    try:
+        return int(parsedate_to_datetime(raw).timestamp() * 1000)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def parse_rss(xml):
     """Read our own feed document back into the entry shape.
 
@@ -242,6 +289,7 @@ def parse_rss(xml):
             "category": _tag_text(item, "category")[:MAX_CATEGORY],
             "image": _unescape(enclosure.group("url")) if enclosure else "",
             "url": url,
+            "publishedMs": _rfc822_ms(_tag_text(item, "pubDate")),
         })
         if len(entries) >= FEED_LIMIT:
             break
