@@ -3225,6 +3225,12 @@ test("Local controls carry Work and Security tabs instead of a session card", as
     accountSessionFixture,
   });
   await waitForWorld(page);
+  // The owner-only avatar plate carries assigned work, never a session card.
+  const board = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.setSelfWorkBoard({}),
+  );
+  expect(board.state).toBe("locked");
+
   await page.locator("[data-world-settings-open]").first().click();
   await expect(page.locator("[data-world-settings]")).toHaveAttribute(
     "data-open",
@@ -3277,11 +3283,6 @@ test("Local controls carry Work and Security tabs instead of a session card", as
   ).toBeVisible();
   await expect(page.locator("[data-world-work-active]")).toHaveText("1");
 
-  // The owner-only avatar plate carries the same work, never a session card.
-  const board = await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.world.setSelfWorkBoard({}),
-  );
-  expect(board.state).toBe("locked");
 });
 
 
