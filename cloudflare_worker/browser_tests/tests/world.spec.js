@@ -2099,13 +2099,16 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
       "forkmesh-office-interior"
     );
     const cameraPosition = interior.localToWorld(
-      shell.world.camera.position.clone().set(-15, 15, 1)
+      shell.world.camera.position.clone().set(-9, 11, 9)
     );
     const target = interior.localToWorld(
-      shell.world.camera.position.clone().set(-18, 7.5, -2)
+      shell.world.camera.position.clone().set(-18, 7.2, -2)
     );
+    shell.world.scene.getObjectByName(
+      "forkmesh-reflective-fm-cube"
+    ).rotation.y = Math.PI;
     shell.world.setPaused(true);
-    shell.world.camera.fov = 70;
+    shell.world.camera.fov = 50;
     shell.world.camera.updateProjectionMatrix();
     shell.world.camera.position.copy(cameraPosition);
     shell.world.camera.lookAt(target);
