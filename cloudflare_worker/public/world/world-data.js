@@ -42,6 +42,7 @@ export const LANDMARKS = [
     bullets: [
       "One named bench per public registered account, kept for the whole session and left visibly empty while its owner is out walking the world.",
       "Guests, and members the directory has not caught up with, take the open benches the circle always keeps free.",
+      "The ring always leaves a doorway-wide gap facing the town, so anyone can walk in to the fire and back out without stepping over a bench.",
       "Private profiles and hidden-name visitors are never given a named bench.",
       "The seated pose is held until you move, so any movement key stands you back up.",
     ],

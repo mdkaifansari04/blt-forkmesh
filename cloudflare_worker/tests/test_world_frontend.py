@@ -1882,7 +1882,11 @@ def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
     assert '"OUT AND ABOUT"' in SCENE
     assert "campfire.userData.seatByName" in SCENE
     assert "noteDirectoryMembers" in APP
-    assert "(count * CAMPFIRE_SEAT_SPACING) / (2 * Math.PI)" in SCENE
+    # The ring's arc carries the seats plus the walk-in gap (adhoc #430).
+    assert (
+        "(count * CAMPFIRE_SEAT_SPACING + CAMPFIRE_ENTRANCE_WIDTH) / (2 * Math.PI)"
+        in SCENE
+    )
     assert '"sitting around the campfire"' in SCENE
     # Figures and idle live avatars both face the pit at the circle's centre.
     # Avatar fronts face local -Z, so the inward heading is atan2(x, z) — the
