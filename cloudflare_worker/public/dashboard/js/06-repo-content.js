@@ -540,6 +540,20 @@
     }
   }
 
+  function renderIssueTimelineComment(ev) {
+    const who = ev.authorName || ev.author || "unknown";
+    const when = formatRecordDate(ev.ts);
+    const body = String(ev.body || "").trim();
+    return `
+      <div class="border-t border-border px-4 py-3 text-sm first:border-t-0">
+        <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span class="font-medium text-foreground">${escapeHtml(who)}</span>
+          <span>commented</span><span>&middot;</span><span>${escapeHtml(when)}</span>
+        </div>
+        ${body ? `<div class="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">${escapeHtml(body)}</div>` : ""}
+      </div>`;
+  }
+
   // Full issue activity timeline: comment events render as bodied cards and
   // every other event as an activity line, in chronological order, so the
   // detail view shows every action stored in the issue JSON (adhoc #45). The
@@ -559,15 +573,7 @@
       const when = formatRecordDate(ev.ts);
       if (ev.type === "comment") {
         if (deletedComments.has(ev.id)) continue;
-        const body = String(ev.body || "").trim();
-        items.push(`
-          <div class="border-t border-border px-4 py-3 text-sm first:border-t-0">
-            <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <span class="font-medium text-foreground">${escapeHtml(who)}</span>
-              <span>commented</span><span>&middot;</span><span>${escapeHtml(when)}</span>
-            </div>
-            ${body ? `<div class="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">${escapeHtml(body)}</div>` : ""}
-          </div>`);
+        items.push(renderIssueTimelineComment(ev));
         continue;
       }
       items.push(`
@@ -1324,6 +1330,23 @@
     }).filter(Boolean);
   }
 
+  function renderIssueCommentForm(number) {
+    if (!state.session?.nodeName) {
+      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to comment on this issue.</div>`;
+    }
+    return `
+      <form data-repo-issue-comment-form data-repo-issue-comment-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
+        ${composeIdentityHtml(state.session, "Commenting")}
+        <label class="grid gap-1 text-xs font-medium text-muted-foreground">Comment
+          <textarea data-repo-issue-comment-body rows="3" placeholder="Leave a comment. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
+        </label>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <span data-repo-issue-comment-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+          <button type="submit" data-repo-issue-comment-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Comment</button>
+        </div>
+      </form>`;
+  }
+
   function renderDiscussionReplyForm(number) {
     if (!state.session?.nodeName) {
       return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to reply to this discussion.</div>`;
@@ -1541,9 +1564,17 @@
     const metadata = recordDetailMeta(kind, values);
     const pendingNotice = options.pending ? `
         <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is still syncing to the maintainer's inbox and hasn't been drained to the public mirror yet, so it doesn't have a number assigned.</div>` : "";
-    const issueTimeline = (!isPulls && !isDiscussions) ? renderIssueTimeline(parsed.issueEvents) : "";
-    const issueTimelineSection = issueTimeline
-      ? `<div data-repo-issue-timeline class="border-t border-border">${issueTimeline}</div>`
+    const isIssues = !isPulls && !isDiscussions;
+    const issueTimeline = isIssues ? renderIssueTimeline(parsed.issueEvents) : "";
+    // Always mount the timeline container for issues so a comment posted from
+    // the form below has somewhere to land, but keep it borderless while empty.
+    const issueTimelineSection = isIssues
+      ? `<div data-repo-issue-timeline data-empty="${issueTimeline ? "false" : "true"}" class="${issueTimeline ? "border-t border-border" : ""}">${issueTimeline}</div>`
+      : "";
+    // A pending issue is still in the maintainer's inbox and has no number yet,
+    // so there's nothing for a comment's signature to bind to.
+    const issueCommentSection = isIssues && !options.pending
+      ? renderIssueCommentForm(number)
       : "";
     const pullPatch = parsed.pullPatch || { patch: "", files: [], unavailable: false };
     const pullConversation = parsed.pullConversation || [];
@@ -1616,6 +1647,7 @@
                 </div>
                 <div data-repo-record-body class="whitespace-pre-wrap px-4 py-4 text-sm leading-6 text-foreground">${escapeHtml(body)}</div>
                 ${issueTimelineSection}
+                ${issueCommentSection}
                 ${pullConversationSection}
               </section>`}
             <section class="overflow-hidden rounded-lg border border-border" data-repo-federated-thread>

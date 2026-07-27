@@ -45,6 +45,13 @@ struct AgentDiffStat {
     // True when re-merging the base branch into this session's branch would
     // conflict (adhoc #229) — surfaced as a conflict marker in the agents list.
     bool conflicted = false;
+    // Working-copy state of the session's own worktree (adhoc #403), surfaced on
+    // the Status cell's branch chip: `worktree` is the dedicated checkout's path
+    // ("" when the session has none left), and `dirty` counts the entries
+    // `git status --porcelain` reports there (-1 when there was no worktree to
+    // ask, 0 when it is clean).
+    QString worktree;
+    int dirty = -1;
 };
 
 #include <QElapsedTimer>
@@ -275,7 +282,16 @@ public:
     {
         m_homeRoster.clear();
         m_removedPeerIds.clear();
+        m_peerLastSeenMs.clear();
     }
+    // Backdates every remembered sighting by `ageMs` so a test can exercise the
+    // idle-visitor sweep without waiting ten real minutes (adhoc #404).
+    void testAgePeerSightings(qint64 ageMs)
+    {
+        for (auto it = m_peerLastSeenMs.begin(); it != m_peerLastSeenMs.end(); ++it)
+            *it -= ageMs;
+    }
+    QList<MemberInfo> testHomeRoster() const { return m_homeRoster; }
     // Sets the live roster directly (skipping setRoster's side effects, e.g.
     // refreshRepositoryList's node-switcher bookkeeping) and rebuilds the Mirror
     // nodes panel, so a test can exercise loadMirrorNodesPanel's row-building
@@ -516,6 +532,10 @@ public:
         return markAgentSessionsMerged(0, branch);
     }
     QString testAgentStatusCellText(int sessionId) const;
+    // adhoc #403: the badge data the Status cell hands its branch chip, read back
+    // as "files|dirty|worktree", so a test can prove the chip's files-changed /
+    // uncommitted / worktree-present markers are fed from the session's diff stat.
+    QString testAgentStatusCellBadges(int sessionId, const AgentDiffStat &stat) const;
     bool testAgentSessionMerged(int sessionId) const;
 #endif
 
@@ -1832,6 +1852,16 @@ private:
     // m_agentSessions.size().
     void updateAgentsNavBadge();
     void processAgentQueue();
+    // Re-drain the queue after a slot frees, coalesced onto the event loop and
+    // skipped unless something is queued AND there is room to start it.
+    void scheduleAgentQueuePump();
+    // How many sessions currently hold one of the maxRunningAgents() slots
+    // (adhoc #433): our own, unmerged, actively-executing ones.
+    int runningAgentCount() const;
+    // The running/waiting/queued sessions "Stop all" acts on, across all repos.
+    QList<int> stoppableAgentSessionIds() const;
+    // Stop every session above and clear the pending queue (adhoc #433).
+    void stopAllRunningAgents();
     // Returns the pooled runner currently executing sessionId, or nullptr.
     AgentRunner *runnerForSession(int sessionId) const;
     // Returns an idle pooled runner, creating (and wiring) a new one if needed.
@@ -2021,6 +2051,11 @@ private:
     void approveSelectedRun();
     void rejectSelectedRun();
     ActionRun *findRun(int runId);
+    // Whether a queued run's `needs:` workflows have already succeeded for the
+    // same commit. Waiting runs stay queued; blocked ones are skipped.
+    ActionNeeds::State actionRunNeedsState(int runId, QString *detail);
+    // Log "waiting for X" once per queued run, not on every queue sweep.
+    void noteActionRunWaiting(int runId, const QString &detail);
     int repoIndexFor(const QString &owner, const QString &name) const;
     // Settings: global variables/secrets editor.
     void reloadVariablesTable();
@@ -4760,6 +4795,7 @@ private:
     QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
+    QSet<int> m_actionWaitingRuns;   // queued ids already logged as `needs:`-blocked
     // The encrypted mirror materialization a run is executing out of (see
     // pinActionMirror). Held until the run finishes so a concurrent re-seal
     // cannot delete the served mirror mid-build.
@@ -4859,6 +4895,9 @@ private:
     QList<AgentRunner *> m_agentRunners;
     QList<AgentSession> m_agentSessions;
     QList<int> m_agentQueue;
+    // Guards scheduleAgentQueuePump()'s zero-timer against piling up one pump
+    // per status/reload hook in a burst.
+    bool m_agentQueuePumpScheduled = false;
     // True while runDeferredStartup() drains the sessions initAgents() re-queued
     // after an app restart: resumed runs must NOT jump to the Agents tab the way
     // a fresh user-driven start does. At startup that jump forced a full cold
@@ -5310,6 +5349,9 @@ private:
     // by path. Used by the quick-add image paste/attach path (issue #79).
     QString saveNewAgentPromptImage(const QImage &image);
     QPushButton *m_agentStopButton = nullptr;
+    // Above the session list: stop every running agent and cancel the queue
+    // (adhoc #433).
+    QPushButton *m_agentStopAllButton = nullptr;
     QPushButton *m_agentFixConflictsButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
@@ -5694,6 +5736,12 @@ private:
     QTimer *m_chatDirectoryTimer = nullptr;
     bool m_chatDirectoryLoaded = false; // first fill done (may legitimately be empty)
     QSet<QString> m_removedPeerIds;  // IDs explicitly removed via removeChatMember
+    // When each roster peer was last seen live, so guests and World visitors
+    // (throwaway browser sessions) are forgotten after ChatVisitorPresence::
+    // kVisitorIdleMs of silence instead of being retained as dead offline rows
+    // the way a real node or account is (adhoc #404). Pruned to the current
+    // roster on every update, so it can't outgrow it.
+    QHash<QString, qint64> m_peerLastSeenMs;
     // True once this node has posted (or confirmed it already posted) its one-time
     // welcome greeting this run, so the per-roster check stays cheap (issue #192).
     bool m_welcomeAnnounced = false;

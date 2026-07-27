@@ -73,6 +73,11 @@ const CHAT_ACTIVITY_SEEN_KEY = "forkmesh.chat.activitySeen";
 // line — an account merely missing from the previous (top-1000) page isn't news.
 const NEW_USER_ANNOUNCE_WINDOW_MS = 10 * 60 * 1000;
 const PEER_STALE_MS = 180000;
+// Guests and World visitors are throwaway browser sessions: their id dies with
+// the tab, so an offline row for one can never come back and the pane filled up
+// with dozens of dead "Guest ####" people. Forget them after this much silence
+// (registered accounts and nodes still keep their offline row) — adhoc #404.
+const VISITOR_IDLE_FORGET_MS = 10 * 60 * 1000;
 const GROUP_WINDOW_MS = 5 * 60 * 1000; // same-sender messages collapse under one header
 const REACTION_EMOJI = ["👍", "❤️", "😂", "🎉", "👀", "🚀"];
 const ACTIVE_CHANNEL_KEY = "forkmesh.chat.channel";
@@ -1259,6 +1264,27 @@ function personIsOnline(person) {
   return person.lastSeenMs > 0 && Date.now() - person.lastSeenMs <= PEER_STALE_MS;
 }
 
+// An anonymous guest, or a World visitor from an older client that still
+// prefixes its asserted name. Never a registered account or a node.
+function personIsTransientVisitor(person) {
+  if (!person || person.id === selfId) return false;
+  if (person.kind === "guest") return true;
+  return /^\s*(guest\b|world\s+guest\b|world\s+visitor\b)/i.test(
+    String(person.name || ""),
+  );
+}
+
+// Drop visitors that have gone quiet (or said "bye", which zeroes lastSeenMs),
+// so the people pane only keeps rows that can still come back.
+function forgetIdleVisitors() {
+  const cutoff = Date.now() - VISITOR_IDLE_FORGET_MS;
+  for (const [id, person] of [...roster]) {
+    if (!personIsTransientVisitor(person)) continue;
+    if (person.lastSeenMs > cutoff) continue;
+    roster.delete(id);
+  }
+}
+
 // ---- registered-user directory ------------------------------------------------
 // The room roster only knows senders it has decrypted frames from, so a user
 // who signed up on the website but never opened chat was invisible here. Merge
@@ -1395,6 +1421,9 @@ async function markChatActivitySeen() {
 
 function renderPeople() {
   if (!peopleEl) return;
+  // Sweep expired visitors first (this also runs on a 30s timer, so they clear
+  // even in a silent room).
+  forgetIdleVisitors();
   peopleEl.textContent = "";
   // Collapse multiple entries for the same person into one row: a person can
   // surface under several ids (history-replayed old senderIds, or the same

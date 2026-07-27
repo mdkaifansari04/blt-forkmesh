@@ -136,7 +136,8 @@ def test_entry_is_walk_through_for_everyone_and_the_keypad_protocol_is_absent():
         'const OFFICE_ENTRY_PATH = "/api/world/office/general/entry"',
         'const OFFICE_FLOORS_PATH = "/api/world/office/floors"',
         "function authenticatedSession()",
-        "const entered = completeOfficeEntry()",
+        "const entered = completeOfficeEntry({",
+        "loadPublicAttendance: !activeSession",
         "void refreshOfficeAuthorization(",
         "async function authorizeMeeting()",
         "meeting.openLobby()",
@@ -168,6 +169,18 @@ def test_entrance_uses_two_proximity_sliding_panels_without_a_hinged_door():
         "THREE.MathUtils.lerp(",
     ):
         assert contract in scene
+    door_material = scene[
+        scene.index('const doorMaterial = makeMaterial(THREE, "#c9fff3"'):
+        scene.index("const elevatorFacadeMinX")
+    ]
+    for contract in (
+        "transparent: true",
+        "opacity: 0.3",
+        "metalness: 0",
+        "roughness: 0.38",
+        "depthWrite: false",
+    ):
+        assert contract in door_material
     assert "forkmesh-office-door-pivot" not in scene
     assert "officeInteriorDoorPivot" not in scene
 
@@ -178,9 +191,12 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
     for contract in (
         'const OFFICE_ATTENDANCE_PATH = "/api/world/office/attendance"',
         "async function loadAttendance()",
-        "function recordAttendance(direction)",
+        "function recordAttendance(",
         "visits.slice(0, 20)",
-        "void loadAttendance()",
+        "if (loadPublicAttendance) void loadAttendance()",
+        "loadPublicAttendance: !activeSession",
+        "loadPublicFallback: true",
+        "generation === authorizationGeneration",
         'const action = direction === "out" ? "out" : "in"',
         "attendanceWrite = attendanceWrite",
     ):
@@ -190,11 +206,42 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
         'context.fillText("USER"',
         'context.fillText("IN"',
         'context.fillText("OUT"',
+        'context.fillText("TOTAL"',
         "visit?.inAt",
         "visit?.outAt",
+        "visit?.durationMs",
+        "officeAttendanceDurationLabel",
+        "updateOfficeAttendanceClock",
+        "Math.floor(elapsedMs / 30_000)",
         "IN BUILDING",
     ):
         assert contract in scene
+
+
+def test_attendance_duration_labels_are_compact_and_reject_bad_values():
+    script = f"""
+      import {{ officeAttendanceDurationLabel }} from {
+          json.dumps(SCENE_PATH.as_uri())
+      };
+      process.stdout.write(JSON.stringify([
+        officeAttendanceDurationLabel(null),
+        officeAttendanceDurationLabel(-1),
+        officeAttendanceDurationLabel(0),
+        officeAttendanceDurationLabel(59_999),
+        officeAttendanceDurationLabel(60_000),
+        officeAttendanceDurationLabel(3_720_000),
+        officeAttendanceDurationLabel(90_000_000),
+      ]));
+    """
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert json.loads(result.stdout) == [
+        "—", "—", "0m", "0m", "1m", "1h 02m", "1d 01h",
+    ]
 
 
 def test_floor_access_is_loaded_once_and_only_server_grants_unlock_buttons():
@@ -351,16 +398,26 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
     ):
         assert hard_snap not in prepare
 
-    # The threshold helper converts the live avatar's world pose into Office
-    # coordinates. It keeps the crossing beside the physical entrance instead
-    # of spawning the visitor deep inside the lobby.
+    # The threshold helper is now a pure coordinate conversion. The mode
+    # handoff may normalize floor height, but must preserve the doorway's exact
+    # physical X/Z instead of staging a second inward teleport.
     assert "worldToLocal" in local_position
-    assert "OFFICE_FRONT_Z" in local_position
-    assert re.search(
-        r"OFFICE_(?:AVATAR_RADIUS|INTERIOR_(?:EXIT_Z|WALL_LIMIT))",
-        local_position,
-    )
+    assert "target.x =" not in local_position
+    assert "target.z =" not in local_position
     assert "officeAvatarLocalPosition(" in enter
+    threshold_handoff = enter[
+        enter.index("if (enteringFromTown)"):
+        enter.index("} else if (meetingAvatar)")
+    ]
+    assert "localPosition.y = currentFloorY" in threshold_handoff
+    assert "localPosition.x =" not in threshold_handoff
+    assert "localPosition.z =" not in threshold_handoff
+    assert "OFFICE_INTERIOR_WALL_LIMIT - 0.72" not in enter
+
+    collision = function_body(scene, "constrainOfficeInteriorWalls")
+    assert "const movingOutward =" in collision
+    assert "movingOutward &&" in collision
+    assert "z <= OFFICE_DOORWAY_ENTRY_Z + 0.08" in collision
 
     # Entry continues with the same player object. A second local avatar, a
     # forced camera mode, or rewritten orbit state would read as a scene cut.
@@ -376,6 +433,33 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
         "camera.lookAt",
     ):
         assert swap_or_snap not in enter
+
+
+def test_lobby_camera_clamp_has_one_strict_open_door_portal():
+    scene = source(SCENE_PATH)
+    limit = function_body(scene, "officeCameraDistanceLimit")
+
+    # Only an outward ray through the open lobby aperture may omit the front-Z
+    # face. Its real width and sill/lintel are checked at the front plane.
+    for contract in (
+        "const rawFrontDistance =",
+        "(OFFICE_FRONT_Z - localTarget.z) / frontDirection",
+        'officeCurrentFloorId === "lobby"',
+        "officeSlidingDoorOpen >= 0.9",
+        "Math.abs(portalX) <= OFFICE_DOOR_WIDTH / 2 - 0.08",
+        "portalY >= OFFICE_DOOR_SILL_Y + 0.08",
+        "OFFICE_DOOR_SILL_Y + OFFICE_DOOR_HEIGHT - 0.08",
+        'axis === "z"',
+        "component > 0",
+        "rayThroughOpenLobbyPortal",
+    ):
+        assert contract in limit
+
+    # All other envelope faces remain in the ray/AABB calculation.
+    for axis in ('["x", "minX", "maxX"]', '["y", "minY", "maxY"]',
+                 '["z", "minZ", "maxZ"]'):
+        assert axis in limit
+    assert "ridingElevator" in limit
 
 
 def test_office_walkers_share_world_movement_tuning_and_heading():
@@ -453,16 +537,17 @@ def test_office_third_person_camera_distance_is_bounded_by_local_geometry():
     assert "return requested;" in limiter[rooftop_bypass:]
 
 
-def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
+def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
     scene = source(SCENE_PATH)
     for contract in (
         'officeReception.name = "forkmesh-office-reception"',
-        'id: "office-greeter-maya"',
         'id: "office-greeter-noah"',
         'receptionDesk.name = "forkmesh-office-reception-desk"',
         "receptionDesk.position.set(0, 1.05, -36.5)",
-        "avatar.position.set(staff.x, 0.38, -40)",
-        "avatar.rotation.y = Math.PI",
+        "officeReceptionNoah.position.set(0, 0.38, -40)",
+        "officeReceptionNoah.rotation.y = Math.PI",
+        'noahNameplate.name = "forkmesh-office-reception-nameplate-noah"',
+        "Walk up to Noah for World and repository tips",
         "WELCOME · WALK RIGHT IN",
         "officeGreetingBoard.position.set(0, 6.25, -OFFICE_FRONT_Z + 0.5)",
         'officeAttendanceBoard.name = "forkmesh-office-attendance"',
@@ -473,7 +558,8 @@ def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
         'logoFountain.name = "forkmesh-office-logo-fountain"',
         'chromeCube.name = "forkmesh-reflective-fm-cube"',
         'chromeMark.name = "forkmesh-reflective-fm-cube-fixed-tilt"',
-        "chromeMark.quaternion.setFromUnitVectors(",
+        "chromeMark.quaternion.identity()",
+        "chromeMark.userData.logoUpright = true",
         "addFLogoFace(2.68, 0)",
         "addFLogoFace(-2.68, Math.PI)",
         "addMLogoFace(2.68, Math.PI / 2)",
@@ -485,14 +571,17 @@ def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
         'logoSupport.name = "forkmesh-reflective-fm-cube-support"',
         "new THREE.WebGLCubeRenderTarget(",
         "new THREE.CubeCamera(",
-        "metalness: 1",
+        "reflectionTarget.texture.mapping = THREE.CubeReflectionMapping",
+        "metalness: 0.94",
         "chromeCube.rotation.y = time * 0.00022",
         "reflectionCamera.update(renderer, scene)",
     ):
         assert contract in scene
+    assert "office-greeter-maya" not in scene.lower()
+    assert "maya and noah" not in scene.lower()
     logo = scene[
         scene.index('chromeCube.name = "forkmesh-reflective-fm-cube"'):
-        scene.index("let lastLogoReflectionAt")
+        scene.index("let officeLobbyPlayerMoving")
     ]
     assert "const cubeBody" not in logo
     assert "new THREE.BoxGeometry(5.6, 5.6, 5.6" not in logo
@@ -507,15 +596,172 @@ def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
         scene.index("const chrome = new THREE.MeshPhysicalMaterial"):
         scene.index("const darkChrome")
     ]
-    assert 'color: "#aeb9c8"' in chrome_material
-    assert "metalness: 1" in chrome_material
+    assert 'color: "#dbe4ef"' in chrome_material
+    assert "metalness: 0.94" in chrome_material
     assert "envMap: reflectionTarget.texture" in chrome_material
+    assert "const logoLetterStroke = 1.04" in logo
+    assert "const logoPanelChrome = chrome.clone()" in scene
+    assert "logoPanelChrome.metalness = 0.8" in scene
+    assert "logoInnerFace," in logo
+    assert "chromeCube.add(logoSupport)" in logo
+    assert "chromeMark.quaternion.setFromUnitVectors(" not in logo
     animation = scene[
-        scene.index("const logoReflectionIntervalMs"):
+        scene.index("const logoReflectionSettleMs"):
         scene.index("// One physical selector rides inside")
     ]
     assert "chromeMark.rotation" not in animation
     assert "chromeMark.quaternion" not in animation
+    assert "logoReflectionIntervalMs" not in animation
+    for contract in (
+        'reflectionCamera.userData.logoCapturePolicy = "dirty-idle-once"',
+        "logoReflectionDirty && time >= logoReflectionEligibleAt",
+        "logoReflectionEligibleAt = time + logoReflectionSettleMs",
+        "player.visible = true",
+        "player.updateWorldMatrix(true, true)",
+        "reflectionCamera.updateWorldMatrix(true, true)",
+        "player.visible = playerWasVisible",
+        "reflectionCamera.userData.logoCaptureCount += 1",
+        "reflectionCamera.userData.logoCapturedPlayerId",
+    ):
+        assert contract in scene
+
+
+def test_noah_reuses_local_chat_bubbles_with_hysteresis_and_no_frame_spam():
+    scene = source(SCENE_PATH)
+    guide = function_body(scene, "updateOfficeReceptionGuide")
+    bubble = function_body(scene, "showAvatarChatBubble")
+    animate = function_body(scene, "animate")
+
+    for contract in (
+        'officeSceneMode === "lobby"',
+        'officeCurrentFloorId === "lobby"',
+        "officeReceptionDeskDistance(",
+        "OFFICE_RECEPTION_RESET_RANGE",
+        "OFFICE_RECEPTION_TALK_RANGE",
+        "officeReceptionWasNear",
+        "OFFICE_RECEPTION_TALK_COOLDOWN_MS",
+        "officeFloorAccess.authenticated === true",
+        "OFFICE_RECEPTION_GUEST_TIPS",
+        "OFFICE_RECEPTION_MEMBER_TIPS",
+        "showAvatarChatBubble(",
+        "{ officeReception: true }",
+    ):
+        assert contract in guide
+    assert "updateOfficeReceptionGuide(time)" in animate
+    assert "sprite.userData.officeReceptionGreeting" in bubble
+    assert "world.add(sprite)" in bubble
+    # This stays entirely scene-local; approaching a desk never emits presence,
+    # analytics, attendance, or room messages.
+    for forbidden in (
+        "fetch(",
+        "onMovement(",
+        "onOfficeMovement(",
+        "onWorldEvent",
+        "onOfficeEnter(",
+    ):
+        assert forbidden not in guide
+    guest_tips = scene[
+        scene.index("const OFFICE_RECEPTION_GUEST_TIPS"):
+        scene.index("const OFFICE_RECEPTION_MEMBER_TIPS")
+    ].lower()
+    assert "log in" in guest_tips
+    assert "restricted team floors" in guest_tips
+    assert "lobby is open to everyone" in guest_tips
+
+    # Noah is nested under officeInterior. Shared bubble animation must resolve
+    # the speaker's world transform rather than copying that local position.
+    emote_loop = scene[
+        scene.index("for (let index = emoteSprites.length - 1"):
+        scene.index("for (let index = rewardFlights.length - 1")
+    ]
+    assert "flight.avatar.getWorldPosition(flight.sprite.position)" in emote_loop
+    assert "flight.sprite.position.copy(flight.avatar.position)" not in emote_loop
+
+
+def test_rooftop_furniture_seating_and_real_source_laptop_are_complete():
+    scene = source(SCENE_PATH)
+    world = source(WORLD_PATH)
+    rooftop = scene[
+        scene.index('const rooftop = officeFloorGroups.get("rooftop")'):
+        scene.index("addOfficeFunFloorProps();")
+    ]
+    for contract in (
+        "forkmesh-office-rooftop-table-",
+        "forkmesh-office-rooftop-tabletop-",
+        "forkmesh-office-rooftop-table-${tableIndex + 1}-leg-",
+        "rooftop-chair-",
+        "forkmesh-office-${chairId}-seat",
+        "forkmesh-office-${chairId}-back",
+        "forkmesh-office-${chairId}-leg-",
+        'chair.userData.officeFloorId = "rooftop"',
+        "chair.userData.officeSeatTopY = seatTopY",
+        'child.userData.interactive = "office-chair"',
+        'rooftopLaptop.name = "forkmesh-office-rooftop-laptop"',
+        'child.userData.interactive = "office-rooftop-laptop"',
+        "CLICK TO OPEN REAL REPOSITORY",
+    ):
+        assert contract in rooftop
+    assert "const telescopeTube" not in rooftop
+    assert "new THREE.BoxGeometry(2.2, 0.34, 2.2)" not in rooftop
+
+    sit = function_body(scene, "sitOnOfficeChair")
+    pose = function_body(scene, "applyOfficeChairSeatPose")
+    assert "chair.userData.officeFloorId" in sit
+    assert "officeCurrentFloorId" in sit
+    assert "officeFloorY(floorId) + seatTopY" in pose
+
+    callback = world[
+        world.index("onOfficeRooftopLaptopSelect:"):
+        world.index("onWorldBulletinSelect:", world.index(
+            "onOfficeRooftopLaptopSelect:"
+        ))
+    ]
+    assert (
+        '"/forkmesh/forkmesh/blob/cloudflare_worker/public/world/'
+        'world-scene.js"' in callback
+    )
+    assert '"_blank"' in callback
+    assert '"noopener,noreferrer"' in callback
+    assert "desktop app or IDE extension" in callback
+    assert "/api/" not in callback
+    assert "POST" not in callback
+
+
+def test_rooftop_camera_and_pointer_travel_stay_on_the_active_floor():
+    scene = source(SCENE_PATH)
+    camera = function_body(scene, "updateCamera")
+    floor_filter = function_body(scene, "officeObjectMatchesCurrentFloor")
+    ground = function_body(scene, "groundPointAt")
+    double_click = function_body(scene, "handleDoubleClick")
+    lobby_walk = function_body(scene, "walkOfficeLobbyPlayer")
+    pointer = function_body(scene, "finishPointer")
+
+    assert 'officeCurrentFloorId === "rooftop"' in camera
+    assert 'officeFloorY("rooftop") + 0.55' in camera
+    assert camera.count("localCamera.y = Math.max(") >= 1
+    assert camera.index("camera.position.lerp(") < camera.rindex(
+        "localCamera.y = Math.max("
+    )
+    assert "localDesired.y = Math.max(" in camera
+    # Only Y is redirected above the slab, preserving the full outward X/Z
+    # zoom that officeCameraDistanceLimit grants on the patio.
+    rooftop_guard = camera[
+        camera.index("if (rooftopPatioCamera)"):
+        camera.index("if (reducedMotion)")
+    ]
+    assert "localDesired.x" not in rooftop_guard
+    assert "localDesired.z" not in rooftop_guard
+
+    assert "floorId === officeCurrentFloorId" in floor_filter
+    assert 'object.userData?.interactive === "office-elevator-floor"' in (
+        floor_filter
+    )
+    assert "officeObjectMatchesCurrentFloor(object)" in pointer
+    assert "officeObjectMatchesCurrentFloor(object)" in double_click
+    assert "officeInteriorPointIsWalkable(" in ground
+    assert "officeCurrentFloorId" in ground
+    assert "dashTarget" in lobby_walk
+    assert "constrainOfficeInteriorWalls(" in lobby_walk
 
 
 def test_elevator_animates_between_floors_and_emits_departure_and_arrival_audio():
@@ -541,7 +787,7 @@ def test_elevator_has_one_stable_car_glass_layer_and_idle_lobby_reflections():
         scene.index("const elevatorPanelGeometry")
     ]
     reflection = scene[
-        scene.index("const logoReflectionIntervalMs"):
+        scene.index("let logoReflectionDirty"):
         scene.index("// One physical selector rides inside")
     ]
     assert "const elevatorCarGlass = makeMaterial" in elevator
@@ -562,11 +808,15 @@ def test_elevator_has_one_stable_car_glass_layer_and_idle_lobby_reflections():
         'officeSceneMode === "lobby"',
         'officeCurrentFloorId === "lobby"',
         "!officeElevatorRide",
-        "!officeLobbyPlayerMoving",
-        "primaryPointerId === null",
-        "!pinchActive",
+        "officeLobbyPlayerMoving ||",
+        "primaryPointerId !== null",
+        "pinchActive",
+        "logoReflectionDirty = true",
+        "logoReflectionWasBusy = true",
+        "logoReflectionDirty = false",
     ):
         assert contract in reflection
+    assert "logoReflectionIntervalMs" not in reflection
 
 
 def test_rooftop_has_glass_safety_barriers_and_office_jumping_is_disabled():
@@ -633,7 +883,8 @@ def test_walking_through_the_doorway_enters_immediately_and_hydrates_access():
         office.index("function completeOfficeExit()")
     ]
     assert 'entry?.source === "doorway"' in entry
-    assert "const entered = completeOfficeEntry()" in entry
+    assert "const entered = completeOfficeEntry({" in entry
+    assert "loadPublicAttendance: !activeSession" in entry
     assert "void refreshOfficeAuthorization(" in entry
     assert "requestOfficeEntry" not in entry
     assert "world.setOfficeDoorwayEntryPending?.(false)" in entry
