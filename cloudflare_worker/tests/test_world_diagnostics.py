@@ -136,3 +136,49 @@ def test_build_marker_is_strictly_reduced_to_version_and_git_revision():
     assert "/^[a-f0-9]{7,64}$/i" in build
     assert "return { version, revision };" in build
     assert "build.revision.slice(0, 12)" in APP
+
+
+def test_readings_are_graded_green_orange_red_from_local_thresholds_only():
+    grading = _section(
+        APP,
+        "const WORLD_DIAGNOSTICS_THRESHOLDS = {",
+        "\nfunction diagnosticStateLevel(",
+    )
+    for metric in (
+        "fps",
+        "frameTimeMs",
+        "calls",
+        "triangles",
+        "longFrames",
+        "longestFrameMs",
+        "pointerGapMs",
+        "reconnects",
+        "bufferedBytes",
+        "frameRate",
+        "coalesced",
+        "backpressure",
+    ):
+        assert f"{metric}:" in grading
+    # FPS is the one reading where a *smaller* number is the unhealthy one.
+    assert "lowerIsWorse: true" in grading
+    assert 'return "high"' in grading
+    assert '? "caution" : "good"' in grading
+    # Thresholds are display-only: no sampling, no network, no persistence.
+    for forbidden in ("fetch(", "setInterval(", "localStorage", "sessionStorage"):
+        assert forbidden not in grading
+
+    render = _section(APP, "  renderDiagnostics()", "\n  startActivityTicker()")
+    assert "diagnosticMetric(" in render
+    assert "diagnosticStateLevel(connection.state)" in render
+    # Every interpolated free-text value stays escaped now that the readings
+    # are written as HTML rather than textContent.
+    assert "escapeHTML(renderer.space)" in render
+    assert "escapeHTML(queues.movement)" in render
+    assert "escapeHTML(version)" in render
+
+    assert '.world-diagnostics-value[data-level="good"]' in CSS
+    assert '.world-diagnostics-value[data-level="caution"]' in CSS
+    assert '.world-diagnostics-value[data-level="high"]' in CSS
+    assert "var(--world-mint)" in CSS
+    assert "var(--world-sun)" in CSS
+    assert "var(--world-danger)" in CSS

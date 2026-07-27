@@ -103,7 +103,7 @@ def test_office_controller_exposes_deliberate_entry_and_exit_lifecycle():
         "function completeOfficeExit",
         "function destroy",
         'world.focusLandmark("office")',
-        "world.enterOffice()",
+        "world.enterOffice({ source })",
         "world.beginOfficeExit?.()",
         "world.setOfficeExitHandler?.(completeOfficeExit)",
     ):

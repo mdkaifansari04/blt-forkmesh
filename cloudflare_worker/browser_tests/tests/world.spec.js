@@ -1777,21 +1777,33 @@ test("a first-frame doorway crossing enters before proximity catches up", async 
   await prepareWorldPage(page, "office-first-frame-entry");
   await waitForWorld(page);
 
-  await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.world.setPaused(false);
-    // Start one centimetre outside the physical avatar threshold and move in
-    // during the same frame. The scene's doorway collision runs before its
-    // proximity ticker, matching a fast dash/double-click arrival.
+  const entry = await page.locator("forkmesh-world").evaluate(async (shell) => {
+    // Freeze between the doorway collision and the later proximity ticker,
+    // matching a fast dash/double-click arrival in that first frame.
+    shell.world.setPaused(true);
     shell.world.player.position.set(0, 0.38, -169.53);
-    shell.world.setControl("forward", true);
-  });
-  try {
-    await waitForOfficeEntry(page);
-  } finally {
-    await page.locator("forkmesh-world").evaluate((shell) => {
-      shell.world.setControl("forward", false);
+    const proximityBefore = shell.officeController.proximity;
+    const nonDoorwayEntered = await shell.officeController.enterOffice({
+      source: "door",
     });
-  }
+    const entered = await shell.officeController.enterOffice({
+      source: "doorway",
+    });
+    return {
+      proximityBefore,
+      nonDoorwayEntered,
+      entered,
+      active: shell.officeController.active,
+      space: shell.world.getPosition().space,
+    };
+  });
+  expect(entry).toEqual({
+    proximityBefore: "distant",
+    nonDoorwayEntered: false,
+    entered: true,
+    active: true,
+    space: "office-lobby",
+  });
 });
 
 test("walking through the Office doorway hydrates floor access without admission POST", async ({

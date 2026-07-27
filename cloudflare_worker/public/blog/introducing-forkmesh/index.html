@@ -19,6 +19,8 @@
     <link rel="stylesheet" href="/site-header.css">
     <script src="/site-header.js" defer></script>
     <script src="/static-page.js" defer></script>
+    <link rel="stylesheet" href="/blog-social.css">
+    <script src="/blog-social.js" defer></script>
 
     <meta property="og:type" content="article">
     <meta property="og:title" content="Introducing ForkMesh: code beyond a single host">
@@ -272,6 +274,13 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
           </div>
         </div>
       </div>
+
+      <!-- Where this post was announced. Paste the permalink into the
+           matching attribute; the ones left blank render as empty. -->
+      <section data-blog-social
+               data-reddit=""
+               data-mastodon=""
+               data-twitter=""></section>
     </main>
   </body>
 </html>
