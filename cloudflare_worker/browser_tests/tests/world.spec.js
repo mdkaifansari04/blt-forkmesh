@@ -1883,11 +1883,23 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
     const maya = scene.getObjectByName("avatar:office-greeter-maya");
     const noah = scene.getObjectByName("avatar:office-greeter-noah");
     const chromeCube = scene.getObjectByName("forkmesh-reflective-fm-cube");
+    const chromeMark = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube-fixed-tilt"
+    );
     const support = scene.getObjectByName(
       "forkmesh-reflective-fm-cube-support"
     );
+    const contact = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube-contact-point"
+    );
     const solidBodies = [];
+    let fFaces = 0;
+    let mFaces = 0;
+    let panels = 0;
     chromeCube.traverse((object) => {
+      if (object.name.startsWith("forkmesh-reflective-f-face-")) fFaces += 1;
+      if (object.name.startsWith("forkmesh-reflective-m-face-")) mFaces += 1;
+      if (object.name.startsWith("forkmesh-reflective-fm-panel-")) panels += 1;
       const size = object.geometry?.parameters;
       if (
         object.isMesh &&
@@ -1898,6 +1910,14 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
         solidBodies.push(object.name || "solid");
       }
     });
+    const contactWorld = contact.getWorldPosition(contact.position.clone());
+    const supportTop = support.localToWorld(
+      support.position.clone().set(
+        0,
+        support.geometry.parameters.height / 2,
+        0,
+      )
+    );
     const sat = shell.world.sitOnOfficeChair("chair-1");
     const seatedWorld = shell.world.player.getWorldPosition(
       shell.world.player.position.clone()
@@ -1922,13 +1942,15 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
         noah: noah?.position.toArray(),
       },
       logo: {
-        edgeTilt: chromeCube.rotation.z,
-        fFaces: chromeCube.children.filter((object) =>
-          object.name.startsWith("forkmesh-reflective-f-face-")
-        ).length,
-        mFaces: chromeCube.children.filter((object) =>
-          object.name.startsWith("forkmesh-reflective-m-face-")
-        ).length,
+        verticalAxisOnly: {
+          x: chromeCube.rotation.x,
+          z: chromeCube.rotation.z,
+        },
+        fixedTiltQuaternion: chromeMark.quaternion.toArray(),
+        contactSupportDistance: contactWorld.distanceTo(supportTop),
+        fFaces,
+        mFaces,
+        panels,
         supportCount: support ? 1 : 0,
         solidBodies,
       },
@@ -1974,10 +1996,15 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   expect(state.reception.desk).toEqual([0, 1.05, -36.5]);
   expect(state.reception.maya).toEqual([-7, 0.38, -40]);
   expect(state.reception.noah).toEqual([7, 0.38, -40]);
-  expect(state.logo.edgeTilt).toBeCloseTo(Math.PI / 4, 5);
+  expect(state.logo.verticalAxisOnly.x).toBeCloseTo(0, 7);
+  expect(state.logo.verticalAxisOnly.z).toBeCloseTo(0, 7);
+  expect(state.logo.fixedTiltQuaternion.some((value) => Math.abs(value) > 0.1))
+    .toBe(true);
+  expect(state.logo.contactSupportDistance).toBeLessThan(0.03);
   expect(state.logo).toMatchObject({
     fFaces: 2,
     mFaces: 2,
+    panels: 2,
     supportCount: 1,
     solidBodies: [],
   });
