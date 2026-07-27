@@ -1771,6 +1771,29 @@ test("Office entrance doors slide apart on approach and close after departure", 
   }).toBeLessThan(0.08);
 });
 
+test("a first-frame doorway crossing enters before proximity catches up", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-first-frame-entry");
+  await waitForWorld(page);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setPaused(false);
+    // Start one centimetre outside the physical avatar threshold and move in
+    // during the same frame. The scene's doorway collision runs before its
+    // proximity ticker, matching a fast dash/double-click arrival.
+    shell.world.player.position.set(0, 0.38, -169.53);
+    shell.world.setControl("forward", true);
+  });
+  try {
+    await waitForOfficeEntry(page);
+  } finally {
+    await page.locator("forkmesh-world").evaluate((shell) => {
+      shell.world.setControl("forward", false);
+    });
+  }
+});
+
 test("walking through the Office doorway hydrates floor access without admission POST", async ({
   page,
 }) => {
