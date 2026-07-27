@@ -13473,7 +13473,10 @@ export function createWorldScene({
     return slots.slice(0, requested);
   }
 
-  function updateNetworkNodes(nodes = []) {
+  function updateNetworkNodes(nodes = networkNodeSnapshot) {
+    networkNodeSnapshot = (Array.isArray(nodes) ? nodes : [])
+      .slice(0, 64)
+      .map((node) => ({ ...node }));
     const fountain = landmarkObjects.get("fountain");
     const fountainPosition = landmarkById("fountain").position;
     const routingX = fountain?.position.x ?? fountainPosition[0];
@@ -13492,7 +13495,7 @@ export function createWorldScene({
     // membership change. A normalized name order keeps every surviving
     // cabinet in the same slot, while a changed member list is laid out again
     // immediately by this existing data-update path.
-    const usableNodes = (Array.isArray(nodes) ? nodes : [])
+    const usableNodes = networkNodeSnapshot
       .map((node) => ({
         node,
         name: String(node?.name || node?.label || "").trim().slice(0, 80),
