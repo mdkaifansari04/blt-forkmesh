@@ -40,6 +40,7 @@ def _load(*names, extra_globals=None):
         "STATUS_HISTORY_RETAIN_MS", "STATUS_SAMPLE_WINDOW_MS",
         "STATUS_HOUR_MS", "STATUS_DAY_MS",
         "STATUS_MINUTES_SHOWN", "STATUS_MINUTE_RETAIN_MS",
+        "STATUS_MIRROR_PREFIX", "STATUS_MIRROR_MAX",
     }
     helper_names = {
         "_status_expected_checks_for_hour", "_status_effective_hour",
@@ -77,7 +78,9 @@ class _Clock:
         return cls.value
 
 
-def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None):
+def _sample_env(
+        now, error_paths, host_online=True, db_ok=True, error_rows=None,
+        mirror_rows=None):
     """Stub error rows plus the signed direct-HTTPS mirror health count."""
     inserted = []
     hourly = []
@@ -97,6 +100,8 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
             if error_rows is not None:
                 return error_rows
             return [{"path": p} for p in error_paths]
+        if "mirror_https_endpoints" in sql:
+            return list(mirror_rows or [])
         return []
 
     async def d1_run(_env, sql, *args):
@@ -116,6 +121,10 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
 
     async def noop(*_a, **_k):
         return None
+    async def repository_probe(_env):
+        return True, ""
+    async def installer_status(_env, _now):
+        return True, ""
 
     extra = {
         "Date": _Clock,
@@ -123,13 +132,19 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
         "d1_first": d1_first,
         "d1_all": d1_all,
         "d1_run": d1_run,
+        "_flagship_repository_probe": repository_probe,
+        "_record_status_monitor_transitions": noop,
+        "_installer_delivery_status": installer_status,
     }
     return extra, inserted, hourly, minutely
 
 
-def _run_sample(error_paths=(), host_online=True, db_ok=True, error_rows=None):
+def _run_sample(
+        error_paths=(), host_online=True, db_ok=True, error_rows=None,
+        mirror_rows=None):
     extra, inserted, hourly, minutely = _sample_env(
-        _Clock.value, error_paths, host_online, db_ok, error_rows=error_rows,
+        _Clock.value, error_paths, host_online, db_ok,
+        error_rows=error_rows, mirror_rows=mirror_rows,
     )
     g = _load("record_status_sample", extra_globals=extra)
     asyncio.run(g["record_status_sample"](object()))
@@ -145,7 +160,8 @@ def _run_sample(error_paths=(), host_online=True, db_ok=True, error_rows=None):
 def test_all_systems_recorded_ok_with_no_errors_and_a_live_https_mirror():
     results, reasons, _minutes = _run_sample(error_paths=[], host_online=True, db_ok=True)
     assert set(results) == {
-        "website", "api", "database", "git_hosting", "realtime", "durable_objects",
+        "website", "api", "database", "flagship_repository",
+        "installer", "git_hosting", "realtime", "durable_objects",
     }
     assert all(failure == 0 for failure in results.values())
     assert all(reason is None for reason in reasons.values())
@@ -166,6 +182,41 @@ def test_no_healthy_https_mirror_fails_only_git_hosting():
     assert results["website"] == 0
     assert results["api"] == 0
     assert "no healthy direct https mirror" in reasons["git_hosting"].lower()
+
+
+def test_signed_mirror_endpoints_get_independent_status_samples():
+    fresh = _Clock.value - 30_000
+    rows = [
+        {"node_name": "mirror2", "checked_at": fresh, "healthy": 1,
+         "integrity": "ok", "forkmesh_active": 1,
+         "forkmesh_verified_at": fresh},
+        {"node_name": "mirror3", "checked_at": fresh, "healthy": 0,
+         "integrity": "ok", "forkmesh_active": 1,
+         "forkmesh_verified_at": fresh},
+        # Invalid registry text can never become a public node/system ID.
+        {"node_name": "Jett user", "checked_at": fresh, "healthy": 1,
+         "integrity": "ok", "forkmesh_active": 1,
+         "forkmesh_verified_at": fresh},
+    ]
+    results, reasons, minutes = _run_sample(mirror_rows=rows)
+    assert results["mirror:mirror2"] == 0
+    assert minutes["mirror:mirror2"] == (1, None)
+    assert results["mirror:mirror3"] == 1
+    assert minutes["mirror:mirror3"][0] == 0
+    assert "failed its signed HTTPS health check" in reasons["mirror:mirror3"]
+    assert all("jett" not in system for system in results)
+
+
+def test_stale_signed_mirror_stays_visible_as_down():
+    stale = _Clock.value - 11 * 60_000
+    rows = [
+        {"node_name": "mirror2", "checked_at": stale, "healthy": 1,
+         "integrity": "ok", "forkmesh_active": 1,
+         "forkmesh_verified_at": stale},
+    ]
+    results, reasons, _minutes = _run_sample(mirror_rows=rows)
+    assert results["mirror:mirror2"] == 1
+    assert "within the last 10 minutes" in reasons["mirror:mirror2"]
 
 
 def test_api_error_does_not_fail_website():
@@ -783,6 +834,81 @@ def test_minute_row_reflects_ok_and_carries_its_failure_reason():
     assert minutes[cur_minute]["reason"] is None
 
 
+def test_recorded_signed_mirror_appears_as_a_full_status_system():
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    minute_rows = [
+        {"minute_ts": cur_minute, "system": "mirror:mirror2",
+         "ok": 1, "reason": None},
+    ]
+    out = _run_history([], minute_rows=minute_rows)
+    system = next(s for s in out["systems"] if s["id"] == "mirror:mirror2")
+    assert system["label"] == "Mirror node — mirror2"
+    assert system["status"] == "operational"
+    assert len(system["days"]) == 30
+    assert len(system["minutes"]) == 60
+    assert "account-bound direct HTTPS endpoint" in system["checkDescription"]
+    assert all(s["id"] != "mirror:jett" for s in out["systems"])
+
+
+def test_latest_passing_minute_clears_failure_from_hourly_rollup():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    rows = [{"day_ts": cur_day, "system": "flagship_repository",
+             "checks": 20, "failures": 5}]
+    hour_rows = [
+        {"hour_ts": cur_hour, "system": "flagship_repository",
+         "checks": 20, "failures": 5,
+         "reason": "README.md body did not load"},
+    ]
+    minute_rows = [
+        {"minute_ts": cur_minute, "system": "flagship_repository",
+         "ok": 1, "reason": None},
+    ]
+    out = _run_history(rows, hour_rows, minute_rows)
+    system = next(
+        s for s in out["systems"] if s["id"] == "flagship_repository")
+    # The aggregate remains below 100% and preserves the historical amber
+    # dots, but the current badge follows the completed reachability probe.
+    assert system["uptime24hPct"] < 100.0
+    assert system["status"] == "operational"
+    assert system["reason"] is None
+    assert system["reasonTs"] is None
+
+
+def test_latest_failing_minute_is_down_even_if_hour_is_mostly_green():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    rows = [{"day_ts": cur_day, "system": "installer",
+             "checks": 59, "failures": 1}]
+    hour_rows = [
+        {"hour_ts": cur_hour, "system": "installer",
+         "checks": 59, "failures": 1, "reason": "installer unreachable"},
+    ]
+    minute_rows = [
+        {"minute_ts": cur_minute, "system": "installer",
+         "ok": 0, "reason": "installer unreachable"},
+    ]
+    out = _run_history(rows, hour_rows, minute_rows)
+    system = next(s for s in out["systems"] if s["id"] == "installer")
+    assert system["status"] == "down"
+    assert system["reason"] == "installer unreachable"
+    assert system["reasonTs"] == cur_minute
+
+
+def test_stale_latest_minute_reports_unknown_not_online():
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    minute_rows = [
+        {"minute_ts": cur_minute - 3 * MINUTE_MS, "system": "git_hosting",
+         "ok": 1, "reason": None},
+    ]
+    out = _run_history([], minute_rows=minute_rows)
+    system = next(s for s in out["systems"] if s["id"] == "git_hosting")
+    assert system["status"] == "unknown"
+    assert "last two minutes" in system["reason"]
+
+
 # --- current-state snapshot (issue #356) ------------------------------------
 
 def _run_history_current(
@@ -994,7 +1120,34 @@ def test_current_snapshot_survives_a_failing_read():
     assert out["current"]["catalogRepos"] is None
     assert out["current"]["onlineNodes"] == 0
     # systems still rendered despite the failed metric
-    assert len(out["systems"]) == 6
+    assert len(out["systems"]) == 8
+
+
+def test_flagship_repository_monitor_is_public_and_deduplicates_email_states():
+    assert '("flagship_repository", "forkmesh/forkmesh repository page")' in ENTRY_TEXT
+    assert "FLAGSHIP_REPOSITORY_URL = \"https://forkmesh.com/forkmesh/forkmesh\"" in ENTRY_TEXT
+    assert 'str(item.get("name") or "").lower() == "readme.md"' in ENTRY_TEXT
+    assert "Repository page shell did not load" in ENTRY_TEXT
+    assert "await org_alias_rewrite(env, request, route_url)" in ENTRY_TEXT
+    assert "Root repository tree did not contain README.md" in ENTRY_TEXT
+    assert "README.md body did not load" in ENTRY_TEXT
+    assert "repository_monitor_state" in ENTRY_TEXT
+    assert "notified_state" in ENTRY_TEXT
+    assert "[ForkMesh outage]" in ENTRY_TEXT
+    assert "[ForkMesh recovered]" in ENTRY_TEXT
+    assert "is passing again after " in ENTRY_TEXT
+    assert "Suggested first step" in ENTRY_TEXT
+    assert "WHERE monitor_id LIKE 'status:%'" in ENTRY_TEXT
+
+
+def test_installer_delivery_is_checked_every_ten_minutes_and_public():
+    assert '("installer", "Installer delivery")' in ENTRY_TEXT
+    assert "INSTALLER_CHECK_INTERVAL_MS = 10 * 60 * 1000" in ENTRY_TEXT
+    assert "async def _installer_delivery_probe" in ENTRY_TEXT
+    assert '"release.json", "release.json.sig", "SHASUMS256.txt"' in ENTRY_TEXT
+    assert "releases/blob/sha256/" in ENTRY_TEXT
+    assert "Cloudflare cannot execute Bash" in ENTRY_TEXT
+    assert "source-build fallback" in ENTRY_TEXT
 
 
 def test_status_page_renders_current_state_grid():

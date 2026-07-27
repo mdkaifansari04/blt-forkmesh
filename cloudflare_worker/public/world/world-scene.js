@@ -17,8 +17,11 @@ const OUTFIT_COLOR_HEX = Object.fromEntries(
 );
 const OUTFIT_STYLE_IDS = OUTFIT_STYLE_OPTIONS.map((option) => option.id);
 
-const WORLD_RADIUS = 72;
+const WORLD_RADIUS = 174;
 const WORLD_GROUND_RADIUS = 88;
+const REPOSITORY_ISLAND_CENTER_X = 130;
+const REPOSITORY_ISLAND_RADIUS = 38;
+const REPOSITORY_ISLAND_RING_RADIUS = 31;
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
 const PLAYER_SPEED = 6.4;
@@ -4786,6 +4789,105 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   portal.userData.repositoryOrbitLayer = null;
   portal.userData.repositorySizeLayer = null;
   portal.userData.repositorySizeMeshes = [];
+
+  // A physical import kiosk remains at the repository district even though
+  // the old central repository portal is retired. Each provider pad opens the
+  // same secure import flow with that provider preselected.
+  const importKiosk = new THREE.Group();
+  importKiosk.name = "repository-import-kiosk";
+  importKiosk.position.set(0, 0, 5.2);
+  const kioskBase = new THREE.Mesh(
+    new THREE.CylinderGeometry(2.15, 2.35, 0.42, 8),
+    makeMaterial(THREE, "#102a32", {
+      emissive: "#123d49",
+      emissiveIntensity: 0.35,
+      metalness: 0.25,
+      roughness: 0.52,
+    }),
+  );
+  kioskBase.position.y = 0.21;
+  importKiosk.add(kioskBase);
+  const kioskColumn = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.24, 0.34, 2.15, 10),
+    frameMaterial,
+  );
+  kioskColumn.position.y = 1.45;
+  importKiosk.add(kioskColumn);
+  const providerPads = [
+    { id: "github", label: "GITHUB", color: "#f0f6fc" },
+    { id: "gitlab", label: "GITLAB", color: "#fc8d45" },
+    { id: "codeberg", label: "CODEBERG", color: "#77d9ff" },
+  ];
+  providerPads.forEach((provider, index) => {
+    const angle = -0.72 + index * 0.72;
+    const pad = new THREE.Mesh(
+      new THREE.BoxGeometry(1.25, 0.2, 0.88),
+      makeMaterial(THREE, provider.color, {
+        emissive: provider.color,
+        emissiveIntensity: 0.72,
+        metalness: 0.22,
+        roughness: 0.34,
+      }),
+    );
+    pad.name = `repository-import-provider:${provider.id}`;
+    pad.position.set(Math.sin(angle) * 1.45, 0.58, -Math.cos(angle) * 1.45);
+    pad.rotation.y = -angle;
+    pad.userData.landmark = "repositories";
+    pad.userData.createRepository = provider.id;
+    importKiosk.add(pad);
+    const label = makeLabelSprite(
+      THREE,
+      provider.label,
+      "IMPORT FROM",
+      provider.color,
+    );
+    label.scale.set(1.18, 0.4, 1);
+    label.position.copy(pad.position);
+    label.position.y += 0.42;
+    importKiosk.add(label);
+  });
+  const importBeam = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.08, 0.68, 3.5, 18, 1, true),
+    makeMaterial(THREE, "#77d9ff", {
+      emissive: "#39bfe8",
+      emissiveIntensity: 1.1,
+      transparent: true,
+      opacity: 0.14,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  importBeam.name = "repository-import-beam";
+  importBeam.position.y = 2.7;
+  importBeam.visible = false;
+  importKiosk.add(importBeam);
+  const importSpark = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(0.28, 1),
+    makeMaterial(THREE, "#9ef7c6", {
+      emissive: "#42e99a",
+      emissiveIntensity: 1.8,
+      transparent: true,
+      opacity: 0.92,
+    }),
+  );
+  importSpark.name = "repository-import-spark";
+  importSpark.position.y = 3.55;
+  importSpark.visible = false;
+  importKiosk.add(importSpark);
+  const kioskSign = makeLabelSprite(
+    THREE,
+    "IMPORT REPOSITORY",
+    "GITHUB · GITLAB · CODEBERG",
+    "#9ef7c6",
+  );
+  kioskSign.scale.set(2.8, 0.78, 1);
+  kioskSign.position.set(0, 4.35, 0);
+  importKiosk.add(kioskSign);
+  group.add(importKiosk);
+  group.userData.repositoryImportKiosk = importKiosk;
+  importKiosk.userData.importBeam = importBeam;
+  importKiosk.userData.importSpark = importSpark;
+  importKiosk.userData.importing = false;
   group.traverse((child) => {
     if (child.isMesh) {
       child.userData.landmark = "repositories";
@@ -4799,6 +4901,18 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
       : Math.sin(time * 0.00018) * 0.09;
     globe.rotation.y = time * 0.00012;
     globe.rotation.x = Math.sin(time * 0.00009) * 0.12;
+    if (importKiosk.userData.importing) {
+      importBeam.visible = true;
+      importSpark.visible = true;
+      importBeam.rotation.y = time * 0.0018;
+      importBeam.material.opacity = 0.11 + Math.sin(time * 0.006) * 0.045;
+      importSpark.rotation.y = time * 0.003;
+      importSpark.rotation.x = time * 0.0017;
+      importSpark.position.y = 3.45 + Math.sin(time * 0.004) * 0.28;
+    } else {
+      importBeam.visible = false;
+      importSpark.visible = false;
+    }
     if (portal.userData.repositoryOrbitLayer) {
       portal.userData.repositoryOrbitLayer.rotation.z = time * 0.000012;
     }
@@ -6106,6 +6220,31 @@ const TWITTER_BANNER_OPTIONS = Object.freeze({
   },
 });
 
+const STATUS_BANNER_OPTIONS = Object.freeze({
+  id: "status",
+  position: [44, 0, -14],
+  accent: "#49d98a",
+  frameColor: "#17613f",
+  titleColor: "#f2fff8",
+  divider: "rgba(73,217,138,0.5)",
+  title: "SYSTEM STATUS",
+  handle: "forkmesh/forkmesh",
+  host: "forkmesh.com/status",
+  lines: [
+    "CHECKING REPOSITORY PAGE",
+    "README.MD · TREE · MIRRORS",
+    "ONE SAMPLE EVERY MINUTE",
+  ],
+  footer: "OPENS FORKMESH.COM/STATUS",
+  url: "/status",
+  feedHeading: "ALL MONITORED SYSTEMS",
+  staleness: {
+    label: "LAST CHECK",
+    freshMs: 2 * 60 * 1000,
+    staleMs: 5 * 60 * 1000,
+  },
+});
+
 const REDDIT_BANNER_OPTIONS = Object.freeze({
   id: "reddit",
   position: [27.6, 0, -26.6],
@@ -6324,6 +6463,164 @@ function socialBannerTexture(
   });
 }
 
+const SYSTEM_STATUS_COLORS = Object.freeze({
+  operational: "#198a43",
+  degraded: "#a66f00",
+  down: "#d92d3a",
+  unknown: "#d9dbe1",
+  future: "#f5f5f7",
+});
+
+function systemStatusColor(status) {
+  return SYSTEM_STATUS_COLORS[String(status || "unknown")] ||
+    SYSTEM_STATUS_COLORS.unknown;
+}
+
+// A compact, canvas-native copy of /status. The physical frame deliberately
+// remains the same as the Twitter sign, while its face contains every system
+// and the same day/hour/minute hierarchy and state colours as the web page.
+function systemStatusBannerTexture(THREE, payload = null) {
+  const WIDTH = SOCIAL_BANNER_WIDTH;
+  const HEIGHT = SOCIAL_BANNER_HEIGHT;
+  return canvasTexture(THREE, WIDTH, HEIGHT, (context) => {
+    context.fillStyle = "#f7f7f8";
+    context.fillRect(0, 0, WIDTH, HEIGHT);
+    context.fillStyle = STATUS_BANNER_OPTIONS.accent;
+    context.fillRect(12, 12, 1512, 190);
+    context.fillStyle = "#f2fff8";
+    context.font = '800 112px "ForkMesh Favorit", sans-serif';
+    context.fillText("SYSTEM STATUS", 72, 145);
+    context.fillStyle = "#25262b";
+    context.font = '700 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("forkmesh.com/status", 72, 250);
+    context.fillStyle = "#686b74";
+    context.font = '500 25px "ForkMesh Favorit", sans-serif';
+    context.fillText(
+      "30 days  ·  last 24 hours  ·  last 60 one-minute checks",
+      72,
+      292,
+    );
+
+    const systems = Array.isArray(payload?.systems) ? payload.systems : [];
+    if (!systems.length) {
+      context.fillStyle = "#25262b";
+      context.font = '700 54px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("LOADING LIVE CHECKS…", 72, 480);
+    }
+
+    const rowTop = 325;
+    const rowHeight = systems.length
+      ? Math.min(205, 1640 / systems.length)
+      : 205;
+    systems.forEach((system, index) => {
+      const top = rowTop + index * rowHeight;
+      const scale = Math.min(1, rowHeight / 190);
+      context.fillStyle = "#ffffff";
+      roundedRect(
+        context, 56, top, 1424, Math.max(24, rowHeight - 10), 14);
+      context.fill();
+      context.strokeStyle = "#dcdee4";
+      context.lineWidth = 2;
+      context.stroke();
+
+      context.beginPath();
+      context.fillStyle = systemStatusColor(system.status);
+      context.arc(
+        82, top + Math.max(16, 34 * scale), Math.max(4, 9 * scale),
+        0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = "#202126";
+      context.font =
+        `700 ${Math.max(13, 30 * scale)}px "ForkMesh Favorit", sans-serif`;
+      context.fillText(
+        clipCanvasText(context, String(system.label || system.id || ""), 650),
+        104,
+        top + Math.max(21, 44 * scale),
+      );
+
+      const metric = (value) => Number.isFinite(Number(value))
+        ? `${Number(value).toFixed(1)}%`
+        : "—";
+      context.textAlign = "right";
+      context.fillStyle = "#202126";
+      context.font =
+        `700 ${Math.max(12, 27 * scale)}px "ForkMesh Mono", ui-monospace, monospace`;
+      context.fillText(
+        metric(system.uptime24hPct), 1100, top + Math.max(18, 38 * scale));
+      context.fillText(
+        metric(system.uptimePct), 1282, top + Math.max(18, 38 * scale));
+      context.fillText(
+        metric(system.coverage24hPct), 1452, top + Math.max(18, 38 * scale));
+      context.fillStyle = "#686b74";
+      context.font =
+        `500 ${Math.max(9, 17 * scale)}px "ForkMesh Favorit", sans-serif`;
+      context.fillText("24h", 1100, top + Math.max(29, 61 * scale));
+      context.fillText("30d", 1282, top + Math.max(29, 61 * scale));
+      context.fillText(
+        "coverage", 1452, top + Math.max(29, 61 * scale));
+      context.textAlign = "left";
+
+      // Top strip: one tile per day, with that day's hourly checks inside.
+      const days = Array.isArray(system.days) ? system.days.slice(-30) : [];
+      const dayX = 76;
+      const dayY = top + Math.max(34, rowHeight * 0.36);
+      const dayWidth = 44;
+      const dayHeight = Math.max(8, rowHeight * 0.24);
+      days.forEach((day, dayIndex) => {
+        const x = dayX + dayIndex * 46;
+        context.fillStyle = "#dedfe4";
+        roundedRect(context, x, dayY, dayWidth, dayHeight, 5);
+        context.fill();
+        const hours = Array.isArray(day?.hours) ? day.hours : [];
+        hours.slice(0, 24).forEach((hour, hourIndex) => {
+          context.fillStyle = systemStatusColor(hour?.status);
+          context.fillRect(
+            x + 4 + (hourIndex % 6) * 6,
+            dayY + 2 + Math.floor(hourIndex / 6) *
+              Math.max(1.5, (dayHeight - 4) / 4),
+            4,
+            Math.max(1, (dayHeight - 7) / 4),
+          );
+        });
+      });
+
+      // Middle strip: the latest 24 hourly checks.
+      const hours = days.flatMap((day) =>
+        Array.isArray(day?.hours) ? day.hours : []).slice(-24);
+      hours.forEach((hour, hourIndex) => {
+        context.fillStyle = systemStatusColor(hour?.status);
+        roundedRect(
+          context, 76 + hourIndex * 29, top + rowHeight * 0.69,
+          23, Math.max(4, rowHeight * 0.10), 3);
+        context.fill();
+      });
+
+      // Bottom strip: the latest 60 raw one-minute reachability checks.
+      const minutes = Array.isArray(system.minutes)
+        ? system.minutes.slice(-60)
+        : [];
+      minutes.forEach((minute, minuteIndex) => {
+        context.fillStyle = systemStatusColor(minute?.status);
+        roundedRect(
+          context, 76 + minuteIndex * 18, top + rowHeight * 0.84,
+          13, Math.max(3, rowHeight * 0.08), 2);
+        context.fill();
+      });
+    });
+
+    context.fillStyle = "#686b74";
+    context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "● OPERATIONAL   ● DEGRADED   ● DOWN   ● NO DATA",
+      72,
+      1992,
+    );
+    context.strokeStyle = STATUS_BANNER_OPTIONS.accent;
+    context.lineWidth = 16;
+    context.strokeRect(12, 12, 1512, 2024);
+  });
+}
+
 function createSocialBanner(THREE, interactive, options) {
   const group = new THREE.Group();
   group.name = `forkmesh-${options.id}-banner`;
@@ -6347,7 +6644,9 @@ function createSocialBanner(THREE, interactive, options) {
   const face = new THREE.Mesh(
     new THREE.PlaneGeometry(7.2, 9.6),
     new THREE.MeshBasicMaterial({
-      map: socialBannerTexture(THREE, options),
+      map: options.id === "status"
+        ? systemStatusBannerTexture(THREE)
+        : socialBannerTexture(THREE, options),
       toneMapped: false,
     }),
   );
@@ -7022,6 +7321,51 @@ export function createWorldScene({
   ground.userData.ground = true;
   world.add(ground);
 
+  // Fully hosted imports live on their own repository island. The bridge
+  // overlaps both shorelines, so it is a real, raycastable walking surface
+  // rather than scenery visitors have to teleport across.
+  const repositoryIsland = new THREE.Mesh(
+    new THREE.CircleGeometry(REPOSITORY_ISLAND_RADIUS, 96),
+    makeMaterial(THREE, "#215c42", { roughness: 1 }),
+  );
+  repositoryIsland.name = "hosted-repository-island";
+  repositoryIsland.rotation.x = -Math.PI / 2;
+  repositoryIsland.position.set(REPOSITORY_ISLAND_CENTER_X, 0.01, 0);
+  repositoryIsland.receiveShadow = true;
+  repositoryIsland.userData.ground = true;
+  world.add(repositoryIsland);
+
+  const repositoryBridge = new THREE.Group();
+  repositoryBridge.name = "hosted-repository-bridge";
+  repositoryBridge.position.set(
+    (WORLD_GROUND_RADIUS +
+      REPOSITORY_ISLAND_CENTER_X -
+      REPOSITORY_ISLAND_RADIUS) /
+      2,
+    0,
+    0,
+  );
+  const bridgeDeck = new THREE.Mesh(
+    new THREE.BoxGeometry(12, 0.22, 4.8),
+    makeMaterial(THREE, "#70563b", { roughness: 0.88 }),
+  );
+  bridgeDeck.position.y = 0.1;
+  bridgeDeck.receiveShadow = true;
+  bridgeDeck.userData.ground = true;
+  repositoryBridge.add(bridgeDeck);
+  for (let x = -5.4; x <= 5.4; x += 1.2) {
+    const plank = new THREE.Mesh(
+      new THREE.BoxGeometry(0.92, 0.12, 4.55),
+      makeMaterial(THREE, x % 2.4 ? "#98724b" : "#aa8053", {
+        roughness: 0.92,
+      }),
+    );
+    plank.position.set(x, 0.25, 0);
+    plank.userData.ground = true;
+    repositoryBridge.add(plank);
+  }
+  world.add(repositoryBridge);
+
   // The room still assigns one of 64 ephemeral slots, but the grid itself is
   // no longer drawn: the plaques at the front edge carry the arrival story and
   // the lawn reads as open ground.
@@ -7091,6 +7435,18 @@ export function createWorldScene({
     THREE, interactive, BLOG_BANNER_OPTIONS);
   world.add(blogBanner);
   registerMovableObject("blog-banner", blogBanner);
+  // Same physical display format as the Twitter/X sign, placed on the Office
+  // approach. Its face mirrors all systems and all three history strips from
+  // /status instead of reducing the page to one repository summary.
+  const statusBanner = createSocialBanner(
+    THREE, interactive, STATUS_BANNER_OPTIONS);
+  world.add(statusBanner);
+  registerMovableObject("status-banner", statusBanner);
+  const statusBannerRecord = {
+    group: statusBanner,
+    options: STATUS_BANNER_OPTIONS,
+    snapshot: null,
+  };
   const socialBanners = [
     { group: twitterBanner, options: TWITTER_BANNER_OPTIONS },
     { group: redditBanner, options: REDDIT_BANNER_OPTIONS },
@@ -7131,8 +7487,10 @@ export function createWorldScene({
     );
     if (!face?.material) return false;
     face.material.map?.dispose?.();
-    face.material.map = socialBannerTexture(
-      THREE, record.options, record.snapshot || null, socialBannerImage);
+    face.material.map = record.options.id === "status"
+      ? systemStatusBannerTexture(THREE, record.snapshot || null)
+      : socialBannerTexture(
+          THREE, record.options, record.snapshot || null, socialBannerImage);
     face.material.needsUpdate = true;
     return true;
   }
@@ -7148,6 +7506,37 @@ export function createWorldScene({
           ? { posts: Array.isArray(feed.posts) ? feed.posts : [] }
           : null;
       repaintSocialBanner(record);
+    }
+  }
+
+  function updateSystemStatusBoard(payload) {
+    statusBannerRecord.snapshot =
+      payload && Array.isArray(payload.systems) ? payload : null;
+    repaintSocialBanner(statusBannerRecord);
+
+    const lastCheck = Number(payload?.current?.lastCronSampleTs) || 0;
+    const since = lastCheck > 0 ? Math.max(0, Date.now() - lastCheck) : null;
+    const plate = statusBanner.getObjectByName(
+      "forkmesh-status-banner-lastpost");
+    if (plate?.material) {
+      plate.material.map?.dispose?.();
+      plate.material.map = mastodonLastPostTexture(
+        THREE,
+        since,
+        STATUS_BANNER_OPTIONS.staleness.label,
+        STATUS_BANNER_OPTIONS.staleness.freshMs,
+        STATUS_BANNER_OPTIONS.staleness.staleMs,
+      );
+      plate.material.needsUpdate = true;
+    }
+    const dial = statusBanner.getObjectByName(
+      "forkmesh-status-banner-countdown");
+    if (dial?.material) {
+      const remaining = 60_000 - (Date.now() % 60_000);
+      dial.material.map?.dispose?.();
+      dial.material.map = mastodonCountdownTexture(
+        THREE, remaining, 60_000, false);
+      dial.material.needsUpdate = true;
     }
   }
 
@@ -8100,6 +8489,7 @@ export function createWorldScene({
   const botAgents = new Map();
   const loungeMembers = new Map();
   const repositoryPortals = new Map();
+  const repositoryPortalBornAt = new Map();
   const emoteSprites = [];
   const rewardFlights = [];
   const pushSurges = [];
@@ -11475,6 +11865,13 @@ export function createWorldScene({
             : 0;
         const rawStarCount = Number(record.starCount);
         const rawFollowerCount = Number(record.fediverseFollowerCount);
+        const rawSizeTree =
+          record.sizeTree &&
+          typeof record.sizeTree === "object" &&
+          Number(record.sizeTree.size) > 0 &&
+          Array.isArray(record.sizeTree.children)
+            ? record.sizeTree
+            : null;
         return {
           owner,
           name,
@@ -11483,6 +11880,10 @@ export function createWorldScene({
           liveHost: record.liveHost === true,
           isPrivate: record.isPrivate === true,
           source: String(record.source || "").slice(0, 40),
+          provider: String(record.provider || "").slice(0, 20),
+          providerLabel: String(record.providerLabel || "").slice(0, 30),
+          externalUrl: String(record.externalUrl || "").slice(0, 500),
+          importId: String(record.importId || "").slice(0, 64),
           mirrorState: String(record.mirrorState || "").slice(0, 24),
           starCount:
             Number.isSafeInteger(rawStarCount) && rawStarCount >= 0
@@ -11499,6 +11900,7 @@ export function createWorldScene({
           fediverseFollowers: Array.isArray(record.fediverseFollowers)
             ? record.fediverseFollowers.slice(0, REPOSITORY_FOLLOWERS_VISIBLE)
             : [],
+          sizeTree: rawSizeTree,
         };
       })
       .sort((left, right) => left.key.localeCompare(right.key));
@@ -11517,16 +11919,26 @@ export function createWorldScene({
         record.liveHost,
         record.isPrivate,
         record.source,
+        record.provider,
+        record.importId,
         record.starCount,
         record.starred,
         record.fediverseFollowerCount,
         record.fediverseFollowerStatus,
+        record.sizeTree
+          ? [
+              String(record.sizeTree.commit || "").slice(0, 64),
+              Number(record.sizeTree.size) || 0,
+              record.sizeTree.children.length,
+            ]
+          : null,
         // Identity only: a follower's avatar/bio arriving does not need a
         // portal rebuild, but a different follower does.
         record.fediverseFollowers.map((follower) => follower?.handle || ""),
       ]),
     ]);
     const previousCatalog = world.userData.repositoryCatalogLayer;
+    const previousPortalKeys = new Set(repositoryPortals.keys());
     if (
       catalogSignature === world.userData.repositoryCatalogSignature &&
       (records.length
@@ -11552,30 +11964,39 @@ export function createWorldScene({
 
     const layer = new THREE.Group();
     layer.name = "repository-perimeter-portals";
-    const guide = new THREE.Mesh(
-      new THREE.TorusGeometry(REPOSITORY_EDGE_RADIUS, 0.045, 6, 256),
-      makeMaterial(THREE, "#77d9ff", {
-        emissive: "#1e637c",
-        emissiveIntensity: 0.45,
-        transparent: true,
-        opacity: 0.38,
-        roughness: 0.5,
-      }),
+    const coreRecords = records.filter(
+      (record) => record.source !== "hosted-import",
     );
-    guide.name = "repository-perimeter-guide";
-    guide.rotation.x = Math.PI / 2;
-    guide.position.y = 0.12;
-    layer.add(guide);
+    const hostedRecords = records.filter(
+      (record) => record.source === "hosted-import",
+    );
+    [
+      ["repository-perimeter-guide", REPOSITORY_EDGE_RADIUS, 0, coreRecords],
+      [
+        "hosted-repository-island-guide",
+        REPOSITORY_ISLAND_RING_RADIUS,
+        REPOSITORY_ISLAND_CENTER_X,
+        hostedRecords,
+      ],
+    ].forEach(([name, radius, centerX, cohort]) => {
+      if (!cohort.length) return;
+      const guide = new THREE.Mesh(
+        new THREE.TorusGeometry(radius, 0.045, 6, 256),
+        makeMaterial(THREE, "#77d9ff", {
+          emissive: "#1e637c",
+          emissiveIntensity: 0.45,
+          transparent: true,
+          opacity: 0.38,
+          roughness: 0.5,
+        }),
+      );
+      guide.name = name;
+      guide.rotation.x = Math.PI / 2;
+      guide.position.set(centerX, 0.12, 0);
+      layer.add(guide);
+    });
 
     const maxBytes = Math.max(0, ...records.map((record) => record.sizeBytes));
-    const portalSpacing =
-      (Math.PI * 2 * REPOSITORY_EDGE_RADIUS) /
-      Math.max(1, records.length);
-    const portalDensityScale = clamp(
-      (portalSpacing - 0.06) / 3.15,
-      0.58,
-      1,
-    );
     const diskGeometry = new THREE.CircleGeometry(1, 36);
     const outlineGeometry = new THREE.TorusGeometry(1.08, 0.065, 8, 40);
     const baseGeometry = new THREE.BoxGeometry(2.35, 0.22, 1.15);
@@ -11624,10 +12045,27 @@ export function createWorldScene({
     };
     const usedMaterials = new Set();
     const portalMeshes = [];
-    records.forEach((record, index) => {
+    const orderedRecords = [...coreRecords, ...hostedRecords];
+    orderedRecords.forEach((record, index) => {
+      const islandRecord = record.source === "hosted-import";
+      const cohort = islandRecord ? hostedRecords : coreRecords;
+      const cohortIndex = cohort.findIndex(
+        (candidate) => candidate.key === record.key,
+      );
+      const ringRadius = islandRecord
+        ? REPOSITORY_ISLAND_RING_RADIUS
+        : REPOSITORY_EDGE_RADIUS;
+      const centerX = islandRecord ? REPOSITORY_ISLAND_CENTER_X : 0;
       const angle =
         Math.PI / 2 +
-        (index / Math.max(1, records.length)) * Math.PI * 2;
+        (cohortIndex / Math.max(1, cohort.length)) * Math.PI * 2;
+      const portalSpacing =
+        (Math.PI * 2 * ringRadius) / Math.max(1, cohort.length);
+      const portalDensityScale = clamp(
+        (portalSpacing - 0.06) / 3.15,
+        0.58,
+        1,
+      );
       const isActive = record.key === activeKey;
       const material = isActive
         ? materials.selected
@@ -11653,11 +12091,28 @@ export function createWorldScene({
       const node = new THREE.Group();
       node.name = `repository-portal:${record.owner}/${record.name}`;
       node.position.set(
-        Math.cos(angle) * REPOSITORY_EDGE_RADIUS,
+        centerX + Math.cos(angle) * ringRadius,
         2.55,
-        Math.sin(angle) * REPOSITORY_EDGE_RADIUS,
+        Math.sin(angle) * ringRadius,
       );
       node.rotation.y = -angle - Math.PI / 2;
+      if (
+        ["external-import", "hosted-import"].includes(record.source) &&
+        !previousPortalKeys.has(record.key)
+      ) {
+        const importedBefore = records
+          .slice(0, index)
+          .filter(
+            (candidate) =>
+              ["external-import", "hosted-import"].includes(candidate.source) &&
+              !previousPortalKeys.has(candidate.key),
+          ).length;
+        repositoryPortalBornAt.set(
+          record.key,
+          performance.now() + importedBefore * 320,
+        );
+        node.scale.setScalar(reducedMotion ? 1 : 0.015);
+      }
       const face = new THREE.Group();
       face.name = `repository-portal-face:${record.owner}/${record.name}`;
       face.scale.setScalar(portalDensityScale);
@@ -11676,10 +12131,15 @@ export function createWorldScene({
         liveHost: record.liveHost,
         isPrivate: record.isPrivate,
         source: record.source,
+        provider: record.provider,
+        providerLabel: record.providerLabel,
+        externalUrl: record.externalUrl,
+        importId: record.importId,
         mirrorState: record.mirrorState,
         starCount: record.starCount,
         starred: record.starred,
         angle,
+        island: islandRecord,
       };
       for (const mesh of [disk, outline]) {
         mesh.userData.landmark = "repositories";
@@ -11688,6 +12148,41 @@ export function createWorldScene({
         portalMeshes.push(mesh);
       }
       face.add(disk, outline);
+      if (!isActive && record.sizeTree) {
+        const map = repositorySizeMapSegments(record.sizeTree, "");
+        const miniature = new THREE.Group();
+        miniature.name =
+          `repository-mini-size-map:${record.owner}/${record.name}`;
+        miniature.position.z = 0.09;
+        const innerRadius = nodeRadius * 0.18;
+        const outerRadius = nodeRadius * 0.91;
+        const ringWidth =
+          (outerRadius - innerRadius) / Math.max(1, map.ringCount);
+        map.segments.slice(0, 24).forEach((segment) => {
+          const geometry = repositoryWedgeGeometry(
+            THREE,
+            innerRadius + (segment.depth - 1) * ringWidth + 0.006,
+            innerRadius + segment.depth * ringWidth - 0.006,
+            segment.from,
+            segment.to,
+            0.045,
+          );
+          if (!geometry) return;
+          const wedge = new THREE.Mesh(
+            geometry,
+            new THREE.MeshBasicMaterial({
+              color: segment.color,
+              transparent: segment.type === "summary",
+              opacity: segment.type === "summary" ? 0.62 : 0.98,
+              side: THREE.DoubleSide,
+              toneMapped: false,
+            }),
+          );
+          wedge.position.z = segment.depth * 0.006;
+          miniature.add(wedge);
+        });
+        face.add(miniature);
+      }
       if (isActive) {
         const selectedHalo = new THREE.Mesh(
           new THREE.TorusGeometry(1.38, 0.055, 8, 40),
@@ -11722,6 +12217,8 @@ export function createWorldScene({
             ? record.sizeBytes
               ? `${compactSceneBytes(record.sizeBytes)} HOSTED`
               : "LIVE MIRROR"
+            : record.source === "external-import"
+              ? `${record.providerLabel || "EXTERNAL"} IMPORT`
             : record.mirrorState === "syncing"
               ? "MIRRORS SYNCING"
               : record.mirrorState === "offline"
@@ -11924,6 +12421,7 @@ export function createWorldScene({
         owner: record.owner,
         name: record.name,
         angle,
+        key: record.key,
       });
     });
 
@@ -11933,6 +12431,30 @@ export function createWorldScene({
     });
     world.userData.repositoryCatalogLayer = layer;
     world.userData.repositoryPortalMeshes = portalMeshes;
+  }
+
+  function setRepositoryImportState(state = {}) {
+    const district = landmarkObjects.get("repositories");
+    const kiosk = district?.userData?.repositoryImportKiosk;
+    if (!kiosk) return;
+    kiosk.userData.importing = state.active === true;
+    kiosk.userData.importStage = String(state.stage || "").slice(0, 40);
+    kiosk.userData.importProvider = String(state.provider || "").slice(0, 20);
+    const spark = kiosk.userData.importSpark;
+    if (spark?.material?.color) {
+      const color =
+        state.status === "error"
+          ? "#ff7f8f"
+          : state.status === "complete"
+            ? "#9ef7c6"
+            : state.provider === "gitlab"
+              ? "#fc8d45"
+              : state.provider === "codeberg"
+                ? "#77d9ff"
+                : "#f0f6fc";
+      spark.material.color.set(color);
+      spark.material.emissive?.set?.(color);
+    }
   }
 
   function updateRepositorySizeMap(sizeTree = {}, selection = {}) {
@@ -13450,7 +13972,9 @@ export function createWorldScene({
       return;
     }
     if (hit?.object?.userData?.createRepository) {
-      onCreateRepository();
+      onCreateRepository({
+        provider: String(hit.object.userData.createRepository || ""),
+      });
       return;
     }
     if (hit?.object?.userData?.officeKeypadDigit) {
@@ -14109,6 +14633,29 @@ export function createWorldScene({
           marker.position.y = Math.sin(angle) * radius;
         }
       });
+      repositoryPortals.forEach(({ group, key }) => {
+        const bornAt = repositoryPortalBornAt.get(key);
+        if (!bornAt) return;
+        const progress = clamp((time - bornAt) / 1050, 0, 1);
+        if (progress <= 0) {
+          group.scale.setScalar(0.015);
+          return;
+        }
+        // Overshoot once, then settle into the ring like a portal locking
+        // onto its perimeter coordinate.
+        const back = 1.70158;
+        const shifted = progress - 1;
+        const scale =
+          1 + (back + 1) * shifted ** 3 + back * shifted ** 2;
+        group.scale.setScalar(Math.max(0.015, scale));
+        group.rotation.z =
+          Math.sin(progress * Math.PI) * (1 - progress) * 0.24;
+        if (progress >= 1) {
+          group.scale.setScalar(1);
+          group.rotation.z = 0;
+          repositoryPortalBornAt.delete(key);
+        }
+      });
       // Node beacons hold a steady colour and size — no pulse — so a status
       // reads the same in a screenshot as it does live. Only degraded and
       // healing nodes carry a sweep, and it turns rather than fades, so the
@@ -14447,6 +14994,7 @@ export function createWorldScene({
     updateMastodonCountdown,
     updateSocialBanners,
     updateSocialBannerTimers,
+    updateSystemStatusBoard,
     setOfficeSeatState,
     showOfficeBubble,
     leaveOfficeInterior,
@@ -14492,6 +15040,7 @@ export function createWorldScene({
     updateIdentity,
     updateRepositoryCatalog,
     updateRepositoryGraph,
+    setRepositoryImportState,
     updateRepositorySizeMap,
     updateRepositoryRecordDesk,
     setRepositoryIssuePageExpanded,

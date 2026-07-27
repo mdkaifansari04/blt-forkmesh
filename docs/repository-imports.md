@@ -1,7 +1,7 @@
 # External repository imports
 
-ForkMesh keeps GitHub/GitLab metadata imports in a separate data model from its
-live mirror catalog:
+ForkMesh keeps GitHub, GitLab, and Codeberg metadata imports in a separate data
+model from its live mirror catalog:
 
 - `/api/repositories` contains published ForkMesh mirrors.
 - `/api/repository-imports` contains external metadata entries and stubs.
@@ -21,15 +21,34 @@ Content-Type: application/json
 {
   "sourceUrl": "https://github.com/owner/repository",
   "providerToken": "request-only token, if needed",
+  "targetOwner": "user-or-organization",
   "mode": "import",
   "sessionToken": "ForkMesh account session"
 }
 ```
 
-`mode` is `import` or `stub`. Only `github.com` and `gitlab.com` HTTPS
-repository URLs are accepted. Provider access tokens are used for that request
-and never written to D1, a Worker log, the response, or browser storage. Private
-repositories require a token that can read the repository.
+`mode` is `import` or `stub`. Only canonical `github.com`, `gitlab.com`, and
+`codeberg.org` HTTPS repository URLs are accepted. `targetOwner` may be the
+signed-in user or an organization where that user is an owner or administrator.
+Provider access tokens are used for that request and never written to D1, a
+Worker log, the response, or browser storage. Private repositories require a
+token that can read the repository.
+
+The World importer can expand a Codeberg user/organization profile into its
+public repositories before importing them one at a time:
+
+```http
+POST /api/repository-imports/discover
+Content-Type: application/json
+
+{
+  "sourceUrl": "https://codeberg.org/m33",
+  "sessionToken": "ForkMesh account session"
+}
+```
+
+Discovery is authenticated, paginated, restricted to canonical Codeberg URLs,
+and bounded to 200 repositories. It never imports a private repository.
 
 A community member can list a public stub without claiming ownership. If a
 provider administrator later imports the same stable provider repository id
@@ -64,6 +83,11 @@ Supported status values are:
 
 The two mirrored states require a matching catalog record. `actively_mirrored`
 also requires a current live-host heartbeat.
+
+An owner or organization administrator can delete an external listing with
+`DELETE /api/repository-imports/{id}`. The website provides select-all and bulk
+deletion controls for only the imports the current account can manage. Deleting
+the listing never deletes anything from the source provider.
 
 ## Mirror volunteers
 
