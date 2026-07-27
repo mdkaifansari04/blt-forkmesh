@@ -731,8 +731,8 @@ def _response(data, status=200, **_kwargs):
 
 
 def _load_handler(
-    *, rows, presence=None, first_hosted=None, live_hosts=None,
-    linked_canonical=False,
+    *, rows, first_hosted=None,
+    linked_canonical=False, endpoint_nodes=None,
 ):
     calls = []
 
@@ -743,17 +743,21 @@ def _load_handler(
         calls.append(sql)
         if "FROM repositories" in sql:
             return rows
-        if "FROM host_presence" in sql:
-            return presence or []
         if "FROM repo_first_hosted" in sql:
             return first_hosted or []
         if "FROM mirror_https_endpoints" in sql:
+            if endpoint_nodes is not None:
+                return [
+                    {"node_name": node, "checked_at": _Clock.now()}
+                    for node in endpoint_nodes
+                ]
             return [
                 {
                     "node_name": (
                         item.get("data", {}).get("machineName")
                         or item.get("data", {}).get("owner")
-                    )
+                    ),
+                    "checked_at": _Clock.now(),
                 }
                 for item in rows
                 if item.get("data", {}).get("visibility", "public") == "public"
@@ -769,16 +773,16 @@ def _load_handler(
     async def decrypt_row(_env, data):
         return data
 
-    async def repo_live_host_count(_env, owner, repo):
-        if live_hosts is None:
-            return None
-        return live_hosts.get(f"{owner}/{repo}")
-
     async def edge_cache_match(_key):
         return None  # always a miss in these unit tests
 
     async def edge_cache_put(_key, _response):
         calls.append("edge_cache_put")
+
+    async def active_registered_node_bis(_env):
+        # Mirror membership is durable even when the live-node set is empty.
+        # Fresh endpoint/presence evidence below still controls online status.
+        return set()
 
     namespace = {
         "Date": _Clock,
@@ -788,15 +792,11 @@ def _load_handler(
         "valid_node_name": lambda value: bool(value),
         "clean_string": lambda value, maximum: str(value or "")[:maximum],
         "asyncio": asyncio,
-        # Fresh per-load probe memo so tests stay independent of each other.
-        "_LIVE_HOST_PROBE_MEMO": {},
-        "LIVE_HOST_PROBE_MEMO_TTL_MS": 30_000,
-        "HYDRATE_PROBE_MAX": 8,
         "ensure_schema": ensure_schema,
+        "active_registered_node_bis": active_registered_node_bis,
         "d1_all": d1_all,
         "d1_first": d1_first,
         "decrypt_row": decrypt_row,
-        "repo_live_host_count": repo_live_host_count,
         "_is_blocked_catalog_identity": lambda _env, _owner, _name: False,
         "json_response": _response,
         "edge_cache_match": edge_cache_match,
@@ -805,7 +805,6 @@ def _load_handler(
     }
     handler, *_ = _load(
         "repo_mirrors_handler",
-        "hydrate_repo_group_live_hosts",
         "method_name",
         "_mirror_ms",
         "repo_mirror_group_key",
@@ -832,7 +831,6 @@ def test_repo_mirrors_handler_get_returns_public_mirrors_payload():
             {"key_bi": "a", "data": _row("a", "mainnode", "forkmesh", root="abc")["data"]},
             {"key_bi": "b", "data": _row("b", "kaif-node", "forkmesh", root="abc")["data"]},
         ],
-        presence=[{"repo_bi": "a", "ts": 999_000}],
         first_hosted=[{"repo_bi": "b", "ts": 500_000}],
     )
 
@@ -841,17 +839,57 @@ def test_repo_mirrors_handler_get_returns_public_mirrors_payload():
     assert response["status"] == 200
     assert response["data"]["ok"] is True
     assert response["data"]["summary"]["mirrors"] == 2
-    assert [mirror["node"] for mirror in response["data"]["mirrors"]] == [
-        "mainnode",
-        "kaif-node",
-    ]
+    assert {
+        mirror["node"] for mirror in response["data"]["mirrors"]
+    } == {"mainnode", "kaif-node"}
     assert any("FROM repositories" in call for call in calls)
-    assert any("FROM host_presence" in call for call in calls)
+    assert not any("FROM host_presence" in call for call in calls)
+    assert sum(
+        "FROM mirror_https_endpoints" in call for call in calls
+    ) == 1
     assert any("FROM repo_first_hosted" in call for call in calls)
     # The handler also gathers the attested-pin history so each mirror carries
     # its clone-integrity verdict.
     assert any("FROM repo_state_history" in call for call in calls)
     assert all("integrity" in mirror for mirror in response["data"]["mirrors"])
+
+
+def test_repo_mirrors_handler_keeps_inactive_rows_visible_offline():
+    handler, _calls = _load_handler(
+        rows=[
+            {
+                "key_bi": "a",
+                "owner_bi": "owner:mainnode",
+                "data": _row(
+                    "a", "mainnode", "forkmesh", root="abc"
+                )["data"],
+            },
+            {
+                "key_bi": "b",
+                "owner_bi": "owner:backup",
+                "data": _row(
+                    "b", "backup", "forkmesh", root="abc",
+                    source="remote-clone",
+                )["data"],
+            },
+        ],
+        endpoint_nodes=[],
+    )
+
+    response = asyncio.run(
+        handler(object(), _Request("GET"), "mainnode", "forkmesh")
+    )
+
+    assert response["status"] == 200
+    assert response["data"]["summary"]["mirrors"] == 2
+    assert {
+        mirror["node"]: mirror["status"]
+        for mirror in response["data"]["mirrors"]
+    } == {"backup": "offline", "mainnode": "offline"}
+    assert all(
+        mirror["cloneAvailable"] is False
+        for mirror in response["data"]["mirrors"]
+    )
 
 
 def test_repo_mirrors_handler_applies_linked_org_integrity_anchor():
@@ -880,6 +918,7 @@ def test_repo_mirrors_handler_applies_linked_org_integrity_anchor():
             },
         ],
         linked_canonical=True,
+        endpoint_nodes=["mirror2", "mirror3"],
     )
 
     response = asyncio.run(
@@ -898,14 +937,13 @@ def test_repo_mirrors_handler_applies_linked_org_integrity_anchor():
     assert any("FROM org_repos" in call for call in calls)
 
 
-def test_repo_mirrors_handler_uses_live_host_probe_for_online_status():
+def test_repo_mirrors_handler_uses_one_signed_endpoint_snapshot_for_status():
     handler, _ = _load_handler(
         rows=[
             {"key_bi": "a", "data": _row("a", "mainnode", "forkmesh", root="abc")["data"]},
             {"key_bi": "b", "data": _row("b", "kaif-node", "forkmesh", root="abc")["data"]},
         ],
-        presence=[],
-        live_hosts={"mainnode/forkmesh": 0, "kaif-node/forkmesh": 1},
+        endpoint_nodes=["kaif-node"],
     )
 
     response = asyncio.run(handler(object(), _Request("GET"), "mainnode", "forkmesh"))
@@ -914,6 +952,11 @@ def test_repo_mirrors_handler_uses_live_host_probe_for_online_status():
     statuses = {m["node"]: m["status"] for m in response["data"]["mirrors"]}
     assert statuses == {"kaif-node": "online", "mainnode": "offline"}
     assert response["data"]["summary"]["online"] == 1
+    live = next(
+        mirror for mirror in response["data"]["mirrors"]
+        if mirror["node"] == "kaif-node"
+    )
+    assert live["lastSeen"] == _Clock.now()
 
 
 def test_fresh_healthy_ok_https_endpoint_hydrates_mirror_online():

@@ -2555,12 +2555,14 @@ void MainWindow::onUiStall(qint64 peakMs, const QString &blockingCall,
     const QString when = QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss"));
     // Name the culprit operation inline so the one-line Log entry is actionable on
     // its own; the full backtrace stays in the stall-detail dialog.
-    QString head =
-        QStringLiteral("[%1] UI stalled ~%2 ms (event loop blocked)").arg(when).arg(peakMs);
+    QString head = QStringLiteral("UI stalled ~%1 ms (event loop blocked)").arg(peakMs);
     if (!blockingCall.isEmpty())
         head += QStringLiteral(" while %1").arg(blockingCall);
-    logSystem(head); // shows up in the app's Log view
-    QString entry = head;
+    // Shows up in the app's Log view under its own STALL badge (filterable from
+    // the chip row); logSystem stamps the time itself, so the dialog's copy is
+    // the one that carries it.
+    logSystem(head);
+    QString entry = QStringLiteral("[%1] %2").arg(when, head);
     if (!backtrace.isEmpty())
         entry += QLatin1Char('\n') + backtrace;
     m_stallLog.append(entry);
@@ -2967,6 +2969,7 @@ QWidget *MainWindow::buildLogSection()
         m_logFilter.clear();
         m_logFilterCategories.clear();
         m_logRenderFrom = 0; // nothing left to page back into once cleared
+        m_logFilterEmptyNotice = false;
         if (m_settingsLog)
             m_settingsLog->clear();
         saveNetworkLog();          // truncate the on-disk log too

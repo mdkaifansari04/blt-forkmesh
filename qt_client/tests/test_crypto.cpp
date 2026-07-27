@@ -1,9 +1,11 @@
 #include "../src/ActionFile.h"
+#include "../src/ActionStore.h"
 #include "../src/AccountCapability.h"
 #include "../src/AgentJail.h"
 #include "../src/AgentStore.h"
 #include "../src/BackoffNetworkAccessManager.h"
 #include "../src/ChatHistoryLimits.h"
+#include "../src/ChatVisitorPresence.h"
 #include "../src/CommitCommentStore.h"
 #include "../src/CoveCrypto.h"
 #include "../src/CoveStore.h"
@@ -393,6 +395,31 @@ int main(int argc, char *argv[])
         check(oversized.size() == 1 && !oversized.first().contains("file") &&
                   oversized.first().value("fileName").toString() == "huge.bin",
               "oversized file payloads are stripped from stored history");
+    }
+
+    {
+        // Transient visitors (adhoc #404): a browser guest is forgotten after
+        // ten idle minutes, while nodes and accounts keep their offline row.
+        using namespace ChatVisitorPresence;
+        check(isTransientVisitor(QStringLiteral("guest"), QStringLiteral("jett")),
+              "an advertised guest account kind marks a transient visitor");
+        check(isTransientVisitor(QString(), QStringLiteral("Guest 1667")) &&
+                  isTransientVisitor(QString(), QStringLiteral("World Guest f49ab8")) &&
+                  isTransientVisitor(QString(),
+                                     QString::fromUtf8("World visitor \xC2\xB7 jett")),
+              "guest and World-visitor names mark a transient visitor");
+        check(!isTransientVisitor(QStringLiteral("node"), QStringLiteral("mirror-1")) &&
+                  !isTransientVisitor(QStringLiteral("user"), QStringLiteral("jett")) &&
+                  !isTransientVisitor(QString(), QStringLiteral("guesthouse")),
+              "nodes, accounts, and guest-lookalike names are not visitors");
+
+        const qint64 now = 1700000000000LL;
+        check(!visitorIsIdle(now - kVisitorIdleMs + 1000, now),
+              "a visitor seen inside the idle window is kept");
+        check(visitorIsIdle(now - kVisitorIdleMs - 1000, now),
+              "a visitor silent past the idle window is forgotten");
+        check(!visitorIsIdle(0, now),
+              "a visitor with no sighting yet is left alone");
     }
 
     {
@@ -5726,6 +5753,112 @@ int main(int argc, char *argv[])
               "a headless node answers to its mirror-executor node name");
         check(ActionFile::parseLabelList(QStringLiteral("  ")).isEmpty(),
               "an empty label list normalizes to nothing");
+    }
+
+    {
+        // `needs:` orders one workflow behind another for the same commit, so a
+        // deploy can trust the CI run instead of repeating its test suite.
+        const ActionWorkflow deploy = ActionFile::parse(
+            QStringLiteral(".forkmesh/deploy.yml"),
+            QStringLiteral("name: Deploy\non: [push]\n"
+                           "needs: [.forkmesh/ci.yml]\n"
+                           "jobs:\n  deploy:\n    steps:\n"
+                           "      - run: ./deploy.sh\n"));
+        check(deploy.valid &&
+                  deploy.needs == QStringList{QStringLiteral(".forkmesh/ci.yml")},
+              "top-level needs parses into one dependency");
+
+        const ActionWorkflow jobLevel = ActionFile::parse(
+            QStringLiteral(".forkmesh/publish.yml"),
+            QStringLiteral("name: Publish\non: [push]\n"
+                           "jobs:\n  publish:\n    needs:\n      - CI tests\n"
+                           "    steps:\n      - run: echo hi\n"));
+        check(jobLevel.needs == QStringList{QStringLiteral("CI tests")},
+              "job-level needs block lists parse too");
+
+        // Jobs inside one file are flattened into a single step list, so a
+        // GitHub-style dependency between sibling jobs must not be read as a
+        // dependency on another workflow (which would never resolve).
+        const ActionWorkflow siblings = ActionFile::parse(
+            QStringLiteral(".forkmesh/build.yml"),
+            QStringLiteral("name: Build\non: [push]\n"
+                           "jobs:\n  compile:\n    steps:\n      - run: make\n"
+                           "  test:\n    needs: compile\n    steps:\n"
+                           "      - run: make test\n"));
+        check(siblings.needs.isEmpty(),
+              "needs naming a job in the same file is not a workflow dependency");
+
+        check(ActionNeeds::matches(QStringLiteral("ci"), QStringLiteral("CI tests"),
+                                   QStringLiteral(".forkmesh/ci.yml")) &&
+                  ActionNeeds::matches(QStringLiteral("CI TESTS"),
+                                       QStringLiteral("CI tests"),
+                                       QStringLiteral(".forkmesh/ci.yml")) &&
+                  ActionNeeds::matches(QStringLiteral(".forkmesh/ci.yml"),
+                                       QStringLiteral("CI tests"),
+                                       QStringLiteral(".forkmesh/ci.yml")),
+              "a needs entry matches by name, path, or file name, case-insensitively");
+        check(!ActionNeeds::matches(QStringLiteral("ci-qt"),
+                                    QStringLiteral("CI tests"),
+                                    QStringLiteral(".forkmesh/ci.yml")),
+              "a needs entry does not match an unrelated workflow");
+
+        ActionRun dependency;
+        dependency.id = 1;
+        dependency.owner = QStringLiteral("forkmesh");
+        dependency.name = QStringLiteral("forkmesh");
+        dependency.workflowPath = QStringLiteral(".forkmesh/ci.yml");
+        dependency.workflowName = QStringLiteral("CI tests");
+        dependency.commit = QStringLiteral("abc123");
+        ActionRun dependent = dependency;
+        dependent.id = 2;
+        dependent.workflowPath = QStringLiteral(".forkmesh/deploy.yml");
+        dependent.workflowName = QStringLiteral("Deploy Cloudflare Worker");
+        const QStringList needs{QStringLiteral(".forkmesh/ci.yml")};
+
+        dependency.status = ActionStatus::Running;
+        check(ActionNeeds::resolve(dependent, needs, {dependency}) ==
+                  ActionNeeds::State::Waiting,
+              "a dependent run waits while its dependency is still running");
+        dependency.status = ActionStatus::AwaitingApproval;
+        check(ActionNeeds::resolve(dependent, needs, {dependency}) ==
+                  ActionNeeds::State::Waiting,
+              "an unapproved dependency keeps the dependent queued");
+        dependency.status = ActionStatus::Success;
+        check(ActionNeeds::resolve(dependent, needs, {dependency}) ==
+                  ActionNeeds::State::Ready,
+              "a succeeded dependency releases the dependent run");
+        dependency.status = ActionStatus::Failed;
+        QString detail;
+        check(ActionNeeds::resolve(dependent, needs, {dependency}, &detail) ==
+                  ActionNeeds::State::Blocked &&
+                  detail.contains(ActionStatus::Failed),
+              "a failed dependency blocks the dependent run and reports why");
+
+        // A dependency at a different commit is a different result entirely; the
+        // gate is per-commit, and a missing record must not wedge the queue.
+        dependency.status = ActionStatus::Success;
+        ActionRun otherCommit = dependency;
+        otherCommit.commit = QStringLiteral("def456");
+        otherCommit.status = ActionStatus::Failed;
+        check(ActionNeeds::resolve(dependent, needs, {otherCommit}) ==
+                  ActionNeeds::State::Ready,
+              "runs of the dependency at other commits do not gate this one");
+        check(ActionNeeds::resolve(dependent, needs, {}) ==
+                  ActionNeeds::State::Ready,
+              "a dependency that never ran on this node is not a barrier");
+        check(ActionNeeds::resolve(dependent, {}, {dependency}) ==
+                  ActionNeeds::State::Ready,
+              "a workflow with no needs is always ready");
+
+        // Re-running a workflow prepends a fresh record; the newest one wins.
+        ActionRun rerun = dependency;
+        rerun.id = 3;
+        rerun.status = ActionStatus::Running;
+        ActionRun superseded = dependency;
+        superseded.status = ActionStatus::Cancelled;
+        check(ActionNeeds::resolve(dependent, needs, {rerun, superseded}) ==
+                  ActionNeeds::State::Waiting,
+              "the newest run of a dependency decides the gate");
     }
 
     // --- Secret scanning -------------------------------------------------------

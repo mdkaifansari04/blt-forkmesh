@@ -391,7 +391,7 @@ def test_layout_editor_rotates_with_the_wheel_while_dragging():
     assert "mouse wheel while dragging" in world_js
 
 
-def test_individual_placards_and_node_cabinets_are_movable():
+def test_individual_placards_are_movable_but_node_cabinets_stay_automatic():
     scene_js = WORLD_SCENE_JS.read_text(encoding="utf-8")
     # Each placard carries its own layout id, so a sign can be nudged without
     # dragging the whole section it stands in front of.
@@ -404,11 +404,15 @@ def test_individual_placards_and_node_cabinets_are_movable():
     assert "function layoutGroundPoint(object, clientX, clientY)" in scene_js
     assert "parent.worldToLocal(point)" in scene_js
 
-    # Node cabinets are rebuilt whenever their live data changes and are
-    # re-slotted on every refresh, so the locked placement is re-applied after
-    # the slot assignment and dropped again when the node disappears.
-    assert 'worldLayoutId("node-", nodeName)' in scene_js
-    assert "registerMovableObject(layoutId, cabinet);" in scene_js
-    assert "forgetMovableObject(cabinet?.userData?.layoutId);" in scene_js
+    # Live node cabinets are deterministically re-slotted around the global
+    # reward pool. They are intentionally absent from the saved layout editor,
+    # whose stale positions would otherwise override automatic membership.
+    network_nodes = scene_js[
+        scene_js.index("function updateNetworkNodes("):
+        scene_js.index("function focusNetworkNode(")
+    ]
+    assert 'worldLayoutId("node-"' not in network_nodes
+    assert "registerMovableObject(" not in network_nodes
+    assert "forgetMovableObject(" not in network_nodes
     assert "function applyLockedPlacement(id, object)" in scene_js
     assert "lockedWorldLayout.set(id" in scene_js

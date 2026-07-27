@@ -211,7 +211,7 @@ def test_payload_states_gate_each_feed_independently():
 
 _BLOG_CARD_HTML = (
     '<a class="blog1-card" href="/blog/desktop-node-mirrors/"'
-    ' data-section="mesh">'
+    ' data-published="2026-07-04" data-section="mesh">'
     '<img class="blog1-post-image" src="/x.webp" alt="">'
     '<div class="blog1-card-copy">'
     '<p class="blog1-card-meta">Distributed hosting &amp; more · Feature 01'
@@ -234,9 +234,12 @@ def test_blog_feed_normalization_carries_preview_text_and_artwork():
     assert post["detail"] == (
         "Actively mirrored repositories live on independent nodes.")
     assert post["image"] == "https://forkmesh.com/x.webp"
-    # Feed items carry no dates; the board's staleness plate reads the
-    # snapshot age instead.
-    assert post["createdAt"] == 0
+    # The item's pubDate rides through as createdAt: the board's plate
+    # reads how long ago the newest post went up.
+    assert post["createdAt"] == 1783123200000
+    undated = feeds.normalize_blog_feed(blog_feed.build_feed(
+        _BLOG_CARD_HTML.replace(' data-published="2026-07-04"', "")))
+    assert undated[0]["createdAt"] == 0
     assert post["url"] == "https://forkmesh.com/blog/desktop-node-mirrors/"
     # Malformed documents degrade to an empty list, never raise.
     assert feeds.normalize_blog_feed(None) == []
@@ -277,9 +280,13 @@ def test_banners_carry_sync_and_staleness_plates():
     assert "banner-lastpost" in scene
     assert "function updateSocialBannerTimers(payload)" in scene
     assert "updateSocialBannerTimers,\n" in scene
-    # The blog board has no post dates, so its plate reads the snapshot age.
-    assert 'label: "SYNCED"' in scene
-    assert scene.count('label: "LAST POST"') == 2
+    # Every board, blog included, reads its own newest post's age.
+    assert 'label: "SYNCED"' not in scene
+    assert scene.count('label: "LAST POST"') == 3
+    # The blog runs the same color rule on a blog's slower cadence.
+    assert "const BLOG_POST_FRESH_MS = 7 * 24 * 60 * 60 * 1000;" in scene
+    assert "const BLOG_POST_STALE_MS = 21 * 24 * 60 * 60 * 1000;" in scene
+    assert "freshMs: BLOG_POST_FRESH_MS," in scene
 
 
 def test_world_drives_the_banner_clocks_on_a_one_second_tick():
@@ -287,7 +294,7 @@ def test_world_drives_the_banner_clocks_on_a_one_second_tick():
     assert "syncSocialBannerTimers()" in world
     assert "this.world?.updateSocialBannerTimers?.(" in world
     assert "socialNewestPostAgo(feed)" in world
-    assert "socialSnapshotAge()" in world
+    assert "blog: timers(this.socialNewestPostAgo(snapshot?.blog))," in world
     # The tick, not a ten-minute interval, drives the reload so the countdown
     # and the fetch can never drift apart.
     idx = world.index("startSocialBannersRefresh() {")

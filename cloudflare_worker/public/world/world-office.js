@@ -47,6 +47,7 @@ export function createWorldOfficeController({
   let meetingAuthorizationPromise = null;
   let exitPending = false;
   let authorizationGeneration = 0;
+  let floorAuthorizationPromise = null;
   let officeEntryTicket = "";
   let officeEntryExpiresAt = 0;
   let officeAccess = normalizeOfficeFloorAccess({});
@@ -197,7 +198,11 @@ export function createWorldOfficeController({
     const visits = Array.isArray(payload?.visits)
       ? payload.visits.slice(0, 20)
       : [];
-    world.setOfficeAttendance?.({ visits });
+    const asOfAt = Number(payload?.asOfAt);
+    world.setOfficeAttendance?.({
+      visits,
+      ...(Number.isFinite(asOfAt) && asOfAt > 0 ? { asOfAt } : {}),
+    });
     return visits;
   }
 
@@ -215,7 +220,13 @@ export function createWorldOfficeController({
     }
   }
 
-  function recordAttendance(direction) {
+  function recordAttendance(
+    direction,
+    {
+      loadPublicFallback = false,
+      generation = authorizationGeneration,
+    } = {},
+  ) {
     const account = String(attendanceAccount || "");
     if (!account || typeof root.postJSON !== "function") {
       return attendanceWrite;
@@ -234,7 +245,20 @@ export function createWorldOfficeController({
         applyAttendance(payload);
         return payload;
       })
-      .catch(() => null);
+      .catch(async () => {
+        // A failed signed IN should still leave the public lobby's last-20
+        // ledger useful. This fallback is sequential, never concurrent with
+        // the authoritative POST response.
+        if (
+          loadPublicFallback &&
+          action === "in" &&
+          active &&
+          generation === authorizationGeneration
+        ) {
+          await loadAttendance();
+        }
+        return null;
+      });
     return attendanceWrite;
   }
 
@@ -244,8 +268,11 @@ export function createWorldOfficeController({
     return normalizeOfficeFloorAccess({});
   }
 
-  function completeOfficeEntry() {
-    if (!world.enterOffice()) return false;
+  function completeOfficeEntry({
+    loadPublicAttendance = true,
+    source = "",
+  } = {}) {
+    if (!world.enterOffice({ source })) return false;
     authorizationGeneration += 1;
     setEntryPending(false);
     officeAccess = initialOfficeAccess();
@@ -258,13 +285,17 @@ export function createWorldOfficeController({
     exitPending = false;
     meeting.openLobby();
     tasks?.setActive?.(false);
-    void loadAttendance();
+    if (loadPublicAttendance) void loadAttendance();
     return true;
   }
 
   async function refreshOfficeAuthorization(
     activeSession,
     generation = authorizationGeneration,
+    {
+      recordEntry = true,
+      loadPublicFallback = true,
+    } = {},
   ) {
     if (
       !activeSession ||
@@ -278,19 +309,66 @@ export function createWorldOfficeController({
       return false;
     }
     setEntryPending(true);
+    const refresh = (async () => {
+      try {
+        const floorAccess = await loadFloorAccess(activeSession);
+        if (!active || generation !== authorizationGeneration) return false;
+        officeAccess = floorAccess;
+        attendanceAccount = officeAccess.account;
+        world.setOfficeAccess?.(officeAccess);
+        if (recordEntry) {
+          void recordAttendance("in", {
+            loadPublicFallback,
+            generation,
+          });
+        }
+        return true;
+      } catch (_) {
+        // A stale/invalid signed session remains a public-lobby visit. Load
+        // its read-only ledger only for the initial entry path; an explicit
+        // post-membership refresh must not add unrelated network traffic.
+        if (
+          loadPublicFallback &&
+          active &&
+          generation === authorizationGeneration
+        ) {
+          void loadAttendance();
+        }
+        return false;
+      } finally {
+        if (generation === authorizationGeneration) setEntryPending(false);
+      }
+    })();
+    floorAuthorizationPromise = refresh;
     try {
-      const floorAccess = await loadFloorAccess(activeSession);
-      if (!active || generation !== authorizationGeneration) return false;
-      officeAccess = floorAccess;
-      attendanceAccount = officeAccess.account;
-      world.setOfficeAccess?.(officeAccess);
-      void recordAttendance("in");
-      return true;
-    } catch (_) {
-      return false;
+      return await refresh;
     } finally {
-      if (generation === authorizationGeneration) setEntryPending(false);
+      if (floorAuthorizationPromise === refresh) {
+        floorAuthorizationPromise = null;
+      }
     }
+  }
+
+  // One explicit, server-authoritative refresh after the signed-in viewer's
+  // own organization-team membership changes. It waits for entry hydration
+  // rather than racing it, never records another attendance punch, and owns no
+  // interval/polling loop.
+  async function refreshAuthorization() {
+    const pending = floorAuthorizationPromise;
+    if (pending) {
+      try {
+        await pending;
+      } catch (_) {}
+    }
+    const activeSession = authenticatedSession();
+    const generation = authorizationGeneration;
+    if (!active || !activeSession || generation !== authorizationGeneration) {
+      return false;
+    }
+    return refreshOfficeAuthorization(activeSession, generation, {
+      recordEntry: false,
+      loadPublicFallback: false,
+    });
   }
 
   async function authorizeMeeting() {
@@ -345,9 +423,15 @@ export function createWorldOfficeController({
   async function enterOffice(entry = {}) {
     const doorwayEntry = entry?.source === "doorway";
     try {
-      if (proximity !== "nearby" || active) return false;
+      // The scene emits "doorway" only after its physical collider verifies a
+      // real threshold crossing. Do not reject a fast crossing merely because
+      // the later proximity tick still contains the previous frame.
+      if (active || (!doorwayEntry && proximity !== "nearby")) return false;
       const activeSession = authenticatedSession();
-      const entered = completeOfficeEntry();
+      const entered = completeOfficeEntry({
+        loadPublicAttendance: !activeSession,
+        source: doorwayEntry ? "doorway" : "",
+      });
       if (entered && activeSession) {
         // Physical admission never waits on the network. Signed-in visitors
         // receive team-floor and meeting permissions in the background.
@@ -372,6 +456,7 @@ export function createWorldOfficeController({
     officeEntryTicket = "";
     officeEntryExpiresAt = 0;
     meetingAuthorizationPromise = null;
+    floorAuthorizationPromise = null;
     officeAccess = normalizeOfficeFloorAccess({});
     attendanceAccount = "";
     world.setOfficeAccess?.(officeAccess);
@@ -463,6 +548,7 @@ export function createWorldOfficeController({
     officeEntryTicket = "";
     officeEntryExpiresAt = 0;
     meetingAuthorizationPromise = null;
+    floorAuthorizationPromise = null;
     officeAccess = normalizeOfficeFloorAccess({});
     authorizationGeneration += 1;
     setEntryPending(false);
@@ -481,6 +567,7 @@ export function createWorldOfficeController({
     setProximity,
     focusOffice,
     enterOffice,
+    refreshAuthorization,
     authorizeMeeting,
     openFallback,
     collapse,

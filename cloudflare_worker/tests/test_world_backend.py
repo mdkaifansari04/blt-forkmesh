@@ -73,7 +73,6 @@ class _Headers:
 def _load_context_handler(now=17_500_000):
     nodes = [
         _top_level_node("world_request_country"),
-        _top_level_node("_world_security_details"),
         _top_level_node("world_context_handler"),
     ]
     module = ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[]))
@@ -101,10 +100,7 @@ def _load_context_handler(now=17_500_000):
 
 def test_context_returns_only_country_and_shared_clock_fields():
     now = 91_234_567
-    headers = _Headers(
-        {"cf-ipcountry": "us"},
-        allowed={"cf-ipcountry", "cf-connecting-ip", "user-agent"},
-    )
+    headers = _Headers({"cf-ipcountry": "us"}, allowed={"cf-ipcountry"})
     request = SimpleNamespace(method="GET", headers=headers)
     response = _load_context_handler(now)(request)
 
@@ -118,21 +114,11 @@ def test_context_returns_only_country_and_shared_clock_fields():
         "worldConnections": 64,
         "worldMessagesPerSecond": 4,
         "chatConnections": 128,
-        "securityDetails": {"ip": "", "agent": ""},
     }
-    assert headers.read == [
-        "cf-ipcountry",
-        "cf-connecting-ip",
-        "user-agent",
-    ]
+    assert headers.read == ["cf-ipcountry"]
     assert response["cache_control"] == "no-store, max-age=0, must-revalidate"
     assert response["headers"]["x-content-type-options"] == "nosniff"
-    public_context = {
-        key: value
-        for key, value in response["data"].items()
-        if key != "securityDetails"
-    }
-    serialized = repr(public_context).lower()
+    serialized = repr(response["data"]).lower()
     for forbidden in ("ip", "user-agent", "useragent", "latitude", "longitude",
                       "repo", "wallet", "url"):
         assert forbidden not in serialized
@@ -148,10 +134,7 @@ def test_context_rejects_non_get_without_reading_headers():
 
 
 def test_context_prefers_trusted_request_cf_country_without_header_read():
-    headers = _Headers(
-        {"cf-ipcountry": "GB"},
-        allowed={"cf-connecting-ip", "user-agent"},
-    )
+    headers = _Headers({"cf-ipcountry": "GB"}, allowed=set())
     request = SimpleNamespace(
         method="GET",
         headers=headers,
@@ -159,10 +142,16 @@ def test_context_prefers_trusted_request_cf_country_without_header_read():
     )
     response = _load_context_handler()(request)
     assert response["data"]["countryCode"] == "JP"
-    assert headers.read == ["cf-connecting-ip", "user-agent"]
+    assert headers.read == []
 
 
-def test_context_reflects_only_edge_ip_and_agent_to_the_same_no_store_request():
+def test_context_never_reflects_a_connection_card_back_to_the_visitor():
+    """Connection details belong to account session management, not context.
+
+    The World context is served to every visitor, guests included, so it reads
+    no address or user-agent header at all. The owner-only sign-in address now
+    lives on /api/accounts/sessions behind a live session token.
+    """
     headers = _Headers(
         {
             "cf-ipcountry": "US",
@@ -170,17 +159,14 @@ def test_context_reflects_only_edge_ip_and_agent_to_the_same_no_store_request():
             "user-agent": "  Example Browser/7.2\tLinux  ",
             "x-forwarded-for": "198.51.100.88",
         },
-        allowed={"cf-ipcountry", "cf-connecting-ip", "user-agent"},
+        allowed={"cf-ipcountry"},
     )
     response = _load_context_handler()(SimpleNamespace(
         method="GET",
         headers=headers,
     ))
-    assert response["data"]["securityDetails"] == {
-        "ip": "2001:db8::1",
-        "agent": "Example Browser/7.2 Linux",
-    }
-    assert "x-forwarded-for" not in headers.read
+    assert "securityDetails" not in response["data"]
+    assert headers.read == ["cf-ipcountry"]
     assert response["cache_control"] == "no-store, max-age=0, must-revalidate"
 
 

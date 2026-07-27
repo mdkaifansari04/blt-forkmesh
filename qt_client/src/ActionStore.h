@@ -52,6 +52,32 @@ struct ActionRun {
     static ActionRun fromJson(const QJsonObject &obj);
 };
 
+// Resolves a workflow's `needs:` against the run history, so a run can wait for
+// another workflow's result at the same commit instead of repeating its work.
+namespace ActionNeeds {
+
+enum class State {
+    Ready,   // every dependency succeeded, or isn't scheduled on this node
+    Waiting, // a dependency is still awaiting approval, queued, or running
+    Blocked, // a dependency finished without succeeding
+};
+
+// True when one `needs:` entry names the workflow at workflowPath. Matching is
+// case-insensitive and accepts the display name, the repo-relative path, the
+// bare file name, or the file name without its extension.
+bool matches(const QString &token, const QString &workflowName,
+             const QString &workflowPath);
+
+// Resolve `needs` against `history` (newest first) for run's repository and
+// commit. A dependency with no run record at all is not a barrier: it may be
+// dedicated to another node, disabled, or simply absent, and blocking on it
+// would wedge the queue forever. `detail` receives the reason for a non-Ready
+// state.
+State resolve(const ActionRun &run, const QStringList &needs,
+              const QList<ActionRun> &history, QString *detail = nullptr);
+
+} // namespace ActionNeeds
+
 // Persists run history and logs on disk, and owns the global variables store and
 // the per-repo approved-workflow store (both in QSettings).
 class ActionStore

@@ -175,11 +175,11 @@ def normalize_twitter_timeline(next_data):
 def normalize_blog_feed(xml):
     """Bound the blog's published RSS items to the banner's post shape.
 
-    Feed items carry no publication dates (the feature posts are static), so
-    createdAt stays 0 and the board's staleness plate reads the snapshot age
-    instead of a last-post age. `detail` is the item's description — the
-    preview text the board prints under the headline — and `image` is the
-    item enclosure the board paints as the card's artwork.
+    createdAt is the item's pubDate, so the board's plate reads how long ago
+    the newest post went up (0 for an undated item, which the plate treats as
+    unknown). `detail` is the item's description — the preview text the board
+    prints under the headline — and `image` is the item enclosure the board
+    paints as the card's artwork.
     """
     posts = []
     for entry in blog_feed.parse_rss(xml):
@@ -192,7 +192,7 @@ def normalize_blog_feed(xml):
             "detail": _clean_text(entry.get("summary")),
             "meta": _clean_text(entry.get("category"), 80),
             "image": _clean_text(entry.get("image"), 300),
-            "createdAt": 0,
+            "createdAt": _epoch_ms(entry.get("publishedMs")),
             "url": _clean_text(entry.get("url"), 300) or BLOG_URL,
         })
         if len(posts) >= SOCIAL_POSTS_LIMIT:

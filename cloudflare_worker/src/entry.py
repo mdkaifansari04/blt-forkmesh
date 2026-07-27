@@ -76,6 +76,16 @@ SENTRY_CRON_MAX_RUNTIME_MINUTES = 5
 CRON_WATCHDOG_GRACE_MS = 3 * 60 * 1000
 CRON_WATCHDOG_RETRY_MS = 5 * 60 * 1000
 CRON_WATCHDOG_NAME = "scheduled-completion-v1"
+# The Cron Trigger only seeds this singleton. Its Durable Object alarm owns the
+# minute loop and re-arms itself before doing any work, so a killed Python
+# scheduled wrapper cannot leave maintenance stopped until the next deploy.
+CRON_RUNNER_NAME = "scheduled-runner-v1"
+CRON_RUNNER_INTERVAL_MS = 60 * 1000
+CRON_RUNNER_KICK_DELAY_MS = 1000
+CRON_RUNNER_ALARM_OFFSET_MS = 1500
+# Native AbortSignal timeouts do not create nested Pyodide asyncio tasks. Keep
+# every cron-reachable control-plane request well inside a minute.
+CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS = 12
 # Retained chat history (encrypted) so late-joining nodes see some backlog.
 CHAT_HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000  # keep the last 7 days
 CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
@@ -334,6 +344,8 @@ from urls import (  # noqa: E402
     ORG_REPOS_RE,
     ORG_SUCCESSION_RE,
     ORG_FEDIVERSE_RE,
+    BADGES_RE,
+    BADGE_ACCOUNT_RE,
     REPO_API_PREFIX_RE,
     AP_USER_RE,
     AP_USER_SUB_RE,
@@ -530,6 +542,11 @@ import og_card  # noqa: E402
 # /blog/rss.xml and, through world_social_feeds, the world's blog banner.
 import blog_feed  # noqa: E402
 
+# The fixed achievement-badge catalog (slug -> name/description/icon) and slug
+# validation are pure data/logic, so they live in their own js-free sibling
+# module; the D1-backed award/list/grant handlers stay below (adhoc #370).
+import badges as badge_catalog  # noqa: E402
+
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
 # the relay's ~1 MiB message cap.
@@ -562,11 +579,11 @@ HOST_PRESENCE_REFRESH_MS = 60 * 1000
 # endpoint checks. This window intentionally matches the old presence headline
 # so the status page's semantics remain stable while its evidence gets stronger.
 HTTPS_MIRROR_STATUS_FRESH_MS = 10 * 60 * 1000
-# Registered desktop/headless node accounts that have not been seen for this
-# long are treated as abandoned: their physical node row and public repo catalog
-# namespace are pruned so old one-off registrations stop participating in
-# browse/clone routing. A node that returns after this window must register
-# again.
+# Registered desktop/headless node accounts older than this are no longer
+# considered live. Liveness is transient routing evidence, not a catalog
+# retention policy: owner-signed repository rows remain visible as offline.
+# Housekeeping may remove an old physical node row only when it has neither a
+# repository catalog row nor a registered direct-HTTPS endpoint.
 REGISTERED_NODE_ACTIVE_MS = 60 * 60 * 1000
 STALE_NODE_PURGE_INTERVAL_MS = 60 * 1000
 STALE_NODE_PURGE_BATCH = 100
@@ -2305,6 +2322,16 @@ async def _cron_watchdog_completion(env):
         raise RuntimeError("cron watchdog rejected completion heartbeat")
 
 
+async def _cron_runner_kick(env):
+    """Seed/reconcile the independent alarm-backed minute runner."""
+    runner_id = env.FORKMESH_CRON_RUNNER.idFromName(CRON_RUNNER_NAME)
+    runner = env.FORKMESH_CRON_RUNNER.get(runner_id)
+    response = await runner.fetch(
+        "https://forkmesh.internal/cron-runner/kick")
+    if int(getattr(response, "status", 0) or 0) != 200:
+        raise RuntimeError("cron runner rejected trigger kick")
+
+
 async def _record_status_monitor_transitions(
         env, ok, reason, now, status_systems=None):
     """Deduplicate outage/recovery mail for every system shown on /status."""
@@ -3604,6 +3631,11 @@ async def _record_referral_signup(env, new_name, raw_ref):
         if not ref_bi or ref_name == new_name:
             return
         await _referral_bump(env, ref_name, ref_bi, "signups")
+        # "Connector" badge: award the referrer the first time one of their
+        # links converts into a real signup.
+        _clicks, signups, _last_ts = await _referral_counts(env, ref_bi)
+        if signups == 1:
+            await _award_badge(env, ref_name, ref_bi, "first_referral")
     except Exception:
         pass  # attribution is best-effort; the account itself already exists
 
@@ -4002,9 +4034,10 @@ def world_request_country(request):
 def world_context_handler(request):
     """Return the visitor's context and the shared world clock.
 
-    The raw connection card is returned only to the same request that supplied
-    it, under ``no-store``; it never enters public presence, a Durable Object,
-    persistence, analytics, or another visitor's response.
+    Nothing here identifies the requester: the coarse country hint and the
+    shared clock are all that leave the edge. Connection details belong to
+    account session management (``/api/accounts/sessions``), not to a payload
+    every guest receives.
     """
     if method_name(request) != "GET":
         return json_response(
@@ -4015,7 +4048,6 @@ def world_context_handler(request):
         )
     payload = world_protocol.context_payload(
         world_request_country(request), int(Date.now()), MAX_CONNECTIONS)
-    payload["securityDetails"] = _world_security_details(request)
     return json_response(
         payload,
         cache_control="no-store, max-age=0, must-revalidate",
@@ -4587,6 +4619,12 @@ async def world_ticket_handler(env, request):
             env, account_bi, now, continuation)
         if activity["creditedMs"] > 0:
             await edge_cache_delete(USERS_DIRECTORY_CACHE_KEY)
+        # "World Explorer" badge: _award_badge is an idempotent INSERT OR
+        # IGNORE, so re-checking this on every ticket past the threshold is
+        # harmless — no need to detect the exact crossing tick.
+        if activity["totalActiveMs"] >= WORLD_FIRST_HOUR_BADGE_MS:
+            await _award_badge(env, claim["name"], account_bi,
+                               "world_first_hour")
     except Exception:
         # Aggregate activity is optional telemetry. Authentication and
         # multiplayer entry must continue while D1 is unavailable or migrating.
@@ -5799,7 +5837,7 @@ async def _chat_channel_socket_handler(env, request, channel_id):
         extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
-def _office_attendance_visit(row):
+def _office_attendance_visit(row, observed_at=None):
     """Project one D1 attendance row into a bounded public lobby record."""
     if not isinstance(row, dict):
         return None
@@ -5822,15 +5860,29 @@ def _office_attendance_visit(row):
         and (out_at < in_at or out_at > max_safe_integer)
     ):
         return None
+    try:
+        observed_at = int(
+            Date.now() if observed_at is None else observed_at)
+    except (TypeError, ValueError):
+        observed_at = in_at
+    if observed_at <= 0 or observed_at > max_safe_integer:
+        observed_at = in_at
+    duration_end = out_at if out_at is not None else max(in_at, observed_at)
     return {
         "id": visit_id,
         "account": account,
         "inAt": in_at,
         "outAt": out_at,
+        "durationMs": duration_end - in_at,
     }
 
 
-async def _office_attendance_recent(env):
+async def _office_attendance_recent(env, observed_at=None):
+    try:
+        observed_at = int(
+            Date.now() if observed_at is None else observed_at)
+    except (TypeError, ValueError):
+        observed_at = 0
     rows = await d1_all(
         env,
         "SELECT visit_id, account_name, in_at, out_at "
@@ -5839,7 +5891,7 @@ async def _office_attendance_recent(env):
     )
     visits = []
     for row in rows or []:
-        visit = _office_attendance_visit(row)
+        visit = _office_attendance_visit(row, observed_at)
         if visit is not None:
             visits.append(visit)
     return visits
@@ -5860,8 +5912,13 @@ async def office_attendance_handler(env, request):
         )
     if method == "GET":
         await ensure_schema(env)
+        observed_at = int(Date.now())
         return json_response(
-            {"ok": True, "visits": await _office_attendance_recent(env)},
+            {
+                "ok": True,
+                "asOfAt": observed_at,
+                "visits": await _office_attendance_recent(env, observed_at),
+            },
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"x-content-type-options": "nosniff"},
         )
@@ -5939,7 +5996,11 @@ async def office_attendance_handler(env, request):
             str(account_bi),
         )
     return json_response(
-        {"ok": True, "visits": await _office_attendance_recent(env)},
+        {
+            "ok": True,
+            "asOfAt": now,
+            "visits": await _office_attendance_recent(env, now),
+        },
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
     )
@@ -6064,7 +6125,12 @@ def _office_team_slug(value):
 
 
 async def office_floor_access_handler(env, request):
-    """Return only the signed-in viewer's server-derived elevator grants."""
+    """Return only the signed-in viewer's server-derived elevator grants.
+
+    The shared tower belongs to one authoritative organization.  A matching
+    team name in a user-created organization must never unlock its floors, and
+    a stale ``org_team_members`` row must not survive deletion of any parent.
+    """
     if method_name(request) != "GET":
         return json_response(
             {"error": "method_not_allowed"},
@@ -6092,12 +6158,33 @@ async def office_floor_access_handler(env, request):
             cache_control="no-store, max-age=0, must-revalidate",
         )
     await ensure_schema(env)
-    rows = await d1_all(
-        env,
-        "SELECT DISTINCT team FROM org_team_members "
-        "WHERE member_bi=? ORDER BY team LIMIT 32",
-        str(account_bi),
+    office_org = str(
+        getattr(env, "OFFICE_MARKETING_ORG", "") or "forkmesh"
+    ).strip().lower()
+    office_org_bi, office_org_row = (
+        await _org_row(env, office_org)
+        if valid_node_name(office_org)
+        else ("", None)
     )
+    rows = []
+    if office_org_row:
+        rows = await d1_all(
+            env,
+            "SELECT DISTINCT tm.team AS team "
+            "FROM org_team_members tm "
+            "INNER JOIN orgs o ON o.org_bi=tm.org_bi "
+            "INNER JOIN org_members om "
+            "ON om.org_bi=tm.org_bi AND om.member_bi=tm.member_bi "
+            "INNER JOIN org_teams ot "
+            "ON ot.org_bi=tm.org_bi AND ot.team=tm.team "
+            "WHERE tm.org_bi=? AND o.name=? AND tm.member_bi=? "
+            "AND om.role IN ('owner','admin','member') "
+            "AND ot.permission IN ('read','write','maintain','admin') "
+            "ORDER BY tm.team LIMIT 50",
+            str(office_org_bi),
+            office_org,
+            str(account_bi),
+        )
     teams = sorted({
         slug
         for slug in (
@@ -7035,10 +7122,11 @@ async def active_registered_node_bis(env, now=None):
 
 
 async def _decrypted_public_catalog(env, now):
-    # Decrypted {key_bi, is_private, data} rows for every public repo owned by
-    # an active node, memoized per-isolate for PUBLIC_CATALOG_MEMO_TTL_MS — see
-    # the comment on _PUBLIC_CATALOG_MEMO for why this must not re-decrypt the
-    # whole catalog on every call.
+    # Decrypted {key_bi, is_private, data} rows for every retained public repo,
+    # memoized per-isolate for PUBLIC_CATALOG_MEMO_TTL_MS — see the comment on
+    # _PUBLIC_CATALOG_MEMO for why this must not re-decrypt the whole catalog on
+    # every call. Online/serving eligibility is checked separately from fresh
+    # signed endpoint evidence; an offline owner must not disappear here.
     cached = _PUBLIC_CATALOG_MEMO
     if cached["rows"] is not None and now - cached["ts"] < PUBLIC_CATALOG_MEMO_TTL_MS:
         return cached["rows"]
@@ -7062,15 +7150,9 @@ async def _decrypted_public_catalog(env, now):
         rows = await d1_all(
             env,
             "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
-        try:
-            active_nodes = await active_registered_node_bis(env, now)
-        except Exception:
-            active_nodes = None
         catalog_rows = []
         decrypted = {}
         for row in rows:
-            if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
-                continue
             blob = str(row.get("data") or "")
             rec = _CATALOG_ROW_DECRYPT_MEMO.get(blob)
             if not rec:
@@ -7099,11 +7181,11 @@ async def _decrypted_public_catalog(env, now):
 
 
 async def purge_stale_registered_nodes(env, force=False):
-    # Bound the registered-node table and public repo catalog to nodes that have
-    # been live in the last hour. This is intentionally NOT account deletion:
-    # accounts are credentials/ownership records. What gets pruned is the
-    # request-serving surface (nodes mirror rows + repo catalog namespace) that
-    # made old one-off registrations keep participating in browse/clone fanout.
+    # Remove expired transient presence and bound only truly orphaned physical
+    # node registrations. Repository catalog rows are durable owner-signed
+    # identity: temporary downtime must never cascade into namespace deletion.
+    # A stale node that still owns a repository or direct-HTTPS endpoint remains
+    # registered and is simply reported offline until fresh evidence returns.
     await ensure_schema(env)
     now = int(Date.now())
     if not force and now - int(_stale_node_purge.get("ts") or 0) < STALE_NODE_PURGE_INTERVAL_MS:
@@ -7119,9 +7201,18 @@ async def purge_stale_registered_nodes(env, force=False):
     active = await active_registered_node_bis(env, now)
     rows = await d1_all(
         env,
-        """SELECT node_bi, name FROM nodes
-           WHERE COALESCE(last_seen, 0) < ?
-           ORDER BY COALESCE(last_seen, 0) ASC
+        """SELECT n.node_bi, n.name FROM nodes n
+           WHERE COALESCE(n.last_seen, 0) < ?
+             AND NOT EXISTS (
+                 SELECT 1 FROM repositories r
+                  WHERE r.owner_bi = n.node_bi
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM mirror_https_endpoints e
+                  WHERE e.node_bi = n.node_bi
+                     OR lower(e.node_name) = lower(n.name)
+             )
+           ORDER BY COALESCE(n.last_seen, 0) ASC
            LIMIT ?""",
         cutoff, STALE_NODE_PURGE_BATCH,
     )
@@ -7130,9 +7221,7 @@ async def purge_stale_registered_nodes(env, force=False):
         node_bi = str(row.get("node_bi") or "")
         if not node_bi or node_bi in active:
             continue
-        name = clean_string(row.get("name", ""), MAX_NODE_NAME).lower()
         try:
-            await _delete_repo_namespace(env, node_bi, name)
             await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", node_bi)
             removed += 1
         except Exception:
@@ -7292,6 +7381,9 @@ SCHEMA_ALTER_STATEMENTS = [
     # Heading offset in radians for an administrator-locked scene object
     # (migration 0082). 0 keeps the object's authored rotation.
     "ALTER TABLE world_object_layout ADD COLUMN rotation REAL NOT NULL DEFAULT 0",
+    # Edge-observed sign-in address of each account session, shown only to the
+    # owner of that account in the World security tab and account settings.
+    "ALTER TABLE account_sessions ADD COLUMN client_ip TEXT NOT NULL DEFAULT ''",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
@@ -8872,8 +8964,8 @@ async def catalog_handler(env, request):
         # Best-effort D1 housekeeping (drop blocked phantoms, prune stale nodes)
         # only on the cheap, edge-cached anonymous miss. The response is already
         # correct without it — blocked entries are skipped by
-        # _is_blocked_catalog_identity and stale ones by the active-node filter
-        # below — and the staggered cron sweeps D1 on its own schedule. An
+        # _is_blocked_catalog_identity — and the staggered cron sweeps D1 on its
+        # own schedule. An
         # authenticated (per-viewer, never-cached) request must NOT run these:
         # replaying a burst of DELETEs plus host-offline notifications inline on
         # every catalog load held the single Worker event loop long enough for
@@ -8882,13 +8974,9 @@ async def catalog_handler(env, request):
         # staggered cron already runs purge_blocked_catalog (minute%15==9) and
         # purge_stale_registered_nodes (minute%15==4), and the response is
         # correct without them — blocked entries are skipped by
-        # _is_blocked_catalog_identity and stale ones by the active-node
-        # filter below. Running purges on every 10s cache miss helped melt
-        # the free plan during the 2026-07-11 overload.
-        try:
-            active_nodes = await active_registered_node_bis(env)
-        except Exception:
-            active_nodes = None
+        # _is_blocked_catalog_identity, while stale signed catalog entries stay
+        # visible with offline availability. Running purges on every 10s cache
+        # miss helped melt the free plan during the 2026-07-11 overload.
         # Public repos are listed for everyone; an authenticated viewer additionally
         # gets the private repos they own (matched by blind index) AND any private
         # repo another owner has shared with them (issue #9, via the repo_shares
@@ -8959,9 +9047,6 @@ async def catalog_handler(env, request):
                         )
                         if not shared:
                             continue
-                if active_nodes is not None:
-                    if str(owner_bi or "") not in active_nodes:
-                        continue
                 # Defense in depth: never surface a blocked identity even if a
                 # row slipped in before the purge ran.
                 if _is_blocked_catalog_identity(
@@ -10010,14 +10095,8 @@ async def repo_mirrors_handler(env, request, owner, repo):
         env,
         "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0"
     )
-    try:
-        active_nodes = await active_registered_node_bis(env)
-    except Exception:
-        active_nodes = None
     catalog_rows = []
     for row in rows:
-        if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
-            continue
         rec = await decrypt_row(env, row.get("data"))
         if not rec:
             continue
@@ -10031,15 +10110,40 @@ async def repo_mirrors_handler(env, request, owner, repo):
             "data": rec,
         })
 
-    presence_rows = await d1_all(env, "SELECT repo_bi, ts FROM host_presence")
-    presence = {
-        str(r.get("repo_bi")): int(r.get("ts") or 0)
-        for r in presence_rows
-        if r.get("repo_bi")
-    }
     now = int(Date.now())
-    presence = await hydrate_repo_group_live_hosts(
-        env, owner, repo, catalog_rows, presence, now)
+    # Repository bytes moved off the retired host WebSocket to signed direct
+    # HTTPS endpoints. Read the fresh endpoint leases once and map them onto
+    # this catalog group directly; the old hydrate path issued up to eight
+    # redundant per-owner D1 probes and memoized a transient zero for 30s,
+    # making a recovered mirror flicker offline after its signed lease was
+    # already healthy again.
+    endpoint_rows = await d1_all(
+        env,
+        """SELECT node_name,checked_at FROM mirror_https_endpoints
+            WHERE checked_at>=? AND forkmesh_verified_at>=?
+              AND healthy=1 AND forkmesh_active=1
+              AND integrity='ok' AND abuse_blocked=0""",
+        now - HTTPS_MIRROR_STATUS_FRESH_MS,
+        now - HTTPS_MIRROR_STATUS_FRESH_MS,
+    )
+    reachable_seen = {
+        clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower():
+        int(row.get("checked_at") or now)
+        for row in endpoint_rows or []
+        if valid_node_name(
+            clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower())
+    }
+    reachable_nodes = set(reachable_seen)
+    presence = {}
+    for row in catalog_rows:
+        record = row.get("data") or {}
+        node_name = clean_string(
+            record.get("machineName") or record.get("owner", ""),
+            MAX_NODE_NAME,
+        ).lower()
+        key = str(row.get("key_bi") or "")
+        if key and node_name in reachable_seen:
+            presence[key] = reachable_seen[node_name]
     first_rows = await d1_all(env, "SELECT repo_bi, ts FROM repo_first_hosted")
     first_hosted = {
         str(r.get("repo_bi")): int(r.get("ts") or 0)
@@ -10070,21 +10174,6 @@ async def repo_mirrors_handler(env, request, owner, repo):
         str(owner or "").strip().lower(),
         str(repo or "").strip().lower(),
     )
-    endpoint_rows = await d1_all(
-        env,
-        """SELECT node_name FROM mirror_https_endpoints
-            WHERE checked_at>=? AND forkmesh_verified_at>=?
-              AND healthy=1 AND forkmesh_active=1
-              AND integrity='ok' AND abuse_blocked=0""",
-        now - HTTPS_MIRROR_STATUS_FRESH_MS,
-        now - HTTPS_MIRROR_STATUS_FRESH_MS,
-    )
-    reachable_nodes = {
-        clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower()
-        for row in endpoint_rows or []
-        if valid_node_name(
-            clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower())
-    }
     payload = build_repo_mirrors_payload(
         owner,
         repo,
@@ -11352,7 +11441,8 @@ async def _clean_profile_links(env, rec, raw_links):
 
 
 async def _account_public_payload(
-        env, rec, session_token=None, session_device_label=""):
+        env, rec, session_token=None, session_device_label="",
+        session_client_ip=""):
     name = rec.get("name", "")
     solana = (rec.get("solana") or "").strip()
     has_payout = bool(solana and SOLANA_RE.match(solana))
@@ -11379,7 +11469,7 @@ async def _account_public_payload(
             session_token
             if session_token is not None
             else await _account_session_token(
-                env, name, session_device_label)
+                env, name, session_device_label, session_client_ip)
         ),
         "avatarPng": rec.get("avatar_png", ""),
         "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
@@ -11449,6 +11539,32 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
 
 USERS_DIRECTORY_CACHE_KEY = "https://forkmesh.internal/api/accounts/users"
 USERS_DIRECTORY_TTL = 30
+# The World campfire paints its member total straight from this body, so a
+# browser-held copy leaves the fire showing an old count until a hard refresh.
+# The edge copy still collapses the origin decrypt work; the bytes handed to
+# the client are never stored, so a plain reload always repaints the real
+# roster. Every caller already throttles its own polling well past the edge
+# TTL, so dropping the browser copy adds no extra polling.
+USERS_DIRECTORY_CLIENT_CACHE_CONTROL = "no-store, max-age=0, must-revalidate"
+
+
+async def _users_directory_cache_get():
+    # Return the edge-held roster as a fresh no-store response, the same
+    # rebuild git_advert_cache_get does: the stored copy carries a public
+    # max-age so the Cache API will keep it, which must not reach the browser.
+    try:
+        hit = await js_caches.default.match(USERS_DIRECTORY_CACHE_KEY)
+    except Exception:
+        hit = None
+    if hit is None:
+        return None
+    return JsResponse.new(hit.body, to_js({
+        "status": 200,
+        "headers": {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": USERS_DIRECTORY_CLIENT_CACHE_CONTROL,
+        },
+    }))
 
 
 async def _account_users_directory(env, request):
@@ -11458,9 +11574,10 @@ async def _account_users_directory(env, request):
     # Edge-cached: the chat page polls this to surface new signups, and each
     # origin hit decrypts up to 1000 rows — collapse the polls per colo per TTL.
     # A signup deletes the cached copy so the new account shows without waiting
-    # out the TTL.
+    # out the TTL. Edge-only: the response is no-store, so no browser ever
+    # holds a roster of its own (adhoc #434).
     del request
-    cached = await edge_cache_match(USERS_DIRECTORY_CACHE_KEY)
+    cached = await _users_directory_cache_get()
     if cached is not None:
         return cached
     out = []
@@ -11494,10 +11611,15 @@ async def _account_users_directory(env, request):
     # first) rather than left in the query's alphabetical fetch order.
     out.sort(key=lambda user: user.get("createdAt", 0))
 
-    resp = json_response({"ok": True, "users": out},
-                         cache_seconds=USERS_DIRECTORY_TTL)
-    await edge_cache_put(USERS_DIRECTORY_CACHE_KEY, resp)
-    return resp
+    payload = {"ok": True, "users": out}
+    # Two bodies on purpose: the stored one carries the public max-age the
+    # Cache API needs to keep it, the returned one carries no-store.
+    await edge_cache_put(
+        USERS_DIRECTORY_CACHE_KEY,
+        json_response(payload, cache_seconds=USERS_DIRECTORY_TTL),
+    )
+    return json_response(
+        payload, cache_control=USERS_DIRECTORY_CLIENT_CACHE_CONTROL)
 
 
 def _donation_expiry_fields(rec, now):
@@ -11538,7 +11660,7 @@ def _account_session_token_digest(env, token):
     ).hexdigest()
 
 
-async def _account_session_token(env, name, device_label=""):
+async def _account_session_token(env, name, device_label="", client_ip=""):
     """Mint one random, server-revocable session; D1 stores no bearer token."""
     name = clean_string(name or "", MAX_NODE_NAME).lower()
     if not valid_node_name(name):
@@ -11571,7 +11693,8 @@ async def _account_session_token(env, name, device_label=""):
         env,
         "INSERT INTO account_sessions "
         "(session_id,account_bi,token_digest,created_at,last_seen_at,"
-        "expires_at,revoked_at,device_label) VALUES (?,?,?,?,?,?,0,?)",
+        "expires_at,revoked_at,device_label,client_ip) "
+        "VALUES (?,?,?,?,?,?,0,?,?)",
         session_id,
         account_bi,
         _account_session_token_digest(env, token),
@@ -11579,6 +11702,7 @@ async def _account_session_token(env, name, device_label=""):
         now,
         expires,
         clean_string(device_label or "", 80),
+        clean_string(client_ip or "", 64),
     )
     return token
 
@@ -11785,6 +11909,24 @@ def _generalized_client_category(request):
     return "other-client" if ua else ""
 
 
+def _account_session_client_ip(request):
+    """Canonicalize the edge-observed sign-in address for session management.
+
+    Only Cloudflare's edge-set header is accepted; X-Forwarded-For is client
+    controlled and is intentionally ignored. The value is stored against the
+    session row and returned exclusively to the account that owns it, so the
+    owner can tell an unfamiliar device apart before revoking it.
+    """
+    try:
+        raw = str(request.headers.get("cf-connecting-ip") or "")
+    except Exception:
+        return ""
+    try:
+        return str(ipaddress.ip_address(raw.strip().strip("[]")[:64]))[:64]
+    except (ValueError, TypeError):
+        return ""
+
+
 def _account_session_device_label(request, desktop=False):
     """Return a coarse owner-visible label without retaining a raw user agent."""
     if desktop:
@@ -11821,37 +11963,6 @@ async def _world_moderation_tokens(env, request, now=None):
     # tokens may be forwarded or persisted; public badge display continues to
     # use the existing generalized browser/OS allowlist.
     return tokens
-
-
-def _world_security_details(request):
-    """Return bounded self-only connection details for the context response.
-
-    The address is canonicalized as IPv4/IPv6 and the agent is restricted to
-    printable ASCII with collapsed whitespace. Only Cloudflare's edge-set
-    address header is accepted; X-Forwarded-For is intentionally ignored.
-    Neither value is written to D1, logs, tickets, public presence, Durable
-    Object state, or moderation records.
-    """
-    try:
-        raw_address = str(
-            request.headers.get("cf-connecting-ip") or "")
-    except Exception:
-        raw_address = ""
-    raw_address = raw_address.strip().strip("[]")[:64]
-    try:
-        address = str(ipaddress.ip_address(raw_address))
-    except (ValueError, TypeError):
-        address = ""
-    try:
-        raw_agent = str(request.headers.get("user-agent") or "")
-    except Exception:
-        raw_agent = ""
-    printable_agent = "".join(
-        character if 32 <= ord(character) <= 126 else " "
-        for character in raw_agent[:2048]
-    )
-    agent = " ".join(printable_agent.split())[:256]
-    return {"ip": address[:64], "agent": agent}
 
 
 async def _world_active_manual_block(env, tokens, now=None):
@@ -12283,9 +12394,18 @@ async def _account_signup(env, request):
     await edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY)
     # Credit the referrer named by the /r/<name> share link, if any.
     await _record_referral_signup(env, name, data.get("ref", ""))
+    # "Founding Member" badge: this account's row is already saved above, so
+    # counting now tells whether it landed inside the first 100 real signups.
+    user_count = await d1_first(
+        env,
+        "SELECT COUNT(*) AS c FROM users "
+        "WHERE email_bi IS NOT NULL AND email_bi <> ''")
+    if user_count and int(user_count.get("c") or 0) <= FIRST_100_USERS_LIMIT:
+        await _award_badge(env, name, name_bi, "first_100_users")
     payload = await _account_public_payload(
         env, rec,
-        session_device_label=_account_session_device_label(request))
+        session_device_label=_account_session_device_label(request),
+        session_client_ip=_account_session_client_ip(request))
     return json_response(
         payload,
         status=201,
@@ -12635,7 +12755,8 @@ async def _account_finalize(env, request):
     payload = await _account_public_payload(
         env, rec,
         session_device_label=_account_session_device_label(
-            request, desktop=bool(pubkey)))
+            request, desktop=bool(pubkey)),
+        session_client_ip=_account_session_client_ip(request))
     return json_response(
         payload,
         status=201,
@@ -13010,10 +13131,15 @@ async def _link_node_to_user(env, node_name, node_bi, node_rec, user_name):
     user_bi, user_rec = await _account_row(env, user_name)
     if user_rec is not None:
         nodes = _owned_nodes(user_rec)
+        was_operator = bool(nodes)
         if node_name not in nodes:
             nodes.append(node_name)
         user_rec["nodes"] = nodes
         await _save_account(env, user_bi, user_rec)
+        if not was_operator:
+            # "Mirror Operator" badge: this is the account's first node, the
+            # real event that makes it a mirror operator.
+            await _award_badge(env, user_name, user_bi, "mirror_operator")
 
 
 async def _account_claim_node(env, request):
@@ -13803,7 +13929,8 @@ async def _account_login(env, request):
         payload = await _account_public_payload(
             env, rec,
             session_device_label=_account_session_device_label(
-                request, desktop=True))
+                request, desktop=True),
+            session_client_ip=_account_session_client_ip(request))
         payload = _with_session_capabilities(
             payload, session_kind="desktop_node", device_kind=device_kind,
             key_matched=True, desktop_capable=desktop_capable,
@@ -13817,7 +13944,8 @@ async def _account_login(env, request):
 
     payload = await _account_public_payload(
         env, rec,
-        session_device_label=_account_session_device_label(request))
+        session_device_label=_account_session_device_label(request),
+        session_client_ip=_account_session_client_ip(request))
     payload = _with_session_capabilities(
         payload, session_kind="account", device_kind="web_or_mobile",
         key_matched=False, desktop_capable=False)
@@ -13951,7 +14079,12 @@ async def _account_last_seen(env, account_bi, floor_ts=0):
 
 
 async def _account_sessions(env, request, target_session_id=""):
-    """List or revoke this account's sessions without exposing client details."""
+    """List or revoke this account's own sessions.
+
+    The listing is strictly self-scoped: it is reachable only with a live
+    session token for the account whose rows it returns, so the sign-in address
+    on each row is visible to that owner alone.
+    """
     method = method_name(request)
     token, cookie_auth = _request_account_session_token(request, {})
     if (
@@ -13972,7 +14105,8 @@ async def _account_sessions(env, request, target_session_id=""):
     if method == "GET" and not target_session_id:
         rows = await d1_all(
             env,
-            "SELECT session_id,created_at,last_seen_at,expires_at,device_label "
+            "SELECT session_id,created_at,last_seen_at,expires_at,"
+            "device_label,client_ip "
             "FROM account_sessions WHERE account_bi=? AND revoked_at=0 "
             "AND expires_at>? ORDER BY last_seen_at DESC,created_at DESC "
             "LIMIT ?",
@@ -13989,6 +14123,7 @@ async def _account_sessions(env, request, target_session_id=""):
                     clean_string(row.get("device_label", ""), 80)
                     or "Unknown device"
                 ),
+                "ipAddress": clean_string(row.get("client_ip", ""), 64),
                 "createdAt": int(row.get("created_at") or 0),
                 "lastSeenAt": int(row.get("last_seen_at") or 0),
                 "expiresAt": int(row.get("expires_at") or 0),
@@ -14008,9 +14143,10 @@ async def _account_sessions(env, request, target_session_id=""):
                     **_account_email_activity(rec),
                 },
                 "privacyNotice": (
-                    "Only a broad device category and session timestamps are "
-                    "shown. ForkMesh does not expose IP addresses or raw user "
-                    "agents in session management."
+                    "Only you can see this list. Each row shows a broad device "
+                    "category, the address the sign-in came from, and session "
+                    "timestamps. Raw user agents are never stored, and no "
+                    "other account can read these rows."
                 ),
             },
             cache_control="no-store, max-age=0, must-revalidate",
@@ -14033,6 +14169,13 @@ async def _account_sessions(env, request, target_session_id=""):
         )
         audit_target = "all-other-devices"
         audit_scope = "others"
+    elif target_session_id == "all":
+        # "Log out everywhere" also drops the calling device, so a lost or
+        # shared browser can be cleared in one action.
+        await _account_revoke_sessions(env, account_bi)
+        revoke_current = True
+        audit_target = "all-devices"
+        audit_scope = "all"
     else:
         if not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", target_session_id):
             return json_response(
@@ -17614,11 +17757,24 @@ async def org_members_handler(env, request, org):
             "SELECT name, role, created_at FROM org_members WHERE org_bi=? "
             "ORDER BY created_at ASC",
             org_bi)
+        # Each member's team list rides along so a roster reader never has to
+        # fan out one request per team. This is the same org-internal layout
+        # the per-team member listing already shows any member.
+        team_rows = await d1_all(
+            env,
+            "SELECT name, team FROM org_team_members WHERE org_bi=? "
+            "ORDER BY team ASC",
+            org_bi)
+        teams_by_member = {}
+        for r in team_rows or []:
+            teams_by_member.setdefault(
+                str(r.get("name") or ""), []).append(str(r.get("team") or ""))
         return json_response({"ok": True, "visibility": access["offices"],
                               "members": [
             {"name": str(r.get("name") or ""),
              "role": str(r.get("role") or ""),
-             "since": int(r.get("created_at") or 0)}
+             "since": int(r.get("created_at") or 0),
+             "teams": teams_by_member.get(str(r.get("name") or ""), [])}
             for r in rows or []]}, cache_control="no-store")
     if method not in ("POST", "DELETE"):
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -18476,6 +18632,111 @@ async def cleanup_sensitive_audit_records(env):
         now - SECURITY_AUDIT_RETAIN_MS)
 
 
+# --- Achievement badges (adhoc #370) -----------------------------------------
+# Public recognition marks, similar in shape to org teams: a fixed catalog
+# (badges.py) awarded once per account, either automatically at a real
+# platform event (see the call sites of _award_badge below) or by a platform
+# administrator. Awards are permanent — later losing eligibility does not
+# revoke an already-earned badge.
+FIRST_100_USERS_LIMIT = 100
+WORLD_FIRST_HOUR_BADGE_MS = 60 * 60 * 1000
+
+
+async def _award_badge(env, name, name_bi, slug, granted_by="system"):
+    slug = badge_catalog.normalize_badge_slug(slug)
+    if not slug or not name_bi:
+        return
+    await ensure_schema(env)
+    await d1_run(
+        env,
+        "INSERT OR IGNORE INTO badge_awards "
+        "(badge_slug, account_bi, name, granted_by, created_at) "
+        "VALUES (?,?,?,?,?)",
+        slug, name_bi, name, (granted_by or "system"), int(Date.now()))
+
+
+async def _account_badges(env, name_bi):
+    rows = await d1_all(
+        env,
+        "SELECT badge_slug, granted_by, created_at FROM badge_awards "
+        "WHERE account_bi=? ORDER BY created_at", name_bi)
+    out = []
+    for row in rows or []:
+        info = badge_catalog.badge_definition(row.get("badge_slug"))
+        if not info:
+            continue
+        granted_by = str(row.get("granted_by") or "system")
+        out.append({
+            "slug": str(row.get("badge_slug") or ""),
+            "name": info["name"],
+            "description": info["description"],
+            "icon": info["icon"],
+            "grantedBy": "system" if granted_by == "system" else "admin",
+            "awardedAt": int(row.get("created_at") or 0),
+        })
+    return out
+
+
+async def badges_catalog_handler(env, request):
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    return json_response(
+        {"ok": True, "badges": badge_catalog.public_catalog()},
+        cache_seconds=3600)
+
+
+async def account_badges_handler(env, request, raw_name):
+    # GET: the badges one account has earned (public — same visibility as the
+    # public account lookup). POST/DELETE: a platform administrator grants or
+    # revokes one badge.
+    await ensure_schema(env)
+    name = clean_string(raw_name or "", MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(name):
+        return json_response({"error": "invalid_account"}, status=400)
+    name_bi, rec = await _account_row(env, name)
+    if not rec:
+        return json_response({"error": "not_found"}, status=404)
+    method = method_name(request)
+    if method == "GET":
+        return json_response(
+            {"ok": True, "account": name,
+             "badges": await _account_badges(env, name_bi)},
+            cache_seconds=30)
+    if method not in ("POST", "DELETE"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        data = {}
+    _, actor_rec = await _account_session_record(env, request, data)
+    actor = (actor_rec.get("name", "") if actor_rec else "").strip().lower()
+    audit_action = "badge.grant" if method == "POST" else "badge.revoke"
+    if not actor or not await _has_role(env, actor, "platform_administrator"):
+        await _audit_sensitive_action(
+            env, actor, audit_action, "account_badge", name, "denied",
+            {"reason": "insufficient_role"})
+        return json_response({"error": "forbidden"}, status=403)
+    slug = badge_catalog.normalize_badge_slug(data.get("slug", ""))
+    if not slug:
+        return json_response({"error": "invalid_badge"}, status=400)
+    if method == "DELETE":
+        await d1_run(
+            env, "DELETE FROM badge_awards WHERE badge_slug=? AND account_bi=?",
+            slug, name_bi)
+        await _audit_sensitive_action(
+            env, actor, audit_action, "account_badge", name + "/" + slug,
+            "success")
+        return json_response(
+            {"ok": True, "account": name, "slug": slug, "revoked": True})
+    await _award_badge(env, name, name_bi, slug, granted_by=actor)
+    await _audit_sensitive_action(
+        env, actor, audit_action, "account_badge", name + "/" + slug,
+        "success")
+    return json_response(
+        {"ok": True, "account": name, "slug": slug, "granted": True},
+        status=201)
+
+
 async def _admin_authorized(env, node, ts, sig, canonical):
     # The requesting admin proves control of their node's key, and the account
     # must have is_admin set. Returns the admin's record on success, else None.
@@ -18552,7 +18813,6 @@ MAILTRAP_SEND_URL = "https://send.api.mailtrap.io/api/send"
 
 async def _send_email(env, to_email, subject, text, html=None,
                       from_email=None, from_name=None):
-    from js import fetch as js_fetch
     token = (getattr(env, "MAILTRAP_API_TOKEN", "") or "").strip()
     if not token or not to_email:
         return False
@@ -18570,12 +18830,18 @@ async def _send_email(env, to_email, subject, text, html=None,
     if html:
         payload["html"] = html
     try:
-        resp = await js_fetch(url, to_js({
-            "method": "POST",
-            "headers": {"content-type": "application/json",
-                        "authorization": "Bearer " + token},
-            "body": json.dumps(payload),
-        }))
+        resp = await js_fetch_with_timeout(
+            url,
+            {
+                "method": "POST",
+                "headers": {
+                    "content-type": "application/json",
+                    "authorization": "Bearer " + token,
+                },
+                "body": json.dumps(payload),
+            },
+            CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS,
+        )
         return 200 <= int(getattr(resp, "status", 0)) < 300
     except Exception:
         return False
@@ -19612,7 +19878,6 @@ async def _relay_sign_headers(env, body_str):
 
 
 async def _call_main_relay(env, path, body_dict):
-    from js import fetch as js_fetch
     base = _main_relay_url(env)
     if not base:
         return None
@@ -19623,8 +19888,11 @@ async def _call_main_relay(env, path, body_dict):
 
     async def _post(target_path):
         try:
-            resp = await js_fetch(base + target_path, to_js(
-                {"method": "POST", "headers": headers, "body": body_str}))
+            resp = await js_fetch_with_timeout(
+                base + target_path,
+                {"method": "POST", "headers": headers, "body": body_str},
+                CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS,
+            )
             text = await resp.text()
             data = json.loads(text) if text else {}
             if not isinstance(data, dict):
@@ -22437,7 +22705,6 @@ async def _ap_signed_request(key_id, priv_b64, method, url, body_str=None,
                              accept="application/activity+json"):
     # One signed outbound HTTP request (draft-cavage). GETs sign
     # (request-target) host date accept; POSTs add digest + content-type.
-    from js import fetch as js_fetch
     parts = urlparse(url)
     if parts.scheme != "https" or not parts.netloc:
         return None
@@ -22465,7 +22732,8 @@ async def _ap_signed_request(key_id, priv_b64, method, url, body_str=None,
         send_headers["content-type"] = headers["content-type"]
         init["body"] = body_str
     try:
-        return await js_fetch(url, to_js(init))
+        return await js_fetch_with_timeout(
+            url, init, CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS)
     except Exception:
         return None
 
@@ -28197,15 +28465,18 @@ async def capture_sentry_error(env, status, method, path, message, ray="",
             "\n" + json.dumps({"type": "event"}) +
             "\n" + json.dumps(event) + "\n"
         )
-        from js import fetch as js_fetch
-        resp = await js_fetch(parts["endpoint"], to_js({
-            "method": "POST",
-            "headers": {
-                "content-type": "application/x-sentry-envelope",
-                "x-sentry-auth": parts["auth"],
+        resp = await js_fetch_with_timeout(
+            parts["endpoint"],
+            {
+                "method": "POST",
+                "headers": {
+                    "content-type": "application/x-sentry-envelope",
+                    "x-sentry-auth": parts["auth"],
+                },
+                "body": envelope,
             },
-            "body": envelope,
-        }))
+            CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS,
+        )
         return 200 <= int(getattr(resp, "status", 0)) < 300
     except Exception:
         return False
@@ -28303,15 +28574,18 @@ async def capture_sentry_cron_check_in(env, status, check_in_id="",
             "\n" + json.dumps({"type": "check_in"}) +
             "\n" + json.dumps(payload) + "\n"
         )
-        from js import fetch as js_fetch
-        resp = await js_fetch(parts["endpoint"], to_js({
-            "method": "POST",
-            "headers": {
-                "content-type": "application/x-sentry-envelope",
-                "x-sentry-auth": parts["auth"],
+        resp = await js_fetch_with_timeout(
+            parts["endpoint"],
+            {
+                "method": "POST",
+                "headers": {
+                    "content-type": "application/x-sentry-envelope",
+                    "x-sentry-auth": parts["auth"],
+                },
+                "body": envelope,
             },
-            "body": envelope,
-        }))
+            CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS,
+        )
         return 200 <= int(getattr(resp, "status", 0)) < 300
     except Exception:
         return False
@@ -30811,8 +31085,12 @@ async def _admin_disburse(env):
 HTTPS_MIRROR_ENDPOINT_PATH = "/api/mirrors/https"
 HTTPS_MIRROR_PRIVATE_ROUTE_PATH = "/api/mirrors/private"
 HTTPS_MIRROR_MANIFEST_MAX_BYTES = 128 * 1024
-HTTPS_MIRROR_HEALTH_BATCH = 8
+# Two oldest endpoints per minute supports twenty mirrors inside the ten-minute
+# routing freshness window while keeping a fully timed-out alarm comfortably
+# below its next wake-up.
+HTTPS_MIRROR_HEALTH_BATCH = 2
 HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS = 20
+HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS = 6
 HTTPS_MIRROR_BODY_MAX_BYTES = 8 * 1024 * 1024
 HTTPS_MIRROR_MERGE_BODY_MAX_BYTES = 8 * 1024
 HTTPS_MIRROR_MERGE_RESULT_MAX_BYTES = 16 * 1024
@@ -30831,6 +31109,13 @@ HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS = frozenset({
 })
 HTTPS_MIRROR_RETRY_STATUSES = frozenset({
     401, 403, 404, 408, 425, 429, 500, 502, 503, 504,
+})
+# A health endpoint's timeout/rate-limit/server failure is inconclusive: keep a
+# prior signed lease until its normal freshness deadline. Authentication and
+# missing-route responses are definitive for this public control endpoint and
+# therefore still fail closed immediately.
+HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES = frozenset({
+    408, 425, 429, 500, 502, 503, 504,
 })
 HTTPS_MIRROR_REPO_PROOF_TTL_MS = 60 * 1000
 HTTPS_MIRROR_REPO_PROOF_MEMO_MAX = 500
@@ -30883,21 +31168,18 @@ def _https_mirror_registration_payload(data):
 async def _https_mirror_fetch_text(
         url, max_bytes, timeout_seconds, accept="application/json"):
     """Fetch a bounded control document without forwarding caller metadata."""
-    from js import fetch as js_fetch
     try:
-        response = await asyncio.wait_for(
-            js_fetch(
-                url,
-                to_js({
-                    "method": "GET",
-                    "headers": {
-                        "accept": accept,
-                        "user-agent": "ForkMesh-HTTPS-router/1.0",
-                    },
-                    "redirect": "manual",
-                }),
-            ),
-            timeout=timeout_seconds,
+        response = await js_fetch_with_timeout(
+            url,
+            {
+                "method": "GET",
+                "headers": {
+                    "accept": accept,
+                    "user-agent": "ForkMesh-HTTPS-router/1.0",
+                },
+                "redirect": "manual",
+            },
+            timeout_seconds,
         )
         status = int(getattr(response, "status", 0) or 0)
         try:
@@ -30936,7 +31218,7 @@ async def _cloudflare_edge_range_documents():
             "https://www.cloudflare.com/ips-v4",
             "https://www.cloudflare.com/ips-v6"):
         status, text = await _https_mirror_fetch_text(
-            url, 16 * 1024, HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS)
+            url, 16 * 1024, HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS)
         if status != 200 or not text:
             return ()
         fetched.append(text)
@@ -30959,7 +31241,15 @@ async def _cloudflare_edge_range_documents():
 
 
 async def _https_mirror_cloudflare_dns_ok(base_url):
-    """Independently verify that an endpoint resolves to Cloudflare's edge."""
+    """Independently verify that an endpoint resolves to Cloudflare's edge.
+
+    ``None`` means the independent verifier itself was temporarily unavailable
+    (DoH/range-document timeout or malformed upstream response).  Callers that
+    establish a new endpoint still treat that as a rejection.  The recurring
+    health check can distinguish it from a definitive non-Cloudflare answer and
+    let an existing signed lease expire naturally instead of flickering offline
+    on one control-plane timeout.
+    """
     normalized = https_routing.normalize_base_url(base_url)
     try:
         hostname = urlparse(normalized).hostname or ""
@@ -30977,7 +31267,7 @@ async def _https_mirror_cloudflare_dns_ok(base_url):
         return bool(memo.get("ok"))
     cidr_documents = await _cloudflare_edge_range_documents()
     if not cidr_documents:
-        return False
+        return None
     payloads = []
     for record_type in ("A", "AAAA"):
         target = (
@@ -30989,15 +31279,15 @@ async def _https_mirror_cloudflare_dns_ok(base_url):
         status, text = await _https_mirror_fetch_text(
             target,
             HTTPS_MIRROR_MANIFEST_MAX_BYTES,
-            HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+            HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS,
             "application/dns-json",
         )
         if status != 200 or not text:
-            return False
+            return None
         try:
             payloads.append(json.loads(text))
         except Exception:
-            return False
+            return None
     ok = https_routing.cloudflare_proxied_dns_answers(
         payloads, cidr_documents)
     _HTTPS_MIRROR_EDGE_DNS_MEMO[hostname] = {
@@ -31011,7 +31301,7 @@ async def _https_mirror_manifest_ok(registration):
     status, text = await _https_mirror_fetch_text(
         registration["baseUrl"] + "/forkmesh-mirror.json",
         HTTPS_MIRROR_MANIFEST_MAX_BYTES,
-        HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS,
     )
     if status != 200 or not text:
         return False
@@ -31647,6 +31937,20 @@ async def _https_mirror_mark_failed(env, row, now):
     )
 
 
+async def _https_mirror_mark_transient(env, row, now):
+    # Record only the attempt time.  checked_at/forkmesh_verified_at remain the
+    # last successful signed proof, so routing naturally stops at the normal
+    # freshness deadline if the outage persists.  Keeping updated_at separate
+    # also lets oldest-attempt-first scheduling rotate past this endpoint.
+    await d1_run(
+        env,
+        """UPDATE mirror_https_endpoints
+              SET updated_at=?
+            WHERE node_bi=?""",
+        now, row.get("node_bi"),
+    )
+
+
 async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
     """Verify one fresh node-signed health and forkmesh/forkmesh proof."""
     now = int(Date.now())
@@ -31658,8 +31962,14 @@ async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
         or not valid_node_pubkey(public_key)
         or not base_url
         or public_key not in await _owner_signing_pubkeys(env, node)
-        or not await _https_mirror_cloudflare_dns_ok(base_url)
     ):
+        await _https_mirror_mark_failed(env, row, now)
+        return False
+    dns_ok = await _https_mirror_cloudflare_dns_ok(base_url)
+    if dns_ok is None:
+        await _https_mirror_mark_transient(env, row, now)
+        return False
+    if not dns_ok:
         await _https_mirror_mark_failed(env, row, now)
         return False
     nonce = _b64url_encode(_random_bytes(18))
@@ -31672,9 +31982,12 @@ async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
     status, text = await _https_mirror_fetch_text(
         target,
         HTTPS_MIRROR_MANIFEST_MAX_BYTES,
-        HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS,
     )
     latency = max(0, min(60_000, int(Date.now()) - started))
+    if status == 0 or status in HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES:
+        await _https_mirror_mark_transient(env, row, now)
+        return False
     try:
         data = json.loads(text) if text else {}
     except Exception:
@@ -31794,16 +32107,30 @@ async def https_mirror_health_cron(env):
         env,
         """SELECT node_bi,node_name,base_url,public_key
              FROM mirror_https_endpoints
-            ORDER BY checked_at ASC,node_name ASC LIMIT ?""",
+            ORDER BY
+              CASE WHEN updated_at > checked_at
+                   THEN updated_at ELSE checked_at END ASC,
+              node_name ASC
+            LIMIT ?""",
         HTTPS_MIRROR_HEALTH_BATCH,
     )
     if not rows:
         return
     accepted = await _https_mirror_accepted_forkmesh_refs(env)
-    await asyncio.gather(
-        *[_https_mirror_health_one(env, row, accepted) for row in rows],
-        return_exceptions=True,
-    )
+    # A missing canonical state pin is a control-plane read failure, not proof
+    # that every independent mirror became invalid simultaneously.  Preserve
+    # their existing leases; the next minute retries the bounded batch.
+    if not accepted:
+        return
+    # Keep the alarm runner on one Python task. Python fan-out/timeout wrappers
+    # create nested Pyodide tasks which can poison a later scheduled wrapper
+    # with "Cannot enter into task" after the invocation has already ended.
+    # Oldest-first ordering plus the bounded batch still rotates every endpoint.
+    for row in rows:
+        try:
+            await _https_mirror_health_one(env, row, accepted)
+        except BaseException:
+            continue
 
 
 async def _https_mirror_private_candidates(
@@ -32352,7 +32679,7 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
     status, text = await _https_mirror_fetch_text(
         target,
         HTTPS_MIRROR_MANIFEST_MAX_BYTES,
-        HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS,
     )
     try:
         data = json.loads(text) if text else {}
@@ -33286,6 +33613,13 @@ async def _https_mirror_proxy(
 
 class Default(WorkerEntrypoint):
     async def scheduled(self, controller, env, ctx):
+        # Keep the platform Cron Trigger deliberately tiny. It starts (and then
+        # once a minute reconciles) a singleton Durable Object alarm. The alarm
+        # re-arms itself before work, so a stateless Python wrapper poisoned by
+        # another request or a killed maintenance batch cannot stop the runner.
+        await _cron_runner_kick(self.env)
+
+    async def _run_scheduled_jobs(self, controller=None, env=None, ctx=None):
         # Cron trigger (every minute, see [triggers] in wrangler.toml).
         #
         # Only the two once-a-minute samples run on every tick; everything else
@@ -33453,9 +33787,9 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/send-notification-digests",
                     "send_notification_digests failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Stale-node purge bounds the serving surface to nodes live within the
-        # last hour; running it every 15 minutes still purges well inside that
-        # window (it used to run force=True every single minute).
+        # Stale-node housekeeping expires transient presence and removes only
+        # orphaned physical registrations. Repository/endpoint-backed nodes
+        # remain as offline catalog identity until fresh evidence returns.
         if minute % 15 == 4:
             try:
                 await purge_stale_registered_nodes(self.env, force=True)
@@ -34384,6 +34718,16 @@ class Default(WorkerEntrypoint):
             if not org:
                 return json_response({"error": "not_found"}, status=404)
             return await org_handler(self.env, request, org)
+
+        # --- Achievement badges (adhoc #370) ------------------------------
+        if BADGES_RE.match(url.path):
+            return await badges_catalog_handler(self.env, request)
+        badge_account_match = BADGE_ACCOUNT_RE.match(url.path)
+        if badge_account_match:
+            account = safe_segment(badge_account_match.group(1))
+            if not account:
+                return json_response({"error": "not_found"}, status=404)
+            return await account_badges_handler(self.env, request, account)
 
         # Founders-outreach email console (/outreach): admins plus the
         # admin-managed outreach_team roster send from the founders address.
@@ -35379,7 +35723,7 @@ class ForkMeshCronWatchdog(DurableObject):
             await self.ctx.storage.put("notified_state", "up")
 
         await self.ctx.storage.put("last_completion_at", now)
-        self.ctx.storage.setAlarm(now + CRON_WATCHDOG_GRACE_MS)
+        await self.ctx.storage.setAlarm(now + CRON_WATCHDOG_GRACE_MS)
         durable_object_traffic_note(self, messages=1)
         await durable_object_traffic_flush(self)
         return json_response({"ok": True})
@@ -35394,7 +35738,7 @@ class ForkMeshCronWatchdog(DurableObject):
         if now < deadline:
             # A heartbeat raced an already-dispatched alarm. Keep the newer
             # deadline instead of manufacturing an outage.
-            self.ctx.storage.setAlarm(deadline)
+            await self.ctx.storage.setAlarm(deadline)
             return
 
         outage_started_at = int(
@@ -35413,7 +35757,71 @@ class ForkMeshCronWatchdog(DurableObject):
                 return
         # Retry an unavailable email provider/admin-recipient lookup without
         # depending on the still-missing Cron Trigger.
-        self.ctx.storage.setAlarm(now + CRON_WATCHDOG_RETRY_MS)
+        await self.ctx.storage.setAlarm(now + CRON_WATCHDOG_RETRY_MS)
+
+
+class _CronJobEntrypoint:
+    """Minimal receiver for Default._run_scheduled_jobs' self.env contract."""
+
+    def __init__(self, env):
+        self.env = env
+
+
+class ForkMeshCronRunner(DurableObject):
+    """Alarm-backed, self-rearming owner of the scheduled maintenance loop.
+
+    The stateless Cron Trigger is only a seed and liveness reconciliation path.
+    The alarm is persisted for the next minute before the current batch starts.
+    A platform kill therefore loses at most the current idempotent/bounded slot;
+    it cannot erase the next wake-up. Duplicate alarm delivery is suppressed
+    after a slot completes. A catchable failure records bounded diagnostics and
+    advances to the already-armed next minute instead of creating a retry storm.
+    """
+
+    traffic_binding = "FORKMESH_CRON_RUNNER"
+
+    async def fetch(self, request):
+        if urlparse(request.url).path != "/cron-runner/kick":
+            return json_response({"error": "not_found"}, status=404)
+        now = int(Date.now())
+        await self.ctx.storage.put("last_trigger_kick_at", now)
+        await self.ctx.storage.setAlarm(now + CRON_RUNNER_KICK_DELAY_MS)
+        return json_response({"ok": True})
+
+    async def alarm(self, alarm_info=None):
+        now = int(Date.now())
+        minute_slot = now // CRON_RUNNER_INTERVAL_MS
+        next_alarm = (
+            (minute_slot + 1) * CRON_RUNNER_INTERVAL_MS
+            + CRON_RUNNER_ALARM_OFFSET_MS
+        )
+        # Persist the successor before any D1, asset, network, or Python task
+        # work. Even an uncatchable runtime/resource-limit kill leaves it armed.
+        await self.ctx.storage.setAlarm(next_alarm)
+
+        completed_slot = int(
+            await self.ctx.storage.get("last_completed_slot") or -1)
+        if completed_slot >= minute_slot:
+            return
+        await self.ctx.storage.put("last_started_slot", minute_slot)
+        await self.ctx.storage.put("last_started_at", now)
+        try:
+            await Default._run_scheduled_jobs(
+                _CronJobEntrypoint(self.env))
+        except BaseException as error:
+            await self.ctx.storage.put(
+                "last_failure",
+                _safe_error_text(error)[:1000],
+            )
+            await self.ctx.storage.put("last_failure_at", int(Date.now()))
+            try:
+                print("cron runner alarm failed: " + _safe_error_text(error))
+            except BaseException:
+                pass
+            return
+        await self.ctx.storage.put("last_completed_slot", minute_slot)
+        await self.ctx.storage.put("last_completed_at", int(Date.now()))
+        await self.ctx.storage.put("last_failure", "")
 
 
 class ForkMeshWorld(DurableObject):

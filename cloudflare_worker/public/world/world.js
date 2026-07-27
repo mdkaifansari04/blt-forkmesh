@@ -42,6 +42,7 @@ import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
 import { createWorldOfficeController } from "./world-office.js";
 import { createWorldOfficeMeeting } from "./world-office-meeting.js";
 import { createWorldOfficeTasksController } from "./world-office-tasks.js";
+import { officeFloorsForTeam } from "./world-office-tower.js";
 import {
   CAMPFIRE_SEATED_ACTIVITY,
   SWING_RIDING_ACTIVITY,
@@ -158,7 +159,7 @@ const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
 const WORLD_UPDATE_RELOAD_DELAY_MS = 1400;
 const WORLD_UPDATE_RELOADED_REV_KEY = "forkmesh.world.updateReloadedRev.v1";
 const WORLD_NOTIFICATION_POLL_MS = 60 * 1000;
-const MIRROR_STATUS_POLL_MS = 60 * 1000;
+const MIRROR_STATUS_POLL_MS = 5 * 60 * 1000;
 const WORLD_EVENT_POLL_MS = 3 * 60 * 1000;
 const WORLD_REWARD_POLL_MS = 5 * 60 * 1000;
 const WORLD_MEDIA_PLAYBACK_POLL_MS = 15 * 1000;
@@ -192,6 +193,55 @@ const WORLD_MOVE_ACCEL_MAX = 1000;
 const WORLD_MOVE_ACCEL_DEFAULT = 100;
 const WORLD_DIAGNOSTICS_INTERVAL_MS = 1000;
 const WORLD_DIAGNOSTICS_COUNTER_MAX = 1_000_000_000;
+// Debug readings are graded green / orange / red so a glance separates a
+// healthy sample from one worth watching. The thresholds are local display
+// heuristics only; nothing about them is measured remotely or transmitted.
+const WORLD_DIAGNOSTICS_THRESHOLDS = {
+  fps: { caution: 50, high: 30, lowerIsWorse: true },
+  frameTimeMs: { caution: 20, high: 34 },
+  calls: { caution: 600, high: 1500 },
+  triangles: { caution: 400_000, high: 1_200_000 },
+  longFrames: { caution: 1, high: 5 },
+  longestFrameMs: { caution: 34, high: 100 },
+  pointerGapMs: { caution: 50, high: 120 },
+  reconnects: { caution: 1, high: 5 },
+  bufferedBytes: { caution: 16 * 1024, high: 256 * 1024 },
+  frameRate: { caution: 30, high: 90 },
+  coalesced: { caution: 30, high: 120 },
+  backpressure: { caution: 1, high: 5 },
+};
+
+// "good" | "caution" | "high" for one reading against its threshold pair.
+function diagnosticLevel(metric, value) {
+  const bounds = WORLD_DIAGNOSTICS_THRESHOLDS[metric];
+  const number = Number(value);
+  if (!bounds || !Number.isFinite(number)) return "good";
+  if (bounds.lowerIsWorse) {
+    if (number < bounds.high) return "high";
+    return number < bounds.caution ? "caution" : "good";
+  }
+  if (number >= bounds.high) return "high";
+  return number >= bounds.caution ? "caution" : "good";
+}
+
+// Graded readings are spans inside the existing text, so the surrounding
+// separators stay plain and the whole line still reads as one sentence.
+function diagnosticReading(text, level) {
+  return `<span class="world-diagnostics-value" data-level="${level}">${escapeHTML(
+    String(text),
+  )}</span>`;
+}
+
+function diagnosticMetric(metric, value, text) {
+  return diagnosticReading(text, diagnosticLevel(metric, value));
+}
+
+function diagnosticStateLevel(state) {
+  if (state === "online") return "good";
+  return ["connecting", "handshaking", "reconnecting"].includes(state)
+    ? "caution"
+    : "high";
+}
 const WORLD_PULL_MERGE_MAX_REQUESTS = 6;
 const WORLD_PULL_MERGE_POLL_MS = 400;
 const WORLD_PULL_MERGE_RESPONSE_MAX_BYTES = 16 * 1024;
@@ -239,6 +289,22 @@ function escapeHTML(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+// Coarse "how long ago" reading for the session rows. Deliberately rounded:
+// the exact millisecond a device was last active is not useful here and a
+// bucketed label reads the same in every locale.
+function relativeTimeLabel(timestamp, now = Date.now()) {
+  const value = Number(timestamp) || 0;
+  if (value <= 0) return "unknown";
+  const elapsed = Math.max(0, now - value);
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "1 day ago" : `${days} days ago`;
 }
 
 function incrementDiagnosticCounter(value) {
@@ -2675,11 +2741,31 @@ function normalizeWorldNotifications(payload) {
       if (!/^[A-Za-z0-9_-]{16,160}$/.test(id)) return null;
       const title = sanitizeNotificationText(item?.title, "Notification", 160);
       if (!title) return null;
+      const repoCandidate = String(item?.repo || "")
+        .trim()
+        .toLowerCase()
+        .slice(0, 128);
+      const repoParts = repoCandidate.split("/");
+      const repo =
+        repoParts.length === 2 &&
+        WORLD_ACCOUNT_NAME_RE.test(repoParts[0]) &&
+        /^[a-z0-9][a-z0-9._-]{0,99}$/.test(repoParts[1])
+          ? repoCandidate
+          : "";
+      const rawNumber = Number(item?.meta?.number);
+      const number =
+        Number.isSafeInteger(rawNumber) &&
+        rawNumber > 0 &&
+        rawNumber <= 1_000_000_000
+          ? rawNumber
+          : 0;
       return {
         id,
         kind: sanitizeNotificationText(item?.kind, "Update", 40),
         title,
         body: sanitizeNotificationText(item?.body, "", 500),
+        repo,
+        number,
         href: safeNotificationURL(item?.href),
         ts: Math.max(0, Number(item?.ts) || 0),
         readAt: Math.max(0, Number(item?.readAt) || 0),
@@ -3474,6 +3560,57 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button type="button" data-world-account-open>Account</button>
           </section>
 
+          <div class="world-settings-tabs" role="tablist" aria-label="Local controls section">
+            <button type="button" role="tab" aria-selected="true" data-world-settings-tab="view">View</button>
+            <button type="button" role="tab" aria-selected="false" data-world-settings-tab="work">Work</button>
+            <button type="button" role="tab" aria-selected="false" data-world-settings-tab="security">Security</button>
+          </div>
+
+          <div class="world-settings-pane" data-world-settings-pane="work" hidden>
+            <fieldset class="world-setting-group">
+              <legend>Assigned work · only visible to you</legend>
+              <div class="world-work-stats" data-world-work-stats>
+                <div><strong data-world-work-total>0</strong><span>Assigned</span></div>
+                <div><strong data-world-work-active>0</strong><span>Running</span></div>
+                <div><strong data-world-work-tracked>0:00</strong><span>Tracked</span></div>
+              </div>
+              <ol class="world-office-task-list" data-world-work-list aria-label="Work assigned to you">
+                <li class="world-office-task-empty">Sign in to load the work assigned to you.</li>
+              </ol>
+              <p class="world-office-panel-status" data-world-work-status role="status" aria-live="polite"></p>
+              <p class="world-work-issue-heading">Recent issue assignments</p>
+              <ol class="world-office-task-list" data-world-work-issue-list aria-label="Issues recently assigned to you">
+                <li class="world-office-task-empty">No recent issue assignments.</li>
+              </ol>
+              <small>
+                Starting or stopping a task is timed on the server. The same
+                tasks and recent issue assignments ride the private board on
+                the back of your own avatar; nobody else can read it and
+                built-in screenshots hide it.
+              </small>
+            </fieldset>
+          </div>
+
+          <div class="world-settings-pane" data-world-settings-pane="security" hidden>
+            <fieldset class="world-setting-group">
+              <legend>Signed-in sessions · this account everywhere</legend>
+              <ol class="world-session-list" data-world-session-list aria-label="Signed-in sessions">
+                <li class="world-session-empty">Sign in to review the devices holding a session.</li>
+              </ol>
+              <div class="world-session-actions">
+                <button type="button" data-world-session-revoke="others">Log out other devices</button>
+                <button type="button" data-world-session-revoke="all">Log out everywhere</button>
+              </div>
+              <p class="world-office-panel-status" data-world-session-status role="status" aria-live="polite"></p>
+              <small data-world-session-privacy>
+                Each row shows the device category, the address the sign-in came
+                from, and when it was last active. Only this account can read
+                this list.
+              </small>
+            </fieldset>
+          </div>
+
+          <div class="world-settings-pane" data-world-settings-pane="view">
           <fieldset class="world-setting-group">
             <legend>Personal environment · only changes this device</legend>
             <div class="world-theme-grid">${themes}</div>
@@ -3648,15 +3785,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
 
           <p class="world-setting-note">
             Browser and OS are detected locally. Country comes from a country-only
-            edge hint. Your own avatar may show you the edge-observed IP and
-            User-Agent on a private back plate for session awareness; other
-            visitors cannot see it, it is not stored or sent through World
-            sockets, and built-in screenshots hide it. Whatever the three
+            edge hint. Your own avatar may show you the work assigned to you on a
+            private back plate; other visitors cannot see it, it never enters a
+            World socket, and built-in screenshots hide it. Sign-in addresses
+            live in the Security tab and nowhere else. Whatever the three
             public identity toggles share is saved on your account so your
             campfire bench still shows it while you are away — switch one off
             and the saved copy is cleared. Movement is coarse, ephemeral, and never includes
             URLs, search terms, form contents, repository names, or wallet data.
           </p>
+          </div>
         </section>
 
         <section class="world-tour" data-world-tour aria-labelledby="world-tour-title" aria-hidden="true">
@@ -3692,6 +3830,10 @@ class ForkMeshWorld extends HTMLElement {
     this.visitorStats = null;
     this.activeFediverseMention = null;
     this.organizations = [];
+    // account name -> the team plaque worn on that member's avatar back,
+    // rebuilt whenever the organization spaces reload. Empty for viewers who
+    // do not own or administer any organization.
+    this.orgTeamIndex = new Map();
     this.activeOffice = null;
     this.events = [];
     this.eventsState = "loading";
@@ -3759,9 +3901,9 @@ class ForkMeshWorld extends HTMLElement {
     // next presence frame does not force another fetch (noteDirectoryMembers).
     this.unlistedDirectoryNames = new Set();
     this.worldClientProfileKey = "";
-    // Requester-only connection details never enter identity, presence,
-    // BroadcastChannel, browser storage, or analytics.
-    this.selfSecurityDetails = { ip: "", userAgent: "" };
+    this.worldSessions = [];
+    this.worldSessionsLoadedAt = 0;
+    this.settingsTab = "view";
     this.pendingKnocks = new Map();
     this.serverPeerId = "";
     this.sessionAuthenticated = false;
@@ -3790,7 +3932,6 @@ class ForkMeshWorld extends HTMLElement {
     this.socialFeedsLoad = null;
     this.socialFeedsTimer = 0;
     this.socialFeedsRequestedAt = 0;
-    this.socialFeedsFetchedAt = 0;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -3859,6 +4000,8 @@ class ForkMeshWorld extends HTMLElement {
     this.clockTimer = 0;
     this.distanceTimer = 0;
     this.toastTimer = 0;
+    this.toastPriority = 0;
+    this.toastLockUntil = 0;
     this.inactiveSyncTimer = 0;
     this.inputInactiveTimer = 0;
     this.lastInputInactiveScheduleAt = 0;
@@ -4448,6 +4591,25 @@ class ForkMeshWorld extends HTMLElement {
         onOfficeMeetingBoardSelect: () => {
           void this.officeMeeting?.joinRoom?.("general");
         },
+        onOfficeRooftopLaptopSelect: () => {
+          // ForkMesh does not expose a browser-side arbitrary source writer.
+          // Open the real repository browser and keep write-capable work on
+          // the owner device through desktop / IDE integration.
+          window.open(
+            "/forkmesh/forkmesh/blob/cloudflare_worker/public/world/world-scene.js",
+            "_blank",
+            "noopener,noreferrer",
+          );
+          this.toast(
+            this.sessionAuthenticated
+              ? "Opening the live ForkMesh source browser. Source edits stay in the desktop app or IDE extension."
+              : "Opening public ForkMesh source. Log in for account features. Source edits stay in the desktop app or IDE extension.",
+            // The same first click may satisfy the browser's pending music
+            // autoplay gesture. Keep that asynchronous playback notice from
+            // immediately replacing this interaction-specific explanation.
+            { priority: 1, lockMs: 1500 },
+          );
+        },
         onWorldBulletinSelect: () => this.openLandmark("events"),
         onMastodonBoardSelect: () => this.openMastodonBoard(),
         onMastodonOpenLink: (url) => {
@@ -4481,6 +4643,7 @@ class ForkMeshWorld extends HTMLElement {
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
+        onOrgTeamAssign: (target) => this.openOrgTeamAssignment(target),
         onFediverseProfile: (target) =>
           void this.loadWorldFediverseProfile(target),
         onFediverseFollow: (target) =>
@@ -4511,6 +4674,7 @@ class ForkMeshWorld extends HTMLElement {
         getSession: readSession,
         toast: (message) => this.toast(message),
       });
+      this.syncRecentIssueAssignments();
       this.officeController = createWorldOfficeController({
         root: this,
         world: this.world,
@@ -4530,7 +4694,8 @@ class ForkMeshWorld extends HTMLElement {
       });
       await Promise.allSettled([contextPromise, dataPromise]);
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
-      this.world.setSelfSecurityDetails?.(this.selfSecurityDetails);
+      this.syncRecentIssueAssignments();
+      this.officeTasks?.prime?.();
       this.applyWorldLayoutEditor();
       this.world.updateNetworkNodes(
         liveNodeRecords(this.network, this.mirrorCatalogs),
@@ -4927,21 +5092,6 @@ class ForkMeshWorld extends HTMLElement {
       .trim()
       .toUpperCase()
       .slice(0, 2);
-    const securityDetails =
-      context?.securityDetails && typeof context.securityDetails === "object"
-        ? context.securityDetails
-        : {};
-    this.selfSecurityDetails = {
-      ip: String(securityDetails.ip || "").trim().slice(0, 64),
-      userAgent: String(
-        securityDetails.userAgent || securityDetails.agent || "",
-      )
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 256),
-    };
-    // A later context refresh can update the already-created local mesh.
-    this.world?.setSelfSecurityDetails?.(this.selfSecurityDetails);
     // A guest owns no account record, so the coarse country is remembered in
     // this browser: the flag survives a reload and an unreachable edge context
     // instead of silently dropping back to "no country".
@@ -5051,6 +5201,16 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  async fetchMirrorCatalog({ force = false } = {}) {
+    return this.fetchJSON("/api/repo/forkmesh/forkmesh/mirrors", {
+      auth: false,
+      timeout: 5000,
+      maxAge: force ? 0 : MIRROR_STATUS_POLL_MS - 5000,
+      backoff: true,
+      staleIfError: true,
+    });
+  }
+
   async loadWorldData() {
     const session = validWorldSession();
     const hasSession = this.sessionAuthenticated && Boolean(session);
@@ -5079,11 +5239,7 @@ class ForkMeshWorld extends HTMLElement {
     ] =
       await Promise.allSettled([
         this.fetchJSON("/api/network/overview", { auth: false }),
-        this.fetchJSON("/api/repo/forkmesh/forkmesh/mirrors", {
-          auth: false,
-          timeout: 5000,
-          cache: "no-store",
-        }),
+        this.fetchMirrorCatalog(),
         this.fetchJSON("/api/world/instances", {
           auth: false,
           timeout: 5000,
@@ -5268,6 +5424,7 @@ class ForkMeshWorld extends HTMLElement {
       this.notificationsState = hasSession ? "unavailable" : "signed-out";
     }
     this.updateNotificationBadge();
+    this.syncRecentIssueAssignments();
     this.buildDiagnostics =
       versionResult.status === "fulfilled"
         ? normalizeBuildDiagnostics(versionResult.value)
@@ -5290,6 +5447,7 @@ class ForkMeshWorld extends HTMLElement {
     if (this.organizations.length) {
       this.organizations = await this.loadOrganizationSpaces(this.organizations);
     }
+    this.rebuildOrgTeamIndex();
     this.securityScan =
       scanResult.status === "fulfilled" ? scanResult.value || null : null;
     this.fediverseDirectory =
@@ -5937,6 +6095,258 @@ class ForkMeshWorld extends HTMLElement {
     return spaces.filter((space) => space?.name || space?.org);
   }
 
+  // Organizations the viewer owns or administers, keyed by name.
+  managedOrganizations() {
+    return this.organizations.filter((organization) =>
+      ["owner", "admin"].includes(
+        String(
+          organization?.viewerRole || organization?.role || "",
+        ).toLowerCase(),
+      ),
+    );
+  }
+
+  managedOrganization(name) {
+    const org = String(name || "").trim().toLowerCase();
+    return (
+      this.managedOrganizations().find(
+        (organization) =>
+          sanitizePresenceText(
+            organization.name || organization.org,
+            "",
+            50,
+          ).toLowerCase() === org,
+      ) || null
+    );
+  }
+
+  // One plaque per member of an organization the viewer administers. Built
+  // once per organization reload rather than per presence frame: the roster is
+  // capped at 50 organizations x 40 members, and presence redraws are frequent.
+  rebuildOrgTeamIndex() {
+    const index = new Map();
+    this.managedOrganizations().forEach((organization) => {
+      const org = sanitizePresenceText(
+        organization.name || organization.org,
+        "",
+        50,
+      ).toLowerCase();
+      const teams = Array.isArray(organization.teamList)
+        ? organization.teamList
+        : [];
+      if (!org || !teams.length) return;
+      const teamNames = new Set(
+        teams.map((team) => String(team?.team || "").toLowerCase()),
+      );
+      (Array.isArray(organization.memberList)
+        ? organization.memberList
+        : []
+      ).forEach((member) => {
+        const account = String(member?.name || "").trim().toLowerCase();
+        if (!WORLD_ACCOUNT_NAME_RE.test(account) || index.has(account)) return;
+        const assigned = (Array.isArray(member?.teams) ? member.teams : [])
+          .map((team) => String(team || "").toLowerCase())
+          .filter((team) => teamNames.has(team));
+        index.set(account, {
+          org,
+          member: account,
+          assigned: assigned.length,
+          total: teamNames.size,
+        });
+      });
+    });
+    this.orgTeamIndex = index;
+  }
+
+  orgTeamAssignmentFor(name) {
+    const account = String(name || "").trim().toLowerCase();
+    if (!account) return null;
+    return this.orgTeamIndex.get(account) || null;
+  }
+
+  // Re-read one organization's roster and team layout after a team write so
+  // the plaque count and the organization panel reflect the same server state.
+  async refreshOrganizationTeams(name) {
+    const org = String(name || "").trim().toLowerCase();
+    const organization = this.managedOrganization(org);
+    if (!organization) return;
+    const root = `/api/orgs/${encodeURIComponent(org)}`;
+    const [members, teams] = await Promise.allSettled([
+      this.fetchJSON(`${root}/members`, { timeout: 5000, cache: "no-store" }),
+      this.fetchJSON(`${root}/teams`, { timeout: 5000, cache: "no-store" }),
+    ]);
+    if (this.destroyed) return;
+    if (members.status === "fulfilled" &&
+        Array.isArray(members.value?.members)) {
+      organization.memberList = members.value.members.slice(0, 40);
+    }
+    if (teams.status === "fulfilled" && Array.isArray(teams.value?.teams)) {
+      organization.teamList = teams.value.teams.slice(0, 40);
+    }
+    this.rebuildOrgTeamIndex();
+    this.renderPeers();
+  }
+
+  // The team plaque on a member's back opens accessible checkboxes. Team
+  // membership is what raises a member's repository permission, which is what
+  // opens the organization's repository floors and personal offices in the
+  // World — so the dialog says so plainly. Only owners and administrators ever
+  // see the plaque, and the worker re-checks that role on every write.
+  openOrgTeamAssignment(target = {}) {
+    const org = String(target.org || "").trim().toLowerCase();
+    const member = String(target.member || target.name || "")
+      .trim()
+      .toLowerCase();
+    if (!this.sessionAuthenticated || !validWorldSession()) {
+      this.toast("Sign in as an organization administrator to assign teams.");
+      return;
+    }
+    const organization = this.managedOrganization(org);
+    if (!organization || !WORLD_ACCOUNT_NAME_RE.test(member)) {
+      this.toast("Organization administrator access is required.");
+      return;
+    }
+    const teams = (
+      Array.isArray(organization.teamList) ? organization.teamList : []
+    )
+      .map((team) => ({
+        team: String(team?.team || "").toLowerCase(),
+        permission: sanitizePresenceText(team?.permission, "read", 24),
+        floors: officeFloorsForTeam(team?.team).map((floor) => floor.label),
+      }))
+      .filter((team) => team.team);
+    if (!teams.length) {
+      this.toast(
+        `${org} has no teams yet. Create one in organization settings.`,
+      );
+      return;
+    }
+    const roster = (
+      Array.isArray(organization.memberList) ? organization.memberList : []
+    ).find(
+      (entry) => String(entry?.name || "").trim().toLowerCase() === member,
+    );
+    const current = new Set(
+      (Array.isArray(roster?.teams) ? roster.teams : [])
+        .map((team) => String(team || "").toLowerCase())
+        .filter((team) => teams.some((option) => option.team === team)),
+    );
+    document.querySelector("[data-world-org-team-assignment]")?.remove();
+    const dialog = document.createElement("dialog");
+    dialog.dataset.worldOrgTeamAssignment = "true";
+    dialog.style.cssText =
+      "width:min(520px,calc(100vw - 28px));border:1px solid #9ef7c6;border-radius:18px;background:linear-gradient(155deg,#071611,#0b2525);color:#e9fff2;padding:0;box-shadow:0 28px 110px #000c";
+    dialog.innerHTML = `
+      <form style="padding:22px;display:grid;gap:16px">
+        <header>
+          <strong style="font-size:21px">Assign ${escapeHTML(
+            member,
+          )} to ${escapeHTML(org)} teams</strong>
+          <p style="margin:6px 0 0;color:#9eb6aa;font-size:13px;line-height:1.5">These are the same organization teams managed in the ForkMesh website organization settings. Changes here update that same membership. A team carries one repository permission over every linked repository and may also unlock an Office elevator floor.</p>
+        </header>
+        <fieldset style="display:grid;gap:8px;padding:12px;border-radius:9px;border:1px solid #3a6655;background:#071a16">
+          <legend style="padding:0 5px;font-size:12px;font-weight:800;color:#eafff4">Teams</legend>
+          <div style="display:grid;gap:8px;max-height:320px;overflow:auto">
+            ${teams
+              .map(
+                (team) =>
+                  `<label style="display:grid;grid-template-columns:auto 1fr;align-items:start;gap:10px;padding:9px;border:1px solid #23483b;border-radius:8px;cursor:pointer">
+                    <input type="checkbox" name="teams" value="${escapeHTML(
+                      team.team,
+                    )}" ${current.has(team.team) ? "checked" : ""} style="margin-top:3px;accent-color:#9ef7c6">
+                    <span style="display:grid;gap:3px">
+                      <strong style="font:800 13px/1.3 ui-monospace,monospace">${escapeHTML(
+                        team.team,
+                      )} · ${escapeHTML(team.permission)}</strong>
+                      <small style="color:#9eb6aa;font:12px/1.4 ui-monospace,monospace">${
+                        team.floors.length
+                          ? `Unlocks Office elevator ${
+                              team.floors.length === 1 ? "floor" : "floors"
+                            }: ${escapeHTML(team.floors.join(", "))}`
+                          : "No additional Office elevator floor"
+                      }</small>
+                    </span>
+                  </label>`,
+              )
+              .join("")}
+          </div>
+        </fieldset>
+        <output style="min-height:18px;color:#9ef7c6;font-size:12px" aria-live="polite"></output>
+        <footer style="display:flex;justify-content:flex-end;gap:8px">
+          <button type="button" data-world-org-team-cancel style="padding:9px 12px;border-radius:8px;border:1px solid #3a6655;background:#0b211b;color:inherit">Close</button>
+          <button type="submit" style="background:#9ef7c6;color:#071611;border:0;border-radius:8px;padding:9px 14px;font-weight:800">Save team access</button>
+        </footer>
+      </form>`;
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog
+      .querySelector("[data-world-org-team-cancel]")
+      ?.addEventListener("click", () => dialog.close());
+    dialog.querySelector("form")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const output = form.querySelector("output");
+      const submit = form.querySelector('[type="submit"]');
+      const selected = new Set(
+        [...form.querySelectorAll('input[name="teams"]:checked')].map(
+          (checkbox) => checkbox.value,
+        ),
+      );
+      const added = [...selected].filter((team) => !current.has(team));
+      const removed = [...current].filter((team) => !selected.has(team));
+      if (!added.length && !removed.length) {
+        dialog.close();
+        return;
+      }
+      submit.disabled = true;
+      let failures = 0;
+      let savedChanges = 0;
+      const root = `/api/orgs/${encodeURIComponent(org)}/teams`;
+      for (const team of [...added, ...removed]) {
+        const grant = added.includes(team);
+        output.textContent = `${grant ? "Adding" : "Removing"} ${member} ${
+          grant ? "to" : "from"
+        } ${team}…`;
+        try {
+          await this.postJSON(
+            `${root}/${encodeURIComponent(team)}/members`,
+            { member },
+            grant ? {} : { method: "DELETE" },
+          );
+          savedChanges += 1;
+        } catch (error) {
+          failures += 1;
+          output.textContent = `${team}: ${String(
+            error?.message || "request failed",
+          )}`;
+        }
+      }
+      await this.refreshOrganizationTeams(org);
+      if (
+        savedChanges > 0 &&
+        member === String(validWorldSession()?.nodeName || "").toLowerCase()
+      ) {
+        await this.officeController?.refreshAuthorization?.();
+      }
+      submit.disabled = false;
+      if (failures) {
+        this.toast(
+          `${failures} team change${
+            failures === 1 ? " was" : "s were"
+          } not applied. Organization role checks are enforced by the server.`,
+        );
+        return;
+      }
+      dialog.close();
+      this.toast(
+        `${member} now holds ${selected.size} ${org} team${
+          selected.size === 1 ? "" : "s"
+        }. Repository floors and offices follow the team permission.`,
+      );
+    });
+    dialog.showModal();
+  }
+
   bindUI() {
     const chatTerminal = this.$("[data-world-chat-terminal]");
     chatTerminal?.addEventListener("toggle", () => {
@@ -6063,6 +6473,18 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-settings-close]")) {
         this.toggleSettings(false);
+        return;
+      }
+      const settingsTab = event.target.closest("[data-world-settings-tab]");
+      if (settingsTab) {
+        this.selectSettingsTab(settingsTab.dataset.worldSettingsTab);
+        return;
+      }
+      const sessionRevoke = event.target.closest("[data-world-session-revoke]");
+      if (sessionRevoke) {
+        void this.revokeWorldSession(
+          sessionRevoke.dataset.worldSessionRevoke,
+        );
         return;
       }
       const emojiChoice = event.target.closest(
@@ -7463,16 +7885,7 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async refreshMirrorCatalogs({ force = false } = {}) {
-    const payload = await this.fetchJSON(
-      "/api/repo/forkmesh/forkmesh/mirrors",
-      {
-        auth: false,
-        timeout: 5000,
-        maxAge: force ? 0 : MIRROR_STATUS_POLL_MS - 5000,
-        backoff: true,
-        staleIfError: true,
-      },
-    );
+    const payload = await this.fetchMirrorCatalog({ force });
     this.mirrorCatalogs = [
       {
         ...payload,
@@ -7487,7 +7900,7 @@ class ForkMeshWorld extends HTMLElement {
   startMirrorPolling() {
     window.clearInterval(this.mirrorTimer);
     this.mirrorTimer = window.setInterval(() => {
-      if (this.destroyed || document.visibilityState !== "visible") return;
+      if (this.destroyed || document.hidden) return;
       void this.refreshMirrorCatalogs().catch(() => {
         // Preserve the last verified snapshot during a transient HTTPS failure.
       });
@@ -8156,7 +8569,6 @@ class ForkMeshWorld extends HTMLElement {
           throw new Error(`social posts returned ${response.status}`);
         }
         this.socialFeedsSnapshot = await response.json();
-        this.socialFeedsFetchedAt = Date.now();
         this.syncSocialBanners();
       } catch (_) {
         // Keep the previous snapshot — or the static signs — on failure.
@@ -8191,8 +8603,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   // Milliseconds since the newest post in a proxied feed, or null when the
-  // feed has no dated posts (unfetched, unavailable, or the blog's undated
-  // feature articles).
+  // feed has no dated posts (unfetched, unavailable, or an item that shipped
+  // without a date).
   socialNewestPostAgo(feed) {
     let latest = 0;
     for (const post of Array.isArray(feed?.posts) ? feed.posts : []) {
@@ -8200,15 +8612,6 @@ class ForkMeshWorld extends HTMLElement {
       if (at > latest) latest = at;
     }
     return latest ? Math.max(0, Date.now() - latest) : null;
-  }
-
-  // Age of the snapshot itself: the server stamps `now` when it builds the
-  // payload, so an edge-cached read still reports how old the data really
-  // is. Feeds the blog board's SYNCED plate.
-  socialSnapshotAge() {
-    const stamp =
-      Number(this.socialFeedsSnapshot?.now) || this.socialFeedsFetchedAt;
-    return stamp ? Math.max(0, Date.now() - stamp) : null;
   }
 
   syncSocialBannerTimers() {
@@ -8228,7 +8631,7 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.updateSocialBannerTimers?.({
       twitter: timers(this.socialNewestPostAgo(snapshot?.twitter)),
       reddit: timers(this.socialNewestPostAgo(snapshot?.reddit)),
-      blog: timers(this.socialSnapshotAge()),
+      blog: timers(this.socialNewestPostAgo(snapshot?.blog)),
     });
   }
 
@@ -8296,10 +8699,10 @@ class ForkMeshWorld extends HTMLElement {
           .filter(Boolean)
           .join(" · "),
       ),
-      // Blog items have no dates or counts: the meta line is the section +
-      // feature number the RSS category carries, the headline is the item
-      // title, and the board prints the item's description as preview text
-      // under its artwork.
+      // Blog items carry no counts: the meta line is the section + feature
+      // number the RSS category carries, the headline is the item title,
+      // and the board prints the item's description as preview text under
+      // its artwork. Their pubDate drives the stand's LAST POST plate.
       blog: bound(
         snapshot.blog,
         (post) => String(post?.meta || ""),
@@ -10058,6 +10461,45 @@ class ForkMeshWorld extends HTMLElement {
     if (announcements.length) this.toast(announcements.join(" · "));
   }
 
+  recentIssueAssignments() {
+    const seen = new Set();
+    return this.notifications
+      .filter(
+        (item) =>
+          String(item?.kind || "").trim().toLowerCase() === "issue_assigned",
+      )
+      .map((item) => {
+        const key =
+          item.repo && item.number
+            ? `${item.repo}#${item.number}`
+            : String(item.id || "");
+        if (!key || seen.has(key)) return null;
+        seen.add(key);
+        return {
+          id: String(item.id || ""),
+          title: sanitizeNotificationText(
+            item.body || item.title,
+            "Assigned issue",
+            160,
+          ),
+          repo: [
+            String(item.repo || ""),
+            item.number ? `#${item.number}` : "",
+          ]
+            .filter(Boolean)
+            .join(" "),
+          href: safeNotificationURL(item.href),
+          assignedAt: Math.max(0, Number(item.ts) || 0),
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 6);
+  }
+
+  syncRecentIssueAssignments() {
+    this.officeTasks?.setRecentIssues?.(this.recentIssueAssignments());
+  }
+
   async refreshPersonalNotifications(
     render = false,
     { digestOnly = false } = {},
@@ -10071,6 +10513,7 @@ class ForkMeshWorld extends HTMLElement {
       this.notificationToken = "";
       this.seenNotifications.clear();
       this.updateNotificationBadge();
+      this.syncRecentIssueAssignments();
       if (render || this.isEventsPanelOpen()) this.refreshOpenEventsPanel();
       return;
     }
@@ -10125,6 +10568,7 @@ class ForkMeshWorld extends HTMLElement {
       }
     }
     this.updateNotificationBadge();
+    this.syncRecentIssueAssignments();
     this.announceWorldNotifications();
     if (render || this.isEventsPanelOpen()) this.refreshOpenEventsPanel();
   }
@@ -15319,7 +15763,163 @@ class ForkMeshWorld extends HTMLElement {
     if (!panel) return;
     panel.dataset.open = String(open);
     panel.setAttribute("aria-hidden", String(!open));
-    if (open) window.setTimeout(() => panel.querySelector("button")?.focus(), 80);
+    this.officeTasks?.setPersonalView?.(open === true);
+    if (open) {
+      this.selectSettingsTab(this.settingsTab || "view");
+      window.setTimeout(() => panel.querySelector("button")?.focus(), 80);
+    }
+  }
+
+  selectSettingsTab(tab) {
+    const selected = ["view", "work", "security"].includes(tab) ? tab : "view";
+    this.settingsTab = selected;
+    this.$$("[data-world-settings-tab]").forEach((button) => {
+      button.setAttribute(
+        "aria-selected",
+        String(button.dataset.worldSettingsTab === selected),
+      );
+    });
+    this.$$("[data-world-settings-pane]").forEach((pane) => {
+      pane.hidden = pane.dataset.worldSettingsPane !== selected;
+    });
+    if (selected === "security") {
+      // The list is small and revocation must never read a stale row, so it is
+      // re-read on entry rather than polled while the panel sits open.
+      void this.loadWorldSessions();
+    }
+    if (selected === "work") void this.officeTasks?.refresh?.({ quiet: true });
+  }
+
+  renderWorldSessions(message = "", tone = "") {
+    const list = this.$("[data-world-session-list]");
+    const status = this.$("[data-world-session-status]");
+    if (status) {
+      status.textContent = String(message || "").slice(0, 240);
+      if (tone) status.dataset.tone = tone;
+      else delete status.dataset.tone;
+    }
+    this.$$("[data-world-session-revoke]").forEach((button) => {
+      button.disabled = this.worldSessions.length < (
+        button.dataset.worldSessionRevoke === "others" ? 2 : 1
+      );
+    });
+    if (!list) return;
+    if (!this.worldSessions.length) {
+      list.innerHTML =
+        `<li class="world-session-empty">${escapeHTML(
+          message || "No signed-in sessions to show.",
+        )}</li>`;
+      return;
+    }
+    list.innerHTML = this.worldSessions
+      .map(
+        (session) => `
+        <li class="world-session" data-current="${session.current}">
+          <div class="world-session-copy">
+            <strong>${escapeHTML(session.deviceLabel)}${
+              session.current ? " \u00b7 this device" : ""
+            }</strong>
+            <small>${escapeHTML(session.ipAddress || "address unavailable")}</small>
+            <small>Last active ${escapeHTML(
+              relativeTimeLabel(session.lastSeenAt),
+            )} \u00b7 signed in ${escapeHTML(
+              relativeTimeLabel(session.createdAt),
+            )}</small>
+          </div>
+          <button type="button" data-world-session-revoke="${escapeHTML(
+            session.id,
+          )}">${session.current ? "Log out here" : "Log out"}</button>
+        </li>`,
+      )
+      .join("");
+  }
+
+  async loadWorldSessions(force = false) {
+    if (!readSession()?.sessionToken) {
+      this.worldSessions = [];
+      this.renderWorldSessions("Sign in to review the devices holding a session.");
+      return false;
+    }
+    if (!force && Date.now() - this.worldSessionsLoadedAt < 5000) return true;
+    this.renderWorldSessions("Loading signed-in sessions\u2026");
+    try {
+      const payload = await this.fetchJSON("/api/accounts/sessions", {
+        cache: "no-store",
+        timeout: 8000,
+      });
+      this.worldSessions = (
+        Array.isArray(payload?.sessions) ? payload.sessions : []
+      )
+        .slice(0, 50)
+        .map((session) => ({
+          id: String(session?.id || "").slice(0, 64),
+          deviceLabel: String(session?.deviceLabel || "Unknown device").slice(0, 80),
+          ipAddress: String(session?.ipAddress || "").slice(0, 64),
+          createdAt: Number(session?.createdAt) || 0,
+          lastSeenAt: Number(session?.lastSeenAt) || 0,
+          current: session?.current === true,
+        }))
+        .filter((session) => session.id);
+      this.worldSessionsLoadedAt = Date.now();
+      const privacy = this.$("[data-world-session-privacy]");
+      if (privacy && payload?.privacyNotice) {
+        privacy.textContent = String(payload.privacyNotice).slice(0, 400);
+      }
+      this.renderWorldSessions(
+        `${this.worldSessions.length} signed-in session${
+          this.worldSessions.length === 1 ? "" : "s"
+        }.`,
+      );
+      return true;
+    } catch (_) {
+      this.worldSessions = [];
+      this.renderWorldSessions(
+        "Signed-in sessions could not be loaded.",
+        "error",
+      );
+      return false;
+    }
+  }
+
+  async revokeWorldSession(target) {
+    const scope = String(target || "").trim();
+    if (!/^[A-Za-z0-9_-]{2,64}$/.test(scope)) return false;
+    if (!readSession()?.sessionToken) return false;
+    const revokingCurrent =
+      scope === "all" ||
+      this.worldSessions.some(
+        (session) => session.id === scope && session.current,
+      );
+    this.renderWorldSessions("Revoking\u2026");
+    let payload = null;
+    try {
+      payload = await this.postJSON(
+        `/api/accounts/sessions/${encodeURIComponent(scope)}`,
+        {},
+        { method: "DELETE", timeout: 10000 },
+      );
+    } catch (error) {
+      this.renderWorldSessions(
+        String(error?.message || "That session could not be revoked.").slice(
+          0,
+          160,
+        ),
+        "error",
+      );
+      return false;
+    }
+    if (payload?.currentRevoked || revokingCurrent) {
+      // This browser's own token just died; drop the local copy and reload so
+      // the World comes back as a guest instead of retrying a dead session.
+      await this.logoutFromWorld();
+      return true;
+    }
+    this.toast(
+      scope === "others"
+        ? "Every other device was logged out."
+        : "That device was logged out.",
+    );
+    return this.loadWorldSessions(true);
   }
 
   openWorldChat(href = "/dashboard/chat", returnFocus = null) {
@@ -15828,10 +16428,9 @@ class ForkMeshWorld extends HTMLElement {
     const world = this.world;
     const canvas = world?.renderer?.domElement;
     if (!canvas) return null;
-    // Raw IP/User-Agent details are self-only and intentionally omitted from
-    // built-in captures so sharing a normal World screenshot cannot leak them.
-    const securityBadgeWasVisible =
-      world.setSelfSecurityBadgeVisibility?.(false);
+    // The assigned-work back plate is self-only and intentionally omitted
+    // from built-in captures so sharing a World screenshot cannot leak it.
+    const workBadgeWasVisible = world.setSelfWorkBadgeVisibility?.(false);
     try {
       // The renderer runs without preserveDrawingBuffer, so paint a fresh
       // frame and read it back synchronously before the buffer is cleared.
@@ -15882,9 +16481,7 @@ class ForkMeshWorld extends HTMLElement {
     } catch (_) {
       return null;
     } finally {
-      world.setSelfSecurityBadgeVisibility?.(
-        securityBadgeWasVisible !== false,
-      );
+      world.setSelfWorkBadgeVisibility?.(workBadgeWasVisible !== false);
     }
   }
 
@@ -16453,14 +17050,21 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  toast(message) {
+  toast(message, { priority = 0, lockMs = 0 } = {}) {
     const element = this.$("[data-world-toast]");
     if (!element) return;
+    const now = performance.now();
+    const safePriority = Number.isFinite(priority) ? priority : 0;
+    if (now < this.toastLockUntil && safePriority < this.toastPriority) return;
     window.clearTimeout(this.toastTimer);
+    this.toastPriority = safePriority;
+    this.toastLockUntil = now + Math.max(0, Number(lockMs) || 0);
     element.textContent = message;
     element.dataset.open = "true";
     this.toastTimer = window.setTimeout(() => {
       element.dataset.open = "false";
+      this.toastPriority = 0;
+      this.toastLockUntil = 0;
     }, 4200);
   }
 
@@ -16755,54 +17359,55 @@ class ForkMeshWorld extends HTMLElement {
       if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
       return `${Math.round(count)}`;
     };
-    const setCompactText = (selector, value) => {
+    const setCompactHTML = (selector, value) => {
       const element = this.$(selector);
-      if (element) element.textContent = value;
+      if (element) element.innerHTML = value;
     };
+    const unavailable = (label) => diagnosticReading(label, "high");
     const version = build.version
       ? `${/^v/i.test(build.version) ? "" : "v"}${build.version}`
       : "build pending";
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-renderer-compact]",
       renderer
         ? renderer.paused
-          ? "R paused"
-          : `R ${renderer.fps.toFixed(0)} FPS/${renderer.frameTimeMs.toFixed(1)} ms · ${formatCompactCount(renderer.calls)}c/${formatCompactCount(renderer.triangles)}△`
-        : "R unavailable",
+          ? `R ${diagnosticReading("paused", "caution")}`
+          : `R ${diagnosticMetric("fps", renderer.fps, `${renderer.fps.toFixed(0)} FPS`)}/${diagnosticMetric("frameTimeMs", renderer.frameTimeMs, `${renderer.frameTimeMs.toFixed(1)} ms`)} · ${diagnosticMetric("calls", renderer.calls, `${formatCompactCount(renderer.calls)}c`)}/${diagnosticMetric("triangles", renderer.triangles, `${formatCompactCount(renderer.triangles)}△`)}`
+        : `R ${unavailable("unavailable")}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-frame-compact]",
       renderer
-        ? `F ${formatCompactCount(renderer.longFrames)}L/${renderer.longestFrameMs.toFixed(0)}w`
-        : "F unavailable",
+        ? `F ${diagnosticMetric("longFrames", renderer.longFrames, `${formatCompactCount(renderer.longFrames)}L`)}/${diagnosticMetric("longestFrameMs", renderer.longestFrameMs, `${renderer.longestFrameMs.toFixed(0)}w`)}`
+        : `F ${unavailable("unavailable")}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-input-compact]",
       renderer
-        ? `I ${renderer.dragging ? "drag" : "idle"} · ${formatCompactCount(renderer.pointerMoves)}p/${renderer.pointerWorstGapMs.toFixed(0)}g · ${formatCompactCount(renderer.interactiveObjects)}i/${formatCompactCount(renderer.animations)}a @${renderer.pixelRatio.toFixed(1)}`
-        : "I unavailable",
+        ? `I ${renderer.dragging ? "drag" : "idle"} · ${formatCompactCount(renderer.pointerMoves)}p/${diagnosticMetric("pointerGapMs", renderer.pointerWorstGapMs, `${renderer.pointerWorstGapMs.toFixed(0)}g`)} · ${formatCompactCount(renderer.interactiveObjects)}i/${formatCompactCount(renderer.animations)}a @${renderer.pixelRatio.toFixed(1)}`
+        : `I ${unavailable("unavailable")}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-world-compact]",
       renderer
-        ? `W ${renderer.moving ? "move" : "still"} · ${renderer.cameraMode === "first-person" ? "1P" : "3P"} · ${renderer.space} · z${renderer.zoom.toFixed(1)}`
-        : "W unavailable",
+        ? `W ${renderer.moving ? "move" : "still"} · ${renderer.cameraMode === "first-person" ? "1P" : "3P"} · ${escapeHTML(renderer.space)} · z${renderer.zoom.toFixed(1)}`
+        : `W ${unavailable("unavailable")}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-connection-compact]",
-      `N ${connection.state} · ${connection.peers}p/${connection.reconnects}r/${formatCompactCount(connection.bufferedBytes)}B`,
+      `N ${diagnosticReading(connection.state, diagnosticStateLevel(connection.state))} · ${connection.peers}p/${diagnosticMetric("reconnects", connection.reconnects, `${connection.reconnects}r`)}/${diagnosticMetric("bufferedBytes", connection.bufferedBytes, `${formatCompactCount(connection.bufferedBytes)}B`)}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-traffic-compact]",
-      `IO ${formatCompactCount(traffic.inboundFrames)}↓@${formatRate(traffic.inboundRate)} · ${formatCompactCount(traffic.outboundFrames)}↑@${formatRate(traffic.outboundRate)}`,
+      `IO ${formatCompactCount(traffic.inboundFrames)}↓@${diagnosticMetric("frameRate", traffic.inboundRate, formatRate(traffic.inboundRate))} · ${formatCompactCount(traffic.outboundFrames)}↑@${diagnosticMetric("frameRate", traffic.outboundRate, formatRate(traffic.outboundRate))}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-queues-compact]",
-      `Q ${queues.movement[0] || "?"}/${queues.profile[0] || "?"} · ${queues.movementCoalesced}+${queues.profileCoalesced}c/${queues.backpressureEvents}bp`,
+      `Q ${queues.movement[0] || "?"}/${queues.profile[0] || "?"} · ${diagnosticMetric("coalesced", queues.movementCoalesced + queues.profileCoalesced, `${queues.movementCoalesced}+${queues.profileCoalesced}c`)}/${diagnosticMetric("backpressure", queues.backpressureEvents, `${queues.backpressureEvents}bp`)}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-build-compact]",
-      `B ${version}${build.revision ? `/${build.revision.slice(0, 7)}` : ""}`,
+      `B ${escapeHTML(version)}${build.revision ? `/${escapeHTML(build.revision.slice(0, 7))}` : ""}`,
     );
     const musicActive =
       music.state === "playing" || music.state === "paused";
@@ -16851,27 +17456,29 @@ class ForkMeshWorld extends HTMLElement {
     }
     const rendererDetail = this.$("[data-world-diagnostics-renderer]");
     if (rendererDetail) {
-      rendererDetail.textContent = renderer
-        ? `${renderer.paused ? "Paused" : `${renderer.fps.toFixed(1)} FPS · ${renderer.frameTimeMs.toFixed(1)} ms/frame`} · ${Math.round(renderer.calls).toLocaleString()} calls · ${Math.round(renderer.triangles).toLocaleString()} triangles`
-        : "WebGL renderer unavailable";
+      rendererDetail.innerHTML = renderer
+        ? `${renderer.paused ? diagnosticReading("Paused", "caution") : `${diagnosticMetric("fps", renderer.fps, `${renderer.fps.toFixed(1)} FPS`)} · ${diagnosticMetric("frameTimeMs", renderer.frameTimeMs, `${renderer.frameTimeMs.toFixed(1)} ms/frame`)}`} · ${diagnosticMetric("calls", renderer.calls, `${Math.round(renderer.calls).toLocaleString()} calls`)} · ${diagnosticMetric("triangles", renderer.triangles, `${Math.round(renderer.triangles).toLocaleString()} triangles`)}`
+        : unavailable("WebGL renderer unavailable");
     }
     const frameHealth = this.$("[data-world-diagnostics-frame-health]");
     if (frameHealth) {
-      frameHealth.textContent = renderer
-        ? `${Math.round(renderer.longFrames).toLocaleString()} long frames · ${renderer.longestFrameMs.toFixed(1)} ms worst in the last sample`
-        : "WebGL renderer unavailable";
+      frameHealth.innerHTML = renderer
+        ? `${diagnosticMetric("longFrames", renderer.longFrames, `${Math.round(renderer.longFrames).toLocaleString()} long frames`)} · ${diagnosticMetric("longestFrameMs", renderer.longestFrameMs, `${renderer.longestFrameMs.toFixed(1)} ms worst`)} in the last sample`
+        : unavailable("WebGL renderer unavailable");
     }
     const inputDetail = this.$("[data-world-diagnostics-input]");
     if (inputDetail) {
-      inputDetail.textContent = renderer
-        ? `${renderer.dragging ? "Dragging" : "Idle"} · ${Math.round(renderer.pointerMoves).toLocaleString()} pointer moves/s · ${renderer.pointerWorstGapMs.toFixed(1)} ms worst input gap · ${Math.round(renderer.interactiveObjects).toLocaleString()} interactives · ${Math.round(renderer.animations).toLocaleString()} animations · DPR ${renderer.pixelRatio.toFixed(2)}`
-        : "WebGL renderer unavailable";
+      inputDetail.innerHTML = renderer
+        ? `${renderer.dragging ? "Dragging" : "Idle"} · ${Math.round(renderer.pointerMoves).toLocaleString()} pointer moves/s · ${diagnosticMetric("pointerGapMs", renderer.pointerWorstGapMs, `${renderer.pointerWorstGapMs.toFixed(1)} ms worst input gap`)} · ${Math.round(renderer.interactiveObjects).toLocaleString()} interactives · ${Math.round(renderer.animations).toLocaleString()} animations · DPR ${renderer.pixelRatio.toFixed(2)}`
+        : unavailable("WebGL renderer unavailable");
     }
     const worldState = this.$("[data-world-diagnostics-world-state]");
     if (worldState) {
-      worldState.textContent = renderer
-        ? `${renderer.moving ? "Moving" : "Still"} · ${renderer.cameraMode} · ${renderer.space} · zoom ${renderer.zoom.toFixed(2)}`
-        : "World state unavailable";
+      worldState.innerHTML = renderer
+        ? escapeHTML(
+            `${renderer.moving ? "Moving" : "Still"} · ${renderer.cameraMode} · ${renderer.space} · zoom ${renderer.zoom.toFixed(2)}`,
+          )
+        : unavailable("World state unavailable");
     }
     const musicDetail = this.$("[data-world-diagnostics-music]");
     if (musicDetail) {
@@ -16884,21 +17491,23 @@ class ForkMeshWorld extends HTMLElement {
       "[data-world-diagnostics-connection]",
     );
     if (connectionDetail) {
-      connectionDetail.textContent = `${connection.state} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${connection.reconnects} reconnect attempts · ${Math.round(connection.bufferedBytes).toLocaleString()} buffered bytes`;
+      connectionDetail.innerHTML = `${diagnosticReading(connection.state, diagnosticStateLevel(connection.state))} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${diagnosticMetric("reconnects", connection.reconnects, `${connection.reconnects} reconnect attempts`)} · ${diagnosticMetric("bufferedBytes", connection.bufferedBytes, `${Math.round(connection.bufferedBytes).toLocaleString()} buffered bytes`)}`;
     }
     const trafficDetail = this.$("[data-world-diagnostics-traffic]");
     if (trafficDetail) {
-      trafficDetail.textContent = `Inbound ${Math.round(traffic.inboundFrames).toLocaleString()} (${formatRate(traffic.inboundRate)}) · outbound ${Math.round(traffic.outboundFrames).toLocaleString()} (${formatRate(traffic.outboundRate)})`;
+      trafficDetail.innerHTML = `Inbound ${Math.round(traffic.inboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.inboundRate, formatRate(traffic.inboundRate))}) · outbound ${Math.round(traffic.outboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.outboundRate, formatRate(traffic.outboundRate))})`;
     }
     const queueDetail = this.$("[data-world-diagnostics-queues]");
     if (queueDetail) {
-      queueDetail.textContent = `Movement ${queues.movement} (${queues.movementCoalesced} coalesced) · profile ${queues.profile} (${queues.profileCoalesced} coalesced) · ${queues.backpressureEvents} backpressure events`;
+      queueDetail.innerHTML = `Movement ${escapeHTML(queues.movement)} (${diagnosticMetric("coalesced", queues.movementCoalesced, `${queues.movementCoalesced} coalesced`)}) · profile ${escapeHTML(queues.profile)} (${diagnosticMetric("coalesced", queues.profileCoalesced, `${queues.profileCoalesced} coalesced`)}) · ${diagnosticMetric("backpressure", queues.backpressureEvents, `${queues.backpressureEvents} backpressure events`)}`;
     }
     const buildDetail = this.$("[data-world-diagnostics-build]");
     if (buildDetail) {
-      buildDetail.textContent = build.version
-        ? `${version}${build.revision ? ` · ${build.revision.slice(0, 12)}` : " · revision unavailable"}`
-        : "Version endpoint unavailable";
+      buildDetail.innerHTML = build.version
+        ? escapeHTML(
+            `${version}${build.revision ? ` · ${build.revision.slice(0, 12)}` : " · revision unavailable"}`,
+          )
+        : unavailable("Version endpoint unavailable");
     }
   }
 
@@ -17935,12 +18544,24 @@ class ForkMeshWorld extends HTMLElement {
       });
     }
     const players = [...combined.values()].map((player) => {
-      if (!player?.solana) return player;
-      const wallet = this.walletBadgeFor(player.solana);
+      // Only members of an organization this viewer owns or administers carry
+      // a team plaque; everyone else's back stays bare. A guest may type any
+      // display name, so an unverified name never resolves to a roster entry.
+      const orgTeam =
+        String(player?.accountStatus || "Guest") === "Guest"
+          ? null
+          : this.orgTeamAssignmentFor(player?.name);
+      const wallet = player?.solana ? this.walletBadgeFor(player.solana) : null;
+      if (!orgTeam && !wallet) return player;
       return {
         ...player,
-        walletSol: wallet?.sol ?? null,
-        walletTxBucket: wallet?.txBucket || "",
+        ...(wallet
+          ? {
+              walletSol: wallet?.sol ?? null,
+              walletTxBucket: wallet?.txBucket || "",
+            }
+          : {}),
+        ...(orgTeam ? { orgTeam } : {}),
       };
     });
     this.world?.setRemotePlayers(players);

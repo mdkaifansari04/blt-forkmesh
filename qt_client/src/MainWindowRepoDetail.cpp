@@ -1494,6 +1494,10 @@ void MainWindow::openRepoDetail(int repoIndex)
     refreshRepoActions();
     updateActionsTabIndicator(); // reflect any in-flight runs for this repo
     refreshRepoPinBanner();      // warn if the relay's integrity pin is stale
+    // The rail's Git badge is visible from the first paint, so give it this
+    // repo's uncommitted count now instead of leaving the previous repo's
+    // number (or a blank icon) until the changes panel is first opened.
+    refreshRepoChangeBadge();
     m_repoDetailLoading = false;
 }
 
@@ -6470,7 +6474,7 @@ void MainWindow::submitCommitComment()
         }
         // Push the new comment into the bare mirror and tell mirroring peers
         // right away (like issue/PR comments do) so it converges in seconds
-        // instead of at the next 15-minute auto-sync. Resolve the writable
+        // instead of at the next three-minute auto-sync. Resolve the writable
         // repo's own index — the open detail may be a read-only preview of a
         // repo we actually host under a different entry.
         const int srcIndex = repoIndexFor(rec.owner, rec.name);
@@ -8940,9 +8944,11 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_scmDiff = new QTextBrowser;
     m_scmDiff->setObjectName("diffView");
     registerDiffView(m_scmDiff);
+    // Sticky per-file header + read-progress tracking over the combined
+    // working-tree diff (adhoc #399).
+    setupScmDiffPane();
     m_scmDiff->setHtml(QStringLiteral(
-        "<p style='color:#8b949e'>Select a change or open all changes to view "
-        "the diff.</p>"));
+        "<p style='color:#8b949e'>No working-tree changes to review.</p>"));
     changesLayout->addWidget(m_scmDiff, 1);
 
     m_commitsStack->addWidget(changesPage); // kCommitWorkspaceChangesPage

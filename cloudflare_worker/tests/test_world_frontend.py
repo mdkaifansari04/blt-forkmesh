@@ -247,14 +247,15 @@ def test_user_agent_is_reduced_locally_to_generalized_badge_categories():
         APP.index("  async loadContext() {"):
         APP.index("\n  async loadSatelliteSky()", APP.index("  async loadContext() {"))
     ]
-    assert "context?.securityDetails" in context
-    assert "setSelfSecurityDetails" in context
+    # The shared context is a guest-visible payload: no connection card rides
+    # back on it, so nothing here reads an address or a raw user agent.
+    assert "securityDetails" not in context
     presence = APP[
         APP.index("  sendPresence(message) {"):
         APP.index("\n  receivePresence(message)", APP.index("  sendPresence(message) {"))
     ]
     assert "securityDetails" not in presence
-    assert "selfSecurityDetails" not in presence
+    assert "selfWorkBoard" not in presence
 
 
 def test_avatar_chest_activity_country_shirt_and_input_state_are_privacy_safe():
@@ -297,13 +298,16 @@ def test_chest_badge_shows_client_categories_exact_ages_and_status_note():
         "`FIRST ${joined}`",
     ):
         assert contract in SCENE
-    # Public chest badges still show only coarse categories. Raw details are
-    # confined to the requester-only back plate and never enter an identity.
+    # Public chest badges still show only coarse categories. The owner-only
+    # back plate carries the assigned-work board and never enters an identity.
     assert "navigator.userAgent" not in SCENE
-    assert "function avatarSecurityBadgeTexture" in SCENE
-    assert 'badge.name = "forkmesh-self-security-back-badge"' in SCENE
-    assert "setSelfSecurityBadgeVisibility" in SCENE
+    assert "function avatarWorkBadgeTexture" in SCENE
+    assert 'badge.name = "forkmesh-self-work-back-badge"' in SCENE
+    assert "setSelfWorkBadgeVisibility" in SCENE
     assert "HIDDEN FROM PEERS + SCREENSHOTS" in SCENE
+    # The retired session card must not come back on the avatar's back.
+    assert "YOUR SESSION" not in SCENE
+    assert "EDGE IP" not in SCENE
     for contract in (
         "firstSeenMinutes:",
         "joinedAt:",

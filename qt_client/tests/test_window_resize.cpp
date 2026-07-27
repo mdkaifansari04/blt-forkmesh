@@ -953,6 +953,51 @@ int main(int argc, char *argv[])
               networkLog.contains(QStringLiteral("New Peer")),
           QStringLiteral("newly online peer is logged when node-connect alerts are disabled"));
 
+    // adhoc #404: a browser guest / World visitor that stops sending presence is
+    // forgotten after ten idle minutes, while a real node keeps its offline row
+    // so it stays selectable in the Node dropdown.
+    window.testResetRosterForAlerts();
+    window.testSetNodeAlertGraceUntilMs(0);
+    QList<MemberInfo> visitorRoster;
+    visitorRoster.append(testMember(QStringLiteral("self-node"),
+                                    QStringLiteral("Self Node"), true));
+    visitorRoster.append(testMember(QStringLiteral("real-node"),
+                                    QStringLiteral("Mirror One")));
+    MemberInfo guest = testMember(QStringLiteral("guest-1"),
+                                  QStringLiteral("Guest 1667"));
+    guest.accountKind = QStringLiteral("guest");
+    visitorRoster.append(guest);
+    visitorRoster.append(testMember(
+        QStringLiteral("visitor-1"),
+        QString::fromUtf8("World visitor \xC2\xB7 tobiloba")));
+    window.testSetRoster(visitorRoster);
+
+    // Everyone drops off the live roster (only self remains).
+    QList<MemberInfo> selfOnly;
+    selfOnly.append(testMember(QStringLiteral("self-node"),
+                               QStringLiteral("Self Node"), true));
+    window.testSetRoster(selfOnly);
+    const auto rosterNames = [&] {
+        QStringList names;
+        for (const MemberInfo &m : window.testHomeRoster())
+            names << m.name;
+        return names;
+    };
+    check(rosterNames().contains(QStringLiteral("Guest 1667")) &&
+              rosterNames().contains(QStringLiteral("Mirror One")),
+          QStringLiteral("a just-departed guest is still retained on the roster"));
+
+    // Ten minutes of silence later, only the real node survives.
+    window.testAgePeerSightings(11 * 60 * 1000);
+    window.testSetRoster(selfOnly);
+    const QStringList afterIdle = rosterNames();
+    check(!afterIdle.contains(QStringLiteral("Guest 1667")) &&
+              !afterIdle.contains(QString::fromUtf8("World visitor \xC2\xB7 tobiloba")),
+          QStringLiteral("idle guests and World visitors leave the roster"));
+    check(afterIdle.contains(QStringLiteral("Mirror One")),
+          QStringLiteral("an offline node keeps its roster row"));
+    window.testResetRosterForAlerts();
+
     std::atomic<int> historyDeleteCalls{0};
     QSemaphore historyDeleteStarted;
     QSemaphore finishHistoryDelete;
@@ -1960,6 +2005,27 @@ int main(int argc, char *argv[])
                       "(issue #291, cell = %1)")
                   .arg(window.testAgentStatusCellText(2910)));
 
+        // adhoc #403: the Status cell's branch chip also carries the session's
+        // files-changed count, its worktree's uncommitted-entry count and the
+        // worktree path (empty once the checkout is gone) — the three badges
+        // AgentBranchButtonDelegate paints beside the branch glyph.
+        AgentDiffStat chip;
+        chip.files = 7;
+        chip.dirty = 2;
+        chip.worktree = QStringLiteral("/tmp/wt-291");
+        check(window.testAgentStatusCellBadges(2910, chip) ==
+                  QStringLiteral("7|2|/tmp/wt-291"),
+              QString("the branch chip carries files/dirty/worktree badges "
+                      "(adhoc #403, got %1)")
+                  .arg(window.testAgentStatusCellBadges(2910, chip)));
+        // A cleaned-up session with no patch yet leaves every badge unknown, so
+        // the chip falls back to the plain branch button.
+        check(window.testAgentStatusCellBadges(2910, AgentDiffStat()) ==
+                  QStringLiteral("-1|-1|"),
+              QString("a session with no patch/worktree paints a bare branch chip "
+                      "(adhoc #403, got %1)")
+                  .arg(window.testAgentStatusCellBadges(2910, AgentDiffStat())));
+
         // A branch with no attached session must not be flagged.
         check(!window.testMarkAgentBranchMerged(
                   QStringLiteral("agent/issue-291-unrelated")),
@@ -2028,6 +2094,46 @@ int main(int argc, char *argv[])
                   QStringLiteral("scrolling to the top with nothing older left "
                                  "does not change the view"));
         }
+    }
+
+    // adhoc #442: UI stalls are their own log category, and the chip row always
+    // offers a Stalls filter so a freeze can be pulled up on demand.
+    {
+        window.testResetNetworkLog();
+        window.testShowLogSection();
+        QApplication::processEvents();
+        check(window.testLogFilterChipLabels().contains(QStringLiteral("STALL")),
+              QStringLiteral("the log filter row offers a Stalls chip before any "
+                             "stall has been recorded"));
+
+        window.testSetLogFilter(QStringLiteral("STALL"));
+        QTextBrowser *logView = window.testNetworkLogView();
+        check(logView && logView->toPlainText().contains(
+                             QStringLiteral("No STALL events recorded")),
+              QStringLiteral("the Stalls filter says so when nothing stalled"));
+
+        window.testLogSystem(QStringLiteral("Pushed 2 commits to origin"));
+        window.testLogSystem(
+            QStringLiteral("UI stalled ~900 ms (event loop blocked) while "
+                           "git ls-tree (could not be avoided)"));
+        const QStringList stored = window.testNetworkLog();
+        check(!stored.isEmpty() &&
+                  window.testLogBadgeFor(stored.last()) == QStringLiteral("STALL"),
+              QStringLiteral("a recorded UI stall badges as STALL, not ERROR, even "
+                             "when its blocking call reads like a failure"));
+        if (logView) {
+            const QString filtered = logView->toPlainText();
+            check(filtered.contains(QStringLiteral("UI stalled ~900 ms")) &&
+                      !filtered.contains(QStringLiteral("Pushed 2 commits")) &&
+                      !filtered.contains(QStringLiteral("No STALL events recorded")),
+                  QStringLiteral("the Stalls filter shows the stall and hides "
+                                 "unrelated log lines"));
+        }
+        window.testSetLogFilter(QString());
+        if (logView)
+            check(logView->toPlainText().contains(QStringLiteral("Pushed 2 commits")),
+                  QStringLiteral("clearing the filter restores every log line"));
+        window.testResetNetworkLog();
     }
 
     stopChildProcesses(window);

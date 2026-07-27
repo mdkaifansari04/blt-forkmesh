@@ -1049,6 +1049,28 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAgentJailMemoryMbSetting, mb);
     });
 
+    // Cap on how many agents run at once (adhoc #433). Anything started past the
+    // cap waits in the queue with a clock icon and launches as slots free up, so
+    // assigning a batch of issues can't spawn a CLI per issue all at once.
+    auto *maxRunningAgentsEdit = new QLineEdit;
+    maxRunningAgentsEdit->setPlaceholderText(
+        QString::number(kDefaultMaxRunningAgents));
+    maxRunningAgentsEdit->setText(QString::number(maxRunningAgents()));
+    maxRunningAgentsEdit->setToolTip(
+        "How many agent sessions may run at the same time. Sessions started "
+        "beyond this stay queued and start automatically as running ones "
+        "finish. Defaults to 5.");
+    connect(maxRunningAgentsEdit, &QLineEdit::editingFinished, this,
+            [this, maxRunningAgentsEdit] {
+                const int limit = qMax(kMinMaxRunningAgents,
+                                       maxRunningAgentsEdit->text().toInt());
+                maxRunningAgentsEdit->setText(QString::number(limit));
+                QSettings().setValue(kMaxRunningAgentsSetting, limit);
+                // Raising the cap should start waiting sessions right away
+                // rather than at the next completion.
+                scheduleAgentQueuePump();
+            });
+
     m_codexApiKeyEdit = new QLineEdit;
     m_codexApiKeyEdit->setEchoMode(QLineEdit::Password);
     m_codexApiKeyEdit->setPlaceholderText("OPENAI_API_KEY");
@@ -1173,6 +1195,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->setLabelAlignment(Qt::AlignLeft);
     agentForm->setSpacing(8);
     agentForm->addRow("Default agent", m_defaultAgentProviderCombo);
+    agentForm->addRow("Max running agents", maxRunningAgentsEdit);
     agentForm->addRow("OpenAI API key", m_codexApiKeyEdit);
     agentForm->addRow("OpenAI Admin key", m_openAiAdminKeyEdit);
     agentForm->addRow("OpenAI model", m_codexModelEdit);
@@ -3106,6 +3129,7 @@ void MainWindow::leaveSession(const QString &)
     m_userName.clear();
 
     m_homeRoster.clear();
+    m_peerLastSeenMs.clear();
     refreshRepositoryList(); // clears node online status from the repos panel
     updateHomeStats();
 }
@@ -3683,9 +3707,21 @@ const Rule kNetworkLogRules[] = {
         {"saved", "#3fb950", "SAVE"},
 };
 
+// Badge/accent for a recorded UI freeze. Amber, matching the footer's stall
+// alert icon, and looked up from one place so the log entry and the quick-filter
+// chip always agree.
+const char *const kStallBadge = "STALL";
+const char *const kStallAccent = "#d29922";
+
 NetworkLogStyle networkLogStyleFor(const QString &message)
 {
     const QString lower = message.toLower();
+    // A watchdog-recorded UI stall gets its own badge so freezes stand out in the
+    // log (and can be filtered to). Checked ahead of the error precedence below:
+    // the entry names the blocking operation, whose breadcrumb can itself contain
+    // "failed"/"unable" and would otherwise mis-badge the stall as ERROR.
+    if (lower.contains(QLatin1String("ui stalled")))
+        return {QString::fromLatin1(kStallAccent), QString::fromLatin1(kStallBadge)};
     // Errors / failures take precedence over any category — red is reserved
     // for these so it always means "something failed."
     if (lower.contains("fail") || lower.contains("error") ||
@@ -3727,6 +3763,8 @@ QString accentForBadge(const QString &badge)
 {
     if (badge == QLatin1String("ERROR"))
         return QStringLiteral("#f85149");
+    if (badge == QLatin1String(kStallBadge))
+        return QString::fromLatin1(kStallAccent);
     if (badge == QLatin1String("INFO"))
         return QStringLiteral("#6e7681");
     for (const Rule &r : kNetworkLogRules) {
@@ -4004,13 +4042,15 @@ void MainWindow::rebuildLogFilterButtons()
     m_logFilterGroup = new QButtonGroup(this);
     m_logFilterGroup->setExclusive(true);
 
-    auto addChip = [this](const QString &label, const QString &category) {
+    auto addChip = [this](const QString &label, const QString &category,
+                          const QString &tip = QString()) {
         auto *chip = new QPushButton(label);
         chip->setObjectName("logFilterChip");
         chip->setCheckable(true);
         chip->setChecked(m_logFilter == category);
         chip->setCursor(Qt::PointingHandCursor);
-        chip->setToolTip(category.isEmpty()
+        chip->setToolTip(!tip.isEmpty() ? tip
+                         : category.isEmpty()
                              ? QStringLiteral("Show every event")
                              : QStringLiteral("Show only %1 events").arg(label));
         // Tint each chip with the same accent its badge uses in the log body
@@ -4037,6 +4077,13 @@ void MainWindow::rebuildLogFilterButtons()
     };
 
     addChip(QStringLiteral("All"), QString());
+    // Stalls get a permanent chip right beside All, even before one has been
+    // recorded: it's the diagnostic people go looking for when the window felt
+    // frozen, so it shouldn't only appear once the app has already misbehaved.
+    // (Every other category chip is discovered from the buffered history.)
+    addChip(QString::fromLatin1(kStallBadge), QString::fromLatin1(kStallBadge),
+            QStringLiteral("Show only recorded UI stalls — moments the window "
+                           "froze, with the operation that blocked it"));
     // Show present categories in a stable, readable order.
     static const char *order[] = {
         "SESSION", "STATUS", "PEER",  "NODE",   "FORK",  "FORKED", "MIRROR",
@@ -4054,6 +4101,18 @@ void MainWindow::rebuildLogFilterButtons()
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
+QStringList MainWindow::testLogFilterChipLabels() const
+{
+    QStringList labels;
+    if (!m_logFilterRow)
+        return labels;
+    for (int i = 0; i < m_logFilterRow->count(); ++i) {
+        if (auto *chip = qobject_cast<QPushButton *>(m_logFilterRow->itemAt(i)->widget()))
+            labels << chip->text();
+    }
+    return labels;
+}
+
 void MainWindow::testResetNetworkLog()
 {
     m_networkLog.clear();
@@ -4087,6 +4146,18 @@ void MainWindow::rebuildNetworkLogView()
     m_logRenderFrom = idx;
     for (const QString &line : std::as_const(segment))
         appendNetworkLogLine(line);
+    // A filter that matches nothing (the pinned STALL chip on a healthy session,
+    // most often) would otherwise render as a blank pane that reads like a bug.
+    // Say so instead, and remember it so the next matching line replaces the
+    // notice rather than appending underneath it.
+    m_logFilterEmptyNotice = segment.isEmpty() && !m_logFilter.isEmpty();
+    if (m_logFilterEmptyNotice) {
+        const QString muted = currentThemeIsDark() ? QStringLiteral("#8b949e")
+                                                   : QStringLiteral("#656d76");
+        m_settingsLog->append(
+            QStringLiteral("<span style='color:%1'>No %2 events recorded.</span>")
+                .arg(muted, m_logFilter.toHtmlEscaped()));
+    }
     m_logViewMutating = false;
 }
 
@@ -4197,9 +4268,15 @@ void MainWindow::logSystem(const QString &text)
         m_logFilterCategories.insert(badge);
         rebuildLogFilterButtons(); // no-ops until the log section is built
     }
-    // Only render the line if it passes the active filter.
-    if (m_logFilter.isEmpty() || m_logFilter == badge)
-        appendNetworkLogLine(line);
+    // Only render the line if it passes the active filter. The first line to
+    // pass while the "No X events recorded." notice is up rebuilds the view so
+    // the notice goes away instead of sitting above the entry.
+    if (m_logFilter.isEmpty() || m_logFilter == badge) {
+        if (m_logFilterEmptyNotice)
+            rebuildNetworkLogView();
+        else
+            appendNetworkLogLine(line);
+    }
 
     // Mirror the newest event onto the always-on footer log line so the latest
     // activity is visible at the bottom of the app even when the Log tab is closed.

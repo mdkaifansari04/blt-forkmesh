@@ -428,9 +428,11 @@ constexpr int kPacmanAnchorRole = Qt::UserRole + 12;
 constexpr int kNodeLightRole = Qt::UserRole + 13;
 // Cadence on which a node re-fetches its mirrors from source (mirrors
 // m_mirrorSyncTimer, which adds ±15% jitter — the pie is an approximation);
-// a behind node is expected to catch up at the next tick. Only a safety net
-// now: push events notify mirror peers the moment the source moves.
-constexpr qint64 kMirrorSyncIntervalMs = 15LL * 60 * 1000;
+// a behind node is expected to catch up within roughly three minutes. This is
+// only the dropped-event safety net: push events still notify mirror peers the
+// moment the source moves.
+constexpr qint64 kMirrorSyncIntervalMs = 3LL * 60 * 1000;
+constexpr int kMirrorSyncJitterPercent = 15;
 
 // Extra labels this machine answers to when a workflow declares `runs-on:`
 // (free-form, comma/space separated — e.g. "ios, xcode, gpu"). The machine's
@@ -3029,6 +3031,23 @@ inline int agentJailMemoryMb()
     return qMax(kMinAgentJailMemoryMb,
                 QSettings()
                     .value(kAgentJailMemoryMbSetting, kDefaultAgentJailMemoryMb)
+                    .toInt());
+}
+// How many agent sessions may run at the same time (adhoc #433). Anything
+// started beyond the cap stays Queued and launches as a slot frees up, so a
+// batch of assignments can't spawn a dozen CLIs at once. Adjustable in
+// Settings -> Agents & IDE.
+const QString kMaxRunningAgentsSetting = QStringLiteral("agents/maxRunning");
+constexpr int kDefaultMaxRunningAgents = 5;
+constexpr int kMinMaxRunningAgents = 1;
+
+// The configured concurrency cap, clamped to at least one slot so a zero or a
+// typo can't wedge the queue with nothing ever starting.
+inline int maxRunningAgents()
+{
+    return qMax(kMinMaxRunningAgents,
+                QSettings()
+                    .value(kMaxRunningAgentsSetting, kDefaultMaxRunningAgents)
                     .toInt());
 }
 // Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
