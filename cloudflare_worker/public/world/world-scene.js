@@ -4018,7 +4018,10 @@ function createTree(THREE, x, z, scale = 1, color = "#2f8c5f") {
 function rewardPoolRimTexture(THREE) {
   const width = 4096;
   const height = 256;
-  const repeats = 5;
+  // Three repeats around the rim: five crowded the 18-character title into its
+  // own neighbours, so the wrap read as one smeared word from every angle.
+  const repeats = 3;
+  const title = "GLOBAL REWARD POOL";
   return canvasTexture(THREE, width, height, (context) => {
     context.fillStyle = "#1d5240";
     context.fillRect(0, 0, width, height);
@@ -4028,13 +4031,26 @@ function rewardPoolRimTexture(THREE) {
     context.textAlign = "center";
     context.textBaseline = "middle";
     const slot = width / repeats;
+    // Measured, not assumed: shrink the title until a repeat plus its ◎
+    // separator fits inside one slot, whatever font the browser resolves.
+    const available = slot * 0.72;
+    let titleSize = 108;
+    const titleFont = (size) =>
+      `800 ${size}px "ForkMesh Mono", ui-monospace, monospace`;
+    context.font = titleFont(titleSize);
+    while (titleSize > 48 && context.measureText(title).width > available) {
+      titleSize -= 2;
+      context.font = titleFont(titleSize);
+    }
     for (let index = 0; index < repeats; index += 1) {
       const centre = slot * (index + 0.5);
       context.fillStyle = "#f7c96b";
-      context.font = '800 108px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("GLOBAL REWARD POOL", centre, height / 2 + 4);
+      context.font = titleFont(titleSize);
+      context.fillText(title, centre, height / 2 + 4);
       context.fillStyle = "#9ef7c6";
-      context.font = '700 96px "ForkMesh Mono", ui-monospace, monospace';
+      context.font = `700 ${Math.round(
+        titleSize * 0.88,
+      )}px "ForkMesh Mono", ui-monospace, monospace`;
       context.fillText("◎", centre + slot / 2, height / 2 + 4);
     }
   });
@@ -10028,6 +10044,11 @@ export function createWorldScene({
   officeElevatorCar.add(elevatorPanel);
   const neighborhoodHomes = new Map();
   const nodeInfrastructure = new Map();
+  // Cabinets stand in the server yard by default; "Organize nodes" switches the
+  // fleet to rings around the reward pool. The last live list is kept so the
+  // switch can re-place the yard without waiting for the next network poll.
+  let nodeLayoutMode = "yard";
+  let lastNetworkNodes = [];
   const botAgents = new Map();
   const loungeMembers = new Map();
   // Public account facts the member directory publishes but a live presence
@@ -13136,9 +13157,51 @@ export function createWorldScene({
     return true;
   }
 
+  // Concentric rings of cabinets around the reward pool, innermost first. The
+  // first ring clears the pool rim and its tree circle; each further ring only
+  // starts once the one inside it is full at walkable spacing.
+  function rewardCircleSlots(centreX, centreZ, count) {
+    const spacing = 3.2;
+    // The campfire keeps its clearing: a ring position that landed on the
+    // bench circle would stand a cabinet through the seating.
+    const campfire = landmarkById("campfire").position;
+    const slots = [];
+    let radius = 9.6;
+    while (slots.length < count && radius < WORLD_RADIUS - 6) {
+      const capacity = Math.max(
+        1,
+        Math.floor((Math.PI * 2 * radius) / spacing),
+      );
+      const open = [];
+      for (let index = 0; index < capacity; index += 1) {
+        const angle = (index / capacity) * Math.PI * 2;
+        const x = centreX + Math.cos(angle) * radius;
+        const z = centreZ + Math.sin(angle) * radius;
+        if (Math.hypot(x - campfire[0], z - campfire[2]) < 7.4) continue;
+        open.push({ x, z });
+      }
+      const take = Math.min(open.length, count - slots.length);
+      // A part-filled ring spreads over its whole circle rather than trailing
+      // off as a lopsided arc.
+      const stride = take > 0 ? open.length / take : 0;
+      for (let index = 0; index < take; index += 1) {
+        slots.push(open[Math.floor(index * stride)]);
+      }
+      radius += 3.6;
+    }
+    return slots;
+  }
+
   function updateNetworkNodes(nodes = []) {
-    const routingX = SERVER_CABINET_YARD_ORIGIN[0];
-    const routingZ = SERVER_CABINET_YARD_ORIGIN[2];
+    lastNetworkNodes = Array.isArray(nodes) ? nodes : [];
+    const rewardCircle = nodeLayoutMode === "reward-circle";
+    const fountain = landmarkObjects.get("fountain");
+    const routingX = rewardCircle
+      ? fountain?.position.x ?? 0
+      : SERVER_CABINET_YARD_ORIGIN[0];
+    const routingZ = rewardCircle
+      ? fountain?.position.z ?? 0
+      : SERVER_CABINET_YARD_ORIGIN[2];
     // A dedicated 8×8 server yard keeps all 64 bounded live slots separate
     // without requiring the retired routing-station landmark. Fill the inward
     // slots first so a small healthy fleet stays closest to the Town Square.
@@ -13173,6 +13236,9 @@ export function createWorldScene({
     const usableNodes = (Array.isArray(nodes) ? nodes : [])
       .filter((node) => String(node?.name || node?.label || "").trim())
       .slice(0, 64);
+    const circleSlots = rewardCircle
+      ? rewardCircleSlots(routingX, routingZ, usableNodes.length)
+      : null;
     usableNodes.forEach((node, index) => {
       const nodeName = String(node.name || node.label).trim().slice(0, 80);
       const id = `node:${nodeName.toLowerCase()}`;
@@ -13213,14 +13279,17 @@ export function createWorldScene({
         }
         nodeInfrastructure.set(id, cabinet);
       }
-      const slot = serverSlots[index];
-      cabinet.position.set(slot.x, 0.38, slot.z);
-      // The front display faces inward so each cabinet remains individually
-      // readable from the surrounding walkway.
-      cabinet.rotation.y = Math.atan2(
-        routingX - slot.x,
-        routingZ - slot.z,
-      );
+      const slot = circleSlots ? circleSlots[index] : serverSlots[index];
+      const placeInSlot = () => {
+        cabinet.position.set(slot.x, 0.38, slot.z);
+        // The front display faces inward so each cabinet remains individually
+        // readable from the surrounding walkway.
+        cabinet.rotation.y = Math.atan2(
+          routingX - slot.x,
+          routingZ - slot.z,
+        );
+      };
+      placeInSlot();
       // The yard slot is only the default: registering the cabinet re-applies
       // any administrator-locked position and turn on top of it, and it has to
       // happen after the slot assignment above overwrites both.
@@ -13230,6 +13299,9 @@ export function createWorldScene({
         cabinet.userData.layoutBaseRotation = cabinet.rotation.y;
         registerMovableObject(layoutId, cabinet);
       }
+      // "Organize nodes" is an explicit viewer request, so it wins over a
+      // locked placement for as long as the ring stays switched on.
+      if (rewardCircle) placeInSlot();
       const nextCommit = String(node?.commit || "");
       if (priorCommit && nextCommit && nextCommit !== priorCommit) {
         spawnPushSurge(cabinet.position);
@@ -13248,6 +13320,31 @@ export function createWorldScene({
       removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
+  }
+
+  // Arranges every live cabinet in even rings around the reward pool, or puts
+  // the fleet back in the server yard. Returns the resulting arrangement so the
+  // HUD button can label and announce itself from the real scene state.
+  function organizeNetworkNodes(organized) {
+    const next =
+      organized === undefined
+        ? nodeLayoutMode !== "reward-circle"
+        : Boolean(organized);
+    nodeLayoutMode = next ? "reward-circle" : "yard";
+    updateNetworkNodes(lastNetworkNodes);
+    return {
+      organized: next,
+      mode: nodeLayoutMode,
+      nodes: nodeInfrastructure.size,
+    };
+  }
+
+  function getNodeLayoutState() {
+    return {
+      organized: nodeLayoutMode === "reward-circle",
+      mode: nodeLayoutMode,
+      nodes: nodeInfrastructure.size,
+    };
   }
 
   function focusNetworkNode(name) {
@@ -17226,6 +17323,8 @@ export function createWorldScene({
     updateMemberLounge,
     updateReferralLeaderboard,
     updateNetworkNodes,
+    organizeNetworkNodes,
+    getNodeLayoutState,
     focusNetworkNode,
     updateFederatedInstances,
     updateBots,
