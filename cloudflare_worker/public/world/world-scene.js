@@ -3423,6 +3423,7 @@ function serverPanelTexture(THREE, node) {
       ? `${String(repo.owner).slice(0, 32)}/${String(repo.name).slice(0, 44)}`
       : "REPOSITORY NOT REPORTED";
   const commitSnapshot = mirrorCommitSnapshot(node, repo);
+  const syncAgo = mirrorCommitAgeLabel(node?.syncAgeMs);
   const commit = String(node?.commit || repo?.commit || "").toLowerCase();
   const shortCommit = /^[0-9a-f]{40,64}$/.test(commit)
     ? commit.slice(0, 12)
@@ -3479,7 +3480,7 @@ function serverPanelTexture(THREE, node) {
     context.font = '600 21px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#8ca99a";
     context.textAlign = "right";
-    context.fillText(activity || `SYNCED ${mirrorCommitAgeLabel(node?.syncAgeMs)}`, 966, 124);
+    context.fillText(activity || `SYNCED ${syncAgo}`, 966, 124);
     context.textAlign = "left";
 
     context.strokeStyle = "#294339";
@@ -3596,24 +3597,29 @@ function serverPanelTexture(THREE, node) {
     context.fillStyle = "#b4cabd";
     context.fillText(commitSnapshot.age, 598, 540);
 
+    // BRANCHES/PULL REQUESTS/ISSUES don't carry their own per-item
+    // timestamps, but they're read from the same signed snapshot as
+    // everything else on the card, so the record's own publish age
+    // (syncAgo) is an honest freshness stamp for them. COMMITS gets the
+    // precise last-commit age instead, since that's actually known.
     const rows = [
-      ["COMMITS", node?.commitCount],
-      ["BRANCHES", node?.branchCount],
-      ["PULL REQUESTS", node?.pullCount],
-      ["ISSUES", node?.issueCount],
-      ["DISCUSSIONS", node?.discussionCount],
-      ["ARTIFACTS", node?.artifactCount],
-      ["WORKTREES", node?.worktreeCount],
-      ["CLONES SERVED", node?.clonesServed],
-      ["WEB SERVED", node?.websiteServed],
-      ["REPO BYTES", compactMirrorBytes(node?.sizeBytes)],
+      ["COMMITS", node?.commitCount, commitSnapshot.age],
+      ["BRANCHES", node?.branchCount, syncAgo],
+      ["PULL REQUESTS", node?.pullCount, syncAgo],
+      ["ISSUES", node?.issueCount, syncAgo],
+      ["DISCUSSIONS", node?.discussionCount, null],
+      ["ARTIFACTS", node?.artifactCount, null],
+      ["WORKTREES", node?.worktreeCount, null],
+      ["CLONES SERVED", node?.clonesServed, null],
+      ["WEB SERVED", node?.websiteServed, null],
+      ["REPO BYTES", compactMirrorBytes(node?.sizeBytes), null],
     ];
-    context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
-    rows.forEach(([label, value], index) => {
+    rows.forEach(([label, value, age], index) => {
       const column = index % 2;
       const row = Math.floor(index / 2);
       const x = column === 0 ? 58 : 536;
       const y = 604 + row * 62;
+      context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
       context.fillStyle = "#8ca99a";
       context.fillText(label, x, y);
       context.textAlign = "right";
@@ -3621,8 +3627,13 @@ function serverPanelTexture(THREE, node) {
       context.fillText(
         typeof value === "string" ? value : compactMirrorCount(value),
         x + 414,
-        y,
+        age ? y - 9 : y,
       );
+      if (age) {
+        context.font = '600 15px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillStyle = "#6f8579";
+        context.fillText(age, x + 414, y + 15);
+      }
       context.textAlign = "left";
     });
 
