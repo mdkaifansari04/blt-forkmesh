@@ -33564,6 +33564,48 @@ async def repository_actions_status_handler(env, request, owner, repo):
         cache_control="no-store")
 
 
+async def _organization_owner_can_merge_repo(
+        env, request, canonical_owner, repo, actor):
+    """Require the signed-in actor to own the org alias in the original URL.
+
+    The internal router has already rewritten /api/repo/<org>/<repo> to the
+    backing node namespace. Merge-via-mirror is intentionally narrower than
+    ordinary team write access until group merge policy exists: direct node
+    URLs, organization admins, maintainers, and writers all fail closed.
+    """
+    if not actor:
+        return False
+    try:
+        original = urlparse(request.url)
+        match = REPO_API_PREFIX_RE.match(original.path)
+    except Exception:
+        return False
+    if not match:
+        return False
+    alias_owner = (safe_segment(match.group(1)) or "").strip().lower()
+    alias_repo = (safe_segment(match.group(2)) or "").strip().lower()
+    canonical_owner = str(canonical_owner or "").strip().lower()
+    repo = str(repo or "").strip().lower()
+    if (
+        not alias_owner
+        or alias_owner == canonical_owner
+        or alias_repo != repo
+    ):
+        return False
+    org_bi, org_row = await _org_row(env, alias_owner)
+    if not org_row:
+        return False
+    linked = await d1_first(
+        env,
+        "SELECT 1 AS ok FROM org_repos "
+        "WHERE org_bi=? AND repo=? AND node_owner=?",
+        org_bi, repo, canonical_owner,
+    )
+    if not linked:
+        return False
+    return await _org_role(env, org_bi, actor) == "owner"
+
+
 def _https_mirror_merge_response(value):
     status = str((value or {}).get("status") or "")
     if status == "processing":
@@ -33675,12 +33717,8 @@ async def repository_pull_merge_handler(
     if not actor:
         return json_response({"error": "invalid_session"}, status=401)
     try:
-        authorized = bool(
-            actor == context["owner"]
-            or await _account_owns_node(env, actor, context["owner"])
-            or await _org_write_allowed(
-                env, context["owner"], context["repo"], actor)
-        )
+        authorized = await _organization_owner_can_merge_repo(
+            env, request, context["owner"], context["repo"], actor)
     except Exception:
         authorized = False
     target = context["owner"] + "/" + context["repo"]

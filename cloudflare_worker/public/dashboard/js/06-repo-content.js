@@ -939,15 +939,96 @@
     return parseDiffFiles(patch).files.map((file) => ({ path: file.newPath || file.oldPath || "file", adds: file.adds, dels: file.dels }));
   }
 
-  function renderRepoPullFiles(files) {
+  function pullViewedStorageKey(repo, number, metadataCommit) {
+    const commit = immutableGitCommit(metadataCommit);
+    const owner = String(repo?.owner || "").trim().toLowerCase();
+    const name = String(repo?.name || "").trim().toLowerCase();
+    return owner && name && Number(number) > 0 && commit
+      ? `forkmesh.pull-viewed.v1:${owner}/${name}@${commit}#${Number(number)}`
+      : "";
+  }
+
+  function loadRepoPullViewed(repo, number, metadataCommit) {
+    const key = pullViewedStorageKey(repo, number, metadataCommit);
+    if (!key) return new Set();
+    try {
+      const value = JSON.parse(localStorage.getItem(key) || "[]");
+      return new Set(
+        (Array.isArray(value) ? value : [])
+          .filter((path) => typeof path === "string" && path.length <= 500)
+          .slice(0, 1000),
+      );
+    } catch (_) {
+      return new Set();
+    }
+  }
+
+  function saveRepoPullViewed(repo, number, metadataCommit, viewed) {
+    const key = pullViewedStorageKey(repo, number, metadataCommit);
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify([...viewed].slice(0, 1000)));
+    } catch (_) {}
+  }
+
+  function toggleRepoPullViewed(repo, path) {
+    const detail = state.repoRecordDetail;
+    if (!repo || detail?.kind !== "pulls" || !path) return;
+    const metadataCommit = detail.parsed?.pullMetadataCommit || "";
+    const viewed = loadRepoPullViewed(repo, detail.number, metadataCommit);
+    if (viewed.has(path)) viewed.delete(path);
+    else viewed.add(path);
+    saveRepoPullViewed(repo, detail.number, metadataCommit, viewed);
+
+    const article = document.querySelector("[data-repo-record-detail='pulls']");
+    if (!article) return;
+    article.querySelectorAll("[data-repo-pull-file]").forEach((row) => {
+      if (row.dataset.repoPullFile !== path) return;
+      const selected = viewed.has(path);
+      row.dataset.viewed = selected ? "true" : "false";
+      const icon = row.querySelector("[data-lucide]");
+      if (icon) {
+        icon.setAttribute("data-lucide", selected ? "check-circle-2" : "circle");
+        icon.classList.toggle("text-primary", selected);
+        icon.classList.toggle("text-muted-foreground", !selected);
+      }
+    });
+    article.querySelectorAll("[data-repo-pull-diff-file]").forEach((block) => {
+      if (block.dataset.repoPullDiffFile !== path) return;
+      const selected = viewed.has(path);
+      block.dataset.viewed = selected ? "true" : "false";
+      block.classList.toggle("border-primary/40", selected);
+      block.classList.toggle("border-border", !selected);
+      const button = block.querySelector("[data-repo-pull-viewed]");
+      if (button) {
+        button.setAttribute("aria-pressed", selected ? "true" : "false");
+        button.classList.toggle("text-primary", selected);
+        button.classList.toggle("text-muted-foreground", !selected);
+        button.innerHTML = `<i data-lucide="${selected ? "check-circle-2" : "circle"}" class="h-3.5 w-3.5"></i>${selected ? "Viewed" : "Mark viewed"}`;
+      }
+    });
+    const summary = article.querySelector("[data-repo-pull-viewed-summary]");
+    if (summary) {
+      const fileCount = detail.parsed?.pullPatch?.files?.length || 0;
+      summary.textContent = `${formatCount(viewed.size)} of ${formatCount(fileCount)} viewed`;
+    }
+    window.lucide?.createIcons();
+  }
+
+  function renderRepoPullFiles(files, viewed = new Set()) {
     const rows = Array.isArray(files) ? files : [];
     if (!rows.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">No committed patch file summary is available for this pull request.</div>';
-    return rows.slice(0, 100).map((file) => `
-      <div class="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-3 border-t border-border px-4 py-2 text-xs">
+    return rows.slice(0, 100).map((file) => {
+      const path = file.path || "file";
+      const isViewed = viewed.has(path);
+      return `
+      <button type="button" data-repo-pull-file="${escapeHtml(path)}" data-viewed="${isViewed ? "true" : "false"}" class="grid w-full grid-cols-[1rem_minmax(0,1fr)_auto_auto] items-center gap-2 border-t border-border px-3 py-2 text-left text-xs transition-colors hover:bg-secondary/50 first:border-t-0">
+        <i data-lucide="${isViewed ? "check-circle-2" : "circle"}" class="h-3.5 w-3.5 ${isViewed ? "text-primary" : "text-muted-foreground"}"></i>
         <span class="min-w-0 truncate font-mono text-foreground">${escapeHtml(file.path || "file")}</span>
         <span class="font-mono text-primary">+${formatCount(file.adds || 0)}</span>
         <span class="font-mono text-destructive">-${formatCount(file.dels || 0)}</span>
-      </div>`).join("");
+      </button>`;
+    }).join("");
   }
 
   // Pull-request badge (adhoc #44): a visual fingerprint of the PR. One tile
@@ -1137,12 +1218,17 @@
     return `${Math.min(36, 2.5 + rows * 1.25).toFixed(2)}rem`;
   }
 
-  function renderDiffFileBlock(file, image) {
+  function renderDiffFileBlock(file, image, viewed = new Set()) {
+    const path = file.newPath || file.oldPath || "file";
+    const isViewed = viewed.has(path);
     return `
-      <div class="overflow-hidden rounded-lg border border-border" style="content-visibility:auto;contain-intrinsic-size:auto ${diffFileBlockIntrinsicSize(file)}">
+      <div data-repo-pull-diff-file="${escapeHtml(path)}" data-viewed="${isViewed ? "true" : "false"}" class="overflow-hidden rounded-lg border ${isViewed ? "border-primary/40" : "border-border"}" style="content-visibility:auto;contain-intrinsic-size:auto ${diffFileBlockIntrinsicSize(file)}">
         <div class="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-secondary/50 px-3 py-2">
           <span class="inline-flex min-w-0 items-center truncate font-mono text-xs font-medium text-foreground">${diffFileHeaderPath(file)}${diffFileStatusBadge(file)}</span>
-          <span class="shrink-0 font-mono text-[10px]"><span class="text-primary">+${formatCount(file.adds)}</span><span class="ml-1 text-destructive">-${formatCount(file.dels)}</span></span>
+          <span class="inline-flex shrink-0 items-center gap-3">
+            <span class="font-mono text-[10px]"><span class="text-primary">+${formatCount(file.adds)}</span><span class="ml-1 text-destructive">-${formatCount(file.dels)}</span></span>
+            <button type="button" data-repo-pull-viewed="${escapeHtml(path)}" aria-pressed="${isViewed ? "true" : "false"}" class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2 text-[10px] font-semibold ${isViewed ? "text-primary" : "text-muted-foreground"} hover:bg-secondary"><i data-lucide="${isViewed ? "check-circle-2" : "circle"}" class="h-3.5 w-3.5"></i>${isViewed ? "Viewed" : "Mark viewed"}</button>
+          </span>
         </div>
         ${image ? renderDiffImagePreview(image) : ""}
         ${file.binary
@@ -1151,19 +1237,19 @@
       </div>`;
   }
 
-  function renderDiffFiles(parsed, imageDiffs) {
+  function renderDiffFiles(parsed, imageDiffs, viewed = new Set()) {
     const { files } = parsed;
     if (!files.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">No changes to display.</div>';
     const images = new Map();
     (Array.isArray(imageDiffs) ? imageDiffs : []).forEach((item) => {
       if (item?.path && item?.mime) images.set(item.path, item);
     });
-    return `<div class="grid gap-3 p-3">${files.map((file) => renderDiffFileBlock(file, images.get(file.newPath) || images.get(file.oldPath))).join("")}</div>`;
+    return `<div class="grid gap-3 p-3">${files.map((file) => renderDiffFileBlock(file, images.get(file.newPath) || images.get(file.oldPath), viewed)).join("")}</div>`;
   }
 
-  function renderRepoPullPatch(patch) {
+  function renderRepoPullPatch(patch, viewed = new Set()) {
     if (!String(patch || "").trim()) return '<div class="px-4 py-3 text-sm text-muted-foreground">No textual patch is committed for this pull request. Branch-backed PRs are reconstructed by the desktop client.</div>';
-    return `<div data-repo-pull-patch>${renderDiffFiles(parseDiffFiles(patch))}</div>`;
+    return `<div data-repo-pull-patch>${renderDiffFiles(parseDiffFiles(patch), [], viewed)}</div>`;
   }
 
   async function loadRepoPullPatch(repo, number, metadataCommit = "") {
@@ -1462,6 +1548,205 @@
     }
   }
 
+  async function loadRepoPullMergeAuthorization(repo) {
+    if (!repo || !state.session?.sessionToken) return false;
+    try {
+      const profile = await orgApiRequest(
+        "GET",
+        `/api/orgs/${encodeURIComponent(repo.owner || "")}`,
+      );
+      return profile?.viewerRole === "owner";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function repoPullMergeContext(repo, number, values, metadataCommit) {
+    const pullNumber = Number(number);
+    const expectedBaseOid = immutableGitCommit(
+      repo?.commit || repo?.rootCommit || repo?.latestCommit,
+    );
+    const expectedHeadOid = immutableGitCommit(values?.creationHeadOid);
+    const expectedPullsOid = immutableGitCommit(metadataCommit);
+    if (
+      !Number.isInteger(pullNumber)
+      || pullNumber <= 0
+      || values?.status !== "open"
+      || values?.derive !== "branch"
+      || expectedBaseOid !== immutableGitCommit(values?.creationBaseOid)
+      || !expectedHeadOid
+      || !expectedPullsOid
+      || new Set([
+        expectedBaseOid.length,
+        expectedHeadOid.length,
+        expectedPullsOid.length,
+      ]).size !== 1
+    ) {
+      return null;
+    }
+    return {
+      number: pullNumber,
+      expectedBaseOid,
+      expectedHeadOid,
+      expectedPullsOid,
+    };
+  }
+
+  function createRepoPullMergeRequestId() {
+    const bytes = new Uint8Array(18);
+    crypto.getRandomValues(bytes);
+    return `dashboard_${Array.from(bytes, (value) =>
+      value.toString(16).padStart(2, "0")).join("")}`;
+  }
+
+  function renderRepoPullMergeControl(repo, number, parsed) {
+    if (!parsed.pullMergeAuthorized) return "";
+    const merge = parsed.pullMerge || {};
+    const context = repoPullMergeContext(
+      repo,
+      number,
+      parsed.values || {},
+      parsed.pullMetadataCommit || "",
+    );
+    if (!context) {
+      return `
+        <div data-repo-pull-merge-panel class="rounded-lg border border-border bg-secondary/30 p-4 text-xs text-muted-foreground">
+          Owner-only mirror merge is unavailable until the open pull request exposes matching immutable base, head, and pull-metadata commits.
+        </div>`;
+    }
+    const stateName = String(merge.state || "ready");
+    const processing = stateName === "processing";
+    const merged = stateName === "merged";
+    const failed = stateName === "failed";
+    const label = merged
+      ? "Merged into mirror"
+      : processing
+        ? "Merging into mirror…"
+        : failed
+          ? "Retry mirror merge"
+          : "Merge into mirror";
+    const status = merged
+      ? "The selected mirror published the merge. Normal repository sync will carry it back to the source of truth."
+      : processing
+        ? "The selected online mirror is checking the exact reviewed commits."
+        : failed
+          ? escapeHtml(merge.message || "The mirror could not confirm the merge. Retrying reuses the same idempotent request.")
+          : "Organization owners can merge these exact commits into an online mirror; the mirror is then synchronized back to the source of truth.";
+    return `
+      <div data-repo-pull-merge-panel class="flex flex-wrap items-center justify-between gap-3 rounded-lg border ${failed ? "border-destructive/40" : "border-border"} bg-secondary/30 p-4">
+        <span class="min-w-0 text-xs leading-5 text-muted-foreground">${status}</span>
+        <button type="button" data-repo-pull-merge ${processing || merged ? "disabled" : ""} class="inline-flex h-9 shrink-0 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"><i data-lucide="${merged ? "check-circle-2" : "git-merge"}" class="h-4 w-4"></i>${label}</button>
+      </div>`;
+  }
+
+  function updateRepoPullMergePanel(repo, number, parsed) {
+    const current = document.querySelector("[data-repo-pull-merge-panel]");
+    if (!current) return;
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = renderRepoPullMergeControl(repo, number, parsed);
+    const replacement = wrapper.firstElementChild;
+    if (replacement) current.replaceWith(replacement);
+    window.lucide?.createIcons();
+  }
+
+  async function handleRepoPullMerge(repo) {
+    const detail = state.repoRecordDetail;
+    if (
+      !repo
+      || detail?.kind !== "pulls"
+      || !detail.parsed?.pullMergeAuthorized
+    ) {
+      return;
+    }
+    const parsed = detail.parsed;
+    const context = repoPullMergeContext(
+      repo,
+      detail.number,
+      parsed.values || {},
+      parsed.pullMetadataCommit || "",
+    );
+    if (!context) return;
+    const existing = parsed.pullMerge || {};
+    const requestId = existing.requestId || createRepoPullMergeRequestId();
+    const request = {
+      schemaVersion: 1,
+      type: "forkmesh.pull-merge-v1",
+      pullNumber: context.number,
+      requestId,
+      expectedBaseOid: context.expectedBaseOid,
+      expectedHeadOid: context.expectedHeadOid,
+      expectedPullsOid: context.expectedPullsOid,
+    };
+    parsed.pullMerge = { state: "processing", requestId };
+    updateRepoPullMergePanel(repo, detail.number, parsed);
+    const endpoint =
+      `${repoApiBase(repo)}/pulls/${context.number}/merge`;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            authorization: `Bearer ${state.session?.sessionToken || ""}`,
+            "content-type": "application/json",
+          },
+          cache: "no-store",
+          body: JSON.stringify(request),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (
+          response.status === 202
+          && payload?.status === "processing"
+          && payload?.requestId === requestId
+        ) {
+          await new Promise((resolve) => window.setTimeout(resolve, 750));
+          continue;
+        }
+        if (
+          response.ok
+          && payload?.status === "merged"
+          && payload?.published === true
+          && payload?.requestId === requestId
+          && immutableGitCommit(payload.baseBefore) === context.expectedBaseOid
+          && immutableGitCommit(payload.head) === context.expectedHeadOid
+          && immutableGitCommit(payload.pullsBefore) === context.expectedPullsOid
+        ) {
+          parsed.pullMerge = { state: "merged", requestId };
+        } else {
+          const messages = {
+            forbidden: "Only an organization owner can merge through a mirror.",
+            merge_conflict: "The exact reviewed commits have a merge conflict.",
+            stale_base: "The base branch changed; reload and review the new state.",
+            stale_head: "The pull-request head changed; reload and review it again.",
+            stale_pull_metadata: "The pull-request metadata changed; reload before merging.",
+            merge_node_unavailable: "No eligible online mirror can merge this pull request right now.",
+          };
+          parsed.pullMerge = {
+            state: "failed",
+            requestId,
+            message: messages[payload?.error] || "The mirror merge could not be confirmed.",
+          };
+        }
+        updateRepoPullMergePanel(repo, detail.number, parsed);
+        return;
+      } catch (_) {
+        parsed.pullMerge = {
+          state: "failed",
+          requestId,
+          message: "The mirror merge request could not reach the relay.",
+        };
+        updateRepoPullMergePanel(repo, detail.number, parsed);
+        return;
+      }
+    }
+    parsed.pullMerge = {
+      state: "failed",
+      requestId,
+      message: "The mirror is still processing. Retry to check the same merge request.",
+    };
+    updateRepoPullMergePanel(repo, detail.number, parsed);
+  }
+
   function recordDetailMeta(kind, values) {
     if (kind === "pulls") {
       return [
@@ -1590,24 +1875,22 @@
       : "";
     const pullPatch = parsed.pullPatch || { patch: "", files: [], unavailable: false };
     const pullConversation = parsed.pullConversation || [];
+    const pullViewed = isPulls
+      ? loadRepoPullViewed(repo, number, parsed.pullMetadataCommit || "")
+      : new Set();
     const pullConversationSection = isPulls ? `
           <div data-repo-pull-conversation data-empty="${pullConversation.length ? "false" : "true"}" class="border-t border-border">${renderRepoPullConversation(pullConversation)}</div>
           ${renderPullReviewForm(number)}` : "";
     const pullFilesSection = isPulls ? `
-        <section class="overflow-hidden rounded-lg border border-border" data-repo-record-badge-panel>
-          <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="fingerprint" class="h-3.5 w-3.5 text-primary"></i>Badge</div>
-          ${renderRepoPullBadge(title, options.pending ? 0 : number, author, pullPatch.files)}
-        </section>
-        <section class="overflow-hidden rounded-lg border border-border" data-repo-record-files-panel>
-          <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
-            <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="files" class="h-3.5 w-3.5 text-primary"></i>Files changed</span>
-            <span class="font-mono text-[10px] text-muted-foreground">${formatCount(pullPatch.files.length)} files</span>
+        <section class="overflow-hidden rounded-lg border border-border">
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
+            <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="files" class="h-3.5 w-3.5 text-primary"></i>${formatCount(pullPatch.files.length)} files changed</span>
+            <span data-repo-pull-viewed-summary class="font-mono text-[10px] text-muted-foreground">${formatCount(pullViewed.size)} of ${formatCount(pullPatch.files.length)} viewed</span>
           </div>
-          <div data-repo-pull-files>${renderRepoPullFiles(pullPatch.files)}</div>
-        </section>
-        <section class="overflow-hidden rounded-lg border border-border" data-repo-record-patch-panel>
-          <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="git-compare-arrows" class="h-3.5 w-3.5 text-primary"></i>Patch</div>
-          ${renderRepoPullPatch(pullPatch.patch)}
+          <div class="grid min-w-0 lg:grid-cols-[16rem_minmax(0,1fr)]">
+            <nav data-repo-pull-file-list aria-label="Changed files" class="max-h-[70vh] overflow-auto border-b border-border bg-secondary/20 lg:sticky lg:top-0 lg:border-b-0 lg:border-r">${renderRepoPullFiles(pullPatch.files, pullViewed)}</nav>
+            <div data-repo-pull-diff-list class="min-w-0">${renderRepoPullPatch(pullPatch.patch, pullViewed)}</div>
+          </div>
         </section>` : "";
     const discussionConversation = parsed.discussionConversation || [];
     const discussionConversationSection = isDiscussions ? `
@@ -1621,10 +1904,10 @@
         </section>` : "";
     const recordTabs = isPulls ? `
         <nav class="flex min-w-0 overflow-x-auto border-b border-border" aria-label="Pull request sections">
-          <button type="button" data-repo-record-tab="conversation" class="inline-flex h-11 items-center gap-2 border-b-2 border-primary px-3 text-xs font-semibold text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5"></i>Conversation<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullConversation.length)}</span></button>
-          <button type="button" data-repo-record-tab="commits" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5"></i>Commits<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">1</span></button>
-          <button type="button" data-repo-record-tab="files" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="files" class="h-3.5 w-3.5"></i>Files changed<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullPatch.files.length)}</span></button>
-          <button type="button" data-repo-record-tab="badge" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="fingerprint" class="h-3.5 w-3.5"></i>Badge</button>
+          <button type="button" data-repo-record-tab="conversation" aria-selected="true" class="inline-flex h-11 items-center gap-2 border-b-2 border-primary px-3 text-xs font-semibold text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5"></i>Conversation<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullConversation.length)}</span></button>
+          <button type="button" data-repo-record-tab="commits" aria-selected="false" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5"></i>Commits<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">1</span></button>
+          <button type="button" data-repo-record-tab="files" aria-selected="false" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="files" class="h-3.5 w-3.5"></i>Files changed<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullPatch.files.length)}</span></button>
+          <button type="button" data-repo-record-tab="badge" aria-selected="false" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="fingerprint" class="h-3.5 w-3.5"></i>Badge</button>
         </nav>` : "";
     const sidebarSection = (label, value) => `
       <div class="border-t border-border py-4 first:border-t-0 first:pt-0">
@@ -1651,25 +1934,44 @@
         </header>
         <div class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_18rem]">
           <div class="grid min-w-0 gap-4">
-            ${isDiscussions ? discussionConversationSection : `
-              <section data-repo-record-conversation class="overflow-hidden rounded-lg border border-border">
-                <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
-                  <span class="inline-flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><span class="font-semibold text-foreground">${escapeHtml(author)}</span> commented ${escapeHtml(date)}</span>
-                  <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Contributor</span>
+            <div data-repo-record-panel="conversation" class="grid min-w-0 gap-4">
+              ${isDiscussions ? discussionConversationSection : `
+                <section data-repo-record-conversation class="overflow-hidden rounded-lg border border-border">
+                  <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
+                    <span class="inline-flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><span class="font-semibold text-foreground">${escapeHtml(author)}</span> commented ${escapeHtml(date)}</span>
+                    <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Contributor</span>
+                  </div>
+                  <div data-repo-record-body class="whitespace-pre-wrap px-4 py-4 text-sm leading-6 text-foreground">${escapeHtml(body)}</div>
+                  ${issueTimelineSection}
+                  ${issueCommentSection}
+                  ${pullConversationSection}
+                </section>`}
+              ${isPulls ? renderRepoPullMergeControl(repo, number, parsed) : ""}
+              <section class="overflow-hidden rounded-lg border border-border" data-repo-federated-thread>
+                <div class="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-secondary/50 px-4 py-3">
+                  <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Fediverse thread</span>
+                  <span class="text-[10px] text-muted-foreground">Remote provenance · separate from signed native history</span>
                 </div>
-                <div data-repo-record-body class="whitespace-pre-wrap px-4 py-4 text-sm leading-6 text-foreground">${escapeHtml(body)}</div>
-                ${issueTimelineSection}
-                ${issueCommentSection}
-                ${pullConversationSection}
-              </section>`}
-            <section class="overflow-hidden rounded-lg border border-border" data-repo-federated-thread>
-              <div class="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-secondary/50 px-4 py-3">
-                <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Fediverse thread</span>
-                <span class="text-[10px] text-muted-foreground">Remote provenance · separate from signed native history</span>
+                <div data-repo-federated-replies></div>
+              </section>
+            </div>
+            ${isPulls ? `
+              <div data-repo-record-panel="commits" class="hidden min-w-0">
+                <section class="overflow-hidden rounded-lg border border-border">
+                  <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5 text-primary"></i>Reviewed commit</div>
+                  <div class="grid gap-2 px-4 py-4">
+                    <p class="text-sm font-semibold text-foreground">${escapeHtml(title)}</p>
+                    <span class="break-all font-mono text-xs text-muted-foreground">${escapeHtml(values.creationHeadOid || "Commit unavailable from this mirror")}</span>
+                  </div>
+                </section>
               </div>
-              <div data-repo-federated-replies></div>
-            </section>
-            ${pullFilesSection}
+              <div data-repo-record-panel="files" class="hidden min-w-0">${pullFilesSection}</div>
+              <div data-repo-record-panel="badge" class="hidden min-w-0">
+                <section class="overflow-hidden rounded-lg border border-border">
+                  <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="fingerprint" class="h-3.5 w-3.5 text-primary"></i>Badge</div>
+                  ${renderRepoPullBadge(title, options.pending ? 0 : number, author, pullPatch.files)}
+                </section>
+              </div>` : ""}
           </div>
           <aside data-repo-record-sidebar class="min-w-0 text-xs">
             ${isPulls ? sidebarSection("Reviewers", `<span data-repo-pull-reviewers class="grid gap-0.5">${renderPullReviewers(pullConversation)}</span>`) : ""}
@@ -1746,11 +2048,13 @@
         : null;
       if (pullPatch) parsed.pullPatch = pullPatch;
       if (kind === "pulls") {
+        parsed.pullMetadataCommit = pullMetadataCommit;
         parsed.pullConversation = await loadRepoPullConversation(
           repo,
           number,
           pullMetadataCommit,
         );
+        parsed.pullMergeAuthorized = await loadRepoPullMergeAuthorization(repo);
       }
       if (kind === "discussions") parsed.discussionConversation = await loadRepoDiscussionConversation(repo, number);
       state.repoRecordDetail = { repo, kind, number, parsed };

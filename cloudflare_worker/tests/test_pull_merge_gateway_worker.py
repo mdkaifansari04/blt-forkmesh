@@ -198,8 +198,7 @@ def test_worker_route_auth_idempotency_and_no_failover_contracts():
     ]
     for required in (
         "_account_session_record",
-        "_account_owns_node",
-        "_org_write_allowed",
+        "_organization_owner_can_merge_repo",
         "repo_merge_jobs",
         "request_id_reused",
         "selected_node",
@@ -209,6 +208,18 @@ def test_worker_route_auth_idempotency_and_no_failover_contracts():
     assert "merge_node_unavailable" in handler
     assert "An uncertain transport result never fails over" in handler
     assert "_https_mirror_merge_proxy(" in handler
+
+
+def test_mirror_merge_authorization_is_org_owner_only():
+    helper = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _organization_owner_can_merge_repo"):
+        ENTRY_TEXT.index("\n\ndef _https_mirror_merge_response")
+    ]
+    assert "_org_role(env, org_bi, actor) == \"owner\"" in helper
+    assert "FROM org_repos" in helper
+    assert "alias_owner == canonical_owner" in helper
+    assert "_org_write_allowed" not in helper
+    assert "_account_owns_node" not in helper
 
 
 def test_merge_capability_is_explicit_signed_and_schema_bounded():

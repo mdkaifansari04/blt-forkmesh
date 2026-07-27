@@ -13449,7 +13449,7 @@ class ForkMeshWorld extends HTMLElement {
       },
       forbidden: {
         title: "Merge not authorized",
-        body: "This signed-in account is not authorized as the repository owner, node owner, or an organization writer.",
+        body: "Mirror merges are currently restricted to an owner of the organization that publishes this repository.",
       },
       unauthenticated: {
         title: "Session no longer valid",

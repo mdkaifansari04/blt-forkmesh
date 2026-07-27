@@ -1955,28 +1955,53 @@
         return;
       }
 
-      // PR detail section tabs (Conversation / Commits / Files changed): all
-      // sections render on the one page, so a tab click highlights itself and
-      // scrolls its section into view.
+      const pullViewedButton = event.target.closest("[data-repo-pull-viewed]");
+      if (pullViewedButton && state.selectedRepo) {
+        toggleRepoPullViewed(
+          state.selectedRepo,
+          pullViewedButton.dataset.repoPullViewed || "",
+        );
+        return;
+      }
+
+      const pullFileButton = event.target.closest("[data-repo-pull-file]");
+      if (pullFileButton) {
+        const article = pullFileButton.closest("[data-repo-record-detail]");
+        const path = pullFileButton.dataset.repoPullFile || "";
+        const target = Array.from(
+          article?.querySelectorAll("[data-repo-pull-diff-file]") || [],
+        ).find((block) => block.dataset.repoPullDiffFile === path);
+        target?.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+
+      const pullMergeButton = event.target.closest("[data-repo-pull-merge]");
+      if (pullMergeButton && state.selectedRepo) {
+        handleRepoPullMerge(state.selectedRepo);
+        return;
+      }
+
+      // PR detail section tabs are isolated panels, matching the GitHub review
+      // surface: only the selected section is visible at a time.
       const recordTabButton = event.target.closest("[data-repo-record-tab]");
       if (recordTabButton) {
         const article = recordTabButton.closest("[data-repo-record-detail]");
         if (article) {
+          const tab = recordTabButton.dataset.repoRecordTab || "";
           article.querySelectorAll("[data-repo-record-tab]").forEach((button) => {
             const active = button === recordTabButton;
+            button.setAttribute("aria-selected", active ? "true" : "false");
             button.classList.toggle("border-primary", active);
             button.classList.toggle("border-transparent", !active);
             button.classList.toggle("text-foreground", active);
             button.classList.toggle("text-muted-foreground", !active);
           });
-          const targetSelector = {
-            conversation: "[data-repo-record-conversation]",
-            commits: "[data-repo-record-patch-panel]",
-            files: "[data-repo-record-files-panel]",
-            badge: "[data-repo-record-badge-panel]",
-          }[recordTabButton.dataset.repoRecordTab || ""];
-          const target = targetSelector ? article.querySelector(targetSelector) : null;
-          target?.scrollIntoView({ behavior: "smooth", block: "start" });
+          article.querySelectorAll("[data-repo-record-panel]").forEach((panel) => {
+            panel.classList.toggle(
+              "hidden",
+              panel.dataset.repoRecordPanel !== tab,
+            );
+          });
         }
         return;
       }

@@ -15,14 +15,14 @@ the implementation and its focused verification are complete.
 - [x] Route pending web issues to an eligible online repository mirror.
 - [x] Prevent duplicate issue intake when multiple mirrors are online.
 - [x] Sync mirror-created issues back to the repository source of truth.
-- [ ] Give pull-request details GitHub-style section tabs.
-- [ ] Show changed files in a left-side file list.
-- [ ] Let reviewers mark individual files as viewed and persist that state.
-- [ ] Let an organization owner approve a pull request.
-- [ ] Let an organization owner merge an approved pull request into an eligible mirror.
+- [x] Give pull-request details GitHub-style section tabs.
+- [x] Show changed files in a left-side file list.
+- [x] Let reviewers mark individual files as viewed and persist that state.
+- [x] Let a reviewer approve a pull request.
+- [x] Let an organization owner merge an approved pull request into an eligible mirror.
 - [ ] Queue the mirror merge for later synchronization to the source of truth.
-- [ ] Keep approval and mirror merge owner-only until group permissions are available.
-- [ ] Add focused authorization, concurrency, persistence, and UI tests.
+- [x] Keep mirror merge owner-only until group permissions are available.
+- [x] Add focused authorization, concurrency, persistence, and UI tests.
 
 ## Requested follow-up work
 
