@@ -2136,6 +2136,45 @@ int main(int argc, char *argv[])
         window.testResetNetworkLog();
     }
 
+    // adhoc #436: hosts with a hardcoded mark (api.anthropic.com serves no
+    // /favicon.ico, so fetching one logged a 404 error line of its own) resolve
+    // locally, and every log line that names a host leads with an icon in both
+    // the full Log view and the footer strip.
+    {
+        window.testResetNetworkLog();
+        window.testLogSystem(
+            QStringLiteral("net POST https://api.anthropic.com/v1/messages 200"));
+        QApplication::processEvents();
+
+        check(window.testFaviconCached(QStringLiteral("api.anthropic.com")),
+              QStringLiteral("an Anthropic host resolves its favicon locally, "
+                             "with no network fetch (adhoc #436)"));
+
+        auto leadsWithIcon = [](QTextEdit *view) {
+            if (!view)
+                return false;
+            for (QTextBlock b = view->document()->firstBlock(); b.isValid();
+                 b = b.next()) {
+                for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) {
+                    const QTextCharFormat fmt = it.fragment().charFormat();
+                    if (fmt.isImageFormat() &&
+                        fmt.toImageFormat().name().startsWith(
+                            QStringLiteral("favicon://")))
+                        return true;
+                }
+            }
+            return false;
+        };
+
+        window.testShowLogSection();
+        window.testRebuildNetworkLogView();
+        check(leadsWithIcon(window.testNetworkLogView()),
+              QStringLiteral("the full Log view renders the site favicon inline"));
+        check(leadsWithIcon(window.testFooterLogView()),
+              QStringLiteral("the footer live-log strip renders the site favicon "
+                             "inline too (adhoc #436)"));
+    }
+
     stopChildProcesses(window);
     return failures == 0 ? 0 : 1;
 }

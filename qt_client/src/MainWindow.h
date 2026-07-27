@@ -325,6 +325,11 @@ public:
         return logBadgeFor(storedLine);
     }
     QTextBrowser *testNetworkLogView() const { return m_settingsLog; }
+    QTextEdit *testFooterLogView() const { return m_footerUpdateLog; }
+    bool testFaviconCached(const QString &host) const
+    {
+        return m_faviconCache.contains(host);
+    }
     void testScrollNetworkLogToTop() { onNetworkLogScrolled(0); }
     QStringList testQuickUpdatePullArguments(const QString &clientDir) const;
     // Issue #214: the ordered "Build & preview" command pipeline — checkout into a
