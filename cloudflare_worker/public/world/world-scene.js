@@ -13514,16 +13514,66 @@ export function createWorldScene({
           entry.name.toLowerCase() !== entries[index - 1].name.toLowerCase(),
       )
       .slice(0, 64);
+    const usableIds = new Set(
+      usableNodes.map(({ name }) => `node:${name.toLowerCase()}`),
+    );
+    nodeSlotAssignments.forEach((_slotIndex, id) => {
+      if (!usableIds.has(id)) nodeSlotAssignments.delete(id);
+    });
+    const usedSlotIndexes = new Set(nodeSlotAssignments.values());
+    usableNodes.forEach(({ name }) => {
+      const id = `node:${name.toLowerCase()}`;
+      if (nodeSlotAssignments.has(id)) return;
+      let slotIndex = 0;
+      while (usedSlotIndexes.has(slotIndex) && slotIndex < 64) {
+        slotIndex += 1;
+      }
+      if (slotIndex >= 64) return;
+      nodeSlotAssignments.set(id, slotIndex);
+      usedSlotIndexes.add(slotIndex);
+    });
+    const campfireRadius =
+      Math.max(6.2, Number(campfire.userData.seatRadius) || 0) + 2;
     const circleSlots = rewardCircleSlots(
       routingX,
       routingZ,
-      usableNodes.length,
+      64,
+      {
+        campfirePosition: [
+          campfire.position.x,
+          campfire.position.y,
+          campfire.position.z,
+        ],
+        campfireClearance: campfireRadius,
+        circleKeepouts: [
+          {
+            x: swingSet.position.x,
+            z: swingSet.position.z,
+            radius: 6.2,
+          },
+        ],
+        rectangleKeepouts: [
+          {
+            ...ARRIVAL_GRID_BOUNDS,
+            padding: 1.8,
+          },
+        ],
+        isWalkable: (x, z) => worldWalkSurfaceContains(x, z, 1.7),
+      },
     );
-    usableNodes.forEach(({ node, name: nodeName }, index) => {
+    usableNodes.forEach(({ node, name: nodeName }) => {
       const id = `node:${nodeName.toLowerCase()}`;
       const dataKey = nodeDataKey({ ...node, name: nodeName });
       seen.add(id);
       let cabinet = nodeInfrastructure.get(id);
+      const followedPosition = cabinet?.position?.clone?.() || null;
+      const focusFollowsCabinet = Boolean(
+        cameraFocus &&
+        followedPosition &&
+        Math.abs(cameraFocus.x - followedPosition.x) < 0.01 &&
+        Math.abs(cameraFocus.y - (followedPosition.y + 1.65)) < 0.01 &&
+        Math.abs(cameraFocus.z - followedPosition.z) < 0.01
+      );
       // The commit shown before this update, captured ahead of any rebuild.
       // Comparing it against the fresh signed record is what detects "code
       // was just pushed onto this node" — for both the instant socket-driven
@@ -13558,7 +13608,8 @@ export function createWorldScene({
         }
         nodeInfrastructure.set(id, cabinet);
       }
-      const slot = circleSlots[index];
+      const slot = circleSlots[nodeSlotAssignments.get(id)];
+      if (!slot) return;
       cabinet.position.set(slot.x, 0.38, slot.z);
       // The front display faces inward so each cabinet remains individually
       // readable from the surrounding walkway.
@@ -13566,6 +13617,10 @@ export function createWorldScene({
         routingX - slot.x,
         routingZ - slot.z,
       );
+      if (focusFollowsCabinet) {
+        cameraFocus.copy(cabinet.position);
+        cameraFocus.y += 1.65;
+      }
       const nextCommit = String(node?.commit || "");
       if (priorCommit && nextCommit && nextCommit !== priorCommit) {
         spawnPushSurge(cabinet.position);
@@ -13584,6 +13639,11 @@ export function createWorldScene({
       removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
+  }
+
+  function relayoutNetworkNodes() {
+    if (!networkNodeSnapshot.length && !nodeInfrastructure.size) return;
+    updateNetworkNodes(networkNodeSnapshot);
   }
 
   function focusNetworkNode(name) {
