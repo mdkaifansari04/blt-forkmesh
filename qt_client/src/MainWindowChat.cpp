@@ -3790,7 +3790,11 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *chromeRow = new QHBoxLayout(chrome);
     chromeRow->setContentsMargins(14, 0, 8, 0);
     chromeRow->setSpacing(8);
-    chromeRow->addWidget(appVersionLabel);
+    // The relay switcher (favicon + host dropdown) and its open-in-browser link
+    // now head the window-chrome line in place of the app-version label, which
+    // has moved down to the right-hand end of the row below (adhoc #407).
+    chromeRow->addWidget(m_relayMenuButton);
+    chromeRow->addWidget(m_relayOpenButton);
     chromeRow->addStretch();
 
     auto *searchCluster = new QWidget;
@@ -3851,10 +3855,8 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->setContentsMargins(16, 0, 16, 0);
     mainRow->setSpacing(8);
     // m_relayRadar (radar + latency) now lives on the window-chrome line, just
-    // left of the CPU/MEM/DISK sparklines (adhoc #87).
-    mainRow->addWidget(m_relayMenuButton);
-    mainRow->addWidget(m_relayOpenButton);
-    mainRow->addSpacing(10);
+    // left of the CPU/MEM/DISK sparklines (adhoc #87); the relay switcher and its
+    // link button moved up there too (adhoc #407), so this row starts at the node.
     mainRow->addWidget(m_nodeLabel);
     mainRow->addWidget(m_nodeMenuButton);
     mainRow->addSpacing(10);
@@ -3886,6 +3888,11 @@ QWidget *MainWindow::buildBreadcrumb()
     // Notification bell, tucked just left of the account avatar (adhoc #137).
     mainRow->addWidget(m_notificationButton);
     mainRow->addWidget(m_userAvatarNavButton);
+    // App version, moved off the window-chrome line so the relay switcher can head
+    // it; it now sits at the right-hand end of this row, under the stall/resource
+    // indicators (adhoc #407).
+    mainRow->addSpacing(10);
+    mainRow->addWidget(appVersionLabel);
     auto *mainRowHost = new QWidget;
     mainRowHost->setLayout(mainRow);
     mainRowHost->setMinimumWidth(0);
