@@ -2700,13 +2700,41 @@ async def status_history(env):
                 "uptimePct": uptime, "coveragePct": coverage,
                 "hours": hours, "hoursElapsed": len(hours),
             })
-        # Current status comes from the most recent HOUR with recorded
-        # samples, not the whole current day's aggregate — otherwise an
-        # incident that was resolved an hour ago keeps the badge red/yellow
-        # for the rest of the day even once every recent check is green.
-        # And if the newest recorded sample is over an hour stale, the honest
-        # badge is "unknown": we have no current evidence either way, and
-        # claiming operational (or down) from old data would be false info.
+        # Current state comes from the newest RAW MINUTE probe. An hourly
+        # aggregate answers "did anything fail during this hour?", not "is it
+        # reachable now"; using it for the badge left recovered systems yellow
+        # and displayed an hour-old reason as though it were current. A failed
+        # latest probe is a hard red/down state. A passing latest probe is
+        # green and clears the old reason immediately.
+        latest_minute_row = None
+        minute_records = by_system_minute.get(system_id, {})
+        if minute_records:
+            latest_minute_ts = max(minute_records)
+            latest_minute_row = minute_records[latest_minute_ts]
+        reason_text = reason_ts = None
+        if (
+            latest_minute_row is not None
+            and latest_minute_ts >= current_minute - 2 * STATUS_SAMPLE_WINDOW_MS
+        ):
+            if int(latest_minute_row.get("ok") or 0) == 1:
+                status = "operational"
+            else:
+                status = "down"
+                reason_text = (
+                    latest_minute_row.get("reason")
+                    or "The latest reachability check failed")
+                reason_ts = latest_minute_ts
+        elif latest_minute_row is not None:
+            status = "unknown"
+            reason_text = (
+                "No health sample has been recorded in the last two minutes "
+                "— monitoring gap; current reachability is unknown.")
+            reason_ts = latest_minute_ts
+        else:
+            # Backward-compatible fallback for an existing deployment while
+            # minute sampling is first being populated.
+            status = None
+
         latest_hour = None
         for d in reversed(days):
             for h in reversed(d["hours"]):
@@ -2715,23 +2743,22 @@ async def status_history(env):
                     break
             if latest_hour:
                 break
-        reason_text = reason_ts = None
-        if latest_hour is not None and (
-                latest_hour["hourTs"] >= current_hour - STATUS_HOUR_MS):
-            status = latest_hour["status"]
-            if status != "operational":
-                reason_text = latest_hour.get("reason")
+        if status is None:
+            if latest_hour is not None and (
+                    latest_hour["hourTs"] >= current_hour - STATUS_HOUR_MS):
+                status = latest_hour["status"]
+                if status != "operational":
+                    reason_text = latest_hour.get("reason")
+                    reason_ts = latest_hour.get("hourTs")
+            elif latest_hour is not None:
+                status = "unknown"
+                reason_text = (
+                    "No health samples have been recorded since the sampling "
+                    "cron's last run — monitoring gap; the current state is "
+                    "unknown, not a confirmed outage.")
                 reason_ts = latest_hour.get("hourTs")
-        elif latest_hour is not None:
-            status = "unknown"
-            reason_text = (
-                "No health samples have been recorded since the sampling "
-                "cron's last run — monitoring gap; the current state is "
-                "unknown, not a confirmed outage.")
-            reason_ts = latest_hour.get("hourTs")
-        else:
-            # No recorded samples anywhere in the 30-day window.
-            status = "unknown"
+            else:
+                status = "unknown"
         overall_uptime = (
             round(((total_checks - total_failures) / total_checks) * 100, 2)
             if total_checks else None

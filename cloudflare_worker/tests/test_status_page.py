@@ -791,6 +791,65 @@ def test_minute_row_reflects_ok_and_carries_its_failure_reason():
     assert minutes[cur_minute]["reason"] is None
 
 
+def test_latest_passing_minute_clears_failure_from_hourly_rollup():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    rows = [{"day_ts": cur_day, "system": "flagship_repository",
+             "checks": 20, "failures": 5}]
+    hour_rows = [
+        {"hour_ts": cur_hour, "system": "flagship_repository",
+         "checks": 20, "failures": 5,
+         "reason": "README.md body did not load"},
+    ]
+    minute_rows = [
+        {"minute_ts": cur_minute, "system": "flagship_repository",
+         "ok": 1, "reason": None},
+    ]
+    out = _run_history(rows, hour_rows, minute_rows)
+    system = next(
+        s for s in out["systems"] if s["id"] == "flagship_repository")
+    # The aggregate remains below 100% and preserves the historical amber
+    # dots, but the current badge follows the completed reachability probe.
+    assert system["uptime24hPct"] < 100.0
+    assert system["status"] == "operational"
+    assert system["reason"] is None
+    assert system["reasonTs"] is None
+
+
+def test_latest_failing_minute_is_down_even_if_hour_is_mostly_green():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    rows = [{"day_ts": cur_day, "system": "installer",
+             "checks": 59, "failures": 1}]
+    hour_rows = [
+        {"hour_ts": cur_hour, "system": "installer",
+         "checks": 59, "failures": 1, "reason": "installer unreachable"},
+    ]
+    minute_rows = [
+        {"minute_ts": cur_minute, "system": "installer",
+         "ok": 0, "reason": "installer unreachable"},
+    ]
+    out = _run_history(rows, hour_rows, minute_rows)
+    system = next(s for s in out["systems"] if s["id"] == "installer")
+    assert system["status"] == "down"
+    assert system["reason"] == "installer unreachable"
+    assert system["reasonTs"] == cur_minute
+
+
+def test_stale_latest_minute_reports_unknown_not_online():
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    minute_rows = [
+        {"minute_ts": cur_minute - 3 * MINUTE_MS, "system": "git_hosting",
+         "ok": 1, "reason": None},
+    ]
+    out = _run_history([], minute_rows=minute_rows)
+    system = next(s for s in out["systems"] if s["id"] == "git_hosting")
+    assert system["status"] == "unknown"
+    assert "last two minutes" in system["reason"]
+
+
 # --- current-state snapshot (issue #356) ------------------------------------
 
 def _run_history_current(

@@ -69,10 +69,14 @@ def test_repository_status_board_reuses_the_social_sign_format_near_the_office()
     assert 'title: "SYSTEM STATUS"' in scene
     assert 'host: "forkmesh.com/status"' in scene
     assert 'url: "/status"' in scene
-    assert '"flagship_repository"' in scene
-    assert '"LAST 60 MINUTES"' in scene
-    assert '"LAST 24 HOURS"' in scene
-    assert '"LAST 30 DAYS"' in scene
+    assert "function systemStatusBannerTexture(" in scene
+    assert "payload?.systems" in scene
+    assert "system.days" in scene
+    assert "system.minutes" in scene
+    assert "systemStatusColor(hour?.status)" in scene
+    assert "systemStatusColor(minute?.status)" in scene
+    assert "last 24 hours" in scene
+    assert "last 60 one-minute checks" in scene
     assert 'registerMovableObject("status-banner", statusBanner);' in scene
     assert "updateSystemStatusBoard," in scene
     assert 'this.fetchJSON("/api/status"' in world

@@ -6237,7 +6237,7 @@ const STATUS_BANNER_OPTIONS = Object.freeze({
   ],
   footer: "OPENS FORKMESH.COM/STATUS",
   url: "/status",
-  feedHeading: "REPOSITORY AVAILABILITY",
+  feedHeading: "ALL MONITORED SYSTEMS",
   staleness: {
     label: "LAST CHECK",
     freshMs: 2 * 60 * 1000,
@@ -6463,6 +6463,145 @@ function socialBannerTexture(
   });
 }
 
+const SYSTEM_STATUS_COLORS = Object.freeze({
+  operational: "#198a43",
+  degraded: "#a66f00",
+  down: "#d92d3a",
+  unknown: "#d9dbe1",
+  future: "#f5f5f7",
+});
+
+function systemStatusColor(status) {
+  return SYSTEM_STATUS_COLORS[String(status || "unknown")] ||
+    SYSTEM_STATUS_COLORS.unknown;
+}
+
+// A compact, canvas-native copy of /status. The physical frame deliberately
+// remains the same as the Twitter sign, while its face contains every system
+// and the same day/hour/minute hierarchy and state colours as the web page.
+function systemStatusBannerTexture(THREE, payload = null) {
+  const WIDTH = SOCIAL_BANNER_WIDTH;
+  const HEIGHT = SOCIAL_BANNER_HEIGHT;
+  return canvasTexture(THREE, WIDTH, HEIGHT, (context) => {
+    context.fillStyle = "#f7f7f8";
+    context.fillRect(0, 0, WIDTH, HEIGHT);
+    context.fillStyle = STATUS_BANNER_OPTIONS.accent;
+    context.fillRect(12, 12, 1512, 190);
+    context.fillStyle = "#f2fff8";
+    context.font = '800 112px "ForkMesh Favorit", sans-serif';
+    context.fillText("SYSTEM STATUS", 72, 145);
+    context.fillStyle = "#25262b";
+    context.font = '700 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("forkmesh.com/status", 72, 250);
+    context.fillStyle = "#686b74";
+    context.font = '500 25px "ForkMesh Favorit", sans-serif';
+    context.fillText(
+      "30 days  ·  last 24 hours  ·  last 60 one-minute checks",
+      72,
+      292,
+    );
+
+    const systems = Array.isArray(payload?.systems) ? payload.systems : [];
+    if (!systems.length) {
+      context.fillStyle = "#25262b";
+      context.font = '700 54px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("LOADING LIVE CHECKS…", 72, 480);
+    }
+
+    const rowTop = 325;
+    const rowHeight = 205;
+    systems.slice(0, 8).forEach((system, index) => {
+      const top = rowTop + index * rowHeight;
+      context.fillStyle = "#ffffff";
+      roundedRect(context, 56, top, 1424, rowHeight - 12, 14);
+      context.fill();
+      context.strokeStyle = "#dcdee4";
+      context.lineWidth = 2;
+      context.stroke();
+
+      context.beginPath();
+      context.fillStyle = systemStatusColor(system.status);
+      context.arc(82, top + 34, 9, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = "#202126";
+      context.font = '700 30px "ForkMesh Favorit", sans-serif';
+      context.fillText(
+        clipCanvasText(context, String(system.label || system.id || ""), 650),
+        104,
+        top + 44,
+      );
+
+      const metric = (value) => Number.isFinite(Number(value))
+        ? `${Number(value).toFixed(1)}%`
+        : "—";
+      context.textAlign = "right";
+      context.fillStyle = "#202126";
+      context.font = '700 27px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(metric(system.uptime24hPct), 1100, top + 38);
+      context.fillText(metric(system.uptimePct), 1282, top + 38);
+      context.fillText(metric(system.coverage24hPct), 1452, top + 38);
+      context.fillStyle = "#686b74";
+      context.font = '500 17px "ForkMesh Favorit", sans-serif';
+      context.fillText("24h", 1100, top + 61);
+      context.fillText("30d", 1282, top + 61);
+      context.fillText("coverage", 1452, top + 61);
+      context.textAlign = "left";
+
+      // Top strip: one tile per day, with that day's hourly checks inside.
+      const days = Array.isArray(system.days) ? system.days.slice(-30) : [];
+      const dayX = 76;
+      const dayY = top + 77;
+      const dayWidth = 44;
+      days.forEach((day, dayIndex) => {
+        const x = dayX + dayIndex * 46;
+        context.fillStyle = "#dedfe4";
+        roundedRect(context, x, dayY, dayWidth, 50, 5);
+        context.fill();
+        const hours = Array.isArray(day?.hours) ? day.hours : [];
+        hours.slice(0, 24).forEach((hour, hourIndex) => {
+          context.fillStyle = systemStatusColor(hour?.status);
+          context.fillRect(
+            x + 4 + (hourIndex % 6) * 6,
+            dayY + 5 + Math.floor(hourIndex / 6) * 10,
+            4,
+            7,
+          );
+        });
+      });
+
+      // Middle strip: the latest 24 hourly checks.
+      const hours = days.flatMap((day) =>
+        Array.isArray(day?.hours) ? day.hours : []).slice(-24);
+      hours.forEach((hour, hourIndex) => {
+        context.fillStyle = systemStatusColor(hour?.status);
+        roundedRect(context, 76 + hourIndex * 29, top + 139, 23, 19, 3);
+        context.fill();
+      });
+
+      // Bottom strip: the latest 60 raw one-minute reachability checks.
+      const minutes = Array.isArray(system.minutes)
+        ? system.minutes.slice(-60)
+        : [];
+      minutes.forEach((minute, minuteIndex) => {
+        context.fillStyle = systemStatusColor(minute?.status);
+        roundedRect(context, 76 + minuteIndex * 18, top + 166, 13, 15, 2);
+        context.fill();
+      });
+    });
+
+    context.fillStyle = "#686b74";
+    context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "● OPERATIONAL   ● DEGRADED   ● DOWN   ● NO DATA",
+      72,
+      1992,
+    );
+    context.strokeStyle = STATUS_BANNER_OPTIONS.accent;
+    context.lineWidth = 16;
+    context.strokeRect(12, 12, 1512, 2024);
+  });
+}
+
 function createSocialBanner(THREE, interactive, options) {
   const group = new THREE.Group();
   group.name = `forkmesh-${options.id}-banner`;
@@ -6486,7 +6625,9 @@ function createSocialBanner(THREE, interactive, options) {
   const face = new THREE.Mesh(
     new THREE.PlaneGeometry(7.2, 9.6),
     new THREE.MeshBasicMaterial({
-      map: socialBannerTexture(THREE, options),
+      map: options.id === "status"
+        ? systemStatusBannerTexture(THREE)
+        : socialBannerTexture(THREE, options),
       toneMapped: false,
     }),
   );
@@ -7276,8 +7417,8 @@ export function createWorldScene({
   world.add(blogBanner);
   registerMovableObject("blog-banner", blogBanner);
   // Same physical display format as the Twitter/X sign, placed on the Office
-  // approach. Its four live rows summarize the minute, hour/day, and 30-day
-  // repository availability windows from /api/status.
+  // approach. Its face mirrors all systems and all three history strips from
+  // /status instead of reducing the page to one repository summary.
   const statusBanner = createSocialBanner(
     THREE, interactive, STATUS_BANNER_OPTIONS);
   world.add(statusBanner);
@@ -7327,8 +7468,10 @@ export function createWorldScene({
     );
     if (!face?.material) return false;
     face.material.map?.dispose?.();
-    face.material.map = socialBannerTexture(
-      THREE, record.options, record.snapshot || null, socialBannerImage);
+    face.material.map = record.options.id === "status"
+      ? systemStatusBannerTexture(THREE, record.snapshot || null)
+      : socialBannerTexture(
+          THREE, record.options, record.snapshot || null, socialBannerImage);
     face.material.needsUpdate = true;
     return true;
   }
@@ -7348,41 +7491,8 @@ export function createWorldScene({
   }
 
   function updateSystemStatusBoard(payload) {
-    const systems = Array.isArray(payload?.systems) ? payload.systems : [];
-    const repository = systems.find(
-      (system) => system?.id === "flagship_repository");
-    const minutes = Array.isArray(repository?.minutes)
-      ? repository.minutes.filter(
-          (minute) => ["operational", "down"].includes(minute?.status))
-      : [];
-    const minutePassed = minutes.filter(
-      (minute) => minute.status === "operational").length;
-    const pct = (value) =>
-      Number.isFinite(Number(value))
-        ? `${Number(value).toFixed(2)}% UPTIME`
-        : "AWAITING SAMPLES";
-    const current = String(repository?.status || "unknown").toUpperCase();
-    statusBannerRecord.snapshot = repository
-      ? {
-          posts: [
-            { meta: "NOW", text: current.replace(/_/g, " ") },
-            {
-              meta: "LAST 60 MINUTES",
-              text: minutes.length
-                ? `${minutePassed}/${minutes.length} CHECKS PASSED`
-                : "AWAITING MINUTE SAMPLES",
-            },
-            {
-              meta: "LAST 24 HOURS",
-              text: pct(repository.uptime24hPct),
-            },
-            {
-              meta: "LAST 30 DAYS",
-              text: pct(repository.uptimePct),
-            },
-          ],
-        }
-      : null;
+    statusBannerRecord.snapshot =
+      payload && Array.isArray(payload.systems) ? payload : null;
     repaintSocialBanner(statusBannerRecord);
 
     const lastCheck = Number(payload?.current?.lastCronSampleTs) || 0;
