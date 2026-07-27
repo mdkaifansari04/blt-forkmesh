@@ -431,6 +431,12 @@ constexpr int kNodeLightRole = Qt::UserRole + 13;
 // a behind node is expected to catch up at the next tick. Only a safety net
 // now: push events notify mirror peers the moment the source moves.
 constexpr qint64 kMirrorSyncIntervalMs = 15LL * 60 * 1000;
+
+// Extra labels this machine answers to when a workflow declares `runs-on:`
+// (free-form, comma/space separated — e.g. "ios, xcode, gpu"). The machine's
+// node name, its mirror-executor node name and the platform are always labels;
+// this setting only adds capability tags on top of them.
+constexpr auto kActionNodeLabelsSetting = "actions/nodeLabels";
 // Defined further down; used early by MirrorSyncDelegate to pick chart colors.
 bool currentThemeIsDark();
 
@@ -2781,25 +2787,11 @@ const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
 // freeze gets fixed automatically. On by default (adhoc #205).
 const QString kAutoAgentOnStallSetting =
     QStringLiteral("diagnostics/autoAgentOnStall");
-// Opt-in (OFF by default): on startup, upload the previous session's crash
-// summary and UI-stall records to the mainnode so bugs users hit reach a triage
-// queue instead of dying in a local log (issue #354). Only the app version, OS,
-// and an anonymized node hash go with it; repo names and filesystem paths are
-// scrubbed client-side before the payload is built. kTelemetryCrashOffsetSetting
-// / kTelemetryStallOffsetSetting remember how many bytes of each log were already
-// sent, so a restart never re-uploads the same records.
-const QString kUploadTelemetrySetting =
-    QStringLiteral("diagnostics/uploadTelemetry");
-const QString kTelemetryCrashOffsetSetting =
-    QStringLiteral("diagnostics/telemetryCrashOffset");
-const QString kTelemetryStallOffsetSetting =
-    QStringLiteral("diagnostics/telemetryStallOffset");
 // How many bytes of crashes.log had already been seen as of the last startup,
 // so a crash that ended the previous session (which never gets a chance to log
 // itself — the process is gone) shows up as a line in *this* session's own log
 // instead of only ever living in crashes.log/stderr/journalctl (adhoc #200).
-// Independent of kTelemetryCrashOffsetSetting/telemetry opt-in: this in-app
-// notice always fires, regardless of whether the user enabled the upload.
+// Purely local: the notice is shown in-app and nothing leaves the machine.
 const QString kCrashLogSeenOffsetSetting =
     QStringLiteral("diagnostics/crashLogSeenOffset");
 const QString kVotesSpentSetting = QStringLiteral("votes/spent");
@@ -2944,6 +2936,14 @@ const QString kClaudeCodeCommandSetting = QStringLiteral("agents/claudeCodeComma
 // or the "auto" sentinel (adhoc #91) that routes each task to a model.
 // Surfaced as a chooser in the footer quick-add bar (adhoc #261).
 const QString kClaudeCodeModelSetting = QStringLiteral("agents/claudeCodeModel");
+// Last model picked in the Releases tab's "Generate release notes with agent"
+// row, split by provider family since Claude and GPT model ids don't overlap.
+// Remembered so drafting the next release starts on whatever model generated
+// the previous one instead of resetting to the first item in the list.
+const QString kReleaseNotesClaudeModelSetting =
+    QStringLiteral("agents/releaseNotesClaudeModel");
+const QString kReleaseNotesGptModelSetting =
+    QStringLiteral("agents/releaseNotesGptModel");
 // Disk cache of the last successful /v1/models fetch (see
 // MainWindow::refreshClaudeModelCombo), loaded back into m_liveClaudeModels at
 // startup so a model combo built before this session's first live fetch
@@ -3002,8 +3002,9 @@ const QString kPublishAgentsToWebSetting =
 const QString kAutoFixAgentConflictsSetting =
     QStringLiteral("agents/autoFixConflicts");
 // When a repo's tests or build fail (the same kind of failure this very task
-// was dispatched to fix), automatically start an agent to fix them instead of
-// waiting for a manual dispatch. Default on; can be disabled in Settings.
+// was dispatched to fix), automatically send the failure back to whichever
+// agent session last worked on that branch instead of waiting for a manual
+// dispatch (adhoc #306). Default on; can be disabled in Settings.
 const QString kAutoFixFailuresSetting =
     QStringLiteral("agents/autoFixFailures");
 // Whether to hide external `claude` CLI sessions (ones ForkMesh didn't start
@@ -5979,14 +5980,14 @@ private:
     int m_angle = 0;
 };
 
-// Compact "issue looper" toggle that floats just above the Issues tab (adhoc
-// #130). It is both the control and the indicator: a small on/off switch and
-// the open issue currently being worked ("#124") — clicking that "#N" jumps to
-// its agent (adhoc #134), while clicking elsewhere toggles the loop. While on,
-// a single neon-green segment travels slowly around the rounded-rect border — a
-// bright loop circling "the whole thing" so the running loop reads from any
-// tab. Replaces the old in-page "working the backlog" banner and the tiny
-// Issues-tab braille snake.
+// Compact "issue looper" toggle placed inline in the Issues heading row, next
+// to "New issue" (adhoc #130, moved from floating over the tab in #354). It is
+// both the control and the indicator: a small on/off switch and the open issue
+// currently being worked ("#124") — clicking that "#N" jumps to its agent
+// (adhoc #134), while clicking elsewhere toggles the loop. While on, a single
+// neon-green segment travels slowly around the rounded-rect border. Replaces
+// the old in-page "working the backlog" banner and the tiny Issues-tab braille
+// snake.
 class LooperToggle : public QWidget
 {
 public:
@@ -6504,6 +6505,145 @@ inline void setOcticon(QPushButton *button, const QString &name, int size = 16,
     button->setProperty("forkmeshOcticonRotation", rotationDeg);
     applyStoredOcticon(button);
 }
+
+// One entry in the thin vertical activity rail down the repo detail page's left
+// edge (adhoc #357): an octicon over an optional small label, VS-Code style,
+// with the selected state drawn as a 2px accent line along the item's left
+// edge. The Git entry rides a blue count badge on the icon's corner (the
+// working-tree change count) which a small rotating sync glyph replaces while
+// the repo is publishing/syncing. Fully custom-painted (icon tint follows the
+// live theme on every repaint), so no QSS or stored-octicon re-tinting applies.
+class ActivityRailButton : public QPushButton
+{
+public:
+    explicit ActivityRailButton(const QString &iconName, const QString &label,
+                                QWidget *parent = nullptr)
+        : QPushButton(parent), m_iconName(iconName), m_label(label)
+    {
+        setCheckable(true);
+        setCursor(Qt::PointingHandCursor);
+        setFlat(true);
+        setFixedSize(44, m_label.isEmpty() ? 40 : 48);
+        // The sync spinner's timer only runs while syncing *and* visible (see
+        // show/hideEvent), so an idle or hidden item costs nothing.
+        m_spinTimer = new QTimer(this);
+        m_spinTimer->setInterval(60);
+        connect(m_spinTimer, &QTimer::timeout, this, [this] {
+            m_spinAngle = (m_spinAngle + 30) % 360;
+            update();
+        });
+    }
+
+    // The count riding the icon's corner (0 hides the badge).
+    void setBadgeCount(int count)
+    {
+        if (m_badge == count)
+            return;
+        m_badge = count;
+        update();
+    }
+
+    void setSyncing(bool on)
+    {
+        if (m_syncing == on)
+            return;
+        m_syncing = on;
+        if (m_syncing && isVisible())
+            m_spinTimer->start();
+        else
+            m_spinTimer->stop();
+        update();
+    }
+
+protected:
+    void showEvent(QShowEvent *e) override
+    {
+        if (m_syncing)
+            m_spinTimer->start();
+        QPushButton::showEvent(e);
+    }
+    void hideEvent(QHideEvent *e) override
+    {
+        m_spinTimer->stop();
+        QPushButton::hideEvent(e);
+    }
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const bool dark = currentThemeIsDark();
+        const bool lit = isChecked() || underMouse();
+        const QColor fg = dark ? QColor(lit ? "#e6edf3" : "#8b949e")
+                               : QColor(lit ? "#1f2328" : "#656d76");
+
+        // Selection line along the left edge — same accent green as the repo
+        // tabs' checked underline.
+        if (isChecked())
+            p.fillRect(QRectF(0, 4, 2, height() - 8), QColor("#2ea043"));
+
+        const int iconPx = 20;
+        const QRect iconRect((width() - iconPx) / 2,
+                             m_label.isEmpty() ? (height() - iconPx) / 2 : 6,
+                             iconPx, iconPx);
+        p.drawPixmap(iconRect.topLeft(),
+                     tintedOcticonPixmap(m_iconName, fg, iconPx));
+
+        if (!m_label.isEmpty()) {
+            QFont f = font();
+            f.setPixelSize(10);
+            f.setWeight(QFont::DemiBold);
+            p.setFont(f);
+            p.setPen(fg);
+            p.drawText(QRect(0, iconRect.bottom() + 2, width(), 14),
+                       Qt::AlignHCenter | Qt::AlignTop, m_label);
+        }
+
+        // Badge / sync spinner overlapping the icon's bottom-right corner.
+        if (m_syncing) {
+            const int s = 14;
+            const QPoint at(iconRect.right() - s / 2 + 4, iconRect.bottom() - s / 2 + 4);
+            // Knock out a disc behind the glyph so it reads over the icon.
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(dark ? "#0d1117" : "#ffffff"));
+            p.drawEllipse(QRect(at, QSize(s, s)).adjusted(-1, -1, 1, 1));
+            p.drawPixmap(at, refreshPixmap(QColor("#58a6ff"), m_spinAngle, s));
+        } else if (m_badge > 0) {
+            const QString text = m_badge > 99 ? QStringLiteral("99+")
+                                              : QString::number(m_badge);
+            QFont f = font();
+            f.setPixelSize(9);
+            f.setBold(true);
+            p.setFont(f);
+            const int h = 14;
+            const int w = qMax(h, QFontMetrics(f).horizontalAdvance(text) + 8);
+            const QRectF badge(iconRect.right() - w + h / 2.0 + 2,
+                               iconRect.bottom() - h / 2.0 + 2, w, h);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor("#1f6feb"));
+            p.drawRoundedRect(badge, h / 2.0, h / 2.0);
+            p.setPen(QColor("#ffffff"));
+            p.drawText(badge, Qt::AlignCenter, text);
+        }
+    }
+    void enterEvent(QEnterEvent *e) override
+    {
+        update();
+        QPushButton::enterEvent(e);
+    }
+    void leaveEvent(QEvent *e) override
+    {
+        update();
+        QPushButton::leaveEvent(e);
+    }
+
+private:
+    QString m_iconName;
+    QString m_label;
+    int m_badge = 0;
+    bool m_syncing = false;
+    QTimer *m_spinTimer = nullptr;
+    int m_spinAngle = 0;
+};
 
 // ---- voice input (whisper.cpp) helpers --------------------------------------
 // Where whisper.cpp is cloned/built. Defaults to the app's local-data dir; the
@@ -7714,6 +7854,40 @@ inline QList<MirrorReleaseBlob> mirrorReleaseBlobs(const QString &mirrorPath)
     return blobs;
 }
 
+// Carry a node's release artifact store from a retiring mirror directory into
+// the one that will serve the repository next. An encrypted repository is
+// served out of a temporary materialization that every sealing pass replaces,
+// and release binaries live beside the git data rather than in it (issue #304),
+// so without this every artifact this node hosts is dropped the moment the old
+// materialization is released — install.sh then 404s on a release it just
+// published. Blobs are content-addressed and immutable, so a hard link is
+// enough (and costs nothing); copying is only the cross-device fallback.
+// Returns the number of blobs carried over.
+inline int carryMirrorReleaseCas(const QString &fromMirror,
+                                 const QString &toMirror)
+{
+    if (fromMirror.trimmed().isEmpty() || toMirror.trimmed().isEmpty() ||
+        QDir::cleanPath(fromMirror) == QDir::cleanPath(toMirror) ||
+        !QDir(toMirror).exists())
+        return 0;
+    int carried = 0;
+    for (const MirrorReleaseBlob &blob : mirrorReleaseBlobs(fromMirror)) {
+        const QString destination = mirrorReleaseBlobPath(toMirror, blob.hash);
+        if (QFile::exists(destination))
+            continue;
+        if (!QDir().mkpath(QFileInfo(destination).absolutePath()))
+            continue;
+        bool linked = false;
+#ifndef Q_OS_WIN
+        linked = ::link(QFile::encodeName(blob.path).constData(),
+                        QFile::encodeName(destination).constData()) == 0;
+#endif
+        if (linked || QFile::copy(blob.path, destination))
+            ++carried;
+    }
+    return carried;
+}
+
 // How many numbered subdirectories a node's bare mirror holds under <subdir>/ on
 // the served branch (the same tally the issues / pulls / discussions tabs show).
 // Advertised to peers so the mirror-nodes view can show what each node is
@@ -7796,6 +7970,28 @@ inline QString nodeListIdentityKey(const MemberInfo &m)
     if (!nodeName.isEmpty())
         return nodeName;
     return m.name.trimmed();
+}
+
+// A temporary world/website chat visitor — a human passing through the public
+// room, never a serving node — so every node surface (Nodes directory, top-bar
+// node dropdown, relay nodes dialog) must skip them (adhoc #308: "World Guest
+// fb9d" rows in the Nodes list). The web chat stamps these accountKind "guest";
+// frames sent before that stamp existed are recognised by the placeholder names
+// the world assigns ("World visitor · <name>", "World Guest ab12", "Guest 1234")
+// — but only when the peer never advertised a registered node identity, so a
+// real node someone happens to have named "Guest ..." keeps its row.
+inline bool isTemporaryChatGuest(const MemberInfo &m)
+{
+    const QString kind = m.accountKind.trimmed().toLower();
+    if (kind == QLatin1String("guest"))
+        return true;
+    if (!kind.isEmpty() || !m.nodeName.trimmed().isEmpty())
+        return false;
+    static const QRegularExpression legacyGuestName(
+        QString::fromUtf8("^(?:world visitor\\s*\xC2\xB7.*|world guest\\s+\\S+|"
+                          "guest\\s+\\d+)$"),
+        QRegularExpression::CaseInsensitiveOption);
+    return legacyGuestName.match(m.name.trimmed()).hasMatch();
 }
 
 // Open issue count for the advertised catalog issueCount. Closed issues keep
@@ -8020,6 +8216,44 @@ inline int mirrorCommitCount(const QString &mirrorPath, const QString &branch)
     bool ok = false;
     const int n = QString::fromUtf8(out).trimmed().toInt(&ok);
     return ok ? n : -1;
+}
+
+// Subject / author / commit time of one commit, read from a git directory (a
+// bare mirror or a working copy). Returns an empty identity when the repo or
+// the commit isn't there — a peer can advertise a commit we never fetched.
+inline CommitIdentity gitCommitIdentity(const QString &gitPath,
+                                        const QString &commit)
+{
+    CommitIdentity identity;
+    if (gitPath.trimmed().isEmpty() || commit.trimmed().isEmpty() ||
+        !QDir(gitPath).exists())
+        return identity;
+    QByteArray out;
+    if (!runGitCapture(gitPath,
+                       {"show", "-s", "--format=%s%n%an%n%ct", commit}, &out,
+                       nullptr))
+        return identity;
+    const QStringList lines = QString::fromUtf8(out).split('\n');
+    if (lines.size() < 3)
+        return identity;
+    identity.subject = lines.at(0).trimmed().left(kMaxCommitSubjectChars);
+    identity.author = lines.at(1).trimmed().left(kMaxCommitAuthorChars);
+    identity.committedAtMs =
+        qMax(qint64(0), lines.at(2).trimmed().toLongLong() * 1000);
+    return identity;
+}
+
+// The same lookup across a node's two copies: prefer the served bare mirror,
+// falling back to the working copy for a source node whose primary-branch tip
+// is ahead of the mirror it serves.
+inline CommitIdentity mirrorCommitIdentity(const QString &mirrorPath,
+                                           const QString &workTreePath,
+                                           const QString &commit)
+{
+    CommitIdentity identity = gitCommitIdentity(mirrorPath, commit);
+    if (identity.subject.isEmpty() && identity.author.isEmpty())
+        identity = gitCommitIdentity(workTreePath, commit);
+    return identity;
 }
 
 // Commit activity histogram for the website repository list: 52 weekly buckets,

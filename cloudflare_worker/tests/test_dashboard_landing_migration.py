@@ -281,7 +281,7 @@ def test_dashboard_profile_views_are_own_pages_and_client_section_router_is_gone
     assert 'data-home-user-name' in home
     assert 'data-home-action-panel' in home
     assert 'data-home-agent-input' in home
-    assert 'data-home-changelog-card' in home
+    assert 'data-home-blog-card' in home
     assert 'data-home-contributions' not in visible
     # The client-side section router is deleted: boot dispatches per page via
     # PAGE_INITS keyed off <body data-page>.
@@ -667,13 +667,13 @@ def test_dashboard_home_widgets_are_wired_to_real_data_and_actions():
     assert 'data-home-ad-card' in home
     assert 'href="/blog/parallel-agents/"' in home
     assert 'href="/blog/live-clone-routing/"' in home
-    assert 'href="/changelog"' in home
+    assert 'href="/blog"' in home
     assert 'data-home-feed-card' not in home
     assert "Dashboard feed adopts GitHub-style repository discovery" not in home
 
     for marker in (
         "function renderHomeFeed()",
-        "function renderHomeChangelog()",
+        "function renderHomeBlogPosts()",
         "function submitHomeAgentPrompt()",
         'fetch("/api/forkbot/chat"',
         "await response.text()",
@@ -686,6 +686,37 @@ def test_dashboard_home_widgets_are_wired_to_real_data_and_actions():
 
     assert "3 hours ago" not in dashboard_js
     assert "mesh-maintainer" not in dashboard_js
+
+
+def test_home_right_rail_lists_latest_blog_posts_with_artwork():
+    """adhoc #381: the right-rail card shows the three newest blog posts,
+    with their images, read from the blog's own edge-cached RSS feed."""
+    home = _read(VIEWS / "home.html")
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    assert "Latest from the blog" in home
+    assert 'data-home-blog-list' in home
+    # The hand-maintained release list the card used to bake in is gone.
+    assert "The Living Code City" not in home
+    assert "The Living Code City" not in dashboard_js
+    assert "Loading release notes" not in home
+
+    for marker in (
+        "const HOME_BLOG_POST_LIMIT = 3;",
+        'const HOME_BLOG_FEED_URL = "/blog/rss.xml";',
+        "function parseHomeBlogFeed(xml)",
+        'doc.querySelectorAll("item")',
+        'item.querySelector("enclosure")?.getAttribute("url")',
+        ".slice(0, HOME_BLOG_POST_LIMIT)",
+        "async function loadHomeBlogPosts()",
+        "void loadHomeBlogPosts();",
+    ):
+        assert marker in dashboard_js
+    # Post artwork is painted, and titles/URLs stay escaped like every other
+    # feed-sourced string in the dashboard.
+    assert 'loading="lazy" class="block aspect-[16/9] w-full object-cover"' in dashboard_js
+    assert "${escapeHtml(post.image)}" in dashboard_js
+    assert "${escapeHtml(post.title)}" in dashboard_js
 
 
 def test_dashboard_has_mobile_responsive_navigation_drawers():

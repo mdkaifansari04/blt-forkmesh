@@ -276,4 +276,23 @@ def safe_catalog_record(data):
     if disk_total is not None:
         record["diskUsedBytes"] = disk_used
         record["diskTotalBytes"] = disk_total
+    # The publishing machine's node name (node/machineName on the desktop),
+    # distinct from the owning account. Same optional-extension rule: absent
+    # (never empty) when unset so older clients' signatures keep verifying.
+    machine_name = clean_string(data.get("machineName", ""), 63)
+    if machine_name:
+        record["machineName"] = machine_name
+    # Subject / author / date of the advertised head commit, so the Mirror nodes
+    # view and the World cabinets can name a node's latest commit instead of
+    # showing a bare hash. Same optional-extension rule: absent when the node
+    # couldn't read it (or is an older client), never an empty string.
+    commit_subject = clean_string(data.get("commitSubject", ""), 120)
+    if commit_subject:
+        record["commitSubject"] = commit_subject
+    commit_author_name = clean_string(data.get("commitAuthorName", ""), 64)
+    if commit_author_name:
+        record["commitAuthorName"] = commit_author_name
+    commit_at = clean_string(data.get("commitAt", ""), 16)
+    if commit_at:
+        record["commitAt"] = commit_at
     return record

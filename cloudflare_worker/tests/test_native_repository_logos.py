@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import re
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 
 SRC = Path(__file__).resolve().parents[1] / "src"
@@ -26,6 +26,7 @@ FUNCTIONS = {
     "_repository_access_context",
     "_native_repository_logo_id",
     "_native_repository_logo_record",
+    "_committed_repository_logo_url",
     "_native_repository_logo_context",
 }
 
@@ -41,6 +42,7 @@ def _load(extra):
     namespace = {
         "hashlib": hashlib,
         "re": re,
+        "quote": quote,
         "unquote": unquote,
         "urlparse": urlparse,
         "ROOM_NAME_RE": re.compile(r"^[A-Za-z0-9._:-]+$"),
@@ -208,6 +210,44 @@ def test_public_native_logo_context_uses_sanitized_catalog_factors():
     assert repository_id.startswith("native_")
     assert actor == ""
     assert len(decryptions) == 1
+
+
+def test_committed_root_logo_wins_over_generated_artwork():
+    namespace = _load({})
+    record = namespace["_native_repository_logo_record"]({
+        "owner": "alice",
+        "name": "project",
+        "visibility": "public",
+        "commit": "a" * 40,
+        "logoMetadata": {
+            "fileStructure": ["README.md", "logo.png", "src/"],
+        },
+    }, "alice", "project")
+
+    assert namespace["_committed_repository_logo_url"](
+        record, "alice", "project"
+    ) == (
+        "/api/repo/alice/project/raw?path=logo.png&ref=" + "a" * 40
+    )
+
+
+def test_committed_logo_requires_public_repo_exact_commit_and_root_image():
+    namespace = _load({})
+    helper = namespace["_committed_repository_logo_url"]
+    base = {
+        "isPrivate": False,
+        "commit": "b" * 40,
+        "metadata": {"fileStructure": ["assets/logo.png"]},
+    }
+    assert helper(base, "alice", "project") == ""
+    assert helper({**base, "metadata": {"fileStructure": ["logo.svg"]}},
+                  "alice", "project") == ""
+    assert helper({**base, "isPrivate": True,
+                   "metadata": {"fileStructure": ["logo.png"]}},
+                  "alice", "project") == ""
+    assert helper({**base, "commit": "main",
+                   "metadata": {"fileStructure": ["logo.png"]}},
+                  "alice", "project") == ""
 
 
 def test_native_logo_handler_normalizes_missing_and_unauthorized_to_404():

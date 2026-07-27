@@ -1,7 +1,7 @@
 """External repository imports, stubs, invitations, and logo helpers.
 
 The relay keeps external-provider metadata separate from ``repositories``.
-That separation is intentional: a GitHub/GitLab listing is never cloneable
+That separation is intentional: a GitHub/GitLab/Codeberg listing is never cloneable
 through ForkMesh until an independently verified mirror is linked to it.
 
 This module is stdlib-only.  The Worker-specific adapter in ``entry.py``
@@ -22,10 +22,10 @@ import hmac
 import html
 import json
 import re
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 
-PROVIDERS = ("github", "gitlab")
+PROVIDERS = ("github", "gitlab", "codeberg")
 IMPORT_MODES = ("stub", "import")
 REPOSITORY_STATUSES = (
     "external_repository",
@@ -67,6 +67,7 @@ MAX_LOGO_BYTES = 256 * 1024
 MAX_SUGGESTIONS_PER_REPOSITORY = 50
 MAX_PENDING_LOGO_SUGGESTIONS_PER_PROPOSER = 5
 MAX_INVITATIONS_PER_REPOSITORY = 500
+MAX_NAMESPACE_REPOSITORIES = 200
 
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 _IMPORT_ID_RE = re.compile(r"^ext_[0-9a-f]{24}$")
@@ -151,7 +152,7 @@ def _safe_segment(value):
 
 
 def parse_provider_source(value):
-    """Parse a public web/clone URL for GitHub.com or GitLab.com.
+    """Parse a public web/clone URL for GitHub, GitLab, or Codeberg.
 
     Only the primary provider hosts are accepted.  API URLs, credentials,
     query strings, fragments, arbitrary ports, and ambiguous extra paths are
@@ -212,7 +213,50 @@ def parse_provider_source(value):
             "metadataPath": "/projects/%s?license=true" % quote(
                 full_name, safe=""),
         }
+    if host in ("codeberg.org", "www.codeberg.org"):
+        if len(parts) != 2:
+            raise ProviderSourceError("codeberg_owner_and_repository_required")
+        owner, name = parts
+        canonical = "https://codeberg.org/%s/%s" % (
+            quote(owner, safe=""), quote(name, safe=""))
+        return {
+            "provider": "codeberg",
+            "host": "codeberg.org",
+            "owner": owner,
+            "name": name,
+            "fullName": owner + "/" + name,
+            "canonicalUrl": canonical,
+            "metadataPath": "/repos/%s/%s" % (
+                quote(owner, safe=""), quote(name, safe="")),
+        }
     raise ProviderSourceError("unsupported_provider")
+
+
+def parse_codeberg_namespace(value):
+    """Return a safe Codeberg user/organization name from a profile URL."""
+    raw = str(value or "").strip()
+    if not raw or len(raw) > 2048:
+        raise ProviderSourceError("source_url_required")
+    if "://" not in raw:
+        raw = "https://" + raw
+    parsed = urlparse(raw)
+    if parsed.scheme != "https" or parsed.username or parsed.password:
+        raise ProviderSourceError("https_provider_url_required")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ProviderSourceError("invalid_provider_url") from exc
+    if (
+            host not in ("codeberg.org", "www.codeberg.org")
+            or port not in (None, 443)
+            or parsed.query or parsed.fragment):
+        raise ProviderSourceError("invalid_codeberg_namespace_url")
+    parts = [_safe_segment(part) for part in parsed.path.strip("/").split("/")
+             if part]
+    if len(parts) != 1 or not parts[0]:
+        raise ProviderSourceError("codeberg_namespace_required")
+    return parts[0]
 
 
 def provider_api_origin(provider):
@@ -220,16 +264,18 @@ def provider_api_origin(provider):
         return "https://api.github.com"
     if provider == "gitlab":
         return "https://gitlab.com/api/v4"
+    if provider == "codeberg":
+        return "https://codeberg.org/api/v1"
     raise ProviderSourceError("unsupported_provider")
 
 
 def provider_extra_paths(source, root):
     """Metadata-only API paths; no blob, archive, raw-file, or source endpoint."""
-    if source["provider"] == "github":
+    if source["provider"] in ("github", "codeberg"):
         base = "/repos/%s/%s" % (
             quote(source["owner"], safe=""), quote(source["name"], safe=""))
         default_branch = clean_text(root.get("default_branch"), 160)
-        return {
+        paths = {
             "topics": base + "/topics?per_page=100",
             "languages": base + "/languages",
             # Git's tree API returns path/type metadata, never blob contents.
@@ -246,6 +292,21 @@ def provider_extra_paths(source, root):
             "pullRequests": base + "/pulls?state=all&per_page=50",
             "releases": base + "/releases?per_page=30",
         }
+        if source["provider"] == "codeberg":
+            paths.update({
+                "topics": base + "/topics",
+                "structure": (
+                    base + "/git/trees/" + quote(default_branch, safe="")
+                    + "?recursive=true"
+                ) if default_branch else "",
+                "branches": base + "/branches?limit=100",
+                "contributors": base + "/contributors?limit=100",
+                "commits": base + "/commits?limit=30",
+                "issues": base + "/issues?state=all&limit=50&type=issues",
+                "pullRequests": base + "/pulls?state=all&limit=50",
+                "releases": base + "/releases?limit=30",
+            })
+        return paths
     project_id = root.get("id")
     if not isinstance(project_id, int) and not str(project_id or "").isdigit():
         raise ProviderRequestError("invalid_provider_response", status=502)
@@ -716,7 +777,7 @@ def build_repository_record(
     if not isinstance(root, dict):
         raise ProviderRequestError("invalid_provider_response", status=502)
     provider = source["provider"]
-    if provider == "github":
+    if provider in ("github", "codeberg"):
         external_id = str(root.get("id") or "")
         full_name = clean_text(root.get("full_name"), 300) or source["fullName"]
         original_url = clean_text(root.get("html_url"), 500) or source["canonicalUrl"]
@@ -798,20 +859,28 @@ def build_repository_record(
         "providerRateLimit": provider_rate or {},
         "metadataIncomplete": list(incomplete or []),
         "attribution": {
-            "provider": "GitHub" if provider == "github" else "GitLab",
+            "provider": {
+                "github": "GitHub",
+                "gitlab": "GitLab",
+                "codeberg": "Codeberg",
+            }[provider],
             "originalRepository": original_url,
             "api": provider_api_origin(provider),
             "termsUrl": (
                 "https://docs.github.com/en/site-policy/github-terms/"
                 "github-terms-of-service"
                 if provider == "github"
-                else "https://about.gitlab.com/terms/"),
+                else "https://about.gitlab.com/terms/"
+                if provider == "gitlab"
+                else "https://codeberg.org/Codeberg/org/src/branch/main/TermsOfUse.md"),
             "rateLimitPolicy": (
                 "https://docs.github.com/rest/using-the-rest-api/"
                 "rate-limits-for-the-rest-api"
                 if provider == "github"
                 else "https://docs.gitlab.com/administration/"
-                "settings/user_and_ip_rate_limits/"),
+                "settings/user_and_ip_rate_limits/"
+                if provider == "gitlab"
+                else "https://docs.codeberg.org/getting-started/faq/"),
         },
         "ownershipNotice": (
             "External repository metadata. ForkMesh does not own or control "
@@ -1209,6 +1278,31 @@ class RepositoryImportService:
         name = clean_text(record.get("name"), 100).lower()
         return name, record
 
+    async def _target_owner(self, env, actor, requested=""):
+        target = clean_text(requested, 100).lower() or actor
+        resolver = self.d.get("target_owner")
+        if callable(resolver):
+            resolved = await resolver(env, actor, target)
+            return resolved if isinstance(resolved, dict) else None
+        if target != actor:
+            return None
+        return {
+            "name": actor,
+            "kind": "user",
+            "ownerBi": await self.d["blind_index"](env, actor),
+        }
+
+    async def _can_manage_owner(self, env, actor, owner_bi):
+        if not actor or not owner_bi:
+            return False
+        if owner_bi == await self.d["blind_index"](env, actor):
+            return True
+        checker = self.d.get("can_manage_owner")
+        return bool(
+            callable(checker)
+            and await checker(env, actor, owner_bi)
+        )
+
     async def _load(self, env, import_id, actor="", hide_private=True):
         if not valid_import_id(import_id):
             return None, None
@@ -1426,10 +1520,13 @@ class RepositoryImportService:
     async def _list(self, env, request):
         actor, _ = await self._actor(env, request)
         actor_bi = await self.d["blind_index"](env, actor) if actor else ""
+        params = parse_qs(
+            urlparse(str(getattr(request, "url", "") or "")).query)
+        digest_only = params.get("view", [""])[0] == "digest"
         if actor:
             rows = await self.d["d1_all"](
                 env,
-                "SELECT id, owner_bi, is_private, status, data FROM "
+                "SELECT id, owner_bi, is_private, status, data, updated_at FROM "
                 "repository_imports WHERE is_private=0 OR owner_bi=? "
                 "ORDER BY updated_at DESC LIMIT ?",
                 actor_bi, MAX_PUBLIC_IMPORTS,
@@ -1437,10 +1534,32 @@ class RepositoryImportService:
         else:
             rows = await self.d["d1_all"](
                 env,
-                "SELECT id, owner_bi, is_private, status, data FROM "
+                "SELECT id, owner_bi, is_private, status, data, updated_at FROM "
                 "repository_imports WHERE is_private=0 "
                 "ORDER BY updated_at DESC LIMIT ?",
                 MAX_PUBLIC_IMPORTS,
+            )
+        # Pollers only need a change token. Avoid decrypting and serializing up
+        # to 200 rich provider snapshots (hundreds of KiB) every few seconds
+        # merely to discover that nothing changed. Private rows are still
+        # selected only for their authenticated owner by the queries above.
+        if digest_only:
+            return self._json(
+                {
+                    "ok": True,
+                    "repositories": [
+                        {
+                            "id": str(row.get("id") or ""),
+                            "status": str(row.get("status") or ""),
+                            "updatedAt": int(row.get("updated_at") or 0),
+                        }
+                        for row in rows or []
+                        if str(row.get("id") or "")
+                    ],
+                },
+                cache_control=(
+                    "no-store, max-age=0, must-revalidate"
+                    if actor else "public, max-age=30"),
             )
         records = []
         for row in rows or []:
@@ -1453,10 +1572,15 @@ class RepositoryImportService:
             records.append(record)
         logos = await self._official_logos(
             env, [record.get("id", "") for record in records])
-        items = [
-            public_repository_record(record, logos.get(record.get("id", "")))
-            for record in records
-        ]
+        items = []
+        rows_by_id = {str(row.get("id") or ""): row for row in rows or []}
+        for record in records:
+            item = public_repository_record(
+                record, logos.get(record.get("id", "")))
+            row = rows_by_id.get(str(record.get("id") or "")) or {}
+            item["canManage"] = await self._can_manage_owner(
+                env, actor, str(row.get("owner_bi") or ""))
+            items.append(item)
         return self._json(
             {
                 "ok": True,
@@ -1484,6 +1608,10 @@ class RepositoryImportService:
         actor, _ = await self._actor(env, request, data)
         if not actor:
             return self._json({"error": "invalid_session"}, status=401)
+        target_owner = await self._target_owner(
+            env, actor, data.get("targetOwner"))
+        if not target_owner:
+            return self._json({"error": "target_owner_forbidden"}, status=403)
         try:
             source = parse_provider_source(data.get("sourceUrl"))
             token = clean_provider_token(data.get("providerToken"))
@@ -1496,6 +1624,12 @@ class RepositoryImportService:
                 source, root, extras, actor, mode, self.d["now_ms"](),
                 token_present=bool(token), provider_rate=rate,
                 incomplete=incomplete)
+            record["targetOwner"] = clean_text(
+                target_owner.get("name"), 100).lower()
+            record["targetOwnerType"] = (
+                "organization"
+                if target_owner.get("kind") == "organization"
+                else "user")
             provider_invitation_candidates = (
                 provider_public_invitation_candidates(
                     record.get("provider"), extras)
@@ -1508,7 +1642,9 @@ class RepositoryImportService:
                 kwargs["extra_headers"] = {"Retry-After": exc.retry_after}
             return self._json(
                 {"error": exc.code}, status=exc.status, **kwargs)
-        owner_bi = await self.d["blind_index"](env, actor)
+        owner_bi = str(target_owner.get("ownerBi") or "")
+        if not owner_bi:
+            return self._json({"error": "target_owner_forbidden"}, status=403)
         existing_row = await self.d["d1_first"](
             env,
             "SELECT id, owner_bi, is_private, status, data, created_at, "
@@ -1570,6 +1706,107 @@ class RepositoryImportService:
             "repository": await self._render(env, record),
             "credentialStored": False,
         }, status=201 if not existing_row else 200)
+
+    async def _discover(self, env, request):
+        try:
+            data = await request.json()
+        except Exception:
+            return self._json({"error": "invalid_json"}, status=400)
+        actor, _ = await self._actor(env, request, data)
+        if not actor:
+            return self._json({"error": "invalid_session"}, status=401)
+        try:
+            namespace = parse_codeberg_namespace(data.get("sourceUrl"))
+            token = clean_provider_token(data.get("providerToken"))
+        except ProviderSourceError as exc:
+            return self._json({"error": str(exc)}, status=400)
+        urls = []
+        seen = set()
+        incomplete = False
+        for page in range(1, 5):
+            result = await self.d["provider_fetch"](
+                env, "codeberg",
+                "/users/%s/repos?limit=50&page=%d"
+                % (quote(namespace, safe=""), page),
+                token,
+            )
+            status = int((result or {}).get("status") or 0)
+            if status != 200:
+                if not urls:
+                    return self._json(
+                        {"error": "provider_request_failed"},
+                        status=502 if status >= 500 or status <= 0 else status,
+                    )
+                incomplete = True
+                break
+            rows = (result or {}).get("data")
+            if not isinstance(rows, list):
+                return self._json(
+                    {"error": "invalid_provider_response"}, status=502)
+            for row in rows:
+                if not isinstance(row, dict) or row.get("private"):
+                    continue
+                candidate = row.get("html_url") or row.get("clone_url")
+                try:
+                    source = parse_provider_source(candidate)
+                except ProviderSourceError:
+                    continue
+                if (
+                        source["provider"] != "codeberg"
+                        or source["owner"].casefold() != namespace.casefold()
+                        or source["canonicalUrl"] in seen):
+                    continue
+                seen.add(source["canonicalUrl"])
+                urls.append(source["canonicalUrl"])
+                if len(urls) >= MAX_NAMESPACE_REPOSITORIES:
+                    incomplete = True
+                    break
+            if len(urls) >= MAX_NAMESPACE_REPOSITORIES or len(rows) < 50:
+                break
+        return self._json({
+            "ok": True,
+            "provider": "codeberg",
+            "namespace": namespace,
+            "repositories": urls,
+            "count": len(urls),
+            "incomplete": incomplete,
+        }, cache_control="no-store, max-age=0, must-revalidate")
+
+    async def _delete(self, env, request, import_id):
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        actor, _ = await self._actor(env, request, data)
+        if not actor:
+            return self._json({"error": "invalid_session"}, status=401)
+        row = await self.d["d1_first"](
+            env,
+            "SELECT id, owner_bi, is_private, status, data, created_at, "
+            "updated_at FROM repository_imports WHERE id=?",
+            import_id,
+        )
+        if not row:
+            return self._json({"error": "not_found"}, status=404)
+        if not await self._can_manage_owner(
+                env, actor, str(row.get("owner_bi") or "")):
+            return self._json({"error": "forbidden"}, status=403)
+        # Remove repository-scoped presentation/workflow rows first. Abuse
+        # reports remain as moderation evidence and contain no source token.
+        for sql in (
+                "DELETE FROM repository_mirror_volunteers WHERE repo_id=?",
+                "DELETE FROM contributor_invitation_provenance WHERE repo_id=?",
+                "DELETE FROM contributor_invitations WHERE repo_id=?",
+                "DELETE FROM contributor_invitation_rate WHERE repo_id=?",
+                "DELETE FROM repository_logo_suggestions WHERE repo_id=?"):
+            await self.d["d1_run"](env, sql, import_id)
+        await self.d["d1_run"](
+            env, "DELETE FROM repository_imports WHERE id=?", import_id)
+        await self._audit(
+            env, actor, "repository_import.delete", import_id, "success",
+            {"externalRepository": True})
+        return self._json({
+            "ok": True, "id": import_id, "deleted": True})
 
     async def _get(self, env, request, import_id):
         actor, _ = await self._actor(env, request)
@@ -2505,6 +2742,10 @@ class RepositoryImportService:
             if method == "POST":
                 return await self._create(env, request)
             return self._json({"error": "method_not_allowed"}, status=405)
+        if normalized == prefix + "/discover":
+            if method == "POST":
+                return await self._discover(env, request)
+            return self._json({"error": "method_not_allowed"}, status=405)
         if not normalized.startswith(prefix + "/"):
             return self._json({"error": "not_found"}, status=404)
         parts = normalized[len(prefix) + 1:].split("/")
@@ -2516,6 +2757,8 @@ class RepositoryImportService:
                 return await self._get(env, request, import_id)
             if method == "PATCH":
                 return await self._patch(env, request, import_id)
+            if method == "DELETE":
+                return await self._delete(env, request, import_id)
             return self._json({"error": "method_not_allowed"}, status=405)
         if len(parts) == 2 and parts[1] == "mirror-volunteers":
             return await self._volunteers(env, request, import_id)

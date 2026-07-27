@@ -230,7 +230,47 @@ def test_repository_social_version_tracks_refs_then_commit_without_build_rev():
     assert "_build_rev" not in page_source
 
 
-def test_alias_ssh_url_checks_backing_allowlist_but_publishes_org_path():
+def test_org_alias_remote_clone_is_still_an_official_social_actor():
+    """The org link, not the backing mirror's source tag, owns the actor."""
+
+    async def blind_index(_env, value):
+        return {
+            "org:forkmesh": "org-bi",
+            "mirror2/forkmesh": "repo-bi",
+        }[value]
+
+    async def d1_first(_env, sql, *params):
+        if "FROM org_repos" in sql:
+            assert params == ("org-bi", "forkmesh")
+            return {"node_owner": "mirror2"}
+        assert "FROM repositories" in sql
+        assert params == ("repo-bi",)
+        return {"data": "encrypted"}
+
+    async def decrypt_row(_env, value):
+        assert value == "encrypted"
+        return {
+            "owner": "mirror2",
+            "name": "forkmesh",
+            "source": "remote-clone",
+        }
+
+    official = _load_function("_ap_repo_is_official_actor", {
+        "blind_index": blind_index,
+        "d1_first": d1_first,
+        "decrypt_row": decrypt_row,
+        "valid_node_name": lambda value: bool(value),
+        "_catalog_record_matches_identity": (
+            lambda rec, owner, repo:
+            rec.get("owner") == owner and rec.get("name") == repo
+        ),
+    })
+
+    assert _run(official(
+        None, "forkmesh", "forkmesh")) is True
+
+
+def test_alias_ssh_url_checks_public_alias_allowlist_and_publishes_org_path():
     functions = {}
     for name in (
         "_ssh_gateway_settings",
@@ -244,14 +284,15 @@ def test_alias_ssh_url_checks_backing_allowlist_but_publishes_org_path():
         SSH_GATEWAY_HOST="ssh.forkmesh.com",
         SSH_GATEWAY_PORT="22",
         SSH_GATEWAY_TOKEN="t" * 32,
-        SSH_GATEWAY_REPOSITORIES="mirror2/forkmesh=read-write",
+        SSH_GATEWAY_REPOSITORIES="forkmesh/forkmesh=read-only",
+        SSH_GATEWAY_NODE_HOSTS="forkmesh=ssh-mirror2.forkmesh.com",
     )
     assert functions["_ssh_alias_repository_url"](
         env, "forkmesh", "mirror2", "forkmesh",
-    ) == "ssh://git@ssh.forkmesh.com/forkmesh/forkmesh.git"
+    ) == "ssh://git@ssh-mirror2.forkmesh.com/forkmesh/forkmesh.git"
     assert functions["_ssh_alias_repository_url"](
         env, "forkmesh", "mirror3", "forkmesh",
-    ) == ""
+    ) == "ssh://git@ssh-mirror2.forkmesh.com/forkmesh/forkmesh.git"
 
     org_handler = ast.get_source_segment(
         ENTRY_TEXT,
@@ -526,3 +567,13 @@ def test_alias_html_stays_out_of_internal_path_rewrite():
     assert "REPO_API_PREFIX_RE.match" in rewrite
     assert not re.search(
         r"(?:REPO_PAGE|DASHBOARD_REPO).*\\.match", rewrite)
+
+
+def test_alias_stars_remain_scoped_to_public_repository_identity():
+    handler = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def repo_star_handler"):
+        ENTRY_TEXT.index("\n\nasync def fedi_comments_handler")
+    ]
+    assert "REPO_STAR_RE.match" in handler
+    assert "await _org_repo_node(" in handler
+    assert 'blind_index(env, public_owner + "/" + repo)' in handler

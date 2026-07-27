@@ -7,6 +7,7 @@ import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -69,6 +70,9 @@ def make_bare_repository(tmp_path):
         encoding="utf-8",
     )
     (source / "image.bin").write_bytes(b"\x00\x01\x02")
+    (source / "logo.png").write_bytes(
+        b"\x89PNG\r\n\x1a\n" + b"repository-owned-logo"
+    )
     run(["git", "add", "."], source)
     run(["git", "commit", "-m", "Initial files"], source)
     (source / "src" / "main.py").write_text(
@@ -96,6 +100,24 @@ def make_bare_repository(tmp_path):
     run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], bare)
     commit = run(["git", "rev-parse", "HEAD"], source)
     return bare, commit
+
+
+def test_runtime_cleanup_removes_only_gateway_materializations(tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    stale_one = runtime / "forkmesh-mirror-runtime-a1_b2"
+    stale_two = runtime / "forkmesh-mirror-runtime-z9"
+    unrelated = runtime / "operator-data"
+    stale_one.mkdir()
+    stale_two.mkdir()
+    unrelated.mkdir()
+    (stale_one / "pack").write_bytes(b"stale")
+    (unrelated / "keep").write_bytes(b"owned elsewhere")
+
+    assert gateway.cleanup_stale_runtime(runtime) == 2
+    assert not stale_one.exists()
+    assert not stale_two.exists()
+    assert (unrelated / "keep").read_bytes() == b"owned elsewhere"
 
 
 def signed_manifest(origin="https://mirror.example.test", node="mirror-a"):
@@ -368,6 +390,39 @@ def test_config_requires_loopback_public_integrity_and_no_secret_fields(tmp_path
         gateway.GatewayError, match="age-encrypted-tar-v1"
     ):
         gateway.load_config(ambiguous_path)
+
+
+def test_config_allows_read_only_git_dir_only_in_hosted_import_root(
+    tmp_path, monkeypatch
+):
+    hosted_root = tmp_path / "imports"
+    node_root = hosted_root / "mirror-a"
+    node_root.mkdir(parents=True)
+    bare, _commit = make_bare_repository(node_root)
+    repository = node_root / "project.git"
+    bare.rename(repository)
+    monkeypatch.setattr(gateway, "HOSTED_PUBLIC_GIT_ROOT", hosted_root)
+    config = gateway.load_config(
+        write_config(
+            tmp_path,
+            repository,
+            repositories=[
+                {
+                    "owner": "mirror-a",
+                    "name": "project",
+                    "visibility": "public",
+                    "enabled": True,
+                    "gitDir": str(repository),
+                    "integrity": {
+                        "expectedRefsSha256": gateway.refs_sha256(repository),
+                    },
+                    "operations": ["git-info-refs", "git-upload-pack", "sizes"],
+                }
+            ],
+        )
+    )
+    assert config.repositories[0].git_dir == repository
+    assert config.repositories[0].encrypted_archive is None
 
 
 def test_identical_alias_archives_materialize_once_with_distinct_configs(
@@ -740,6 +795,42 @@ def test_tree_blob_history_commit_branches_search_stats_and_sizes(application):
         payload = decode_json(response)
         assert payload["ok"] is True
         assert field in payload
+    tree = decode_json(
+        dispatch(
+            app,
+            "tree",
+            {},
+            request_id="tree_exact_commit_time",
+        )
+    )
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}",
+        tree["latestCommit"]["date"],
+    )
+    assert all(
+        re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}",
+            commit["date"],
+        )
+        for commit in decode_json(
+            dispatch(
+                app,
+                "history",
+                {},
+                request_id="history_exact_commit_times",
+            )
+        )["commits"]
+    )
+    raw = dispatch(
+        app,
+        "raw",
+        {"path": "logo.png"},
+        request_id="raw_repository_logo",
+    )
+    assert raw.status == 200
+    assert raw.content_type == "image/png"
+    assert raw.stream is not None
+    assert raw.stream.content_type == "image/png"
     blob = decode_json(
         dispatch(
             app,

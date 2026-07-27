@@ -134,7 +134,7 @@ def repo_clone_online(rec, served_groups):
 
 def build_repo_mirrors_payload(
     owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms,
-    history=None, linked_canonical=False,
+    history=None, linked_canonical=False, reachable_nodes=None,
 ):
     def clone_target(rec):
         raw = str((rec or {}).get("cloneUrl") or "").strip()
@@ -305,11 +305,34 @@ def build_repo_mirrors_payload(
     mirrors = []
     for row in members:
         rec = row["data"]
+        node_name = (
+            str(rec.get("machineName") or "").strip()
+            or str(rec.get("owner") or "").strip()
+        )
         key = row.get("key_bi")
         seen = _mirror_ms((presence or {}).get(key))
-        online = bool(seen and now - seen <= stale_ms)
         hosted = _mirror_ms(rec.get("hostedSince")) or _mirror_ms((first_hosted or {}).get(key))
         last_sync = _mirror_ms(rec.get("lastSync"))
+        # Public byte serving no longer keeps the legacy host WebSocket open.
+        # A source-of-truth desktop still signs and publishes its local-node
+        # catalog while it is alive, so that fresh publication is its bounded
+        # liveness lease. Remote clones keep using independently challenged
+        # endpoint presence and cannot self-declare online this way.
+        local_publication_seen = (
+            last_sync
+            if str(rec.get("source") or "local-node") == "local-node"
+            else None
+        )
+        effective_seen = seen or local_publication_seen
+        effective_stale_ms = (
+            max(stale_ms, 10 * 60 * 1000)
+            if local_publication_seen and not seen
+            else stale_ms
+        )
+        online = bool(
+            effective_seen and now - effective_seen <= effective_stale_ms)
+        if reachable_nodes is not None:
+            online = online and node_name.lower() in reachable_nodes
         try:
             size_bytes = max(0, int(rec.get("sizeBytes") or 0))
         except (TypeError, ValueError):
@@ -380,24 +403,57 @@ def build_repo_mirrors_payload(
             integrity = "healing"
         else:
             integrity = "rejected"
+        if not online:
+            activity = "offline"
+        elif actions_state == "running":
+            activity = "running-actions"
+        elif behind:
+            # The node is live but its last signed publication is not the
+            # freshest exact refs state. This is a truthful, Worker-observable
+            # "sync pending/in progress" signal without guessing which local
+            # process is currently consuming CPU.
+            activity = "syncing"
+        elif integrity == "healing":
+            activity = "verifying"
+        elif integrity == "rejected":
+            activity = "integrity-blocked"
+        elif integrity == "unknown":
+            activity = "awaiting-verification"
+        else:
+            activity = "serving"
+        serving = online and integrity == "ok"
         mirrors.append({
-            "node": str(rec.get("owner") or "").strip(),
+            # A node is a machine, not the user/account that owns its catalog
+            # row. Older publishers did not advertise machineName, so retain
+            # owner only as a compatibility fallback.
+            "node": node_name,
             "owner": str(rec.get("owner") or "").strip(),
             "ownerUser": str(rec.get("ownerUser") or "").strip(),
+            # The publishing machine's advertised node name (may differ from
+            # the owning account); display-only, never an identity key.
+            "machineName": str(rec.get("machineName") or "").strip(),
             "repo": str(rec.get("name") or "").strip(),
-            "status": "online" if online else "offline",
-            "lastSeen": seen if online else None,
+            "status": "online" if serving else "offline",
+            "lastSeen": effective_seen if online else None,
             "hostedSince": hosted,
             "syncAgeMs": max(0, now - last_sync) if last_sync else None,
             "lastSync": last_sync,
             "behind": behind,
-            "cloneAvailable": online,
+            "cloneAvailable": serving,
             "sizeBytes": size_bytes,
             "source": str(rec.get("source") or "").strip(),
             # Node facts the publishing node mirrored into its catalog record, so the
             # Mirror nodes view fills these columns even for an offline node (adhoc #56).
             "commit": str(rec.get("commit") or "").strip(),
             "branch": str(rec.get("branch") or "").strip(),
+            # What that commit says and who wrote it, mirrored from the node's
+            # signed record, so a hash alone isn't all a viewer gets. Optional
+            # catalog-v2 extensions: None when the node never published them.
+            "lastCommitMessage": (
+                str(rec.get("commitSubject") or "").strip() or None),
+            "lastCommitAuthorName": (
+                str(rec.get("commitAuthorName") or "").strip() or None),
+            "lastCommitAt": _mirror_ms(rec.get("commitAt")),
             "issueCount": issue_count,
             "commitCount": _int_field(rec, "commitCount"),
             "branchCount": _int_field(rec, "branchCount"),
@@ -424,6 +480,8 @@ def build_repo_mirrors_payload(
             "diskUsedBytes": disk_used,
             "diskTotalBytes": disk_total,
             "integrity": integrity,
+            "activity": activity,
+            "activityUpdatedAt": effective_seen or last_sync,
         })
 
     mirrors.sort(

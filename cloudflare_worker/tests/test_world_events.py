@@ -124,6 +124,18 @@ class FakeRuntime:
         self.db.commit()
 
 
+class CachedFakeRuntime(FakeRuntime):
+    def __init__(self):
+        super().__init__()
+        self.env = object()
+        self.list_reads = 0
+
+    async def d1_all(self, sql, *args):
+        if "FROM world_events" in sql:
+            self.list_reads += 1
+        return await super().d1_all(sql, *args)
+
+
 def test_event_policy_requires_explicit_utc_and_bounded_future_window():
     normalized, error = policy.normalize_event(event_record(), NOW)
     assert error == ""
@@ -227,6 +239,30 @@ async def test_expired_events_are_filtered_even_before_retention_cleanup():
     assert runtime.db.execute(
         "SELECT COUNT(*) FROM world_events"
     ).fetchone()[0] == 0
+
+
+@run_async_test
+async def test_public_event_bursts_share_one_read_and_mutations_invalidate_cache():
+    runtime = CachedFakeRuntime()
+    first = await api.handle(runtime.use("GET"), "/api/world/events")
+    second = await api.handle(
+        runtime.use("GET", now=NOW + 5_000),
+        "/api/world/events",
+    )
+    assert first["data"] == second["data"]
+    assert runtime.list_reads == 1
+
+    created = await api.handle(
+        runtime.use("POST", "admin", event_record(), now=NOW + 5_000),
+        "/api/world/events",
+    )
+    refreshed = await api.handle(
+        runtime.use("GET", now=NOW + 6_000),
+        "/api/world/events",
+    )
+    assert refreshed["data"]["events"][0]["id"] == (
+        created["data"]["event"]["id"])
+    assert runtime.list_reads == 2
 
 
 def test_event_schema_route_and_client_use_live_d1_records():

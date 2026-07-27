@@ -955,20 +955,6 @@ bool MainWindow::testShowRepoIssuesTab()
     return m_repoDetailStack->currentIndex() == 2;
 }
 
-void MainWindow::testShowPublishBar(bool on)
-{
-    if (m_repoPushButton) {
-        if (on) {
-            m_repoPushButton->setText(QStringLiteral("Sync"));
-            m_repoPushButton->setEnabled(true);
-            positionRepoPushButton(); // floats it above the Code tab
-        }
-        m_repoPushButton->setVisible(on);
-    }
-    if (m_repoPublishBar)
-        m_repoPublishBar->setVisible(on);
-}
-
 int MainWindow::testRepoTabContentTop()
 {
     return m_repoDetailStack ? m_repoDetailStack->mapTo(this, QPoint(0, 0)).y() : -1;
@@ -991,30 +977,35 @@ int MainWindow::testRepoTabGapAroundIssues() const
                 pullsRect.left() - issuesRect.right() - 1);
 }
 
-int MainWindow::testIssueLooperGapAboveIssuesTab() const
+// Adhoc #354: the looper toggle moved inline into the Issues heading row,
+// right after "New issue". These test helpers check it landed there instead
+// of the old floating-above-the-tab position.
+int MainWindow::testIssueLooperGapFromNewIssueButton() const
 {
-    if (!m_looperToggle || !m_repoIssuesTab || !m_looperToggle->isVisible())
+    if (!m_looperToggle || !m_issueListNewButton ||
+        !m_looperToggle->isVisible())
         return -100000;
     const QRect looperRect(m_looperToggle->mapTo(const_cast<MainWindow *>(this),
                                                  QPoint(0, 0)),
                            m_looperToggle->size());
-    const QRect issuesRect(m_repoIssuesTab->mapTo(const_cast<MainWindow *>(this),
-                                                  QPoint(0, 0)),
-                           m_repoIssuesTab->size());
-    return issuesRect.top() - looperRect.bottom() - 1;
+    const QRect newIssueRect(
+        m_issueListNewButton->mapTo(const_cast<MainWindow *>(this), QPoint(0, 0)),
+        m_issueListNewButton->size());
+    return looperRect.left() - newIssueRect.right() - 1;
 }
 
-int MainWindow::testIssueLooperCenterDelta() const
+bool MainWindow::testIssueLooperRowAligned() const
 {
-    if (!m_looperToggle || !m_repoIssuesTab || !m_looperToggle->isVisible())
-        return 100000;
+    if (!m_looperToggle || !m_issueListNewButton ||
+        !m_looperToggle->isVisible())
+        return false;
     const QRect looperRect(m_looperToggle->mapTo(const_cast<MainWindow *>(this),
                                                  QPoint(0, 0)),
                            m_looperToggle->size());
-    const QRect issuesRect(m_repoIssuesTab->mapTo(const_cast<MainWindow *>(this),
-                                                  QPoint(0, 0)),
-                           m_repoIssuesTab->size());
-    return looperRect.center().x() - issuesRect.center().x();
+    const QRect newIssueRect(
+        m_issueListNewButton->mapTo(const_cast<MainWindow *>(this), QPoint(0, 0)),
+        m_issueListNewButton->size());
+    return qAbs(looperRect.center().y() - newIssueRect.center().y()) <= 8;
 }
 
 int MainWindow::testTopNavTrailingGap() const

@@ -173,6 +173,73 @@ def test_payload_groups_public_root_commit_mirrors_and_sorts_online_first():
     assert payload["mirrors"][1]["cloneAvailable"] is True
 
 
+def test_payload_keeps_machine_node_and_user_owner_as_distinct_identities():
+    now = 1_000_000
+    row = _row(
+        "a", "jett", "forkmesh", root="abc", synced="990000",
+        owner_user="jett",
+    )
+    row["data"]["machineName"] = "forkmesh"
+    payload = build_repo_mirrors_payload(
+        "jett",
+        "forkmesh",
+        [row],
+        {"a": now - 1_000},
+        {},
+        now,
+        600_000,
+        5_000,
+    )
+
+    mirror = payload["mirrors"][0]
+    assert mirror["node"] == "forkmesh"
+    assert mirror["machineName"] == "forkmesh"
+    assert mirror["owner"] == "jett"
+    assert mirror["ownerUser"] == "jett"
+
+
+def test_presence_does_not_claim_online_without_a_reachable_mirror_endpoint():
+    now = 1_000_000
+    rows = [
+        _row("a", "mirror2", "forkmesh", root="abc", synced="990000"),
+        _row("b", "mirror3", "forkmesh", root="abc", synced="990000"),
+    ]
+    payload = build_repo_mirrors_payload(
+        "mirror2",
+        "forkmesh",
+        rows,
+        {"a": now - 1_000, "b": now - 1_000},
+        {},
+        now,
+        600_000,
+        5_000,
+        reachable_nodes={"mirror2"},
+    )
+
+    mirrors = {mirror["node"]: mirror for mirror in payload["mirrors"]}
+    assert mirrors["mirror2"]["status"] == "online"
+    assert mirrors["mirror2"]["cloneAvailable"] is True
+    assert mirrors["mirror3"]["status"] == "offline"
+    assert mirrors["mirror3"]["cloneAvailable"] is False
+    assert payload["summary"]["online"] == 1
+
+
+def test_fresh_signed_local_publication_is_source_node_liveness():
+    now = 1_000_000
+    row = _row(
+        "a", "jett", "forkmesh", root="abc", synced="500000",
+        source="local-node",
+    )
+    row["data"]["machineName"] = "forkmesh"
+    payload = build_repo_mirrors_payload(
+        "jett", "forkmesh", [row], {}, {}, now, 600_000, 5_000)
+
+    source = payload["mirrors"][0]
+    assert source["node"] == "forkmesh"
+    assert source["status"] == "online"
+    assert source["lastSeen"] == 500_000
+
+
 def test_identical_signed_ref_states_are_not_behind_only_due_to_sync_time():
     now = 1_000_000
     exact_state = "a" * 64
@@ -329,6 +396,35 @@ def test_payload_carries_node_facts_for_offline_mirrors():
     assert legacy["diskTotalBytes"] is None
     assert legacy["actionsEnabled"] is False
     assert legacy["actionsState"] == "disabled"
+
+
+def test_payload_names_the_latest_commit_of_each_mirror():
+    # A node signs the subject/author/date of its head commit into its catalog
+    # record, so the Mirror nodes table and the World cabinets can say what the
+    # commit is instead of showing a bare hash (adhoc #337). A node that never
+    # published them stays truthfully unknown (None), never a blank string.
+    now = 1_000_000
+    rows = [
+        _row("a", "mainnode", "forkmesh", root="abc", synced="990000",
+             commit="686d7ebd1ef0", branch="main"),
+        _row("b", "legacy", "forkmesh", root="abc", synced="980000"),
+    ]
+    rows[0]["data"].update({
+        "commitSubject": "Show the last commit on every node",
+        "commitAuthorName": "Ada Lovelace",
+        "commitAt": "1750000000000",
+    })
+    payload = build_repo_mirrors_payload(
+        "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
+    )
+    rich = payload["mirrors"][0]
+    assert rich["lastCommitMessage"] == "Show the last commit on every node"
+    assert rich["lastCommitAuthorName"] == "Ada Lovelace"
+    assert rich["lastCommitAt"] == 1_750_000_000_000
+    legacy = payload["mirrors"][1]
+    assert legacy["lastCommitMessage"] is None
+    assert legacy["lastCommitAuthorName"] is None
+    assert legacy["lastCommitAt"] is None
 
 
 def test_payload_defensively_bounds_or_hides_invalid_host_telemetry():
@@ -586,9 +682,15 @@ def test_payload_groups_mirror_with_missing_root_commit_by_name():
 def test_payload_falls_back_to_repo_name_when_root_commit_is_absent():
     now = 1_000_000
     rows = [
-        _row("a", "mainnode", "forkmesh", synced="990000"),
-        _row("b", "backup", "ForkMesh", synced="980000"),
-        _row("c", "backup", "other", synced="999000"),
+        _row(
+            "a", "mainnode", "forkmesh", synced="990000",
+            source="remote-clone"),
+        _row(
+            "b", "backup", "ForkMesh", synced="980000",
+            source="remote-clone"),
+        _row(
+            "c", "backup", "other", synced="999000",
+            source="remote-clone"),
     ]
     payload = build_repo_mirrors_payload(
         "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
@@ -645,6 +747,17 @@ def _load_handler(
             return presence or []
         if "FROM repo_first_hosted" in sql:
             return first_hosted or []
+        if "FROM mirror_https_endpoints" in sql:
+            return [
+                {
+                    "node_name": (
+                        item.get("data", {}).get("machineName")
+                        or item.get("data", {}).get("owner")
+                    )
+                }
+                for item in rows
+                if item.get("data", {}).get("visibility", "public") == "public"
+            ]
         return []
 
     async def d1_first(_env, sql, *args):
@@ -670,6 +783,10 @@ def _load_handler(
     namespace = {
         "Date": _Clock,
         "HOST_PRESENCE_STALE_MS": 600_000,
+        "HTTPS_MIRROR_STATUS_FRESH_MS": 600_000,
+        "MAX_NODE_NAME": 64,
+        "valid_node_name": lambda value: bool(value),
+        "clean_string": lambda value, maximum: str(value or "")[:maximum],
         "asyncio": asyncio,
         # Fresh per-load probe memo so tests stay independent of each other.
         "_LIVE_HOST_PROBE_MEMO": {},

@@ -114,6 +114,11 @@ QJsonValue redactProviderCredentials(
     return result;
 }
 
+// Branch a row's session runs on, stashed on its Status cell so
+// AgentBranchButtonDelegate (below) can paint the row's branch button and route
+// the click without looking the session back up (adhoc #377).
+constexpr int kAgentBranchRole = Qt::UserRole + 33;
+
 // The base branch an agent session landed in, defaulting to "main" when the
 // session never recorded one (issue #291).
 QString agentMergeBase(const AgentSession &s)
@@ -150,16 +155,22 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
         cell->setIcon(themedOcticon("x", QColor("#f85149"), 14));
     else
         cell->setIcon(QIcon());
-    cell->setToolTip(
-        s.merged
-            ? QStringLiteral("Worktree/PR merged into %1%2")
-                  .arg(agentMergeBase(s),
-                       s.mergedAtMs > 0
-                           ? QStringLiteral(" on %1").arg(
-                                 QDateTime::fromMSecsSinceEpoch(s.mergedAtMs)
-                                     .toString(QStringLiteral("MMM d  hh:mm")))
-                           : QString())
-            : QString());
+    // The branch drives the cell's branch button (adhoc #377); AgentBranchButton-
+    // Delegate paints it and opens the branch on click, so a session without one
+    // simply gets no button.
+    cell->setData(kAgentBranchRole, s.branchName);
+    QStringList tip;
+    if (s.merged)
+        tip << QStringLiteral("Worktree/PR merged into %1%2")
+                   .arg(agentMergeBase(s),
+                        s.mergedAtMs > 0
+                            ? QStringLiteral(" on %1").arg(
+                                  QDateTime::fromMSecsSinceEpoch(s.mergedAtMs)
+                                      .toString(QStringLiteral("MMM d  hh:mm")))
+                            : QString());
+    if (!s.branchName.isEmpty())
+        tip << QStringLiteral("Click the branch button to open %1").arg(s.branchName);
+    cell->setToolTip(tip.join(QLatin1Char('\n')));
 }
 
 // Effective run duration for the header Time stat + the Speed figure. While a
@@ -272,6 +283,92 @@ void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
 static constexpr qint64 kScannerIdleMs = 1500;
 // Far-right "Activity" column the scanner is painted into.
 static constexpr int kAgentActivityColumn = 8;
+// "Status" column, which also carries the per-row branch button (adhoc #377).
+static constexpr int kAgentStatusColumn = 4;
+
+// Draws a small branch button at the right edge of every Status cell whose
+// session has a branch, and opens that branch when it's clicked (adhoc #377):
+// jumping to an agent's branch no longer means selecting the row and hunting for
+// the branch chip in the detail header. Subclasses the agents list's own item
+// delegate so the column keeps its green selected-row outline.
+class AgentBranchButtonDelegate : public SelectionBorderRowDelegate
+{
+public:
+    AgentBranchButtonDelegate(QAbstractItemView *view,
+                              std::function<void(const QString &)> onClick)
+        : SelectionBorderRowDelegate(view), m_onClick(std::move(onClick))
+    {
+    }
+
+    // Reserve the button's slot in the column's width so ResizeToContents never
+    // sizes the column so tight that the glyph sits on top of the status text.
+    QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
+    {
+        QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
+        if (!idx.data(kAgentBranchRole).toString().isEmpty())
+            s.rwidth() += kButtonSize + 2 * kButtonMargin;
+        return s;
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        SelectionBorderRowDelegate::paint(painter, option, index);
+        if (index.data(kAgentBranchRole).toString().isEmpty())
+            return;
+        const QRect r = buttonRect(option.rect);
+        if (r.width() <= 0)
+            return;
+        // Hovering the cell lifts the button out of the row so it reads as
+        // clickable; at rest it's a quiet chip like the detail header's chips.
+        const bool hot = option.state & QStyle::State_MouseOver;
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(hot ? "#30363d" : "#21262d"));
+        painter->drawRoundedRect(r, 4, 4);
+        painter->restore();
+        // Centre the glyph at its native size rather than letting QIcon::paint
+        // upscale the 12px pixmap to fill the chip.
+        QRect glyph(0, 0, kGlyphSize, kGlyphSize);
+        glyph.moveCenter(r.center());
+        themedOcticon("git-branch", QColor(hot ? "#c9d1d9" : "#8b949e"), kGlyphSize)
+            .paint(painter, glyph);
+    }
+
+    // Clicks land here before the view starts an edit, so a press+release inside
+    // the button opens the branch and is swallowed (the row still selects on the
+    // press, which is what clicking a row does anyway).
+    bool editorEvent(QEvent *event, QAbstractItemModel *model,
+                     const QStyleOptionViewItem &option,
+                     const QModelIndex &index) override
+    {
+        if (event->type() == QEvent::MouseButtonRelease && m_onClick) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            const QString branch = index.data(kAgentBranchRole).toString();
+            if (!branch.isEmpty() && me->button() == Qt::LeftButton &&
+                buttonRect(option.rect).contains(me->pos())) {
+                m_onClick(branch);
+                return true;
+            }
+        }
+        return SelectionBorderRowDelegate::editorEvent(event, model, option, index);
+    }
+
+private:
+    static constexpr int kButtonSize = 18;
+    static constexpr int kButtonMargin = 4;
+    static constexpr int kGlyphSize = 12;
+
+    static QRect buttonRect(const QRect &cell)
+    {
+        const int size = qMin(kButtonSize, cell.height() - 2);
+        return QRect(cell.right() - kButtonMargin - size,
+                     cell.center().y() - size / 2 + 1, size, size);
+    }
+
+    std::function<void(const QString &)> m_onClick;
+};
 
 // Paints a session's Larson-scanner light from MainWindow's per-session state,
 // looked up by the sessionId stored in the cell's Qt::UserRole. Reading from a
@@ -572,6 +669,12 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTable->setColumnWidth(kAgentActivityColumn, 104);
     m_agentTable->setItemDelegateForColumn(
         kAgentActivityColumn, new AgentScannerDelegate(&m_scannerStates, m_agentTable));
+    // Branch button on every Status cell (adhoc #377): one click from the list
+    // straight to that session's branch in the Branches panel.
+    m_agentTable->setItemDelegateForColumn(
+        kAgentStatusColumn,
+        new AgentBranchButtonDelegate(
+            m_agentTable, [this](const QString &branch) { switchToBranch(branch); }));
     // ~22fps timer that advances + repaints the active scanner lights. It is
     // started on demand by noteAgentActivity and self-stops once all lights idle.
     m_scannerTimer = new QTimer(this);
@@ -1345,19 +1448,16 @@ QWidget *MainWindow::buildAgentsTab()
     return page;
 }
 
-// Steer the currently-selected agent session (m_selectedAgentSessionId) with a
-// follow-up message. Shared by the agent detail page's "Send" composer and the
-// footer quick-add's up-arrow ("send to the visible agent") button.
-void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
+// The composer's model dropdown is the user's live choice for what runs
+// next; without this the session kept coasting on whatever model it
+// happened to launch with, so switching the dropdown before following up
+// on an idle/stopped agent silently did nothing. Only a restart (the
+// no-live-process branch in sendPromptToAgentSession below) actually picks
+// the new model up — a still-running process can't be retargeted mid-turn
+// — but stashing it on the session now means the very next resume honors it.
+void MainWindow::applyComposerSelectionToAgentSession(int sessionId)
 {
-    // The composer's model dropdown is the user's live choice for what runs
-    // next; without this the session kept coasting on whatever model it
-    // happened to launch with, so switching the dropdown before following up
-    // on an idle/stopped agent silently did nothing. Only a restart (the
-    // no-live-process branch in sendPromptToAgentSession below) actually picks
-    // the new model up — a still-running process can't be retargeted mid-turn
-    // — but stashing it on the session now means the very next resume honors it.
-    if (AgentSession *session = findAgentSession(m_selectedAgentSessionId);
+    if (AgentSession *session = findAgentSession(sessionId);
         session && (session->provider == QLatin1String("claude-code") ||
                     agentIsCodexProvider(session->provider))) {
         bool changed = false;
@@ -1401,6 +1501,14 @@ void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
         if (changed && m_agentStore)
             m_agentStore->saveSession(*session);
     }
+}
+
+// Steer the currently-selected agent session (m_selectedAgentSessionId) with a
+// follow-up message. Shared by the agent detail page's "Send" composer and the
+// footer quick-add's up-arrow ("send to the visible agent") button.
+void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
+{
+    applyComposerSelectionToAgentSession(m_selectedAgentSessionId);
     sendPromptToAgentSession(m_selectedAgentSessionId, prompt);
 }
 
@@ -4964,12 +5072,12 @@ void MainWindow::looperOnSessionFinished(int sessionId)
 
 void MainWindow::updateIssueLooperButton()
 {
-    // Drive the floating toggle above the Issues tab (adhoc #130): on/off state,
-    // the issue currently being worked, and a neon loop that animates while on.
+    // Drive the inline toggle in the Issues heading row (adhoc #130/#354):
+    // on/off state, the issue currently being worked, and a neon loop that
+    // animates while on.
     if (auto *toggle = static_cast<LooperToggle *>(m_looperToggle)) {
         toggle->setActive(m_looperActive);
         toggle->setIssueNumber(m_looperActive ? m_looperCurrentIssue : 0);
-        positionLooperToggle(); // anchor + reveal over the Issues tab
     }
     persistLooperState();
 }
@@ -5292,8 +5400,30 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
     // can hand the number back out (nextId() reuses the highest deleted id), or the
     // reused id would inherit this dead session's cached transcript/resume state.
     purgeSessionState(snapshot.id);
-    if (m_selectedAgentSessionId == sessionId)
-        m_selectedAgentSessionId = -1;
+    if (m_selectedAgentSessionId == sessionId) {
+        // Land on the row that was just above the deleted one (issue #353) instead
+        // of letting refreshAgentTable's "not found" fallback jump to the top of
+        // the list. Falls back to the row below when the deleted row was first.
+        int neighborId = -1;
+        if (m_agentTable) {
+            int row = -1;
+            for (int r = 0; r < m_agentTable->rowCount(); ++r) {
+                QTableWidgetItem *it = m_agentTable->item(r, 0);
+                if (it && it->data(Qt::UserRole).toInt() == sessionId) {
+                    row = r;
+                    break;
+                }
+            }
+            if (row > 0) {
+                if (QTableWidgetItem *it = m_agentTable->item(row - 1, 0))
+                    neighborId = it->data(Qt::UserRole).toInt();
+            } else if (row == 0 && m_agentTable->rowCount() > 1) {
+                if (QTableWidgetItem *it = m_agentTable->item(row + 1, 0))
+                    neighborId = it->data(Qt::UserRole).toInt();
+            }
+        }
+        m_selectedAgentSessionId = neighborId;
+    }
     return true;
 }
 

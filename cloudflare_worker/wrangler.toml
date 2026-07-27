@@ -1,7 +1,10 @@
 name = "forkmesh-relay"
 main = "src/entry.py"
 compatibility_flags = [ "python_workers", "disable_python_external_sdk" ]
-compatibility_date = "2026-06-14"
+# Keep the Python/Pyodide runtime on Cloudflare's current snapshot. The older
+# 2026-06-14 snapshot could re-enter one scheduled wrapper task while another
+# request wrapper was executing ("Cannot enter into task ...").
+compatibility_date = "2026-07-23"
 
 # Runs automatically before every deploy: applies the D1 schema (idempotent).
 [build]
@@ -38,11 +41,19 @@ run_worker_first = [
   "!/dashboard/profile/repositories",
   "/index.html",
   "/blog.html",
+  # The blog's RSS feed is built from blog.html at request time, so the
+  # Worker must own it before the assets router treats rss.xml as a post
+  # slug. /rss.xml is the root-level alias (and the _redirects safety net).
+  "/blog/rss.xml",
+  "/blog/feed.xml",
+  "/rss.xml",
+  "/feed.xml",
   "/login.html",
   "/signup.html",
   "/forgot-password.html",
   "/reset-password.html",
   "/mirror-payouts.html",
+  "/referrals.html",
   "/outreach.html",
   "/security-report.html",
   "/docs.html",
@@ -140,8 +151,9 @@ FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 # served at https://<host>/<ADMIN_PATH>, gated by a forkmesh login whose account
 # carries the is_admin flag (no static HTTP Basic credentials).
 
-# Durable Objects are used only for transient encrypted chat/world presence.
-# Repository content and control traffic use normal HTTPS.
+# Durable Objects are used only for transient state: encrypted chat/world
+# presence plus the per-owner node event channel (payload-free "something
+# changed" frames). Repository content and control traffic use normal HTTPS.
 #
 # ForkBot uses Cloudflare Workers AI when available to turn a chat mention into
 # a crisp issue title/body. The Worker falls back to deterministic parsing when
@@ -160,6 +172,14 @@ class_name = "ForkMeshWorld"
 [[durable_objects.bindings]]
 name = "FORKMESH_OFFICE_ROOM"
 class_name = "ForkMeshOfficeRoom"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_NODES"
+class_name = "ForkMeshNodes"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_CRON_WATCHDOG"
+class_name = "ForkMeshCronWatchdog"
 
 # Persistent storage: repo catalog, accounts, and the issue/pull inboxes.
 # Create once with:  uvx --from workers-py pywrangler d1 create forkmesh
@@ -198,6 +218,14 @@ class_name = "ForkMeshWorld"
 [[env.dev.durable_objects.bindings]]
 name = "FORKMESH_OFFICE_ROOM"
 class_name = "ForkMeshOfficeRoom"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_NODES"
+class_name = "ForkMeshNodes"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_CRON_WATCHDOG"
+class_name = "ForkMeshCronWatchdog"
 
 [[migrations]]
 tag = "v1"
@@ -255,19 +283,33 @@ tag = "v11"
 # every bound Durable Object class to be registered through a migration.
 new_sqlite_classes = ["ForkMeshOfficeRoom"]
 
+[[migrations]]
+tag = "v12"
+# Per-owner node event channel (unlike the retired per-repo ForkMeshHost
+# tunnel, it never carries repository bytes — see ForkMeshNodes in entry.py).
+# Live sockets are runtime state; SQLite registration is still required.
+new_sqlite_classes = ["ForkMeshNodes"]
+
+[[migrations]]
+tag = "v13"
+# A single alarm-backed object watches successful cron completions. Its alarm
+# runs independently of the Cron Trigger, so it can email administrators when
+# the trigger stops completing and again after the first successful recovery.
+new_sqlite_classes = ["ForkMeshCronWatchdog"]
+
 
 [observability]
 enabled = true
-head_sampling_rate = 1
+head_sampling_rate = 0.05
 
-# Logs stay in the Cloudflare dashboard only. The Sentry destinations added in
-# the 2026-07-18 full-sampling round exported an info event for every D1 call,
-# Durable Object websocket wakeup, and request ("d1_run OK",
-# "hibernatableWebSocket OK", "POST OK", ...), flooding Sentry. Real error
-# reporting is unaffected: it goes through capture_sentry_error in src/entry.py.
+# Keep a representative production sample without spending the Workers Free
+# 200k/day observability-event allowance on routine requests. Logs stay in the
+# Cloudflare dashboard only and invocation logs remain off. Real errors are
+# unaffected: capture_sentry_error persists them through the bounded D1/Sentry
+# path independently of this diagnostic sample.
 [observability.logs]
 enabled = true
-head_sampling_rate = 1
+head_sampling_rate = 0.05
 invocation_logs = false
 
 [observability.traces]

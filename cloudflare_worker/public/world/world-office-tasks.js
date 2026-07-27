@@ -1,5 +1,11 @@
 const OFFICE_TASKS_PATH = "/api/world/office/marketing-tasks";
-const OFFICE_TASKS_POLL_MS = 20_000;
+// Mutations refresh immediately and opening the board refreshes after five
+// seconds, so a 60-second foreground poll keeps the wall current without
+// making three D1-backed requests a minute per visitor. If an assignee leaves
+// the Office with a timer running, only a five-minute reconciliation poll is
+// needed; elapsed time continues locally from the server clock.
+const OFFICE_TASKS_POLL_MS = 60_000;
+const OFFICE_TASKS_BACKGROUND_POLL_MS = 5 * 60_000;
 const OFFICE_TASKS_TICK_MS = 1_000;
 const OFFICE_CHECKIN_MIN_MS = 4 * 60 * 1_000;
 const OFFICE_CHECKIN_MAX_MS = 9 * 60 * 1_000;
@@ -328,11 +334,26 @@ export function createWorldOfficeTasksController({
     if (pollTimer) window.clearTimeout(pollTimer);
     pollTimer = 0;
     if (!monitoring) return;
+    const delay =
+      document.hidden || (!officeActive && !opened)
+        ? OFFICE_TASKS_BACKGROUND_POLL_MS
+        : OFFICE_TASKS_POLL_MS;
     pollTimer = window.setTimeout(async () => {
       pollTimer = 0;
-      await refresh({ quiet: true });
+      if (!document.hidden) await refresh({ quiet: true });
       schedulePoll();
-    }, OFFICE_TASKS_POLL_MS);
+    }, delay);
+  }
+
+  function onVisibilityChange() {
+    if (!monitoring || document.hidden) return;
+    if (Date.now() - lastRefreshAt < OFFICE_TASKS_POLL_MS) {
+      schedulePoll();
+      return;
+    }
+    if (pollTimer) window.clearTimeout(pollTimer);
+    pollTimer = 0;
+    void refresh({ quiet: true }).finally(schedulePoll);
   }
 
   async function refresh({ quiet = false } = {}) {
@@ -567,6 +588,7 @@ export function createWorldOfficeTasksController({
     stopActiveForDeparture();
     officeActive = false;
     stopMonitoring();
+    document.removeEventListener("visibilitychange", onVisibilityChange);
     root.removeEventListener("click", onClick);
     root.removeEventListener("submit", onSubmit);
     world.updateOfficeMarketingTasks?.({
@@ -577,6 +599,7 @@ export function createWorldOfficeTasksController({
     });
   }
 
+  document.addEventListener("visibilitychange", onVisibilityChange);
   root.addEventListener("click", onClick);
   root.addEventListener("submit", onSubmit);
   physicalState("locked", "Enter Office to sync tasks");

@@ -1,0 +1,37 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "ForkMesh Deploy",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785035823749,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "ForkMesh Deploy",
+            "body": "Evaluate whether the source-of-truth desktop node should automatically push refs to every registered mirror over SSH. Keep this disabled until the threat model and operational design are reviewed.\n\nSecurity requirements:\n- authorize each canonical node repository independently; do not treat an organization alias as authority for every node\n- use per-node scoped keys or short-lived credentials with least privilege and clean revocation\n- pin host identities and fail closed on key or route changes\n- prevent a compromised mirror from becoming a source of truth or affecting sibling mirrors\n- bound concurrency, timeouts, ref namespaces, repository size, and retry behavior\n- preserve signed audit records without logging credentials\n- define partial-failure behavior so one unavailable node does not block healthy mirrors\n- require explicit owner opt-in and make node membership changes race-safe\n\nCompare direct per-node SSH delivery with a hardened gateway fan-out design. Include migration, rollback, testing, and documentation before implementation.",
+            "id": "open-523",
+            "sig": "cKTqWDgnEaguzxGzKwO2sCNRytph2o3TQM3QKon0tGi9X7DI7DgPu-rY2uXuAyfTsh-3BxXq2xikUuFUdCl8Bw",
+            "title": "Security review: source-of-truth SSH fan-out to every mirror node",
+            "ts": 1785035823749,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "security",
+        "backlog"
+    ],
+    "milestone": "",
+    "number": 523,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Security review: source-of-truth SSH fan-out to every mirror node",
+    "updatedAt": 1785035823749,
+    "votes": 0
+}

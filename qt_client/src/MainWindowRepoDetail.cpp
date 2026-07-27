@@ -648,6 +648,13 @@ QWidget *MainWindow::buildRepoOverviewPage()
     toolbar->addWidget(m_remotesButton);
     toolbar->addWidget(m_toolbarCommitsButton);
     toolbar->addWidget(m_tagsButton);
+    // Releases (adhoc #180): moved out of the top tab bar to sit beside Tags on
+    // the Code overview page. The button itself is created with the other repo
+    // tabs in buildRepoDetailSection (kept in m_repoDetailTabs so tab switching
+    // and the Releases (N) badge keep working) — here we just place it in the
+    // toolbar. buildRepoOverviewPage runs after that loop, so it already exists.
+    if (m_repoReleasesTab)
+        toolbar->addWidget(m_repoReleasesTab);
     toolbar->addWidget(m_fileSearch, 1);
 
     // Everything below the latest-commit bar swaps between the file browser
@@ -1531,10 +1538,6 @@ void MainWindow::updateRepoIssueCount()
         m_repoIssuesTab->setText(
             QStringLiteral("Issues (%1)").arg(formatCount(openCount)));
     }
-    // Opening a repo (or reloading its issues) runs here, so it's the reliable
-    // funnel for revealing the looper toggle above the Issues tab even when the
-    // loop is off — updateIssueLooperButton only fires on a state change (#130).
-    positionLooperToggle();
 }
 
 void MainWindow::updateRepoDiscussionCount()
@@ -5677,7 +5680,7 @@ void MainWindow::deleteCommit(const QString &hash)
     setRepoDetailNotice(QStringLiteral("Removed commit %1 — gone from history.")
                             .arg(hash.left(8)));
     loadCommits();
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
 }
 
 // Undo a commit by recording its inverse as a brand-new commit on top of the
@@ -5759,7 +5762,7 @@ void MainWindow::revertCommit(const QString &hash)
         QStringLiteral("Reverted commit %1 — added a commit that undoes it.")
             .arg(hash.left(8)));
     loadCommits();
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
 }
 
 void MainWindow::showCommitsBanner(const QString &html)
@@ -8075,7 +8078,9 @@ QWidget *MainWindow::buildRepoDetailSection()
             continue;
         const TabDef tab = tabs.at(i);
         auto *b = new QPushButton(QString::fromLatin1(tab.label));
-        b->setObjectName("repoTab");
+        // Releases (id 12) is styled like a toolbar button, not a tab: it lives in
+        // the Code overview toolbar next to Tags (adhoc #180), not the tab row.
+        b->setObjectName(i == 12 ? "ghostButton" : "repoTab");
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
         setOcticon(b, QString::fromLatin1(tab.icon), 16);
@@ -8102,7 +8107,14 @@ QWidget *MainWindow::buildRepoDetailSection()
         if (i == 17)
             m_repoProjectsTab = b; // handle for the Projects (N) badge
         m_repoDetailTabs->addButton(b, i);
-        if (i == 17)
+        if (i == 12)
+            // Releases (adhoc #180): no top-bar tab. Its button is placed in the
+            // Code overview toolbar next to Tags (see buildRepoOverviewPage), so
+            // releases sit beside tags instead of between Insights and Mirror
+            // nodes. It stays in m_repoDetailTabs (id 12) so tab switching, the
+            // Releases (N) badge and the Tags button shortcut all keep working.
+            (void)b; // added to the toolbar layout below, not the tab row
+        else if (i == 17)
             // Projects sits right after Issues in the row (Code=0, Issues=1
             // among the visible buttons) despite its appended positional id.
             tabRow->insertWidget(2, b);
@@ -8146,45 +8158,16 @@ QWidget *MainWindow::buildRepoDetailSection()
     // a caution triangle on the self row/dot in the Mirror nodes panel, whose
     // header carries the "Reset integrity pin" action.
 
-    m_repoPushButton = new QPushButton(this);
-    m_repoPushButton->setObjectName("primaryButton");
-    m_repoPushButton->setCursor(Qt::PointingHandCursor);
-    m_repoPushButton->hide();
-    m_repoPushButton->setStyleSheet(
-        QStringLiteral("QPushButton#primaryButton{padding:3px 10px;font-size:12px;}"));
-    setOcticon(m_repoPushButton, "sync", 14);
-    connect(m_repoPushButton, &QPushButton::clicked, this,
-            &MainWindow::pushCurrentRepoUpstream);
-    // The "Sync" button floats in the band just above the Code tab
-    // (see positionRepoPushButton) rather than living in the tab row: it's an
-    // overlay raised one above the tabs, so showing/hiding it as sync state
-    // changes never reflows the tab content below — that shift is what read as the
-    // whole view "resizing" on small screens, most visibly on Mirror nodes.
-    m_repoPublishBar = nullptr; // no separate row: the button floats over Code
+    // No floating "Sync (N) ↑" pill (nor its eye shortcut) above the Code tab:
+    // adhoc #374 removed that overlay. Syncing runs from the Source control
+    // panel's commit-and-sync action and the repo list's Sync entry; the activity
+    // rail's Git glyph still spins while a publish/push is in flight.
 
-    // Eye icon riding beside the Sync button: a one-click shortcut to the
-    // commits panel while the pending-commits state is already on screen.
-    m_repoPushEyeButton = new QPushButton(this);
-    m_repoPushEyeButton->setObjectName("ghostButton");
-    m_repoPushEyeButton->setProperty("buttonSize", "sm");
-    m_repoPushEyeButton->setCursor(Qt::PointingHandCursor);
-    m_repoPushEyeButton->hide();
-    setOcticon(m_repoPushEyeButton, "eye", 14);
-    m_repoPushEyeButton->setToolTip("View the commit history");
-    connect(m_repoPushEyeButton, &QPushButton::clicked, this, [this] {
-        if (m_historyButton && !m_historyButton->isChecked())
-            m_historyButton->click();
-        else
-            showOverviewCommits();
-    });
-
-    // Issue-looper toggle (adhoc #130): a compact switch floating in the band
-    // just above the Issues tab, mirroring how the Sync button floats over
-    // Code. It both shows the loop's state and toggles it, so the loop is
-    // controllable and visible from any tab without an in-page banner. Created
-    // parented to the window; positionLooperToggle reparents it onto the page.
+    // Issue-looper toggle (adhoc #130, moved inline adhoc #354): a compact
+    // switch that both shows the loop's state and toggles it. Created here,
+    // parented to the window, then placed inline in the Issues heading row
+    // (next to "New issue") by buildIssuesSection().
     auto *looperToggle = new LooperToggle(this);
-    looperToggle->hide();
     looperToggle->setOnClick([this] { toggleIssueLooper(); });
     // Clicking the "#N" itself jumps to the agent currently working that issue
     // instead of toggling the loop (adhoc #134).
@@ -8386,15 +8369,87 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->setMinimumHeight(0);
     m_repoDetailStack->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
 
-    auto *layout = new QVBoxLayout(page);
+    // --- Thin activity rail down the page's left edge (adhoc #357): a Code
+    // entry (file browser) and a Git entry (current changes), VS-Code style.
+    // The Git icon carries a blue badge with the working-tree change count
+    // (kept fresh by refreshSourceControl) that flips to a spinner while a
+    // sync/publish is in flight (refreshRepoSyncIndicators); the selected entry
+    // shows a 2px line along its left edge.
+    m_railCodeButton = new ActivityRailButton(QStringLiteral("code"),
+                                              QStringLiteral("Code"));
+    m_railCodeButton->setToolTip(QStringLiteral("Browse the repository files"));
+    connect(m_railCodeButton, &QPushButton::clicked, this, [this] {
+        // Same path as clicking the Code tab: land on the file browser.
+        if (m_repoDetailTabs && m_repoDetailTabs->button(0))
+            m_repoDetailTabs->button(0)->click();
+        updateRepoActivityRail();
+    });
+    m_railGitButton = new ActivityRailButton(QStringLiteral("git-branch"),
+                                             QString());
+    m_railGitButton->setToolTip(
+        QStringLiteral("Source control \xE2\x80\x94 view the current changes"));
+    connect(m_railGitButton, &QPushButton::clicked, this, [this] {
+        // Open the commits/changes workspace inside the Code overview. Going
+        // through the commit strip's toggle runs its deferred list build and
+        // change rescan; when it's already showing, just re-assert the view.
+        if (m_historyButton && !m_historyButton->isChecked())
+            m_historyButton->click();
+        else
+            showOverviewCommits();
+        updateRepoActivityRail();
+    });
+    auto *rail = new QWidget;
+    rail->setObjectName("repoActivityRail");
+    rail->setFixedWidth(46);
+    auto *railLayout = new QVBoxLayout(rail);
+    railLayout->setContentsMargins(0, 8, 0, 8);
+    railLayout->setSpacing(2);
+    railLayout->addWidget(m_railCodeButton, 0, Qt::AlignHCenter);
+    railLayout->addWidget(m_railGitButton, 0, Qt::AlignHCenter);
+    railLayout->addStretch();
+    // The checked states mirror the visible view (Code tab, and which body the
+    // overview shows), so track every stack the navigation helpers drive.
+    connect(m_repoDetailStack, &QStackedWidget::currentChanged, this,
+            [this](int) { updateRepoActivityRail(); });
+    if (m_overviewBodyStack)
+        connect(m_overviewBodyStack, &QStackedWidget::currentChanged, this,
+                [this](int) { updateRepoActivityRail(); });
+    if (m_filesStack)
+        connect(m_filesStack, &QStackedWidget::currentChanged, this,
+                [this](int) { updateRepoActivityRail(); });
+    updateRepoActivityRail();
+
+    auto *content = new QVBoxLayout;
+    content->setContentsMargins(0, 0, 0, 0);
+    content->setSpacing(6);
+    content->addLayout(headerRow);
+    content->addWidget(m_repoDetailNotice);
+    content->addWidget(metaBand);
+    content->addWidget(tabBarScroll);
+    content->addWidget(m_repoDetailStack, 1);
+    auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(6);
-    layout->addLayout(headerRow);
-    layout->addWidget(m_repoDetailNotice);
-    layout->addWidget(metaBand);
-    layout->addWidget(tabBarScroll);
-    layout->addWidget(m_repoDetailStack, 1);
+    layout->setSpacing(0);
+    layout->addWidget(rail);
+    layout->addLayout(content, 1);
     return page;
+}
+
+// The rail highlights what's actually on screen: Code while the repo detail
+// view sits anywhere on the Code tab's file side, Git while the Code overview
+// body shows the commits/changes workspace. Exclusive, like an editor's
+// activity bar.
+void MainWindow::updateRepoActivityRail()
+{
+    if (!m_railCodeButton || !m_railGitButton)
+        return;
+    const bool onCode =
+        m_repoDetailStack && m_repoDetailStack->currentIndex() == 0;
+    const bool onChanges =
+        onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
+        m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
+    m_railCodeButton->setChecked(onCode && !onChanges);
+    m_railGitButton->setChecked(onChanges);
 }
 
 

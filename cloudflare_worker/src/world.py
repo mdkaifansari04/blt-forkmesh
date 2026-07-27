@@ -75,6 +75,13 @@ WORLD_ACCOUNT_STATUS_VALUES = frozenset({
 WORLD_OUTFIT_COLOR_VALUES = frozenset({
     "", "aurora", "ember", "violet", "gold", "slate",
 })
+# A Supporting member perk: pin one of the tailored outfit cuts instead of the
+# cut the visitor's public name seeds. "" means "wear the name-seeded cut".
+# The ids must stay in lockstep with OUTFIT_STYLE_OPTIONS in world-data.js.
+WORLD_OUTFIT_STYLE_VALUES = frozenset({
+    "", "sash", "racer", "chevron", "argyle", "circuit", "pixel",
+    "waves", "starfield", "hex", "bolt", "tartan", "binary",
+})
 WORLD_SPACE_VALUES = frozenset({
     "town-square", "east", "central", "west", "sky-campus",
     "space-station", "code-planet", "organization-region", "planet-atlas",
@@ -84,6 +91,13 @@ WORLD_INACTIVITY_VALUES = frozenset({
 })
 WORLD_NODE_BADGE_MAX = 6
 WORLD_STATUS_NOTE_MAX = 20
+# "First seen 12 minutes ago" on the chest badge. The client derives this from
+# its own local first-visit marker; only whole minutes travel, bounded to ten
+# years so a spoofed value cannot become an unbounded number on a peer canvas.
+WORLD_FIRST_SEEN_MAX_MINUTES = 10 * 365 * 24 * 60
+# "Joined 3 months ago" — the account creation timestamp, which is already
+# public on /api/accounts/{name}. Guests never carry one.
+WORLD_JOINED_AT_MIN_MS = 1577836800000  # 2020-01-01T00:00:00Z
 
 # Office meetings use a separate authorized socket from the global World.
 # This protocol carries only ephemeral room-local avatar and chair state. Chat
@@ -110,8 +124,10 @@ OFFICE_PUBLIC_FIELDS = (
 WORLD_PUBLIC_FIELDS = (
     "id", "name", "countryCode", "browser", "os", "status", "localTime",
     "activityCategory", "inputActive", "visitCount", "firstVisitAge",
+    "firstSeenMinutes", "joinedAt",
     "accountStatus", "nodeCount", "space",
     "publicDoor", "statusEmoji", "statusNote", "outfitColor",
+    "outfitStyle", "faceImage", "solana",
     "x", "y", "z", "yaw", "moving", "updatedAt",
 )
 
@@ -119,6 +135,7 @@ _COUNTRY_RE = re.compile(r"^[A-Z]{2}$")
 _LOCAL_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 _PEER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 _P256_COORDINATE_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+_SOLANA_ADDRESS_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
 
 def approximate_country_code(value):
@@ -132,6 +149,27 @@ def approximate_country_code(value):
     if not _COUNTRY_RE.fullmatch(code) or code == "XX":
         return ""
     return code
+
+
+def clean_client_profile(country="", browser="", operating_system=""):
+    """Normalize the coarse client profile stored on an account record.
+
+    An account keeps the same three coarse values a live presence frame
+    publishes — approximate country, browser family, operating-system family —
+    so the member's campfire bench figure still wears their flag and client
+    badge while they are away and have no live presence.  Nothing finer ever
+    enters the record: no address, user-agent string, or version.  ``hidden``
+    (the privacy sentinel of a live frame) and any unknown value store as "".
+    """
+    browser = str(browser or "").strip().lower()
+    operating_system = str(operating_system or "").strip().lower()
+    return {
+        "countryCode": approximate_country_code(country),
+        "browser": browser if browser in WORLD_BROWSER_VALUES
+                   and browser != "hidden" else "",
+        "os": operating_system if operating_system in WORLD_OS_VALUES
+              and operating_system != "hidden" else "",
+    }
 
 
 def clean_display_name(value, fallback="Guest"):
@@ -293,6 +331,22 @@ def _bounded_visit_count(value, fallback):
     return max(0, min(999, value))
 
 
+def _bounded_first_seen_minutes(value, fallback):
+    """Return whole minutes since the visitor's own first visit."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return fallback
+    return max(0, min(WORLD_FIRST_SEEN_MAX_MINUTES, value))
+
+
+def _bounded_joined_at(value, now, fallback):
+    """Return a public account-creation timestamp, or 0 when implausible."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return fallback
+    if value < WORLD_JOINED_AT_MIN_MS or value > int(now):
+        return 0
+    return value
+
+
 def arrival_position(slot):
     """Return one deterministic, non-overlapping Town Square arrival slot.
 
@@ -383,6 +437,10 @@ def default_presence(peer_id, now):
         "inputActive": False,
         "visitCount": 0,
         "firstVisitAge": "hidden",
+        "firstSeenMinutes": 0,
+        # Public account age, shown as "joined … ago" on the chest badge. It
+        # stays 0 until a validated world ticket has made this a named account.
+        "joinedAt": 0,
         # Account status and operator-belt count are supplied by the routing
         # Worker after it validates a short-lived world ticket. They are never
         # accepted from arbitrary socket JSON.
@@ -393,6 +451,11 @@ def default_presence(peer_id, now):
         "statusEmoji": "",
         "statusNote": "",
         "outfitColor": "",
+        "outfitStyle": "",
+        "faceImage": False,
+        # The chest wallet-QR address. A self-claim like the display name,
+        # but only a ticket-authenticated account may wear one.
+        "solana": "",
         "x": 0.0,
         "y": 0.0,
         "z": 0.0,
@@ -580,9 +643,10 @@ def sanitize_message(payload, current, now, country_source="",
         elif trusted_name:
             state["name"] = clean_display_name(
                 trusted_name, state.get("name") or "Contributor")
-        elif "name" in payload:
-            state["name"] = clean_display_name(
-                payload.get("name"), state.get("name") or "Guest")
+        # An anonymous socket never chooses an account-looking display name.
+        # Its server-generated Guest suffix is bound to this random peer id,
+        # so a second client cannot visually impersonate a signed-in avatar
+        # simply by copying the victim's name into a presence frame.
         if "browser" in payload:
             state["browser"] = _choice(
                 payload.get("browser"), WORLD_BROWSER_VALUES,
@@ -616,13 +680,24 @@ def sanitize_message(payload, current, now, country_source="",
                 payload.get("firstVisitAge"),
                 WORLD_FIRST_VISIT_AGE_VALUES,
                 "hidden")
-        # Activity privacy is the parent control for all three derived
+        if "firstSeenMinutes" in payload:
+            state["firstSeenMinutes"] = _bounded_first_seen_minutes(
+                payload.get("firstSeenMinutes"), 0)
+        if "joinedAt" in payload:
+            state["joinedAt"] = _bounded_joined_at(
+                payload.get("joinedAt"), now, 0)
+        # Activity privacy is the parent control for all four derived
         # indicators. Explicitly clear prior values so turning sharing off
         # cannot leave stale metadata visible in a live socket attachment.
         if state.get("activityCategory") == "hidden":
             state["inputActive"] = False
             state["visitCount"] = 0
             state["firstVisitAge"] = "hidden"
+            state["firstSeenMinutes"] = 0
+        # A joined date belongs to an account. A connection the routing Worker
+        # never authenticated cannot publish one.
+        if state.get("accountStatus") == "Guest":
+            state["joinedAt"] = 0
         if "publicDoor" in payload:
             state["publicDoor"] = _choice(
                 payload.get("publicDoor"), WORLD_DOOR_VALUES, "closed")
@@ -641,6 +716,30 @@ def sanitize_message(payload, current, now, country_source="",
             state["outfitColor"] = (
                 _choice(payload.get("outfitColor"), WORLD_OUTFIT_COLOR_VALUES, "")
                 if state.get("accountStatus") == "Supporting member" else "")
+        # The pinned outfit cut follows the same trust rule as the color.
+        if "outfitStyle" in payload:
+            state["outfitStyle"] = (
+                _choice(payload.get("outfitStyle"), WORLD_OUTFIT_STYLE_VALUES, "")
+                if state.get("accountStatus") == "Supporting member" else "")
+        # Wearing the account's public avatar image as the 3D face is opt-in
+        # and only a boolean travels over presence: peers resolve the actual
+        # image from the already-public /api/accounts/{name} lookup, so no
+        # image bytes ever enter a presence frame.
+        if "faceImage" in payload:
+            state["faceImage"] = (
+                payload.get("faceImage") is True
+                and state.get("accountStatus") == "Supporting member")
+        # The chest wallet QR shows an address its owner already chose to
+        # publish on their account. It is validated as base58 and gated to
+        # authenticated accounts so an anonymous socket cannot dress itself
+        # in an arbitrary wallet.
+        if "solana" in payload:
+            raw_solana = str(payload.get("solana") or "")
+            state["solana"] = (
+                raw_solana
+                if state.get("accountStatus") != "Guest"
+                and _SOLANA_ADDRESS_RE.fullmatch(raw_solana)
+                else "")
         if "space" in payload:
             state["space"] = _choice(
                 payload.get("space"), WORLD_SPACE_VALUES, "town-square")
