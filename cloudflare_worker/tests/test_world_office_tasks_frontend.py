@@ -29,7 +29,7 @@ def test_marketing_task_controller_is_wired_to_the_office_and_scene():
         "this.officeTasks",
     ):
         assert contract in world
-    assert "tasks?.setActive?.(true)" in office
+    assert 'tasks?.setActive?.(floor.id === "marketing")' in office
     assert "tasks?.setActive?.(false)" in office
 
 

@@ -6760,14 +6760,9 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     metalness: 0.08,
     roughness: 0.22,
   });
-  const warm = makeMaterial(THREE, "#ffd18a", {
-    emissive: "#e28b35",
-    emissiveIntensity: 0.85,
-    roughness: 0.4,
-  });
   const doorMaterial = makeMaterial(THREE, "#245845", {
     metalness: 0.34,
-    roughness: 0.5,
+    roughness: 0.44,
   });
   const elevatorFacadeMinX =
     OFFICE_ELEVATOR_CENTER_X -
@@ -7010,31 +7005,35 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   sign.position.set(0, OFFICE_HEIGHT - 3, OFFICE_FRONT_Z + 0.24);
   group.add(sign);
 
-  const doorPivot = new THREE.Group();
-  doorPivot.name = "forkmesh-office-door-pivot";
-  doorPivot.position.set(-doorWidth / 2, 0, OFFICE_FRONT_Z + 0.03);
-  const door = new THREE.Mesh(
-    new THREE.BoxGeometry(doorWidth, doorHeight, 0.18),
-    doorMaterial,
-  );
-  door.name = "forkmesh-office-door";
-  door.position.set(doorWidth / 2, doorHeight / 2 + 0.34, 0);
-  door.userData.officeEnter = true;
-  doorPivot.add(door);
-  const handle = new THREE.Mesh(
-    new THREE.SphereGeometry(0.1, 12, 8),
-    warm,
-  );
-  handle.position.set(doorWidth - 0.28, doorHeight / 2 + 0.28, 0.12);
-  handle.userData.officeEnter = true;
-  doorPivot.add(handle);
-  group.add(doorPivot);
+  const slidingDoors = new THREE.Group();
+  slidingDoors.name = "forkmesh-office-sliding-doors";
+  slidingDoors.position.z = OFFICE_FRONT_Z + 0.03;
+  const doorPanelWidth = doorWidth / 2 - 0.08;
+  const doorClosedX = doorWidth / 4;
+  const doorOpenX = doorWidth / 2 + doorPanelWidth / 2 + 0.18;
+  const doorPanels = [-1, 1].map((side) => {
+    const panel = new THREE.Mesh(
+      new THREE.BoxGeometry(doorPanelWidth, doorHeight, 0.18),
+      doorMaterial,
+    );
+    panel.name =
+      `forkmesh-office-sliding-door-${side < 0 ? "left" : "right"}`;
+    panel.position.set(
+      side * doorClosedX,
+      doorHeight / 2 + 0.34,
+      0,
+    );
+    slidingDoors.add(panel);
+    return panel;
+  });
+  group.add(slidingDoors);
 
   group.position.set(...position);
   group.userData.landmark = "office";
-  group.userData.officeDoorPivot = doorPivot;
-  group.userData.officeDoor = door;
-  doorPivot.rotation.y = Math.PI / 2;
+  group.userData.officeSlidingDoors = slidingDoors;
+  group.userData.officeDoorPanels = doorPanels;
+  group.userData.officeDoorClosedX = doorClosedX;
+  group.userData.officeDoorOpenX = doorOpenX;
   group.traverse((child) => {
     if (!child.isMesh) return;
     child.userData.landmark = "office";
@@ -8707,89 +8706,48 @@ export function createWorldScene({
     rooftop.add(telescope);
   }
   addOfficeFunFloorProps();
-  const officeBackWall = new THREE.Mesh(
-    new THREE.BoxGeometry(OFFICE_WIDTH, OFFICE_HEIGHT, 0.35),
-    officeFloorGlassMaterial,
-  );
-  officeBackWall.position.set(0, OFFICE_HEIGHT / 2, -OFFICE_FRONT_Z + 0.2);
-  officeInterior.add(officeBackWall);
-  for (const x of [
-    -OFFICE_WIDTH / 2 + 0.2,
-    OFFICE_WIDTH / 2 - 0.2,
-  ]) {
-    const wall = new THREE.Mesh(
-      new THREE.BoxGeometry(0.35, OFFICE_HEIGHT, OFFICE_DEPTH),
-      officeFloorGlassMaterial,
+  // The exterior tower already owns the curtain wall. A second interior shell
+  // sat almost coplanar with it and made the transparent panes flash as the
+  // depth buffer alternated between layers. Interior props now render through
+  // that single stable glass envelope.
+  const officeBuilding = landmarkObjects.get("office");
+  const officeSlidingDoorPanels =
+    officeBuilding?.userData?.officeDoorPanels || [];
+  const officeDoorClosedX =
+    Number(officeBuilding?.userData?.officeDoorClosedX) ||
+    OFFICE_DOOR_WIDTH / 4;
+  const officeDoorOpenX =
+    Number(officeBuilding?.userData?.officeDoorOpenX) ||
+    OFFICE_DOOR_WIDTH * 0.76;
+  let officeSlidingDoorOpen = 0;
+  animated.push((_time, delta = 0.016) => {
+    const localPosition = officeAvatarLocalPosition(
+      player,
+      new THREE.Vector3(),
     );
-    wall.position.set(x, OFFICE_HEIGHT / 2, 0);
-    officeInterior.add(wall);
-  }
-  for (const [minX, maxX] of [
-    [-OFFICE_WIDTH / 2, -OFFICE_DOOR_WIDTH / 2],
-    [OFFICE_DOOR_WIDTH / 2, elevatorCutMinX],
-    [elevatorCutMaxX, OFFICE_WIDTH / 2],
-  ]) {
-    const officeFrontPanelWidth = maxX - minX;
-    const wall = new THREE.Mesh(
-      new THREE.BoxGeometry(officeFrontPanelWidth, OFFICE_HEIGHT, 0.35),
-      officeFloorGlassMaterial,
-    );
-    wall.position.set(
-      (minX + maxX) / 2,
-      OFFICE_HEIGHT / 2,
-      OFFICE_FRONT_Z - 0.2,
-    );
-    officeInterior.add(wall);
-  }
-  const officeDoorOpeningHeight = 4.8;
-  const officeDoorHeaderHeight = OFFICE_HEIGHT - officeDoorOpeningHeight;
-  const officeDoorHeader = new THREE.Mesh(
-    new THREE.BoxGeometry(
-      OFFICE_DOOR_WIDTH,
-      officeDoorHeaderHeight,
-      0.35,
-    ),
-    officeFloorGlassMaterial,
-  );
-  officeDoorHeader.position.set(
-    0,
-    officeDoorOpeningHeight + officeDoorHeaderHeight / 2,
-    OFFICE_FRONT_Z - 0.2,
-  );
-  officeInterior.add(officeDoorHeader);
-  const officeInteriorDoorPivot = new THREE.Group();
-  officeInteriorDoorPivot.name = "forkmesh-office-interior-door-pivot";
-  officeInteriorDoorPivot.position.set(
-    -OFFICE_DOOR_WIDTH / 2,
-    0,
-    OFFICE_FRONT_Z - 0.38,
-  );
-  const officeInteriorDoor = new THREE.Mesh(
-    new THREE.BoxGeometry(OFFICE_DOOR_WIDTH, 4.4, 0.18),
-    makeMaterial(THREE, "#245845", {
-      metalness: 0.34,
-      roughness: 0.5,
-    }),
-  );
-  officeInteriorDoor.name = "forkmesh-office-interior-door";
-  officeInteriorDoor.position.set(OFFICE_DOOR_WIDTH / 2, 2.54, 0);
-  officeInteriorDoorPivot.add(officeInteriorDoor);
-  officeInteriorDoorPivot.rotation.y = Math.PI / 2;
-  officeInterior.add(officeInteriorDoorPivot);
-  const windowMaterial = makeMaterial(THREE, "#8eeac5", {
-    transparent: true,
-    opacity: 0.3,
-    emissive: "#1f8b65",
-    emissiveIntensity: 0.36,
+    const onEntranceFloor =
+      officeSceneMode === "town" ||
+      (officeSceneMode === "lobby" && officeCurrentFloorId === "lobby");
+    const approaching =
+      onEntranceFloor &&
+      Math.abs(localPosition.x) <= OFFICE_DOOR_WIDTH / 2 + 3.2 &&
+      Math.abs(localPosition.z - OFFICE_FRONT_Z) <= 7.5;
+    const target =
+      approaching || officeDoorwayEntryPending || officeExitPending ? 1 : 0;
+    const travel = Math.min(1, Math.max(0, Number(delta) || 0) * 5.8);
+    officeSlidingDoorOpen +=
+      (target - officeSlidingDoorOpen) * travel;
+    officeSlidingDoorPanels.forEach((panel, index) => {
+      const side = index === 0 ? -1 : 1;
+      panel.position.x =
+        side *
+        THREE.MathUtils.lerp(
+          officeDoorClosedX,
+          officeDoorOpenX,
+          officeSlidingDoorOpen,
+        );
+    });
   });
-  for (const x of [-5.5, -1.85, 1.85, 5.5]) {
-    const windowPane = new THREE.Mesh(
-      new THREE.BoxGeometry(2.7, 3.4, 0.08),
-      windowMaterial,
-    );
-    windowPane.position.set(x, 3.6, -OFFICE_FRONT_Z + 0.42);
-    officeInterior.add(windowPane);
-  }
   const officeTable = new THREE.Mesh(
     new THREE.BoxGeometry(7.4, 0.34, 3.6),
     makeMaterial(THREE, "#715238", { roughness: 0.66 }),
@@ -8812,17 +8770,18 @@ export function createWorldScene({
   // office floor (0.4), so their sitters' shins reach the floor unchanged.
   const OFFICE_CHAIR_SEAT_TOP_Y = 0.91;
   const chairTransforms = [
-    [-5.15, 0, Math.PI / 2],
-    [-2.35, -3.35, 0],
-    [0, -3.35, 0],
-    [2.35, -3.35, 0],
-    [5.15, 0, -Math.PI / 2],
-    [2.35, 3.35, Math.PI],
-    [0, 3.35, Math.PI],
-    [-2.35, 3.35, Math.PI],
+    [-5.15, 0],
+    [-2.35, -3.35],
+    [0, -3.35],
+    [2.35, -3.35],
+    [5.15, 0],
+    [2.35, 3.35],
+    [0, 3.35],
+    [-2.35, 3.35],
   ];
-  chairTransforms.forEach(([x, z, yaw], index) => {
+  chairTransforms.forEach(([x, z], index) => {
     const chairId = `chair-${index + 1}`;
+    const yaw = Math.atan2(-x, -z);
     const chair = new THREE.Group();
     chair.name = `forkmesh-office-${chairId}`;
     const seat = new THREE.Mesh(
@@ -9133,31 +9092,6 @@ export function createWorldScene({
   );
   logoWater.position.y = 1.12;
   logoFountain.add(logoWater);
-  const fountainJetMaterial = makeMaterial(THREE, "#c5f7ff", {
-    transparent: true,
-    opacity: 0.58,
-    emissive: "#67d9ff",
-    emissiveIntensity: 0.72,
-    metalness: 0.05,
-    roughness: 0.04,
-  });
-  const fountainJets = [];
-  for (const [x, z, tiltX, tiltZ] of [
-    [-3.4, 0, 0, -0.22],
-    [3.4, 0, 0, 0.22],
-    [0, -3.4, 0.22, 0],
-    [0, 3.4, -0.22, 0],
-  ]) {
-    const jet = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.07, 0.15, 4.5, 10),
-      fountainJetMaterial,
-    );
-    jet.position.set(x, 3.05, z);
-    jet.rotation.x = tiltX;
-    jet.rotation.z = tiltZ;
-    logoFountain.add(jet);
-    fountainJets.push(jet);
-  }
   const fountainGlow = new THREE.PointLight("#91eaff", 4.2, 25, 1.7);
   fountainGlow.position.set(0, 4.8, 0);
   logoFountain.add(fountainGlow);
@@ -9197,8 +9131,16 @@ export function createWorldScene({
   // The mark is an open sculpture, not a chrome box: paired F and M glyphs
   // define four sides while the branch graph repeats across the top/bottom.
   // The empty center stays visible as it slowly turns.
-  chromeCube.position.y = 5.5;
-  chromeCube.rotation.z = Math.PI / 4;
+  const logoHalfSize = 2.8;
+  const logoSupportTopY = 2.4;
+  // Align a body diagonal with world-up. This gives the open cube one precise
+  // lowest vertex instead of resting it across an entire edge.
+  chromeCube.position.y = logoSupportTopY + logoHalfSize * Math.sqrt(3);
+  chromeCube.rotation.set(
+    Math.atan(1 / Math.sqrt(2)),
+    0,
+    Math.PI / 4,
+  );
   const logoPiece = (
     parent,
     width,
@@ -9221,11 +9163,13 @@ export function createWorldScene({
 
   const addFLogoFace = (z, rotationY) => {
     const face = new THREE.Group();
+    face.name =
+      `forkmesh-reflective-f-face-${z > 0 ? "front" : "back"}`;
     face.position.z = z;
     face.rotation.y = rotationY;
-    logoPiece(face, 0.5, 4.2, 0.38, -1.25, 0, 0);
-    logoPiece(face, 2.9, 0.5, 0.38, -0.05, 1.85, 0);
-    logoPiece(face, 2.35, 0.5, 0.38, -0.325, 0.2, 0);
+    logoPiece(face, 0.72, 4.55, 0.5, -1.32, -0.08, 0);
+    logoPiece(face, 3.45, 0.72, 0.5, 0.04, 1.84, 0);
+    logoPiece(face, 2.75, 0.72, 0.5, -0.31, 0.18, 0);
     chromeCube.add(face);
   };
   addFLogoFace(2.8, 0);
@@ -9233,26 +9177,28 @@ export function createWorldScene({
 
   const addMLogoFace = (x, rotationY) => {
     const face = new THREE.Group();
+    face.name =
+      `forkmesh-reflective-m-face-${x > 0 ? "right" : "left"}`;
     face.position.x = x;
     face.rotation.y = rotationY;
-    logoPiece(face, 0.5, 4.2, 0.38, -1.45, 0, 0);
-    logoPiece(face, 0.5, 4.2, 0.38, 1.45, 0, 0);
+    logoPiece(face, 0.72, 4.55, 0.5, -1.5, -0.08, 0);
+    logoPiece(face, 0.72, 4.55, 0.5, 1.5, -0.08, 0);
     const addDiagonal = (fromX, fromY, toX, toY) => {
       const dx = toX - fromX;
       const dy = toY - fromY;
       logoPiece(
         face,
-        0.5,
+        0.72,
         Math.hypot(dx, dy),
-        0.38,
+        0.5,
         (fromX + toX) / 2,
         (fromY + toY) / 2,
         0,
         Math.atan2(-dx, dy),
       );
     };
-    addDiagonal(-1.45, 1.85, 0, 0.25);
-    addDiagonal(0, 0.25, 1.45, 1.85);
+    addDiagonal(-1.5, 1.88, 0, 0.12);
+    addDiagonal(0, 0.12, 1.5, 1.88);
     chromeCube.add(face);
   };
   addMLogoFace(2.8, Math.PI / 2);
@@ -9291,11 +9237,11 @@ export function createWorldScene({
     });
   }
   const logoSupport = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.22, 0.3, 1.35, 20),
+    new THREE.CylinderGeometry(0.2, 0.28, 1.28, 20),
     darkChrome,
   );
   logoSupport.name = "forkmesh-reflective-fm-cube-support";
-  logoSupport.position.y = 1.72;
+  logoSupport.position.y = logoSupportTopY - 0.64;
   logoFountain.add(logoSupport);
   logoFountain.add(chromeCube);
   officeInterior.add(logoFountain);
@@ -9308,9 +9254,6 @@ export function createWorldScene({
   animated.push((time) => {
     chromeCube.rotation.y = time * 0.00022;
     logoWater.rotation.y = -time * 0.00012;
-    fountainJets.forEach((jet, index) => {
-      jet.scale.y = 0.94 + Math.sin(time * 0.003 + index * 1.2) * 0.055;
-    });
     if (
       officeSceneMode !== "town" &&
       time - lastLogoReflectionAt >= logoReflectionIntervalMs
@@ -9438,8 +9381,18 @@ export function createWorldScene({
         context.textAlign = "center";
         context.textBaseline = "middle";
         context.font =
-          '900 64px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText(String(destination.level + 1), 96, 58);
+          '900 52px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(String(destination.level + 1), 96, 39);
+        context.fillStyle = "#b9f8da";
+        context.font =
+          '800 17px "ForkMesh Mono", ui-monospace, monospace';
+        const teamLabel = (
+          destination.team ||
+          (destination.id === "rooftop" ? "ROOF" : destination.label)
+        )
+          .replaceAll("-", " ")
+          .toUpperCase();
+        context.fillText(teamLabel, 96, 85, 172);
       });
       return [
         destination.id,
@@ -9469,8 +9422,15 @@ export function createWorldScene({
       elevatorButtonMaterials.get(destination.id),
     );
     const column = index % 2;
-    const row = Math.floor(index / 2);
-    button.position.set((column - 0.5) * 2.2, 1.65 - row * 0.78, 0.3);
+    const rowFromBottom = Math.floor(index / 2);
+    // Conventional lift ordering: floor 1 starts at the lower-left, rises
+    // left-to-right, and the rooftop ends at the top.
+    button.position.set(
+      (column - 0.5) * 2.2,
+      -1.65 + rowFromBottom * 0.78,
+      0.3,
+    );
+    button.name = `forkmesh-office-elevator-button-${destination.id}`;
     button.userData.interactive = "office-elevator-floor";
     button.userData.officeFloorId = destination.id;
     button.userData.officeFloorLevel = destination.level;
@@ -10167,7 +10127,7 @@ export function createWorldScene({
     currentFloorY = officeFloorY(destinationFloor.id) + 0.38;
     cameraFocus = null;
     officeInterior.visible = true;
-    officeInteriorDoorPivot.rotation.y = Math.PI / 2;
+    officeSlidingDoorOpen = 1;
     if (enteringFromTown) {
       const localPosition = officeAvatarLocalPosition(
         player,
@@ -10662,7 +10622,7 @@ export function createWorldScene({
       return travelToOfficeFloor("lobby");
     }
     officeExitPending = false;
-    officeInteriorDoorPivot.rotation.y = Math.PI / 2;
+    officeSlidingDoorOpen = 1;
     const avatar =
       officeSceneMode === "meeting"
         ? officeParticipants.get(officeLocalParticipantId)

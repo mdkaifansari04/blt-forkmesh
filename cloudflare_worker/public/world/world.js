@@ -3995,10 +3995,11 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   // The embedded /dashboard/chat iframe mirrors every live chat line to this
-  // page (dashboard-chat.js, emitWorldChatBubble). Float it above the
-  // speaker's avatar so nearby visitors see who is talking. Chat identity is
-  // separate from presence, so peers are matched by shared display name —
-  // best effort only, and unmatched senders simply show no bubble.
+  // page (dashboard-chat.js, emitWorldChatBubble). The public chat transport
+  // does not cryptographically bind its sender id to a World peer id, so only
+  // the browser's own line and ForkBot's fixed system identity may create
+  // avatar bubbles. Remote lines remain visible in CHAT without being able to
+  // impersonate a live avatar by copying its display name.
   handleWorldChatMessage = (event) => {
     if (this.destroyed || event.origin !== location.origin) return;
     const data = event.data;
@@ -4030,26 +4031,6 @@ class ForkMeshWorld extends HTMLElement {
       this.world?.showChatBubble?.("forkbot", text);
       return;
     }
-    for (const [id, peer] of this.remotePlayers) {
-      const peerName = String(peer?.name || "").trim().toLowerCase();
-      // The public room truncates asserted names to 16 characters, so a
-      // truncated sender may only be a prefix of the presence name.
-      if (
-        peerName === senderName ||
-        (senderName.length >= 16 && peerName.startsWith(senderName))
-      ) {
-        if (Date.now() < Number(peer.chatBubblesEnabledAt || 0)) return;
-        this.world?.showChatBubble?.(id, text);
-        if (FORKBOT_MENTION_RE.test(text)) {
-          this.world?.exciteForkbot?.(id, text);
-        }
-        return;
-      }
-    }
-    // No live peer with that name: a member talking from the website while
-    // their avatar sits on its campfire bench gets the bubble over the
-    // seated figure instead (world-scene showMemberChatBubble).
-    this.world?.showMemberChatBubble?.(sender, text);
   };
 
   // ForkBot walks over and welcomes a visitor the first time this browser
@@ -17449,6 +17430,7 @@ class ForkMeshWorld extends HTMLElement {
       );
     });
     socket.addEventListener("message", (event) => {
+      if (this.socket !== socket) return;
       this.socketInboundFrames = incrementDiagnosticCounter(
         this.socketInboundFrames,
       );
@@ -17719,7 +17701,11 @@ class ForkMeshWorld extends HTMLElement {
     } else if (message.type === "move" && message.id) {
       const id = String(message.id);
       if (id !== this.serverPeerId) {
-        const current = this.remotePlayers.get(id) || remotePlayer({ id });
+        // A movement delta is meaningful only after this active socket has
+        // announced the peer in its welcome/join stream. Never resurrect an
+        // avatar from a late frame that followed its authoritative leave.
+        const current = this.remotePlayers.get(id);
+        if (!current) return;
         this.remotePlayers.set(id, {
           ...current,
           x: boundedPresenceNumber(message.x),

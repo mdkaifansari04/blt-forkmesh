@@ -758,9 +758,11 @@ def new_socket_id():
 
 def new_world_peer_id():
     # World ids are random per connection and deliberately contain no account,
-    # node, address, timestamp, or device identifier.
-    rnd = js_crypto.getRandomValues(Uint8Array.new(8))
-    return "".join("%02x" % int(rnd[index]) for index in range(8))
+    # node, address, timestamp, or device identifier. Use the full 128-bit
+    # peer-id allowance so even a long-lived room cannot plausibly collide two
+    # controllers and merge their movement streams.
+    rnd = js_crypto.getRandomValues(Uint8Array.new(16))
+    return "".join("%02x" % int(rnd[index]) for index in range(16))
 
 
 def _ws_attachment(ws):
@@ -3981,11 +3983,11 @@ def world_request_country(request):
 
 
 def world_context_handler(request):
-    """Return the visitor's coarse country code and the shared world clock.
+    """Return the visitor's context and the shared world clock.
 
-    This endpoint reads only ``request.cf.country`` (or ``cf-ipcountry`` in
-    local/dev environments). It never reads or returns an IP address,
-    user-agent, precise location, account, repository, or wallet information.
+    The raw connection card is returned only to the same request that supplied
+    it, under ``no-store``; it never enters public presence, a Durable Object,
+    persistence, analytics, or another visitor's response.
     """
     if method_name(request) != "GET":
         return json_response(
@@ -3994,9 +3996,11 @@ def world_context_handler(request):
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"allow": "GET"},
         )
+    payload = world_protocol.context_payload(
+        world_request_country(request), int(Date.now()), MAX_CONNECTIONS)
+    payload["securityDetails"] = _world_security_details(request)
     return json_response(
-        world_protocol.context_payload(
-            world_request_country(request), int(Date.now()), MAX_CONNECTIONS),
+        payload,
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
     )
@@ -4043,7 +4047,8 @@ async def world_durable_object_request(
 
     The general tunnel helper forwards Authorization and User-Agent because Git
     hosts need them. World presence does not. It receives only WebSocket
-    handshake headers plus the already-sanitized, approximate country code.
+    handshake headers plus the already-sanitized, approximate country code and
+    opaque moderation subjects.
     """
     headers = {}
     for name in (
@@ -4074,6 +4079,9 @@ async def world_durable_object_request(
             # The Durable Object uses it only to tailor moderation handles to
             # an administrator's socket; it is not public presence metadata.
             "isAdmin": claim.get("isAdmin") is True,
+            # One live use per signed ticket prevents a copied socket URL from
+            # creating a second verified-looking avatar in this room.
+            "ticketNonce": str(claim.get("ticketNonce") or ""),
         }
         encoded_claim = base64.urlsafe_b64encode(
             json.dumps(private_claim, separators=(",", ":")).encode()
@@ -4117,6 +4125,7 @@ async def office_durable_object_request(request, claims, target_url=None):
             (claims or {}).get("name"), "Guest"),
         "accountStatus": str(
             (claims or {}).get("accountStatus") or "Guest"),
+        "nonce": str((claims or {}).get("nonce") or ""),
     }
     encoded_claim = base64.urlsafe_b64encode(
         json.dumps(safe_claim, separators=(",", ":")).encode()
@@ -4214,6 +4223,10 @@ def _world_ticket_decode(env, ticket):
     # `isAdmin` is accepted only from the HMAC-authenticated ticket body. It is
     # never accepted from a browser presence frame.
     public["isAdmin"] = claim.get("isAdmin") is True
+    nonce = str(claim.get("nonce") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,32}", nonce):
+        return None
+    public["ticketNonce"] = nonce
     return public
 
 
@@ -4565,6 +4578,7 @@ async def world_ticket_handler(env, request):
         "issuedAt": now,
         "expiresAt": now + WORLD_TICKET_TTL_MS,
         "activityGeneration": activity["generation"],
+        "nonce": new_world_peer_id(),
     }
     response_data = {
         "ok": True,
@@ -6035,6 +6049,15 @@ async def _office_general_socket_handler(env, request):
             r"[0-9a-f]{64}", str(claims.get("account_bi") or ""))
     ):
         return _private_replica_not_found()
+    try:
+        session_account_bi, _session_record = (
+            await _account_session_record(env, request))
+    except Exception:
+        session_account_bi = ""
+    if not hmac.compare_digest(
+            str(session_account_bi or ""),
+            str(claims.get("account_bi") or "")):
+        return _private_replica_not_found()
     claims["accountStatus"] = "Registered"
     return await _forward_office_socket(
         env,
@@ -6060,6 +6083,15 @@ async def _office_channel_socket_handler(env, request, channel_id):
         if len(ticket_values) == 1 else None
     )
     if not claims or claims["scope"] != channel_id:
+        return _private_replica_not_found()
+    try:
+        session_account_bi, _session_record = (
+            await _account_session_record(env, request))
+    except Exception:
+        session_account_bi = ""
+    if not hmac.compare_digest(
+            str(session_account_bi or ""),
+            str(claims.get("account_bi") or "")):
         return _private_replica_not_found()
     try:
         await ensure_schema(env)
@@ -11586,6 +11618,37 @@ async def _world_moderation_tokens(env, request, now=None):
     # tokens may be forwarded or persisted; public badge display continues to
     # use the existing generalized browser/OS allowlist.
     return tokens
+
+
+def _world_security_details(request):
+    """Return bounded self-only connection details for the context response.
+
+    The address is canonicalized as IPv4/IPv6 and the agent is restricted to
+    printable ASCII with collapsed whitespace. Only Cloudflare's edge-set
+    address header is accepted; X-Forwarded-For is intentionally ignored.
+    Neither value is written to D1, logs, tickets, public presence, Durable
+    Object state, or moderation records.
+    """
+    try:
+        raw_address = str(
+            request.headers.get("cf-connecting-ip") or "")
+    except Exception:
+        raw_address = ""
+    raw_address = raw_address.strip().strip("[]")[:64]
+    try:
+        address = str(ipaddress.ip_address(raw_address))
+    except (ValueError, TypeError):
+        address = ""
+    try:
+        raw_agent = str(request.headers.get("user-agent") or "")
+    except Exception:
+        raw_agent = ""
+    printable_agent = "".join(
+        character if 32 <= ord(character) <= 126 else " "
+        for character in raw_agent[:2048]
+    )
+    agent = " ".join(printable_agent.split())[:256]
+    return {"ip": address[:64], "agent": agent}
 
 
 async def _world_active_manual_block(env, tokens, now=None):
@@ -33818,6 +33881,37 @@ class Default(WorkerEntrypoint):
                 _world_ticket_decode(self.env, ticket_values[0])
                 if len(ticket_values) == 1 else None
             )
+            if ticket_values and not trusted_claim:
+                return json_response(
+                    {"error": "invalid_world_session"},
+                    status=401,
+                    cache_control="no-store, max-age=0, must-revalidate",
+                )
+            if trusted_claim:
+                try:
+                    _account_bi, session_record = (
+                        await _account_session_record(
+                            self.env, request))
+                    session_name = world_protocol.clean_display_name(
+                        (session_record or {}).get("name"), "")
+                    ticket_name = world_protocol.clean_display_name(
+                        trusted_claim.get("name"), "")
+                except Exception:
+                    session_record = None
+                    session_name = ""
+                    ticket_name = ""
+                if (
+                    not session_record
+                    or not session_name
+                    or not hmac.compare_digest(
+                        session_name.lower(), ticket_name.lower())
+                ):
+                    return json_response(
+                        {"error": "invalid_world_session"},
+                        status=401,
+                        cache_control=(
+                            "no-store, max-age=0, must-revalidate"),
+                    )
             moderation_tokens = await _world_moderation_tokens(
                 self.env, request)
             active_block = await _world_active_manual_block(
@@ -35159,7 +35253,20 @@ class ForkMeshWorld(DurableObject):
             raw_country = request.headers.get("x-forkmesh-country") or ""
         except Exception:
             raw_country = ""
-        peer_id = new_world_peer_id()
+        live_ids = {
+            str(_ws_attr(peer, "id", "") or "") for peer in peers
+        }
+        peer_id = ""
+        for _attempt in range(4):
+            candidate = new_world_peer_id()
+            if (
+                re.fullmatch(r"[A-Za-z0-9_-]{1,32}", candidate or "")
+                and candidate not in live_ids
+            ):
+                peer_id = candidate
+                break
+        if not peer_id:
+            return json_response({"error": "identity_unavailable"}, status=503)
         country_source = world_protocol.approximate_country_code(raw_country)
         state = world_protocol.default_presence(peer_id, now)
         blocked_slots = []
@@ -35176,6 +35283,7 @@ class ForkMeshWorld(DurableObject):
         state.update(world_protocol.arrival_position(arrival_slot))
         trusted_claim = {}
         is_admin = False
+        ticket_nonce = ""
         try:
             encoded_claim = (
                 request.headers.get("x-forkmesh-world-claim") or "")
@@ -35186,14 +35294,28 @@ class ForkMeshWorld(DurableObject):
                 candidate = json.loads(
                     base64.urlsafe_b64decode(padded).decode())
                 if isinstance(candidate, dict):
-                    trusted_claim = world_protocol.trusted_presence_claim(
-                        candidate.get("name", ""),
-                        candidate.get("accountStatus", "Guest"),
-                        candidate.get("nodeCount", 0))
-                    is_admin = candidate.get("isAdmin") is True
+                    candidate_nonce = str(
+                        candidate.get("ticketNonce") or "")
+                    if re.fullmatch(
+                            r"[A-Za-z0-9_-]{8,32}", candidate_nonce):
+                        trusted_claim = (
+                            world_protocol.trusted_presence_claim(
+                                candidate.get("name", ""),
+                                candidate.get(
+                                    "accountStatus", "Guest"),
+                                candidate.get("nodeCount", 0)))
+                        is_admin = candidate.get("isAdmin") is True
+                        ticket_nonce = candidate_nonce
         except Exception:
             trusted_claim = {}
             is_admin = False
+            ticket_nonce = ""
+        if ticket_nonce and any(
+                hmac.compare_digest(
+                    str(_ws_attr(peer, "ticket_nonce", "") or ""),
+                    ticket_nonce)
+                for peer in peers):
+            return json_response({"error": "ticket_replayed"}, status=409)
         moderation_tokens = {}
         for target_type in ("ip", "agent"):
             try:
@@ -35217,7 +35339,8 @@ class ForkMeshWorld(DurableObject):
             trusted_node_count=trusted_claim.get("nodeCount", 0),
             arrival_slot=arrival_slot, is_admin=is_admin,
             ip_token=moderation_tokens["ip"],
-            agent_token=moderation_tokens["agent"])
+            agent_token=moderation_tokens["agent"],
+            ticket_nonce=ticket_nonce)
 
         # The only snapshot is the state of sockets alive right now. It is sent
         # directly from runtime attachments and is never persisted or replayed.
@@ -35334,7 +35457,7 @@ class ForkMeshWorld(DurableObject):
                          departed=False, country_source=None,
                          trusted_name=None, trusted_node_count=None,
                          pending_knocks=None, arrival_slot=None, is_admin=None,
-                         ip_token=None, agent_token=None):
+                         ip_token=None, agent_token=None, ticket_nonce=None):
         if country_source is None:
             country_source = _ws_attr(ws, "country_source", "")
         if trusted_name is None:
@@ -35351,6 +35474,8 @@ class ForkMeshWorld(DurableObject):
             ip_token = _ws_attr(ws, "ip_token", "")
         if agent_token is None:
             agent_token = _ws_attr(ws, "agent_token", "")
+        if ticket_nonce is None:
+            ticket_nonce = _ws_attr(ws, "ticket_nonce", "")
         pending_knocks = [
             str(peer_id)
             for peer_id in list(pending_knocks or [])[-8:]
@@ -35381,6 +35506,12 @@ class ForkMeshWorld(DurableObject):
                 str(agent_token)
                 if re.fullmatch(r"[a-f0-9]{64}", str(agent_token or ""))
                 else ""),
+            "ticket_nonce": (
+                str(ticket_nonce)
+                if re.fullmatch(
+                    r"[A-Za-z0-9_-]{8,32}",
+                    str(ticket_nonce or ""))
+                else ""),
             # One-use, live-socket-only consent requests. They are never
             # persisted, broadcast, or exposed in the public presence record.
             "pending_knocks": pending_knocks,
@@ -35399,7 +35530,8 @@ class ForkMeshWorld(DurableObject):
 
     def _presence_for_viewer(self, viewer, subject):
         public = world_protocol.public_presence(self._socket_state(subject))
-        if not bool(_ws_attr(viewer, "is_admin", False)):
+        is_admin = bool(_ws_attr(viewer, "is_admin", False))
+        if not is_admin:
             return public
         handles = {}
         for target_type in ("ip", "agent"):
@@ -35495,6 +35627,9 @@ class ForkMeshWorld(DurableObject):
         return allowed
 
     async def webSocketMessage(self, ws, message):
+        if bool(_ws_attr(ws, "departed", False)):
+            self._safe_close(ws, 1000, "")
+            return
         if not isinstance(message, str):
             self._safe_close(ws, 1003, "text frames only")
             return
@@ -35730,8 +35865,28 @@ class ForkMeshOfficeRoom(DurableObject):
         peers = self._live_sockets(cleanup=True)
         if len(peers) >= world_protocol.OFFICE_MAX_CONNECTIONS:
             return json_response({"error": "room_full"}, status=429)
+        ticket_nonce = str(claim.get("nonce") or "")
+        if any(
+                hmac.compare_digest(
+                    str(_ws_attr(peer, "ticket_nonce", "") or ""),
+                    ticket_nonce)
+                for peer in peers):
+            return json_response({"error": "ticket_replayed"}, status=409)
 
-        participant_id = new_world_peer_id()
+        live_ids = {
+            str(_ws_attr(peer, "id", "") or "") for peer in peers
+        }
+        participant_id = ""
+        for _attempt in range(4):
+            candidate = new_world_peer_id()
+            if (
+                re.fullmatch(r"[A-Za-z0-9_-]{1,32}", candidate or "")
+                and candidate not in live_ids
+            ):
+                participant_id = candidate
+                break
+        if not participant_id:
+            return json_response({"error": "identity_unavailable"}, status=503)
         state = world_protocol.default_office_presence(participant_id, now)
         sanitized = world_protocol.sanitize_office_message(
             {"type": "presence"},
@@ -35755,6 +35910,7 @@ class ForkMeshOfficeRoom(DurableObject):
             version=int(version_raw),
             trusted_name=claim.get("name", ""),
             trusted_status=claim.get("accountStatus", "Guest"),
+            ticket_nonce=ticket_nonce,
         )
         self._safe_send(server, {
             "type": "welcome",
@@ -35801,12 +35957,16 @@ class ForkMeshOfficeRoom(DurableObject):
             claim.get("accountStatus", "Guest"),
             0,
         )
+        nonce = str(claim.get("nonce") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,32}", nonce):
+            return None
         return {
             "scope": scope,
             "version": version,
             "account_bi": account_bi,
             "name": trusted["name"] if claim.get("name") else "",
             "accountStatus": trusted["accountStatus"],
+            "nonce": nonce,
         }
 
     def _socket_state(self, ws):
@@ -35817,7 +35977,8 @@ class ForkMeshOfficeRoom(DurableObject):
 
     def _save_socket(self, ws, state, last, rate_start, rate_count,
                      departed=False, account_bi=None, scope=None, version=None,
-                     trusted_name=None, trusted_status=None):
+                     trusted_name=None, trusted_status=None,
+                     ticket_nonce=None):
         if account_bi is None:
             account_bi = _ws_attr(ws, "account_bi", "")
         if scope is None:
@@ -35828,6 +35989,8 @@ class ForkMeshOfficeRoom(DurableObject):
             trusted_name = _ws_attr(ws, "trusted_name", "")
         if trusted_status is None:
             trusted_status = _ws_attr(ws, "trusted_status", "Guest")
+        if ticket_nonce is None:
+            ticket_nonce = _ws_attr(ws, "ticket_nonce", "")
         record = {
             **world_protocol.public_office_presence(state),
             "account_bi": str(account_bi or ""),
@@ -35835,6 +35998,12 @@ class ForkMeshOfficeRoom(DurableObject):
             "version": int(version or 0),
             "trusted_name": str(trusted_name or ""),
             "trusted_status": str(trusted_status or "Guest"),
+            "ticket_nonce": (
+                str(ticket_nonce)
+                if re.fullmatch(
+                    r"[A-Za-z0-9_-]{8,32}",
+                    str(ticket_nonce or ""))
+                else ""),
             "last": int(last or 0),
             "rl_start": int(rate_start or 0),
             "rl_count": int(rate_count or 0),
@@ -35965,6 +36134,9 @@ class ForkMeshOfficeRoom(DurableObject):
             return False
 
     async def webSocketMessage(self, ws, message):
+        if bool(_ws_attr(ws, "departed", False)):
+            self._safe_close(ws, 1000, "")
+            return
         if not isinstance(message, str):
             self._safe_close(ws, 1003, "text frames only")
             return

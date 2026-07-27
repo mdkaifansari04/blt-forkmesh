@@ -389,11 +389,22 @@ def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
         'officeReception.name = "forkmesh-office-reception"',
         'id: "office-greeter-maya"',
         'id: "office-greeter-noah"',
+        'receptionDesk.name = "forkmesh-office-reception-desk"',
+        "receptionDesk.position.set(0, 1.05, -36.5)",
+        "avatar.position.set(staff.x, 0.38, -40)",
+        "avatar.rotation.y = Math.PI",
         "WELCOME · WALK RIGHT IN",
+        "officeGreetingBoard.position.set(0, 6.25, -OFFICE_FRONT_Z + 0.5)",
         'officeAttendanceBoard.name = "forkmesh-office-attendance"',
         "function setOfficeAttendance(event = {})",
         'logoFountain.name = "forkmesh-office-logo-fountain"',
         'chromeCube.name = "forkmesh-reflective-fm-cube"',
+        "chromeCube.rotation.z = Math.PI / 4",
+        "addFLogoFace(2.8, 0)",
+        "addFLogoFace(-2.8, Math.PI)",
+        "addMLogoFace(2.8, Math.PI / 2)",
+        "addMLogoFace(-2.8, -Math.PI / 2)",
+        'logoSupport.name = "forkmesh-reflective-fm-cube-support"',
         "new THREE.WebGLCubeRenderTarget(",
         "new THREE.CubeCamera(",
         "metalness: 1",
@@ -401,6 +412,12 @@ def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
         "reflectionCamera.update(renderer, scene)",
     ):
         assert contract in scene
+    logo = scene[
+        scene.index('chromeCube.name = "forkmesh-reflective-fm-cube"'):
+        scene.index("let lastLogoReflectionAt")
+    ]
+    assert "const cubeBody" not in logo
+    assert "new THREE.BoxGeometry(5.6, 5.6, 5.6" not in logo
 
 
 def test_elevator_animates_between_floors_and_emits_departure_and_arrival_audio():
