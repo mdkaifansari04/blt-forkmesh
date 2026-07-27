@@ -1932,6 +1932,34 @@ QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables)
                                        });
 }
 
+bool localBinaryRunsOnVultrMirror(const QString &kernelType,
+                                  const QString &cpuArchitecture)
+{
+    if (kernelType.trimmed().toLower() != QLatin1String("linux"))
+        return false;
+    const QString arch = cpuArchitecture.trimmed().toLower();
+    return arch == QLatin1String("x86_64") || arch == QLatin1String("amd64") ||
+           arch == QLatin1String("x64");
+}
+
+bool vultrInstallNeedsLocalBinary(const QString &installOutput)
+{
+    // Matched on the installer's own wording for the two dead ends a retry
+    // cannot clear: nothing in the mesh is serving the repo, and no prebuilt
+    // release exists (or authenticates) for the instance's platform.
+    static const QStringList markers = {
+        QStringLiteral("No online ForkMesh node"),
+        QStringLiteral("No prebuilt ForkMesh binary is published"),
+        QStringLiteral("No prebuilt ForkMesh release passed"),
+        QStringLiteral("falling back to a source build is disabled"),
+    };
+    for (const QString &marker : markers) {
+        if (installOutput.contains(marker))
+            return true;
+    }
+    return false;
+}
+
 QString cloudflareZoneNameFromVariables(
     const QMap<QString, QString> &variables)
 {

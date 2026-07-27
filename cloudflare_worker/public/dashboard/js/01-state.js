@@ -47,6 +47,7 @@
     claimNode: { pendingNodeId: "" },
     linkGrant: null,
     repoMirrors: [],
+    repoLatestCommit: null,
     repoServedBy: null,
     // Owner-only "Agents" tab (adhoc #225): owner verification by node account,
     // no password required. selectedAgentId (adhoc #259) is the id of the agent
