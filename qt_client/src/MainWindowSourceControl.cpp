@@ -435,7 +435,7 @@ void MainWindow::refreshRepoChangeBadge()
     runGitDetached(dir,
                    {QStringLiteral("status"), QStringLiteral("--porcelain=v1"),
                     QStringLiteral("-z")},
-                   [this, forIndex](bool ok, const QByteArray &out) {
+                   [this, forIndex, dir](bool ok, const QByteArray &out) {
                        // The user can switch repos while git runs; a late reply
                        // must not stamp the wrong repo's count on the badge.
                        if (!ok || !m_railGitButton ||
@@ -445,7 +445,9 @@ void MainWindow::refreshRepoChangeBadge()
                        // Rebuild the panel only when it's on screen *and* the
                        // tree actually moved: the rebuild drops the open diff
                        // and the selection, so it must never run speculatively.
-                       if (out != m_scmStatusCache && m_scmTree &&
+                       // Same repo-keyed scan key refreshSourceControl() caches.
+                       const QByteArray scanKey = dir.toUtf8() + '\0' + out;
+                       if (scanKey != m_scmStatusCache && m_scmTree &&
                            m_scmTree->isVisible())
                            refreshSourceControl();
                    });
