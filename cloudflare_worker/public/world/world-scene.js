@@ -9152,6 +9152,7 @@ export function createWorldScene({
   );
   officeMarketingTaskBoardFrame.name =
     "forkmesh-office-marketing-task-board-frame";
+  officeMarketingTaskBoardFrame.userData.officeFloorId = "marketing";
   officeMarketingTaskBoardFrame.userData.interactive =
     "office-marketing-task-board";
   officeMarketingTaskBoard.add(officeMarketingTaskBoardFrame);
@@ -9167,6 +9168,7 @@ export function createWorldScene({
   officeMarketingTaskBoardFace.name =
     "forkmesh-office-marketing-task-board-face";
   officeMarketingTaskBoardFace.position.z = 0.101;
+  officeMarketingTaskBoardFace.userData.officeFloorId = "marketing";
   officeMarketingTaskBoardFace.userData.interactive =
     "office-marketing-task-board";
   officeMarketingTaskBoard.add(officeMarketingTaskBoardFace);
@@ -9191,6 +9193,7 @@ export function createWorldScene({
     officeFloorY("marketing") + 6.65,
     -OFFICE_FRONT_Z + 0.56,
   );
+  officeGuideBoard.userData.officeFloorId = "marketing";
   officeGuideBoard.userData.interactive = "office-meeting-board";
   interactive.push(officeGuideBoard);
   officeInterior.add(officeGuideBoard);
@@ -15610,6 +15613,25 @@ export function createWorldScene({
     pointerLast.copy(currentPointer);
   }
 
+  function officeObjectMatchesCurrentFloor(object) {
+    if (!object || officeSceneMode === "town") return true;
+    let current = object;
+    let floorId = "";
+    let insideOffice = false;
+    while (current) {
+      if (!floorId && current.userData?.officeFloorId) {
+        floorId = String(current.userData.officeFloorId);
+      }
+      if (current === officeInterior) {
+        insideOffice = true;
+        break;
+      }
+      current = current.parent;
+    }
+    if (!insideOffice) return false;
+    return !floorId || floorId === officeCurrentFloorId;
+  }
+
   function finishPointer(event, cancelled = false) {
     const wasPinching = pinchActive || touchPointers.size > 1;
     let remainingTouch = null;
@@ -15690,7 +15712,11 @@ export function createWorldScene({
     raycaster.setFromCamera(pointer, camera);
     const hit = raycaster
       .intersectObjects(interactive, false)
-      .find(({ object }) => objectIsEffectivelyVisible(object));
+      .find(
+        ({ object }) =>
+          objectIsEffectivelyVisible(object) &&
+          officeObjectMatchesCurrentFloor(object),
+      );
     if (
       officeSceneMode !== "town" &&
       hit?.object?.userData?.interactive === "office-marketing-task-board"
@@ -15926,7 +15952,21 @@ export function createWorldScene({
     if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.z)) {
       return null;
     }
-    if (!worldWalkSurfaceContains(point.x, point.z)) return null;
+    if (officeSceneMode === "lobby") {
+      const localPoint = officeInterior.worldToLocal(point.clone());
+      if (
+        !officeInteriorPointIsWalkable(
+          officeCurrentFloorId,
+          localPoint.x,
+          localPoint.z,
+          OFFICE_AVATAR_RADIUS,
+        )
+      ) {
+        return null;
+      }
+    } else if (!worldWalkSurfaceContains(point.x, point.z)) {
+      return null;
+    }
     point.y = currentFloorY;
     return point;
   }
@@ -16162,11 +16202,26 @@ export function createWorldScene({
   function handleDoubleClick(event) {
     if (event.button !== undefined && event.button !== 0) return;
     if (lastGestureDragged) return;
-    if (officeSceneMode !== "town") return;
+    if (officeSceneMode === "meeting" || officeElevatorRide) return;
     // A quick double tap on a bench is still a request to sit on it, not to
     // dash to the patch of ground the bench happens to stand on.
     pointerCoordinates(event);
     raycaster.setFromCamera(pointer, camera);
+    if (officeSceneMode === "lobby") {
+      const officeHit = raycaster
+        .intersectObjects(interactive, false)
+        .find(
+          ({ object }) =>
+            objectIsEffectivelyVisible(object) &&
+            officeObjectMatchesCurrentFloor(object),
+        );
+      if (officeHit) {
+        // The two click events already performed the object interaction.
+        // Suppress only the follow-up dash through that same object/floor.
+        event.preventDefault();
+        return;
+      }
+    }
     const benchHit = raycaster
       .intersectObjects(interactive, false)
       .find(
