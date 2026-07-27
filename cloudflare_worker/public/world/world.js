@@ -4448,6 +4448,21 @@ class ForkMeshWorld extends HTMLElement {
         onOfficeMeetingBoardSelect: () => {
           void this.officeMeeting?.joinRoom?.("general");
         },
+        onOfficeRooftopLaptopSelect: () => {
+          // ForkMesh does not expose a browser-side arbitrary source writer.
+          // Open the real repository browser and keep write-capable work on
+          // the owner device through desktop / IDE integration.
+          window.open(
+            "/forkmesh/forkmesh",
+            "_blank",
+            "noopener,noreferrer",
+          );
+          this.toast(
+            this.sessionAuthenticated
+              ? "Opening the live ForkMesh source browser. Source edits stay in the desktop app or IDE extension."
+              : "Opening public ForkMesh source. Log in for account features; source edits stay in the desktop app or IDE extension.",
+          );
+        },
         onWorldBulletinSelect: () => this.openLandmark("events"),
         onMastodonBoardSelect: () => this.openMastodonBoard(),
         onMastodonOpenLink: (url) => {

@@ -11421,10 +11421,10 @@ export function createWorldScene({
       }
       standUpFromOfficeChair();
     }
-    const walking = movement.lengthSq() > 0;
-    officeLobbyPlayerMoving = walking;
+    let walking = movement.lengthSq() > 0;
     const movementSpeed = movementSpeedForInput(input, delta);
     if (walking) {
+      cancelDash();
       const previousPosition = avatar.position.clone();
       avatar.position.addScaledVector(
         movement,
@@ -11437,7 +11437,32 @@ export function createWorldScene({
       ) {
         return;
       }
+    } else if (dashTarget) {
+      const previousPosition = avatar.position.clone();
+      const toTarget = new THREE.Vector3(
+        dashTarget.x - avatar.position.x,
+        0,
+        dashTarget.z - avatar.position.z,
+      );
+      const remaining = toTarget.length();
+      const step = PLAYER_DASH_SPEED * moveSpeedScale * delta;
+      if (remaining <= Math.max(step, PLAYER_DASH_ARRIVE_DISTANCE)) {
+        avatar.position.x = dashTarget.x;
+        avatar.position.z = dashTarget.z;
+        cancelDash();
+      } else {
+        toTarget.divideScalar(remaining);
+        avatar.position.x += toTarget.x * step;
+        avatar.position.z += toTarget.z * step;
+        avatar.rotation.y = Math.atan2(-toTarget.x, -toTarget.z);
+      }
+      avatar.position.y = officeFloorY(officeCurrentFloorId) + 0.38;
+      walking = true;
+      if (constrainOfficeInteriorWalls(avatar, previousPosition)) {
+        return;
+      }
     }
+    officeLobbyPlayerMoving = walking;
     const gait = walking ? Math.sin(time * 0.012) * 0.48 : 0;
     avatar.userData.leftArm.rotation.x = gait;
     avatar.userData.rightArm.rotation.x = -gait;
@@ -12186,8 +12211,41 @@ export function createWorldScene({
     const desired = target
       .clone()
       .addScaledVector(offsetDirection, distance);
+    const localTarget = officeInterior.worldToLocal(target.clone());
+    const rooftopPatioCamera =
+      officeSceneMode === "lobby" &&
+      officeCurrentFloorId === "rooftop" &&
+      !officeElevatorRide &&
+      !officeElevatorCabinContains(
+        localTarget.x,
+        localTarget.z,
+        0.08,
+      );
+    if (rooftopPatioCamera) {
+      // Looking upward puts an orbit camera below its eye target. Preserve the
+      // requested outward X/Z zoom, but keep that eye just above the roof slab
+      // instead of letting a steep pitch pass through the story below.
+      const localDesired = officeInterior.worldToLocal(desired.clone());
+      localDesired.y = Math.max(
+        localDesired.y,
+        officeFloorY("rooftop") + 0.55,
+      );
+      desired.copy(officeInterior.localToWorld(localDesired));
+    }
     if (reducedMotion) camera.position.copy(desired);
     else camera.position.lerp(desired, 1 - Math.pow(0.0008, delta));
+    if (rooftopPatioCamera) {
+      // Clamp the actual eased camera as well as its destination. Otherwise a
+      // prior below-slab frame could lerp through the roof on its way back up.
+      const localCamera = officeInterior.worldToLocal(
+        camera.position.clone(),
+      );
+      localCamera.y = Math.max(
+        localCamera.y,
+        officeFloorY("rooftop") + 0.55,
+      );
+      camera.position.copy(officeInterior.localToWorld(localCamera));
+    }
     if (officeElevatorRide) {
       // The cabin moves faster than a softly lerped orbit camera. Clamp the
       // eased result back inside its live glass envelope so the eye never
@@ -15615,6 +15673,12 @@ export function createWorldScene({
 
   function officeObjectMatchesCurrentFloor(object) {
     if (!object || officeSceneMode === "town") return true;
+    // A car-mounted selector's floor id is its destination, not the story the
+    // mesh occupies. Keep every destination button clickable from the cabin;
+    // the server-derived allowed flag remains the authority on travel.
+    if (object.userData?.interactive === "office-elevator-floor") {
+      return true;
+    }
     let current = object;
     let floorId = "";
     let insideOffice = false;
