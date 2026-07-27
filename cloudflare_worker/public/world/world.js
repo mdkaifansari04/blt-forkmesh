@@ -4462,7 +4462,7 @@ class ForkMeshWorld extends HTMLElement {
           this.toast(
             this.sessionAuthenticated
               ? "Opening the live ForkMesh source browser. Source edits stay in the desktop app or IDE extension."
-              : "Opening public ForkMesh source. Log in for account features; source edits stay in the desktop app or IDE extension.",
+              : "Opening public ForkMesh source. Log in for account features. Source edits stay in the desktop app or IDE extension.",
             // The same first click may satisfy the browser's pending music
             // autoplay gesture. Keep that asynchronous playback notice from
             // immediately replacing this interaction-specific explanation.
