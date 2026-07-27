@@ -16582,6 +16582,12 @@ class ForkMeshWorld extends HTMLElement {
       clone.style.width = `${width}px`;
       clone.style.height = `${height}px`;
       clone.style.margin = "0";
+      // The world root paints an opaque backdrop behind the 3D canvas. The HUD
+      // raster is composited *over* the rendered frame, so leaving that fill in
+      // the clone buries the game world and the capture comes back as chrome on
+      // a flat colour.
+      clone.style.background = "transparent";
+      clone.style.backgroundColor = "transparent";
       await this.inlineHudImages(root, clone);
       markup = new XMLSerializer().serializeToString(clone);
     } catch (_) {
