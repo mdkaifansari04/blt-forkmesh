@@ -83,6 +83,10 @@ const REPOSITORY_FIRST_PERSON_PITCH = -0.08;
 const OFFICE_HEIGHT = OFFICE_FLOOR_HEIGHT;
 const OFFICE_INTERIOR_WALL_LIMIT = OFFICE_FRONT_Z - 0.54;
 const OFFICE_INTERIOR_EXIT_Z = OFFICE_FRONT_Z + 0.18;
+const OFFICE_DOOR_HEIGHT = 4.4;
+const OFFICE_DOOR_SILL_Y = 0.34;
+const OFFICE_DOORWAY_ENTRY_Z =
+  OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS;
 const OFFICE_ELEVATOR_HALF_WIDTH = 5;
 const OFFICE_ELEVATOR_HALF_DEPTH = 4;
 const OFFICE_ELEVATOR_CUT_MARGIN = 0.35;
@@ -6881,7 +6885,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const wallThickness = 0.35;
   const doorWidth = OFFICE_DOOR_WIDTH;
-  const doorHeight = 4.4;
+  const doorHeight = OFFICE_DOOR_HEIGHT;
   const rooftopY = officeFloorY("rooftop");
   const concrete = makeMaterial(THREE, "#18231f", {
     metalness: 0.08,
@@ -6898,9 +6902,12 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     roughness: 0.62,
     depthWrite: false,
   });
-  const doorMaterial = makeMaterial(THREE, "#245845", {
-    metalness: 0.34,
-    roughness: 0.44,
+  const doorMaterial = makeMaterial(THREE, "#c9fff3", {
+    transparent: true,
+    opacity: 0.3,
+    metalness: 0,
+    roughness: 0.38,
+    depthWrite: false,
   });
   const elevatorFacadeMinX =
     OFFICE_ELEVATOR_CENTER_X -
@@ -7158,7 +7165,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
       `forkmesh-office-sliding-door-${side < 0 ? "left" : "right"}`;
     panel.position.set(
       side * doorClosedX,
-      doorHeight / 2 + 0.34,
+      doorHeight / 2 + OFFICE_DOOR_SILL_Y,
       0,
     );
     slidingDoors.add(panel);
@@ -9331,10 +9338,26 @@ export function createWorldScene({
   officeAttendanceBoard.rotation.y = Math.PI / 2;
   officeInterior.add(officeAttendanceBoard);
 
-  function officeAttendanceTexture(snapshot = {}) {
+  function officeAttendanceDurationLabel(value) {
+    if (value === null || value === undefined || value === "") return "—";
+    const milliseconds = Number(value);
+    if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
+    const totalMinutes = Math.floor(milliseconds / 60_000);
+    if (totalMinutes < 60) return `${totalMinutes}m`;
+    const totalHours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    if (totalHours < 24) {
+      return `${totalHours}h ${String(minutes).padStart(2, "0")}m`;
+    }
+    const days = Math.floor(totalHours / 24);
+    return `${days}d ${String(totalHours % 24).padStart(2, "0")}h`;
+  }
+
+  function officeAttendanceTexture(snapshot = {}, openElapsedMs = 0) {
     const visits = Array.isArray(snapshot?.visits)
       ? snapshot.visits.slice(0, 20)
       : [];
+    const liveElapsedMs = Math.max(0, Number(openElapsedMs) || 0);
     return canvasTexture(THREE, 1600, 800, (context) => {
       const format = (value) => {
         const timestamp = Number(value);
@@ -9358,8 +9381,9 @@ export function createWorldScene({
       context.fillStyle = "#79a996";
       context.font = '800 27px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText("USER", 42, 112);
-      context.fillText("IN", 570, 112);
-      context.fillText("OUT", 1080, 112);
+      context.fillText("IN", 500, 112);
+      context.fillText("OUT", 900, 112);
+      context.fillText("TOTAL", 1350, 112);
       context.strokeStyle = "rgba(121,239,181,0.28)";
       context.lineWidth = 2;
       context.beginPath();
@@ -9375,16 +9399,27 @@ export function createWorldScene({
         }
         context.fillStyle = "#e9fff6";
         context.fillText(
-          String(visit?.account || "Contributor").slice(0, 25),
+          String(visit?.account || "Contributor").slice(0, 22),
           42,
           y,
         );
         context.fillStyle = "#a9d7c4";
-        context.fillText(format(visit?.inAt), 570, y);
+        context.fillText(format(visit?.inAt), 500, y);
         context.fillStyle = visit?.outAt ? "#a9d7c4" : "#f7c96b";
         context.fillText(
           visit?.outAt ? format(visit.outAt) : "IN BUILDING",
-          1080,
+          900,
+          y,
+        );
+        const durationMs =
+          visit?.durationMs === null || visit?.durationMs === undefined
+            ? null
+            : Number(visit.durationMs) +
+              (visit?.inAt && !visit?.outAt ? liveElapsedMs : 0);
+        context.fillStyle = visit?.outAt ? "#a9d7c4" : "#f7c96b";
+        context.fillText(
+          officeAttendanceDurationLabel(durationMs),
+          1350,
           y,
         );
       });
@@ -9444,19 +9479,24 @@ export function createWorldScene({
     180,
     reflectionTarget,
   );
+  reflectionCamera.name = "forkmesh-office-logo-reflection-camera";
+  reflectionCamera.userData.logoCaptureCount = 0;
+  reflectionCamera.userData.logoCapturePolicy = "dirty-idle-once";
   reflectionCamera.position.y = 5.1;
   logoFountain.add(reflectionCamera);
   const chrome = new THREE.MeshPhysicalMaterial({
     // A neutral mid-silver base leaves headroom for the live cube map. Nearly
     // white metal clipped those reflected lobby greens and dark window bands
     // into a flat white surface under ACES tone mapping.
-    color: "#aeb9c8",
-    metalness: 1,
-    roughness: 0.045,
+    color: "#dbe4ef",
+    metalness: 0.94,
+    roughness: 0.055,
+    emissive: "#0b1417",
+    emissiveIntensity: 0.14,
     clearcoat: 1,
     clearcoatRoughness: 0.02,
     envMap: reflectionTarget.texture,
-    envMapIntensity: 1.65,
+    envMapIntensity: 1.45,
   });
   const darkChrome = new THREE.MeshPhysicalMaterial({
     color: "#05070b",
@@ -9466,26 +9506,36 @@ export function createWorldScene({
     envMap: reflectionTarget.texture,
     envMapIntensity: 1.5,
   });
+  const logoInnerFace = new THREE.MeshStandardMaterial({
+    color: "#030807",
+    metalness: 0.18,
+    roughness: 0.72,
+  });
+  const logoPanelChrome = chrome.clone();
+  logoPanelChrome.color.set("#f0f5ff");
+  logoPanelChrome.metalness = 0.8;
+  logoPanelChrome.roughness = 0.07;
+  logoPanelChrome.envMapIntensity = 1.3;
+  logoPanelChrome.emissive.set("#111c20");
+  logoPanelChrome.emissiveIntensity = 0.16;
   const chromeCube = new THREE.Group();
   chromeCube.name = "forkmesh-reflective-fm-cube";
   // The resting view presents the F/M corner together. Motion-enabled clients
   // then continue from this pose around the same world-vertical axis.
   chromeCube.rotation.y = 0;
   // Only this outer mount animates. Its Y rotation is the single vertical
-  // spindle through the fountain; the inner edge-balanced tilt never changes.
+  // spindle through the fountain; the inner mark remains architecturally
+  // upright so the top is horizontal and the F/M walls stay vertical.
   const chromeMark = new THREE.Group();
   chromeMark.name = "forkmesh-reflective-fm-cube-fixed-tilt";
   chromeCube.add(chromeMark);
   const logoHalfSize = 2.92;
-  const logoSupportTopY = 2.4;
-  // Align one body diagonal with world-up. The selected lower corner therefore
-  // remains exactly over the single support even while the outer mount spins.
-  const logoLowerCorner = new THREE.Vector3(-1, -1, -1).normalize();
-  chromeMark.quaternion.setFromUnitVectors(
-    logoLowerCorner,
-    new THREE.Vector3(0, -1, 0),
-  );
-  chromeCube.position.y = logoSupportTopY + logoHalfSize * Math.sqrt(3);
+  const logoSupportBaseY = 1.16;
+  const logoSupportTopY = 3.4;
+  const logoSupportHeight = logoSupportTopY - logoSupportBaseY;
+  chromeMark.quaternion.identity();
+  chromeMark.userData.logoUpright = true;
+  chromeCube.position.y = logoSupportTopY + logoHalfSize;
   reflectionCamera.position.y = chromeCube.position.y;
   const logoPiece = (
     parent,
@@ -9499,13 +9549,25 @@ export function createWorldScene({
   ) => {
     const piece = new THREE.Mesh(
       new THREE.BoxGeometry(width, height, depth),
-      chrome,
+      // Every face group is authored with local +Z pointing out of the cube.
+      // Only that public face is mirror-bright. Matte sides and inward backs
+      // keep the repeated opposite F/M marks from flashing through the hollow
+      // center as fragmented chrome strokes.
+      [
+        logoInnerFace,
+        logoInnerFace,
+        logoInnerFace,
+        logoInnerFace,
+        chrome,
+        logoInnerFace,
+      ],
     );
     piece.position.set(x, y, z);
     piece.rotation.z = rotationZ;
     parent.add(piece);
     return piece;
   };
+  const logoLetterStroke = 1.04;
 
   const addFLogoFace = (z, rotationY) => {
     const face = new THREE.Group();
@@ -9513,9 +9575,9 @@ export function createWorldScene({
       `forkmesh-reflective-f-face-${z > 0 ? "front" : "back"}`;
     face.position.z = z;
     face.rotation.y = rotationY;
-    logoPiece(face, 0.82, 4.9, 0.48, -1.64, -0.04, 0);
-    logoPiece(face, 4.35, 0.82, 0.48, 0.12, 2.0, 0);
-    logoPiece(face, 3.45, 0.82, 0.48, -0.33, 0.22, 0);
+    logoPiece(face, logoLetterStroke, 4.9, 0.48, -1.64, -0.04, 0);
+    logoPiece(face, 4.35, logoLetterStroke, 0.48, 0.12, 2.0, 0);
+    logoPiece(face, 3.45, logoLetterStroke, 0.48, -0.33, 0.22, 0);
     chromeMark.add(face);
   };
   addFLogoFace(2.68, 0);
@@ -9527,14 +9589,14 @@ export function createWorldScene({
       `forkmesh-reflective-m-face-${x > 0 ? "right" : "left"}`;
     face.position.x = x;
     face.rotation.y = rotationY;
-    logoPiece(face, 0.82, 4.9, 0.48, -1.72, -0.04, 0);
-    logoPiece(face, 0.82, 4.9, 0.48, 1.72, -0.04, 0);
+    logoPiece(face, logoLetterStroke, 4.9, 0.48, -1.72, -0.04, 0);
+    logoPiece(face, logoLetterStroke, 4.9, 0.48, 1.72, -0.04, 0);
     const addDiagonal = (fromX, fromY, toX, toY) => {
       const dx = toX - fromX;
       const dy = toY - fromY;
       logoPiece(
         face,
-        0.82,
+        logoLetterStroke,
         Math.hypot(dx, dy),
         0.48,
         (fromX + toX) / 2,
@@ -9643,7 +9705,7 @@ export function createWorldScene({
   logoPanelGeometry.translate(0, 0, -0.18);
   logoPanelGeometry.rotateX(Math.PI / 2);
   for (const faceY of [-2.68, 2.68]) {
-    const panel = new THREE.Mesh(logoPanelGeometry, chrome);
+    const panel = new THREE.Mesh(logoPanelGeometry, logoPanelChrome);
     panel.name =
       `forkmesh-reflective-fm-panel-${faceY > 0 ? "top" : "bottom"}`;
     panel.position.y = faceY;
@@ -9655,19 +9717,21 @@ export function createWorldScene({
     chrome,
   );
   logoContactPoint.name = "forkmesh-reflective-fm-cube-contact-point";
-  logoContactPoint.position.set(
-    -logoHalfSize,
-    -logoHalfSize,
-    -logoHalfSize,
-  );
+  logoContactPoint.position.set(0, -logoHalfSize, 2.68);
   chromeMark.add(logoContactPoint);
   const logoSupport = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.2, 0.28, 1.28, 20),
+    new THREE.CylinderGeometry(0.28, 0.38, logoSupportHeight, 20),
     darkChrome,
   );
   logoSupport.name = "forkmesh-reflective-fm-cube-support";
-  logoSupport.position.y = logoSupportTopY - 0.64;
-  logoFountain.add(logoSupport);
+  // The sole pedestal meets the center of the lower F-side edge and turns
+  // with the yawing sculpture, so the visible contact never drifts away.
+  logoSupport.position.set(
+    0,
+    logoSupportBaseY + logoSupportHeight / 2 - chromeCube.position.y,
+    2.68,
+  );
+  chromeCube.add(logoSupport);
   logoFountain.add(chromeCube);
   for (const [x, y, z, intensity] of [
     [-7, 9, 5, 4.8],
@@ -9684,31 +9748,73 @@ export function createWorldScene({
     logoFountain.add(highlight);
   }
   officeInterior.add(logoFountain);
-  let lastLogoReflectionAt = 0;
   let officeLobbyPlayerMoving = false;
-  // One cube-map refresh renders the scene six times. The lobby itself is
-  // mostly static, so refresh only while its visitor and camera are idle.
-  // Capturing on other floors or during a drag spends six full scene renders
-  // on an invisible sculpture and presents as a periodic movement hitch.
-  const logoReflectionIntervalMs = compactRenderer ? 2500 : 1000;
+  let logoReflectionDirty = true;
+  let logoReflectionWasInLobby = false;
+  let logoReflectionWasBusy = false;
+  let logoReflectionEligibleAt = Infinity;
+  // One cube-map refresh renders the scene six times. Treat it as an idle
+  // snapshot, not a recurring animation: entry and motion only mark the map
+  // dirty, then one capture runs after the visitor has settled. This keeps the
+  // Office and the local avatar legible in the chrome without a one-second
+  // render spike or visible reflection flash while walking.
+  const logoReflectionSettleMs = compactRenderer ? 1400 : 900;
+  reflectionCamera.userData.logoCaptureSettleMs = logoReflectionSettleMs;
   animated.push((time) => {
     chromeCube.rotation.y = time * 0.00022;
     logoWater.rotation.y = -time * 0.00012;
   });
   function updateOfficeLogoReflection(time) {
-    if (
+    const inLobby =
       officeSceneMode === "lobby" &&
       officeCurrentFloorId === "lobby" &&
-      !officeElevatorRide &&
-      !officeLobbyPlayerMoving &&
-      primaryPointerId === null &&
-      !pinchActive &&
-      time - lastLogoReflectionAt >= logoReflectionIntervalMs
-    ) {
-      lastLogoReflectionAt = time;
+      !officeElevatorRide;
+    if (!inLobby) {
+      logoReflectionWasInLobby = false;
+      logoReflectionWasBusy = false;
+      logoReflectionDirty = true;
+      logoReflectionEligibleAt = Infinity;
+      return;
+    }
+    if (!logoReflectionWasInLobby) {
+      logoReflectionWasInLobby = true;
+      logoReflectionDirty = true;
+      logoReflectionEligibleAt = time + logoReflectionSettleMs;
+      return;
+    }
+    const busy =
+      officeLobbyPlayerMoving ||
+      primaryPointerId !== null ||
+      pinchActive;
+    if (busy) {
+      logoReflectionDirty = true;
+      logoReflectionWasBusy = true;
+      logoReflectionEligibleAt = time + logoReflectionSettleMs;
+      return;
+    }
+    if (logoReflectionWasBusy) {
+      logoReflectionWasBusy = false;
+      logoReflectionEligibleAt = time + logoReflectionSettleMs;
+      return;
+    }
+    if (logoReflectionDirty && time >= logoReflectionEligibleAt) {
+      const cubeWasVisible = chromeCube.visible;
+      const playerWasVisible = player.visible;
       chromeCube.visible = false;
-      reflectionCamera.update(renderer, scene);
-      chromeCube.visible = true;
+      // First-person mode normally hides the local body from the main camera.
+      // The reflection camera is independent, so reveal it for this capture
+      // and restore the exact prior state immediately afterwards.
+      player.visible = true;
+      try {
+        reflectionCamera.update(renderer, scene);
+      } finally {
+        player.visible = playerWasVisible;
+        chromeCube.visible = cubeWasVisible;
+      }
+      logoReflectionDirty = false;
+      logoReflectionEligibleAt = Infinity;
+      reflectionCamera.userData.logoCaptureCount += 1;
+      reflectionCamera.userData.logoCapturedPlayer = true;
     }
   }
 
@@ -9987,6 +10093,8 @@ export function createWorldScene({
   let officeFloorHandler = null;
   let officeElevatorRide = null;
   let officeAttendance = { visits: [] };
+  let officeAttendanceObservedAt = performance.now();
+  let officeAttendanceRenderedBucket = 0;
   let officeReceptionWasNear = false;
   let officeReceptionLastTipAt = -Infinity;
   let officeReceptionGuestTipIndex = 0;
@@ -10081,21 +10189,10 @@ export function createWorldScene({
   function officeAvatarLocalPosition(
     avatar,
     target = new THREE.Vector3(),
-    { entry = false } = {},
   ) {
     if (!avatar) return target.set(0, 0, 0);
     avatar.getWorldPosition(target);
     officeInterior.worldToLocal(target);
-    if (entry) {
-      // Admission may resolve one frame after the physical threshold crossing.
-      // Keep that live pose at the doorway instead of letting latency place the
-      // visitor beyond the front face before interior collision takes over.
-      const doorwayEdge = Math.min(
-        OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS,
-        OFFICE_INTERIOR_EXIT_Z,
-      );
-      target.z = Math.min(target.z, doorwayEdge);
-    }
     return target;
   }
 
@@ -10250,18 +10347,41 @@ export function createWorldScene({
   }
 
   function setOfficeAttendance(event = {}) {
+    const receivedAt = performance.now();
+    const rawAsOfAt = Number(event?.asOfAt);
+    const asOfAt =
+      Number.isFinite(rawAsOfAt) && rawAsOfAt > 0
+        ? rawAsOfAt
+        : Date.now();
     const visits = Array.isArray(event?.visits)
-      ? event.visits.slice(0, 20).map((visit) => ({
-          id: String(visit?.id || "").slice(0, 32),
-          account: String(visit?.account || "Contributor")
-            .replace(/\s+/g, " ")
-            .trim()
-            .slice(0, 32),
-          inAt: Math.max(0, Number(visit?.inAt) || 0),
-          outAt: Math.max(0, Number(visit?.outAt) || 0),
-        }))
+      ? event.visits.slice(0, 20).map((visit) => {
+          const inAt = Math.max(0, Number(visit?.inAt) || 0);
+          const rawOutAt = Math.max(0, Number(visit?.outAt) || 0);
+          const outAt = inAt > 0 && rawOutAt >= inAt ? rawOutAt : 0;
+          const suppliedDuration = Number(visit?.durationMs);
+          const durationMs =
+            inAt <= 0
+              ? null
+              : Number.isFinite(suppliedDuration) && suppliedDuration >= 0
+                ? suppliedDuration
+                : outAt
+                  ? outAt - inAt
+                  : Math.max(0, asOfAt - inAt);
+          return {
+            id: String(visit?.id || "").slice(0, 32),
+            account: String(visit?.account || "Contributor")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 32),
+            inAt,
+            outAt,
+            durationMs,
+          };
+        })
       : [];
-    officeAttendance = { visits };
+    officeAttendance = { visits, asOfAt };
+    officeAttendanceObservedAt = receivedAt;
+    officeAttendanceRenderedBucket = 0;
     const previous = officeAttendanceBoard.material.map;
     officeAttendanceBoard.material.map =
       officeAttendanceTexture(officeAttendance);
@@ -10270,6 +10390,26 @@ export function createWorldScene({
     return {
       visits: officeAttendance.visits.map((visit) => ({ ...visit })),
     };
+  }
+
+  function updateOfficeAttendanceClock(time) {
+    if (
+      officeSceneMode !== "lobby" ||
+      !officeAttendance.visits.some(
+        (visit) => visit.inAt > 0 && !visit.outAt,
+      )
+    ) {
+      return;
+    }
+    const elapsedMs = Math.max(0, time - officeAttendanceObservedAt);
+    const bucket = Math.floor(elapsedMs / 30_000);
+    if (bucket === officeAttendanceRenderedBucket) return;
+    officeAttendanceRenderedBucket = bucket;
+    const previous = officeAttendanceBoard.material.map;
+    officeAttendanceBoard.material.map =
+      officeAttendanceTexture(officeAttendance, elapsedMs);
+    officeAttendanceBoard.material.needsUpdate = true;
+    previous?.dispose?.();
   }
 
   function travelToOfficeFloor(floorId) {
@@ -10327,7 +10467,7 @@ export function createWorldScene({
     const previousX = previousPosition.x - office.position.x;
     const previousZ = previousPosition.z - office.position.z;
     const doorClearance = OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS;
-    const doorwayThreshold = OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS;
+    const doorwayThreshold = OFFICE_DOORWAY_ENTRY_Z;
     if (
       localZ > doorwayThreshold + 0.32 &&
       localZ > previousZ + 0.01
@@ -10420,8 +10560,10 @@ export function createWorldScene({
       position.z = OFFICE_INTERIOR_WALL_LIMIT;
       commitPosition();
     }
+    const movingOutward = position.z > previous.z + 1e-5;
     if (
       officeCurrentFloorId === "lobby" &&
+      movingOutward &&
       position.z >= OFFICE_INTERIOR_EXIT_Z &&
       Math.abs(position.x) <= doorClearance
     ) {
@@ -10438,7 +10580,7 @@ export function createWorldScene({
         officeCurrentFloorId === "lobby" &&
         Math.abs(x) <= doorClearance &&
         z >= OFFICE_INTERIOR_WALL_LIMIT &&
-        z <= OFFICE_INTERIOR_EXIT_Z;
+        z <= OFFICE_DOORWAY_ENTRY_Z + 0.08;
       return (
         inLobbyDoorway ||
         officeInteriorPointIsWalkable(
@@ -10648,20 +10790,11 @@ export function createWorldScene({
       const localPosition = officeAvatarLocalPosition(
         player,
         new THREE.Vector3(),
-        { entry: true },
       );
-      const doorClearance =
-        OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS - 0.08;
-      localPosition.x = clamp(
-        localPosition.x,
-        -doorClearance,
-        doorClearance,
-      );
+      // The town-wall crossing already verified that this is the physical
+      // doorway. Preserve its exact X/Z threshold pose across the mode handoff;
+      // subsequent lobby motion owns wall and outward-exit collision.
       localPosition.y = currentFloorY;
-      localPosition.z = Math.min(
-        localPosition.z,
-        OFFICE_INTERIOR_WALL_LIMIT - 0.72,
-      );
       applyOfficeAvatarLocalPosition(player, localPosition);
     } else if (meetingAvatar) {
       const localPosition = nearestOfficeWalkablePosition(
@@ -11421,10 +11554,10 @@ export function createWorldScene({
       }
       standUpFromOfficeChair();
     }
-    const walking = movement.lengthSq() > 0;
-    officeLobbyPlayerMoving = walking;
+    let walking = movement.lengthSq() > 0;
     const movementSpeed = movementSpeedForInput(input, delta);
     if (walking) {
+      cancelDash();
       const previousPosition = avatar.position.clone();
       avatar.position.addScaledVector(
         movement,
@@ -11437,7 +11570,32 @@ export function createWorldScene({
       ) {
         return;
       }
+    } else if (dashTarget) {
+      const previousPosition = avatar.position.clone();
+      const toTarget = new THREE.Vector3(
+        dashTarget.x - avatar.position.x,
+        0,
+        dashTarget.z - avatar.position.z,
+      );
+      const remaining = toTarget.length();
+      const step = PLAYER_DASH_SPEED * moveSpeedScale * delta;
+      if (remaining <= Math.max(step, PLAYER_DASH_ARRIVE_DISTANCE)) {
+        avatar.position.x = dashTarget.x;
+        avatar.position.z = dashTarget.z;
+        cancelDash();
+      } else {
+        toTarget.divideScalar(remaining);
+        avatar.position.x += toTarget.x * step;
+        avatar.position.z += toTarget.z * step;
+        avatar.rotation.y = Math.atan2(-toTarget.x, -toTarget.z);
+      }
+      avatar.position.y = officeFloorY(officeCurrentFloorId) + 0.38;
+      walking = true;
+      if (constrainOfficeInteriorWalls(avatar, previousPosition)) {
+        return;
+      }
     }
+    officeLobbyPlayerMoving = walking;
     const gait = walking ? Math.sin(time * 0.012) * 0.48 : 0;
     avatar.userData.leftArm.rotation.x = gait;
     avatar.userData.rightArm.rotation.x = -gait;
@@ -12110,6 +12268,34 @@ export function createWorldScene({
           minZ: -OFFICE_DEPTH / 2 + 0.72,
           maxZ: OFFICE_FRONT_Z - 0.72,
         };
+    const frontDirection = Number(direction.z) || 0;
+    const rawFrontDistance =
+      frontDirection > 1e-6
+        ? (OFFICE_FRONT_Z - localTarget.z) / frontDirection
+        : NaN;
+    const targetInDoorwayThreshold =
+      localTarget.z >= OFFICE_FRONT_Z &&
+      localTarget.z <= OFFICE_DOORWAY_ENTRY_Z + 0.08;
+    const portalDistance =
+      rawFrontDistance >= 0
+        ? rawFrontDistance
+        : targetInDoorwayThreshold
+          ? 0
+          : NaN;
+    const portalX =
+      localTarget.x + (Number(direction.x) || 0) * portalDistance;
+    const portalY =
+      localTarget.y + (Number(direction.y) || 0) * portalDistance;
+    const rayThroughOpenLobbyPortal =
+      !ridingElevator &&
+      officeCurrentFloorId === "lobby" &&
+      officeSlidingDoorOpen >= 0.9 &&
+      frontDirection > 1e-6 &&
+      Number.isFinite(portalDistance) &&
+      Math.abs(portalX) <= OFFICE_DOOR_WIDTH / 2 - 0.08 &&
+      portalY >= OFFICE_DOOR_SILL_Y + 0.08 &&
+      portalY <=
+        OFFICE_DOOR_SILL_Y + OFFICE_DOOR_HEIGHT - 0.08;
     const axes = [
       ["x", "minX", "maxX"],
       ["y", "minY", "maxY"],
@@ -12119,6 +12305,16 @@ export function createWorldScene({
     axes.forEach(([axis, minKey, maxKey]) => {
       const component = Number(direction[axis]) || 0;
       if (Math.abs(component) < 1e-6) return;
+      // The open front door is a real portal in the floor envelope. Only its
+      // Z face is omitted; side walls, floor/ceiling, rear wall, elevator, and
+      // every ray that misses the actual aperture retain the normal clamp.
+      if (
+        axis === "z" &&
+        component > 0 &&
+        rayThroughOpenLobbyPortal
+      ) {
+        return;
+      }
       const edge = component > 0 ? bounds[maxKey] : bounds[minKey];
       const distance = (edge - localTarget[axis]) / component;
       if (distance >= 0) boundaryDistance = Math.min(boundaryDistance, distance);
@@ -12186,8 +12382,41 @@ export function createWorldScene({
     const desired = target
       .clone()
       .addScaledVector(offsetDirection, distance);
+    const localTarget = officeInterior.worldToLocal(target.clone());
+    const rooftopPatioCamera =
+      officeSceneMode === "lobby" &&
+      officeCurrentFloorId === "rooftop" &&
+      !officeElevatorRide &&
+      !officeElevatorCabinContains(
+        localTarget.x,
+        localTarget.z,
+        0.08,
+      );
+    if (rooftopPatioCamera) {
+      // Looking upward puts an orbit camera below its eye target. Preserve the
+      // requested outward X/Z zoom, but keep that eye just above the roof slab
+      // instead of letting a steep pitch pass through the story below.
+      const localDesired = officeInterior.worldToLocal(desired.clone());
+      localDesired.y = Math.max(
+        localDesired.y,
+        officeFloorY("rooftop") + 0.55,
+      );
+      desired.copy(officeInterior.localToWorld(localDesired));
+    }
     if (reducedMotion) camera.position.copy(desired);
     else camera.position.lerp(desired, 1 - Math.pow(0.0008, delta));
+    if (rooftopPatioCamera) {
+      // Clamp the actual eased camera as well as its destination. Otherwise a
+      // prior below-slab frame could lerp through the roof on its way back up.
+      const localCamera = officeInterior.worldToLocal(
+        camera.position.clone(),
+      );
+      localCamera.y = Math.max(
+        localCamera.y,
+        officeFloorY("rooftop") + 0.55,
+      );
+      camera.position.copy(officeInterior.localToWorld(localCamera));
+    }
     if (officeElevatorRide) {
       // The cabin moves faster than a softly lerped orbit camera. Clamp the
       // eased result back inside its live glass envelope so the eye never
@@ -15615,6 +15844,12 @@ export function createWorldScene({
 
   function officeObjectMatchesCurrentFloor(object) {
     if (!object || officeSceneMode === "town") return true;
+    // A car-mounted selector's floor id is its destination, not the story the
+    // mesh occupies. Keep every destination button clickable from the cabin;
+    // the server-derived allowed flag remains the authority on travel.
+    if (object.userData?.interactive === "office-elevator-floor") {
+      return true;
+    }
     let current = object;
     let floorId = "";
     let insideOffice = false;
@@ -16494,6 +16729,7 @@ export function createWorldScene({
       walkOfficeParticipant(delta, time);
     }
     updateOfficeReceptionGuide(time);
+    updateOfficeAttendanceClock(time);
     // The Office is part of the same live World. Neighbours and ForkBot keep
     // animating while the local visitor is in the tower instead of freezing
     // the landscape visible through its glass walls.
