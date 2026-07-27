@@ -172,6 +172,7 @@ def test_office_doorway_has_no_concrete_sill_or_raised_door_panels():
     office = scene[office_start:office_end]
 
     assert "OFFICE_DOOR_SILL_Y" not in scene
+    assert "const OFFICE_DOOR_HEIGHT = OFFICE_HEIGHT;" in scene
     assert "[-OFFICE_WIDTH / 2, -doorWidth / 2]" in office
     assert "[doorWidth / 2, elevatorFacadeMinX]" in office
     assert "doorHeight / 2," in office
@@ -632,6 +633,10 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
         in enter
     assert "player.position.z = office.position.z + doorwayThreshold" \
         in town_collision
+    assert "const OFFICE_DOORWAY_APPROACH_Z = OFFICE_DOORWAY_ENTRY_Z + 0.9;" \
+        in scene
+    assert "const inDoorwayApproach =" in town_collision
+    assert "movingInward;" in town_collision
     accepted_handoff = town_collision[
         town_collision.index('if (officeSceneMode !== "town")'):
         town_collision.index("// Fail closed only")
@@ -642,7 +647,7 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
     collision = function_body(scene, "constrainOfficeInteriorWalls")
     assert "const movingOutward =" in collision
     assert "movingOutward &&" in collision
-    assert "z <= OFFICE_DOORWAY_ENTRY_Z + 0.08" in collision
+    assert "z <= OFFICE_DOORWAY_APPROACH_Z + 0.08" in collision
 
     # Entry continues with the same player object. A second local avatar, a
     # forced camera mode, or rewritten orbit state would read as a scene cut.

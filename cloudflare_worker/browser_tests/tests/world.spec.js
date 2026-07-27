@@ -2042,7 +2042,8 @@ test("Office entry preserves the live avatar and keeps zoom inside the tower", a
   expect(after.cloneVisible).toBe(false);
   expect(after.handoff.before.uuid).toBe(before.uuid);
   expect(after.handoff.after.uuid).toBe(before.uuid);
-  expect(after.handoff.before.local[2]).toBeCloseTo(45.46, 2);
+  expect(after.handoff.before.local[2]).toBeGreaterThan(45.46);
+  expect(after.handoff.before.local[2]).toBeLessThan(46.5);
   expect(after.handoff.after.local[0])
     .toBeCloseTo(after.handoff.before.local[0], 7);
   expect(after.handoff.after.local[2])

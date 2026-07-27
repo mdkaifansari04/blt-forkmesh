@@ -87,9 +87,14 @@ const REPOSITORY_FIRST_PERSON_PITCH = -0.08;
 const OFFICE_HEIGHT = OFFICE_FLOOR_HEIGHT;
 const OFFICE_LOBBY_SURFACE_Y = 0.38;
 const OFFICE_INTERIOR_WALL_LIMIT = OFFICE_FRONT_Z - 0.54;
-const OFFICE_DOOR_HEIGHT = 4.4;
+const OFFICE_DOOR_HEIGHT = OFFICE_HEIGHT;
 const OFFICE_DOORWAY_ENTRY_Z =
   OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS;
+// Begin the continuous scene-mode handoff just outside the collision plane.
+// Waiting for the avatar center to hit one exact Z left a visible pause at low
+// walking speeds; an inward-only approach corridor makes the next frame belong
+// to the lobby before the tower shell can ever hold the player.
+const OFFICE_DOORWAY_APPROACH_Z = OFFICE_DOORWAY_ENTRY_Z + 0.9;
 // Entry and exit cross the same physical plane. Separate thresholds used to
 // snap the avatar first inward and then outward as the scene mode changed,
 // which felt like a bump even though the Office stays in the same world.
@@ -10681,6 +10686,26 @@ export function createWorldScene({
     if (!office) return false;
     const localX = player.position.x - office.position.x;
     const localZ = player.position.z - office.position.z;
+    const previousZ = previousPosition.z - office.position.z;
+    const doorClearance = OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS;
+    const movingInward = localZ < previousZ - 1e-5;
+    const inDoorwayApproach =
+      Math.abs(localX) <= doorClearance &&
+      previousZ >= OFFICE_FRONT_Z &&
+      localZ <= OFFICE_DOORWAY_APPROACH_Z &&
+      movingInward;
+    if (inDoorwayApproach && !officeDoorwayEntryPending) {
+      officeDoorwayEntryPending = true;
+      onOfficeEnter({
+        source: "doorway",
+      });
+    }
+    if (officeSceneMode !== "town") {
+      // The lobby now owns this same position and velocity before the physical
+      // facade boundary, so there is no collision frame or threshold pause.
+      return false;
+    }
+
     const halfWidth = OFFICE_WIDTH / 2 + OFFICE_AVATAR_RADIUS;
     const halfDepth = OFFICE_DEPTH / 2 + OFFICE_AVATAR_RADIUS;
     if (Math.abs(localX) >= halfWidth || Math.abs(localZ) >= halfDepth) {
@@ -10688,8 +10713,6 @@ export function createWorldScene({
     }
 
     const previousX = previousPosition.x - office.position.x;
-    const previousZ = previousPosition.z - office.position.z;
-    const doorClearance = OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS;
     const doorwayThreshold = OFFICE_DOORWAY_ENTRY_Z;
     const crossedDoorway =
       Math.abs(localX) <= doorClearance &&
@@ -10708,17 +10731,6 @@ export function createWorldScene({
       if (!crossedDoorway) {
         // The open approach is real walkable space. Do not pull the avatar
         // forward to the trigger plane before they have actually crossed it.
-        return false;
-      }
-      if (!officeDoorwayEntryPending) {
-        officeDoorwayEntryPending = true;
-        onOfficeEnter({
-          source: "doorway",
-        });
-      }
-      if (officeSceneMode !== "town") {
-        // The controller completed its synchronous scene-mode handoff. Keep
-        // the exact attempted position and any active dash/held-key speed.
         return false;
       }
       // Fail closed only if no controller accepted the crossing.
@@ -10813,7 +10825,7 @@ export function createWorldScene({
         officeCurrentFloorId === "lobby" &&
         Math.abs(x) <= doorClearance &&
         z >= OFFICE_INTERIOR_WALL_LIMIT &&
-        z <= OFFICE_DOORWAY_ENTRY_Z + 0.08;
+        z <= OFFICE_DOORWAY_APPROACH_Z + 0.08;
       return (
         inLobbyDoorway ||
         officeInteriorPointIsWalkable(
