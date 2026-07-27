@@ -118,6 +118,12 @@ QJsonValue redactProviderCredentials(
 // AgentBranchButtonDelegate (below) can paint the row's branch button and route
 // the click without looking the session back up (adhoc #377).
 constexpr int kAgentBranchRole = Qt::UserRole + 33;
+// Companion roles the same chip reads (adhoc #403): files the session's patch
+// touched, how many entries `git status` reports in its worktree, and whether a
+// dedicated worktree is still checked out. -1 means "not known" for the counts.
+constexpr int kAgentBranchFilesRole = Qt::UserRole + 34;
+constexpr int kAgentBranchDirtyRole = Qt::UserRole + 35;
+constexpr int kAgentBranchWorktreeRole = Qt::UserRole + 36;
 
 // The base branch an agent session landed in, defaulting to "main" when the
 // session never recorded one (issue #291).
@@ -132,7 +138,8 @@ QString agentMergeBase(const AgentSession &s)
 // and time so the note is visible straight from the list. The Claude run summary
 // ("N turns · Ms") that used to be appended here now lives in the agent
 // detail-page header's Stats line (adhoc #42).
-void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
+void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
+                          const AgentDiffStat &stat = AgentDiffStat())
 {
     cell->setText(s.merged ? QStringLiteral("merged") : agentStatusText(s.status));
     cell->setForeground(s.merged ? QColor("#a371f7") : agentStatusColor(s.status));
@@ -140,7 +147,10 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
     // purple merge mark once it lands, a green check on success, a red stop sign
     // when halted, an orange hand while it waits on the user, and a red X circle
     // on failure (issue #322). The running glyph is seeded at frame 0 here;
-    // animateRunningAgentIcons() spins it. Other states carry no icon.
+    // animateRunningAgentIcons() spins it. A queued session gets the amber clock
+    // (adhoc #433) — with the concurrency cap in place it can sit there for a
+    // while, so the list has to say why nothing is happening. Other states carry
+    // no icon.
     if (s.merged)
         cell->setIcon(themedOcticon("git-merge", QColor("#a371f7"), 14));
     else if (s.status == AgentStatus::Running)
@@ -153,13 +163,24 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
         cell->setIcon(themedOcticon("hand", QColor("#e3742f"), 14));
     else if (s.status == AgentStatus::Failed)
         cell->setIcon(themedOcticon("x", QColor("#f85149"), 14));
+    else if (s.status == AgentStatus::Queued)
+        cell->setIcon(themedOcticon("history", QColor("#d29922"), 14));
     else
         cell->setIcon(QIcon());
     // The branch drives the cell's branch button (adhoc #377); AgentBranchButton-
     // Delegate paints it and opens the branch on click, so a session without one
     // simply gets no button.
     cell->setData(kAgentBranchRole, s.branchName);
+    // …and the chip's at-a-glance badges (adhoc #403): files changed, dirty-work
+    // dot, and whether the session still has a worktree on disk.
+    cell->setData(kAgentBranchFilesRole, stat.files);
+    cell->setData(kAgentBranchDirtyRole, stat.dirty);
+    cell->setData(kAgentBranchWorktreeRole, stat.worktree);
     QStringList tip;
+    if (!s.merged && s.status == AgentStatus::Queued)
+        tip << QStringLiteral("Queued \xE2\x80\x94 starts when one of the %1 running "
+                              "agent slots frees up (Settings \xE2\x86\x92 Agents)")
+                   .arg(maxRunningAgents());
     if (s.merged)
         tip << QStringLiteral("Worktree/PR merged into %1%2")
                    .arg(agentMergeBase(s),
@@ -168,8 +189,23 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
                                   QDateTime::fromMSecsSinceEpoch(s.mergedAtMs)
                                       .toString(QStringLiteral("MMM d  hh:mm")))
                             : QString());
-    if (!s.branchName.isEmpty())
+    if (!s.branchName.isEmpty()) {
         tip << QStringLiteral("Click the branch button to open %1").arg(s.branchName);
+        if (stat.files >= 0)
+            tip << QStringLiteral("%1 file%2 changed")
+                       .arg(stat.files)
+                       .arg(stat.files == 1 ? QString() : QStringLiteral("s"));
+        if (stat.worktree.isEmpty())
+            tip << QStringLiteral("No worktree checked out");
+        else
+            tip << QStringLiteral("Worktree: %1").arg(stat.worktree);
+        if (stat.dirty > 0)
+            tip << QStringLiteral("%1 uncommitted change%2 in the worktree")
+                       .arg(stat.dirty)
+                       .arg(stat.dirty == 1 ? QString() : QStringLiteral("s"));
+        else if (stat.dirty == 0)
+            tip << QStringLiteral("Worktree is clean");
+    }
     cell->setToolTip(tip.join(QLatin1Char('\n')));
 }
 
@@ -300,13 +336,13 @@ public:
     {
     }
 
-    // Reserve the button's slot in the column's width so ResizeToContents never
+    // Reserve the chip's slot in the column's width so ResizeToContents never
     // sizes the column so tight that the glyph sits on top of the status text.
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
         QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
         if (!idx.data(kAgentBranchRole).toString().isEmpty())
-            s.rwidth() += kButtonSize + 2 * kButtonMargin;
+            s.rwidth() += chipWidth(opt, idx) + 2 * kButtonMargin;
         return s;
     }
 
@@ -316,24 +352,62 @@ public:
         SelectionBorderRowDelegate::paint(painter, option, index);
         if (index.data(kAgentBranchRole).toString().isEmpty())
             return;
-        const QRect r = buttonRect(option.rect);
+        const QRect r = buttonRect(option, index);
         if (r.width() <= 0)
             return;
-        // Hovering the cell lifts the button out of the row so it reads as
+        // Hovering the cell lifts the chip out of the row so it reads as
         // clickable; at rest it's a quiet chip like the detail header's chips.
         const bool hot = option.state & QStyle::State_MouseOver;
+        // Accent outline while the session still has its own checkout on disk,
+        // neutral once the worktree has been cleaned up (adhoc #403) — so
+        // "worktree there or not" reads straight off the row.
+        const bool live = !index.data(kAgentBranchWorktreeRole).toString().isEmpty();
+        const bool dark = currentThemeIsDark();
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing, true);
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor(hot ? "#30363d" : "#21262d"));
-        painter->drawRoundedRect(r, 4, 4);
-        painter->restore();
-        // Centre the glyph at its native size rather than letting QIcon::paint
+        // Soft vertical gradient behind a 1px border: reads as a raised chip
+        // rather than the flat block it used to be.
+        QLinearGradient fill(r.topLeft(), r.bottomLeft());
+        if (dark) {
+            fill.setColorAt(0.0, QColor(hot ? "#3b424c" : "#2b313a"));
+            fill.setColorAt(1.0, QColor(hot ? "#2c323b" : "#1f242b"));
+        } else {
+            fill.setColorAt(0.0, QColor("#ffffff"));
+            fill.setColorAt(1.0, QColor(hot ? "#e8ebef" : "#f0f2f5"));
+        }
+        painter->setBrush(fill);
+        const QColor border =
+            live ? QColor(dark ? (hot ? "#58a6ff" : "#3d6ea8") : "#0969da")
+                 : QColor(dark ? (hot ? "#484f58" : "#30363d")
+                               : (hot ? "#afb8c1" : "#d0d7de"));
+        painter->setPen(QPen(border, 1));
+        painter->drawRoundedRect(QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5);
+        // Draw the glyph at its native size rather than letting QIcon::paint
         // upscale the 12px pixmap to fill the chip.
-        QRect glyph(0, 0, kGlyphSize, kGlyphSize);
-        glyph.moveCenter(r.center());
-        themedOcticon("git-branch", QColor(hot ? "#c9d1d9" : "#8b949e"), kGlyphSize)
-            .paint(painter, glyph);
+        const QColor ink(dark ? (hot ? "#c9d1d9" : "#8b949e")
+                              : (hot ? "#1f2328" : "#656d76"));
+        QRect glyph(r.left() + kChipPadding, r.center().y() - kGlyphSize / 2,
+                    kGlyphSize, kGlyphSize);
+        themedOcticon("git-branch", ink, kGlyphSize).paint(painter, glyph);
+        // Files the session's patch touched, in small type beside the glyph.
+        const QString files = filesText(index);
+        if (!files.isEmpty()) {
+            const int textLeft = glyph.right() + 1 + kChipGap;
+            painter->setPen(ink);
+            painter->setFont(chipFont(option));
+            painter->drawText(QRect(textLeft, r.top(),
+                                    r.right() - kChipPadding - textLeft + 1,
+                                    r.height()),
+                              Qt::AlignVCenter | Qt::AlignLeft, files);
+        }
+        // Uncommitted work in that worktree: an amber pip on the chip's corner,
+        // ringed in the list background so it stays legible over the border.
+        if (branchDirty(index) > 0) {
+            painter->setPen(QPen(QColor(dark ? "#0d1117" : "#ffffff"), 1.5));
+            painter->setBrush(QColor(dark ? "#d29922" : "#bf8700"));
+            painter->drawEllipse(QPointF(r.right() - 0.5, r.top() + 1.5), 3.0, 3.0);
+        }
+        painter->restore();
     }
 
     // Clicks land here before the view starts an edit, so a press+release inside
@@ -347,7 +421,7 @@ public:
             auto *me = static_cast<QMouseEvent *>(event);
             const QString branch = index.data(kAgentBranchRole).toString();
             if (!branch.isEmpty() && me->button() == Qt::LeftButton &&
-                buttonRect(option.rect).contains(me->pos())) {
+                buttonRect(option, index).contains(me->pos())) {
                 m_onClick(branch);
                 return true;
             }
@@ -356,15 +430,58 @@ public:
     }
 
 private:
-    static constexpr int kButtonSize = 18;
-    static constexpr int kButtonMargin = 4;
+    static constexpr int kButtonSize = 18;   // chip height
+    static constexpr int kButtonMargin = 4;  // gap to the cell's right edge
     static constexpr int kGlyphSize = 12;
+    static constexpr int kChipPadding = 4;   // chip edge -> glyph / count text
+    static constexpr int kChipGap = 3;       // glyph -> count text
 
-    static QRect buttonRect(const QRect &cell)
+    // The count rides at a smaller, slightly heavier size than the row text so it
+    // stays a badge rather than competing with the status word next to it.
+    static QFont chipFont(const QStyleOptionViewItem &opt)
     {
-        const int size = qMin(kButtonSize, cell.height() - 2);
-        return QRect(cell.right() - kButtonMargin - size,
-                     cell.center().y() - size / 2 + 1, size, size);
+        QFont f = opt.font;
+        if (f.pixelSize() > 0)
+            f.setPixelSize(qMax(9, f.pixelSize() - 3));
+        else
+            f.setPointSizeF(qMax(7.0, f.pointSizeF() - 2.0));
+        f.setWeight(QFont::DemiBold);
+        return f;
+    }
+
+    // Files the session's patch touched, capped so a huge run can't stretch the
+    // column; empty when the count isn't known yet (no patch captured).
+    static QString filesText(const QModelIndex &idx)
+    {
+        const int files = idx.data(kAgentBranchFilesRole).toInt();
+        if (files < 0)
+            return QString();
+        return files > 99 ? QStringLiteral("99+") : QString::number(files);
+    }
+
+    static int branchDirty(const QModelIndex &idx)
+    {
+        const QVariant v = idx.data(kAgentBranchDirtyRole);
+        return v.isValid() ? v.toInt() : -1;
+    }
+
+    static int chipWidth(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    {
+        int w = 2 * kChipPadding + kGlyphSize;
+        const QString files = filesText(idx);
+        if (!files.isEmpty())
+            w += kChipGap + QFontMetrics(chipFont(opt)).horizontalAdvance(files);
+        return w;
+    }
+
+    static QRect buttonRect(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    {
+        const QRect cell = opt.rect;
+        const int h = qMin(kButtonSize, cell.height() - 2);
+        const int w =
+            qMin(chipWidth(opt, idx), qMax(0, cell.width() - 2 * kButtonMargin));
+        return QRect(cell.right() - kButtonMargin - w + 1,
+                     cell.center().y() - h / 2 + 1, w, h);
     }
 
     std::function<void(const QString &)> m_onClick;
@@ -748,10 +865,24 @@ QWidget *MainWindow::buildAgentsTab()
         }
     });
 
+    // "Stop all" halts every ForkMesh-run session in one click (adhoc #433) —
+    // the companion to the concurrency cap, since a full queue can otherwise
+    // only be drained one Stop at a time. Disabled while nothing is in flight.
+    m_agentStopAllButton = new QPushButton("Stop all");
+    m_agentStopAllButton->setObjectName("dangerButton");
+    m_agentStopAllButton->setCursor(Qt::PointingHandCursor);
+    m_agentStopAllButton->setToolTip(
+        "Stop every running agent and cancel the queued ones. External "
+        "Claude Code sessions started outside ForkMesh are left alone.");
+    setOcticon(m_agentStopAllButton, "circle-slash", 16);
+    connect(m_agentStopAllButton, &QPushButton::clicked, this,
+            &MainWindow::stopAllRunningAgents);
+
     auto *agentListToolbar = new QHBoxLayout;
     agentListToolbar->setContentsMargins(0, 0, 0, 0);
     agentListToolbar->setSpacing(8);
     agentListToolbar->addWidget(m_agentSearch, 1);
+    agentListToolbar->addWidget(m_agentStopAllButton, 0);
     agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
     agentListToolbar->addWidget(m_agentHideDetailButton, 0);
     listLayout->addLayout(agentListToolbar);
@@ -3283,6 +3414,11 @@ void MainWindow::reloadAgents()
     // recheck). Re-check here too so a rebuild queued behind a run doesn't stay
     // stuck on "Waiting for running actions to finish" once it actually goes idle.
     maybeStartQueuedRebuild();
+    // Same reasoning for the run limit (adhoc #433): whatever just finished may
+    // have freed the slot the next queued session is waiting on, and "Stop all"
+    // follows the same running/queued set.
+    updateAgentActionState();
+    scheduleAgentQueuePump();
 }
 
 // Count badge on the top-bar Agents nav button (adhoc #194), same look as the
@@ -3592,8 +3728,11 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
     plain(2)->setText(agentProviderName(session.provider));
     // Model column: the LLM model selected for this session.
     applyAgentModelCell(plain(3), session);
+    // Diff figures, memoised — feed both the Status cell's branch chip (files /
+    // dirty / worktree badges, adhoc #403) and the Diff column below.
+    const AgentDiffStat diffStat = agentDiffStat(session, agentGitDir, agentBase);
     // Status column: text + coloured glyph (issue #108).
-    applyAgentStatusCell(plain(4), session);
+    applyAgentStatusCell(plain(4), session, diffStat);
     // Turns/Time/Cost/Tokens now live in the detail-page header (adhoc #42); the
     // table keeps only Speed as the at-a-glance throughput. The token total still
     // feeds the Speed figure and is refreshed in place while the session streams
@@ -3617,8 +3756,7 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
                                   QStringLiteral("yyyy-MM-dd HH:mm:ss"))
                             : QString());
     // Diff column (issue #170): files changed + branch ahead/behind, memoised.
-    applyAgentDiffCell(sortable(7),
-                       agentDiffStat(session, agentGitDir, agentBase), agentBase);
+    applyAgentDiffCell(sortable(7), diffStat, agentBase);
     // Night-rider light: a custom-painted scanner that sweeps while this session
     // streams raw output. AgentScannerDelegate looks the animation state up by the
     // sessionId stashed here in Qt::UserRole.
@@ -3650,6 +3788,25 @@ QString MainWindow::testAgentStatusCellText(int sessionId) const
             applyAgentStatusCell(&item, s);
             return item.text();
         }
+    }
+    return QString();
+}
+
+// adhoc #403: read the branch chip's badges back off the Status cell —
+// AgentBranchButtonDelegate paints straight from these roles, so proving they
+// carry the session's diff stat proves the chip shows the right counts.
+QString MainWindow::testAgentStatusCellBadges(int sessionId,
+                                              const AgentDiffStat &stat) const
+{
+    for (const AgentSession &s : m_agentSessions) {
+        if (s.id != sessionId)
+            continue;
+        QTableWidgetItem item;
+        applyAgentStatusCell(&item, s, stat);
+        return QStringLiteral("%1|%2|%3")
+            .arg(item.data(kAgentBranchFilesRole).toInt())
+            .arg(item.data(kAgentBranchDirtyRole).toInt())
+            .arg(item.data(kAgentBranchWorktreeRole).toString());
     }
     return QString();
 }
@@ -3806,6 +3963,23 @@ AgentDiffStat MainWindow::agentDiffStat(const AgentSession &session,
                            {"merge-tree", "--write-tree", session.branchName, base},
                            nullptr, nullptr))
             stat.conflicted = true;
+    }
+    // Worktree + uncommitted-work state behind the Status cell's branch chip
+    // (adhoc #403). cachedSessionWorktree() memoises the `git worktree list`
+    // probe, and `git status` only runs when a dedicated checkout is still on
+    // disk — a cleaned-up session (the common case for finished runs) costs no
+    // extra git at all.
+    if (!gitDir.isEmpty() && !session.branchName.isEmpty()) {
+        const QString wt = cachedSessionWorktree(session.id, gitDir, session.branchName);
+        if (!wt.isEmpty() && QDir(wt).exists()) {
+            stat.worktree = wt;
+            QByteArray dirtyOut;
+            if (runGitCapture(wt, {"status", "--porcelain"}, &dirtyOut, nullptr)) {
+                const QString lines = QString::fromUtf8(dirtyOut).trimmed();
+                stat.dirty =
+                    lines.isEmpty() ? 0 : lines.count(QLatin1Char('\n')) + 1;
+            }
+        }
     }
     m_agentDiffStats.insert(session.id, stat);
     return stat;
@@ -5146,6 +5320,21 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         QStringLiteral("==> Started from a prompt (%1).\n")
             .arg(agentProviderName(provider)));
 
+    // This path launches directly instead of going through processAgentQueue, so
+    // it has to honour the run limit itself (adhoc #433) — the quick-add bar is
+    // where a burst of prompts is most likely to come from. The session keeps its
+    // "queued" status with its prompt and branch already persisted, which is all
+    // processAgentQueue needs to start it once a slot frees.
+    if (runningAgentCount() >= maxRunningAgents()) {
+        m_agentQueue.append(session.id);
+        reloadAgents();
+        switchToAgentsTab(session.id);
+        flashMessage(QStringLiteral("Queued \xE2\x80\x94 %1 agents are already "
+                                    "running (limit set in Settings).")
+                         .arg(maxRunningAgents()));
+        return session.id;
+    }
+
     if (provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) {
         // Both CLI-backed agents render through their structured protocols; the
         // typed prompt is their task verbatim.
@@ -5740,13 +5929,94 @@ AgentRunner *MainWindow::acquireAgentRunner()
     return runner;
 }
 
+// How many sessions currently occupy a run slot (adhoc #433). Only a session
+// actively executing counts: a Claude Code process stays alive between turns
+// (status Success/Waiting) without doing work, and holding its slot would let a
+// finished-but-open session starve the queue forever. External (watch-only)
+// rows are somebody else's `claude` process — ForkMesh can't schedule them, so
+// they don't consume a slot either.
+int MainWindow::runningAgentCount() const
+{
+    // A stored "Running" can go stale — a turn whose terminal event never landed,
+    // a resume that produced nothing (the family of adhoc #157). Blocking the
+    // rebuild on one of those was already a bug; blocking every future agent on
+    // one would be worse, since the queue would never drain again. So a session
+    // that has been completely silent for far longer than any single tool call
+    // takes releases its slot. The window is deliberately much wider than
+    // runningAgentBlockers' 90s: over-counting only delays a queued agent, while
+    // under-counting breaks the cap the user asked for.
+    constexpr qint64 kSlotStaleMs = 600'000;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    auto holdsSlot = [&](int id, qint64 startedAtMs) {
+        const qint64 liveAt =
+            qMax(m_scannerStates.value(id).lastActivityMs, startedAtMs);
+        // No timestamps at all: assume it's working rather than over-starting.
+        return liveAt <= 0 || (now - liveAt) < kSlotStaleMs;
+    };
+    QSet<int> counted;
+    for (const AgentSession &session : m_agentSessions)
+        if (!session.merged && session.status == AgentStatus::Running &&
+            !isExternalSession(session.id) &&
+            holdsSlot(session.id, session.startedAtMs))
+            counted.insert(session.id);
+    // A just-launched stream/codex session doesn't land in m_agentSessions until
+    // the next reloadAgents(); runningAgentBlockers() falls back to the same
+    // creation-time snapshot so a session started moments ago isn't invisible
+    // here either — otherwise two quick-add prompts in a row both see a free
+    // slot and blow past the cap.
+    for (auto it = m_streamSessionInfo.constBegin();
+         it != m_streamSessionInfo.constEnd(); ++it)
+        if (it->status == AgentStatus::Running && !isExternalSession(it.key()) &&
+            holdsSlot(it.key(), it->startedAtMs))
+            counted.insert(it.key());
+    return counted.size();
+}
+
+// Re-drain the queue once a slot frees. Coalesced through a zero-timer because
+// the callers are status/reload hooks that fire in bursts, and skipped outright
+// unless there is both something queued and room to start it — processAgentQueue
+// ends in reloadAgents(), which feeds those same hooks, so an unconditional
+// pump would spin.
+void MainWindow::scheduleAgentQueuePump()
+{
+    if (m_agentQueuePumpScheduled || m_agentQueue.isEmpty())
+        return;
+    if (runningAgentCount() >= maxRunningAgents())
+        return;
+    m_agentQueuePumpScheduled = true;
+    QTimer::singleShot(0, this, [this] {
+        m_agentQueuePumpScheduled = false;
+        // A session started from here was deferred by the cap: the user queued it
+        // (and saw it appear in the list) some time ago and has moved on since,
+        // so borrow the restart-resume flag to keep startCliTranscript from
+        // yanking the view to a transcript nobody asked for right now. A start
+        // the user just triggered goes through processAgentQueue directly and
+        // still jumps.
+        const bool wasQuiet = m_agentQuietResume;
+        m_agentQuietResume = true;
+        processAgentQueue();
+        m_agentQuietResume = wasQuiet;
+    });
+}
+
 void MainWindow::processAgentQueue()
 {
     if (!m_agentStore)
         return;
-    // Start every queued session immediately in its own runner — no serial
-    // queue. (Sessions already running stay put.)
+    // Start queued sessions in their own runners, up to the concurrency cap
+    // (adhoc #433). Whatever doesn't fit stays at the head of m_agentQueue with
+    // its "queued" status and clock icon, and is picked up by
+    // scheduleAgentQueuePump() as running sessions finish. Sessions already
+    // running stay put.
+    const int limit = maxRunningAgents();
+    // Tracked locally rather than re-counting each pass: the headless runner
+    // path only writes "Running" to the store, so m_agentSessions doesn't catch
+    // up until the reloadAgents() below.
+    int active = runningAgentCount();
+    bool changed = false;
     while (!m_agentQueue.isEmpty()) {
+        if (active >= limit)
+            break;
         const int sessionId = m_agentQueue.takeFirst();
         AgentSession *session = findAgentSession(sessionId);
         if (!session || session->status != AgentStatus::Queued)
@@ -5758,6 +6028,7 @@ void MainWindow::processAgentQueue()
             session->status = AgentStatus::Failed;
             session->lastError = QStringLiteral("Repository not found.");
             m_agentStore->saveSession(*session);
+            changed = true;
             continue;
         }
         const RepositoryRecord repo = m_repositories.at(repoIndex);
@@ -5770,6 +6041,7 @@ void MainWindow::processAgentQueue()
             session->status = AgentStatus::Failed;
             session->lastError = QStringLiteral("No local checkout is configured.");
             m_agentStore->saveSession(*session);
+            changed = true;
             continue;
         }
         // Ad-hoc sessions (issueNumber == 0) carry no issue; their task lives in
@@ -5792,6 +6064,7 @@ void MainWindow::processAgentQueue()
                 session->status = AgentStatus::Failed;
                 session->lastError = QStringLiteral("Issue not found.");
                 m_agentStore->saveSession(*session);
+                changed = true;
                 continue;
             }
         }
@@ -5801,6 +6074,8 @@ void MainWindow::processAgentQueue()
         if (session->provider == QLatin1String("claude-code") ||
             agentIsCodexProvider(session->provider)) {
             startCliTranscript(*session, issue, agentGitDir, session->prompt);
+            ++active;
+            changed = true;
             continue;
         }
         const AgentSession snapshot = *session;
@@ -5829,8 +6104,15 @@ void MainWindow::processAgentQueue()
                     : base + QStringLiteral("\n\nAdditional user instruction:\n%1").arg(steer);
         }
         acquireAgentRunner()->start(snapshot, issue, agentGitDir, config);
+        ++active;
+        changed = true;
     }
-    reloadAgents();
+    // Only refresh when this pass actually did something. A pass that started
+    // nothing because every slot is busy must not reload: reloadAgents() calls
+    // back into scheduleAgentQueuePump(), and refreshing on a no-op would turn
+    // a full queue into an endless reload loop.
+    if (changed)
+        reloadAgents();
 }
 
 // Lazily create the IDE bridge that lets the `claude` CLI talk back to the app
@@ -6935,6 +7217,69 @@ void MainWindow::stopStreamSession(int sessionId, bool refreshUi)
     }
 }
 
+// The sessions "Stop all" would act on: everything ForkMesh is driving or is
+// about to drive, in any repository. Queued counts — cancelling the backlog is
+// the point — while merged and external (watch-only) rows never do.
+QList<int> MainWindow::stoppableAgentSessionIds() const
+{
+    QList<int> ids;
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (session.merged || isExternalSession(session.id))
+            continue;
+        if (session.status == AgentStatus::Running ||
+            session.status == AgentStatus::Waiting ||
+            session.status == AgentStatus::Queued)
+            ids << session.id;
+    }
+    return ids;
+}
+
+// "Stop all" (adhoc #433): halt every session ForkMesh is driving, across all
+// repositories — the run limit is machine-wide, so its escape hatch is too. The
+// pending queue is dropped first: stopping a running session frees a slot, and
+// leaving the queue in place would just start the next one behind it, so the
+// user would be clicking Stop forever. External (watch-only) rows belong to
+// another process and are left alone.
+//
+// Deliberately unconfirmed: it's the panic button for a runaway fleet, and each
+// stopped session keeps its work and can be continued later, so a dialog only
+// stands between the user and the thing they already asked for.
+void MainWindow::stopAllRunningAgents()
+{
+    // Snapshot the ids up front: each stop below reloads m_agentSessions.
+    const QList<int> ids = stoppableAgentSessionIds();
+    if (ids.isEmpty()) {
+        flashMessage(QStringLiteral("No agents are running."));
+        return;
+    }
+    m_agentQueue.clear();
+    for (const int sessionId : std::as_const(ids)) {
+        if (AgentRunner *runner = runnerForSession(sessionId))
+            runner->stop();
+        // No stream/codex process attached (a queued session, or a runner that
+        // already settled): mark it stopped here so it doesn't sit "queued"
+        // forever now that its place in the queue is gone.
+        stopStreamSession(sessionId, /*refreshUi=*/false);
+        if (AgentSession *as = findAgentSession(sessionId);
+            as && m_agentStore &&
+            (as->status == AgentStatus::Queued ||
+             as->status == AgentStatus::Running ||
+             as->status == AgentStatus::Waiting)) {
+            as->status = AgentStatus::Stopped;
+            as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+            m_agentStore->saveSession(*as);
+        }
+    }
+    scheduleAgentSessionsPush(); // adhoc #182: mirror the new statuses to the web
+    reloadAgents();
+    if (m_selectedAgentSessionId > 0)
+        showAgentSession(m_selectedAgentSessionId);
+    updateAgentActionState();
+    flashMessage(QStringLiteral("Stopped %1 agent session%2.")
+                     .arg(ids.size())
+                     .arg(ids.size() == 1 ? QString() : QStringLiteral("s")));
+}
+
 // ---- External Claude Code sessions ----------------------------------------
 // Watch-only mirrors of `claude` runs started outside ForkMesh. See the header.
 
@@ -7760,7 +8105,10 @@ void MainWindow::updateAgentStatusCell(int sessionId)
             cell = new QTableWidgetItem;
             m_agentTable->setItem(r, 4, cell);
         }
-        applyAgentStatusCell(cell, *s);
+        // Reuse the memoised diff stat so the branch chip keeps its files/dirty/
+        // worktree badges across a bare status flip without re-shelling git here
+        // (an absent entry simply leaves the badges off until the next refresh).
+        applyAgentStatusCell(cell, *s, m_agentDiffStats.value(sessionId));
         break;
     }
     // Keep the footer "Agents:" strip's per-session dot (the ones above the
@@ -7790,6 +8138,9 @@ void MainWindow::updateAgentStatusCell(int sessionId)
     // that session went idle (Success/Failed/Waiting), since nothing ever
     // re-checked the queue (adhoc #104).
     maybeStartQueuedRebuild();
+    // Same for the run limit (adhoc #433): a stream session leaving Running is
+    // exactly when its slot frees, so let the next queued session start.
+    scheduleAgentQueuePump();
 }
 
 // Rebuild the "Connected · working on the task…" pill in the session detail
@@ -8906,6 +9257,10 @@ void MainWindow::updateAgentActionState()
         externalIsLive(m_externalSurfaced.value(m_selectedAgentSessionId).uuid);
     if (m_agentStopButton)
         m_agentStopButton->setEnabled(running || externalRunning);
+    // "Stop all" doesn't depend on the selection — it's live whenever any
+    // ForkMesh session is running, waiting or queued anywhere (adhoc #433).
+    if (m_agentStopAllButton)
+        m_agentStopAllButton->setEnabled(!stoppableAgentSessionIds().isEmpty());
     AgentSession *session = selected ? findAgentSession(m_selectedAgentSessionId)
                                      : nullptr;
     // Block deleting the session whose working-tree git-am the in-flight AI fix is
