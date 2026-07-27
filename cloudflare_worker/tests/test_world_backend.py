@@ -1100,14 +1100,16 @@ def test_world_route_binding_and_migration_are_registered():
         item["name"]: item["class_name"]
         for item in config["durable_objects"]["bindings"]
     }
-    # Multiplayer chat, world presence, and the per-owner node event channel
-    # remain; the repository transport DO (ForkMeshHost, which carried git
-    # bytes) is deleted and must never return as a production binding.
+    # Multiplayer chat, world presence, the per-owner node event channel, and
+    # the alarm-backed cron watchdog remain; the repository transport DO
+    # (ForkMeshHost, which carried git bytes) is deleted and must never return
+    # as a production binding.
     assert bindings == {
         "FORKMESH_MAINNODE_ROOM": "ForkMeshRoom",
         "FORKMESH_WORLD": "ForkMeshWorld",
         "FORKMESH_OFFICE_ROOM": "ForkMeshOfficeRoom",
         "FORKMESH_NODES": "ForkMeshNodes",
+        "FORKMESH_CRON_WATCHDOG": "ForkMeshCronWatchdog",
     }
     dev_bindings = {
         item["name"]: item["class_name"]
@@ -1118,6 +1120,7 @@ def test_world_route_binding_and_migration_are_registered():
         "FORKMESH_WORLD": "ForkMeshWorld",
         "FORKMESH_OFFICE_ROOM": "ForkMeshOfficeRoom",
         "FORKMESH_NODES": "ForkMeshNodes",
+        "FORKMESH_CRON_WATCHDOG": "ForkMeshCronWatchdog",
     }
     migrations = {item["tag"]: item for item in config["migrations"]}
     assert migrations["v9"]["new_sqlite_classes"] == ["ForkMeshWorld"]
@@ -1125,6 +1128,8 @@ def test_world_route_binding_and_migration_are_registered():
     assert migrations["v11"]["new_sqlite_classes"] == [
         "ForkMeshOfficeRoom"]
     assert migrations["v12"]["new_sqlite_classes"] == ["ForkMeshNodes"]
+    assert migrations["v13"]["new_sqlite_classes"] == [
+        "ForkMeshCronWatchdog"]
 
 
 def test_world_static_route_is_reserved_and_asset_first():

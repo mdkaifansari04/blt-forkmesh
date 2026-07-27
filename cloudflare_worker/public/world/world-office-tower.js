@@ -8,12 +8,18 @@ export const OFFICE_BRIDGE_END_Z = -108;
 // about ten times wider while remaining a low-poly, browser-friendly structure.
 export const OFFICE_WIDTH = 170;
 export const OFFICE_DEPTH = 90;
-export const OFFICE_FLOOR_HEIGHT = 8;
+// Give every team a genuinely spacious story. The original eight-unit
+// spacing let the larger floor exhibits visually intersect the slabs above.
+export const OFFICE_FLOOR_HEIGHT = 16;
 export const OFFICE_FLOOR_COUNT = 10;
 export const OFFICE_TOWER_HEIGHT = OFFICE_FLOOR_HEIGHT * OFFICE_FLOOR_COUNT;
 export const OFFICE_FRONT_Z = OFFICE_DEPTH / 2;
 export const OFFICE_DOOR_WIDTH = 10;
 export const OFFICE_AVATAR_RADIUS = 0.46;
+// The panoramic lift straddles the front curtain wall: its doors open back
+// into each floor while the outward half gives riders a live view of Town.
+export const OFFICE_ELEVATOR_CENTER_X = 70;
+export const OFFICE_ELEVATOR_CENTER_Z = OFFICE_FRONT_Z;
 
 export const OFFICE_FLOORS = Object.freeze([
   Object.freeze({
@@ -208,37 +214,28 @@ const FLOOR_OBSTACLES = Object.freeze({
 });
 
 const OFFICE_COMMON_OBSTACLES = Object.freeze([
-  // The elevator call panel stands immediately left of the glass cabin.
+  // The two side panes and outward glass face are solid collision surfaces.
+  // The rear (-Z) face stays open so visitors walk into the car from a floor.
   Object.freeze({
     type: "rect",
-    minX: 62.35,
-    maxX: 63.65,
-    minZ: -33.5,
-    maxZ: -24.5,
-  }),
-  // Three sides of the elevator shaft are solid collision surfaces. The
-  // south/front face stays open while the car is parked so visitors can walk
-  // out onto the selected floor.
-  Object.freeze({
-    type: "rect",
-    minX: 64.55,
-    maxX: 65.45,
-    minZ: -34.45,
-    maxZ: -25.55,
+    minX: OFFICE_ELEVATOR_CENTER_X - 5.45,
+    maxX: OFFICE_ELEVATOR_CENTER_X - 4.55,
+    minZ: OFFICE_ELEVATOR_CENTER_Z - 4.45,
+    maxZ: OFFICE_ELEVATOR_CENTER_Z + 4.45,
   }),
   Object.freeze({
     type: "rect",
-    minX: 74.55,
-    maxX: 75.45,
-    minZ: -34.45,
-    maxZ: -25.55,
+    minX: OFFICE_ELEVATOR_CENTER_X + 4.55,
+    maxX: OFFICE_ELEVATOR_CENTER_X + 5.45,
+    minZ: OFFICE_ELEVATOR_CENTER_Z - 4.45,
+    maxZ: OFFICE_ELEVATOR_CENTER_Z + 4.45,
   }),
   Object.freeze({
     type: "rect",
-    minX: 64.55,
-    maxX: 75.45,
-    minZ: -34.45,
-    maxZ: -33.55,
+    minX: OFFICE_ELEVATOR_CENTER_X - 5.45,
+    maxX: OFFICE_ELEVATOR_CENTER_X + 5.45,
+    minZ: OFFICE_ELEVATOR_CENTER_Z + 3.55,
+    maxZ: OFFICE_ELEVATOR_CENTER_Z + 4.45,
   }),
 ]);
 
@@ -247,6 +244,21 @@ export function officeInteriorContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
   return (
     Math.abs(Number(x)) <= OFFICE_WIDTH / 2 - margin - 0.65 &&
     Math.abs(Number(z)) <= OFFICE_DEPTH / 2 - margin - 0.65
+  );
+}
+
+export function officeElevatorCabinContains(
+  x,
+  z,
+  radius = OFFICE_AVATAR_RADIUS,
+) {
+  const px = Number(x);
+  const pz = Number(z);
+  const margin = Math.max(0, Number(radius) || 0);
+  if (!Number.isFinite(px) || !Number.isFinite(pz)) return false;
+  return (
+    Math.abs(px - OFFICE_ELEVATOR_CENTER_X) <= 4.45 - margin &&
+    Math.abs(pz - OFFICE_ELEVATOR_CENTER_Z) <= 3.45 - margin
   );
 }
 
@@ -287,7 +299,10 @@ export function officeInteriorPointIsWalkable(
   radius = OFFICE_AVATAR_RADIUS,
 ) {
   return (
-    officeInteriorContains(x, z, radius) &&
+    (
+      officeInteriorContains(x, z, radius) ||
+      officeElevatorCabinContains(x, z, radius)
+    ) &&
     !officePointHitsObstacle(floorId, x, z, radius)
   );
 }

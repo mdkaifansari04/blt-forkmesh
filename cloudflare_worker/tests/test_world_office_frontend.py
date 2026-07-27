@@ -3,6 +3,7 @@
 
 import json
 from pathlib import Path
+import re
 import subprocess
 
 
@@ -15,6 +16,36 @@ WORLD_PATH = ROOT / "public" / "world" / "world.js"
 
 def source(path):
     return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def function_body(script, name):
+    """Return one named JavaScript function body without snapshotting formatting."""
+
+    match = re.search(rf"\bfunction\s+{re.escape(name)}\s*\(", script)
+    assert match, f"missing JavaScript helper: {name}"
+    parameter_opening = script.find("(", match.start())
+    parameter_depth = 0
+    parameter_closing = -1
+    for index in range(parameter_opening, len(script)):
+        if script[index] == "(":
+            parameter_depth += 1
+        elif script[index] == ")":
+            parameter_depth -= 1
+            if parameter_depth == 0:
+                parameter_closing = index
+                break
+    assert parameter_closing >= 0, f"unterminated parameters: {name}"
+    opening = script.find("{", parameter_closing)
+    assert opening >= 0, f"missing JavaScript helper body: {name}"
+    depth = 0
+    for index in range(opening, len(script)):
+        if script[index] == "{":
+            depth += 1
+        elif script[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return script[opening + 1:index]
+    raise AssertionError(f"unterminated JavaScript helper: {name}")
 
 
 def test_office_controller_module_exists_and_proximity_is_hysteretic():
@@ -172,7 +203,7 @@ def test_tower_is_ten_stories_and_about_ten_times_the_old_width():
     tower = source(TOWER_PATH)
     assert "export const OFFICE_WIDTH = 170" in tower
     assert "export const OFFICE_FLOOR_COUNT = 10" in tower
-    assert "export const OFFICE_FLOOR_HEIGHT = 8" in tower
+    assert "export const OFFICE_FLOOR_HEIGHT = 16" in tower
     assert tower.count("level: ") == 10
     for floor_id in (
         "lobby",
@@ -192,6 +223,27 @@ def test_tower_is_ten_stories_and_about_ten_times_the_old_width():
     assert "function addOfficeFunFloorProps()" in scene
 
 
+def test_tall_floor_exhibits_and_elevator_openings_stay_between_slabs():
+    scene = source(SCENE_PATH)
+    for contract in (
+        "function addOfficeFloorSurface(parent, material)",
+        "elevatorCutMinX",
+        "elevatorCutMaxX",
+        "elevatorCutMinZ",
+        "forkmesh-office-floor-slab-",
+        "new THREE.TorusKnotGeometry(3.8, 0.6",
+        'shield.name = "forkmesh-office-feature-security-shield"',
+        "OFFICE_FLOOR_HEIGHT / 2",
+        "orbitPivot.rotation.y",
+        "forkmesh-office-feature-partnerships-orbit-",
+    ):
+        assert contract in scene
+    # These rotations were the source of the giant pink/cyan shapes visibly
+    # slicing through adjacent floors.
+    assert "new THREE.TorusKnotGeometry(8, 1.35" not in scene
+    assert "orbit.rotation.z" not in scene
+
+
 def test_office_remains_in_the_world_instead_of_swapping_to_another_scene():
     scene = source(SCENE_PATH)
     for contract in (
@@ -209,6 +261,103 @@ def test_office_remains_in_the_world_instead_of_swapping_to_another_scene():
     ]
     assert "world.visible = false" not in enter
     assert "scene.remove(world)" not in enter
+
+
+def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
+    scene = source(SCENE_PATH)
+    prepare = function_body(scene, "enterOffice")
+    enter = function_body(scene, "enterOfficeLobby")
+    local_position = function_body(scene, "officeAvatarLocalPosition")
+
+    # Admission must not stage a second teleport before the lobby handoff.
+    for hard_snap in (
+        "player.position.set",
+        "camera.position.copy",
+        "camera.lookAt",
+    ):
+        assert hard_snap not in prepare
+
+    # The threshold helper converts the live avatar's world pose into Office
+    # coordinates. It keeps the crossing beside the physical entrance instead
+    # of spawning the visitor deep inside the lobby.
+    assert "worldToLocal" in local_position
+    assert "OFFICE_FRONT_Z" in local_position
+    assert re.search(
+        r"OFFICE_(?:AVATAR_RADIUS|INTERIOR_(?:EXIT_Z|WALL_LIMIT))",
+        local_position,
+    )
+    assert "officeAvatarLocalPosition(" in enter
+
+    # Entry continues with the same player object. A second local avatar, a
+    # forced camera mode, or rewritten orbit state would read as a scene cut.
+    assert "player" in enter
+    for swap_or_snap in (
+        "officeLobbyPlayer.position.set",
+        "player.visible = false",
+        "setCameraMode(",
+        "cameraYaw =",
+        "cameraPitch =",
+        "cameraZoom =",
+        "camera.position.copy",
+        "camera.lookAt",
+    ):
+        assert swap_or_snap not in enter
+
+
+def test_office_walkers_share_world_movement_tuning_and_heading():
+    scene = source(SCENE_PATH)
+    speed = function_body(scene, "movementSpeedForInput")
+    walkers = {
+        name: function_body(scene, name)
+        for name in (
+            "walkPlayer",
+            "walkOfficeLobbyPlayer",
+            "walkOfficeParticipant",
+        )
+    }
+
+    # One cadence owns keyboard acceleration, analog strength, and the user's
+    # per-device tuning in every part of the continuous World.
+    for contract in (
+        "PLAYER_MAX_SPEED",
+        "PLAYER_ACCELERATION",
+        "moveSpeedScale",
+        "moveAccelScale",
+        "keyboardMovementSpeed",
+        "inputStrength",
+    ):
+        assert contract in speed
+    assert "movementSpeedForInput(" in walkers["walkPlayer"]
+    assert "movementSpeedForInput(" in walkers["walkOfficeLobbyPlayer"]
+    assert "movementSpeedForInput(" in walkers["walkOfficeParticipant"]
+
+    heading = re.compile(
+        r"Math\.atan2\(\s*-\s*movement\.x\s*,\s*-\s*movement\.z\s*\)"
+    )
+    for name, body in walkers.items():
+        assert "PLAYER_SPEED * 0.72" not in body, (
+            f"{name} bypasses the shared movement tuning"
+        )
+        assert heading.search(body), f"{name} uses a different avatar heading"
+
+
+def test_office_third_person_camera_distance_is_bounded_by_local_geometry():
+    scene = source(SCENE_PATH)
+    limiter = function_body(scene, "officeCameraDistanceLimit")
+    update = function_body(scene, "updateCamera")
+
+    # The limiter must be part of the live third-person camera calculation,
+    # rather than a constant Office zoom step applied only during entry.
+    assert "officeCameraDistanceLimit(" in update
+    assert "officeSceneMode" in update
+
+    # Account for both the tower envelope and the semi-exterior elevator. The
+    # exact ray/AABB implementation may change; these semantic dependencies and
+    # a real upper-bound operation are the stable behavior contract.
+    assert "OFFICE_WIDTH" in limiter
+    assert "OFFICE_DEPTH" in limiter or "OFFICE_FRONT_Z" in limiter
+    assert re.search(r"elevator", limiter, re.IGNORECASE)
+    assert "Math.min" in limiter or "clamp(" in limiter
 
 
 def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
@@ -270,8 +419,8 @@ def test_walk_surfaces_and_every_floor_use_real_collision_constraints():
         "function constrainTownOfficeWalls(previousPosition)",
         "function constrainOfficeInteriorWalls(avatar, previousPosition)",
         "officeInteriorPointIsWalkable(",
-        "avatar.position.z = previous.z",
-        "avatar.position.x = previous.x",
+        "position.z = previous.z",
+        "position.x = previous.x",
         "player.position.x = previousHorizontalPosition.x",
         "player.position.z = previousHorizontalPosition.z",
     ):
