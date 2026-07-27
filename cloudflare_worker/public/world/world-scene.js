@@ -9483,6 +9483,13 @@ export function createWorldScene({
     metalness: 0.18,
     roughness: 0.72,
   });
+  const logoPanelChrome = chrome.clone();
+  logoPanelChrome.color.set("#f0f5ff");
+  logoPanelChrome.metalness = 0.8;
+  logoPanelChrome.roughness = 0.07;
+  logoPanelChrome.envMapIntensity = 1.3;
+  logoPanelChrome.emissive.set("#111c20");
+  logoPanelChrome.emissiveIntensity = 0.16;
   const chromeCube = new THREE.Group();
   chromeCube.name = "forkmesh-reflective-fm-cube";
   // The resting view presents the F/M corner together. Motion-enabled clients
@@ -9495,7 +9502,9 @@ export function createWorldScene({
   chromeMark.name = "forkmesh-reflective-fm-cube-fixed-tilt";
   chromeCube.add(chromeMark);
   const logoHalfSize = 2.92;
-  const logoSupportTopY = 2.4;
+  const logoSupportBaseY = 1.16;
+  const logoSupportTopY = 3.4;
+  const logoSupportHeight = logoSupportTopY - logoSupportBaseY;
   chromeMark.quaternion.identity();
   chromeMark.userData.logoUpright = true;
   chromeCube.position.y = logoSupportTopY + logoHalfSize;
@@ -9513,11 +9522,17 @@ export function createWorldScene({
     const piece = new THREE.Mesh(
       new THREE.BoxGeometry(width, height, depth),
       // Every face group is authored with local +Z pointing out of the cube.
-      // Keep that public letter face and its beveled-looking edges mirrored,
-      // while the inward -Z face stays matte. Opposite repeated F/M marks no
-      // longer reflect through the hollow center and visually fragment the
-      // readable adjacent letters.
-      [chrome, chrome, chrome, chrome, chrome, logoInnerFace],
+      // Only that public face is mirror-bright. Matte sides and inward backs
+      // keep the repeated opposite F/M marks from flashing through the hollow
+      // center as fragmented chrome strokes.
+      [
+        logoInnerFace,
+        logoInnerFace,
+        logoInnerFace,
+        logoInnerFace,
+        chrome,
+        logoInnerFace,
+      ],
     );
     piece.position.set(x, y, z);
     piece.rotation.z = rotationZ;
@@ -9662,7 +9677,7 @@ export function createWorldScene({
   logoPanelGeometry.translate(0, 0, -0.18);
   logoPanelGeometry.rotateX(Math.PI / 2);
   for (const faceY of [-2.68, 2.68]) {
-    const panel = new THREE.Mesh(logoPanelGeometry, chrome);
+    const panel = new THREE.Mesh(logoPanelGeometry, logoPanelChrome);
     panel.name =
       `forkmesh-reflective-fm-panel-${faceY > 0 ? "top" : "bottom"}`;
     panel.position.y = faceY;
@@ -9677,11 +9692,11 @@ export function createWorldScene({
   logoContactPoint.position.set(0, -logoHalfSize, 0);
   chromeMark.add(logoContactPoint);
   const logoSupport = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.2, 0.28, 1.28, 20),
+    new THREE.CylinderGeometry(0.28, 0.38, logoSupportHeight, 20),
     darkChrome,
   );
   logoSupport.name = "forkmesh-reflective-fm-cube-support";
-  logoSupport.position.y = logoSupportTopY - 0.64;
+  logoSupport.position.y = logoSupportBaseY + logoSupportHeight / 2;
   logoFountain.add(logoSupport);
   logoFountain.add(chromeCube);
   for (const [x, y, z, intensity] of [

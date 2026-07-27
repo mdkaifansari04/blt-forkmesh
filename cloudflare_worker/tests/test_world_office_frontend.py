@@ -136,7 +136,8 @@ def test_entry_is_walk_through_for_everyone_and_the_keypad_protocol_is_absent():
         'const OFFICE_ENTRY_PATH = "/api/world/office/general/entry"',
         'const OFFICE_FLOORS_PATH = "/api/world/office/floors"',
         "function authenticatedSession()",
-        "const entered = completeOfficeEntry()",
+        "const entered = completeOfficeEntry({",
+        "loadPublicAttendance: !activeSession",
         "void refreshOfficeAuthorization(",
         "async function authorizeMeeting()",
         "meeting.openLobby()",
@@ -190,9 +191,12 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
     for contract in (
         'const OFFICE_ATTENDANCE_PATH = "/api/world/office/attendance"',
         "async function loadAttendance()",
-        "function recordAttendance(direction)",
+        "function recordAttendance(",
         "visits.slice(0, 20)",
-        "void loadAttendance()",
+        "if (loadPublicAttendance) void loadAttendance()",
+        "loadPublicAttendance: !activeSession",
+        "loadPublicFallback: true",
+        "generation === authorizationGeneration",
         'const action = direction === "out" ? "out" : "in"',
         "attendanceWrite = attendanceWrite",
     ):
@@ -363,16 +367,26 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
     ):
         assert hard_snap not in prepare
 
-    # The threshold helper converts the live avatar's world pose into Office
-    # coordinates. It keeps the crossing beside the physical entrance instead
-    # of spawning the visitor deep inside the lobby.
+    # The threshold helper is now a pure coordinate conversion. The mode
+    # handoff may normalize floor height, but must preserve the doorway's exact
+    # physical X/Z instead of staging a second inward teleport.
     assert "worldToLocal" in local_position
-    assert "OFFICE_FRONT_Z" in local_position
-    assert re.search(
-        r"OFFICE_(?:AVATAR_RADIUS|INTERIOR_(?:EXIT_Z|WALL_LIMIT))",
-        local_position,
-    )
+    assert "target.x =" not in local_position
+    assert "target.z =" not in local_position
     assert "officeAvatarLocalPosition(" in enter
+    threshold_handoff = enter[
+        enter.index("if (enteringFromTown)"):
+        enter.index("} else if (meetingAvatar)")
+    ]
+    assert "localPosition.y = currentFloorY" in threshold_handoff
+    assert "localPosition.x =" not in threshold_handoff
+    assert "localPosition.z =" not in threshold_handoff
+    assert "OFFICE_INTERIOR_WALL_LIMIT - 0.72" not in enter
+
+    collision = function_body(scene, "constrainOfficeInteriorWalls")
+    assert "const movingOutward =" in collision
+    assert "movingOutward &&" in collision
+    assert "z <= OFFICE_DOORWAY_ENTRY_Z + 0.08" in collision
 
     # Entry continues with the same player object. A second local avatar, a
     # forced camera mode, or rewritten orbit state would read as a scene cut.
@@ -388,6 +402,33 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
         "camera.lookAt",
     ):
         assert swap_or_snap not in enter
+
+
+def test_lobby_camera_clamp_has_one_strict_open_door_portal():
+    scene = source(SCENE_PATH)
+    limit = function_body(scene, "officeCameraDistanceLimit")
+
+    # Only an outward ray through the open lobby aperture may omit the front-Z
+    # face. Its real width and sill/lintel are checked at the front plane.
+    for contract in (
+        "const rawFrontDistance =",
+        "(OFFICE_FRONT_Z - localTarget.z) / frontDirection",
+        'officeCurrentFloorId === "lobby"',
+        "officeSlidingDoorOpen >= 0.9",
+        "Math.abs(portalX) <= OFFICE_DOOR_WIDTH / 2 - 0.08",
+        "portalY >= OFFICE_DOOR_SILL_Y + 0.08",
+        "OFFICE_DOOR_SILL_Y + OFFICE_DOOR_HEIGHT - 0.08",
+        'axis === "z"',
+        "component > 0",
+        "rayThroughOpenLobbyPortal",
+    ):
+        assert contract in limit
+
+    # All other envelope faces remain in the ray/AABB calculation.
+    for axis in ('["x", "minX", "maxX"]', '["y", "minY", "maxY"]',
+                 '["z", "minZ", "maxZ"]'):
+        assert axis in limit
+    assert "ridingElevator" in limit
 
 
 def test_office_walkers_share_world_movement_tuning_and_heading():
@@ -800,7 +841,8 @@ def test_walking_through_the_doorway_enters_immediately_and_hydrates_access():
         office.index("function completeOfficeExit()")
     ]
     assert 'entry?.source === "doorway"' in entry
-    assert "const entered = completeOfficeEntry()" in entry
+    assert "const entered = completeOfficeEntry({" in entry
+    assert "loadPublicAttendance: !activeSession" in entry
     assert "void refreshOfficeAuthorization(" in entry
     assert "requestOfficeEntry" not in entry
     assert "world.setOfficeDoorwayEntryPending?.(false)" in entry

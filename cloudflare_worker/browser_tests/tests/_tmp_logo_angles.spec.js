@@ -26,16 +26,22 @@ test("_tmp logo angles", async ({ page }) => {
   );
   await page.locator("forkmesh-world").evaluate((shell) => {
     shell.world.enterOfficeLobby();
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const reflectedAvatarPoint = interior.localToWorld(
+      shell.world.player.position.clone().set(-9, 0.38, -2)
+    );
+    shell.world.player.parent.worldToLocal(reflectedAvatarPoint);
+    shell.world.player.position.copy(reflectedAvatarPoint);
     shell.world.setPaused(false);
   });
   await page.waitForTimeout(1400);
   const views = [
-    ["w", [-10, 13, 6], 0, 50],
-    ["x", [-8, 14, 8], 0, 45],
-    ["y", [-12, 12, 4], 0, 55],
-    ["z", [-10, 14, -10], 0, 48],
-    ["aa", [-26, 13, 6], 0, 50],
-    ["ab", [-10, 11, 6], 0, 50],
+    ["am", [-9, 12, 6], 0, 48],
+    ["an", [-9, 13, 6], 0, 48],
+    ["ao", [-10, 12, 6], 0, 48],
+    ["ap", [-8, 12, 5], 0, 48],
   ];
   for (const [name, position, yaw, fov] of views) {
     await page.locator("forkmesh-world").evaluate(
@@ -51,7 +57,7 @@ test("_tmp logo angles", async ({ page }) => {
           shell.world.camera.position.clone().set(...spec.position)
         ));
         shell.world.camera.lookAt(interior.localToWorld(
-          shell.world.camera.position.clone().set(-18, 5.3, -2)
+          shell.world.camera.position.clone().set(-18, 6.3, -2)
         ));
         shell.world.renderer.render(scene, shell.world.camera);
       },
