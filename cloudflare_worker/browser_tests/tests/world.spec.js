@@ -1803,6 +1803,40 @@ test("Office rooftop restores the full world zoom outside the elevator", async (
     space: "office-rooftop",
     zoom: 28,
   });
+
+  // Pull the orbit eye below its target to look sharply upward. It may retain
+  // full horizontal zoom, but it must never pass down through the roof slab.
+  const canvas = page.locator("[data-world-canvas-wrap] canvas");
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  const x = Math.round(box.x + box.width * 0.5);
+  await page.mouse.move(x, Math.round(box.y + box.height * 0.86));
+  await page.mouse.down();
+  await page.mouse.move(x, Math.round(box.y + box.height * 0.08), {
+    steps: 4,
+  });
+  await page.mouse.up();
+  await page.waitForTimeout(120);
+  const upward = await page.locator("forkmesh-world").evaluate((shell) => {
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const camera = interior.worldToLocal(shell.world.camera.position.clone());
+    const target = interior.worldToLocal(
+      shell.world.player.getWorldPosition(shell.world.player.position.clone())
+    );
+    return {
+      camera: camera.toArray(),
+      horizontalDistance: Math.hypot(
+        camera.x - target.x,
+        camera.z - target.z,
+      ),
+      zoom: shell.world.getCameraState().zoom,
+    };
+  });
+  expect(upward.camera[1]).toBeGreaterThanOrEqual(144.54);
+  expect(upward.horizontalDistance).toBeGreaterThan(400);
+  expect(upward.zoom).toBe(28);
 });
 
 test("leaving an Office meeting resumes at a walkable first-person pose", async ({
@@ -1925,6 +1959,10 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
     );
     const maya = scene.getObjectByName("avatar:office-greeter-maya");
     const noah = scene.getObjectByName("avatar:office-greeter-noah");
+    let noahCount = 0;
+    scene.traverse((object) => {
+      if (object.name === "avatar:office-greeter-noah") noahCount += 1;
+    });
     const chromeCube = scene.getObjectByName("forkmesh-reflective-fm-cube");
     const chromeMark = scene.getObjectByName(
       "forkmesh-reflective-fm-cube-fixed-tilt"
@@ -1985,8 +2023,9 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
       placards,
       reception: {
         desk: receptionDesk.position.toArray(),
-        maya: maya?.position.toArray(),
+        hasMaya: Boolean(maya),
         noah: noah?.position.toArray(),
+        noahCount,
       },
       logo: {
         verticalAxisOnly: {
@@ -2042,8 +2081,9 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   expect(state.placards.every((placard) => placard.mesh && !placard.sprite))
     .toBe(true);
   expect(state.reception.desk).toEqual([0, 1.05, -36.5]);
-  expect(state.reception.maya).toEqual([-7, 0.38, -40]);
-  expect(state.reception.noah).toEqual([7, 0.38, -40]);
+  expect(state.reception.hasMaya).toBe(false);
+  expect(state.reception.noah).toEqual([0, 0.38, -40]);
+  expect(state.reception.noahCount).toBe(1);
   expect(state.logo.verticalAxisOnly.x).toBeCloseTo(0, 7);
   expect(state.logo.verticalAxisOnly.z).toBeCloseTo(0, 7);
   expect(state.logo.fixedTiltQuaternion.some((value) => Math.abs(value) > 0.1))
@@ -2120,6 +2160,83 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   });
 });
 
+test("Noah greets desk approaches locally without per-frame bubble spam", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-noah-reception");
+  await waitForWorld(page);
+  const placeAtDeskDistance = async (localZ) =>
+    page.locator("forkmesh-world").evaluate((shell, z) => {
+      const interior = shell.world.scene.getObjectByName(
+        "forkmesh-office-interior"
+      );
+      const point = interior.localToWorld(
+        shell.world.player.position.clone().set(0, 0.38, z)
+      );
+      shell.world.player.parent.worldToLocal(point);
+      shell.world.player.position.copy(point);
+      shell.world.setPaused(false);
+    }, localZ);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.enterOfficeLobby();
+  });
+  await placeAtDeskDistance(-32);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      let count = 0;
+      shell.world.scene.traverse((object) => {
+        if (object.userData?.officeReceptionGreeting === true) count += 1;
+      });
+      return count;
+    })
+  ).toBe(1);
+
+  const first = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const noah = scene.getObjectByName("avatar:office-greeter-noah");
+    let bubble = null;
+    let noahCount = 0;
+    scene.traverse((object) => {
+      if (object.name === "avatar:office-greeter-noah") noahCount += 1;
+      if (object.userData?.officeReceptionGreeting === true) bubble = object;
+    });
+    return {
+      noahCount,
+      hasMaya: Boolean(scene.getObjectByName("avatar:office-greeter-maya")),
+      uuid: bubble?.uuid || "",
+      message: bubble?.userData?.message || "",
+      bubble: bubble?.position.toArray() || [],
+      noah: noah?.getWorldPosition(noah.position.clone()).toArray() || [],
+    };
+  });
+  expect(first.noahCount).toBe(1);
+  expect(first.hasMaya).toBe(false);
+  expect(first.message).toContain("lobby is open to everyone");
+  expect(first.message).toContain("Log in");
+  expect(first.message).toContain("restricted team floors");
+  expect(Math.abs(first.bubble[0] - first.noah[0])).toBeLessThan(0.05);
+  expect(Math.abs(first.bubble[2] - first.noah[2])).toBeLessThan(0.05);
+  expect(first.bubble[1]).toBeGreaterThan(first.noah[1]);
+
+  // Cross the hysteresis boundary and return during the cooldown. The existing
+  // local bubble remains; no new sprite/event is created on animation frames.
+  await placeAtDeskDistance(-27);
+  await page.waitForTimeout(100);
+  await placeAtDeskDistance(-32);
+  await page.waitForTimeout(180);
+  const second = await page.locator("forkmesh-world").evaluate((shell) => {
+    const bubbles = [];
+    shell.world.scene.traverse((object) => {
+      if (object.userData?.officeReceptionGreeting === true) {
+        bubbles.push(object.uuid);
+      }
+    });
+    return bubbles;
+  });
+  expect(second).toEqual([first.uuid]);
+});
+
 test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", async ({
   page,
 }) => {
@@ -2176,10 +2293,10 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
     cube.rotation.y = 0;
     const interior = scene.getObjectByName("forkmesh-office-interior");
     shell.world.setPaused(true);
-    shell.world.camera.fov = 55;
+    shell.world.camera.fov = 65;
     shell.world.camera.updateProjectionMatrix();
     shell.world.camera.position.copy(interior.localToWorld(
-      shell.world.camera.position.clone().set(-23, 25.5, -7)
+      shell.world.camera.position.clone().set(-24, 15, 6)
     ));
     shell.world.camera.lookAt(interior.localToWorld(
       shell.world.camera.position.clone().set(-18, 7.5, -2)
