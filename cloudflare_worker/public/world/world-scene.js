@@ -75,6 +75,8 @@ const CAMERA_PITCH_MIN = -Math.PI / 2 + 0.01;
 // Stop just shy of vertical so the camera stays numerically stable while a
 // player can still look directly into the sky.
 const CAMERA_PITCH_MAX = Math.PI / 2 - 0.01;
+const WORLD_GROUND_Y = 0;
+const CAMERA_GROUND_CLEARANCE = 0.6;
 const FIRST_PERSON_EYE_HEIGHT = 2.2;
 const FIRST_PERSON_ZOOM_MIN = 0.25;
 const FIRST_PERSON_ZOOM_MAX = 5;
@@ -1737,6 +1739,14 @@ function officeMarketingTasksTexture(THREE, payload = {}) {
       context.fillText(task.status.toUpperCase(), 954, top + 10, 260);
       context.textAlign = "left";
     });
+  });
+}
+
+function officeMarketingTasksBlankTexture(THREE) {
+  return canvasTexture(THREE, 1024, 768, (context) => {
+    context.clearRect(0, 0, 1024, 768);
+    context.fillStyle = "rgba(5,17,14,0.97)";
+    context.fillRect(0, 0, 1024, 768);
   });
 }
 
@@ -8740,6 +8750,10 @@ export function createWorldScene({
   const officeParticipantLabels = new Map();
   const officeBubbles = new Map();
   const officeChairs = new Map();
+  let officeMarketingTaskSnapshot = normalizeOfficeMarketingTasks({
+    authorized: false,
+    state: "locked",
+  });
   const officeInterior = new THREE.Group();
   officeInterior.name = "forkmesh-office-interior";
   officeInterior.position.set(
@@ -9382,10 +9396,7 @@ export function createWorldScene({
   const officeMarketingTaskBoardFace = new THREE.Mesh(
     new THREE.PlaneGeometry(18.12, 11.02),
     new THREE.MeshBasicMaterial({
-      map: officeMarketingTasksTexture(THREE, {
-        authorized: false,
-        state: "locked",
-      }),
+      map: officeMarketingTasksBlankTexture(THREE),
     }),
   );
   officeMarketingTaskBoardFace.name =
@@ -9396,7 +9407,7 @@ export function createWorldScene({
     "office-marketing-task-board";
   officeMarketingTaskBoard.add(officeMarketingTaskBoardFace);
   officeMarketingTaskBoard.userData.face = officeMarketingTaskBoardFace;
-  officeMarketingTaskBoard.userData.taskState = "locked";
+  officeMarketingTaskBoard.userData.taskState = "vacant";
   officeMarketingTaskBoard.userData.taskCount = 0;
   interactive.push(
     officeMarketingTaskBoardFrame,
@@ -11048,6 +11059,7 @@ export function createWorldScene({
     lastPosition.copy(player.position);
     if (!enteringFromTown) keyboardMovementSpeed = baseMoveSpeed();
     officeExitPending = false;
+    renderOfficeMarketingTasks();
     return true;
   }
 
@@ -11224,20 +11236,45 @@ export function createWorldScene({
     if (localParticipant && officeSceneMode === "meeting") {
       localParticipant.visible = cameraMode !== "first-person";
     }
+    renderOfficeMarketingTasks();
+  }
+
+  function officeMarketingRoomOccupied() {
+    return (
+      officeParticipants.size > 0 ||
+      (officeSceneMode === "lobby" &&
+        officeCurrentFloorId === "marketing")
+    );
+  }
+
+  function renderOfficeMarketingTasks() {
+    const occupied = officeMarketingRoomOccupied();
+    const key = JSON.stringify({
+      occupied,
+      snapshot: officeMarketingTaskSnapshot,
+    });
+    if (officeMarketingTaskBoard.userData.taskKey === key) {
+      return officeMarketingTaskSnapshot;
+    }
+    const face = officeMarketingTaskBoard.userData.face;
+    face.material.map?.dispose?.();
+    face.material.map = occupied
+      ? officeMarketingTasksTexture(THREE, officeMarketingTaskSnapshot)
+      : officeMarketingTasksBlankTexture(THREE);
+    face.material.needsUpdate = true;
+    officeMarketingTaskBoard.userData.taskKey = key;
+    officeMarketingTaskBoard.userData.taskState = occupied
+      ? officeMarketingTaskSnapshot.state
+      : "vacant";
+    officeMarketingTaskBoard.userData.taskCount = occupied
+      ? officeMarketingTaskSnapshot.tasks.length
+      : 0;
+    return officeMarketingTaskSnapshot;
   }
 
   function updateOfficeMarketingTasks(payload = {}) {
-    const snapshot = normalizeOfficeMarketingTasks(payload);
-    const key = JSON.stringify(snapshot);
-    if (officeMarketingTaskBoard.userData.taskKey === key) return snapshot;
-    const face = officeMarketingTaskBoard.userData.face;
-    face.material.map?.dispose?.();
-    face.material.map = officeMarketingTasksTexture(THREE, snapshot);
-    face.material.needsUpdate = true;
-    officeMarketingTaskBoard.userData.taskKey = key;
-    officeMarketingTaskBoard.userData.taskState = snapshot.state;
-    officeMarketingTaskBoard.userData.taskCount = snapshot.tasks.length;
-    return snapshot;
+    officeMarketingTaskSnapshot = normalizeOfficeMarketingTasks(payload);
+    return renderOfficeMarketingTasks();
   }
 
   function updateWorldBulletin(events = []) {
@@ -11850,6 +11887,7 @@ export function createWorldScene({
     officeElevatorDoors[1].position.x = 4.36;
     currentSpace = `office-${ride.floorId}`;
     officeElevatorRide = null;
+    renderOfficeMarketingTasks();
     onOfficeElevatorSound("arrive", {
       floor: ride.floorId,
       duration: ride.duration,
@@ -12532,6 +12570,26 @@ export function createWorldScene({
     return Math.min(requested, Math.max(0, boundaryDistance - 0.24));
   }
 
+  function groundCameraDistanceLimit(target, direction, requestedDistance) {
+    const requested = Math.max(0, Number(requestedDistance) || 0);
+    if (
+      officeSceneMode !== "town" ||
+      !target ||
+      !direction ||
+      requested <= 0
+    ) {
+      return requested;
+    }
+    const rise = Number(direction.y) || 0;
+    if (rise > -1e-6) return requested;
+    const headroom = Math.max(
+      0,
+      (Number(target.y) || 0) -
+        (WORLD_GROUND_Y + CAMERA_GROUND_CLEARANCE),
+    );
+    return Math.min(requested, headroom / -rise);
+  }
+
   function updateCamera(delta) {
     const officeAvatar =
       officeSceneMode === "meeting"
@@ -12583,10 +12641,14 @@ export function createWorldScene({
       Math.sin(cameraPitch),
       Math.cos(cameraYaw) * Math.cos(cameraPitch),
     );
-    const distance = officeCameraDistanceLimit(
+    const distance = groundCameraDistanceLimit(
       target,
       offsetDirection,
-      requestedDistance,
+      officeCameraDistanceLimit(
+        target,
+        offsetDirection,
+        requestedDistance,
+      ),
     );
     const desired = target
       .clone()
@@ -12614,6 +12676,12 @@ export function createWorldScene({
     }
     if (reducedMotion) camera.position.copy(desired);
     else camera.position.lerp(desired, 1 - Math.pow(0.0008, delta));
+    if (officeSceneMode === "town") {
+      camera.position.y = Math.max(
+        camera.position.y,
+        WORLD_GROUND_Y + CAMERA_GROUND_CLEARANCE,
+      );
+    }
     if (rooftopPatioCamera) {
       // Clamp the actual eased camera as well as its destination. Otherwise a
       // prior below-slab frame could lerp through the roof on its way back up.

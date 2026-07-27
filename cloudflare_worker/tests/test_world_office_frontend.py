@@ -440,6 +440,31 @@ def test_an_arrival_cell_never_drops_a_visitor_off_their_office_floor():
     assert welcome.index("const relocated") < welcome.index("this.currentSpace =")
 
 
+def test_town_camera_cannot_orbit_through_the_ground():
+    scene = source(SCENE_PATH)
+    limiter = function_body(scene, "groundCameraDistanceLimit")
+    assert 'officeSceneMode !== "town"' in limiter
+    assert "headroom / -rise" in limiter
+    update = function_body(scene, "updateCamera")
+    assert "groundCameraDistanceLimit(" in update
+    assert "WORLD_GROUND_Y + CAMERA_GROUND_CLEARANCE" in update
+
+
+def test_marketing_task_board_is_blank_while_the_room_is_empty():
+    scene = source(SCENE_PATH)
+    blank = function_body(scene, "officeMarketingTasksBlankTexture")
+    assert "fillRect(0, 0, 1024, 768)" in blank
+    occupancy = function_body(scene, "officeMarketingRoomOccupied")
+    assert "officeParticipants.size > 0" in occupancy
+    assert 'officeCurrentFloorId === "marketing"' in occupancy
+    render = function_body(scene, "renderOfficeMarketingTasks")
+    assert "officeMarketingTasksBlankTexture(THREE)" in render
+    assert '? officeMarketingTaskSnapshot.state' in render
+    assert ': "vacant"' in render
+    update = function_body(scene, "updateOfficeMarketingTasks")
+    assert "officeMarketingTaskSnapshot = normalizeOfficeMarketingTasks(payload)" in update
+
+
 def test_office_is_a_remote_island_reached_by_a_glass_bridge():
     scene = source(SCENE_PATH)
     tower = source(TOWER_PATH)
