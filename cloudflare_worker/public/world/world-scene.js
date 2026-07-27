@@ -3423,6 +3423,7 @@ function serverPanelTexture(THREE, node) {
       ? `${String(repo.owner).slice(0, 32)}/${String(repo.name).slice(0, 44)}`
       : "REPOSITORY NOT REPORTED";
   const commitSnapshot = mirrorCommitSnapshot(node, repo);
+  const syncAgo = mirrorCommitAgeLabel(node?.syncAgeMs);
   const commit = String(node?.commit || repo?.commit || "").toLowerCase();
   const shortCommit = /^[0-9a-f]{40,64}$/.test(commit)
     ? commit.slice(0, 12)
@@ -3479,7 +3480,7 @@ function serverPanelTexture(THREE, node) {
     context.font = '600 21px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#8ca99a";
     context.textAlign = "right";
-    context.fillText(activity || `SYNCED ${mirrorCommitAgeLabel(node?.syncAgeMs)}`, 966, 124);
+    context.fillText(activity || `SYNCED ${syncAgo}`, 966, 124);
     context.textAlign = "left";
 
     context.strokeStyle = "#294339";
@@ -3596,24 +3597,29 @@ function serverPanelTexture(THREE, node) {
     context.fillStyle = "#b4cabd";
     context.fillText(commitSnapshot.age, 598, 540);
 
+    // BRANCHES/PULL REQUESTS/ISSUES don't carry their own per-item
+    // timestamps, but they're read from the same signed snapshot as
+    // everything else on the card, so the record's own publish age
+    // (syncAgo) is an honest freshness stamp for them. COMMITS gets the
+    // precise last-commit age instead, since that's actually known.
     const rows = [
-      ["COMMITS", node?.commitCount],
-      ["BRANCHES", node?.branchCount],
-      ["PULL REQUESTS", node?.pullCount],
-      ["ISSUES", node?.issueCount],
-      ["DISCUSSIONS", node?.discussionCount],
-      ["ARTIFACTS", node?.artifactCount],
-      ["WORKTREES", node?.worktreeCount],
-      ["CLONES SERVED", node?.clonesServed],
-      ["WEB SERVED", node?.websiteServed],
-      ["REPO BYTES", compactMirrorBytes(node?.sizeBytes)],
+      ["COMMITS", node?.commitCount, commitSnapshot.age],
+      ["BRANCHES", node?.branchCount, syncAgo],
+      ["PULL REQUESTS", node?.pullCount, syncAgo],
+      ["ISSUES", node?.issueCount, syncAgo],
+      ["DISCUSSIONS", node?.discussionCount, null],
+      ["ARTIFACTS", node?.artifactCount, null],
+      ["WORKTREES", node?.worktreeCount, null],
+      ["CLONES SERVED", node?.clonesServed, null],
+      ["WEB SERVED", node?.websiteServed, null],
+      ["REPO BYTES", compactMirrorBytes(node?.sizeBytes), null],
     ];
-    context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
-    rows.forEach(([label, value], index) => {
+    rows.forEach(([label, value, age], index) => {
       const column = index % 2;
       const row = Math.floor(index / 2);
       const x = column === 0 ? 58 : 536;
       const y = 604 + row * 62;
+      context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
       context.fillStyle = "#8ca99a";
       context.fillText(label, x, y);
       context.textAlign = "right";
@@ -3621,8 +3627,13 @@ function serverPanelTexture(THREE, node) {
       context.fillText(
         typeof value === "string" ? value : compactMirrorCount(value),
         x + 414,
-        y,
+        age ? y - 9 : y,
       );
+      if (age) {
+        context.font = '600 15px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillStyle = "#6f8579";
+        context.fillText(age, x + 414, y + 15);
+      }
       context.textAlign = "left";
     });
 
@@ -4007,7 +4018,10 @@ function createTree(THREE, x, z, scale = 1, color = "#2f8c5f") {
 function rewardPoolRimTexture(THREE) {
   const width = 4096;
   const height = 256;
-  const repeats = 5;
+  // Three repeats around the rim: five crowded the 18-character title into its
+  // own neighbours, so the wrap read as one smeared word from every angle.
+  const repeats = 3;
+  const title = "GLOBAL REWARD POOL";
   return canvasTexture(THREE, width, height, (context) => {
     context.fillStyle = "#1d5240";
     context.fillRect(0, 0, width, height);
@@ -4017,13 +4031,26 @@ function rewardPoolRimTexture(THREE) {
     context.textAlign = "center";
     context.textBaseline = "middle";
     const slot = width / repeats;
+    // Measured, not assumed: shrink the title until a repeat plus its ◎
+    // separator fits inside one slot, whatever font the browser resolves.
+    const available = slot * 0.72;
+    let titleSize = 108;
+    const titleFont = (size) =>
+      `800 ${size}px "ForkMesh Mono", ui-monospace, monospace`;
+    context.font = titleFont(titleSize);
+    while (titleSize > 48 && context.measureText(title).width > available) {
+      titleSize -= 2;
+      context.font = titleFont(titleSize);
+    }
     for (let index = 0; index < repeats; index += 1) {
       const centre = slot * (index + 0.5);
       context.fillStyle = "#f7c96b";
-      context.font = '800 108px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("GLOBAL REWARD POOL", centre, height / 2 + 4);
+      context.font = titleFont(titleSize);
+      context.fillText(title, centre, height / 2 + 4);
       context.fillStyle = "#9ef7c6";
-      context.font = '700 96px "ForkMesh Mono", ui-monospace, monospace';
+      context.font = `700 ${Math.round(
+        titleSize * 0.88,
+      )}px "ForkMesh Mono", ui-monospace, monospace`;
       context.fillText("◎", centre + slot / 2, height / 2 + 4);
     }
   });
@@ -6171,6 +6198,12 @@ function mastodonCountdownTexture(
 const MASTODON_POST_FRESH_MS = 24 * 60 * 60 * 1000;
 const MASTODON_POST_STALE_MS = 72 * 60 * 60 * 1000;
 
+// The same cadence rule for the blog board, stretched to how often a feature
+// blog actually publishes: a post within the week is green, a quiet week
+// turns amber, and three silent weeks read as a stalled blog and go red.
+const BLOG_POST_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
+const BLOG_POST_STALE_MS = 21 * 24 * 60 * 60 * 1000;
+
 // Compact elapsed readout: minutes under an hour, hours under two days,
 // whole days beyond that.
 function mastodonLastPostClock(sinceMs) {
@@ -6195,9 +6228,9 @@ function mastodonLastPostColor(
 // The plate beside the sync clock: how long since @forkmesh last posted,
 // tinted green / amber / red by the cadence thresholds above so a glance at
 // the stand says whether it is time to post again. sinceMs of null (nothing
-// fetched yet) renders a neutral placeholder. The social banners reuse the
-// same plate with their own label and thresholds (the blog board has no
-// post dates, so its plate reads the snapshot age as "SYNCED").
+// fetched yet, or a feed with no dated posts) renders a neutral placeholder.
+// The social banners reuse the same plate with their own label and
+// thresholds.
 function mastodonLastPostTexture(
   THREE,
   sinceMs = null,
@@ -6461,9 +6494,10 @@ const REDDIT_BANNER_OPTIONS = Object.freeze({
 
 // The blog board continues the same ring past Reddit. Its posts come from
 // the blog's own RSS feed (/blog/rss.xml), so each card shows the item's
-// artwork and preview text. The articles carry no dates, so the staleness
-// plate reads how old the fetched snapshot is: green within a healthy sync
-// window, red once the feed looks stuck.
+// artwork and preview text. Feed items carry pubDate, so the plate at the
+// bottom of the board reads how long ago the newest article went up, tinted
+// by the same green / amber / red rule as the Mastodon kiosk's LAST POST
+// plate — only at a blog's slower cadence (a week fresh, three weeks stale).
 const BLOG_BANNER_OPTIONS = Object.freeze({
   id: "blog",
   position: [19.8, 0, -32.8],
@@ -6484,9 +6518,9 @@ const BLOG_BANNER_OPTIONS = Object.freeze({
   footer: "RSS FEED AT /BLOG/RSS.XML",
   url: "https://forkmesh.com/blog",
   staleness: {
-    label: "SYNCED",
-    freshMs: 15 * 60 * 1000,
-    staleMs: 60 * 60 * 1000,
+    label: "LAST POST",
+    freshMs: BLOG_POST_FRESH_MS,
+    staleMs: BLOG_POST_STALE_MS,
   },
 });
 
@@ -7298,6 +7332,21 @@ function updateScreenLabel(THREE, object, element, camera, width, height, yOffse
   if (!visible) return;
   element.style.left = `${(position.x * 0.5 + 0.5) * width}px`;
   element.style.top = `${(-position.y * 0.5 + 0.5) * height}px`;
+}
+
+export function officeAttendanceDurationLabel(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  const milliseconds = Number(value);
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
+  const totalMinutes = Math.floor(milliseconds / 60_000);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const totalHours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (totalHours < 24) {
+    return `${totalHours}h ${String(minutes).padStart(2, "0")}m`;
+  }
+  const days = Math.floor(totalHours / 24);
+  return `${days}d ${String(totalHours % 24).padStart(2, "0")}h`;
 }
 
 export function createWorldScene({
@@ -9338,10 +9387,11 @@ export function createWorldScene({
   officeAttendanceBoard.rotation.y = Math.PI / 2;
   officeInterior.add(officeAttendanceBoard);
 
-  function officeAttendanceTexture(snapshot = {}) {
+  function officeAttendanceTexture(snapshot = {}, openElapsedMs = 0) {
     const visits = Array.isArray(snapshot?.visits)
       ? snapshot.visits.slice(0, 20)
       : [];
+    const liveElapsedMs = Math.max(0, Number(openElapsedMs) || 0);
     return canvasTexture(THREE, 1600, 800, (context) => {
       const format = (value) => {
         const timestamp = Number(value);
@@ -9365,8 +9415,9 @@ export function createWorldScene({
       context.fillStyle = "#79a996";
       context.font = '800 27px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText("USER", 42, 112);
-      context.fillText("IN", 570, 112);
-      context.fillText("OUT", 1080, 112);
+      context.fillText("IN", 500, 112);
+      context.fillText("OUT", 900, 112);
+      context.fillText("TOTAL", 1350, 112);
       context.strokeStyle = "rgba(121,239,181,0.28)";
       context.lineWidth = 2;
       context.beginPath();
@@ -9382,16 +9433,27 @@ export function createWorldScene({
         }
         context.fillStyle = "#e9fff6";
         context.fillText(
-          String(visit?.account || "Contributor").slice(0, 25),
+          String(visit?.account || "Contributor").slice(0, 22),
           42,
           y,
         );
         context.fillStyle = "#a9d7c4";
-        context.fillText(format(visit?.inAt), 570, y);
+        context.fillText(format(visit?.inAt), 500, y);
         context.fillStyle = visit?.outAt ? "#a9d7c4" : "#f7c96b";
         context.fillText(
           visit?.outAt ? format(visit.outAt) : "IN BUILDING",
-          1080,
+          900,
+          y,
+        );
+        const durationMs =
+          visit?.durationMs === null || visit?.durationMs === undefined
+            ? null
+            : Number(visit.durationMs) +
+              (visit?.inAt && !visit?.outAt ? liveElapsedMs : 0);
+        context.fillStyle = visit?.outAt ? "#a9d7c4" : "#f7c96b";
+        context.fillText(
+          officeAttendanceDurationLabel(durationMs),
+          1350,
           y,
         );
       });
@@ -9446,6 +9508,11 @@ export function createWorldScene({
       minFilter: THREE.LinearMipmapLinearFilter,
     },
   );
+  // Be explicit about reflection rather than relying on the render target's
+  // library default. The same live cube map then drives the mirrored letters
+  // and panels without ever turning into a refracted/inside-out view.
+  reflectionTarget.texture.mapping = THREE.CubeReflectionMapping;
+  reflectionTarget.texture.name = "forkmesh-office-logo-live-reflection";
   const reflectionCamera = new THREE.CubeCamera(
     0.2,
     180,
@@ -9496,18 +9563,21 @@ export function createWorldScene({
   // then continue from this pose around the same world-vertical axis.
   chromeCube.rotation.y = 0;
   // Only this outer mount animates. Its Y rotation is the single vertical
-  // spindle through the fountain; the inner mark remains architecturally
-  // upright so the top is horizontal and the F/M walls stay vertical.
+  // spindle through the fountain; the inner edge-balanced tilt never changes.
   const chromeMark = new THREE.Group();
   chromeMark.name = "forkmesh-reflective-fm-cube-fixed-tilt";
   chromeCube.add(chromeMark);
   const logoHalfSize = 2.92;
-  const logoSupportBaseY = 1.16;
-  const logoSupportTopY = 3.4;
-  const logoSupportHeight = logoSupportTopY - logoSupportBaseY;
-  chromeMark.quaternion.identity();
-  chromeMark.userData.logoUpright = true;
-  chromeCube.position.y = logoSupportTopY + logoHalfSize;
+  const logoSupportTopY = 2.4;
+  // Align the original lower body diagonal with world-down. The selected
+  // corner therefore remains exactly over the sole support while the outer
+  // mount spins around the world-vertical axis.
+  const logoLowerCorner = new THREE.Vector3(-1, -1, -1).normalize();
+  chromeMark.quaternion.setFromUnitVectors(
+    logoLowerCorner,
+    new THREE.Vector3(0, -1, 0),
+  );
+  chromeCube.position.y = logoSupportTopY + logoHalfSize * Math.sqrt(3);
   reflectionCamera.position.y = chromeCube.position.y;
   const logoPiece = (
     parent,
@@ -9689,21 +9759,19 @@ export function createWorldScene({
     chrome,
   );
   logoContactPoint.name = "forkmesh-reflective-fm-cube-contact-point";
-  logoContactPoint.position.set(0, -logoHalfSize, 2.68);
+  logoContactPoint.position.set(
+    -logoHalfSize,
+    -logoHalfSize,
+    -logoHalfSize,
+  );
   chromeMark.add(logoContactPoint);
   const logoSupport = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.28, 0.38, logoSupportHeight, 20),
+    new THREE.CylinderGeometry(0.2, 0.28, 1.28, 20),
     darkChrome,
   );
   logoSupport.name = "forkmesh-reflective-fm-cube-support";
-  // The sole pedestal meets the center of the lower F-side edge and turns
-  // with the yawing sculpture, so the visible contact never drifts away.
-  logoSupport.position.set(
-    0,
-    logoSupportBaseY + logoSupportHeight / 2 - chromeCube.position.y,
-    2.68,
-  );
-  chromeCube.add(logoSupport);
+  logoSupport.position.y = logoSupportTopY - 0.64;
+  logoFountain.add(logoSupport);
   logoFountain.add(chromeCube);
   for (const [x, y, z, intensity] of [
     [-7, 9, 5, 4.8],
@@ -9777,6 +9845,11 @@ export function createWorldScene({
       // The reflection camera is independent, so reveal it for this capture
       // and restore the exact prior state immediately afterwards.
       player.visible = true;
+      // Movement and camera updates happen earlier in this frame. Commit the
+      // avatar's latest pose before the six cube faces render so its mirror
+      // image never trails one settled position behind.
+      player.updateWorldMatrix(true, true);
+      reflectionCamera.updateWorldMatrix(true, true);
       try {
         reflectionCamera.update(renderer, scene);
       } finally {
@@ -9787,6 +9860,8 @@ export function createWorldScene({
       logoReflectionEligibleAt = Infinity;
       reflectionCamera.userData.logoCaptureCount += 1;
       reflectionCamera.userData.logoCapturedPlayer = true;
+      reflectionCamera.userData.logoCapturedPlayerId =
+        String(player.userData?.id || player.name || "local-player");
     }
   }
 
@@ -9969,6 +10044,11 @@ export function createWorldScene({
   officeElevatorCar.add(elevatorPanel);
   const neighborhoodHomes = new Map();
   const nodeInfrastructure = new Map();
+  // Cabinets stand in the server yard by default; "Organize nodes" switches the
+  // fleet to rings around the reward pool. The last live list is kept so the
+  // switch can re-place the yard without waiting for the next network poll.
+  let nodeLayoutMode = "yard";
+  let lastNetworkNodes = [];
   const botAgents = new Map();
   const loungeMembers = new Map();
   // Public account facts the member directory publishes but a live presence
@@ -10065,6 +10145,8 @@ export function createWorldScene({
   let officeFloorHandler = null;
   let officeElevatorRide = null;
   let officeAttendance = { visits: [] };
+  let officeAttendanceObservedAt = performance.now();
+  let officeAttendanceRenderedBucket = 0;
   let officeReceptionWasNear = false;
   let officeReceptionLastTipAt = -Infinity;
   let officeReceptionGuestTipIndex = 0;
@@ -10317,18 +10399,46 @@ export function createWorldScene({
   }
 
   function setOfficeAttendance(event = {}) {
+    const receivedAt = performance.now();
+    const rawAsOfAt = Number(event?.asOfAt);
+    const asOfAt =
+      Number.isFinite(rawAsOfAt) && rawAsOfAt > 0
+        ? rawAsOfAt
+        : Date.now();
     const visits = Array.isArray(event?.visits)
-      ? event.visits.slice(0, 20).map((visit) => ({
-          id: String(visit?.id || "").slice(0, 32),
-          account: String(visit?.account || "Contributor")
-            .replace(/\s+/g, " ")
-            .trim()
-            .slice(0, 32),
-          inAt: Math.max(0, Number(visit?.inAt) || 0),
-          outAt: Math.max(0, Number(visit?.outAt) || 0),
-        }))
+      ? event.visits.slice(0, 20).map((visit) => {
+          const inAt = Math.max(0, Number(visit?.inAt) || 0);
+          const rawOutAt = Math.max(0, Number(visit?.outAt) || 0);
+          const outAt = inAt > 0 && rawOutAt >= inAt ? rawOutAt : 0;
+          const suppliedDuration = Number(visit?.durationMs);
+          const hasSuppliedDuration =
+            visit?.durationMs !== null &&
+            visit?.durationMs !== undefined &&
+            Number.isFinite(suppliedDuration) &&
+            suppliedDuration >= 0;
+          const durationMs =
+            inAt <= 0
+              ? null
+              : hasSuppliedDuration
+                ? suppliedDuration
+                : outAt
+                  ? outAt - inAt
+                  : Math.max(0, asOfAt - inAt);
+          return {
+            id: String(visit?.id || "").slice(0, 32),
+            account: String(visit?.account || "Contributor")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 32),
+            inAt,
+            outAt,
+            durationMs,
+          };
+        })
       : [];
-    officeAttendance = { visits };
+    officeAttendance = { visits, asOfAt };
+    officeAttendanceObservedAt = receivedAt;
+    officeAttendanceRenderedBucket = 0;
     const previous = officeAttendanceBoard.material.map;
     officeAttendanceBoard.material.map =
       officeAttendanceTexture(officeAttendance);
@@ -10337,6 +10447,26 @@ export function createWorldScene({
     return {
       visits: officeAttendance.visits.map((visit) => ({ ...visit })),
     };
+  }
+
+  function updateOfficeAttendanceClock(time) {
+    if (
+      officeSceneMode !== "lobby" ||
+      !officeAttendance.visits.some(
+        (visit) => visit.inAt > 0 && !visit.outAt,
+      )
+    ) {
+      return;
+    }
+    const elapsedMs = Math.max(0, time - officeAttendanceObservedAt);
+    const bucket = Math.floor(elapsedMs / 30_000);
+    if (bucket === officeAttendanceRenderedBucket) return;
+    officeAttendanceRenderedBucket = bucket;
+    const previous = officeAttendanceBoard.material.map;
+    officeAttendanceBoard.material.map =
+      officeAttendanceTexture(officeAttendance, elapsedMs);
+    officeAttendanceBoard.material.needsUpdate = true;
+    previous?.dispose?.();
   }
 
   function travelToOfficeFloor(floorId) {
@@ -10677,8 +10807,11 @@ export function createWorldScene({
     );
   }
 
-  function enterOffice() {
-    if (officeZoneState !== "nearby") return false;
+  function enterOffice({ source = "" } = {}) {
+    // A doorway callback is emitted only after the town collider verifies the
+    // avatar crossed the real opening. Trust that physical proof even when a
+    // fast dash reaches it one frame before nearestLandmark updates proximity.
+    if (source !== "doorway" && officeZoneState !== "nearby") return false;
     selectedLandmark = "office";
     officeExitPending = false;
     officeDoorwayEntryPending = false;
@@ -13024,9 +13157,51 @@ export function createWorldScene({
     return true;
   }
 
+  // Concentric rings of cabinets around the reward pool, innermost first. The
+  // first ring clears the pool rim and its tree circle; each further ring only
+  // starts once the one inside it is full at walkable spacing.
+  function rewardCircleSlots(centreX, centreZ, count) {
+    const spacing = 3.2;
+    // The campfire keeps its clearing: a ring position that landed on the
+    // bench circle would stand a cabinet through the seating.
+    const campfire = landmarkById("campfire").position;
+    const slots = [];
+    let radius = 9.6;
+    while (slots.length < count && radius < WORLD_RADIUS - 6) {
+      const capacity = Math.max(
+        1,
+        Math.floor((Math.PI * 2 * radius) / spacing),
+      );
+      const open = [];
+      for (let index = 0; index < capacity; index += 1) {
+        const angle = (index / capacity) * Math.PI * 2;
+        const x = centreX + Math.cos(angle) * radius;
+        const z = centreZ + Math.sin(angle) * radius;
+        if (Math.hypot(x - campfire[0], z - campfire[2]) < 7.4) continue;
+        open.push({ x, z });
+      }
+      const take = Math.min(open.length, count - slots.length);
+      // A part-filled ring spreads over its whole circle rather than trailing
+      // off as a lopsided arc.
+      const stride = take > 0 ? open.length / take : 0;
+      for (let index = 0; index < take; index += 1) {
+        slots.push(open[Math.floor(index * stride)]);
+      }
+      radius += 3.6;
+    }
+    return slots;
+  }
+
   function updateNetworkNodes(nodes = []) {
-    const routingX = SERVER_CABINET_YARD_ORIGIN[0];
-    const routingZ = SERVER_CABINET_YARD_ORIGIN[2];
+    lastNetworkNodes = Array.isArray(nodes) ? nodes : [];
+    const rewardCircle = nodeLayoutMode === "reward-circle";
+    const fountain = landmarkObjects.get("fountain");
+    const routingX = rewardCircle
+      ? fountain?.position.x ?? 0
+      : SERVER_CABINET_YARD_ORIGIN[0];
+    const routingZ = rewardCircle
+      ? fountain?.position.z ?? 0
+      : SERVER_CABINET_YARD_ORIGIN[2];
     // A dedicated 8×8 server yard keeps all 64 bounded live slots separate
     // without requiring the retired routing-station landmark. Fill the inward
     // slots first so a small healthy fleet stays closest to the Town Square.
@@ -13061,6 +13236,9 @@ export function createWorldScene({
     const usableNodes = (Array.isArray(nodes) ? nodes : [])
       .filter((node) => String(node?.name || node?.label || "").trim())
       .slice(0, 64);
+    const circleSlots = rewardCircle
+      ? rewardCircleSlots(routingX, routingZ, usableNodes.length)
+      : null;
     usableNodes.forEach((node, index) => {
       const nodeName = String(node.name || node.label).trim().slice(0, 80);
       const id = `node:${nodeName.toLowerCase()}`;
@@ -13101,14 +13279,17 @@ export function createWorldScene({
         }
         nodeInfrastructure.set(id, cabinet);
       }
-      const slot = serverSlots[index];
-      cabinet.position.set(slot.x, 0.38, slot.z);
-      // The front display faces inward so each cabinet remains individually
-      // readable from the surrounding walkway.
-      cabinet.rotation.y = Math.atan2(
-        routingX - slot.x,
-        routingZ - slot.z,
-      );
+      const slot = circleSlots ? circleSlots[index] : serverSlots[index];
+      const placeInSlot = () => {
+        cabinet.position.set(slot.x, 0.38, slot.z);
+        // The front display faces inward so each cabinet remains individually
+        // readable from the surrounding walkway.
+        cabinet.rotation.y = Math.atan2(
+          routingX - slot.x,
+          routingZ - slot.z,
+        );
+      };
+      placeInSlot();
       // The yard slot is only the default: registering the cabinet re-applies
       // any administrator-locked position and turn on top of it, and it has to
       // happen after the slot assignment above overwrites both.
@@ -13118,6 +13299,9 @@ export function createWorldScene({
         cabinet.userData.layoutBaseRotation = cabinet.rotation.y;
         registerMovableObject(layoutId, cabinet);
       }
+      // "Organize nodes" is an explicit viewer request, so it wins over a
+      // locked placement for as long as the ring stays switched on.
+      if (rewardCircle) placeInSlot();
       const nextCommit = String(node?.commit || "");
       if (priorCommit && nextCommit && nextCommit !== priorCommit) {
         spawnPushSurge(cabinet.position);
@@ -13136,6 +13320,31 @@ export function createWorldScene({
       removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
+  }
+
+  // Arranges every live cabinet in even rings around the reward pool, or puts
+  // the fleet back in the server yard. Returns the resulting arrangement so the
+  // HUD button can label and announce itself from the real scene state.
+  function organizeNetworkNodes(organized) {
+    const next =
+      organized === undefined
+        ? nodeLayoutMode !== "reward-circle"
+        : Boolean(organized);
+    nodeLayoutMode = next ? "reward-circle" : "yard";
+    updateNetworkNodes(lastNetworkNodes);
+    return {
+      organized: next,
+      mode: nodeLayoutMode,
+      nodes: nodeInfrastructure.size,
+    };
+  }
+
+  function getNodeLayoutState() {
+    return {
+      organized: nodeLayoutMode === "reward-circle",
+      mode: nodeLayoutMode,
+      nodes: nodeInfrastructure.size,
+    };
   }
 
   function focusNetworkNode(name) {
@@ -16656,6 +16865,7 @@ export function createWorldScene({
       walkOfficeParticipant(delta, time);
     }
     updateOfficeReceptionGuide(time);
+    updateOfficeAttendanceClock(time);
     // The Office is part of the same live World. Neighbours and ForkBot keep
     // animating while the local visitor is in the tower instead of freezing
     // the landscape visible through its glass walls.
@@ -17113,6 +17323,8 @@ export function createWorldScene({
     updateMemberLounge,
     updateReferralLeaderboard,
     updateNetworkNodes,
+    organizeNetworkNodes,
+    getNodeLayoutState,
     focusNetworkNode,
     updateFederatedInstances,
     updateBots,

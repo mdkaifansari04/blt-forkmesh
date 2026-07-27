@@ -2986,6 +2986,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button
               class="world-top-link"
               type="button"
+              data-world-organize-nodes
+              aria-pressed="false"
+              aria-label="Ring the live mirror nodes around the reward pool"
+              title="Ring the live mirror nodes around the reward pool"
+            >
+              <span aria-hidden="true">◎</span><span data-world-organize-nodes-label>Organize nodes</span>
+            </button>
+            <button
+              class="world-top-link"
+              type="button"
               data-world-screenshot
               title="Capture and annotate a screenshot"
             >
@@ -3790,7 +3800,6 @@ class ForkMeshWorld extends HTMLElement {
     this.socialFeedsLoad = null;
     this.socialFeedsTimer = 0;
     this.socialFeedsRequestedAt = 0;
-    this.socialFeedsFetchedAt = 0;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -6017,6 +6026,10 @@ class ForkMeshWorld extends HTMLElement {
         this.world?.dismountSwing?.();
         return;
       }
+      if (event.target.closest("[data-world-organize-nodes]")) {
+        this.toggleOrganizedNodes();
+        return;
+      }
       if (event.target.closest("[data-world-screenshot]")) {
         this.startScreenshotCapture();
         return;
@@ -8177,7 +8190,6 @@ class ForkMeshWorld extends HTMLElement {
           throw new Error(`social posts returned ${response.status}`);
         }
         this.socialFeedsSnapshot = await response.json();
-        this.socialFeedsFetchedAt = Date.now();
         this.syncSocialBanners();
       } catch (_) {
         // Keep the previous snapshot — or the static signs — on failure.
@@ -8212,8 +8224,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   // Milliseconds since the newest post in a proxied feed, or null when the
-  // feed has no dated posts (unfetched, unavailable, or the blog's undated
-  // feature articles).
+  // feed has no dated posts (unfetched, unavailable, or an item that shipped
+  // without a date).
   socialNewestPostAgo(feed) {
     let latest = 0;
     for (const post of Array.isArray(feed?.posts) ? feed.posts : []) {
@@ -8221,15 +8233,6 @@ class ForkMeshWorld extends HTMLElement {
       if (at > latest) latest = at;
     }
     return latest ? Math.max(0, Date.now() - latest) : null;
-  }
-
-  // Age of the snapshot itself: the server stamps `now` when it builds the
-  // payload, so an edge-cached read still reports how old the data really
-  // is. Feeds the blog board's SYNCED plate.
-  socialSnapshotAge() {
-    const stamp =
-      Number(this.socialFeedsSnapshot?.now) || this.socialFeedsFetchedAt;
-    return stamp ? Math.max(0, Date.now() - stamp) : null;
   }
 
   syncSocialBannerTimers() {
@@ -8249,7 +8252,7 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.updateSocialBannerTimers?.({
       twitter: timers(this.socialNewestPostAgo(snapshot?.twitter)),
       reddit: timers(this.socialNewestPostAgo(snapshot?.reddit)),
-      blog: timers(this.socialSnapshotAge()),
+      blog: timers(this.socialNewestPostAgo(snapshot?.blog)),
     });
   }
 
@@ -8317,10 +8320,10 @@ class ForkMeshWorld extends HTMLElement {
           .filter(Boolean)
           .join(" · "),
       ),
-      // Blog items have no dates or counts: the meta line is the section +
-      // feature number the RSS category carries, the headline is the item
-      // title, and the board prints the item's description as preview text
-      // under its artwork.
+      // Blog items carry no counts: the meta line is the section + feature
+      // number the RSS category carries, the headline is the item title,
+      // and the board prints the item's description as preview text under
+      // its artwork. Their pubDate drives the stand's LAST POST plate.
       blog: bound(
         snapshot.blog,
         (post) => String(post?.meta || ""),
@@ -15730,6 +15733,38 @@ class ForkMeshWorld extends HTMLElement {
       next === "first-person"
         ? "First-person view enabled."
         : "Third-person view restored.",
+    );
+  }
+
+  syncOrganizeNodesButton(state) {
+    const button = this.$("[data-world-organize-nodes]");
+    const label = this.$("[data-world-organize-nodes-label]");
+    const organized = Boolean(
+      state?.organized ?? this.world?.getNodeLayoutState?.().organized,
+    );
+    button?.setAttribute("aria-pressed", String(organized));
+    if (button) {
+      button.title = organized
+        ? "Send the mirror nodes back to the server yard"
+        : "Ring the live mirror nodes around the reward pool";
+      button.setAttribute("aria-label", button.title);
+    }
+    if (label) label.textContent = organized ? "Node yard" : "Organize nodes";
+    return organized;
+  }
+
+  toggleOrganizedNodes() {
+    if (!this.world?.organizeNetworkNodes) return;
+    const state = this.world.organizeNetworkNodes();
+    this.syncOrganizeNodesButton(state);
+    if (!state?.nodes) {
+      this.toast("No live mirror nodes are online to organize yet.");
+      return;
+    }
+    this.toast(
+      state.organized
+        ? `Organized ${state.nodes} node${state.nodes === 1 ? "" : "s"} in a ring around the reward pool.`
+        : `Returned ${state.nodes} node${state.nodes === 1 ? "" : "s"} to the server yard.`,
     );
   }
 

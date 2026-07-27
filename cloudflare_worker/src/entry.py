@@ -344,6 +344,8 @@ from urls import (  # noqa: E402
     ORG_REPOS_RE,
     ORG_SUCCESSION_RE,
     ORG_FEDIVERSE_RE,
+    BADGES_RE,
+    BADGE_ACCOUNT_RE,
     REPO_API_PREFIX_RE,
     AP_USER_RE,
     AP_USER_SUB_RE,
@@ -539,6 +541,11 @@ import og_card  # noqa: E402
 # The blog's RSS 2.0 feed, derived from the shipped static blog index. Serves
 # /blog/rss.xml and, through world_social_feeds, the world's blog banner.
 import blog_feed  # noqa: E402
+
+# The fixed achievement-badge catalog (slug -> name/description/icon) and slug
+# validation are pure data/logic, so they live in their own js-free sibling
+# module; the D1-backed award/list/grant handlers stay below (adhoc #370).
+import badges as badge_catalog  # noqa: E402
 
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
@@ -3624,6 +3631,11 @@ async def _record_referral_signup(env, new_name, raw_ref):
         if not ref_bi or ref_name == new_name:
             return
         await _referral_bump(env, ref_name, ref_bi, "signups")
+        # "Connector" badge: award the referrer the first time one of their
+        # links converts into a real signup.
+        _clicks, signups, _last_ts = await _referral_counts(env, ref_bi)
+        if signups == 1:
+            await _award_badge(env, ref_name, ref_bi, "first_referral")
     except Exception:
         pass  # attribution is best-effort; the account itself already exists
 
@@ -4607,6 +4619,12 @@ async def world_ticket_handler(env, request):
             env, account_bi, now, continuation)
         if activity["creditedMs"] > 0:
             await edge_cache_delete(USERS_DIRECTORY_CACHE_KEY)
+        # "World Explorer" badge: _award_badge is an idempotent INSERT OR
+        # IGNORE, so re-checking this on every ticket past the threshold is
+        # harmless — no need to detect the exact crossing tick.
+        if activity["totalActiveMs"] >= WORLD_FIRST_HOUR_BADGE_MS:
+            await _award_badge(env, claim["name"], account_bi,
+                               "world_first_hour")
     except Exception:
         # Aggregate activity is optional telemetry. Authentication and
         # multiplayer entry must continue while D1 is unavailable or migrating.
@@ -5819,7 +5837,7 @@ async def _chat_channel_socket_handler(env, request, channel_id):
         extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
-def _office_attendance_visit(row):
+def _office_attendance_visit(row, observed_at=None):
     """Project one D1 attendance row into a bounded public lobby record."""
     if not isinstance(row, dict):
         return None
@@ -5842,15 +5860,29 @@ def _office_attendance_visit(row):
         and (out_at < in_at or out_at > max_safe_integer)
     ):
         return None
+    try:
+        observed_at = int(
+            Date.now() if observed_at is None else observed_at)
+    except (TypeError, ValueError):
+        observed_at = in_at
+    if observed_at <= 0 or observed_at > max_safe_integer:
+        observed_at = in_at
+    duration_end = out_at if out_at is not None else max(in_at, observed_at)
     return {
         "id": visit_id,
         "account": account,
         "inAt": in_at,
         "outAt": out_at,
+        "durationMs": duration_end - in_at,
     }
 
 
-async def _office_attendance_recent(env):
+async def _office_attendance_recent(env, observed_at=None):
+    try:
+        observed_at = int(
+            Date.now() if observed_at is None else observed_at)
+    except (TypeError, ValueError):
+        observed_at = 0
     rows = await d1_all(
         env,
         "SELECT visit_id, account_name, in_at, out_at "
@@ -5859,7 +5891,7 @@ async def _office_attendance_recent(env):
     )
     visits = []
     for row in rows or []:
-        visit = _office_attendance_visit(row)
+        visit = _office_attendance_visit(row, observed_at)
         if visit is not None:
             visits.append(visit)
     return visits
@@ -5880,8 +5912,13 @@ async def office_attendance_handler(env, request):
         )
     if method == "GET":
         await ensure_schema(env)
+        observed_at = int(Date.now())
         return json_response(
-            {"ok": True, "visits": await _office_attendance_recent(env)},
+            {
+                "ok": True,
+                "asOfAt": observed_at,
+                "visits": await _office_attendance_recent(env, observed_at),
+            },
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"x-content-type-options": "nosniff"},
         )
@@ -5959,7 +5996,11 @@ async def office_attendance_handler(env, request):
             str(account_bi),
         )
     return json_response(
-        {"ok": True, "visits": await _office_attendance_recent(env)},
+        {
+            "ok": True,
+            "asOfAt": now,
+            "visits": await _office_attendance_recent(env, now),
+        },
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
     )
@@ -12335,6 +12376,14 @@ async def _account_signup(env, request):
     await edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY)
     # Credit the referrer named by the /r/<name> share link, if any.
     await _record_referral_signup(env, name, data.get("ref", ""))
+    # "Founding Member" badge: this account's row is already saved above, so
+    # counting now tells whether it landed inside the first 100 real signups.
+    user_count = await d1_first(
+        env,
+        "SELECT COUNT(*) AS c FROM users "
+        "WHERE email_bi IS NOT NULL AND email_bi <> ''")
+    if user_count and int(user_count.get("c") or 0) <= FIRST_100_USERS_LIMIT:
+        await _award_badge(env, name, name_bi, "first_100_users")
     payload = await _account_public_payload(
         env, rec,
         session_device_label=_account_session_device_label(request))
@@ -13062,10 +13111,15 @@ async def _link_node_to_user(env, node_name, node_bi, node_rec, user_name):
     user_bi, user_rec = await _account_row(env, user_name)
     if user_rec is not None:
         nodes = _owned_nodes(user_rec)
+        was_operator = bool(nodes)
         if node_name not in nodes:
             nodes.append(node_name)
         user_rec["nodes"] = nodes
         await _save_account(env, user_bi, user_rec)
+        if not was_operator:
+            # "Mirror Operator" badge: this is the account's first node, the
+            # real event that makes it a mirror operator.
+            await _award_badge(env, user_name, user_bi, "mirror_operator")
 
 
 async def _account_claim_node(env, request):
@@ -18526,6 +18580,111 @@ async def cleanup_sensitive_audit_records(env):
     await d1_run(
         env, "DELETE FROM sensitive_audit_log WHERE ts<?",
         now - SECURITY_AUDIT_RETAIN_MS)
+
+
+# --- Achievement badges (adhoc #370) -----------------------------------------
+# Public recognition marks, similar in shape to org teams: a fixed catalog
+# (badges.py) awarded once per account, either automatically at a real
+# platform event (see the call sites of _award_badge below) or by a platform
+# administrator. Awards are permanent — later losing eligibility does not
+# revoke an already-earned badge.
+FIRST_100_USERS_LIMIT = 100
+WORLD_FIRST_HOUR_BADGE_MS = 60 * 60 * 1000
+
+
+async def _award_badge(env, name, name_bi, slug, granted_by="system"):
+    slug = badge_catalog.normalize_badge_slug(slug)
+    if not slug or not name_bi:
+        return
+    await ensure_schema(env)
+    await d1_run(
+        env,
+        "INSERT OR IGNORE INTO badge_awards "
+        "(badge_slug, account_bi, name, granted_by, created_at) "
+        "VALUES (?,?,?,?,?)",
+        slug, name_bi, name, (granted_by or "system"), int(Date.now()))
+
+
+async def _account_badges(env, name_bi):
+    rows = await d1_all(
+        env,
+        "SELECT badge_slug, granted_by, created_at FROM badge_awards "
+        "WHERE account_bi=? ORDER BY created_at", name_bi)
+    out = []
+    for row in rows or []:
+        info = badge_catalog.badge_definition(row.get("badge_slug"))
+        if not info:
+            continue
+        granted_by = str(row.get("granted_by") or "system")
+        out.append({
+            "slug": str(row.get("badge_slug") or ""),
+            "name": info["name"],
+            "description": info["description"],
+            "icon": info["icon"],
+            "grantedBy": "system" if granted_by == "system" else "admin",
+            "awardedAt": int(row.get("created_at") or 0),
+        })
+    return out
+
+
+async def badges_catalog_handler(env, request):
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    return json_response(
+        {"ok": True, "badges": badge_catalog.public_catalog()},
+        cache_seconds=3600)
+
+
+async def account_badges_handler(env, request, raw_name):
+    # GET: the badges one account has earned (public — same visibility as the
+    # public account lookup). POST/DELETE: a platform administrator grants or
+    # revokes one badge.
+    await ensure_schema(env)
+    name = clean_string(raw_name or "", MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(name):
+        return json_response({"error": "invalid_account"}, status=400)
+    name_bi, rec = await _account_row(env, name)
+    if not rec:
+        return json_response({"error": "not_found"}, status=404)
+    method = method_name(request)
+    if method == "GET":
+        return json_response(
+            {"ok": True, "account": name,
+             "badges": await _account_badges(env, name_bi)},
+            cache_seconds=30)
+    if method not in ("POST", "DELETE"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        data = {}
+    _, actor_rec = await _account_session_record(env, request, data)
+    actor = (actor_rec.get("name", "") if actor_rec else "").strip().lower()
+    audit_action = "badge.grant" if method == "POST" else "badge.revoke"
+    if not actor or not await _has_role(env, actor, "platform_administrator"):
+        await _audit_sensitive_action(
+            env, actor, audit_action, "account_badge", name, "denied",
+            {"reason": "insufficient_role"})
+        return json_response({"error": "forbidden"}, status=403)
+    slug = badge_catalog.normalize_badge_slug(data.get("slug", ""))
+    if not slug:
+        return json_response({"error": "invalid_badge"}, status=400)
+    if method == "DELETE":
+        await d1_run(
+            env, "DELETE FROM badge_awards WHERE badge_slug=? AND account_bi=?",
+            slug, name_bi)
+        await _audit_sensitive_action(
+            env, actor, audit_action, "account_badge", name + "/" + slug,
+            "success")
+        return json_response(
+            {"ok": True, "account": name, "slug": slug, "revoked": True})
+    await _award_badge(env, name, name_bi, slug, granted_by=actor)
+    await _audit_sensitive_action(
+        env, actor, audit_action, "account_badge", name + "/" + slug,
+        "success")
+    return json_response(
+        {"ok": True, "account": name, "slug": slug, "granted": True},
+        status=201)
 
 
 async def _admin_authorized(env, node, ts, sig, canonical):
@@ -34462,6 +34621,16 @@ class Default(WorkerEntrypoint):
             if not org:
                 return json_response({"error": "not_found"}, status=404)
             return await org_handler(self.env, request, org)
+
+        # --- Achievement badges (adhoc #370) ------------------------------
+        if BADGES_RE.match(url.path):
+            return await badges_catalog_handler(self.env, request)
+        badge_account_match = BADGE_ACCOUNT_RE.match(url.path)
+        if badge_account_match:
+            account = safe_segment(badge_account_match.group(1))
+            if not account:
+                return json_response({"error": "not_found"}, status=404)
+            return await account_badges_handler(self.env, request, account)
 
         # Founders-outreach email console (/outreach): admins plus the
         # admin-managed outreach_team roster send from the founders address.
