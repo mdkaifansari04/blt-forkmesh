@@ -259,14 +259,38 @@ def test_bench_height_is_derived_from_the_seated_pose():
 def test_member_total_burns_as_a_number_in_the_fire():
     # adhoc #347: the registered-account total is shown as a number hanging in
     # the flames, painted from the same count that sizes the bench ring.
-    assert "function campfireMemberCountTexture(THREE, total)" in SCENE
+    assert "function campfireMemberCountTexture(THREE, total, newest)" in SCENE
     assert "campfire.add(memberCountSprite);" in SCENE
     lounge = SCENE.split("function updateMemberLounge", 1)[1]
-    assert "setCampfireMemberCount(total);" in lounge
+    assert "setCampfireMemberCount(total, newestMemberName(members));" in lounge
     # Hidden until the roster lands, so the fire never shows a placeholder 0.
     assert "memberCountSprite.visible = false;" in SCENE
     # Repainted only when the count moves; the roster refresh is on a timer.
-    assert "if (memberCountShown === count) return;" in SCENE
+    assert "if (memberCountShown === key) return;" in SCENE
+
+
+def test_fire_credits_the_newest_member_under_the_total():
+    # adhoc #426: the count alone does not say who just arrived, so the most
+    # recently joined account is named under the "MEMBERS" line.
+    count_texture = SCENE.split(
+        "function campfireMemberCountTexture", 1
+    )[1].split("\nfunction ", 1)[0]
+    assert 'context.fillText("NEWEST", 256, 210);' in count_texture
+    assert "context.fillText(latest, 256, 240);" in count_texture
+    # No newest member known yet (empty roster): the old two-line layout stays.
+    assert "if (!latest) return;" in count_texture
+    assert "context.fillText(digits, 256, latest ? 84 : 104);" in count_texture
+    newest = SCENE.split("function newestMemberName(members) {", 1)[1].split(
+        "\n}", 1
+    )[0]
+    # Ranked by the directory's joined timestamp, newest wins ties-free.
+    assert "if (!name || created <= joinedAt) return;" in newest
+    # A member seated from a presence frame has no joined date (0) yet, so it
+    # must not be ranked as the newest — or as the oldest.
+    assert "const created = Number(member?.createdAt) || 0;" in newest
+    # The repaint key carries the name, so a new arrival repaints at the same
+    # count when the directory backfills their joined date.
+    assert "const key = `${count}|${latest}`;" in SCENE
 
 
 def test_member_total_tracks_arrivals_without_waiting_for_the_poll():

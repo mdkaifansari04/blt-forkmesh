@@ -2021,16 +2021,35 @@ function campfireSeatPlateTexture(THREE, name, away) {
   });
 }
 
+// Who joined last, by the public directory's joined timestamp. An account
+// seated straight from a presence frame carries no joined date yet (0), so it
+// is skipped rather than ranked as the oldest member in the circle.
+function newestMemberName(members) {
+  let newest = "";
+  let joinedAt = 0;
+  (Array.isArray(members) ? members : []).forEach((member) => {
+    const name = String(member?.name || "").trim();
+    const created = Number(member?.createdAt) || 0;
+    if (!name || created <= joinedAt) return;
+    joinedAt = created;
+    newest = name.slice(0, 32);
+  });
+  return newest;
+}
+
 // The headline membership number, drawn as glowing embers on transparency so
-// it can hang inside the campfire's flames without a plate behind it.
-function campfireMemberCountTexture(THREE, total) {
+// it can hang inside the campfire's flames without a plate behind it. The
+// account that joined most recently is credited on a line underneath, so the
+// fire says who the latest arrival is and not just how many there are.
+function campfireMemberCountTexture(THREE, total, newest) {
   const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
   const digits = count.toLocaleString("en-US");
+  const latest = String(newest || "").trim().slice(0, 18);
   return canvasTexture(THREE, 512, 256, (context) => {
     context.clearRect(0, 0, 512, 256);
     context.textAlign = "center";
     context.textBaseline = "middle";
-    const ember = context.createLinearGradient(0, 30, 0, 170);
+    const ember = context.createLinearGradient(0, 20, 0, 150);
     ember.addColorStop(0, "#fff6cf");
     ember.addColorStop(0.55, "#ffc457");
     ember.addColorStop(1, "#ff7a2f");
@@ -2038,11 +2057,19 @@ function campfireMemberCountTexture(THREE, total) {
     context.shadowBlur = 36;
     context.fillStyle = ember;
     context.font = '700 132px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText(digits, 256, 104);
+    context.fillText(digits, 256, latest ? 84 : 104);
     context.shadowBlur = 20;
     context.fillStyle = "#ffdcac";
     context.font = '400 40px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(count === 1 ? "MEMBER" : "MEMBERS", 256, 198);
+    context.fillText(count === 1 ? "MEMBER" : "MEMBERS", 256, latest ? 172 : 198);
+    if (!latest) return;
+    context.shadowBlur = 14;
+    context.fillStyle = "#ffbd7a";
+    context.font = '400 24px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("NEWEST", 256, 210);
+    context.fillStyle = "#fff1d2";
+    context.font = '700 30px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText(latest, 256, 240);
   });
 }
 
@@ -7832,15 +7859,22 @@ export function createWorldScene({
   memberCountSprite.scale.set(2.8, 1.4, 1);
   memberCountSprite.visible = false;
   campfire.add(memberCountSprite);
-  let memberCountShown = -1;
-  // Repaints only when the count actually moved: the roster refresh runs on a
-  // timer and would otherwise rebuild the canvas every pass.
-  function setCampfireMemberCount(total) {
+  let memberCountShown = "";
+  // Repaints only when the count or the newest member actually moved: the
+  // roster refresh runs on a timer and would otherwise rebuild the canvas
+  // every pass.
+  function setCampfireMemberCount(total, newest = "") {
     const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
-    if (memberCountShown === count) return;
-    memberCountShown = count;
+    const latest = String(newest || "").trim().slice(0, 18);
+    const key = `${count}|${latest}`;
+    if (memberCountShown === key) return;
+    memberCountShown = key;
     memberCountSprite.material.map?.dispose?.();
-    memberCountSprite.material.map = campfireMemberCountTexture(THREE, count);
+    memberCountSprite.material.map = campfireMemberCountTexture(
+      THREE,
+      count,
+      latest,
+    );
     memberCountSprite.material.needsUpdate = true;
     memberCountSprite.visible = true;
   }
@@ -11965,8 +11999,9 @@ export function createWorldScene({
     guests = 0,
   ) {
     const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
-    // The flames carry the headline count of registered accounts.
-    setCampfireMemberCount(total);
+    // The flames carry the headline count of registered accounts, plus the
+    // name of whoever joined last so the newest member is visible at a glance.
+    setCampfireMemberCount(total, newestMemberName(members));
     const leaderboardFace = activeLeaderboardSign.userData.face;
     const leaderboardKey = JSON.stringify(
       rankedActiveLeaderboardMembers(leaderboardMembers)
