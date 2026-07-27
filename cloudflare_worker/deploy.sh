@@ -536,7 +536,10 @@ verify_marketing_routes() {
 
 # Push every KEY=VALUE in .env.production to the deployed Worker as a SECRET.
 # Idempotent (re-running updates values) and persists across redeploys. Requires
-# the Worker to already exist, so run it after `pywrangler deploy`.
+# the Worker to already exist, so run it after `pywrangler deploy`. Send the
+# complete update in one `secret bulk` command: every individual `secret put`
+# publishes another Worker version, which needlessly restarts Durable Objects
+# and scheduled-runner isolates during an otherwise single deployment.
 push_secrets() {
     if [ ! -f "$ENV_FILE" ]; then
         echo "note: $ENV_FILE not found — no secrets to push." >&2
@@ -554,6 +557,7 @@ push_secrets() {
     echo "Pushing secrets from: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
     local count=0
     local pushed=()
+    local secret_values=()
     local empties=()
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in ''|'#'*) continue ;; esac
@@ -573,17 +577,13 @@ push_secrets() {
         fi
         case "$value" in
             *CHANGE-ME*|change-me*)
-                echo "  warning: $key still has a placeholder value ($value)" >&2 ;;
+                echo "  warning: $key still has a placeholder value" >&2 ;;
         esac
         echo "  secret: $key"
-        # Feed the value on stdin terminated by a newline — the documented
-        # non-interactive form; wrangler strips the single trailing newline. The
-        # previous no-newline pipe could leave the value unread (blank secret).
-        printf '%s\n' "$value" | pywrangler secret put --env "" "$key"
         pushed+=("$key")
+        secret_values+=("$value")
         count=$((count + 1))
     done < "$ENV_FILE"
-    echo "Pushed $count secret(s) from $ENV_FILE."
 
     # Hard-fail if any REQUIRED secret never got a value (empty or missing from
     # the file). This is what previously slipped through as a "successful" deploy
@@ -598,8 +598,58 @@ push_secrets() {
         return 1
     fi
 
+    # Build a JSON object in a mode-0600 temporary file, then publish every
+    # secret in ONE command/version. Values are passed to Python over a private
+    # NUL-delimited pipe rather than argv, so quotes, backslashes, tabs and other
+    # non-NUL bytes are JSON-encoded correctly without becoming visible in the
+    # process list. The subshell's EXIT trap removes the file after both success
+    # and failure (including an interrupted/failed Wrangler invocation).
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "ERROR: python3 is required to encode the bulk secret payload." >&2
+        return 1
+    fi
+    if ! (
+        umask 077
+        secret_bulk_file="$(mktemp "${TMPDIR:-/tmp}/forkmesh-worker-secrets.XXXXXX.json")" \
+            || exit 1
+        trap 'rm -f -- "$secret_bulk_file"' EXIT
+        trap 'exit 129' HUP
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        chmod 0600 "$secret_bulk_file" || exit 1
+        python3 - "$secret_bulk_file" 3< <(
+            for index in "${!pushed[@]}"; do
+                printf '%s\0%s\0' "${pushed[$index]}" "${secret_values[$index]}"
+            done
+        ) <<'PYEOF' || exit 1
+import json
+import os
+import sys
+
+raw = os.fdopen(3, "rb").read()
+parts = raw.split(b"\0")
+if not parts or parts[-1] != b"" or len(parts) % 2 != 1:
+    raise SystemExit("invalid internal secret record stream")
+
+payload = {}
+for index in range(0, len(parts) - 1, 2):
+    key = parts[index].decode("utf-8")
+    value = parts[index + 1].decode("utf-8")
+    payload[key] = value
+
+with open(sys.argv[1], "w", encoding="utf-8") as stream:
+    json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
+PYEOF
+        [ -s "$secret_bulk_file" ] || exit 1
+        pywrangler secret bulk --env "" "$secret_bulk_file"
+    ); then
+        echo "ERROR: bulk secret update failed; no per-secret retry was attempted." >&2
+        return 1
+    fi
+    echo "Pushed $count secret(s) from $ENV_FILE in one bulk update."
+
     # Verify: confirm each pushed name actually exists on the Worker now, so a
-    # silently-failed `secret put` becomes a loud error instead of a mystery.
+    # silently-failed `secret bulk` becomes a loud error instead of a mystery.
     local listed
     if listed="$(pywrangler secret list --env "" 2>/dev/null)"; then
         local missing=()
@@ -864,7 +914,7 @@ case "${1:-deploy}" in
         # pass --env explicitly. Every pywrangler call below that touches the
         # live Worker passes --env "" (the documented way to target the
         # top-level environment) so the warning goes away and every command
-        # (deploy, secret put/list, dev, dry-run) consistently hits the same
+        # (deploy, secret bulk/list, dev, dry-run) consistently hits the same
         # script instead of drifting between an implicit and explicit target.
         # Stamp the build into the Worker as a plaintext var so /api/version can
         # report it. --var is MERGED with wrangler.toml [vars] (it does not wipe

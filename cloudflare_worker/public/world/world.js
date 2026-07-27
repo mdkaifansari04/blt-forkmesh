@@ -3702,6 +3702,10 @@ class ForkMeshWorld extends HTMLElement {
     this.visitorStats = null;
     this.activeFediverseMention = null;
     this.organizations = [];
+    // account name -> the team plaque worn on that member's avatar back,
+    // rebuilt whenever the organization spaces reload. Empty for viewers who
+    // do not own or administer any organization.
+    this.orgTeamIndex = new Map();
     this.activeOffice = null;
     this.events = [];
     this.eventsState = "loading";
@@ -4511,6 +4515,7 @@ class ForkMeshWorld extends HTMLElement {
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
+        onOrgTeamAssign: (target) => this.openOrgTeamAssignment(target),
         onFediverseProfile: (target) =>
           void this.loadWorldFediverseProfile(target),
         onFediverseFollow: (target) =>
@@ -5320,6 +5325,7 @@ class ForkMeshWorld extends HTMLElement {
     if (this.organizations.length) {
       this.organizations = await this.loadOrganizationSpaces(this.organizations);
     }
+    this.rebuildOrgTeamIndex();
     this.securityScan =
       scanResult.status === "fulfilled" ? scanResult.value || null : null;
     this.fediverseDirectory =
@@ -5965,6 +5971,241 @@ class ForkMeshWorld extends HTMLElement {
       }),
     );
     return spaces.filter((space) => space?.name || space?.org);
+  }
+
+  // Organizations the viewer owns or administers, keyed by name.
+  managedOrganizations() {
+    return this.organizations.filter((organization) =>
+      ["owner", "admin"].includes(
+        String(
+          organization?.viewerRole || organization?.role || "",
+        ).toLowerCase(),
+      ),
+    );
+  }
+
+  managedOrganization(name) {
+    const org = String(name || "").trim().toLowerCase();
+    return (
+      this.managedOrganizations().find(
+        (organization) =>
+          sanitizePresenceText(
+            organization.name || organization.org,
+            "",
+            50,
+          ).toLowerCase() === org,
+      ) || null
+    );
+  }
+
+  // One plaque per member of an organization the viewer administers. Built
+  // once per organization reload rather than per presence frame: the roster is
+  // capped at 50 organizations x 40 members, and presence redraws are frequent.
+  rebuildOrgTeamIndex() {
+    const index = new Map();
+    this.managedOrganizations().forEach((organization) => {
+      const org = sanitizePresenceText(
+        organization.name || organization.org,
+        "",
+        50,
+      ).toLowerCase();
+      const teams = Array.isArray(organization.teamList)
+        ? organization.teamList
+        : [];
+      if (!org || !teams.length) return;
+      const teamNames = new Set(
+        teams.map((team) => String(team?.team || "").toLowerCase()),
+      );
+      (Array.isArray(organization.memberList)
+        ? organization.memberList
+        : []
+      ).forEach((member) => {
+        const account = String(member?.name || "").trim().toLowerCase();
+        if (!WORLD_ACCOUNT_NAME_RE.test(account) || index.has(account)) return;
+        const assigned = (Array.isArray(member?.teams) ? member.teams : [])
+          .map((team) => String(team || "").toLowerCase())
+          .filter((team) => teamNames.has(team));
+        index.set(account, {
+          org,
+          member: account,
+          assigned: assigned.length,
+          total: teamNames.size,
+        });
+      });
+    });
+    this.orgTeamIndex = index;
+  }
+
+  orgTeamAssignmentFor(name) {
+    const account = String(name || "").trim().toLowerCase();
+    if (!account) return null;
+    return this.orgTeamIndex.get(account) || null;
+  }
+
+  // Re-read one organization's roster and team layout after a team write so
+  // the plaque count and the organization panel reflect the same server state.
+  async refreshOrganizationTeams(name) {
+    const org = String(name || "").trim().toLowerCase();
+    const organization = this.managedOrganization(org);
+    if (!organization) return;
+    const root = `/api/orgs/${encodeURIComponent(org)}`;
+    const [members, teams] = await Promise.allSettled([
+      this.fetchJSON(`${root}/members`, { timeout: 5000, cache: "no-store" }),
+      this.fetchJSON(`${root}/teams`, { timeout: 5000, cache: "no-store" }),
+    ]);
+    if (this.destroyed) return;
+    if (members.status === "fulfilled" &&
+        Array.isArray(members.value?.members)) {
+      organization.memberList = members.value.members.slice(0, 40);
+    }
+    if (teams.status === "fulfilled" && Array.isArray(teams.value?.teams)) {
+      organization.teamList = teams.value.teams.slice(0, 40);
+    }
+    this.rebuildOrgTeamIndex();
+    this.renderPeers();
+  }
+
+  // The team plaque on a member's back opens this multi-select. Team
+  // membership is what raises a member's repository permission, which is what
+  // opens the organization's repository floors and personal offices in the
+  // World — so the dialog says so plainly. Only owners and administrators ever
+  // see the plaque, and the worker re-checks that role on every write.
+  openOrgTeamAssignment(target = {}) {
+    const org = String(target.org || "").trim().toLowerCase();
+    const member = String(target.member || target.name || "")
+      .trim()
+      .toLowerCase();
+    if (!this.sessionAuthenticated || !validWorldSession()) {
+      this.toast("Sign in as an organization administrator to assign teams.");
+      return;
+    }
+    const organization = this.managedOrganization(org);
+    if (!organization || !WORLD_ACCOUNT_NAME_RE.test(member)) {
+      this.toast("Organization administrator access is required.");
+      return;
+    }
+    const teams = (
+      Array.isArray(organization.teamList) ? organization.teamList : []
+    )
+      .map((team) => ({
+        team: String(team?.team || "").toLowerCase(),
+        permission: sanitizePresenceText(team?.permission, "read", 24),
+      }))
+      .filter((team) => team.team);
+    if (!teams.length) {
+      this.toast(
+        `${org} has no teams yet. Create one in organization settings.`,
+      );
+      return;
+    }
+    const roster = (
+      Array.isArray(organization.memberList) ? organization.memberList : []
+    ).find(
+      (entry) => String(entry?.name || "").trim().toLowerCase() === member,
+    );
+    const current = new Set(
+      (Array.isArray(roster?.teams) ? roster.teams : [])
+        .map((team) => String(team || "").toLowerCase())
+        .filter((team) => teams.some((option) => option.team === team)),
+    );
+    document.querySelector("[data-world-org-team-assignment]")?.remove();
+    const dialog = document.createElement("dialog");
+    dialog.dataset.worldOrgTeamAssignment = "true";
+    dialog.style.cssText =
+      "width:min(520px,calc(100vw - 28px));border:1px solid #9ef7c6;border-radius:18px;background:linear-gradient(155deg,#071611,#0b2525);color:#e9fff2;padding:0;box-shadow:0 28px 110px #000c";
+    dialog.innerHTML = `
+      <form style="padding:22px;display:grid;gap:16px">
+        <header>
+          <strong style="font-size:21px">Assign ${escapeHTML(
+            member,
+          )} to ${escapeHTML(org)} teams</strong>
+          <p style="margin:6px 0 0;color:#9eb6aa;font-size:13px;line-height:1.5">Hold ${
+            navigator.platform?.toLowerCase().includes("mac")
+              ? "Command"
+              : "Control"
+          } (or drag) to select more than one team. A team carries one repository permission over every repository linked to this organization, which is what opens the organization's repository floors and personal offices in the World.</p>
+        </header>
+        <label style="display:grid;gap:6px;font-size:12px">Teams
+          <select name="teams" multiple size="${Math.min(
+            8,
+            Math.max(3, teams.length),
+          )}" style="padding:10px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit;font:13px/1.6 ui-monospace,monospace">
+            ${teams
+              .map(
+                (team) =>
+                  `<option value="${escapeHTML(team.team)}"${
+                    current.has(team.team) ? " selected" : ""
+                  }>${escapeHTML(team.team)} · ${escapeHTML(
+                    team.permission,
+                  )}</option>`,
+              )
+              .join("")}
+          </select>
+        </label>
+        <output style="min-height:18px;color:#9ef7c6;font-size:12px" aria-live="polite"></output>
+        <footer style="display:flex;justify-content:flex-end;gap:8px">
+          <button type="button" data-world-org-team-cancel style="padding:9px 12px;border-radius:8px;border:1px solid #3a6655;background:#0b211b;color:inherit">Close</button>
+          <button type="submit" style="background:#9ef7c6;color:#071611;border:0;border-radius:8px;padding:9px 14px;font-weight:800">Save team access</button>
+        </footer>
+      </form>`;
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog
+      .querySelector("[data-world-org-team-cancel]")
+      ?.addEventListener("click", () => dialog.close());
+    dialog.querySelector("form")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const output = form.querySelector("output");
+      const submit = form.querySelector('[type="submit"]');
+      const selected = new Set(
+        [...form.elements.teams.selectedOptions].map((option) => option.value),
+      );
+      const added = [...selected].filter((team) => !current.has(team));
+      const removed = [...current].filter((team) => !selected.has(team));
+      if (!added.length && !removed.length) {
+        dialog.close();
+        return;
+      }
+      submit.disabled = true;
+      let failures = 0;
+      const root = `/api/orgs/${encodeURIComponent(org)}/teams`;
+      for (const team of [...added, ...removed]) {
+        const grant = added.includes(team);
+        output.textContent = `${grant ? "Adding" : "Removing"} ${member} ${
+          grant ? "to" : "from"
+        } ${team}…`;
+        try {
+          await this.postJSON(
+            `${root}/${encodeURIComponent(team)}/members`,
+            { member },
+            grant ? {} : { method: "DELETE" },
+          );
+        } catch (error) {
+          failures += 1;
+          output.textContent = `${team}: ${String(
+            error?.message || "request failed",
+          )}`;
+        }
+      }
+      await this.refreshOrganizationTeams(org);
+      submit.disabled = false;
+      if (failures) {
+        this.toast(
+          `${failures} team change${
+            failures === 1 ? " was" : "s were"
+          } not applied. Organization role checks are enforced by the server.`,
+        );
+        return;
+      }
+      dialog.close();
+      this.toast(
+        `${member} now holds ${selected.size} ${org} team${
+          selected.size === 1 ? "" : "s"
+        }. Repository floors and offices follow the team permission.`,
+      );
+    });
+    dialog.showModal();
   }
 
   bindUI() {
@@ -17998,12 +18239,24 @@ class ForkMeshWorld extends HTMLElement {
       });
     }
     const players = [...combined.values()].map((player) => {
-      if (!player?.solana) return player;
-      const wallet = this.walletBadgeFor(player.solana);
+      // Only members of an organization this viewer owns or administers carry
+      // a team plaque; everyone else's back stays bare. A guest may type any
+      // display name, so an unverified name never resolves to a roster entry.
+      const orgTeam =
+        String(player?.accountStatus || "Guest") === "Guest"
+          ? null
+          : this.orgTeamAssignmentFor(player?.name);
+      const wallet = player?.solana ? this.walletBadgeFor(player.solana) : null;
+      if (!orgTeam && !wallet) return player;
       return {
         ...player,
-        walletSol: wallet?.sol ?? null,
-        walletTxBucket: wallet?.txBucket || "",
+        ...(wallet
+          ? {
+              walletSol: wallet?.sol ?? null,
+              walletTxBucket: wallet?.txBucket || "",
+            }
+          : {}),
+        ...(orgTeam ? { orgTeam } : {}),
       };
     });
     this.world?.setRemotePlayers(players);

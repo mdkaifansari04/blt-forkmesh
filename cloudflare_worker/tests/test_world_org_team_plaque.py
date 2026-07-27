@@ -1,0 +1,291 @@
+#!/usr/bin/env python3
+"""Organization team assignment from the back of a World avatar (adhoc #438).
+
+An organization owner or administrator sees one extra plaque on the back of
+every avatar belonging to a member of an organization they manage. Opening it
+shows a multi-select of that organization's teams; saving writes the same
+/api/orgs/<org>/teams/<team>/members grants the settings page makes, and team
+permission is what opens the organization's repository floors and offices.
+
+These tests pin:
+
+  * GET /api/orgs/<org>/members carries each member's team list (one roster
+    read instead of one request per team) and the anonymous public-redacted
+    branch still exposes no names and no teams;
+  * the scene renders the plaque on the avatar BACK (positive Z, single sided),
+    only for live registered members, never for guests, bots, or the persisted
+    inactive/local/node peer ids, and registers/cleans it up like the existing
+    moderation plaques;
+  * the plaque texture carries names and counts only — never a session token;
+  * the app layer builds the plaque only for organizations whose viewerRole is
+    owner or admin, and the dialog is a real multi-select whose save diffs into
+    POST/DELETE team-member writes and re-reads the roster afterwards.
+
+Run: python3 -m pytest cloudflare_worker/tests/test_world_org_team_plaque.py
+"""
+
+import ast
+import asyncio
+import importlib.util
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+ENTRY = ROOT / "src" / "entry.py"
+ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+SCENE = (ROOT / "public" / "world" / "world-scene.js").read_text(
+    encoding="utf-8")
+APP = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
+
+
+def _module(name):
+    spec = importlib.util.spec_from_file_location(
+        name, ROOT / "src" / (name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+catalog = _module("catalog")
+
+
+def _load(*names, extra_globals=None):
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    selected = [
+        node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in names
+    ]
+    found = {n.name for n in selected}
+    missing = set(names) - found
+    assert not missing, "missing functions: %s" % sorted(missing)
+    module = ast.fix_missing_locations(
+        ast.Module(body=selected, type_ignores=[]))
+    namespace = dict(extra_globals or {})
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    return namespace
+
+
+def _constant(name):
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and
+                any(getattr(t, "id", "") == name for t in node.targets)):
+            return ast.literal_eval(node.value)
+    raise AssertionError(name + " not found")
+
+
+def _run(coro):
+    return asyncio.new_event_loop().run_until_complete(coro)
+
+
+ORG_ROLES = _constant("ORG_ROLES")
+ORG_WORLD_ACCESS_VALUES = _constant("ORG_WORLD_ACCESS_VALUES")
+
+
+# --- Roster read -------------------------------------------------------------
+
+class _Request:
+    method = "GET"
+
+
+def _members_handler(viewer, viewer_role):
+    queries = []
+
+    async def noop(env):
+        return None
+
+    async def org_row(env, org):
+        return "org-bi", {"name": org, "data": "enc"}
+
+    async def session_record(env, request, data=None):
+        return None, ({"name": viewer} if viewer else None)
+
+    async def org_role(env, org_bi, account):
+        return viewer_role if account == viewer else "member"
+
+    async def decrypt_row(env, blob):
+        return {"worldAccess": {"lobby": "public", "floors": "restricted",
+                                "offices": "restricted"}}
+
+    async def d1_all(env, sql, *params):
+        queries.append(sql)
+        if "FROM org_team_members" in sql:
+            return [
+                {"name": "ada", "team": "core"},
+                {"name": "ada", "team": "release"},
+                {"name": "grace", "team": "core"},
+            ]
+        return [
+            {"name": "ada", "role": "member", "created_at": 11},
+            {"name": "grace", "role": "admin", "created_at": 12},
+            {"name": "linus", "role": "member", "created_at": 13},
+        ]
+
+    async def d1_first(env, sql, *params):
+        queries.append(sql)
+        return {"n": 3}
+
+    def response(data, status=200, **kwargs):
+        return {"status": status, "data": data}
+
+    namespace = _load(
+        "org_members_handler",
+        "_org_world_access",
+        "_org_world_access_allowed",
+        extra_globals={
+            "ORG_ROLES": ORG_ROLES,
+            "ORG_WORLD_ACCESS_VALUES": ORG_WORLD_ACCESS_VALUES,
+            "ensure_schema": noop,
+            "method_name": lambda request: request.method,
+            "_org_row": org_row,
+            "_account_session_record": session_record,
+            "_org_role": org_role,
+            "decrypt_row": decrypt_row,
+            "d1_all": d1_all,
+            "d1_first": d1_first,
+            "json_response": response,
+            "clean_string": catalog.clean_string,
+        },
+    )
+    return namespace["org_members_handler"], queries
+
+
+def test_member_roster_carries_each_members_teams():
+    handler, queries = _members_handler("grace", "admin")
+    result = _run(handler(None, _Request(), "acme"))
+    assert result["status"] == 200
+    assert result["data"]["members"] == [
+        {"name": "ada", "role": "member", "since": 11,
+         "teams": ["core", "release"]},
+        {"name": "grace", "role": "admin", "since": 12, "teams": ["core"]},
+        {"name": "linus", "role": "member", "since": 13, "teams": []},
+    ]
+    # One roster read plus one team read: never one request per team.
+    assert sum("org_team_members" in sql for sql in queries) == 1
+
+
+def test_anonymous_roster_read_exposes_neither_names_nor_teams():
+    handler, _ = _members_handler("", "")
+    result = _run(handler(None, _Request(), "acme"))
+    # Default office visibility is "restricted", so an anonymous read is
+    # rejected outright; a public hallway still redacts every name.
+    assert result["status"] == 403
+    assert result["data"] == {"error": "forbidden"}
+    assert '"visibility": "public-redacted"' in ENTRY_TEXT
+    redacted = ENTRY_TEXT[
+        ENTRY_TEXT.index('"visibility": "public-redacted"'):
+        ENTRY_TEXT.index(
+            "rows = await d1_all(",
+            ENTRY_TEXT.index('"visibility": "public-redacted"'),
+        )
+    ]
+    assert '"members": []' in redacted
+    assert "teams" not in redacted
+
+
+def test_team_member_writes_stay_owner_admin_only():
+    handler = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def org_team_members_handler"):
+        ENTRY_TEXT.index("async def org_repos_handler")
+    ]
+    assert 'if await _org_role(env, org_bi, account) not in ("owner", "admin")' \
+        in handler
+    assert '{"error": "forbidden"}' in handler
+    # team membership can never smuggle in a non-member
+    assert '{"error": "not_a_member"}' in handler
+
+
+# --- The plaque on the avatar back -------------------------------------------
+
+def test_team_plaque_rides_the_avatar_back_for_live_members_only():
+    for contract in (
+        "const WORLD_ORG_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/",
+        "function sanitizedOrgTeamAssignment(remote)",
+        "/^(?:inactive|local|node|bot):/",
+        "remote?.persistedInactive === true",
+        'remote?.accountStatus === "Verified bot"',
+        'String(remote?.accountStatus || "Guest") === "Guest"',
+        "function createAvatarOrgTeamControl",
+        '"ASSIGN TEAMS"',
+        "control.position.set(0, 1.61, 0.321)",
+        "control.userData.worldOrgTeamControl = true",
+        "onOrgTeamAssign = () => {}",
+        "orgTeamActions.set(control",
+        "interactive.push(control)",
+        "function removeRemoteOrgTeamControl",
+        "orgTeamActions.delete(child)",
+        "interactive.splice(interactiveIndex, 1)",
+        "disposeObject3D(controls)",
+        "syncRemoteOrgTeamControl(avatar, remote)",
+        "removeRemoteOrgTeamControl(avatar, id)",
+    ):
+        assert contract in SCENE, contract
+
+    click = SCENE[
+        SCENE.index("const orgTeamAction = hit?.object"):
+        SCENE.index(
+            "if (hit?.object?.userData?.campfireLog)",
+            SCENE.index("const orgTeamAction = hit?.object"),
+        )
+    ]
+    for field in ("org", "member", "peerId", "name"):
+        assert f"{field}: orgTeamAction.{field}" in click
+    assert "onOrgTeamAssign({" in click
+
+
+def test_team_plaque_texture_carries_no_secret():
+    texture = SCENE[
+        SCENE.index("function orgTeamControlTexture"):
+        SCENE.index("function createAvatarOrgTeamControl")
+    ]
+    for secret in ("token", "session", "handle", "email"):
+        assert secret not in texture.lower(), secret
+
+
+# --- The multi-select the plaque opens ---------------------------------------
+
+def test_only_org_owners_and_admins_build_the_plaque():
+    managed = APP[
+        APP.index("  managedOrganizations() {"):
+        APP.index("  managedOrganization(name) {")
+    ]
+    assert '["owner", "admin"].includes(' in managed
+    index = APP[
+        APP.index("  rebuildOrgTeamIndex() {"):
+        APP.index("  orgTeamAssignmentFor(name) {")
+    ]
+    assert "this.managedOrganizations().forEach" in index
+    assert "WORLD_ACCOUNT_NAME_RE.test(account)" in index
+    # A guest may type any display name; only server-stamped accounts resolve.
+    assert 'String(player?.accountStatus || "Guest") === "Guest"' in APP
+    assert "orgTeam ? { orgTeam } : {}" in APP
+    assert "onOrgTeamAssign: (target) => this.openOrgTeamAssignment(target)" \
+        in APP
+
+
+def test_assignment_dialog_is_a_multi_select_that_diffs_into_team_writes():
+    dialog = APP[
+        APP.index("  openOrgTeamAssignment(target = {}) {"):
+        APP.index("  bindUI() {")
+    ]
+    assert "this.managedOrganization(org)" in dialog
+    assert "Organization administrator access is required." in dialog
+    assert '<select name="teams" multiple' in dialog
+    assert "form.elements.teams.selectedOptions" in dialog
+    assert "const added = [...selected].filter((team) => !current.has(team))" \
+        in dialog
+    assert "const removed = [...current].filter((team) => !selected.has(team))" \
+        in dialog
+    assert '`${root}/${encodeURIComponent(team)}/members`' in dialog
+    assert 'grant ? {} : { method: "DELETE" }' in dialog
+    assert "await this.refreshOrganizationTeams(org)" in dialog
+    # The plaque explains what a team grant actually opens in the World.
+    assert "repository floors" in dialog
+
+    refresh = APP[
+        APP.index("  async refreshOrganizationTeams(name) {"):
+        APP.index("  openOrgTeamAssignment(target = {}) {")
+    ]
+    assert "/members" in refresh and "/teams" in refresh
+    assert "this.rebuildOrgTeamIndex()" in refresh
+    assert "this.renderPeers()" in refresh
