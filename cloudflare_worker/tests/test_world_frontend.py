@@ -437,7 +437,7 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
     assert (
         'this.fetchJSON("/api/accounts/users", {\n        auth: false,' in APP
     )
-    assert "async refreshMemberDirectory(force = false)" in APP
+    assert "async refreshMemberDirectory(force = false, probed = [])" in APP
     assert 'type: "presence"' in APP
     assert "shareCountry: Boolean(this.settings.privacy.country)" in APP
     assert "shareName: Boolean(this.settings.privacy.name)" in APP

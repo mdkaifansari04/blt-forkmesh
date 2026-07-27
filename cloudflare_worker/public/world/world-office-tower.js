@@ -174,11 +174,24 @@ export function officeCampusSurfaceContains(x, z, radius = 0) {
 const FLOOR_OBSTACLES = Object.freeze({
   lobby: Object.freeze([
     Object.freeze({ type: "circle", x: -18, z: -2, radius: 8.5 }),
-    Object.freeze({ type: "rect", minX: 8, maxX: 38, minZ: 17, maxZ: 22 }),
+    Object.freeze({
+      type: "rect",
+      minX: -15.5,
+      maxX: 15.5,
+      minZ: -39.2,
+      maxZ: -33.8,
+    }),
   ]),
   marketing: Object.freeze([
-    Object.freeze({ type: "rect", minX: -9, maxX: 9, minZ: -7, maxZ: 7 }),
-    Object.freeze({ type: "rect", minX: -77, maxX: -69, minZ: -15, maxZ: 15 }),
+    // Match the actual tabletop instead of fencing off the chairs, boards,
+    // and most of the studio with oversized invisible rectangles.
+    Object.freeze({
+      type: "rect",
+      minX: -3.9,
+      maxX: 3.9,
+      minZ: -2,
+      maxZ: 2,
+    }),
   ]),
   engineering: Object.freeze([
     Object.freeze({ type: "rect", minX: -44, maxX: 44, minZ: -5, maxZ: 5 }),

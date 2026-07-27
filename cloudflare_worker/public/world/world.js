@@ -3753,9 +3753,9 @@ class ForkMeshWorld extends HTMLElement {
     this.walletBadges = new Map();
     this.memberDirectory = [];
     this.memberDirectoryFetchedAt = 0;
-    // Lowercased names seated straight from a presence frame because they are
-    // newer than the last directory snapshot (see noteDirectoryMembers).
-    this.pendingDirectoryMembers = new Set();
+    // Lowercased names a completed directory snapshot did not list, so their
+    // next presence frame does not force another fetch (noteDirectoryMembers).
+    this.unlistedDirectoryNames = new Set();
     this.worldClientProfileKey = "";
     this.pendingKnocks = new Map();
     this.serverPeerId = "";
@@ -18025,37 +18025,33 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   // An account created after this tab loaded is missing from the directory
-  // snapshot, so its owner would have no bench until the next refresh. Seat
-  // them from their own presence frame instead, and pull a fresh directory in
-  // the background to fill in their joined date and node count.
+  // snapshot, so its owner would have no bench until the next refresh. A
+  // presence frame is evidence the snapshot in hand is stale — it forces a
+  // fresh one — but it is never itself a membership: a presence name may
+  // belong to a guest, a bot, or a private profile the directory omits, and
+  // only rows the users table actually returns may sit at the fire or count
+  // in its total (adhoc #427). A name a completed snapshot came back without
+  // is remembered, so a name the directory will never list cannot keep
+  // forcing fetches.
   noteDirectoryMembers(names) {
     const known = new Set(
       this.memberDirectory.map((member) => member.name.toLowerCase()),
     );
-    const added = [];
+    const missing = [];
     names.forEach((name) => {
-      const key = name.toLowerCase();
-      if (!name || known.has(key)) return;
+      const key = String(name || "").toLowerCase();
+      if (!key || known.has(key) || this.unlistedDirectoryNames.has(key)) {
+        return;
+      }
       known.add(key);
-      added.push({
-        name,
-        createdAt: 0,
-        nodes: [],
-        totalActiveMs: null,
-        avatar: "",
-        countryCode: "",
-        status: "",
-      });
+      missing.push(key);
     });
-    if (!added.length) return false;
-    this.memberDirectory = [...this.memberDirectory, ...added];
-    added.forEach((member) =>
-      this.pendingDirectoryMembers.add(member.name.toLowerCase()),
-    );
+    if (!missing.length) return false;
     // A brand-new account is exactly the case the refresh throttle must not
-    // swallow: pull the directory straight away so the arrival's joined date
-    // and node count fill in behind the bench the count already grew for.
-    void this.refreshMemberDirectory(true);
+    // swallow: signing up drops the endpoint's edge-cached copy, so a forced
+    // fetch hands back the arrival's own row rather than a snapshot from
+    // before it existed.
+    void this.refreshMemberDirectory(true, missing);
     return true;
   }
 
@@ -18064,7 +18060,7 @@ class ForkMeshWorld extends HTMLElement {
   // for the first time in a presence frame forces a fresh snapshot, floored
   // at the endpoint's own cache TTL because a fetch inside that window would
   // only hand back the same edge-cached body.
-  async refreshMemberDirectory(force = false) {
+  async refreshMemberDirectory(force = false, probed = []) {
     const now = Date.now();
     const throttle = force
       ? USERS_DIRECTORY_TTL_MS
@@ -18083,21 +18079,15 @@ class ForkMeshWorld extends HTMLElement {
       });
       const directory = normalizeMemberDirectory(data);
       if (!directory.length || this.destroyed) return;
-      // The endpoint is edge-cached for its own TTL, so a snapshot taken
-      // moments after a signup can still be missing the account this refresh
-      // fired for. Keep the members already seated from presence frames
-      // rather than letting a stale snapshot drop them: the fire's total
-      // would count back down, and the next presence frame would re-add them
-      // and force yet another fetch.
-      const listed = new Set(directory.map((member) => member.name.toLowerCase()));
-      const pending = this.memberDirectory.filter((member) => {
-        const key = member.name.toLowerCase();
-        return this.pendingDirectoryMembers.has(key) && !listed.has(key);
-      });
-      this.pendingDirectoryMembers = new Set(
-        pending.map((member) => member.name.toLowerCase()),
+      // The users table is the only membership: whatever this snapshot lists
+      // is the whole directory, and a name it left out never joins it locally.
+      const listed = new Set(
+        directory.map((member) => member.name.toLowerCase()),
       );
-      this.memberDirectory = [...directory, ...pending];
+      probed.forEach((key) => {
+        if (!listed.has(key)) this.unlistedDirectoryNames.add(key);
+      });
+      this.memberDirectory = directory;
       this.syncMemberLounge();
     } catch (_) {}
   }
@@ -18111,10 +18101,14 @@ class ForkMeshWorld extends HTMLElement {
     const present = new Set();
     const registered = [];
     let guests = 0;
+    const listed = new Set(
+      this.memberDirectory.map((member) => member.name.toLowerCase()),
+    );
     const note = (name, accountStatus) => {
       const clean = String(name || "").trim();
       if (!clean) return;
-      present.add(clean.toLowerCase());
+      const key = clean.toLowerCase();
+      present.add(key);
       const status = String(accountStatus || "Guest");
       // A member who hides their name broadcasts the "Private visitor"
       // sentinel, and the public directory omits private profiles entirely —
@@ -18125,9 +18119,11 @@ class ForkMeshWorld extends HTMLElement {
         clean !== "Private visitor"
       ) {
         registered.push(clean.slice(0, 32));
-      } else {
-        guests += 1;
       }
+      // The named benches come from the users table, so everyone here without
+      // a row in it — guests, private profiles, bots — needs one of the spare
+      // seats instead, or the ring comes up short (adhoc #427).
+      if (!listed.has(key)) guests += 1;
     };
     note(this.identity?.name, this.identity?.accountStatus);
     this.remotePlayers.forEach((player) =>
