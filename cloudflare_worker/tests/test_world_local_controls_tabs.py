@@ -3,7 +3,8 @@
 
 The Security tab is the only place the World shows an account's own signed-in
 sessions and the address each one came from; the Work tab and the owner-only
-avatar back plate carry assigned work instead of the retired session card.
+avatar back plate carry assigned tasks, timers, and recent issue assignments
+instead of the retired session card.
 """
 
 from pathlib import Path
@@ -63,22 +64,41 @@ def test_work_tab_shows_assigned_task_stats_with_start_stop():
         "data-world-work-total",
         "data-world-work-active",
         "data-world-work-tracked",
+        "data-world-work-issue-list",
+        "Recent issue assignments",
+        "syncRecentIssueAssignments()",
     ):
         assert contract in WORLD
     assert "this.officeTasks?.setPersonalView?.(open === true)" in WORLD
+    assert "this.officeTasks?.prime?.()" in WORLD
     for contract in (
         "function renderWorkPane()",
+        "function normalizedRecentIssue(issue)",
+        "function safeIssueHref(value)",
+        "function prime()",
+        "function setRecentIssues(items = [])",
         "setPersonalView,",
+        "setRecentIssues,",
         "ownTasks()",
         'data-world-office-task-action="${activeTask ? "stop" : "start"}"',
     ):
         assert contract in TASKS
+    # Issue assignment data reuses the already-loaded private notification
+    # stream; the task controller creates no second endpoint or poll.
+    assert '"issue_assigned"' in WORLD
+    assert "item?.meta?.number" in WORLD
+    assert "this.notifications" in WORLD
+    assert "/api/issues/assigned" not in WORLD
+    assert "OFFICE_TASKS_POLL_MS = 60_000" in TASKS
+    assert "OFFICE_TASKS_BACKGROUND_POLL_MS = 5 * 60_000" in TASKS
 
 
 def test_avatar_back_plate_carries_work_instead_of_the_session_card():
     assert "world.setSelfWorkBoard?.(" in TASKS
     assert "function avatarWorkBadgeTexture" in SCENE
     assert 'badge.name = "forkmesh-self-work-back-badge"' in SCENE
+    assert 'item?.kind === "issue" ? "issue" : "task"' in SCENE
+    assert 'item.kind === "issue"' in SCENE
     assert "HIDDEN FROM PEERS + SCREENSHOTS" in SCENE
     # Built-in screenshots still hide the owner-only plate.
     assert "world.setSelfWorkBadgeVisibility?.(false)" in WORLD
