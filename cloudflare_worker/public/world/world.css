@@ -5080,6 +5080,153 @@ forkmesh-world.world-office-active .world-quick-dock {
   text-transform: uppercase;
 }
 
+.world-settings-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: 16px;
+  border: 1px solid var(--world-line);
+}
+
+.world-settings-tabs button {
+  min-height: 38px;
+  border: 0;
+  background: #0a1915;
+  color: var(--world-muted);
+  cursor: pointer;
+  font: 0.62rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-settings-tabs button + button {
+  border-left: 1px solid var(--world-line);
+}
+
+.world-settings-tabs button[aria-selected="true"],
+.world-settings-tabs button:hover,
+.world-settings-tabs button:focus-visible {
+  background: #12332a;
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-settings-pane[hidden] {
+  display: none;
+}
+
+.world-work-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.world-work-stats div {
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--world-line);
+  background: rgb(255 255 255 / 0.025);
+  padding: 10px;
+}
+
+.world-work-stats strong {
+  color: var(--world-mint);
+  font-family: "ForkMesh Mono", monospace;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.world-work-stats span {
+  color: var(--world-muted);
+  font-family: "ForkMesh Mono", monospace;
+  font-size: 0.55rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.world-settings-pane .world-office-task-list {
+  padding: 0;
+}
+
+.world-session-list {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.world-session {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--world-line);
+  background: rgb(255 255 255 / 0.025);
+  padding: 12px;
+}
+
+.world-session[data-current="true"] {
+  border-color: rgb(158 247 198 / 0.5);
+  background: rgb(158 247 198 / 0.055);
+}
+
+.world-session-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.world-session-copy strong {
+  overflow: hidden;
+  color: var(--world-copy);
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-session-copy small {
+  color: var(--world-muted);
+  font-family: "ForkMesh Mono", monospace;
+  font-size: 0.6rem;
+  word-break: break-all;
+}
+
+.world-session button,
+.world-session-actions button {
+  border: 1px solid var(--world-line-strong);
+  background: transparent;
+  color: var(--world-copy);
+  padding: 8px 10px;
+  cursor: pointer;
+  font: 700 0.58rem/1 "ForkMesh Mono", monospace;
+  text-transform: uppercase;
+}
+
+.world-session button:hover,
+.world-session-actions button:hover {
+  border-color: var(--world-mint);
+  color: var(--world-mint);
+}
+
+.world-session-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.world-session-actions {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.world-session-empty {
+  border: 1px dashed var(--world-line);
+  color: var(--world-muted);
+  padding: 20px;
+  text-align: center;
+}
+
 .world-setting-group {
   margin: 20px 0 0;
   padding: 0;

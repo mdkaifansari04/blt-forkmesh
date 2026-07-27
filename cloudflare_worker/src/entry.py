@@ -4002,9 +4002,10 @@ def world_request_country(request):
 def world_context_handler(request):
     """Return the visitor's context and the shared world clock.
 
-    The raw connection card is returned only to the same request that supplied
-    it, under ``no-store``; it never enters public presence, a Durable Object,
-    persistence, analytics, or another visitor's response.
+    Nothing here identifies the requester: the coarse country hint and the
+    shared clock are all that leave the edge. Connection details belong to
+    account session management (``/api/accounts/sessions``), not to a payload
+    every guest receives.
     """
     if method_name(request) != "GET":
         return json_response(
@@ -4015,7 +4016,6 @@ def world_context_handler(request):
         )
     payload = world_protocol.context_payload(
         world_request_country(request), int(Date.now()), MAX_CONNECTIONS)
-    payload["securityDetails"] = _world_security_details(request)
     return json_response(
         payload,
         cache_control="no-store, max-age=0, must-revalidate",
@@ -7292,6 +7292,9 @@ SCHEMA_ALTER_STATEMENTS = [
     # Heading offset in radians for an administrator-locked scene object
     # (migration 0082). 0 keeps the object's authored rotation.
     "ALTER TABLE world_object_layout ADD COLUMN rotation REAL NOT NULL DEFAULT 0",
+    # Edge-observed sign-in address of each account session, shown only to the
+    # owner of that account in the World security tab and account settings.
+    "ALTER TABLE account_sessions ADD COLUMN client_ip TEXT NOT NULL DEFAULT ''",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
@@ -11352,7 +11355,8 @@ async def _clean_profile_links(env, rec, raw_links):
 
 
 async def _account_public_payload(
-        env, rec, session_token=None, session_device_label=""):
+        env, rec, session_token=None, session_device_label="",
+        session_client_ip=""):
     name = rec.get("name", "")
     solana = (rec.get("solana") or "").strip()
     has_payout = bool(solana and SOLANA_RE.match(solana))
@@ -11379,7 +11383,7 @@ async def _account_public_payload(
             session_token
             if session_token is not None
             else await _account_session_token(
-                env, name, session_device_label)
+                env, name, session_device_label, session_client_ip)
         ),
         "avatarPng": rec.get("avatar_png", ""),
         "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
@@ -11538,7 +11542,7 @@ def _account_session_token_digest(env, token):
     ).hexdigest()
 
 
-async def _account_session_token(env, name, device_label=""):
+async def _account_session_token(env, name, device_label="", client_ip=""):
     """Mint one random, server-revocable session; D1 stores no bearer token."""
     name = clean_string(name or "", MAX_NODE_NAME).lower()
     if not valid_node_name(name):
@@ -11571,7 +11575,8 @@ async def _account_session_token(env, name, device_label=""):
         env,
         "INSERT INTO account_sessions "
         "(session_id,account_bi,token_digest,created_at,last_seen_at,"
-        "expires_at,revoked_at,device_label) VALUES (?,?,?,?,?,?,0,?)",
+        "expires_at,revoked_at,device_label,client_ip) "
+        "VALUES (?,?,?,?,?,?,0,?,?)",
         session_id,
         account_bi,
         _account_session_token_digest(env, token),
@@ -11579,6 +11584,7 @@ async def _account_session_token(env, name, device_label=""):
         now,
         expires,
         clean_string(device_label or "", 80),
+        clean_string(client_ip or "", 64),
     )
     return token
 
@@ -11785,6 +11791,24 @@ def _generalized_client_category(request):
     return "other-client" if ua else ""
 
 
+def _account_session_client_ip(request):
+    """Canonicalize the edge-observed sign-in address for session management.
+
+    Only Cloudflare's edge-set header is accepted; X-Forwarded-For is client
+    controlled and is intentionally ignored. The value is stored against the
+    session row and returned exclusively to the account that owns it, so the
+    owner can tell an unfamiliar device apart before revoking it.
+    """
+    try:
+        raw = str(request.headers.get("cf-connecting-ip") or "")
+    except Exception:
+        return ""
+    try:
+        return str(ipaddress.ip_address(raw.strip().strip("[]")[:64]))[:64]
+    except (ValueError, TypeError):
+        return ""
+
+
 def _account_session_device_label(request, desktop=False):
     """Return a coarse owner-visible label without retaining a raw user agent."""
     if desktop:
@@ -11821,37 +11845,6 @@ async def _world_moderation_tokens(env, request, now=None):
     # tokens may be forwarded or persisted; public badge display continues to
     # use the existing generalized browser/OS allowlist.
     return tokens
-
-
-def _world_security_details(request):
-    """Return bounded self-only connection details for the context response.
-
-    The address is canonicalized as IPv4/IPv6 and the agent is restricted to
-    printable ASCII with collapsed whitespace. Only Cloudflare's edge-set
-    address header is accepted; X-Forwarded-For is intentionally ignored.
-    Neither value is written to D1, logs, tickets, public presence, Durable
-    Object state, or moderation records.
-    """
-    try:
-        raw_address = str(
-            request.headers.get("cf-connecting-ip") or "")
-    except Exception:
-        raw_address = ""
-    raw_address = raw_address.strip().strip("[]")[:64]
-    try:
-        address = str(ipaddress.ip_address(raw_address))
-    except (ValueError, TypeError):
-        address = ""
-    try:
-        raw_agent = str(request.headers.get("user-agent") or "")
-    except Exception:
-        raw_agent = ""
-    printable_agent = "".join(
-        character if 32 <= ord(character) <= 126 else " "
-        for character in raw_agent[:2048]
-    )
-    agent = " ".join(printable_agent.split())[:256]
-    return {"ip": address[:64], "agent": agent}
 
 
 async def _world_active_manual_block(env, tokens, now=None):
@@ -12285,7 +12278,8 @@ async def _account_signup(env, request):
     await _record_referral_signup(env, name, data.get("ref", ""))
     payload = await _account_public_payload(
         env, rec,
-        session_device_label=_account_session_device_label(request))
+        session_device_label=_account_session_device_label(request),
+        session_client_ip=_account_session_client_ip(request))
     return json_response(
         payload,
         status=201,
@@ -12635,7 +12629,8 @@ async def _account_finalize(env, request):
     payload = await _account_public_payload(
         env, rec,
         session_device_label=_account_session_device_label(
-            request, desktop=bool(pubkey)))
+            request, desktop=bool(pubkey)),
+        session_client_ip=_account_session_client_ip(request))
     return json_response(
         payload,
         status=201,
@@ -13803,7 +13798,8 @@ async def _account_login(env, request):
         payload = await _account_public_payload(
             env, rec,
             session_device_label=_account_session_device_label(
-                request, desktop=True))
+                request, desktop=True),
+            session_client_ip=_account_session_client_ip(request))
         payload = _with_session_capabilities(
             payload, session_kind="desktop_node", device_kind=device_kind,
             key_matched=True, desktop_capable=desktop_capable,
@@ -13817,7 +13813,8 @@ async def _account_login(env, request):
 
     payload = await _account_public_payload(
         env, rec,
-        session_device_label=_account_session_device_label(request))
+        session_device_label=_account_session_device_label(request),
+        session_client_ip=_account_session_client_ip(request))
     payload = _with_session_capabilities(
         payload, session_kind="account", device_kind="web_or_mobile",
         key_matched=False, desktop_capable=False)
@@ -13951,7 +13948,12 @@ async def _account_last_seen(env, account_bi, floor_ts=0):
 
 
 async def _account_sessions(env, request, target_session_id=""):
-    """List or revoke this account's sessions without exposing client details."""
+    """List or revoke this account's own sessions.
+
+    The listing is strictly self-scoped: it is reachable only with a live
+    session token for the account whose rows it returns, so the sign-in address
+    on each row is visible to that owner alone.
+    """
     method = method_name(request)
     token, cookie_auth = _request_account_session_token(request, {})
     if (
@@ -13972,7 +13974,8 @@ async def _account_sessions(env, request, target_session_id=""):
     if method == "GET" and not target_session_id:
         rows = await d1_all(
             env,
-            "SELECT session_id,created_at,last_seen_at,expires_at,device_label "
+            "SELECT session_id,created_at,last_seen_at,expires_at,"
+            "device_label,client_ip "
             "FROM account_sessions WHERE account_bi=? AND revoked_at=0 "
             "AND expires_at>? ORDER BY last_seen_at DESC,created_at DESC "
             "LIMIT ?",
@@ -13989,6 +13992,7 @@ async def _account_sessions(env, request, target_session_id=""):
                     clean_string(row.get("device_label", ""), 80)
                     or "Unknown device"
                 ),
+                "ipAddress": clean_string(row.get("client_ip", ""), 64),
                 "createdAt": int(row.get("created_at") or 0),
                 "lastSeenAt": int(row.get("last_seen_at") or 0),
                 "expiresAt": int(row.get("expires_at") or 0),
@@ -14008,9 +14012,10 @@ async def _account_sessions(env, request, target_session_id=""):
                     **_account_email_activity(rec),
                 },
                 "privacyNotice": (
-                    "Only a broad device category and session timestamps are "
-                    "shown. ForkMesh does not expose IP addresses or raw user "
-                    "agents in session management."
+                    "Only you can see this list. Each row shows a broad device "
+                    "category, the address the sign-in came from, and session "
+                    "timestamps. Raw user agents are never stored, and no "
+                    "other account can read these rows."
                 ),
             },
             cache_control="no-store, max-age=0, must-revalidate",
@@ -14033,6 +14038,13 @@ async def _account_sessions(env, request, target_session_id=""):
         )
         audit_target = "all-other-devices"
         audit_scope = "others"
+    elif target_session_id == "all":
+        # "Log out everywhere" also drops the calling device, so a lost or
+        # shared browser can be cleared in one action.
+        await _account_revoke_sessions(env, account_bi)
+        revoke_current = True
+        audit_target = "all-devices"
+        audit_scope = "all"
     else:
         if not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", target_session_id):
             return json_response(

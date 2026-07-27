@@ -1512,7 +1512,7 @@
             ${escapeHtml(session.deviceLabel || "Unknown device")}
             ${session.current ? '<span class="ml-2 rounded-full border border-emerald-500/50 px-2 py-0.5 text-[11px] text-emerald-300">This device</span>' : ""}
           </p>
-          <p class="mt-1 text-xs text-muted-foreground">Last active ${escapeHtml(formatTimeAgo(Number(session.lastSeenAt || 0)))} · signed in ${escapeHtml(formatDate(Number(session.createdAt || 0)))} · expires ${escapeHtml(formatDate(Number(session.expiresAt || 0)))}</p>
+          <p class="mt-1 text-xs text-muted-foreground">${escapeHtml(String(session.ipAddress || "address unavailable"))} · last active ${escapeHtml(formatTimeAgo(Number(session.lastSeenAt || 0)))} · signed in ${escapeHtml(formatDate(Number(session.createdAt || 0)))} · expires ${escapeHtml(formatDate(Number(session.expiresAt || 0)))}</p>
         </div>
         <button type="button" data-account-session-revoke="${escapeHtml(session.id || "")}" data-account-session-current="${session.current ? "true" : "false"}" class="inline-flex h-8 shrink-0 items-center justify-center rounded-md border border-red-500/50 px-3 text-xs font-semibold text-red-300 hover:bg-red-500/10">
           ${session.current ? "Sign out here" : "Sign out"}

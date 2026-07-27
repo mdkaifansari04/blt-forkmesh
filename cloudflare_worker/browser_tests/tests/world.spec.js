@@ -60,6 +60,7 @@ async function prepareWorldPage(
     officeFloorRequests = [],
     officeFloorAccess = null,
     officeTaskFixture = null,
+    accountSessionFixture = null,
   } = {},
 ) {
   let mentionState = "review";
@@ -551,6 +552,59 @@ async function prepareWorldPage(
         } else {
           status = 404;
           body = { error: "not_found" };
+        }
+      } else {
+        status = 405;
+        body = { error: "method_not_allowed" };
+      }
+    } else if (
+      accountSessionFixture &&
+      url.pathname.startsWith("/api/accounts/sessions")
+    ) {
+      const method = route.request().method();
+      const target =
+        url.pathname
+          .slice("/api/accounts/sessions".length)
+          .split("/")
+          .filter(Boolean)[0] || "";
+      accountSessionFixture.requests ||= [];
+      accountSessionFixture.sessions ||= [];
+      accountSessionFixture.requests.push({ method, target });
+      if (!session?.sessionToken) {
+        status = 401;
+        body = { error: "invalid_session" };
+      } else if (method === "GET") {
+        body = {
+          ok: true,
+          sessions: accountSessionFixture.sessions,
+          account: {
+            lastSeenAt: FIXED_NOW,
+            lastEmailAt: 0,
+            lastEmailStatus: "",
+            lastEmailKind: "",
+          },
+          privacyNotice: "Only you can see this list.",
+        };
+      } else if (method === "DELETE" && target === "others") {
+        accountSessionFixture.sessions =
+          accountSessionFixture.sessions.filter((item) => item.current);
+        body = { ok: true, currentRevoked: false };
+      } else if (method === "DELETE" && target === "all") {
+        accountSessionFixture.sessions = [];
+        body = { ok: true, currentRevoked: true };
+      } else if (method === "DELETE") {
+        const revoked = accountSessionFixture.sessions.find(
+          (item) => item.id === target,
+        );
+        if (!revoked) {
+          status = 404;
+          body = { error: "session_not_found" };
+        } else {
+          accountSessionFixture.sessions =
+            accountSessionFixture.sessions.filter(
+              (item) => item.id !== target,
+            );
+          body = { ok: true, currentRevoked: revoked.current === true };
         }
       } else {
         status = 405;
@@ -2279,6 +2333,114 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
     carHeight: 32,
   });
 });
+
+test("Local controls carry Work and Security tabs instead of a session card", async ({
+  page,
+}) => {
+  const taskId = "b".repeat(32);
+  const officeTaskFixture = {
+    canManage: false,
+    requests: [],
+    tasks: [
+      {
+        id: taskId,
+        title: "Write the launch digest",
+        assignee: "alice",
+        status: "idle",
+        elapsedMs: 0,
+        startedAt: 0,
+        nextCheckinAt: 0,
+        createdAt: FIXED_NOW,
+        updatedAt: FIXED_NOW,
+        lastCheckin: null,
+      },
+    ],
+  };
+  const accountSessionFixture = {
+    requests: [],
+    sessions: [
+      {
+        id: "c".repeat(32),
+        deviceLabel: "Web browser",
+        ipAddress: "203.0.113.9",
+        createdAt: FIXED_NOW - 60_000,
+        lastSeenAt: FIXED_NOW - 60_000,
+        expiresAt: FIXED_NOW + 60_000,
+        current: true,
+      },
+      {
+        id: "d".repeat(32),
+        deviceLabel: "Desktop node",
+        ipAddress: "198.51.100.7",
+        createdAt: FIXED_NOW - 7_200_000,
+        lastSeenAt: FIXED_NOW - 3_600_000,
+        expiresAt: FIXED_NOW + 60_000,
+        current: false,
+      },
+    ],
+  };
+  await prepareWorldPage(page, "local-controls-tabs", {
+    session: {
+      kind: "user",
+      nodeName: "alice",
+      email: "alice@example.test",
+      sessionToken: "alice-token",
+    },
+    officeTaskFixture,
+    accountSessionFixture,
+  });
+  await waitForWorld(page);
+  await page.locator("[data-world-settings-open]").first().click();
+  await expect(page.locator("[data-world-settings]")).toHaveAttribute(
+    "data-open",
+    "true",
+  );
+
+  // The View tab is the default, so the environment controls stay reachable.
+  await expect(page.locator("[data-world-light-level]")).toBeVisible();
+  await expect(page.locator("[data-world-session-list]")).toBeHidden();
+
+  await page.locator('[data-world-settings-tab="security"]').click();
+  const sessions = page.locator("[data-world-session-list] > li");
+  await expect(sessions).toHaveCount(2);
+  await expect(sessions.first()).toContainText("Web browser · this device");
+  await expect(sessions.first()).toContainText("203.0.113.9");
+  await expect(sessions.nth(1)).toContainText("198.51.100.7");
+  await expect(page.locator("[data-world-light-level]")).toBeHidden();
+
+  // Revoking another device leaves this one signed in and does not reload.
+  await sessions
+    .nth(1)
+    .locator("[data-world-session-revoke]")
+    .click();
+  await expect(sessions).toHaveCount(1);
+  expect(
+    accountSessionFixture.requests.some(
+      (request) =>
+        request.method === "DELETE" && request.target === "d".repeat(32),
+    ),
+  ).toBe(true);
+
+  await page.locator('[data-world-settings-tab="work"]').click();
+  await expect(page.locator("[data-world-work-total]")).toHaveText("1");
+  await expect(page.locator("[data-world-work-active]")).toHaveText("0");
+  const workTask = page.locator("[data-world-work-list] > li").first();
+  await expect(workTask).toContainText("Write the launch digest");
+  await workTask.locator('[data-world-office-task-action="start"]').click();
+  await expect(page.locator("[data-world-work-active]")).toHaveText("1");
+  expect(
+    officeTaskFixture.requests.some(
+      (request) => request.path === `/api/world/office/marketing-tasks/${taskId}/start`,
+    ),
+  ).toBe(true);
+
+  // The owner-only avatar plate carries the same work, never a session card.
+  const board = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.setSelfWorkBoard({}),
+  );
+  expect(board.state).toBe("locked");
+});
+
 
 test("Office marketing tasks can be assigned, timed, and checked in privately", async ({
   page,

@@ -241,6 +241,22 @@ function escapeHTML(value) {
     .replace(/'/g, "&#039;");
 }
 
+// Coarse "how long ago" reading for the session rows. Deliberately rounded:
+// the exact millisecond a device was last active is not useful here and a
+// bucketed label reads the same in every locale.
+function relativeTimeLabel(timestamp, now = Date.now()) {
+  const value = Number(timestamp) || 0;
+  if (value <= 0) return "unknown";
+  const elapsed = Math.max(0, now - value);
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "1 day ago" : `${days} days ago`;
+}
+
 function incrementDiagnosticCounter(value) {
   return Math.min(
     WORLD_DIAGNOSTICS_COUNTER_MAX,
@@ -3474,6 +3490,52 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button type="button" data-world-account-open>Account</button>
           </section>
 
+          <div class="world-settings-tabs" role="tablist" aria-label="Local controls section">
+            <button type="button" role="tab" aria-selected="true" data-world-settings-tab="view">View</button>
+            <button type="button" role="tab" aria-selected="false" data-world-settings-tab="work">Work</button>
+            <button type="button" role="tab" aria-selected="false" data-world-settings-tab="security">Security</button>
+          </div>
+
+          <div class="world-settings-pane" data-world-settings-pane="work" hidden>
+            <fieldset class="world-setting-group">
+              <legend>Assigned work · only visible to you</legend>
+              <div class="world-work-stats" data-world-work-stats>
+                <div><strong data-world-work-total>0</strong><span>Assigned</span></div>
+                <div><strong data-world-work-active>0</strong><span>Running</span></div>
+                <div><strong data-world-work-tracked>0:00</strong><span>Tracked</span></div>
+              </div>
+              <ol class="world-office-task-list" data-world-work-list aria-label="Work assigned to you">
+                <li class="world-office-task-empty">Sign in to load the work assigned to you.</li>
+              </ol>
+              <p class="world-office-panel-status" data-world-work-status role="status" aria-live="polite"></p>
+              <small>
+                Starting or stopping a task is timed on the server. The same
+                totals ride the private board on the back of your own avatar;
+                nobody else can read it and built-in screenshots hide it.
+              </small>
+            </fieldset>
+          </div>
+
+          <div class="world-settings-pane" data-world-settings-pane="security" hidden>
+            <fieldset class="world-setting-group">
+              <legend>Signed-in sessions · this account everywhere</legend>
+              <ol class="world-session-list" data-world-session-list aria-label="Signed-in sessions">
+                <li class="world-session-empty">Sign in to review the devices holding a session.</li>
+              </ol>
+              <div class="world-session-actions">
+                <button type="button" data-world-session-revoke="others">Log out other devices</button>
+                <button type="button" data-world-session-revoke="all">Log out everywhere</button>
+              </div>
+              <p class="world-office-panel-status" data-world-session-status role="status" aria-live="polite"></p>
+              <small data-world-session-privacy>
+                Each row shows the device category, the address the sign-in came
+                from, and when it was last active. Only this account can read
+                this list.
+              </small>
+            </fieldset>
+          </div>
+
+          <div class="world-settings-pane" data-world-settings-pane="view">
           <fieldset class="world-setting-group">
             <legend>Personal environment · only changes this device</legend>
             <div class="world-theme-grid">${themes}</div>
@@ -3648,15 +3710,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
 
           <p class="world-setting-note">
             Browser and OS are detected locally. Country comes from a country-only
-            edge hint. Your own avatar may show you the edge-observed IP and
-            User-Agent on a private back plate for session awareness; other
-            visitors cannot see it, it is not stored or sent through World
-            sockets, and built-in screenshots hide it. Whatever the three
+            edge hint. Your own avatar may show you the work assigned to you on a
+            private back plate; other visitors cannot see it, it never enters a
+            World socket, and built-in screenshots hide it. Sign-in addresses
+            live in the Security tab and nowhere else. Whatever the three
             public identity toggles share is saved on your account so your
             campfire bench still shows it while you are away — switch one off
             and the saved copy is cleared. Movement is coarse, ephemeral, and never includes
             URLs, search terms, form contents, repository names, or wallet data.
           </p>
+          </div>
         </section>
 
         <section class="world-tour" data-world-tour aria-labelledby="world-tour-title" aria-hidden="true">
@@ -3759,9 +3822,12 @@ class ForkMeshWorld extends HTMLElement {
     // next presence frame does not force another fetch (noteDirectoryMembers).
     this.unlistedDirectoryNames = new Set();
     this.worldClientProfileKey = "";
-    // Requester-only connection details never enter identity, presence,
-    // BroadcastChannel, browser storage, or analytics.
-    this.selfSecurityDetails = { ip: "", userAgent: "" };
+    // Requester-only assigned-work board for the private avatar back plate.
+    // It never enters identity, presence, BroadcastChannel, or analytics.
+    this.selfWorkBoard = { state: "locked", message: "", items: [] };
+    this.worldSessions = [];
+    this.worldSessionsLoadedAt = 0;
+    this.settingsTab = "view";
     this.pendingKnocks = new Map();
     this.serverPeerId = "";
     this.sessionAuthenticated = false;
@@ -4530,7 +4596,7 @@ class ForkMeshWorld extends HTMLElement {
       });
       await Promise.allSettled([contextPromise, dataPromise]);
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
-      this.world.setSelfSecurityDetails?.(this.selfSecurityDetails);
+      this.world.setSelfWorkBoard?.(this.selfWorkBoard);
       this.applyWorldLayoutEditor();
       this.world.updateNetworkNodes(
         liveNodeRecords(this.network, this.mirrorCatalogs),
@@ -4927,21 +4993,6 @@ class ForkMeshWorld extends HTMLElement {
       .trim()
       .toUpperCase()
       .slice(0, 2);
-    const securityDetails =
-      context?.securityDetails && typeof context.securityDetails === "object"
-        ? context.securityDetails
-        : {};
-    this.selfSecurityDetails = {
-      ip: String(securityDetails.ip || "").trim().slice(0, 64),
-      userAgent: String(
-        securityDetails.userAgent || securityDetails.agent || "",
-      )
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 256),
-    };
-    // A later context refresh can update the already-created local mesh.
-    this.world?.setSelfSecurityDetails?.(this.selfSecurityDetails);
     // A guest owns no account record, so the coarse country is remembered in
     // this browser: the flag survives a reload and an unreachable edge context
     // instead of silently dropping back to "no country".
@@ -6063,6 +6114,18 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-settings-close]")) {
         this.toggleSettings(false);
+        return;
+      }
+      const settingsTab = event.target.closest("[data-world-settings-tab]");
+      if (settingsTab) {
+        this.selectSettingsTab(settingsTab.dataset.worldSettingsTab);
+        return;
+      }
+      const sessionRevoke = event.target.closest("[data-world-session-revoke]");
+      if (sessionRevoke) {
+        void this.revokeWorldSession(
+          sessionRevoke.dataset.worldSessionRevoke,
+        );
         return;
       }
       const emojiChoice = event.target.closest(
@@ -15319,7 +15382,163 @@ class ForkMeshWorld extends HTMLElement {
     if (!panel) return;
     panel.dataset.open = String(open);
     panel.setAttribute("aria-hidden", String(!open));
-    if (open) window.setTimeout(() => panel.querySelector("button")?.focus(), 80);
+    this.officeTasks?.setPersonalView?.(open === true);
+    if (open) {
+      this.selectSettingsTab(this.settingsTab || "view");
+      window.setTimeout(() => panel.querySelector("button")?.focus(), 80);
+    }
+  }
+
+  selectSettingsTab(tab) {
+    const selected = ["view", "work", "security"].includes(tab) ? tab : "view";
+    this.settingsTab = selected;
+    this.$$("[data-world-settings-tab]").forEach((button) => {
+      button.setAttribute(
+        "aria-selected",
+        String(button.dataset.worldSettingsTab === selected),
+      );
+    });
+    this.$$("[data-world-settings-pane]").forEach((pane) => {
+      pane.hidden = pane.dataset.worldSettingsPane !== selected;
+    });
+    if (selected === "security") {
+      // The list is small and revocation must never read a stale row, so it is
+      // re-read on entry rather than polled while the panel sits open.
+      void this.loadWorldSessions();
+    }
+    if (selected === "work") void this.officeTasks?.refresh?.({ quiet: true });
+  }
+
+  renderWorldSessions(message = "", tone = "") {
+    const list = this.$("[data-world-session-list]");
+    const status = this.$("[data-world-session-status]");
+    if (status) {
+      status.textContent = String(message || "").slice(0, 240);
+      if (tone) status.dataset.tone = tone;
+      else delete status.dataset.tone;
+    }
+    this.$$("[data-world-session-revoke]").forEach((button) => {
+      button.disabled = this.worldSessions.length < (
+        button.dataset.worldSessionRevoke === "others" ? 2 : 1
+      );
+    });
+    if (!list) return;
+    if (!this.worldSessions.length) {
+      list.innerHTML =
+        `<li class="world-session-empty">${escapeHTML(
+          message || "No signed-in sessions to show.",
+        )}</li>`;
+      return;
+    }
+    list.innerHTML = this.worldSessions
+      .map(
+        (session) => `
+        <li class="world-session" data-current="${session.current}">
+          <div class="world-session-copy">
+            <strong>${escapeHTML(session.deviceLabel)}${
+              session.current ? " \u00b7 this device" : ""
+            }</strong>
+            <small>${escapeHTML(session.ipAddress || "address unavailable")}</small>
+            <small>Last active ${escapeHTML(
+              relativeTimeLabel(session.lastSeenAt),
+            )} \u00b7 signed in ${escapeHTML(
+              relativeTimeLabel(session.createdAt),
+            )}</small>
+          </div>
+          <button type="button" data-world-session-revoke="${escapeHTML(
+            session.id,
+          )}">${session.current ? "Log out here" : "Log out"}</button>
+        </li>`,
+      )
+      .join("");
+  }
+
+  async loadWorldSessions(force = false) {
+    if (!readSession()?.sessionToken) {
+      this.worldSessions = [];
+      this.renderWorldSessions("Sign in to review the devices holding a session.");
+      return false;
+    }
+    if (!force && Date.now() - this.worldSessionsLoadedAt < 5000) return true;
+    this.renderWorldSessions("Loading signed-in sessions\u2026");
+    try {
+      const payload = await this.fetchJSON("/api/accounts/sessions", {
+        cache: "no-store",
+        timeout: 8000,
+      });
+      this.worldSessions = (
+        Array.isArray(payload?.sessions) ? payload.sessions : []
+      )
+        .slice(0, 50)
+        .map((session) => ({
+          id: String(session?.id || "").slice(0, 64),
+          deviceLabel: String(session?.deviceLabel || "Unknown device").slice(0, 80),
+          ipAddress: String(session?.ipAddress || "").slice(0, 64),
+          createdAt: Number(session?.createdAt) || 0,
+          lastSeenAt: Number(session?.lastSeenAt) || 0,
+          current: session?.current === true,
+        }))
+        .filter((session) => session.id);
+      this.worldSessionsLoadedAt = Date.now();
+      const privacy = this.$("[data-world-session-privacy]");
+      if (privacy && payload?.privacyNotice) {
+        privacy.textContent = String(payload.privacyNotice).slice(0, 400);
+      }
+      this.renderWorldSessions(
+        `${this.worldSessions.length} signed-in session${
+          this.worldSessions.length === 1 ? "" : "s"
+        }.`,
+      );
+      return true;
+    } catch (_) {
+      this.worldSessions = [];
+      this.renderWorldSessions(
+        "Signed-in sessions could not be loaded.",
+        "error",
+      );
+      return false;
+    }
+  }
+
+  async revokeWorldSession(target) {
+    const scope = String(target || "").trim();
+    if (!/^[A-Za-z0-9_-]{2,64}$/.test(scope)) return false;
+    if (!readSession()?.sessionToken) return false;
+    const revokingCurrent =
+      scope === "all" ||
+      this.worldSessions.some(
+        (session) => session.id === scope && session.current,
+      );
+    this.renderWorldSessions("Revoking\u2026");
+    let payload = null;
+    try {
+      payload = await this.postJSON(
+        `/api/accounts/sessions/${encodeURIComponent(scope)}`,
+        {},
+        { method: "DELETE", timeout: 10000 },
+      );
+    } catch (error) {
+      this.renderWorldSessions(
+        String(error?.message || "That session could not be revoked.").slice(
+          0,
+          160,
+        ),
+        "error",
+      );
+      return false;
+    }
+    if (payload?.currentRevoked || revokingCurrent) {
+      // This browser's own token just died; drop the local copy and reload so
+      // the World comes back as a guest instead of retrying a dead session.
+      await this.logoutFromWorld();
+      return true;
+    }
+    this.toast(
+      scope === "others"
+        ? "Every other device was logged out."
+        : "That device was logged out.",
+    );
+    return this.loadWorldSessions(true);
   }
 
   openWorldChat(href = "/dashboard/chat", returnFocus = null) {
@@ -15828,10 +16047,9 @@ class ForkMeshWorld extends HTMLElement {
     const world = this.world;
     const canvas = world?.renderer?.domElement;
     if (!canvas) return null;
-    // Raw IP/User-Agent details are self-only and intentionally omitted from
-    // built-in captures so sharing a normal World screenshot cannot leak them.
-    const securityBadgeWasVisible =
-      world.setSelfSecurityBadgeVisibility?.(false);
+    // The assigned-work back plate is self-only and intentionally omitted
+    // from built-in captures so sharing a World screenshot cannot leak it.
+    const workBadgeWasVisible = world.setSelfWorkBadgeVisibility?.(false);
     try {
       // The renderer runs without preserveDrawingBuffer, so paint a fresh
       // frame and read it back synchronously before the buffer is cleared.
@@ -15882,9 +16100,7 @@ class ForkMeshWorld extends HTMLElement {
     } catch (_) {
       return null;
     } finally {
-      world.setSelfSecurityBadgeVisibility?.(
-        securityBadgeWasVisible !== false,
-      );
+      world.setSelfWorkBadgeVisibility?.(workBadgeWasVisible !== false);
     }
   }
 
