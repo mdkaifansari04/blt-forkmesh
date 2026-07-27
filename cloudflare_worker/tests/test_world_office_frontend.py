@@ -403,6 +403,41 @@ def test_explicit_floor_refresh_updates_access_without_attendance_or_polling():
     refresh = function_body(office, "refreshAuthorization")
     assert "setInterval" not in refresh
     assert "recordAttendance" not in refresh
+def test_marketing_is_a_team_floor_reached_only_through_a_server_grant():
+    tower = source(TOWER_PATH)
+    scene = source(SCENE_PATH)
+    access = function_body(tower, "normalizeOfficeFloorAccess")
+    assert 'supplied.add("lobby")' in access
+    assert 'supplied.add("rooftop")' in access
+    # Signing in must not hand out the Marketing studio. Only the server's
+    # team-derived allowlist may add that floor.
+    assert 'supplied.add("marketing")' not in access
+    marketing_floor = tower[tower.index('id: "marketing"'):]
+    marketing_floor = marketing_floor[:marketing_floor.index("}),")]
+    assert "publicForMembers" not in marketing_floor
+    # The meeting table is the other door onto that storey.
+    meeting = function_body(scene, "enterOfficeMeeting")
+    assert 'canAccessOfficeFloor(officeFloorAccess, "marketing")' in meeting
+    board = scene[scene.index('=== "office-meeting-board"'):]
+    board = board[:board.index("onOfficeMeetingBoardSelect()")]
+    assert 'officeCurrentFloorId === "marketing"' in board
+
+
+def test_an_arrival_cell_never_drops_a_visitor_off_their_office_floor():
+    scene = source(SCENE_PATH)
+    app = source(WORLD_PATH)
+    spawn = function_body(scene, "setSpawn")
+    # Arrival cells are outdoor ground spots. Applying one to a visitor riding
+    # the tower teleported them from their storey down onto the lobby slab.
+    guard = 'if (officeSceneMode !== "town") return false;'
+    assert guard in spawn
+    assert spawn.index(guard) < spawn.index("player.position.set(")
+    assert "return true;" in spawn
+    welcome = app[app.index("const spawnBlocked ="):]
+    welcome = welcome[:welcome.index("window.clearTimeout(this.peerGraceTimer)")]
+    assert "const relocated = this.world?.setSpawn?.({" in welcome
+    assert "if (relocated !== false) {" in welcome
+    assert welcome.index("const relocated") < welcome.index("this.currentSpace =")
 
 
 def test_office_is_a_remote_island_reached_by_a_glass_bridge():
