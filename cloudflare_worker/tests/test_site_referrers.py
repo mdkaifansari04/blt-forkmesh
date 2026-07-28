@@ -341,16 +341,14 @@ def test_surfaces_expose_the_board_and_the_privacy_contract():
 
 
 def test_world_has_a_separate_privacy_safe_http_referrer_board():
-    assert '"/api/referrals/sites"' in WORLD
-    assert "Promise.allSettled" in WORLD.split(
+    loader = WORLD.split(
         "async loadReferralLeaderboard()", 1
     )[1].split("async copyReferralLink()", 1)[0]
+    assert '"/api/leaderboards"' in loader
+    assert "snapshot?.sites?.board" in loader
     assert "updateSiteReferrerLeaderboard" in WORLD
     assert 'sign.name = "world-site-referrer-leaderboard"' in SCENE
-    assert (
-        'registerMovableObject(\n'
-        '    "site-referrer-leaderboard-sign"' in SCENE
-    )
+    assert "placeLeaderboardIslandSign(siteReferrerLeaderboardSign, 2)" in SCENE
     assert "HTTP REFERER LEADERBOARD" in SCENE
     assert "GROUPED BY HOSTNAME · LATEST SAFE FULL URL" in SCENE
     assert "FULL PAGE URL · SENSITIVE QUERY VALUES REDACTED" in SCENE
@@ -358,14 +356,8 @@ def test_world_has_a_separate_privacy_safe_http_referrer_board():
     assert "safeSiteReferrerURL" in SCENE
     assert "new THREE.PlaneGeometry(3.52, 3.3)" in SCENE
     assert "updateSiteReferrerLeaderboard" in SCENE
-    assert (
-        "const SITE_REFERRER_LEADERBOARD_POSITION = "
-        "Object.freeze([-19, 0, 30]);" in SCENE
-    )
-    assert (
-        "const REFERRAL_LEADERBOARD_POSITION = "
-        "Object.freeze([-13.5, 0, 30]);" in SCENE
-    )
+    assert "const LEADERBOARD_ISLAND_CENTER_X = -130;" in SCENE
+    assert 'leaderboardDistrict.name = "forkmesh-leaderboard-district"' in SCENE
 
 
 if __name__ == "__main__":

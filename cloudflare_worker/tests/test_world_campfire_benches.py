@@ -125,15 +125,15 @@ def test_sitters_face_the_flames_not_away_from_them():
     assert "Math.atan2(-offset.x, -offset.z)" not in SCENE
 
 
-def test_faces_wear_the_last_used_emoji_with_a_smile_default():
-    # adhoc #291: the head wears the last world-status emoji the visitor set;
-    # with no stored emoji the face defaults to a smile.
-    assert 'const AVATAR_DEFAULT_FACE_EMOJI = "🙂";' in SCENE
+def test_faces_wear_status_emoji_over_a_unique_generated_default():
+    # A chosen status emoji still takes over the face; otherwise each identity
+    # gets a stable generated portrait instead of every account sharing 🙂.
     assert "function avatarFaceTexture" in SCENE
+    assert "function proceduralAvatarFaceTexture" in SCENE
     assert "function syncAvatarFace" in SCENE
-    assert (
-        "avatar.userData.statusEmoji || AVATAR_DEFAULT_FACE_EMOJI" in SCENE
-    )
+    assert "const drawn = statusEmoji" in SCENE
+    assert "? avatarFaceTexture(THREE, statusEmoji)" in SCENE
+    assert "proceduralAvatarFaceTexture(THREE, identityKey)" in SCENE
     # Status changes re-render the face card.
     assert "syncAvatarFace(THREE, avatar);" in SCENE
     assert "faceMesh.rotation.y = Math.PI;" in SCENE

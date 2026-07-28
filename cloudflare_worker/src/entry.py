@@ -4344,6 +4344,133 @@ async def site_referrer_leaderboard(env):
     return resp
 
 
+async def leaderboards_overview(env):
+    """One public leaderboard model shared by the website and World.
+
+    Source endpoints keep their own cache and privacy boundaries. This view
+    only normalizes their already-public rows so clients cannot drift on which
+    boards exist, how they are titled, or which value each board ranks.
+    """
+    # These four public sources are independent. Resolve them concurrently so
+    # the combined endpoint costs the slowest cache/database read, not the sum
+    # of all four, which keeps both the page and World island quick at startup.
+    network_response, referral_response, site_response, users_response = (
+        await asyncio.gather(
+            network_leaderboards(env),
+            referral_leaderboard(env),
+            site_referrer_leaderboard(env),
+            _account_users_directory(env, None),
+        )
+    )
+    network, referrals, sites, users = await asyncio.gather(
+        _response_json(network_response),
+        _response_json(referral_response),
+        _response_json(site_response),
+        _response_json(users_response),
+    )
+    activity_rows = []
+    for user in users.get("users", []):
+        if not isinstance(user, dict):
+            continue
+        name = clean_string(user.get("name", ""), MAX_NODE_NAME)
+        total_active_ms = _world_public_total_active_ms(
+            user.get("totalActiveMs", 0))
+        if not name or total_active_ms <= 0:
+            continue
+        activity_rows.append({
+            "name": name,
+            "totalActiveMs": total_active_ms,
+            "activityBucket": clean_string(
+                user.get("activityBucket", ""), 24),
+        })
+    activity_rows.sort(
+        key=lambda row: (-row["totalActiveMs"], row["name"].lower()))
+    activity_rows = activity_rows[:LEADERBOARD_LIMIT]
+
+    def board(board_id, title, subtitle, value_kind, rows, category):
+        return {
+            "id": board_id,
+            "title": title,
+            "subtitle": subtitle,
+            "valueKind": value_kind,
+            "category": category,
+            "rows": rows if isinstance(rows, list) else [],
+        }
+
+    window_hours = int(network.get("windowHours") or 48)
+    boards = [
+        board(
+            "activity", "World activity",
+            "Registered members by total public active time",
+            "duration", activity_rows, "community"),
+        board(
+            "uptime", "Mainnode uptime",
+            "Most minutes online · last %dh" % window_hours,
+            "minutes", network.get("uptime"), "network"),
+        board(
+            "node-storage", "Node storage",
+            "Public mirror bytes reported by each connected node",
+            "bytes", network.get("nodes"), "network"),
+        board(
+            "repos", "Top owners", "Most public repositories",
+            "repos", network.get("repos"), "repositories"),
+        board(
+            "mirrors", "Most mirrored",
+            "Repositories hosted under the most owners",
+            "mirrors", network.get("mirrors"), "repositories"),
+        board(
+            "hosted", "Longest hosted", "Repositories online the longest",
+            "age", network.get("hosted"), "repositories"),
+        board(
+            "largest", "Largest repositories",
+            "Most mirror data per repository",
+            "bytes", network.get("largest"), "repositories"),
+        board(
+            "data-hosted", "Most data hosted",
+            "Public mirror data hosted per owner",
+            "bytes", network.get("dataHosted"), "network"),
+        board(
+            "contributors", "Contributor activity",
+            "Issues + pull requests + commits",
+            "contributions", network.get("contributors"), "community"),
+        board(
+            "referrals", "Member referrals",
+            "Signups first; clicks break ties",
+            "referrals", referrals.get("board"), "community"),
+        board(
+            "referring-sites", "Referring websites",
+            "External sites sending visits to ForkMesh",
+            "visits", sites.get("board"), "community"),
+        board(
+            "funds-mainnodes", "Legacy funds · mainnodes",
+            "Historical reporting aggregate; not a balance",
+            "sol", network.get("fundsMainnodes"), "historical"),
+        board(
+            "funds-contributors", "Legacy funds · contributors",
+            "Historical reporting aggregate; not pending funds",
+            "sol", network.get("fundsContributors"), "historical"),
+        board(
+            "funds-projects", "Legacy funds · projects",
+            "Historical migration records; not current funding",
+            "sol", network.get("fundsProjects"), "historical"),
+    ]
+    return json_response(
+        {
+            "ok": True,
+            "observedAt": int(Date.now()),
+            "boards": boards,
+            "network": network,
+            "activity": {"board": activity_rows},
+            "referrals": referrals,
+            "sites": sites,
+            "fundsNotice": network.get("fundsNotice", ""),
+            "fundsState": network.get("fundsState", ""),
+            "fundsCustody": network.get("fundsCustody", ""),
+        },
+        cache_seconds=NETWORK_STATS_TTL,
+    )
+
+
 async def prune_site_referrers(env):
     """Keep the board bounded: the busiest hosts stay, the long tail goes."""
     await ensure_schema(env)
@@ -8394,8 +8521,37 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-18"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-19"
 WORLD_QA_CARDS = (
+    ("world-flagship-always-expanded", "Flagship repository opens without mirror delay",
+     "Open a fresh World tab with normal network throttling. Confirm the "
+     "forkmesh/forkmesh repository wheel expands as soon as its tree arrives "
+     "and never collapses to a flat MIRRORS SYNCING disc while mirror status "
+     "metadata converges. Confirm files remain clickable after the mirror "
+     "details finish loading."),
+    ("world-avatar-identity-refresh", "Immediate avatar flags and verified pin",
+     "Join from a newly verified account with country sharing enabled. From a "
+     "second World tab, confirm its country flag appears without reloading and "
+     "a small green verified check pin is visible on the avatar front. Disable "
+     "country sharing and confirm the country is removed without exposing an "
+     "email address."),
+    ("world-unique-uploaded-faces", "Unique generated and uploaded avatar faces",
+     "Compare several users who have no account photo and confirm each gets a "
+     "stable, visibly different generated face after reload. In World settings "
+     "upload a JPEG, WebP, or PNG and confirm it is center-cropped, reported as "
+     "at most 128px/64 KiB, replaces the generated face, and appears in the "
+     "top-right account button at the same size as neighboring controls."),
+    ("world-combined-repository-work-list", "Combined issue and pull-request list",
+     "Open forkmesh/forkmesh in the World. Confirm one board contains both "
+     "issues and pull requests, with both totals large at the top and 25 mixed "
+     "records per page. Scroll and use Prev/Next; confirm issue actions and PR "
+     "status/mergeability still work and no long title or metadata leaves its "
+     "card."),
+    ("world-cabinet-side-layout", "Cabinet operational and agent side layout",
+     "Walk around a live mirror cabinet. Confirm Actions runs face the "
+     "operational walkway, server information is on the opposite face, Claude "
+     "tasks appear only on the left side, and Codex tasks only on the right. "
+     "Open each panel and confirm its existing authorized detail action works."),
     ("world-connected-mixed-landscape", "Connected city and woodland landscape",
      "Walk from Town Square to the repository district and Office. Confirm "
      "both routes are broad continuous pieces of land with no narrow bridge "
@@ -8447,7 +8603,7 @@ WORLD_QA_CARDS = (
     ("mirror-actions-cabinet", "Mirror cabinet Actions runs",
      "Sign in as a repository owner or organization writer and walk behind "
      "the active mirror cabinet. Confirm recent Actions runs show running, "
-     "done, or error plus a bounded redacted log tail. Click the rear panel "
+     "done, or error plus a bounded redacted log tail. Click the Actions face "
      "and confirm the full authorized run list opens. Repeat without write "
      "access and confirm no private run or log data appears."),
     ("executive-office-floor", "Executive Office floor",
@@ -38418,6 +38574,8 @@ class Default(WorkerEntrypoint):
         # Public ranking boards (node uptime + repos per owner) for /network/.
         if url.path in ("/api/network/leaderboards", "/api/network/leaderboards/"):
             return await network_leaderboards(self.env)
+        if url.path in ("/api/leaderboards", "/api/leaderboards/"):
+            return await leaderboards_overview(self.env)
 
         # Referral-program board (clicks + signups per share link) for the
         # /referrals page and the World's referral leaderboard sign.

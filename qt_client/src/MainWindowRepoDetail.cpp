@@ -4706,7 +4706,6 @@ void MainWindow::rebuildGlobalSearchResults()
         {"Chat", "comment", 2},
         {"Notifications", "bell", 3},
         {"Network log", "list-unordered", 4},
-        {"Leaderboards", "graph", 5},
         {"Hosts", "server", 7},
         {"Relays", "broadcast", 8},
         {"Network", "workflow", kNetworkDiagnosticsSectionIndex},
