@@ -179,6 +179,17 @@ QPushButton#socialIconButton {
 QPushButton#socialIconButton:hover { border-color: #6e7681; }
 #footerGitIdentity { color: #8b949e; font-size: 12px; }
 
+/* --- Bottom status bar: one text line tall, so everything in it is compact. */
+#appStatusBar { background-color: #010409; border-top: 1px solid #30363d; }
+#appStatusBar QLabel {
+    background: transparent; color: #8b949e; font-size: 11px;
+}
+#appStatusBar QPushButton {
+    background: transparent; border: none; color: #c9d1d9;
+    font-size: 11px; padding: 0 4px;
+}
+#appStatusBar QPushButton:hover { color: #58a6ff; }
+
 /* --- Nav rail --- */
 #navRail { background-color: #010409; border-right: 1px solid #30363d; }
 #navRail QLabel { background: transparent; }
@@ -1890,6 +1901,18 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 }
 #logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
 #logDock QLabel { background: transparent; }
+
+/* --- Bottom status bar: one text line tall, so everything in it is compact. */
+#appStatusBar { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
+#appStatusBar QLabel {
+    background: transparent; color: #656d76; font-size: 11px;
+}
+#appStatusBar QPushButton {
+    background: transparent; border: none; color: #1f2328;
+    font-size: 11px; padding: 0 4px;
+}
+#appStatusBar QPushButton:hover { color: #0969da; }
+
 #composerBar { background-color: #ffffff; border-top: 1px solid #d0d7de; }
 #composerInputRow {
     background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
