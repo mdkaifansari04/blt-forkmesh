@@ -133,7 +133,11 @@ const WORLD_LAYOUT_ECHO_KEY = "forkmesh.world.layout.echo.v1";
 const WORLD_LAYOUT_ECHO_TTL_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
-const POSITION_RADIUS = 72;
+// The cardinal campus now reaches the east/west repository and bulletin
+// islands plus the southern member garden. Keep restored/shared positions
+// inside the scene's 340-unit boundary instead of rejecting valid island
+// coordinates with the old town-square-only limit.
+const POSITION_RADIUS = 340;
 const POSITION_FLOOR_TOLERANCE = 0.5;
 // Mirrors the server's WORLD_ARRIVAL_CLEARANCE: a restored spot this close to
 // another visitor is treated as occupied and the fresh server slot wins.
@@ -650,8 +654,8 @@ function normalizedSavedWorldView(record) {
     ![x, y, z, heading, camera.yaw, camera.pitch, camera.zoom].every(
       Number.isFinite,
     ) ||
-    Math.abs(x) > 100 ||
-    Math.abs(z) > 100 ||
+    Math.abs(x) > POSITION_RADIUS ||
+    Math.abs(z) > POSITION_RADIUS ||
     Math.abs(heading) > Math.PI ||
     Math.abs(camera.yaw) > Math.PI * 2 ||
     Math.abs(camera.pitch) > Math.PI / 2 ||

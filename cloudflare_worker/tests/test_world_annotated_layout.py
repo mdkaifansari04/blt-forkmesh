@@ -4,6 +4,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCENE = (ROOT / "public" / "world" / "world-scene.js").read_text()
 DATA = (ROOT / "public" / "world" / "world-data.js").read_text()
+APP = (ROOT / "public" / "world" / "world.js").read_text()
+ENTRY = (ROOT / "src" / "entry.py").read_text()
 
 
 def test_town_has_four_solid_cardinal_paved_routes():
@@ -57,6 +59,8 @@ def test_members_have_a_walkable_south_island_and_campfire():
     assert "Math.hypot(px, pz - MEMBER_ISLAND_CENTER_Z)" in SCENE
     assert "position: [0, 0, 130]" in DATA
     assert 'registerMovableObject("south-members:campfire", campfire);' in SCENE
+    assert "const POSITION_RADIUS = 340;" in APP
+    assert "or abs(x) > 340 or abs(y) > 100 or abs(z) > 340" in ENTRY
 
 
 def test_live_nodes_remain_in_the_central_service_yard():

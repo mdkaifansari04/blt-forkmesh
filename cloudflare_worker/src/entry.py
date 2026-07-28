@@ -9213,7 +9213,7 @@ def _clean_world_saved_view(raw, now):
     if (
         any(not math.isfinite(value) for value in (
             x, y, z, heading, yaw, pitch, zoom))
-        or abs(x) > 100 or abs(y) > 100 or abs(z) > 100
+        or abs(x) > 340 or abs(y) > 100 or abs(z) > 340
         or abs(heading) > math.pi or abs(yaw) > math.pi * 2
         or abs(pitch) > math.pi / 2 or not 0.2 <= zoom <= 8
     ):

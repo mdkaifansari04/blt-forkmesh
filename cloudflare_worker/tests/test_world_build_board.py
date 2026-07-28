@@ -73,6 +73,8 @@ def test_engineering_agent_signals_feed_a_separate_human_todo_board():
     assert "availability.binaryFound === false" in SCENE
     assert 'availability.loginState === "missing"' in SCENE
     assert "session?.agentInfo?.lastError" in SCENE
+    task_update = SCENE.split("function updateMirrorAgentTasks", 1)[1]
+    assert "repaintHumanTodoBoard();" in task_update
     assert "worldHumanTodoTexture(" in SCENE.split(
-        "function updateMirrorAgentTasks", 1
+        "function repaintHumanTodoBoard", 1
     )[1]

@@ -321,7 +321,7 @@ def test_sgp4_bundle_load_is_local_deferred_and_not_world_boot_blocking():
     assert "satellite-js-7.1.0.esm.js" not in index_source
 
     load_start = source.index("  async loadSatelliteSky() {")
-    load_end = source.index("\n  async loadWorldData()", load_start)
+    load_end = source.index("\n  async loadWorldData(", load_start)
     load_body = source[load_start:load_end]
     assert load_body.index(
         'await this.fetchJSON("/api/world/satellites"'

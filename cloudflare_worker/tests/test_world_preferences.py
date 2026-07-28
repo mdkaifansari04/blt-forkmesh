@@ -23,7 +23,7 @@ def test_preferences_stay_in_the_encrypted_account_record_and_are_bounded():
     assert '"storage": "account-encrypted"' in ENTRY
     assert "WORLD_PREFERENCES_MAX_VIEWS = 4" in ENTRY
     assert "data:image/webp;base64" in ENTRY
-    assert "abs(x) > 100" in ENTRY
+    assert "abs(x) > 340" in ENTRY
     assert "settingsUpdatedAt" in ENTRY
 
 
