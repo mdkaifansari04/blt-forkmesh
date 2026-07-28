@@ -215,6 +215,27 @@ def test_marketing_members_can_add_private_proof_from_their_own_desk():
         assert contract in scene
 
 
+def test_private_marketing_initiatives_are_rendered_on_a_clickable_world_panel():
+    tasks = source(TASKS)
+    scene = source(SCENE)
+    for contract in (
+        "function normalizedInitiative(initiative)",
+        "initiatives = Array.isArray(payload?.initiatives)",
+        'if (action === "initiative")',
+        "initiatives.some((item) => item.href === href)",
+        'window.open(href, "_blank", "noopener,noreferrer")',
+    ):
+        assert contract in tasks
+    for contract in (
+        "function officeMarketingInitiativesTexture(",
+        '"forkmesh-office-marketing-initiatives-board"',
+        '"office-marketing-initiatives-board"',
+        "function marketingInitiativeWallAction(uv)",
+        'return { action: "initiative", href: initiative.href }',
+    ):
+        assert contract in scene
+
+
 def test_task_text_is_bounded_and_html_escaped_before_rendering():
     tasks = source(TASKS)
     assert "function escapeHTML" in tasks

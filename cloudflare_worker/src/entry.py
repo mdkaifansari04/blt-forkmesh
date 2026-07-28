@@ -8377,7 +8377,7 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-8"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-9"
 WORLD_QA_CARDS = (
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
@@ -8552,6 +8552,12 @@ WORLD_QA_CARDS = (
      "Provision a new Vultr mirror, reopen Hosts, and confirm its status row "
      "retains Vultr, plan type, region, and expected monthly cost after the "
      "install finishes and after restarting Qt."),
+    ("marketing-initiatives", "Repository issue Marketing initiatives",
+     "As an organization manager, open a numbered web issue and choose Move "
+     "to Marketing initiatives. Confirm a current Marketing member sees one "
+     "deduplicated card on the private Marketing floor panel and can click it "
+     "to reopen the exact issue. Confirm non-Marketing members cannot read "
+     "the panel or its encrypted issue details."),
 )
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
 

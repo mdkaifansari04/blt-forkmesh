@@ -28,6 +28,7 @@ MAX_CHECKIN_NOTE = 500
 MAX_ELAPSED_MS = 10 * 365 * 24 * 60 * 60 * 1000
 MAX_PROOFS = 5000
 MAX_PROOFS_PER_MEMBER = 100
+MAX_INITIATIVES = 250
 CHECKIN_MIN_MS = 4 * 60 * 1000
 CHECKIN_MAX_MS = 9 * 60 * 1000
 
@@ -41,6 +42,7 @@ PERMISSION_RANK = {
 }
 
 _ID_RE = re.compile(r"^[a-f0-9]{32}$")
+_REPO_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
 
 def _response(runtime, data, status=200, allow=""):
@@ -81,6 +83,8 @@ def _route(path):
         return ("stop-active", "", "stop-active")
     if clean == PREFIX + "/proofs":
         return ("proofs", "", "proofs")
+    if clean == PREFIX + "/initiatives":
+        return ("initiatives", "", "initiatives")
     if not clean.startswith(PREFIX + "/"):
         return None
     parts = clean[len(PREFIX) + 1:].split("/")
@@ -288,12 +292,149 @@ async def _list(runtime, org_bi, account_bi, actor, can_manage, now):
             await _proof_records(runtime, org_bi)
             if marketing_actor else []
         ),
+        "initiatives": (
+            await _initiative_records(runtime, org_bi)
+            if marketing_actor else []
+        ),
     }
     if can_manage:
         # Assignment is deliberately narrower than organization management:
         # even an owner may only place Marketing work onto a Marketing member.
         result["members"] = marketing_names
     return _response(runtime, result)
+
+
+async def _initiative_records(runtime, org_bi):
+    rows = await runtime.d1_all(
+        "SELECT initiative_id,data,created_at "
+        "FROM world_office_marketing_initiatives "
+        "WHERE org_bi=? "
+        "ORDER BY created_at DESC,initiative_id DESC LIMIT ?",
+        org_bi,
+        MAX_INITIATIVES,
+    )
+    records = []
+    for row in rows or []:
+        try:
+            data = await runtime.open(row.get("data"))
+        except Exception:
+            continue
+        if not isinstance(data, dict) or not valid_id(row.get("initiative_id")):
+            continue
+        owner = _text(data.get("owner"), 100)
+        repo = _text(data.get("repo"), 100)
+        number = int(data.get("number") or 0)
+        title = _text(data.get("title"), MAX_TITLE, "Repository issue")
+        if (
+            not _REPO_SEGMENT_RE.fullmatch(owner)
+            or not _REPO_SEGMENT_RE.fullmatch(repo)
+            or number <= 0
+            or number > 2_147_483_647
+        ):
+            continue
+        records.append({
+            "id": str(row.get("initiative_id")),
+            "title": title,
+            "repo": owner + "/" + repo,
+            "number": number,
+            "href": f"/{owner}/{repo}/issues/{number}",
+            "createdAt": int(row.get("created_at") or 0),
+        })
+    return records
+
+
+async def _initiative_create(
+        runtime, org_bi, account_bi, actor, data, can_manage, now):
+    marketing_actor = await runtime.marketing_member(org_bi, actor)
+    if not can_manage and not marketing_actor:
+        return _response(runtime, {"error": "marketing_team_only"}, status=403)
+    owner = _text(data.get("owner"), 100)
+    repo = _text(data.get("repo"), 100)
+    title = _text(data.get("title"), MAX_TITLE, "Repository issue")
+    try:
+        number = int(data.get("number") or 0)
+    except (TypeError, ValueError):
+        number = 0
+    if (
+        not _REPO_SEGMENT_RE.fullmatch(owner)
+        or not _REPO_SEGMENT_RE.fullmatch(repo)
+        or number <= 0
+        or number > 2_147_483_647
+    ):
+        return _response(runtime, {"error": "invalid_issue_source"}, status=400)
+    source_bi = await runtime.blind(
+        "office-marketing-initiative:"
+        + owner.lower() + "/" + repo.lower() + "#" + str(number)
+    )
+    existing = await runtime.d1_first(
+        "SELECT initiative_id FROM world_office_marketing_initiatives "
+        "WHERE org_bi=? AND source_bi=?",
+        org_bi,
+        source_bi,
+    )
+    if existing:
+        records = await _initiative_records(runtime, org_bi)
+        initiative_id = str(existing.get("initiative_id") or "")
+        initiative = next(
+            (record for record in records if record["id"] == initiative_id),
+            None,
+        )
+        return _response(runtime, {
+            "ok": True,
+            "existing": True,
+            "initiative": initiative,
+        })
+    count = await runtime.d1_first(
+        "SELECT COUNT(*) AS count "
+        "FROM world_office_marketing_initiatives WHERE org_bi=?",
+        org_bi,
+    )
+    if int((count or {}).get("count") or 0) >= MAX_INITIATIVES:
+        return _response(
+            runtime, {"error": "initiative_capacity_reached"}, status=409)
+    initiative_id = runtime.new_id()
+    if not valid_id(initiative_id):
+        return _response(runtime, {"error": "id_generation_failed"}, status=500)
+    sealed = await runtime.seal({
+        "owner": owner,
+        "repo": repo,
+        "number": number,
+        "title": title,
+    })
+    try:
+        await runtime.d1_run(
+            "INSERT INTO world_office_marketing_initiatives "
+            "(initiative_id,org_bi,source_bi,data,created_by_bi,created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            initiative_id,
+            org_bi,
+            source_bi,
+            sealed,
+            account_bi,
+            now,
+        )
+    except Exception as error:
+        message = str(error)
+        if "catalog_full" in message:
+            return _response(
+                runtime, {"error": "initiative_capacity_reached"}, status=409)
+        if "UNIQUE" in message.upper():
+            return _response(runtime, {"ok": True, "existing": True})
+        raise
+    await runtime.audit(
+        actor,
+        "office.marketing_initiative_created",
+        "office_marketing_initiative",
+        initiative_id,
+        details={"source": "repository_issue"},
+    )
+    records = await _initiative_records(runtime, org_bi)
+    initiative = next(
+        (record for record in records if record["id"] == initiative_id),
+        None,
+    )
+    return _response(
+        runtime, {"ok": True, "initiative": initiative}, status=201)
 
 
 def _proof_url(value):
@@ -876,7 +1017,7 @@ async def handle(runtime, path):
     method = runtime.method()
     allowed = (
         ("GET", "POST")
-        if route[0] in ("collection", "proofs")
+        if route[0] in ("collection", "proofs", "initiatives")
         else ("POST",)
         if route[0] == "stop-active"
         else ("GET", "PATCH", "DELETE")
@@ -912,6 +1053,19 @@ async def handle(runtime, path):
     now = int(runtime.now())
 
     kind, task_id, action = route
+    if kind == "initiatives":
+        marketing_actor = await runtime.marketing_member(org_bi, actor)
+        if method == "GET":
+            if not marketing_actor:
+                return _response(
+                    runtime, {"error": "marketing_team_only"}, status=403)
+            return _response(runtime, {
+                "ok": True,
+                "actor": actor,
+                "initiatives": await _initiative_records(runtime, org_bi),
+            })
+        return await _initiative_create(
+            runtime, org_bi, account_bi, actor, data, can_manage, now)
     if kind == "proofs":
         if not await runtime.marketing_member(org_bi, actor):
             return _response(

@@ -21,7 +21,7 @@ the implementation and its focused verification are complete.
 - [x] Count Marketing Office Hours from explicit Office-building punches only, never general World presence.
 - [x] Put Marketing desks against the windows with chairs, raise the round table, and seat it clearly.
 - [x] Open QA history items as full detail cards with Pass, Fail, Unsure, and Back to Cards actions.
-- [ ] Add a Marketing initiatives panel in the Marketing room and let web issue pages move issues into it.
+- [x] Add a Marketing initiatives panel in the Marketing room and let web issue pages move issues into it.
 - [x] Add a large recent `#general` chat board beside the event list with authors, time, images, and reactions.
 - [x] Include organization-owned repositories in Dashboard Top repositories with clear owner labels.
 - [x] Restore live recent blog posts in the Dashboard “Latest from the blog” card.

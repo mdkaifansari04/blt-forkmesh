@@ -2010,6 +2010,35 @@ function normalizeOfficeMarketingTasks(payload = {}) {
         }))
         .filter((proof) => proof.id && proof.member && proof.host)
     : [];
+  const initiatives = authorized
+    ? (Array.isArray(source.initiatives) ? source.initiatives : [])
+        .filter(
+          (item) =>
+            item && typeof item === "object" && !Array.isArray(item),
+        )
+        .slice(0, 250)
+        .map((item) => ({
+          id: boundedOfficeMarketingTaskText(item.id, 64),
+          title: boundedOfficeMarketingTaskText(
+            item.title,
+            72,
+            "Repository issue",
+          ),
+          repo: boundedOfficeMarketingTaskText(item.repo, 201),
+          number: Math.max(0, Math.floor(Number(item.number) || 0)),
+          href: boundedOfficeMarketingTaskText(item.href, 512),
+          createdAt: Math.max(0, Number(item.createdAt) || 0),
+        }))
+        .filter(
+          (item) =>
+            item.id &&
+            item.repo &&
+            item.number > 0 &&
+            /^\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/issues\/\d+$/.test(
+              item.href,
+            ),
+        )
+    : [];
   const state =
     !authorized || requestedState === "locked"
       ? "locked"
@@ -2023,9 +2052,59 @@ function normalizeOfficeMarketingTasks(payload = {}) {
     members,
     attendanceDays,
     proofs,
+    initiatives,
     actor: boundedOfficeMarketingTaskText(source.actor, 24).toLowerCase(),
     canManage: authorized && source.canManage === true,
   };
+}
+
+function officeMarketingInitiativesTexture(THREE, payload = {}) {
+  const snapshot = normalizeOfficeMarketingTasks(payload);
+  return canvasTexture(THREE, 1024, 1024, (context) => {
+    context.clearRect(0, 0, 1024, 1024);
+    roundedRect(context, 5, 5, 1014, 1014, 18);
+    context.fillStyle = "rgba(5,17,14,0.98)";
+    context.fill();
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 9;
+    context.stroke();
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillStyle = "#f1fff6";
+    context.font = '700 50px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText("MARKETING INITIATIVES", 48, 72);
+    context.fillStyle = "#8fdcb2";
+    context.font = '600 21px "ForkMesh Mono", monospace';
+    context.fillText("PRIVATE MARKETING VIEW · ISSUE PIPELINE", 48, 116);
+    context.strokeStyle = "#315b52";
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(48, 145);
+    context.lineTo(976, 145);
+    context.stroke();
+    if (!snapshot.initiatives.length) {
+      context.fillStyle = "#789487";
+      context.font = '500 29px "ForkMesh Mono", monospace';
+      context.fillText("No repository issues promoted yet.", 48, 215);
+      return;
+    }
+    snapshot.initiatives.slice(0, 8).forEach((item, index) => {
+      const top = 164 + index * 98;
+      roundedRect(context, 42, top, 940, 84, 10);
+      context.fillStyle =
+        index % 2 ? "rgba(15,46,36,0.72)" : "rgba(11,37,29,0.84)";
+      context.fill();
+      context.fillStyle = "#9ef7c6";
+      context.font = '700 23px "ForkMesh Mono", monospace';
+      context.fillText(`#${item.number}`, 60, top + 27);
+      context.fillStyle = "#f1fff6";
+      context.font = '650 27px "ForkMesh Favorit", system-ui, sans-serif';
+      context.fillText(item.title.slice(0, 48), 145, top + 27);
+      context.fillStyle = "#8fdcb2";
+      context.font = '500 19px "ForkMesh Mono", monospace';
+      context.fillText(`${item.repo} · CLICK TO OPEN`, 60, top + 61);
+    });
+  });
 }
 
 function officeMarketingTasksTexture(THREE, payload = {}) {
@@ -2399,6 +2478,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:marketing-room-wall", task: "Marketing wall, desks, calendar + table", estimate: "ready for deploy · in QA", done: true },
   { key: "task:avatar-team-badges", task: "Team badges on each avatar's left arm", estimate: "deployed", done: true },
   { key: "task:marketing-proof", task: "Private Marketing proof-of-work links", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:marketing-initiatives", task: "Issue → private Marketing initiatives wall", estimate: "ready for deploy · in QA", done: true },
   { key: "done:general-chat-board", task: "Recent #general chat beside events", estimate: "ready for deploy · in QA", done: true },
   { key: "task:deploy-lifecycle", task: "Live deploy spinner + ready refresh button", estimate: "deployed", done: true },
   { key: "task:elevator-camera-lock", task: "Elevator button camera lock + release", estimate: "deployed", done: true },
@@ -12520,6 +12600,28 @@ export function createWorldScene({
   officeMarketingTaskBoard.userData.taskState = "vacant";
   officeMarketingTaskBoard.userData.taskCount = 0;
   officeInterior.add(officeMarketingTaskBoard);
+  const officeMarketingInitiativesBoard = new THREE.Mesh(
+    new THREE.PlaneGeometry(12.6, 12.6),
+    new THREE.MeshBasicMaterial({
+      map: officeMarketingInitiativesTexture(
+        THREE,
+        normalizeOfficeMarketingTasks({ authorized: false }),
+      ),
+      toneMapped: false,
+    }),
+  );
+  officeMarketingInitiativesBoard.name =
+    "forkmesh-office-marketing-initiatives-board";
+  officeMarketingInitiativesBoard.position.set(
+    23.2,
+    officeFloorY("marketing") + 6.5,
+    -OFFICE_FRONT_Z + 0.66,
+  );
+  officeMarketingInitiativesBoard.userData.officeFloorId = "marketing";
+  officeMarketingInitiativesBoard.userData.interactive =
+    "office-marketing-initiatives-board";
+  interactive.push(officeMarketingInitiativesBoard);
+  officeInterior.add(officeMarketingInitiativesBoard);
   // Marketing roster furniture is rebuilt from the authoritative team list.
   // It never rides multiplayer presence and disappears when the room is empty.
   const officeMarketingRosterGroup = new THREE.Group();
@@ -14899,7 +15001,36 @@ export function createWorldScene({
       occupied && officeMarketingTaskSnapshot.authorized;
     officeMarketingAttendanceBoard.visible =
       occupied && officeMarketingTaskSnapshot.authorized;
+    officeMarketingInitiativesBoard.visible =
+      occupied && officeMarketingTaskSnapshot.authorized;
+    const initiativesKey = JSON.stringify({
+      occupied,
+      initiatives: officeMarketingTaskSnapshot.initiatives,
+    });
+    if (officeMarketingInitiativesBoard.userData.initiativesKey !== initiativesKey) {
+      const previous = officeMarketingInitiativesBoard.material.map;
+      officeMarketingInitiativesBoard.material.map =
+        officeMarketingInitiativesTexture(THREE, officeMarketingTaskSnapshot);
+      officeMarketingInitiativesBoard.material.needsUpdate = true;
+      officeMarketingInitiativesBoard.userData.initiativesKey = initiativesKey;
+      previous?.dispose?.();
+    }
     return officeMarketingTaskSnapshot;
+  }
+
+  function marketingInitiativeWallAction(uv) {
+    if (
+      !uv ||
+      !officeMarketingRoomOccupied() ||
+      !officeMarketingTaskSnapshot.authorized
+    ) {
+      return null;
+    }
+    const y = (1 - clamp(Number(uv.y) || 0, 0, 1)) * 1024;
+    const row = Math.floor((y - 164) / 98);
+    const initiative = officeMarketingTaskSnapshot.initiatives.slice(0, 8)[row];
+    if (!initiative || y < 164 || y > 948) return null;
+    return { action: "initiative", href: initiative.href };
   }
 
   function updateOfficeMarketingTasks(payload = {}) {
@@ -21372,6 +21503,15 @@ export function createWorldScene({
         action: "proof",
         member: String(hit.object.userData.marketingMember || ""),
       });
+      return;
+    }
+    if (
+      officeSceneMode !== "town" &&
+      hit?.object?.userData?.interactive ===
+        "office-marketing-initiatives-board"
+    ) {
+      const action = marketingInitiativeWallAction(hit.uv);
+      if (action) onOfficeTaskWallAction(action);
       return;
     }
     if (hit?.object?.userData?.interactive === "world-bulletin-scroll-up") {

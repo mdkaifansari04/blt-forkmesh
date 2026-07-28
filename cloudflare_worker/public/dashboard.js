@@ -8700,6 +8700,67 @@
     }
   }
 
+  async function moveIssueToMarketingInitiatives(button) {
+    const detail = state.repoRecordDetail;
+    const repo = state.selectedRepo;
+    if (
+      !button ||
+      !repo ||
+      detail?.kind !== "issues" ||
+      !state.session?.sessionToken
+    ) {
+      if (!state.session?.sessionToken) location.href = "/login";
+      return false;
+    }
+    const title = String(
+      detail.parsed?.values?.title || `Issue #${detail.number}`,
+    ).slice(0, 160);
+    const original = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML =
+      '<span class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-r-transparent"></span>Moving…';
+    try {
+      const response = await fetch(
+        "/api/world/office/marketing-tasks/initiatives",
+        {
+          method: "POST",
+          credentials: "same-origin",
+          cache: "no-store",
+          headers: {
+            accept: "application/json",
+            authorization: `Bearer ${state.session.sessionToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            owner: repo.owner,
+            repo: repo.name,
+            number: Number(detail.number),
+            title,
+            sessionToken: state.session.sessionToken,
+          }),
+        },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+      button.dataset.moved = "true";
+      button.innerHTML =
+        '<i data-lucide="check" class="h-3.5 w-3.5"></i>In Marketing initiatives';
+      window.lucide?.createIcons();
+      return true;
+    } catch (error) {
+      button.disabled = false;
+      button.innerHTML = original;
+      button.title = String(error?.message || "Unable to move issue").slice(
+        0,
+        160,
+      );
+      window.lucide?.createIcons();
+      return false;
+    }
+  }
+
   function renderRepoRecordDetail(repo, kind, number, parsed) {
     const options = parsed.options || {};
     const config = repoCollectionConfig[kind] || repoCollectionConfig.issues;
@@ -8721,6 +8782,10 @@
     const pendingNotice = options.pending ? `
         <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is still syncing to the maintainer's inbox and hasn't been drained to the public mirror yet, so it doesn't have a number assigned.</div>` : "";
     const isIssues = !isPulls && !isDiscussions;
+    const marketingInitiativeAction =
+      isIssues && !options.pending
+        ? `<button type="button" data-repo-marketing-initiative class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="megaphone" class="h-3.5 w-3.5 text-primary"></i>Move to Marketing initiatives</button>`
+        : "";
     const issueTimeline = isIssues ? renderIssueTimeline(parsed.issueEvents) : "";
     // Always mount the timeline container for issues so a comment posted from
     // the form below has somewhere to land, but keep it borderless while empty.
@@ -8780,7 +8845,10 @@
       <article data-repo-record-detail="${escapeHtml(kind)}" class="grid gap-5 border-t border-border bg-background p-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <button type="button" data-repo-record-back="${escapeHtml(kind)}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to ${escapeHtml(config.label)}</button>
-          <span class="font-mono text-xs text-muted-foreground">${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repo")} · ${recordLabel}</span>
+          <div class="flex flex-wrap items-center justify-end gap-2">
+            ${marketingInitiativeAction}
+            <span class="font-mono text-xs text-muted-foreground">${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repo")} · ${recordLabel}</span>
+          </div>
         </div>
         ${pendingNotice}
         <header data-repo-record-hero class="grid gap-3">
@@ -15020,6 +15088,14 @@
         } else {
           loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
         }
+        return;
+      }
+
+      const marketingInitiativeButton = event.target.closest(
+        "[data-repo-marketing-initiative]",
+      );
+      if (marketingInitiativeButton) {
+        void moveIssueToMarketingInitiatives(marketingInitiativeButton);
         return;
       }
 

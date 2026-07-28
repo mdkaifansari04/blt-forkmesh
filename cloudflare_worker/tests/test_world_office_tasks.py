@@ -38,6 +38,9 @@ class FakeRuntime:
         self.db.executescript(
             (ROOT / "migrations" / "0096_world_office_marketing_proofs.sql")
             .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" / "0101_world_office_marketing_initiatives.sql")
+            .read_text(encoding="utf-8"))
         self.request_method = "GET"
         self.request_data = {}
         self.actor = ""
@@ -359,6 +362,74 @@ async def test_marketing_proofs_are_encrypted_and_marketing_team_only():
         f"{tasks_api.PREFIX}/proofs",
     )
     assert outside_view["status"] == 403
+
+
+@run_async_test
+async def test_marketing_initiatives_are_encrypted_deduplicated_and_team_private():
+    runtime = FakeRuntime()
+    issue = {
+        "owner": "forkmesh",
+        "repo": "forkmesh",
+        "number": 541,
+        "title": "Update globe navigation",
+    }
+
+    denied = await tasks_api.handle(
+        runtime.use("POST", "wendy", issue),
+        f"{tasks_api.PREFIX}/initiatives",
+    )
+    assert denied["status"] == 403
+    assert denied["data"]["error"] == "marketing_team_only"
+
+    created = await tasks_api.handle(
+        runtime.use("POST", "alice", issue),
+        f"{tasks_api.PREFIX}/initiatives",
+    )
+    assert created["status"] == 201
+    initiative = created["data"]["initiative"]
+    assert initiative["repo"] == "forkmesh/forkmesh"
+    assert initiative["number"] == 541
+    assert initiative["href"] == "/forkmesh/forkmesh/issues/541"
+
+    duplicate = await tasks_api.handle(
+        runtime.use("POST", "bob", issue),
+        f"{tasks_api.PREFIX}/initiatives",
+    )
+    assert duplicate["status"] == 200
+    assert duplicate["data"]["existing"] is True
+    assert duplicate["data"]["initiative"]["id"] == initiative["id"]
+
+    stored = runtime.db.execute(
+        "SELECT source_bi,data FROM world_office_marketing_initiatives"
+    ).fetchone()
+    assert "forkmesh" not in stored[0]
+    assert issue["title"] not in stored[1]
+    assert "forkmesh" not in json.dumps(runtime.audits)
+    assert issue["title"] not in json.dumps(runtime.audits)
+
+    marketing_view = await tasks_api.handle(
+        runtime.use("GET", "carol"),
+        f"{tasks_api.PREFIX}/initiatives",
+    )
+    assert marketing_view["status"] == 200
+    assert marketing_view["data"]["initiatives"][0]["number"] == 541
+    outside_view = await tasks_api.handle(
+        runtime.use("GET", "wendy"),
+        f"{tasks_api.PREFIX}/initiatives",
+    )
+    assert outside_view["status"] == 403
+
+    manager_board = await tasks_api.handle(
+        runtime.use("GET", "alice"),
+        tasks_api.PREFIX,
+    )
+    assert manager_board["status"] == 200
+    assert manager_board["data"]["initiatives"] == []
+    marketing_board = await tasks_api.handle(
+        runtime.use("GET", "bob"),
+        tasks_api.PREFIX,
+    )
+    assert marketing_board["data"]["initiatives"][0]["title"] == issue["title"]
 
 
 @run_async_test

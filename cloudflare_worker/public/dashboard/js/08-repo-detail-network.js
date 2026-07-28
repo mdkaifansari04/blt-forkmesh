@@ -2026,6 +2026,14 @@
         return;
       }
 
+      const marketingInitiativeButton = event.target.closest(
+        "[data-repo-marketing-initiative]",
+      );
+      if (marketingInitiativeButton) {
+        void moveIssueToMarketingInitiatives(marketingInitiativeButton);
+        return;
+      }
+
       const pullViewedButton = event.target.closest("[data-repo-pull-viewed]");
       if (pullViewedButton && state.selectedRepo) {
         toggleRepoPullViewed(

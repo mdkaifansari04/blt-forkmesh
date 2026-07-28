@@ -120,6 +120,24 @@ function normalizedProof(proof) {
   };
 }
 
+function normalizedInitiative(initiative) {
+  if (!initiative || typeof initiative !== "object") return null;
+  const id = safeTaskId(initiative.id);
+  const title = text(initiative.title, 160);
+  const repo = text(initiative.repo, 201);
+  const number = Math.max(0, Math.floor(Number(initiative.number) || 0));
+  const href = safeIssueHref(initiative.href);
+  if (!id || !title || !repo || !number || !href) return null;
+  return {
+    id,
+    title,
+    repo,
+    number,
+    href,
+    createdAt: timestampMs(initiative.createdAt),
+  };
+}
+
 export function formatOfficeTaskElapsed(value) {
   const totalSeconds = Math.max(0, Math.floor((Number(value) || 0) / 1000));
   const hours = Math.floor(totalSeconds / 3600);
@@ -188,6 +206,7 @@ export function createWorldOfficeTasksController({
   let marketingMembers = [];
   let attendanceDays = [];
   let proofs = [];
+  let initiatives = [];
   let syncedAt = performance.now();
   let serverNowAtSync = Date.now();
   let lastRefreshAt = 0;
@@ -288,6 +307,7 @@ export function createWorldOfficeTasksController({
       members: canManage ? assignable : marketingMembers,
       attendanceDays,
       proofs,
+      initiatives,
     });
     selfWorkState(state, message);
   }
@@ -576,6 +596,7 @@ export function createWorldOfficeTasksController({
       marketingMembers = [];
       attendanceDays = [];
       proofs = [];
+      initiatives = [];
       loading = false;
       if (!quiet) setStatus("Sign in to access organization marketing tasks.");
       physicalState("locked", "Organization access required");
@@ -618,6 +639,12 @@ export function createWorldOfficeTasksController({
               .filter(Boolean)
               .slice(0, 5000)
           : [];
+        initiatives = Array.isArray(payload?.initiatives)
+          ? payload.initiatives
+              .map(normalizedInitiative)
+              .filter(Boolean)
+              .slice(0, 250)
+          : [];
         tasks = Array.isArray(payload?.tasks)
           ? payload.tasks.map(normalizedTask).filter(Boolean).slice(0, 100)
           : [];
@@ -638,6 +665,7 @@ export function createWorldOfficeTasksController({
         marketingMembers = [];
         attendanceDays = [];
         proofs = [];
+        initiatives = [];
         loading = false;
         render();
         setStatus(
@@ -759,6 +787,15 @@ export function createWorldOfficeTasksController({
 
   async function physicalAction(payload = {}) {
     const action = text(payload?.action, 24).toLowerCase();
+    if (action === "initiative") {
+      const href = safeIssueHref(payload?.href);
+      if (!href || !initiatives.some((item) => item.href === href)) {
+        toast("That Marketing initiative is no longer available.");
+        return false;
+      }
+      window.open(href, "_blank", "noopener,noreferrer");
+      return true;
+    }
     if (action === "proof") {
       const member = text(payload?.member, 64).toLowerCase();
       if (!marketingMembers.includes(actor) || member !== actor) {
