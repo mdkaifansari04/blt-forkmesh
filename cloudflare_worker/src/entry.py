@@ -8382,8 +8382,24 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-15"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-16"
 WORLD_QA_CARDS = (
+    ("world-admin-direct-layout", "Admin direct World layout editing",
+     "Sign in as a platform administrator. Drag the visible base of several "
+     "Town Square objects and confirm each follows without a tiny edit handle. "
+     "Right-drag and Shift-drag left/right to rotate, then reload and confirm "
+     "both position and heading persist. Repeat as a non-admin and confirm "
+     "objects retain their normal click behavior and cannot be moved."),
+    ("world-mirror-live-cabinets", "Live green World mirror cabinets",
+     "Open the repository Mirror nodes view and ForkMesh World together. "
+     "Confirm mirror2, mirror3, and mirror6 each have a cabinet and every "
+     "reachable machine has a steady green roof beacon. Open mirror2 detail "
+     "and confirm clone availability and integrity remain truthful even while "
+     "the physical-node beacon reports it alive."),
+    ("qt-mirror-latest-commit-age", "Mirror latest-commit age",
+     "Open the Qt repository Mirror nodes table. Confirm each reported Latest "
+     "commit shows its short hash, branch, and an x-ago age derived from that "
+     "commit's timestamp; hover it and confirm the full commit evidence remains."),
     ("open-pr-audit", "Open pull-request disposition audit",
      "Open the PR board and compare every record marked Open with "
      "docs/operations/open-pull-audit-2026-07-28.md. Confirm PR #52's change "

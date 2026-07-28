@@ -9602,13 +9602,12 @@ class ForkMeshWorld extends HTMLElement {
     const enabled = this.identity?.isAdmin === true;
     this.world?.setLayoutEditor?.(enabled);
     if (!enabled || this.layoutEditorAnnounced) return;
-    // The move handles are deliberately tiny, and nothing else on screen says
-    // the R key turns things, so say it once per session.
+    // Direct base dragging is intentionally handle-free, so mention the
+    // rotation gestures once without leaving permanent editing chrome behind.
     this.layoutEditorAnnounced = true;
     this.toast(
-      "Layout editing on: drag an object's handle to move it; roll the " +
-        "mouse wheel while dragging (or press R, Shift+R to reverse) to " +
-        "rotate it.",
+      "Layout editing on: drag an object's base to move it. Right-drag or " +
+        "Shift-drag left/right to rotate; the mouse wheel and R key also turn it.",
     );
   }
 

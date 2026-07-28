@@ -5844,15 +5844,18 @@ function createMirrorServerCabinet(THREE, node, id) {
 
   const integrity = String(node?.integrity || "unknown").toLowerCase();
   const activity = String(node?.activity || "unknown").toLowerCase();
+  // The roof beacon answers one simple physical question: is this node alive?
+  // Clone eligibility and refs integrity remain explicit on its front/detail
+  // displays. Mixing those two states made a reachable worker look dead or
+  // yellow whenever it intentionally exposed no public clone endpoint.
   const statusColor =
-    integrity === "rejected" || integrity === "degraded"
-      ? "#ff0000"
-      : integrity === "healing" || activity === "syncing" ||
-          activity === "awaiting-verification" ||
-          (online && node?.cloneAvailable !== true)
-        ? "#ffcc00"
-        : online
-          ? "#00cc44"
+    online
+      ? "#00cc44"
+      : integrity === "rejected" || integrity === "degraded"
+        ? "#ff0000"
+        : integrity === "healing" || activity === "syncing" ||
+            activity === "awaiting-verification"
+          ? "#ffcc00"
           : "#71837a";
   // Yellow and red are the two statuses that want attention, so their lamps
   // sweep like a rotating warning beacon; green and offline stay steady.
@@ -12312,7 +12315,6 @@ export function createWorldScene({
   // shared placement is persisted server-side and re-applied for every
   // visitor when the world loads.
   const movableWorldObjects = new Map();
-  const layoutHandles = new Map();
   const layoutDragOffset = new THREE.Vector3();
   // Last placement received from /api/world/layout, kept so objects that only
   // exist after live data arrives (node cabinets) can adopt their locked spot
@@ -12338,6 +12340,7 @@ export function createWorldScene({
   let layoutEditingEnabled = false;
   let draggedLayoutObject = null;
   let activeLayoutObject = null;
+  let layoutDragMode = "move";
   let layoutCommitTimer = 0;
 
   function registerMovableObject(id, object) {
@@ -12353,7 +12356,6 @@ export function createWorldScene({
       movableWorldObjects.set(id, object);
     }
     applyLockedPlacement(id, object);
-    if (layoutEditingEnabled) ensureLayoutHandles();
   }
 
   const worldBulletin = new THREE.Group();
@@ -23060,7 +23062,15 @@ export function createWorldScene({
   }
 
   function handlePointerDown(event) {
-    if (event.pointerType === "mouse" && event.button !== 0) return;
+    const layoutMouseButton =
+      layoutEditingEnabled &&
+      event.pointerType === "mouse" &&
+      (event.button === 0 || event.button === 2);
+    if (
+      event.pointerType === "mouse" &&
+      event.button !== 0 &&
+      !layoutMouseButton
+    ) return;
     if (event.pointerType === "touch") {
       touchPointers.set(event.pointerId, {
         x: event.clientX,
@@ -23076,16 +23086,10 @@ export function createWorldScene({
     raycaster.setFromCamera(pointer, camera);
     const pressHits = raycaster.intersectObjects(interactive, false);
     if (layoutEditingEnabled) {
-      const handleHit = pressHits.find(
-        ({ object }) => object.visible && object.userData?.layoutHandle,
-      );
-      draggedLayoutObject = handleHit
-        ? movableWorldObjects.get(handleHit.object.userData.layoutHandle) ||
-          null
-        : null;
+      draggedLayoutObject = layoutObjectAtPointer();
       if (draggedLayoutObject) {
-        // Drag by delta from the press point so grabbing the tiny handle
-        // never snaps the object's origin to the pointer.
+        // Drag by delta from the press point so grabbing any part of the
+        // object's physical base never snaps its origin to the pointer.
         const point = layoutGroundPoint(
           draggedLayoutObject,
           event.clientX,
@@ -23098,6 +23102,9 @@ export function createWorldScene({
             draggedLayoutObject.position.z - point.z,
           );
           setActiveLayoutObject(draggedLayoutObject);
+          layoutDragMode =
+            event.button === 2 || event.shiftKey ? "rotate" : "move";
+          event.preventDefault();
         } else {
           draggedLayoutObject = null;
         }
@@ -23231,6 +23238,16 @@ export function createWorldScene({
     }
     if (event.pointerId !== primaryPointerId) return;
     if (draggedLayoutObject) {
+      if (layoutDragMode === "rotate" || event.shiftKey) {
+        const deltaX = event.clientX - pointerLast.x;
+        if (Math.abs(deltaX) > 0.1) {
+          rotateLayoutObjectBy(draggedLayoutObject, deltaX * 0.012);
+          pointerLast.set(event.clientX, event.clientY);
+        }
+        pointerGestureMoved = true;
+        event.preventDefault();
+        return;
+      }
       const point = layoutGroundPoint(
         draggedLayoutObject,
         event.clientX,
@@ -23244,6 +23261,7 @@ export function createWorldScene({
         );
       }
       pointerGestureMoved = true;
+      event.preventDefault();
       return;
     }
     if (draggedCampfireLog) {
@@ -23397,6 +23415,7 @@ export function createWorldScene({
     if (draggedLayoutObject) {
       const movedObject = draggedLayoutObject;
       draggedLayoutObject = null;
+      layoutDragMode = "move";
       if (layoutCommitTimer) {
         clearTimeout(layoutCommitTimer);
         layoutCommitTimer = 0;
@@ -24014,41 +24033,33 @@ export function createWorldScene({
 
   function setActiveLayoutObject(object) {
     activeLayoutObject = object || null;
-    // The grabbed object's handle turns amber so it is obvious which prop the
-    // R key will rotate.
-    layoutHandles.forEach((handle, id) => {
-      handle.material?.color?.set?.(
-        activeLayoutObject && activeLayoutObject.userData.layoutId === id
-          ? "#ffd25f"
-          : "#ff5df1",
-      );
-    });
   }
 
-  // Where the object's move handle currently sits, expressed in the space its
-  // position lives in.
-  function layoutHandlePoint(object) {
-    const handle = layoutHandles.get(String(object.userData.layoutId || ""));
-    if (!handle) return null;
-    const point = handle.getWorldPosition(new THREE.Vector3());
+  // The visible centre of the object, expressed in the space its position
+  // lives in. Rotation uses this instead of the group origin because several
+  // authored groups keep their geometry well away from (0, 0, 0).
+  function layoutObjectPoint(object) {
+    if (!object) return null;
+    const bounds = new THREE.Box3().setFromObject(object);
+    if (bounds.isEmpty()) return null;
+    const point = bounds.getCenter(new THREE.Vector3());
     const parent = object.parent;
     return parent && parent !== world ? parent.worldToLocal(point) : point;
   }
 
-  function rotateActiveLayoutObject(direction) {
-    const target = draggedLayoutObject || activeLayoutObject;
+  function rotateLayoutObjectBy(target, radians) {
     if (!target) return false;
-    // Turn the object about the point its handle marks — its visible centre —
+    // Turn the object about the centre of its visible footprint —
     // rather than the group origin. The arrival grid and other groups keep
     // their geometry well away from origin, where a plain yaw would swing them
     // across the square instead of spinning them where they stand.
-    const pivot = layoutHandlePoint(target);
+    const pivot = layoutObjectPoint(target);
     rotateWorldObject(
       target,
       Number(target.userData.layoutRotation || 0) +
-        LAYOUT_ROTATION_STEP * direction,
+        radians,
     );
-    const moved = pivot ? layoutHandlePoint(target) : null;
+    const moved = pivot ? layoutObjectPoint(target) : null;
     if (pivot && moved) {
       // A mid-drag turn shifts the object to keep its centre still; fold the
       // shift into the drag offset or the next pointer move would undo it.
@@ -24067,52 +24078,47 @@ export function createWorldScene({
     return true;
   }
 
-  function ensureLayoutHandles() {
-    movableWorldObjects.forEach((object, id) => {
-      if (layoutHandles.has(id)) return;
-      // Deliberately minuscule: the handle only becomes a comfortable click
-      // target once an administrator zooms right up to the object it moves.
-      const handle = new THREE.Mesh(
-        new THREE.OctahedronGeometry(0.09, 0),
-        new THREE.MeshBasicMaterial({
-          color: "#ff5df1",
-          toneMapped: false,
-          depthTest: false,
-          transparent: true,
-          opacity: 0.92,
-        }),
-      );
-      handle.name = "world-layout-handle-" + id;
-      // Anchor the handle to the object's visible mass, not the group
-      // origin: the arrival plaques sit ~15 units away from their group
-      // origin, where a fixed-origin handle would float in the town center.
-      const center = new THREE.Box3()
-        .setFromObject(object)
-        .getCenter(new THREE.Vector3());
-      object.worldToLocal(center);
-      handle.position.set(
-        Number.isFinite(center.x) ? center.x : 0,
-        0.34,
-        Number.isFinite(center.z) ? center.z : 0,
-      );
-      handle.renderOrder = 30;
-      handle.userData.layoutHandle = id;
-      // Node cabinets register long after the editor was switched on, so a
-      // fresh handle adopts the current editing state instead of staying dark
-      // until the next toggle.
-      handle.visible = layoutEditingEnabled;
-      object.add(handle);
-      interactive.push(handle);
-      layoutHandles.set(id, handle);
-    });
+  function rotateActiveLayoutObject(direction) {
+    return rotateLayoutObjectBy(
+      draggedLayoutObject || activeLayoutObject,
+      LAYOUT_ROTATION_STEP * direction,
+    );
+  }
+
+  function layoutObjectForDescendant(descendant) {
+    let current = descendant;
+    while (current && current !== world) {
+      const id = String(current.userData?.layoutId || "");
+      if (id && movableWorldObjects.get(id) === current) return current;
+      current = current.parent;
+    }
+    return null;
+  }
+
+  // Admin editing uses the geometry visitors already see. Only hits in the
+  // lower part of an object count, so dragging a sign face or control keeps
+  // its normal action while grabbing its plinth, legs, or cabinet base moves
+  // the whole object. There is no extra pink dot to hunt for or obscure it.
+  function layoutObjectAtPointer() {
+    const objects = [...movableWorldObjects.values()].filter(
+      (object) => objectIsEffectivelyVisible(object),
+    );
+    if (!objects.length) return null;
+    const hits = raycaster.intersectObjects(objects, true);
+    for (const hit of hits) {
+      const object = layoutObjectForDescendant(hit.object);
+      if (!object) continue;
+      const bounds = new THREE.Box3().setFromObject(object);
+      if (bounds.isEmpty()) continue;
+      const height = Math.max(0.01, bounds.max.y - bounds.min.y);
+      const baseTop = bounds.min.y + Math.max(0.45, height * 0.28);
+      if (hit.point.y <= baseTop) return object;
+    }
+    return null;
   }
 
   function setLayoutEditor(enabled) {
     layoutEditingEnabled = enabled === true;
-    if (layoutEditingEnabled) ensureLayoutHandles();
-    layoutHandles.forEach((handle) => {
-      handle.visible = layoutEditingEnabled;
-    });
     if (!layoutEditingEnabled) {
       draggedLayoutObject = null;
       setActiveLayoutObject(null);
@@ -24178,6 +24184,13 @@ export function createWorldScene({
 
   function handlePointerCancel(event) {
     finishPointer(event, true);
+  }
+
+  function handleContextMenu(event) {
+    if (!layoutEditingEnabled) return;
+    pointerCoordinates(event);
+    raycaster.setFromCamera(pointer, camera);
+    if (layoutObjectAtPointer()) event.preventDefault();
   }
 
   function handleWheel(event) {
@@ -24301,10 +24314,12 @@ export function createWorldScene({
     pinchActive = false;
     pinchStartDistance = 0;
     draggedLayoutObject = null;
+    layoutDragMode = "move";
     renderer.domElement.dataset.dragging = "false";
   }
 
   renderer.domElement.addEventListener("pointerdown", handlePointerDown);
+  renderer.domElement.addEventListener("contextmenu", handleContextMenu);
   renderer.domElement.addEventListener("dblclick", handleDoubleClick);
   renderer.domElement.addEventListener("pointermove", handlePointerMove, {
     passive: false,
@@ -24791,6 +24806,7 @@ export function createWorldScene({
     window.removeEventListener("resize", resize);
     window.visualViewport?.removeEventListener("resize", resize);
     renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
+    renderer.domElement.removeEventListener("contextmenu", handleContextMenu);
     renderer.domElement.removeEventListener("dblclick", handleDoubleClick);
     renderer.domElement.removeEventListener("pointermove", handlePointerMove);
     renderer.domElement.removeEventListener("wheel", handleWheel);

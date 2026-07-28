@@ -308,8 +308,10 @@ def test_world_frontend_loads_applies_and_admin_locks_the_layout():
 
     scene_js = WORLD_SCENE_JS.read_text(encoding="utf-8")
     assert "registerMovableObject" in scene_js
-    assert "layoutHandle" in scene_js
-    assert "OctahedronGeometry(0.09" in scene_js
+    assert "layoutObjectAtPointer" in scene_js
+    assert "layoutObjectForDescendant" in scene_js
+    assert "OctahedronGeometry(0.09" not in scene_js
+    assert "world-layout-handle-" not in scene_js
     for object_id in (
         "world-bulletin", "arrival-box", "mastodon-kiosk", "campfire",
         "active-leaderboard-sign",
@@ -372,10 +374,17 @@ def test_layout_editor_rotates_with_the_r_key_and_saves_the_heading():
     # (rotation 0) row never spins a prop away from where the scene aimed it.
     assert "object.userData.layoutBaseRotation" in scene_js
     assert "scheduleLayoutCommit" in scene_js
-    # Rotation happens about the handle (the object's visible centre), so a
-    # group whose geometry sits far from its origin spins where it stands.
-    assert "function layoutHandlePoint(object)" in scene_js
-    assert "const pivot = layoutHandlePoint(target);" in scene_js
+    # Rotation happens about the object's visible centre, so a group whose
+    # geometry sits far from its origin spins where it stands.
+    assert "function layoutObjectPoint(object)" in scene_js
+    assert "const pivot = layoutObjectPoint(target);" in scene_js
+    # Direct base dragging replaces the old tiny handle. Right-drag and
+    # Shift-drag provide continuous, discoverable rotation.
+    assert "draggedLayoutObject = layoutObjectAtPointer();" in scene_js
+    assert 'layoutDragMode === "rotate" || event.shiftKey' in scene_js
+    assert "rotateLayoutObjectBy(draggedLayoutObject, deltaX * 0.012)" in scene_js
+    assert 'renderer.domElement.addEventListener("contextmenu", handleContextMenu)' \
+        in scene_js
 
     world_js = WORLD_JS.read_text(encoding="utf-8")
     assert "rotation: Number.isFinite(rotation) ? rotation : 0," in world_js
@@ -383,7 +392,7 @@ def test_layout_editor_rotates_with_the_r_key_and_saves_the_heading():
 
 def test_layout_editor_rotates_with_the_wheel_while_dragging():
     scene_js = WORLD_SCENE_JS.read_text(encoding="utf-8")
-    # While a handle drag is live the wheel turns the object instead of
+    # While a base drag is live the wheel turns the object instead of
     # zooming the camera; the release then saves position and heading.
     assert "rotateActiveLayoutObject(Math.sign(deltaPixels))" in scene_js
     wheel_grab = scene_js.index(
@@ -396,7 +405,7 @@ def test_layout_editor_rotates_with_the_wheel_while_dragging():
     assert "layoutDragOffset.z += pivot.z - moved.z;" in scene_js
     # The one-per-session hint tells administrators the wheel gesture exists.
     world_js = WORLD_JS.read_text(encoding="utf-8")
-    assert "mouse wheel while dragging" in world_js
+    assert "mouse wheel and R key also turn it" in world_js
 
 
 def test_individual_placards_are_movable_but_node_cabinets_stay_automatic():

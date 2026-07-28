@@ -307,6 +307,11 @@ def test_exact_view_and_saved_views_live_in_collapsed_right_rail():
     assert "⌖＋" in WORLD
     assert "setSavedViewsExpanded(expanded)" in WORLD
     assert '<div class="world-saved-view-list" data-world-saved-view-list hidden>' in WORLD
-    assert 'addEventListener("contextmenu"' not in SCENE
-    assert "handleContextMenu" not in SCENE
+    # The ordinary right-click share menu remains removed. The only canvas
+    # context-menu interception is the platform-admin layout editor, where a
+    # right-drag on an object's base rotates it.
+    assert 'renderer.domElement.addEventListener("contextmenu", handleContextMenu)' \
+        in SCENE
+    assert "if (!layoutEditingEnabled) return;" in SCENE
+    assert "if (layoutObjectAtPointer()) event.preventDefault();" in SCENE
     assert ".world-share-view-button" in CSS

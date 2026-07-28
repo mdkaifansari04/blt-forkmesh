@@ -5,6 +5,10 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [x] Let platform admins drag any World object's visible base to move it, with handle-free right-drag / Shift-drag rotation.
+- [x] Keep mirror2 visible as a live green World cabinet when its recent signed endpoint health proves the machine is reachable, while preserving blocked clone/integrity detail.
+- [x] Make live mirror cabinets use green for physical node liveness instead of conflating it with per-repository clone eligibility.
+- [x] Show the latest commit's relative age beside its hash in both live and catalog-backed Qt Mirror nodes rows.
 - [ ] Human TODO: share the live “ForkMesh Forever” post on Reddit, Mastodon, and X, then paste each published permalink into the post’s social-proof fields.
 - [x] Add physical Pass / Fail / Unsure tabs to the QA deck with verdict-filtered task pages.
 - [x] Let authorized QA reviewers send a reviewed card back to “What we're building”.

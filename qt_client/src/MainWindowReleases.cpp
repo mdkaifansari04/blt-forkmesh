@@ -1762,6 +1762,11 @@ void MainWindow::loadMirrorNodesPanel()
             commitTip = advert->commit;
             commitIdentity =
                 resolveCommitIdentity(advert->commit, advert->commitIdentity);
+            if (commitIdentity.committedAtMs > 0)
+                commitText += QString::fromUtf8(" \xC2\xB7 ") +
+                              formatShortRelativeTime(
+                                  commitIdentity.committedAtMs / 1000) +
+                              QStringLiteral(" ago");
             if (!commitIdentity.subject.isEmpty())
                 commitTip = commitIdentity.subject + "\n" + advert->commit;
         }
@@ -2040,6 +2045,11 @@ void MainWindow::loadMirrorNodesPanel()
                 qMax(qint64(0), qint64(m.value(QStringLiteral("lastCommitAt"))
                                            .toDouble()));
             catIdentity = resolveCommitIdentity(catCommit, catIdentity);
+            if (!catCommit.isEmpty() && catIdentity.committedAtMs > 0)
+                catCommitText += QString::fromUtf8(" \xC2\xB7 ") +
+                                 formatShortRelativeTime(
+                                     catIdentity.committedAtMs / 1000) +
+                                 QStringLiteral(" ago");
             setCommitIdentityCells(row, catIdentity);
             auto *catCommitItem = new QTableWidgetItem(catCommitText);
             if (!catCommit.isEmpty())
