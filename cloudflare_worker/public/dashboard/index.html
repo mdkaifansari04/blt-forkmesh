@@ -214,6 +214,27 @@
         line-height: 1.5;
       }
 
+      /* Edit / delete controls on your own chat messages. Hidden until the row
+         is hovered (or a control takes keyboard focus) so the transcript stays
+         quiet, like the full chat page. Hand-written because the pre-built
+         dashboard/tailwind.css carries no group-hover variant. */
+      .chat-message-actions {
+        opacity: 0;
+        transition: opacity 120ms ease;
+      }
+
+      .group:hover > .chat-message-actions,
+      .chat-message-actions:focus-within {
+        opacity: 1;
+      }
+
+      /* Touch devices never hover: keep the controls reachable there. */
+      @media (hover: none) {
+        .chat-message-actions {
+          opacity: 1;
+        }
+      }
+
       .chat-mention {
         display: inline-block;
         border-radius: 5px;
@@ -684,7 +705,7 @@
       }
     </style>
     <script src="/dashboard.js?v=7679101c0d6f" defer></script>
-    <script src="/dashboard-chat.js?v=6e83b7d22f1c" defer></script>
+    <script src="/dashboard-chat.js?v=7f0b44e47dbb" defer></script>
   </head>
   <body class="bg-background text-foreground" data-page="home">
     <div data-dashboard-root data-dashboard-section="home" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
