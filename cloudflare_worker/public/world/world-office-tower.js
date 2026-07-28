@@ -11,7 +11,7 @@ export const OFFICE_DEPTH = 90;
 // Give every team a genuinely spacious story. The original eight-unit
 // spacing let the larger floor exhibits visually intersect the slabs above.
 export const OFFICE_FLOOR_HEIGHT = 16;
-export const OFFICE_FLOOR_COUNT = 10;
+export const OFFICE_FLOOR_COUNT = 11;
 export const OFFICE_TOWER_HEIGHT = OFFICE_FLOOR_HEIGHT * OFFICE_FLOOR_COUNT;
 export const OFFICE_FRONT_Z = OFFICE_DEPTH / 2;
 export const OFFICE_DOOR_WIDTH = 10;
@@ -88,8 +88,15 @@ export const OFFICE_FLOORS = Object.freeze([
     description: "Mission control and incident timeline",
   }),
   Object.freeze({
-    id: "rooftop",
+    id: "executive",
     level: 9,
+    label: "Executive",
+    team: "executive",
+    description: "Strategy room, organization map, and decision table",
+  }),
+  Object.freeze({
+    id: "rooftop",
+    level: 10,
     label: "Rooftop Patio",
     team: "",
     publicForMembers: true,
@@ -157,6 +164,13 @@ export const OFFICE_FLOOR_TEAM_ALIASES = Object.freeze({
     "ops",
     "people-operations",
     "finance-operations",
+  ]),
+  executive: Object.freeze([
+    "executive",
+    "executives",
+    "leadership",
+    "organization-leadership",
+    "org-leadership",
   ]),
 });
 
@@ -298,6 +312,9 @@ const FLOOR_OBSTACLES = Object.freeze({
   ]),
   operations: Object.freeze([
     Object.freeze({ type: "rect", minX: -38, maxX: 38, minZ: -8, maxZ: 8 }),
+  ]),
+  executive: Object.freeze([
+    Object.freeze({ type: "rect", minX: -27, maxX: 27, minZ: -8, maxZ: 8 }),
   ]),
   rooftop: Object.freeze([
     // Keep only the table footprints solid. The former six-unit circles also

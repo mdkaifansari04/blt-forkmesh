@@ -62,7 +62,7 @@ the implementation and its focused verification are complete.
 - [x] Keep Mastodon follower avatars visibly orbiting the selected repository file circle at every normal camera angle.
 - [x] Make clicking the Claude or Codex world bot open its complete Engineering-only live status, work, transcript, runtime, and prompt controls.
 - [x] Surface stalled mirror-agent diagnostics as actionable notes on the Engineering-only Human TODO board.
-- [ ] Provision a supported headless Claude credential on `mirror2` and confirm its Qt node claims website agent jobs; never relay a personal OAuth credential through the Worker.
+- [x] Superseded safely: do not provision Claude on retired `mirror2`; route agent jobs only to signed, provider-ready `mirror6`.
 - [x] Show the latest actual safe full referring URL beneath each hostname on the in-world HTTP referrer board.
 - [x] Show all available blog-board reach stats: total views, approximate unique views, referrer-site count, referred visits, and network distribution.
 - [x] Add an Engineering-only Human TODO board beside the repository work boards, populated from actionable Claude/Codex session signals.
@@ -201,7 +201,7 @@ the implementation and its focused verification are complete.
 - [ ] Restore each node's Clones and Websites metrics and verify that newly provisioned mirrors report both values.
 - [x] Queue Claude organization-agent work only on mirrors that have reported the Claude Code binary installed; currently only mirror6 is eligible.
 - [x] Restore the World fresh-code effect.
-- [ ] Add an executive floor to the Office building.
+- [x] Add an Executive-team-only Office floor with a strategy room, organization map, decision table, chairs, collision footprint, elevator destination, and attendance label.
 - [x] Update the organization-access explanation so Claude/Codex session access is described as Engineering-team-only.
 - [x] Verify and enforce that non-Engineering organization members cannot start, review, continue, or view Claude/Codex sessions.
 - [ ] Show each node cabinet's Actions runs, logs, and running/done/error state on its back with restrained status animations.

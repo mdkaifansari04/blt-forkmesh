@@ -2470,8 +2470,10 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:qa-physical-deck", task: "Global physical QA deck + clear swipe arrows", estimate: "deployed", done: true },
   { key: "task:build-send-qa", task: "Done → send build sticky to QA", estimate: "deployed", done: true },
   { key: "task:member-unified-card", task: "Unified identity + Fedi + wallet QR card", estimate: "deployed", done: true },
-  { key: "task:mirror2-agent-claim", task: "Provision mirror2 agent auth + claim jobs", estimate: "human action", done: false },
+  { key: "task:mirror2-agent-claim", task: "Retire mirror2 agent route; use ready mirror6", estimate: "superseded safely", done: true },
   { key: "task:review-open-prs", task: "Review every open PR + disposition", estimate: "queued", done: false },
+  { key: "task:node-service-metrics", task: "Restore node Clones + Websites metrics", estimate: "in progress", done: false },
+  { key: "task:cabinet-action-runs", task: "Cabinet backs show Actions runs + logs", estimate: "queued", done: false },
   { key: "task:repo-social-orbits", task: "Test follower + contributor avatar orbits", estimate: "deployed · verified", done: true },
   { key: "task:issue-agent-models", task: "Issue buttons for Claude/Codex model choice", estimate: "deployed · verified", done: true },
   { key: "task:qt-agent-installers", task: "Qt mirror Claude + Codex installers", estimate: "deployed", done: true },
@@ -2479,6 +2481,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:avatar-team-badges", task: "Team badges on each avatar's left arm", estimate: "deployed", done: true },
   { key: "task:marketing-proof", task: "Private Marketing proof-of-work links", estimate: "ready for deploy · in QA", done: true },
   { key: "done:marketing-initiatives", task: "Issue → private Marketing initiatives wall", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:executive-floor", task: "Executive strategy floor + elevator access", estimate: "ready for deploy · in QA", done: true },
   { key: "done:general-chat-board", task: "Recent #general chat beside events", estimate: "ready for deploy · in QA", done: true },
   { key: "task:deploy-lifecycle", task: "Live deploy spinner + ready refresh button", estimate: "deployed", done: true },
   { key: "task:elevator-camera-lock", task: "Elevator button camera lock + release", estimate: "deployed", done: true },
@@ -12133,6 +12136,82 @@ export function createWorldScene({
       consoleDesk.position.set(x, 1.5, 0);
       operations.add(consoleDesk);
     }
+
+    const executive = officeFloorGroups.get("executive");
+    const executiveWood = makeMaterial(THREE, "#6f4d34", {
+      metalness: 0.08,
+      roughness: 0.56,
+    });
+    const executiveTrim = makeMaterial(THREE, "#d2af63", {
+      emissive: "#624a1c",
+      emissiveIntensity: 0.28,
+      metalness: 0.72,
+      roughness: 0.24,
+    });
+    const strategyTable = new THREE.Mesh(
+      new THREE.BoxGeometry(52, 0.55, 15),
+      executiveWood,
+    );
+    strategyTable.name = "forkmesh-office-executive-strategy-table";
+    strategyTable.position.set(0, 2.75, 0);
+    executive.add(strategyTable);
+    for (const x of [-22, -11, 0, 11, 22]) {
+      for (const z of [-10, 10]) {
+        const chair = new THREE.Group();
+        chair.name = `forkmesh-office-executive-chair-${x}-${z}`;
+        const seat = new THREE.Mesh(
+          new THREE.BoxGeometry(4.2, 0.35, 3.6),
+          executiveWood,
+        );
+        seat.position.y = 1.8;
+        chair.add(seat);
+        const back = new THREE.Mesh(
+          new THREE.BoxGeometry(4.2, 3.7, 0.35),
+          executiveWood,
+        );
+        back.position.set(0, 3.35, z < 0 ? -1.65 : 1.65);
+        chair.add(back);
+        chair.position.set(x, 0, z);
+        chair.rotation.y = z < 0 ? 0 : Math.PI;
+        executive.add(chair);
+      }
+    }
+    const strategyMap = new THREE.Mesh(
+      new THREE.PlaneGeometry(42, 8),
+      new THREE.MeshBasicMaterial({
+        map: canvasTexture(THREE, 1260, 240, (context) => {
+          context.fillStyle = "#071713";
+          context.fillRect(0, 0, 1260, 240);
+          context.strokeStyle = "#d2af63";
+          context.lineWidth = 10;
+          context.strokeRect(8, 8, 1244, 224);
+          context.fillStyle = "#eafff6";
+          context.font =
+            '800 56px "ForkMesh Mono", ui-monospace, monospace';
+          context.textAlign = "center";
+          context.fillText("ORGANIZATION STRATEGY", 630, 92);
+          context.fillStyle = "#9ef7c6";
+          context.font =
+            '600 31px "ForkMesh Mono", ui-monospace, monospace';
+          context.fillText(
+            "RESILIENT HOSTING · HEALTHY COMMUNITY · OPEN SOURCE",
+            630,
+            160,
+          );
+        }),
+        toneMapped: false,
+      }),
+    );
+    strategyMap.name = "forkmesh-office-executive-strategy-map";
+    strategyMap.position.set(0, 8, -OFFICE_DEPTH / 2 + 0.62);
+    executive.add(strategyMap);
+    const strategyCenter = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.35, 1.35, 0.12, 32),
+      executiveTrim,
+    );
+    strategyCenter.name = "forkmesh-office-executive-table-seal";
+    strategyCenter.position.set(0, 3.06, 0);
+    executive.add(strategyCenter);
 
     const rooftop = officeFloorGroups.get("rooftop");
     const roofGlass = makeMaterial(THREE, "#d8ffff", {

@@ -6827,6 +6827,7 @@ OFFICE_ATTENDANCE_FLOOR_LABELS = {
     "community": "Community",
     "partnerships": "Partnerships",
     "operations": "Operations",
+    "executive": "Executive",
     "rooftop": "Rooftop",
 }
 
@@ -7300,6 +7301,10 @@ OFFICE_FLOOR_TEAM_ALIASES = {
     },
     "operations": {
         "operations", "ops", "people-operations", "finance-operations",
+    },
+    "executive": {
+        "executive", "executives", "leadership", "organization-leadership",
+        "org-leadership",
     },
 }
 
@@ -8377,8 +8382,13 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-11"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-12"
 WORLD_QA_CARDS = (
+    ("executive-office-floor", "Executive Office floor",
+     "Sign in as an Executive-team member and ride the elevator to Executive. "
+     "Confirm the strategy table, ten chairs, organization map and floor label "
+     "render without intersecting adjacent stories. Confirm a non-Executive "
+     "member cannot select the floor and attendance reports Executive."),
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
      "appears immediately, animates while work is active, and ends with a "

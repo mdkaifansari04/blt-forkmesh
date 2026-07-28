@@ -558,13 +558,13 @@ def test_office_glass_uses_one_stable_non_depth_writing_envelope():
     assert "child.receiveShadow = false" in scene
 
 
-def test_tower_is_ten_stories_and_about_ten_times_the_old_width():
+def test_tower_is_eleven_stories_and_about_ten_times_the_old_width():
     scene = source(SCENE_PATH)
     tower = source(TOWER_PATH)
     assert "export const OFFICE_WIDTH = 170" in tower
-    assert "export const OFFICE_FLOOR_COUNT = 10" in tower
+    assert "export const OFFICE_FLOOR_COUNT = 11" in tower
     assert "export const OFFICE_FLOOR_HEIGHT = 16" in tower
-    assert tower.count("level: ") == 10
+    assert tower.count("level: ") == 11
     for floor_id in (
         "lobby",
         "marketing",
@@ -575,12 +575,15 @@ def test_tower_is_ten_stories_and_about_ten_times_the_old_width():
         "community",
         "partnerships",
         "operations",
+        "executive",
         "rooftop",
     ):
         assert f'id: "{floor_id}"' in tower
     assert "for (let level = 1; level < OFFICE_FLOOR_COUNT; level += 1)" in scene
     assert "OFFICE_FLOORS.slice(1).forEach((floor) => {" in scene
     assert "function addOfficeFunFloorProps()" in scene
+    assert 'officeFloorGroups.get("executive")' in scene
+    assert "forkmesh-office-executive-strategy-table" in scene
 
 
 def test_tall_floor_exhibits_and_elevator_openings_stay_between_slabs():
