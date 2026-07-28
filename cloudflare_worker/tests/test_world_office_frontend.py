@@ -825,7 +825,7 @@ def test_meeting_handoff_projects_the_live_player_out_of_collidable_furniture():
 
     assert "nearestOfficeWalkablePosition(" in enter
     assert "setOfficeParticipants([])" in enter
-    assert "officeInteriorPointIsWalkable(" in nearest
+    assert "officeScenePointIsWalkable(" in nearest
     assert "OFFICE_AVATAR_RADIUS" in nearest
     assert "cameraMode !== \"first-person\"" in participants
 
@@ -1103,7 +1103,7 @@ def test_rooftop_camera_and_pointer_travel_stay_on_the_active_floor():
     )
     assert "officeObjectMatchesCurrentFloor(object)" in pointer
     assert "officeObjectMatchesCurrentFloor(object)" in double_click
-    assert "officeInteriorPointIsWalkable(" in ground
+    assert "officeScenePointIsWalkable(" in ground
     assert "officeCurrentFloorId" in ground
     assert "dashTarget" in lobby_walk
     assert "constrainOfficeInteriorWalls(" in lobby_walk
