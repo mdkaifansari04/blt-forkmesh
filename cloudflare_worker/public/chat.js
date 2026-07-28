@@ -2408,7 +2408,7 @@ function saveMessageEdit(record, source) {
   const editedAt = Date.now();
   const richText = { v: 1, source: richSource };
   const plain = makePlain("edit", {
-    conversation: channelDisplayLabel(record.channel),
+    conversation: channelWireLabel(record.channel),
     target: record.id,
     text,
     richText,
@@ -2487,7 +2487,7 @@ function confirmMessageDelete() {
   const record = pendingDeleteRecord;
   if (!record?.self || record.senderId !== selfId) return;
   const plain = makePlain("delete", {
-    conversation: channelDisplayLabel(record.channel),
+    conversation: channelWireLabel(record.channel),
     target: record.id,
   });
   pendingDeleteRecord = null;
@@ -3771,10 +3771,24 @@ function wireThreadControls() {
   });
 }
 
+let messageActionControlsWired = false;
+function wireMessageActionControls() {
+  if (messageActionControlsWired) return;
+  messageActionControlsWired = true;
+  deleteConfirmBtn?.addEventListener("click", confirmMessageDelete);
+  deleteDialog?.addEventListener("close", () => {
+    const trigger = pendingDeleteTrigger;
+    pendingDeleteRecord = null;
+    pendingDeleteTrigger = null;
+    trigger?.focus();
+  });
+}
+
 async function initChat() {
   wireChatControls();
   wireChatComposer();
   wireThreadControls();
+  wireMessageActionControls();
   await hydrateUserSession();
   ensureChannel("#general");
   await refreshPrivateChannels({ connect: false });
@@ -3846,13 +3860,6 @@ async function initChat() {
   });
   channelManageBtn?.addEventListener("click", () => openChannelDialog(true));
   channelDialogClose?.addEventListener("click", () => channelDialog?.close());
-  deleteConfirmBtn?.addEventListener("click", confirmMessageDelete);
-  deleteDialog?.addEventListener("close", () => {
-    const trigger = pendingDeleteTrigger;
-    pendingDeleteRecord = null;
-    pendingDeleteTrigger = null;
-    trigger?.focus();
-  });
   channelInviteForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     inviteChannelMember(channelUsernameInput?.value || "");

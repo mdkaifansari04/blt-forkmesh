@@ -162,6 +162,20 @@ def test_thread_reply_controls_are_wired_before_async_chat_hydration():
     assert "sendThreadReply();" in controls
 
 
+def test_delete_controls_are_wired_early_and_use_canonical_room_labels():
+    init = _function_source("initChat")
+    assert "function wireMessageActionControls()" in CHAT
+    assert init.index("wireMessageActionControls();") < init.index(
+        "await hydrateUserSession();"
+    )
+    controls = _function_source("wireMessageActionControls")
+    assert 'deleteConfirmBtn?.addEventListener("click", confirmMessageDelete)' in controls
+    confirm = _function_source("confirmMessageDelete")
+    edit = _function_source("saveMessageEdit")
+    assert "conversation: channelWireLabel(record.channel)" in confirm
+    assert "conversation: channelWireLabel(record.channel)" in edit
+
+
 def test_protocol_documents_participant_only_direct_messages():
     for marker in (
         'id="personal-direct-messages"',

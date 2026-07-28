@@ -156,8 +156,18 @@ test("real participants create, replay, and isolate an encrypted direct message"
   await aliceBrowser.page.locator("#chat-thread-input").fill(
     "Private thread reply",
   );
-  await aliceBrowser.page.locator("#chat-thread-input").press("Enter");
+  await aliceBrowser.page.locator("#chat-thread-send").click();
   await expect(aliceBrowser.page.locator("#chat-thread-replies")).toContainText(
+    "Private thread reply",
+  );
+  const directReply = aliceBrowser.page.locator(
+    "#chat-thread-replies .chat-thread-message",
+    { hasText: "Private thread reply" },
+  );
+  await directReply.hover();
+  await directReply.getByRole("button", { name: "Delete message" }).click();
+  await aliceBrowser.page.locator("#chat-delete-confirm").click();
+  await expect(aliceBrowser.page.locator("#chat-thread-replies")).not.toContainText(
     "Private thread reply",
   );
   await aliceBrowser.page.locator("#chat-attachment-input").setInputFiles({
@@ -165,7 +175,7 @@ test("real participants create, replay, and isolate an encrypted direct message"
     mimeType: "text/plain",
     buffer: Buffer.from("private attachment body"),
   });
-  await expect.poll(() => retainedFrames.length).toBe(4);
+  await expect.poll(() => retainedFrames.length).toBe(5);
   expect(retainedFrames.join("\n")).not.toContain("First private message");
   expect(retainedFrames.join("\n")).not.toContain("Second private message");
   expect(retainedFrames.join("\n")).not.toContain("private attachment body");
@@ -176,7 +186,7 @@ test("real participants create, replay, and isolate an encrypted direct message"
       token: bob.sessionToken,
     });
     return bobConversations.body.conversations?.[0]?.unreadCount;
-  }).toBe(4);
+  }).toBe(5);
   const conversation = bobConversations.body.conversations[0];
 
   const reopened = await api(request, "/api/chat/direct-messages", {
@@ -200,7 +210,7 @@ test("real participants create, replay, and isolate an encrypted direct message"
     bobBrowser.page.getByRole("button", {
       name: `Direct message with ${aliceName}`,
     }).locator(".chat-room-unread"),
-  ).toHaveText("4");
+  ).toHaveText("5");
   await bobBrowser.page.getByRole("button", {
     name: `Direct message with ${aliceName}`,
   }).click();
@@ -220,7 +230,7 @@ test("real participants create, replay, and isolate an encrypted direct message"
   await receivedDirectRoot.getByRole("button", {
     name: "Reply in thread",
   }).click();
-  await expect(bobBrowser.page.locator("#chat-thread-replies")).toContainText(
+  await expect(bobBrowser.page.locator("#chat-thread-replies")).not.toContainText(
     "Private thread reply",
   );
   await expect(
