@@ -8,7 +8,15 @@ It is open source, free-plan-hostable at the edge, and already doing real work t
 
 > **This is early, and that's the point.** The foundation is built and working. The people who show up now help shape the protocol, earn recognition for the repositories they preserve, and get their nodes on the leaderboards before the mesh fills up. Build a node, mirror a project you care about, and you're already part of it.
 
-**Docs:** [forkmesh.com/docs](https://forkmesh.com/docs) — the protocol spec, desktop/relay/mobile/IDE build notes, and the [changelog](https://forkmesh.com/changelog).
+## Start here
+
+| I want to… | Read |
+| --- | --- |
+| Install ForkMesh and complete the first-run setup | [Getting started](docs/getting-started.md) |
+| Build, run, or troubleshoot the desktop app | [Qt client guide](docs/qt-client.md) |
+| Change the project and open a pull request | [Contributing](CONTRIBUTING.md) |
+| Browse repository development and operations docs | [Documentation index](docs/README.md) |
+| Read the protocol reference or release history | [Hosted docs](https://forkmesh.com/docs) and [changelog](https://forkmesh.com/changelog) |
 
 ---
 
@@ -71,23 +79,25 @@ The 44 epics start from a 30% evidence-based product baseline. None is marked co
 
 ### Desktop Node
 
-Requirements: Qt 6.4+ (Widgets, Network), CMake 3.16+, OpenSSL dev headers, Git, a C++17 compiler, and the `openssl` CLI at runtime for the LAN TLS certificate.
-
-```sh
-cd qt_client
-./run.sh          # build and run
-./run.sh test     # headless backend smoke test
-```
-
-The client creates an Ed25519 identity key, a LAN-encryption TLS certificate, and bare mirrors under its app data directory. Use **+ Add** on the **Repos** page to pick a local repo or paste a remote clone URL. Repositories you select are published to the mainnode catalog and appear on the ForkMesh website — without ever exposing local filesystem paths.
-
-The desktop client starts with no setup input and connects to the ForkMesh mainnode automatically.
-
-Prefer a prebuilt binary over building from source? Use the sha256-verified one-line installer instead:
+For normal use, install the published, SHA-256-verified binary:
 
 ```sh
 curl -fsSL https://forkmesh.com/install.sh | bash
 ```
+
+For development, clone the repository and launch the source build:
+
+```sh
+git clone https://forkmesh.com/forkmesh/forkmesh
+cd forkmesh/qt_client
+./run.sh
+```
+
+The client creates its device identity, connects to the mainnode, and starts
+syncing the ForkMesh project automatically. Continue with
+[Getting started](docs/getting-started.md) for the first-run workflow or the
+[Qt client guide](docs/qt-client.md) for platform dependencies, UI navigation,
+pull requests, logs, tests, and troubleshooting.
 
 ### Cloudflare Relay
 
@@ -134,7 +144,10 @@ forkmesh/
   tools/              Standalone helpers (MCP server, PR review)
 ```
 
-Developer docs (protocol spec, per-project build notes, changelog) live on the website at [forkmesh.com/docs](https://forkmesh.com/docs), not in this repo.
+Repository-specific onboarding, engineering, security, design, and operations
+docs live under [`docs/`](docs/README.md). The complete protocol reference,
+per-client reference, and changelog remain at
+[forkmesh.com/docs](https://forkmesh.com/docs).
 
 ### MCP server
 

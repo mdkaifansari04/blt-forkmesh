@@ -87,6 +87,12 @@ struct PullRequest {
     // "approved" if any node currently approves and none requests changes,
     // "changes_requested" if any node currently requests changes, else "".
     QString reviewSummary() const;
+    // Merge policy: the latest decisive review per signer wins; the pull
+    // author's own reviews are ignored. At least one independent approval and
+    // no independent changes-requested review are required.
+    int independentApprovalCount() const;
+    bool hasIndependentChangesRequested() const;
+    bool independentReviewGateSatisfied() const;
 };
 
 // Repo-scoped pull-request store backed by the on-disk pulls/ folder. Mirrors
@@ -125,7 +131,8 @@ public:
                             int *behindCount = nullptr) const;
     bool updateBranchFromBase(int number, QString *error = nullptr);
     // Apply the PR's patch into the working tree, commit, mark merged.
-    bool mergePull(int number, QString *error = nullptr);
+    bool mergePull(int number, QString *error = nullptr,
+                   bool requirePeerReview = true);
     // Dry-run the PR's patch against the working tree — the same 3-way apply
     // mergePull performs, but with --check so nothing is modified — to report
     // whether it will merge cleanly. Returns false only on a hard error

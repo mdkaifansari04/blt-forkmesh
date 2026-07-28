@@ -140,6 +140,8 @@ set(FORKMESH_APP_SOURCES
     src/NodeEventSocket.h
     src/NodeEventSocket.cpp
     src/BackgroundActivity.h
+    src/ActionTelemetry.h
+    src/ActionTelemetry.cpp
     src/NetworkBackoff.h
     src/BackoffNetworkAccessManager.h
     src/BackoffNetworkAccessManager.cpp
@@ -460,6 +462,8 @@ if(FORKMESH_BUILD_TESTS)
         src/PlatformLogFilter.h
         src/PlatformLogFilter.cpp
         src/BackgroundActivity.h
+        src/ActionTelemetry.h
+        src/ActionTelemetry.cpp
         src/BackoffNetworkAccessManager.h
         src/BackoffNetworkAccessManager.cpp
         src/ActionFile.h
@@ -702,6 +706,8 @@ if(FORKMESH_BUILD_TESTS)
     qt_add_executable(forkmesh-e2e
         tests/test_mesh_e2e.cpp
         src/BackgroundActivity.h
+        src/ActionTelemetry.h
+        src/ActionTelemetry.cpp
         src/BackoffNetworkAccessManager.h
         src/BackoffNetworkAccessManager.cpp
         src/ActionFile.h

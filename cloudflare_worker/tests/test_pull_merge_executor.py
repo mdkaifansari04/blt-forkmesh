@@ -70,7 +70,21 @@ def repository(tmp_path, *, conflict=False, divergent=False):
         "---\n\nReview me.\n",
         encoding="utf-8",
     )
-    run(["git", "add", "pulls/7/pull.md"], work)
+    (path / "0001-review.md").write_text(
+        "---\n"
+        "type: review\n"
+        "id: review-test-1\n"
+        "author: bob\n"
+        "authorName: Bob\n"
+        "ts: 2\n"
+        "state: approved\n"
+        "sig: owner-validated-test-signature\n"
+        "---\n\nReviewed.\n",
+        encoding="utf-8",
+    )
+    run([
+        "git", "add", "pulls/7/pull.md", "pulls/7/0001-review.md",
+    ], work)
     run(["git", "commit", "-m", "pull metadata"], work)
     pulls = run(["git", "rev-parse", "HEAD"], work)
     run(["git", "remote", "add", "origin", str(bare)], work)
@@ -224,6 +238,68 @@ def test_conflict_is_terminal_and_never_moves_public_refs(tmp_path):
     assert git_ref(bare, "refs/heads/forkmesh/pulls") == pulls
     assert refresh._merge_execute_locked(cfg, req) == result
     assert_fsck_clean(bare)
+
+
+def test_merge_requires_one_independent_approval(tmp_path):
+    bare, base, head, pulls, _opening = repository(tmp_path)
+    cfg = config(tmp_path, bare)
+    work = tmp_path / "edit-pulls"
+    run(["git", "clone", str(bare), str(work)], tmp_path)
+    run(["git", "config", "user.name", "Test"], work)
+    run(["git", "config", "user.email", "test@example.invalid"], work)
+    run(["git", "switch", "forkmesh/pulls"], work)
+    (work / "pulls/7/0001-review.md").unlink()
+    run(["git", "add", "-u"], work)
+    run(["git", "commit", "-m", "remove peer review"], work)
+    run(["git", "push", "origin", "forkmesh/pulls"], work)
+    no_review_pulls = git_ref(bare, "refs/heads/forkmesh/pulls")
+    req = request(
+        cfg,
+        base=base,
+        head=head,
+        pulls=no_review_pulls,
+        request_id="merge_request_peer_review",
+    )
+
+    result = refresh._merge_execute_locked(cfg, req)
+
+    assert result["status"] == "failed"
+    assert result["error"] == "review_required"
+    assert git_ref(bare, "refs/heads/main") == base
+
+
+def test_pull_author_self_approval_does_not_unlock_merge(tmp_path):
+    bare, base, head, _pulls, _opening = repository(tmp_path)
+    cfg = config(tmp_path, bare)
+    work = tmp_path / "self-review"
+    run(["git", "clone", str(bare), str(work)], tmp_path)
+    run(["git", "config", "user.name", "Test"], work)
+    run(["git", "config", "user.email", "test@example.invalid"], work)
+    run(["git", "switch", "forkmesh/pulls"], work)
+    review = work / "pulls/7/0001-review.md"
+    review.write_text(
+        review.read_text(encoding="utf-8").replace(
+            "author: bob", "author: alice"
+        ),
+        encoding="utf-8",
+    )
+    run(["git", "add", "pulls/7/0001-review.md"], work)
+    run(["git", "commit", "-m", "self review"], work)
+    run(["git", "push", "origin", "forkmesh/pulls"], work)
+    self_reviewed_pulls = git_ref(bare, "refs/heads/forkmesh/pulls")
+    req = request(
+        cfg,
+        base=base,
+        head=head,
+        pulls=self_reviewed_pulls,
+        request_id="merge_request_self_review",
+    )
+
+    result = refresh._merge_execute_locked(cfg, req)
+
+    assert result["status"] == "failed"
+    assert result["error"] == "review_required"
+    assert git_ref(bare, "refs/heads/main") == base
 
 
 def test_divergent_clean_merge_quarantines_commit_tree_objects(tmp_path):

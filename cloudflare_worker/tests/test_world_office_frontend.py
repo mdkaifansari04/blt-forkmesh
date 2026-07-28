@@ -491,19 +491,26 @@ def test_marketing_task_board_is_blank_while_the_room_is_empty():
     assert "officeMarketingTaskSnapshot = normalizeOfficeMarketingTasks(payload)" in update
 
 
-def test_office_is_a_remote_island_reached_by_a_glass_bridge():
+def test_office_is_a_remote_district_reached_by_a_broad_land_connection():
     scene = source(SCENE_PATH)
     tower = source(TOWER_PATH)
     for contract in (
         'officeIsland.name = "forkmesh-office-island"',
         "new THREE.CircleGeometry(OFFICE_ISLAND_RADIUS, 128)",
+        'officeLandConnection.name = "forkmesh-office-land-connection"',
+        'officeConnectionEarth.name = "forkmesh-office-land-connection-earth"',
+        'officeConnectionTop.name = "forkmesh-office-land-connection-top"',
+        "OFFICE_CONNECTION_HALF_WIDTH * 2",
         'officeBridge.name = "forkmesh-office-bridge"',
         "new THREE.BoxGeometry(OFFICE_BRIDGE_WIDTH, 0.3, officeBridgeLength)",
-        "const bridgeGlass = makeMaterial",
+        "createTerrainFoundation(",
+        '"forkmesh-office-terrain-foundation"',
         "world.add(officeIsland)",
+        "world.add(officeLandConnection)",
         "world.add(officeBridge)",
     ):
         assert contract in scene
+    assert "const bridgeGlass = makeMaterial" not in scene
     for contract in (
         "OFFICE_ISLAND_CENTER = Object.freeze([0, 0, -215])",
         "OFFICE_ISLAND_RADIUS = 110",

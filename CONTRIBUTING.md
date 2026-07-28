@@ -6,10 +6,10 @@ source machine goes offline. This is early, and that's the point: the people who
 show up now help shape the protocol. Human and AI contributors are both
 first-class here.
 
-This guide covers how the project is laid out, how to build and test each
-component, and how to open issues and pull requests. For higher-level context,
-read the [README](README.md); for the protocol spec and per-project build notes,
-see [forkmesh.com/docs](https://forkmesh.com/docs).
+This guide covers the complete change-to-review workflow. If you have not run a
+node yet, begin with [Getting started](docs/getting-started.md). For desktop
+dependencies, navigation, logs, and troubleshooting, use the
+[Qt client guide](docs/qt-client.md).
 
 ---
 
@@ -46,6 +46,38 @@ one directory.
 
 ---
 
+## Prepare a working copy
+
+ForkMesh's native workflow is fork → branch → commit → signed pull request:
+
+1. Run the desktop client and sign in or choose your node identity.
+2. Find `forkmesh/forkmesh` under **Repos**, choose **Fork**, and select the
+   parent folder for your writable checkout. If you already have write access,
+   you may clone the repository normally instead.
+3. Configure a Git author before your first commit:
+
+   ```sh
+   git config user.name "Your Name"
+   git config user.email "you@example.com"
+   ```
+
+4. Start from an up-to-date `main` and create a focused branch:
+
+   ```sh
+   git switch main
+   git pull --ff-only
+   git switch -c docs/clear-getting-started
+   ```
+
+Use a short branch prefix that describes the work, such as `fix/`, `feat/`,
+`docs/`, or `test/`. Never develop directly on `main`, and do not mix unrelated
+cleanup into the same branch.
+
+You can also create the branch in **Code → Branches → New branch**. Git and the
+Qt UI operate on the same working copy, so switching between them is safe.
+
+---
+
 ## Building and testing
 
 Please build and test the component you changed before opening a pull request.
@@ -57,11 +89,13 @@ a C++17 compiler, and the `openssl` CLI at runtime for the LAN TLS certificate.
 
 ```sh
 cd qt_client
-./run.sh          # build and run
-./run.sh test     # headless backend smoke test
+./run.sh          # incremental Release build and launch
+./run.sh test     # main headless and window test suites
 ```
 
-Additional test binaries live in `qt_client/tests/` and are built via CMake.
+Additional test targets live in `qt_client/tests/` and are built via CMake. See
+the [Qt client guide](docs/qt-client.md#build-and-run-from-source) for dependency
+commands, manual CMake usage, and focused-test troubleshooting.
 
 ### Cloudflare relay + website (`cloudflare_worker/`)
 
@@ -140,16 +174,126 @@ You can file issues from the desktop node, the website, or the MCP server
 
 ## Opening a pull request
 
-1. Branch from `main`.
-2. Implement your change, consistent with the surrounding code.
-3. If `main` has advanced, rebase or merge it into your branch and resolve
-   conflicts.
-4. Build and run the tests for the component you touched, and fix any failures.
-5. Commit with a clear, descriptive message.
-6. Open the pull request against `main`, describing what changed and how to
-   verify it.
+### 1. Review and commit the branch
+
+Check that only the intended files changed, then commit them:
+
+```sh
+git status --short
+git diff
+git add path/to/file
+git diff --cached
+git commit -m "docs: add a practical Qt client guide"
+```
+
+Prefer explicit paths over `git add -A` when the working tree contains unrelated
+work. Do not commit build directories, credentials, tokens, local settings,
+diagnostic logs, or private repository data.
+
+If `main` advanced, merge or rebase it into the branch and resolve conflicts
+before review:
+
+```sh
+git fetch origin
+git rebase origin/main
+```
+
+Do not rewrite another contributor's published branch without coordinating
+with them. Signed `.forkmesh/` event records are append-only protocol data; do
+not hand-edit or discard them merely to make a conflict disappear.
+
+### 2. Run the relevant checks
+
+Run the smallest focused tests while iterating, then the component suite before
+opening the PR. From the repository root, validate the quality-gate definition:
+
+```sh
+python3 tools/quality_gate.py validate
+```
+
+Before a code PR, run the core profile:
+
+```sh
+python3 tools/quality_gate.py run --profile core
+```
+
+For a documentation-only change where runtime suites add no useful evidence,
+configuration validation plus local link checks may be sufficient, but explain
+that scope in the PR rather than claiming the runtime gates passed.
+
+The release profile includes the real-browser World suite and its pinned
+Playwright/Chromium requirements:
+
+```sh
+python3 tools/quality_gate.py run --profile release
+```
+
+Record every command and result. If a required toolchain is unavailable, say so
+plainly in the PR; do not report a skipped suite as passing. The detailed policy
+is in the [definition of done](docs/engineering/definition-of-done.md).
+
+### 3. Open the native ForkMesh PR
+
+In the Qt client:
+
+1. Open your writable fork.
+2. Open **Pulls → New pull request**.
+3. Set **Target node** to `forkmesh`, **Base** to `main`, and **Head** to your
+   feature branch.
+4. Enter a concise, outcome-focused title and a useful description, then
+   submit. ForkMesh signs the patch and commit series and queues them in the
+   upstream owner's inbox, even while that node is offline.
+
+Base and head must differ, and the branch must contain a committed diff. If the
+repository says it is read-only, fork it first. The
+[Qt client PR guide](docs/qt-client.md#create-a-pull-request) also documents
+owner-local PRs, direct one-file mirror proposals, and common failure cases.
+
+MCP-capable agents can use the repository's configured
+`open_pr_from_branch` tool. It creates the same signed native PR record; it is
+not a privileged review bypass.
+
+### 4. Complete the PR description
+
+Use [the repository template](.github/PULL_REQUEST_TEMPLATE.md). The **Change**
+section should explain the user-visible outcome and how to verify it. Complete
+all five evidence sections:
+
+- Threat review.
+- Abuse and privacy review.
+- Benchmark and budget evidence.
+- Regression-test evidence.
+- Operational evidence.
+
+For a section that truly does not apply, write a concrete reason, for example
+“Not applicable — Markdown-only change; no runtime path or collected data
+changed.” Placeholder-only or unexplained `N/A` sections fail CI.
+
+Before submitting, make sure the PR answers three reviewer questions without
+requiring them to reconstruct your work: what changed, why this approach is
+safe, and exactly how it was tested.
 
 Keep pull requests scoped to a single concern so they're easy to review.
+
+### 5. Get an independent approval
+
+Every pull request needs at least one approval from a peer who is not the pull
+request author. An author's self-approval does not count. The latest decisive
+review from each signer wins, and any unresolved peer request for changes keeps
+the merge locked.
+
+More distinct approvals create a stronger review signal and make a
+discretionary merge more likely, but they never bypass tests, security checks,
+scope review, or maintainer judgment. See the
+[team onboarding guide](https://forkmesh.com/docs/onboarding#reviews) for the
+website review flow.
+
+### 6. Respond to review
+
+Add follow-up commits to the same branch, rerun affected checks, and summarize
+what changed. Resolve a review thread only after the concern is addressed or
+the reviewer agrees with the documented alternative. The maintainer performs
+the final merge; opening a PR does not grant merge authority.
 
 ### AI agents
 

@@ -436,7 +436,7 @@
     if (!response.ok || data.ok === false) {
       throw new Error(data.error || `HTTP ${response.status}`);
     }
-    return data;
+    return { ...data, event };
   }
 
   async function submitWebPullComment(repo, number, body) {

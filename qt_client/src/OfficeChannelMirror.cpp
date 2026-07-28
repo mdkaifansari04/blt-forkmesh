@@ -1,4 +1,5 @@
 #include "OfficeChannelMirror.h"
+#include "ServerNode.h"
 
 #include <QDateTime>
 #include <QJsonArray>
@@ -10,12 +11,12 @@
 #include <QTimer>
 #include <QUrlQuery>
 
+#include <utility>
+
 namespace {
 
-// Cadence of the read-only office poll. Office rooms are conversational, not
-// operational, so this is deliberately slow next to the mesh room's live
-// socket: it costs one small request per room and rides the same network
-// backoff manager as every other relay call.
+// Cadence of the retained-history safety poll. Active sends/receives use the
+// room socket; this slower pass fills gaps after sleep or disconnects.
 constexpr int kPollIntervalMs = 30000;
 constexpr int kMaxChannels = 50;
 constexpr int kMaxTextChars = 16000;
@@ -23,6 +24,7 @@ constexpr int kMaxDisplayNameChars = 32;
 constexpr int kMaxFileNameChars = 180;
 constexpr int kMaxMimeChars = 100;
 constexpr qsizetype kMaxFileBytes = 8ll * 1024 * 1024;
+constexpr int kMaxPendingTextsPerRoom = 32;
 // Ids already shown per room. Bounded: an office room retains a few hundred
 // messages, and each poll only asks for what landed after the newest stamp
 // this client has seen.
@@ -60,6 +62,14 @@ QByteArray channelListProof(const QString &account, const QString &ts)
 {
     return QStringLiteral("forkmesh-chat-channels-v1\n%1\n%2")
         .arg(account, ts)
+        .toUtf8();
+}
+
+QByteArray channelAccessProof(const QString &account, const QString &channelId,
+                              const QString &ts)
+{
+    return QStringLiteral("forkmesh-chat-channel-access-v1\n%1\n%2\n%3")
+        .arg(account, channelId, ts)
         .toUtf8();
 }
 
@@ -134,17 +144,31 @@ void OfficeChannelMirror::setSigner(std::function<QString(const QByteArray &)> s
     m_signer = std::move(signer);
 }
 
-void OfficeChannelMirror::setIdentity(const QString &account, const QString &selfId)
+void OfficeChannelMirror::setIdentity(const QString &account, const QString &selfId,
+                                      const QString &displayName)
 {
     const QString normalized = account.trimmed().toLower();
-    if (normalized != m_account && !m_conversations.isEmpty()) {
+    if (normalized != m_account) {
         // A different account sees a different set of office rooms.
+        for (auto it = m_rooms.begin(); it != m_rooms.end(); ++it) {
+            failPending(it.value(), QStringLiteral("chat account changed"));
+            discardSender(it.value());
+        }
         m_rooms.clear();
-        m_conversations.clear();
-        emit conversationsChanged(m_conversations);
+        if (!m_conversations.isEmpty()) {
+            m_conversations.clear();
+            emit conversationsChanged(m_conversations);
+        }
     }
     m_account = normalized;
     m_selfId = selfId;
+    m_displayName = displayName.trimmed().left(kMaxDisplayNameChars);
+}
+
+void OfficeChannelMirror::setConnectionAuthorizer(
+    std::function<bool(const QUrl &)> authorizer)
+{
+    m_connectionAuthorizer = std::move(authorizer);
 }
 
 void OfficeChannelMirror::setApiBase(const QUrl &apiBase)
@@ -173,6 +197,8 @@ void OfficeChannelMirror::start()
 void OfficeChannelMirror::stop()
 {
     m_timer->stop();
+    for (auto it = m_rooms.begin(); it != m_rooms.end(); ++it)
+        discardSender(it.value());
     m_rooms.clear();
     if (m_conversations.isEmpty())
         return;
@@ -188,6 +214,43 @@ bool OfficeChannelMirror::isActive() const
 QStringList OfficeChannelMirror::conversations() const
 {
     return m_conversations;
+}
+
+bool OfficeChannelMirror::canSend(const QString &conversation) const
+{
+    if (!ready() || !forkmesh::office::isOfficeConversation(conversation))
+        return false;
+    for (auto it = m_rooms.constBegin(); it != m_rooms.constEnd(); ++it)
+        if (it->conversation == conversation)
+            return true;
+    return false;
+}
+
+bool OfficeChannelMirror::sendMessage(const QString &conversation,
+                                      const QString &text)
+{
+    const QString message = text.trimmed().left(kMaxTextChars);
+    if (message.isEmpty() || !canSend(conversation))
+        return false;
+    for (auto it = m_rooms.begin(); it != m_rooms.end(); ++it) {
+        Room &room = it.value();
+        if (room.conversation != conversation)
+            continue;
+        if (room.pendingTexts.size() >= kMaxPendingTextsPerRoom) {
+            emit sendActivity(QStringLiteral("Office chat: send queue for %1 is full.")
+                                  .arg(conversation));
+            return false;
+        }
+        room.pendingTexts.enqueue(message);
+        emit sendActivity(QStringLiteral("Office chat: queued a message for %1.")
+                              .arg(conversation));
+        if (room.sender && room.senderConnected)
+            flushPending(room);
+        else if (!room.sender && !room.accessFetching)
+            fetchRoomAccess(room.id);
+        return true;
+    }
+    return false;
 }
 
 QUrl OfficeChannelMirror::signedUrl(const QString &path, const QString &ts,
@@ -256,14 +319,206 @@ void OfficeChannelMirror::fetchChannels()
         // Rooms the account can no longer read (removed from a private channel)
         // stop being polled; their already-shown messages stay in the view.
         const QStringList known = m_rooms.keys();
-        for (const QString &id : known)
-            if (!live.contains(id))
+        for (const QString &id : known) {
+            if (!live.contains(id)) {
+                failPending(m_rooms[id],
+                            QStringLiteral("office room is no longer available"));
+                discardSender(m_rooms[id]);
                 m_rooms.remove(id);
-        if (conversations == m_conversations)
-            return;
-        m_conversations = conversations;
-        emit conversationsChanged(m_conversations);
+            }
+        }
+        const bool changed = conversations != m_conversations;
+        if (changed) {
+            m_conversations = conversations;
+            emit conversationsChanged(m_conversations);
+        }
+        // The poll that launched this list request could not yet know the room
+        // ids. Fetch immediately after discovery instead of making first paint
+        // wait for the next 30-second timer tick.
+        for (const QString &id : std::as_const(live))
+            fetchHistory(id);
     });
+}
+
+void OfficeChannelMirror::fetchRoomAccess(const QString &channelId)
+{
+    if (!m_rooms.contains(channelId))
+        return;
+    Room &room = m_rooms[channelId];
+    if (room.accessFetching || room.sender)
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QUrl url = signedUrl(
+        QStringLiteral("/api/chat/channels/%1/room-access").arg(channelId), ts,
+        forkmesh::office::channelAccessProof(m_account, channelId, ts));
+    room.accessFetching = true;
+    emit sendActivity(QStringLiteral("Office chat: requesting encrypted room access "
+                                     "for %1.")
+                          .arg(room.conversation));
+    QNetworkReply *reply = m_network->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, channelId]() {
+                const QByteArray body = reply->readAll();
+                const bool failed = reply->error() != QNetworkReply::NoError;
+                const QString networkError = reply->errorString();
+                reply->deleteLater();
+                if (!m_rooms.contains(channelId))
+                    return;
+                Room &room = m_rooms[channelId];
+                room.accessFetching = false;
+                const QJsonObject payload =
+                    QJsonDocument::fromJson(body).object();
+                if (failed || payload.value(QStringLiteral("room")).toString().isEmpty()) {
+                    failPending(
+                        room,
+                        failed ? networkError
+                               : payload.value(QStringLiteral("error"))
+                                     .toString(QStringLiteral("room access denied")));
+                    return;
+                }
+                openSender(channelId, payload);
+            });
+}
+
+void OfficeChannelMirror::openSender(const QString &channelId,
+                                     const QJsonObject &payload)
+{
+    if (!m_rooms.contains(channelId))
+        return;
+    Room &room = m_rooms[channelId];
+    const QString roomName = payload.value(QStringLiteral("room")).toString();
+    const QString passphrase =
+        payload.value(QStringLiteral("passphrase")).toString();
+    QUrl endpoint =
+        m_apiBase.resolved(QUrl(payload.value(QStringLiteral("webSocketUrl")).toString()));
+    if (endpoint.scheme() == QLatin1String("https"))
+        endpoint.setScheme(QStringLiteral("wss"));
+    else if (endpoint.scheme() == QLatin1String("http"))
+        endpoint.setScheme(QStringLiteral("ws"));
+    if (roomName.isEmpty() || passphrase.isEmpty() || !endpoint.isValid() ||
+        (endpoint.scheme() != QLatin1String("ws") &&
+         endpoint.scheme() != QLatin1String("wss"))) {
+        failPending(room, QStringLiteral("relay returned invalid room access"));
+        return;
+    }
+
+    discardSender(room);
+    auto *sender = new ServerNode(
+        m_displayName.isEmpty() ? m_account : m_displayName, m_account, m_account,
+        m_selfId, endpoint, roomName, QString(), passphrase, this);
+    sender->setAccountKind(QStringLiteral("user"));
+    sender->addChannel(QLatin1Char('#') + room.name);
+    if (m_connectionAuthorizer)
+        sender->setConnectionAuthorizer(m_connectionAuthorizer);
+    room.sender = sender;
+    room.senderConnected = false;
+
+    connect(sender, &ChatBackend::messageArrived, this,
+            [this, channelId, sender](ChatMessage message) {
+                if (!m_rooms.contains(channelId) ||
+                    m_rooms[channelId].sender != sender)
+                    return;
+                Room &liveRoom = m_rooms[channelId];
+                message.conversation = liveRoom.conversation;
+                if (liveRoom.seenIds.contains(message.id))
+                    return;
+                rememberSeen(liveRoom, message.id);
+                emit messageArrived(message);
+            });
+    connect(sender, &ServerNode::connectionChanged, this,
+            [this, channelId, sender](bool connected) {
+                if (!m_rooms.contains(channelId) ||
+                    m_rooms[channelId].sender != sender)
+                    return;
+                Room &liveRoom = m_rooms[channelId];
+                liveRoom.senderConnected = connected;
+                if (connected) {
+                    emit sendActivity(
+                        QStringLiteral("Office chat: encrypted socket ready for %1.")
+                            .arg(liveRoom.conversation));
+                    flushPending(liveRoom);
+                    return;
+                }
+                liveRoom.sender = nullptr;
+                sender->shutdown();
+                sender->deleteLater();
+                if (!liveRoom.pendingTexts.isEmpty())
+                    fetchRoomAccess(channelId);
+            });
+    connect(sender, &ChatBackend::systemMessage, this,
+            [this, channelId](const QString &message) {
+                if (message.contains(QStringLiteral("error"), Qt::CaseInsensitive) ||
+                    message.contains(QStringLiteral("failed"), Qt::CaseInsensitive) ||
+                    message.contains(QStringLiteral("blocked"), Qt::CaseInsensitive))
+                    emit sendActivity(QStringLiteral("Office chat: %1").arg(message));
+            });
+
+    if (!sender->start()) {
+        room.sender = nullptr;
+        sender->deleteLater();
+        failPending(room, QStringLiteral("could not start encrypted room socket"));
+        return;
+    }
+
+    // A ticket or edge failure must not leave queued text stuck forever. A later
+    // send gets a fresh ticket instead of reusing a stale reconnect URL.
+    QTimer::singleShot(20000, this, [this, channelId, sender] {
+        if (!m_rooms.contains(channelId))
+            return;
+        Room &liveRoom = m_rooms[channelId];
+        if (liveRoom.sender != sender || liveRoom.senderConnected)
+            return;
+        liveRoom.sender = nullptr;
+        sender->shutdown();
+        sender->deleteLater();
+        failPending(liveRoom, QStringLiteral("encrypted room connection timed out"));
+    });
+}
+
+void OfficeChannelMirror::flushPending(Room &room)
+{
+    if (!room.sender || !room.senderConnected)
+        return;
+    while (!room.pendingTexts.isEmpty()) {
+        const QString text = room.pendingTexts.dequeue();
+        room.sender->sendChat(QLatin1Char('#') + room.name, text);
+        emit sendActivity(QStringLiteral("Office chat: sent an encrypted message "
+                                         "to %1.")
+                              .arg(room.conversation));
+    }
+}
+
+void OfficeChannelMirror::failPending(Room &room, const QString &reason)
+{
+    if (room.pendingTexts.isEmpty())
+        return;
+    const QString failure =
+        reason.trimmed().isEmpty() ? QStringLiteral("send failed") : reason.trimmed();
+    while (!room.pendingTexts.isEmpty())
+        emit messageSendFailed(room.conversation, room.pendingTexts.dequeue(), failure);
+    emit sendActivity(QStringLiteral("Office chat: send to %1 failed (%2).")
+                          .arg(room.conversation, failure));
+}
+
+void OfficeChannelMirror::rememberSeen(Room &room, const QString &messageId)
+{
+    if (messageId.isEmpty() || room.seenIds.contains(messageId))
+        return;
+    room.seenIds.insert(messageId);
+    room.seenOrder.enqueue(messageId);
+    while (room.seenOrder.size() > kSeenIdsPerRoom)
+        room.seenIds.remove(room.seenOrder.dequeue());
+}
+
+void OfficeChannelMirror::discardSender(Room &room)
+{
+    ServerNode *sender = room.sender.data();
+    room.sender = nullptr;
+    room.senderConnected = false;
+    if (!sender)
+        return;
+    sender->shutdown();
+    sender->deleteLater();
 }
 
 void OfficeChannelMirror::fetchHistory(const QString &channelId)
@@ -328,10 +583,7 @@ void OfficeChannelMirror::applyHistory(Room &room, const QJsonObject &payload)
             continue;
         if (room.seenIds.contains(message.id))
             continue;
-        room.seenIds.insert(message.id);
-        room.seenOrder.enqueue(message.id);
-        while (room.seenOrder.size() > kSeenIdsPerRoom)
-            room.seenIds.remove(room.seenOrder.dequeue());
+        rememberSeen(room, message.id);
         emit messageArrived(message);
     }
 }

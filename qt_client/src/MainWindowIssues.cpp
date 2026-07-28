@@ -1360,7 +1360,6 @@ void MainWindow::refreshIssuesRepoCombo()
                 m_agentComposeRepo->setCurrentIndex(restore);
         }
     }
-    reloadIssues();
 }
 
 QIcon MainWindow::issueAssigneeAvatar(const QString &name)
@@ -1382,6 +1381,7 @@ void MainWindow::reloadIssues()
 {
     if (!m_issueTable)
         return;
+    ++m_issueLoadGen; // supersede an older worker result
     if (issuesRepoIndex() < 0) {
         m_currentIssues.clear();
         m_currentLabels.clear();
@@ -1440,10 +1440,96 @@ void MainWindow::reloadIssues()
     refreshIssueLabels();
     updateIssueActionState();
     updateRepoIssueCount();
+    maybeRestoreIssueLooper();
+}
+
+void MainWindow::reloadIssuesInBackground()
+{
+    if (!m_issueTable || issuesRepoIndex() < 0)
+        return;
+    const int generation = ++m_issueLoadGen;
+    if (m_issueBackgroundLoadInFlight) {
+        m_issueBackgroundReloadQueued = true;
+        return;
+    }
+    m_issueBackgroundLoadInFlight = true;
+    const int repoIndex = issuesRepoIndex();
+    const IssueStore store = issueStoreForCurrentRepo();
+    const QString oldSignature = m_issuesLoadedSig;
+    struct LoadedIssues {
+        QString signature;
+        QList<Issue> issues;
+        QList<IssueLabel> labels;
+        QList<IssueMilestone> milestones;
+    };
+    runOffThread<LoadedIssues>(
+        [store, oldSignature] {
+            const forkmesh::BackgroundScope activity(
+                QStringLiteral("issues"), QStringLiteral("load issue metadata"),
+                forkmesh::ActionTelemetry::Execution::Worker);
+            LoadedIssues loaded;
+            loaded.signature = store.contentSignature();
+            if (!loaded.signature.isEmpty() &&
+                loaded.signature == oldSignature)
+                return loaded;
+            loaded.issues = store.loadAll();
+            loaded.labels = store.loadLabels();
+            loaded.milestones = store.loadMilestones();
+            return loaded;
+        },
+        [this, generation, repoIndex](LoadedIssues loaded) {
+            m_issueBackgroundLoadInFlight = false;
+            if (generation == m_issueLoadGen &&
+                repoIndex == issuesRepoIndex() &&
+                (loaded.signature.isEmpty() ||
+                 loaded.signature != m_issuesLoadedSig)) {
+                applyLoadedIssues(loaded.signature, std::move(loaded.issues),
+                                  std::move(loaded.labels),
+                                  std::move(loaded.milestones));
+            }
+            if (m_issueBackgroundReloadQueued) {
+                m_issueBackgroundReloadQueued = false;
+                reloadIssuesInBackground();
+            }
+        });
+}
+
+void MainWindow::applyLoadedIssues(const QString &signature, QList<Issue> issues,
+                                   QList<IssueLabel> labels,
+                                   QList<IssueMilestone> milestones)
+{
+    m_issuesLoadedSig = signature;
+    m_currentIssues = std::move(issues);
+    m_currentLabels = std::move(labels);
+    m_currentMilestones = std::move(milestones);
+
+    QSignalBlocker labelBlock(m_issueLabelFilter);
+    m_issueLabelFilter->clear();
+    m_issueLabelFilter->addItem(QStringLiteral("All labels"), QString());
+    for (const IssueLabel &label : std::as_const(m_currentLabels))
+        m_issueLabelFilter->addItem(label.name, label.name);
+    labelBlock.unblock();
+
+    QSignalBlocker milestoneBlock(m_issueMilestoneFilter);
+    m_issueMilestoneFilter->clear();
+    m_issueMilestoneFilter->addItem(QStringLiteral("All milestones"), QString());
+    for (const IssueMilestone &milestone : std::as_const(m_currentMilestones))
+        m_issueMilestoneFilter->addItem(milestone.title, milestone.title);
+    milestoneBlock.unblock();
+
+    refreshIssueList();
+    refreshIssueMilestones();
+    refreshIssueLabels();
+    updateIssueActionState();
+    updateRepoIssueCount();
 }
 
 void MainWindow::appendCreatedIssue(const IssueStore &store, const Issue &issue)
 {
+    // A worker started before this write contains an older snapshot. Supersede
+    // it before touching the live list so its queued apply cannot erase the new
+    // issue/detail pane after quick-add returns.
+    ++m_issueLoadGen;
     // We already have the exact Issue createIssue() just wrote to disk, so
     // splice it into the live list rather than calling reloadIssues(), which
     // would re-read and re-parse every issue file in the repo just to surface
@@ -1904,7 +1990,8 @@ void MainWindow::refreshIssueList()
     TableRepaintGuard repaintGuard(m_issueTable);
     m_issueTable->blockSignals(true);
     m_issueTable->setSortingEnabled(false);
-    m_issueTable->setRowCount(0);
+    QList<const Issue *> visible;
+    visible.reserve(m_currentIssues.size());
     for (const Issue &issue : m_currentIssues) {
         if (statusFilter == "Open" && issue.status != "open")
             continue;
@@ -1931,9 +2018,14 @@ void MainWindow::refreshIssueList()
             if (!hay.contains(search, Qt::CaseInsensitive))
                 continue;
         }
+        visible.append(&issue);
+    }
 
-        const int row = m_issueTable->rowCount();
-        m_issueTable->insertRow(row);
+    // Allocate the model once. Per-row insert signals forced QTableView through
+    // repeated geometry/layout passes even with painting disabled.
+    m_issueTable->setRowCount(visible.size());
+    for (int row = 0; row < visible.size(); ++row) {
+        const Issue &issue = *visible.at(row);
 
         auto *numItem = new QTableWidgetItem;
         // An int in DisplayRole both renders the number and sorts numerically.

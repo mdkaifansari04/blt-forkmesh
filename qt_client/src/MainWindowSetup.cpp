@@ -1781,8 +1781,30 @@ void MainWindow::startOfficeChannelMirror()
         m_officeChannelMirror->setSigner([this](const QByteArray &canonical) {
             return m_profileIdentity.signData(canonical);
         });
+        m_officeChannelMirror->setConnectionAuthorizer(
+            [this](const QUrl &endpoint) {
+                return authorizeFirewallConnection(QStringLiteral("WebSocket"),
+                                                   endpoint);
+            });
         connect(m_officeChannelMirror, &OfficeChannelMirror::messageArrived,
                 this, &MainWindow::onMessage);
+        connect(m_officeChannelMirror, &OfficeChannelMirror::sendActivity,
+                this, &MainWindow::logSystem);
+        connect(m_officeChannelMirror, &OfficeChannelMirror::messageSendFailed,
+                this,
+                [this](const QString &conversation, const QString &text,
+                       const QString &reason) {
+                    logSystem(QStringLiteral("Office chat: could not send to %1 "
+                                             "(%2).")
+                                  .arg(conversation, reason));
+                    // Preserve the user's text when an async ticket/socket
+                    // operation fails instead of silently eating the message.
+                    if (conversation == m_currentConversation &&
+                        m_messageInput && m_messageInput->text().isEmpty()) {
+                        m_messageInput->setText(text);
+                        m_messageInput->setFocus();
+                    }
+                });
         connect(m_officeChannelMirror, &OfficeChannelMirror::conversationsChanged,
                 this, [this](const QStringList &conversations) {
                     m_officeConversations = conversations;
@@ -1792,7 +1814,8 @@ void MainWindow::startOfficeChannelMirror()
                 });
     }
     m_officeChannelMirror->setApiBase(catalogApiUrl());
-    m_officeChannelMirror->setIdentity(node, m_profileIdentity.publicKey());
+    m_officeChannelMirror->setIdentity(node, m_profileIdentity.publicKey(),
+                                       chatDisplayName());
     m_officeChannelMirror->start(); // no-op once polling
 }
 

@@ -1220,7 +1220,8 @@ quint64 MainWindow::beginBackgroundTask(const QString &kind,
 void MainWindow::finishBackgroundTask(quint64 id, bool success,
                                       const QString &detail)
 {
-    forkmesh::BackgroundActivity::end(id);
+    forkmesh::BackgroundActivity::end(
+        id, success ? QStringLiteral("succeeded") : QStringLiteral("failed"));
     if (!detail.trimmed().isEmpty())
         logSystem(QStringLiteral("Background: %1").arg(detail.trimmed()));
     if (!success && !detail.trimmed().isEmpty())

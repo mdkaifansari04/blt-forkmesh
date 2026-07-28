@@ -13,10 +13,18 @@ const QLatin1String kAgentTrailer("ForkMesh-Agent:");
 // empty string when the commit has no ForkMesh-Agent trailer.
 QString agentTrailerIn(QStringView text)
 {
-    for (const auto &line : text.split(u'\n')) {
-        const QStringView t = line.trimmed();
+    // Avoid QStringView::split(): it materializes an entry for every line in a
+    // potentially multi-megabyte mbox merely to find one short trailer. This
+    // function runs for every visible pull during list refresh.
+    for (qsizetype start = 0; start <= text.size();) {
+        const qsizetype newline = text.indexOf(u'\n', start);
+        const qsizetype end = newline < 0 ? text.size() : newline;
+        const QStringView t = text.sliced(start, end - start).trimmed();
         if (t.startsWith(kAgentTrailer))
             return t.mid(kAgentTrailer.size()).trimmed().toString();
+        if (newline < 0)
+            break;
+        start = newline + 1;
     }
     return QString();
 }

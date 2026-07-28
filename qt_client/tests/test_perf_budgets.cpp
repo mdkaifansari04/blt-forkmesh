@@ -10,15 +10,20 @@
 // window-tests' functional coverage.
 
 #include "../src/MainWindow.h"
+#include "../src/MainWindowInternal.h"
+#include "../src/ActionTelemetry.h"
+#include "../src/BackgroundActivity.h"
 
 #include <QApplication>
 #include <QByteArray>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QProcess>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QTextEdit>
 
 namespace {
 
@@ -152,6 +157,40 @@ int main(int argc, char *argv[])
     checkBudget(QStringLiteral("startup (ctor -> first paint)"),
                 startupTimer.elapsed(), startupBudgetMs);
 
+    // --- Pathological rich-text diff: a single generated file used to bypass
+    // per-file streaming and block QTextDocument layout for 2-12 seconds. The
+    // renderer now keeps a bounded rich-text preview while the authoritative
+    // patch remains in Git/PR state.
+    QString hugeDiffHtml =
+        QStringLiteral("<a name=\"file-0\"></a><div class='fileblock'>"
+                       "<div class='fileheader'>large/generated.json</div>"
+                       "<table class='difftable'>");
+    const QString row =
+        QStringLiteral("<tr><td class='ln'>123</td><td class='code add'>"
+                       "+&quot;generated-key&quot;: &quot;generated-value&quot;"
+                       "</td></tr>");
+    hugeDiffHtml.reserve(4 * 1024 * 1024);
+    while (hugeDiffHtml.size() < 4 * 1024 * 1024)
+        hugeDiffHtml += row;
+    hugeDiffHtml += QStringLiteral("</table></div>");
+    QTextEdit hugeDiffView;
+    hugeDiffView.setObjectName(QStringLiteral("perfHugeDiff"));
+    const qint64 diffBudgetMs =
+        envBudgetMs("FORKMESH_PERF_HUGE_DIFF_BUDGET_MS", 150);
+    QElapsedTimer hugeDiffTimer;
+    hugeDiffTimer.start();
+    forkmesh::ui::renderDiffStreamed(
+        &hugeDiffView, hugeDiffHtml,
+        forkmesh::ui::diffStyleSheet());
+    QApplication::processEvents();
+    checkBudget(QStringLiteral("single-file 4 MiB diff first paint"),
+                hugeDiffTimer.elapsed(), diffBudgetMs);
+    if (!hugeDiffView.toPlainText().contains(
+            QStringLiteral("content omitted"))) {
+        qCritical("FAIL: oversized diff was not replaced by a bounded preview");
+        ++failures;
+    }
+
     // --- Repo-detail tab switches, including each tab's first (lazy-build)
     // open -- the Commits tab and the "and more" list tabs (Worktrees,
     // Releases, Mirror nodes) were exactly the ones found slow by feel.
@@ -162,8 +201,13 @@ int main(int argc, char *argv[])
     if (initGitRepo(repoDir)) {
         const int idx =
             window.testAddLocalRepository("perf", "budgetrepo", repoDir.path());
+        QElapsedTimer repoOpenTimer;
+        repoOpenTimer.start();
         window.testOpenRepository(idx);
         QApplication::processEvents();
+        checkBudget(QStringLiteral("repository open first paint"),
+                    repoOpenTimer.elapsed(),
+                    envBudgetMs("FORKMESH_PERF_REPO_OPEN_BUDGET_MS", 250));
 
         struct TabCase {
             int id;
@@ -184,6 +228,30 @@ int main(int argc, char *argv[])
         }
     } else {
         qCritical("FAIL: could not set up a temporary repo for tab-switch timing");
+        ++failures;
+    }
+
+    // The action journal must contain a matching start/finish pair and must have
+    // flushed before shutdown returns.
+    const QString actionLog = dataDir.filePath(QStringLiteral("actions.jsonl"));
+    forkmesh::ActionTelemetry::initialize(actionLog);
+    const quint64 probe = forkmesh::BackgroundActivity::begin(
+        QStringLiteral("test"), QStringLiteral("perf telemetry probe"),
+        forkmesh::ActionTelemetry::Execution::Worker);
+    forkmesh::BackgroundActivity::end(probe, QStringLiteral("succeeded"));
+    forkmesh::ActionTelemetry::shutdown();
+    QFile actionFile(actionLog);
+    const QByteArray actionBytes =
+        actionFile.open(QIODevice::ReadOnly) ? actionFile.readAll() : QByteArray();
+    if (actionBytes.count("\"detail\":\"perf telemetry probe\"") == 2 &&
+        actionBytes.contains("\"event\":\"started\"") &&
+        actionBytes.contains("\"event\":\"finished\"") &&
+        actionBytes.contains("\"outcome\":\"succeeded\"")) {
+        qInfo("PASS: asynchronous action journal records start, finish, duration, "
+              "execution context and outcome");
+    } else {
+        qCritical("FAIL: asynchronous action journal did not flush a complete "
+                  "start/finish pair");
         ++failures;
     }
 
