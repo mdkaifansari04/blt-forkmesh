@@ -29,6 +29,8 @@ ENTRY = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
 CHAT = (ROOT / "public" / "chat.js").read_text(encoding="utf-8")
 HEADER_JS = (ROOT / "public" / "site-header.js").read_text(encoding="utf-8")
 HEADER_CSS = (ROOT / "public" / "site-header.css").read_text(encoding="utf-8")
+DASHBOARD_CHAT = (ROOT / "public" / "dashboard-chat.js").read_text(
+    encoding="utf-8")
 
 
 def _function_source(name: str) -> str:
@@ -139,3 +141,43 @@ def test_header_badge_uses_activity_counters_and_shared_baseline():
 def test_header_css_styles_icon_and_badge():
     assert ".fm-header-chat {" in HEADER_CSS
     assert ".fm-header-chat-badge {" in HEADER_CSS
+
+
+# --- own messages never count as unread --------------------------------------
+
+def test_own_messages_advance_the_header_baseline():
+    # adhoc #426: the badge is a delta against the stored baseline, so a line
+    # this browser contributed to #general showed up as unread on every other
+    # page of the site. Sending advances the baseline by one instead.
+    assert "function noteOwnChatActivity()" in CHAT
+    assert "noteOwnChatActivity();" in CHAT
+    # Only retained public-world frames reach the counter the badge reads; a
+    # private channel, a DM, or an unretained oversized file frame must not
+    # move the baseline.
+    assert (
+        'if (envelope.persist && scope === "public-world-general" '
+        "&& !plain.file) {"
+    ) in CHAT
+    # Without an existing baseline the header still seeds one silently.
+    assert "if (!raw) return;" in CHAT
+    # The World and dashboard talk to the same room through their own client,
+    # so it keeps the same baseline (this is where the World's CHAT bar sends).
+    assert "function noteOwnChatActivity()" in DASHBOARD_CHAT
+    assert 'const CHAT_ACTIVITY_SEEN_KEY = "forkmesh.chat.activitySeen";' in (
+        DASHBOARD_CHAT
+    )
+    assert (
+        "if (envelope.persist && PUBLIC_WORLD_GENERAL && !plain.file) {"
+    ) in DASHBOARD_CHAT
+
+
+def test_own_account_messages_never_bump_a_room_badge():
+    # selfId is per-browser, so the same account talking from another tab,
+    # phone, or the desktop client used to light an unread badge for a message
+    # the user had just typed. The account name on the frame settles it.
+    assert "function isOwnChatMessage(record)" in CHAT
+    assert "} else if (!isOwnChatMessage(record)) {" in CHAT
+    assert 'String(userSession()?.nodeName || "").trim().toLowerCase()' in CHAT
+    # Weaker identity check, so it gates unread bookkeeping only — editing and
+    # deleting still require the senderId match.
+    assert "record.senderId !== selfId" in CHAT
