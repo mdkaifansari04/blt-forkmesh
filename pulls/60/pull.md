@@ -4,7 +4,7 @@ number: 60
 title: Chat: harden recovery and hydrate actions before rendering
 base: api-pr/20260728-office-aquarium
 head: api-pr/20260728-chat-reliability-after-aquarium
-status: open
+status: merged
 ts: 1785253086240
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
