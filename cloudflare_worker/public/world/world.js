@@ -21502,7 +21502,10 @@ class ForkMeshWorld extends HTMLElement {
         // Preserve the last verified snapshot during a transient HTTPS
         // failure; the regular poll retries on its own cadence.
       });
-    }, 600);
+    // Give the catalog purge/publication transaction a moment to become
+    // visible at the edge. The verified-effect arm remains live through the
+    // regular fallback polls if this eager read is still early.
+    }, 1_500);
   }
 
   setupBroadcastChannel() {

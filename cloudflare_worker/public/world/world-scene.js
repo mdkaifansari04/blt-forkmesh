@@ -17535,7 +17535,13 @@ export function createWorldScene({
     }
     pendingMirrorPushEffects.set(node, {
       commit,
-      expiresAt: Date.now() + 15_000,
+      // The push frame arrives immediately after the relay accepts the signed
+      // publication, but edge caches and a busy mirror can take longer than
+      // the old 15-second window to expose the matching catalog snapshot.
+      // Keep the doorbell armed through two normal catalog polls; the effect
+      // still cannot fire unless that signed record confirms this exact node
+      // and commit prefix.
+      expiresAt: Date.now() + 120_000,
     });
     return true;
   }
