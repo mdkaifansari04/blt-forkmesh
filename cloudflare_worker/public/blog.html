@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Blog · ForkMesh</title>
-    <meta name="description" content="ForkMesh blog posts for every feature in the distributed Git mesh: mirrors, signed collaboration, AI agents, CI, encrypted chat, rewards, and apps.">
+    <meta name="description" content="ForkMesh feature explainers and product updates from the distributed Git mesh: mirrors, signed collaboration, AI agents, CI, chat, rewards, and apps.">
     <meta name="application-name" content="ForkMesh">
     <meta name="apple-mobile-web-app-title" content="ForkMesh">
     <meta name="theme-color" content="#090909">
@@ -22,10 +22,10 @@
     <meta property="og:url" content="https://forkmesh.com/blog">
     <meta property="og:site_name" content="ForkMesh">
     <meta property="og:title" content="ForkMesh Blog">
-    <meta property="og:description" content="Every ForkMesh feature explained as a short technical blog post.">
-    <meta property="og:image" content="https://forkmesh.com/assets/blog/features/desktop-node-mirrors.webp">
+    <meta property="og:description" content="ForkMesh feature explainers and product updates from the distributed Git mesh.">
+    <meta property="og:image" content="https://forkmesh.com/assets/blog/features/forkmesh-forever.webp">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/desktop-node-mirrors.webp">
+    <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/forkmesh-forever.webp">
     <style>
       :root, html.dark { --blog1-bg:#000; --blog1-paper:#030303; --blog1-line:#252525; --blog1-soft-line:#151515; --blog1-text:#f6f6f2; --blog1-muted:#8f8f8f; --blog1-dim:#666; --blog1-green:#3fb950; --blog1-cyan:#76d8f6; --blog1-hover-line:rgba(246,246,242,.24); --blog1-hover-fill:rgba(255,255,255,.045); --blog1-hover-ring:rgba(255,255,255,.08); --blog1-popup-sheen:rgba(255,255,255,.11); --blog1-popup-glow:rgba(255,255,255,.07); --blog1-stripe:rgba(255,255,255,.075); --blog1-placeholder:#0a0a0a; --blog1-chip-bg:#f4f4f1; --blog1-chip-text:#151515; --blog1-panel-bg-1:rgba(18,18,18,.98); --blog1-panel-bg-2:rgba(3,3,3,.98); --blog1-panel-border:rgba(246,246,242,.14); --blog1-close-bg:#111; --blog1-field-bg:rgba(0,0,0,.44); --blog1-field-focus-bg:rgba(255,255,255,.03); --blog1-result-bg:rgba(255,255,255,.025); --blog1-search-icon-color:rgba(246,246,242,.68); --blog1-search-trigger-bg:rgba(255,255,255,.01); --blog1-serif:Georgia,"Times New Roman",serif; --blog1-sans:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; --blog1-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
       html.light { --blog1-bg:#fff; --blog1-paper:#fff; --blog1-line:#d9d9de; --blog1-soft-line:#e7e7ea; --blog1-text:#111113; --blog1-muted:#5c5c66; --blog1-dim:#74747e; --blog1-hover-line:rgba(17,17,19,.24); --blog1-hover-fill:rgba(17,17,19,.045); --blog1-hover-ring:rgba(17,17,19,.08); --blog1-popup-sheen:rgba(17,17,19,.11); --blog1-popup-glow:rgba(17,17,19,.07); --blog1-stripe:rgba(17,17,19,.05); --blog1-placeholder:#ececef; --blog1-chip-bg:#111113; --blog1-chip-text:#fff; --blog1-panel-bg-1:rgba(255,255,255,.98); --blog1-panel-bg-2:rgba(246,246,247,.98); --blog1-panel-border:rgba(17,17,19,.12); --blog1-close-bg:#ececef; --blog1-field-bg:rgba(17,17,19,.05); --blog1-field-focus-bg:rgba(17,17,19,.03); --blog1-result-bg:rgba(17,17,19,.03); --blog1-search-icon-color:rgba(17,17,19,.55); --blog1-search-trigger-bg:rgba(17,17,19,.015); }
@@ -53,19 +53,19 @@
         <div>
           <p class="blog1-eyebrow">Blog</p>
           <h1>Our latest <span class="blog1-mono">articles</span></h1>
-          <p class="blog1-subhead">Every ForkMesh feature now has a short technical post, generated from the live feature catalog and paired with its own visual.</p>
+          <p class="blog1-subhead">Every ForkMesh feature now has a short technical post, and product updates from the live project appear alongside them.</p>
           <a class="blog1-feed-link" href="/blog/rss.xml">RSS feed<span aria-hidden="true">→</span></a>
         </div>
-        <button class="blog1-search-trigger" type="button" aria-haspopup="dialog" aria-controls="blog-search-modal" data-blog-search-open><span class="blog1-search-icon" aria-hidden="true">⌕</span><span>Search every feature post</span><span class="blog1-search-key" aria-hidden="true">/</span></button>
+        <button class="blog1-search-trigger" type="button" aria-haspopup="dialog" aria-controls="blog-search-modal" data-blog-search-open><span class="blog1-search-icon" aria-hidden="true">⌕</span><span>Search every article</span><span class="blog1-search-key" aria-hidden="true">/</span></button>
       </section>
       <main class="blog1-main">
-        <a class="blog1-featured" href="/blog/building-forkmesh-in-the-open/">
-          <div class="blog1-featured-image blog1-has-art"><img class="blog1-cover-img" src="/assets/blog/features/building-forkmesh-in-the-open.webp" alt=""></div>
+        <a class="blog1-featured" href="/blog/forkmesh-forever/">
+          <div class="blog1-featured-image blog1-has-art"><img class="blog1-cover-img" src="/assets/blog/features/forkmesh-forever.webp" alt=""></div>
           <div class="blog1-featured-copy">
-            <div class="blog1-meta"><span class="blog1-tag">Featured</span><span>July 27, 2026</span><span class="blog1-dot"></span><span>Product update</span></div>
-            <h2>Building ForkMesh in the open</h2>
-            <p>A field report from the current build round: a smoother World and Office, stronger mirror workflows, clearer pull-request review, and coding agents that work with the team.</p>
-            <span class="blog1-button">Read the post</span>
+            <div class="blog1-meta"><span class="blog1-tag">Featured</span><span>July 28, 2026</span><span class="blog1-dot"></span><span>Product update · 2:27 video</span></div>
+            <h2>ForkMesh Forever: a full-song tour through the mesh</h2>
+            <p>A 2:27 trip through ForkMesh World: mirror a repository, bring a node online, route a clone, carry signed collaboration, and turn agent work into a reviewed change.</p>
+            <span class="blog1-button">Watch the film</span>
           </div>
         </a>
         <div class="blog1-divider"></div>
@@ -76,6 +76,14 @@
             <h2>What we're building now</h2>
           </div>
           <div class="blog1-grid">
+          <a class="blog1-card" href="/blog/forkmesh-forever/" data-published="2026-07-28" data-section="updates">
+            <img class="blog1-post-image blog1-has-art" src="/assets/blog/features/forkmesh-forever.webp" alt="ForkMesh Forever end frame showing connected mirror nodes around the message Run a node. Mirror a repo. Keep code available.">
+            <div class="blog1-card-copy">
+              <p class="blog1-card-meta">Product update · July 28, 2026 · 2:27 video</p>
+              <h3>ForkMesh Forever: a full-song tour through the mesh</h3>
+              <p>A 2:27 trip through ForkMesh World: mirror a repository, bring a node online, route a clone, carry signed collaboration, and turn agent work into a reviewed change.</p>
+            </div>
+          </a>
           <a class="blog1-card" href="/blog/building-forkmesh-in-the-open/" data-published="2026-07-27" data-section="updates">
             <img class="blog1-post-image blog1-has-art" src="/assets/blog/features/building-forkmesh-in-the-open.webp" alt="ForkMesh Office, task board, mirror node, and coding agents in a moonlit forest">
             <div class="blog1-card-copy">
@@ -754,6 +762,11 @@
           <div class="blog1-search-panel-head"><div><p class="blog1-eyebrow">Search</p><h2 id="blog-search-title">Find a ForkMesh article</h2></div><button class="blog1-search-close" type="button" data-blog-search-close>Close</button></div>
           <label class="blog1-search-field" for="blog-search-input"><span class="blog1-search-icon" aria-hidden="true">⌕</span><input id="blog-search-input" type="search" autocomplete="off" placeholder="Search mirrors, AI, bounties, chat..."><span class="blog1-search-hint" aria-hidden="true">Esc to close</span></label>
           <div class="blog1-search-results" aria-live="polite">
+            <a class="blog1-search-result" href="/blog/forkmesh-forever/" data-blog-search-result data-blog-search-text="forkmesh forever full song explainer video world repository mirror node clone https signed issues pull requests codex claude code agents worktrees review">
+              <span class="blog1-search-result-meta">Product update · July 28, 2026 · 2:27 video</span>
+              <span class="blog1-search-result-title">ForkMesh Forever: a full-song tour through the mesh</span>
+              <span class="blog1-search-result-copy">A 2:27 trip through ForkMesh World: mirror a repository, bring a node online, route a clone, carry signed collaboration, and turn agent work into a reviewed change.</span>
+            </a>
             <a class="blog1-search-result" href="/blog/building-forkmesh-in-the-open/" data-blog-search-result data-blog-search-text="building forkmesh in the open product update world office mirrors pull request review claude codex coding agents headless nodes">
               <span class="blog1-search-result-meta">Product update · July 27, 2026</span>
               <span class="blog1-search-result-title">Building ForkMesh in the open</span>
