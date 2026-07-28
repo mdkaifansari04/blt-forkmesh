@@ -55,6 +55,17 @@
             "sig": "balnv7KcLB40OyCmuVekc7YZxhxtXvoNvy7PXm8SbKYllB9X65aABV9FpVwf2C-64NMB94y7FLuyIWyKEoXtAQ",
             "ts": 1785207634263,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-532-add-wave-button\".",
+            "id": "97762093-db64-4acc-af4b-64a61a3f1e9a",
+            "sig": "131WOIF3fXEmTAvwyD1uR0MndAqq4R-mUaloWJ0y05gGbSzXEogMVgb9rUEESx1VDpaloU2tLxXS3Au02OWHCA",
+            "ts": 1785209843153,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -68,6 +79,6 @@
     "startDate": 0,
     "status": "open",
     "title": "Add wave button",
-    "updatedAt": 1785207634263,
+    "updatedAt": 1785209843153,
     "votes": 0
 }
