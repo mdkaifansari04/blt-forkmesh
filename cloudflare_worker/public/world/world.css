@@ -3576,6 +3576,62 @@ forkmesh-world.world-office-active .world-quick-dock {
   background: var(--detail-color);
 }
 
+.world-danger-zone {
+  margin-top: 22px;
+  border: 1px solid #ff745f;
+  background: #28120f;
+  padding: 14px;
+}
+
+.world-danger-zone h3 {
+  margin: 0 0 6px;
+  color: #ff9a89;
+  font-size: 0.9rem;
+}
+
+.world-danger-zone p,
+.world-danger-zone label,
+.world-danger-zone [data-world-admin-delete-status] {
+  color: #dca79f;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.world-danger-zone form,
+.world-danger-zone label {
+  display: grid;
+  gap: 8px;
+}
+
+.world-danger-zone form {
+  margin-top: 12px;
+}
+
+.world-danger-zone input {
+  border: 1px solid #965347;
+  background: #0d1110;
+  padding: 8px 10px;
+  color: var(--world-copy);
+  font: 0.72rem "ForkMesh Mono", monospace;
+}
+
+.world-danger-action {
+  min-height: 36px;
+  border: 1px solid #ff745f;
+  background: #8e2d22;
+  padding: 0 12px;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.world-danger-action:hover,
+.world-danger-action:focus-visible {
+  background: #b3392b;
+  outline: 2px solid #ff9a89;
+  outline-offset: 2px;
+}
+
 .world-repositories-panel {
   margin-top: 20px;
   border-top: 1px solid var(--world-line);

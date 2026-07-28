@@ -2391,6 +2391,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "done:bulk-import-retirement", task: "54 archived legacy imports retired", estimate: "deployed · in QA", done: true },
   { key: "done:engineering-agent-authorization", task: "Engineering-only agent access enforced", estimate: "deployed · in QA", done: true },
   { key: "done:dashboard-home-data", task: "Org repos + live blog on Dashboard", estimate: "deployed · in QA", done: true },
+  { key: "done:admin-node-delete", task: "Typed-confirmation admin node removal", estimate: "ready for deploy · in QA", done: true },
 ]);
 
 function worldTaskBulletinSeed(value) {

@@ -10656,6 +10656,27 @@ class ForkMeshWorld extends HTMLElement {
             : '<p class="world-empty-state">Repository identity was not reported for this live node.</p>'
         }
         <p class="world-panel-footnote">Resource measurements and repository counters are operator-reported, bounded values signed into the public catalog. They are not independent performance audits and may be stale between publications.</p>
+        ${
+          this.identity?.isAdmin === true
+            ? `<div class="world-danger-zone">
+                <h3>Permanently delete node</h3>
+                <p>This removes the node account, its published repositories, endpoint registration, sessions, and server-side state. It does not destroy the provider VM.</p>
+                <form data-world-admin-delete-node data-node-name="${escapeHTML(
+                  String(node?.name || node?.machineName || "").toLowerCase(),
+                )}">
+                  <label>Type <code>DELETE ${escapeHTML(
+                    String(node?.name || node?.machineName || "").toLowerCase(),
+                  )}</code> to confirm
+                    <input name="confirmation" autocomplete="off" required />
+                  </label>
+                  <div class="world-detail-actions">
+                    <button class="world-danger-action" type="submit">Delete this node entirely</button>
+                  </div>
+                  <span data-world-admin-delete-status></span>
+                </form>
+              </div>`
+            : ""
+        }
       </section>`;
   }
 
@@ -10682,6 +10703,46 @@ class ForkMeshWorld extends HTMLElement {
       </div>`;
     this.showDetailOverlay(detail, backdrop, { returnFocus });
     this.wireMirrorNodeAgentWorkspace(node);
+    this.wireMirrorNodeAdminDelete(node);
+  }
+
+  wireMirrorNodeAdminDelete(node) {
+    const form = this.$("[data-world-admin-delete-node]");
+    if (!form || this.identity?.isAdmin !== true) return;
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const nodeName = String(form.dataset.nodeName || "").trim().toLowerCase();
+      const confirmation = String(
+        new FormData(form).get("confirmation") || "",
+      ).trim();
+      const status = form.querySelector("[data-world-admin-delete-status]");
+      if (confirmation !== `DELETE ${nodeName}`) {
+        if (status) status.textContent = `Type DELETE ${nodeName} exactly.`;
+        return;
+      }
+      if (!window.confirm(`Permanently delete ${nodeName} from ForkMesh?`)) {
+        return;
+      }
+      const controls = [...form.elements];
+      controls.forEach((control) => { control.disabled = true; });
+      if (status) status.textContent = "Deleting node and scoped state…";
+      try {
+        await this.postJSON("/api/world/admin/nodes/delete", {
+          nodeName,
+          confirmation,
+        });
+        this.toast(`${nodeName} was permanently removed from ForkMesh.`);
+        this.closeLandmark();
+        await this.loadWorldData();
+      } catch (error) {
+        controls.forEach((control) => { control.disabled = false; });
+        if (status) {
+          status.textContent = `Delete failed: ${String(
+            error?.message || "unknown error",
+          )}`;
+        }
+      }
+    });
   }
 
   openAgentBotDetail(botId, { returnFocus = null } = {}) {

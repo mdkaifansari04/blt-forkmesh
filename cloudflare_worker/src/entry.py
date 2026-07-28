@@ -8449,6 +8449,12 @@ WORLD_QA_CARDS = (
      "it opens the secret platform is_admin console, scrolls to Operational "
      "alerts, and focuses the checkbox used to enable or disable those emails. "
      "Confirm a non-admin account cannot open or change it."),
+    ("admin-node-delete", "Admin-only permanent node deletion",
+     "As a platform is_admin, open a disposable node cabinet and confirm the "
+     "danger action requires typing DELETE plus the exact node name. Cancel "
+     "once, then delete the disposable node and confirm its cabinet, catalog "
+     "repositories, endpoint, and owner fleet entry disappear. Confirm the "
+     "control is absent for a non-admin."),
     ("qa-history-routing", "QA history tabs and routing",
      "Use the physical Cards, Pass, Fail, and Unsure tabs. Page the shared task "
      "lists, select a task, then as an authorized maintainer send one back to "
@@ -14453,6 +14459,74 @@ async def world_moderation_handler(env, request):
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
     )
+
+
+async def world_admin_delete_node_handler(env, request):
+    """Permanently remove one named node after an exact admin confirmation."""
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "POST"})
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response(
+            {"error": "invalid_json"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+    actor = await _authed_account_name(env, request, data)
+    if not actor or not await _is_admin(env, actor):
+        return json_response(
+            {"error": "not_admin"}, status=403,
+            cache_control="no-store, max-age=0, must-revalidate")
+    target = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    confirmation = clean_string(data.get("confirmation", ""), 128)
+    if not valid_node_name(target):
+        return json_response({"error": "invalid_node_name"}, status=400)
+    required = "DELETE " + target
+    if confirmation != required:
+        return json_response(
+            {"error": "confirmation_mismatch",
+             "requiredConfirmation": required}, status=400)
+    if target == actor or target in ("forkmesh", "forkmesh-mainnode"):
+        await _audit_sensitive_action(
+            env, actor, "world.node_delete", "node", target, "denied",
+            {"reason": "protected_node"})
+        return json_response({"error": "protected_node"}, status=409)
+    target_bi, record = await _account_row(env, target)
+    node_row = await d1_first(
+        env, "SELECT node_bi FROM nodes WHERE node_bi=?", target_bi)
+    if not record or not node_row:
+        return json_response({"error": "node_not_found"}, status=404)
+    if await _is_admin(env, target):
+        await _audit_sensitive_action(
+            env, actor, "world.node_delete", "node", target, "denied",
+            {"reason": "admin_node"})
+        return json_response({"error": "protected_node"}, status=409)
+
+    owner = clean_string(record.get("owner", ""), MAX_NODE_NAME).lower()
+    if owner:
+        owner_bi, owner_record = await _account_row(env, owner)
+        if owner_record:
+            owner_record["nodes"] = [
+                node for node in _owned_nodes(owner_record)
+                if str(node).lower() != target
+            ]
+            await _save_account(env, owner_bi, owner_record)
+
+    # These node-scoped operational rows do not belong to the account
+    # namespace helper. Private routes cascade from the endpoint row.
+    await d1_run(
+        env, "DELETE FROM reward_node_observations WHERE node_bi=?", target_bi)
+    await d1_run(
+        env, "DELETE FROM mirror_https_endpoints WHERE node_bi=?", target_bi)
+    await _delete_account_namespace(env, target_bi, record)
+    await _audit_sensitive_action(
+        env, actor, "world.node_delete", "node", target, "success",
+        {"owner": owner})
+    return json_response(
+        {"ok": True, "nodeDeleted": target},
+        cache_control="no-store, max-age=0, must-revalidate")
 
 
 async def _world_layout_objects(env):
@@ -37777,6 +37851,11 @@ class Default(WorkerEntrypoint):
         if url.path in (
                 "/api/world/moderation", "/api/world/moderation/"):
             return await world_moderation_handler(self.env, request)
+
+        if url.path in (
+                "/api/world/admin/nodes/delete",
+                "/api/world/admin/nodes/delete/"):
+            return await world_admin_delete_node_handler(self.env, request)
 
         if (
             url.path == "/api/world/office/marketing-tasks"
