@@ -172,9 +172,11 @@ def test_client_treats_the_frame_as_a_doorbell_and_coalesces_one_refresh():
     # The announced name is sanitized before any display and the frame never
     # drives scene state directly — only a refresh of the signed payload.
     assert "sanitizePresenceText(message?.node" in handler
-    assert "refreshMirrorCatalogs()" in handler
+    assert "refreshMirrorCatalogs({ force: true })" in handler
     assert "clearTimeout(this.mirrorPushRefreshTimer)" in handler
     assert "spawnPushSurge" not in APP
+    assert "armMirrorPushEffect?.(node, commit)" in handler
+    assert "!/^[0-9a-f]{12}$/.test(commit)" in handler
     assert "window.clearTimeout(this.mirrorPushRefreshTimer);" in APP
 
 
@@ -187,6 +189,10 @@ def test_scene_plays_a_bounded_disposed_surge_from_verified_commit_changes():
     assert "cabinet?.userData?.nodeRecord?.commit" in update
     assert "nextCommit !== priorCommit" in update
     assert "spawnPushSurge(cabinet.position)" in update
+    assert "verifiedPendingPush" in update
+    assert "nextCommit.toLowerCase().startsWith(pendingPush.commit)" in update
+    assert "function armMirrorPushEffect(nodeName, commitPrefix)" in SCENE
+    assert "expiresAt: Date.now() + 15_000" in SCENE
     surge = SCENE[SCENE.index("function spawnPushSurge"):]
     surge = surge[:surge.index("function playRewardEvent")]
     # A burst of simultaneous publishes stays within a fixed effect budget.

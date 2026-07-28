@@ -17,6 +17,7 @@ SCENE = (ROOT / "public" / "world" / "world-scene.js").read_text(
     encoding="utf-8")
 CSS = (ROOT / "public" / "world" / "world.css").read_text(encoding="utf-8")
 MIGRATION = ROOT / "migrations" / "0098_world_qa_reviews.sql"
+ITEM_MIGRATION = ROOT / "migrations" / "0099_world_qa_items.sql"
 
 
 def _run(awaitable):
@@ -77,7 +78,21 @@ def _handler_runtime():
             "reviewed_at": reviewed_at,
         }
 
-    async def d1_all(_env, _sql, account_bi):
+    async def d1_all(_env, sql, *params):
+        if "FROM world_qa_items" in sql:
+            return []
+        if "GROUP BY item_key,verdict" in sql:
+            totals = {}
+            for value in rows.values():
+                pair = (value["item_key"], value["verdict"])
+                totals[pair] = totals.get(pair, 0) + 1
+            return [
+                {"item_key": key, "verdict": verdict, "count": count}
+                for (key, verdict), count in totals.items()
+            ]
+        if "COUNT(DISTINCT account_bi)" in sql:
+            return [{"testers": len({owner for owner, _key in rows})}]
+        account_bi = params[0]
         return [
             dict(value)
             for (owner, _key), value in rows.items()
@@ -124,9 +139,13 @@ def test_qa_schema_is_account_scoped_and_bounded():
     assert "username" not in migration.lower()
     assert "ip" not in migration.lower().split("create table", 1)[1]
     assert "world_qa_reviews" in SCHEMA
+    item_sql = ITEM_MIGRATION.read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS world_qa_items" in item_sql
+    assert "how_to_test TEXT NOT NULL" in item_sql
+    assert "world_qa_items" in SCHEMA
 
 
-def test_qa_results_are_private_per_account_and_update_totals():
+def test_qa_votes_are_per_account_with_global_aggregate_totals():
     handler, rows = _handler_runtime()
     anonymous = _run(handler(None, _Request(account="")))
     assert anonymous["status"] == 200
@@ -144,11 +163,17 @@ def test_qa_results_are_private_per_account_and_update_totals():
     assert saved["payload"]["reviews"]["office-doorway"]["verdict"] == "pass"
     assert saved["payload"]["stats"]["pass"] == 1
     assert saved["payload"]["stats"]["reviewed"] == 1
+    assert saved["payload"]["globalStats"]["pass"] == 1
+    assert saved["payload"]["globalStats"]["testers"] == 1
+    assert saved["payload"]["globalReviews"]["office-doorway"] == {
+        "pass": 1, "fail": 0, "unsure": 0, "total": 1,
+    }
     assert ("bi:alice", "office-doorway") in rows
 
     bob = _run(handler(None, _Request(account="bi:bob")))
     assert bob["payload"]["reviews"] == {}
     assert bob["payload"]["stats"]["reviewed"] == 0
+    assert bob["payload"]["globalStats"]["pass"] == 1
 
 
 def test_qa_write_rejects_cross_origin_unknown_items_and_bad_verdicts():
@@ -172,9 +197,10 @@ def test_world_has_one_direct_physical_card_with_swipes_and_stats():
     for contract in (
         'const WORLD_QA_ENDPOINT = "/api/world/qa"',
         "async refreshQaDeck(",
-        "async recordQaVerdict(verdict)",
-        "onQaVerdict: ({ verdict }) => void this.recordQaVerdict(verdict)",
-        "currentIndex: this.qaCardIndex",
+            "async recordQaVerdict(verdict)",
+            "onQaVerdict: ({ verdict }) => void this.recordQaVerdict(verdict)",
+            "currentIndex: this.qaCardIndex",
+            "globalStats: this.qaDeck.globalStats",
     ):
         assert contract in WORLD
     for contract in (
@@ -184,6 +210,11 @@ def test_world_has_one_direct_physical_card_with_swipes_and_stats():
         'arrow: "←", label: "FAIL"',
         'arrow: "→", label: "PASS"',
         'arrow: "↓", label: "UNSURE"',
+        'color: "#ff3f46"',
+        'color: "#27df78"',
+        'color: "#aeb7b2"',
+        "qaSwipeCues.visible = true",
+        "GLOBAL · PASS ${",
         'verdict = deltaX > 0 ? "pass" : "fail"',
         'verdict = "unsure"',
         "onQaVerdict({ verdict })",
@@ -195,6 +226,25 @@ def test_world_has_one_direct_physical_card_with_swipes_and_stats():
     assert "renderQaBoardPanel" not in WORLD
     assert "data-world-qa-verdict" not in WORLD
     assert ".world-qa-playing-card" not in CSS
+
+
+def test_completed_build_tasks_can_be_sent_into_the_shared_qa_deck():
+    for contract in (
+        'action == "send_qa"',
+        "INSERT INTO world_qa_items(",
+        "how_to_test=excluded.how_to_test",
+    ):
+        assert contract in (
+            ROOT / "src" / "world_build_board.py"
+        ).read_text(encoding="utf-8")
+    for contract in (
+        'context.fillText("DONE → QA"',
+        "function buildBoardSendQaHit",
+        "onBuildSendQa({",
+        "sendBuildTaskToQa(key, title)",
+        "action: \"send_qa\"",
+    ):
+        assert contract in SCENE + WORLD
 
 
 def test_exact_view_and_saved_views_live_in_collapsed_right_rail():

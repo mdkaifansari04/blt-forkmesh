@@ -255,13 +255,20 @@ export function createWorldOfficeTasksController({
       authorized,
       state,
       message: text(message, 80),
+      actor,
+      canManage,
       tasks: tasks.map((task) => ({
+        id: task.id,
         title: task.title,
         assignee: task.assignee,
         status: task.status,
         elapsed: formatOfficeTaskElapsed(currentElapsed(task)),
+        canStartStop: task.assignee === actor && task.status !== "done",
+        canComplete:
+          (task.assignee === actor || canManage) && task.status !== "done",
+        canDelete: canManage,
       })),
-      members: marketingMembers,
+      members: canManage ? assignable : marketingMembers,
       attendanceDays,
     });
     selfWorkState(state, message);
@@ -724,6 +731,77 @@ export function createWorldOfficeTasksController({
     }
   }
 
+  async function physicalAction(payload = {}) {
+    const action = text(payload?.action, 24).toLowerCase();
+    if (action === "create") {
+      if (!canManage) {
+        toast("Only an organization manager can create Marketing tasks.");
+        return false;
+      }
+      const assignee = text(payload?.assignee, 64).toLowerCase();
+      if (!assignable.includes(assignee)) {
+        toast("Choose a current Marketing team member.");
+        return false;
+      }
+      const entered = window.prompt(`New task for @${assignee}:`, "");
+      const title = text(entered);
+      if (!title) return false;
+      const saved = await mutate(OFFICE_TASKS_PATH, { title, assignee });
+      if (saved) toast("Marketing task added to the physical wall.");
+      return saved;
+    }
+    const id = safeTaskId(payload?.id);
+    const task = tasks.find((item) => item.id === id);
+    if (
+      !task ||
+      !["start", "stop", "complete", "delete"].includes(action)
+    ) {
+      return false;
+    }
+    if (
+      ["start", "stop"].includes(action) &&
+      (task.assignee !== actor || task.status === "done")
+    ) {
+      toast("Only the assignee can run this timer.");
+      return false;
+    }
+    if (
+      action === "complete" &&
+      task.assignee !== actor &&
+      !canManage
+    ) {
+      toast("Only the assignee or an organization manager can finish it.");
+      return false;
+    }
+    if (action === "delete" && !canManage) return false;
+    if (
+      action === "delete" &&
+      !window.confirm("Delete this task and its private check-in history?")
+    ) {
+      return false;
+    }
+    const saved = await mutate(
+      action === "delete"
+        ? `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}`
+        : `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}/${action}`,
+      {},
+      id,
+      action === "delete" ? { method: "DELETE" } : {},
+    );
+    if (saved) {
+      toast(
+        action === "start"
+          ? "Task timer started."
+          : action === "stop"
+            ? "Task timer stopped."
+            : action === "complete"
+              ? "Task marked done."
+              : "Task deleted.",
+      );
+    }
+    return saved;
+  }
+
   function open() {
     if (!officeActive) {
       toast("Enter the ForkMesh Office to use the marketing task board.");
@@ -878,6 +956,7 @@ export function createWorldOfficeTasksController({
     close,
     destroy,
     open,
+    physicalAction,
     prime,
     refresh,
     setActive,
