@@ -21,6 +21,7 @@ the implementation and its focused verification are complete.
 - [ ] Add a large recent `#general` chat board beside the event list with authors, time, images, and reactions.
 - [ ] Include organization-owned repositories in Dashboard Top repositories with clear owner labels.
 - [ ] Restore live recent blog posts in the Dashboard “Latest from the blog” card.
+- [ ] Add an audited `is_admin`-only World action to permanently delete a named node after typed confirmation.
 - [x] Add a direct “Manage this alert” link to component and scheduled-job alert emails, opening the affected expanded status row.
 - [x] Make QA arrows permanently visible and large (red Fail, green Pass, grey Unsure), publish global aggregate stats, and continuously intake newly completed tasks.
 - [x] Fix the production `/api/world/deploy-status` response error that made API and Worker status red, then verify live recovery.
