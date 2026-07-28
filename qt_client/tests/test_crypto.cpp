@@ -6364,6 +6364,50 @@ int main(int argc, char *argv[])
               "listener");
     }
 
+    {
+        // Log outcome lines (adhoc #419): the ✓ / ✕ marker is what tells the user
+        // which work actually made it into the background strip, so the threshold
+        // it is derived from has to match the strip's own show delay.
+        const QString ok = forkmesh::backgroundOkGlyph();
+        const QString no = forkmesh::backgroundNotGlyph();
+        check(forkmesh::backgroundOutcomeLine(QStringLiteral("git"), 1, 1400,
+                                              QStringLiteral("git log")) ==
+                  QStringLiteral("Background %1 git backgrounded (1.4s) - git log")
+                      .arg(ok),
+              "slow work logs a checkmark, its duration and the caller's note");
+        check(forkmesh::backgroundOutcomeLine(QStringLiteral("git"), 24, 61,
+                                              QString()) ==
+                  QStringLiteral("Background %1 git %2%3 not backgrounded "
+                                 "(longest 61ms)")
+                      .arg(no)
+                      .arg(QChar(0x00D7))
+                      .arg(24),
+              "a burst of too-fast tickets logs one red-x summary for the kind");
+        check(forkmesh::backgroundOutcomeLine(
+                  QString(), 1, forkmesh::kBackgroundShowAfterMs, QString())
+                  .startsWith(QStringLiteral("Background %1 work").arg(ok)),
+              "work exactly at the show delay counts as backgrounded, and an "
+              "unnamed kind still reads as something");
+        check(forkmesh::backgroundElapsedText(-5) == QStringLiteral("0ms") &&
+                  forkmesh::backgroundElapsedText(999) ==
+                      QStringLiteral("999ms") &&
+                  forkmesh::backgroundElapsedText(1000) ==
+                      QStringLiteral("1.0s"),
+              "elapsed text stays short and never renders a negative clock skew");
+
+        // Both log views paint the message body in one colour, so the marker is
+        // recoloured after escaping — green for ✓, red for ✕, and only the first
+        // of each so a note that happens to contain one can't smear the line.
+        const QString painted = forkmesh::colorizeBackgroundMarker(
+            QStringLiteral("Background %1 net %2").arg(no, ok));
+        check(painted.contains(QStringLiteral("#f85149")) &&
+                  painted.contains(QStringLiteral("#3fb950")),
+              "the outcome marker is lifted into its own coloured span");
+        check(forkmesh::colorizeBackgroundMarker(QStringLiteral("no marker")) ==
+                  QStringLiteral("no marker"),
+              "a line without a marker is passed through untouched");
+    }
+
     if (failures) {
         qCritical("TESTS FAILED");
         return 1;
