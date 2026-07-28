@@ -1075,10 +1075,6 @@ private:
     bool autoBackupEnabled() const;
     int backupKeepCount() const;
     QWidget *buildNotificationsSection();
-    // Network leaderboards (issue #11): fetched from /api/network/leaderboards.
-    QWidget *buildLeaderboardsSection();
-    void refreshLeaderboards();
-    void populateLeaderboards(const QJsonObject &data);
     // Network repository catalog: all repos known by the active relay, with local
     // fork/mirror actions and the relay's mirror-node list per repo.
     QWidget *buildNetworkReposSection();
@@ -3847,7 +3843,6 @@ private:
     QPushButton *m_settingsNavButton = nullptr; // Settings button on the repo header row
     QPushButton *m_logNavButton = nullptr; // retired (adhoc #137): Log now opens via m_floatingLogButton
     QPushButton *m_floatingLogButton = nullptr; // "Log" button floating over the live-log strip
-    QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
     QPushButton *m_controlNodeNavButton = nullptr; // local control-node operations
     QPushButton *m_worldNavButton = nullptr; // opens the active relay's 3D world
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
@@ -3866,8 +3861,6 @@ private:
     // for agent-completion paths that miss their maybeStartQueuedRebuild() call
     // (adhoc #104/#111/#116/#134/#143 each found one more).
     QTimer *m_rebuildQueuePollTimer = nullptr;
-    QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
-    QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
     QTableWidget *m_networkReposTable = nullptr;
     QLabel *m_networkReposStatus = nullptr;
     QPushButton *m_networkReposRefreshButton = nullptr;

@@ -54,6 +54,12 @@ const REPOSITORY_ISLAND_RING_RADIUS = 31;
 const REPOSITORY_CONNECTION_MIN_X = 78;
 const REPOSITORY_CONNECTION_MAX_X = 103;
 const REPOSITORY_CONNECTION_HALF_WIDTH = 26;
+const LEADERBOARD_ISLAND_CENTER_X = -130;
+const LEADERBOARD_ISLAND_RADIUS = 34;
+const LEADERBOARD_ISLAND_BOARD_RADIUS = 25;
+const LEADERBOARD_CONNECTION_MIN_X = -103;
+const LEADERBOARD_CONNECTION_MAX_X = -78;
+const LEADERBOARD_CONNECTION_HALF_WIDTH = 18;
 const OFFICE_CONNECTION_MIN_Z = -116;
 const OFFICE_CONNECTION_MAX_Z = -78;
 const OFFICE_CONNECTION_HALF_WIDTH = 36;
@@ -235,6 +241,19 @@ function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
     return true;
   }
   if (
+    Math.hypot(px - LEADERBOARD_ISLAND_CENTER_X, pz) <=
+    LEADERBOARD_ISLAND_RADIUS - margin
+  ) {
+    return true;
+  }
+  if (
+    px >= LEADERBOARD_CONNECTION_MIN_X + margin &&
+    px <= LEADERBOARD_CONNECTION_MAX_X - margin &&
+    Math.abs(pz) <= LEADERBOARD_CONNECTION_HALF_WIDTH - margin
+  ) {
+    return true;
+  }
+  if (
     Math.abs(px) <= OFFICE_CONNECTION_HALF_WIDTH - margin &&
     pz >= OFFICE_CONNECTION_MIN_Z + margin &&
     pz <= OFFICE_CONNECTION_MAX_Z - margin
@@ -253,13 +272,6 @@ const MOVEMENT_KEYS = new Set([
   "ArrowLeft",
   "ArrowRight",
 ]);
-const ACTIVE_LEADERBOARD_POSITION = Object.freeze([-11.5, 0, 25]);
-// Beside the active leaderboard, just west of the arrival grid.
-const REFERRAL_LEADERBOARD_POSITION = Object.freeze([-13.5, 0, 30]);
-// The HTTP Referer board is a distinct, privacy-safe hostname leaderboard.
-// Keep it directly beside the member referral board so the two meanings are
-// visually related without mixing their unrelated counters.
-const SITE_REFERRER_LEADERBOARD_POSITION = Object.freeze([-19, 0, 30]);
 // Floor-local positions on the Infrastructure story. These are deliberately
 // not part of the shared Town layout: a saved outdoor object placement must
 // never pull an interior observatory fixture back out of the building.
@@ -1600,6 +1612,88 @@ function wordTexture(THREE, title, subtitle, color = "#9ef7c6") {
   });
 }
 
+function linkSubmissionRewardTexture(THREE, links = []) {
+  const rows = (Array.isArray(links) ? links : []).slice(0, 4);
+  return canvasTexture(THREE, 1400, 900, (context) => {
+    context.fillStyle = "#061714";
+    context.fillRect(0, 0, 1400, 900);
+    context.strokeStyle = "#77d9ff";
+    context.lineWidth = 16;
+    context.strokeRect(10, 10, 1380, 880);
+    context.textBaseline = "middle";
+    context.fillStyle = "#eafff6";
+    context.font = '900 54px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("LINK REWARDS", 54, 72);
+    context.fillStyle = "#77d9ff";
+    context.font = '650 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "SUBMITTER · REACH · TRAFFIC · SOL · PAYMENT",
+      54,
+      122,
+    );
+    rows.forEach((link, index) => {
+      const top = 162 + index * 166;
+      context.fillStyle = index % 2 ? "#0a211c" : "#0c2821";
+      roundedRect(context, 40, top, 1320, 146, 14);
+      context.fill();
+      context.fillStyle = "#dffff1";
+      context.font = '800 31px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `${index + 1}. ${String(link?.title || link?.host || "Public link").slice(0, 37)}`,
+        66,
+        top + 34,
+        810,
+      );
+      const low = Math.max(0, Number(link?.potentialTraffic?.low) || 0);
+      const high = Math.max(low, Number(link?.potentialTraffic?.high) || 0);
+      context.fillStyle = "#8fc9b5";
+      context.font = '650 22px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `BY ${String(link?.submittedBy || "member").toUpperCase().slice(0, 20)} · REACH ${Math.max(0, Math.min(100, Number(link?.score) || 0))}/100`,
+        66,
+        top + 78,
+        810,
+      );
+      context.fillText(
+        `${low.toLocaleString()}–${high.toLocaleString()} POTENTIAL VISITS · ${Number(link?.rewardSol || 0).toFixed(5)} SOL · ${String(link?.paymentStatus || "unpaid").toUpperCase()}`,
+        66,
+        top + 116,
+        890,
+      );
+      const wallet = AVATAR_SOLANA_ADDRESS_RE.test(
+        String(link?.walletAddress || ""),
+      )
+        ? String(link.walletAddress)
+        : "";
+      context.setLineDash(wallet ? [] : [12, 10]);
+      context.strokeStyle = wallet ? "#f7c96b" : "#68877b";
+      context.lineWidth = 5;
+      context.strokeRect(1198, top + 14, 116, 116);
+      context.setLineDash([]);
+      if (wallet) {
+        drawQrModules(context, wallet, 1207, top + 23, 98);
+      } else {
+        context.fillStyle = "#68877b";
+        context.textAlign = "center";
+        context.font = '900 38px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("+", 1256, top + 54);
+        context.font = '700 14px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("ADD SOL", 1256, top + 91);
+        context.fillText("ADDRESS", 1256, top + 111);
+        context.textAlign = "left";
+      }
+    });
+    if (!rows.length) {
+      context.fillStyle = "#86a99c";
+      context.font = '650 31px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO PUBLIC LINKS SUBMITTED YET", 54, 245);
+    }
+    context.fillStyle = "#f7c96b";
+    context.font = '800 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("CLICK TO OPEN · QR DONATES DIRECTLY TO THE SUBMITTER", 54, 848);
+  });
+}
+
 function activeDurationLabel(value) {
   const milliseconds = Number(value);
   if (!Number.isFinite(milliseconds) || milliseconds < 0) {
@@ -1946,6 +2040,216 @@ function makeSiteReferrerLeaderboardSign(THREE) {
   face.position.set(0, 2.38, 0.151);
   sign.add(face);
   sign.userData.face = face;
+  return sign;
+}
+
+const WORLD_LEADERBOARD_BOARD_STUBS = Object.freeze([
+  {
+    id: "uptime",
+    title: "MAINNODE UPTIME",
+    subtitle: "MOST MINUTES ONLINE",
+    valueKind: "minutes",
+  },
+  {
+    id: "node-storage",
+    title: "NODE STORAGE",
+    subtitle: "PUBLIC MIRROR BYTES",
+    valueKind: "bytes",
+  },
+  {
+    id: "repos",
+    title: "TOP OWNERS",
+    subtitle: "MOST PUBLIC REPOSITORIES",
+    valueKind: "repos",
+  },
+  {
+    id: "mirrors",
+    title: "MOST MIRRORED",
+    subtitle: "REPOSITORIES BY OWNERS",
+    valueKind: "mirrors",
+  },
+  {
+    id: "hosted",
+    title: "LONGEST HOSTED",
+    subtitle: "REPOSITORIES ONLINE",
+    valueKind: "age",
+  },
+  {
+    id: "largest",
+    title: "LARGEST REPOSITORIES",
+    subtitle: "MIRROR DATA BY REPOSITORY",
+    valueKind: "bytes",
+  },
+  {
+    id: "data-hosted",
+    title: "MOST DATA HOSTED",
+    subtitle: "PUBLIC DATA BY OWNER",
+    valueKind: "bytes",
+  },
+  {
+    id: "contributors",
+    title: "CONTRIBUTORS",
+    subtitle: "ISSUES + PRS + COMMITS",
+    valueKind: "contributions",
+  },
+  {
+    id: "funds-mainnodes",
+    title: "LEGACY · MAINNODES",
+    subtitle: "HISTORICAL REPORTING",
+    valueKind: "sol",
+  },
+  {
+    id: "funds-contributors",
+    title: "LEGACY · CONTRIBUTORS",
+    subtitle: "HISTORICAL REPORTING",
+    valueKind: "sol",
+  },
+  {
+    id: "funds-projects",
+    title: "LEGACY · PROJECTS",
+    subtitle: "HISTORICAL REPORTING",
+    valueKind: "sol",
+  },
+]);
+
+function leaderboardStatCompactNumber(value) {
+  return Math.max(0, Number(value) || 0).toLocaleString("en-US");
+}
+
+function leaderboardStatValue(board = {}, row = {}) {
+  const kind = String(board.valueKind || "");
+  if (kind === "minutes") {
+    const minutes = Math.max(0, Math.round(Number(row.minutes) || 0));
+    return minutes >= 60
+      ? `${Math.floor(minutes / 60)}H ${minutes % 60}M`
+      : `${minutes}M`;
+  }
+  if (kind === "bytes") {
+    let bytes = Math.max(0, Number(row.bytes ?? row.sizeBytes) || 0);
+    const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+    let unit = 0;
+    while (bytes >= 1024 && unit < units.length - 1) {
+      bytes /= 1024;
+      unit += 1;
+    }
+    return `${unit ? bytes.toFixed(bytes >= 100 ? 0 : 1) : Math.round(bytes)} ${units[unit]}`;
+  }
+  if (kind === "repos") {
+    return `${leaderboardStatCompactNumber(row.repos)} REPOS`;
+  }
+  if (kind === "mirrors") {
+    return `${leaderboardStatCompactNumber(row.mirrors)} OWNERS`;
+  }
+  if (kind === "age") {
+    const milliseconds = Math.max(0, Number(row.ageMs) || 0);
+    const days = Math.floor(milliseconds / 86400000);
+    return days
+      ? `${leaderboardStatCompactNumber(days)}D`
+      : `${Math.floor(milliseconds / 3600000)}H`;
+  }
+  if (kind === "contributions") {
+    return `${leaderboardStatCompactNumber(row.total)} TOTAL`;
+  }
+  if (kind === "sol") {
+    const sol = Number(row.sol) || (Number(row.lamports) || 0) / 1e9;
+    return `${sol.toFixed(sol >= 1 ? 2 : 4)} SOL`;
+  }
+  return String(row.value ?? "—").slice(0, 18).toUpperCase();
+}
+
+function leaderboardStatTexture(THREE, board = {}) {
+  const rows = Array.isArray(board.rows) ? board.rows.slice(0, 5) : [];
+  return canvasTexture(THREE, 768, 512, (context) => {
+    context.clearRect(0, 0, 768, 512);
+    roundedRect(context, 4, 4, 760, 504, 16);
+    context.fillStyle = "rgba(6,17,14,0.96)";
+    context.fill();
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 5;
+    context.stroke();
+    context.textBaseline = "middle";
+    context.fillStyle = "#f1fff6";
+    context.font = '700 43px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText(
+      String(board.title || "LEADERBOARD").toUpperCase().slice(0, 30),
+      38,
+      58,
+      692,
+    );
+    context.fillStyle = "#77d9ff";
+    context.font = '400 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      String(board.subtitle || "LIVE PUBLIC RANKINGS").toUpperCase().slice(0, 48),
+      38,
+      101,
+      692,
+    );
+    rows.forEach((row, index) => {
+      const top = 154 + index * 65;
+      const name = String(row?.name || row?.host || "participant")
+        .trim()
+        .slice(0, 24);
+      context.fillStyle = index < 3 ? "#d9ffea" : "#b7c9c0";
+      context.font = '700 23px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(`${index + 1}. ${name}`, 38, top, 430);
+      const value = leaderboardStatValue(board, row);
+      context.fillStyle = index < 3 ? "#9ef7c6" : "#77d9ff";
+      context.font = '700 19px "ForkMesh Mono", ui-monospace, monospace';
+      context.textAlign = "right";
+      context.fillText(value, 730, top, 250);
+      context.textAlign = "left";
+    });
+    if (!rows.length) {
+      context.fillStyle = "#91a39a";
+      context.font = '400 24px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("WAITING FOR PUBLIC DATA", 38, 194);
+    }
+    context.fillStyle = "#60756b";
+    context.font = '400 16px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("LIVE WITH /LEADERBOARDS", 38, 475);
+  });
+}
+
+function makeLeaderboardStatSign(THREE, board = {}) {
+  const sign = new THREE.Group();
+  sign.name = `world-leaderboard-${String(board.id || "stats")}`;
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(4.8, 0.25, 1.35),
+    makeMaterial(THREE, "#173136", { roughness: 0.78 }),
+  );
+  base.position.y = 0.13;
+  sign.add(base);
+  for (const x of [-1.72, 1.72]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.16, 3.7, 0.16),
+      makeMaterial(THREE, "#29645e", {
+        emissive: "#113d36",
+        emissiveIntensity: 0.3,
+        metalness: 0.28,
+        roughness: 0.48,
+      }),
+    );
+    post.position.set(x, 1.85, 0);
+    sign.add(post);
+  }
+  const boardFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(3.72, 2.72, 0.12),
+    makeMaterial(THREE, "#071712", { roughness: 0.55 }),
+  );
+  boardFrame.position.set(0, 2.08, 0.08);
+  sign.add(boardFrame);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.52, 2.55),
+    new THREE.MeshBasicMaterial({
+      map: leaderboardStatTexture(THREE, board),
+      transparent: true,
+    }),
+  );
+  face.position.set(0, 2.08, 0.151);
+  sign.add(face);
+  sign.userData.face = face;
+  sign.userData.boardId = String(board.id || "");
+  sign.userData.board = board;
   return sign;
 }
 
@@ -12634,6 +12938,7 @@ export function createWorldScene({
   onFediverseFollow = () => {},
   onAvatarWalletAction = () => {},
   onLayoutObjectMoved = () => {},
+  onLayoutObjectSelect = () => {},
   onForkbotChat = () => {},
   onAgentBotChat = () => {},
   onPlayForkmeshSong = () => {},
@@ -12732,7 +13037,6 @@ export function createWorldScene({
   // shared placement is persisted server-side and re-applied for every
   // visitor when the world loads.
   const movableWorldObjects = new Map();
-  const layoutDragOffset = new THREE.Vector3();
   // Last placement received from /api/world/layout, kept so objects that only
   // exist after live data arrives (node cabinets) can adopt their locked spot
   // the moment they are built.
@@ -12753,12 +13057,24 @@ export function createWorldScene({
   // One R press is a 15° step: fine enough to line a placard up with a path,
   // coarse enough that a quarter turn is six taps.
   const LAYOUT_ROTATION_STEP = Math.PI / 12;
+  const LAYOUT_MOVE_STEP = 0.5;
   const LAYOUT_COMMIT_DELAY_MS = 450;
   let layoutEditingEnabled = false;
-  let draggedLayoutObject = null;
   let activeLayoutObject = null;
-  let layoutDragMode = "move";
   let layoutCommitTimer = 0;
+  const layoutSelectionBounds = new THREE.Box3();
+  const layoutSelectionHighlight = new THREE.Box3Helper(
+    layoutSelectionBounds,
+    "#9ef7c6",
+  );
+  layoutSelectionHighlight.name = "forkmesh-layout-selection-highlight";
+  layoutSelectionHighlight.visible = false;
+  layoutSelectionHighlight.renderOrder = 40;
+  layoutSelectionHighlight.material.transparent = true;
+  layoutSelectionHighlight.material.opacity = 0.48;
+  layoutSelectionHighlight.material.depthTest = false;
+  layoutSelectionHighlight.material.depthWrite = false;
+  scene.add(layoutSelectionHighlight);
 
   function registerMovableObject(id, object) {
     if (!object) return;
@@ -12986,6 +13302,142 @@ export function createWorldScene({
   repositoryPromenade.userData.ground = true;
   repositoryBridge.add(repositoryPromenade);
   world.add(repositoryBridge);
+
+  // A purpose-built public rankings district balances the repository island
+  // across town. The broad earth connection is always walkable, with an
+  // illuminated promenade making the route legible at every sky theme.
+  const leaderboardIsland = new THREE.Mesh(
+    new THREE.CircleGeometry(LEADERBOARD_ISLAND_RADIUS, 96),
+    makeMaterial(THREE, "#42665b", { roughness: 0.96 }),
+  );
+  leaderboardIsland.name = "forkmesh-leaderboard-island";
+  leaderboardIsland.rotation.x = -Math.PI / 2;
+  leaderboardIsland.position.set(LEADERBOARD_ISLAND_CENTER_X, 0.012, 0);
+  leaderboardIsland.receiveShadow = true;
+  leaderboardIsland.userData.ground = true;
+  world.add(leaderboardIsland);
+  const leaderboardFoundation = createTerrainFoundation(
+    THREE,
+    "forkmesh-leaderboard-island-foundation",
+    LEADERBOARD_ISLAND_RADIUS,
+    5.8,
+    "leaderboards",
+  );
+  leaderboardFoundation.position.x = LEADERBOARD_ISLAND_CENTER_X;
+  world.add(leaderboardFoundation);
+
+  const leaderboardConnection = new THREE.Group();
+  leaderboardConnection.name = "forkmesh-leaderboard-island-connection";
+  leaderboardConnection.position.set(
+    (LEADERBOARD_CONNECTION_MIN_X + LEADERBOARD_CONNECTION_MAX_X) / 2,
+    0,
+    0,
+  );
+  const leaderboardConnectionLength =
+    LEADERBOARD_CONNECTION_MAX_X - LEADERBOARD_CONNECTION_MIN_X;
+  const leaderboardConnectionEarth = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      leaderboardConnectionLength,
+      5.8,
+      LEADERBOARD_CONNECTION_HALF_WIDTH * 2,
+    ),
+    makeMaterial(THREE, "#314f46", { roughness: 1 }),
+  );
+  leaderboardConnectionEarth.name =
+    "forkmesh-leaderboard-connection-earth";
+  leaderboardConnectionEarth.position.y = -2.9;
+  leaderboardConnection.add(leaderboardConnectionEarth);
+  const leaderboardConnectionTop = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      leaderboardConnectionLength,
+      0.16,
+      LEADERBOARD_CONNECTION_HALF_WIDTH * 2,
+    ),
+    makeMaterial(THREE, "#4d7065", { roughness: 0.94 }),
+  );
+  leaderboardConnectionTop.name = "forkmesh-leaderboard-connection-top";
+  leaderboardConnectionTop.position.y = 0.08;
+  leaderboardConnectionTop.receiveShadow = true;
+  leaderboardConnectionTop.userData.ground = true;
+  leaderboardConnection.add(leaderboardConnectionTop);
+  const leaderboardPromenade = new THREE.Mesh(
+    new THREE.BoxGeometry(leaderboardConnectionLength, 0.08, 7.2),
+    makeMaterial(THREE, "#b5cbbf", { roughness: 0.82 }),
+  );
+  leaderboardPromenade.name = "forkmesh-leaderboard-promenade";
+  leaderboardPromenade.position.y = 0.19;
+  leaderboardPromenade.receiveShadow = true;
+  leaderboardPromenade.userData.ground = true;
+  leaderboardConnection.add(leaderboardPromenade);
+  for (const z of [-4.3, 4.3]) {
+    const guide = new THREE.Mesh(
+      new THREE.BoxGeometry(leaderboardConnectionLength - 1, 0.1, 0.14),
+      makeMaterial(THREE, "#9ef7c6", {
+        emissive: "#38ca8d",
+        emissiveIntensity: 1.7,
+        metalness: 0.25,
+        roughness: 0.25,
+      }),
+    );
+    guide.position.set(0, 0.28, z);
+    leaderboardConnection.add(guide);
+  }
+  for (const x of [-10, -5, 0, 5, 10]) {
+    for (const z of [-5.6, 5.6]) {
+      const beacon = new THREE.Mesh(
+        new THREE.SphereGeometry(0.2, 10, 8),
+        makeMaterial(THREE, "#77d9ff", {
+          emissive: "#42bce2",
+          emissiveIntensity: 2,
+          roughness: 0.2,
+        }),
+      );
+      beacon.position.set(x, 0.72, z);
+      leaderboardConnection.add(beacon);
+    }
+  }
+  world.add(leaderboardConnection);
+
+  const leaderboardDistrict = new THREE.Group();
+  leaderboardDistrict.name = "forkmesh-leaderboard-district";
+  leaderboardDistrict.position.set(LEADERBOARD_ISLAND_CENTER_X, 0, 0);
+  const leaderboardRing = new THREE.Mesh(
+    new THREE.RingGeometry(8.5, 10.2, 64),
+    makeMaterial(THREE, "#a9c5b8", { roughness: 0.9 }),
+  );
+  leaderboardRing.name = "forkmesh-leaderboard-ring-walk";
+  leaderboardRing.rotation.x = -Math.PI / 2;
+  leaderboardRing.position.y = 0.1;
+  leaderboardRing.receiveShadow = true;
+  leaderboardRing.userData.ground = true;
+  leaderboardDistrict.add(leaderboardRing);
+  const leaderboardBeacon = new THREE.Mesh(
+    new THREE.CylinderGeometry(3.1, 4.2, 0.7, 24),
+    makeMaterial(THREE, "#173c35", {
+      metalness: 0.35,
+      roughness: 0.46,
+    }),
+  );
+  leaderboardBeacon.position.y = 0.35;
+  leaderboardDistrict.add(leaderboardBeacon);
+  const leaderboardIslandTitle = new THREE.Mesh(
+    new THREE.PlaneGeometry(7.4, 2.45),
+    new THREE.MeshBasicMaterial({
+      map: wordTexture(
+        THREE,
+        "Leaderboard Island",
+        "14 live public rankings",
+        "#9ef7c6",
+      ),
+      transparent: true,
+      toneMapped: false,
+    }),
+  );
+  leaderboardIslandTitle.name = "forkmesh-leaderboard-island-title";
+  leaderboardIslandTitle.position.set(0, 3.1, 0);
+  leaderboardIslandTitle.rotation.y = -Math.PI / 2;
+  leaderboardDistrict.add(leaderboardIslandTitle);
+  world.add(leaderboardDistrict);
 
   // The Office is a real campus district, not another interior scene. Its
   // wooded earth joins town across a broad continuous neck, with a stone
@@ -13906,43 +14358,68 @@ export function createWorldScene({
   world.add(swingSet);
   registerMovableObject("swing-set", swingSet);
 
-  const activeLeaderboardSign = makeActiveLeaderboardSign(THREE);
-  activeLeaderboardSign.position.set(...ACTIVE_LEADERBOARD_POSITION);
-  activeLeaderboardSign.rotation.y = Math.atan2(
-    -ACTIVE_LEADERBOARD_POSITION[0],
-    -ACTIVE_LEADERBOARD_POSITION[2],
+  // All public boards live together around the island's inner walk. The
+  // ordering is stable so visitors can learn the circuit while every face is
+  // still repainted from the shared /api/leaderboards response.
+  const leaderboardIslandSigns = [];
+  const placeLeaderboardIslandSign = (sign, index, total = 14) => {
+    const angle = (index / total) * Math.PI * 2;
+    const x = Math.cos(angle) * LEADERBOARD_ISLAND_BOARD_RADIUS;
+    const z = Math.sin(angle) * LEADERBOARD_ISLAND_BOARD_RADIUS;
+    sign.position.set(x, 0, z);
+    sign.rotation.y = Math.atan2(-x, -z);
+    leaderboardDistrict.add(sign);
+    leaderboardIslandSigns.push(sign);
+    return sign;
+  };
+
+  const activeLeaderboardSign = placeLeaderboardIslandSign(
+    makeActiveLeaderboardSign(THREE),
+    0,
   );
-  world.add(activeLeaderboardSign);
-  registerMovableObject("active-leaderboard-sign", activeLeaderboardSign);
   const referralLeaderboardSign = makeReferralLeaderboardSign(THREE);
-  referralLeaderboardSign.position.set(...REFERRAL_LEADERBOARD_POSITION);
-  referralLeaderboardSign.rotation.y = Math.atan2(
-    -REFERRAL_LEADERBOARD_POSITION[0],
-    -REFERRAL_LEADERBOARD_POSITION[2],
-  );
-  world.add(referralLeaderboardSign);
-  registerMovableObject("referral-leaderboard-sign", referralLeaderboardSign);
+  placeLeaderboardIslandSign(referralLeaderboardSign, 1);
   // Tapping the board copies the viewer's referral link (world.js supplies
   // the handler); the whole face is the hit target.
   referralLeaderboardSign.userData.face.userData.interactive =
     "referral-leaderboard";
   interactive.push(referralLeaderboardSign.userData.face);
   const siteReferrerLeaderboardSign = makeSiteReferrerLeaderboardSign(THREE);
-  siteReferrerLeaderboardSign.position.set(
-    ...SITE_REFERRER_LEADERBOARD_POSITION,
-  );
-  siteReferrerLeaderboardSign.rotation.y = Math.atan2(
-    -SITE_REFERRER_LEADERBOARD_POSITION[0],
-    -SITE_REFERRER_LEADERBOARD_POSITION[2],
-  );
-  world.add(siteReferrerLeaderboardSign);
-  registerMovableObject(
-    "site-referrer-leaderboard-sign",
-    siteReferrerLeaderboardSign,
-  );
+  placeLeaderboardIslandSign(siteReferrerLeaderboardSign, 2);
   siteReferrerLeaderboardSign.userData.face.userData.interactive =
     "site-referrer-link";
   interactive.push(siteReferrerLeaderboardSign.userData.face);
+  const genericLeaderboardSigns = new Map();
+  WORLD_LEADERBOARD_BOARD_STUBS.forEach((board, index) => {
+    const sign = makeLeaderboardStatSign(THREE, board);
+    genericLeaderboardSigns.set(board.id, sign);
+    placeLeaderboardIslandSign(sign, index + 3);
+  });
+
+  function updateLeaderboards(boards = []) {
+    const byId = new Map(
+      (Array.isArray(boards) ? boards : [])
+        .filter((board) => board && typeof board === "object")
+        .map((board) => [String(board.id || ""), board]),
+    );
+    genericLeaderboardSigns.forEach((sign, id) => {
+      const board = byId.get(id);
+      const face = sign.userData.face;
+      if (!board || !face) return;
+      const key = JSON.stringify([
+        String(board.title || ""),
+        String(board.subtitle || ""),
+        String(board.valueKind || ""),
+        Array.isArray(board.rows) ? board.rows : [],
+      ]);
+      if (sign.userData.key === key) return;
+      face.material.map?.dispose?.();
+      face.material.map = leaderboardStatTexture(THREE, board);
+      face.material.needsUpdate = true;
+      sign.userData.key = key;
+      sign.userData.board = board;
+    });
+  }
 
   // Repaints the referral sign only when the ranked rows or the viewer's own
   // share link actually changed, mirroring the active-leaderboard swap.
@@ -15421,6 +15898,50 @@ export function createWorldScene({
   officeLinkKiosk.add(officeLinkKioskFace);
   interactive.push(officeLinkKioskFace);
   officeInterior.add(officeLinkKiosk);
+
+  // A separate live board beside the submission terminal makes the public
+  // links, their submitters, transparent reach inputs, tiny SOL appreciation
+  // estimate, and payment state visible without first opening a dialog.
+  const officeLinkRewards = new THREE.Group();
+  officeLinkRewards.name = "forkmesh-office-link-rewards";
+  officeLinkRewards.position.set(39, 0, -28);
+  const officeLinkRewardsStand = new THREE.Mesh(
+    new THREE.BoxGeometry(10.5, 3.4, 2.8),
+    makeMaterial(THREE, "#16333b", {
+      metalness: 0.35,
+      roughness: 0.42,
+    }),
+  );
+  officeLinkRewardsStand.position.y = 1.7;
+  officeLinkRewards.add(officeLinkRewardsStand);
+  const officeLinkRewardsFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(13, 8.35),
+    new THREE.MeshBasicMaterial({
+      map: linkSubmissionRewardTexture(THREE),
+      toneMapped: false,
+    }),
+  );
+  officeLinkRewardsFace.name = "forkmesh-office-link-rewards-screen";
+  officeLinkRewardsFace.position.set(0, 7.15, 0.15);
+  officeLinkRewardsFace.userData.officeFloorId = "lobby";
+  officeLinkRewardsFace.userData.interactive = "office-link-kiosk";
+  officeLinkRewards.add(officeLinkRewardsFace);
+  interactive.push(officeLinkRewardsFace);
+  officeInterior.add(officeLinkRewards);
+
+  function updateLobbyLinkBoard(links = []) {
+    const rows = Array.isArray(links) ? links.slice(0, 4) : [];
+    const key = JSON.stringify(rows);
+    if (officeLinkRewards.userData.key === key) return;
+    officeLinkRewardsFace.material.map?.dispose?.();
+    officeLinkRewardsFace.material.map = linkSubmissionRewardTexture(
+      THREE,
+      rows,
+    );
+    officeLinkRewardsFace.material.needsUpdate = true;
+    officeLinkRewards.userData.key = key;
+  }
+
   for (const [x, z] of [
     [-52, 7],
     [0, -29],
@@ -23904,15 +24425,7 @@ export function createWorldScene({
   }
 
   function handlePointerDown(event) {
-    const layoutMouseButton =
-      layoutEditingEnabled &&
-      event.pointerType === "mouse" &&
-      (event.button === 0 || event.button === 2);
-    if (
-      event.pointerType === "mouse" &&
-      event.button !== 0 &&
-      !layoutMouseButton
-    ) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
     if (event.pointerType === "touch") {
       touchPointers.set(event.pointerId, {
         x: event.clientX,
@@ -23927,42 +24440,16 @@ export function createWorldScene({
     pointerCoordinates(event);
     raycaster.setFromCamera(pointer, camera);
     const pressHits = raycaster.intersectObjects(interactive, false);
-    if (layoutEditingEnabled) {
-      draggedLayoutObject = layoutObjectAtPointer();
-      if (draggedLayoutObject) {
-        // Drag by delta from the press point so grabbing any part of the
-        // object's physical base never snaps its origin to the pointer.
-        const point = layoutGroundPoint(
-          draggedLayoutObject,
-          event.clientX,
-          event.clientY,
-        );
-        if (point) {
-          layoutDragOffset.set(
-            draggedLayoutObject.position.x - point.x,
-            0,
-            draggedLayoutObject.position.z - point.z,
-          );
-          setActiveLayoutObject(draggedLayoutObject);
-          layoutDragMode =
-            event.button === 2 || event.shiftKey ? "rotate" : "move";
-          event.preventDefault();
-        } else {
-          draggedLayoutObject = null;
-        }
-      }
-    }
-    const logHit = draggedLayoutObject
-      ? null
-      : pressHits
-          .find(({ object }) => object.visible && object.userData?.campfireLog);
+    const logHit = pressHits.find(
+      ({ object }) => object.visible && object.userData?.campfireLog,
+    );
     if (logHit) {
       draggedCampfireLog = logHit.object;
       draggedCampfireLog.userData.campfireCarried = true;
       draggedCampfireLog.material.emissive?.set?.("#d88a43");
       draggedCampfireLog.material.emissiveIntensity = 0.5;
     }
-    if (!draggedLayoutObject && !draggedCampfireLog) {
+    if (!draggedCampfireLog) {
       const qaHit = pressHits.find(
         ({ object }) => object === qaBoardFace,
       );
@@ -24079,33 +24566,6 @@ export function createWorldScene({
       }
     }
     if (event.pointerId !== primaryPointerId) return;
-    if (draggedLayoutObject) {
-      if (layoutDragMode === "rotate" || event.shiftKey) {
-        const deltaX = event.clientX - pointerLast.x;
-        if (Math.abs(deltaX) > 0.1) {
-          rotateLayoutObjectBy(draggedLayoutObject, deltaX * 0.012);
-          pointerLast.set(event.clientX, event.clientY);
-        }
-        pointerGestureMoved = true;
-        event.preventDefault();
-        return;
-      }
-      const point = layoutGroundPoint(
-        draggedLayoutObject,
-        event.clientX,
-        event.clientY,
-      );
-      if (point) {
-        moveWorldObject(
-          draggedLayoutObject,
-          point.x + layoutDragOffset.x,
-          point.z + layoutDragOffset.z,
-        );
-      }
-      pointerGestureMoved = true;
-      event.preventDefault();
-      return;
-    }
     if (draggedCampfireLog) {
       const point = groundPointAt(event.clientX, event.clientY);
       if (point) {
@@ -24254,29 +24714,6 @@ export function createWorldScene({
     primaryPointerId = null;
     renderer.domElement.dataset.dragging =
       touchPointers.size ? "true" : "false";
-    if (draggedLayoutObject) {
-      const movedObject = draggedLayoutObject;
-      draggedLayoutObject = null;
-      layoutDragMode = "move";
-      if (layoutCommitTimer) {
-        clearTimeout(layoutCommitTimer);
-        layoutCommitTimer = 0;
-      }
-      commitLayoutObject(movedObject);
-      if (
-        ["fountain", "campfire", "swing-set"].includes(
-          String(movedObject.userData.layoutId || "").replace(
-            /^landmark-/,
-            "",
-          ),
-        )
-      ) {
-        relayoutNetworkNodes();
-      }
-      lastGestureDragged = true;
-      pointerGestureMoved = false;
-      return;
-    }
     if (draggedCampfireLog) {
       const droppedLog = draggedCampfireLog;
       draggedCampfireLog = null;
@@ -24396,6 +24833,11 @@ export function createWorldScene({
       clientY: pointerStart.y,
     });
     raycaster.setFromCamera(pointer, camera);
+    const selectedLayoutObject = layoutObjectAtPointer();
+    setActiveLayoutObject(selectedLayoutObject);
+    if (selectedLayoutObject) {
+      onLayoutObjectSelect(layoutObjectSelection(selectedLayoutObject));
+    }
     const hit = raycaster
       .intersectObjects(interactive, false)
       .find(
@@ -24767,16 +25209,6 @@ export function createWorldScene({
     return point;
   }
 
-  // Section placards and node cabinets can sit inside a parent group, so the
-  // pointer's ground point is converted into the space the object's position
-  // actually lives in before it is used as a drag target.
-  function layoutGroundPoint(object, clientX, clientY) {
-    const point = groundPointAt(clientX, clientY);
-    if (!point) return null;
-    const parent = object?.parent;
-    return parent && parent !== world ? parent.worldToLocal(point) : point;
-  }
-
   function moveWorldObject(object, targetX, targetZ) {
     const radius = Math.hypot(targetX, targetZ);
     const scale = radius > WORLD_RADIUS ? WORLD_RADIUS / radius : 1;
@@ -24826,6 +25258,7 @@ export function createWorldScene({
     if (!locked || !object) return;
     moveWorldObject(object, locked.x, locked.z);
     rotateWorldObject(object, locked.rotation);
+    refreshActiveLayoutHighlight(object);
   }
 
   function applyWorldLayout(objects) {
@@ -24879,6 +25312,55 @@ export function createWorldScene({
 
   function setActiveLayoutObject(object) {
     activeLayoutObject = object || null;
+    if (!activeLayoutObject) {
+      layoutSelectionHighlight.visible = false;
+      return;
+    }
+    layoutSelectionBounds.setFromObject(activeLayoutObject);
+    layoutSelectionHighlight.visible = !layoutSelectionBounds.isEmpty();
+  }
+
+  function refreshActiveLayoutHighlight(object = activeLayoutObject) {
+    if (!object || object !== activeLayoutObject) return;
+    layoutSelectionBounds.setFromObject(object);
+    layoutSelectionHighlight.visible = !layoutSelectionBounds.isEmpty();
+  }
+
+  function layoutObjectSelection(object) {
+    const id = String(object?.userData?.layoutId || "");
+    let landmarkId = "";
+    object?.traverse?.((child) => {
+      if (landmarkId) return;
+      const candidate = String(child.userData?.landmark || "");
+      if (candidate && landmarkById(candidate)) landmarkId = candidate;
+    });
+    if (!landmarkId && id.startsWith("landmark-")) {
+      const candidate = id.slice("landmark-".length);
+      if (landmarkById(candidate)) landmarkId = candidate;
+    }
+    if (!landmarkId) {
+      landmarkId =
+        {
+          "world-bulletin": "events",
+          "world-general-chat-board": "events",
+          "world-qa-board": "events",
+          "status-banner": "events",
+          "mastodon-kiosk": "fediverse",
+          "twitter-banner": "broadcast",
+          "reddit-banner": "broadcast",
+          "blog-banner": "broadcast",
+          "arrival-box": "neighborhood",
+          campfire: "neighborhood",
+          "swing-set": "neighborhood",
+          "office-task-bulletin": "organizations",
+        }[id] || "neighborhood";
+    }
+    return {
+      id,
+      label: String(object?.name || id || "World object").slice(0, 80),
+      landmarkId,
+      editable: layoutEditingEnabled,
+    };
   }
 
   // The visible centre of the object, expressed in the space its position
@@ -24907,28 +25389,66 @@ export function createWorldScene({
     );
     const moved = pivot ? layoutObjectPoint(target) : null;
     if (pivot && moved) {
-      // A mid-drag turn shifts the object to keep its centre still; fold the
-      // shift into the drag offset or the next pointer move would undo it.
-      if (draggedLayoutObject === target) {
-        layoutDragOffset.x += pivot.x - moved.x;
-        layoutDragOffset.z += pivot.z - moved.z;
-      }
       moveWorldObject(
         target,
         target.position.x + (pivot.x - moved.x),
         target.position.z + (pivot.z - moved.z),
       );
     }
-    // A dragged object saves on release; a parked one has no other trigger.
-    if (!draggedLayoutObject) scheduleLayoutCommit(target);
+    refreshActiveLayoutHighlight(target);
+    scheduleLayoutCommit(target);
     return true;
   }
 
   function rotateActiveLayoutObject(direction) {
     return rotateLayoutObjectBy(
-      draggedLayoutObject || activeLayoutObject,
+      activeLayoutObject,
       LAYOUT_ROTATION_STEP * direction,
     );
+  }
+
+  function nudgeActiveLayoutObject(code) {
+    const target = activeLayoutObject;
+    if (!target) return false;
+    const forwardX = -Math.sin(cameraYaw);
+    const forwardZ = -Math.cos(cameraYaw);
+    const rightX = Math.cos(cameraYaw);
+    const rightZ = -Math.sin(cameraYaw);
+    const forward =
+      Number(code === "ArrowUp") - Number(code === "ArrowDown");
+    const right =
+      Number(code === "ArrowRight") - Number(code === "ArrowLeft");
+    if (!forward && !right) return false;
+    const delta = new THREE.Vector3(
+      (forwardX * forward + rightX * right) * LAYOUT_MOVE_STEP,
+      0,
+      (forwardZ * forward + rightZ * right) * LAYOUT_MOVE_STEP,
+    );
+    // Most objects live directly under the World, but individual placards can
+    // sit inside a rotated district group. Convert the camera-relative world
+    // direction into that parent's local axes so Up always moves away from
+    // the camera rather than unexpectedly sliding sideways.
+    if (target.parent && target.parent !== world) {
+      const parentWorldRotation = target.parent.getWorldQuaternion(
+        new THREE.Quaternion(),
+      );
+      delta.applyQuaternion(parentWorldRotation.invert());
+    }
+    moveWorldObject(
+      target,
+      target.position.x + delta.x,
+      target.position.z + delta.z,
+    );
+    refreshActiveLayoutHighlight(target);
+    scheduleLayoutCommit(target);
+    if (
+      ["fountain", "campfire", "swing-set"].includes(
+        String(target.userData.layoutId || "").replace(/^landmark-/, ""),
+      )
+    ) {
+      relayoutNetworkNodes();
+    }
+    return true;
   }
 
   function layoutObjectForDescendant(descendant) {
@@ -24941,10 +25461,9 @@ export function createWorldScene({
     return null;
   }
 
-  // Admin editing uses the geometry visitors already see. Only hits in the
-  // lower part of an object count, so dragging a sign face or control keeps
-  // its normal action while grabbing its plinth, legs, or cabinet base moves
-  // the whole object. There is no extra pink dot to hunt for or obscure it.
+  // Selection uses the geometry visitors already see. A click on any visible
+  // part chooses the nearest movable ancestor; there is no hidden handle or
+  // drag gesture competing with the object's normal interaction.
   function layoutObjectAtPointer() {
     const objects = [...movableWorldObjects.values()].filter(
       (object) => objectIsEffectivelyVisible(object),
@@ -24953,22 +25472,13 @@ export function createWorldScene({
     const hits = raycaster.intersectObjects(objects, true);
     for (const hit of hits) {
       const object = layoutObjectForDescendant(hit.object);
-      if (!object) continue;
-      const bounds = new THREE.Box3().setFromObject(object);
-      if (bounds.isEmpty()) continue;
-      const height = Math.max(0.01, bounds.max.y - bounds.min.y);
-      const baseTop = bounds.min.y + Math.max(0.45, height * 0.28);
-      if (hit.point.y <= baseTop) return object;
+      if (object) return object;
     }
     return null;
   }
 
   function setLayoutEditor(enabled) {
     layoutEditingEnabled = enabled === true;
-    if (!layoutEditingEnabled) {
-      draggedLayoutObject = null;
-      setActiveLayoutObject(null);
-    }
   }
 
   function handleDoubleClick(event) {
@@ -25032,13 +25542,6 @@ export function createWorldScene({
     finishPointer(event, true);
   }
 
-  function handleContextMenu(event) {
-    if (!layoutEditingEnabled) return;
-    pointerCoordinates(event);
-    raycaster.setFromCamera(pointer, camera);
-    if (layoutObjectAtPointer()) event.preventDefault();
-  }
-
   function handleWheel(event) {
     const lineHeight = 16;
     const deltaPixels =
@@ -25050,13 +25553,6 @@ export function createWorldScene({
           : 1);
     if (!Number.isFinite(deltaPixels) || deltaPixels === 0) return;
     event.preventDefault();
-    // While an object is being dragged by its pink move handle the wheel
-    // turns it one step per notch instead of zooming the camera; releasing
-    // the drag saves the settled position and heading together.
-    if (draggedLayoutObject) {
-      rotateActiveLayoutObject(Math.sign(deltaPixels));
-      return;
-    }
     pointerCoordinates(event);
     raycaster.setFromCamera(pointer, camera);
     const bulletinHit = raycaster
@@ -25110,6 +25606,15 @@ export function createWorldScene({
       event.target instanceof HTMLAnchorElement ||
       event.target?.isContentEditable
     ) return;
+    if (
+      layoutEditingEnabled &&
+      activeLayoutObject &&
+      event.code.startsWith("Arrow") &&
+      nudgeActiveLayoutObject(event.code)
+    ) {
+      event.preventDefault();
+      return;
+    }
     if (MOVEMENT_KEYS.has(event.code)) {
       if (!keys.size && !event.repeat) {
         const now = performance.now();
@@ -25136,14 +25641,15 @@ export function createWorldScene({
       }
       event.preventDefault();
     }
-    // R turns the object being dragged — or the one most recently grabbed —
-    // a step at a time; hold Shift to turn it back the other way.
+    // R turns the selected object a step at a time; hold Shift to turn it back
+    // the other way. Selection never changes the behavior for non-admins.
     if (event.code === "KeyR" && layoutEditingEnabled) {
       if (rotateActiveLayoutObject(event.shiftKey ? -1 : 1)) {
         event.preventDefault();
       }
     }
     if (event.code === "Escape") {
+      setActiveLayoutObject(null);
       if (cameraMode === "first-person") setCameraMode("third-person");
       else clearFocus();
     }
@@ -25172,13 +25678,10 @@ export function createWorldScene({
     pointerGestureMoved = false;
     pinchActive = false;
     pinchStartDistance = 0;
-    draggedLayoutObject = null;
-    layoutDragMode = "move";
     renderer.domElement.dataset.dragging = "false";
   }
 
   renderer.domElement.addEventListener("pointerdown", handlePointerDown);
-  renderer.domElement.addEventListener("contextmenu", handleContextMenu);
   renderer.domElement.addEventListener("dblclick", handleDoubleClick);
   renderer.domElement.addEventListener("pointermove", handlePointerMove, {
     passive: false,
@@ -25707,7 +26210,6 @@ export function createWorldScene({
     window.removeEventListener("resize", resize);
     window.visualViewport?.removeEventListener("resize", resize);
     renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
-    renderer.domElement.removeEventListener("contextmenu", handleContextMenu);
     renderer.domElement.removeEventListener("dblclick", handleDoubleClick);
     renderer.domElement.removeEventListener("pointermove", handlePointerMove);
     renderer.domElement.removeEventListener("wheel", handleWheel);
@@ -25783,6 +26285,7 @@ export function createWorldScene({
     getOfficeAquariumState,
     setOfficeParticipants,
     updateOfficeMarketingTasks,
+    updateLobbyLinkBoard,
     isOfficeInterior: () => officeSceneMode !== "town",
     updateWorldBulletin,
     updateWorldGeneralChat,
@@ -25829,6 +26332,7 @@ export function createWorldScene({
     setAvatarFaceImage,
     updateArrivalStats,
     updateMemberLounge,
+    updateLeaderboards,
     updateReferralLeaderboard,
     updateSiteReferrerLeaderboard,
     updateNetworkNodes,

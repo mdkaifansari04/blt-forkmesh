@@ -3,8 +3,9 @@
 The kiosk never fetches a submitted URL. It combines an authenticated
 ForkMesh account's server-side follower count with aggregate visits already
 recorded for the submitted hostname. The result estimates potential traffic;
-it is not a ranking of a person and has no effect on access, merges, rewards,
-or governance.
+it is not a ranking of a person and has no effect on access, merges, or
+governance. The separate tiny SOL appreciation estimate is optional,
+non-custodial, and never a promise of payment.
 """
 
 import math
@@ -36,6 +37,23 @@ HOST_RE = re.compile(
     r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
     r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
 )
+SOLANA_ADDRESS_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+# A deliberately tiny, deterministic SOL-denominated appreciation estimate.
+# Scores map across ten steps; the UI publishes only SOL and never presents
+# this as a guaranteed payout or a balance.
+REWARD_SOL_MIN = 0.00005
+REWARD_SOL_MAX = 0.00050
+
+
+def reward_sol(score):
+    step = max(
+        1,
+        min(10, 1 + round(max(0, min(100, int(score or 0))) * 9 / 100)),
+    )
+    value = REWARD_SOL_MIN + (step - 1) * (
+        (REWARD_SOL_MAX - REWARD_SOL_MIN) / 9
+    )
+    return float(f"{value:.8f}")
 
 
 def _response(runtime, payload, status=200):
@@ -151,11 +169,15 @@ def _verified_profile_host(record, host):
 
 async def _public_links(runtime):
     rows = await runtime.d1_all(
-        "SELECT link_id,data,score,potential_low,potential_high,created_at "
-        "FROM world_lobby_links ORDER BY created_at DESC,link_id DESC LIMIT ?",
+        "SELECT l.link_id,l.account_bi,l.data,l.score,l.potential_low,"
+        "l.potential_high,l.created_at,u.data AS account_data "
+        "FROM world_lobby_links l "
+        "LEFT JOIN users u ON u.user_bi=l.account_bi "
+        "ORDER BY l.created_at DESC,l.link_id DESC LIMIT ?",
         PUBLIC_LIMIT,
     )
     links = []
+    accounts = {}
     for row in rows or []:
         try:
             data = await runtime.open(row.get("data"))
@@ -163,9 +185,26 @@ async def _public_links(runtime):
             data = None
         if not isinstance(data, dict):
             continue
+        account_key = str(row.get("account_bi") or "")
+        if account_key not in accounts:
+            try:
+                accounts[account_key] = await runtime.open(
+                    row.get("account_data")
+                )
+            except Exception:
+                accounts[account_key] = None
+        account = accounts.get(account_key)
         url, host = normalize_public_url(data.get("url"))
         if not url:
             continue
+        wallet = str((account or {}).get("solana") or "").strip()
+        if (
+            (account or {}).get("status") != "active"
+            or not SOLANA_ADDRESS_RE.fullmatch(wallet)
+        ):
+            wallet = ""
+        paid_at = max(0, int(data.get("paidAt") or 0))
+        score = max(0, min(100, int(row.get("score") or 0)))
         links.append({
             "id": str(row.get("link_id") or ""),
             "url": url,
@@ -176,11 +215,15 @@ async def _public_links(runtime):
                 str(data.get("channel") or "other")
                 if str(data.get("channel") or "") in CHANNELS else "other"
             ),
-            "score": max(0, min(100, int(row.get("score") or 0))),
+            "score": score,
             "potentialTraffic": {
                 "low": max(0, int(row.get("potential_low") or 0)),
                 "high": max(0, int(row.get("potential_high") or 0)),
             },
+            "walletAddress": wallet,
+            "rewardSol": reward_sol(score),
+            "paymentStatus": "paid" if paid_at else "unpaid",
+            "paidAt": paid_at,
             "createdAt": int(row.get("created_at") or 0),
         })
     return links
@@ -201,7 +244,9 @@ async def handle(runtime, path):
                 "label": "Estimated reach score",
                 "minimum": 0,
                 "maximum": 100,
-                "notUsedFor": ["merge access", "rewards", "governance"],
+                "notUsedFor": [
+                    "merge access", "governance", "guaranteed payouts"
+                ],
             },
         })
 
@@ -298,6 +343,14 @@ async def handle(runtime, path):
             "score": estimate["score"],
             "potentialTraffic": estimate["potentialTraffic"],
             "factors": estimate["factors"],
+            "walletAddress": (
+                str((record or {}).get("solana") or "").strip()
+                if SOLANA_ADDRESS_RE.fullmatch(
+                    str((record or {}).get("solana") or "").strip())
+                else ""
+            ),
+            "rewardSol": reward_sol(estimate["score"]),
+            "paymentStatus": "unpaid",
             "createdAt": now,
         },
         "links": await _public_links(runtime),

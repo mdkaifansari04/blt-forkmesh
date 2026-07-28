@@ -2713,7 +2713,7 @@ void MainWindow::updateFooterGitIdentity()
 {
     if (!m_footerGitIdentity)
         return;
-    // No repo open (Log/Leaderboards/etc.): nothing repo-specific to show.
+    // No repo open (Log/Settings/etc.): nothing repo-specific to show.
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
         m_footerGitIdentity->clear();
         return;
@@ -3919,18 +3919,6 @@ QWidget *MainWindow::buildBreadcrumb()
     // nav (adhoc #137): it's opened via the floating "Log" button overlaid on
     // the always-on live-log strip, created in buildNetworkLogDock().
 
-    // Leaderboards: the public network rankings (issue #11), section index 5.
-    m_leaderboardNavButton = new QPushButton(QStringLiteral("Leaderboards"));
-    m_leaderboardNavButton->setObjectName("topNavButton");
-    m_leaderboardNavButton->setCheckable(true);
-    m_leaderboardNavButton->setCursor(Qt::PointingHandCursor);
-    m_leaderboardNavButton->setToolTip(
-        QString::fromUtf8("Leaderboards \xE2\x80\x94 network rankings"));
-    setOcticon(m_leaderboardNavButton, "graph", 16);
-    m_navGroup->addButton(m_leaderboardNavButton, 5); // section 5: Leaderboards
-    connect(m_leaderboardNavButton, &QPushButton::clicked, this,
-            [this] { showSection(5); });
-
     // Control node: this desktop's operational surface for local mirrors,
     // permissions, keys, wallet public address, Cloudflare, and connected hosts.
     m_controlNodeNavButton = new QPushButton(QStringLiteral("Control"));
@@ -3956,7 +3944,7 @@ QWidget *MainWindow::buildBreadcrumb()
             &MainWindow::openForkMeshWorld);
 
     // Hosts (adhoc #263): provision a remote machine by SSHing in and running the
-    // ForkMesh installer over ansible. Sits right next to Leaderboards, section 7.
+    // ForkMesh installer over ansible, section 7.
     m_hostsNavButton = new QPushButton(QStringLiteral("Hosts"));
     m_hostsNavButton->setObjectName("topNavButton");
     m_hostsNavButton->setCheckable(true);
@@ -4300,7 +4288,6 @@ QWidget *MainWindow::buildBreadcrumb()
     // (adhoc #137): the bell rides beside the avatar in mainRow, and the gear
     // sits in the right-hand utility cluster next to the rebuild button. Log is
     // now a floating button on the live-log strip.
-    navRow->addWidget(m_leaderboardNavButton);
     navRow->addWidget(m_controlNodeNavButton);
     navRow->addWidget(m_worldNavButton);
     navRow->addWidget(m_hostsNavButton);
@@ -6538,7 +6525,6 @@ void MainWindow::ensureSectionBuilt(int index)
     case 2: section = buildChatSection(); break;
     case 3: section = buildNotificationsSection(); break;
     case 4: section = buildLogSection(); break;
-    case 5: section = buildLeaderboardsSection(); break;
     case 6: section = buildSearchResultsSection(); break;
     case 7: section = buildHostsSection(); break;
     case 8: section = buildRelaysSection(); break;
@@ -6560,6 +6546,10 @@ void MainWindow::showSection(int index)
 {
     if (index == 9)
         index = kNetworkDiagnosticsSectionIndex;
+    // Section 5 was a retired desktop rankings page. Preserve fixed stack
+    // indexes for saved navigation state, but land stale history safely at Home.
+    if (index == 5)
+        index = 0;
     ensureSectionBuilt(index);
     // Leaving Settings (index 1) while the mic test is recording would otherwise
     // leave the recorder holding the microphone open in the background; stop it.
@@ -6596,9 +6586,6 @@ void MainWindow::showSection(int index)
         }
         // Jump to the newest log line whenever the Log section opens.
         m_settingsLog->moveCursor(QTextCursor::End);
-    } else if (index == 5) {
-        // Pull the latest rankings each time the Leaderboards section opens.
-        refreshLeaderboards();
     } else if (index == 7) {
         // Re-read the saved host list whenever the Hosts section opens.
         refreshHostsTable();
@@ -7181,237 +7168,6 @@ void MainWindow::mirrorNetworkRepo(const QString &owner, const QString &name,
     mirrorCatalogRepo(owner, name, source, isPrivate);
     flashMessage(QStringLiteral("Mirroring %1/%2.").arg(owner, name));
     refreshNetworkReposPage();
-}
-
-// --- Leaderboards (issue #11) ----------------------------------------------
-// A scrollable grid of ranking cards mirroring the website's /network/
-// leaderboards: mainnode uptime, top owners, most-mirrored and longest-hosted
-// repositories, contributor activity, and funds received by mainnodes,
-// contributors and projects. Data comes from /api/network/leaderboards.
-
-QWidget *MainWindow::buildLeaderboardsSection()
-{
-    auto *page = new QWidget;
-    auto *outer = new QVBoxLayout(page);
-    outer->setContentsMargins(24, 20, 24, 24);
-    outer->setSpacing(12);
-
-    auto *title = new QLabel(QStringLiteral("Leaderboards"));
-    title->setObjectName("sectionTitle");
-    QFont titleFont = title->font();
-    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
-    titleFont.setBold(true);
-    title->setFont(titleFont);
-    outer->addWidget(title);
-
-    auto *subtitle = new QLabel(QString::fromUtf8(
-        "Mainnode uptime, top owners, the most-mirrored and longest-hosted "
-        "repositories, contributor activity, and funds received \xE2\x80\x94 "
-        "across the whole network."));
-    subtitle->setObjectName("mutedLabel");
-    subtitle->setWordWrap(true);
-    outer->addWidget(subtitle);
-
-    m_leaderboardsStatus = new QLabel(QString::fromUtf8("Loading leaderboards\xE2\x80\xA6"));
-    m_leaderboardsStatus->setObjectName("mutedLabel");
-    outer->addWidget(m_leaderboardsStatus);
-
-    // The boards themselves live in a grid of cards inside a scroll area so a
-    // tall list never forces the window taller.
-    m_leaderboardsContent = new QWidget;
-    auto *grid = new QGridLayout(m_leaderboardsContent);
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setHorizontalSpacing(20);
-    grid->setVerticalSpacing(20);
-
-    auto *scroll = new QScrollArea;
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll->setWidget(m_leaderboardsContent);
-    outer->addWidget(scroll, 1);
-
-    return page;
-}
-
-void MainWindow::refreshLeaderboards()
-{
-    if (m_leaderboardsStatus)
-        m_leaderboardsStatus->setText(QString::fromUtf8("Loading leaderboards\xE2\x80\xA6"));
-
-    QUrl url = catalogApiUrl(); // same relay host, http(s) scheme
-    url.setPath(QStringLiteral("/api/network/leaderboards"));
-    url.setQuery(QString());
-    QNetworkRequest request(url);
-    request.setRawHeader("accept", "application/json");
-    QNetworkReply *reply = m_networkAccess->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            if (m_leaderboardsStatus)
-                m_leaderboardsStatus->setText(
-                    QStringLiteral("Leaderboards unavailable right now."));
-            return;
-        }
-        const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
-        populateLeaderboards(obj);
-    });
-}
-
-void MainWindow::populateLeaderboards(const QJsonObject &data)
-{
-    if (!m_leaderboardsContent)
-        return;
-    auto *grid = qobject_cast<QGridLayout *>(m_leaderboardsContent->layout());
-    if (!grid)
-        return;
-
-    // Clear any boards from a previous refresh.
-    QLayoutItem *old = nullptr;
-    while ((old = grid->takeAt(0))) {
-        if (old->widget())
-            old->widget()->deleteLater();
-        delete old;
-    }
-
-    // Build one board card from a JSON array, formatting each row's value.
-    auto makeBoard = [](const QString &boardTitle, const QString &boardSub,
-                        const QJsonArray &rows,
-                        const std::function<QString(const QJsonObject &)> &fmt)
-        -> QWidget * {
-        auto *card = new QFrame;
-        card->setObjectName("leaderboardCard");
-        card->setFrameShape(QFrame::StyledPanel);
-        auto *col = new QVBoxLayout(card);
-        col->setContentsMargins(16, 14, 16, 14);
-        col->setSpacing(2);
-
-        auto *h = new QLabel(boardTitle);
-        QFont hf = h->font();
-        hf.setBold(true);
-        hf.setPointSizeF(hf.pointSizeF() + 1);
-        h->setFont(hf);
-        col->addWidget(h);
-
-        auto *sub = new QLabel(boardSub);
-        sub->setObjectName("mutedLabel");
-        sub->setWordWrap(true);
-        QFont sf = sub->font();
-        sf.setPointSizeF(sf.pointSizeF() - 1);
-        sub->setFont(sf);
-        col->addWidget(sub);
-        col->addSpacing(6);
-
-        if (rows.isEmpty()) {
-            auto *empty = new QLabel(QStringLiteral("No data yet."));
-            empty->setObjectName("mutedLabel");
-            col->addWidget(empty);
-            return card;
-        }
-
-        int rank = 0;
-        for (const QJsonValue &v : rows) {
-            const QJsonObject row = v.toObject();
-            ++rank;
-            auto *line = new QHBoxLayout;
-            line->setContentsMargins(0, 2, 0, 2);
-            line->setSpacing(8);
-
-            auto *rankLabel = new QLabel(QString::number(rank));
-            rankLabel->setObjectName("mutedLabel");
-            rankLabel->setFixedWidth(20);
-            line->addWidget(rankLabel);
-
-            auto *name = new QLabel(row.value("name").toString(QStringLiteral("node")));
-            name->setTextInteractionFlags(Qt::TextSelectableByMouse);
-            line->addWidget(name, 1);
-
-            auto *value = new QLabel(fmt(row));
-            QFont vf = value->font();
-            vf.setBold(true);
-            value->setFont(vf);
-            value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            line->addWidget(value);
-
-            col->addLayout(line);
-        }
-        return card;
-    };
-
-    auto arr = [&](const char *key) { return data.value(QLatin1String(key)).toArray(); };
-    auto numVal = [](const QJsonObject &o, const char *k) {
-        return o.value(QLatin1String(k)).toDouble();
-    };
-    auto plural = [](double n, const QString &word) {
-        const long long v = static_cast<long long>(n);
-        return QString::number(v) + " " + word + (v == 1 ? "" : "s");
-    };
-    auto fmtMinutes = [](double m) {
-        const long long mins = static_cast<long long>(m);
-        const long long h = mins / 60, rem = mins % 60;
-        if (h && rem) return QStringLiteral("%1h %2m").arg(h).arg(rem);
-        if (h) return QStringLiteral("%1h").arg(h);
-        return QStringLiteral("%1m").arg(rem);
-    };
-    auto fmtAge = [](double ms) {
-        const long long days = static_cast<long long>(ms / 86400000.0);
-        if (days >= 1) return QString::number(days) + (days == 1 ? " day" : " days");
-        const long long hrs = static_cast<long long>(ms / 3600000.0);
-        return QString::number(hrs) + (hrs == 1 ? " hour" : " hours");
-    };
-    auto fmtSol = [numVal](const QJsonObject &o) {
-        double sol = o.value(QLatin1String("sol")).toDouble();
-        if (sol <= 0)
-            sol = numVal(o, "lamports") / 1e9;
-        return QString::number(sol, 'f', sol >= 1 ? 2 : 4) + " SOL";
-    };
-
-    const int hours = data.value("windowHours").toInt(48);
-
-    struct Board {
-        QString title, sub;
-        QJsonArray rows;
-        std::function<QString(const QJsonObject &)> fmt;
-    };
-    QList<Board> boards = {
-        {QStringLiteral("Mainnode uptime"),
-         QStringLiteral("Most minutes online \xC2\xB7 last %1h").arg(hours), arr("uptime"),
-         [fmtMinutes, numVal](const QJsonObject &o) { return fmtMinutes(numVal(o, "minutes")); }},
-        {QStringLiteral("Top owners"), QStringLiteral("Most public repositories"),
-         arr("repos"),
-         [plural, numVal](const QJsonObject &o) { return plural(numVal(o, "repos"), "repo"); }},
-        {QStringLiteral("Most mirrored"),
-         QStringLiteral("Repositories hosted under the most owners"), arr("mirrors"),
-         [plural, numVal](const QJsonObject &o) { return plural(numVal(o, "mirrors"), "owner"); }},
-        {QStringLiteral("Longest hosted"),
-         QStringLiteral("Repositories online the longest"), arr("hosted"),
-         [fmtAge, numVal](const QJsonObject &o) { return fmtAge(numVal(o, "ageMs")); }},
-        {QStringLiteral("Contributor activity"),
-         QStringLiteral("Issues + pull requests + commits"), arr("contributors"),
-         [plural, numVal](const QJsonObject &o) { return plural(numVal(o, "total"), "contribution"); }},
-        {QString::fromUtf8("Funds \xC2\xB7 mainnodes"),
-         QStringLiteral("Most received from the node split"), arr("fundsMainnodes"),
-         fmtSol},
-        {QString::fromUtf8("Funds \xC2\xB7 contributors"),
-         QStringLiteral("Most received from bounties"), arr("fundsContributors"),
-         fmtSol},
-        {QString::fromUtf8("Funds \xC2\xB7 projects"),
-         QStringLiteral("Most bounty funds earned"), arr("fundsProjects"), fmtSol},
-    };
-
-    const int columns = 2;
-    for (int i = 0; i < boards.size(); ++i) {
-        const Board &b = boards.at(i);
-        auto *card = makeBoard(b.title, b.sub, b.rows, b.fmt);
-        card->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-        grid->addWidget(card, i / columns, i % columns, Qt::AlignTop);
-    }
-    grid->setColumnStretch(0, 1);
-    grid->setColumnStretch(1, 1);
-    grid->setRowStretch(grid->rowCount(), 1);
-
-    if (m_leaderboardsStatus)
-        m_leaderboardsStatus->setText(QString());
 }
 
 // --- Hosts (adhoc #263) -----------------------------------------------------
