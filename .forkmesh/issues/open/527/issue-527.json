@@ -20,6 +20,15 @@
             "title": "Message Board Request",
             "ts": 1784958804397,
             "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "d59de5cb-33dd-44f2-90f2-0717e6cd6f2a",
+            "progress": 69,
+            "sig": "aa0PYLUNB8iq8xwTomVjOvwp7DR3fBTqh_Q83MtGt3v5d0iVT9w-3bz4KgXX4fvAUJ1Im8uVIVYYLZOqDux_DA",
+            "ts": 1785207441506,
+            "type": "progress"
         }
     ],
     "labels": [
@@ -28,11 +37,11 @@
     "milestone": "",
     "number": 527,
     "priority": 0,
-    "progress": 0,
+    "progress": 69,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
     "status": "open",
     "title": "Message Board Request",
-    "updatedAt": 1784958804397,
+    "updatedAt": 1785207441506,
     "votes": 0
 }
