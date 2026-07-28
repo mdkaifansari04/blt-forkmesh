@@ -20,6 +20,17 @@
             "title": "ForkMesh v0.7.0 Production Multiplayer Validation Issue",
             "ts": 1784953327017,
             "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "this is working fine now",
+            "id": "0a06a129-4516-4b5d-af2b-4002109c13b2",
+            "sig": "I10d0OcWdBRUpKWSyYJf6Y0gCcIzplQgFDl7YrstKu8GUKcu0Z0JV9SGrQ4hiyBVLU3tpVqsF7SFpt9HDWWbCw",
+            "ts": 1785207342052,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -33,6 +44,6 @@
     "startDate": 0,
     "status": "open",
     "title": "ForkMesh v0.7.0 Production Multiplayer Validation Issue",
-    "updatedAt": 1784953327017,
+    "updatedAt": 1785207342052,
     "votes": 0
 }
