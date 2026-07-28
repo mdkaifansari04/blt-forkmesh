@@ -17,7 +17,6 @@ def run_module(source):
     result = subprocess.run(
         [
             "node",
-            "--experimental-default-type=module",
             "--input-type=module",
             "-e",
             source,

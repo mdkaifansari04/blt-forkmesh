@@ -55,7 +55,6 @@ def test_live_node_builder_preserves_signed_repo_facts_and_unknown_telemetry():
     result = subprocess.run(
         [
             "node",
-            "--experimental-default-type=module",
             "--input-type=module",
             "-e",
             script,
@@ -120,7 +119,6 @@ def test_live_node_builder_keeps_long_names_distinct_and_rejected_routes_blocked
     result = subprocess.run(
         [
             "node",
-            "--experimental-default-type=module",
             "--input-type=module",
             "-e",
             script,
@@ -172,7 +170,6 @@ def test_live_node_builder_uses_the_freshest_repository_state_per_node():
     result = subprocess.run(
         [
             "node",
-            "--experimental-default-type=module",
             "--input-type=module",
             "-e",
             script,
@@ -223,7 +220,6 @@ def test_live_node_builder_retains_offline_payload_rows_but_not_unrelated_names(
     result = subprocess.run(
         [
             "node",
-            "--experimental-default-type=module",
             "--input-type=module",
             "-e",
             script,

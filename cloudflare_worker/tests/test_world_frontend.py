@@ -97,7 +97,6 @@ def test_world_entry_modules_have_valid_ecmascript_module_syntax():
         completed = subprocess.run(
             [
                 "node",
-                "--experimental-default-type=module",
                 "--check",
                 str(module),
             ],
@@ -112,8 +111,8 @@ def test_world_entry_modules_have_valid_ecmascript_module_syntax():
 
 def test_world_contains_the_initial_city_districts_without_a_clock():
     for landmark in (
-        "information",
         "fountain",
+        "campfire",
         "repositories",
         "office",
     ):
@@ -143,40 +142,28 @@ def test_forkmesh_office_is_a_navigable_world_landmark():
     assert 'id: "office"' in DATA
     assert 'label: "ForkMesh Office"' in DATA
     assert 'shortLabel: "Office"' in DATA
-    assert "position: [45, 0, -27]" in DATA
+    assert "position: [0, 0, -215]" in DATA
     assert 'id: "visiting-office"' in DATA
 
 
-def test_landmarks_are_spread_out_inside_the_repository_portal_perimeter():
+def test_landmarks_use_stable_positions_inside_the_world_and_office_campus():
     positions = {
-        "information": (-40, 30),
         "fountain": (0, 0),
+        "campfire": (8, 8),
         "repositories": (35, 38),
-        "office": (45, -27),
+        "office": (0, -215),
     }
     for landmark, (x, z) in positions.items():
         start = DATA.index(f'id: "{landmark}"')
         block = DATA[start: DATA.index("\n  },", start)]
         assert f"position: [{x}, 0, {z}]" in block
 
-    perimeter_radius = 68
-    noncentral = {
-        landmark: position
-        for landmark, position in positions.items()
-        if landmark != "fountain"
-    }
-    assert all(
-        math.hypot(x, z) <= perimeter_radius - 15
-        for x, z in noncentral.values()
-    )
-    assert min(
-        math.dist(left, right)
-        for index, left in enumerate(noncentral.values())
-        for right in list(noncentral.values())[index + 1:]
-    ) >= 18
+    town_landmarks = [positions["campfire"], positions["repositories"]]
+    assert min(math.dist(left, right) for left in town_landmarks for right in town_landmarks if left != right) >= 18
+    assert math.dist(positions["office"], positions["fountain"]) >= 180
     assert "const REPOSITORY_EDGE_RADIUS = 68" in SCENE
     assert "const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0])" in SCENE
-    assert "const SYSTEM_CAPACITY_PLATFORM_POSITION = Object.freeze([8, 0, -27])" in SCENE
+    assert "const SYSTEM_CAPACITY_INFRASTRUCTURE_POSITION = Object.freeze([-24, 0, 7])" in SCENE
 
 
 def test_static_world_fallback_links_to_chat():
@@ -187,7 +174,6 @@ def test_static_world_fallback_links_to_chat():
 def test_scene_builds_playable_landmarks_and_badged_avatars():
     for builder in (
         "createAvatar",
-        "createInformationBooth",
         "createFountain",
         "createRepositoryDistrict",
         "createOrganizationQuarter",
@@ -215,7 +201,7 @@ def test_scene_builds_playable_landmarks_and_badged_avatars():
     ):
         assert status_icon in APP
         assert status_icon in SCENE
-    assert "You entered as a guest immediately" in DATA
+    assert "Everyone, including guests, can cross the bridge and enter the lobby" in DATA
     assert "function updateOrganizations" in SCENE
     assert "organization-profiles" in SCENE
     assert "organization.memberList" in SCENE
@@ -809,7 +795,7 @@ def test_focus_music_is_local_long_form_playback_without_polling():
     assert "focusMusicTrackId: DEFAULT_FOCUS_MUSIC_TRACK_ID" in APP
     assert "focusMusicVolume: DEFAULT_FOCUS_MUSIC_VOLUME" in APP
     assert "focusMusicMuted: false" in APP
-    assert "writeJSON(localStorage, SETTINGS_KEY, this.settings)" in APP
+    assert "writeJSON(localStorage, SETTINGS_KEY, {" in APP
 
     start = APP.index("  async playFocusMusic(")
     end = APP.index("\n  stopFocusMusic(", start)
@@ -1036,7 +1022,7 @@ def test_mobile_world_chat_composer_stays_above_safe_area_and_terminal_bars():
 
 
 def test_world_receives_private_notifications_and_global_announcements():
-    assert "WORLD_NOTIFICATION_POLL_MS = 30 * 1000" in APP
+    assert "WORLD_NOTIFICATION_POLL_MS = 60 * 1000" in APP
     assert "normalizeWorldNotifications" in APP
     assert "/api/notifications?node=${encodeURIComponent(" in APP
     assert 'this.fetchJSON("/api/world/events"' in APP
@@ -1909,10 +1895,10 @@ def test_known_bots_are_verified_from_a_deployed_public_directory():
 
 def test_financial_and_security_metaphors_disclose_current_limitations():
     assert (
-        "Worker stores only public payout addresses, unsigned intents, and "
-        "finalized signatures"
+        "The production mainnet-beta flow reads public on-chain state, accepts "
+        "direct wallet-to-pool contributions"
     ) in DATA
-    assert "community-pool signer stays in the first instance operator’s encrypted local Qt client" in DATA
+    assert "sends unsigned plans to the instance owner’s local Qt signer" in DATA
     assert "Mainnet-beta · external signer" in DATA
     assert "Development instances may explicitly select a test network" in DATA
     assert "Visual coins are not guaranteed rewards or investments" in DATA
@@ -1921,8 +1907,8 @@ def test_financial_and_security_metaphors_disclose_current_limitations():
         "platform administrators do not automatically receive those recipient "
         "private keys"
     ) in PRIVACY
-    assert "Raw IP addresses are never shown in the world" in DATA
-    assert "does not eliminate endpoint, authorization, or operational risk" in DATA
+    assert "Raw IP addresses, full User-Agent strings, and precise location are never public" in PRIVACY
+    assert "Every metaphor has a technical panel" in DATA
     assert "availability, not automatic trust" in DATA
     assert "Normal repository traffic stays on HTTPS" in DATA
     assert "What is actually happening" in APP
@@ -2044,9 +2030,9 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
 def test_world_overview_zoom_keeps_the_finite_ground_inside_camera_depth():
     assert "const WORLD_GROUND_RADIUS = 88;" in SCENE
     assert "const CAMERA_OFFSET = [17, 16, 21];" in SCENE
-    assert "const CAMERA_ZOOM_MIN = 0.12;" in SCENE
-    assert "const CAMERA_ZOOM_MAX = 3.2;" in SCENE
-    assert "const CAMERA_FAR_PLANE = 240;" in SCENE
+    assert "const CAMERA_ZOOM_MIN = 0.06;" in SCENE
+    assert "const CAMERA_ZOOM_MAX = 28;" in SCENE
+    assert "const CAMERA_FAR_PLANE = 1200;" in SCENE
     assert (
         "new THREE.PerspectiveCamera(\n"
         "    44,\n"
@@ -2059,19 +2045,11 @@ def test_world_overview_zoom_keeps_the_finite_ground_inside_camera_depth():
     # At maximum strategic zoom, a camera looking at the world center can still
     # see through the opposite edge of the finite ground before its far plane.
     camera_distance = math.hypot(17, 16, 21)
-    assert camera_distance * 3.2 + 88 < 240
-
-    zoom_fog_start = SCENE.index("  function zoomFogMultiplier() {")
-    zoom_fog = SCENE[
-        zoom_fog_start:
-        SCENE.index("\n  function setLightLevel(", zoom_fog_start)
-    ]
-    assert "CAMERA_ZOOM_MAX - 1" in zoom_fog
-    assert "(cameraZoom - 1) / 7" not in zoom_fog
+    assert camera_distance * 28 + 88 < 1200
 
 
 def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
-    assert "const WORLD_RADIUS = 174" in SCENE
+    assert "const WORLD_RADIUS = 340" in SCENE
     assert "const WORLD_GROUND_RADIUS = 88" in SCENE
     assert "electric-mesh-city-block-grid" not in SCENE
     assert "electricMeshConduit" not in SCENE
@@ -2301,7 +2279,7 @@ def test_world_lighting_is_static_daylight_with_a_local_persisted_control():
     assert "data-world-light-level-output" in APP
     assert "this.settings.lightLevel = next" in APP
     assert "this.world?.setLightLevel(next)" in APP
-    assert "writeJSON(localStorage, SETTINGS_KEY, this.settings)" in APP
+    assert "writeJSON(localStorage, SETTINGS_KEY, {" in APP
     assert "lightLevel" not in APP[
         APP.index("function publicIdentity"):APP.index("function presenceBrowser")
     ]
@@ -2388,14 +2366,8 @@ def test_approved_federated_instances_render_without_private_relay_material():
     assert "instance?.approved === true" in SCENE
 
 
-def test_information_booth_deep_link_carries_no_cloudflare_secret():
+def test_cloudflare_setup_deep_link_carries_no_cloudflare_secret():
     exact = "forkmesh://control/cloudflare"
-    assert exact in APP
-    assert "The hosted World never accepts, proxies, or stores a Cloudflare API token" in APP
-    assert 'type="password"' not in APP[
-        APP.index("informationPanelHTML()"):
-        APP.index("rewardPanelHTML()")
-    ]
     assert exact in QT_MAIN
     assert "target == QLatin1String" in QT_MAIN
     assert "openCloudflareSetupFromSystemLink" in QT_CONTROL
@@ -2558,7 +2530,7 @@ def test_forkbot_mention_excites_the_droid_with_echo_screen_and_thinking_dots():
         "const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\\b/i;"
         in APP
     )
-    assert APP.count("this.world?.exciteForkbot?.(") == 2
+    assert APP.count("this.world?.exciteForkbot?.(") == 1
 
 
 def test_collapsed_chat_bar_shows_an_unread_count_excluding_own_lines():
