@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "forkbot",
     "authorName": "forkbot",
@@ -43,6 +44,17 @@
             "sig": "BWfWvuEw4JzBhWx5HUOc7LPNbpS4NA9OaUYXAspyw_50EY-FY0CCytAopUuuuko7so4mytaFuOtAY45cPkXGBQ",
             "ts": 1785207634193,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "5ef19cee-f25b-4b6d-b032-3c821bd3c9e6",
+            "sig": "balnv7KcLB40OyCmuVekc7YZxhxtXvoNvy7PXm8SbKYllB9X65aABV9FpVwf2C-64NMB94y7FLuyIWyKEoXtAQ",
+            "ts": 1785207634263,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -56,6 +68,6 @@
     "startDate": 0,
     "status": "open",
     "title": "Add wave button",
-    "updatedAt": 1785207634193,
+    "updatedAt": 1785207634263,
     "votes": 0
 }
