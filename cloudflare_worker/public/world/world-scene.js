@@ -10007,7 +10007,7 @@ function createOfficeMarineAquarium(THREE, animated) {
   const AQUARIUM_FEEDING_DURATION_MS = 60_000;
   const AQUARIUM_FEEDING_APPROACH_MS = 4_200;
   const AQUARIUM_FEEDING_RETURN_MS = 6_500;
-  const feedingCenter = new THREE.Vector3(0.68, 9.7, -1.8);
+  const feedingCenter = new THREE.Vector3(0.68, 6.9, -1.8);
   let feedingStartedAt = -Infinity;
   let feedingActive = false;
   const AQUARIUM_FISH_SPECIES = Object.freeze([
@@ -11257,12 +11257,12 @@ function createOfficeMarineAquarium(THREE, animated) {
       feedingTangent: new THREE.Vector3(),
       feedingRadius:
         instance.speciesId === "chromis"
-          ? 1.5 + speciesIndex * 0.28
-          : 0.72 + index * 0.22,
+          ? 4.2 + speciesIndex * 0.7
+          : 1.8 + index * 0.8,
       feedingHeight:
         instance.speciesId === "chromis"
-          ? 0.45 + speciesIndex * 0.24
-          : (index % 3 - 1) * 0.42,
+          ? -0.8 + speciesIndex * 0.4
+          : (index % 3 - 1) * 0.65,
       feedingPhase: instance.phase * Math.PI * 2 + index * 0.74,
       feedingSpeed: 0.00105 + (index % 4) * 0.00009,
       feedingDelay: index * 260,
@@ -11292,11 +11292,11 @@ function createOfficeMarineAquarium(THREE, animated) {
   const food = new THREE.Group();
   food.name = "forkmesh-office-aquarium-food";
   food.visible = false;
-  const foodGeometry = new THREE.SphereGeometry(0.055, 8, 6);
+  const foodGeometry = new THREE.SphereGeometry(0.075, 8, 6);
   const foodMaterial = new THREE.MeshStandardMaterial({
     color: "#d7a14b",
     emissive: "#80521f",
-    emissiveIntensity: 0.32,
+    emissiveIntensity: 0.66,
     roughness: 0.82,
     metalness: 0,
     transparent: true,
@@ -11314,7 +11314,7 @@ function createOfficeMarineAquarium(THREE, animated) {
     foodStates.push({
       pellet,
       x: (aquariumSeedFraction(94, index) - 0.5) * 0.82,
-      z: (aquariumSeedFraction(95, index) - 0.5) * 2.35,
+      z: (aquariumSeedFraction(95, index) - 0.5) * 8.4,
       drift: 3.8 + aquariumSeedFraction(96, index) * 3.1,
       phase: aquariumSeedFraction(97, index) * Math.PI * 2,
     });
@@ -11606,7 +11606,7 @@ function createOfficeMarineAquarium(THREE, animated) {
       progress < 0.82
         ? 1
         : aquariumSmoothstep((1 - progress) / 0.18);
-    feedingCenter.set(0.68, 9.7 - visualProgress * 3.6, -1.8);
+    feedingCenter.set(0.68, 6.9 - visualProgress * 1.8, -1.8);
     food.visible = true;
     foodMaterial.opacity = 0.96 * fade;
     for (let index = 0; index < foodStates.length; index += 1) {
@@ -11616,7 +11616,7 @@ function createOfficeMarineAquarium(THREE, animated) {
         : Math.sin(state.phase) * 0.1;
       state.pellet.position.set(
         feedingCenter.x + state.x + wobble,
-        10.75 - visualProgress * state.drift - (index % 5) * 0.055,
+        7.85 - visualProgress * state.drift - (index % 5) * 0.055,
         feedingCenter.z + state.z + wobble * 0.55,
       );
       state.pellet.rotation.set(
@@ -11649,7 +11649,7 @@ function createOfficeMarineAquarium(THREE, animated) {
     if (feedingActive) return false;
     feedingStartedAt = now;
     feedingActive = true;
-    updateFeeding(now, false);
+    updateAquariumFood(now, true);
     return true;
   }
 
