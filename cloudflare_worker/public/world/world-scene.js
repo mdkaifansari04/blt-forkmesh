@@ -470,16 +470,16 @@ function joinedAgoLabel(joinedAt, now = Date.now()) {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return "";
   const elapsed = Math.max(0, now - timestamp);
   const units = [
-    [365 * 24 * 60 * 60 * 1000, "YEAR"],
-    [30 * 24 * 60 * 60 * 1000, "MONTH"],
-    [7 * 24 * 60 * 60 * 1000, "WEEK"],
-    [24 * 60 * 60 * 1000, "DAY"],
-    [60 * 60 * 1000, "HOUR"],
-    [60 * 1000, "MINUTE"],
+    [365 * 24 * 60 * 60 * 1000, "Y"],
+    [30 * 24 * 60 * 60 * 1000, "MO"],
+    [7 * 24 * 60 * 60 * 1000, "W"],
+    [24 * 60 * 60 * 1000, "D"],
+    [60 * 60 * 1000, "H"],
+    [60 * 1000, "M"],
   ];
   for (const [size, unit] of units) {
     const count = Math.floor(elapsed / size);
-    if (count) return `JOINED ${count} ${unit}${count === 1 ? "" : "S"} AGO`;
+    if (count) return `JOINED ${count}${unit} AGO`;
   }
   return "JOINED JUST NOW";
 }
@@ -500,17 +500,17 @@ function firstSeenAgoLabel(minutes) {
   if (!Number.isFinite(total) || total < 0) return "";
   if (total === 0) return "FIRST SEEN JUST NOW";
   const units = [
-    [365 * 24 * 60, "YEAR"],
-    [30 * 24 * 60, "MONTH"],
-    [7 * 24 * 60, "WEEK"],
-    [24 * 60, "DAY"],
-    [60, "HOUR"],
-    [1, "MINUTE"],
+    [365 * 24 * 60, "Y"],
+    [30 * 24 * 60, "MO"],
+    [7 * 24 * 60, "W"],
+    [24 * 60, "D"],
+    [60, "H"],
+    [1, "M"],
   ];
   for (const [size, unit] of units) {
     const count = Math.floor(total / size);
     if (count) {
-      return `FIRST SEEN ${count} ${unit}${count === 1 ? "" : "S"} AGO`;
+      return `FIRST SEEN ${count}${unit} AGO`;
     }
   }
   return "";
@@ -535,7 +535,12 @@ function badgeStatusLabel(identity) {
   return `${emoji} ${note}`.trim().slice(0, 24);
 }
 
-function badgeTexture(THREE, identity, accent = "#9ef7c6") {
+function badgeTexture(
+  THREE,
+  identity,
+  accent = "#9ef7c6",
+  profile = {},
+) {
   const activityLabels = {
     "browsing-code-visualization": "CODE MAP",
     "exploring-town-square": "TOWN SQUARE",
@@ -572,13 +577,75 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
 
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.font = '104px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
+    context.font = '62px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
     context.fillStyle = "#ffffff";
-    context.fillText(identity.flag || "◌", 256, 88);
+    context.fillText(identity.flag || "◌", 70, 62);
 
-    context.font = '700 42px "ForkMesh Mono", ui-monospace, monospace';
+    context.textAlign = "left";
+    context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#ffffff";
-    context.fillText(String(identity.name || "guest").slice(0, 15), 256, 172);
+    context.fillText(String(identity.name || "guest").slice(0, 14), 112, 54);
+    context.font = '700 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#a9b8ff";
+    context.fillText(
+      String(profile.handle || `@${identity.name || "guest"}`).slice(0, 27),
+      112,
+      82,
+    );
+    context.fillStyle = "#9ef7c6";
+    context.fillText(
+      profile.state === "ready"
+        ? `${Math.max(0, Number(profile.followers) || 0)} FOLLOWERS · ${
+            Math.max(0, Number(profile.following) || 0)
+          } FOLLOWING`
+        : "FEDIVERSE · LOADING",
+      112,
+      106,
+    );
+
+    const walletAddress = AVATAR_SOLANA_ADDRESS_RE.test(
+      String(identity.solana || ""),
+    )
+      ? String(identity.solana)
+      : "";
+    context.setLineDash(walletAddress ? [] : [7, 6]);
+    context.strokeStyle = walletAddress ? "#f7c96b" : "#708078";
+    context.lineWidth = 4;
+    context.strokeRect(400, 20, 88, 88);
+    context.setLineDash([]);
+    if (walletAddress) {
+      drawQrModules(context, walletAddress, 406, 26, 76);
+    } else {
+      context.textAlign = "center";
+      context.fillStyle = "#708078";
+      context.font = '900 28px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("+", 444, 57);
+      context.font = '700 11px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        identity.walletEditable ? "ADD WALLET" : "NO WALLET",
+        444,
+        84,
+      );
+    }
+    context.textAlign = "center";
+    context.fillStyle = "#f7c96b";
+    context.font = '700 14px "ForkMesh Mono", ui-monospace, monospace';
+    const walletSol = Number(identity.walletSol);
+    context.fillText(
+      walletAddress && Number.isFinite(walletSol)
+        ? `${walletSol.toLocaleString("en-US", {
+            maximumFractionDigits: 4,
+          })} SOL`
+        : "",
+      444,
+      124,
+    );
+    context.strokeStyle = "rgba(158,247,198,0.28)";
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(30, 142);
+    context.lineTo(482, 142);
+    context.stroke();
 
     const joined = joinedAgoLabel(identity.joinedAt);
     const firstSeen =
@@ -617,11 +684,22 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
       ],
     ].filter(([text]) => text);
     // Five rows still have to clear the status pill at y=374.
-    const step = rows.length > 4 ? 30 : 34;
-    context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
+    const step = rows.length > 4 ? 25 : 29;
+    context.textAlign = "left";
+    context.font = '700 17px "ForkMesh Mono", ui-monospace, monospace';
     rows.forEach(([text, color], index) => {
       context.fillStyle = color;
-      context.fillText(text, 256, 224 + index * step);
+      context.fillText(text, 34, 172 + index * step);
+    });
+
+    const posts = Array.isArray(profile.posts) ? profile.posts.slice(0, 2) : [];
+    context.fillStyle = "#a9b8ff";
+    context.font = '800 15px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("RECENT FEDIVERSE", 34, 312);
+    context.font = '600 14px "ForkMesh Mono", ui-monospace, monospace';
+    posts.forEach((post, index) => {
+      context.fillStyle = index ? "#93a4c8" : "#dfe8ff";
+      context.fillText(String(post).slice(0, 48), 34, 337 + index * 23);
     });
 
     // The world status the visitor set for themselves, on the chest rather
@@ -630,14 +708,15 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
     if (status) {
       context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
       const width = Math.min(452, context.measureText(status).width + 44);
-      roundedRect(context, 256 - width / 2, 374, width, 46, 22);
+      roundedRect(context, 28, 386, width, 38, 19);
       context.fillStyle = "rgba(158,247,198,0.14)";
       context.fill();
       context.strokeStyle = "rgba(158,247,198,0.5)";
       context.lineWidth = 2;
       context.stroke();
       context.fillStyle = "#eafff2";
-      context.fillText(status, 256, 398);
+      context.textAlign = "left";
+      context.fillText(status, 48, 405);
     }
 
     context.beginPath();
@@ -658,16 +737,36 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
       86,
       453,
     );
+
+    const followLabel = fediverseFollowLabel(profile);
+    if (followLabel) {
+      roundedRect(context, 300, 438, 184, 46, 22);
+      context.fillStyle = "rgba(169,184,255,0.18)";
+      context.fill();
+      context.strokeStyle = "#a9b8ff";
+      context.lineWidth = 2;
+      context.stroke();
+      context.textAlign = "center";
+      context.fillStyle = "#eaefff";
+      context.font = '700 16px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(followLabel, 392, 461);
+    }
   });
 }
 
 // The follow control lives inside the fediverse tab's canvas rather than on a
 // separate sliver of chest: the click handler hits it by UV rectangle.
 const BADGE_FOLLOW_PILL = Object.freeze({
-  minU: 96 / 512,
-  maxU: 416 / 512,
-  minV: 1 - 476 / 512,
-  maxV: 1 - 424 / 512,
+  minU: 300 / 512,
+  maxU: 484 / 512,
+  minV: 1 - 484 / 512,
+  maxV: 1 - 438 / 512,
+});
+const BADGE_WALLET_SQUARE = Object.freeze({
+  minU: 394 / 512,
+  maxU: 494 / 512,
+  minV: 1 - 132 / 512,
+  maxV: 1 - 14 / 512,
 });
 
 function badgeFollowPillHit(uv) {
@@ -677,6 +776,16 @@ function badgeFollowPillHit(uv) {
       uv.x <= BADGE_FOLLOW_PILL.maxU &&
       uv.y >= BADGE_FOLLOW_PILL.minV &&
       uv.y <= BADGE_FOLLOW_PILL.maxV,
+  );
+}
+
+function badgeWalletSquareHit(uv) {
+  return Boolean(
+    uv &&
+      uv.x >= BADGE_WALLET_SQUARE.minU &&
+      uv.x <= BADGE_WALLET_SQUARE.maxU &&
+      uv.y >= BADGE_WALLET_SQUARE.minV &&
+      uv.y <= BADGE_WALLET_SQUARE.maxV,
   );
 }
 
@@ -2165,8 +2274,23 @@ function officeReclaimedWoodTexture(THREE) {
 // completed task moves to a varied slot on the right with a hand-drawn X.
 // Keep the ordering stable so a repaint never makes notes jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
+  { key: "task:status-deploy-semaphore", task: "Skip false status incidents during deploys", estimate: "testing", done: false },
+  { key: "task:mobile-home-world", task: "Mobile home live count + Join World", estimate: "testing", done: false },
+  { key: "task:qa-physical-deck", task: "Physical swipe QA deck + account totals", estimate: "testing", done: false },
+  { key: "task:build-send-qa", task: "Done → send build sticky to QA", estimate: "building", done: false },
+  { key: "task:member-unified-card", task: "Unified identity + Fedi + wallet QR card", estimate: "queued", done: false },
   { key: "task:mirror2-agent-claim", task: "Provision mirror2 agent auth + claim jobs", estimate: "human action", done: false },
   { key: "task:review-open-prs", task: "Review every open PR + disposition", estimate: "queued", done: false },
+  { key: "task:repo-social-orbits", task: "Test follower + contributor avatar orbits", estimate: "testing", done: false },
+  { key: "task:issue-agent-models", task: "Issue buttons for Claude/Codex model choice", estimate: "testing", done: false },
+  { key: "task:qt-agent-installers", task: "Qt mirror Claude + Codex installers", estimate: "testing", done: false },
+  { key: "task:marketing-room-wall", task: "Marketing wall, desks, calendar + table", estimate: "testing", done: false },
+  { key: "task:avatar-team-badges", task: "Team badges on each avatar's left arm", estimate: "building", done: false },
+  { key: "task:marketing-proof", task: "Private Marketing proof-of-work links", estimate: "building", done: false },
+  { key: "task:deploy-lifecycle", task: "Live deploy spinner + ready refresh button", estimate: "testing", done: false },
+  { key: "task:elevator-camera-lock", task: "Elevator button camera lock + release", estimate: "testing", done: false },
+  { key: "task:build-board-nearby", task: "Refresh task wall when a player approaches", estimate: "building", done: false },
+  { key: "task:twitter-feed", task: "ForkMesh X posts on the Twitter board", estimate: "verifying feed", done: false },
   { key: "done:follower-orbit-visible", task: "Visible Mastodon follower orbit", estimate: "deployed", done: true },
   { key: "done:bot-full-status", task: "Engineering bot status + controls", estimate: "deployed", done: true },
   { key: "done:agent-diagnostics", task: "Stalled agent diagnostics → Human TODO", estimate: "deployed", done: true },
@@ -2318,6 +2442,120 @@ function worldTaskBulletinTexture(THREE, source = WORLD_TASK_BULLETIN_ITEMS) {
   });
 }
 
+function worldQaCardTexture(THREE, snapshot = {}) {
+  const current = snapshot?.current && typeof snapshot.current === "object"
+    ? snapshot.current
+    : null;
+  const stats = snapshot?.stats && typeof snapshot.stats === "object"
+    ? snapshot.stats
+    : {};
+  const total = Math.max(0, Number(stats.total) || 0);
+  const currentIndex = Math.max(0, Number(snapshot?.currentIndex) || 0);
+  return canvasTexture(THREE, 1200, 1050, (context) => {
+    context.fillStyle = "#2b1f17";
+    context.fillRect(0, 0, 1200, 1050);
+    context.strokeStyle = "#a5764d";
+    context.lineWidth = 8;
+    for (let y = 10; y < 1050; y += 30) {
+      context.beginPath();
+      context.moveTo(0, y);
+      context.bezierCurveTo(300, y - 7, 860, y + 8, 1200, y - 2);
+      context.stroke();
+    }
+    context.fillStyle = "#f4e8ce";
+    roundedRect(context, 62, 52, 1076, 782, 42);
+    context.fill();
+    context.strokeStyle = "#111d1a";
+    context.lineWidth = 10;
+    context.stroke();
+    context.fillStyle = "#14392e";
+    context.font = '900 48px "ForkMesh Mono", ui-monospace, monospace';
+    context.textAlign = "center";
+    context.fillText("24-HOUR QA DECK", 600, 128);
+    context.fillStyle = "#396b5b";
+    context.font = '800 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      current
+        ? `CARD ${Math.min(total, currentIndex + 1)} OF ${total} · ONE AT A TIME`
+        : total
+          ? `ALL ${total} CARDS REVIEWED · TAP TO RECHECK`
+          : "SIGN IN TO SAVE YOUR RESULTS",
+      600,
+      174,
+    );
+    context.strokeStyle = "#9e7652";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(120, 204);
+    context.lineTo(1080, 204);
+    context.stroke();
+    context.fillStyle = "#16211d";
+    context.textAlign = "left";
+    context.font = '900 48px "ForkMesh Mono", ui-monospace, monospace';
+    wrapCanvasText(
+      context,
+      String(current?.title || "Open the QA deck"),
+      120,
+      248,
+      960,
+      58,
+      3,
+    );
+    context.fillStyle = "#2f5a4d";
+    context.font = '900 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("HOW TO TEST", 120, 438);
+    context.fillStyle = "#1f2c27";
+    context.font = '600 30px "ForkMesh Mono", ui-monospace, monospace';
+    wrapCanvasText(
+      context,
+      String(
+        current?.howToTest ||
+          "Tap this board to review the recent work one card at a time.",
+      ),
+      120,
+      486,
+      960,
+      42,
+      6,
+    );
+    context.fillStyle = "#10251e";
+    roundedRect(context, 62, 868, 1076, 128, 24);
+    context.fill();
+    context.textAlign = "center";
+    context.fillStyle = "#9ef7c6";
+    context.font = '900 30px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      `PASS ${Number(stats.pass) || 0}  ·  FAIL ${
+        Number(stats.fail) || 0
+      }  ·  UNSURE ${Number(stats.unsure) || 0}`,
+      600,
+      922,
+    );
+    context.fillStyle = "#c9e7da";
+    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("GRAB · ← FAIL · PASS → · ↓ UNSURE", 600, 966);
+  });
+}
+
+function worldQaArrowTexture(THREE, direction, label, color) {
+  return canvasTexture(THREE, 512, 260, (context) => {
+    context.clearRect(0, 0, 512, 260);
+    roundedRect(context, 8, 8, 496, 244, 40);
+    context.fillStyle = "rgba(5,18,15,0.94)";
+    context.fill();
+    context.strokeStyle = color;
+    context.lineWidth = 10;
+    context.stroke();
+    context.fillStyle = color;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '900 116px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(direction, 150, 128);
+    context.font = '900 40px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(label, 340, 128);
+  });
+}
+
 function worldRepoIssuesTexture(THREE, issues = []) {
   const visible = (Array.isArray(issues) ? issues : []).slice(0, 12);
   return canvasTexture(THREE, 1800, 1120, (context) => {
@@ -2377,8 +2615,17 @@ function worldRepoIssuesTexture(THREE, issues = []) {
 }
 
 function humanTodoItemsFromAgentSessions(sessions = []) {
-  const items = [];
-  const seen = new Set();
+  const cloudflareLogSetup = {
+    id: "system:cloudflare-observability-key",
+    provider: "SYSTEM",
+    title: "Cloudflare attention-email logs",
+    action:
+      "Set CLOUDFLARE_OBSERVABILITY_API_TOKEN and CLOUDFLARE_ACCOUNT_ID in the deploy environment so attention emails include the prior two minutes of Worker logs.",
+    reason: "SETUP",
+    updatedAt: Number.MAX_SAFE_INTEGER,
+  };
+  const items = [cloudflareLogSetup];
+  const seen = new Set([cloudflareLogSetup.action.toLowerCase()]);
   const add = (session, text, reason) => {
     const action = String(text || "")
       .replace(/[\u0000-\u001f\u007f]/g, " ")
@@ -2714,7 +2961,63 @@ function sanitizedModerationHandles(remote, isAdmin) {
   return handles;
 }
 
-function createAvatarModerationControls(THREE, handles) {
+function sanitizedAdminGuestNetwork(remote, isAdmin) {
+  if (
+    isAdmin !== true ||
+    String(remote?.accountStatus || "Guest") !== "Guest" ||
+    !remote?.adminGuestNetwork ||
+    typeof remote.adminGuestNetwork !== "object" ||
+    Array.isArray(remote.adminGuestNetwork)
+  ) {
+    return {};
+  }
+  const ipAddress = String(
+    remote.adminGuestNetwork.ipAddress || "",
+  ).slice(0, 64);
+  const userAgent = String(
+    remote.adminGuestNetwork.userAgent || "",
+  ).slice(0, 1024);
+  return {
+    ipAddress: /^[0-9a-f:.]{2,64}$/i.test(ipAddress) ? ipAddress : "",
+    userAgent:
+      userAgent &&
+      !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(userAgent)
+        ? userAgent
+        : "",
+  };
+}
+
+function guestNetworkTexture(THREE, label, value, color, height = 220) {
+  return canvasTexture(THREE, 1024, height, (context) => {
+    context.clearRect(0, 0, 1024, height);
+    roundedRect(context, 4, 4, 1016, height - 8, 22);
+    context.fillStyle = "rgba(4,16,14,0.97)";
+    context.fill();
+    context.strokeStyle = color;
+    context.lineWidth = 9;
+    context.stroke();
+    context.textAlign = "left";
+    context.textBaseline = "top";
+    context.fillStyle = color;
+    context.font = '800 28px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(`${label} · CLICK TO COPY`, 28, 20);
+    context.fillStyle = "#effff7";
+    context.font = `${
+      label === "FULL USER AGENT" ? 19 : 34
+    }px "ForkMesh Mono", ui-monospace, monospace`;
+    wrapCanvasText(
+      context,
+      value || "Not reported",
+      28,
+      label === "FULL USER AGENT" ? 62 : 66,
+      968,
+      label === "FULL USER AGENT" ? 24 : 38,
+      label === "FULL USER AGENT" ? 16 : 2,
+    );
+  });
+}
+
+function createAvatarModerationControls(THREE, handles, guestNetwork = {}) {
   const group = new THREE.Group();
   group.name = "forkmesh-world-moderation-controls";
   const specs = [
@@ -2756,6 +3059,46 @@ function createAvatarModerationControls(THREE, handles) {
     control.renderOrder = 3;
     group.add(control);
   });
+  for (const spec of [
+    {
+      field: "ipAddress",
+      label: "GUEST IP",
+      color: "#80e8ff",
+      y: 1.63,
+      width: 1.18,
+      height: 0.3,
+      textureHeight: 220,
+    },
+    {
+      field: "userAgent",
+      label: "FULL USER AGENT",
+      color: "#b8a8ff",
+      y: 1.12,
+      width: 1.18,
+      height: 0.68,
+      textureHeight: 600,
+    },
+  ]) {
+    const value = String(guestNetwork[spec.field] || "");
+    if (!value) continue;
+    const control = new THREE.Mesh(
+      new THREE.PlaneGeometry(spec.width, spec.height),
+      new THREE.MeshBasicMaterial({
+        map: guestNetworkTexture(
+          THREE,
+          spec.label,
+          value,
+          spec.color,
+          spec.textureHeight,
+        ),
+        depthWrite: true,
+      }),
+    );
+    control.position.set(0, spec.y, 0.322);
+    control.userData.worldGuestCopy = spec.field;
+    control.renderOrder = 3;
+    group.add(control);
+  }
   return group;
 }
 
@@ -2792,7 +3135,47 @@ function sanitizedOrgTeamAssignment(remote) {
     member,
     assigned: Math.max(0, Math.min(total, Number(assignment.assigned) || 0)),
     total,
+    teams: (Array.isArray(assignment.teams) ? assignment.teams : [])
+      .map((team) => String(team || "").toLowerCase())
+      .filter((team) => WORLD_ORG_NAME_PATTERN.test(team))
+      .slice(0, 6),
   };
+}
+
+function avatarTeamBadgeTexture(THREE, team, index) {
+  const colors = ["#9ef7c6", "#80e8ff", "#ffc279", "#d8b7ff", "#ff9ca4"];
+  const accent = colors[index % colors.length];
+  return canvasTexture(THREE, 512, 176, (context) => {
+    roundedRect(context, 4, 4, 504, 168, 42);
+    context.fillStyle = "rgba(5,20,17,0.97)";
+    context.fill();
+    context.strokeStyle = accent;
+    context.lineWidth = 10;
+    context.stroke();
+    context.fillStyle = accent;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '900 54px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(team || "").toUpperCase(), 256, 88, 452);
+  });
+}
+
+function createAvatarTeamBadges(THREE, assignment) {
+  const group = new THREE.Group();
+  group.name = "forkmesh-avatar-left-arm-team-badges";
+  assignment.teams.slice(0, 4).forEach((team, index) => {
+    const badge = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.48, 0.17),
+      new THREE.MeshBasicMaterial({
+        map: avatarTeamBadgeTexture(THREE, team, index),
+        depthWrite: true,
+      }),
+    );
+    badge.position.set(0, 0.43 - index * 0.19, 0.166);
+    badge.renderOrder = 3;
+    group.add(badge);
+  });
+  return group;
 }
 
 function orgTeamControlTexture(THREE, title, subtitle) {
@@ -3790,7 +4173,12 @@ function createAvatar(THREE, identity, options = {}) {
   const badge = new THREE.Mesh(
     new THREE.PlaneGeometry(0.76, 0.76),
     new THREE.MeshBasicMaterial({
-      map: badgeTexture(THREE, identity, remote ? "#77d9ff" : "#9ef7c6"),
+      map: badgeTexture(
+        THREE,
+        { ...identity, walletEditable: remote !== true },
+        remote ? "#77d9ff" : "#9ef7c6",
+        { state: "loading" },
+      ),
       transparent: false,
     }),
   );
@@ -3799,25 +4187,6 @@ function createAvatar(THREE, identity, options = {}) {
   badge.rotation.y = Math.PI;
   badge.userData.chestBadge = true;
   group.add(badge);
-
-  const chestTabs = createAvatarChestTabs(THREE);
-  group.add(chestTabs);
-
-  // Wallet chip: a small QR of the account's published Solana address worn
-  // on the lower chest under the tabs. Hidden until the identity carries an
-  // address; syncAvatarWallet paints the QR, balance, and recency ring.
-  const walletChip = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.28, 0.28),
-    new THREE.MeshBasicMaterial({ transparent: true }),
-  );
-  walletChip.name = "wallet-chip";
-  // Slightly proud of the torso (and any operator belt) so nothing occludes
-  // the QR; avatar fronts face -Z like the badge above it.
-  walletChip.position.set(0, 1.54, -0.345);
-  walletChip.rotation.y = Math.PI;
-  walletChip.renderOrder = 3;
-  walletChip.visible = false;
-  group.add(walletChip);
 
   group.scale.setScalar(scale);
   group.userData = {
@@ -3832,9 +4201,7 @@ function createAvatar(THREE, identity, options = {}) {
     badge,
     badgeIdentity: identity,
     badgeRemote: remote,
-    chestTabs,
-    chestTab: "info",
-    chestTabRendered: "info",
+    chestTabs: null,
     fediverseProfile: null,
     shirt,
     shirtMeshes: [torso, leftArm, rightArm],
@@ -3843,7 +4210,7 @@ function createAvatar(THREE, identity, options = {}) {
     antennaBulb,
     activityLight,
     activityBucket: "",
-    walletChip,
+    walletChip: null,
     walletKey: "",
     inputEnergy: 0,
     phase: (seed % 100) / 10,
@@ -4109,18 +4476,17 @@ function renderAvatarBadge(THREE, avatar, remote = false) {
   const identity = avatar.userData.badgeIdentity || {};
   const accent = remote ? "#77d9ff" : "#9ef7c6";
   const old = badge.material.map;
-  badge.material.map =
-    avatar.userData.chestTab === "fediverse"
-      ? fediverseBadgeTexture(
-          THREE,
-          identity,
-          accent,
-          avatar.userData.fediverseProfile || { state: "loading" },
-        )
-      : badgeTexture(THREE, identity, accent);
+  badge.material.map = badgeTexture(
+    THREE,
+    {
+      ...identity,
+      walletEditable: remote !== true,
+    },
+    accent,
+    avatar.userData.fediverseProfile || { state: "loading" },
+  );
   badge.material.needsUpdate = true;
   old?.dispose?.();
-  syncChestTabs(THREE, avatar);
 }
 
 function updateAvatarBadge(THREE, avatar, identity, remote = false) {
@@ -9398,8 +9764,10 @@ export function createWorldScene({
   onSiteReferrerOpen = () => {},
   onSystemCapacityTableSelect = () => {},
   onInfrastructureConsoleToggle = () => {},
+  onBuildBoardNearby = () => {},
   onBuildBoardReorder = () => {},
   onBuildIssueAssign = () => {},
+  onQaVerdict = () => {},
   onRepositoryIssueOpen = () => {},
   onRendererStateChange = () => {},
   onOfficeChairSelect = () => {},
@@ -9409,9 +9777,11 @@ export function createWorldScene({
   onRegionChange = () => {},
   onMovement = () => {},
   onModeration = () => {},
+  onAdminGuestCopy = () => {},
   onOrgTeamAssign = () => {},
   onFediverseProfile = () => {},
   onFediverseFollow = () => {},
+  onAvatarWalletAction = () => {},
   onLayoutObjectMoved = () => {},
   onForkbotChat = () => {},
   onAgentBotChat = () => {},
@@ -9419,7 +9789,6 @@ export function createWorldScene({
   onCreateRepository = () => {},
   onSwingRide = () => {},
   onCameraMode = () => {},
-  onShareLocation = () => {},
 }) {
   // Phones frequently expose a high-density screen to a comparatively small
   // GPU.  Use the same scene, but avoid allocating multisample and shadow-map
@@ -10739,6 +11108,7 @@ export function createWorldScene({
   const remotePlayers = new Map();
   const remoteLabels = new Map();
   const moderationActions = new WeakMap();
+  const adminGuestCopyActions = new WeakMap();
   const moderationControlKeys = new Map();
   const orgTeamActions = new WeakMap();
   const orgTeamControlKeys = new Map();
@@ -11651,6 +12021,22 @@ export function createWorldScene({
   officeTaskBulletinFace.position.z = 0.18;
   officeTaskBulletinFace.userData.interactive = "build-task-board";
   officeTaskBulletin.add(officeTaskBulletinFace);
+  const buildBoardSpinner = new THREE.Mesh(
+    new THREE.TorusGeometry(0.2, 0.055, 10, 28, Math.PI * 1.55),
+    new THREE.MeshBasicMaterial({
+      color: "#8ff1c3",
+      toneMapped: false,
+    }),
+  );
+  buildBoardSpinner.name = "forkmesh-build-board-updating-spinner";
+  buildBoardSpinner.position.set(5.28, 2.34, 0.27);
+  buildBoardSpinner.visible = false;
+  officeTaskBulletin.add(buildBoardSpinner);
+  animated.push((time) => {
+    if (buildBoardSpinner.visible) {
+      buildBoardSpinner.rotation.z = -time * 0.006;
+    }
+  });
   const officeTaskDoneFace = new THREE.Mesh(
     new THREE.PlaneGeometry(12.1, 1.48),
     new THREE.MeshBasicMaterial({
@@ -11737,6 +12123,31 @@ export function createWorldScene({
     issues: [],
   };
   let draggedBuildCard = null;
+  let buildBoardWasNearby = false;
+
+  function setBuildBoardLoading(loading) {
+    buildBoardSpinner.visible = loading === true;
+  }
+
+  function updateBuildBoardProximity() {
+    if (officeSceneMode !== "town") {
+      buildBoardWasNearby = false;
+      return;
+    }
+    const position = officeTaskBulletin.getWorldPosition(
+      new THREE.Vector3(),
+    );
+    const distance = Math.hypot(
+      player.position.x - position.x,
+      player.position.z - position.z,
+    );
+    if (distance <= 18 && !buildBoardWasNearby) {
+      buildBoardWasNearby = true;
+      onBuildBoardNearby();
+    } else if (distance >= 23) {
+      buildBoardWasNearby = false;
+    }
+  }
 
   function repaintBuildBoards() {
     const previousTasks = officeTaskBulletinFace.material.map;
@@ -11837,6 +12248,105 @@ export function createWorldScene({
   }
   world.add(officeTaskBulletin);
   registerMovableObject("office-task-bulletin", officeTaskBulletin);
+
+  const worldQaBoard = new THREE.Group();
+  worldQaBoard.name = "forkmesh-world-qa-board";
+  worldQaBoard.position.set(-15.5, 3.2, -33);
+  worldQaBoard.rotation.y = Math.atan2(
+    -worldQaBoard.position.x,
+    -worldQaBoard.position.z,
+  );
+  const qaBoardFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(8.2, 7.25, 0.38),
+    makeMaterial(THREE, "#332318", { roughness: 0.82 }),
+  );
+  worldQaBoard.add(qaBoardFrame);
+  const qaBoardFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(7.8, 6.8),
+    new THREE.MeshBasicMaterial({
+      map: worldQaCardTexture(THREE),
+      toneMapped: false,
+    }),
+  );
+  qaBoardFace.name = "forkmesh-world-qa-board-face";
+  qaBoardFace.position.z = 0.21;
+  qaBoardFace.userData.interactive = "world-qa-board";
+  worldQaBoard.add(qaBoardFace);
+  const qaBoardBase = new THREE.Mesh(
+    new THREE.BoxGeometry(8.7, 0.3, 1.55),
+    makeMaterial(THREE, "#332318", { roughness: 0.86 }),
+  );
+  qaBoardBase.position.y = -3.76;
+  worldQaBoard.add(qaBoardBase);
+  for (const x of [-3.5, 3.5]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.24, 7.6, 0.24),
+      makeMaterial(THREE, "#332318", { roughness: 0.82 }),
+    );
+    post.position.set(x, -0.25, -0.1);
+    worldQaBoard.add(post);
+  }
+  const qaSwipeCues = new THREE.Group();
+  qaSwipeCues.name = "forkmesh-world-qa-swipe-cues";
+  for (const cue of [
+    { name: "fail", arrow: "←", label: "FAIL", color: "#ff858a", x: -5.45, y: 0 },
+    { name: "pass", arrow: "→", label: "PASS", color: "#73e6a8", x: 5.45, y: 0 },
+    { name: "unsure", arrow: "↓", label: "UNSURE", color: "#9ba7a1", x: 0, y: -4.62 },
+  ]) {
+    const arrow = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.25, 1.14),
+      new THREE.MeshBasicMaterial({
+        map: worldQaArrowTexture(
+          THREE,
+          cue.arrow,
+          cue.label,
+          cue.color,
+        ),
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    );
+    arrow.name = `forkmesh-world-qa-${cue.name}-arrow`;
+    arrow.position.set(cue.x, cue.y, 0.3);
+    arrow.renderOrder = 48;
+    qaSwipeCues.add(arrow);
+  }
+  qaSwipeCues.visible = false;
+  worldQaBoard.add(qaSwipeCues);
+  interactive.push(qaBoardFace);
+  world.add(worldQaBoard);
+  registerMovableObject("world-qa-board", worldQaBoard);
+
+  function updateQaBoard(snapshot = {}) {
+    const previous = qaBoardFace.material.map;
+    qaBoardFace.material.map = worldQaCardTexture(THREE, snapshot);
+    qaBoardFace.material.needsUpdate = true;
+    previous?.dispose?.();
+  }
+
+  let draggedQaCard = null;
+  let qaCueTimer = 0;
+
+  function showQaSwipeCues(visible, linger = false) {
+    if (qaCueTimer) {
+      clearTimeout(qaCueTimer);
+      qaCueTimer = 0;
+    }
+    qaSwipeCues.visible = visible === true;
+    if (visible && linger) {
+      qaCueTimer = setTimeout(() => {
+        qaSwipeCues.visible = false;
+        qaCueTimer = 0;
+      }, 1800);
+    }
+  }
+
+  function resetQaCardTransform() {
+    qaBoardFace.position.set(0, 0, 0.21);
+    qaBoardFace.rotation.z = 0;
+  }
 
   // Shared, bounded time clock on the left lobby wall. Authenticated punches
   // are server-timestamped; the public board exposes only the latest 20 visits.
@@ -12623,6 +13133,9 @@ export function createWorldScene({
   let officeFloorAccess = normalizeOfficeFloorAccess();
   let officeFloorHandler = null;
   let officeElevatorRide = null;
+  let officeElevatorCameraLocked = false;
+  let officeElevatorCameraReleased = false;
+  let officeElevatorPriorCameraMode = null;
   let officeAttendance = { visits: [] };
   let officeAttendanceObservedAt = performance.now();
   let officeAttendanceRenderedBucket = 0;
@@ -12960,6 +13473,7 @@ export function createWorldScene({
       duration: 1400 + Math.abs(floor.level -
         (officeFloorById(officeCurrentFloorId)?.level || 0)) * 360,
     };
+    lockOfficeElevatorCamera();
     cancelDash();
     jumpQueued = false;
     jumpVelocity = 0;
@@ -13889,6 +14403,7 @@ export function createWorldScene({
     officeSceneMode = "town";
     officeCurrentFloorId = "lobby";
     officeElevatorRide = null;
+    releaseOfficeElevatorCamera(false);
     currentSpace = "town-square";
     localPosition.x = clamp(
       localPosition.x,
@@ -13986,6 +14501,29 @@ export function createWorldScene({
     renderer.domElement.dataset.cameraMode = cameraMode;
     if (changed) onCameraMode({ mode: cameraMode, reason });
     return cameraMode;
+  }
+
+  function lockOfficeElevatorCamera() {
+    if (!officeElevatorCameraLocked) {
+      officeElevatorPriorCameraMode = cameraMode;
+    }
+    officeElevatorCameraLocked = true;
+    officeElevatorCameraReleased = false;
+    if (cameraMode !== "first-person") {
+      setCameraMode("first-person", "office-elevator-enter");
+    }
+  }
+
+  function releaseOfficeElevatorCamera(released = true) {
+    if (officeElevatorCameraLocked || officeElevatorPriorCameraMode) {
+      const prior = officeElevatorPriorCameraMode || "third-person";
+      officeElevatorCameraLocked = false;
+      officeElevatorPriorCameraMode = null;
+      if (cameraMode !== prior) {
+        setCameraMode(prior, "office-elevator-exit");
+      }
+    }
+    officeElevatorCameraReleased = Boolean(released);
   }
 
   function setCameraView(view = {}) {
@@ -14344,6 +14882,7 @@ export function createWorldScene({
     officeElevatorDoors[1].position.x = 4.36;
     currentSpace = `office-${ride.floorId}`;
     officeElevatorRide = null;
+    releaseOfficeElevatorCamera(true);
     renderOfficeMarketingTasks();
     onOfficeElevatorSound("arrive", {
       floor: ride.floorId,
@@ -15180,6 +15719,36 @@ export function createWorldScene({
         : officeSceneMode === "lobby"
           ? player
           : null;
+    if (officeSceneMode === "lobby") {
+      const localPosition = officeAvatarLocalPosition(player);
+      const insideElevator = officeElevatorCabinContains(
+        localPosition.x,
+        localPosition.z,
+        OFFICE_AVATAR_RADIUS,
+      );
+      if (!insideElevator) {
+        releaseOfficeElevatorCamera(false);
+      } else if (officeElevatorRide || !officeElevatorCameraReleased) {
+        lockOfficeElevatorCamera();
+      }
+    } else {
+      releaseOfficeElevatorCamera(false);
+    }
+    if (officeElevatorCameraLocked) {
+      // Security-camera framing from the upper rear-left corner of the moving
+      // glass car. It keeps the right-wall controls and the open front/outside
+      // in one stable first-person frame instead of pinning the eye to the
+      // avatar and looking directly into the panel.
+      const eye = officeElevatorCar.localToWorld(
+        new THREE.Vector3(-3.72, 6.46, 2.7),
+      );
+      const panelTarget = officeElevatorCar.localToWorld(
+        new THREE.Vector3(2.45, 2.9, -3.7),
+      );
+      camera.position.copy(eye);
+      camera.lookAt(panelTarget);
+      return;
+    }
     if (cameraMode === "first-person") {
       const firstPersonAvatar = officeAvatar || player;
       const eye = firstPersonAvatar
@@ -15339,42 +15908,38 @@ export function createWorldScene({
     return true;
   }
 
-  // The chest is clickable on the local player and on live peers: the two
-  // tabs under the badge swap the display, and the fediverse tab's follow
-  // pill is hit by UV inside the badge plane itself.
+  // One unified chest card is clickable on the local player and live peers.
+  // It contains identity, Fediverse and wallet controls without mode tabs.
   function registerAvatarChestControls(avatar, peerId) {
     if (!avatar?.userData?.badge || avatar.userData.chestRegistered) return;
-    const meshes = [
-      avatar.userData.badge,
-      ...(avatar.userData.chestTabs?.children || []),
-    ];
+    const meshes = [avatar.userData.badge];
     meshes.forEach((mesh) => {
       chestControls.set(mesh, { avatar, peerId: String(peerId || "") });
       interactive.push(mesh);
     });
     avatar.userData.chestRegistered = true;
+    if (!avatar.userData.fediverseProfile) {
+      avatar.userData.fediverseProfile = { state: "loading" };
+      onFediverseProfile({
+        peerId: String(peerId || ""),
+        name: String(avatar.userData.badgeIdentity?.name || ""),
+        accountStatus: String(
+          avatar.userData.badgeIdentity?.accountStatus || "Guest",
+        ),
+        self: String(peerId || "") === identity.id,
+      });
+    }
   }
 
   function unregisterAvatarChestControls(avatar) {
     if (!avatar?.userData?.chestRegistered) return;
-    [
-      avatar.userData.badge,
-      ...(avatar.userData.chestTabs?.children || []),
-    ].forEach((mesh) => {
+    [avatar.userData.badge].forEach((mesh) => {
       if (!mesh) return;
       chestControls.delete(mesh);
       const index = interactive.indexOf(mesh);
       if (index >= 0) interactive.splice(index, 1);
     });
     avatar.userData.chestRegistered = false;
-  }
-
-  function setAvatarChestTab(avatar, tab) {
-    if (!avatar?.userData?.badge) return;
-    const next = tab === "fediverse" ? "fediverse" : "info";
-    if (avatar.userData.chestTab === next) return;
-    avatar.userData.chestTab = next;
-    renderAvatarBadge(THREE, avatar, avatar.userData.badgeRemote === true);
   }
 
   /** Attach a loaded (or failed) fediverse card to one avatar's chest. */
@@ -15387,15 +15952,11 @@ export function createWorldScene({
     if (!avatar?.userData?.badge) return;
     avatar.userData.fediverseProfile =
       profile && typeof profile === "object" ? profile : { state: "unavailable" };
-    if (avatar.userData.chestTab === "fediverse") {
-      renderAvatarBadge(THREE, avatar, avatar.userData.badgeRemote === true);
-    }
+    renderAvatarBadge(THREE, avatar, avatar.userData.badgeRemote === true);
     if (avatar === player && officeLobbyPlayer?.userData?.badge) {
       officeLobbyPlayer.userData.fediverseProfile =
         avatar.userData.fediverseProfile;
-      if (officeLobbyPlayer.userData.chestTab === "fediverse") {
-        renderAvatarBadge(THREE, officeLobbyPlayer, false);
-      }
+      renderAvatarBadge(THREE, officeLobbyPlayer, false);
     }
   }
 
@@ -15414,28 +15975,15 @@ export function createWorldScene({
 
   function handleChestControl(control, hit) {
     const avatar = control.avatar;
-    const tab = hit.object.userData?.chestTab;
-    if (tab) {
-      setAvatarChestTab(avatar, tab);
-      if (tab === "fediverse" && !avatar.userData.fediverseProfile) {
-        avatar.userData.fediverseProfile = { state: "loading" };
-        renderAvatarBadge(THREE, avatar, avatar.userData.badgeRemote === true);
-        onFediverseProfile({
-          peerId: control.peerId,
-          name: String(avatar.userData.badgeIdentity?.name || ""),
-          accountStatus: String(
-            avatar.userData.badgeIdentity?.accountStatus || "Guest",
-          ),
-          self: control.peerId === identity.id,
-        });
-      }
+    if (badgeWalletSquareHit(hit.uv)) {
+      onAvatarWalletAction({
+        peerId: control.peerId,
+        self: control.peerId === identity.id,
+        address: String(avatar.userData.badgeIdentity?.solana || ""),
+      });
       return;
     }
-    // The badge plane: only the fediverse tab's follow pill is actionable.
-    if (
-      avatar.userData.chestTab !== "fediverse" ||
-      !badgeFollowPillHit(hit.uv)
-    ) {
+    if (!badgeFollowPillHit(hit.uv)) {
       return;
     }
     const profile = avatar.userData.fediverseProfile || {};
@@ -15454,6 +16002,7 @@ export function createWorldScene({
     if (controls) {
       controls.traverse((child) => {
         moderationActions.delete(child);
+        adminGuestCopyActions.delete(child);
         const interactiveIndex = interactive.indexOf(child);
         if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
       });
@@ -15471,10 +16020,16 @@ export function createWorldScene({
       remote,
       identity?.isAdmin === true,
     );
+    const guestNetwork = sanitizedAdminGuestNetwork(
+      remote,
+      identity?.isAdmin === true,
+    );
     const key = JSON.stringify([
       name,
       handles.ip || "",
       handles.agent || "",
+      guestNetwork.ipAddress || "",
+      guestNetwork.userAgent || "",
     ]);
     if (
       moderationControlKeys.get(peerId) === key &&
@@ -15483,10 +16038,32 @@ export function createWorldScene({
       return;
     }
     removeRemoteModerationControls(avatar, peerId);
-    if (!handles.ip && !handles.agent) return;
+    if (
+      !handles.ip &&
+      !handles.agent &&
+      !guestNetwork.ipAddress &&
+      !guestNetwork.userAgent
+    ) {
+      return;
+    }
 
-    const controls = createAvatarModerationControls(THREE, handles);
+    const controls = createAvatarModerationControls(
+      THREE,
+      handles,
+      guestNetwork,
+    );
     controls.children.forEach((control) => {
+      const copyField = control.userData.worldGuestCopy;
+      if (copyField && guestNetwork[copyField]) {
+        adminGuestCopyActions.set(control, {
+          field: copyField,
+          value: guestNetwork[copyField],
+          peerId,
+          name,
+        });
+        interactive.push(control);
+        return;
+      }
       const targetType = control.userData.worldModerationControl;
       const handle = handles[targetType];
       if (!WORLD_MODERATION_HANDLE_PATTERN.test(handle || "")) return;
@@ -15515,6 +16092,12 @@ export function createWorldScene({
       disposeObject3D(controls);
       delete avatar.userData.orgTeamControls;
     }
+    const teamBadges = avatar?.userData?.teamBadges;
+    if (teamBadges) {
+      avatar.userData.leftArm?.remove(teamBadges);
+      disposeObject3D(teamBadges);
+      delete avatar.userData.teamBadges;
+    }
     orgTeamControlKeys.delete(String(peerId || ""));
   }
 
@@ -15535,6 +16118,7 @@ export function createWorldScene({
       assignment?.member || "",
       assignment?.assigned ?? -1,
       assignment?.total ?? -1,
+      ...(assignment?.teams || []),
     ]);
     if (
       orgTeamControlKeys.get(peerId) === key &&
@@ -15557,6 +16141,11 @@ export function createWorldScene({
     });
     avatar.add(controls);
     avatar.userData.orgTeamControls = controls;
+    if (assignment.teams.length && avatar.userData.leftArm) {
+      const teamBadges = createAvatarTeamBadges(THREE, assignment);
+      avatar.userData.leftArm.add(teamBadges);
+      avatar.userData.teamBadges = teamBadges;
+    }
     orgTeamControlKeys.set(peerId, key);
   }
 
@@ -17683,7 +18272,10 @@ export function createWorldScene({
         const followerStatus = String(record.fediverseFollowerStatus || "idle");
         const gallery = new THREE.Group();
         gallery.name = `repository-fediverse-follower-icons:${record.owner}/${record.name}`;
-        gallery.position.set(0, 0.55, 0.82);
+        // Keep the social portraits on the wheel's local face plane. A deep
+        // positive-Z offset made them parallax toward the camera and appear
+        // detached from the circle at elevated viewing angles.
+        gallery.position.set(0, 0.55, 0.18);
         const visibleFollowers = followers.slice(
           0,
           REPOSITORY_FOLLOWERS_VISIBLE,
@@ -17698,7 +18290,7 @@ export function createWorldScene({
               Math.max(1, visibleFollowers.length - 1)) *
               Math.PI *
               1.16;
-          const orbitRadius = 3.65;
+          const orbitRadius = 4.25;
           icon.position.set(
             Math.cos(orbitAngle) * orbitRadius,
             Math.sin(orbitAngle) * orbitRadius,
@@ -17753,7 +18345,7 @@ export function createWorldScene({
             }),
           );
           follow.name = `repository-fediverse-follow:${record.owner}/${record.name}`;
-          follow.position.set(1.8, 5.18, 0.84);
+          follow.position.set(1.8, 5.18, 0.2);
           follow.renderOrder = 42;
           follow.userData.landmark = "repositories";
           follow.userData.repositoryFediverseFollow = {
@@ -18657,7 +19249,7 @@ export function createWorldScene({
       if (contributors.length) {
         const contributorOrbit = new THREE.Group();
         contributorOrbit.name = "repository-contributor-inner-ring";
-        contributorOrbit.position.set(0, 0.55, 0.8);
+        contributorOrbit.position.set(0, 0.55, 0.17);
         contributors.forEach((contributor, contributorIndex) => {
           const icon = makeRepositoryContributorIcon(THREE, contributor);
           const angle =
@@ -18666,7 +19258,7 @@ export function createWorldScene({
               Math.max(1, contributors.length - 1)) *
               Math.PI *
               1.08;
-          const radius = 2.28;
+          const radius = 2.7;
           icon.position.set(
             Math.cos(angle) * radius,
             Math.sin(angle) * radius,
@@ -19310,6 +19902,7 @@ export function createWorldScene({
 
   function rotateCamera(deltaX, deltaY) {
     if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return;
+    if (officeElevatorCameraLocked) return;
     // The canvas behaves like a grabbed world: pull the scene with the
     // pointer, so the camera turns opposite to the hand's travel direction.
     cameraYaw -= deltaX * CAMERA_LOOK_SENSITIVITY;
@@ -19383,6 +19976,13 @@ export function createWorldScene({
       draggedCampfireLog.material.emissiveIntensity = 0.5;
     }
     if (!draggedLayoutObject && !draggedCampfireLog) {
+      const qaHit = pressHits.find(
+        ({ object }) => object === qaBoardFace,
+      );
+      if (qaHit) {
+        draggedQaCard = { moved: false };
+        showQaSwipeCues(true);
+      }
       const boardHit = pressHits.find(
         ({ object }) =>
           object === officeTaskBulletinFace ||
@@ -19509,6 +20109,18 @@ export function createWorldScene({
         );
       }
       pointerGestureMoved = true;
+      return;
+    }
+    if (draggedQaCard) {
+      const deltaX = event.clientX - pointerStart.x;
+      const deltaY = event.clientY - pointerStart.y;
+      draggedQaCard.moved =
+        draggedQaCard.moved || Math.hypot(deltaX, deltaY) > 5;
+      qaBoardFace.position.x = clamp(deltaX / 110, -1.35, 1.35);
+      qaBoardFace.position.y = clamp(-deltaY / 110, -1.1, 1.1);
+      qaBoardFace.rotation.z = clamp(-deltaX * 0.0022, -0.2, 0.2);
+      pointerGestureMoved = true;
+      event.preventDefault();
       return;
     }
     if (draggedBuildCard) {
@@ -19665,6 +20277,35 @@ export function createWorldScene({
         droppedLog.visible = false;
         droppedLog.userData.campfireCarried = false;
         fireLevel = Math.min(2.4, fireLevel + 0.28);
+      }
+      lastGestureDragged = true;
+      pointerGestureMoved = false;
+      return;
+    }
+    if (draggedQaCard) {
+      const deltaX = event.clientX - pointerStart.x;
+      const deltaY = event.clientY - pointerStart.y;
+      draggedQaCard = null;
+      resetQaCardTransform();
+      let verdict = "";
+      if (
+        !cancelled &&
+        Math.abs(deltaX) >= 70 &&
+        Math.abs(deltaX) > Math.abs(deltaY)
+      ) {
+        verdict = deltaX > 0 ? "pass" : "fail";
+      } else if (
+        !cancelled &&
+        deltaY >= 70 &&
+        Math.abs(deltaY) > Math.abs(deltaX)
+      ) {
+        verdict = "unsure";
+      }
+      if (verdict) {
+        showQaSwipeCues(false);
+        onQaVerdict({ verdict });
+      } else {
+        showQaSwipeCues(true, true);
       }
       lastGestureDragged = true;
       pointerGestureMoved = false;
@@ -19855,6 +20496,13 @@ export function createWorldScene({
     const moderationAction = hit?.object
       ? moderationActions.get(hit.object)
       : null;
+    const guestCopyAction = hit?.object
+      ? adminGuestCopyActions.get(hit.object)
+      : null;
+    if (guestCopyAction) {
+      onAdminGuestCopy({ ...guestCopyAction });
+      return;
+    }
     if (moderationAction) {
       onModeration({
         targetType: moderationAction.targetType,
@@ -20456,49 +21104,7 @@ export function createWorldScene({
     renderer.domElement.dataset.dragging = "false";
   }
 
-  function handleContextMenu(event) {
-    event.preventDefault();
-    pointerCoordinates(event);
-    raycaster.setFromCamera(pointer, camera);
-    const plane = new THREE.Plane(
-      new THREE.Vector3(0, 1, 0),
-      -currentFloorY,
-    );
-    const point = raycaster.ray.intersectPlane(
-      plane,
-      new THREE.Vector3(),
-    ) || player.position.clone();
-    point.x = clamp(point.x, -WORLD_RADIUS, WORLD_RADIUS);
-    point.z = clamp(point.z, -WORLD_RADIUS, WORLD_RADIUS);
-    if (officeSceneMode === "town" && currentSpace === "town-square") {
-      constrainTownOfficeWalls(point);
-    }
-    onShareLocation({
-      clientX: event.clientX,
-      clientY: event.clientY,
-      x: Number(point.x.toFixed(2)),
-      z: Number(point.z.toFixed(2)),
-      heading: Number(player.rotation.y.toFixed(3)),
-      space: Object.hasOwn(WORLD_SPACE_FLOORS, currentSpace)
-        ? currentSpace
-        : "town-square",
-      cameraMode,
-      yaw: Number(cameraYaw.toFixed(3)),
-      pitch: Number(
-        (cameraMode === "first-person"
-          ? firstPersonPitch
-          : cameraPitch).toFixed(3),
-      ),
-      zoom: Number(
-        (cameraMode === "first-person"
-          ? firstPersonZoom
-          : cameraZoom).toFixed(3),
-      ),
-    });
-  }
-
   renderer.domElement.addEventListener("pointerdown", handlePointerDown);
-  renderer.domElement.addEventListener("contextmenu", handleContextMenu);
   renderer.domElement.addEventListener("dblclick", handleDoubleClick);
   renderer.domElement.addEventListener("pointermove", handlePointerMove, {
     passive: false,
@@ -20625,6 +21231,7 @@ export function createWorldScene({
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
     }
+    updateBuildBoardProximity();
     updateOfficeReceptionGuide(time);
     updateOfficeAttendanceClock(time);
     // The Office is part of the same live World. Neighbours and ForkBot keep
@@ -20976,7 +21583,6 @@ export function createWorldScene({
     window.removeEventListener("resize", resize);
     window.visualViewport?.removeEventListener("resize", resize);
     renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
-    renderer.domElement.removeEventListener("contextmenu", handleContextMenu);
     renderer.domElement.removeEventListener("dblclick", handleDoubleClick);
     renderer.domElement.removeEventListener("pointermove", handlePointerMove);
     renderer.domElement.removeEventListener("wheel", handleWheel);
@@ -21096,7 +21702,9 @@ export function createWorldScene({
     updateMirrorAgentTasks,
     updateSystemCapacity,
     setInfrastructureConsoleLogs,
+    setBuildBoardLoading,
     updateBuildBoard,
+    updateQaBoard,
     updateOrganizations,
     updateFediverseDirectory,
     updateMediaSpaces,

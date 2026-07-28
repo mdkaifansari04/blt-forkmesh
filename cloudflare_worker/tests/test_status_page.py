@@ -45,6 +45,8 @@ def _load(*names, extra_globals=None):
     helper_names = {
         "_status_expected_checks_for_hour", "_status_effective_hour",
         "_status_minute", "_is_tunnel_content_path",
+        "_status_deploy_semaphore_active",
+        "_record_status_deploy_sample",
     }
     selected = []
     for node in list(urls_tree.body) + list(tree.body):
@@ -165,6 +167,42 @@ def test_all_systems_recorded_ok_with_no_errors_and_a_live_https_mirror():
     }
     assert all(failure == 0 for failure in results.values())
     assert all(reason is None for reason in reasons.values())
+
+
+def test_deploy_semaphore_records_a_neutral_minute_without_alerting():
+    calls = []
+
+    async def d1_first(_env, sql, *_args):
+        if "world_deploy_status" in sql:
+            return {"state": "deploying"}
+        return {}
+
+    async def d1_all(_env, _sql, *_args):
+        return [{"system": "mirror:mirror2"}]
+
+    async def d1_run(_env, sql, *args):
+        calls.append((sql, args))
+
+    runtime = _load(
+        "_status_deploy_semaphore_active",
+        "_record_status_deploy_sample",
+        extra_globals={
+            "d1_first": d1_first,
+            "d1_all": d1_all,
+            "d1_run": d1_run,
+        },
+    )
+    assert asyncio.run(
+        runtime["_status_deploy_semaphore_active"](object())
+    ) is True
+    asyncio.run(
+        runtime["_record_status_deploy_sample"](object(), _Clock.value)
+    )
+    assert len(calls) == 3
+    minute_sql, minute_args = calls[-1]
+    assert "system_status_minute" in minute_sql
+    assert "mirror:mirror2" in minute_args
+    assert "ok=1, reason=NULL" in minute_sql
 
 
 def test_database_failure_is_isolated_to_the_database_system():

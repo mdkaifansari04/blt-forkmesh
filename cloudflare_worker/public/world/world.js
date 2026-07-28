@@ -83,6 +83,7 @@ function loadSatelliteSgp4Module() {
 }
 const SETTINGS_KEY = "forkmesh.world.settings.v1";
 const WORLD_PREFERENCES_ENDPOINT = "/api/world/preferences";
+const WORLD_QA_ENDPOINT = "/api/world/qa";
 const WORLD_PREFERENCES_SYNC_DELAY_MS = 700;
 const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
 const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
@@ -160,6 +161,7 @@ const WORLD_ACTIVITY_CONTINUATION_HEADER = "x-forkmesh-world-activity";
 // Code revisions are offered with an explicit refresh button. Shared object
 // placements are data-only updates and are applied to the running scene.
 const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const WORLD_DEPLOY_STATUS_POLL_MS = 2500;
 const WORLD_LAYOUT_LIVE_REFRESH_MS = 60 * 1000;
 const REPOSITORY_IMPORT_POLL_MS = 2 * 60 * 1000;
 // forkmesh/forkmesh opens by default, but its commit pin needs the repository
@@ -1237,6 +1239,25 @@ function remotePlayer(peer) {
       }
     }
   }
+  const adminGuestNetwork = {};
+  if (
+    peer.adminGuestNetwork &&
+    typeof peer.adminGuestNetwork === "object" &&
+    String(peer.accountStatus || "Guest") === "Guest"
+  ) {
+    const ipAddress = String(
+      peer.adminGuestNetwork.ipAddress || "",
+    ).slice(0, 64);
+    const userAgent = String(
+      peer.adminGuestNetwork.userAgent || "",
+    ).slice(0, 1024);
+    if (/^[0-9a-f:.]{2,64}$/i.test(ipAddress)) {
+      adminGuestNetwork.ipAddress = ipAddress;
+    }
+    if (userAgent && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(userAgent)) {
+      adminGuestNetwork.userAgent = userAgent;
+    }
+  }
   return {
     id: String(peer.id),
     name: sanitizePresenceText(peer.name, "visitor", 32),
@@ -1299,6 +1320,7 @@ function remotePlayer(peer) {
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
     moderationHandles,
+    adminGuestNetwork,
     updatedAt: Math.max(0, Number(peer.updatedAt) || 0),
     solana: WORLD_SOLANA_ADDRESS_RE.test(String(peer.solana || ""))
       ? String(peer.solana)
@@ -3421,13 +3443,9 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         <button type="button" data-world-renderer-reload hidden>Reload World</button>
       </div>
       <div class="world-update-notice" data-world-update-notice role="status" aria-live="polite" hidden>
-        <span><strong>A new World build is ready.</strong> Refresh when you are ready; your position will be preserved.</span>
+        <span class="world-update-activity" data-world-update-activity aria-hidden="true"></span>
+        <span data-world-update-copy><strong>A new World build is ready.</strong> Refresh when you are ready; your position will be preserved.</span>
         <button type="button" data-world-update-refresh>Refresh World</button>
-      </div>
-      <div class="world-share-menu" data-world-share-menu role="menu" hidden>
-        <button type="button" role="menuitem" data-world-share-view>
-          🔗 Share this exact view
-        </button>
       </div>
       <div class="world-label-layer" data-world-label-layer></div>
 
@@ -3523,17 +3541,34 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </div>
             <ul class="world-map-list">${mapItems}</ul>
           </section>
-          <section class="world-saved-views" data-world-saved-views aria-label="Saved World views">
+          <button
+            class="world-share-view-button"
+            type="button"
+            data-world-share-current
+            title="Share a link to this exact location and camera view"
+          >
+            <span aria-hidden="true">🔗</span>
+            <span>Share exact view</span>
+          </button>
+          <section class="world-saved-views" data-world-saved-views data-expanded="false" aria-label="Saved World views">
             <div class="world-saved-views-heading">
-              <span>Saved views</span>
+              <button
+                class="world-saved-views-toggle"
+                type="button"
+                data-world-saved-views-toggle
+                aria-expanded="false"
+              >
+                <span aria-hidden="true">▸</span>
+                <span>Saved views</span>
+              </button>
               <button
                 type="button"
                 data-world-save-view
                 aria-label="Save this location and perspective"
                 title="Save this view"
-              >＋</button>
+              ><span aria-hidden="true">⌖＋</span><span>Map</span></button>
             </div>
-            <div class="world-saved-view-list" data-world-saved-view-list></div>
+            <div class="world-saved-view-list" data-world-saved-view-list hidden></div>
           </section>
           <section
             class="world-community-placement"
@@ -4283,6 +4318,7 @@ class ForkMeshWorld extends HTMLElement {
     this.systemCapacityFocus = "";
     this.systemCapacitySort = { key: "rowCount", direction: "desc" };
     this.buildBoardTimer = 0;
+    this.buildBoardLoad = null;
     this.orgAgentTimer = 0;
     this.sessionWatchTimer = 0;
     this.sessionWatchActive = false;
@@ -4400,7 +4436,18 @@ class ForkMeshWorld extends HTMLElement {
     this.lastDiagnosticsSnapshot = null;
     this.rendererRecoveryTimer = 0;
     this.buildDiagnostics = { version: "", revision: "" };
+    this.qaDeck = {
+      authenticated: false,
+      cards: [],
+      reviews: {},
+      stats: { pass: 0, fail: 0, unsure: 0, reviewed: 0, total: 0 },
+    };
+    this.qaCardIndex = 0;
+    this.qaLoad = null;
+    this.qaSaving = false;
     this.updateCheckTimer = 0;
+    this.deployStatusTimer = 0;
+    this.deployObservedRevision = "";
     this.layoutRefreshTimer = 0;
     this.worldLayoutFingerprint = "";
     this.pendingWorldShare = null;
@@ -4574,6 +4621,7 @@ class ForkMeshWorld extends HTMLElement {
     this.bootstrap();
     this.startWorldTicketRefresh();
     this.startUpdateWatch();
+    this.startDeployStatusWatch();
     this.startWorldLayoutWatch();
   }
 
@@ -5183,10 +5231,13 @@ class ForkMeshWorld extends HTMLElement {
           this.openSystemCapacityTables(table),
         onInfrastructureConsoleToggle: ({ enabled }) =>
           this.setInfrastructureConsoleEnabled(enabled),
+        onBuildBoardNearby: () =>
+          void this.refreshBuildBoard({ quiet: true }),
         onBuildBoardReorder: ({ order }) =>
           void this.reorderBuildBoard(order),
         onBuildIssueAssign: ({ key, title }) =>
           void this.assignBuildIssue(key, title),
+        onQaVerdict: ({ verdict }) => void this.recordQaVerdict(verdict),
         onRepositoryIssueOpen: (issue) =>
           this.openRepositoryIssueWorkbench(issue),
         onRendererStateChange: (state) => {
@@ -5214,7 +5265,6 @@ class ForkMeshWorld extends HTMLElement {
           this.openRepositoryCreateForm(options),
         onSwingRide: (state) => this.handleSwingRide(state),
         onCameraMode: (state) => this.handleWorldCameraMode(state),
-        onShareLocation: (view) => this.openWorldShareMenu(view),
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
         },
@@ -5228,11 +5278,28 @@ class ForkMeshWorld extends HTMLElement {
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
+        onAdminGuestCopy: (detail) =>
+          void this.copyAdminGuestDetail(detail),
         onOrgTeamAssign: (target) => this.openOrgTeamAssignment(target),
         onFediverseProfile: (target) =>
           void this.loadWorldFediverseProfile(target),
         onFediverseFollow: (target) =>
           void this.toggleWorldFediverseFollow(target),
+        onAvatarWalletAction: ({ self, address } = {}) => {
+          const wallet = String(address || "").trim();
+          if (wallet) {
+            void navigator.clipboard.writeText(wallet).then(
+              () => this.toast("Solana wallet address copied."),
+              () => this.toast(wallet),
+            );
+            return;
+          }
+          if (self) {
+            window.location.assign("/dashboard/settings#profile");
+            return;
+          }
+          this.toast("This member has not added a Solana wallet yet.");
+        },
         onLayoutObjectMoved: (move) => {
           void this.lockWorldObjectPlacement(move);
         },
@@ -5240,6 +5307,7 @@ class ForkMeshWorld extends HTMLElement {
       this.setLoadingProgress(68, "World is live · syncing nearby activity…");
       this.syncWorldCameraModeButton();
       void this.refreshBuildBoard();
+      void this.refreshQaDeck();
       this.buildBoardTimer = window.setInterval(
         () => void this.refreshBuildBoard({ quiet: true }),
         WORLD_BUILD_BOARD_POLL_MS,
@@ -5450,7 +5518,10 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async refreshBuildBoard({ quiet = false } = {}) {
-    try {
+    if (this.buildBoardLoad) return this.buildBoardLoad;
+    this.world?.setBuildBoardLoading?.(true);
+    this.buildBoardLoad = (async () => {
+      try {
       const payload = await this.fetchJSON("/api/world/build-board", {
         timeout: 12_000,
         cache: "no-store",
@@ -5515,11 +5586,136 @@ class ForkMeshWorld extends HTMLElement {
       }
       this.world?.updateBuildBoard?.(payload);
       return payload;
-    } catch (_) {
-      if (!quiet) {
-        this.toast("The shared build board is temporarily unavailable.");
+      } catch (_) {
+        if (!quiet) {
+          this.toast("The shared build board is temporarily unavailable.");
+        }
+        return null;
+      } finally {
+        this.world?.setBuildBoardLoading?.(false);
+        this.buildBoardLoad = null;
       }
-      return null;
+    })();
+    return this.buildBoardLoad;
+  }
+
+  applyQaDeck(payload = {}, { afterKey = "" } = {}) {
+    const reviews =
+      payload?.reviews && typeof payload.reviews === "object"
+        ? payload.reviews
+        : {};
+    const cards = (Array.isArray(payload?.cards) ? payload.cards : [])
+      .map((card) => {
+        const key = sanitizePresenceText(card?.key, "", 80);
+        const title = sanitizePresenceText(card?.title, "", 120);
+        const howToTest = sanitizePresenceText(
+          card?.howToTest,
+          "",
+          720,
+        );
+        const verdict = ["pass", "fail", "unsure"].includes(
+          String(card?.verdict || reviews?.[key]?.verdict || ""),
+        )
+          ? String(card?.verdict || reviews?.[key]?.verdict)
+          : "";
+        return key && title && howToTest
+          ? { key, title, howToTest, verdict }
+          : null;
+      })
+      .filter(Boolean)
+      .slice(0, 64);
+    const counts = { pass: 0, fail: 0, unsure: 0 };
+    cards.forEach((card) => {
+      if (card.verdict) counts[card.verdict] += 1;
+    });
+    this.qaDeck = {
+      authenticated: payload?.authenticated === true,
+      revision: sanitizePresenceText(payload?.revision, "", 80),
+      cards,
+      reviews,
+      stats: {
+        ...counts,
+        reviewed: cards.filter((card) => card.verdict).length,
+        total: cards.length,
+      },
+    };
+    const previousIndex = cards.findIndex((card) => card.key === afterKey);
+    const unreviewed = cards
+      .map((card, index) => ({ card, index }))
+      .filter(({ card }) => !card.verdict);
+    if (unreviewed.length) {
+      this.qaCardIndex =
+        unreviewed.find(({ index }) => index > previousIndex)?.index ??
+        unreviewed[0].index;
+    } else if (cards.length) {
+      this.qaCardIndex =
+        previousIndex >= 0 ? (previousIndex + 1) % cards.length : 0;
+    } else {
+      this.qaCardIndex = 0;
+    }
+    this.world?.updateQaBoard?.({
+      authenticated: this.qaDeck.authenticated,
+      current: cards[this.qaCardIndex] || null,
+      currentIndex: this.qaCardIndex,
+      stats: this.qaDeck.stats,
+    });
+    return this.qaDeck;
+  }
+
+  async refreshQaDeck({ afterKey = "", quiet = false } = {}) {
+    if (this.qaLoad) return this.qaLoad;
+    this.qaLoad = (async () => {
+      try {
+        const payload = await this.fetchJSON(WORLD_QA_ENDPOINT, {
+          timeout: 8000,
+          cache: "no-store",
+          dedupe: true,
+        });
+        return this.applyQaDeck(payload, { afterKey });
+      } catch (_) {
+        if (!quiet) {
+          this.toast("The personal QA deck is temporarily unavailable.");
+        }
+        return this.qaDeck;
+      } finally {
+        this.qaLoad = null;
+      }
+    })();
+    return this.qaLoad;
+  }
+
+  async recordQaVerdict(verdict) {
+    if (
+      this.qaSaving ||
+      !["pass", "fail", "unsure"].includes(verdict)
+    ) {
+      return false;
+    }
+    const card = this.qaDeck.cards[this.qaCardIndex];
+    if (!card) return false;
+    if (!this.qaDeck.authenticated || !validWorldSession()) {
+      this.toast("Sign in to save QA results to your account.");
+      return false;
+    }
+    this.qaSaving = true;
+    try {
+      const payload = await this.postJSON(
+        WORLD_QA_ENDPOINT,
+        { key: card.key, verdict },
+        { timeout: 8000 },
+      );
+      this.applyQaDeck(payload, { afterKey: card.key });
+      this.toast(
+        `${card.title}: ${verdict}. Your private QA totals were updated.`,
+      );
+      return true;
+    } catch (error) {
+      this.toast(
+        String(error?.message || "The QA result could not be saved."),
+      );
+      return false;
+    } finally {
+      this.qaSaving = false;
     }
   }
 
@@ -7001,6 +7197,7 @@ class ForkMeshWorld extends HTMLElement {
           member: account,
           assigned: assigned.length,
           total: teamNames.size,
+          teams: assigned.slice(0, 6),
         });
       });
     });
@@ -7210,6 +7407,12 @@ class ForkMeshWorld extends HTMLElement {
     this.addEventListener("click", (event) => {
       if (event.target.closest("[data-world-save-view]")) {
         this.saveCurrentWorldView();
+        this.setSavedViewsExpanded(true);
+        return;
+      }
+      if (event.target.closest("[data-world-saved-views-toggle]")) {
+        const section = this.$("[data-world-saved-views]");
+        this.setSavedViewsExpanded(section?.dataset.expanded !== "true");
         return;
       }
       const savedViewEdit = event.target.closest("[data-world-saved-view-edit]");
@@ -7222,12 +7425,9 @@ class ForkMeshWorld extends HTMLElement {
         void this.restoreSavedWorldView(savedView.dataset.worldSavedView);
         return;
       }
-      if (event.target.closest("[data-world-share-view]")) {
-        void this.sharePendingWorldView();
+      if (event.target.closest("[data-world-share-current]")) {
+        void this.shareCurrentWorldView();
         return;
-      }
-      if (!event.target.closest("[data-world-share-menu]")) {
-        this.closeWorldShareMenu();
       }
       // Keep chat inside the World: any /dashboard/chat link (or explicit
       // opener) opens the embedded panel rather than navigating away. The
@@ -7935,30 +8135,6 @@ class ForkMeshWorld extends HTMLElement {
     });
   }
 
-  openWorldShareMenu(view) {
-    const menu = this.$("[data-world-share-menu]");
-    if (!menu || !view) return;
-    this.pendingWorldShare = view;
-    const rootRect = this.getBoundingClientRect();
-    const left = Math.max(
-      8,
-      Math.min(rootRect.width - 220, Number(view.clientX) - rootRect.left),
-    );
-    const top = Math.max(
-      8,
-      Math.min(rootRect.height - 64, Number(view.clientY) - rootRect.top),
-    );
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
-    menu.hidden = false;
-    menu.querySelector("button")?.focus();
-  }
-
-  closeWorldShareMenu() {
-    const menu = this.$("[data-world-share-menu]");
-    if (menu) menu.hidden = true;
-  }
-
   worldShareURL(view) {
     const url = new URL("/world/", location.origin);
     const fixed = (value, places = 3) =>
@@ -7979,7 +8155,6 @@ class ForkMeshWorld extends HTMLElement {
     const view = this.pendingWorldShare;
     if (!view) return;
     const url = this.worldShareURL(view);
-    this.closeWorldShareMenu();
     try {
       if (navigator.share) {
         await navigator.share({
@@ -7996,6 +8171,38 @@ class ForkMeshWorld extends HTMLElement {
       if (String(error?.name || "") === "AbortError") return;
       this.toast(`Share this World view: ${url}`);
     }
+  }
+
+  async shareCurrentWorldView() {
+    const state = this.world?.getSavedViewState?.();
+    if (!state) {
+      this.toast("This view is still loading. Try again in a moment.");
+      return;
+    }
+    this.pendingWorldShare = {
+      x: state.x,
+      z: state.z,
+      heading: state.heading,
+      space: state.office ? "town-square" : state.space,
+      cameraMode: state.camera?.mode || "third-person",
+      yaw: state.camera?.yaw,
+      pitch: state.camera?.pitch,
+      zoom: state.camera?.zoom,
+    };
+    await this.sharePendingWorldView();
+  }
+
+  setSavedViewsExpanded(expanded) {
+    const section = this.$("[data-world-saved-views]");
+    const list = this.$("[data-world-saved-view-list]");
+    const toggle = this.$("[data-world-saved-views-toggle]");
+    if (!section || !list || !toggle) return;
+    const active = expanded === true;
+    section.dataset.expanded = String(active);
+    list.hidden = !active;
+    toggle.setAttribute("aria-expanded", String(active));
+    const icon = toggle.querySelector("span");
+    if (icon) icon.textContent = active ? "▾" : "▸";
   }
 
   savedViewsStorageKey() {
@@ -8786,6 +8993,31 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  async copyAdminGuestDetail(detail = {}) {
+    if (!this.identity?.isAdmin) {
+      this.toast("Platform administrator access is required.");
+      return;
+    }
+    const field = String(detail?.field || "");
+    const value = String(detail?.value || "");
+    if (
+      !["ipAddress", "userAgent"].includes(field) ||
+      !value ||
+      value.length > 1024
+    ) {
+      this.toast("That guest connection detail is no longer available.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(value);
+      this.toast(
+        `${field === "ipAddress" ? "Guest IP address" : "Full User-Agent"} copied.`,
+      );
+    } catch (_) {
+      this.toast("Clipboard access was denied by this browser.");
+    }
+  }
+
   // The chest's second tab. Everything shown is public profile data the
   // account already publishes at /@name and to the fediverse; it is fetched
   // only when a visitor actually opens the tab, never polled.
@@ -9545,6 +9777,7 @@ class ForkMeshWorld extends HTMLElement {
       detail.dataset.open = "false";
       detail.dataset.repositoryReview = "false";
       detail.dataset.issueWorkbench = "false";
+      detail.dataset.qaDeck = "false";
       detail.setAttribute("aria-hidden", "true");
     }
     if (backdrop) {
@@ -19526,6 +19759,94 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
+  startDeployStatusWatch() {
+    window.clearInterval(this.deployStatusTimer);
+    void this.checkDeployStatus();
+    this.deployStatusTimer = window.setInterval(
+      () => void this.checkDeployStatus(),
+      WORLD_DEPLOY_STATUS_POLL_MS,
+    );
+  }
+
+  renderDeployStatus(state) {
+    const notice = this.$("[data-world-update-notice]");
+    const copy = this.$("[data-world-update-copy]");
+    const refresh = this.$("[data-world-update-refresh]");
+    if (!notice || !copy || !refresh) return;
+    notice.dataset.state = state;
+    if (state === "deploying") {
+      notice.hidden = false;
+      refresh.hidden = true;
+      copy.innerHTML =
+        "<strong>ForkMesh is deploying now.</strong> The World stays live while the new build rolls out.";
+      return;
+    }
+    if (state === "failed") {
+      notice.hidden = false;
+      refresh.hidden = true;
+      copy.innerHTML =
+        "<strong>The deployment needs attention.</strong> This World remains on the current stable build.";
+      return;
+    }
+    if (state === "ready") {
+      this.updateReloadPending = true;
+      notice.hidden = false;
+      refresh.hidden = false;
+      copy.innerHTML =
+        "<strong>The new World build is ready.</strong> Refresh when you are ready; your position will be preserved.";
+      return;
+    }
+    if (!this.updateReloadPending) notice.hidden = true;
+  }
+
+  async checkDeployStatus() {
+    if (this.destroyed || document.hidden) return;
+    let status;
+    try {
+      status = await this.fetchJSON("/api/world/deploy-status", {
+        auth: false,
+        timeout: 4000,
+        cache: "no-store",
+      });
+    } catch (_) {
+      return;
+    }
+    const state = String(status?.state || "idle");
+    const revision = String(status?.revision || "");
+    const known = String(this.buildDiagnostics?.revision || "");
+    if (state === "deploying") {
+      this.deployObservedRevision = revision;
+      this.renderDeployStatus("deploying");
+      return;
+    }
+    if (
+      state === "ready" &&
+      revision &&
+      (
+        (known && revision !== known) ||
+        revision === this.deployObservedRevision
+      )
+    ) {
+      const announce = !this.updateReloadPending;
+      this.renderDeployStatus("ready");
+      if (announce) {
+        this.toast(
+          "✨ The new World build is ready. Refresh when you are ready.",
+        );
+      }
+      return;
+    }
+    if (
+      state === "failed" &&
+      revision &&
+      revision === this.deployObservedRevision
+    ) {
+      this.renderDeployStatus("failed");
+      return;
+    }
+    this.renderDeployStatus("idle");
+  }
+
   async checkForWorldUpdate() {
     if (this.destroyed || this.updateReloadPending || document.hidden) return;
     // Visibility flips can arrive in bursts; keep the check to at most one
@@ -19552,8 +19873,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     if (build.revision === known) return;
     this.updateReloadPending = true;
-    const notice = this.$("[data-world-update-notice]");
-    if (notice) notice.hidden = false;
+    this.renderDeployStatus("ready");
     this.toast("✨ A new World build is ready. Refresh when you are ready.");
   }
 
@@ -21325,6 +21645,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.worldTicketTimer);
     window.clearInterval(this.diagnosticsTimer);
     window.clearInterval(this.updateCheckTimer);
+    window.clearInterval(this.deployStatusTimer);
     window.clearInterval(this.layoutRefreshTimer);
     window.clearInterval(this.mastodonRefreshTimer);
     window.clearInterval(this.socialFeedsTimer);

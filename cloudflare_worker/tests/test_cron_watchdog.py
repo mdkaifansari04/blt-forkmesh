@@ -4,6 +4,7 @@
 import ast
 import asyncio
 from pathlib import Path
+import re
 from types import SimpleNamespace
 from urllib.parse import urlparse
 
@@ -21,6 +22,8 @@ def _load_watchdog():
         "CRON_WATCHDOG_RETRY_MS",
     }
     wanted_functions = {
+        "_status_alert_manage_url",
+        "_email_with_status_alert_manage_link",
         "_cron_watchdog_email_content",
         "_send_cron_watchdog_email",
     }
@@ -88,6 +91,7 @@ def _load_watchdog():
     namespace = {
         "DurableObject": DurableObject,
         "Date": Date,
+        "re": re,
         "urlparse": urlparse,
         "_repository_monitor_admin_emails":
             _repository_monitor_admin_emails,

@@ -287,14 +287,14 @@ def test_follower_gallery_orbits_real_follower_icons_around_file_circle():
     gallery = SCENE.split(
         "// Who follows this repository over ActivityPub", 1)
     assert len(gallery) == 2
-    body = gallery[1][:3200]
+    body = gallery[1][:5200]
     assert "repository-fediverse-follower-icons:" in body
     assert "record.fediverseFollowers" in body
     assert "makeRepositoryFollowerIcon(THREE, follower)" in body
-    assert "orbitRadius = nodeRadius * 3.25" in body
-    assert "gallery.position.z = 0.82" in body
+    assert "const orbitRadius = 4.25" in body
+    assert "gallery.position.set(0, 0.55, 0.18)" in body
     assert "caption.material.depthTest = false" in body
-    assert "face.add(gallery)" in body
+    assert "node.add(gallery)" in body
     # Followers are social records, not in-world physical visitors.
     assert "makeRepositoryFollowerFigure" not in body
     assert "figure.rotation.y" not in body
@@ -338,7 +338,8 @@ def test_remote_avatar_load_is_anonymous_and_optional():
 def test_repository_social_graph_has_outer_followers_inner_contributors_and_follow():
     assert "repository-contributor-inner-ring" in SCENE
     assert "makeRepositoryContributorIcon(THREE, contributor)" in SCENE
-    assert "const radius = 2.28" in SCENE
+    assert "const radius = 2.7" in SCENE
+    assert "contributorOrbit.position.set(0, 0.55, 0.17)" in SCENE
     assert "repository-fediverse-follow:" in SCENE
     assert "repositoryFollowButtonTexture" in SCENE
     assert "repositoryFediverseFollow" in SCENE

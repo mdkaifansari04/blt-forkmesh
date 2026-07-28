@@ -3646,6 +3646,11 @@ const Rule kNetworkLogRules[] = {
         // Firewall messages mention "ForkMesh's ports" — keep above "fork" so
         // they don't get swept into the FORK badge by that substring.
         {"firewall", "#f2cc60", "NETWORK"},
+        // The footer strip's ✓ / ✕ outcome lines name the kind of work they
+        // summarise ("git", "net", "sync" …), so they must be classified before
+        // the per-kind rules below claim them — and their own chip makes them
+        // filterable as a group (adhoc #419).
+        {"background ", "#8b949e", "BGTASK"},
         {"pull request", "#3fb950", "PULL"},
         {"pull #", "#3fb950", "PULL"},
         {"merged", "#a371f7", "MERGE"},
@@ -3856,7 +3861,9 @@ QString formatLogLineHtml(const QString &time, const QString &message, bool dark
                 "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
                 "<span style='color:%3'>%4</span>")
                 .arg(style.accent, style.badge.leftJustified(7).toHtmlEscaped(),
-                     messageColor, linkifyEscapedMessage(message.toHtmlEscaped()));
+                     messageColor,
+                     forkmesh::colorizeBackgroundMarker(
+                         linkifyEscapedMessage(message.toHtmlEscaped())));
     return html;
 }
 } // namespace

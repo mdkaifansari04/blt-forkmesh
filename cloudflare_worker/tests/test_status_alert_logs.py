@@ -25,6 +25,8 @@ def _load_helpers(events=None, status=200):
         "_sanitize_attention_log_text",
         "_cloudflare_attention_log_tail",
         "_attention_email_with_logs",
+        "_status_alert_manage_url",
+        "_email_with_status_alert_manage_link",
     }
     selected = []
     for node in ast.parse(ENTRY_TEXT, filename=str(ENTRY)).body:
@@ -150,3 +152,22 @@ def test_only_non_green_component_mail_receives_cloudflare_log_tail():
     ]
     assert "if not recovered:" in watchdog
     assert "_cloudflare_attention_log_tail(env, now)" in watchdog
+
+
+def test_alert_email_has_direct_manage_link_to_affected_status_entry():
+    ns = _load_helpers()
+    text, html = ns["_email_with_status_alert_manage_link"](
+        "alert text",
+        "<html><body><div><div>alert</div></div></body></html>",
+        "mirror:Mirror 2",
+    )
+    expected = "https://forkmesh.com/status#system-mirror-mirror-2"
+    assert "Manage this alert: " + expected in text
+    assert 'href="' + expected + '"' in html
+    assert ">Manage this alert</a>" in html
+    assert html.endswith("</body></html>")
+
+    status_html = (ROOT / "public" / "status.html").read_text(
+        encoding="utf-8")
+    assert 'row.id = "system-" + safeSystemId' in status_html
+    assert 'window.location.hash === "#" + row.id' in status_html

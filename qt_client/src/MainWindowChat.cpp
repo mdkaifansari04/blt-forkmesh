@@ -47,10 +47,16 @@ constexpr int kBackgroundTaskRowSpacing = 3;
 // Work that finishes inside this window never gets a row. Almost every git read
 // lands well under it, so the strip shows genuinely slow jobs and no widget is
 // created (let alone destroyed) for the hundreds of fast ones.
-constexpr qint64 kBackgroundTaskShowAfterMs = 200;
+constexpr qint64 kBackgroundTaskShowAfterMs = forkmesh::kBackgroundShowAfterMs;
 // Idle ticks kept before the spin timer stands down, so a burst of short jobs
-// doesn't start/stop it repeatedly.
+// doesn't start/stop it repeatedly. The panel itself stays on screen either way
+// (adhoc #419) — only the spinner animation stands down.
 constexpr int kBackgroundTaskIdleTicksBeforeStop = 12;
+// Tickets too fast to be backgrounded are logged as one ✕ summary per kind
+// instead of one line each: the hot git path opens hundreds of them and the log
+// is persisted line by line. A kind's pending summary is flushed once its first
+// fast ticket is this old, or as soon as the strip goes quiet.
+constexpr qint64 kBackgroundTaskFastFlushMs = 2000;
 } // namespace
 
 // -------------------------------------------------------------- server rail
@@ -1097,9 +1103,12 @@ QWidget *MainWindow::buildNetworkLogDock()
     positionFloatingLogButton();
 
     // Background work is visible without taking over the app: this narrow strip
-    // sits exactly between the live log and the agent prompt, lists one spinner
-    // plus one-word tag per kind of job in flight, and disappears when the last
-    // one finishes. Five tags fit; past that the list scrolls (adhoc #421).
+    // sits exactly between the live log and the agent prompt and lists one
+    // spinner plus one-word tag per kind of job in flight. Five tags fit; past
+    // that the list scrolls (adhoc #421). The panel is permanent (adhoc #419):
+    // it holds its slot in the footer and reads "idle" when nothing is running,
+    // so it never appears/disappears under the pointer and the row it would use
+    // is never borrowed by the log or the prompt.
     m_backgroundQueue = new QFrame;
     m_backgroundQueue->setObjectName("backgroundTaskQueue");
     m_backgroundQueue->setFrameShape(QFrame::StyledPanel);
@@ -1120,6 +1129,14 @@ QWidget *MainWindow::buildNetworkLogDock()
         new QVBoxLayout(m_backgroundQueueRowsHost);
     m_backgroundQueueRowsLayout->setContentsMargins(0, 0, 0, 0);
     m_backgroundQueueRowsLayout->setSpacing(kBackgroundTaskRowSpacing);
+    // Placeholder for the (common) case of nothing in flight: an always-visible
+    // panel with an empty body would read as broken, and the dimmed word keeps
+    // the list's height stable as rows come and go.
+    m_backgroundQueueIdleLabel = new QLabel(QStringLiteral("idle"));
+    m_backgroundQueueIdleLabel->setObjectName("backgroundTaskIdle");
+    m_backgroundQueueIdleLabel->setToolTip(
+        QStringLiteral("No background work in flight"));
+    m_backgroundQueueRowsLayout->addWidget(m_backgroundQueueIdleLabel);
     m_backgroundQueueRowsLayout->addStretch(1);
     m_backgroundQueueScroll = new QScrollArea;
     m_backgroundQueueScroll->setObjectName("backgroundTaskQueueScroll");
@@ -1134,11 +1151,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     backgroundRowFont.setPointSizeF(
         qMax(7.5, backgroundRowFont.pointSizeF() - 1.0));
     m_backgroundTaskRowHeight = QFontMetrics(backgroundRowFont).height() + 2;
+    m_backgroundQueueIdleLabel->setFont(backgroundRowFont);
+    m_backgroundQueueIdleLabel->setFixedHeight(m_backgroundTaskRowHeight);
+    m_backgroundQueueIdleLabel->setStyleSheet(
+        QStringLiteral("color:#6e7681;"));
     m_backgroundQueueScroll->setMaximumHeight(
         kBackgroundTaskVisibleRows * m_backgroundTaskRowHeight +
         (kBackgroundTaskVisibleRows - 1) * kBackgroundTaskRowSpacing);
     backgroundLayout->addWidget(m_backgroundQueueScroll, 1);
-    m_backgroundQueue->hide();
 
     // Every announcement in the process lands here. The hop through
     // invokeMethod() is what lets tickets be opened off the GUI thread (mirror
@@ -1212,6 +1232,47 @@ void MainWindow::finishBackgroundTask(quint64 id, bool success,
         flashMessage(detail.trimmed(), true);
 }
 
+// A finished run of one kind of work goes into a pending tally rather than
+// straight into the log (adhoc #419): the hot paths retire hundreds of tickets a
+// minute and one line each would bury every other event (and rewrite the log
+// file that often). flushBackgroundOutcomes() turns each tally into a single
+// entry — ✓ for work that was actually backgrounded, red ✕ for work that came
+// and went too fast to ever be.
+void MainWindow::recordBackgroundOutcome(const QString &word, qint64 elapsedMs,
+                                         const QString &detail, qint64 now)
+{
+    QHash<QString, BackgroundOutcomeTally> &bucket =
+        elapsedMs >= kBackgroundTaskShowAfterMs ? m_backgroundTaskDone
+                                                : m_backgroundTaskFast;
+    BackgroundOutcomeTally &tally = bucket[word];
+    if (tally.runs == 0)
+        tally.firstAt = now;
+    ++tally.runs;
+    tally.longestMs = qMax(tally.longestMs, elapsedMs);
+    const QString note = detail.trimmed();
+    if (!note.isEmpty())
+        tally.detail = note;
+}
+
+// Emit the tallies that have been open long enough to be worth summarising (or
+// all of them, when the strip is about to go quiet).
+void MainWindow::flushBackgroundOutcomes(bool force)
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (QHash<QString, BackgroundOutcomeTally> *bucket :
+         {&m_backgroundTaskDone, &m_backgroundTaskFast}) {
+        for (auto it = bucket->begin(); it != bucket->end();) {
+            if (!force && now - it->firstAt < kBackgroundTaskFastFlushMs) {
+                ++it;
+                continue;
+            }
+            logSystem(forkmesh::backgroundOutcomeLine(
+                it.key(), it->runs, it->longestMs, it->detail));
+            it = bucket->erase(it);
+        }
+    }
+}
+
 // Ticket bookkeeping. Rows are *not* touched here: a job that finishes inside
 // kBackgroundTaskShowAfterMs must never create a widget, so the sweep below owns
 // what is on screen and this only maintains the counts it reads.
@@ -1238,6 +1299,11 @@ void MainWindow::noteBackgroundActivity(quint64 id, const QString &kind,
         if (count > 0) {
             m_backgroundTaskCounts.insert(word, count);
         } else {
+            // Last ticket of this kind: hand the run to the log's ✓ / ✕ tally.
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            recordBackgroundOutcome(word,
+                                    now - m_backgroundTaskSince.value(word, now),
+                                    m_backgroundTaskDetails.value(word), now);
             m_backgroundTaskCounts.remove(word);
             m_backgroundTaskSince.remove(word);
             m_backgroundTaskDetails.remove(word);
@@ -1334,8 +1400,12 @@ void MainWindow::tickBackgroundQueue()
         label->setToolTip(note.isEmpty() ? word : note);
     }
 
+    // The panel itself never hides (adhoc #419); the placeholder stands in for
+    // the rows while nothing is in flight.
     const int visible = m_backgroundTaskRows.size();
-    m_backgroundQueue->setVisible(visible > 0);
+    m_backgroundQueue->show();
+    if (m_backgroundQueueIdleLabel)
+        m_backgroundQueueIdleLabel->setVisible(visible == 0);
     if (m_backgroundQueueTitle) {
         m_backgroundQueueTitle->setText(
             visible > 0 ? QStringLiteral("Background %1 %2")
@@ -1345,15 +1415,20 @@ void MainWindow::tickBackgroundQueue()
     }
 
     // Stand the timer down once nothing is running and nothing is drawn, with a
-    // grace period so a stream of short jobs doesn't flap it.
+    // grace period so a stream of short jobs doesn't flap it. The pending ✓ / ✕
+    // tallies are flushed unconditionally on the way down, since nothing will be
+    // ticking to flush them later.
     if (m_backgroundTaskCounts.isEmpty() && visible == 0) {
-        if (++m_backgroundTaskIdleTicks >= kBackgroundTaskIdleTicksBeforeStop &&
-            m_backgroundTaskSpinTimer) {
+        const bool standingDown =
+            ++m_backgroundTaskIdleTicks >= kBackgroundTaskIdleTicksBeforeStop;
+        flushBackgroundOutcomes(standingDown);
+        if (standingDown && m_backgroundTaskSpinTimer) {
             m_backgroundTaskSpinTimer->stop();
             m_backgroundTaskIdleTicks = 0;
         }
     } else {
         m_backgroundTaskIdleTicks = 0;
+        flushBackgroundOutcomes(false);
     }
 }
 
@@ -7917,6 +7992,13 @@ void MainWindow::installAgentClisForHost(int row)
             break;
         }
     }
+    const QString identityFile = savedHostIdentityFile(node, ip, user);
+    // A Vultr mirror provisioned by ForkMesh has a pinned per-host identity.
+    // Use only that identity even if this process still has an old session
+    // password in memory; this avoids an opaque password fallback and makes
+    // the authentication path match every later headless-agent connection.
+    const QString sshPassword =
+        identityFile.isEmpty() ? pass : QString();
     const QString remoteCmd = QStringLiteral(
         "sh -lc 'set -eu; "
         "echo \"Installing Claude Code from claude.ai...\"; "
@@ -7932,8 +8014,7 @@ void MainWindow::installAgentClisForHost(int row)
     QString sshError;
     const forkmesh::control::HostSshCommand ssh =
         forkmesh::control::buildHostSshCommand(
-            ip, user, pass, remoteCmd, &sshError,
-            savedHostIdentityFile(node, ip, user));
+            ip, user, sshPassword, remoteCmd, &sshError, identityFile);
     if (ssh.program.isEmpty()) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(sshError);
@@ -7944,6 +8025,13 @@ void MainWindow::installAgentClisForHost(int row)
     appendHostInstallLog(
         QStringLiteral("Installing Claude Code and Codex on %1 (%2@%3)...\n")
             .arg(node, user, ip));
+    appendHostInstallLog(
+        identityFile.isEmpty()
+            ? QStringLiteral(
+                  "No managed key is saved for this host; using the current "
+                  "session credential or the system SSH agent.\n")
+            : QStringLiteral(
+                  "Using the ForkMesh-managed SSH identity for this host.\n"));
     if (m_hostInstallStatus)
         m_hostInstallStatus->setText(
             QStringLiteral("Installing agent CLIs on %1...").arg(node));
@@ -7952,7 +8040,14 @@ void MainWindow::installAgentClisForHost(int row)
     proc->setProcessChannelMode(QProcess::MergedChannels);
     proc->setProcessEnvironment(ssh.environment);
     connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
-        appendHostInstallLog(QString::fromUtf8(proc->readAllStandardOutput()));
+        const QByteArray chunk = proc->readAllStandardOutput();
+        QByteArray transcript =
+            proc->property("forkmeshAgentInstallOutput").toByteArray();
+        transcript += chunk;
+        if (transcript.size() > 8192)
+            transcript = transcript.right(8192);
+        proc->setProperty("forkmeshAgentInstallOutput", transcript);
+        appendHostInstallLog(QString::fromUtf8(chunk));
     });
     connect(proc, &QProcess::errorOccurred, this,
             [this](QProcess::ProcessError error) {
@@ -7962,7 +8057,8 @@ void MainWindow::installAgentClisForHost(int row)
         }
     });
     connect(proc, &QProcess::finished, this,
-            [this, proc, node](int code, QProcess::ExitStatus status) {
+            [this, proc, node, ip, identityFile](
+                int code, QProcess::ExitStatus status) {
         if (m_hostAgentInstallProcess == proc)
             m_hostAgentInstallProcess = nullptr;
         const bool ok =
@@ -7972,12 +8068,32 @@ void MainWindow::installAgentClisForHost(int row)
                : QStringLiteral("\nAgent CLI installation failed (exit %1).\n")
                      .arg(code));
         if (m_hostInstallStatus) {
+            const QString output = QString::fromUtf8(
+                proc->property("forkmeshAgentInstallOutput").toByteArray());
+            const bool timedOut = output.contains(
+                QStringLiteral("Connection timed out"),
+                Qt::CaseInsensitive);
+            const bool keyRejected = output.contains(
+                QStringLiteral("Permission denied"),
+                Qt::CaseInsensitive);
             m_hostInstallStatus->setText(
                 ok
                     ? QStringLiteral(
                           "Claude Code and Codex are installed on %1. Sign in "
                           "on that mirror before starting sessions.")
                           .arg(node)
+                    : timedOut
+                        ? QStringLiteral(
+                              "SSH could not reach %1 on port 22. The saved "
+                              "key was not reached; use the host's reachable "
+                              "public/stable address or connect this device to "
+                              "the private network, then retry.")
+                              .arg(ip)
+                        : keyRejected && !identityFile.isEmpty()
+                            ? QStringLiteral(
+                                  "The mirror rejected its saved ForkMesh SSH "
+                                  "key. Re-provision or replace that host key, "
+                                  "then retry.")
                     : QStringLiteral(
                           "Agent CLI installation failed on %1; see Live output.")
                           .arg(node));

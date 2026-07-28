@@ -5,6 +5,32 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [x] Add a direct “Manage this alert” link to component and scheduled-job alert emails, opening the affected expanded status row.
+- [ ] Fix the production `/api/world/deploy-status` response error that made API and Worker status red, then verify live recovery.
+- [ ] Use the deploy lifecycle singleton as a status semaphore so rollout minutes do not create false Website/API/Worker incidents or emails.
+- [ ] Show the live World user count and a Join World button between the homepage logo and hamburger on mobile.
+- [ ] Make the 24-hour QA deck a direct physical grab/swipe board with left Fail, right Pass, down Unsure, test instructions, and private cross-device totals.
+- [ ] Add “Done → send for QA” to each active build sticky and enqueue its test instructions into the QA deck.
+- [ ] Keep Share exact view on the right rail, restore the normal right-click menu, and keep Saved Views collapsed with small thumbnails and a +Map control.
+- [ ] Show admin-only copyable full IP and User-Agent details on guest backs without persisting or broadcasting them to other users.
+- [ ] Keep repository follower and contributor avatar orbits coplanar with the repository wheel and spaced farther out.
+- [ ] Consolidate member Info/Fedi into one compact front card with short relative times, Solana wallet QR/copy/balance, and no mode buttons.
+- [ ] Show every server-authoritative team badge as a stacked list on the avatar's left arm.
+- [ ] Restore the Marketing task wall to room scale and put create, Marketing-only assign, start/stop, done, and delete controls directly on the physical wall.
+- [ ] Set up `CLOUDFLARE_OBSERVABILITY_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` so attention emails can include the prior two minutes of logs.
+- [ ] Deploy an instant World-wide deployment-start indicator, animated activity state, and explicit ready-to-refresh action without auto-refreshing.
+- [ ] Switch the elevator to an upper-corner first-person view that frames the controls and outside, then restore the prior view on arrival or exit.
+- [ ] Refresh “What we're building” whenever a player approaches and show its physical updating spinner.
+- [ ] Verify the ForkMesh X timeline feed and keep the in-world board sourced from the public `@forkmesh` profile without third-party tracking script injection.
+- [ ] Make mirror agent installers exclusively use the saved ForkMesh SSH key when present and clearly distinguish an unreachable host from rejected authentication.
+- [ ] Finish and test the repository Mastodon-follower and Git-contributor avatar orbits.
+- [ ] Finish and test Claude/Codex/model assignment controls on World issue cards.
+- [ ] Finish and test the Qt host buttons that install the official Claude Code and Codex CLIs.
+- [ ] Finish and test the Marketing wall, member desks, attendance calendar, and sealed reclaimed-wood logo table.
+- [ ] Add server-authoritative team badges to each user's left arm.
+- [ ] Let Marketing members submit private social proof-of-work links from their own desk and show those items only to Marketing.
+- [ ] Run the focused Worker, browser-module, mirror gateway, and Qt tests for this round.
+- [ ] Deploy this round, verify the production revision/assets, and move each completed sticky to Done.
 - [x] Keep Mastodon follower avatars visibly orbiting the selected repository file circle at every normal camera angle.
 - [x] Make clicking the Claude or Codex world bot open its complete Engineering-only live status, work, transcript, runtime, and prompt controls.
 - [x] Surface stalled mirror-agent diagnostics as actionable notes on the Engineering-only Human TODO board.

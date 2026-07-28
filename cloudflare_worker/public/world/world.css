@@ -399,6 +399,32 @@ forkmesh-world {
   font-size: 12px;
 }
 
+.world-update-activity {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border: 2px solid rgb(158 247 198 / 0.25);
+  border-top-color: var(--world-mint);
+  border-radius: 50%;
+  animation: world-deploy-spin 650ms linear infinite;
+}
+
+.world-update-notice:not([data-state="deploying"]) .world-update-activity {
+  display: none;
+}
+
+.world-update-notice[data-state="ready"] {
+  border-color: #a8f7c8;
+}
+
+.world-update-notice[data-state="failed"] {
+  border-color: #ffb37c;
+}
+
+@keyframes world-deploy-spin {
+  to { transform: rotate(360deg); }
+}
+
 .world-update-notice[hidden] {
   display: none;
 }
@@ -414,37 +440,10 @@ forkmesh-world {
   cursor: pointer;
 }
 
-.world-share-menu {
-  position: absolute;
-  z-index: 90;
-  min-width: 210px;
-  border: 1px solid var(--world-line-strong);
-  border-radius: 9px;
-  background: rgb(5 24 18 / 0.98);
-  padding: 5px;
-  box-shadow: 0 16px 46px rgb(0 0 0 / 0.44);
-}
-
-.world-share-menu[hidden] {
-  display: none;
-}
-
-.world-share-menu button {
-  width: 100%;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  padding: 9px 10px;
-  color: var(--world-copy);
-  text-align: left;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.world-share-menu button:hover,
-.world-share-menu button:focus-visible {
-  background: rgb(158 247 198 / 0.14);
-  outline: none;
+@media (prefers-reduced-motion: reduce) {
+  .world-update-activity {
+    animation-duration: 1.8s;
+  }
 }
 
 .world-canvas {
@@ -766,6 +765,28 @@ forkmesh-world {
   backdrop-filter: blur(18px);
 }
 
+.world-share-view-button {
+  justify-self: end;
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--world-line);
+  background: var(--world-panel);
+  padding: 7px 10px;
+  color: var(--world-copy);
+  font: 700 0.62rem/1.2 "ForkMesh Mono", monospace;
+  cursor: pointer;
+  backdrop-filter: blur(18px);
+}
+
+.world-share-view-button:hover,
+.world-share-view-button:focus-visible {
+  border-color: var(--world-mint);
+  color: var(--world-mint);
+  outline: none;
+}
+
 .world-saved-views-heading {
   display: flex;
   min-height: 30px;
@@ -780,14 +801,33 @@ forkmesh-world {
   text-transform: uppercase;
 }
 
-.world-saved-views-heading button {
+.world-saved-views-heading > button:last-child {
   display: grid;
-  width: 23px;
-  height: 23px;
-  place-items: center;
+  grid-template-columns: auto auto;
+  min-height: 23px;
+  align-items: center;
+  gap: 3px;
   border: 1px solid var(--world-line);
   background: rgb(158 247 198 / 0.08);
+  padding: 3px 5px;
   color: var(--world-mint);
+  font: 700 0.51rem/1 "ForkMesh Mono", monospace;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.world-saved-views-toggle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  padding: 5px 0;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
   cursor: pointer;
 }
 
@@ -862,8 +902,8 @@ forkmesh-world {
 
 .world-saved-view button:hover,
 .world-saved-view button:focus-visible,
-.world-saved-views-heading button:hover,
-.world-saved-views-heading button:focus-visible {
+.world-saved-views-heading > button:hover,
+.world-saved-views-heading > button:focus-visible {
   border-color: var(--world-mint);
   outline: none;
 }

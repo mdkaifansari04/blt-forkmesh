@@ -936,9 +936,10 @@ private:
     void updateNodeOnlineControls();
     // Bottom quick-add issue bar (the network log now lives in its own section).
     QWidget *buildNetworkLogDock();
-    // Compact footer queue between the live log and agent prompt. It exists only
-    // while background work is running and gives each kind of job a spinner plus
-    // a one-word tag ("git", "net", "fork" …); past five tags it scrolls.
+    // Compact footer queue between the live log and agent prompt. It is always on
+    // screen (reading "idle" when nothing is running) and gives each kind of job
+    // a spinner plus a one-word tag ("git", "net", "fork" …); past five tags it
+    // scrolls.
     quint64 beginBackgroundTask(const QString &kind,
                                 const QString &detail = QString());
     void finishBackgroundTask(quint64 id, bool success,
@@ -948,6 +949,11 @@ private:
                                 const QString &detail, bool started);
     // Spin the glyphs and reconcile the visible rows with the open tickets.
     void tickBackgroundQueue();
+    // Tally a finished run of one kind of work for the log's ✓ / ✕ outcome line,
+    // and emit the tallies that are ready (or all of them, when force is set).
+    void recordBackgroundOutcome(const QString &word, qint64 elapsedMs,
+                                 const QString &detail, qint64 now);
+    void flushBackgroundOutcomes(bool force);
     // Collapse a caller's note to the single lowercase word shown in the strip.
     static QString backgroundTaskWord(const QString &kind);
     // Refresh the footer's centered git-identity label for the open repo.
@@ -3672,6 +3678,9 @@ private:
     // widget churn stays flat no matter how busy the app gets.
     QFrame *m_backgroundQueue = nullptr;
     QLabel *m_backgroundQueueTitle = nullptr;
+    // Dimmed "idle" placeholder shown in place of the rows while nothing is in
+    // flight — the panel is permanent, so its body is never empty (adhoc #419).
+    QLabel *m_backgroundQueueIdleLabel = nullptr;
     QWidget *m_backgroundQueueRowsHost = nullptr;
     QVBoxLayout *m_backgroundQueueRowsLayout = nullptr;
     QScrollArea *m_backgroundQueueScroll = nullptr;
@@ -3682,6 +3691,17 @@ private:
     QHash<QString, qint64> m_backgroundTaskSince;        // word -> first ticket ms
     QHash<QString, QString> m_backgroundTaskDetails;     // word -> newest note
     QHash<quint64, QString> m_backgroundTaskWords;       // ticket -> word
+    // Pending log outcome per kind: one tally for work that was backgrounded (✓)
+    // and one for work that finished before the strip would have drawn it (✕), so
+    // a burst of same-kind tickets becomes one summary line instead of hundreds.
+    struct BackgroundOutcomeTally {
+        int runs = 0;
+        qint64 longestMs = 0;
+        qint64 firstAt = 0;
+        QString detail;
+    };
+    QHash<QString, BackgroundOutcomeTally> m_backgroundTaskDone; // word -> ✓
+    QHash<QString, BackgroundOutcomeTally> m_backgroundTaskFast; // word -> ✕
     QTimer *m_backgroundTaskSpinTimer = nullptr;
     int m_backgroundTaskRowHeight = 18;
     int m_backgroundTaskSpinFrame = 0;
