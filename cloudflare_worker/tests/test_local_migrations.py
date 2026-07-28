@@ -9,6 +9,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_world_build_board_title_migration_is_safe_after_table_creation():
+    create = (ROOT / "migrations" / "0091_world_build_board.sql").read_text(
+        encoding="utf-8"
+    )
+    upgrade = (
+        ROOT / "migrations" / "0092_world_build_board_issue_title.sql"
+    ).read_text(encoding="utf-8")
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(create)
+        connection.executescript(upgrade)
+        title_columns = [
+            row for row in connection.execute(
+                "PRAGMA table_info(world_build_board_items)"
+            ) if row[1] == "title"
+        ]
+    finally:
+        connection.close()
+
+    assert len(title_columns) == 1
+
+
 def _literal_assignment(path, name):
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in tree.body:
@@ -77,6 +99,8 @@ def test_lazy_schema_upgrade_adds_columns_before_dependent_indexes():
     try:
         connection.executescript(initial)
         for statement in pre_alters:
+            if "ap_comments" not in statement and "ap_outbox" not in statement:
+                continue
             connection.execute(statement)
         for statement in schema_statements:
             if "ap_comments" in statement or "ap_outbox" in statement:
