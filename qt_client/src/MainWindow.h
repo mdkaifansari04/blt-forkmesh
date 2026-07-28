@@ -1170,6 +1170,13 @@ private:
     // one selected mirror over its existing TOFU-pinned SSH connection.
     // Authentication is intentionally separate and never copied by this action.
     void installAgentClisForHost(int row);
+    // Open a live in-app terminal on one mirror so the provider sign-ins the
+    // installer deliberately skips (`claude` then /login, `codex login`) can be
+    // completed by hand. Opened automatically once an install finishes, and
+    // available on demand from the host row.
+    void openHostAgentLoginTerminalForSelection(int row);
+    void openHostAgentLoginTerminal(const QString &node, const QString &ip,
+                                    const QString &user);
     void runHostActionsConfiguration(
         forkmesh::control::MirrorActionsConfigurationRequest request,
         const QString &sshPassword);
