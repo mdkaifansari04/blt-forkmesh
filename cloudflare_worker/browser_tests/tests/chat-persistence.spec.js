@@ -64,3 +64,60 @@ test("self-authored retained chat survives a page refresh", async ({ page }) => 
     "My message must survive refresh",
   );
 });
+
+
+test("a public chat message accepts and sends a thread reply", async ({ page }) => {
+  const passphrase = "playwright-public-thread-passphrase";
+  const retainedFrames = [];
+
+  await page.route("**/api/**", (route) => {
+    const url = new URL(route.request().url());
+    let body = { error: "not_found" };
+    let status = 404;
+    if (url.pathname === "/api/chat/room-key") {
+      status = 200;
+      body = {
+        ok: true,
+        room: "world-general",
+        access: "public-world-general",
+        passphrase,
+      };
+    } else if (url.pathname === "/api/accounts/users") {
+      status = 200;
+      body = { ok: true, users: [] };
+    } else if (url.pathname === "/api/chat/activity") {
+      status = 200;
+      body = { ok: true, messageCount: 0, latestMessageTs: 0, userCount: 0 };
+    }
+    return route.fulfill({
+      status,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+  await page.routeWebSocket(
+    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
+    (socket) => {
+      socket.onMessage((message) => {
+        const frame = String(message);
+        if (JSON.parse(frame).persist === true) retainedFrames.push(frame);
+      });
+    },
+  );
+
+  await page.goto("/chat.html");
+  await expect(page.locator("#chat-status")).toContainText("Connected");
+  const rootText = "Thread root from the browser";
+  const replyText = "Thread reply from the browser";
+  await page.locator("#chat-input").fill(rootText);
+  await page.locator("#chat-input").press("Enter");
+  const root = page.locator(".chat-msg", { hasText: rootText });
+  await expect(root).toBeVisible();
+  await root.hover();
+  await root.getByRole("button", { name: "Reply in thread" }).click();
+  await expect(page.locator("#chat-thread-input")).toBeFocused();
+  await page.locator("#chat-thread-input").fill(replyText);
+  await page.locator("#chat-thread-input").press("Enter");
+  await expect(page.locator("#chat-thread-replies")).toContainText(replyText);
+  await expect.poll(() => retainedFrames.length).toBe(2);
+});

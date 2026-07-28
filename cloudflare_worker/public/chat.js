@@ -3737,9 +3737,44 @@ function wireChatComposer() {
   });
 }
 
+let threadControlsWired = false;
+function wireThreadControls() {
+  if (threadControlsWired) return;
+  threadControlsWired = true;
+  threadSendBtn?.addEventListener("click", sendThreadReply);
+  threadCloseBtn?.addEventListener("click", () => closeThread());
+  threadInput?.addEventListener("input", resizeThreadComposer);
+  threadInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !threadInput.value) {
+      event.preventDefault();
+      closeThread();
+    } else if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendThreadReply();
+    }
+  });
+  if (threadAttachmentBtn && threadAttachmentInput) {
+    threadAttachmentBtn.addEventListener("click", () => threadAttachmentInput.click());
+    threadAttachmentInput.addEventListener("change", () => {
+      const files = Array.from(threadAttachmentInput.files || []);
+      threadAttachmentInput.value = "";
+      if (files.length && activeThreadRootId) {
+        stageAttachments(files, { rootId: activeThreadRootId });
+      }
+    });
+  }
+  threadInput?.addEventListener("paste", (event) => {
+    const file = clipboardImage(event);
+    if (!file || !activeThreadRootId) return;
+    event.preventDefault();
+    stageAttachments([file], { rootId: activeThreadRootId });
+  });
+}
+
 async function initChat() {
   wireChatControls();
   wireChatComposer();
+  wireThreadControls();
   await hydrateUserSession();
   ensureChannel("#general");
   await refreshPrivateChannels({ connect: false });
@@ -3775,18 +3810,6 @@ async function initChat() {
   if (clearBtn) clearBtn.addEventListener("click", clearChat);
   directMoreBtn?.addEventListener("click", loadMoreDirectMessages);
   directDialogClose?.addEventListener("click", () => directDialog?.close());
-  threadSendBtn?.addEventListener("click", sendThreadReply);
-  threadCloseBtn?.addEventListener("click", () => closeThread());
-  threadInput?.addEventListener("input", resizeThreadComposer);
-  threadInput?.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !threadInput.value) {
-      event.preventDefault();
-      closeThread();
-    } else if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      sendThreadReply();
-    }
-  });
   for (const button of formatButtons) {
     button.addEventListener("mousedown", (event) => event.preventDefault());
     button.addEventListener("click", () => {
@@ -3837,22 +3860,6 @@ async function initChat() {
   officeRetryBtn?.addEventListener("click", () => {
     showOfficeFailure("");
     connect();
-  });
-  if (threadAttachmentBtn && threadAttachmentInput) {
-    threadAttachmentBtn.addEventListener("click", () => threadAttachmentInput.click());
-    threadAttachmentInput.addEventListener("change", () => {
-      const files = Array.from(threadAttachmentInput.files || []);
-      threadAttachmentInput.value = "";
-      if (files.length && activeThreadRootId) {
-        stageAttachments(files, { rootId: activeThreadRootId });
-      }
-    });
-  }
-  threadInput?.addEventListener("paste", (event) => {
-    const file = clipboardImage(event);
-    if (!file || !activeThreadRootId) return;
-    event.preventDefault();
-    stageAttachments([file], { rootId: activeThreadRootId });
   });
   installDropTarget(mainPane);
   installDropTarget(threadView, () => activeThreadRootId);

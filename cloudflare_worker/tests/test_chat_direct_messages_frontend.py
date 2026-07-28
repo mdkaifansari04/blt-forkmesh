@@ -149,6 +149,19 @@ def test_direct_message_controls_are_wired_before_async_chat_hydration():
     ) < start.index("reconcileDirectMessages(")
 
 
+def test_thread_reply_controls_are_wired_before_async_chat_hydration():
+    init = _function_source("initChat")
+    assert "function wireThreadControls()" in CHAT
+    assert init.index("wireThreadControls();") < init.index(
+        "await hydrateUserSession();"
+    )
+    controls = _function_source("wireThreadControls")
+    assert 'threadSendBtn?.addEventListener("click", sendThreadReply)' in controls
+    assert 'threadInput?.addEventListener("keydown"' in controls
+    assert 'event.key === "Enter" && !event.shiftKey' in controls
+    assert "sendThreadReply();" in controls
+
+
 def test_protocol_documents_participant_only_direct_messages():
     for marker in (
         'id="personal-direct-messages"',
