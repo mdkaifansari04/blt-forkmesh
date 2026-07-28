@@ -7,17 +7,17 @@ the implementation and its focused verification are complete.
 
 - [x] Straighten the World “What we're building” cards, show the complete active task set, and add readable scope/status detail to every card.
 - [x] Size the World PR and Issue panels to their visible records, move open counts below the lists, put the newest record at the bottom, and add one-click first-person viewing pads.
-- [ ] Stop signed-in mobile World pans from clearing or visually refreshing the WebGL scene.
+- [x] Stop signed-in mobile World pans from clearing or visually refreshing the WebGL scene.
 - [ ] Restore the cached spawn pose before scene hydration and keep Office travel attached to the avatar.
-- [ ] Join the World districts into one continuous city landscape with seamless concrete paths.
-- [ ] Add a visible START HERE progress map from the users area to the centered mirror nodes.
-- [ ] Make Space jump off the roof, check the user out on exit, and allow every chair or bench to seat a visitor.
-- [ ] Add a connected driveable road, car, beach environment, water, horizon, and beach seating.
-- [ ] Move the perimeter bike route outside activity areas while retaining two usable bicycles.
-- [ ] Circle-align the public billboards, retain one leaderboard panel, and remove the obsolete center marker.
-- [ ] Apply a shared GitHub-like interface system across World panels and controls.
-- [ ] Add local daylight, stars, chest time, organization-level stars, and optimized local scene textures.
-- [ ] Finish the canonical World node-delete resolution and cabinet-removal animation regression fix.
+- [x] Join the World districts into one continuous city landscape with seamless concrete paths.
+- [x] Add a visible START HERE progress map from the users area to the centered mirror nodes.
+- [x] Make Space jump off the roof, check the user out on exit, and allow every chair or bench to seat a visitor.
+- [x] Add a connected driveable road, car, beach environment, water, horizon, and beach seating.
+- [x] Move the perimeter bike route outside activity areas while retaining two usable bicycles.
+- [x] Circle-align the public billboards, retain one leaderboard panel, and remove the obsolete center marker.
+- [x] Apply a shared GitHub-like interface system across World panels and controls.
+- [x] Add local daylight, stars, chest time, organization-level stars, and optimized local scene textures.
+- [x] Finish the canonical World node-delete resolution and cabinet-removal animation regression fix.
 - [x] Make the separate World PR and Issue panels single-column while retaining 25 records per independently paginated page.
 - [x] Show explicit verified/unverified email state in the World member panel and give `is_admin` viewers a direct, filtered admin user-detail link.
 - [x] Split the selected-repository World exhibit into left PR and right Issue panels with large open counts, bottom-only pagination, an angled named commit-activity pedestal, and compact per-repository live agent terminals.

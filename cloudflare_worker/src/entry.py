@@ -8558,6 +8558,42 @@ WORLD_QA_CARDS = (
      "below the list. Click the floor pad beneath each board and confirm the "
      "World enters first-person at a distance and pitch that frame the complete "
      "panel; walk away and confirm ordinary first-person controls still work."),
+    ("world-continuous-city-round", "Continuous World city foundation",
+     "Walk between the central nodes, repositories, users, billboards, and "
+     "Office without jumping a gap. Confirm every route rests on one finished "
+     "city foundation with grass and concrete textures and no visible seam."),
+    ("world-start-here-progress", "START HERE destination progress",
+     "Open a fresh World profile and use the START HERE map. Visit the users "
+     "circle, nodes, repository district, Office, and an exploration stop. "
+     "Confirm each bounded step checks once and remains checked after reload."),
+    ("world-roof-jump-seating", "Roof jump and universal seating",
+     "Ride to the Office roof, press Space, clear the perimeter, and confirm "
+     "the avatar returns outdoors with an attendance checkout. Click several "
+     "park benches and chairs and confirm each seats and releases the avatar."),
+    ("world-connected-beach-car", "Connected beach and driveable car",
+     "Follow the eastern road to the beach, drive the car both directions, "
+     "then dismount. Confirm sand, water, the local horizon, and seating load "
+     "without a remote request, invisible wall, or disconnected land."),
+    ("world-perimeter-bike-loop", "Perimeter bicycle route",
+     "Ride both bicycles around the complete outer loop. Confirm the lane "
+     "stays outside activity areas, remains on solid land, and reconnects "
+     "without a narrow bridge or collision stop."),
+    ("world-billboard-circle", "Circular public billboard layout",
+     "Visit the billboard district from the center and perimeter. Confirm all "
+     "public boards form one readable tangent circle, only one leaderboard "
+     "panel exists, and no obsolete center monument remains."),
+    ("world-github-dark-system", "Shared GitHub-dark World controls",
+     "Open the map, settings, account, repository detail, Office task, and "
+     "notice panels. Confirm they share the same dark surfaces, borders, "
+     "button radii, focus states, and readable contrast."),
+    ("world-local-daylight-textures", "Local daylight and optimized textures",
+     "Compare the World at daytime and nighttime or simulate the local clock. "
+     "Confirm sky and sun follow local time, chest time is local, organization "
+     "stars render, and grass, path, and beach textures load from local WebP."),
+    ("world-node-delete-alias-regression", "Canonical World node deletion",
+     "As is_admin, delete a disposable cabinet whose visible machine name, "
+     "account, and node ID differ. Confirm the API resolves the canonical node, "
+     "removes only that cabinet and owner link, and plays the removal effect."),
     ("world-admin-member-detail-email-state",
      "Admin member detail and email state",
      "Open a registered member from their World avatar. Confirm the side "
