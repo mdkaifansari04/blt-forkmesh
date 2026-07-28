@@ -53,6 +53,15 @@
             "sig": "6GKb_pilkdTmBwtCPJkn49VIwlPY_oVlP54mxHNCVcSQymQxiITIqBtf3LwbxWBz6AG80NrCkvyL5YooUTgaDg",
             "ts": 1785204358908,
             "type": "agent"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "09e6d7bf-639f-4f3f-91b9-22fb68b644e5",
+            "sig": "IoigmKY3SK4z-QMCfcyzUYqqzPzDnxz6H5yVBiXBW3w_29OMB7YpHifNK1N8En3QNuwZPvC3Qafti-wy4ZKQDQ",
+            "status": "closed",
+            "ts": 1785204359473,
+            "type": "status"
         }
     ],
     "labels": [
@@ -63,8 +72,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "make it so that if you login as the same user you are combined and all device…",
-    "updatedAt": 1785204358908,
+    "updatedAt": 1785204359473,
     "votes": 0
 }
