@@ -6242,6 +6242,61 @@ forkmesh-world.world-office-active .world-quick-dock {
   text-transform: none;
 }
 
+.world-aquarium-feed-action {
+  position: absolute;
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  transform: translate(-50%, -100%);
+  border: 1px solid rgb(113 239 255 / 0.74);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgb(10 42 48 / 0.94), rgb(5 20 25 / 0.96));
+  box-shadow:
+    0 12px 30px rgb(0 8 12 / 0.4),
+    inset 0 1px rgb(214 253 255 / 0.16);
+  padding: 8px 15px;
+  color: #e3fcff;
+  cursor: pointer;
+  font: 750 0.64rem/1 "ForkMesh Mono", ui-monospace, monospace;
+  letter-spacing: 0.025em;
+  white-space: nowrap;
+  pointer-events: auto;
+  backdrop-filter: blur(10px);
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.world-aquarium-feed-action[hidden] {
+  display: none;
+}
+
+.world-aquarium-feed-action:hover:not(:disabled) {
+  transform: translate(-50%, calc(-100% - 2px));
+  border-color: #b8fbff;
+  box-shadow:
+    0 14px 34px rgb(0 8 12 / 0.46),
+    0 0 22px rgb(72 228 246 / 0.2),
+    inset 0 1px rgb(232 254 255 / 0.22);
+}
+
+.world-aquarium-feed-action:focus-visible {
+  outline: 2px solid var(--world-mint);
+  outline-offset: 3px;
+}
+
+.world-aquarium-feed-action[data-feeding="true"] {
+  border-color: rgb(158 247 198 / 0.62);
+  background:
+    linear-gradient(180deg, rgb(19 52 44 / 0.94), rgb(7 26 23 / 0.96));
+  color: #cffff0;
+  cursor: default;
+}
+
 .world-dashboard-embed {
   min-height: calc(100svh - 3.5rem);
 }

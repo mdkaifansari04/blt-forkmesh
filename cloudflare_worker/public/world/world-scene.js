@@ -13796,6 +13796,21 @@ export function createWorldScene({
   addOfficeFloorSurface(officeInterior, officeLobbyFloorMaterial);
   const officeAquarium = createOfficeMarineAquarium(THREE, animated);
   officeInterior.add(officeAquarium.group);
+  const aquariumFeedAnchor = new THREE.Object3D();
+  aquariumFeedAnchor.name = "forkmesh-office-aquarium-feed-anchor";
+  aquariumFeedAnchor.position.set(2.15, 8.4, 0);
+  officeAquarium.group.add(aquariumFeedAnchor);
+  const aquariumFeedLocalPosition = new THREE.Vector3();
+  let aquariumFeedNearby = false;
+  const aquariumFeedAction = document.createElement("button");
+  aquariumFeedAction.type = "button";
+  aquariumFeedAction.className = "world-aquarium-feed-action";
+  aquariumFeedAction.dataset.worldAquariumFeed = "";
+  aquariumFeedAction.dataset.feeding = "false";
+  aquariumFeedAction.textContent = "Feed the Fishes";
+  aquariumFeedAction.setAttribute("aria-label", "Feed the Fishes");
+  aquariumFeedAction.hidden = true;
+  labelLayer.appendChild(aquariumFeedAction);
 
   function feedOfficeAquarium(time = performance.now()) {
     const started = officeAquarium.feed(time);
@@ -13806,6 +13821,64 @@ export function createWorldScene({
   function getOfficeAquariumState(time = performance.now()) {
     officeAquarium.updateFeeding(time, !reducedMotion);
     return officeAquarium.getFeedingState(time);
+  }
+
+  function handleAquariumFeed(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!aquariumFeedNearby) return;
+    if (feedOfficeAquarium()) {
+      aquariumFeedAction.disabled = true;
+      aquariumFeedAction.dataset.feeding = "true";
+      aquariumFeedAction.textContent = "Fishes are feeding";
+      aquariumFeedAction.setAttribute(
+        "aria-label",
+        "Fishes are feeding",
+      );
+    }
+  }
+  aquariumFeedAction.addEventListener("click", handleAquariumFeed);
+
+  function updateOfficeAquariumProximity(time, rect) {
+    officeAvatarLocalPosition(player, aquariumFeedLocalPosition);
+    aquariumFeedNearby =
+      officeSceneMode === "lobby" &&
+      officeCurrentFloorId === "lobby" &&
+      !officeElevatorRide &&
+      aquariumFeedLocalPosition.x >=
+        OFFICE_AQUARIUM_BOUNDS.maxX + OFFICE_AVATAR_RADIUS - 0.04 &&
+      aquariumFeedLocalPosition.x <=
+        OFFICE_AQUARIUM_BOUNDS.maxX + OFFICE_AVATAR_RADIUS + 4.8 &&
+      aquariumFeedLocalPosition.z >= OFFICE_AQUARIUM_BOUNDS.minZ + 0.4 &&
+      aquariumFeedLocalPosition.z <= OFFICE_AQUARIUM_BOUNDS.maxZ - 0.4;
+    if (!aquariumFeedNearby) {
+      aquariumFeedAction.hidden = true;
+      aquariumFeedAction.style.visibility = "hidden";
+      return;
+    }
+    const feeding = officeAquarium.getFeedingState(time).active;
+    const label = feeding ? "Fishes are feeding" : "Feed the Fishes";
+    aquariumFeedAction.hidden = false;
+    aquariumFeedAction.disabled = feeding;
+    aquariumFeedAction.dataset.feeding = String(feeding);
+    if (aquariumFeedAction.textContent !== label) {
+      aquariumFeedAction.textContent = label;
+      aquariumFeedAction.setAttribute("aria-label", label);
+    }
+    aquariumFeedAnchor.position.z = clamp(
+      aquariumFeedLocalPosition.z - officeAquarium.group.position.z,
+      -11.2,
+      11.2,
+    );
+    updateScreenLabel(
+      THREE,
+      aquariumFeedAnchor,
+      aquariumFeedAction,
+      camera,
+      rect.width,
+      rect.height,
+      0,
+    );
   }
   OFFICE_FLOORS.slice(1).forEach((floor) => {
     const floorGroup = new THREE.Group();
@@ -24166,6 +24239,8 @@ export function createWorldScene({
       event.target instanceof HTMLInputElement ||
       event.target instanceof HTMLTextAreaElement ||
       event.target instanceof HTMLSelectElement ||
+      event.target instanceof HTMLButtonElement ||
+      event.target instanceof HTMLAnchorElement ||
       event.target?.isContentEditable
     ) return;
     if (MOVEMENT_KEYS.has(event.code)) {
@@ -24539,6 +24614,7 @@ export function createWorldScene({
       animateWeather(weather.snow, time, delta, "snow");
     }
     const rect = container.getBoundingClientRect();
+    updateOfficeAquariumProximity(time, rect);
     // main removed the floating landmark labels (adhoc #243); only the player
     // and remote name plates remain, and they are a town-scene concern.
     if (officeSceneMode === "town") {
@@ -24723,6 +24799,7 @@ export function createWorldScene({
     window.removeEventListener("keydown", handleKeyDown);
     window.removeEventListener("keyup", handleKeyUp);
     window.removeEventListener("blur", handleWindowBlur);
+    aquariumFeedAction.removeEventListener("click", handleAquariumFeed);
     touchPointers.clear();
     keys.clear();
     touchKeys.clear();

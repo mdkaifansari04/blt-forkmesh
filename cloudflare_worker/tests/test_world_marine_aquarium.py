@@ -136,3 +136,11 @@ def test_aquarium_feeding_is_timed_and_reuses_scene_animation():
     assert "return { group, feed, updateFeeding, getFeedingState }" in aquarium
     assert "setTimeout(" not in aquarium
     assert "setInterval(" not in aquarium
+
+
+def test_aquarium_feeding_action_is_proximity_scoped_and_accessible():
+    assert 'aquariumFeedAction.type = "button"' in SCENE
+    assert 'aquariumFeedAction.textContent = "Feed the Fishes"' in SCENE
+    assert 'aquariumFeedAction.dataset.worldAquariumFeed = ""' in SCENE
+    assert "updateOfficeAquariumProximity" in SCENE
+    assert 'removeEventListener("click", handleAquariumFeed)' in SCENE
