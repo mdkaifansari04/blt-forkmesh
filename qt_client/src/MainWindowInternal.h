@@ -2696,12 +2696,6 @@ const QString kAutoSwitchToAgentSetting = QStringLiteral("agents/autoSwitchToAge
 // no agent metadata leaves this machine unless the user opts in.
 const QString kPublishAgentsToWebSetting =
     QStringLiteral("agents/publishToWeb");
-// When an idle agent session's branch would conflict with base (the same
-// condition that shows the "Fix conflicts with agent" button), automatically
-// ask the agent to merge base and resolve the conflicts instead of waiting for
-// a manual click. Default on; can be disabled in Settings.
-const QString kAutoFixAgentConflictsSetting =
-    QStringLiteral("agents/autoFixConflicts");
 // When a repo's tests or build fail (the same kind of failure this very task
 // was dispatched to fix), automatically send the failure back to whichever
 // agent session last worked on that branch instead of waiting for a manual

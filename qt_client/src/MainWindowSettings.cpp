@@ -980,22 +980,10 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoAgentOnStallSetting, enabled);
     });
 
-    // When an idle agent's branch would conflict with base — the same check
-    // that shows the "Fix conflicts with agent" button — automatically ask the
-    // agent to merge and resolve it instead of waiting for a manual click.
-    // On by default.
-    auto *autoFixConflictsCheck =
-        new QCheckBox("Auto-fix agent branch conflicts");
-    autoFixConflictsCheck->setChecked(
-        QSettings().value(kAutoFixAgentConflictsSetting, true).toBool());
-    autoFixConflictsCheck->setToolTip(
-        "When an idle agent's branch conflicts with the base branch, "
-        "automatically ask the agent to merge and resolve the conflicts "
-        "(the same action as the \"Fix conflicts with agent\" button). "
-        "On by default; only attempted once per detected conflict.");
-    connect(autoFixConflictsCheck, &QCheckBox::toggled, this, [](bool enabled) {
-        QSettings().setValue(kAutoFixAgentConflictsSetting, enabled);
-    });
+    // Branch conflicts are no longer fixed automatically (adhoc #446): the
+    // agents list flags a conflicting branch with an orange conflict button and
+    // the agent is only steered into merging base when that button is clicked,
+    // so there's no setting here any more.
 
     // When a repo's tests or build fail, automatically send the failure back
     // to the agent that last worked on that branch instead of waiting for a
@@ -1797,7 +1785,6 @@ QWidget *MainWindow::buildSettingsSection()
     agentsCol->addWidget(agentsHint);
     agentsCol->addLayout(agentForm);
     agentsCol->addWidget(autoStallAgentCheck);
-    agentsCol->addWidget(autoFixConflictsCheck);
     agentsCol->addWidget(autoFixFailuresCheck);
     agentsCol->addWidget(jailAgentsCheck);
     agentsCol->addSpacing(6);
