@@ -20,6 +20,17 @@
             "title": "Users unable to navigate the space",
             "ts": 1785000579284,
             "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "this has been fixed ",
+            "id": "773a6e99-bae3-4379-b94b-4d4d5b550a1a",
+            "sig": "H0ZzHedf_QmDbv1voBZYs6vZbVtrldGrhsPqnDvRcGukys95BEQZJLgDCUAXZBtnQ7LX9QseJVt9zV-7saK9Aw",
+            "ts": 1785207478596,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -33,6 +44,6 @@
     "startDate": 0,
     "status": "open",
     "title": "Users unable to navigate the space",
-    "updatedAt": 1785000579284,
+    "updatedAt": 1785207478596,
     "votes": 0
 }
