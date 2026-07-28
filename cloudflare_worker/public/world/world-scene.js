@@ -2512,6 +2512,12 @@ function officeReclaimedWoodTexture(THREE) {
 // completed task moves to a varied slot on the right with a hand-drawn X.
 // Keep the ordering stable so a repaint never makes notes jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
+  { key: "wip:flagship-expanded", task: "Keep flagship repo expanded without sync delay", estimate: "in progress · testing", done: false },
+  { key: "wip:avatar-identity", task: "Immediate flags + verified email pins", estimate: "in progress · testing", done: false },
+  { key: "wip:avatar-faces", task: "Unique faces + compact avatar upload", estimate: "in progress · building", done: false },
+  { key: "wip:repo-work-list", task: "One issue + PR list with big totals", estimate: "in progress · testing", done: false },
+  { key: "wip:top-avatar", task: "Top-right account avatar button", estimate: "in progress · building", done: false },
+  { key: "wip:cabinet-panel-swap", task: "Swap cabinet faces + split agent sides", estimate: "in progress · testing", done: false },
   { key: "task:status-deploy-semaphore", task: "Skip false status incidents during deploys", estimate: "deployed", done: true },
   { key: "task:mobile-home-world", task: "Mobile home live count + Join World", estimate: "deployed", done: true },
   { key: "task:qa-physical-deck", task: "Global physical QA deck + clear swipe arrows", estimate: "deployed", done: true },
@@ -5764,10 +5770,13 @@ function normalizeMirrorAgentTask(task) {
   };
 }
 
-function mirrorAgentTaskPanelTexture(THREE, node) {
+function mirrorAgentTaskPanelTexture(THREE, node, provider = "") {
+  const providerLabel =
+    String(provider || "").toLowerCase() === "codex" ? "CODEX" : "CLAUDE";
   const tasks = (Array.isArray(node?.agentTasks) ? node.agentTasks : [])
     .map(normalizeMirrorAgentTask)
     .filter(Boolean)
+    .filter((task) => task.provider === providerLabel)
     .sort((left, right) => right.updatedAt - left.updatedAt)
     .slice(0, 5);
   return canvasTexture(THREE, 512, 1024, (context, canvas) => {
@@ -5781,7 +5790,7 @@ function mirrorAgentTaskPanelTexture(THREE, node) {
     context.textBaseline = "middle";
     context.font = '800 36px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#f1fff6";
-    context.fillText("AGENT TASKS", 28, 48);
+    context.fillText(`${providerLabel} TASKS`, 28, 48);
     context.font = '700 17px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#73f0ad";
     context.fillText("ENGINEERING TEAM VIEW · CLICK TO OPEN", 28, 82);
@@ -5796,9 +5805,9 @@ function mirrorAgentTaskPanelTexture(THREE, node) {
       context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
       context.fillStyle = "#91a39a";
       context.textAlign = "center";
-      context.fillText("NO AGENT TASKS", canvas.width / 2, 230);
+      context.fillText(`NO ${providerLabel} TASKS`, canvas.width / 2, 230);
       context.font = '600 18px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("Start Claude or Codex from Agents", canvas.width / 2, 270);
+      context.fillText(`Start ${providerLabel} from Agents`, canvas.width / 2, 270);
       return;
     }
 
@@ -5939,21 +5948,20 @@ function createMirrorServerCabinet(THREE, node, id) {
   const panel = new THREE.Mesh(panelGeometry, panelMaterial);
   // Keep a real depth gap in front of the 0.71 cabinet face. A near-coplanar
   // display flickers at oblique camera angles on mobile GPUs.
-  panel.position.set(0, 1.72, 0.735);
-  panel.name = "mirror-server-front-panel";
+  panel.position.set(0, 1.72, -0.735);
+  panel.rotation.y = Math.PI;
+  panel.name = "mirror-server-rear-panel";
   panel.userData.nodeCabinet = { ...node };
   group.add(panel);
-  // A mirrored service panel on the rear keeps the technical display readable
-  // from the third-person camera while the physical front remains oriented
-  // toward the routing-station walkway.
+  // Actions now face the routing-station walkway; technical server detail is
+  // on the opposite face so each cabinet has a distinct operational side.
   const actionsPanelMaterial = new THREE.MeshBasicMaterial({
     map: mirrorActionsPanelTexture(THREE, node),
     toneMapped: false,
   });
   const rearPanel = new THREE.Mesh(panelGeometry, actionsPanelMaterial);
-  rearPanel.position.set(0, 1.72, -0.735);
-  rearPanel.rotation.y = Math.PI;
-  rearPanel.name = "mirror-server-rear-panel";
+  rearPanel.position.set(0, 1.72, 0.735);
+  rearPanel.name = "mirror-server-front-panel";
   rearPanel.userData.nodeCabinet = { ...node };
   group.add(rearPanel);
   const actionStatuses = (Array.isArray(node?.actionRuns)
@@ -5977,21 +5985,21 @@ function createMirrorServerCabinet(THREE, node, id) {
         new THREE.BoxGeometry(0.055, 2.5, 0.04),
         actionPulseMaterial,
       );
-      pulse.position.set(x, 1.72, -0.758);
+      pulse.position.set(x, 1.72, 0.758);
       group.add(pulse);
     }
     group.userData.actionPulseMaterial = actionPulseMaterial;
     group.userData.actionPulseAttention = actionAttention;
   }
 
-  const agentTaskPanelMaterial = new THREE.MeshBasicMaterial({
-    map: mirrorAgentTaskPanelTexture(THREE, node),
-    toneMapped: false,
-  });
   for (const side of [-1, 1]) {
+    const provider = side < 0 ? "claude-code" : "codex";
     const agentTaskPanel = new THREE.Mesh(
       new THREE.PlaneGeometry(1.27, 2.72),
-      agentTaskPanelMaterial,
+      new THREE.MeshBasicMaterial({
+        map: mirrorAgentTaskPanelTexture(THREE, node, provider),
+        toneMapped: false,
+      }),
     );
     agentTaskPanel.position.set(side * 1.125, 1.72, 0);
     agentTaskPanel.rotation.y = side * Math.PI / 2;
@@ -7542,7 +7550,11 @@ function repositoryIssueCardTexture(THREE, issue) {
     context.fillStyle = "#f1fff6";
     context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
-      String(issue.title || `Issue #${issue.number}`).slice(0, 31),
+      clipCanvasText(
+        context,
+        String(issue.title || `Issue #${issue.number}`),
+        640,
+      ),
       52,
       138,
     );
@@ -7560,7 +7572,7 @@ function repositoryIssueCardTexture(THREE, issue) {
     ]
       .filter(Boolean)
       .join(" · ");
-    context.fillText(meta.slice(0, 46), 52, 220);
+    context.fillText(clipCanvasText(context, meta, 640), 52, 220);
     context.fillStyle = issue.metadataAvailable === false ? "#f0c66f" : "#70d99d";
     context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
@@ -7606,7 +7618,11 @@ function repositoryPullCardTexture(THREE, pull) {
     context.textAlign = "left";
     context.fillStyle = "#f1edff";
     context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(String(pull.title || "").slice(0, 43), 52, 138);
+    context.fillText(
+      clipCanvasText(context, String(pull.title || ""), 920),
+      52,
+      138,
+    );
     context.fillStyle = "#b9b3d4";
     context.font = '700 29px "ForkMesh Mono", ui-monospace, monospace';
     const branch = pull.head && pull.base ? `${pull.head} → ${pull.base}` : "";
@@ -7617,14 +7633,14 @@ function repositoryPullCardTexture(THREE, pull) {
     ]
       .filter(Boolean)
       .join(" · ");
-    context.fillText(meta.slice(0, 62), 52, 220);
+    context.fillText(clipCanvasText(context, meta, 920), 52, 220);
     context.fillStyle =
       !metadataAvailable || reviewStatus === "unavailable"
         ? "#f0c66f"
         : "#9e8cff";
     context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
-      mergeability.factors.join(" · ").slice(0, 86),
+      clipCanvasText(context, mergeability.factors.join(" · "), 920),
       52,
       270,
     );
@@ -19702,10 +19718,7 @@ export function createWorldScene({
       avatar.userData.badgeIdentity = enriched;
       syncCountryShirt(THREE, avatar, enriched);
       syncAvatarVerifiedPin(avatar, enriched);
-      if (
-        enriched.faceImage === true &&
-        String(profile?.avatarUrl || "")
-      ) {
+      if (String(profile?.avatarUrl || "")) {
         applyAvatarFaceImage(THREE, avatar, profile.avatarUrl);
       }
     }
@@ -19726,10 +19739,7 @@ export function createWorldScene({
         officeLobbyPlayer,
         officeLobbyPlayer.userData.badgeIdentity,
       );
-      if (
-        officeLobbyPlayer.userData.badgeIdentity?.faceImage === true &&
-        String(profile?.avatarUrl || "")
-      ) {
+      if (String(profile?.avatarUrl || "")) {
         applyAvatarFaceImage(THREE, officeLobbyPlayer, profile.avatarUrl);
       }
       renderAvatarBadge(THREE, officeLobbyPlayer, false);
@@ -20387,6 +20397,7 @@ export function createWorldScene({
           os: String(member.os || "Hidden"),
           status: "sitting around the campfire",
           accountStatus: "Registered",
+          emailVerified: member.emailVerified === true,
           localTime: "",
           activityCategory: "sitting-at-member-fire",
           inputActive: false,

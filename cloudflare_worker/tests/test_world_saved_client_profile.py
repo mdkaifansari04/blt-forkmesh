@@ -88,6 +88,7 @@ def test_client_profile_writes_only_when_the_value_changed():
 def test_public_directory_carries_the_saved_client_profile():
     payload = ast.unparse(_top_level_node("_account_chat_user_payload"))
     assert "_account_world_client_fields(rec)" in payload
+    assert "emailVerified" in payload
     fields = ast.unparse(_top_level_node("_account_world_client_fields"))
     # Read back through the same normalizer, so a record edited outside this
     # endpoint can still only publish the coarse allowlisted values.
@@ -114,6 +115,8 @@ def test_world_client_saves_the_profile_once_per_change():
     # A fingerprint in localStorage keeps an ordinary reload from rewriting
     # the same value.
     assert "CLIENT_PROFILE_KEY" in sync
+    assert "this.memberDirectoryFetchedAt = 0" in sync
+    assert "refreshMemberDirectory(True)" in sync or "refreshMemberDirectory(true)" in sync
     # The privacy toggles all funnel through saveSettings, so hiding a value
     # clears the saved copy immediately.
     saved = APP.split("  saveSettings() {", 1)[1].split("\n  }\n", 1)[0]

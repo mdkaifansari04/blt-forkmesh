@@ -8394,8 +8394,37 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-18"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-19"
 WORLD_QA_CARDS = (
+    ("world-flagship-always-expanded", "Flagship repository opens without mirror delay",
+     "Open a fresh World tab with normal network throttling. Confirm the "
+     "forkmesh/forkmesh repository wheel expands as soon as its tree arrives "
+     "and never collapses to a flat MIRRORS SYNCING disc while mirror status "
+     "metadata converges. Confirm files remain clickable after the mirror "
+     "details finish loading."),
+    ("world-avatar-identity-refresh", "Immediate avatar flags and verified pin",
+     "Join from a newly verified account with country sharing enabled. From a "
+     "second World tab, confirm its country flag appears without reloading and "
+     "a small green verified check pin is visible on the avatar front. Disable "
+     "country sharing and confirm the country is removed without exposing an "
+     "email address."),
+    ("world-unique-uploaded-faces", "Unique generated and uploaded avatar faces",
+     "Compare several users who have no account photo and confirm each gets a "
+     "stable, visibly different generated face after reload. In World settings "
+     "upload a JPEG, WebP, or PNG and confirm it is center-cropped, reported as "
+     "at most 128px/64 KiB, replaces the generated face, and appears in the "
+     "top-right account button at the same size as neighboring controls."),
+    ("world-combined-repository-work-list", "Combined issue and pull-request list",
+     "Open forkmesh/forkmesh in the World. Confirm one board contains both "
+     "issues and pull requests, with both totals large at the top and 25 mixed "
+     "records per page. Scroll and use Prev/Next; confirm issue actions and PR "
+     "status/mergeability still work and no long title or metadata leaves its "
+     "card."),
+    ("world-cabinet-side-layout", "Cabinet operational and agent side layout",
+     "Walk around a live mirror cabinet. Confirm Actions runs face the "
+     "operational walkway, server information is on the opposite face, Claude "
+     "tasks appear only on the left side, and Codex tasks only on the right. "
+     "Open each panel and confirm its existing authorized detail action works."),
     ("world-connected-mixed-landscape", "Connected city and woodland landscape",
      "Walk from Town Square to the repository district and Office. Confirm "
      "both routes are broad continuous pieces of land with no narrow bridge "
@@ -8447,7 +8476,7 @@ WORLD_QA_CARDS = (
     ("mirror-actions-cabinet", "Mirror cabinet Actions runs",
      "Sign in as a repository owner or organization writer and walk behind "
      "the active mirror cabinet. Confirm recent Actions runs show running, "
-     "done, or error plus a bounded redacted log tail. Click the rear panel "
+     "done, or error plus a bounded redacted log tail. Click the Actions face "
      "and confirm the full authorized run list opens. Repeat without write "
      "access and confirm no private run or log data appears."),
     ("executive-office-floor", "Executive Office floor",

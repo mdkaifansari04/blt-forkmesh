@@ -1496,9 +1496,12 @@ def test_repository_map_autoload_is_deduplicated_and_never_overrides_manual_choi
     ]
     assert "this.repositoryManualSelection" in auto
     assert "this.activeRepository" in auto
-    assert "this.world.updateRepositoryGraph?.([], []);" in auto
-    assert "requireComplete: true" in auto
-    assert "expectedCommits: catalogCommits" in auto
+    # The tree preview paints immediately; mirror metadata may converge behind
+    # it without collapsing the flagship wheel into a syncing placeholder.
+    assert "this.world.updateRepositoryGraph?.([], []);" not in auto
+    assert "if (!catalogCommits.size)" not in auto
+    assert "requireComplete: false" in auto
+    assert "catalogCommits.size ? catalogCommits : undefined" in auto
 
     load_map = APP[
         APP.index("  async loadRepositoryMap("):
