@@ -559,19 +559,17 @@ function badgeTexture(
     "over-a-year": "FIRST SEEN 1Y+ AGO",
     hidden: "FIRST SEEN HIDDEN",
   };
-  const statusColors = {
-    online: "#9ef7c6",
-    available: "#9ef7c6",
-    away: "#f7c96b",
-    inactive: "#91a39a",
-    recent: "#91a39a",
-    returning: "#77d9ff",
-    hidden: "#65776f",
-  };
   return canvasTexture(THREE, 512, 512, (context) => {
     context.fillStyle = "#0c2019";
     context.fillRect(0, 0, 512, 512);
-    context.strokeStyle = accent;
+    // The card border itself is the account-activity indicator. This keeps
+    // the signal inside the box and replaces the detached shirt lamp.
+    const activityBorder =
+      String(identity.accountStatus || "Guest") !== "Guest" &&
+      ACTIVITY_LIGHT_COLORS[identity.activityBucket]
+        ? ACTIVITY_LIGHT_COLORS[identity.activityBucket]
+        : accent;
+    context.strokeStyle = activityBorder;
     context.lineWidth = 12;
     context.strokeRect(8, 8, 496, 496);
 
@@ -598,7 +596,9 @@ function badgeTexture(
         ? `${Math.max(0, Number(profile.followers) || 0)} FOLLOWERS · ${
             Math.max(0, Number(profile.following) || 0)
           } FOLLOWING`
-        : "FEDIVERSE · LOADING",
+        : profile.state === "unavailable"
+          ? "FEDIVERSE · UNAVAILABLE"
+          : "FEDIVERSE · LOADING",
       112,
       106,
     );
@@ -719,10 +719,6 @@ function badgeTexture(
       context.fillText(status, 48, 405);
     }
 
-    context.beginPath();
-    context.arc(60, 452, 12, 0, Math.PI * 2);
-    context.fillStyle = statusColors[identity.status] || "#9ef7c6";
-    context.fill();
     context.textAlign = "left";
     context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#b9cfc4";
@@ -734,7 +730,7 @@ function badgeTexture(
         `${ACCOUNT_STATUS_ICONS[account] || "○"} ${account}`,
         identity.localTime,
       ].filter(Boolean).join(" · "),
-      86,
+      52,
       453,
     );
 
@@ -1933,6 +1929,7 @@ function normalizeOfficeMarketingTasks(payload = {}) {
         .filter((task) => task && typeof task === "object" && !Array.isArray(task))
         .slice(0, OFFICE_MARKETING_TASK_LIMIT)
         .map((task) => ({
+          id: boundedOfficeMarketingTaskText(task.id, 64),
           title: boundedOfficeMarketingTaskText(
             task.title,
             42,
@@ -1953,6 +1950,9 @@ function normalizeOfficeMarketingTasks(payload = {}) {
             18,
             "Not started",
           ),
+          canStartStop: task.canStartStop === true,
+          canComplete: task.canComplete === true,
+          canDelete: task.canDelete === true,
         }))
     : [];
   const members = authorized
@@ -1995,14 +1995,20 @@ function normalizeOfficeMarketingTasks(payload = {}) {
         : tasks.length
           ? "ready"
           : "empty";
-  return { authorized, state, tasks, members, attendanceDays };
+  return {
+    authorized, state, tasks,
+    members,
+    attendanceDays,
+    actor: boundedOfficeMarketingTaskText(source.actor, 24).toLowerCase(),
+    canManage: authorized && source.canManage === true,
+  };
 }
 
 function officeMarketingTasksTexture(THREE, payload = {}) {
   const snapshot = normalizeOfficeMarketingTasks(payload);
-  return canvasTexture(THREE, 2048, 768, (context) => {
-    context.clearRect(0, 0, 2048, 768);
-    roundedRect(context, 5, 5, 2038, 758, 18);
+  return canvasTexture(THREE, 2048, 1024, (context) => {
+    context.clearRect(0, 0, 2048, 1024);
+    roundedRect(context, 5, 5, 2038, 1014, 18);
     context.fillStyle = "rgba(5,17,14,0.97)";
     context.fill();
     context.strokeStyle = "#9ef7c6";
@@ -2013,7 +2019,7 @@ function officeMarketingTasksTexture(THREE, payload = {}) {
     context.textBaseline = "middle";
     context.fillStyle = "#f1fff6";
     context.font = '700 54px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText("MARKETING TASKS · FULL WALL", 52, 64);
+    context.fillText("MARKETING TASK BOARD", 52, 64);
     context.fillStyle = "#9ef7c6";
     context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
@@ -2044,66 +2050,96 @@ function officeMarketingTasksTexture(THREE, payload = {}) {
       return;
     }
 
-    const rowsPerColumn = Math.min(8, Math.max(1, snapshot.tasks.length));
-    const columnCount = Math.max(
-      1,
-      Math.ceil(snapshot.tasks.length / rowsPerColumn),
-    );
-    const columnWidth = 1940 / columnCount;
-    const titleSize = Math.max(13, Math.min(27, columnWidth / 17));
-    const metaSize = Math.max(10, Math.min(19, columnWidth / 23));
-    snapshot.tasks.forEach((task, index) => {
-      const column = Math.floor(index / rowsPerColumn);
-      const row = index % rowsPerColumn;
-      const left = 42 + column * columnWidth;
-      const top = 180 + row * 70;
+    let rowsTop = 174;
+    if (snapshot.canManage) {
+      context.fillStyle = "rgba(158,247,198,0.075)";
+      roundedRect(context, 42, 164, 1954, 108, 10);
+      context.fill();
+      context.fillStyle = "#91a39a";
+      context.font = '700 18px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("ASSIGN TO", 68, 190);
+      context.fillStyle = "#f1fff6";
+      context.font = '700 29px "ForkMesh Favorit", system-ui, sans-serif';
+      context.fillText(
+        `@${snapshot.members[0] || snapshot.actor || "marketing"}`,
+        68,
+        232,
+        780,
+      );
+      context.fillStyle = "#9ef7c6";
+      roundedRect(context, 1030, 181, 920, 72, 10);
+      context.fill();
+      context.fillStyle = "#071712";
+      context.textAlign = "center";
+      context.font = '800 29px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("+ ADD MARKETING TASK", 1490, 218);
+      context.textAlign = "left";
+      rowsTop = 298;
+    }
+
+    const visibleTasks = snapshot.tasks.slice(0, snapshot.canManage ? 6 : 7);
+    visibleTasks.forEach((task, index) => {
+      const top = rowsTop + index * 112;
       context.fillStyle = index % 2
         ? "rgba(255,255,255,0.025)"
         : "rgba(158,247,198,0.045)";
-      roundedRect(
-        context,
-        left,
-        top - 27,
-        Math.max(24, columnWidth - 12),
-        62,
-        8,
-      );
+      roundedRect(context, 42, top, 1954, 96, 8);
       context.fill();
       context.fillStyle = "#d9ffea";
-      context.font = `700 ${titleSize}px "ForkMesh Favorit", system-ui, sans-serif`;
-      context.fillText(
-        task.title,
-        left + 14,
-        top - 5,
-        Math.max(12, columnWidth - 112),
-      );
+      context.font = '700 27px "ForkMesh Favorit", system-ui, sans-serif';
+      context.fillText(task.title, 68, top + 30, 940);
       context.fillStyle = "#91a39a";
-      context.font = `400 ${metaSize}px "ForkMesh Mono", ui-monospace, monospace`;
+      context.font = '400 18px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
-        `${task.assignee} · ${task.elapsed}`,
-        left + 14,
-        top + 20,
-        Math.max(12, columnWidth - 28),
+        `@${task.assignee} · ${task.elapsed} · ${task.status.toUpperCase()}`,
+        68,
+        top + 68,
+        930,
       );
-      context.textAlign = "right";
-      context.fillStyle = "#9ef7c6";
-      context.font = `700 ${Math.max(10, metaSize)}px "ForkMesh Mono", ui-monospace, monospace`;
-      context.fillText(
-        task.status.toUpperCase(),
-        left + columnWidth - 22,
-        top - 5,
-        Math.max(12, columnWidth * 0.28),
-      );
+      const controls = [
+        task.canStartStop
+          ? {
+              label: task.status === "active" ? "STOP" : "START",
+              left: 1110,
+              color: "#79d9ff",
+            }
+          : null,
+        task.canComplete && task.status !== "done"
+          ? { label: "DONE", left: 1405, color: "#9ef7c6" }
+          : null,
+        task.canDelete
+          ? { label: "DELETE", left: 1700, color: "#ff9d86" }
+          : null,
+      ].filter(Boolean);
+      controls.forEach((control) => {
+        context.strokeStyle = control.color;
+        context.lineWidth = 3;
+        roundedRect(context, control.left, top + 18, 260, 60, 7);
+        context.stroke();
+        context.fillStyle = control.color;
+        context.textAlign = "center";
+        context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(control.label, control.left + 130, top + 49);
+      });
       context.textAlign = "left";
     });
+    if (snapshot.tasks.length > visibleTasks.length) {
+      context.fillStyle = "#91a39a";
+      context.font = '700 18px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `+ ${snapshot.tasks.length - visibleTasks.length} MORE TASKS · COMPLETE OR DELETE ITEMS TO REVEAL`,
+        52,
+        984,
+      );
+    }
   });
 }
 
 function officeMarketingTasksBlankTexture(THREE) {
-  return canvasTexture(THREE, 2048, 768, (context) => {
-    context.clearRect(0, 0, 2048, 768);
+  return canvasTexture(THREE, 2048, 1024, (context) => {
+    context.clearRect(0, 0, 2048, 1024);
     context.fillStyle = "rgba(5,17,14,0.97)";
-    context.fillRect(0, 0, 2048, 768);
+    context.fillRect(0, 0, 2048, 1024);
   });
 }
 
@@ -2274,23 +2310,25 @@ function officeReclaimedWoodTexture(THREE) {
 // completed task moves to a varied slot on the right with a hand-drawn X.
 // Keep the ordering stable so a repaint never makes notes jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
-  { key: "task:status-deploy-semaphore", task: "Skip false status incidents during deploys", estimate: "testing", done: false },
-  { key: "task:mobile-home-world", task: "Mobile home live count + Join World", estimate: "testing", done: false },
-  { key: "task:qa-physical-deck", task: "Physical swipe QA deck + account totals", estimate: "testing", done: false },
-  { key: "task:build-send-qa", task: "Done → send build sticky to QA", estimate: "building", done: false },
-  { key: "task:member-unified-card", task: "Unified identity + Fedi + wallet QR card", estimate: "queued", done: false },
+  { key: "task:status-deploy-semaphore", task: "Skip false status incidents during deploys", estimate: "deployed", done: true },
+  { key: "task:mobile-home-world", task: "Mobile home live count + Join World", estimate: "deployed", done: true },
+  { key: "task:qa-physical-deck", task: "Global physical QA deck + clear swipe arrows", estimate: "deployed", done: true },
+  { key: "task:build-send-qa", task: "Done → send build sticky to QA", estimate: "deployed", done: true },
+  { key: "task:member-unified-card", task: "Unified identity + Fedi + wallet QR card", estimate: "deployed", done: true },
   { key: "task:mirror2-agent-claim", task: "Provision mirror2 agent auth + claim jobs", estimate: "human action", done: false },
   { key: "task:review-open-prs", task: "Review every open PR + disposition", estimate: "queued", done: false },
   { key: "task:repo-social-orbits", task: "Test follower + contributor avatar orbits", estimate: "testing", done: false },
   { key: "task:issue-agent-models", task: "Issue buttons for Claude/Codex model choice", estimate: "testing", done: false },
   { key: "task:qt-agent-installers", task: "Qt mirror Claude + Codex installers", estimate: "testing", done: false },
   { key: "task:marketing-room-wall", task: "Marketing wall, desks, calendar + table", estimate: "testing", done: false },
-  { key: "task:avatar-team-badges", task: "Team badges on each avatar's left arm", estimate: "building", done: false },
+  { key: "task:avatar-team-badges", task: "Team badges on each avatar's left arm", estimate: "deployed", done: true },
   { key: "task:marketing-proof", task: "Private Marketing proof-of-work links", estimate: "building", done: false },
-  { key: "task:deploy-lifecycle", task: "Live deploy spinner + ready refresh button", estimate: "testing", done: false },
-  { key: "task:elevator-camera-lock", task: "Elevator button camera lock + release", estimate: "testing", done: false },
-  { key: "task:build-board-nearby", task: "Refresh task wall when a player approaches", estimate: "building", done: false },
+  { key: "task:deploy-lifecycle", task: "Live deploy spinner + ready refresh button", estimate: "deployed", done: true },
+  { key: "task:elevator-camera-lock", task: "Elevator button camera lock + release", estimate: "deployed", done: true },
+  { key: "task:build-board-nearby", task: "Refresh task wall when a player approaches", estimate: "deployed", done: true },
   { key: "task:twitter-feed", task: "ForkMesh X posts on the Twitter board", estimate: "verifying feed", done: false },
+  { key: "done:fresh-code-surge", task: "Restore verified Fresh Code beam + shockwave", estimate: "deployed", done: true },
+  { key: "done:chest-fediverse", task: "Fix chest Fedi load + activity border", estimate: "deployed", done: true },
   { key: "done:follower-orbit-visible", task: "Visible Mastodon follower orbit", estimate: "deployed", done: true },
   { key: "done:bot-full-status", task: "Engineering bot status + controls", estimate: "deployed", done: true },
   { key: "done:agent-diagnostics", task: "Stalled agent diagnostics → Human TODO", estimate: "deployed", done: true },
@@ -2427,12 +2465,25 @@ function worldTaskBulletinTexture(THREE, source = WORLD_TASK_BULLETIN_ITEMS) {
       if (!item.done) {
         context.fillStyle = "#22634f";
         context.font =
-          '800 25px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+          '800 22px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
         context.fillText(
-          `◌ IN PROGRESS · ${String(item.estimate || "estimating")}`,
+          `◌ IN PROGRESS · ${String(
+            item.estimate || "estimating",
+          ).toUpperCase()}`,
           -width / 2 + 16,
           height / 2 - 25,
         );
+        roundedRect(context, width / 2 - 184, height / 2 - 48, 168, 36, 12);
+        context.fillStyle = "#1b6c4f";
+        context.fill();
+        context.strokeStyle = "#0b3a2a";
+        context.lineWidth = 2;
+        context.stroke();
+        context.fillStyle = "#effff7";
+        context.textAlign = "center";
+        context.font =
+          '900 19px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+        context.fillText("DONE → QA", width / 2 - 100, height / 2 - 25);
       }
       context.restore();
     };
@@ -2449,6 +2500,14 @@ function worldQaCardTexture(THREE, snapshot = {}) {
   const stats = snapshot?.stats && typeof snapshot.stats === "object"
     ? snapshot.stats
     : {};
+  const globalStats =
+    snapshot?.globalStats && typeof snapshot.globalStats === "object"
+      ? snapshot.globalStats
+      : {};
+  const currentGlobal =
+    current?.global && typeof current.global === "object"
+      ? current.global
+      : {};
   const total = Math.max(0, Number(stats.total) || 0);
   const currentIndex = Math.max(0, Number(snapshot?.currentIndex) || 0);
   return canvasTexture(THREE, 1200, 1050, (context) => {
@@ -2518,6 +2577,18 @@ function worldQaCardTexture(THREE, snapshot = {}) {
       42,
       6,
     );
+    context.fillStyle = "#365c50";
+    context.font = '800 23px "ForkMesh Mono", ui-monospace, monospace';
+    context.textAlign = "center";
+    context.fillText(
+      current?.verdict
+        ? `YOUR RESULT · ${String(current.verdict).toUpperCase()}`
+        : `THIS CARD · ${Number(currentGlobal.pass) || 0} PASS · ${
+            Number(currentGlobal.fail) || 0
+          } FAIL · ${Number(currentGlobal.unsure) || 0} UNSURE`,
+      600,
+      810,
+    );
     context.fillStyle = "#10251e";
     roundedRect(context, 62, 868, 1076, 128, 24);
     context.fill();
@@ -2525,15 +2596,21 @@ function worldQaCardTexture(THREE, snapshot = {}) {
     context.fillStyle = "#9ef7c6";
     context.font = '900 30px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
-      `PASS ${Number(stats.pass) || 0}  ·  FAIL ${
-        Number(stats.fail) || 0
-      }  ·  UNSURE ${Number(stats.unsure) || 0}`,
+      `GLOBAL · PASS ${Number(globalStats.pass) || 0}  ·  FAIL ${
+        Number(globalStats.fail) || 0
+      }  ·  UNSURE ${Number(globalStats.unsure) || 0}`,
       600,
       922,
     );
     context.fillStyle = "#c9e7da";
     context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("GRAB · ← FAIL · PASS → · ↓ UNSURE", 600, 966);
+    context.fillText(
+      `${Number(globalStats.testers) || 0} TESTERS · YOUR CARDS ${
+        Number(stats.reviewed) || 0
+      }/${total} · GRAB + SWIPE`,
+      600,
+      966,
+    );
   });
 }
 
@@ -3133,6 +3210,7 @@ function sanitizedOrgTeamAssignment(remote) {
   return {
     org,
     member,
+    canManage: assignment.canManage === true,
     assigned: Math.max(0, Math.min(total, Number(assignment.assigned) || 0)),
     total,
     teams: (Array.isArray(assignment.teams) ? assignment.teams : [])
@@ -3171,7 +3249,10 @@ function createAvatarTeamBadges(THREE, assignment) {
         depthWrite: true,
       }),
     );
-    badge.position.set(0, 0.43 - index * 0.19, 0.166);
+    // Avatar fronts face local -Z. Mount every team mark on that same visible
+    // face of the anatomical left arm, stacked vertically like cloth patches.
+    badge.position.set(0, 0.43 - index * 0.19, -0.166);
+    badge.rotation.y = Math.PI;
     badge.renderOrder = 3;
     group.add(badge);
   });
@@ -3808,20 +3889,17 @@ const ANTENNA_STALK_COLOR = "#1aa856";
 const ANTENNA_BLINK_MIN_HZ = 0.9;
 const ANTENNA_BLINK_MAX_HZ = 5.4;
 
-// Chest activity light: one colour per coarse account-recency bucket from the
-// server ("active within …"). The freshest bucket breathes softly in
-// animateAvatarActivity; every older bucket holds a steady colour, stepping
-// bright green → dim green → green-orange → green-red → orange → red → grey.
+// Unified-card border: one darker, node-light-style colour per coarse
+// account-recency bucket from the server ("active within …").
 const ACTIVITY_LIGHT_COLORS = Object.freeze({
-  hour: "#3ce97f",
-  "5h": "#2e8054",
-  "24h": "#94b23a",
-  "3d": "#b1892f",
-  "5d": "#e0762c",
-  "10d": "#d63b30",
-  stale: "#767c85",
+  hour: "#168a4d",
+  "5h": "#205f43",
+  "24h": "#607b2e",
+  "3d": "#806628",
+  "5d": "#a95525",
+  "10d": "#9e302b",
+  stale: "#555f5b",
 });
-const ACTIVITY_LIGHT_BREATH_HZ = 0.33;
 
 const AVATAR_SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
@@ -4125,20 +4203,6 @@ function createAvatar(THREE, identity, options = {}) {
   antenna.visible = identity.inputActive === true;
   group.add(antenna);
 
-  // Account activity light: a small lamp pinned high on the chest whose
-  // colour steps through ACTIVITY_LIGHT_COLORS as the account's coarse
-  // recency bucket ages. syncAvatarActivity keeps it current and it stays
-  // dark on anonymous guests.
-  const activityLight = new THREE.Mesh(
-    new THREE.SphereGeometry(0.055, 14, 12),
-    new THREE.MeshBasicMaterial({ color: ACTIVITY_LIGHT_COLORS.hour }),
-  );
-  activityLight.name = "account-activity-light";
-  // Avatar fronts face -Z; half-sunk into the torso above the badge corner.
-  activityLight.position.set(-0.4, 2.82, -0.31);
-  activityLight.visible = false;
-  group.add(activityLight);
-
   // Each leg is a hip pivot carrying a thigh, and a knee pivot carrying the
   // shin plus that leg's shoe. Standing (every pitch at zero) the two segments
   // stack into the same block the single-box leg used to be, but the joints let
@@ -4171,7 +4235,7 @@ function createAvatar(THREE, identity, options = {}) {
   const rightLeg = rightLegRig.hip;
 
   const badge = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.76, 0.76),
+    new THREE.PlaneGeometry(0.88, 0.88),
     new THREE.MeshBasicMaterial({
       map: badgeTexture(
         THREE,
@@ -4182,8 +4246,8 @@ function createAvatar(THREE, identity, options = {}) {
       transparent: false,
     }),
   );
-  badge.scale.set(1, 1.14, 1);
-  badge.position.set(0, 2.32, -0.316);
+  badge.scale.set(1, 1.12, 1);
+  badge.position.set(0, 2.3, -0.316);
   badge.rotation.y = Math.PI;
   badge.userData.chestBadge = true;
   group.add(badge);
@@ -4208,7 +4272,7 @@ function createAvatar(THREE, identity, options = {}) {
     skin,
     antenna,
     antennaBulb,
-    activityLight,
+    activityLight: null,
     activityBucket: "",
     walletChip: null,
     walletKey: "",
@@ -4452,22 +4516,11 @@ function syncAvatarActivity(avatar, identity) {
   avatar.userData.inputActive = active;
   avatar.userData.accountStatus = identity.accountStatus || "Guest";
   if (avatar.userData.antenna) avatar.userData.antenna.visible = active;
-  const light = avatar.userData.activityLight;
-  if (light) {
-    const bucket = ACTIVITY_LIGHT_COLORS[identity.activityBucket]
-      ? String(identity.activityBucket)
-      : "";
-    avatar.userData.activityBucket = bucket;
-    // The light reads account recency, so it stays dark on anonymous guests.
-    light.visible =
-      Boolean(bucket) && avatar.userData.accountStatus !== "Guest";
-    if (light.visible) {
-      // The "hour" breath overrides colour and scale every frame; older
-      // buckets hold their steady step here.
-      light.material.color.set(ACTIVITY_LIGHT_COLORS[bucket]);
-      light.scale.setScalar(1);
-    }
-  }
+  avatar.userData.activityBucket = ACTIVITY_LIGHT_COLORS[
+    identity.activityBucket
+  ]
+    ? String(identity.activityBucket)
+    : "";
 }
 
 function renderAvatarBadge(THREE, avatar, remote = false) {
@@ -4521,23 +4574,6 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
     const cycle = (time * 0.001 * hz + avatar.userData.phase) % 1;
     const lit = reducedMotion || cycle < 0.5;
     bulb.material.color.set(lit ? ANTENNA_LIT_COLOR : ANTENNA_DARK_COLOR);
-  }
-  const light = avatar.userData.activityLight;
-  if (light?.visible && avatar.userData.activityBucket === "hour") {
-    // Accounts active within the hour breathe: a slow sine swell rather than
-    // the antenna's hard blink, easing between dimmed and full green.
-    const breath = reducedMotion
-      ? 1
-      : 0.5 +
-        0.5 *
-          Math.sin(
-            time * 0.001 * ACTIVITY_LIGHT_BREATH_HZ * Math.PI * 2 +
-              avatar.userData.phase,
-          );
-    light.material.color
-      .set(ACTIVITY_LIGHT_COLORS.hour)
-      .multiplyScalar(0.55 + 0.45 * breath);
-    light.scale.setScalar(0.92 + 0.16 * breath);
   }
   const inactiveFor = avatar.userData.inactiveSince
     ? Math.max(0, time - avatar.userData.inactiveSince)
@@ -9755,6 +9791,7 @@ export function createWorldScene({
   onOfficeProximity = () => {},
   onOfficeEnter = () => {},
   onOfficeTaskBoardSelect = () => {},
+  onOfficeTaskWallAction = () => {},
   onOfficeMeetingBoardSelect = () => {},
   onOfficeRooftopLaptopSelect = () => {},
   onWorldBulletinSelect = () => {},
@@ -9767,6 +9804,7 @@ export function createWorldScene({
   onBuildBoardNearby = () => {},
   onBuildBoardReorder = () => {},
   onBuildIssueAssign = () => {},
+  onBuildSendQa = () => {},
   onQaVerdict = () => {},
   onRepositoryIssueOpen = () => {},
   onRendererStateChange = () => {},
@@ -11023,6 +11061,10 @@ export function createWorldScene({
   const agentBotStates = new Map();
   let agentBotAccessAllowed = false;
   let repositoryIssueAgentPicker = null;
+  // A mirror-push socket frame is only a doorbell. It may arm a short-lived
+  // expectation, but the visual effect is released only after the next signed
+  // catalog record confirms that exact node and commit prefix.
+  const pendingMirrorPushEffects = new Map();
   for (const config of WORLD_AGENT_BOTS) {
     const avatar = new THREE.Group();
     avatar.name = `${config.id}-agent-droid`;
@@ -11826,12 +11868,12 @@ export function createWorldScene({
   const officeMarketingTaskBoard = new THREE.Group();
   officeMarketingTaskBoard.name = "forkmesh-office-marketing-task-board";
   officeMarketingTaskBoard.position.set(
-    0,
-    officeFloorY("marketing") + 7.25,
+    -24,
+    officeFloorY("marketing") + 6.4,
     -OFFICE_FRONT_Z + 0.55,
   );
   const officeMarketingTaskBoardFrame = new THREE.Mesh(
-    new THREE.BoxGeometry(124, 13.8, 0.18),
+    new THREE.BoxGeometry(18.5, 11.4, 0.18),
     makeMaterial(THREE, "#315b52", {
       metalness: 0.34,
       roughness: 0.48,
@@ -11842,9 +11884,12 @@ export function createWorldScene({
   officeMarketingTaskBoardFrame.name =
     "forkmesh-office-marketing-task-board-frame";
   officeMarketingTaskBoardFrame.userData.officeFloorId = "marketing";
+  officeMarketingTaskBoardFrame.userData.interactive =
+    "office-marketing-task-board";
+  interactive.push(officeMarketingTaskBoardFrame);
   officeMarketingTaskBoard.add(officeMarketingTaskBoardFrame);
   const officeMarketingTaskBoardFace = new THREE.Mesh(
-    new THREE.PlaneGeometry(123.4, 13.24),
+    new THREE.PlaneGeometry(18.12, 11.02),
     new THREE.MeshBasicMaterial({
       map: officeMarketingTasksBlankTexture(THREE),
     }),
@@ -11853,6 +11898,9 @@ export function createWorldScene({
     "forkmesh-office-marketing-task-board-face";
   officeMarketingTaskBoardFace.position.z = 0.101;
   officeMarketingTaskBoardFace.userData.officeFloorId = "marketing";
+  officeMarketingTaskBoardFace.userData.interactive =
+    "office-marketing-task-board";
+  interactive.push(officeMarketingTaskBoardFace);
   officeMarketingTaskBoard.add(officeMarketingTaskBoardFace);
   officeMarketingTaskBoard.userData.face = officeMarketingTaskBoardFace;
   officeMarketingTaskBoard.userData.taskState = "vacant";
@@ -12246,6 +12294,16 @@ export function createWorldScene({
     const index = row * 3 + column;
     return index < count ? index : -1;
   }
+
+  function buildBoardSendQaHit(uv, index) {
+    if (!uv || index < 0) return false;
+    const fromTop = 1 - clamp(Number(uv.y) || 0, 0, 1);
+    const rowOffset = (fromTop - 0.17) % 0.205;
+    const columnOffset =
+      (clamp(Number(uv.x) || 0, 0, 0.999) * 3) % 1;
+    return rowOffset >= 0.125 && rowOffset <= 0.185 &&
+      columnOffset >= 0.62;
+  }
   world.add(officeTaskBulletin);
   registerMovableObject("office-task-bulletin", officeTaskBulletin);
 
@@ -12289,12 +12347,12 @@ export function createWorldScene({
   const qaSwipeCues = new THREE.Group();
   qaSwipeCues.name = "forkmesh-world-qa-swipe-cues";
   for (const cue of [
-    { name: "fail", arrow: "←", label: "FAIL", color: "#ff858a", x: -5.45, y: 0 },
-    { name: "pass", arrow: "→", label: "PASS", color: "#73e6a8", x: 5.45, y: 0 },
-    { name: "unsure", arrow: "↓", label: "UNSURE", color: "#9ba7a1", x: 0, y: -4.62 },
+    { name: "fail", arrow: "←", label: "FAIL", color: "#ff3f46", x: -5.65, y: 0 },
+    { name: "pass", arrow: "→", label: "PASS", color: "#27df78", x: 5.65, y: 0 },
+    { name: "unsure", arrow: "↓", label: "UNSURE", color: "#aeb7b2", x: 0, y: -4.82 },
   ]) {
     const arrow = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.25, 1.14),
+      new THREE.PlaneGeometry(3.15, 1.62),
       new THREE.MeshBasicMaterial({
         map: worldQaArrowTexture(
           THREE,
@@ -12313,7 +12371,7 @@ export function createWorldScene({
     arrow.renderOrder = 48;
     qaSwipeCues.add(arrow);
   }
-  qaSwipeCues.visible = false;
+  qaSwipeCues.visible = true;
   worldQaBoard.add(qaSwipeCues);
   interactive.push(qaBoardFace);
   world.add(worldQaBoard);
@@ -12334,10 +12392,14 @@ export function createWorldScene({
       clearTimeout(qaCueTimer);
       qaCueTimer = 0;
     }
-    qaSwipeCues.visible = visible === true;
+    // These large red/green/grey directions stay visible for every tester.
+    // Grabbing the card enlarges them briefly without hiding them afterward.
+    qaSwipeCues.visible = true;
+    qaSwipeCues.scale.setScalar(visible ? 1.08 : 1);
     if (visible && linger) {
       qaCueTimer = setTimeout(() => {
-        qaSwipeCues.visible = false;
+        qaSwipeCues.visible = true;
+        qaSwipeCues.scale.setScalar(1);
         qaCueTimer = 0;
       }, 1800);
     }
@@ -14143,6 +14205,53 @@ export function createWorldScene({
     return renderOfficeMarketingTasks();
   }
 
+  function marketingTaskWallAction(uv) {
+    if (
+      !uv ||
+      !officeMarketingRoomOccupied() ||
+      !officeMarketingTaskSnapshot.authorized
+    ) {
+      return null;
+    }
+    const x = clamp(Number(uv.x) || 0, 0, 1) * 2048;
+    const y = (1 - clamp(Number(uv.y) || 0, 0, 1)) * 1024;
+    const snapshot = officeMarketingTaskSnapshot;
+    if (snapshot.canManage && y >= 164 && y <= 272) {
+      if (x < 1010 && snapshot.members.length) {
+        const first = snapshot.members.shift();
+        snapshot.members.push(first);
+        officeMarketingTaskBoard.userData.taskKey = "";
+        renderOfficeMarketingTasks();
+        return { action: "select-assignee", assignee: snapshot.members[0] };
+      }
+      if (x >= 1010) {
+        return {
+          action: "create",
+          assignee: snapshot.members[0] || snapshot.actor,
+        };
+      }
+    }
+    const rowsTop = snapshot.canManage ? 298 : 174;
+    const row = Math.floor((y - rowsTop) / 112);
+    const tasks = snapshot.tasks.slice(0, snapshot.canManage ? 6 : 7);
+    const task = tasks[row];
+    if (!task || y < rowsTop || y > rowsTop + row * 112 + 96) return null;
+    let action = "";
+    if (x >= 1110 && x <= 1370 && task.canStartStop) {
+      action = task.status === "active" ? "stop" : "start";
+    } else if (
+      x >= 1405 &&
+      x <= 1665 &&
+      task.canComplete &&
+      task.status !== "done"
+    ) {
+      action = "complete";
+    } else if (x >= 1700 && x <= 1960 && task.canDelete) {
+      action = "delete";
+    }
+    return action ? { action, id: task.id } : null;
+  }
+
   function updateWorldBulletin(events = []) {
     const face = worldBulletin.getObjectByName("forkmesh-world-bulletin-face");
     if (!face?.material) return false;
@@ -15920,14 +16029,18 @@ export function createWorldScene({
     avatar.userData.chestRegistered = true;
     if (!avatar.userData.fediverseProfile) {
       avatar.userData.fediverseProfile = { state: "loading" };
-      onFediverseProfile({
+      const target = {
         peerId: String(peerId || ""),
         name: String(avatar.userData.badgeIdentity?.name || ""),
         accountStatus: String(
           avatar.userData.badgeIdentity?.accountStatus || "Guest",
         ),
         self: String(peerId || "") === identity.id,
-      });
+      };
+      // The local player registers while createWorldScene is still returning.
+      // Defer one microtask so world.js has stored the scene handle before a
+      // fast cached profile response tries to paint this card.
+      queueMicrotask(() => onFediverseProfile(target));
     }
   }
 
@@ -16118,35 +16231,57 @@ export function createWorldScene({
       assignment?.member || "",
       assignment?.assigned ?? -1,
       assignment?.total ?? -1,
+      assignment?.canManage === true,
       ...(assignment?.teams || []),
     ]);
+    const hasExpectedControl =
+      assignment?.canManage !== true ||
+      Boolean(avatar?.userData?.orgTeamControls);
+    const hasExpectedBadges =
+      !assignment?.teams?.length || Boolean(avatar?.userData?.teamBadges);
     if (
       orgTeamControlKeys.get(peerId) === key &&
-      avatar?.userData?.orgTeamControls
+      hasExpectedControl &&
+      hasExpectedBadges
     ) {
       return;
     }
     removeRemoteOrgTeamControl(avatar, peerId);
     if (!assignment) return;
 
-    const controls = createAvatarOrgTeamControl(THREE, assignment);
-    controls.children.forEach((control) => {
-      orgTeamActions.set(control, {
-        org: assignment.org,
-        member: assignment.member,
-        peerId,
-        name,
+    if (assignment.canManage) {
+      const controls = createAvatarOrgTeamControl(THREE, assignment);
+      controls.children.forEach((control) => {
+        orgTeamActions.set(control, {
+          org: assignment.org,
+          member: assignment.member,
+          peerId,
+          name,
+        });
+        interactive.push(control);
       });
-      interactive.push(control);
-    });
-    avatar.add(controls);
-    avatar.userData.orgTeamControls = controls;
+      avatar.add(controls);
+      avatar.userData.orgTeamControls = controls;
+    }
     if (assignment.teams.length && avatar.userData.leftArm) {
       const teamBadges = createAvatarTeamBadges(THREE, assignment);
       avatar.userData.leftArm.add(teamBadges);
       avatar.userData.teamBadges = teamBadges;
     }
     orgTeamControlKeys.set(peerId, key);
+  }
+
+  function setLocalOrgTeam(orgTeam) {
+    const localRecord = {
+      id: identity.id,
+      name: identity.name,
+      accountStatus: identity.accountStatus || "Registered",
+      orgTeam,
+    };
+    syncRemoteOrgTeamControl(player, localRecord);
+    if (officeLobbyPlayer) {
+      syncRemoteOrgTeamControl(officeLobbyPlayer, localRecord);
+    }
   }
 
   // Fill in the directory-only rows for an avatar's badge. A guest can type
@@ -17004,7 +17139,24 @@ export function createWorldScene({
         cameraFocus.y += 1.65;
       }
       const nextCommit = String(node?.commit || "");
-      if (priorCommit && nextCommit && nextCommit !== priorCommit) {
+      const pendingPush = pendingMirrorPushEffects.get(
+        nodeName.toLowerCase(),
+      );
+      const verifiedPendingPush = Boolean(
+        pendingPush &&
+        pendingPush.expiresAt > Date.now() &&
+        nextCommit.toLowerCase().startsWith(pendingPush.commit),
+      );
+      if (pendingPush && pendingPush.expiresAt <= Date.now()) {
+        pendingMirrorPushEffects.delete(nodeName.toLowerCase());
+      }
+      if (
+        verifiedPendingPush ||
+        (priorCommit && nextCommit && nextCommit !== priorCommit)
+      ) {
+        if (verifiedPendingPush) {
+          pendingMirrorPushEffects.delete(nodeName.toLowerCase());
+        }
         spawnPushSurge(cabinet.position);
       }
       const nextServed = mirrorServedTotal(node);
@@ -17021,6 +17173,22 @@ export function createWorldScene({
       removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
+  }
+
+  function armMirrorPushEffect(nodeName, commitPrefix) {
+    const node = String(nodeName || "").trim().toLowerCase();
+    const commit = String(commitPrefix || "").trim().toLowerCase();
+    if (
+      !/^[a-z0-9][a-z0-9.-]{0,79}$/.test(node) ||
+      !/^[0-9a-f]{12}$/.test(commit)
+    ) {
+      return false;
+    }
+    pendingMirrorPushEffects.set(node, {
+      commit,
+      expiresAt: Date.now() + 15_000,
+    });
+    return true;
   }
 
   function relayoutNetworkNodes() {
@@ -20006,6 +20174,10 @@ export function createWorldScene({
             source,
             key: String(list[index].key),
             index,
+            sendQa:
+              source === "task" &&
+              buildBoardState.canManage &&
+              buildBoardSendQaHit(boardHit.uv, index),
             canDrag:
               buildBoardState.canManage &&
               !(source === "issue" && list[index].assigned),
@@ -20314,9 +20486,26 @@ export function createWorldScene({
     if (draggedBuildCard) {
       const card = draggedBuildCard;
       draggedBuildCard = null;
+      const task = buildBoardState.items.find(
+        (item) => item.key === card.key,
+      );
       const issue = buildBoardState.issues.find(
         (item) => item.key === card.key,
       );
+      if (
+        !cancelled &&
+        card.source === "task" &&
+        card.sendQa &&
+        !card.moved
+      ) {
+        onBuildSendQa({
+          key: card.key,
+          title: String(task?.task || "Completed task").slice(0, 160),
+        });
+        lastGestureDragged = false;
+        pointerGestureMoved = false;
+        return;
+      }
       if (!cancelled && card.source === "issue" && !card.moved) {
         onRepositoryIssueOpen({
           owner: String(issue?.owner || "forkmesh").slice(0, 40),
@@ -20382,10 +20571,21 @@ export function createWorldScene({
       officeSceneMode !== "town" &&
       hit?.object?.userData?.interactive === "office-marketing-task-board"
     ) {
-      onOfficeTaskBoardSelect({
-        state: officeMarketingTaskBoard.userData.taskState,
-        count: officeMarketingTaskBoard.userData.taskCount,
-      });
+      const action =
+        hit.object === officeMarketingTaskBoard.userData.face
+          ? marketingTaskWallAction(hit.uv)
+          : null;
+      if (action?.action === "select-assignee") {
+        return;
+      }
+      if (action) {
+        onOfficeTaskWallAction(action);
+      } else {
+        onOfficeTaskBoardSelect({
+          state: officeMarketingTaskBoard.userData.taskState,
+          count: officeMarketingTaskBoard.userData.taskCount,
+        });
+      }
       return;
     }
     if (hit?.object?.userData?.interactive === "world-bulletin-scroll-up") {
@@ -21689,6 +21889,7 @@ export function createWorldScene({
       })),
     }),
     setRemotePlayers,
+    setLocalOrgTeam,
     setAvatarFediverseProfile,
     setAvatarFaceImage,
     updateArrivalStats,
@@ -21696,6 +21897,7 @@ export function createWorldScene({
     updateReferralLeaderboard,
     updateSiteReferrerLeaderboard,
     updateNetworkNodes,
+    armMirrorPushEffect,
     focusNetworkNode,
     updateFederatedInstances,
     updateBots,
