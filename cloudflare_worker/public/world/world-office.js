@@ -282,6 +282,13 @@ export function createWorldOfficeController({
     stopAttendanceHeartbeat();
     attendanceHeartbeat = window.setInterval(() => {
       if (!active || document.hidden || !attendanceAccount) return;
+      // The scene owns the physical building boundary. A delayed doorway
+      // callback must never let general World time leak into Office Hours.
+      if (world.isOfficeInterior?.() === false) {
+        stopAttendanceHeartbeat();
+        void recordAttendance("out");
+        return;
+      }
       void recordAttendance("heartbeat");
     }, OFFICE_ATTENDANCE_HEARTBEAT_MS);
   }

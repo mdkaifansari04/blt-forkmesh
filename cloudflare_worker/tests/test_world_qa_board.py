@@ -245,6 +245,10 @@ def test_world_has_one_direct_physical_card_with_swipes_and_stats():
         'return { action: "route", target: "issues" }',
         "SEND TO TODO",
         "SEND TO ISSUES",
+        "QA RESULT DETAIL · REVIEW OR RETURN",
+        "BACK TO CARDS",
+        'return { action: "verdict", verdict: "pass" }',
+        'return { action: "back" }',
         "onQaAction(qaAction)",
     ):
         assert contract in SCENE

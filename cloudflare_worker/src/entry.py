@@ -7077,8 +7077,8 @@ async def office_attendance_handler(env, request):
             env,
             "INSERT OR IGNORE INTO world_office_attendance "
             "(visit_id, account_bi, account_name, in_at, out_at, "
-            "last_seen_at, floor_id) "
-            "VALUES (?, ?, ?, ?, NULL, ?, ?)",
+            "last_seen_at, floor_id, visit_scope) "
+            "VALUES (?, ?, ?, ?, NULL, ?, ?, 'office')",
             new_world_peer_id(),
             str(account_bi),
             world_protocol.clean_display_name(
@@ -8047,6 +8047,7 @@ class _OfficeMarketingTasksRuntime:
                 "SELECT in_at,out_at,last_seen_at "
                 "FROM world_office_attendance "
                 "WHERE account_bi=? "
+                "AND visit_scope='office' "
                 "AND in_at<? "
                 "AND COALESCE(out_at,NULLIF(last_seen_at,0),?)>=? "
                 "ORDER BY in_at ASC LIMIT 500",
@@ -8435,6 +8436,27 @@ WORLD_QA_CARDS = (
      "Use the physical Cards, Pass, Fail, and Unsure tabs. Page the shared task "
      "lists, select a task, then as an authorized maintainer send one back to "
      "What we're building and another into forkmesh/forkmesh issues."),
+    ("qa-history-detail", "QA history full-card review",
+     "Open Pass, Fail, or Unsure, select a prior task, and confirm its full "
+     "title and test instructions appear. Change its verdict with the large "
+     "buttons, then use Back to Cards and confirm shared totals update."),
+    ("elevator-front-camera", "Front-facing elevator camera and controls",
+     "Enter the elevator and confirm its upper-corner security-camera view "
+     "frames the large high-contrast buttons on the right wall while looking "
+     "out into the World, not back into the Office. Confirm the old view "
+     "returns after arrival or exit."),
+    ("marketing-office-hours", "Office-only Marketing attendance",
+     "Spend time in the World outside the building, then enter and leave the "
+     "Office. Confirm Marketing Office Hours increases only for the interval "
+     "between the explicit building entry and exit punches."),
+    ("marketing-furniture", "Marketing window desks and seating",
+     "Visit Marketing and confirm named desks sit against the rear windows "
+     "with chairs, while the raised round sealed-wood table has eight visible "
+     "chairs and no green floor showing through its top."),
+    ("office-landscaping", "Office exterior landscaping",
+     "Walk around and through the Office approach. Confirm flowers, bushes, "
+     "and low-poly trees surround the island without blocking the bridge, "
+     "doorway, or smooth entry and exit."),
 )
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
 
@@ -9413,6 +9435,11 @@ SCHEMA_ALTER_STATEMENTS = [
        CHECK (length(floor_id) <= 32)""",
     """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_live
        ON world_office_attendance(out_at, last_seen_at DESC)""",
+    """ALTER TABLE world_office_attendance
+       ADD COLUMN visit_scope TEXT NOT NULL DEFAULT 'legacy'
+       CHECK (visit_scope IN ('legacy', 'office'))""",
+    """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_scope
+       ON world_office_attendance(visit_scope, account_bi, in_at)""",
     # Assigned issue titles are already public repository metadata; retain a
     # bounded copy so the build-board card survives the recent-issues window.
     """ALTER TABLE world_build_board_items

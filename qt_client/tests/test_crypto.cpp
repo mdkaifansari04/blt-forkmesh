@@ -6106,6 +6106,28 @@ int main(int argc, char *argv[])
                   QStringLiteral("Secret/token assignment")),
               "secret scan detects generic quoted secret assignment");
 
+        // The generic assignment rule has no provider prefix to anchor it, so
+        // recognisable placeholders (test fixtures, docs samples, template
+        // holes) must not block a push.
+        check(!runSecretTest(
+                  "password: \"correct-horse-battery-staple\"\n",
+                  QStringLiteral("Secret/token assignment")),
+              "secret scan ignores the XKCD example password");
+        check(!runSecretTest("API_TOKEN=\"your-token-goes-here-abcdef\"\n",
+                             QStringLiteral("Secret/token assignment")),
+              "secret scan ignores your-… placeholder token values");
+        check(!runSecretTest("API_KEY=\"${FORKMESH_API_KEY_FROM_ENV}\"\n",
+                             QStringLiteral("Secret/token assignment")),
+              "secret scan ignores ${VAR} template holes");
+        check(!runSecretTest("password=\"xxxxxxxxxxxxxxxxxxxxxxxx\"\n",
+                             QStringLiteral("Secret/token assignment")),
+              "secret scan ignores single-character filler runs");
+        // A provider-prefixed hit stays high-confidence even next to
+        // placeholder-ish wording.
+        check(runSecretTest("EXAMPLE_TOKEN=ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n",  // forkmesh-secret-scan:ignore-line
+                            QStringLiteral("GitHub token")),
+              "secret scan still flags prefixed tokens in example wording");
+
         // Benign content must not trigger a false positive
         {
             QTemporaryDir td;

@@ -6029,12 +6029,34 @@ void MainWindow::pushCurrentRepoUpstream()
                         .arg(scan.findings.size())
                         .arg(scan.findings.size() == 1 ? QString() : QStringLiteral("s"))
                         .arg(repo.owner, repo.name, detail));
+                auto *viewBtn = box.addButton(QStringLiteral("View code"),
+                                              QMessageBox::ActionRole);
                 auto *cancelBtn = box.addButton(QStringLiteral("Cancel push"),
                                                 QMessageBox::RejectRole);
                 auto *bypassBtn = box.addButton(QStringLiteral("Push anyway"),
                                                 QMessageBox::DestructiveRole);
                 box.setDefaultButton(cancelBtn);
                 box.exec();
+                if (box.clickedButton() == viewBtn) {
+                    // Jumping to the code cancels the push: the point is to remove
+                    // the credential first. Copy the path/line out before the
+                    // navigation below, which pumps the event loop (and can rebuild
+                    // the findings' owning state) across its git reads.
+                    const QString path = scan.findings.first().path;
+                    const int line = scan.findings.first().line;
+                    m_pushingRepos.remove(index);
+                    refreshRepoSyncIndicators();
+                    openRepoDetail(index);
+                    // Switch to the Code tab (index 0) so the highlighted line is
+                    // visible; openRepoFileAtLine alone only touches the (currently
+                    // hidden) files panel.
+                    if (m_repoDetailTabs && m_repoDetailTabs->button(0))
+                        m_repoDetailTabs->button(0)->setChecked(true);
+                    if (m_repoDetailStack)
+                        m_repoDetailStack->setCurrentIndex(0);
+                    openRepoFileAtLine(path, line);
+                    return;
+                }
                 if (box.clickedButton() != bypassBtn) {
                     m_pushingRepos.remove(index);
                     refreshRepoSyncIndicators();

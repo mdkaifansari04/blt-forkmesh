@@ -1701,7 +1701,9 @@ SCHEMA_STATEMENTS = [
         in_at INTEGER NOT NULL CHECK (in_at > 0),
         out_at INTEGER CHECK (out_at IS NULL OR out_at >= in_at),
         last_seen_at INTEGER NOT NULL DEFAULT 0 CHECK (last_seen_at >= 0),
-        floor_id TEXT NOT NULL DEFAULT '' CHECK (length(floor_id) <= 32))""",
+        floor_id TEXT NOT NULL DEFAULT '' CHECK (length(floor_id) <= 32),
+        visit_scope TEXT NOT NULL DEFAULT 'office'
+            CHECK (visit_scope IN ('legacy', 'office')))""",
     """CREATE UNIQUE INDEX IF NOT EXISTS idx_world_office_attendance_open
         ON world_office_attendance(account_bi)
         WHERE out_at IS NULL""",
@@ -1709,6 +1711,8 @@ SCHEMA_STATEMENTS = [
         ON world_office_attendance(in_at DESC, visit_id DESC)""",
     """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_live
         ON world_office_attendance(out_at, last_seen_at DESC)""",
+    """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_scope
+        ON world_office_attendance(visit_scope, account_bi, in_at)""",
     # Marketing proof-of-work links (migration 0096). Public social URLs and
     # labels remain inside encrypted payloads and are disclosed only to a
     # currently authorized Marketing-team member.
