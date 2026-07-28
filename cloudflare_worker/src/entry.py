@@ -8550,6 +8550,13 @@ async def world_deploy_status_handler(env, request):
 
 WORLD_QA_DECK_REVISION = "2026-07-28-24h-24"
 WORLD_QA_CARDS = (
+    ("world-repository-agent-live-terminals",
+     "Interactive repository agent terminals",
+     "As an Engineering team member, open a repository with a running Claude "
+     "or Codex session. Confirm its small robot screen shows the exact task, "
+     "status, mirror, and latest terminal line. Click it and confirm the exact "
+     "session opens with transcript plus a working secure follow-up prompt. "
+     "Repeat as a non-engineer and confirm the controls remain inaccessible."),
     ("world-repository-record-view-pads",
      "Repository list order, footer, and viewing pads",
      "Open forkmesh/forkmesh in the World. Confirm the PR and Issue boards "

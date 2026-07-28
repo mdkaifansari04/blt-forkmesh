@@ -9,6 +9,7 @@ the implementation and its focused verification are complete.
 - [x] Size the World PR and Issue panels to their visible records, move open counts below the lists, put the newest record at the bottom, and add one-click first-person viewing pads.
 - [x] Stop signed-in mobile World pans from clearing or visually refreshing the WebGL scene.
 - [ ] Restore the cached spawn pose before scene hydration and keep Office travel attached to the avatar.
+- [x] Show each live repository agent task on its tiny terminal and open that exact engineering-only transcript with prompt and re-prompt controls when clicked.
 - [x] Join the World districts into one continuous city landscape with seamless concrete paths.
 - [x] Add a visible START HERE progress map from the users area to the centered mirror nodes.
 - [x] Make Space jump off the roof, check the user out on exit, and allow every chair or bench to seat a visitor.

@@ -112,6 +112,13 @@ def test_repo_exhibit_has_angled_named_pedestal_and_live_agent_terminals():
     assert "repositoryAgentTasksByRepository" in SCENE
     assert "task.status === \"running\"" in SCENE
     assert "task.targetNode" in SCENE
+    assert "latestTerminalLine" in SCENE
+    assert "CLICK · TRANSCRIPT + PROMPT" in SCENE
+    assert "repositoryAgentSession || null" in SCENE
+    assert "sessionId: String(session?.id || \"\")" in APP
+    assert "focusSessionId: String(sessionId || \"\")" in APP
+    assert "focusSessionId === String(session?.id || \"\")" in APP
+    assert "world-agent-prompt-form" in APP
 
 
 def test_cabinet_faces_are_swapped_and_agent_sides_are_provider_specific():

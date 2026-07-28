@@ -2927,6 +2927,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:world-board-detail", task: "Straight, detailed build board", detail: "Aligned every card to a fixed grid and exposed the active scope and status until QA.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-mobile-pan-stability", task: "Stop mobile pan refreshes", detail: "Viewport changes are coalesced outside active gestures so walking never clears the live WebGL scene.", estimate: "deployed · verified", done: true },
   { key: "task:world-stable-hydration", task: "Stable spawn and Office travel", detail: "Preload the cached pose, prevent reconnect jumps, and keep the camera attached to the avatar.", estimate: "implementation active", done: false },
+  { key: "task:repo-agent-live-terminals", task: "Interactive repository agent terminals", detail: "Each robot screen now shows its active task, mirror, status, and latest terminal line; clicking opens that exact engineering session with transcript and secure prompt or re-prompt controls.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:repo-board-view-pads", task: "Content-height repo boards + view pads", detail: "Each list now fits its page, reads newest at the bottom, carries a lower count footer, and has a height-aware first-person pad.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-continuous-city", task: "One continuous city landscape", detail: "The districts now share one walkable foundation, textured grass, and seamless concrete connections.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-start-here-map", task: "START HERE progress map", detail: "A persistent users-to-nodes checklist now checks bounded milestones as each destination is visited.", estimate: "ready for deploy · in QA", done: true },
@@ -7835,6 +7836,17 @@ function repositoryAgentTerminalTexture(THREE, task = {}) {
     task.displayStatus || task.status || "running",
   ).toUpperCase();
   const color = provider === "CODEX" ? "#8fffe0" : "#ef9f74";
+  const history = Array.isArray(task.history) ? task.history : [];
+  const latestTerminalLine = history
+    .slice()
+    .reverse()
+    .map((entry) =>
+      String(entry?.text || "")
+        .replace(/[\u0000-\u001f\u007f]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim(),
+    )
+    .find(Boolean);
   return canvasTexture(THREE, 512, 384, (context) => {
     context.fillStyle = "#06130f";
     context.fillRect(0, 0, 512, 384);
@@ -7857,26 +7869,41 @@ function repositoryAgentTerminalTexture(THREE, task = {}) {
       context,
       String(task.title || "Agent session"),
       28,
-      112,
+      104,
       456,
-      40,
-      3,
+      36,
+      2,
+    );
+    context.fillStyle = "#9ef7c6";
+    context.font = '700 23px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      clipCanvasText(
+        context,
+        latestTerminalLine ? `> ${latestTerminalLine}` : "> session is live…",
+        456,
+      ),
+      28,
+      218,
     );
     context.fillStyle = "#77d9ff";
-    context.font = '800 27px "ForkMesh Mono", ui-monospace, monospace';
+    context.font = '800 25px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
       `NODE · ${String(task.targetNode || "PENDING").toUpperCase().slice(0, 24)}`,
       28,
-      292,
+      272,
     );
     context.fillStyle = "#91a39a";
-    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
     const age = Number(task.updatedAt)
       ? mirrorCommitAgeLabel(
           Math.max(0, Date.now() - Number(task.updatedAt)),
         )
       : "NOW";
-    context.fillText(`UPDATED ${String(age).toUpperCase()}`, 28, 342);
+    context.fillText(`UPDATED ${String(age).toUpperCase()}`, 28, 322);
+    context.textAlign = "right";
+    context.fillStyle = color;
+    context.font = '800 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("CLICK · TRANSCRIPT + PROMPT", 484, 354);
   });
 }
 
@@ -7945,6 +7972,8 @@ function createRepositoryAgentTerminal(THREE, task = {}) {
     id: String(task.id || ""),
     provider,
     targetNode: String(task.targetNode || ""),
+    title: String(task.title || "Agent session"),
+    status: String(task.displayStatus || task.status || "running"),
   };
   group.add(screen);
   const antenna = new THREE.Mesh(
@@ -27051,7 +27080,10 @@ export function createWorldScene({
       return;
     }
     if (hit?.object?.userData?.agentBotChat) {
-      onAgentBotChat(String(hit.object.userData.agentBotChat));
+      onAgentBotChat(
+        String(hit.object.userData.agentBotChat),
+        hit.object.userData.repositoryAgentSession || null,
+      );
       return;
     }
     if (hit?.object?.userData?.playForkmeshSong) {

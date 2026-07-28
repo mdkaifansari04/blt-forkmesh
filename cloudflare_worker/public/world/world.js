@@ -5694,7 +5694,7 @@ class ForkMeshWorld extends HTMLElement {
         onForkbotChat: () => {
           this.openChatTerminal("@forkbot ");
         },
-        onAgentBotChat: (botId) => {
+        onAgentBotChat: (botId, session = null) => {
           if (this.orgAgentAccess?.state !== "allowed") {
             this.toast(
               "Claude and Codex chat is available only to the Engineering team.",
@@ -5704,7 +5704,9 @@ class ForkMeshWorld extends HTMLElement {
           const name = String(botId || "").toLowerCase() === "codex"
             ? "codex"
             : "claude";
-          this.openAgentBotDetail(name);
+          this.openAgentBotDetail(name, {
+            sessionId: String(session?.id || ""),
+          });
         },
         onPlayForkmeshSong: () => {
           void this.playForkmeshSong();
@@ -10654,6 +10656,7 @@ class ForkMeshWorld extends HTMLElement {
       ? String(options.provider)
       : "";
     const allNodes = options?.allNodes === true;
+    const focusSessionId = String(options?.focusSessionId || "");
     const sessions = this.orgAgentSessions
       .filter(
         (session) =>
@@ -10662,6 +10665,13 @@ class ForkMeshWorld extends HTMLElement {
               nodeName) &&
           (!providerFilter || session?.provider === providerFilter),
       )
+      .sort((left, right) => {
+        if (focusSessionId) {
+          if (String(left?.id || "") === focusSessionId) return -1;
+          if (String(right?.id || "") === focusSessionId) return 1;
+        }
+        return Number(right?.updatedAt || 0) - Number(left?.updatedAt || 0);
+      })
       .slice(0, 50);
     const date = (value) => {
       const timestamp = Number(value);
@@ -10703,7 +10713,11 @@ class ForkMeshWorld extends HTMLElement {
         availability.loginState === "missing";
       return `
         <details class="world-agent-session" ${
-          sessions[0]?.id === session?.id ? "open" : ""
+          (focusSessionId
+            ? focusSessionId === String(session?.id || "")
+            : sessions[0]?.id === session?.id)
+            ? "open"
+            : ""
         }>
           <summary>
             <strong>${escapeHTML(
@@ -11686,7 +11700,10 @@ class ForkMeshWorld extends HTMLElement {
     });
   }
 
-  openAgentBotDetail(botId, { returnFocus = null } = {}) {
+  openAgentBotDetail(
+    botId,
+    { returnFocus = null, sessionId = "" } = {},
+  ) {
     if (this.orgAgentAccess?.state !== "allowed") {
       this.toast(
         "Claude and Codex status is available only to the Engineering team.",
@@ -11719,7 +11736,11 @@ class ForkMeshWorld extends HTMLElement {
         <p class="world-detail-summary">What ${label} is working on across eligible mirrors, with the complete authorized runtime and transcript data reported by Qt.</p>
         ${this.mirrorNodeAgentSessionsHTML(
           {},
-          { provider, allNodes: true },
+          {
+            provider,
+            allNodes: true,
+            focusSessionId: String(sessionId || ""),
+          },
         )}
       </div>`;
     this.showDetailOverlay(detail, backdrop, { returnFocus });
