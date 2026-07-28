@@ -55,6 +55,15 @@
             "sig": "XMrowwLGNnPRgCJeFA0O-zPl6hxDRR51sS2MRbiaRZbNJQcqaRCbzUVL0M2rJl7Vasq_6F5BjaxEsUo4q5m6Cg",
             "ts": 1785210480033,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "423d862b-b8df-47e8-a645-83e935daed08",
+            "sig": "vQe2JUnsB16YYi2nqzulfgZz6ghhnmt4RJsYFDQPlXOHlgwu1k60XjtGobXEOFJIFGTvXdzfAuKt5XBypZJNBw",
+            "status": "closed",
+            "ts": 1785210480113,
+            "type": "status"
         }
     ],
     "labels": [
@@ -66,8 +75,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "Add edit and delete message options",
-    "updatedAt": 1785210480033,
+    "updatedAt": 1785210480113,
     "votes": 0
 }
