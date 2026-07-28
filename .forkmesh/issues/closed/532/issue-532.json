@@ -75,6 +75,18 @@
             "status": "closed",
             "ts": 1785209843227,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "44371df3-ea78-4029-87cd-62dc95d6d619",
+            "sig": "3M6Em_dToUxm11DnmUaiF8uo-mrjcKgV4lLkhp-zhM9Sr3r-rYXaXmM8FtchQJvC4oYILNJQ-WAfhcJu07utAA",
+            "ts": 1785209843417,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -88,6 +100,6 @@
     "startDate": 0,
     "status": "closed",
     "title": "Add wave button",
-    "updatedAt": 1785209843227,
+    "updatedAt": 1785209843417,
     "votes": 0
 }
