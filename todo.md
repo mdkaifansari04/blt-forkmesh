@@ -5,6 +5,10 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [ ] Restyle the compact and expanded World right HUD with GitHub Primer primitives, including selected, hover, focus, and icon-button states.
+- [ ] Open both Issue and PR tower records in their canonical embedded web workbenches; complete PR readiness, conflict, checks, reviews, files, update-from-main, and protected merge management there.
+- [x] Audit the full 2026-07-28 request history against the implementation, tests, QA deck, and build-board source; keep every partial or externally unverifiable item open below.
+- [x] Scale repository PR and Issue towers to their complete bounded item counts and move them outside the ActivityPub follower orbit.
 - [x] Remove zoom-out relationship lines, rounded connector pads, colored grass ovals, disjoint terrain remnants, and obstructive agent-terminal blocks; retain one fast continuous walkable grass foundation.
 - [x] Make the perimeter bike path a true circle and lock mounted bikes to its center groove, with `E` as the explicit mount/dismount control.
 - [x] Make World PR and Issue clicks open record-only detail drawers without unrelated Repository portals content.
@@ -149,7 +153,7 @@ the implementation and its focused verification are complete.
 - [x] Give capacity graph cells a consistent shape and aspect ratio.
 - [x] Show every seated member's complete public identity card, including flag.
 - [x] Keep joined/first-seen/activity details visible for newly joined seated members.
-- [x] Add a right-click World action to share an exact location and perspective.
+- [x] Superseded: the initial right-click exact-view action was removed and replaced by the persistent right-rail Share exact view button.
 - [x] Restore shared coordinates and camera perspective when opening the link.
 - [x] Route new issue submissions into an online repository mirror immediately.
 - [x] Replace pending issue placeholders with real mirrored issues after intake.
@@ -231,6 +235,18 @@ the implementation and its focused verification are complete.
 - [x] Keep mirror merge owner-only until group permissions are available.
 - [x] Add focused authorization, concurrency, persistence, and UI tests.
 
+## 2026-07-28 audit additions
+
+- [x] Render recent public X and Reddit posts inside scene-native World frames through the bounded same-origin social-feed snapshot; use Reddit's explicit application User-Agent and avoid injecting third-party tracking scripts into the WebGL page.
+- [x] Keep ActivityPub followers in the large outer repository portrait ring, Git contributors in the smaller inner ring, and provide the floating repository Follow control.
+- [x] Remove the Office Guide and oversized Marketing Studio banner objects from the Marketing room while retaining the room-scale task controls, desks, attendance calendar, and table.
+- [x] Reconcile the later exact-view request: sharing stays on the right rail, Saved Views stays collapsed, and the normal right-click interaction is restored.
+
+The remaining implementation work stays in **Current focus**. The Cloudflare
+observability credentials and “ForkMesh Forever” social-proof publishing remain
+the two canonical unchecked human actions above; they are not duplicated here
+so their completion state cannot drift.
+
 ## Requested follow-up work
 
 - [x] Redesign the exterior World as a mixed city-and-woodland landscape with stone plazas, paths, varied grass patches, trees, broad continuous land connections, finished edges, and visible dirt/roots underneath.
@@ -270,9 +286,9 @@ the implementation and its focused verification are complete.
 
 ## Screenshot branch integration
 
-The code from these screenshot sessions has been integrated into `main`.
-Deleting their source branches/worktrees remains a separate unchecked cleanup
-task above so they stay recoverable until final verification.
+The code from these screenshot sessions has been integrated into `main`, and
+their verified merged source branches/worktrees were removed after the
+recoverability checks recorded above.
 
 - [x] Session 445 — ForkMesh recover setting.
 - [x] Session 444 — prevent falling through the floor.
