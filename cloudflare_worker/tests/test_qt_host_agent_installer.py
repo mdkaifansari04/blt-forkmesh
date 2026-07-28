@@ -14,6 +14,7 @@ def test_hosts_table_has_a_selected_host_agent_cli_install_action():
     assert "installAgentClisForHost(i)" in CHAT
     assert "void MainWindow::installAgentClisForHost(int row)" in CHAT
     assert "m_hostAgentInstallProcess" in HEADER
+    assert 'QStringLiteral("Claude"), QStringLiteral("Codex")' in CHAT
 
 
 def test_agent_install_uses_pinned_ssh_and_official_user_scoped_installers():
@@ -42,3 +43,28 @@ def test_saved_host_key_path_fails_closed_instead_of_falling_back_to_password():
     assert "return identity;" in lookup
     assert "QFileInfo(identity).isFile()" not in lookup
     assert "silently fall back to a session password" in lookup
+
+
+def test_saved_hosts_are_reprobed_until_online_with_agent_capabilities():
+    for contract in (
+        "void MainWindow::probeSavedHosts()",
+        "void MainWindow::probeSavedHost(",
+        "m_hostProbeTimer->setInterval(30000)",
+        "m_hostProbesInFlight.contains(key)",
+        "FORKMESH=%s CLAUDE=%s CODEX=%s",
+        "Provisioning \\xC2\\xB7 waiting for SSH",
+        "Attention \\xC2\\xB7 SSH key rejected",
+        "Online \\xC2\\xB7 ForkMesh missing",
+        "\\xE2\\x9C\\x93 Installed",
+        "Not installed",
+        "QTimer::singleShot(0, this, &MainWindow::probeSavedHosts)",
+    ):
+        assert contract in CHAT
+    for contract in (
+        "QTimer *m_hostProbeTimer",
+        "QSet<QString> m_hostProbesInFlight",
+        "QHash<QString, QString> m_hostReachability",
+        "QHash<QString, QString> m_hostClaudeAvailability",
+        "QHash<QString, QString> m_hostCodexAvailability",
+    ):
+        assert contract in HEADER

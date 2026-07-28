@@ -8114,9 +8114,29 @@ void MainWindow::probeSavedHost(const QString &name, const QString &ip,
         process->setProperty("forkmeshHostProbeTimedOut", true);
         process->kill();
     });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, deadline, key, render](
+                QProcess::ProcessError processError) {
+        if (processError != QProcess::FailedToStart ||
+            process->property("forkmeshHostProbeDone").toBool()) {
+            return;
+        }
+        process->setProperty("forkmeshHostProbeDone", true);
+        deadline->stop();
+        m_hostProbesInFlight.remove(key);
+        render(
+            QString::fromUtf8("\xE2\x97\x8F Attention \xC2\xB7 SSH unavailable"),
+            QString::fromUtf8("\xE2\x80\x94"),
+            QString::fromUtf8("\xE2\x80\x94"),
+            QColor(QStringLiteral("#cf222e")));
+        process->deleteLater();
+    });
     connect(process, &QProcess::finished, this,
             [this, process, deadline, key, savedStatus, render, rowForKey](
                 int exitCode, QProcess::ExitStatus exitStatus) {
+        if (process->property("forkmeshHostProbeDone").toBool())
+            return;
+        process->setProperty("forkmeshHostProbeDone", true);
         deadline->stop();
         QByteArray bytes =
             process->property("forkmeshHostProbe").toByteArray();
@@ -8146,6 +8166,19 @@ void MainWindow::probeSavedHost(const QString &name, const QString &ip,
                 forkmesh
                     ? QColor(QStringLiteral("#2da44e"))
                     : QColor(QStringLiteral("#d29922")));
+            const int row = rowForKey(key);
+            if (row >= 0 && m_hostsTable) {
+                if (QTableWidgetItem *item = m_hostsTable->item(row, 4)) {
+                    item->setForeground(QColor(
+                        claude ? QStringLiteral("#2da44e")
+                               : QStringLiteral("#8b949e")));
+                }
+                if (QTableWidgetItem *item = m_hostsTable->item(row, 5)) {
+                    item->setForeground(QColor(
+                        codex ? QStringLiteral("#2da44e")
+                              : QStringLiteral("#8b949e")));
+                }
+            }
         } else {
             const bool rejected =
                 output.contains(QStringLiteral("Permission denied"),
@@ -8326,6 +8359,7 @@ void MainWindow::installAgentClisForHost(int row)
                           "Agent CLI installation failed on %1; see Live output.")
                           .arg(node));
         }
+        QTimer::singleShot(0, this, &MainWindow::probeSavedHosts);
         proc->deleteLater();
     });
     proc->start(ssh.program, ssh.arguments);
