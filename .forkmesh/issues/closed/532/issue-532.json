@@ -66,6 +66,15 @@
             "sig": "131WOIF3fXEmTAvwyD1uR0MndAqq4R-mUaloWJ0y05gGbSzXEogMVgb9rUEESx1VDpaloU2tLxXS3Au02OWHCA",
             "ts": 1785209843153,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "9efbd9a7-12b4-48e5-9c82-8f9a1714718f",
+            "sig": "0zgwwZJg9HiBqmz2lu7Mcwz05CGdCV3W_hiHR86Z5Y3cw9d-wJPzTfkimmEaAbzHlen1b6QtagFjdh8hMZyYDA",
+            "status": "closed",
+            "ts": 1785209843227,
+            "type": "status"
         }
     ],
     "labels": [
@@ -77,8 +86,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "Add wave button",
-    "updatedAt": 1785209843153,
+    "updatedAt": 1785209843227,
     "votes": 0
 }
