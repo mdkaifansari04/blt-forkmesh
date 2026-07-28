@@ -5701,7 +5701,7 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   renderQaDeck() {
-    const view = ["pass", "fail", "unsure"].includes(this.qaDeckView)
+    const view = ["detail", "pass", "fail", "unsure"].includes(this.qaDeckView)
       ? this.qaDeckView
       : "cards";
     const filtered = this.qaDeckCardsForView(view);
@@ -5720,7 +5720,14 @@ class ForkMeshWorld extends HTMLElement {
     }
     this.world?.updateQaBoard?.({
       authenticated: this.qaDeck.authenticated,
-      current: this.qaDeck.cards[this.qaCardIndex] || null,
+      current:
+        (view === "detail"
+          ? this.qaDeck.cards.find(
+              (card) => card.key === this.qaDeckSelectedKey,
+            )
+          : null) ||
+        this.qaDeck.cards[this.qaCardIndex] ||
+        null,
       currentIndex: this.qaCardIndex,
       stats: this.qaDeck.stats,
       globalStats: this.qaDeck.globalStats,
@@ -5746,9 +5753,22 @@ class ForkMeshWorld extends HTMLElement {
     }
     if (action === "select") {
       const key = String(detail?.key || "");
-      if (!this.qaDeck.cards.some((card) => card.key === key)) return;
+      const index = this.qaDeck.cards.findIndex((card) => card.key === key);
+      if (index < 0) return;
       this.qaDeckSelectedKey = key;
+      this.qaCardIndex = index;
+      this.qaDeckView = "detail";
       this.renderQaDeck();
+      return;
+    }
+    if (action === "back") {
+      this.qaDeckView = "cards";
+      this.qaDeckSelectedKey = "";
+      this.renderQaDeck();
+      return;
+    }
+    if (action === "verdict") {
+      await this.recordQaVerdict(String(detail?.verdict || ""));
       return;
     }
     if (action === "page") {
