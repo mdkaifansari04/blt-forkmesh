@@ -2553,6 +2553,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "done:dashboard-home-data", task: "Org repos + live blog on Dashboard", estimate: "deployed · in QA", done: true },
   { key: "done:admin-node-delete", task: "Typed-confirmation admin node removal", estimate: "ready for deploy · in QA", done: true },
   { key: "done:admin-error-analytics", task: "Admin grouped error trends · 24h chart", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:repo-terms-flags", task: "Visible repository Terms policy flags", estimate: "ready for deploy · in QA", done: true },
 ]);
 
 function worldTaskBulletinSeed(value) {
@@ -18862,6 +18863,8 @@ export function createWorldScene({
           sizeBytes,
           liveHost: record.liveHost === true,
           isPrivate: record.isPrivate === true,
+          termsFlagged: record.termsFlagged === true,
+          termsCategory: String(record.termsCategory || "").slice(0, 20),
           source: String(record.source || "").slice(0, 40),
           provider: String(record.provider || "").slice(0, 20),
           providerLabel: String(record.providerLabel || "").slice(0, 30),
@@ -18907,6 +18910,8 @@ export function createWorldScene({
         record.sizeBytes,
         record.liveHost,
         record.isPrivate,
+        record.termsFlagged,
+        record.termsCategory,
         record.source,
         record.provider,
         record.importId,
@@ -19129,6 +19134,8 @@ export function createWorldScene({
         sizeBytes: record.sizeBytes,
         liveHost: record.liveHost,
         isPrivate: record.isPrivate,
+        termsFlagged: record.termsFlagged,
+        termsCategory: record.termsCategory,
         source: record.source,
         provider: record.provider,
         providerLabel: record.providerLabel,
@@ -19147,6 +19154,27 @@ export function createWorldScene({
         portalMeshes.push(mesh);
       }
       face.add(disk, outline);
+      if (record.termsFlagged) {
+        const policyFlag = new THREE.Group();
+        policyFlag.name =
+          `repository-terms-flag:${record.owner}/${record.name}`;
+        policyFlag.position.set(nodeRadius * 0.72, nodeRadius * 0.72, 0.16);
+        const pole = new THREE.Mesh(
+          new THREE.BoxGeometry(0.035, 0.44, 0.035),
+          makeMaterial(THREE, "#d7e1df", { metalness: 0.45 }),
+        );
+        pole.position.y = 0.16;
+        const cloth = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.34, 0.2),
+          makeMaterial(THREE, "#ef4444", {
+            emissive: "#7f1d1d",
+            emissiveIntensity: 0.5,
+          }),
+        );
+        cloth.position.set(0.18, 0.32, 0.02);
+        policyFlag.add(pole, cloth);
+        face.add(policyFlag);
+      }
       if (!isActive && record.sizeTree) {
         const map = repositorySizeMapSegments(record.sizeTree, "");
         const miniature = new THREE.Group();

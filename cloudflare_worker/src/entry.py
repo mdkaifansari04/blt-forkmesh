@@ -1173,7 +1173,7 @@ async def purge_catalog_related_caches():
 # host_presence catalog.
 CATALOG_CACHE_KEY = (
     "https://forkmesh.internal/api/repositories"
-    "?privacy=v2&availability=signed-v1"
+    "?privacy=v2&availability=signed-v1&terms=v1"
 )
 # Guest (viewer-less) GET /api/accounts/<name> payloads, keyed by name.
 ACCOUNT_LOOKUP_CACHE_PREFIX = "https://forkmesh.internal/api/accounts/"
@@ -8377,7 +8377,7 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-10"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-11"
 WORLD_QA_CARDS = (
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
@@ -8563,6 +8563,11 @@ WORLD_QA_CARDS = (
      "logs. Confirm the previous-24-hours chart has 24 accessible hourly bars, "
      "equivalent status/method/path/message rows are grouped with counts, and "
      "the bounded redacted raw log remains available below."),
+    ("repository-terms-flags", "Repository Terms moderation flags",
+     "As a platform is_admin, apply a Terms flag to a disposable repository "
+     "with a private note. Confirm the repository list, detail page, and World "
+     "portal show a red flag and public category but never the note. Clear it "
+     "and confirm the badges disappear after the catalog refresh."),
 )
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
 
@@ -11256,6 +11261,16 @@ async def catalog_handler(env, request):
             for row in live_rows or []
             if str(row.get("node_bi") or "")
         }
+        terms_rows = await d1_all(
+            env,
+            "SELECT repo_bi,category FROM repo_terms_flags WHERE active=1",
+        )
+        terms_flags = {
+            str(row.get("repo_bi") or ""): clean_string(
+                row.get("category"), 20).lower()
+            for row in terms_rows or []
+            if str(row.get("repo_bi") or "")
+        }
         repos = []
         ssh_gateway = _ssh_gateway_settings(env)
         for r in rows:
@@ -11306,6 +11321,10 @@ async def catalog_handler(env, request):
                 rec["sharedWithMe"] = bool(
                     authed_viewer and rec["isPrivate"]
                     and rec.get("owner") != authed_viewer)
+                terms_category = terms_flags.get(str(r.get("key_bi") or ""))
+                rec["termsFlagged"] = bool(terms_category)
+                if terms_category:
+                    rec["termsCategory"] = terms_category
                 # Publish an SSH clone/push URL only when a separate gateway
                 # host and its Worker authorization token are both configured.
                 # The URL is never a claim that this HTTP Worker terminates SSH.
@@ -33690,7 +33709,7 @@ ADMIN_STYLE = """
         padding:6px 12px;font:600 13px system-ui;cursor:pointer}
  .ab-root button:hover{background:var(--ab-btn-hover)}
  .ab-root button[disabled]{background:var(--ab-border-2);border-color:var(--ab-border-2);color:var(--ab-muted);cursor:not-allowed}
- .ab-root input[type=text],.ab-root input[type=password]{background:var(--ab-bg);color:var(--ab-fg);
+ .ab-root input[type=text],.ab-root input[type=password],.ab-root select{background:var(--ab-bg);color:var(--ab-fg);
         border:1px solid var(--ab-border-2);border-radius:6px;padding:6px 8px;font:13px system-ui}
  .ab-root .banner{margin:0 24px 8px;padding:10px 14px;border-radius:6px;border:1px solid var(--ab-btn-hover);
          background:var(--ab-ok-bg);color:var(--ab-ok-fg);white-space:pre-wrap;font:13px ui-monospace,monospace}
@@ -33749,7 +33768,7 @@ ADMIN_STYLE = """
  .ab-root .diagcol table{width:auto;min-width:220px}
  .ab-root .error-analytics{padding:4px 24px 18px}
  .ab-root .error-chart{height:150px;display:grid;grid-template-columns:repeat(24,minmax(8px,1fr));gap:4px;align-items:end;border-bottom:1px solid var(--ab-border);padding-top:12px}
- .ab-root .error-bar{min-height:2px;background:var(--ab-accent);border-radius:3px 3px 0 0;position:relative}
+ .ab-root .error-bar{min-height:2px;background:var(--ab-link);border-radius:3px 3px 0 0;position:relative}
  .ab-root .error-bar[data-empty="true"]{background:var(--ab-border)}
  .ab-root .error-bar:focus{outline:2px solid var(--ab-fg);outline-offset:2px}
  .ab-root .error-hours{display:flex;justify-content:space-between;color:var(--ab-muted);font-size:11px;margin-top:6px}
@@ -33770,6 +33789,7 @@ ADMIN_HIDDEN_TABLES = (
     "agent_prompts",
     "owner_encryption_keys",
     "repo_privacy_policy",
+    "repo_terms_flags",
     "security_reports",
     "repo_security_scans",
     "repo_security_scan_reviews",
@@ -34459,6 +34479,32 @@ def _render_admin_operational_alerts(
     )
 
 
+def _render_admin_repo_terms_flags(csrf_field="", admin_query=""):
+    return (
+        '<section id="repository-terms-flags" class="admin-setting" '
+        'tabindex="-1"><div><h2>Repository Terms flags</h2>'
+        '<p>Apply or clear the public policy-warning badge for a repository. '
+        'The operator note is encrypted and remains admin-only.</p></div>'
+        '<form method="post" action="%s">' %
+        _admin_href(admin_query, action="set_repo_terms_flag") +
+        csrf_field +
+        '<input type="text" name="owner" placeholder="owner" '
+        'pattern="[A-Za-z0-9._-]{1,100}" required>'
+        '<input type="text" name="repo" placeholder="repository" '
+        'pattern="[A-Za-z0-9._-]{1,100}" required>'
+        '<select name="category" aria-label="Terms category">'
+        '<option value="spam">Spam</option>'
+        '<option value="malware">Malware</option>'
+        '<option value="harassment">Harassment</option>'
+        '<option value="illegal">Illegal content</option>'
+        '<option value="other">Other</option></select>'
+        '<input type="text" name="note" maxlength="500" '
+        'placeholder="private operator note">'
+        '<label><input type="checkbox" name="clear" value="1"> Clear</label>'
+        '<button type="submit">Save flag</button></form></section>'
+    )
+
+
 def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=False):
     counts = counts or {}
     if sort_records:
@@ -34528,6 +34574,7 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         + _render_admin_stats(env_stats)
         + _render_admin_operational_alerts(
             operational_alerts_enabled, csrf_field, admin_query)
+        + _render_admin_repo_terms_flags(csrf_field, admin_query)
         + '<div class="tools"><form method="post" action="%s" '
           'onsubmit="return confirm(\'Show legacy custody migration status?\')">'
           % _admin_href(admin_query, action="disburse")
@@ -37699,6 +37746,75 @@ class Default(WorkerEntrypoint):
                 except Exception as error:
                     banner = (
                         "Operational alert update failed: " + repr(error))
+            elif action == "set_repo_terms_flag":
+                try:
+                    owner = safe_segment(
+                        form.get("owner", [""])[0]).lower()
+                    repo = safe_segment(
+                        form.get("repo", [""])[0]).lower()
+                    category = clean_string(
+                        form.get("category", [""])[0], 20).lower()
+                    note = clean_string(form.get("note", [""])[0], 500)
+                    clear = form.get("clear", [""])[0] == "1"
+                    if (
+                        not owner
+                        or not repo
+                        or category not in (
+                            "spam", "malware", "harassment",
+                            "illegal", "other",
+                        )
+                        or (not clear and not note)
+                    ):
+                        banner = "Repository Terms flag failed: invalid fields."
+                    else:
+                        repo_bi = await blind_index(
+                            self.env, owner + "/" + repo)
+                        exists = await d1_first(
+                            self.env,
+                            "SELECT 1 AS found FROM repositories "
+                            "WHERE key_bi=? LIMIT 1",
+                            repo_bi,
+                        )
+                        if not exists:
+                            banner = (
+                                "Repository Terms flag failed: repository "
+                                "was not found."
+                            )
+                        else:
+                            await d1_run(
+                                self.env,
+                                "INSERT INTO repo_terms_flags "
+                                "(repo_bi,active,category,data,updated_by_bi,"
+                                "updated_at) VALUES (?,?,?,?,?,?) "
+                                "ON CONFLICT(repo_bi) DO UPDATE SET "
+                                "active=excluded.active,"
+                                "category=excluded.category,"
+                                "data=excluded.data,"
+                                "updated_by_bi=excluded.updated_by_bi,"
+                                "updated_at=excluded.updated_at",
+                                repo_bi,
+                                0 if clear else 1,
+                                category,
+                                await encrypt_row(self.env, {
+                                    "note": note,
+                                    "actor": account_cookie_name,
+                                }),
+                                await blind_index(
+                                    self.env, account_cookie_name),
+                                int(Date.now()),
+                            )
+                            await purge_catalog_related_caches()
+                            banner = (
+                                "Repository Terms flag cleared."
+                                if clear
+                                else "Repository Terms flag applied."
+                            )
+                            audit_details = {
+                                "active": not clear,
+                                "category": category,
+                            }
+                except Exception as error:
+                    banner = "Repository Terms flag failed: " + repr(error)
             elif action == "delete_rows":
                 try:
                     tables = await _admin_list_tables(self.env)
@@ -37761,7 +37877,8 @@ class Default(WorkerEntrypoint):
             if action in (
                     "disburse", "set_password", "resend_verify",
                     "request_ownership", "delete_rows", "update_row",
-                    "insert_row", "set_operational_alerts"):
+                    "insert_row", "set_operational_alerts",
+                    "set_repo_terms_flag"):
                 audit_actor = (
                     account_cookie_name
                     or params.get("admin", [""])[0])
@@ -37771,6 +37888,8 @@ class Default(WorkerEntrypoint):
                         "request_ownership")
                     else "platform_alerts"
                     if action == "set_operational_alerts"
+                    else "repository"
+                    if action == "set_repo_terms_flag"
                     else "database_table" if action in (
                         "delete_rows", "update_row", "insert_row")
                     else "legacy_custody")
@@ -37781,6 +37900,11 @@ class Default(WorkerEntrypoint):
                     if action == "request_ownership"
                     else "forkmesh-system-checks"
                     if action == "set_operational_alerts"
+                    else (
+                        form.get("owner", [""])[0] + "/"
+                        + form.get("repo", [""])[0]
+                    )
+                    if action == "set_repo_terms_flag"
                     else params.get("table", [""])[0])
                 lowered_banner = str(banner or "").lower()
                 outcome = (

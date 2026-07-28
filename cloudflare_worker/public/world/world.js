@@ -2698,6 +2698,8 @@ function cleanRepositories(payload) {
         isPrivate: Boolean(
           repo.private || repo.isPrivate || repo.visibility === "private",
         ),
+        termsFlagged: repo.termsFlagged === true,
+        termsCategory: String(repo.termsCategory || "").slice(0, 20),
         commit: /^[0-9a-f]{40,64}$/.test(commit) ? commit : "",
         stateHash: /^[0-9a-f]{64}$/.test(stateHash) ? stateHash : "",
         rootCommit: immutableGitOid(repo.rootCommit),

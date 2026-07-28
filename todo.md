@@ -13,7 +13,7 @@ the implementation and its focused verification are complete.
 - [x] Show separate Claude Code and Codex installed/missing status beside every saved host.
 - [x] Install/probe Claude Code and Codex as the actual `forkmesh-node` service account, including copied device logins.
 - [x] Route Claude/Codex organization jobs only to fresh mirrors whose signed catalog advertises that provider.
-- [ ] Show a visible Terms-of-Service moderation flag on repositories that violate ForkMesh policy.
+- [x] Show a visible Terms-of-Service moderation flag on repositories that violate ForkMesh policy.
 - [x] Initial front-wall elevator camera placement (superseded after live QA).
 - [x] Increase the in-elevator button labels and contrast for clear floor selection.
 - [x] Follow-up: restore elevator buttons to the side wall and use an upper security-camera view that frames them with the World outside.

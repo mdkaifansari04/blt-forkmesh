@@ -13,6 +13,15 @@
     return haystack.includes(query);
   }
 
+  function repositoryTermsBadge(repo, compact = false) {
+    if (repo?.termsFlagged !== true) return "";
+    const category = String(repo.termsCategory || "policy").replace(
+      /[^a-z-]/gi,
+      "",
+    ).slice(0, 20);
+    return `<span title="This repository has an active ForkMesh Terms of Service moderation flag${category ? `: ${escapeHtml(category)}` : ""}." class="inline-flex shrink-0 items-center gap-1 rounded-full border border-destructive/60 bg-destructive/10 ${compact ? "px-1 py-0.5 text-[8px]" : "px-2 py-0.5 text-[10px]"} font-semibold text-destructive"><i data-lucide="flag" class="${compact ? "h-2.5 w-2.5" : "h-3 w-3"}"></i>${compact ? "ToS" : "Terms flag"}</span>`;
+  }
+
   function groupMatchesGlobalSearch(group, query) {
     if (!query) return true;
     if (repositoryMatchesQuery(sourceOfTruth(group), query)) return true;
@@ -357,6 +366,7 @@
               <span class="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${statusClass}">
                 ${statusText}
               </span>
+              ${repositoryTermsBadge(origin)}
               <button data-repo-star-button data-repo-key="${escapeHtml(key)}" type="button" aria-pressed="false" aria-label="Star ${escapeHtml(key)}" class="ml-auto hidden shrink-0 items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs text-foreground hover:bg-background sm:inline-flex">
                 <i data-lucide="star" data-repo-star-icon class="h-3.5 w-3.5 text-muted-foreground"></i>
                 <span data-repo-star-label>Star</span>
@@ -402,6 +412,7 @@
         <span class="flex min-w-0 flex-wrap items-center gap-2">
           <span class="min-w-0 truncate text-lg font-semibold text-accent hover:underline">${escapeHtml(repo.name || "repository")}</span>
           <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${escapeHtml(visibility)}</span>
+          ${repositoryTermsBadge(repo)}
         </span>
         <span class="mt-1 block text-xs text-muted-foreground">Published from ${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repository")}</span>
         <span class="mt-2 line-clamp-2 text-sm text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</span>
@@ -538,6 +549,7 @@
         <a href="${escapeHtml(entry.href)}" class="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
           <span class="h-2 w-2 shrink-0 rounded-full ${live ? "bg-primary" : "bg-muted-foreground/40"}"></span>
           <span class="min-w-0 flex-1 truncate"><span class="text-muted-foreground">${escapeHtml(repo.owner || "owner")}/</span><span class="text-foreground">${escapeHtml(repo.name || "repository")}</span></span>
+          ${repositoryTermsBadge(repo, true)}
           ${entry.organization ? '<span class="shrink-0 rounded border border-border px-1 py-0.5 font-mono text-[8px] uppercase text-muted-foreground">org</span>' : ""}
         </a>`;
     }).join("");
@@ -573,6 +585,7 @@
             return `<a href="${escapeHtml(entry.href)}" class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground">
               <i data-lucide="${entry.organization ? "building-2" : "book-marked"}" class="h-3.5 w-3.5 shrink-0"></i>
               <span class="min-w-0 truncate">${escapeHtml(key)}</span>
+              ${repositoryTermsBadge(repo, true)}
               ${entry.organization ? '<span class="ml-auto shrink-0 text-[9px] uppercase text-muted-foreground">organization</span>' : ""}
             </a>`;
           }).join("")}</div>`
