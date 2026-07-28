@@ -54,7 +54,7 @@ the implementation and its focused verification are complete.
 - [x] Finish and test the repository Mastodon-follower and Git-contributor avatar orbits.
 - [x] Finish and test Claude/Codex/model assignment controls on World issue cards.
 - [x] Finish and test the Qt host buttons that install the official Claude Code and Codex CLIs.
-- [ ] Finish and test the Marketing wall, member desks, attendance calendar, and sealed reclaimed-wood logo table.
+- [x] Finish and test the Marketing wall, member desks, attendance calendar, and sealed reclaimed-wood logo table.
 - [x] Add server-authoritative team badges to each user's left arm.
 - [ ] Let Marketing members submit private social proof-of-work links from their own desk and show those items only to Marketing.
 - [ ] Run the focused Worker, browser-module, mirror gateway, and Qt tests for this round.
@@ -208,8 +208,8 @@ the implementation and its focused verification are complete.
 - [ ] Add an admin-only error-log analytics view that groups equivalent errors and charts their occurrences over the previous 24 hours.
 - [x] Move the recent roughly 50-repository bulk-import set back onto its own World island before considering deletion.
 - [x] Identify and delete only the 54 repositories imported in that batch after verifying the exact cohort, temporarily isolating it in the World, and preserving a checksum-verified upstream/HEAD recovery archive.
-- [ ] Move Marketing desks to the front windows, face them outward, correct chair orientation, and use small desktop name plaques.
-- [ ] Crop and embed the supplied ForkMesh cube logo beneath the epoxy surface of the round Marketing table.
+- [x] Move Marketing desks to the front windows, face them outward, correct chair orientation, and use small desktop name plaques.
+- [x] Crop and embed the supplied ForkMesh cube logo beneath the epoxy surface of the round Marketing table.
 - [x] Fix the member chest Fediverse feed when it reports unavailable.
 - [x] Make Add wallet open the signed-in user's profile wallet editor.
 - [x] Allow all users to enter the building.

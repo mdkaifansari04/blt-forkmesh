@@ -34,6 +34,9 @@ class FakeRuntime:
         self.db.executescript(
             (ROOT / "migrations" / "0075_world_office_marketing_tasks.sql")
             .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" / "0096_world_office_marketing_proofs.sql")
+            .read_text(encoding="utf-8"))
         self.request_method = "GET"
         self.request_data = {}
         self.actor = ""
@@ -261,11 +264,11 @@ async def test_org_authorization_manager_roles_and_filtered_reads():
     assert "members" in manager_list["data"]
     assert "inactive" not in manager_list["data"]["members"]
     assert manager_list["data"]["members"] == ["bob", "carol"]
-    assert manager_list["data"]["marketingMembers"] == ["bob", "carol"]
-    assert manager_list["data"]["attendanceDays"][0]["hours"][0] == {
-        "member": "bob",
-        "hours": 1.25,
-    }
+    # Managers can assign only to Marketing members, but private Marketing
+    # roster/attendance/proof data stays hidden unless the actor is on Marketing.
+    assert manager_list["data"]["marketingMembers"] == []
+    assert manager_list["data"]["attendanceDays"] == []
+    assert manager_list["data"]["proofs"] == []
 
     bob_list = await tasks_api.handle(
         runtime.use("GET", "bob"), tasks_api.PREFIX)
@@ -274,6 +277,11 @@ async def test_org_authorization_manager_roles_and_filtered_reads():
     assert bob_list["data"]["canManage"] is False
     assert "members" not in bob_list["data"]
     assert [task["assignee"] for task in bob_list["data"]["tasks"]] == ["bob"]
+    assert bob_list["data"]["marketingMembers"] == ["bob", "carol"]
+    assert bob_list["data"]["attendanceDays"][0]["hours"][0] == {
+        "member": "bob",
+        "hours": 1.25,
+    }
 
     inactive_assignee = await create_task(runtime, "inactive")
     assert inactive_assignee["status"] == 400

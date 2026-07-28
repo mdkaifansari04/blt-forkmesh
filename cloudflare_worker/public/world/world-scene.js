@@ -2320,7 +2320,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:repo-social-orbits", task: "Test follower + contributor avatar orbits", estimate: "deployed · verified", done: true },
   { key: "task:issue-agent-models", task: "Issue buttons for Claude/Codex model choice", estimate: "deployed · verified", done: true },
   { key: "task:qt-agent-installers", task: "Qt mirror Claude + Codex installers", estimate: "deployed", done: true },
-  { key: "task:marketing-room-wall", task: "Marketing wall, desks, calendar + table", estimate: "testing", done: false },
+  { key: "task:marketing-room-wall", task: "Marketing wall, desks, calendar + table", estimate: "ready for deploy · in QA", done: true },
   { key: "task:avatar-team-badges", task: "Team badges on each avatar's left arm", estimate: "deployed", done: true },
   { key: "task:marketing-proof", task: "Private Marketing proof-of-work links", estimate: "building", done: false },
   { key: "task:deploy-lifecycle", task: "Live deploy spinner + ready refresh button", estimate: "deployed", done: true },
@@ -12170,6 +12170,28 @@ export function createWorldScene({
   // z-fight through it at shallow camera angles.
   officeTable.position.set(0, officeFloorY("marketing") + 2.1, 0);
   officeInterior.add(officeTable);
+  const officeTableLogoTexture = new THREE.TextureLoader().load(
+    "/assets/world/marketing-table-cube-inlay.png",
+    (texture) => {
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.needsUpdate = true;
+    },
+    undefined,
+    () => {},
+  );
+  officeTableLogoTexture.colorSpace = THREE.SRGBColorSpace;
+  const officeTableLogo = new THREE.Mesh(
+    new THREE.CircleGeometry(2.18, 64),
+    new THREE.MeshBasicMaterial({
+      map: officeTableLogoTexture,
+      color: "#ffffff",
+      toneMapped: false,
+    }),
+  );
+  officeTableLogo.name = "forkmesh-office-marketing-cube-inlay";
+  officeTableLogo.rotation.x = -Math.PI / 2;
+  officeTableLogo.position.set(0, officeFloorY("marketing") + 2.365, 0);
+  officeInterior.add(officeTableLogo);
   const officeTableEpoxy = new THREE.Mesh(
     new THREE.CylinderGeometry(2.28, 2.28, 0.09, 48),
     new THREE.MeshPhysicalMaterial({
@@ -14548,20 +14570,22 @@ export function createWorldScene({
         desk.add(leg);
       }
       const nameplate = new THREE.Mesh(
-        new THREE.PlaneGeometry(5.9, 1.46),
+        new THREE.PlaneGeometry(2.65, 0.66),
         new THREE.MeshBasicMaterial({
           map: officeMarketingDeskNameTexture(THREE, member),
           toneMapped: false,
         }),
       );
-      nameplate.position.set(0, 1.2, 1.82);
+      nameplate.name = `forkmesh-office-marketing-desk-plaque:${member}`;
+      nameplate.position.set(0, 2.22, -1.35);
+      nameplate.rotation.y = Math.PI;
       desk.add(nameplate);
-      // Desks line the rear windows rather than floating in the middle of the
-      // room. Additional rows move inward while retaining a broad aisle.
+      // Desks line the front curtain wall and face out across Town Square.
+      // Additional rows move inward while retaining a broad central aisle.
       desk.position.set(
         (column - (columns - 1) / 2) * 10.6,
         officeFloorY("marketing"),
-        -38 + row * 6.8,
+        37.2 - row * 6.8,
       );
       desk.userData.officeFloorId = "marketing";
       desk.traverse((child) => {
@@ -14585,7 +14609,7 @@ export function createWorldScene({
       deskChair.position.set(
         desk.position.x,
         officeFloorY("marketing"),
-        desk.position.z + 3.0,
+        desk.position.z - 3.2,
       );
       deskChair.userData.officeFloorId = "marketing";
       deskChair.traverse((child) => {

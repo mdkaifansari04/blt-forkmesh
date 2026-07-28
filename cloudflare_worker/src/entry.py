@@ -8377,7 +8377,7 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-5"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-6"
 WORLD_QA_CARDS = (
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
@@ -8444,8 +8444,9 @@ WORLD_QA_CARDS = (
      "desk and attendance calendar, and the old guide/banner are absent."),
     ("marketing-table", "Marketing reclaimed-wood table",
      "Inspect the Marketing room table from above and at seated height. Confirm "
-     "it is round reclaimed wood with the ForkMesh cube embedded beneath a "
-     "clear epoxy-like surface."),
+     "it is round reclaimed wood with the supplied chrome ForkMesh cube image "
+     "embedded beneath a clear epoxy-like surface. Confirm front-window desks "
+     "face outward, chairs face their desks, and names are small desktop plaques."),
     ("marketing-proof", "Private Marketing proof links",
      "As a Marketing member, submit an HTTPS social proof link from your own "
      "desk and confirm it appears there. Verify a non-Marketing account cannot "
