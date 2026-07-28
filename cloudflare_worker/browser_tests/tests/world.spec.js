@@ -1928,12 +1928,23 @@ test("Office lobby marine aquarium is visible, ambient, and animated", async ({
     const aquarium = shell.world.scene.getObjectByName(
       "forkmesh-office-marine-aquarium",
     );
-    const fish = aquarium.getObjectByName("forkmesh-office-aquarium-fish-0");
+    const fish = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-fish-clownfish-0",
+    );
+    const tail = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-fish-tail-clownfish",
+    );
     const bubble = aquarium.getObjectByName(
       "forkmesh-office-aquarium-bubble-0",
     );
-    const anemone = aquarium.getObjectByName(
-      "forkmesh-office-aquarium-anemone-0",
+    const softCoral = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-soft-coral-0",
+    );
+    const surface = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-water-surface",
+    );
+    const caustics = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-caustics",
     );
     const light = aquarium.getObjectByName("forkmesh-office-aquarium-light");
     const interactive = [];
@@ -1943,8 +1954,11 @@ test("Office lobby marine aquarium is visible, ambient, and animated", async ({
     return {
       visible: aquarium.visible,
       fish: fish.position.toArray(),
+      tailRotation: tail.rotation.y,
       bubbleY: bubble.position.y,
-      anemoneRotation: anemone.rotation.z,
+      coralRotation: softCoral.rotation.z,
+      surfaceHeight: surface.geometry.getAttribute("position").getY(0),
+      causticOpacity: caustics.children[0].material.opacity,
       lightIntensity: light.intensity,
       interactive,
     };
@@ -1954,46 +1968,91 @@ test("Office lobby marine aquarium is visible, ambient, and animated", async ({
     const aquarium = shell.world.scene.getObjectByName(
       "forkmesh-office-marine-aquarium",
     );
-    const fish = aquarium.getObjectByName("forkmesh-office-aquarium-fish-0");
+    const fish = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-fish-clownfish-0",
+    );
+    const tail = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-fish-tail-clownfish",
+    );
     const bubble = aquarium.getObjectByName(
       "forkmesh-office-aquarium-bubble-0",
     );
-    const anemone = aquarium.getObjectByName(
-      "forkmesh-office-aquarium-anemone-0",
+    const softCoral = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-soft-coral-0",
+    );
+    const surface = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-water-surface",
+    );
+    const caustics = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-caustics",
     );
     const light = aquarium.getObjectByName("forkmesh-office-aquarium-light");
     const interior = shell.world.scene.getObjectByName(
       "forkmesh-office-interior",
     );
     const cameraPosition = interior.localToWorld(
-      shell.world.camera.position.clone().set(-47, 9.4, 13),
+      shell.world.camera.position.clone().set(-58, 8.2, 13),
     );
     const target = interior.localToWorld(
       shell.world.camera.position.clone().set(-82.4, 6.1, -10.5),
     );
     shell.world.setPaused(true);
-    shell.world.camera.fov = 57;
+    shell.world.camera.fov = 52;
     shell.world.camera.updateProjectionMatrix();
     shell.world.camera.position.copy(cameraPosition);
     shell.world.camera.lookAt(target);
     shell.world.renderer.render(shell.world.scene, shell.world.camera);
     return {
       fish: fish.position.toArray(),
+      tailRotation: tail.rotation.y,
       bubbleY: bubble.position.y,
-      anemoneRotation: anemone.rotation.z,
+      coralRotation: softCoral.rotation.z,
+      surfaceHeight: surface.geometry.getAttribute("position").getY(0),
+      causticOpacity: caustics.children[0].material.opacity,
       lightIntensity: light.intensity,
     };
   });
   await page.locator("canvas.world-canvas").screenshot({
-    path: "/tmp/forkmesh-office-marine-aquarium.png",
+    path: "/tmp/forkmesh-office-cinematic-reef-close.png",
     animations: "disabled",
   });
   expect(first.visible).toBe(true);
   expect(first.interactive).toEqual([]);
   expect(second.fish).not.toEqual(first.fish);
+  expect(second.tailRotation).not.toBe(first.tailRotation);
   expect(second.bubbleY).not.toBe(first.bubbleY);
-  expect(second.anemoneRotation).not.toBe(first.anemoneRotation);
+  expect(second.coralRotation).not.toBe(first.coralRotation);
+  expect(second.surfaceHeight).not.toBe(first.surfaceHeight);
+  expect(second.causticOpacity).not.toBe(first.causticOpacity);
   expect(second.lightIntensity).not.toBe(first.lightIntensity);
+});
+
+test("Office cinematic reef remains composed with reduced motion", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-cinematic-reef-reduced-motion");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await waitForWorld(page);
+  const state = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.enterOfficeLobby({ floorId: "lobby" });
+    const aquarium = shell.world.scene.getObjectByName(
+      "forkmesh-office-marine-aquarium",
+    );
+    const fish = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-fish-clownfish-0",
+    );
+    const bubble = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-bubble-0",
+    );
+    return {
+      visible: aquarium.visible,
+      fishPosition: fish.position.toArray(),
+      bubblePosition: bubble.position.toArray(),
+    };
+  });
+  expect(state.visible).toBe(true);
+  expect(state.fishPosition[1]).toBeGreaterThan(2);
+  expect(state.bubblePosition[1]).toBeGreaterThan(0.8);
 });
 
 test("a first-frame doorway crossing enters before proximity catches up", async ({

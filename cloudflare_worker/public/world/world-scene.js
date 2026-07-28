@@ -10448,11 +10448,11 @@ function createOfficeMarineAquarium(THREE, animated) {
     const joints = [
       [0, 0, 0],
       [0, 1.15, 0],
-      [-0.46, 1.86, 0.08],
-      [0.48, 2.04, -0.06],
-      [-0.66, 2.48, 0.12],
-      [0.7, 2.72, -0.14],
-      [0.04, 2.42, 0.2],
+      [-0.06, 1.86, -0.46],
+      [0.08, 2.04, 0.48],
+      [-0.08, 2.48, -0.72],
+      [0.06, 2.72, 0.76],
+      [0.02, 2.42, 0.16],
     ];
     for (const [from, to] of [
       [0, 1],
@@ -10652,6 +10652,58 @@ function createOfficeMarineAquarium(THREE, animated) {
       grass.add(blade);
     }
     return grass;
+  }
+
+  function createAquariumStarfish(THREE, material, scale) {
+    const starfish = new THREE.Group();
+    const center = new THREE.Mesh(
+      new THREE.SphereGeometry(0.13 * scale, 14, 10),
+      material,
+    );
+    center.scale.y = 0.34;
+    starfish.add(center);
+    for (let index = 0; index < 5; index += 1) {
+      const angle = (index / 5) * Math.PI * 2;
+      starfish.add(
+        aquariumCylinderBetween(
+          THREE,
+          new THREE.Vector3(0, 0, 0),
+          new THREE.Vector3(
+            Math.cos(angle) * 0.42 * scale,
+            0.025 * scale,
+            Math.sin(angle) * 0.42 * scale,
+          ),
+          0.105 * scale,
+          0.025 * scale,
+          material,
+          7,
+        ),
+      );
+    }
+    return starfish;
+  }
+
+  function createAquariumClam(THREE, materials, scale) {
+    const clam = new THREE.Group();
+    for (const side of [-1, 1]) {
+      const shell = new THREE.Mesh(
+        new THREE.SphereGeometry(
+          0.32 * scale,
+          18,
+          10,
+          0,
+          Math.PI * 2,
+          0,
+          Math.PI / 2,
+        ),
+        side > 0 ? materials.base : materials.tip,
+      );
+      shell.scale.set(1, 0.45, 0.8);
+      shell.position.x = side * 0.08 * scale;
+      shell.rotation.z = side * 0.42;
+      clam.add(shell);
+    }
+    return clam;
   }
 
   function createAquariumDepthTexture(THREE) {
@@ -10857,6 +10909,38 @@ function createOfficeMarineAquarium(THREE, animated) {
     rubble.rotation.y = index * 1.17;
     sand.add(rubble);
   }
+  const starfishMaterial = new THREE.MeshPhysicalMaterial({
+    color: "#e88442",
+    roughness: 0.72,
+    clearcoat: 0.12,
+  });
+  for (const [index, x, z, scale] of [
+    [0, 0.58, 8.8, 0.72],
+    [1, -0.62, -0.2, 0.54],
+  ]) {
+    const starfish = createAquariumStarfish(THREE, starfishMaterial, scale);
+    starfish.name = `forkmesh-office-aquarium-starfish-${index}`;
+    starfish.position.set(x, 0.88, z);
+    starfish.rotation.y = index * 1.34;
+    sand.add(starfish);
+  }
+  const clamMaterials = {
+    base: new THREE.MeshPhysicalMaterial({
+      color: "#b974c7",
+      roughness: 0.38,
+      clearcoat: 0.46,
+    }),
+    tip: new THREE.MeshPhysicalMaterial({
+      color: "#75d4c5",
+      roughness: 0.34,
+      clearcoat: 0.52,
+    }),
+  };
+  const clam = createAquariumClam(THREE, clamMaterials, 0.76);
+  clam.name = "forkmesh-office-aquarium-clam";
+  clam.position.set(0.36, 0.9, 5.7);
+  clam.rotation.y = -0.48;
+  sand.add(clam);
   const liveRockMaterial = new THREE.MeshPhysicalMaterial({
     color: "#4d3f36",
     roughness: 0.9,
@@ -10909,7 +10993,8 @@ function createOfficeMarineAquarium(THREE, animated) {
       depthWrite: !transparent,
     }),
   });
-  const staghornMaterials = coralMaterialPair("#d75b91", "#ffd1e7");
+  const staghornMaterials = coralMaterialPair("#d95791", "#ffd1e7");
+  const mintStaghornMaterials = coralMaterialPair("#43bfa4", "#c8fff1");
   const plateMaterials = coralMaterialPair("#ac6be0", "#e6c8ff");
   const brainMaterials = coralMaterialPair("#d38c3b", "#ffd67a");
   const fanMaterials = coralMaterialPair("#a84da8", "#f1a9e6", true);
@@ -10921,12 +11006,13 @@ function createOfficeMarineAquarium(THREE, animated) {
   group.add(coralGarden);
   const corals = [];
   for (const [index, x, y, z, scale] of [
-    [0, -0.28, 1.68, -9.4, 0.74],
-    [1, 0.28, 1.56, -4.4, 0.64],
+    [0, -0.28, 1.76, -9.4, 1.02],
+    [1, 0.28, 1.64, -4.4, 0.9],
+    [2, -0.18, 1.36, 2.5, 0.68],
   ]) {
     const staghorn = createBranchingCoral(
       THREE,
-      staghornMaterials,
+      index === 1 ? mintStaghornMaterials : staghornMaterials,
       scale,
       index + 8,
     );
@@ -10935,8 +11021,8 @@ function createOfficeMarineAquarium(THREE, animated) {
     coralGarden.add(staghorn);
   }
   for (const [index, x, y, z, scale] of [
-    [0, 0.26, 1.52, -6.9, 0.72],
-    [1, -0.24, 1.34, 1.4, 0.62],
+    [0, 0.26, 1.62, -6.9, 0.92],
+    [1, -0.24, 1.44, 1.1, 0.82],
   ]) {
     const plate = createPlateCoral(THREE, plateMaterials, scale, index + 14);
     plate.name = `forkmesh-office-aquarium-plate-coral-${index}`;
@@ -10953,8 +11039,8 @@ function createOfficeMarineAquarium(THREE, animated) {
     coralGarden.add(brain);
   }
   for (const [index, x, y, z, scale, phase] of [
-    [0, -0.42, 1.62, -8.1, 0.68, 0.4],
-    [1, -0.46, 1.36, 0.2, 0.56, 2.1],
+    [0, -0.42, 1.58, -8.1, 1.12, 0.4],
+    [1, -0.46, 1.34, 0.1, 0.92, 2.1],
   ]) {
     const coral = createSeaFan(THREE, fanMaterials, scale, index + 21);
     coral.name = `forkmesh-office-aquarium-sea-fan-${index}`;
@@ -10963,9 +11049,9 @@ function createOfficeMarineAquarium(THREE, animated) {
     coralGarden.add(coral);
   }
   for (const [index, x, y, z, scale, phase] of [
-    [0, 0.5, 1.5, -5.4, 0.72, 0.8],
-    [1, -0.34, 1.3, 2.8, 0.62, 2.4],
-    [2, 0.3, 1.08, 6.8, 0.48, 4.2],
+    [0, 0.5, 1.58, -5.4, 1.04, 0.8],
+    [1, -0.34, 1.38, 2.8, 0.9, 2.4],
+    [2, 0.3, 1.14, 6.8, 0.72, 4.2],
   ]) {
     const coral = createSoftCoral(THREE, softMaterials, scale, index + 30);
     coral.name = `forkmesh-office-aquarium-soft-coral-${index}`;
@@ -10975,8 +11061,8 @@ function createOfficeMarineAquarium(THREE, animated) {
   }
   const anemones = [];
   for (const [index, x, y, z, scale, phase] of [
-    [0, 0.38, 1.46, -1.2, 0.72, 0.4],
-    [1, -0.32, 1.18, 6.1, 0.58, 2.1],
+    [0, 0.38, 1.5, -1.2, 0.98, 0.4],
+    [1, -0.32, 1.22, 6.1, 0.84, 2.1],
   ]) {
     const anemone = createAquariumAnemone(
       THREE,
