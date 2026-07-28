@@ -1,10 +1,14 @@
 #pragma once
 
+#include <QByteArray>
 #include <QColor>
 #include <QFont>
+#include <QUrl>
 #include <QVector>
 #include <QWidget>
 
+class QContextMenuEvent;
+class QMouseEvent;
 class QSocketNotifier;
 
 // A self-contained, lightweight terminal emulator that runs a command under a
@@ -33,6 +37,10 @@ public:
 signals:
     void started();
     void finished(int exitCode);
+    // Emitted once per run when a Claude sign-in link appears in the output,
+    // so a live-shell caller can open it without the user having to select
+    // and copy the wrapped URL by hand.
+    void signInUrlDetected(const QUrl &url);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -41,6 +49,11 @@ protected:
     void wheelEvent(QWheelEvent *event) override;
     void focusInEvent(QFocusEvent *event) override;
     void focusOutEvent(QFocusEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
+    void contextMenuEvent(QContextMenuEvent *event) override;
     bool event(QEvent *event) override;
 
 private:
@@ -59,6 +72,7 @@ private:
     void reap(bool emitSignal);  // collect the child's exit status
     void writeToPty(const QByteArray &bytes);
     void applyWinSize();         // TIOCSWINSZ from the current grid size
+    void pasteFromClipboard();
 
     // --- screen model ---
     void recomputeGrid();        // size the grid from the widget + font metrics
@@ -82,6 +96,21 @@ private:
 
     int cols() const { return m_cols; }
     int rows() const { return m_rows; }
+
+    // --- selection / clipboard ---
+    struct CellPos {
+        int row = 0; // absolute index into scrollback+screen stream
+        int col = 0;
+    };
+    CellPos cellPosAt(const QPoint &widgetPos) const;
+    const Row *rowAt(int absRow) const;
+    int streamRowCount() const;
+    QString selectedText() const;
+    void copySelection() const;
+    void clearSelection();
+
+    // --- sign-in link detection ---
+    void scanForSignInUrl(const QByteArray &chunk);
 
     // PTY state
     int m_master = -1;
@@ -123,6 +152,18 @@ private:
 
     // View scroll: how many lines up from the bottom the viewport is shifted.
     int m_viewOffset = 0;
+
+    // Selection (mouse drag), in absolute stream-row/col coordinates.
+    bool m_selecting = false;
+    bool m_hasSelection = false;
+    CellPos m_selAnchor;
+    CellPos m_selCursor;
+
+    // Sign-in URL scan: a rolling tail of raw child output, scanned for a
+    // Claude OAuth link so it can be opened automatically. Not reset on
+    // resize/repaint, only on a fresh runCommand().
+    QByteArray m_urlScanBuffer;
+    bool m_signInUrlEmitted = false;
 
     // Parser state machine
     enum class State { Ground, Esc, Csi, Osc, EscIntermediate };
