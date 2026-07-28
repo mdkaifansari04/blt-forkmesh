@@ -194,6 +194,27 @@ def test_assignment_control_has_explicit_contrast_and_tasks_can_finish_or_delete
     assert '.world-office-task[data-status="done"]' in css
 
 
+def test_marketing_members_can_add_private_proof_from_their_own_desk():
+    tasks = source(TASKS)
+    scene = source(SCENE)
+    for contract in (
+        "function normalizedProof(proof)",
+        "proofs = Array.isArray(payload?.proofs)",
+        'if (action === "proof")',
+        "!marketingMembers.includes(actor) || member !== actor",
+        '`${OFFICE_TASKS_PATH}/proofs`',
+        '"Paste the public HTTPS social post link:"',
+    ):
+        assert contract in tasks
+    for contract in (
+        "function officeMarketingDeskProofTexture(",
+        "officeMarketingTaskSnapshot.proofs",
+        'proofPanel.userData.interactive = "office-marketing-proof-desk"',
+        'action: "proof"',
+    ):
+        assert contract in scene
+
+
 def test_task_text_is_bounded_and_html_escaped_before_rendering():
     tasks = source(TASKS)
     assert "function escapeHTML" in tasks

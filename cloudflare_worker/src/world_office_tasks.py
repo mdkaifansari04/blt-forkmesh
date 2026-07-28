@@ -405,7 +405,7 @@ async def _proof_create(
         "office.marketing_proof_created",
         "office_marketing_proof",
         proof_id,
-        details={"host": urlsplit(url).hostname},
+        details={"source": "marketing_desk"},
     )
     records = await _proof_records(runtime, org_bi)
     proof = next(

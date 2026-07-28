@@ -1987,6 +1987,29 @@ function normalizeOfficeMarketingTasks(payload = {}) {
             })),
         }))
     : [];
+  const proofs = authorized
+    ? (Array.isArray(source.proofs) ? source.proofs : [])
+        .filter(
+          (proof) =>
+            proof && typeof proof === "object" && !Array.isArray(proof),
+        )
+        .slice(0, 5000)
+        .map((proof) => ({
+          id: boundedOfficeMarketingTaskText(proof.id, 64),
+          member: boundedOfficeMarketingTaskText(
+            proof.member,
+            24,
+          ).toLowerCase(),
+          host: boundedOfficeMarketingTaskText(proof.host, 120),
+          label: boundedOfficeMarketingTaskText(
+            proof.label,
+            120,
+            "Social post",
+          ),
+          createdAt: Math.max(0, Number(proof.createdAt) || 0),
+        }))
+        .filter((proof) => proof.id && proof.member && proof.host)
+    : [];
   const state =
     !authorized || requestedState === "locked"
       ? "locked"
@@ -1999,6 +2022,7 @@ function normalizeOfficeMarketingTasks(payload = {}) {
     authorized, state, tasks,
     members,
     attendanceDays,
+    proofs,
     actor: boundedOfficeMarketingTaskText(source.actor, 24).toLowerCase(),
     canManage: authorized && source.canManage === true,
   };
@@ -2158,6 +2182,58 @@ function officeMarketingDeskNameTexture(THREE, member) {
     context.fillStyle = "#7eb899";
     context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText("MARKETING · RESERVED DESK", 384, 145, 690);
+  });
+}
+
+function officeMarketingDeskProofTexture(
+  THREE,
+  member,
+  proofs,
+  canAdd,
+) {
+  return canvasTexture(THREE, 768, 512, (context) => {
+    context.fillStyle = "#06150f";
+    context.fillRect(0, 0, 768, 512);
+    context.strokeStyle = canAdd ? "#9ef7c6" : "#416957";
+    context.lineWidth = 8;
+    context.strokeRect(6, 6, 756, 500);
+    context.fillStyle = "#dffff0";
+    context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("POSTED WORK", 34, 60);
+    context.fillStyle = "#7eb899";
+    context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(`@${String(member || "").slice(0, 24)}`, 34, 98);
+    const rows = (Array.isArray(proofs) ? proofs : []).slice(0, 4);
+    if (!rows.length) {
+      context.fillStyle = "#70887c";
+      context.font = '600 29px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        canAdd ? "CLICK TO ADD HTTPS PROOF" : "NO POSTS RECORDED",
+        34,
+        186,
+        700,
+      );
+      return;
+    }
+    rows.forEach((proof, index) => {
+      const y = 158 + index * 76;
+      context.fillStyle = "#effff6";
+      context.font = '700 27px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        String(proof.label || proof.host || "Social post").slice(0, 38),
+        34,
+        y,
+        700,
+      );
+      context.fillStyle = "#83cba8";
+      context.font = '600 21px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(String(proof.host || "").slice(0, 54), 34, y + 30, 700);
+    });
+    if (canAdd) {
+      context.fillStyle = "#9ef7c6";
+      context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("+ CLICK DESK TO ADD ANOTHER", 34, 480);
+    }
   });
 }
 
@@ -2322,7 +2398,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:qt-agent-installers", task: "Qt mirror Claude + Codex installers", estimate: "deployed", done: true },
   { key: "task:marketing-room-wall", task: "Marketing wall, desks, calendar + table", estimate: "ready for deploy · in QA", done: true },
   { key: "task:avatar-team-badges", task: "Team badges on each avatar's left arm", estimate: "deployed", done: true },
-  { key: "task:marketing-proof", task: "Private Marketing proof-of-work links", estimate: "building", done: false },
+  { key: "task:marketing-proof", task: "Private Marketing proof-of-work links", estimate: "ready for deploy · in QA", done: true },
   { key: "task:deploy-lifecycle", task: "Live deploy spinner + ready refresh button", estimate: "deployed", done: true },
   { key: "task:elevator-camera-lock", task: "Elevator button camera lock + release", estimate: "deployed", done: true },
   { key: "task:build-board-nearby", task: "Refresh task wall when a player approaches", estimate: "deployed", done: true },
@@ -12313,6 +12389,7 @@ export function createWorldScene({
   const officeMarketingRosterGroup = new THREE.Group();
   officeMarketingRosterGroup.name = "forkmesh-office-marketing-roster-desks";
   officeInterior.add(officeMarketingRosterGroup);
+  let officeMarketingDeskInteractives = [];
   const officeMarketingAttendanceBoard = new THREE.Mesh(
     new THREE.PlaneGeometry(25, 12.5),
     new THREE.MeshBasicMaterial({
@@ -14535,6 +14612,13 @@ export function createWorldScene({
   }
 
   function rebuildOfficeMarketingRoster() {
+    if (officeMarketingDeskInteractives.length) {
+      const stale = new Set(officeMarketingDeskInteractives);
+      for (let index = interactive.length - 1; index >= 0; index -= 1) {
+        if (stale.has(interactive[index])) interactive.splice(index, 1);
+      }
+      officeMarketingDeskInteractives = [];
+    }
     officeMarketingRosterGroup.traverse((child) => {
       if (!child.isMesh) return;
       child.geometry?.dispose?.();
@@ -14580,6 +14664,35 @@ export function createWorldScene({
       nameplate.position.set(0, 2.22, -1.35);
       nameplate.rotation.y = Math.PI;
       desk.add(nameplate);
+      const memberProofs = officeMarketingTaskSnapshot.proofs
+        .filter((proof) => proof.member === member)
+        .sort((left, right) => right.createdAt - left.createdAt);
+      const canAddProof =
+        officeMarketingTaskSnapshot.actor === member &&
+        officeMarketingTaskSnapshot.members.includes(member);
+      const proofPanel = new THREE.Mesh(
+        new THREE.PlaneGeometry(2.7, 1.8),
+        new THREE.MeshBasicMaterial({
+          map: officeMarketingDeskProofTexture(
+            THREE,
+            member,
+            memberProofs,
+            canAddProof,
+          ),
+          toneMapped: false,
+        }),
+      );
+      proofPanel.name = `forkmesh-office-marketing-proof-desk:${member}`;
+      proofPanel.position.set(0, 2.1, 0.2);
+      proofPanel.rotation.x = -Math.PI / 2;
+      proofPanel.userData.officeFloorId = "marketing";
+      if (canAddProof) {
+        proofPanel.userData.interactive = "office-marketing-proof-desk";
+        proofPanel.userData.marketingMember = member;
+        officeMarketingDeskInteractives.push(proofPanel);
+        interactive.push(proofPanel);
+      }
+      desk.add(proofPanel);
       // Desks line the front curtain wall and face out across Town Square.
       // Additional rows move inward while retaining a broad central aisle.
       desk.position.set(
@@ -21102,6 +21215,16 @@ export function createWorldScene({
           count: officeMarketingTaskBoard.userData.taskCount,
         });
       }
+      return;
+    }
+    if (
+      officeSceneMode !== "town" &&
+      hit?.object?.userData?.interactive === "office-marketing-proof-desk"
+    ) {
+      onOfficeTaskWallAction({
+        action: "proof",
+        member: String(hit.object.userData.marketingMember || ""),
+      });
       return;
     }
     if (hit?.object?.userData?.interactive === "world-bulletin-scroll-up") {

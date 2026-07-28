@@ -104,6 +104,22 @@ function normalizedTask(task) {
   };
 }
 
+function normalizedProof(proof) {
+  if (!proof || typeof proof !== "object") return null;
+  const id = safeTaskId(proof.id);
+  const member = text(proof.member, 64).toLowerCase();
+  const host = text(proof.host, 120).toLowerCase();
+  const label = text(proof.label, 120);
+  if (!id || !member || !host) return null;
+  return {
+    id,
+    member,
+    host,
+    label: label || host,
+    createdAt: timestampMs(proof.createdAt),
+  };
+}
+
 export function formatOfficeTaskElapsed(value) {
   const totalSeconds = Math.max(0, Math.floor((Number(value) || 0) / 1000));
   const hours = Math.floor(totalSeconds / 3600);
@@ -171,6 +187,7 @@ export function createWorldOfficeTasksController({
   let assignable = [];
   let marketingMembers = [];
   let attendanceDays = [];
+  let proofs = [];
   let syncedAt = performance.now();
   let serverNowAtSync = Date.now();
   let lastRefreshAt = 0;
@@ -270,6 +287,7 @@ export function createWorldOfficeTasksController({
       })),
       members: canManage ? assignable : marketingMembers,
       attendanceDays,
+      proofs,
     });
     selfWorkState(state, message);
   }
@@ -557,6 +575,7 @@ export function createWorldOfficeTasksController({
       assignable = [];
       marketingMembers = [];
       attendanceDays = [];
+      proofs = [];
       loading = false;
       if (!quiet) setStatus("Sign in to access organization marketing tasks.");
       physicalState("locked", "Organization access required");
@@ -593,6 +612,12 @@ export function createWorldOfficeTasksController({
         attendanceDays = Array.isArray(payload?.attendanceDays)
           ? payload.attendanceDays.slice(-7)
           : [];
+        proofs = Array.isArray(payload?.proofs)
+          ? payload.proofs
+              .map(normalizedProof)
+              .filter(Boolean)
+              .slice(0, 5000)
+          : [];
         tasks = Array.isArray(payload?.tasks)
           ? payload.tasks.map(normalizedTask).filter(Boolean).slice(0, 100)
           : [];
@@ -612,6 +637,7 @@ export function createWorldOfficeTasksController({
         assignable = [];
         marketingMembers = [];
         attendanceDays = [];
+        proofs = [];
         loading = false;
         render();
         setStatus(
@@ -733,6 +759,29 @@ export function createWorldOfficeTasksController({
 
   async function physicalAction(payload = {}) {
     const action = text(payload?.action, 24).toLowerCase();
+    if (action === "proof") {
+      const member = text(payload?.member, 64).toLowerCase();
+      if (!marketingMembers.includes(actor) || member !== actor) {
+        toast("Only a Marketing member can add proof to their own desk.");
+        return false;
+      }
+      const entered = window.prompt(
+        "Paste the public HTTPS social post link:",
+        "",
+      );
+      const url = String(entered || "").trim().slice(0, 500);
+      if (!url) return false;
+      const label = text(
+        window.prompt("Short label for this post (optional):", "") || "",
+        120,
+      );
+      const saved = await mutate(
+        `${OFFICE_TASKS_PATH}/proofs`,
+        { url, label },
+      );
+      if (saved) toast("Proof of work added to your Marketing desk.");
+      return saved;
+    }
     if (action === "create") {
       if (!canManage) {
         toast("Only an organization manager can create Marketing tasks.");

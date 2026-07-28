@@ -56,7 +56,7 @@ the implementation and its focused verification are complete.
 - [x] Finish and test the Qt host buttons that install the official Claude Code and Codex CLIs.
 - [x] Finish and test the Marketing wall, member desks, attendance calendar, and sealed reclaimed-wood logo table.
 - [x] Add server-authoritative team badges to each user's left arm.
-- [ ] Let Marketing members submit private social proof-of-work links from their own desk and show those items only to Marketing.
+- [x] Let Marketing members submit private social proof-of-work links from their own desk and show those items only to Marketing.
 - [ ] Run the focused Worker, browser-module, mirror gateway, and Qt tests for this round.
 - [ ] Deploy this round, verify the production revision/assets, and move each completed sticky to Done.
 - [x] Keep Mastodon follower avatars visibly orbiting the selected repository file circle at every normal camera angle.

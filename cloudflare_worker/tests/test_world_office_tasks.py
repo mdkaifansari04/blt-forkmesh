@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -169,6 +170,11 @@ class FakeRuntime:
         return json.loads(base64.urlsafe_b64decode(
             str(value)[7:].encode()).decode())
 
+    async def blind(self, value):
+        return hashlib.sha256(
+            ("test-blind:" + str(value)).encode()
+        ).hexdigest()
+
     async def audit(self, actor, action, target_type="", target="",
                     outcome="success", details=None):
         self.audits.append({
@@ -304,6 +310,55 @@ async def test_org_authorization_manager_roles_and_filtered_reads():
         tasks_api.PREFIX,
     )
     assert external_manage["status"] == 403
+
+
+@run_async_test
+async def test_marketing_proofs_are_encrypted_and_marketing_team_only():
+    runtime = FakeRuntime()
+    url = "https://social.example/posts/forkmesh-launch"
+    label = "Launch announcement"
+    denied = await tasks_api.handle(
+        runtime.use("POST", "mary", {"url": url, "label": label}),
+        f"{tasks_api.PREFIX}/proofs",
+    )
+    assert denied["status"] == 403
+    assert denied["data"]["error"] == "marketing_team_only"
+
+    insecure = await tasks_api.handle(
+        runtime.use("POST", "bob", {"url": "http://example.com/post"}),
+        f"{tasks_api.PREFIX}/proofs",
+    )
+    assert insecure["status"] == 400
+    assert insecure["data"]["error"] == "invalid_social_url"
+
+    created = await tasks_api.handle(
+        runtime.use("POST", "bob", {"url": url, "label": label}),
+        f"{tasks_api.PREFIX}/proofs",
+    )
+    assert created["status"] == 201
+    assert created["data"]["proof"]["member"] == "bob"
+    assert created["data"]["proof"]["url"] == url
+    assert created["data"]["proof"]["label"] == label
+    stored = runtime.db.execute(
+        "SELECT url_bi,data FROM world_office_marketing_proofs"
+    ).fetchone()
+    assert url not in stored[0]
+    assert url not in stored[1]
+    assert label not in stored[1]
+    assert url not in json.dumps(runtime.audits)
+    assert "social.example" not in json.dumps(runtime.audits)
+
+    marketing_view = await tasks_api.handle(
+        runtime.use("GET", "carol"),
+        f"{tasks_api.PREFIX}/proofs",
+    )
+    assert marketing_view["status"] == 200
+    assert marketing_view["data"]["proofs"][0]["url"] == url
+    outside_view = await tasks_api.handle(
+        runtime.use("GET", "eve"),
+        f"{tasks_api.PREFIX}/proofs",
+    )
+    assert outside_view["status"] == 403
 
 
 @run_async_test

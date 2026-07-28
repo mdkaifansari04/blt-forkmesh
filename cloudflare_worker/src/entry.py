@@ -8377,7 +8377,7 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-6"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-7"
 WORLD_QA_CARDS = (
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
