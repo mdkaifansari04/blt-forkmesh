@@ -31,6 +31,18 @@
             "sig": "J0m1NhJMmvewRRrualkxQtYTzB3bwWhPTlL55MFUoo7L82bTa20REptv6Zo-3382QuCTVpxZNO8J-3d25SQ8Cw",
             "ts": 1785207629725,
             "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 423,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "87ad1ae8-1aa9-4084-a83c-d76ebe343bfd",
+            "sig": "BWfWvuEw4JzBhWx5HUOc7LPNbpS4NA9OaUYXAspyw_50EY-FY0CCytAopUuuuko7so4mytaFuOtAY45cPkXGBQ",
+            "ts": 1785207634193,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -44,6 +56,6 @@
     "startDate": 0,
     "status": "open",
     "title": "Add wave button",
-    "updatedAt": 1785207629725,
+    "updatedAt": 1785207634193,
     "votes": 0
 }
