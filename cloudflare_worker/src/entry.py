@@ -8464,6 +8464,12 @@ WORLD_QA_CARDS = (
      "the forkmesh-node service account. Start a Claude task from an Engineering "
      "account and confirm it targets mirror6; confirm an offline, stale, or "
      "Claude-missing mirror is never offered or selected."),
+    ("headless-agent-checkout", "Headless mirror agent checkout",
+     "Provision a new headless mirror and confirm its private service-owned "
+     "forkmesh working checkout exists before forkmesh-node starts. Restart the "
+     "service twice and confirm the checkout remains selected, the signed "
+     "catalog stays fresh, and a Claude or Codex job can be claimed without a "
+     "\"no local checkout\" error."),
     ("mirror-agent-status", "Mirror cabinet agent status",
      "Inspect each mirror cabinet side. Confirm agent tasks show running, "
      "stopped, merged, or attention and the authorized detail panel agrees."),

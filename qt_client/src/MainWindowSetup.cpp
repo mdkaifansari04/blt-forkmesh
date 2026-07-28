@@ -2346,8 +2346,28 @@ void MainWindow::ensureFlagshipRepo()
                 changed = true;
             }
             if (m_headless && !repo.localPath.trimmed().isEmpty()) {
-                repo.localPath.clear();
-                changed = true;
+                // Headless agent workers need a real working tree. Older
+                // bootstrap code unconditionally discarded the installer-
+                // provisioned checkout here, leaving a healthy mirror and
+                // installed provider CLIs unable to claim any job. Preserve a
+                // private checkout beneath the service account's home, while
+                // still rejecting stale, external, or missing paths copied
+                // from another machine.
+                const QString localPath =
+                    QFileInfo(repo.localPath).canonicalFilePath();
+                const QString serviceHome =
+                    QFileInfo(QDir::homePath()).canonicalFilePath();
+                const bool serviceManagedCheckout =
+                    !localPath.isEmpty() && !serviceHome.isEmpty() &&
+                    (localPath == serviceHome ||
+                     localPath.startsWith(serviceHome + QLatin1Char('/'))) &&
+                    QFileInfo(QDir(localPath).filePath(
+                                  QStringLiteral(".git")))
+                        .exists();
+                if (!serviceManagedCheckout) {
+                    repo.localPath.clear();
+                    changed = true;
+                }
             }
             if (repo.mirrorPath.trimmed().isEmpty() ||
                 (m_headless &&
