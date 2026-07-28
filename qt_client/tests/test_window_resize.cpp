@@ -1502,6 +1502,24 @@ int main(int argc, char *argv[])
               QString("the default branch is pinned to the top of the branches "
                       "list (adhoc #185, first row = %1)")
                   .arg(order.isEmpty() ? QStringLiteral("<none>") : order.first()));
+
+        // adhoc #420: following a branch link must land on the branch straight
+        // away. The panel's git reads run on a worker thread now, so the
+        // selection has to come from the rows already on screen — reading it
+        // back without pumping the event loop proves nothing was waited on.
+        const QString landed = window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/keep-selected"));
+        check(landed == QStringLiteral("feature/keep-selected"),
+              QString("clicking a branch link selects the branch without waiting "
+                      "for the panel's git reads (adhoc #420, landed on %1)")
+                  .arg(landed.isEmpty() ? QStringLiteral("<none>") : landed));
+        // And the refresh it kicked off still lands, leaving that branch selected.
+        window.testReloadBranchesPanel();
+        QApplication::processEvents();
+        const QStringList after = window.testBranchRowOrder();
+        check(after.contains(QStringLiteral("feature/keep-selected")),
+              QStringLiteral("the background refresh rebuilds the rows after the "
+                             "click (adhoc #420)"));
     }
 
     // adhoc #183/follow-up: the repo's default (merge-base) branch must stay
