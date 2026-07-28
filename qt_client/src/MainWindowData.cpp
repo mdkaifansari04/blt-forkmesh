@@ -636,9 +636,10 @@ void MainWindow::startAutoBackups()
     m_backupTimer->start();
 
     // Catch up when this launch comes more than an hour after the newest
-    // snapshot (the app was closed overnight, or backups were just switched on).
-    // Deferred a few seconds so the first frame isn't competing with tar for
-    // the disk, and so a rapid restart loop can't spawn one per launch.
+    // snapshot (the app was closed overnight, or backups were just switched on)
+    // — otherwise a machine that is only ever up for 50 minutes at a time would
+    // never get a backup at all. Deferred a few seconds so the first frame isn't
+    // competing with tar for the disk.
     const QList<forkmesh::BackupSnapshot> snapshots =
         forkmesh::listBackups(backupRoot());
     const QDateTime last =
@@ -662,9 +663,13 @@ void MainWindow::takeBackupNow(bool automatic)
 
     const QString tarExe = QStandardPaths::findExecutable(QStringLiteral("tar"));
     if (tarExe.isEmpty()) {
+        // The panel isn't built on a headless node, so the log is the only place
+        // an unattended host can report that its backups never ran.
         setBackupStatus("Can't back up: the 'tar' tool was not found on this "
                         "system.",
                         true);
+        logSystem(QStringLiteral(
+            "Backup: skipped \xE2\x80\x94 'tar' was not found on this system."));
         return;
     }
 
@@ -862,6 +867,7 @@ void MainWindow::deleteDataDir(const QString &label, const QString &path,
                       "files may be in use.",
                       true);
     refreshDataDirTable();
+    refreshBackupTable(); // the Backups row is one of the deletable locations
 }
 
 void MainWindow::deleteAllData()
