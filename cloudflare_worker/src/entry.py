@@ -8377,7 +8377,7 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-7"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-8"
 WORLD_QA_CARDS = (
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
@@ -8451,6 +8451,11 @@ WORLD_QA_CARDS = (
      "As a Marketing member, submit an HTTPS social proof link from your own "
      "desk and confirm it appears there. Verify a non-Marketing account cannot "
      "read or submit any proof records."),
+    ("general-chat-board", "Recent #general World board",
+     "Open the World beside the event bulletin. Confirm the #general board "
+     "fills from retained and live encrypted chat with author, time, message, "
+     "image thumbnail/file label and reaction count when present. Click it and "
+     "confirm the complete #general chat opens."),
     ("avatar-team-badges", "Avatar team badges",
      "View members from the front-left and confirm each authorized team appears "
      "as a readable badge on the member's left arm, without exposing private "

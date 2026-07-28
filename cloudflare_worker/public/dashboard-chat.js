@@ -1398,6 +1398,50 @@
   // recent line — reconnects never resurrect old bubbles.
   const WORLD_EMBED_BUBBLES =
     requestedParams.get("worldEmbed") === "1" && window.parent !== window;
+  const worldAttachmentPreviewCache = new WeakMap();
+
+  function worldAttachmentPreview(attachment) {
+    if (
+      !attachment ||
+      typeof attachment !== "object" ||
+      !String(attachment.fileMime || "").startsWith("image/")
+    ) {
+      return Promise.resolve("");
+    }
+    if (worldAttachmentPreviewCache.has(attachment)) {
+      return worldAttachmentPreviewCache.get(attachment);
+    }
+    const pending = new Promise((resolve) => {
+      const image = new Image();
+      image.onload = () => {
+        try {
+          const scale = Math.min(1, 160 / Math.max(image.width, image.height));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(image.width * scale));
+          canvas.height = Math.max(1, Math.round(image.height * scale));
+          canvas.getContext("2d")?.drawImage(
+            image,
+            0,
+            0,
+            canvas.width,
+            canvas.height,
+          );
+          const preview = canvas.toDataURL("image/webp", 0.7);
+          resolve(preview.length <= 120_000 ? preview : "");
+        } catch (_) {
+          resolve("");
+        }
+      };
+      image.onerror = () => resolve("");
+      try {
+        image.src = attachmentObjectUrl(attachment);
+      } catch (_) {
+        resolve("");
+      }
+    });
+    worldAttachmentPreviewCache.set(attachment, pending);
+    return pending;
+  }
 
   // Authored by the signed-in account, but not necessarily by this browser —
   // another tab, a phone, or the desktop client counts too. Kept apart from
@@ -1411,35 +1455,67 @@
     return String(sender || "").trim().toLowerCase() === account;
   }
 
-  function emitWorldChatBubble(sender, senderId, text, history = false) {
+  function emitWorldChatBubble(
+    sender,
+    senderId,
+    text,
+    history = false,
+    meta = {},
+  ) {
     if (!WORLD_EMBED_BUBBLES) return;
     if (orgAgentIdentity(sender, senderId) && !orgAgentEngineeringAccess) return;
     const line = String(text || "").trim().slice(0, 200);
-    if (!line) return;
-    try {
-      window.parent.postMessage(
-        {
+    const attachmentName = safeAttachmentName(meta?.attachment?.fileName || "");
+    if (!line && !attachmentName) return;
+    const payload = {
           type: "forkmesh:world-chat",
+          id: String(meta?.id || "").slice(0, 96),
           sender: String(sender || "").slice(0, MAX_NAME),
           self: senderId === selfId,
           own: isOwnChatLine(sender, senderId),
           text: line,
+          ts: Number(meta?.ts) || Date.now(),
+          attachmentName: attachmentName === "file" ? "" : attachmentName,
+          attachmentMime: safeAttachmentMime(
+            meta?.attachment?.fileMime || "",
+          ).slice(0, MAX_ATTACHMENT_MIME),
+          reactionCount: Math.max(
+            0,
+            Math.min(999, Number(meta?.reactionCount) || 0),
+          ),
           history,
-        },
-        location.origin
-      );
-    } catch (_) {}
+        };
+    const post = (attachmentPreview = "") => {
+      try {
+        window.parent.postMessage(
+          { ...payload, attachmentPreview },
+          location.origin,
+        );
+      } catch (_) {}
+    };
+    post();
+    if (meta?.attachment) {
+      void worldAttachmentPreview(meta.attachment).then((preview) => {
+        if (preview) post(preview);
+      });
+    }
   }
 
-  // Replayed entries can arrive out of order, so only forward a history line
-  // when it is the newest one seen — the parent's CHAT bar keeps the latest.
+  // Replayed entries can arrive out of order. Forward each bounded record so
+  // the physical World board can sort the recent backlog; the parent updates
+  // its collapsed CHAT label only when the timestamp is newer.
   let newestHistoryTs = 0;
   function emitWorldChatHistory(entry) {
-    if (!WORLD_EMBED_BUBBLES || !entry.text) return;
+    if (!WORLD_EMBED_BUBBLES) return;
     const ts = Number(entry.ts) || 0;
-    if (ts < newestHistoryTs) return;
-    newestHistoryTs = ts;
-    emitWorldChatBubble(entry.sender, entry.senderId, entry.text, true);
+    newestHistoryTs = Math.max(newestHistoryTs, ts);
+    emitWorldChatBubble(
+      entry.sender,
+      entry.senderId,
+      entry.text,
+      true,
+      entry,
+    );
   }
 
   function allowedChatAccountKind(value) {
@@ -1481,9 +1557,22 @@
                   Number(entry.ts) || Date.now(), attachment);
     if (live) {
       newestHistoryTs = Math.max(newestHistoryTs, Number(entry.ts) || 0);
-      emitWorldChatBubble(who, entry.senderId, text);
+      emitWorldChatBubble(who, entry.senderId, text, false, {
+        id: entry.id,
+        ts: entry.ts,
+        attachment,
+        reactionCount: entry.reactionCount,
+      });
     } else {
-      emitWorldChatHistory({ sender: who, senderId: entry.senderId, text, ts: entry.ts });
+      emitWorldChatHistory({
+        id: entry.id,
+        sender: who,
+        senderId: entry.senderId,
+        text,
+        ts: entry.ts,
+        attachment,
+        reactionCount: entry.reactionCount,
+      });
     }
   }
 

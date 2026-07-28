@@ -3,6 +3,7 @@
 
 import json
 from pathlib import Path
+import re
 import subprocess
 
 
@@ -41,7 +42,10 @@ def test_shared_chat_modules_exist_and_full_chat_imports_them():
     assert '<script type="module" src="/chat.js"></script>' in html
     assert '<link rel="stylesheet" href="/chat.css?v=' in html
     assert '<link rel="stylesheet" href="/site-header.css" />' in html
-    assert 'src="/site-header.js?v=f72e1bf39d6f"' in html
+    assert re.search(
+        r'src="/site-header\.js\?v=[0-9a-f]{12}"',
+        html,
+    )
     assert '<div data-forkmesh-header="simple"></div>' in html
 
 

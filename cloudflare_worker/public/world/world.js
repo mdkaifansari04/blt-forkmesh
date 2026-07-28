@@ -4616,6 +4616,8 @@ class ForkMeshWorld extends HTMLElement {
     // other people only — replayed history and this browser's own messages
     // never bump it — and resets whenever the panel is opened.
     this.chatTerminalUnread = 0;
+    this.chatTerminalNewestAt = 0;
+    this.recentWorldChatMessages = [];
     this.visitedPlaces = new Set(["town-square"]);
     this.tourIndex = -1;
     this.lastMovement = {
@@ -4822,14 +4824,88 @@ class ForkMeshWorld extends HTMLElement {
   // impersonate a live avatar by copying its display name.
   handleWorldChatMessage = (event) => {
     if (this.destroyed || event.origin !== location.origin) return;
+    const chatSources = [
+      this.$("[data-world-chat-frame]")?.contentWindow,
+      this.$("[data-world-chat-terminal-frame]")?.contentWindow,
+    ].filter(Boolean);
+    if (!chatSources.includes(event.source)) return;
     const data = event.data;
     if (!data || data.type !== "forkmesh:world-chat") return;
-    const text = String(data.text || "").trim();
-    if (!text) return;
+    const text = String(data.text || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 200);
+    const attachmentName = String(data.attachmentName || "")
+      .replace(/[\u0000-\u001f\u007f]/g, "")
+      .trim()
+      .slice(0, 96);
+    if (!text && !attachmentName) return;
     const sender = String(data.sender || "")
       .replace(/^World visitor\s*·\s*/i, "")
-      .trim();
-    this.setChatTerminalLastMessage(sender, text);
+      .replace(/[\u0000-\u001f\u007f]/g, "")
+      .trim()
+      .slice(0, 64);
+    if (!sender) return;
+    const now = Date.now();
+    const ts = Math.max(
+      0,
+      Math.min(now + 60_000, Number(data.ts) || now),
+    );
+    const id = String(data.id || "")
+      .replace(/[^a-zA-Z0-9._:-]/g, "")
+      .slice(0, 96);
+    const key =
+      id || `${sender.toLowerCase()}:${ts}:${text}:${attachmentName}`;
+    const existing = this.recentWorldChatMessages.findIndex(
+      (entry) => entry.key === key,
+    );
+    const previous =
+      existing >= 0 ? this.recentWorldChatMessages[existing] : null;
+    const attachmentPreview = String(data.attachmentPreview || "");
+    const safePreview =
+      attachmentPreview.length <= 120_000 &&
+      /^data:image\/(?:png|jpeg|webp);base64,[a-zA-Z0-9+/=]+$/.test(
+        attachmentPreview,
+      )
+        ? attachmentPreview
+        : "";
+    const message = {
+      key,
+      sender,
+      text,
+      ts,
+      attachmentName,
+      attachmentMime: String(data.attachmentMime || "").slice(0, 100),
+      reactionCount: Math.max(
+        0,
+        Math.min(999, Number(data.reactionCount) || 0),
+      ),
+      previewImage: previous?.previewImage || null,
+    };
+    if (safePreview) {
+      const previewImage = new Image();
+      previewImage.onload = () => {
+        if (!this.destroyed) {
+          this.world?.updateWorldGeneralChat?.(
+            this.recentWorldChatMessages,
+          );
+        }
+      };
+      previewImage.src = safePreview;
+      message.previewImage = previewImage;
+    }
+    if (existing >= 0) this.recentWorldChatMessages.splice(existing, 1);
+    this.recentWorldChatMessages.push(message);
+    this.recentWorldChatMessages.sort((left, right) => left.ts - right.ts);
+    this.recentWorldChatMessages = this.recentWorldChatMessages.slice(-40);
+    this.world?.updateWorldGeneralChat?.(this.recentWorldChatMessages);
+    if (ts >= this.chatTerminalNewestAt) {
+      this.chatTerminalNewestAt = ts;
+      this.setChatTerminalLastMessage(
+        sender,
+        text || `Shared ${attachmentName}`,
+      );
+    }
     // Replayed history updates only the collapsed CHAT bar — never a bubble,
     // so reconnects do not resurrect old messages above avatars.
     if (data.history === true) return;
@@ -5335,6 +5411,9 @@ class ForkMeshWorld extends HTMLElement {
           );
         },
         onWorldBulletinSelect: () => this.openLandmark("events"),
+        onWorldGeneralChatSelect: () => {
+          this.openWorldChat("/dashboard/chat");
+        },
         onMastodonBoardSelect: () => this.openMastodonBoard(),
         onMastodonOpenLink: (url) => {
           if (url) window.open(url, "_blank", "noopener,noreferrer");

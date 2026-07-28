@@ -2399,6 +2399,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:marketing-room-wall", task: "Marketing wall, desks, calendar + table", estimate: "ready for deploy · in QA", done: true },
   { key: "task:avatar-team-badges", task: "Team badges on each avatar's left arm", estimate: "deployed", done: true },
   { key: "task:marketing-proof", task: "Private Marketing proof-of-work links", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:general-chat-board", task: "Recent #general chat beside events", estimate: "ready for deploy · in QA", done: true },
   { key: "task:deploy-lifecycle", task: "Live deploy spinner + ready refresh button", estimate: "deployed", done: true },
   { key: "task:elevator-camera-lock", task: "Elevator button camera lock + release", estimate: "deployed", done: true },
   { key: "task:build-board-nearby", task: "Refresh task wall when a player approaches", estimate: "deployed", done: true },
@@ -8358,6 +8359,98 @@ function worldBulletinTexture(THREE, events = [], offset = 0) {
   });
 }
 
+function worldGeneralChatTexture(THREE, messages = []) {
+  const entries = (Array.isArray(messages) ? messages : [])
+    .filter((message) => message && String(message.sender || "").trim())
+    .sort((left, right) => Number(left.ts || 0) - Number(right.ts || 0))
+    .slice(-8);
+  return canvasTexture(THREE, 1536, 1024, (context) => {
+    context.fillStyle = "#071712";
+    context.fillRect(0, 0, 1536, 1024);
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 10;
+    context.strokeRect(8, 8, 1520, 1008);
+    context.fillStyle = "#effff6";
+    context.font = '800 52px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("#GENERAL · RECENT CHAT", 42, 70);
+    context.fillStyle = "#80bda0";
+    context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "LIVE HISTORY · CLICK TO OPEN FULL CHAT · IMAGES & REACTIONS",
+      44,
+      108,
+    );
+    context.strokeStyle = "rgba(158,247,198,0.35)";
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(44, 128);
+    context.lineTo(1492, 128);
+    context.stroke();
+    if (!entries.length) {
+      context.fillStyle = "#9ab3a5";
+      context.font = '700 31px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("CONNECTING TO ENCRYPTED #GENERAL HISTORY…", 44, 210);
+      return;
+    }
+    entries.forEach((message, index) => {
+      const y = 170 + index * 101;
+      const timestamp = Number(message.ts) || 0;
+      const time = timestamp
+        ? new Date(timestamp).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : "now";
+      context.fillStyle = "#9ef7c6";
+      context.font = '800 25px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `${String(message.sender).slice(0, 26)}  ${time}`,
+        44,
+        y,
+        800,
+      );
+      const reactionCount = Math.max(0, Number(message.reactionCount) || 0);
+      const attachmentName = String(message.attachmentName || "").slice(0, 52);
+      const meta = [
+        attachmentName ? `▣ ${attachmentName}` : "",
+        reactionCount ? `♡ ${reactionCount}` : "",
+      ].filter(Boolean).join("  ");
+      const preview = message.previewImage;
+      const hasPreview =
+        preview &&
+        preview.complete === true &&
+        Number(preview.naturalWidth) > 0;
+      if (hasPreview) {
+        try {
+          context.drawImage(preview, 1398, y - 22, 72, 72);
+        } catch (_) {}
+      }
+      if (meta) {
+        context.fillStyle = "#f7d58a";
+        context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
+        context.textAlign = "right";
+        context.fillText(meta, hasPreview ? 1382 : 1484, y, 580);
+        context.textAlign = "left";
+      }
+      context.fillStyle = "#d9eee2";
+      context.font = '600 22px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        String(message.text || (attachmentName ? "Shared an image or file" : ""))
+          .replace(/\s+/g, " ")
+          .slice(0, 104),
+        64,
+        y + 35,
+        hasPreview ? 1290 : 1390,
+      );
+      context.strokeStyle = "rgba(158,247,198,0.18)";
+      context.beginPath();
+      context.moveTo(44, y + 61);
+      context.lineTo(1492, y + 61);
+      context.stroke();
+    });
+  });
+}
+
 // Three posts at a time on a board twice as tall as the old one, so each card
 // holds the full text, a deep image strip, and the post's engagement counts.
 // The board is repainted from the same snapshot the mini-app renders.
@@ -10134,6 +10227,7 @@ export function createWorldScene({
   onOfficeMeetingBoardSelect = () => {},
   onOfficeRooftopLaptopSelect = () => {},
   onWorldBulletinSelect = () => {},
+  onWorldGeneralChatSelect = () => {},
   onMastodonBoardSelect = () => {},
   onMastodonOpenLink = () => {},
   onReferralBoardSelect = () => {},
@@ -10382,6 +10476,48 @@ export function createWorldScene({
   interactive.push(bulletinFrame, bulletinFace, bulletinScrollUp, bulletinScrollDown);
   world.add(worldBulletin);
   registerMovableObject("world-bulletin", worldBulletin);
+
+  const worldGeneralChatBoard = new THREE.Group();
+  worldGeneralChatBoard.name = "forkmesh-world-general-chat-board";
+  worldGeneralChatBoard.position.set(-15.5, 0, 39);
+  worldGeneralChatBoard.rotation.y = Math.atan2(
+    -worldGeneralChatBoard.position.x,
+    -worldGeneralChatBoard.position.z,
+  );
+  const chatBoardBase = new THREE.Mesh(
+    new THREE.BoxGeometry(7.9, 0.26, 1.5),
+    makeMaterial(THREE, "#102b22", { roughness: 0.8 }),
+  );
+  chatBoardBase.position.y = 0.13;
+  worldGeneralChatBoard.add(chatBoardBase);
+  for (const x of [-3.35, 3.35]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.18, 6.5, 0.18),
+      makeMaterial(THREE, "#285d49", { metalness: 0.24, roughness: 0.52 }),
+    );
+    post.position.set(x, 3.25, 0);
+    worldGeneralChatBoard.add(post);
+  }
+  const worldGeneralChatFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(7.55, 5.1, 0.24),
+    makeMaterial(THREE, "#123126", { metalness: 0.3, roughness: 0.48 }),
+  );
+  worldGeneralChatFrame.position.y = BULLETIN_FACE_CENTER_Y;
+  worldGeneralChatFrame.userData.interactive = "world-general-chat-board";
+  const worldGeneralChatFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(7.2, 4.8),
+    new THREE.MeshBasicMaterial({
+      map: worldGeneralChatTexture(THREE),
+      toneMapped: false,
+    }),
+  );
+  worldGeneralChatFace.name = "forkmesh-world-general-chat-board-face";
+  worldGeneralChatFace.position.set(0, BULLETIN_FACE_CENTER_Y, 0.14);
+  worldGeneralChatFace.userData.interactive = "world-general-chat-board";
+  worldGeneralChatBoard.add(worldGeneralChatFrame, worldGeneralChatFace);
+  interactive.push(worldGeneralChatFrame, worldGeneralChatFace);
+  world.add(worldGeneralChatBoard);
+  registerMovableObject("world-general-chat-board", worldGeneralChatBoard);
 
   const ground = new THREE.Mesh(
     new THREE.CircleGeometry(WORLD_GROUND_RADIUS, 128),
@@ -14835,6 +14971,17 @@ export function createWorldScene({
       worldBulletinOffset,
     );
     face.material.needsUpdate = true;
+    return true;
+  }
+
+  function updateWorldGeneralChat(messages = []) {
+    const previous = worldGeneralChatFace.material.map;
+    worldGeneralChatFace.material.map = worldGeneralChatTexture(
+      THREE,
+      messages,
+    );
+    worldGeneralChatFace.material.needsUpdate = true;
+    previous?.dispose?.();
     return true;
   }
 
@@ -21239,6 +21386,10 @@ export function createWorldScene({
       onWorldBulletinSelect();
       return;
     }
+    if (hit?.object?.userData?.interactive === "world-general-chat-board") {
+      onWorldGeneralChatSelect();
+      return;
+    }
     const recordPage = hit?.object?.userData?.repositoryRecordPage;
     if (recordPage?.enabled === true) {
       changeRepositoryRecordPage(
@@ -22491,6 +22642,7 @@ export function createWorldScene({
     updateOfficeMarketingTasks,
     isOfficeInterior: () => officeSceneMode !== "town",
     updateWorldBulletin,
+    updateWorldGeneralChat,
     updateSatelliteSky: (snapshot, sgp4Engine) =>
       worldSky.update(snapshot, sgp4Engine),
     updateMastodonKiosk,
