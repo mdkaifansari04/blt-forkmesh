@@ -20,6 +20,17 @@
             "title": "Investigate issue creation problem",
             "ts": 1785061754187,
             "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "seems ok now",
+            "id": "19e06298-f888-4cd0-88f6-cfd85201b061",
+            "sig": "UqyvYfZuRO25J-Andpwhpaf67kwKHDcx2kn48BeyL5Vfu_zpf-F6ukrntQtLxcGIN566Go9spOcbSQunaByFAw",
+            "ts": 1785207664180,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -33,6 +44,6 @@
     "startDate": 0,
     "status": "open",
     "title": "Investigate issue creation problem",
-    "updatedAt": 1785061754187,
+    "updatedAt": 1785207664180,
     "votes": 0
 }
