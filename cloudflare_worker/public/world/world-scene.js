@@ -2552,6 +2552,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "done:engineering-agent-authorization", task: "Engineering-only agent access enforced", estimate: "deployed · in QA", done: true },
   { key: "done:dashboard-home-data", task: "Org repos + live blog on Dashboard", estimate: "deployed · in QA", done: true },
   { key: "done:admin-node-delete", task: "Typed-confirmation admin node removal", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:admin-error-analytics", task: "Admin grouped error trends · 24h chart", estimate: "ready for deploy · in QA", done: true },
 ]);
 
 function worldTaskBulletinSeed(value) {

@@ -179,3 +179,16 @@ def test_admin_resend_verify_tool_on_users_table():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert "_admin_resend_verification" in admin_calls
+
+
+def test_admin_error_log_has_grouped_24_hour_occurrence_analytics():
+    for contract in (
+        "Previous 24 hours",
+        "Equivalent errors",
+        'class="error-chart"',
+        'class="error-bar"',
+        "WHERE ts>=? ORDER BY ts DESC LIMIT 5000",
+        "groups[signature] = groups.get(signature, 0) + 1",
+        'aria-labelledby="error-analytics-title"',
+    ):
+        assert contract in ENTRY_TEXT

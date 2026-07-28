@@ -8377,7 +8377,7 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-9"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-10"
 WORLD_QA_CARDS = (
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
@@ -8558,6 +8558,11 @@ WORLD_QA_CARDS = (
      "deduplicated card on the private Marketing floor panel and can click it "
      "to reopen the exact issue. Confirm non-Marketing members cannot read "
      "the panel or its encrypted issue details."),
+    ("admin-error-analytics", "Admin 24-hour error analytics",
+     "As a platform is_admin, open the secret admin console and select Error "
+     "logs. Confirm the previous-24-hours chart has 24 accessible hourly bars, "
+     "equivalent status/method/path/message rows are grouped with counts, and "
+     "the bounded redacted raw log remains available below."),
 )
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
 
@@ -33742,6 +33747,13 @@ ADMIN_STYLE = """
  .ab-root .diagcol{min-width:240px}
  .ab-root .diagcol h3{font-size:13px;color:var(--ab-muted);margin:8px 0 4px;font-weight:600}
  .ab-root .diagcol table{width:auto;min-width:220px}
+ .ab-root .error-analytics{padding:4px 24px 18px}
+ .ab-root .error-chart{height:150px;display:grid;grid-template-columns:repeat(24,minmax(8px,1fr));gap:4px;align-items:end;border-bottom:1px solid var(--ab-border);padding-top:12px}
+ .ab-root .error-bar{min-height:2px;background:var(--ab-accent);border-radius:3px 3px 0 0;position:relative}
+ .ab-root .error-bar[data-empty="true"]{background:var(--ab-border)}
+ .ab-root .error-bar:focus{outline:2px solid var(--ab-fg);outline-offset:2px}
+ .ab-root .error-hours{display:flex;justify-content:space-between;color:var(--ab-muted);font-size:11px;margin-top:6px}
+ .ab-root .error-groups{margin-top:16px}
 """
 
 # Cloudflare D1 internal bookkeeping stays out of the browser. The following
@@ -34186,7 +34198,90 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
                 % (len(recent), total) + events)
 
     if table == "error_log":
-        # Keep the purpose-built, time-formatted error view.
+        # Keep the purpose-built, time-formatted error view and add a bounded
+        # 24-hour occurrence overview. The aggregation uses the same already
+        # redacted fields as the raw admin-only table.
+        now = int(Date.now())
+        recent_24h = await d1_all(
+            env,
+            "SELECT ts,status,method,path,message FROM error_log "
+            "WHERE ts>=? ORDER BY ts DESC LIMIT 5000",
+            now - 24 * 60 * 60 * 1000,
+        )
+        hourly = [0] * 24
+        groups = {}
+        for row in recent_24h or []:
+            ts = int(row.get("ts") or 0)
+            if 0 < ts < 10 ** 11:
+                ts *= 1000
+            age_hours = max(0, (now - ts) // (60 * 60 * 1000))
+            if age_hours < 24:
+                hourly[23 - int(age_hours)] += 1
+            signature = (
+                clean_string(row.get("status"), 12),
+                clean_string(row.get("method"), 12).upper(),
+                clean_string(row.get("path"), 240),
+                clean_string(row.get("message"), 240),
+            )
+            groups[signature] = groups.get(signature, 0) + 1
+        peak = max(hourly) if hourly else 0
+        bars = []
+        for index, count in enumerate(hourly):
+            height = max(2, round(132 * count / peak)) if peak else 2
+            hours_ago = 23 - index
+            label = (
+                "current hour" if hours_ago == 0
+                else "%d hours ago" % hours_ago
+            )
+            bars.append(
+                '<div class="error-bar" tabindex="0" role="img" '
+                'aria-label="%s: %d error%s" data-empty="%s" '
+                'style="height:%dpx" title="%s · %d"></div>'
+                % (
+                    _html_escape(label),
+                    count,
+                    "" if count == 1 else "s",
+                    "true" if count == 0 else "false",
+                    height,
+                    _html_escape(label),
+                    count,
+                )
+            )
+        group_rows = []
+        for (status, request_method, path, message), count in sorted(
+                groups.items(), key=lambda item: (-item[1], item[0]))[:25]:
+            group_rows.append(
+                "<tr><td>%d</td><td>%s</td><td>%s</td><td>%s</td>"
+                "<td title=\"%s\">%s</td></tr>"
+                % (
+                    count,
+                    _html_escape(status or "error"),
+                    _html_escape(request_method or "—"),
+                    _html_escape(path or "—"),
+                    _html_escape(message or "—"),
+                    _html_escape((message or "—")[:160]),
+                )
+            )
+        analytics = (
+            '<section class="error-analytics" aria-labelledby="error-analytics-title">'
+            '<h2 id="error-analytics-title">Previous 24 hours · %d occurrence%s</h2>'
+            '<div class="error-chart">%s</div>'
+            '<div class="error-hours"><span>24h ago</span><span>12h ago</span>'
+            '<span>now</span></div><div class="error-groups">'
+            '<h3>Equivalent errors</h3>%s</div></section>'
+            % (
+                len(recent_24h or []),
+                "" if len(recent_24h or []) == 1 else "s",
+                "".join(bars),
+                (
+                    "<table><thead><tr><th>Count</th><th>Status</th>"
+                    "<th>Method</th><th>Path</th><th>Message</th></tr></thead>"
+                    "<tbody>" + "".join(group_rows) + "</tbody></table>"
+                    if group_rows
+                    else '<div class="empty">No errors in the previous 24 hours.</div>'
+                ),
+            )
+        )
         body = []
         for r in rows:
             status = r.get("status", "")
@@ -34210,7 +34305,11 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
                      + "<th>Time</th><th>Status</th><th>Method</th>"
                      "<th>Path</th><th>Message</th><th>CF-Ray</th></tr></thead><tbody>"
                      + "".join(body) + "</tbody></table></form>")
-        return ('<div class="title">Error logs · %d row(s)</div>' % total) + inner
+        return (
+            '<div class="title">Error logs · %d row(s)</div>' % total
+            + analytics
+            + inner
+        )
 
     purge_allowed = _admin_purge_allowed(table)
     add_link = ""

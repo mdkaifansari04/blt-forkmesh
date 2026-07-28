@@ -205,7 +205,7 @@ the implementation and its focused verification are complete.
 - [x] Update the organization-access explanation so Claude/Codex session access is described as Engineering-team-only.
 - [x] Verify and enforce that non-Engineering organization members cannot start, review, continue, or view Claude/Codex sessions.
 - [ ] Show each node cabinet's Actions runs, logs, and running/done/error state on its back with restrained status animations.
-- [ ] Add an admin-only error-log analytics view that groups equivalent errors and charts their occurrences over the previous 24 hours.
+- [x] Add an admin-only error-log analytics view that groups equivalent errors and charts their occurrences over the previous 24 hours.
 - [x] Move the recent roughly 50-repository bulk-import set back onto its own World island before considering deletion.
 - [x] Identify and delete only the 54 repositories imported in that batch after verifying the exact cohort, temporarily isolating it in the World, and preserving a checksum-verified upstream/HEAD recovery archive.
 - [x] Move Marketing desks to the front windows, face them outward, correct chair orientation, and use small desktop name plaques.
