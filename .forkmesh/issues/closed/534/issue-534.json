@@ -31,6 +31,15 @@
             "sig": "UqyvYfZuRO25J-Andpwhpaf67kwKHDcx2kn48BeyL5Vfu_zpf-F6ukrntQtLxcGIN566Go9spOcbSQunaByFAw",
             "ts": 1785207664180,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "5fbd523e-5d74-4998-a2ce-7f88cf3f780c",
+            "sig": "qsUicrb4a-P32DtBjnlADNj-rtW98-FsGcilVcQCdDIN-OSxQKBASTsscQfxlnX1KoIcfIl8e81xi37i4UdtCQ",
+            "status": "closed",
+            "ts": 1785207664255,
+            "type": "status"
         }
     ],
     "labels": [
@@ -42,8 +51,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "Investigate issue creation problem",
-    "updatedAt": 1785207664180,
+    "updatedAt": 1785207664255,
     "votes": 0
 }
