@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <script src="/posthog.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Leaderboards · ForkMesh</title>
+    <meta
+      name="description"
+      content="Every public ForkMesh leaderboard in one place: World activity, network uptime, repositories, contributors, referrals, and historical reporting."
+    />
+    <meta name="application-name" content="ForkMesh" />
+    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+    <meta name="theme-color" content="#090909" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/site-header.css" />
+    <link rel="stylesheet" href="/site-footer.css" />
+    <script src="/site-header.js?v=5b600387dab6" defer></script>
+    <script src="/site-footer.js?v=acdada792fa2" defer></script>
+    <script src="/leaderboards.js" defer></script>
+    <style>
+      .leaderboards-page {
+        width: min(1440px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: clamp(38px, 7vw, 86px) 0 80px;
+      }
+      .leaderboards-hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.6fr);
+        gap: 32px;
+        align-items: end;
+        margin-bottom: 34px;
+      }
+      .leaderboards-kicker,
+      .leaderboards-summary-label {
+        margin: 0 0 10px;
+        color: var(--accent);
+        font: 750 12px/1.3 var(--mono);
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+      }
+      .leaderboards-hero h1 {
+        max-width: 850px;
+        margin: 0;
+        color: var(--foreground);
+        font-size: clamp(40px, 7vw, 86px);
+        line-height: 0.96;
+        letter-spacing: -0.055em;
+      }
+      .leaderboards-intro {
+        max-width: 720px;
+        margin: 22px 0 0;
+        color: var(--muted);
+        font-size: clamp(16px, 2vw, 19px);
+        line-height: 1.65;
+      }
+      .leaderboards-summary {
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 20px;
+        background: color-mix(in srgb, var(--surface, #151515) 88%, transparent);
+      }
+      .leaderboards-summary strong {
+        display: block;
+        color: var(--foreground);
+        font-size: 34px;
+      }
+      .leaderboards-summary span {
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .leaderboards-toolbar {
+        position: sticky;
+        z-index: 5;
+        top: 10px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 24px;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: color-mix(in srgb, var(--background, #090909) 92%, transparent);
+        backdrop-filter: blur(18px);
+      }
+      .leaderboards-search {
+        min-width: min(100%, 280px);
+        flex: 1 1 300px;
+        min-height: 42px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--background);
+        color: var(--foreground);
+        padding: 9px 12px;
+        font: inherit;
+      }
+      .leaderboards-filter,
+      .leaderboards-refresh {
+        min-height: 40px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: transparent;
+        color: var(--muted);
+        padding: 8px 13px;
+        font: 700 12px/1 var(--mono);
+        cursor: pointer;
+      }
+      .leaderboards-filter[aria-pressed="true"],
+      .leaderboards-filter:hover,
+      .leaderboards-refresh:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .leaderboards-status {
+        margin-left: auto;
+        color: var(--muted-2);
+        font: 600 11px/1.3 var(--mono);
+      }
+      .leaderboards-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr));
+        gap: 18px;
+      }
+      .leaderboard-card {
+        min-width: 0;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background:
+          linear-gradient(145deg, color-mix(in srgb, var(--accent) 5%, transparent), transparent 45%),
+          var(--surface, #121212);
+      }
+      .leaderboard-card[hidden] { display: none; }
+      .leaderboard-card-header {
+        min-height: 98px;
+        padding: 18px 18px 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .leaderboard-category {
+        margin: 0 0 7px;
+        color: var(--accent);
+        font: 700 10px/1 var(--mono);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .leaderboard-card h2 {
+        margin: 0 0 5px;
+        color: var(--foreground);
+        font-size: 19px;
+      }
+      .leaderboard-card-subtitle {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .leaderboard-row {
+        display: grid;
+        grid-template-columns: 30px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        min-height: 52px;
+        padding: 9px 18px;
+        border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+      }
+      .leaderboard-row:first-child { border-top: 0; }
+      .leaderboard-rank {
+        color: var(--muted-2);
+        font: 800 13px/1 var(--mono);
+      }
+      .leaderboard-name {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--foreground);
+        font-weight: 750;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .leaderboard-detail {
+        display: block;
+        overflow: hidden;
+        margin-top: 3px;
+        color: var(--muted-2);
+        font: 500 10px/1.35 var(--mono);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .leaderboard-value {
+        color: var(--accent);
+        font: 800 12px/1.2 var(--mono);
+        text-align: right;
+        white-space: nowrap;
+      }
+      .leaderboard-empty,
+      .leaderboards-empty {
+        padding: 26px 18px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .leaderboards-empty {
+        grid-column: 1 / -1;
+        border: 1px dashed var(--border);
+        border-radius: 16px;
+        text-align: center;
+      }
+      .leaderboards-disclosure {
+        margin: 28px 0 0;
+        padding: 18px 20px;
+        border-left: 3px solid var(--accent);
+        background: color-mix(in srgb, var(--accent) 6%, transparent);
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      @media (max-width: 760px) {
+        .leaderboards-hero { grid-template-columns: 1fr; }
+        .leaderboards-toolbar { position: static; }
+        .leaderboards-status { width: 100%; margin-left: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <div data-forkmesh-header="simple"></div>
+    <main class="leaderboards-page">
+      <section class="leaderboards-hero" aria-labelledby="leaderboards-title">
+        <div>
+          <p class="leaderboards-kicker">Network-wide public rankings</p>
+          <h1 id="leaderboards-title">Every board. One honest view.</h1>
+          <p class="leaderboards-intro">
+            Explore public activity, node uptime, repository resilience,
+            contribution, referrals, and historical reporting. Rankings never
+            grant access, merge authority, governance weight, or guaranteed rewards.
+          </p>
+        </div>
+        <aside class="leaderboards-summary" aria-live="polite">
+          <p class="leaderboards-summary-label">Live overview</p>
+          <strong data-leaderboards-count>—</strong>
+          <span data-leaderboards-summary>Loading public boards…</span>
+        </aside>
+      </section>
+
+      <section aria-label="Leaderboard controls">
+        <div class="leaderboards-toolbar">
+          <input
+            class="leaderboards-search"
+            type="search"
+            placeholder="Find a board or participant"
+            aria-label="Search leaderboards"
+            data-leaderboards-search
+          />
+          <button class="leaderboards-filter" type="button" data-category="all" aria-pressed="true">All</button>
+          <button class="leaderboards-filter" type="button" data-category="network" aria-pressed="false">Network</button>
+          <button class="leaderboards-filter" type="button" data-category="repositories" aria-pressed="false">Repositories</button>
+          <button class="leaderboards-filter" type="button" data-category="community" aria-pressed="false">Community</button>
+          <button class="leaderboards-filter" type="button" data-category="historical" aria-pressed="false">Historical</button>
+          <button class="leaderboards-refresh" type="button" data-leaderboards-refresh>Refresh</button>
+          <span class="leaderboards-status" role="status" data-leaderboards-status>Loading…</span>
+        </div>
+      </section>
+
+      <section class="leaderboards-grid" aria-live="polite" data-leaderboards-grid>
+        <div class="leaderboards-empty"><span class="fm-spinner" aria-hidden="true"></span> Loading all leaderboard stats…</div>
+      </section>
+
+      <p class="leaderboards-disclosure" data-leaderboards-disclosure>
+        Historical funds boards are reporting aggregates, not balances or proof
+        of payment. ForkMesh does not hold recipient keys or funds.
+      </p>
+    </main>
+    <div data-forkmesh-footer="standard"></div>
+  </body>
+</html>

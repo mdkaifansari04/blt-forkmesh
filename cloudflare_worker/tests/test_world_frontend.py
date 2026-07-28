@@ -1496,9 +1496,12 @@ def test_repository_map_autoload_is_deduplicated_and_never_overrides_manual_choi
     ]
     assert "this.repositoryManualSelection" in auto
     assert "this.activeRepository" in auto
-    assert "this.world.updateRepositoryGraph?.([], []);" in auto
-    assert "requireComplete: true" in auto
-    assert "expectedCommits: catalogCommits" in auto
+    # The tree preview paints immediately; mirror metadata may converge behind
+    # it without collapsing the flagship wheel into a syncing placeholder.
+    assert "this.world.updateRepositoryGraph?.([], []);" not in auto
+    assert "if (!catalogCommits.size)" not in auto
+    assert "requireComplete: false" in auto
+    assert "catalogCommits.size ? catalogCommits : undefined" in auto
 
     load_map = APP[
         APP.index("  async loadRepositoryMap("):
@@ -2067,17 +2070,19 @@ def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
     assert 'avatar.userData.loungeActivity === "recent"' in SCENE
 
 
-def test_active_leaderboard_position_and_orientation():
+def test_leaderboards_have_a_walkable_island_and_inward_facing_ring():
+    assert "const LEADERBOARD_ISLAND_CENTER_X = -130;" in SCENE
+    assert "const LEADERBOARD_ISLAND_RADIUS = 34;" in SCENE
+    assert "const LEADERBOARD_CONNECTION_MIN_X = -103;" in SCENE
+    assert 'leaderboardIsland.name = "forkmesh-leaderboard-island"' in SCENE
     assert (
-        "const ACTIVE_LEADERBOARD_POSITION = Object.freeze([-11.5, 0, 25]);"
+        'leaderboardConnection.name = "forkmesh-leaderboard-island-connection"'
         in SCENE
     )
-    assert (
-        "activeLeaderboardSign.position.set(...ACTIVE_LEADERBOARD_POSITION)"
-        in SCENE
-    )
-    assert "-ACTIVE_LEADERBOARD_POSITION[0]" in SCENE
-    assert "-ACTIVE_LEADERBOARD_POSITION[2]" in SCENE
+    assert 'leaderboardPromenade.name = "forkmesh-leaderboard-promenade"' in SCENE
+    assert "Math.hypot(px - LEADERBOARD_ISLAND_CENTER_X, pz)" in SCENE
+    assert "Math.atan2(-x, -z)" in SCENE
+    assert "placeLeaderboardIslandSign(" in SCENE
 
 
 def test_world_has_no_pale_plaza_and_places_trees_deterministically_clear_of_use():

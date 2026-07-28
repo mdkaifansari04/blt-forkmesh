@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Contracts for the in-world issue and pull-request review boards.
+"""Contracts for the in-world combined issue and pull-request work list.
 
-Beside the selected repository portal the scene stands matching, two-column
-review boards with up to 25 issue and pull-request cards. Issue records can
+Beside the selected repository portal the scene stands one two-column
+review board with up to 25 mixed issue and pull-request cards. Issue records can
 expand before opening the signed thread; pull records route into exact-ref diff
 review. Both are projections of records the shell already verified.
 """
@@ -26,8 +26,9 @@ def test_scene_builds_a_bounded_desk_from_verified_records_only():
     assert "REPOSITORY_PULL_CARDS_VISIBLE = 25" in SCENE
     assert "number >= 1 && number <= 10_000_000" in SCENE
     assert 'layer.name = "repository-record-desk"' in DESK
-    assert "addRecordBoard(issues, \"issue\"" in DESK
-    assert "addRecordBoard(pulls, \"pull\"" in DESK
+    assert 'recordKind: "issue"' in DESK
+    assert 'recordKind: "pull"' in DESK
+    assert '"combined"' in DESK
     assert "const columns = items.length > 13 ? 2 : 1;" in DESK
     assert "repository-issue-page-expanded:" in DESK
     # Pure projection: no network, no storage, no invented records.
