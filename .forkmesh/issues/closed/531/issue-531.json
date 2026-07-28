@@ -31,6 +31,15 @@
             "sig": "aqRhgBTYQnRg1D6zCHUJl93B6EH4k-SAabzJi7pPGNG0s0IssSsNx_7si311eAvgP5n-SdR64kHHwn-mFfE7BQ",
             "ts": 1785207552836,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "09bc162d-6f5f-4f92-a71a-1ade5f985922",
+            "sig": "Qzn7fhba2oZyV2YvW96PQyY-xutwn1XkLunE5l1fj1_muXaV3JjBQPXplIeMeGb3oYgOhTNXwEmHts_KBzojCw",
+            "status": "closed",
+            "ts": 1785207552910,
+            "type": "status"
         }
     ],
     "labels": [
@@ -42,8 +51,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "Add notifications tab",
-    "updatedAt": 1785207552836,
+    "updatedAt": 1785207552910,
     "votes": 0
 }
