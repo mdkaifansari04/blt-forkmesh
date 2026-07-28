@@ -31,6 +31,15 @@
             "sig": "H0ZzHedf_QmDbv1voBZYs6vZbVtrldGrhsPqnDvRcGukys95BEQZJLgDCUAXZBtnQ7LX9QseJVt9zV-7saK9Aw",
             "ts": 1785207478596,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "19bdd6bf-4b3b-4c5e-9b59-89834c252d9d",
+            "sig": "h0ni6rmZ-6ti5lr839Xvd9jn8BTorekCk5rDllfoRMmzs6BMBUsMP63X7itsxkEmQzOrs-jiUeiZNT4Iy0saBw",
+            "status": "closed",
+            "ts": 1785207478665,
+            "type": "status"
         }
     ],
     "labels": [
@@ -42,8 +51,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "Users unable to navigate the space",
-    "updatedAt": 1785207478596,
+    "updatedAt": 1785207478665,
     "votes": 0
 }
