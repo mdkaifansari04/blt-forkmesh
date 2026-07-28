@@ -2524,13 +2524,12 @@ def _attention_email_with_logs(text, html, log_tail):
 
 
 def _status_alert_manage_url(system_id=""):
-    safe_id = re.sub(
-        r"[^a-z0-9_-]+", "-",
-        str(system_id or "").strip().lower(),
-    ).strip("-")
+    # Alert mail is controlled from the flagship repository's owner-only
+    # Settings tab. The old /status#system-* destination only explained the
+    # failing check and offered no way to enable/disable the alert.
     return (
-        "https://forkmesh.com/status#system-" + safe_id
-        if safe_id else "https://forkmesh.com/status"
+        "https://forkmesh.com/forkmesh/forkmesh/settings"
+        "#operational-alerts"
     )
 
 
@@ -8415,6 +8414,23 @@ WORLD_QA_CARDS = (
      "Hard-load the World on desktop and mobile. Confirm the real scene remains "
      "visible behind a small animated progress cover and objects do not shift "
      "noticeably as initial data arrives."),
+    ("fresh-code-surge", "Fresh Code mirror-push effect",
+     "Keep the World open while a mirror publishes a new verified commit. "
+     "Confirm the cabinet emits the tall green beam and expanding ground "
+     "shockwave once the refreshed signed catalog confirms that commit."),
+    ("chest-fediverse-activity", "Unified chest Fediverse and activity card",
+     "Open your own and another registered member's chest card. Confirm "
+     "Fediverse leaves Loading, the card is slightly larger, no separate "
+     "activity dot remains, and the darker node-style border reflects account "
+     "activity recency."),
+    ("qt-host-live-capabilities", "Qt live host and agent CLI status",
+     "Add or reopen a saved Qt Host. Confirm its row keeps checking while SSH "
+     "comes online, distinguishes provisioning, unreachable, and rejected-key "
+     "states, then shows Claude and Codex as Installed or Not installed."),
+    ("alert-management-link", "Alert email management destination",
+     "Open Manage this alert from a component or scheduled-job email. Confirm "
+     "it opens forkmesh/forkmesh Settings, scrolls to Operational alerts, and "
+     "focuses the checkbox used to enable or disable those emails."),
 )
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
 
@@ -8441,6 +8457,61 @@ async def world_qa_handler(env, request):
         except Exception:
             return json_response({"ok": False, "error": "invalid_json"},
                                  status=400)
+    dynamic_rows = await d1_all(
+        env,
+        "SELECT item_key,title,how_to_test,added_at FROM world_qa_items "
+        "WHERE active=1 ORDER BY added_at DESC,item_key LIMIT 64",
+    )
+    deck_cards = list(WORLD_QA_CARDS)
+    deck_keys = set(WORLD_QA_CARD_KEYS)
+    for row in dynamic_rows or []:
+        key = clean_string(row.get("item_key"), 80)
+        title = clean_string(row.get("title"), 160)
+        how_to_test = clean_string(row.get("how_to_test"), 720)
+        if not key or key in deck_keys or not title or not how_to_test:
+            continue
+        deck_cards.append((key, title, how_to_test))
+        deck_keys.add(key)
+    deck_cards = deck_cards[:64]
+    deck_keys = {item[0] for item in deck_cards}
+
+    async def global_qa_snapshot():
+        global_rows = await d1_all(
+            env,
+            "SELECT item_key,verdict,COUNT(*) AS count "
+            "FROM world_qa_reviews GROUP BY item_key,verdict",
+        )
+        global_reviews = {}
+        for row in global_rows or []:
+            key = clean_string(row.get("item_key"), 80)
+            verdict = clean_string(row.get("verdict"), 12).lower()
+            if (
+                key not in deck_keys
+                or verdict not in ("pass", "fail", "unsure")
+            ):
+                continue
+            counts = global_reviews.setdefault(
+                key, {"pass": 0, "fail": 0, "unsure": 0, "total": 0})
+            count = max(0, int(row.get("count") or 0))
+            counts[verdict] += count
+            counts["total"] += count
+        tester_rows = await d1_all(
+            env,
+            "SELECT COUNT(DISTINCT account_bi) AS testers "
+            "FROM world_qa_reviews",
+        )
+        return global_reviews, {
+            "pass": sum(item["pass"] for item in global_reviews.values()),
+            "fail": sum(item["fail"] for item in global_reviews.values()),
+            "unsure": sum(item["unsure"] for item in global_reviews.values()),
+            "reviewed": sum(item["total"] for item in global_reviews.values()),
+            "testers": max(
+                0, int(((tester_rows or [{}])[0]).get("testers") or 0)),
+            "total": len(deck_cards),
+        }
+
+    global_reviews, global_stats = await global_qa_snapshot()
+
     account_bi, record = await _account_session_record(env, request, data)
     if not account_bi or not record:
         return json_response({
@@ -8448,17 +8519,27 @@ async def world_qa_handler(env, request):
             "authenticated": False,
             "revision": WORLD_QA_DECK_REVISION,
             "cards": [
-                {"key": key, "title": title, "howToTest": how_to_test}
-                for key, title, how_to_test in WORLD_QA_CARDS
+                {
+                    "key": key,
+                    "title": title,
+                    "howToTest": how_to_test,
+                    "global": global_reviews.get(
+                        key,
+                        {"pass": 0, "fail": 0, "unsure": 0, "total": 0},
+                    ),
+                }
+                for key, title, how_to_test in deck_cards
             ],
             "reviews": {},
             "stats": {"pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
-                      "total": len(WORLD_QA_CARDS)},
+                      "total": len(deck_cards)},
+            "globalReviews": global_reviews,
+            "globalStats": global_stats,
         }, cache_control="no-store")
     if method == "POST":
         item_key = clean_string(data.get("key"), 80)
         verdict = clean_string(data.get("verdict"), 12).lower()
-        if item_key not in WORLD_QA_CARD_KEYS:
+        if item_key not in deck_keys:
             return json_response({"ok": False, "error": "unknown_qa_item"},
                                  status=400)
         if verdict not in ("pass", "fail", "unsure"):
@@ -8472,6 +8553,7 @@ async def world_qa_handler(env, request):
             "verdict=excluded.verdict,reviewed_at=excluded.reviewed_at",
             account_bi, item_key, verdict, int(Date.now()),
         )
+        global_reviews, global_stats = await global_qa_snapshot()
     rows = await d1_all(
         env,
         "SELECT item_key,verdict,reviewed_at FROM world_qa_reviews "
@@ -8482,7 +8564,7 @@ async def world_qa_handler(env, request):
     for row in rows:
         key = clean_string(row.get("item_key"), 80)
         verdict = clean_string(row.get("verdict"), 12).lower()
-        if key in WORLD_QA_CARD_KEYS and verdict in ("pass", "fail", "unsure"):
+        if key in deck_keys and verdict in ("pass", "fail", "unsure"):
             reviews[key] = {
                 "verdict": verdict,
                 "reviewedAt": max(0, int(row.get("reviewed_at") or 0)),
@@ -8495,7 +8577,7 @@ async def world_qa_handler(env, request):
         "unsure": sum(1 for item in reviews.values()
                       if item["verdict"] == "unsure"),
         "reviewed": len(reviews),
-        "total": len(WORLD_QA_CARDS),
+        "total": len(deck_cards),
     }
     return json_response({
         "ok": True,
@@ -8506,12 +8588,16 @@ async def world_qa_handler(env, request):
                 "key": key,
                 "title": title,
                 "howToTest": how_to_test,
+                "global": global_reviews.get(
+                    key, {"pass": 0, "fail": 0, "unsure": 0, "total": 0}),
                 **reviews.get(key, {}),
             }
-            for key, title, how_to_test in WORLD_QA_CARDS
+            for key, title, how_to_test in deck_cards
         ],
         "reviews": reviews,
         "stats": stats,
+        "globalReviews": global_reviews,
+        "globalStats": global_stats,
     }, cache_control="no-store")
 
 
@@ -30542,8 +30628,9 @@ async def agents_ack_handler(env, request, owner, repo):
 #
 # This is intentionally NOT an authorization shortcut into repo_agents. Those
 # rows remain owner-device E2EE. Organization bots have their own encrypted-at-
-# rest session/job tables, are visible only to current org members, and execute
-# only after the selected mirror runs a tool-free Claude Haiku safety preflight.
+# rest session/job tables, are visible and controllable only by current members
+# of the organization's Engineering team, and execute only after the selected
+# mirror runs a tool-free Claude Haiku safety preflight.
 ORG_AGENT_PROVIDERS = ("claude-code", "codex")
 ORG_AGENT_MODEL_ALIASES = {
     "claude-code": {
@@ -30861,7 +30948,7 @@ async def org_agent_bots_handler(env, request, org, repo):
                 for provider in ORG_AGENT_PROVIDERS
             },
             "sessions": sessions,
-            "privacyBoundary": "organization-members-encrypted-at-rest",
+            "privacyBoundary": "engineering-team-encrypted-at-rest",
             "securityGate": "claude-haiku-tool-free-fail-closed",
         }, cache_control="no-store")
 
@@ -31245,6 +31332,28 @@ async def repo_org_agent_job_result_handler(
             "updated_by_bi=excluded.updated_by_bi,updated_at=excluded.updated_at",
             task_key, board_kind, session_row.get("created_by_bi") or "",
             now, now, session_row.get("created_by_bi") or "",
+        )
+        qa_title = clean_string(
+            session.get("prompt") or task_key.replace("task:", ""),
+            160,
+        ).strip()
+        await d1_run(
+            env,
+            "INSERT INTO world_qa_items("
+            "item_key,title,how_to_test,source_key,added_at,active) "
+            "VALUES(?,?,?,?,?,1) ON CONFLICT(item_key) DO UPDATE SET "
+            "title=excluded.title,how_to_test=excluded.how_to_test,"
+            "source_key=excluded.source_key,added_at=excluded.added_at,"
+            "active=1",
+            task_key,
+            qa_title or "Completed agent task",
+            (
+                "Open the completed feature and follow its normal user flow. "
+                "Confirm the requested behavior works, existing behavior did "
+                "not regress, and no console or network error appears."
+            ),
+            task_key,
+            now,
         )
     await _audit_sensitive_action(
         env, owner, "organization.agent_job_result", "organization_agent",

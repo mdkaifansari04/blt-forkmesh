@@ -1242,11 +1242,15 @@ private:
     void rememberHost(const QString &name, const QString &ip, const QString &user,
                       const QString &pass, const QString &status = QStringLiteral("installed"),
                       const QString &identityFile = QString());
-    // The managed private-key path saved for a host, when the file still
-    // exists; empty otherwise (agent/default keys or password are used).
+    // The managed private-key path configured for a host. The SSH command
+    // builder validates that it still exists and fails closed instead of
+    // silently falling back to a password.
     QString savedHostIdentityFile(const QString &name, const QString &ip,
                                   const QString &user) const;
     void refreshHostsTable();
+    void probeSavedHosts();
+    void probeSavedHost(const QString &name, const QString &ip,
+                        const QString &user, const QString &savedStatus);
     // Drop a saved host from this app's list only \xe2\x80\x94 no SSH session is
     // opened and nothing is changed on the remote host itself. Use Uninstall
     // instead to actually remove ForkMesh from the host.
@@ -3903,6 +3907,11 @@ private:
     // can record why each attempt failed.
     QString m_hostInstallLastFailure;
     QTableWidget *m_hostsTable = nullptr;
+    QTimer *m_hostProbeTimer = nullptr;
+    QSet<QString> m_hostProbesInFlight;
+    QHash<QString, QString> m_hostReachability;
+    QHash<QString, QString> m_hostClaudeAvailability;
+    QHash<QString, QString> m_hostCodexAvailability;
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QProcess *m_hostLogProcess = nullptr;     // running ssh log-tail session, if any
     QProcess *m_hostActionsProcess = nullptr; // one-shot stdin-only Actions config
