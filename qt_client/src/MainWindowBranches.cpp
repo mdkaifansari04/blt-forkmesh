@@ -657,26 +657,63 @@ void MainWindow::switchToBranch(const QString &branch)
 {
     // The branches panel lives inside the Code overview now (no top-level tab).
     showOverviewBranches();
-    loadBranchesPanel();
-    if (!m_branchesTable || branch.isEmpty())
+    if (!m_branchesTable || branch.isEmpty()) {
+        loadBranchesPanel();
         return;
+    }
+    // Select from the rows already on screen first — the panel's git reads run on
+    // a worker thread now, and waiting for that rebuild before showing anything
+    // is what made following a branch link feel slow (adhoc #420). The rows are
+    // only trustworthy when they were built for the repo we're selecting into;
+    // otherwise (and when the branch isn't listed yet) the refresh below picks
+    // the branch up when it lands.
+    const bool fresh = !m_branchesPanelDir.isEmpty() &&
+                       m_branchesPanelDir == repoGitDir();
+    if (fresh && selectBranchRow(branch))
+        m_branchesPanelPendingSelect.clear();
+    else
+        m_branchesPanelPendingSelect = branch;
+    loadBranchesPanel();
+}
+
+bool MainWindow::selectBranchRow(const QString &branch)
+{
+    if (!m_branchesTable || branch.isEmpty())
+        return false;
     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
         QTableWidgetItem *it = m_branchesTable->item(row, 0);
         if (it && it->text() == branch) {
             m_branchesTable->selectRow(row); // fires currentCellChanged -> diff
-            return;
+            return true;
         }
     }
-    // Clicking an agent's branch link when that branch no longer exists here (it
-    // may have been merged and deleted, or never synced into this checkout) would
-    // otherwise land on the Branches tab with nothing selected. Tell the user why
-    // rather than leaving them on a silently empty selection (adhoc #185).
+    return false;
+}
+
+// Clicking an agent's branch link when that branch no longer exists here (it may
+// have been merged and deleted, or never synced into this checkout) would
+// otherwise land on the Branches panel with nothing selected. Tell the user why
+// rather than leaving them on a silently empty selection (adhoc #185).
+void MainWindow::reportBranchNotFound(const QString &branch)
+{
     QMessageBox::information(
         this, QStringLiteral("Branch not found"),
         QStringLiteral("Branch '%1' was not found in this repository. "
                        "It may have been merged and deleted.")
             .arg(branch));
 }
+
+#ifdef FORKMESH_WINDOW_TESTS
+// Rebuild the branches panel and wait for its off-thread git reads to land, so
+// tests can read the rows straight after (adhoc #420).
+void MainWindow::testReloadBranchesPanel()
+{
+    loadBranchesPanel();
+    QDeadlineTimer deadline(10000);
+    while (m_branchesPanelLoading && !deadline.hasExpired())
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+}
+#endif
 
 bool MainWindow::selectWorktreeRow(const QString &branch)
 {
@@ -2197,119 +2234,67 @@ QWidget *MainWindow::buildBranchesTab()
     return page;
 }
 
-void MainWindow::loadBranchesPanel()
+// Gather everything the branches table needs from git. Runs on a worker thread
+// (see loadBranchesPanel), so it must touch nothing but its by-value argument:
+// every read below used to run on the GUI thread, which made clicking into the
+// panel — or following an agent's branch link — wait on six git processes
+// (adhoc #420).
+MainWindow::BranchesPanelData
+MainWindow::readBranchesPanelGit(BranchesPanelData data)
 {
-    if (!m_branchesTable)
-        return;
-    // Re-entrancy guard: the GitKeepAlive below pumps the event loop between the
-    // per-branch git reads, so a queued reload (a network/roster callback) must
-    // not start a second pass that clears the half-built table out from under us.
-    // (Mirrors the m_repoDetailLoading guard in openRepoDetail.)
-    if (m_branchesPanelLoading)
-        return;
-    QScopedValueRollback<bool> loadingGuard(m_branchesPanelLoading, true);
-    // Each row's ahead/behind count and in-memory merge-conflict probe shells out
-    // to git serially below; on a repo with many branches that blocked the GUI
-    // thread for ~2s and tripped the stall watchdog (adhoc #222). waitForGit
-    // pumps the event loop in short slices on the GUI thread, so the window
-    // stays responsive across the batch instead of freezing.
-    GitKeepAlive keepAlive;
-    // Remember which branch's diff is on screen so we can re-render it at the end
-    // (now reflecting any merge we just performed).
-    const QString previouslyViewed = m_branchDiffBranch;
-    // Freeze the whole splitter — table, changed-files/scope lists and diff view —
-    // while we tear down and rebuild the rows so a refresh after a merge/delete
-    // doesn't flash all of them blank before the new contents land; they all
-    // repaint once together when the guard lifts (adhoc #256).
-    TableRepaintGuard repaintGuard(m_branchesSplit ? m_branchesSplit
-                                                   : static_cast<QWidget *>(m_branchesTable));
-    // Block the table's selection signals across the rebuild so clearing the rows
-    // doesn't fire currentCellChanged -> showBranchDiff(empty), which would blank
-    // the diff pane and churn m_branchDiffBranch mid-rebuild. We re-render the
-    // viewed branch's diff explicitly at the end instead (adhoc #256).
-    QSignalBlocker branchesTableBlock(m_branchesTable);
-    m_branchesTable->setRowCount(0);
-    const QString dir = repoGitDir();
-    QStringList branches = repoBranches();
-    const QString base = repoDefaultBranch(branches);
-    // Always pin the default branch ("main") to the top of the list, regardless
-    // of which feature branch was committed to most recently — repoBranches()
-    // sorts by committer date, so without this main sinks below active branches
-    // (adhoc #185).
-    if (!base.isEmpty() && branches.removeOne(base))
-        branches.prepend(base);
-    const QString selected = m_repoBranch.isEmpty() ? base : m_repoBranch;
-    const bool writable = repoHasWorkingTree();
+    const QString &dir = data.dir;
+    const QString &base = data.base;
+    if (dir.isEmpty())
+        return data;
 
     // Remote-tracking branches (refs/remotes/*): the branches other nodes / the
     // relay have published, which `git branch` (local heads only, via
     // repoBranches()) leaves out. The list should show every branch in the repo,
     // including these refs, under their full ref-qualified name (adhoc #55).
-    // Rendered read-only after the local branches below. Skip each remote's
-    // symbolic */HEAD pointer and the bare remote name (e.g. "origin"), which
-    // aren't branches; a remote-tracking ref is always "<remote>/<branch>".
-    QStringList remoteBranches;
-    if (!dir.isEmpty()) {
-        QByteArray rout;
-        if (runGitCapture(dir,
-                          {"for-each-ref", "--sort=-committerdate",
-                           "--format=%(refname:short)", "refs/remotes/"},
-                          &rout, nullptr)) {
-            for (const QString &line :
-                 QString::fromUtf8(rout).split('\n', Qt::SkipEmptyParts)) {
-                const QString ref = line.trimmed();
-                if (ref.isEmpty() || !ref.contains(u'/') ||
-                    ref.endsWith(QLatin1String("/HEAD")))
-                    continue;
-                if (!remoteBranches.contains(ref))
-                    remoteBranches.append(ref);
-            }
+    // Rendered read-only after the local branches. Skip each remote's symbolic
+    // */HEAD pointer and the bare remote name (e.g. "origin"), which aren't
+    // branches; a remote-tracking ref is always "<remote>/<branch>".
+    QByteArray rout;
+    if (runGitCapture(dir,
+                      {"for-each-ref", "--sort=-committerdate",
+                       "--format=%(refname:short)", "refs/remotes/"},
+                      &rout, nullptr)) {
+        for (const QString &line :
+             QString::fromUtf8(rout).split('\n', Qt::SkipEmptyParts)) {
+            const QString ref = line.trimmed();
+            if (ref.isEmpty() || !ref.contains(u'/') ||
+                ref.endsWith(QLatin1String("/HEAD")))
+                continue;
+            if (!data.remoteBranches.contains(ref))
+                data.remoteBranches.append(ref);
         }
     }
 
-    if (m_branchesSummary) {
-        const QString def = base.isEmpty() ? QStringLiteral("none") : base;
-        const QString total =
-            remoteBranches.isEmpty()
-                ? QString::number(branches.size())
-                : QString::fromUtf8("%1 local \xC2\xB7 %2 remote")
-                      .arg(branches.size())
-                      .arg(remoteBranches.size());
-        m_branchesSummary->setText(
-            QString::fromUtf8("\xC2\xB7 %1 \xC2\xB7 default: %2").arg(total, def));
-    }
-
     // Branch commit timestamps in one batch: spawning a `git log -1` per branch
-    // (below) blocked the UI thread for ~2s on repos with many branches because
-    // each row started its own git process serially (issue #152). for-each-ref
-    // returns every branch tip's committer date in a single call.
-    QHash<QString, qint64> branchTimes;
-    QHash<QString, QString> branchShortShas;
-    QHash<QString, QString> branchSubjects;
-    QHash<QString, QString> branchAuthors;
-    if (!dir.isEmpty()) {
-        QByteArray times;
-        if (runGitCapture(
-                dir,
-                {"for-each-ref",
-                 "--format=%(refname:short)%09%(committerdate:unix)%09"
-                 "%(objectname:short)%09%(subject)%09%(authorname)",
-                 "refs/heads/", "refs/remotes/"},
-                &times, nullptr)) {
-            for (const QString &line :
-                 QString::fromUtf8(times).split('\n', Qt::SkipEmptyParts)) {
-                const QStringList parts = line.split(QLatin1Char('\t'));
-                if (parts.size() < 2)
-                    continue;
-                const QString ref = parts.at(0);
-                branchTimes.insert(ref, parts.at(1).toLongLong());
-                if (parts.size() >= 3)
-                    branchShortShas.insert(ref, parts.at(2));
-                if (parts.size() >= 4)
-                    branchSubjects.insert(ref, parts.at(3));
-                if (parts.size() >= 5)
-                    branchAuthors.insert(ref, parts.at(4));
-            }
+    // blocked the UI thread for ~2s on repos with many branches because each row
+    // started its own git process serially (issue #152). for-each-ref returns
+    // every branch tip's committer date in a single call.
+    QByteArray times;
+    if (runGitCapture(
+            dir,
+            {"for-each-ref",
+             "--format=%(refname:short)%09%(committerdate:unix)%09"
+             "%(objectname:short)%09%(subject)%09%(authorname)",
+             "refs/heads/", "refs/remotes/"},
+            &times, nullptr)) {
+        for (const QString &line :
+             QString::fromUtf8(times).split('\n', Qt::SkipEmptyParts)) {
+            const QStringList parts = line.split(QLatin1Char('\t'));
+            if (parts.size() < 2)
+                continue;
+            const QString ref = parts.at(0);
+            data.times.insert(ref, parts.at(1).toLongLong());
+            if (parts.size() >= 3)
+                data.shortShas.insert(ref, parts.at(2));
+            if (parts.size() >= 4)
+                data.subjects.insert(ref, parts.at(3));
+            if (parts.size() >= 5)
+                data.authors.insert(ref, parts.at(4));
         }
     }
 
@@ -2320,8 +2305,7 @@ void MainWindow::loadBranchesPanel()
     // hundreds of remote refs. The atom emits "<ahead> <behind>"; the hash stays
     // empty (rows fall back to a plain "Remote" label) when the field or base is
     // unavailable, e.g. on older git.
-    QHash<QString, QPair<int, int>> remoteAheadBehind; // ref -> (ahead, behind)
-    if (!dir.isEmpty() && !base.isEmpty() && !remoteBranches.isEmpty()) {
+    if (!base.isEmpty() && !data.remoteBranches.isEmpty()) {
         QByteArray ab;
         if (runGitCapture(
                 dir,
@@ -2335,7 +2319,7 @@ void MainWindow::loadBranchesPanel()
                     QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
                 // "<ref> <ahead> <behind>"; ref names never contain whitespace.
                 if (parts.size() >= 3)
-                    remoteAheadBehind.insert(
+                    data.remoteAheadBehind.insert(
                         parts.first(),
                         qMakePair(parts.at(1).toInt(), parts.at(2).toInt()));
             }
@@ -2344,12 +2328,11 @@ void MainWindow::loadBranchesPanel()
 
     // The same batched read for the local heads. Each row used to shell its own
     // `git rev-list --left-right --count`, so a repo with dozens of branches ran
-    // dozens of git processes serially on the GUI thread every time the panel
-    // rebuilt (adhoc #416). One for-each-ref answers them all. The atom needs
-    // git 2.41+; where it's missing the hash stays empty and the rows fall back
-    // to their own rev-list below, so older git still reports the right counts.
-    QHash<QString, QPair<int, int>> localAheadBehind; // branch -> (ahead, behind)
-    if (!dir.isEmpty() && !base.isEmpty()) {
+    // dozens of git processes serially every time the panel rebuilt (adhoc #416).
+    // One for-each-ref answers them all. The atom needs git 2.41+; where it's
+    // missing the per-branch rev-list below fills the gaps, so older git still
+    // reports the right counts.
+    if (!base.isEmpty()) {
         QByteArray ab;
         if (runGitCapture(
                 dir,
@@ -2362,11 +2345,147 @@ void MainWindow::loadBranchesPanel()
                 const QStringList parts = line.split(
                     QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
                 if (parts.size() >= 3)
-                    localAheadBehind.insert(
+                    data.localAheadBehind.insert(
                         parts.first(),
                         qMakePair(parts.at(1).toInt(), parts.at(2).toInt()));
             }
         }
+        for (const QString &branch : std::as_const(data.branches)) {
+            if (branch == base || data.localAheadBehind.contains(branch))
+                continue;
+            QByteArray counts;
+            if (!runGitCapture(dir,
+                               {"rev-list", "--left-right", "--count",
+                                base + "..." + branch},
+                               &counts, nullptr))
+                continue;
+            const QStringList parts = QString::fromUtf8(counts).trimmed().split(
+                QRegularExpression(QStringLiteral("\\s+")));
+            // "<behind> <ahead>" — the left side is base's own commits.
+            if (parts.size() >= 2)
+                data.localAheadBehind.insert(
+                    branch, qMakePair(parts.at(1).toInt(), parts.at(0).toInt()));
+        }
+    }
+
+    // Map each branch to the worktree (other than the main checkout) it's checked
+    // out in, in a single `git worktree list --porcelain` call so the per-row
+    // Worktree column doesn't spawn a git process each (issue #172).
+    QByteArray wtOut;
+    if (runGitCapture(dir, {"worktree", "list", "--porcelain"}, &wtOut, nullptr)) {
+        // Compare canonical paths so a symlinked checkout root (e.g. /tmp on
+        // some platforms) doesn't make the main worktree look like a separate
+        // branch worktree; fall back to the absolute path if it can't resolve.
+        QString mainPath = QFileInfo(dir).canonicalFilePath();
+        if (mainPath.isEmpty())
+            mainPath = QDir(dir).absolutePath();
+        QString currentPath;
+        for (const QString &raw : QString::fromUtf8(wtOut).split(QLatin1Char('\n'))) {
+            const QString line = raw.trimmed();
+            if (line.startsWith(QLatin1String("worktree ")))
+                currentPath = line.mid(9).trimmed();
+            else if (line.startsWith(QLatin1String("branch "))) {
+                const QString br =
+                    line.mid(7).trimmed().replace(QLatin1String("refs/heads/"),
+                                                  QString());
+                QString canonicalPath = QFileInfo(currentPath).canonicalFilePath();
+                if (canonicalPath.isEmpty())
+                    canonicalPath = QDir(currentPath).absolutePath();
+                if (!br.isEmpty() && !currentPath.isEmpty() && canonicalPath != mainPath)
+                    data.worktrees.insert(br, currentPath);
+            }
+        }
+    }
+    return data;
+}
+
+// Refresh the branches panel. The git reads run on a worker thread and the rows
+// are built when they land, so this returns immediately and the window stays
+// responsive (adhoc #420 — it used to shell six-plus git processes on the GUI
+// thread under a GitKeepAlive, which is what made clicking a branch link feel
+// slow). Reloads that arrive while a read is in flight are coalesced into one.
+void MainWindow::loadBranchesPanel()
+{
+    if (!m_branchesTable)
+        return;
+    if (m_branchesPanelLoading) {
+        m_branchesPanelReloadQueued = true;
+        return;
+    }
+    BranchesPanelData data;
+    data.dir = repoGitDir();
+    data.branches = repoBranches();
+    data.base = repoDefaultBranch(data.branches);
+    // Always pin the default branch ("main") to the top of the list, regardless
+    // of which feature branch was committed to most recently — repoBranches()
+    // sorts by committer date, so without this main sinks below active branches
+    // (adhoc #185).
+    if (!data.base.isEmpty() && data.branches.removeOne(data.base))
+        data.branches.prepend(data.base);
+    data.selected = m_repoBranch.isEmpty() ? data.base : m_repoBranch;
+    data.writable = repoHasWorkingTree();
+    // Remember which branch's diff is on screen so we can re-render it at the end
+    // (now reflecting any merge we just performed).
+    data.previouslyViewed = m_branchDiffBranch;
+
+    m_branchesPanelLoading = true;
+    const int gen = ++m_branchesPanelGen;
+    runOffThread<BranchesPanelData>(
+        [data] { return readBranchesPanelGit(data); },
+        [this, gen](BranchesPanelData loaded) {
+            if (gen != m_branchesPanelGen)
+                return; // a newer load already owns the table
+            m_branchesPanelLoading = false;
+            if (m_branchesTable)
+                renderBranchesPanel(loaded);
+            if (m_branchesPanelReloadQueued) {
+                m_branchesPanelReloadQueued = false;
+                loadBranchesPanel();
+            }
+        });
+}
+
+void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
+{
+    // Freeze the whole splitter — table, changed-files/scope lists and diff view —
+    // while we tear down and rebuild the rows so a refresh after a merge/delete
+    // doesn't flash all of them blank before the new contents land; they all
+    // repaint once together when the guard lifts (adhoc #256).
+    TableRepaintGuard repaintGuard(m_branchesSplit ? m_branchesSplit
+                                                   : static_cast<QWidget *>(m_branchesTable));
+    // Block the table's selection signals across the rebuild so clearing the rows
+    // doesn't fire currentCellChanged -> showBranchDiff(empty), which would blank
+    // the diff pane and churn m_branchDiffBranch mid-rebuild. We re-render the
+    // viewed branch's diff explicitly at the end instead (adhoc #256).
+    QSignalBlocker branchesTableBlock(m_branchesTable);
+    m_branchesTable->setRowCount(0);
+    const QString &dir = data.dir;
+    const QStringList &branches = data.branches;
+    const QString &base = data.base;
+    const QString &selected = data.selected;
+    const QString &previouslyViewed = data.previouslyViewed;
+    const bool writable = data.writable;
+    const QStringList &remoteBranches = data.remoteBranches;
+    const QHash<QString, qint64> &branchTimes = data.times;
+    const QHash<QString, QString> &branchShortShas = data.shortShas;
+    const QHash<QString, QString> &branchSubjects = data.subjects;
+    const QHash<QString, QString> &branchAuthors = data.authors;
+    const QHash<QString, QPair<int, int>> &localAheadBehind = data.localAheadBehind;
+    const QHash<QString, QPair<int, int>> &remoteAheadBehind = data.remoteAheadBehind;
+    const QHash<QString, QString> &branchWorktrees = data.worktrees;
+    // Rows on screen now describe this repo, so switchToBranch can trust them.
+    m_branchesPanelDir = dir;
+
+    if (m_branchesSummary) {
+        const QString def = base.isEmpty() ? QStringLiteral("none") : base;
+        const QString total =
+            remoteBranches.isEmpty()
+                ? QString::number(branches.size())
+                : QString::fromUtf8("%1 local \xC2\xB7 %2 remote")
+                      .arg(branches.size())
+                      .arg(remoteBranches.size());
+        m_branchesSummary->setText(
+            QString::fromUtf8("\xC2\xB7 %1 \xC2\xB7 default: %2").arg(total, def));
     }
 
     // Map each branch to the agent session working it (if any), scoped to the
@@ -2375,13 +2494,12 @@ void MainWindow::loadBranchesPanel()
     // may carry more than one session over its life; prefer one bound to an issue
     // and otherwise the most recent.
     //
-    // Stored by value, not by pointer into m_agentSessions: the per-row git reads
-    // further down run under GitKeepAlive, which pumps the event loop, and a
-    // queued callback landing mid-pump (e.g. an agent finishing/being deleted)
-    // can append/remove entries and reallocate that list. A pointer taken here
-    // would dangle and crash (free(): invalid pointer) when later dereferenced —
-    // this is what crashed on a branch click after a merge freed its agent
-    // session (adhoc #200).
+    // Stored by value, not by pointer into m_agentSessions: a queued callback
+    // (e.g. an agent finishing/being deleted) can append/remove entries and
+    // reallocate that list between rebuilds. A pointer taken here would dangle
+    // and crash (free(): invalid pointer) when later dereferenced — this is what
+    // crashed on a branch click after a merge freed its agent session (adhoc
+    // #200).
     QHash<QString, AgentSession> branchSessions;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
@@ -2395,40 +2513,6 @@ void MainWindow::loadBranchesPanel()
                 ((session.issueNumber > 0) == (existing->issueNumber > 0) &&
                  session.id > existing->id))
                 branchSessions.insert(session.branchName, session);
-        }
-    }
-
-    // Map each branch to the worktree (other than the main checkout) it's checked
-    // out in, in a single `git worktree list --porcelain` call so the per-row
-    // Worktree column below doesn't spawn a git process each (issue #172).
-    QHash<QString, QString> branchWorktrees;
-    if (!dir.isEmpty()) {
-        QByteArray wtOut;
-        if (runGitCapture(dir, {"worktree", "list", "--porcelain"}, &wtOut, nullptr)) {
-            // Compare canonical paths so a symlinked checkout root (e.g. /tmp on
-            // some platforms) doesn't make the main worktree look like a separate
-            // branch worktree; fall back to the absolute path if it can't resolve.
-            QString mainPath = QFileInfo(dir).canonicalFilePath();
-            if (mainPath.isEmpty())
-                mainPath = QDir(dir).absolutePath();
-            QString currentPath;
-            for (const QString &raw :
-                 QString::fromUtf8(wtOut).split(QLatin1Char('\n'))) {
-                const QString line = raw.trimmed();
-                if (line.startsWith(QLatin1String("worktree ")))
-                    currentPath = line.mid(9).trimmed();
-                else if (line.startsWith(QLatin1String("branch "))) {
-                    const QString br =
-                        line.mid(7).trimmed().replace(QLatin1String("refs/heads/"),
-                                                      QString());
-                    QString canonicalPath = QFileInfo(currentPath).canonicalFilePath();
-                    if (canonicalPath.isEmpty())
-                        canonicalPath = QDir(currentPath).absolutePath();
-                    if (!br.isEmpty() && !currentPath.isEmpty()
-                        && canonicalPath != mainPath)
-                        branchWorktrees.insert(br, currentPath);
-                }
-            }
         }
     }
 
@@ -2473,27 +2557,14 @@ void MainWindow::loadBranchesPanel()
         qint64 ts = 0;
         if (!dir.isEmpty()) {
             if (branch != base) {
-                bool counted = false;
+                // Counts come from the worker's batched read (with its per-branch
+                // rev-list fallback for pre-2.41 git); a missing entry means the
+                // divergence is unknown, so the row shows no status at all.
                 const auto abIt = localAheadBehind.constFind(branch);
-                if (abIt != localAheadBehind.constEnd()) {
+                const bool counted = abIt != localAheadBehind.constEnd();
+                if (counted) {
                     ahead = abIt->first;
                     behind = abIt->second;
-                    counted = true;
-                }
-                QByteArray counts;
-                if (!counted &&
-                    runGitCapture(dir,
-                                  {"rev-list", "--left-right", "--count",
-                                   base + "..." + branch},
-                                  &counts, nullptr)) {
-                    const QStringList parts =
-                        QString::fromUtf8(counts).trimmed().split(
-                            QRegularExpression(QStringLiteral("\\s+")));
-                    if (parts.size() >= 2) {
-                        behind = parts.at(0).toInt();
-                        ahead = parts.at(1).toInt();
-                        counted = true;
-                    }
                 }
                 if (counted)
                     status = QString::fromUtf8("%1 behind \xC2\xB7 %2 ahead")
@@ -2827,6 +2898,12 @@ void MainWindow::loadBranchesPanel()
     // (adhoc #416).
     startBranchConflictProbes(dir, base, conflictProbes);
 
+    // A branch switchToBranch asked for before the rows existed: land on it now
+    // that they do, and tell the user if it isn't in this repository after all
+    // (adhoc #185/#420).
+    const QString pendingSelect = m_branchesPanelPendingSelect;
+    m_branchesPanelPendingSelect.clear();
+
     if (m_branchesTable->rowCount() == 0) {
         m_branchesTable->insertRow(0);
         auto *empty = new QTableWidgetItem("No branches in this repository.");
@@ -2834,12 +2911,20 @@ void MainWindow::loadBranchesPanel()
         m_branchesTable->setItem(0, 0, empty);
         // Table signals are blocked, so blank the diff pane ourselves.
         showBranchDiff(QString());
+        if (!pendingSelect.isEmpty())
+            reportBranchNotFound(pendingSelect);
         return;
     }
 
     // Re-select the row the user was viewing (falling back to the checked-out
-    // branch) so rebuilding the table doesn't leave the diff pane blank.
+    // branch) so rebuilding the table doesn't leave the diff pane blank. A
+    // pending switchToBranch wins: it's the branch the user just clicked.
     QString target = previouslyViewed;
+    if (!pendingSelect.isEmpty() &&
+        (branches.contains(pendingSelect) || remoteBranches.contains(pendingSelect)))
+        target = pendingSelect;
+    else if (!pendingSelect.isEmpty())
+        reportBranchNotFound(pendingSelect);
     if (target.isEmpty() ||
         (!branches.contains(target) && !remoteBranches.contains(target)))
         target = selected;

@@ -518,7 +518,8 @@ public:
     // Rebuild the Branches panel, then read back the Worktree column (column 3)
     // for `branch`, so a test can prove the branches list surfaces the worktree a
     // branch is checked out in (issue #172).
-    void testReloadBranchesPanel() { loadBranchesPanel(); }
+    // Rebuilds off-thread now (adhoc #420), so this pumps until the rows land.
+    void testReloadBranchesPanel();
     QString testBranchWorktreePath(const QString &branch) const;
     // Inject an agent session so a test can prove the branches list surfaces the
     // issue/agent a branch is attached to (adhoc #191).
@@ -2215,6 +2216,32 @@ private:
     // repos with many agent branches.
     QString repoDefaultBranchFast() const;
     QWidget *buildBranchesTab();
+    // Everything the branches table is built from. The git half is gathered on a
+    // worker thread (readBranchesPanelGit) so opening the panel — or landing on a
+    // branch from an agent/PR link — never waits on git (adhoc #420); the GUI half
+    // is snapshotted before the worker starts.
+    struct BranchesPanelData {
+        QString dir;
+        QString base;             // default branch
+        QString selected;         // branch the repo view is parked on
+        QString previouslyViewed; // branch whose diff was on screen
+        bool writable = false;
+        QStringList branches;       // local heads, default branch first
+        QStringList remoteBranches; // refs/remotes/* (read-only rows)
+        QHash<QString, qint64> times;
+        QHash<QString, QString> shortShas;
+        QHash<QString, QString> subjects;
+        QHash<QString, QString> authors;
+        // branch/ref -> (ahead, behind) vs the default branch. A missing entry
+        // means the counts are unknown, so the row shows no ahead/behind status.
+        QHash<QString, QPair<int, int>> localAheadBehind;
+        QHash<QString, QPair<int, int>> remoteAheadBehind;
+        QHash<QString, QString> worktrees; // branch -> linked worktree path
+    };
+    // Runs on a worker thread: fills the git-derived half of `data`.
+    static BranchesPanelData readBranchesPanelGit(BranchesPanelData data);
+    // Builds the table rows from a gathered snapshot (GUI thread, no git).
+    void renderBranchesPanel(const BranchesPanelData &data);
     void loadBranchesPanel();
     QWidget *buildWorktreesTab();
     void loadWorktreesPanel();
@@ -2266,6 +2293,11 @@ private:
     // the selection on the worktree being acted on after loadWorktreesPanel()
     // rebuilds the table (which would otherwise clear it — issue #272).
     bool selectWorktreeRow(const QString &branch);
+    // Same for the branches table: select the row whose name matches (which fires
+    // currentCellChanged -> showBranchDiff). Returns false if no such row exists.
+    bool selectBranchRow(const QString &branch);
+    // Explain that a branch link pointed at a branch this repository doesn't have.
+    void reportBranchNotFound(const QString &branch);
     void showWorktreeDiff(const QString &branch, const QString &worktreePath);
     // Merge a worktree's branch into the default branch. On success the now-merged
     // worktree and its branch are removed (the work is preserved in the merge
@@ -5577,7 +5609,19 @@ private:
     void tickIssueListSpinners();
     bool m_nodeSwitching = false;      // a node switch's heavy load is running
     bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
-    bool m_branchesPanelLoading = false; // re-entrancy guard for loadBranchesPanel
+    // A branches-panel git snapshot is being read on a worker thread. Reloads
+    // arriving meanwhile set m_branchesPanelReloadQueued instead of starting a
+    // second read, so a busy agent fleet can't pile up workers (adhoc #420).
+    bool m_branchesPanelLoading = false;
+    bool m_branchesPanelReloadQueued = false;
+    // Bumped per load so a snapshot that lands after a newer one is dropped.
+    int m_branchesPanelGen = 0;
+    // Git dir the table's rows were built for, so switchToBranch only trusts the
+    // rows on screen when they belong to the repo it's selecting into.
+    QString m_branchesPanelDir;
+    // Branch switchToBranch asked for that wasn't on screen yet: selected (or
+    // reported as missing) once the pending rebuild lands.
+    QString m_branchesPanelPendingSelect;
     // Re-entrancy guard for loadMirrorNodesPanel: its synchronous git reads pump
     // the event loop, so a queued roster/mirror callback could start a second
     // pass that appends its own rows on top of the half-built table — every node
