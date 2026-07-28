@@ -4767,12 +4767,14 @@ def world_websocket_origin_allowed(request):
 
 async def world_durable_object_request(
         request, trusted_claim=None, moderation_tokens=None):
-    """Rebuild the world upgrade with no identifying connection headers.
+    """Rebuild the world upgrade with tightly scoped connection headers.
 
     The general tunnel helper forwards Authorization and User-Agent because Git
-    hosts need them. World presence does not. It receives only WebSocket
-    handshake headers plus the already-sanitized, approximate country code and
-    opaque moderation subjects.
+    hosts need them. Public World presence does not. The live room receives
+    WebSocket handshake headers, the approximate country code, opaque
+    moderation subjects, and an ephemeral edge IP/raw agent pair that its
+    server-verified admin projection may reveal for guest moderation only.
+    Those two values are never persisted or emitted to ordinary sockets.
     """
     headers = {}
     for name in (
@@ -4818,6 +4820,16 @@ async def world_durable_object_request(
             # Only keyed opaque tokens cross this boundary. The source address
             # and raw client fingerprint remain in the outer Worker call frame.
             headers["x-forkmesh-world-%s-token" % target_type] = token
+    client_ip = _account_session_client_ip(request)
+    if client_ip:
+        headers["x-forkmesh-world-private-ip"] = client_ip
+    try:
+        raw_agent = clean_string(
+            request.headers.get("user-agent") or "", 1024)
+    except Exception:
+        raw_agent = ""
+    if raw_agent:
+        headers["x-forkmesh-world-private-agent"] = raw_agent
     source_url = urlparse(request.url)
     # Strip query/fragment data as an additional privacy boundary. The world
     # protocol has no tokens or user-selected URL state.
@@ -8162,6 +8174,36 @@ async def world_build_board_handler(env, request, path):
         ):
             return await world_build_board.handle(runtime, path, [])
     return await world_build_board.handle(runtime, path, [])
+
+
+async def world_deploy_status_handler(env, request):
+    if method_name(request) != "GET":
+        return json_response(
+            {"ok": False, "error": "method_not_allowed"},
+            405,
+            {"Allow": "GET"},
+        )
+    row = await d1_first(
+        env,
+        "SELECT state,revision,started_at,finished_at "
+        "FROM world_deploy_status WHERE singleton=1",
+    )
+    row = row or {}
+    state = str(row.get("state") or "idle")
+    if state not in ("idle", "deploying", "ready", "failed"):
+        state = "idle"
+    return json_response(
+        {
+            "ok": True,
+            "state": state,
+            "revision": clean_string(row.get("revision") or "", 96),
+            "startedAt": max(0, int(row.get("started_at") or 0)),
+            "finishedAt": max(0, int(row.get("finished_at") or 0)),
+            "now": Date.now(),
+        },
+        200,
+        {"Cache-Control": "no-store, max-age=0"},
+    )
 
 
 WORLD_PREFERENCES_MAX_BYTES = 320 * 1024
@@ -37131,6 +37173,10 @@ class Default(WorkerEntrypoint):
                 self.env, request, url.path)
 
         if url.path in (
+                "/api/world/deploy-status", "/api/world/deploy-status/"):
+            return await world_deploy_status_handler(self.env, request)
+
+        if url.path in (
                 "/api/world/preferences", "/api/world/preferences/"):
             return await world_preferences_handler(self.env, request)
 
@@ -38817,6 +38863,18 @@ class ForkMeshWorld(DurableObject):
                 token = ""
             moderation_tokens[target_type] = (
                 token if re.fullmatch(r"[a-f0-9]{64}", token) else "")
+        try:
+            client_ip = str(
+                request.headers.get("x-forkmesh-world-private-ip") or "")
+            client_ip = str(ipaddress.ip_address(client_ip))[:64]
+        except Exception:
+            client_ip = ""
+        try:
+            client_user_agent = clean_string(
+                request.headers.get(
+                    "x-forkmesh-world-private-agent") or "", 1024)
+        except Exception:
+            client_user_agent = ""
         if trusted_claim:
             # The name and operator count remain private attachment fields
             # until the owner's first presence frame opts into each one.
@@ -38832,6 +38890,8 @@ class ForkMeshWorld(DurableObject):
             arrival_slot=arrival_slot, is_admin=is_admin,
             ip_token=moderation_tokens["ip"],
             agent_token=moderation_tokens["agent"],
+            client_ip=client_ip,
+            client_user_agent=client_user_agent,
             ticket_nonce=ticket_nonce)
 
         # The only snapshot is the state of sockets alive right now. It is sent
@@ -38949,7 +39009,8 @@ class ForkMeshWorld(DurableObject):
                          departed=False, country_source=None,
                          trusted_name=None, trusted_node_count=None,
                          pending_knocks=None, arrival_slot=None, is_admin=None,
-                         ip_token=None, agent_token=None, ticket_nonce=None):
+                         ip_token=None, agent_token=None, ticket_nonce=None,
+                         client_ip=None, client_user_agent=None):
         if country_source is None:
             country_source = _ws_attr(ws, "country_source", "")
         if trusted_name is None:
@@ -38968,6 +39029,10 @@ class ForkMeshWorld(DurableObject):
             agent_token = _ws_attr(ws, "agent_token", "")
         if ticket_nonce is None:
             ticket_nonce = _ws_attr(ws, "ticket_nonce", "")
+        if client_ip is None:
+            client_ip = _ws_attr(ws, "client_ip", "")
+        if client_user_agent is None:
+            client_user_agent = _ws_attr(ws, "client_user_agent", "")
         pending_knocks = [
             str(peer_id)
             for peer_id in list(pending_knocks or [])[-8:]
@@ -39004,6 +39069,13 @@ class ForkMeshWorld(DurableObject):
                 str(agent_token)
                 if re.fullmatch(r"[a-f0-9]{64}", str(agent_token or ""))
                 else ""),
+            # Ephemeral guest-moderation detail. These fields live only in the
+            # active socket attachment and are projected only to a
+            # server-verified platform administrator by
+            # `_presence_for_viewer`.
+            "client_ip": clean_string(client_ip or "", 64),
+            "client_user_agent": clean_string(
+                client_user_agent or "", 1024),
             "ticket_nonce": (
                 str(ticket_nonce)
                 if re.fullmatch(
@@ -39038,6 +39110,16 @@ class ForkMeshWorld(DurableObject):
                 handles[target_type] = token
         if handles:
             public["moderationHandles"] = handles
+        if str(public.get("accountStatus") or "Guest") == "Guest":
+            ip_value = clean_string(
+                _ws_attr(subject, "client_ip", "") or "", 64)
+            agent_value = clean_string(
+                _ws_attr(subject, "client_user_agent", "") or "", 1024)
+            if ip_value or agent_value:
+                public["adminGuestNetwork"] = {
+                    "ipAddress": ip_value,
+                    "userAgent": agent_value,
+                }
         return public
 
     def _mark_departed(self, ws):

@@ -2192,6 +2192,13 @@ SCHEMA_STATEMENTS = [
         completed_by_bi TEXT NOT NULL DEFAULT '')""",
     "CREATE INDEX IF NOT EXISTS idx_world_build_board_priority "
     "ON world_build_board_items(priority, item_key)",
+    """CREATE TABLE IF NOT EXISTS world_deploy_status (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        state TEXT NOT NULL
+            CHECK (state IN ('idle', 'deploying', 'ready', 'failed')),
+        revision TEXT NOT NULL DEFAULT '' CHECK (length(revision) <= 96),
+        started_at INTEGER NOT NULL DEFAULT 0 CHECK (started_at >= 0),
+        finished_at INTEGER NOT NULL DEFAULT 0 CHECK (finished_at >= 0))""",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

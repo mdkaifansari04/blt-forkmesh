@@ -2167,6 +2167,16 @@ function officeReclaimedWoodTexture(THREE) {
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:mirror2-agent-claim", task: "Provision mirror2 agent auth + claim jobs", estimate: "human action", done: false },
   { key: "task:review-open-prs", task: "Review every open PR + disposition", estimate: "queued", done: false },
+  { key: "task:repo-social-orbits", task: "Test follower + contributor avatar orbits", estimate: "testing", done: false },
+  { key: "task:issue-agent-models", task: "Issue buttons for Claude/Codex model choice", estimate: "testing", done: false },
+  { key: "task:qt-agent-installers", task: "Qt mirror Claude + Codex installers", estimate: "testing", done: false },
+  { key: "task:marketing-room-wall", task: "Marketing wall, desks, calendar + table", estimate: "testing", done: false },
+  { key: "task:avatar-team-badges", task: "Team badges on each avatar's left arm", estimate: "building", done: false },
+  { key: "task:marketing-proof", task: "Private Marketing proof-of-work links", estimate: "building", done: false },
+  { key: "task:deploy-lifecycle", task: "Live deploy spinner + ready refresh button", estimate: "testing", done: false },
+  { key: "task:elevator-camera-lock", task: "Elevator button camera lock + release", estimate: "testing", done: false },
+  { key: "task:build-board-nearby", task: "Refresh task wall when a player approaches", estimate: "building", done: false },
+  { key: "task:twitter-feed", task: "ForkMesh X posts on the Twitter board", estimate: "verifying feed", done: false },
   { key: "done:follower-orbit-visible", task: "Visible Mastodon follower orbit", estimate: "deployed", done: true },
   { key: "done:bot-full-status", task: "Engineering bot status + controls", estimate: "deployed", done: true },
   { key: "done:agent-diagnostics", task: "Stalled agent diagnostics → Human TODO", estimate: "deployed", done: true },
@@ -2714,7 +2724,63 @@ function sanitizedModerationHandles(remote, isAdmin) {
   return handles;
 }
 
-function createAvatarModerationControls(THREE, handles) {
+function sanitizedAdminGuestNetwork(remote, isAdmin) {
+  if (
+    isAdmin !== true ||
+    String(remote?.accountStatus || "Guest") !== "Guest" ||
+    !remote?.adminGuestNetwork ||
+    typeof remote.adminGuestNetwork !== "object" ||
+    Array.isArray(remote.adminGuestNetwork)
+  ) {
+    return {};
+  }
+  const ipAddress = String(
+    remote.adminGuestNetwork.ipAddress || "",
+  ).slice(0, 64);
+  const userAgent = String(
+    remote.adminGuestNetwork.userAgent || "",
+  ).slice(0, 1024);
+  return {
+    ipAddress: /^[0-9a-f:.]{2,64}$/i.test(ipAddress) ? ipAddress : "",
+    userAgent:
+      userAgent &&
+      !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(userAgent)
+        ? userAgent
+        : "",
+  };
+}
+
+function guestNetworkTexture(THREE, label, value, color, height = 220) {
+  return canvasTexture(THREE, 1024, height, (context) => {
+    context.clearRect(0, 0, 1024, height);
+    roundedRect(context, 4, 4, 1016, height - 8, 22);
+    context.fillStyle = "rgba(4,16,14,0.97)";
+    context.fill();
+    context.strokeStyle = color;
+    context.lineWidth = 9;
+    context.stroke();
+    context.textAlign = "left";
+    context.textBaseline = "top";
+    context.fillStyle = color;
+    context.font = '800 28px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(`${label} · CLICK TO COPY`, 28, 20);
+    context.fillStyle = "#effff7";
+    context.font = `${
+      label === "FULL USER AGENT" ? 19 : 34
+    }px "ForkMesh Mono", ui-monospace, monospace`;
+    wrapCanvasText(
+      context,
+      value || "Not reported",
+      28,
+      label === "FULL USER AGENT" ? 62 : 66,
+      968,
+      label === "FULL USER AGENT" ? 24 : 38,
+      label === "FULL USER AGENT" ? 16 : 2,
+    );
+  });
+}
+
+function createAvatarModerationControls(THREE, handles, guestNetwork = {}) {
   const group = new THREE.Group();
   group.name = "forkmesh-world-moderation-controls";
   const specs = [
@@ -2756,6 +2822,46 @@ function createAvatarModerationControls(THREE, handles) {
     control.renderOrder = 3;
     group.add(control);
   });
+  for (const spec of [
+    {
+      field: "ipAddress",
+      label: "GUEST IP",
+      color: "#80e8ff",
+      y: 1.63,
+      width: 1.18,
+      height: 0.3,
+      textureHeight: 220,
+    },
+    {
+      field: "userAgent",
+      label: "FULL USER AGENT",
+      color: "#b8a8ff",
+      y: 1.12,
+      width: 1.18,
+      height: 0.68,
+      textureHeight: 600,
+    },
+  ]) {
+    const value = String(guestNetwork[spec.field] || "");
+    if (!value) continue;
+    const control = new THREE.Mesh(
+      new THREE.PlaneGeometry(spec.width, spec.height),
+      new THREE.MeshBasicMaterial({
+        map: guestNetworkTexture(
+          THREE,
+          spec.label,
+          value,
+          spec.color,
+          spec.textureHeight,
+        ),
+        depthWrite: true,
+      }),
+    );
+    control.position.set(0, spec.y, 0.322);
+    control.userData.worldGuestCopy = spec.field;
+    control.renderOrder = 3;
+    group.add(control);
+  }
   return group;
 }
 
@@ -2792,7 +2898,47 @@ function sanitizedOrgTeamAssignment(remote) {
     member,
     assigned: Math.max(0, Math.min(total, Number(assignment.assigned) || 0)),
     total,
+    teams: (Array.isArray(assignment.teams) ? assignment.teams : [])
+      .map((team) => String(team || "").toLowerCase())
+      .filter((team) => WORLD_ORG_NAME_PATTERN.test(team))
+      .slice(0, 6),
   };
+}
+
+function avatarTeamBadgeTexture(THREE, team, index) {
+  const colors = ["#9ef7c6", "#80e8ff", "#ffc279", "#d8b7ff", "#ff9ca4"];
+  const accent = colors[index % colors.length];
+  return canvasTexture(THREE, 512, 176, (context) => {
+    roundedRect(context, 4, 4, 504, 168, 42);
+    context.fillStyle = "rgba(5,20,17,0.97)";
+    context.fill();
+    context.strokeStyle = accent;
+    context.lineWidth = 10;
+    context.stroke();
+    context.fillStyle = accent;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '900 54px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(team || "").toUpperCase(), 256, 88, 452);
+  });
+}
+
+function createAvatarTeamBadges(THREE, assignment) {
+  const group = new THREE.Group();
+  group.name = "forkmesh-avatar-left-arm-team-badges";
+  assignment.teams.slice(0, 4).forEach((team, index) => {
+    const badge = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.48, 0.17),
+      new THREE.MeshBasicMaterial({
+        map: avatarTeamBadgeTexture(THREE, team, index),
+        depthWrite: true,
+      }),
+    );
+    badge.position.set(0, 0.43 - index * 0.19, 0.166);
+    badge.renderOrder = 3;
+    group.add(badge);
+  });
+  return group;
 }
 
 function orgTeamControlTexture(THREE, title, subtitle) {
@@ -9398,6 +9544,7 @@ export function createWorldScene({
   onSiteReferrerOpen = () => {},
   onSystemCapacityTableSelect = () => {},
   onInfrastructureConsoleToggle = () => {},
+  onBuildBoardNearby = () => {},
   onBuildBoardReorder = () => {},
   onBuildIssueAssign = () => {},
   onRepositoryIssueOpen = () => {},
@@ -9409,6 +9556,7 @@ export function createWorldScene({
   onRegionChange = () => {},
   onMovement = () => {},
   onModeration = () => {},
+  onAdminGuestCopy = () => {},
   onOrgTeamAssign = () => {},
   onFediverseProfile = () => {},
   onFediverseFollow = () => {},
@@ -10739,6 +10887,7 @@ export function createWorldScene({
   const remotePlayers = new Map();
   const remoteLabels = new Map();
   const moderationActions = new WeakMap();
+  const adminGuestCopyActions = new WeakMap();
   const moderationControlKeys = new Map();
   const orgTeamActions = new WeakMap();
   const orgTeamControlKeys = new Map();
@@ -11651,6 +11800,22 @@ export function createWorldScene({
   officeTaskBulletinFace.position.z = 0.18;
   officeTaskBulletinFace.userData.interactive = "build-task-board";
   officeTaskBulletin.add(officeTaskBulletinFace);
+  const buildBoardSpinner = new THREE.Mesh(
+    new THREE.TorusGeometry(0.2, 0.055, 10, 28, Math.PI * 1.55),
+    new THREE.MeshBasicMaterial({
+      color: "#8ff1c3",
+      toneMapped: false,
+    }),
+  );
+  buildBoardSpinner.name = "forkmesh-build-board-updating-spinner";
+  buildBoardSpinner.position.set(5.28, 2.34, 0.27);
+  buildBoardSpinner.visible = false;
+  officeTaskBulletin.add(buildBoardSpinner);
+  animated.push((time) => {
+    if (buildBoardSpinner.visible) {
+      buildBoardSpinner.rotation.z = -time * 0.006;
+    }
+  });
   const officeTaskDoneFace = new THREE.Mesh(
     new THREE.PlaneGeometry(12.1, 1.48),
     new THREE.MeshBasicMaterial({
@@ -11737,6 +11902,31 @@ export function createWorldScene({
     issues: [],
   };
   let draggedBuildCard = null;
+  let buildBoardWasNearby = false;
+
+  function setBuildBoardLoading(loading) {
+    buildBoardSpinner.visible = loading === true;
+  }
+
+  function updateBuildBoardProximity() {
+    if (officeSceneMode !== "town") {
+      buildBoardWasNearby = false;
+      return;
+    }
+    const position = officeTaskBulletin.getWorldPosition(
+      new THREE.Vector3(),
+    );
+    const distance = Math.hypot(
+      player.position.x - position.x,
+      player.position.z - position.z,
+    );
+    if (distance <= 18 && !buildBoardWasNearby) {
+      buildBoardWasNearby = true;
+      onBuildBoardNearby();
+    } else if (distance >= 23) {
+      buildBoardWasNearby = false;
+    }
+  }
 
   function repaintBuildBoards() {
     const previousTasks = officeTaskBulletinFace.material.map;
@@ -12623,6 +12813,8 @@ export function createWorldScene({
   let officeFloorAccess = normalizeOfficeFloorAccess();
   let officeFloorHandler = null;
   let officeElevatorRide = null;
+  let officeElevatorCameraLocked = false;
+  let officeElevatorCameraReleased = false;
   let officeAttendance = { visits: [] };
   let officeAttendanceObservedAt = performance.now();
   let officeAttendanceRenderedBucket = 0;
@@ -14344,6 +14536,8 @@ export function createWorldScene({
     officeElevatorDoors[1].position.x = 4.36;
     currentSpace = `office-${ride.floorId}`;
     officeElevatorRide = null;
+    officeElevatorCameraLocked = false;
+    officeElevatorCameraReleased = true;
     renderOfficeMarketingTasks();
     onOfficeElevatorSound("arrive", {
       floor: ride.floorId,
@@ -15180,6 +15374,34 @@ export function createWorldScene({
         : officeSceneMode === "lobby"
           ? player
           : null;
+    if (officeSceneMode === "lobby") {
+      const localPosition = officeAvatarLocalPosition(player);
+      const insideElevator = officeElevatorCabinContains(
+        localPosition.x,
+        localPosition.z,
+        OFFICE_AVATAR_RADIUS,
+      );
+      if (!insideElevator) {
+        officeElevatorCameraLocked = false;
+        officeElevatorCameraReleased = false;
+      } else if (officeElevatorRide || !officeElevatorCameraReleased) {
+        officeElevatorCameraLocked = true;
+      }
+    } else {
+      officeElevatorCameraLocked = false;
+      officeElevatorCameraReleased = false;
+    }
+    if (officeElevatorCameraLocked) {
+      const eye = player
+        .getWorldPosition(new THREE.Vector3())
+        .add(new THREE.Vector3(0, FIRST_PERSON_EYE_HEIGHT, 0));
+      const panelTarget = elevatorPanel.getWorldPosition(
+        new THREE.Vector3(),
+      );
+      camera.position.copy(eye);
+      camera.lookAt(panelTarget);
+      return;
+    }
     if (cameraMode === "first-person") {
       const firstPersonAvatar = officeAvatar || player;
       const eye = firstPersonAvatar
@@ -15454,6 +15676,7 @@ export function createWorldScene({
     if (controls) {
       controls.traverse((child) => {
         moderationActions.delete(child);
+        adminGuestCopyActions.delete(child);
         const interactiveIndex = interactive.indexOf(child);
         if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
       });
@@ -15471,10 +15694,16 @@ export function createWorldScene({
       remote,
       identity?.isAdmin === true,
     );
+    const guestNetwork = sanitizedAdminGuestNetwork(
+      remote,
+      identity?.isAdmin === true,
+    );
     const key = JSON.stringify([
       name,
       handles.ip || "",
       handles.agent || "",
+      guestNetwork.ipAddress || "",
+      guestNetwork.userAgent || "",
     ]);
     if (
       moderationControlKeys.get(peerId) === key &&
@@ -15483,10 +15712,32 @@ export function createWorldScene({
       return;
     }
     removeRemoteModerationControls(avatar, peerId);
-    if (!handles.ip && !handles.agent) return;
+    if (
+      !handles.ip &&
+      !handles.agent &&
+      !guestNetwork.ipAddress &&
+      !guestNetwork.userAgent
+    ) {
+      return;
+    }
 
-    const controls = createAvatarModerationControls(THREE, handles);
+    const controls = createAvatarModerationControls(
+      THREE,
+      handles,
+      guestNetwork,
+    );
     controls.children.forEach((control) => {
+      const copyField = control.userData.worldGuestCopy;
+      if (copyField && guestNetwork[copyField]) {
+        adminGuestCopyActions.set(control, {
+          field: copyField,
+          value: guestNetwork[copyField],
+          peerId,
+          name,
+        });
+        interactive.push(control);
+        return;
+      }
       const targetType = control.userData.worldModerationControl;
       const handle = handles[targetType];
       if (!WORLD_MODERATION_HANDLE_PATTERN.test(handle || "")) return;
@@ -15515,6 +15766,12 @@ export function createWorldScene({
       disposeObject3D(controls);
       delete avatar.userData.orgTeamControls;
     }
+    const teamBadges = avatar?.userData?.teamBadges;
+    if (teamBadges) {
+      avatar.userData.leftArm?.remove(teamBadges);
+      disposeObject3D(teamBadges);
+      delete avatar.userData.teamBadges;
+    }
     orgTeamControlKeys.delete(String(peerId || ""));
   }
 
@@ -15535,6 +15792,7 @@ export function createWorldScene({
       assignment?.member || "",
       assignment?.assigned ?? -1,
       assignment?.total ?? -1,
+      ...(assignment?.teams || []),
     ]);
     if (
       orgTeamControlKeys.get(peerId) === key &&
@@ -15557,6 +15815,11 @@ export function createWorldScene({
     });
     avatar.add(controls);
     avatar.userData.orgTeamControls = controls;
+    if (assignment.teams.length && avatar.userData.leftArm) {
+      const teamBadges = createAvatarTeamBadges(THREE, assignment);
+      avatar.userData.leftArm.add(teamBadges);
+      avatar.userData.teamBadges = teamBadges;
+    }
     orgTeamControlKeys.set(peerId, key);
   }
 
@@ -19310,6 +19573,7 @@ export function createWorldScene({
 
   function rotateCamera(deltaX, deltaY) {
     if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return;
+    if (officeElevatorCameraLocked) return;
     // The canvas behaves like a grabbed world: pull the scene with the
     // pointer, so the camera turns opposite to the hand's travel direction.
     cameraYaw -= deltaX * CAMERA_LOOK_SENSITIVITY;
@@ -19855,6 +20119,13 @@ export function createWorldScene({
     const moderationAction = hit?.object
       ? moderationActions.get(hit.object)
       : null;
+    const guestCopyAction = hit?.object
+      ? adminGuestCopyActions.get(hit.object)
+      : null;
+    if (guestCopyAction) {
+      onAdminGuestCopy({ ...guestCopyAction });
+      return;
+    }
     if (moderationAction) {
       onModeration({
         targetType: moderationAction.targetType,
@@ -20625,6 +20896,7 @@ export function createWorldScene({
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
     }
+    updateBuildBoardProximity();
     updateOfficeReceptionGuide(time);
     updateOfficeAttendanceClock(time);
     // The Office is part of the same live World. Neighbours and ForkBot keep
@@ -21096,6 +21368,7 @@ export function createWorldScene({
     updateMirrorAgentTasks,
     updateSystemCapacity,
     setInfrastructureConsoleLogs,
+    setBuildBoardLoading,
     updateBuildBoard,
     updateOrganizations,
     updateFediverseDirectory,

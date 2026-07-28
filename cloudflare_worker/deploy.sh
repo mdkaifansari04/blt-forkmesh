@@ -178,6 +178,37 @@ app_version() {
     sed -n 's/^project(ForkMesh VERSION \([0-9][0-9.]*\).*/\1/p' "$cmake" | head -n1
 }
 
+# Publish only a state, revision, and timestamps. Wrangler is the authenticated
+# writer; World clients never receive a mutation credential.
+signal_world_deploy() {
+    local state="$1"
+    local revision="$2"
+    local now_ms
+    now_ms="$(date -u +%s)000"
+    case "$state" in
+        deploying)
+            pywrangler d1 execute "${FORKMESH_D1_NAME:-forkmesh}" --remote \
+                --command "INSERT INTO world_deploy_status(singleton,state,revision,started_at,finished_at) VALUES(1,'deploying','$revision',$now_ms,0) ON CONFLICT(singleton) DO UPDATE SET state='deploying',revision='$revision',started_at=$now_ms,finished_at=0"
+            ;;
+        ready|failed)
+            pywrangler d1 execute "${FORKMESH_D1_NAME:-forkmesh}" --remote \
+                --command "INSERT INTO world_deploy_status(singleton,state,revision,started_at,finished_at) VALUES(1,'$state','$revision',$now_ms,$now_ms) ON CONFLICT(singleton) DO UPDATE SET state='$state',revision='$revision',finished_at=$now_ms"
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+}
+
+DEPLOY_SIGNAL_ACTIVE=0
+mark_interrupted_world_deploy() {
+    local exit_code=$?
+    if [ "$DEPLOY_SIGNAL_ACTIVE" = "1" ] && [ -n "${BUILD_REV:-}" ]; then
+        signal_world_deploy failed "$BUILD_REV" >/dev/null 2>&1 || true
+    fi
+    return "$exit_code"
+}
+
 build_dashboard_assets() {
     python3 tools/build_dashboard_assets.py
 }
@@ -923,6 +954,15 @@ case "${1:-deploy}" in
         BUILD_REV="$(build_rev)"
         APP_VERSION="$(app_version)"
         DEPLOYED_AT_MS="$(date -u +%s)000"
+        # Apply the lifecycle table before announcing this deployment. The
+        # Wrangler build hook safely rechecks the migration immediately after.
+        ./migrate.sh
+        if signal_world_deploy deploying "$BUILD_REV"; then
+            DEPLOY_SIGNAL_ACTIVE=1
+            trap mark_interrupted_world_deploy EXIT
+        else
+            echo "note: could not publish the World deployment indicator; continuing." >&2
+        fi
         echo "Deploying ForkMesh website + relay to Cloudflare (build $BUILD_REV, version ${APP_VERSION:-unknown})..."
         # wrangler.toml defines [env.dev] alongside the top-level (production)
         # config, so wrangler warns "no target environment specified" unless we
@@ -949,6 +989,11 @@ case "${1:-deploy}" in
         verify_public_assets
         retire_legacy_marketing_worker
         verify_marketing_routes
+        if [ "$DEPLOY_SIGNAL_ACTIVE" = "1" ]; then
+            signal_world_deploy ready "$BUILD_REV"
+            DEPLOY_SIGNAL_ACTIVE=0
+            trap - EXIT
+        fi
 
         # Build and publish a prebuilt release binary for install.sh to find.
         # This is optional: if it fails, the deploy still succeeds (users can build

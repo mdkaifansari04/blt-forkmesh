@@ -399,6 +399,32 @@ forkmesh-world {
   font-size: 12px;
 }
 
+.world-update-activity {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border: 2px solid rgb(158 247 198 / 0.25);
+  border-top-color: var(--world-mint);
+  border-radius: 50%;
+  animation: world-deploy-spin 650ms linear infinite;
+}
+
+.world-update-notice:not([data-state="deploying"]) .world-update-activity {
+  display: none;
+}
+
+.world-update-notice[data-state="ready"] {
+  border-color: #a8f7c8;
+}
+
+.world-update-notice[data-state="failed"] {
+  border-color: #ffb37c;
+}
+
+@keyframes world-deploy-spin {
+  to { transform: rotate(360deg); }
+}
+
 .world-update-notice[hidden] {
   display: none;
 }
@@ -412,6 +438,12 @@ forkmesh-world {
   color: #062017;
   font-weight: 800;
   cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-update-activity {
+    animation-duration: 1.8s;
+  }
 }
 
 .world-share-menu {
