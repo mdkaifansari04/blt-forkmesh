@@ -11,6 +11,9 @@ the implementation and its focused verification are complete.
 - [x] Keep newly provisioned Hosts rows checking until each mirror is reachable, with clear provisioning/online/attention state.
 - [x] Show separate Claude Code and Codex installed/missing status beside every saved host.
 - [ ] Show a visible Terms-of-Service moderation flag on repositories that violate ForkMesh policy.
+- [ ] Move the elevator's locked first-person camera to the front wall at the same height, facing outward.
+- [ ] Increase the in-elevator button labels and contrast for clear floor selection.
+- [ ] Add tasteful scene-native flowers, trees, and bushes around the Office exterior.
 - [x] Add a direct “Manage this alert” link to component and scheduled-job alert emails, opening the affected expanded status row.
 - [x] Make QA arrows permanently visible and large (red Fail, green Pass, grey Unsure), publish global aggregate stats, and continuously intake newly completed tasks.
 - [x] Fix the production `/api/world/deploy-status` response error that made API and Worker status red, then verify live recovery.
