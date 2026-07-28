@@ -1770,12 +1770,22 @@ bool vultrPlanHasIpv4(const QJsonObject &plan)
 
 QJsonObject cheapestVultrPlan(const QJsonArray &plans)
 {
+    // ForkMesh keeps the authenticated public repository materialization in
+    // private temporary storage while the durable copy remains age-encrypted.
+    // Vultr's 512 MB plans mount /tmp at roughly half of RAM, which is smaller
+    // than the flagship repository and makes an otherwise successful install
+    // disappear during its first sync. One GiB is the minimum supported
+    // automatic mirror size; operators can still install manually on custom
+    // hosts whose temporary-storage layout meets the same runtime needs.
+    constexpr double kMinimumMirrorRamMb = 1024.0;
     QJsonObject best;
     for (const QJsonValue &value : plans) {
         const QJsonObject plan = value.toObject();
         const double cost = plan.value(QStringLiteral("monthly_cost")).toDouble();
+        const double ram = plan.value(QStringLiteral("ram")).toDouble();
         const QString id = plan.value(QStringLiteral("id")).toString();
         if (id.isEmpty() || !std::isfinite(cost) || cost <= 0.0 ||
+            !std::isfinite(ram) || ram < kMinimumMirrorRamMb ||
             !vultrPlanHasIpv4(plan) ||
             plan.value(QStringLiteral("locations")).toArray().isEmpty()) {
             continue;
@@ -1792,7 +1802,6 @@ QJsonObject cheapestVultrPlan(const QJsonArray &plans)
         }
         if (cost > bestCost)
             continue;
-        const double ram = plan.value(QStringLiteral("ram")).toDouble();
         const double bestRam = best.value(QStringLiteral("ram")).toDouble();
         if (ram > bestRam ||
             (ram == bestRam &&

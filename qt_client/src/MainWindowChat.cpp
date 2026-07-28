@@ -7617,7 +7617,7 @@ QWidget *MainWindow::buildHostsSection()
 
     // --- Create a Vultr mirror (adhoc #315) --------------------------------
     // Fully automated alternative to the manual form above: given only a Vultr
-    // API key, deploy a brand-new VPS (cheapest plan, newest Debian), with the
+    // API key, deploy a brand-new VPS (cheapest supported plan, newest Debian), with the
     // SSH key created and managed by ForkMesh, then run the same hosted
     // installer over SSH so the node auto-links to this account and starts
     // mirroring/syncing on its own.
@@ -7636,8 +7636,10 @@ QWidget *MainWindow::buildHostsSection()
 
     auto *vultrHint = new QLabel(QString::fromUtf8(
         "One click deploys a brand-new cloud mirror on your Vultr account: "
-        "ForkMesh picks the cheapest available IPv4 plan (Vultr's IPv6-only "
-        "tiers are unreachable for the mesh) running the latest Debian, "
+        "ForkMesh picks the cheapest available IPv4 plan with at least 1 GB "
+        "RAM (smaller plans cannot hold the encrypted mirror's temporary "
+        "working set; Vultr's IPv6-only tiers are also unreachable for the "
+        "mesh) running the latest Debian, "
         "creates and manages the SSH key for it automatically, boots the "
         "instance, installs ForkMesh over SSH and links the new node to your "
         "account so it starts mirroring and syncing right away. The API key "
@@ -12073,7 +12075,7 @@ void MainWindow::createVultrMirrorFromForm()
         m_hostInstallLogBold = false;
     }
     appendHostInstallLog(QString::fromUtf8(
-        "Creating Vultr mirror \"%1\" \xE2\x80\x94 cheapest plan, latest "
+        "Creating Vultr mirror \"%1\" \xE2\x80\x94 cheapest supported plan, latest "
         "Debian, managed SSH key\xE2\x80\xA6\n").arg(node));
     if (storedKey)
         appendHostInstallLog(QStringLiteral(
@@ -12120,7 +12122,7 @@ void MainWindow::createVultrMirrorFromForm()
             }
             if (m_vultrStatus)
                 m_vultrStatus->setText(QString::fromUtf8(
-                    "Choosing the cheapest plan\xE2\x80\xA6"));
+                    "Choosing the cheapest supported plan\xE2\x80\xA6"));
             vultrApiCall(
                 apiKey, QStringLiteral("/v2/plans?per_page=500"),
                 QByteArrayLiteral("GET"), {},
@@ -12144,7 +12146,7 @@ void MainWindow::createVultrMirrorFromForm()
                     }
                     appendHostInstallLog(
                         QStringLiteral(
-                            "Cheapest plan: %1 ($%2/month, %3 MB RAM, %4 GB "
+                            "Cheapest supported plan: %1 ($%2/month, %3 MB RAM, %4 GB "
                             "disk) in region %5\n")
                             .arg(plan.value(QStringLiteral("id")).toString())
                             .arg(plan.value(QStringLiteral("monthly_cost"))

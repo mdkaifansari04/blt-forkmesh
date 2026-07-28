@@ -838,6 +838,13 @@ int main(int argc, char **argv)
                     {QStringLiteral("locations"),
                      QJsonArray{QStringLiteral("fra"),
                                 QStringLiteral("ams")}}},
+        // Cheapest IPv4 plan, but too small for the encrypted temporary
+        // repository materialization. Automatic provisioning must skip it.
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-1c-0.5gb")},
+                    {QStringLiteral("monthly_cost"), 2.5},
+                    {QStringLiteral("ram"), 512},
+                    {QStringLiteral("locations"),
+                     QJsonArray{QStringLiteral("ewr")}}},
         // Cheaper but sold out everywhere: not deployable, must be skipped.
         QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-old")},
                     {QStringLiteral("monthly_cost"), 3},
@@ -863,7 +870,7 @@ int main(int argc, char **argv)
           "cheapest Vultr plan skips undeployable plans and breaks ties on RAM");
     check(forkmesh::control::vultrPlanHasIpv4(cheapest) &&
               !forkmesh::control::vultrPlanHasIpv4(
-                  vultrPlans.at(4).toObject()) &&
+                  vultrPlans.at(5).toObject()) &&
               !forkmesh::control::vultrPlanHasIpv4(QJsonObject()),
           "IPv6-only Vultr plans are never eligible, however cheap");
     check(forkmesh::control::vultrPlanRegion(cheapest) ==

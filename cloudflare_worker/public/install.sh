@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.13.0 (2026-07-24)"
+INSTALLER_VERSION="0.14.0 (2026-07-28)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -779,36 +779,48 @@ pkg_for() {
   local what="$1"
   case "$PM:$what" in
     apt:git)        echo git ;;
+    apt:age)        echo age ;;
+    apt:tar)        echo tar ;;
     apt:cmake)      echo cmake ;;
     apt:compiler)   echo "g++" ;;
     apt:qt)         echo "qt6-base-dev qt6-svg-dev" ;;
     apt:openssl)    echo libssl-dev ;;
 
     dnf:git|yum:git)            echo git ;;
+    dnf:age|yum:age)            echo age ;;
+    dnf:tar|yum:tar)            echo tar ;;
     dnf:cmake|yum:cmake)        echo cmake ;;
     dnf:compiler|yum:compiler)  echo "gcc-c++" ;;
     dnf:qt|yum:qt)              echo "qt6-qtbase-devel qt6-qtsvg-devel" ;;
     dnf:openssl|yum:openssl)    echo openssl-devel ;;
 
     pacman:git)       echo git ;;
+    pacman:age)       echo age ;;
+    pacman:tar)       echo tar ;;
     pacman:cmake)     echo cmake ;;
     pacman:compiler)  echo gcc ;;
     pacman:qt)        echo "qt6-base qt6-svg" ;;
     pacman:openssl)   echo openssl ;;
 
     zypper:git)       echo git ;;
+    zypper:age)       echo age ;;
+    zypper:tar)       echo tar ;;
     zypper:cmake)     echo cmake ;;
     zypper:compiler)  echo "gcc-c++" ;;
     zypper:qt)        echo "qt6-base-devel qt6-svg-devel" ;;
     zypper:openssl)   echo libopenssl-devel ;;
 
     apk:git)       echo git ;;
+    apk:age)       echo age ;;
+    apk:tar)       echo tar ;;
     apk:cmake)     echo "cmake make" ;;
     apk:compiler)  echo "g++" ;;
     apk:qt)        echo "qt6-qtbase-dev qt6-qtsvg-dev" ;;
     apk:openssl)   echo "openssl-dev" ;;
 
     brew:git)       echo git ;;
+    brew:age)       echo age ;;
+    brew:tar)       echo gnu-tar ;;
     brew:cmake)     echo cmake ;;
     brew:qt)        echo qt ;;
     brew:openssl)   echo "openssl@3" ;;
@@ -866,6 +878,11 @@ have_openssl_dev() {
     [ -f /usr/local/include/openssl/ssl.h ]
 }
 
+have_age_tools() {
+  command -v age >/dev/null 2>&1 &&
+    command -v age-keygen >/dev/null 2>&1
+}
+
 # Prebuilt/uploaded binaries skip the source-build pipeline (and thus its Qt 6
 # dependency install), but the binary is dynamically linked against the Qt 6
 # runtime libraries (libQt6Widgets/Gui/Core/Network/Svg) and will not even start
@@ -909,8 +926,10 @@ else
 fi
 
 CURRENT_STEP="deps"
-say "Checking build prerequisites (git, cmake, compiler, Qt 6, OpenSSL)…"
-ensure git    command -v git
+say "Checking runtime prerequisites (Git, age, age-keygen, tar)…"
+ensure git command -v git
+ensure age have_age_tools
+ensure tar command -v tar
 
 # --- prebuilt release binary (fast path) ------------------------------------
 # Resolve this machine's release asset name from uname. The release workflow
@@ -1638,9 +1657,20 @@ launch_root_headless_service() {
     useradd --system --home-dir "$state_dir" --create-home \
       --shell /usr/sbin/nologin "$service_user"
   fi
-  mkdir -p "$state_dir/.local/share/forkmesh" /etc/forkmesh
+  # QSettings places the first-run Actions recovery lock beneath this directory.
+  # Creating only the data directory left a brand-new service in a crash loop:
+  # QLockFile could not create its lock parent and reported configuration_busy.
+  # Keep both application roots private to the dedicated service account.
+  mkdir -p "$state_dir/.local/share/forkmesh" \
+    "$state_dir/.config/ForkMesh" "$state_dir/tmp" /etc/forkmesh
   chown -R "$service_user:$service_user" "$state_dir"
   chmod 0750 "$state_dir"
+  chmod 0700 "$state_dir/.config" "$state_dir/.config/ForkMesh"
+  # Encrypted public repositories are authenticated into temporary plaintext
+  # materializations. Keep those on the node's private persistent filesystem:
+  # distro /tmp is commonly a RAM-backed mount capped at half of memory, which
+  # made a valid repository exhaust small mirrors during first sync.
+  chmod 0700 "$state_dir/tmp"
   {
     printf 'forkmesh-managed-service-v1\n'
     printf 'path=%s\n' "$state_dir"
@@ -1658,6 +1688,7 @@ launch_root_headless_service() {
     printf 'FORKMESH_LINK_CODE=%s\n' "$FORKMESH_LINK_CODE"
     printf 'HOME=%s\n' "$state_dir"
     printf 'XDG_DATA_HOME=%s\n' "$state_dir/.local/share"
+    printf 'TMPDIR=%s\n' "$state_dir/tmp"
   } > "$SYSTEMD_ENV"
   {
     printf '# Managed-By: ForkMesh installer\n'
@@ -1678,9 +1709,24 @@ launch_root_headless_service() {
   chmod 0600 "$SYSTEMD_ENV" "$SYSTEMD_INSTALL_MARKER"
   chmod 0644 "$SYSTEMD_UNIT"
   systemctl daemon-reload
+  systemctl reset-failed forkmesh-node.service >/dev/null 2>&1 || true
   systemctl enable --now forkmesh-node.service
-  systemctl is-active --quiet forkmesh-node.service ||
-    die "forkmesh-node.service did not become active."
+  # "active" for a single instant is not a successful installation. The old
+  # check raced a first-run crash loop and marked the host installed while
+  # systemd was already preparing its restart. Require a short stable window
+  # with a live MainPID and no automatic restart.
+  local stable_tick restarts main_pid
+  for stable_tick in 1 2 3 4 5; do
+    sleep 1
+    systemctl is-active --quiet forkmesh-node.service ||
+      die "forkmesh-node.service did not remain active during its startup health check."
+    main_pid="$(systemctl show forkmesh-node.service --property=MainPID --value)"
+    restarts="$(systemctl show forkmesh-node.service --property=NRestarts --value)"
+    printf '%s' "$main_pid" | grep -Eq '^[1-9][0-9]*$' ||
+      die "forkmesh-node.service has no live daemon after installation."
+    [ "${restarts:-0}" = "0" ] ||
+      die "forkmesh-node.service restarted during its startup health check; inspect journalctl -u forkmesh-node.service."
+  done
   LAUNCH_MODE="service"
   LOG_PATH="journalctl -u forkmesh-node.service"
   return 0

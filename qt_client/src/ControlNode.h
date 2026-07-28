@@ -357,9 +357,10 @@ QString validateVultrMirrorRequest(const QString &apiKey,
 // never win the cheapest-plan race (adhoc #344).
 bool vultrPlanHasIpv4(const QJsonObject &plan);
 
-// From GET /v2/plans: the cheapest plan that can actually be deployed
-// (monthly_cost > 0, at least one location, and IPv4). Ties break toward more
-// RAM, then the lexicographically smallest id, so selection is deterministic.
+// From GET /v2/plans: the cheapest plan that can actually run an encrypted
+// mirror (at least 1 GiB RAM, monthly_cost > 0, a location, and IPv4). Ties
+// break toward more RAM, then the lexicographically smallest id, so selection
+// is deterministic.
 QJsonObject cheapestVultrPlan(const QJsonArray &plans);
 
 // Deterministic region for a chosen plan: its lexicographically first
