@@ -549,11 +549,14 @@ int main(int argc, char *argv[])
     if (headless && !qEnvironmentVariableIsSet("QT_QPA_PLATFORM"))
         qputenv("QT_QPA_PLATFORM", "offscreen");
 
-    // Headless always runs on offscreen/minimal, whose propagateSizeHints()
-    // warning would otherwise spam the `forkmesh>` console. Install the filter
-    // only here so the desktop GUI keeps Qt's untouched default logging.
-    if (headless)
-        forkmesh::installPlatformLogFilter();
+    // Drop Qt's two known-noise warnings before anything can emit them: the
+    // offscreen/minimal propagateSizeHints() line (headless spams it into the
+    // interactive `forkmesh>` console) and QFontDatabase's "OpenType support
+    // missing for ..." fallback walk, which prints one line per installed font
+    // family every time a codepoint needs shaping the system fonts can't do.
+    // Everything else, including every warning the app itself logs, is forwarded
+    // untouched to Qt's default handler.
+    forkmesh::installPlatformLogFilter();
 
     // The embedded terminal (TerminalWidget) renders itself from a forkpty PTY —
     // no xterm, no X11 reparenting — so it works the same on X11 and Wayland and

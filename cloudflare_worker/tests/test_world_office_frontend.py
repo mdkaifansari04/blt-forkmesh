@@ -1246,3 +1246,24 @@ def test_scene_returns_the_new_office_control_surface():
         "leaveOfficeInterior",
     ):
         assert contract in returned
+def test_marketing_furniture_and_exterior_landscaping_keep_paths_clear():
+    scene = source(SCENE_PATH)
+    for contract in (
+        'officeTable.position.set(0, officeFloorY("marketing") + 2.1, 0)',
+        'officeTableEpoxy.position.set(0, officeFloorY("marketing") + 2.395, 0)',
+        "[-7.4, 0]",
+        "[0, -7.4]",
+        'desk.name = `forkmesh-office-marketing-desk:${member}`',
+        "-38 + row * 6.8",
+        'deskChair.name = `forkmesh-office-marketing-desk-chair:${member}`',
+        'officeLandscaping.name = "forkmesh-office-landscaping"',
+        'bush.name = `forkmesh-office-landscape-bush-${index + 1}`',
+        'flower.name = `forkmesh-office-landscape-flower-${index + 1}`',
+    ):
+        assert contract in scene
+    landscaping = scene[
+        scene.index('officeLandscaping.name = "forkmesh-office-landscaping"'):
+        scene.index("world.add(officeLandscaping)") + 40
+    ]
+    assert "userData.interactive" not in landscaping
+    assert "userData.ground" not in landscaping

@@ -2332,6 +2332,11 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "done:qt-host-probes", task: "Live host + Claude/Codex capability checks", estimate: "deployed", done: true },
   { key: "done:alert-management-link", task: "Alert mail opens the real management switch", estimate: "deployed", done: true },
   { key: "done:qa-history-routing", task: "QA result tabs + Todo/Issue routing", estimate: "deployed", done: true },
+  { key: "done:qa-history-detail", task: "QA history opens full verdict cards", estimate: "deployed", done: true },
+  { key: "done:elevator-front-camera", task: "Elevator front camera + clear controls", estimate: "deployed", done: true },
+  { key: "done:office-only-hours", task: "Office-only Marketing attendance", estimate: "deployed", done: true },
+  { key: "done:marketing-furniture", task: "Window desks + visible table chairs", estimate: "deployed", done: true },
+  { key: "done:office-landscaping", task: "Trees, bushes + flowers around Office", estimate: "deployed", done: true },
   { key: "done:follower-orbit-visible", task: "Visible Mastodon follower orbit", estimate: "deployed", done: true },
   { key: "done:bot-full-status", task: "Engineering bot status + controls", estimate: "deployed", done: true },
   { key: "done:agent-diagnostics", task: "Stalled agent diagnostics → Human TODO", estimate: "deployed", done: true },
@@ -2500,7 +2505,7 @@ function worldQaCardTexture(THREE, snapshot = {}) {
   const current = snapshot?.current && typeof snapshot.current === "object"
     ? snapshot.current
     : null;
-  const view = ["pass", "fail", "unsure"].includes(String(snapshot?.view || ""))
+  const view = ["detail", "pass", "fail", "unsure"].includes(String(snapshot?.view || ""))
     ? String(snapshot.view)
     : "cards";
   const list = (Array.isArray(snapshot?.list) ? snapshot.list : []).slice(0, 5);
@@ -2545,9 +2550,11 @@ function worldQaCardTexture(THREE, snapshot = {}) {
     context.fillStyle = "#396b5b";
     context.font = '800 25px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
-      view === "cards"
+      view === "cards" || view === "detail"
         ? current
-          ? `CARD ${Math.min(total, currentIndex + 1)} OF ${total} · ONE AT A TIME`
+          ? view === "detail"
+            ? "QA RESULT DETAIL · REVIEW OR RETURN"
+            : `CARD ${Math.min(total, currentIndex + 1)} OF ${total} · ONE AT A TIME`
           : total
             ? `ALL ${total} CARDS REVIEWED · TAP TO RECHECK`
             : "SIGN IN TO SAVE YOUR RESULTS"
@@ -2561,7 +2568,7 @@ function worldQaCardTexture(THREE, snapshot = {}) {
     context.moveTo(120, 204);
     context.lineTo(1080, 204);
     context.stroke();
-    if (view === "cards") {
+    if (view === "cards" || view === "detail") {
       context.fillStyle = "#16211d";
       context.textAlign = "left";
       context.font = '900 48px "ForkMesh Mono", ui-monospace, monospace';
@@ -2601,8 +2608,23 @@ function worldQaCardTexture(THREE, snapshot = {}) {
               Number(currentGlobal.fail) || 0
             } FAIL · ${Number(currentGlobal.unsure) || 0} UNSURE`,
         600,
-        810,
+        view === "detail" ? 684 : 810,
       );
+      if (view === "detail") {
+        [
+          { action: "fail", label: "← FAIL", x: 100, color: "#b63b3f" },
+          { action: "unsure", label: "↓ UNSURE", x: 355, color: "#68736e" },
+          { action: "pass", label: "PASS →", x: 610, color: "#168a4d" },
+          { action: "back", label: "BACK TO CARDS", x: 865, color: "#315b52" },
+        ].forEach((control) => {
+          context.fillStyle = control.color;
+          roundedRect(context, control.x, 720, 235, 76, 12);
+          context.fill();
+          context.fillStyle = "#effff7";
+          context.font = '900 21px "ForkMesh Mono", ui-monospace, monospace';
+          context.fillText(control.label, control.x + 117.5, 760);
+        });
+      }
     } else {
       context.textAlign = "left";
       if (!list.length) {
@@ -2709,6 +2731,12 @@ function qaBoardHitAction(uv, snapshot = {}) {
     }
   }
   const view = String(snapshot?.view || "cards");
+  if (view === "detail" && y >= 720 && y <= 796) {
+    if (x >= 100 && x <= 335) return { action: "verdict", verdict: "fail" };
+    if (x >= 355 && x <= 590) return { action: "verdict", verdict: "unsure" };
+    if (x >= 610 && x <= 845) return { action: "verdict", verdict: "pass" };
+    if (x >= 865 && x <= 1100) return { action: "back" };
+  }
   if (view === "cards") return { action: "swipe" };
   if (y >= 230 && y <= 720) {
     const index = Math.floor((y - 230) / 98);
@@ -10426,6 +10454,97 @@ export function createWorldScene({
       registerMovableObject("landmark-" + landmark.id, object);
     }
   });
+  // Decorative landscaping lives on the Office island but owns no walkable
+  // surface or collision metadata. The doorway and its full bridge-width
+  // approach remain completely clear.
+  const officeLandscaping = new THREE.Group();
+  officeLandscaping.name = "forkmesh-office-landscaping";
+  officeLandscaping.position.set(
+    OFFICE_ISLAND_CENTER[0],
+    OFFICE_ISLAND_CENTER[1],
+    OFFICE_ISLAND_CENTER[2],
+  );
+  const treeTrunkMaterial = makeMaterial(THREE, "#513824", {
+    roughness: 0.92,
+  });
+  const treeCanopyMaterials = ["#174f34", "#226947", "#2d7a50"].map(
+    (color) => makeMaterial(THREE, color, { roughness: 0.88 }),
+  );
+  [
+    [-97, -26], [-97, 4], [-96, 31],
+    [97, -30], [97, 1], [96, 29],
+    [-42, -73], [0, -78], [42, -73],
+  ].forEach(([x, z], index) => {
+    const tree = new THREE.Group();
+    tree.name = `forkmesh-office-landscape-tree-${index + 1}`;
+    const trunk = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.55, 0.75, 5.2, 9),
+      treeTrunkMaterial,
+    );
+    trunk.position.y = 2.6;
+    tree.add(trunk);
+    const lowerCanopy = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(3.8, 0),
+      treeCanopyMaterials[index % treeCanopyMaterials.length],
+    );
+    lowerCanopy.position.y = 6.5;
+    lowerCanopy.scale.set(1.1, 0.92, 1.1);
+    tree.add(lowerCanopy);
+    const upperCanopy = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(2.8, 0),
+      treeCanopyMaterials[(index + 1) % treeCanopyMaterials.length],
+    );
+    upperCanopy.position.set(0.35, 9.2, -0.2);
+    tree.add(upperCanopy);
+    tree.position.set(x, 0.38, z);
+    officeLandscaping.add(tree);
+  });
+  const bushMaterial = makeMaterial(THREE, "#246b42", { roughness: 0.9 });
+  [
+    [-72, 52], [-58, 53], [-44, 52], [-29, 53], [-18, 52],
+    [18, 52], [29, 53], [44, 52], [58, 53], [72, 52],
+    [-91, -3], [-91, 17], [91, -4], [91, 18],
+  ].forEach(([x, z], index) => {
+    const bush = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(2.25, 0),
+      bushMaterial,
+    );
+    bush.name = `forkmesh-office-landscape-bush-${index + 1}`;
+    bush.position.set(x, 2.05, z);
+    bush.scale.set(1.45, 0.78, 1);
+    officeLandscaping.add(bush);
+  });
+  const flowerStemMaterial = makeMaterial(THREE, "#3d8b50", {
+    roughness: 0.9,
+  });
+  const flowerColors = ["#f28fb8", "#ffd76f", "#a99cff", "#f58e6d"];
+  [
+    [-52, 57], [-42, 57], [-30, 57], [-20, 57],
+    [20, 57], [30, 57], [42, 57], [52, 57],
+  ].forEach(([x, z], index) => {
+    const flower = new THREE.Group();
+    flower.name = `forkmesh-office-landscape-flower-${index + 1}`;
+    const stem = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.1, 1.15, 7),
+      flowerStemMaterial,
+    );
+    stem.position.y = 0.72;
+    flower.add(stem);
+    const bloom = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(0.48, 0),
+      makeMaterial(THREE, flowerColors[index % flowerColors.length], {
+        roughness: 0.68,
+        emissive: flowerColors[index % flowerColors.length],
+        emissiveIntensity: 0.08,
+      }),
+    );
+    bloom.position.y = 1.42;
+    flower.add(bloom);
+    flower.position.set(x, 0.38, z);
+    officeLandscaping.add(flower);
+  });
+  setShadows(officeLandscaping);
+  world.add(officeLandscaping);
   const mastodonKiosk = createMastodonKiosk(THREE, interactive);
   world.add(mastodonKiosk);
   registerMovableObject("mastodon-kiosk", mastodonKiosk);
@@ -11957,7 +12076,9 @@ export function createWorldScene({
     }),
   );
   officeTable.name = "forkmesh-office-marketing-tabletop";
-  officeTable.position.set(0, officeFloorY("marketing") + 1.8, 0);
+  // Lift the sealed top clear of the floor plane so the green floor can never
+  // z-fight through it at shallow camera angles.
+  officeTable.position.set(0, officeFloorY("marketing") + 2.1, 0);
   officeInterior.add(officeTable);
   const officeTableEpoxy = new THREE.Mesh(
     new THREE.CylinderGeometry(2.28, 2.28, 0.09, 48),
@@ -11973,16 +12094,16 @@ export function createWorldScene({
     }),
   );
   officeTableEpoxy.name = "forkmesh-office-marketing-logo-epoxy";
-  officeTableEpoxy.position.set(0, officeFloorY("marketing") + 2.095, 0);
+  officeTableEpoxy.position.set(0, officeFloorY("marketing") + 2.395, 0);
   officeInterior.add(officeTableEpoxy);
   for (const x of [-2.5, 2.5]) {
     for (const z of [-2.5, 2.5]) {
       const tableLeg = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.19, 0.25, 1.3, 12),
+        new THREE.CylinderGeometry(0.19, 0.25, 1.6, 12),
         makeMaterial(THREE, "#10231e", { metalness: 0.42 }),
       );
       tableLeg.name = "forkmesh-office-marketing-table-leg";
-      tableLeg.position.set(x, officeFloorY("marketing") + 1.02, z);
+      tableLeg.position.set(x, officeFloorY("marketing") + 1.2, z);
       officeInterior.add(tableLeg);
     }
   }
@@ -11990,14 +12111,14 @@ export function createWorldScene({
   // office floor (0.4), so their sitters' shins reach the floor unchanged.
   const OFFICE_CHAIR_SEAT_TOP_Y = 0.91;
   const chairTransforms = [
-    [-5.15, 0],
-    [-2.35, -3.35],
-    [0, -3.35],
-    [2.35, -3.35],
-    [5.15, 0],
-    [2.35, 3.35],
-    [0, 3.35],
-    [-2.35, 3.35],
+    [-7.4, 0],
+    [-5.25, -5.25],
+    [0, -7.4],
+    [5.25, -5.25],
+    [7.4, 0],
+    [5.25, 5.25],
+    [0, 7.4],
+    [-5.25, 5.25],
   ];
   chairTransforms.forEach(([x, z], index) => {
     const chairId = `chair-${index + 1}`;
@@ -14343,16 +14464,42 @@ export function createWorldScene({
       );
       nameplate.position.set(0, 1.2, 1.82);
       desk.add(nameplate);
+      // Desks line the rear windows rather than floating in the middle of the
+      // room. Additional rows move inward while retaining a broad aisle.
       desk.position.set(
         (column - (columns - 1) / 2) * 10.6,
         officeFloorY("marketing"),
-        13 + row * 7.2,
+        -38 + row * 6.8,
       );
       desk.userData.officeFloorId = "marketing";
       desk.traverse((child) => {
         if (child.isMesh) child.userData.officeFloorId = "marketing";
       });
       officeMarketingRosterGroup.add(desk);
+      const deskChair = new THREE.Group();
+      deskChair.name = `forkmesh-office-marketing-desk-chair:${member}`;
+      const deskSeat = new THREE.Mesh(
+        new THREE.BoxGeometry(1.25, 0.2, 1.25),
+        makeMaterial(THREE, "#2f6d56", { roughness: 0.72 }),
+      );
+      deskSeat.position.y = 0.86;
+      deskChair.add(deskSeat);
+      const deskBack = new THREE.Mesh(
+        new THREE.BoxGeometry(1.25, 1.55, 0.2),
+        makeMaterial(THREE, "#347a61", { roughness: 0.7 }),
+      );
+      deskBack.position.set(0, 1.5, -0.56);
+      deskChair.add(deskBack);
+      deskChair.position.set(
+        desk.position.x,
+        officeFloorY("marketing"),
+        desk.position.z + 3.0,
+      );
+      deskChair.userData.officeFloorId = "marketing";
+      deskChair.traverse((child) => {
+        if (child.isMesh) child.userData.officeFloorId = "marketing";
+      });
+      officeMarketingRosterGroup.add(deskChair);
     });
     const previous = officeMarketingAttendanceBoard.material.map;
     officeMarketingAttendanceBoard.material.map =
@@ -22059,6 +22206,7 @@ export function createWorldScene({
     sitOnOfficeChair,
     setOfficeParticipants,
     updateOfficeMarketingTasks,
+    isOfficeInterior: () => officeSceneMode !== "town",
     updateWorldBulletin,
     updateSatelliteSky: (snapshot, sgp4Engine) =>
       worldSky.update(snapshot, sgp4Engine),

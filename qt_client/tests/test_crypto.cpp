@@ -18,6 +18,7 @@
 #include "../src/MirrorCrypto.h"
 #include "../src/PrivateMirrorStore.h"
 #include "../src/NetworkBackoff.h"
+#include "../src/PlatformLogFilter.h"
 #include "../src/ProjectStore.h"
 #include "../src/PullAiReview.h"
 #include "../src/PullReviewModel.h"
@@ -61,6 +62,15 @@
 namespace {
 
 int failures = 0;
+
+QStringList *capturedMessages = nullptr;
+
+void captureMessages(QtMsgType, const QMessageLogContext &,
+                     const QString &message)
+{
+    if (capturedMessages)
+        *capturedMessages << message;
+}
 
 void check(bool condition, const char *what)
 {
@@ -6096,6 +6106,28 @@ int main(int argc, char *argv[])
                   QStringLiteral("Secret/token assignment")),
               "secret scan detects generic quoted secret assignment");
 
+        // The generic assignment rule has no provider prefix to anchor it, so
+        // recognisable placeholders (test fixtures, docs samples, template
+        // holes) must not block a push.
+        check(!runSecretTest(
+                  "password: \"correct-horse-battery-staple\"\n",
+                  QStringLiteral("Secret/token assignment")),
+              "secret scan ignores the XKCD example password");
+        check(!runSecretTest("API_TOKEN=\"your-token-goes-here-abcdef\"\n",
+                             QStringLiteral("Secret/token assignment")),
+              "secret scan ignores your-… placeholder token values");
+        check(!runSecretTest("API_KEY=\"${FORKMESH_API_KEY_FROM_ENV}\"\n",
+                             QStringLiteral("Secret/token assignment")),
+              "secret scan ignores ${VAR} template holes");
+        check(!runSecretTest("password=\"xxxxxxxxxxxxxxxxxxxxxxxx\"\n",
+                             QStringLiteral("Secret/token assignment")),
+              "secret scan ignores single-character filler runs");
+        // A provider-prefixed hit stays high-confidence even next to
+        // placeholder-ish wording.
+        check(runSecretTest("EXAMPLE_TOKEN=ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n",  // forkmesh-secret-scan:ignore-line
+                            QStringLiteral("GitHub token")),
+              "secret scan still flags prefixed tokens in example wording");
+
         // Benign content must not trigger a false positive
         {
             QTemporaryDir td;
@@ -6406,6 +6438,34 @@ int main(int argc, char *argv[])
         check(forkmesh::colorizeBackgroundMarker(QStringLiteral("no marker")) ==
                   QStringLiteral("no marker"),
               "a line without a marker is passed through untouched");
+    }
+
+    // QFontDatabase logs "OpenType support missing for \"<family>\", script N"
+    // once per installed family every time it walks the fallback list for a
+    // codepoint the system fonts can't shape, burying the console. The log
+    // filter (installed for every launch, not just headless) must swallow
+    // exactly those lines and forward everything else.
+    {
+        QStringList captured;
+        capturedMessages = &captured;
+        QtMessageHandler previous = qInstallMessageHandler(captureMessages);
+        forkmesh::installPlatformLogFilter(); // chains to captureMessages
+        qWarning("OpenType support missing for \"DejaVu Sans Mono\", script 9");
+        qWarning("OpenType support missing for \"\", script 9");
+        qWarning("forkmesh-419-control-line");
+        qInstallMessageHandler(previous); // restore so PASS/FAIL output prints
+        capturedMessages = nullptr;
+
+        const QString joined = captured.join(QLatin1Char('\n'));
+        check(!joined.contains(QStringLiteral("OpenType support missing")),
+              "the log filter drops QFontDatabase OpenType fallback warnings");
+        check(joined.contains(QStringLiteral("forkmesh-419-control-line")),
+              "the log filter still forwards unrelated warnings");
+        check(forkmesh::isFontDatabaseNoise(QStringLiteral(
+                  "OpenType support missing for \"Noto Mono\", script 9")) &&
+                  !forkmesh::isFontDatabaseNoise(
+                      QStringLiteral("forkmesh-419-control-line")),
+              "isFontDatabaseNoise matches only the font-database warning");
     }
 
     if (failures) {

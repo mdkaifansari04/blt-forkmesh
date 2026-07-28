@@ -7603,14 +7603,10 @@ void MainWindow::createAndCheckoutBranch()
     refreshCommitsBranchButton();
 }
 
-QStringList MainWindow::repoBranches() const
+// The `git branch` read behind repoBranches(), with no GUI state of its own so a
+// worker thread can run it too (adhoc #420).
+QStringList MainWindow::listRepoBranches(const QString &dir)
 {
-    const QString dir = repoGitDir();
-    const qint64 now = QDateTime::currentSecsSinceEpoch();
-    if (dir == m_branchesCacheDir && !m_branchesCache.isEmpty() &&
-        now - m_branchesCacheTime < 5) {
-        return m_branchesCache;
-    }
     QStringList branches;
     QByteArray out;
     if (!dir.isEmpty() &&
@@ -7624,10 +7620,48 @@ QStringList MainWindow::repoBranches() const
                 branches.append(branch);
         }
     }
+    return branches;
+}
+
+QStringList MainWindow::repoBranches() const
+{
+    const QString dir = repoGitDir();
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    if (dir == m_branchesCacheDir && !m_branchesCache.isEmpty() &&
+        now - m_branchesCacheTime < 5) {
+        return m_branchesCache;
+    }
+    const QStringList branches = listRepoBranches(dir);
     m_branchesCacheDir = dir;
     m_branchesCache = branches;
     m_branchesCacheTime = now;
     return branches;
+}
+
+// repoDefaultBranch's rules with its GUI state passed in, so the branches-panel
+// worker can pick the base off the GUI thread as well (adhoc #420).
+QString MainWindow::chooseDefaultBranch(const QStringList &branches,
+                                        const QString &configured,
+                                        const QString &dir,
+                                        const QString &checkedOut)
+{
+    if (!configured.isEmpty() && branches.contains(configured))
+        return configured;
+    if (branches.contains(QStringLiteral("main")))
+        return QStringLiteral("main");
+    if (branches.contains(QStringLiteral("master")))
+        return QStringLiteral("master");
+
+    QByteArray head;
+    if (!dir.isEmpty() &&
+        runGitCapture(dir, {"symbolic-ref", "--short", "HEAD"}, &head, nullptr)) {
+        const QString branch = QString::fromUtf8(head).trimmed();
+        if (branches.contains(branch))
+            return branch;
+    }
+    if (!checkedOut.isEmpty() && branches.contains(checkedOut))
+        return checkedOut;
+    return branches.isEmpty() ? QString() : branches.first();
 }
 
 QString MainWindow::repoDefaultBranch(const QStringList &branches) const
@@ -7639,26 +7673,8 @@ QString MainWindow::repoDefaultBranch(const QStringList &branches) const
     // fall back to the checked-out HEAD; otherwise switching branches in the
     // commits area (or a transient checkout during a branches-page merge) would
     // silently change the default branch, which we never want to do on its own.
-    const QString configured = m_repoInfo.defaultBranch.trimmed();
-    if (!configured.isEmpty() && branches.contains(configured))
-        return configured;
-    if (branches.contains(QStringLiteral("main")))
-        return QStringLiteral("main");
-    if (branches.contains(QStringLiteral("master")))
-        return QStringLiteral("master");
-
-    QByteArray head;
-    const QString dir = repoGitDir();
-    if (!dir.isEmpty() &&
-        runGitCapture(dir, {"symbolic-ref", "--short", "HEAD"}, &head,
-                      nullptr)) {
-        const QString branch = QString::fromUtf8(head).trimmed();
-        if (branches.contains(branch))
-            return branch;
-    }
-    if (!m_repoBranch.isEmpty() && branches.contains(m_repoBranch))
-        return m_repoBranch;
-    return branches.isEmpty() ? QString() : branches.first();
+    return chooseDefaultBranch(branches, m_repoInfo.defaultBranch.trimmed(),
+                               repoGitDir(), m_repoBranch);
 }
 
 QString MainWindow::repoDefaultBranchFast() const
