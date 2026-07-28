@@ -5,6 +5,7 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [ ] Human TODO: share the live “ForkMesh Forever” post on Reddit, Mastodon, and X, then paste each published permalink into the post’s social-proof fields.
 - [x] Add physical Pass / Fail / Unsure tabs to the QA deck with verdict-filtered task pages.
 - [x] Let authorized QA reviewers send a reviewed card back to “What we're building”.
 - [x] Let authorized QA reviewers file a reviewed card into the `forkmesh/forkmesh` issues list.
