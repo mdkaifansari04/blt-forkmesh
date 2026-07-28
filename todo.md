@@ -23,10 +23,10 @@ the implementation and its focused verification are complete.
 - [x] Open QA history items as full detail cards with Pass, Fail, Unsure, and Back to Cards actions.
 - [ ] Add a Marketing initiatives panel in the Marketing room and let web issue pages move issues into it.
 - [ ] Add a large recent `#general` chat board beside the event list with authors, time, images, and reactions.
-- [ ] Include organization-owned repositories in Dashboard Top repositories with clear owner labels.
-- [ ] Restore live recent blog posts in the Dashboard “Latest from the blog” card.
+- [x] Include organization-owned repositories in Dashboard Top repositories with clear owner labels.
+- [x] Restore live recent blog posts in the Dashboard “Latest from the blog” card.
 - [ ] Add an audited `is_admin`-only World action to permanently delete a named node after typed confirmation.
-- [ ] Make clicking the ForkMesh logo on Dashboard perform a clean Dashboard reload.
+- [x] Make clicking the ForkMesh logo on Dashboard perform a clean Dashboard reload.
 - [x] Keep newly installed mirror6 visible through provisioning in Qt Hosts and the World node cabinets.
 - [ ] Move Operational alerts into the platform `is_admin` area and retarget alert-management deep links.
 - [x] Add a direct “Manage this alert” link to component and scheduled-job alert emails, opening the affected expanded status row.

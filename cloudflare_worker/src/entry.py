@@ -8425,6 +8425,11 @@ WORLD_QA_CARDS = (
      "Hard-load the World on desktop and mobile. Confirm the real scene remains "
      "visible behind a small animated progress cover and objects do not shift "
      "noticeably as initial data arrives."),
+    ("dashboard-home-data", "Dashboard home repositories and blog",
+     "Sign in on Dashboard. Confirm Top repositories includes linked "
+     "organization aliases with an organization label, Latest from the blog "
+     "shows current posts and artwork, and either ForkMesh logo cleanly reloads "
+     "the Dashboard."),
     ("fresh-code-surge", "Fresh Code mirror-push effect",
      "Keep the World open while a mirror publishes a new verified commit. "
      "Confirm the cabinet emits the tall green beam and expanding ground "

@@ -1302,6 +1302,7 @@
     // The blog card fills in from the edge-cached feed; the baked markup
     // already shows its loading state.
     void loadHomeBlogPosts();
+    void loadHomeOrganizationRepositories();
     // Feed + top repositories fill in when loadRepositories()/loadNotifications()
     // resolve — both re-render the home containers.
     // Active agent sessions (adhoc #81) need the catalog first so we know which

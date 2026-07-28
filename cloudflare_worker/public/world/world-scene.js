@@ -2390,6 +2390,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "done:mirror6-agent-routing", task: "Mirror6 signed Claude/Codex routing", estimate: "deployed · in QA", done: true },
   { key: "done:bulk-import-retirement", task: "54 archived legacy imports retired", estimate: "deployed · in QA", done: true },
   { key: "done:engineering-agent-authorization", task: "Engineering-only agent access enforced", estimate: "deployed · in QA", done: true },
+  { key: "done:dashboard-home-data", task: "Org repos + live blog on Dashboard", estimate: "deployed · in QA", done: true },
 ]);
 
 function worldTaskBulletinSeed(value) {

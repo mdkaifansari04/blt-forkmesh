@@ -24,7 +24,11 @@ class BrandLogoParser(HTMLParser):
         attr_map = dict(attrs)
         classes = set(attr_map.get("class", "").split())
 
-        if tag == "a" and "brand" in classes and attr_map.get("href") == "/":
+        if (
+            tag == "a"
+            and "brand" in classes
+            and attr_map.get("href") in {"/", "/dashboard"}
+        ):
             self._in_brand = True
             self._brand_depth = 1
             self.brand_links += 1

@@ -63,6 +63,10 @@
     // parsed from /blog/rss.xml. null until the feed read resolves so the card
     // can tell "loading" apart from "feed unavailable".
     homeBlogPosts: null,
+    // Organization aliases are not duplicate catalog publications: load the
+    // signed-in viewer's linked aliases separately so Top repositories can
+    // show the stable organization path with a clear owner label.
+    homeOrganizationRepositories: [],
     repoCommitDetail: null,
     repoRecordDetail: null,
     profileContributions: {
