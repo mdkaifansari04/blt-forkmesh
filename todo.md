@@ -28,7 +28,7 @@ the implementation and its focused verification are complete.
 - [ ] Add an audited `is_admin`-only World action to permanently delete a named node after typed confirmation.
 - [x] Make clicking the ForkMesh logo on Dashboard perform a clean Dashboard reload.
 - [x] Keep newly installed mirror6 visible through provisioning in Qt Hosts and the World node cabinets.
-- [ ] Move Operational alerts into the platform `is_admin` area and retarget alert-management deep links.
+- [x] Move Operational alerts into the platform `is_admin` area and retarget alert-management deep links.
 - [x] Add a direct “Manage this alert” link to component and scheduled-job alert emails, opening the affected expanded status row.
 - [x] Make QA arrows permanently visible and large (red Fail, green Pass, grey Unsure), publish global aggregate stats, and continuously intake newly completed tasks.
 - [x] Fix the production `/api/world/deploy-status` response error that made API and Worker status red, then verify live recovery.

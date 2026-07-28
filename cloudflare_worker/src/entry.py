@@ -2289,10 +2289,9 @@ async def _installer_delivery_status(env, now):
     return is_up, reason
 
 
-# Per-repository operational-alert switches the repo's org admin manages from
-# the same About/settings form as the fediverse switches. Everything defaults
-# to OFF: a deployment (and every repository that has no row) mails nobody
-# until an admin explicitly opts in, so nobody inherits the alert pager.
+# Platform operational-alert state. It uses the flagship repository identity
+# as a stable storage key, but only the is_admin console may mutate it.
+# Everything defaults to OFF so nobody silently inherits the alert pager.
 REPO_ALERT_SETTING_DEFAULTS = {
     # "[ForkMesh outage]" / "[ForkMesh recovered]" mail for the systems on
     # /status and the independent cron watchdog. One switch covers both
@@ -2337,11 +2336,10 @@ async def _repo_alert_settings_get(env, owner, repo):
 
 
 async def _status_alert_emails_enabled(env):
-    """Has the flagship repository's org admin opted into outage mail?
+    """Has a platform is_admin opted into outage mail?
 
     The /status systems and the cron watchdog are properties of the whole
-    deployment, so they hang off the flagship repository's settings — the one
-    repo whose org admin also administers the relay.
+    deployment, so they hang off the flagship repository's stable storage key.
     """
     owner, _, repo = FLAGSHIP_MONITOR_ID.partition("/")
     settings = await _repo_alert_settings_get(env, owner, repo)
@@ -2524,18 +2522,21 @@ def _attention_email_with_logs(text, html, log_tail):
     return text + "\n\n" + heading + "\n" + safe_tail, rendered_html
 
 
-def _status_alert_manage_url(system_id=""):
-    # Alert mail is controlled from the flagship repository's owner-only
-    # Settings tab. The old /status#system-* destination only explained the
-    # failing check and offered no way to enable/disable the alert.
+def _status_alert_manage_url(env, system_id=""):
+    # Alert mail is controlled only from the platform is_admin console. Build
+    # the destination from the configured secret path instead of leaking the
+    # control back into a repository-owner page.
+    admin_path = _admin_path(env)
+    if not admin_path:
+        return "https://forkmesh.com/dashboard"
     return (
-        "https://forkmesh.com/forkmesh/forkmesh/settings"
+        "https://forkmesh.com/" + quote(admin_path, safe="/") +
         "#operational-alerts"
     )
 
 
-def _email_with_status_alert_manage_link(text, html, system_id=""):
-    manage_url = _status_alert_manage_url(system_id)
+def _email_with_status_alert_manage_link(env, text, html, system_id=""):
+    manage_url = _status_alert_manage_url(env, system_id)
     manage_text = "\n\nManage this alert: " + manage_url
     manage_html = (
         "<p class=\"fm-actions\" style=\"margin:20px 0 0\">"
@@ -2553,7 +2554,7 @@ def _email_with_status_alert_manage_link(text, html, system_id=""):
     return text + manage_text, rendered_html
 
 
-def _cron_watchdog_email_content(recovered, outage_started_at, now):
+def _cron_watchdog_email_content(env, recovered, outage_started_at, now):
     duration = _flagship_monitor_duration(
         max(0, int(now) - int(outage_started_at or now)))
     if recovered:
@@ -2608,7 +2609,7 @@ def _cron_watchdog_email_content(recovered, outage_started_at, now):
         "href=\"https://forkmesh.com/status\">Open ForkMesh status</a>"
         "</p>")
     text, html = _email_with_status_alert_manage_link(
-        text, html, "scheduled-jobs")
+        env, text, html, "scheduled-jobs")
     return subject, text, html
 
 
@@ -2629,7 +2630,7 @@ async def _send_cron_watchdog_email(
     if not recipients:
         return False
     subject, text, html = _cron_watchdog_email_content(
-        recovered, outage_started_at, now)
+        env, recovered, outage_started_at, now)
     if not recovered:
         log_tail = await _cloudflare_attention_log_tail(env, now)
         text, html = _attention_email_with_logs(text, html, log_tail)
@@ -2824,7 +2825,7 @@ async def _record_status_monitor_transitions(
             text, html = _attention_email_with_logs(
                 text, html, attention_log_tail)
         text, html = _email_with_status_alert_manage_link(
-            text, html, system_id)
+            env, text, html, system_id)
         delivered = True
         for email in recipients:
             delivered = bool(await _send_email(
@@ -8445,8 +8446,9 @@ WORLD_QA_CARDS = (
      "states, then shows Claude and Codex as Installed or Not installed."),
     ("alert-management-link", "Alert email management destination",
      "Open Manage this alert from a component or scheduled-job email. Confirm "
-     "it opens forkmesh/forkmesh Settings, scrolls to Operational alerts, and "
-     "focuses the checkbox used to enable or disable those emails."),
+     "it opens the secret platform is_admin console, scrolls to Operational "
+     "alerts, and focuses the checkbox used to enable or disable those emails. "
+     "Confirm a non-admin account cannot open or change it."),
     ("qa-history-routing", "QA history tabs and routing",
      "Use the physical Cards, Pass, Fail, and Unsure tabs. Page the shared task "
      "lists, select a task, then as an authorized maintainer send one back to "
@@ -12013,10 +12015,6 @@ async def _repo_about_public(env, request, owner, repo):
             "followersList": followers_list,
             "settings": ap_settings,
         },
-        # Admin-only switches, echoed so the settings form can seed itself and
-        # round-trip an untouched save. Booleans about who gets operational
-        # mail — no address or recipient is exposed here.
-        "alerts": await _repo_alert_settings_get(env, owner, repo),
     }, cache_control="public, max-age=30")
 
 
@@ -12185,26 +12183,6 @@ async def repo_about_handler(env, request, owner, repo):
                     "_ap_purge_repo_digest_queues")
                 if callable(purge_digests):
                     await purge_digests(env, owner, repo)
-    # Per-repo operational-alert switches ride the same save (an `alerts`
-    # object, like `fediverse`). The About handler already proves the caller
-    # administers this repo's owner account, which is exactly the "org admin"
-    # gate these switches need. Absent = unchanged; unchanged writes nothing.
-    alert_settings = None
-    alerts_data = data.get("alerts")
-    if isinstance(alerts_data, dict):
-        current_alerts = await _repo_alert_settings_get(env, owner, repo)
-        alert_settings = dict(current_alerts)
-        for key in REPO_ALERT_SETTING_DEFAULTS:
-            if key in alerts_data:
-                alert_settings[key] = bool(alerts_data.get(key))
-        if alert_settings != current_alerts:
-            await d1_run(
-                env,
-                "INSERT INTO repo_alert_settings (repo_bi, data, updated_at)"
-                " VALUES (?,?,?) ON CONFLICT(repo_bi) DO UPDATE SET"
-                " data=excluded.data, updated_at=excluded.updated_at",
-                await _repo_alert_settings_bi(env, owner, repo),
-                json.dumps(alert_settings), int(Date.now()))
     if text_changed:
         # Queue the edit for the owner's desktop node, which writes it into the
         # repo's committed .forkmesh/info.json (the same file the desktop app's
@@ -12250,8 +12228,6 @@ async def repo_about_handler(env, request, owner, repo):
     }
     if ap_settings is not None:
         result["fediverse"] = {"settings": ap_settings}
-    if alert_settings is not None:
-        result["alerts"] = alert_settings
     return json_response(result)
 
 
@@ -33561,6 +33537,14 @@ ADMIN_STYLE = """
         border:1px solid var(--ab-border-2);border-radius:6px;padding:6px 8px;font:13px system-ui}
  .ab-root .banner{margin:0 24px 8px;padding:10px 14px;border-radius:6px;border:1px solid var(--ab-btn-hover);
          background:var(--ab-ok-bg);color:var(--ab-ok-fg);white-space:pre-wrap;font:13px ui-monospace,monospace}
+ .ab-root .admin-setting{margin:12px 24px 4px;padding:14px 16px;border:1px solid var(--ab-border-2);
+        border-radius:8px;background:var(--ab-card);display:flex;align-items:center;justify-content:space-between;
+        gap:18px;scroll-margin-top:20px;outline:none}
+ .ab-root .admin-setting:focus{box-shadow:0 0 0 3px color-mix(in srgb,var(--ab-link) 35%,transparent)}
+ .ab-root .admin-setting h2{font-size:15px;margin:0 0 4px}
+ .ab-root .admin-setting p{color:var(--ab-muted);font-size:12px;margin:0;max-width:760px}
+ .ab-root .admin-setting form{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+ .ab-root .admin-setting label{white-space:nowrap;font-size:13px}
  .ab-root .layout{display:flex;align-items:flex-start;width:100%}
  .ab-root nav{width:210px;flex:none;border-right:1px solid var(--ab-border);min-height:60vh;padding:8px 0}
  .ab-root nav a{display:block;padding:5px 20px;color:var(--ab-fg);font-size:13px}
@@ -34204,6 +34188,26 @@ def _render_admin_stats(stats):
     return '<div class="cards">' + "".join(out) + "</div>"
 
 
+def _render_admin_operational_alerts(
+        enabled, csrf_field="", admin_query=""):
+    checked = " checked" if enabled else ""
+    return (
+        '<section id="operational-alerts" class="admin-setting" '
+        'tabindex="-1"><div><h2>Operational alerts</h2>'
+        '<p>Email platform administrators when a ForkMesh system check '
+        'fails, and again when it recovers. Attention emails include a '
+        'redacted two-minute Cloudflare log excerpt when credentials are '
+        'configured.</p></div>'
+        '<form method="post" action="%s">' %
+        _admin_href(admin_query, action="set_operational_alerts") +
+        csrf_field +
+        '<label><input type="checkbox" name="enabled" value="1"%s> '
+        'Send outage and recovery email</label>'
+        '<button type="submit">Save alert setting</button></form></section>'
+        % checked
+    )
+
+
 def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=False):
     counts = counts or {}
     if sort_records:
@@ -34229,7 +34233,8 @@ def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=
 
 
 def render_admin_html(env_stats, tables, active_table, table_html, banner="",
-                      counts=None, csrf_field="", admin_query="", sort_records=False):
+                      counts=None, csrf_field="", admin_query="",
+                      sort_records=False, operational_alerts_enabled=False):
     banner_html = ('<div class="banner">%s</div>' % _html_escape(banner)) if banner else ""
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -34270,6 +34275,8 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         "<div class=\"meta\">Live Durable Object load, every D1 table, and "
         "Solana payment-reference status.</div></header>"
         + _render_admin_stats(env_stats)
+        + _render_admin_operational_alerts(
+            operational_alerts_enabled, csrf_field, admin_query)
         + '<div class="tools"><form method="post" action="%s" '
           'onsubmit="return confirm(\'Show legacy custody migration status?\')">'
           % _admin_href(admin_query, action="disburse")
@@ -34298,7 +34305,11 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         + "</div></div>"
         "<script>for (const el of document.querySelectorAll('[data-ts]')){"
         "const ms=Number(el.getAttribute('data-ts'));"
-        "if(ms)el.textContent=new Date(ms).toLocaleString();}</script>"
+        "if(ms)el.textContent=new Date(ms).toLocaleString();}"
+        "if(location.hash==='#operational-alerts'){"
+        "var a=document.getElementById('operational-alerts');"
+        "if(a){a.scrollIntoView({block:'center'});a.focus({preventScroll:true});}"
+        "}</script>"
         "</body></html>"
     )
 
@@ -37413,6 +37424,30 @@ class Default(WorkerEntrypoint):
                     )
                 except Exception as error:
                     banner = "Ownership request failed: " + repr(error)
+            elif action == "set_operational_alerts":
+                try:
+                    enabled = form.get("enabled", [""])[0] == "1"
+                    current_alerts = await _repo_alert_settings_get(
+                        self.env, *FLAGSHIP_MONITOR_ID.split("/", 1))
+                    updated_alerts = dict(current_alerts)
+                    updated_alerts["statusEmails"] = enabled
+                    await d1_run(
+                        self.env,
+                        "INSERT INTO repo_alert_settings "
+                        "(repo_bi, data, updated_at) VALUES (?,?,?) "
+                        "ON CONFLICT(repo_bi) DO UPDATE SET "
+                        "data=excluded.data, updated_at=excluded.updated_at",
+                        await _repo_alert_settings_bi(
+                            self.env,
+                            *FLAGSHIP_MONITOR_ID.split("/", 1)),
+                        json.dumps(updated_alerts), int(Date.now()))
+                    banner = (
+                        "Operational alert email is now " +
+                        ("enabled." if enabled else "disabled."))
+                    audit_details = {"enabled": enabled}
+                except Exception as error:
+                    banner = (
+                        "Operational alert update failed: " + repr(error))
             elif action == "delete_rows":
                 try:
                     tables = await _admin_list_tables(self.env)
@@ -37475,7 +37510,7 @@ class Default(WorkerEntrypoint):
             if action in (
                     "disburse", "set_password", "resend_verify",
                     "request_ownership", "delete_rows", "update_row",
-                    "insert_row"):
+                    "insert_row", "set_operational_alerts"):
                 audit_actor = (
                     account_cookie_name
                     or params.get("admin", [""])[0])
@@ -37483,6 +37518,8 @@ class Default(WorkerEntrypoint):
                     "account" if action in (
                         "set_password", "resend_verify",
                         "request_ownership")
+                    else "platform_alerts"
+                    if action == "set_operational_alerts"
                     else "database_table" if action in (
                         "delete_rows", "update_row", "insert_row")
                     else "legacy_custody")
@@ -37491,6 +37528,8 @@ class Default(WorkerEntrypoint):
                         "set_password", "resend_verify")
                     else form.get("target", [""])[0]
                     if action == "request_ownership"
+                    else "forkmesh-system-checks"
+                    if action == "set_operational_alerts"
                     else params.get("table", [""])[0])
                 lowered_banner = str(banner or "").lower()
                 outcome = (
@@ -37536,13 +37575,17 @@ class Default(WorkerEntrypoint):
             except Exception:
                 counts[t] = 0
         stats = await admin_stats(self.env)
+        operational_alerts_enabled = await _status_alert_emails_enabled(
+            self.env)
         # Default the table browser to most-records-first; ?sort=name opts back
         # into the A–Z ordering.
         sort_records = params.get("sort", [""])[0] != "name"
         return Response(
             render_admin_html(stats, tables, active, table_html, banner, counts,
                               csrf_field=csrf_field, admin_query=admin_query,
-                              sort_records=sort_records),
+                              sort_records=sort_records,
+                              operational_alerts_enabled=(
+                                  operational_alerts_enabled)),
             status=200,
             headers={"content-type": "text/html; charset=utf-8"},
         )

@@ -3337,8 +3337,6 @@
       }
       // Admin-only operational-alert switches, seeded the same way. Absent or
       // never saved reads as off, which is the stored default.
-      const alertBox = $("[data-repo-alert-status-emails]");
-      if (alertBox) alertBox.checked = Boolean(body.alerts?.statusEmails);
       // Mirrors may report their own actor handle, but the repository UI
       // advertises the canonical ForkMesh actor everywhere.
       const handle = "@forkmesh.forkmesh@forkmesh.com";

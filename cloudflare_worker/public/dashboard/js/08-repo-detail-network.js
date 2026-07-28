@@ -98,7 +98,7 @@
             <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="settings" class="h-3.5 w-3.5 text-primary"></i>Repository settings</span>
           </div>
           <form data-repo-settings-form class="grid gap-4 p-4">
-            <fieldset id="operational-alerts" data-repo-operational-alerts tabindex="-1" class="grid gap-2 scroll-mt-20 rounded-md border border-border p-3 text-xs text-muted-foreground outline-none focus:ring-2 focus:ring-primary/50">
+            <fieldset class="grid gap-2 rounded-md border border-border p-3 text-xs text-muted-foreground">
               <legend class="px-1 text-[11px] font-semibold uppercase tracking-wide">ActivityPub federation</legend>
               <label class="inline-flex items-start gap-2"><input data-repo-ap-federate type="checkbox" class="mt-0.5 h-3.5 w-3.5" checked />Federate this repository (fediverse actor and handle)</label>
               <label class="inline-flex items-start gap-2"><input data-repo-ap-broadcast type="checkbox" class="mt-0.5 h-3.5 w-3.5" checked />Include meaningful public updates in one automated digest at most every 24 hours</label>
@@ -112,11 +112,6 @@
                 <p class="mt-1 leading-5">Only public titles, stable links, categories and UTC times enter the encrypted bounded queue. Empty digests are never posted.</p>
                 <pre data-repo-digest-preview class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-3 font-mono text-[11px] leading-5 text-foreground">Loading preview…</pre>
               </div>`}
-            </fieldset>
-            <fieldset class="grid gap-2 rounded-md border border-border p-3 text-xs text-muted-foreground">
-              <legend class="px-1 text-[11px] font-semibold uppercase tracking-wide">Operational alerts</legend>
-              <label class="inline-flex items-start gap-2"><input data-repo-alert-status-emails type="checkbox" class="mt-0.5 h-3.5 w-3.5" />Email this organization's administrators when a ForkMesh system check fails, and again when it recovers</label>
-              <p class="leading-5">Off by default. Nobody receives outage or recovery mail until an organization administrator turns this on.</p>
             </fieldset>
             <p class="text-[11px] leading-5 text-muted-foreground">Saved to the relay now and written into the repository's committed <span class="font-mono">.forkmesh/info.json</span> the next time the owner's node syncs.</p>
             <div class="flex flex-wrap items-center justify-between gap-2">
@@ -400,16 +395,6 @@
     // markup underneath) is already on the right tab.
     const initialTab = repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code";
     setRepoTab(initialTab);
-    if (
-      initialTab === "settings" &&
-      window.location.hash === "#operational-alerts"
-    ) {
-      window.requestAnimationFrame(() => {
-        const alerts = document.querySelector("[data-repo-operational-alerts]");
-        alerts?.scrollIntoView({ block: "center" });
-        alerts?.focus({ preventScroll: true });
-      });
-    }
     window.lucide?.createIcons();
     // When the URL restored a feature tab (or a record detail), the tree/README
     // load is only a warm-up for a later click on Code — run it in background
@@ -2194,9 +2179,6 @@
             federate: Boolean(settingsForm.querySelector("[data-repo-ap-federate]")?.checked),
             broadcastEvents: Boolean(settingsForm.querySelector("[data-repo-ap-broadcast]")?.checked),
             acceptComments: Boolean(settingsForm.querySelector("[data-repo-ap-comments]")?.checked),
-          },
-          alerts: {
-            statusEmails: Boolean(settingsForm.querySelector("[data-repo-alert-status-emails]")?.checked),
           },
         });
         setRepoSettingsStatus("Settings saved.", "good");

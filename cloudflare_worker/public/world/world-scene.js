@@ -2330,7 +2330,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "done:fresh-code-surge", task: "Restore verified Fresh Code beam + shockwave", estimate: "deployed", done: true },
   { key: "done:chest-fediverse", task: "Fix chest Fedi load + activity border", estimate: "deployed", done: true },
   { key: "done:qt-host-probes", task: "Live host + Claude/Codex capability checks", estimate: "deployed", done: true },
-  { key: "done:alert-management-link", task: "Alert mail opens the real management switch", estimate: "deployed", done: true },
+  { key: "done:alert-management-link", task: "Admin-only alerts + exact email deep link", estimate: "ready for deploy · in QA", done: true },
   { key: "done:qa-history-routing", task: "QA result tabs + Todo/Issue routing", estimate: "deployed", done: true },
   { key: "done:qa-history-detail", task: "QA history opens full verdict cards", estimate: "deployed", done: true },
   { key: "done:elevator-front-camera", task: "Upper elevator camera + side controls", estimate: "ready", done: true },

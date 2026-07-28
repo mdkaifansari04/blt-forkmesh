@@ -67,6 +67,8 @@ def _load_helpers(events=None, status=200):
         "js_fetch_with_timeout": js_fetch_with_timeout,
         "_html_escape": lambda value: (
             str(value).replace("&", "&amp;").replace("<", "&lt;")),
+        "_admin_path": lambda env: str(
+            getattr(env, "ADMIN_PATH", "") or "").strip("/"),
     }
     module = ast.fix_missing_locations(
         ast.Module(body=selected, type_ignores=[]))
@@ -156,25 +158,26 @@ def test_only_non_green_component_mail_receives_cloudflare_log_tail():
 
 def test_alert_email_has_direct_manage_link_to_alert_management_controls():
     ns = _load_helpers()
+    env = SimpleNamespace(ADMIN_PATH="private-admin-console")
     text, html = ns["_email_with_status_alert_manage_link"](
+        env,
         "alert text",
         "<html><body><div><div>alert</div></div></body></html>",
         "mirror:Mirror 2",
     )
-    expected = (
-        "https://forkmesh.com/forkmesh/forkmesh/settings"
-        "#operational-alerts"
-    )
+    expected = "https://forkmesh.com/private-admin-console#operational-alerts"
     assert "Manage this alert: " + expected in text
     assert 'href="' + expected + '"' in html
     assert ">Manage this alert</a>" in html
     assert html.endswith("</body></html>")
 
+    admin_source = ENTRY_TEXT[
+        ENTRY_TEXT.index("def _render_admin_operational_alerts"):
+        ENTRY_TEXT.index("\ndef _render_admin_nav")
+    ]
+    assert 'id="operational-alerts"' in admin_source
+    assert 'action="set_operational_alerts"' in ENTRY_TEXT
     repo_network = (
         ROOT / "public" / "dashboard" / "js" /
-        "08-repo-detail-network.js"
-    ).read_text(
-        encoding="utf-8")
-    assert 'id="operational-alerts"' in repo_network
-    assert 'window.location.hash === "#operational-alerts"' in repo_network
-    assert 'alerts?.scrollIntoView({ block: "center" });' in repo_network
+        "08-repo-detail-network.js").read_text(encoding="utf-8")
+    assert "data-repo-alert-status-emails" not in repo_network
