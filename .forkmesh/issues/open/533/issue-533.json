@@ -20,6 +20,17 @@
             "title": "Incorrect Member Count Increment",
             "ts": 1785061246324,
             "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "seems fine now",
+            "id": "52e612fe-65bc-4c5e-b64e-3bb238f81732",
+            "sig": "fTnHV1oRXa0vOnh1LdJ0JacZKa5YPE6psQziOo4lYHQsABHxpeA-VBlss7J7vPuehoSUS0b_ooZtitHfLHwRBQ",
+            "ts": 1785207649472,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -33,6 +44,6 @@
     "startDate": 0,
     "status": "open",
     "title": "Incorrect Member Count Increment",
-    "updatedAt": 1785061246324,
+    "updatedAt": 1785207649472,
     "votes": 0
 }
