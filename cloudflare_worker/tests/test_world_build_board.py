@@ -44,6 +44,38 @@ def test_world_renders_and_drags_priority_and_issue_stickies():
     assert "WORLD_BUILD_BOARD_POLL_MS = 60 * 1000" in WORLD
 
 
+def test_build_board_lists_active_work_on_straight_detailed_cards():
+    texture = SCENE[
+        SCENE.index("function worldTaskBulletinTexture("):
+        SCENE.index("function worldQaCardTexture(")
+    ]
+    assert 'key: "task:world-board-detail"' in SCENE
+    assert 'key: "task:world-node-delete-regression"' in SCENE
+    assert "const x = 58 + column * 574;" in texture
+    assert "const y = 200 + row * 218;" in texture
+    assert "context.rotate(angle)" not in texture
+    assert "`#${index + 1} · OPEN TODO`" in texture
+    assert "item.detail ||" in texture
+    assert "Active implementation item; details will update" in texture
+    assert "Returned from QA for another implementation" in SCENE
+    assert "Assigned from the forkmesh/forkmesh repository issue queue" in SCENE
+    for key in (
+        "task:world-board-detail",
+        "task:world-mobile-pan-stability",
+        "task:world-stable-hydration",
+        "task:world-continuous-city",
+        "task:world-start-here-map",
+        "task:world-roof-and-seating",
+        "task:world-beach-road",
+        "task:world-bike-perimeter",
+        "task:world-panel-layout",
+        "task:world-github-theme",
+        "task:world-time-stars-textures",
+        "task:world-node-delete-regression",
+    ):
+        assert f'"{key}"' in API
+
+
 def test_build_board_refreshes_on_approach_with_a_scene_native_spinner():
     assert 'buildBoardSpinner.name = "forkmesh-build-board-updating-spinner"' in SCENE
     assert "buildBoardSpinner.visible = false;" in SCENE

@@ -2886,10 +2886,21 @@ function officeReclaimedWoodTexture(THREE) {
 }
 
 // Public build-progress wall in the Office lobby. This intentionally mirrors
-// todo.md in short, readable phrases: unfinished notes stay on the left and a
-// completed task moves to a varied slot on the right with a hand-drawn X.
-// Keep the ordering stable so a repaint never makes notes jump around.
+// the active implementation queue in a fixed, readable grid. Keep the ordering
+// stable so a repaint never makes cards jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
+  { key: "task:world-board-detail", task: "Straight, detailed build board", detail: "Aligned every card to a fixed grid and exposed the active scope and status until QA.", estimate: "ready for deploy · in QA", done: true },
+  { key: "task:world-mobile-pan-stability", task: "Stop mobile pan refreshes", detail: "Coalesce visual viewport changes so authenticated movement and camera pans never clear WebGL.", estimate: "implementation active", done: false },
+  { key: "task:world-stable-hydration", task: "Stable spawn and Office travel", detail: "Preload the cached pose, prevent reconnect jumps, and keep the camera attached to the avatar.", estimate: "implementation active", done: false },
+  { key: "task:world-continuous-city", task: "One continuous city landscape", detail: "Unify land and concrete paths, remove visible seams, and keep every destination walkable.", estimate: "layout pass", done: false },
+  { key: "task:world-start-here-map", task: "START HERE progress map", detail: "Place a visible users-to-nodes checklist that auto-checks locations as they are visited.", estimate: "layout pass", done: false },
+  { key: "task:world-roof-and-seating", task: "Roof jump and universal seating", detail: "Space jumps off the roof, checkout follows the exit, and every chair or bench accepts a sitter.", estimate: "interaction pass", done: false },
+  { key: "task:world-beach-road", task: "Driveable road and beach", detail: "Add a car, connected coastal road, immersive local horizon, water, and places to sit.", estimate: "environment pass", done: false },
+  { key: "task:world-bike-perimeter", task: "Clear perimeter bike route", detail: "Move the continuous lane outside activity areas while retaining two rideable bikes.", estimate: "layout pass", done: false },
+  { key: "task:world-panel-layout", task: "Aligned boards and leaderboard", detail: "Circle-align billboards, keep one leaderboard panel, and remove the obsolete center marker.", estimate: "layout pass", done: false },
+  { key: "task:world-github-theme", task: "GitHub interface design system", detail: "Apply shared dark primitives, borders, spacing, buttons, and focus states across every panel.", estimate: "interface pass", done: false },
+  { key: "task:world-time-stars-textures", task: "Daylight, stars, time, textures", detail: "Use local daylight, chest time, organization-level stars, and optimized local image textures.", estimate: "visual pass", done: false },
+  { key: "task:world-node-delete-regression", task: "Reliable node delete and effect", detail: "Resolve account, machine, and node IDs to one canonical target, then animate removal.", estimate: "backend + effect", done: false },
   { key: "done:repo-panels-one-column", task: "Single-column PR + Issue panels", estimate: "ready for deploy · in QA", done: true },
   { key: "done:admin-member-detail", task: "Admin member detail + email state", estimate: "ready for deploy · in QA", done: true },
   { key: "done:repo-exhibit-split", task: "Split PR/Issue panels + repo agent terminals", estimate: "ready for deploy · in QA", done: true },
@@ -3011,101 +3022,110 @@ function worldTaskBulletinTexture(THREE, source = WORLD_TASK_BULLETIN_ITEMS) {
   const pending = (Array.isArray(source) ? source : [])
     .filter((item) => !item.done)
     .slice(0, 12);
-  const stickyColors = ["#fff39a", "#ffc9e3", "#bcecff", "#c9f5bd", "#ffd2a8"];
+  const cardAccents = ["#58a6ff", "#3fb950", "#d29922", "#a371f7"];
   return canvasTexture(THREE, 1800, 1120, (context) => {
-    context.fillStyle = "#8a5938";
+    context.fillStyle = "#0d1117";
     context.fillRect(0, 0, 1800, 1120);
-    context.strokeStyle = "rgba(75,39,20,0.28)";
+    context.strokeStyle = "#30363d";
     context.lineWidth = 4;
-    for (let y = 18; y < 1120; y += 34) {
-      context.beginPath();
-      context.moveTo(0, y);
-      context.bezierCurveTo(440, y - 8, 1220, y + 10, 1800, y - 3);
-      context.stroke();
-    }
-    context.fillStyle = "rgba(255,250,224,0.94)";
-    context.fillRect(34, 24, 1732, 100);
-    context.fillStyle = "#201812";
+    context.strokeRect(12, 12, 1776, 1096);
+    context.fillStyle = "#161b22";
+    roundedRect(context, 34, 24, 1732, 104, 14);
+    context.fill();
+    context.strokeStyle = "#30363d";
+    context.lineWidth = 3;
+    context.stroke();
+    context.fillStyle = "#f0f6fc";
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.font =
-      '700 60px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+    context.font = '800 54px "ForkMesh Favorit", system-ui, sans-serif';
     context.fillText("FORKMESH · WHAT WE'RE BUILDING", 900, 72);
-    context.font =
-      '700 38px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
-    context.fillText(`DRAG TO PRIORITIZE · 1 IS HIGHEST`, 900, 155);
+    context.fillStyle = "#8c959f";
+    context.font = '700 28px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("OPEN WORK · DRAG TO PRIORITIZE · #1 IS HIGHEST", 900, 158);
 
-    const drawNote = (item, index, side) => {
-      const seed = worldTaskBulletinSeed(`${side}:${item.task}`);
+    const drawNote = (item, index) => {
       const column = index % 3;
       const row = Math.floor(index / 3);
-      const x = 58 + column * 574 + ((seed >>> 3) % 19) - 9;
-      const y = 200 + row * 218 + ((seed >>> 9) % 13) - 6;
+      const x = 58 + column * 574;
+      const y = 200 + row * 218;
       const width = 530;
       const height = 188;
-      const angle = ((((seed >>> 14) % 13) - 6) * Math.PI) / 180;
+      const accent = cardAccents[row % cardAccents.length];
       context.save();
-      context.translate(x + width / 2, y + height / 2);
-      context.rotate(angle);
-      context.shadowColor = "rgba(37,19,9,0.36)";
-      context.shadowBlur = 12;
-      context.shadowOffsetX = 5;
-      context.shadowOffsetY = 7;
-      context.fillStyle = stickyColors[seed % stickyColors.length];
-      context.beginPath();
-      context.moveTo(-width / 2 + 4, -height / 2);
-      context.lineTo(width / 2, -height / 2 + 3);
-      context.lineTo(width / 2 - 5, height / 2);
-      context.lineTo(-width / 2, height / 2 - 4);
-      context.closePath();
+      context.shadowColor = "rgba(0,0,0,0.34)";
+      context.shadowBlur = 8;
+      context.shadowOffsetY = 4;
+      roundedRect(context, x, y, width, height, 12);
+      context.fillStyle = "#161b22";
       context.fill();
       context.shadowColor = "transparent";
-      context.fillStyle = "#29221d";
+      context.strokeStyle = "#30363d";
+      context.lineWidth = 3;
+      context.stroke();
+      roundedRect(context, x, y, 9, height, 4);
+      context.fillStyle = accent;
+      context.fill();
+      context.fillStyle = "#f0f6fc";
       context.textAlign = "left";
       context.textBaseline = "top";
-      context.font =
-        '700 35px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+      context.font = '800 21px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
-        `#${index + 1}`,
-        -width / 2 + 18,
-        -height / 2 + 15,
+        `#${index + 1} · OPEN TODO`,
+        x + 24,
+        y + 13,
       );
+      context.font = '800 26px "ForkMesh Favorit", system-ui, sans-serif';
       wrapCanvasText(
         context,
         item.task,
-        -width / 2 + 16,
-        -height / 2 + 58,
-        width - 32,
-        36,
-        2,
+        x + 24,
+        y + 42,
+        width - 48,
+        28,
+        1,
+      );
+      context.fillStyle = "#b1bac4";
+      context.font = '600 18px "ForkMesh Favorit", system-ui, sans-serif';
+      wrapCanvasText(
+        context,
+        String(
+          item.detail ||
+            "Active implementation item; details will update with the next board refresh.",
+        ),
+        x + 24,
+        y + 76,
+        width - 48,
+        21,
+        3,
       );
       if (!item.done) {
-        context.fillStyle = "#22634f";
-        context.font =
-          '800 22px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+        context.fillStyle = "#3fb950";
+        context.font = '800 16px "ForkMesh Mono", ui-monospace, monospace';
         context.fillText(
-          `◌ IN PROGRESS · ${String(
+          `● ${String(
             item.estimate || "estimating",
           ).toUpperCase()}`,
-          -width / 2 + 16,
-          height / 2 - 25,
+          x + 24,
+          y + height - 29,
+          305,
         );
-        roundedRect(context, width / 2 - 184, height / 2 - 48, 168, 36, 12);
-        context.fillStyle = "#1b6c4f";
+        roundedRect(context, x + width - 174, y + height - 46, 150, 32, 7);
+        context.fillStyle = "#238636";
         context.fill();
-        context.strokeStyle = "#0b3a2a";
+        context.strokeStyle = "#2ea043";
         context.lineWidth = 2;
         context.stroke();
-        context.fillStyle = "#effff7";
+        context.fillStyle = "#ffffff";
         context.textAlign = "center";
-        context.font =
-          '900 19px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
-        context.fillText("DONE → QA", width / 2 - 100, height / 2 - 25);
+        context.textBaseline = "middle";
+        context.font = '800 17px "ForkMesh Favorit", system-ui, sans-serif';
+        context.fillText("DONE → QA", x + width - 99, y + height - 30);
       }
       context.restore();
     };
     pending.forEach((item, index) => {
-      drawNote(item, index, "pending");
+      drawNote(item, index);
     });
   });
 }
@@ -16897,6 +16917,8 @@ export function createWorldScene({
         byKey.set(key, {
           key,
           task: String(task?.title || "QA follow-up").slice(0, 92),
+          detail:
+            "Returned from QA for another implementation, verification, and deployment pass.",
           estimate: "QA follow-up",
           done: false,
         });
@@ -16909,6 +16931,8 @@ export function createWorldScene({
         task: `#${Number(issue?.number) || "?"} ${String(
           issue?.title || "Repository issue",
         ).slice(0, 92)}`,
+        detail:
+          "Assigned from the forkmesh/forkmesh repository issue queue for active implementation.",
         estimate: "repo issue",
         done: false,
       });
