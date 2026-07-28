@@ -428,6 +428,51 @@ HostSshCommand buildHostSshCommand(const QString &host,
     return command;
 }
 
+HostSshCommand buildHostInteractiveSshCommand(const QString &host,
+                                              const QString &sshUser,
+                                              const QString &sshPassword,
+                                              const QString &remoteCommand,
+                                              QString *error,
+                                              const QString &identityFile)
+{
+    HostSshCommand command = buildHostSshCommand(host, sshUser, sshPassword,
+                                                 remoteCommand, error,
+                                                 identityFile);
+    if (command.program.isEmpty())
+        return command;
+    // The last two words are always "user@host" and the remote command, and
+    // -tt has to precede both.
+    command.arguments.insert(command.arguments.size() - 2,
+                             QStringLiteral("-tt"));
+    return command;
+}
+
+QString hostSshCommandLine(const HostSshCommand &command)
+{
+    if (command.program.isEmpty())
+        return {};
+    const auto quote = [](const QString &word) {
+        QString value = word;
+        value.replace(QStringLiteral("'"), QStringLiteral("'\\''"));
+        return QLatin1Char('\'') + value + QLatin1Char('\'');
+    };
+    QStringList words{quote(command.program)};
+    for (const QString &argument : command.arguments)
+        words << quote(argument);
+    return words.join(QLatin1Char(' '));
+}
+
+QString buildHostAgentLoginRemoteCommand()
+{
+    return QStringLiteral(
+        "sh -lc 'export PATH=\"$HOME/.local/bin:$HOME/.claude/bin:$PATH\"; "
+        "echo \"Finish the provider sign-ins on this mirror:\"; "
+        "echo \"  claude        then run /login inside it\"; "
+        "echo \"  codex login\"; "
+        "echo; "
+        "exec \"${SHELL:-/bin/sh}\" -l'");
+}
+
 QString savedHostCredentialKey(const QString &nodeName, const QString &host,
                                const QString &sshUser)
 {
