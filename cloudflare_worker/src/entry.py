@@ -8548,8 +8548,19 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-21"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-22"
 WORLD_QA_CARDS = (
+    ("world-repository-split-panels-agent-dock",
+     "Split repository work panels and agent dock",
+     "Open forkmesh/forkmesh in the World. Confirm pull requests occupy the "
+     "left panel and issues the right panel, each shows a star-sized OPEN "
+     "count, and only bottom controls contain Prev, Next, page, and range. "
+     "Page each side independently and open one card from each. Confirm the "
+     "repository name is part of the angled commit-activity pedestal. While "
+     "an Engineering-authorized Claude or Codex session runs for this repo, "
+     "confirm one compact 45-degree robot screen appears in front with its "
+     "provider, live state, task snapshot, and target node; confirm a "
+     "non-Engineering member sees no agent terminal."),
     ("world-object-click-keyboard-layout", "Click-selected World object editing",
      "Click a movable Town object and confirm a restrained mint outline appears "
      "while its related information opens in the side panel. As an is_admin "

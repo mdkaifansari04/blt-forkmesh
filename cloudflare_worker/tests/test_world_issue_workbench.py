@@ -89,7 +89,7 @@ def test_office_exit_preserves_heading_instead_of_reversing_the_visitor():
     assert "Math.sin(player.rotation.y)" in leave
     assert "Math.cos(player.rotation.y)" in leave
     assert "cameraYaw = 0" not in leave
-    assert "cameraZoom = 1" in leave
+    assert "cameraZoom = OFFICE_EXIT_CAMERA_ZOOM" in leave
     assert "setCameraMode(\"third-person\", \"office-exit\")" in leave
 
 

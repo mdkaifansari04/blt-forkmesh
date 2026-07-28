@@ -2890,7 +2890,7 @@ function officeReclaimedWoodTexture(THREE) {
 // completed task moves to a varied slot on the right with a hand-drawn X.
 // Keep the ordering stable so a repaint never makes notes jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
-  { key: "task:repo-exhibit-split", task: "Split PR/Issue panels + repo agent terminals", estimate: "testing · compact layout", done: false },
+  { key: "done:repo-exhibit-split", task: "Split PR/Issue panels + repo agent terminals", estimate: "ready for deploy · in QA", done: true },
   { key: "done:object-keyboard-layout", task: "Click-select objects + keyboard layout controls", estimate: "ready for deploy · in QA", done: true },
   { key: "done:member-click-panel", task: "Click a user for public member side panel", estimate: "ready for deploy · in QA", done: true },
   { key: "done:world-node-delete-fix", task: "Fix admin World mirror deletion target", estimate: "ready for deploy · in QA", done: true },
@@ -7710,7 +7710,9 @@ function repositoryAgentTerminalTexture(THREE, task = {}) {
     context.fillStyle = "#91a39a";
     context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
     const age = Number(task.updatedAt)
-      ? relativeTimeLabel(Number(task.updatedAt))
+      ? mirrorCommitAgeLabel(
+          Math.max(0, Date.now() - Number(task.updatedAt)),
+        )
       : "NOW";
     context.fillText(`UPDATED ${String(age).toUpperCase()}`, 28, 342);
   });

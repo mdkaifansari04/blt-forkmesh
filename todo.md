@@ -5,7 +5,7 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
-- [ ] Split the selected-repository World exhibit into left PR and right Issue panels with large open counts, bottom-only pagination, an angled named commit-activity pedestal, and compact per-repository live agent terminals.
+- [x] Split the selected-repository World exhibit into left PR and right Issue panels with large open counts, bottom-only pagination, an angled named commit-activity pedestal, and compact per-repository live agent terminals.
 - [x] Replace World object dragging with click selection, a subtle selection highlight, automatic detail-panel opening, admin arrow-key nudging, and `R` rotation.
 - [x] Make every visible user avatar clickable, subtly highlight the selected person, and open their privacy-filtered member information in the side panel.
 - [x] Fix the `is_admin` World cabinet delete action to target the physical mirror name (not its operator account), report failures, and force-refresh cabinets after deletion.
