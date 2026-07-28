@@ -13,6 +13,11 @@ ENTRY_TEXT = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
 WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
 REDIRECTS = PUBLIC / "_redirects"
 FEATURE_IMAGES = PUBLIC / "assets" / "blog" / "features"
+FORKMESH_FOREVER_POST = PUBLIC / "blog" / "forkmesh-forever" / "index.html"
+FORKMESH_FOREVER_VIDEO = PUBLIC / "assets" / "video" / "forkmesh-forever.mp4"
+FORKMESH_FOREVER_CAPTIONS = (
+    PUBLIC / "assets" / "video" / "forkmesh-forever.en.vtt"
+)
 
 
 class BlogNavParser(HTMLParser):
@@ -98,10 +103,11 @@ def test_blog_page_indexes_every_feature_post():
     html = _read(BLOG_PAGE)
     posts = _feature_post_paths()
 
-    assert len(posts) == 73
-    assert html.count('class="blog1-card" href="/blog/') == 73
-    assert html.count('class="blog1-search-result" href="/blog/') == 73
-    assert html.count('data-blog-search-text=') == 73
+    assert len(posts) == 74
+    assert html.count('class="blog1-card" href="/blog/') == 74
+    assert html.count('class="blog1-search-result" href="/blog/') == 74
+    assert html.count('data-blog-search-text=') == 74
+    assert 'href="/blog/forkmesh-forever/"' in html
     assert 'href="/blog/building-forkmesh-in-the-open/"' in html
     assert 'href="/blog/desktop-node-mirrors/"' in html
     assert 'href="/blog/status-blog-and-changelog/"' in html
@@ -127,7 +133,7 @@ def test_feature_blog_posts_have_images_and_article_shells():
 def test_every_blog_post_carries_fillable_social_permalinks():
     posts = sorted((PUBLIC / "blog").glob("*/index.html"))
 
-    assert len(posts) == 74
+    assert len(posts) == 75
     for post in posts:
         html = _read(post)
         for marker in (
@@ -166,10 +172,32 @@ def test_feature_blog_images_exist_for_each_generated_post():
     posts = _feature_post_paths()
     images = sorted(FEATURE_IMAGES.glob("*.webp"))
 
-    assert len(images) == 73
+    assert len(images) == 74
     for post in posts:
         slug = post.parent.name
         assert FEATURE_IMAGES.joinpath(slug + ".webp").is_file()
+
+
+def test_forkmesh_forever_post_embeds_a_deployable_captioned_video():
+    html = _read(FORKMESH_FOREVER_POST)
+
+    for marker in (
+        '<link rel="canonical" href="https://forkmesh.com/blog/forkmesh-forever/">',
+        'class="hero-video"',
+        'poster="/assets/blog/features/forkmesh-forever.webp"',
+        '<source src="/assets/video/forkmesh-forever.mp4" type="video/mp4">',
+        '<track kind="captions"',
+        'src="/assets/video/forkmesh-forever.en.vtt"',
+        '<meta property="og:video:type" content="video/mp4">',
+        '"@type": "VideoObject"',
+    ):
+        assert marker in html
+
+    assert FORKMESH_FOREVER_VIDEO.is_file()
+    # Workers Static Assets reject any individual file larger than 25 MiB.
+    assert FORKMESH_FOREVER_VIDEO.stat().st_size < 25 * 1024 * 1024
+    assert FORKMESH_FOREVER_CAPTIONS.is_file()
+    assert _read(FORKMESH_FOREVER_CAPTIONS).startswith("WEBVTT\n")
 
 
 def test_blog_page_search_opens_dialog():
@@ -245,14 +273,14 @@ def test_blog_paths_are_owned_by_redirects_not_python_worker():
 
 if __name__ == "__main__":
     test_blog_page_uses_editorial_feature_archive_shell()
-    test_blog_page_nav_only_links_auth()
-    test_blog_page_uses_homepage_logo_markup()
+    test_blog_page_mounts_the_universal_site_header()
     test_blog_page_footer_keeps_only_twitter_social_link()
     test_blog_page_indexes_every_feature_post()
     test_feature_blog_posts_have_images_and_article_shells()
     test_every_blog_post_carries_fillable_social_permalinks()
     test_blog_social_renderer_shows_unfilled_networks_as_empty()
     test_feature_blog_images_exist_for_each_generated_post()
+    test_forkmesh_forever_post_embeds_a_deployable_captioned_video()
     test_blog_page_search_opens_dialog()
     test_blog_page_uses_landing_green_accent_for_primary_art()
     test_blog_interaction_states_use_neutral_dark_not_green()
