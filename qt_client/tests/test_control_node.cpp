@@ -741,6 +741,45 @@ int main(int argc, char **argv)
               .program.isEmpty(),
           "a missing managed identity file fails closed");
 
+    // Provider sign-in terminal (adhoc #422): the agent-CLI installer copies no
+    // tokens, so ForkMesh opens a real interactive shell on the mirror right
+    // after it finishes. That needs a forced remote TTY and a shell-safe
+    // command line, and the remote command itself must stay credential-free.
+    QString loginError;
+    const auto loginCommand =
+        forkmesh::control::buildHostInteractiveSshCommand(
+            QStringLiteral("203.0.113.10"), QStringLiteral("root"), QString(),
+            forkmesh::control::buildHostAgentLoginRemoteCommand(), &loginError,
+            identityPath);
+    check(loginError.isEmpty() &&
+              loginCommand.program == QStringLiteral("ssh") &&
+              loginCommand.arguments.contains(QStringLiteral("-tt")) &&
+              loginCommand.arguments.indexOf(QStringLiteral("-tt")) ==
+                  loginCommand.arguments.size() - 3 &&
+              loginCommand.arguments.at(loginCommand.arguments.size() - 2) ==
+                  QStringLiteral("root@203.0.113.10"),
+          "the sign-in shell forces a remote TTY before user@host");
+    const QString loginRemote =
+        forkmesh::control::buildHostAgentLoginRemoteCommand();
+    check(loginRemote.contains(QStringLiteral("$HOME/.local/bin")) &&
+              loginRemote.contains(QStringLiteral("codex login")) &&
+              loginRemote.contains(QStringLiteral("exec \"${SHELL:-/bin/sh}\"")),
+          "the sign-in shell puts the CLI prefixes on PATH and execs a login shell");
+    const QString loginLine =
+        forkmesh::control::hostSshCommandLine(loginCommand);
+    check(loginLine.startsWith(QStringLiteral("'ssh' ")) &&
+              loginLine.contains(QStringLiteral("'-tt'")) &&
+              loginLine.contains(QStringLiteral("'\\''")),
+          "the flattened sign-in command line quotes every word and escapes the "
+          "remote command's own quotes");
+    check(forkmesh::control::hostSshCommandLine(
+              forkmesh::control::buildHostInteractiveSshCommand(
+                  QStringLiteral("-oProxyCommand=bad"),
+                  QStringLiteral("root"), QString(),
+                  QStringLiteral("true"), &loginError))
+              .isEmpty(),
+          "a rejected sign-in host flattens to no command line at all");
+
     // Host size map (adhoc #390): a read-only `du` browser over the same
     // authenticated SSH channel.
     check(forkmesh::control::normalizeRemoteDiskPath(

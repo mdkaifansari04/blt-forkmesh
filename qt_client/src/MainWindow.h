@@ -1176,6 +1176,13 @@ private:
     // one selected mirror over its existing TOFU-pinned SSH connection.
     // Authentication is intentionally separate and never copied by this action.
     void installAgentClisForHost(int row);
+    // Open a live in-app terminal on one mirror so the provider sign-ins an
+    // install without copied credentials skips (`claude` then /login,
+    // `codex login`) can be completed by hand. Opened automatically once such
+    // an install finishes, and available on demand from the host row.
+    void openHostAgentLoginTerminalForSelection(int row);
+    void openHostAgentLoginTerminal(const QString &node, const QString &ip,
+                                    const QString &user);
     // Shared driver behind that button and the one-click Vultr flow's "also
     // install the agent CLIs" option (adhoc #418). With copyCredentials the
     // run additionally hands the mirror this device's provider logins on the
@@ -1812,9 +1819,8 @@ private:
     // disturbing whatever session is currently selected in the UI.
     void continueAgentSession(int sessionId);
     // Ask the given session's agent to merge base and resolve conflicts, then
-    // resume it — the action behind the "Fix conflicts with agent" button.
-    // Shared by that button (selected session) and the auto-fix setting below
-    // (any idle session, not necessarily the selected one).
+    // resume it. Used by the auto-fix setting below (any idle session whose
+    // branch conflicts with base).
     void fixAgentConflictsWithAgent(int sessionId);
     // If kAutoFixAgentConflictsSetting is on and `stat` says session's branch
     // conflicts with base, automatically triggers fixAgentConflictsWithAgent().
@@ -5601,7 +5607,6 @@ private:
     // Above the session list: stop every running agent and cancel the queue
     // (adhoc #433).
     QPushButton *m_agentStopAllButton = nullptr;
-    QPushButton *m_agentFixConflictsButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
     // Above the session list: wipe every merged session's worktree, branch and

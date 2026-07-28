@@ -55,6 +55,38 @@
             "sig": "balnv7KcLB40OyCmuVekc7YZxhxtXvoNvy7PXm8SbKYllB9X65aABV9FpVwf2C-64NMB94y7FLuyIWyKEoXtAQ",
             "ts": 1785207634263,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-532-add-wave-button\".",
+            "id": "97762093-db64-4acc-af4b-64a61a3f1e9a",
+            "sig": "131WOIF3fXEmTAvwyD1uR0MndAqq4R-mUaloWJ0y05gGbSzXEogMVgb9rUEESx1VDpaloU2tLxXS3Au02OWHCA",
+            "ts": 1785209843153,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "9efbd9a7-12b4-48e5-9c82-8f9a1714718f",
+            "sig": "0zgwwZJg9HiBqmz2lu7Mcwz05CGdCV3W_hiHR86Z5Y3cw9d-wJPzTfkimmEaAbzHlen1b6QtagFjdh8hMZyYDA",
+            "status": "closed",
+            "ts": 1785209843227,
+            "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "44371df3-ea78-4029-87cd-62dc95d6d619",
+            "sig": "3M6Em_dToUxm11DnmUaiF8uo-mrjcKgV4lLkhp-zhM9Sr3r-rYXaXmM8FtchQJvC4oYILNJQ-WAfhcJu07utAA",
+            "ts": 1785209843417,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -66,8 +98,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "Add wave button",
-    "updatedAt": 1785207634263,
+    "updatedAt": 1785209843417,
     "votes": 0
 }
