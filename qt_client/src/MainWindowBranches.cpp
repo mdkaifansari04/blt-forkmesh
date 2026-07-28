@@ -3217,50 +3217,91 @@ void MainWindow::updateBranchDetailActions(const QString &branch)
     if (!m_branchMergeButton)
         return;
     const QString dir = repoGitDir();
-    const QString base = repoDefaultBranch(repoBranches());
+    // repoDefaultBranchFast() rather than repoDefaultBranch(repoBranches()): this
+    // runs on every branch click, and the sorted `git branch` listing behind
+    // repoBranches() is exactly the kind of wait a click shouldn't pay.
+    const QString base = repoDefaultBranchFast();
+    const bool isBase = branch.isEmpty() || branch == base;
+    if (dir.isEmpty() || isBase) {
+        applyBranchDetailActions(branch, base, 0, 0, false);
+        return;
+    }
+
+    // The ahead/behind count and the branch/base tips behind the conflict memo's
+    // key are git reads, and a cold selection used to add an inline merge-tree
+    // (~0.5-1s) on top — all of it on the GUI thread, so clicking a branch froze
+    // the window before its detail bar appeared (adhoc #420). Read them on a
+    // worker and paint the bar when they land; the merge-tree itself stays in
+    // startBranchConflictProbes, which calls back here once it has a verdict.
+    const int gen = ++m_branchDetailActionsGen;
+    // Paint what's already known (the branch name, the actions that don't depend
+    // on the divergence) while the counts are read.
+    applyBranchDetailActions(branch, base, -1, -1, false);
+    struct BranchDetailStats {
+        int behind = 0;
+        int ahead = 0;
+        QString conflictKey;
+    };
+    runOffThread<BranchDetailStats>(
+        [dir, base, branch] {
+            BranchDetailStats s;
+            QByteArray counts;
+            if (runGitCapture(dir,
+                              {"rev-list", "--left-right", "--count",
+                               base + "..." + branch},
+                              &counts, nullptr)) {
+                const QStringList parts = QString::fromUtf8(counts).trimmed().split(
+                    QRegularExpression(QStringLiteral("\\s+")));
+                if (parts.size() >= 2) {
+                    s.behind = parts.at(0).toInt();
+                    s.ahead = parts.at(1).toInt();
+                }
+            }
+            // Only a branch with its own commits and base commits it lacks can
+            // conflict; the memo key names that exact commit pair.
+            if (s.behind > 0 && s.ahead > 0) {
+                QByteArray shas;
+                if (runGitCapture(dir, {"rev-parse", "--short", base, branch}, &shas,
+                                  nullptr)) {
+                    const QStringList tips =
+                        QString::fromUtf8(shas).split('\n', Qt::SkipEmptyParts);
+                    if (tips.size() >= 2)
+                        s.conflictKey = branchConflictKey(dir, tips.at(0).trimmed(),
+                                                          tips.at(1).trimmed());
+                }
+            }
+            return s;
+        },
+        [this, gen, branch, base, dir](BranchDetailStats s) {
+            // Dropped once a newer selection owns the detail bar.
+            if (gen != m_branchDetailActionsGen || m_branchDiffBranch != branch)
+                return;
+            bool hasConflict = false;
+            if (!s.conflictKey.isEmpty()) {
+                const auto cached = m_branchConflictCache.constFind(s.conflictKey);
+                if (cached != m_branchConflictCache.constEnd())
+                    hasConflict = *cached;
+                else
+                    // Leaves the flag off until the verdict lands (adhoc #416).
+                    startBranchConflictProbes(dir, base, {{branch, s.conflictKey}});
+            }
+            applyBranchDetailActions(branch, base, s.behind, s.ahead, hasConflict);
+        });
+}
+
+// Paint the branch detail bar from counts the caller has already gathered.
+void MainWindow::applyBranchDetailActions(const QString &branch, const QString &base,
+                                          int behind, int ahead, bool hasConflict)
+{
+    if (!m_branchMergeButton)
+        return;
+    const QString dir = repoGitDir();
     const bool writable = repoHasWorkingTree();
     const bool isBase = branch.isEmpty() || branch == base;
-
-    int behind = 0, ahead = 0;
-    bool hasConflict = false;
-    if (!dir.isEmpty() && !isBase) {
-        QByteArray counts;
-        if (runGitCapture(dir,
-                          {"rev-list", "--left-right", "--count", base + "..." + branch},
-                          &counts, nullptr)) {
-            const QStringList parts = QString::fromUtf8(counts).trimmed().split(
-                QRegularExpression(QStringLiteral("\\s+")));
-            if (parts.size() >= 2) {
-                behind = parts.at(0).toInt();
-                ahead = parts.at(1).toInt();
-            }
-        }
-        // Only a branch with its own commits and base commits it lacks can conflict.
-        // Reuse the panel's memo when it already holds the verdict for these two
-        // tips, and leave the flag off while a background sweep is still computing
-        // it — that sweep calls back here once it lands (adhoc #416). Only a truly
-        // cold selection pays for an inline merge-tree.
-        if (behind > 0 && ahead > 0 && !m_branchConflictProbes.contains(branch)) {
-            QByteArray shas;
-            QString key;
-            if (runGitCapture(dir, {"rev-parse", "--short", base, branch}, &shas,
-                              nullptr)) {
-                const QStringList tips =
-                    QString::fromUtf8(shas).split('\n', Qt::SkipEmptyParts);
-                if (tips.size() >= 2)
-                    key = branchConflictKey(dir, tips.at(0).trimmed(),
-                                            tips.at(1).trimmed());
-            }
-            const auto cached = m_branchConflictCache.constFind(key);
-            if (!key.isEmpty() && cached != m_branchConflictCache.constEnd()) {
-                hasConflict = *cached;
-            } else {
-                hasConflict = branchMergeTree(dir, base, branch).isEmpty();
-                if (!key.isEmpty())
-                    m_branchConflictCache.insert(key, hasConflict);
-            }
-        }
-    }
+    // behind/ahead of -1 mean "not read yet": the actions that depend on the
+    // divergence stay disabled until the worker's counts land, so a click in that
+    // window can't act on the previous branch's state.
+    const bool counted = behind >= 0 && ahead >= 0;
 
     if (m_branchDetailLabel) {
         QString text;
@@ -3269,7 +3310,12 @@ void MainWindow::updateBranchDetailActions(const QString &branch)
         else if (branch == base)
             text = QString::fromUtf8("<b>%1</b> \xC2\xB7 default branch")
                        .arg(branch.toHtmlEscaped());
-        else {
+        else if (!counted) {
+            // Counts still being read off-thread (adhoc #420): name the branch
+            // rather than claiming a divergence we don't know yet.
+            text = QString::fromUtf8("<b>%1</b> \xC2\xB7 checking\xE2\x80\xA6")
+                       .arg(branch.toHtmlEscaped());
+        } else {
             text = QString::fromUtf8("<b>%1</b> \xC2\xB7 %2 behind \xC2\xB7 %3 ahead")
                        .arg(branch.toHtmlEscaped())
                        .arg(behind)
@@ -3302,6 +3348,10 @@ void MainWindow::updateBranchDetailActions(const QString &branch)
     else if (!writable)
         m_branchPullButton->setToolTip(
             "Read-only mirror \xE2\x80\x94 no working tree to update");
+    else if (!counted)
+        m_branchPullButton->setToolTip(
+            QStringLiteral("Checking how far %1 is behind %2\xE2\x80\xA6")
+                .arg(branch, base));
     else if (behind == 0)
         m_branchPullButton->setToolTip(
             QStringLiteral("%1 is already up to date with %2").arg(branch, base));
@@ -3323,6 +3373,10 @@ void MainWindow::updateBranchDetailActions(const QString &branch)
         else if (!writable)
             m_branchMergeEditorButton->setToolTip(
                 "Read-only mirror \xE2\x80\x94 no working tree to update");
+        else if (!counted)
+            m_branchMergeEditorButton->setToolTip(
+                QStringLiteral("Checking how far %1 is behind %2\xE2\x80\xA6")
+                    .arg(branch, base));
         else if (behind == 0)
             m_branchMergeEditorButton->setToolTip(
                 QStringLiteral("%1 is already up to date with %2").arg(branch, base));
@@ -3379,6 +3433,45 @@ void MainWindow::updateBranchDetailActions(const QString &branch)
                 : (isBase ? QStringLiteral("Select a branch other than %1").arg(base)
                           : "Read-only mirror \xE2\x80\x94 nothing to merge into here"));
     }
+
+    // The buttons now say whether the branch is behind and whether it conflicts,
+    // which is exactly what auto-pull needs to decide.
+    maybeAutoPullBranch(branch);
+}
+
+// Auto-pull: as soon as the branch's detail view is behind base with no conflict,
+// try the same update "Pull main" would do by hand, spinning that button while it
+// runs, so landing on a branch is enough to bring it current without an extra
+// click. Skipped when there's a conflict (the "Fix with agent" / "Merge editor"
+// buttons own that case) and attempted at most once per branch so a declined
+// stash prompt can't nag on every incidental rebuild of this panel while the
+// branch stays selected. Deferred a tick so it runs after the caller's own render
+// rather than recursing into it (the pull re-renders itself via showBranchDiff()
+// once it succeeds). Also held off while a background sweep is still deciding
+// whether the branch conflicts: the Fix button is hidden until that verdict
+// lands, and pulling a conflicting branch on the strength of a not-yet-known
+// answer would surface a "couldn't update cleanly" notice the user never asked
+// for (adhoc #416).
+void MainWindow::maybeAutoPullBranch(const QString &branch)
+{
+    if (branch.isEmpty() || m_branchDiffBranch != branch)
+        return;
+    if (!m_branchPullButton || !m_branchPullButton->isEnabled() ||
+        (m_branchFixButton && m_branchFixButton->isVisible()) ||
+        m_branchConflictProbes.contains(branch) ||
+        m_branchAutoPullAttempted == branch)
+        return;
+    m_branchAutoPullAttempted = branch;
+    startButtonSpin(m_branchPullButton);
+    QTimer::singleShot(0, this, [this, branch] {
+        QPushButton *const spinButton = m_branchPullButton;
+        const auto spinGuard =
+            qScopeGuard([this, spinButton] { stopButtonSpin(spinButton); });
+        if (m_branchDiffBranch != branch)
+            return;
+        GitKeepAlive keepAlive;
+        updateBranchFromBase(branch);
+    });
 }
 
 void MainWindow::openBranchInCodium(const QString &branch)
@@ -3449,38 +3542,10 @@ void MainWindow::showBranchDiff(const QString &branch)
     if (!m_branchDiffView)
         return;
     m_branchDiffBranch = branch;
+    // Fills in the detail bar (and, once it knows the branch is behind and
+    // conflict-free, kicks off the auto-pull) from a worker thread — see
+    // updateBranchDetailActions / maybeAutoPullBranch.
     updateBranchDetailActions(branch);
-
-    // Auto-pull: as soon as the branch's detail view is behind base with no
-    // conflict, try the same update "Pull main" would do by hand, spinning that
-    // button while it runs, so landing on a branch is enough to bring it current
-    // without an extra click. Skipped when there's a conflict (the "Fix with
-    // agent" / "Merge editor" buttons own that case) and attempted at most once
-    // per branch so a declined stash prompt can't nag on every incidental
-    // rebuild of this panel while the branch stays selected. Deferred a tick so
-    // it runs after this call's own render rather than recursing into it (the
-    // pull re-renders itself via showBranchDiff() once it succeeds).
-    // Also held off while a background sweep is still deciding whether the branch
-    // conflicts: the Fix button is hidden until that verdict lands, and pulling a
-    // conflicting branch on the strength of a not-yet-known answer would surface a
-    // "couldn't update cleanly" notice the user never asked for (adhoc #416).
-    if (m_branchPullButton && m_branchPullButton->isEnabled() &&
-        (!m_branchFixButton || !m_branchFixButton->isVisible()) &&
-        !m_branchConflictProbes.contains(branch) &&
-        m_branchAutoPullAttempted != branch) {
-        m_branchAutoPullAttempted = branch;
-        startButtonSpin(m_branchPullButton);
-        QTimer::singleShot(0, this, [this, branch] {
-            QPushButton *const spinButton = m_branchPullButton;
-            const auto spinGuard = qScopeGuard([this, spinButton] {
-                stopButtonSpin(spinButton);
-            });
-            if (m_branchDiffBranch != branch)
-                return;
-            GitKeepAlive keepAlive;
-            updateBranchFromBase(branch);
-        });
-    }
 
     m_branchDiffFileSpans.clear();
     m_branchDiffViewedContext.clear();

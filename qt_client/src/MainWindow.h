@@ -2360,6 +2360,13 @@ private:
     // already gone — the desired end state either way.
     bool localBranchExists(const QString &repoPath, const QString &branch) const;
     void showBranchDiff(const QString &branch);
+    // Paint the branch detail bar from already-gathered counts, and let auto-pull
+    // decide once the bar reflects them (the counts arrive off-thread now).
+    void applyBranchDetailActions(const QString &branch, const QString &base,
+                                  int behind, int ahead, bool hasConflict);
+    void maybeAutoPullBranch(const QString &branch);
+    // Bumped per branch selection so a detail-bar read that lands late is dropped.
+    int m_branchDetailActionsGen = 0;
     // Render the branch diff for whichever scope is selected in m_branchScopeList
     // (whole branch vs base, the worktree's uncommitted changes, or one commit).
     void renderBranchScopeDiff();
