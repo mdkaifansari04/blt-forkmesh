@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Contracts for the in-world combined issue and pull-request work list.
+"""Contracts for the in-world issue and pull-request work panels.
 
-Beside the selected repository portal the scene stands one two-column
-review board with up to 25 mixed issue and pull-request cards. Issue records can
-expand before opening the signed thread; pull records route into exact-ref diff
-review. Both are projections of records the shell already verified.
+Beside the selected repository portal the scene stands independent left PR and
+right issue panels, each with up to 25 cards and its own bottom pagination.
+Issue records can expand before opening the signed thread; pull records route
+into exact-ref diff review. Both project records the shell already verified.
 """
 
 from pathlib import Path
@@ -26,9 +26,10 @@ def test_scene_builds_a_bounded_desk_from_verified_records_only():
     assert "REPOSITORY_PULL_CARDS_VISIBLE = 25" in SCENE
     assert "number >= 1 && number <= 10_000_000" in SCENE
     assert 'layer.name = "repository-record-desk"' in DESK
-    assert 'recordKind: "issue"' in DESK
-    assert 'recordKind: "pull"' in DESK
-    assert '"combined"' in DESK
+    assert "const pullBoard = addRecordBoard(" in DESK
+    assert 'pulls,\n      "pull",\n      -7,' in DESK
+    assert 'issues,\n      "issue",\n      7,' in DESK
+    assert '"combined"' not in DESK
     assert "const columns = items.length > 13 ? 2 : 1;" in DESK
     assert "repository-issue-page-expanded:" in DESK
     # Pure projection: no network, no storage, no invented records.
@@ -37,6 +38,7 @@ def test_scene_builds_a_bounded_desk_from_verified_records_only():
     assert "sessionStorage" not in DESK
     assert "repositoryRecordPage(kind, allItems.length)" in DESK
     assert "allItems.slice(pageInfo.start, pageInfo.end)" in DESK
+    assert "repositoryRecordPageTexture(THREE, pageInfo, accent)" in DESK
 
 
 def test_issue_and_pull_cards_show_commit_pinned_metadata():

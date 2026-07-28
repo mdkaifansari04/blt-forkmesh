@@ -9845,8 +9845,16 @@ SCHEMA_ALTER_STATEMENTS = [
        ADD COLUMN title TEXT NOT NULL DEFAULT ''
        CHECK (length(title) <= 160)""",
     "ALTER TABLE pull_inbox ADD COLUMN submitter_bi TEXT",
+    "ALTER TABLE pull_inbox ADD COLUMN claimed_by_bi TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE pull_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE pull_inbox ADD COLUMN mirrored_by_bi TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE pull_inbox ADD COLUMN mirrored_at INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE commit_inbox ADD COLUMN submitter_bi TEXT",
     "ALTER TABLE discussion_inbox ADD COLUMN submitter_bi TEXT",
+    "ALTER TABLE discussion_inbox ADD COLUMN claimed_by_bi TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE discussion_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE discussion_inbox ADD COLUMN mirrored_by_bi TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE discussion_inbox ADD COLUMN mirrored_at INTEGER NOT NULL DEFAULT 0",
     # Raw User-Agent of each release download, shown in the admin list (migration 0034).
     "ALTER TABLE release_downloads ADD COLUMN ua TEXT",
     # Operator-settable flag granting a user access to the /outreach console
@@ -29580,6 +29588,56 @@ async def _materialize_issue_inbox_on_mirror(
     return count
 
 
+async def _claim_collaboration_inbox_on_mirror(
+        env, table, repo_bi, signing_key):
+    """Lease unmaterialized PR/discussion rows to one approved mirror."""
+    if table not in ("pull_inbox", "discussion_inbox") or not signing_key:
+        return ""
+    claimant_bi = await blind_index(
+        env, "collaboration-inbox-claim:" + table + ":" + signing_key)
+    now = int(Date.now())
+    await d1_run(
+        env,
+        "UPDATE %s SET claimed_by_bi=?, claim_expires_at=? "
+        "WHERE repo_bi=? AND mirrored_at=0 AND "
+        "(claimed_by_bi='' OR claim_expires_at<=? OR claimed_by_bi=?)" % table,
+        claimant_bi, now + ISSUE_INBOX_CLAIM_TTL_MS, repo_bi, now,
+        claimant_bi,
+    )
+    return claimant_bi
+
+
+async def _materialize_collaboration_inbox_on_mirror(
+        env, request, table, repo_bi, claimant_bi, mirror_node):
+    """Mark exact PR/discussion rows browsable without consuming source sync."""
+    if table not in ("pull_inbox", "discussion_inbox"):
+        return 0
+    ids = _drain_ids_from_request(request)
+    if not ids or not claimant_bi or not mirror_node:
+        return 0
+    marks = ",".join("?" for _ in ids)
+    mirror_bi = await blind_index(
+        env, "collaboration-mirror:" + table + ":" + mirror_node)
+    row = await d1_first(
+        env,
+        "SELECT COUNT(*) AS c FROM %s WHERE repo_bi=? "
+        "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0"
+        % (table, marks),
+        repo_bi, *ids, claimant_bi,
+    )
+    count = int((row or {}).get("c") or 0)
+    if count:
+        await d1_run(
+            env,
+            "UPDATE %s SET mirrored_by_bi=?,mirrored_at=?,"
+            "claimed_by_bi='',claim_expires_at=0 WHERE repo_bi=? "
+            "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0"
+            % (table, marks),
+            mirror_bi, int(Date.now()), repo_bi, *ids, claimant_bi,
+        )
+    return count
+
+
 async def _drain_issue_inbox(env, request, repo_bi, claimant_bi=""):
     """Ack (delete) the exact issue-inbox rows named by ?ids=, returning how many
     were removed, and record the drain in inbox_drain_log. Rows the node did not
@@ -29908,6 +29966,7 @@ async def pulls_handler(env, request, owner, repo):
                                      repo_web_href(owner, repo))
             await subscribe_thread(env, owner, repo, "pull", number, actor)
             await notify_repo_host(env, owner, repo, "pulls")
+            await notify_repo_mirrors(env, owner, repo, "pulls")
             if event.get("type") in ("comment", "review"):
                 await _best_effort_inbox_side_effect(_ap_publish_repo_event(
                     env, request, owner, repo, "pull", event.get("type"),
@@ -29966,6 +30025,7 @@ async def pulls_handler(env, request, owner, repo):
         await notify_mentions(env, owner, repo, actor, title, description,
                               repo_web_href(owner, repo), "pull")
         await notify_repo_host(env, owner, repo, "pulls")
+        await notify_repo_mirrors(env, owner, repo, "pulls")
         # Badge (adhoc #44): render the PR's visual fingerprint from the
         # signed patch and attach it to the federated note as its lead image.
         # Best-effort — a badge failure must never block the submission.
@@ -29988,18 +30048,68 @@ async def pulls_handler(env, request, owner, repo):
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
-        if not await _authorize_repo_inbox_owner(
-                env, request, owner, repo):
-            return json_response({"error": "unauthorized"}, status=401)
-        rows = await d1_all(
-            env, "SELECT data FROM pull_inbox WHERE repo_bi=? ORDER BY id ASC",
-            repo_bi,
-        )
-        pending = [rec for rec in
-                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
-        return json_response({"ok": True, "pending": pending})
+        mirror_intake = (
+            parse_qs(urlparse(request.url).query).get("mirror", [""])[0]
+            == "1")
+        mirror_node = ""
+        if mirror_intake:
+            signing_key, mirror_node = (
+                await _authorized_mirror_issue_signing_key(
+                    env, request, owner, repo))
+            claimant_bi = await _claim_collaboration_inbox_on_mirror(
+                env, "pull_inbox", repo_bi, signing_key)
+            if not claimant_bi:
+                return json_response({"error": "unauthorized"}, status=401)
+            rows = await d1_all(
+                env,
+                "SELECT id,data FROM pull_inbox WHERE repo_bi=? "
+                "AND claimed_by_bi=? AND mirrored_at=0 ORDER BY id ASC",
+                repo_bi, claimant_bi,
+            )
+        else:
+            if not await _authorize_repo_inbox_owner(
+                    env, request, owner, repo):
+                return json_response({"error": "unauthorized"}, status=401)
+            rows = await d1_all(
+                env,
+                "SELECT id,data FROM pull_inbox WHERE repo_bi=? ORDER BY id ASC",
+                repo_bi,
+            )
+        pending = []
+        for row in rows:
+            rec = await decrypt_row(env, row["data"])
+            if rec:
+                rec["id"] = row.get("id")
+                pending.append(rec)
+        return json_response({
+            "ok": True,
+            "pending": pending,
+            "mirrorIntake": mirror_intake,
+            "mirror": mirror_node,
+        })
 
     if method == "DELETE":
+        mirror_intake = (
+            parse_qs(urlparse(request.url).query).get("mirror", [""])[0]
+            == "1")
+        if mirror_intake:
+            signing_key, mirror_node = (
+                await _authorized_mirror_issue_signing_key(
+                    env, request, owner, repo))
+            claimant_bi = await blind_index(
+                env, "collaboration-inbox-claim:pull_inbox:" + signing_key
+            ) if signing_key else ""
+            if not claimant_bi:
+                return json_response({"error": "unauthorized"}, status=401)
+            materialized = await _materialize_collaboration_inbox_on_mirror(
+                env, request, "pull_inbox", repo_bi, claimant_bi,
+                mirror_node)
+            return json_response({
+                "ok": True,
+                "drained": 0,
+                "materialized": materialized,
+                "retainedForSource": True,
+            })
         if not await _authorize_repo_inbox_owner(
                 env, request, owner, repo):
             return json_response({"error": "unauthorized"}, status=401)
@@ -30126,6 +30236,7 @@ async def discussions_handler(env, request, owner, repo):
         await notify_mentions(env, owner, repo, actor, title, event.get("body", ""),
                               repo_web_href(owner, repo), "discussion", number=number)
         await notify_repo_host(env, owner, repo, "discussions")
+        await notify_repo_mirrors(env, owner, repo, "discussions")
         if event.get("type") in ("open", "comment"):
             await _best_effort_inbox_side_effect(_ap_publish_repo_event(
                 env, request, owner, repo, "discussion", event.get("type"),
@@ -30134,18 +30245,73 @@ async def discussions_handler(env, request, owner, repo):
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
-        if not await _authorize_owner(env, request, owner):
-            return json_response({"error": "unauthorized"}, status=401)
-        rows = await d1_all(
-            env, "SELECT data FROM discussion_inbox WHERE repo_bi=? ORDER BY id ASC",
-            repo_bi,
-        )
-        pending = [rec for rec in
-                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
-        return json_response({"ok": True, "pending": pending})
+        mirror_intake = (
+            parse_qs(urlparse(request.url).query).get("mirror", [""])[0]
+            == "1")
+        mirror_node = ""
+        if mirror_intake:
+            signing_key, mirror_node = (
+                await _authorized_mirror_issue_signing_key(
+                    env, request, owner, repo))
+            claimant_bi = await _claim_collaboration_inbox_on_mirror(
+                env, "discussion_inbox", repo_bi, signing_key)
+            if not claimant_bi:
+                return json_response({"error": "unauthorized"}, status=401)
+            rows = await d1_all(
+                env,
+                "SELECT id,data FROM discussion_inbox WHERE repo_bi=? "
+                "AND claimed_by_bi=? AND mirrored_at=0 ORDER BY id ASC",
+                repo_bi, claimant_bi,
+            )
+        else:
+            signing_key = await _authorized_repo_inbox_signing_key(
+                env, request, owner, repo)
+            if not signing_key:
+                return json_response({"error": "unauthorized"}, status=401)
+            rows = await d1_all(
+                env,
+                "SELECT id,data FROM discussion_inbox "
+                "WHERE repo_bi=? ORDER BY id ASC",
+                repo_bi,
+            )
+        pending = []
+        for row in rows:
+            rec = await decrypt_row(env, row["data"])
+            if rec:
+                rec["id"] = row.get("id")
+                pending.append(rec)
+        return json_response({
+            "ok": True,
+            "pending": pending,
+            "mirrorIntake": mirror_intake,
+            "mirror": mirror_node,
+        })
 
     if method == "DELETE":
-        if not await _authorize_owner(env, request, owner):
+        mirror_intake = (
+            parse_qs(urlparse(request.url).query).get("mirror", [""])[0]
+            == "1")
+        if mirror_intake:
+            signing_key, mirror_node = (
+                await _authorized_mirror_issue_signing_key(
+                    env, request, owner, repo))
+            claimant_bi = await blind_index(
+                env,
+                "collaboration-inbox-claim:discussion_inbox:" + signing_key,
+            ) if signing_key else ""
+            if not claimant_bi:
+                return json_response({"error": "unauthorized"}, status=401)
+            materialized = await _materialize_collaboration_inbox_on_mirror(
+                env, request, "discussion_inbox", repo_bi, claimant_bi,
+                mirror_node)
+            return json_response({
+                "ok": True,
+                "drained": 0,
+                "materialized": materialized,
+                "retainedForSource": True,
+            })
+        if not await _authorize_repo_inbox_signing_key(
+                env, request, owner, repo):
             return json_response({"error": "unauthorized"}, status=401)
         await d1_run(env, "DELETE FROM discussion_inbox WHERE repo_bi=?", repo_bi)
         return json_response({"ok": True})
@@ -30174,8 +30340,10 @@ async def repo_pending_counts_handler(env, request, owner, repo):
         env,
         "SELECT 'issues' AS k, COUNT(*) AS c FROM issue_inbox "
         "WHERE repo_bi=? AND mirrored_at=0 "
-        "UNION ALL SELECT 'pulls', COUNT(*) FROM pull_inbox WHERE repo_bi=? "
-        "UNION ALL SELECT 'discussions', COUNT(*) FROM discussion_inbox WHERE repo_bi=? "
+        "UNION ALL SELECT 'pulls', COUNT(*) FROM pull_inbox "
+        "WHERE repo_bi=? AND mirrored_at=0 "
+        "UNION ALL SELECT 'discussions', COUNT(*) FROM discussion_inbox "
+        "WHERE repo_bi=? AND mirrored_at=0 "
         "UNION ALL SELECT 'commits', COUNT(*) FROM commit_inbox WHERE repo_bi=?",
         repo_bi, repo_bi, repo_bi, repo_bi,
     )

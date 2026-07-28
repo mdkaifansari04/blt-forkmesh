@@ -92,7 +92,11 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_issue_inbox_repo ON issue_inbox(repo_bi)",
     """CREATE TABLE IF NOT EXISTS pull_inbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
-        data TEXT NOT NULL)""",
+        data TEXT NOT NULL, submitter_bi TEXT,
+        claimed_by_bi TEXT NOT NULL DEFAULT '',
+        claim_expires_at INTEGER NOT NULL DEFAULT 0,
+        mirrored_by_bi TEXT NOT NULL DEFAULT '',
+        mirrored_at INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_pull_inbox_repo ON pull_inbox(repo_bi)",
     """CREATE TABLE IF NOT EXISTS commit_inbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
@@ -100,7 +104,11 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_commit_inbox_repo ON commit_inbox(repo_bi)",
     """CREATE TABLE IF NOT EXISTS discussion_inbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
-        data TEXT NOT NULL, submitter_bi TEXT)""",
+        data TEXT NOT NULL, submitter_bi TEXT,
+        claimed_by_bi TEXT NOT NULL DEFAULT '',
+        claim_expires_at INTEGER NOT NULL DEFAULT 0,
+        mirrored_by_bi TEXT NOT NULL DEFAULT '',
+        mirrored_at INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_discussion_inbox_repo ON discussion_inbox(repo_bi)",
     # Agent-session sync (website "Agents" tab, adhoc #182): the desktop app
     # pushes a full-replace snapshot of its running/finished Claude Code agent

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Combined repository work list and cabinet-side layout."""
+"""Split repository work panels and compact exhibit layout."""
 
 from pathlib import Path
 
@@ -11,14 +11,16 @@ APP = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
 CSS = (ROOT / "public" / "world" / "world.css").read_text(encoding="utf-8")
 
 
-def test_repository_issues_and_pulls_share_one_paginated_board():
-    assert 'recordKind: "issue"' in SCENE
-    assert 'recordKind: "pull"' in SCENE
-    assert '"combined"' in SCENE
-    assert "ISSUES  ·  ${pullCount} PULL REQUESTS" in SCENE
-    assert "ONE LIVE WORK LIST" in SCENE
-    assert 'addRecordBoard(pulls, "pull"' not in SCENE
-    assert 'addRecordBoard(issues, "issue"' not in SCENE
+def test_repository_issues_and_pulls_have_separate_left_right_panels():
+    desk = SCENE[
+        SCENE.index("function updateRepositoryRecordDesk("):
+        SCENE.index("function setRepositoryIssuePageExpanded(")
+    ]
+    assert "const pullBoard = addRecordBoard(" in desk
+    assert 'pulls,\n      "pull",\n      -7,' in desk
+    assert 'issues,\n      "issue",\n      7,' in desk
+    assert '"combined"' not in desk
+    assert "repository-${kind}-open-count:" in desk
 
 
 def test_repository_cards_clip_text_to_their_physical_bounds():
@@ -32,6 +34,30 @@ def test_repository_cards_clip_text_to_their_physical_bounds():
     ]
     assert issue.count("clipCanvasText") >= 2
     assert pull.count("clipCanvasText") >= 3
+
+
+def test_counts_are_large_open_only_headers_and_paging_is_at_panel_bottom():
+    assert "function repositoryRecordCountTexture(" in SCENE
+    assert '"OPEN ISSUES"' in SCENE
+    assert '"OPEN PRS"' in SCENE
+    assert 'context.font = \'900 205px "ForkMesh Mono"' in SCENE
+    assert 'String(item?.state || "").toLowerCase() === "open"' in SCENE
+    assert "function repositoryRecordPageTexture(" in SCENE
+    assert "groundY + 1.02" in SCENE
+    assert "groundY + boardHeight + 2.04" not in SCENE
+
+
+def test_repo_exhibit_has_angled_named_pedestal_and_live_agent_terminals():
+    assert "repository-commit-activity-pedestal" in SCENE
+    assert "backing.rotation.x = -Math.PI / 4;" in SCENE
+    assert "repositoryCommitActivityTexture(" in SCENE
+    assert "`${owner}/${name}`" in SCENE
+    assert "repository-agent-control-dock:" in SCENE
+    assert "function createRepositoryAgentTerminal(" in SCENE
+    assert "screenShell.rotation.x = -Math.PI / 4;" in SCENE
+    assert "repositoryAgentTasksByRepository" in SCENE
+    assert "task.status === \"running\"" in SCENE
+    assert "task.targetNode" in SCENE
 
 
 def test_cabinet_faces_are_swapped_and_agent_sides_are_provider_specific():

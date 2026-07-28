@@ -7638,6 +7638,8 @@ void MainWindow::pollMirrorIssueInboxes()
             continue;
         seen.insert(key);
         drainIssuesInboxFor(repo, /*interactive=*/false);
+        drainPullsInboxFor(repo, /*interactive=*/false);
+        drainDiscussionsInboxFor(repo, /*interactive=*/false);
     }
 }
 
@@ -7914,6 +7916,10 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
         // An inbound issue/comment may @mention the owner running this node.
         if (!mirrorIntake)
             scanRepoMentionsFor(writable);
+        else {
+            m_mirrorAdvertSig.clear();
+            refreshMirrorAdverts();
+        }
     }
     if (interactive)
         setIssueInlineNotice(

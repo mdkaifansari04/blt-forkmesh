@@ -96,9 +96,9 @@ def test_office_exit_preserves_heading_instead_of_reversing_the_visitor():
 def test_repository_circle_uses_avatar_orbit_and_external_record_boards():
     assert 'icon.scale.set(1.14, 1.14, 1)' in SCENE
     assert "const orbitRadius = 4.25" in SCENE
-    assert 'recordKind: "issue"' in SCENE
-    assert 'recordKind: "pull"' in SCENE
-    assert '"combined"' in SCENE
+    assert "const pullBoard = addRecordBoard(" in SCENE
+    assert 'pulls,\n      "pull",\n      -7,' in SCENE
+    assert 'issues,\n      "issue",\n      7,' in SCENE
     assert '"repository-create-button"' not in SCENE
     follower_texture = _function_body(SCENE, "repositoryFollowerIconTexture")
     assert "256, 256" in follower_texture
@@ -121,8 +121,10 @@ def test_repository_record_boards_show_verified_status_and_page_by_twenty_five()
         '"unavailable"',
     ):
         assert status in _function_body(SCENE, "repositoryPullReviewStatus")
-    assert "${issueCount} ISSUES  ·  ${pullCount} PULL REQUESTS" in SCENE
-    assert "ONE LIVE WORK LIST" in SCENE
+    assert "repositoryRecordCountTexture(" in SCENE
+    assert '"OPEN ISSUES"' in SCENE
+    assert '"OPEN PRS"' in SCENE
+    assert "repositoryRecordPageTexture(" in SCENE
     assert "function changeRepositoryRecordPage(kind, direction)" in SCENE
     assert (
         "`repository-${kind}-page-${direction < 0 ? \"prev\" : \"next\"}`"

@@ -824,6 +824,27 @@ def test_office_walkers_share_world_movement_tuning_and_heading():
         assert heading.search(body), f"{name} uses a different avatar heading"
 
 
+def test_shift_sprints_through_the_shared_collision_aware_movement_path():
+    scene = source(SCENE_PATH)
+    speed = function_body(scene, "movementSpeedForInput")
+    movement = function_body(scene, "movementInput")
+    key_down = function_body(scene, "handleKeyDown")
+    key_up = function_body(scene, "handleKeyUp")
+
+    assert "const PLAYER_SPRINT_MULTIPLIER = 2.6;" in scene
+    assert 'const SPRINT_KEYS = new Set(["ShiftLeft", "ShiftRight"]);' in scene
+    assert "input.sprinting ? PLAYER_SPRINT_MULTIPLIER : 1" in speed
+    assert 'keys.has("ShiftLeft") || keys.has("ShiftRight")' in movement
+    assert "SPRINT_KEYS.has(event.code)" in key_down
+    assert "SPRINT_KEYS.has(event.code)" in key_up
+    for name in (
+        "walkPlayer",
+        "walkOfficeLobbyPlayer",
+        "walkOfficeParticipant",
+    ):
+        assert "movementSpeedForInput(" in function_body(scene, name)
+
+
 def test_meeting_handoff_projects_the_live_player_out_of_collidable_furniture():
     scene = source(SCENE_PATH)
     enter = function_body(scene, "enterOfficeLobby")

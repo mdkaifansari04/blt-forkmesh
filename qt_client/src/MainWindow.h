@@ -1082,6 +1082,7 @@ private:
     // permissions, Cloudflare relay bootstrap, and remote host deployment.
     QWidget *buildControlNodeSection();
     void refreshControlNode();
+    void refreshControlMirrorReadiness();
     void runControlNodeHealthCheck();
     void startControlNodeServing();
     void stopControlNodeServing();
@@ -3257,10 +3258,12 @@ private:
                                  const QJsonArray &pending, bool interactive,
                                  bool mirrorIntake = false);
     void applyPullsInboxPayload(const RepositoryRecord &repo,
-                                const QJsonArray &pending, bool interactive);
+                                const QJsonArray &pending, bool interactive,
+                                bool mirrorIntake = false);
     void applyDiscussionsInboxPayload(const RepositoryRecord &repo,
                                       const QJsonArray &pending,
-                                      bool interactive);
+                                      bool interactive,
+                                      bool mirrorIntake = false);
     void applyCommitInboxPayload(const RepositoryRecord &repo,
                                  const QJsonArray &pending, bool interactive);
     void applyAgentPromptsPayload(const RepositoryRecord &repo,
@@ -3891,6 +3894,13 @@ private:
     bool m_cloudflareConnectAfterDeploy = false;
     QTimer *m_controlNodeRefreshTimer = nullptr;
     QTimer *m_directMirrorRegistrationTimer = nullptr;
+    // Full encrypted-archive authentication hashes hundreds of megabytes for a
+    // large mirror. Keep it off the GUI thread and let the Control page render
+    // the most recent completed snapshot.
+    QHash<QString, bool> m_controlMirrorReadyCache;
+    bool m_controlMirrorProbeInFlight = false;
+    qint64 m_controlMirrorProbeCompletedAtMs = 0;
+    QString m_controlPermissionsSignature;
     // Community reward pool: no private material is held in these widgets or
     // members. Only the vault's public address, public chain intents, and public
     // submitted transaction identifiers are retained in memory/settings.
@@ -5714,6 +5724,10 @@ private:
     // onRequestServed (adhoc #83); skip the rebuild while the signature is
     // unchanged. Reset by attachBackend so a freshly attached backend is re-pushed.
     QString m_mirrorAdvertSig;
+    QString m_mirrorAdvertInputSig;
+    bool m_mirrorAdvertRefreshInFlight = false;
+    qint64 m_mirrorAdvertCompletedAtMs = 0;
+    void refreshMirrorAdverts();
     int m_repoOpenPending = -1;        // repo index queued by openRepoDetailDeferred
     // True while a user-driven repo load (a node switch or opening a repo) runs,
     // so nodeSwitchStep narrates progress for both, not just node switches.

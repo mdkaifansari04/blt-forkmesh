@@ -65,6 +65,8 @@
 #include <QDropEvent>
 #include <QFileInfo>
 #include <QMimeData>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QFrame>
@@ -7776,8 +7778,9 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
     // repo with ~200 issues ran 200+ sequential subprocesses on the GUI thread
     // and the stall watchdog clocked individual publishes at 1.8s+ (adhoc #33).
     // Cache per mirror+branch keyed on the tip commit, and on a miss read every
-    // status through a single `git cat-file --batch` process. UI-thread only,
-    // so a plain static map needs no locking (same as tintedOcticonPixmap).
+    // status through a single `git cat-file --batch` process. Advert snapshots
+    // are gathered on a worker, while explicit publishes can still request the
+    // count elsewhere, so protect the process-wide cache.
     QByteArray tip;
     runGitCapture(mirrorPath, {"rev-parse", "--verify", branch}, &tip, nullptr);
     tip = tip.trimmed();
@@ -7786,8 +7789,10 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
         int count = 0;
     };
     static QHash<QString, OpenIssueCacheEntry> cache;
+    static QMutex cacheMutex;
     const QString cacheKey = mirrorPath + QLatin1Char('\n') + branch;
     if (!tip.isEmpty()) {
+        QMutexLocker lock(&cacheMutex);
         const auto cached = cache.constFind(cacheKey);
         if (cached != cache.constEnd() && cached->tip == tip)
             return cached->count;
@@ -7821,17 +7826,8 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
     // not open — the Issues tab and lists drop it (Issue::isDeleted), so the
     // advertised count must too, or it drifts above the tab (adhoc #16). A
     // delete/self event from anyone else is an unauthorized attempt that still
-    // counts. Deciding needs the record, so read the open/ blobs (open issues
-    // are few); closed/ folders are never open regardless.
-    auto recordTombstoned = [&](const QString &name) {
-        QByteArray blob;
-        if (!runGitCapture(
-                mirrorPath,
-                {"cat-file", "-p",
-                 branch + QStringLiteral(":.forkmesh/issues/open/%1/issue-%1.json")
-                              .arg(name)},
-                &blob, nullptr))
-            return false; // unreadable -> treat as live (matches loadAll)
+    // counts. Closed/ folders are never open regardless.
+    auto recordTombstoned = [](const QByteArray &blob) {
         const QJsonArray events = QJsonDocument::fromJson(blob)
                                       .object()
                                       .value(QStringLiteral("events"))
@@ -7859,13 +7855,48 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
     };
     QSet<QString> counted;
     int open = 0;
-    for (const QString &name :
-         numberedNames(QStringLiteral(".forkmesh/issues/open")))
-        if (!counted.contains(name)) {
-            counted.insert(name);
-            if (!recordTombstoned(name))
-                ++open;
+    const QStringList openNames =
+        numberedNames(QStringLiteral(".forkmesh/issues/open"));
+    for (const QString &name : openNames)
+        counted.insert(name);
+    if (!openNames.isEmpty()) {
+        QByteArray batchIn;
+        for (const QString &name : openNames) {
+            batchIn +=
+                (branch +
+                 QStringLiteral(":.forkmesh/issues/open/%1/issue-%1.json")
+                     .arg(name))
+                    .toUtf8() +
+                '\n';
         }
+        QByteArray batchOut;
+        int remaining = openNames.size();
+        if (runGitCaptureInput(mirrorPath, {"cat-file", "--batch"}, batchIn,
+                               &batchOut, nullptr)) {
+            int pos = 0;
+            while (remaining > 0 && pos < batchOut.size()) {
+                const int eol = batchOut.indexOf('\n', pos);
+                if (eol < 0)
+                    break;
+                const QByteArray header = batchOut.mid(pos, eol - pos);
+                pos = eol + 1;
+                --remaining;
+                const QList<QByteArray> parts = header.split(' ');
+                bool sizeOk = false;
+                const qlonglong size =
+                    parts.size() >= 3 ? parts.at(2).toLongLong(&sizeOk) : 0;
+                if (!sizeOk || size < 0 || pos + size > batchOut.size()) {
+                    ++open; // unreadable records remain live, matching loadAll
+                    continue;
+                }
+                const QByteArray blob = batchOut.mid(pos, size);
+                pos += size + 1; // skip the record's trailing LF
+                if (!recordTombstoned(blob))
+                    ++open;
+            }
+        }
+        open += remaining;
+    }
     for (const QString &name :
          numberedNames(QStringLiteral(".forkmesh/issues/closed")))
         counted.insert(name);
@@ -7917,8 +7948,10 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
         }
         open += remaining; // records the batch never answered default to open
     }
-    if (!tip.isEmpty())
+    if (!tip.isEmpty()) {
+        QMutexLocker lock(&cacheMutex);
         cache.insert(cacheKey, {tip, open});
+    }
     return open;
 }
 

@@ -33,7 +33,10 @@ def test_all_repositories_live_expanded_on_the_east_island():
 def test_billboards_use_the_west_island_and_ignore_legacy_coordinates():
     assert "function placeBillboardOnIsland(object, layoutId)" in SCENE
     assert "movableWorldObjects.delete(layoutId);" in SCENE
-    assert "const districtLayoutId = `west-billboards:${layoutId}`;" in SCENE
+    assert (
+        "const districtLayoutId = `west-billboards-row-v2:${layoutId}`;"
+        in SCENE
+    )
     for object_name in (
         "worldBulletin",
         "worldGeneralChatBoard",
