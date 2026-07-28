@@ -9974,6 +9974,732 @@ function createOfficeMarineAquarium(THREE, animated) {
   const tankLength = 27;
   const tankHeight = 12;
   const tankDepth = 3;
+  const AQUARIUM_FISH_SPECIES = Object.freeze([
+    {
+      id: "clownfish",
+      sceneName: "forkmesh-office-aquarium-fish-clownfish",
+      body: "#ed682b",
+      accent: "#fff6df",
+      length: 1.38,
+      height: 0.52,
+      thickness: 0.42,
+      tail: "round",
+      bands: [0.31, 0.65],
+    },
+    {
+      id: "blue-tang",
+      sceneName: "forkmesh-office-aquarium-fish-blue-tang",
+      body: "#167ec5",
+      accent: "#101c3b",
+      length: 1.56,
+      height: 0.66,
+      thickness: 0.38,
+      tail: "fork",
+      bands: [],
+    },
+    {
+      id: "yellow-tang",
+      sceneName: "forkmesh-office-aquarium-fish-yellow-tang",
+      body: "#f4d52d",
+      accent: "#fff2a2",
+      length: 1.44,
+      height: 0.72,
+      thickness: 0.34,
+      tail: "fork",
+      bands: [],
+    },
+    {
+      id: "royal-gramma",
+      sceneName: "forkmesh-office-aquarium-fish-royal-gramma",
+      body: "#763bbd",
+      accent: "#efc42b",
+      length: 1.25,
+      height: 0.48,
+      thickness: 0.36,
+      tail: "round",
+      bands: [],
+    },
+    {
+      id: "butterflyfish",
+      sceneName: "forkmesh-office-aquarium-fish-butterflyfish",
+      body: "#f4e8bd",
+      accent: "#232a34",
+      length: 1.46,
+      height: 0.7,
+      thickness: 0.32,
+      tail: "fork",
+      bands: [0.7],
+    },
+    {
+      id: "chromis",
+      sceneName: "forkmesh-office-aquarium-fish-chromis",
+      body: "#5fc7d0",
+      accent: "#dcffff",
+      length: 0.8,
+      height: 0.31,
+      thickness: 0.28,
+      tail: "fork",
+      bands: [],
+    },
+  ]);
+
+  function aquariumSeedFraction(seed, index) {
+    const value =
+      Math.sin((seed + 1) * 12.9898 + (index + 1) * 78.233) *
+      43758.5453;
+    return value - Math.floor(value);
+  }
+
+  function drawAquariumSpeciesMarkings(context, canvas, species) {
+    const width = canvas.width;
+    const height = canvas.height;
+    if (species.id === "clownfish") {
+      for (const ratio of species.bands) {
+        context.fillStyle = "#211917";
+        context.fillRect(width * ratio - 12, 0, 24, height);
+        context.fillStyle = "#fff8e6";
+        context.fillRect(width * ratio - 7, 0, 14, height);
+      }
+    } else if (species.id === "blue-tang") {
+      context.fillStyle = "#101a3c";
+      context.beginPath();
+      context.moveTo(width * 0.18, height * 0.22);
+      context.bezierCurveTo(
+        width * 0.43,
+        height * 0.01,
+        width * 0.79,
+        height * 0.17,
+        width * 0.7,
+        height * 0.5,
+      );
+      context.bezierCurveTo(
+        width * 0.58,
+        height * 0.82,
+        width * 0.32,
+        height * 0.85,
+        width * 0.18,
+        height * 0.22,
+      );
+      context.fill();
+      context.fillStyle = "#f0cf35";
+      context.fillRect(width * 0.89, 0, width * 0.11, height);
+    } else if (species.id === "yellow-tang") {
+      const shade = context.createLinearGradient(0, 0, 0, height);
+      shade.addColorStop(0, "rgba(255,255,210,0.5)");
+      shade.addColorStop(0.52, "rgba(255,255,255,0)");
+      shade.addColorStop(1, "rgba(176,112,0,0.38)");
+      context.fillStyle = shade;
+      context.fillRect(0, 0, width, height);
+      context.fillStyle = "rgba(255,250,190,0.7)";
+      context.fillRect(width * 0.18, height * 0.47, width * 0.62, 2);
+    } else if (species.id === "royal-gramma") {
+      const split = context.createLinearGradient(0, 0, width, 0);
+      split.addColorStop(0.38, "rgba(118,59,189,0)");
+      split.addColorStop(0.55, "#efc42b");
+      split.addColorStop(1, "#dfa51d");
+      context.fillStyle = split;
+      context.fillRect(0, 0, width, height);
+      context.fillStyle = "rgba(255,241,167,0.8)";
+      for (let index = 0; index < 10; index += 1) {
+        context.fillRect(width * 0.42 + index * 6, height * 0.34, 2, 2);
+      }
+    } else if (species.id === "butterflyfish") {
+      context.fillStyle = "#252a30";
+      context.fillRect(width * 0.66, 0, width * 0.09, height);
+      context.fillStyle = "#e1b62e";
+      context.fillRect(width * 0.77, 0, width * 0.23, height);
+      context.fillStyle = "#1a2027";
+      context.beginPath();
+      context.arc(width * 0.2, height * 0.5, height * 0.14, 0, Math.PI * 2);
+      context.fill();
+    } else {
+      const shimmer = context.createLinearGradient(0, 0, width, 0);
+      shimmer.addColorStop(0, "rgba(255,255,255,0)");
+      shimmer.addColorStop(0.52, "rgba(229,255,255,0.62)");
+      shimmer.addColorStop(1, "rgba(255,255,255,0)");
+      context.fillStyle = shimmer;
+      context.fillRect(0, height * 0.42, width, height * 0.16);
+    }
+    const scaleGlow = context.createLinearGradient(0, 0, 0, height);
+    scaleGlow.addColorStop(0, "rgba(255,255,255,0.22)");
+    scaleGlow.addColorStop(0.48, "rgba(255,255,255,0)");
+    scaleGlow.addColorStop(1, "rgba(0,22,35,0.2)");
+    context.fillStyle = scaleGlow;
+    context.fillRect(0, 0, width, height);
+  }
+
+  function createAquariumFishTexture(THREE, species) {
+    const texture = canvasTexture(THREE, 256, 128, (context, canvas) => {
+      const gradient = context.createLinearGradient(0, 0, canvas.width, 0);
+      gradient.addColorStop(0, species.accent);
+      gradient.addColorStop(0.18, species.body);
+      gradient.addColorStop(0.76, species.body);
+      gradient.addColorStop(1, species.accent);
+      context.fillStyle = gradient;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      drawAquariumSpeciesMarkings(context, canvas, species);
+    });
+    texture.wrapS = THREE.RepeatWrapping;
+    return texture;
+  }
+
+  function createReefFishBodyGeometry(THREE, species) {
+    const half = species.length / 2;
+    const profile = [
+      new THREE.Vector2(0.07, -half),
+      new THREE.Vector2(species.height * 0.31, -half * 0.78),
+      new THREE.Vector2(species.height * 0.5, -half * 0.3),
+      new THREE.Vector2(species.height * 0.54, half * 0.18),
+      new THREE.Vector2(species.height * 0.44, half * 0.65),
+      new THREE.Vector2(species.height * 0.23, half * 0.91),
+      new THREE.Vector2(0.075, half),
+    ];
+    const geometry = new THREE.LatheGeometry(profile, 24);
+    geometry.rotateX(Math.PI / 2);
+    geometry.scale(species.thickness / species.height, 1, 1);
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
+  function createReefFishTailGeometry(THREE, species) {
+    const fork = species.tail === "fork" ? species.height * 0.14 : 0;
+    const length = species.length * 0.45;
+    const height = species.height * 0.74;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute([
+        0, 0, 0,
+        0, height, -length,
+        0, fork, -length * 0.8,
+        0, -height, -length,
+      ], 3),
+    );
+    geometry.setIndex([0, 1, 2, 0, 2, 3]);
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
+  function createReefFishFinGeometry(THREE, width, height) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute([
+        0, 0, -width * 0.5,
+        0, height, -width * 0.2,
+        0, 0, width * 0.5,
+        0, height * 0.72, width * 0.2,
+      ], 3),
+    );
+    geometry.setIndex([0, 1, 3, 1, 2, 3]);
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
+  function createReefFishDorsalGeometry(THREE, species) {
+    return createReefFishFinGeometry(
+      THREE,
+      species.length * 0.68,
+      species.height * 0.68,
+    );
+  }
+
+  function createReefFishPectoralGeometry(THREE, species) {
+    return createReefFishFinGeometry(
+      THREE,
+      species.length * 0.3,
+      species.height * 0.46,
+    );
+  }
+
+  function createReefFish(THREE, species, instanceIndex) {
+    const fish = new THREE.Group();
+    fish.name = `${species.sceneName}-${instanceIndex}`;
+    const skin = createAquariumFishTexture(THREE, species);
+    const bodyMaterial = new THREE.MeshPhysicalMaterial({
+      color: "#ffffff",
+      map: skin,
+      roughness: 0.38,
+      metalness: 0.02,
+      clearcoat: 0.52,
+      clearcoatRoughness: 0.28,
+      emissive: species.body,
+      emissiveIntensity: 0.035,
+    });
+    const finMaterial = new THREE.MeshPhysicalMaterial({
+      color: species.body,
+      transparent: true,
+      opacity: 0.82,
+      roughness: 0.34,
+      clearcoat: 0.32,
+      clearcoatRoughness: 0.2,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const body = new THREE.Mesh(
+      createReefFishBodyGeometry(THREE, species),
+      bodyMaterial,
+    );
+    body.name = `forkmesh-office-aquarium-fish-${species.id}-body`;
+    fish.add(body);
+    const tail = new THREE.Mesh(
+      createReefFishTailGeometry(THREE, species),
+      finMaterial,
+    );
+    tail.name = `forkmesh-office-aquarium-fish-tail-${species.id}`;
+    tail.position.z = -species.length / 2 + 0.04;
+    fish.add(tail);
+    const dorsalFin = new THREE.Mesh(
+      createReefFishDorsalGeometry(THREE, species),
+      finMaterial,
+    );
+    dorsalFin.name = `forkmesh-office-aquarium-fish-dorsal-fin-${species.id}`;
+    dorsalFin.position.y = species.height * 0.5;
+    dorsalFin.position.z = -species.length * 0.06;
+    fish.add(dorsalFin);
+    const analFin = new THREE.Mesh(
+      createReefFishFinGeometry(
+        THREE,
+        species.length * 0.46,
+        species.height * 0.36,
+      ),
+      finMaterial,
+    );
+    analFin.name = `forkmesh-office-aquarium-fish-anal-fin-${species.id}`;
+    analFin.position.set(0, -species.height * 0.46, -species.length * 0.08);
+    analFin.rotation.z = Math.PI;
+    fish.add(analFin);
+    const pectoralFins = [];
+    for (const side of [-1, 1]) {
+      const pectoralFin = new THREE.Mesh(
+        createReefFishPectoralGeometry(THREE, species),
+        finMaterial,
+      );
+      pectoralFin.name =
+        `forkmesh-office-aquarium-fish-pectoral-fin-${species.id}-${side}`;
+      pectoralFin.position.set(
+        side * species.thickness * 0.46,
+        -species.height * 0.06,
+        species.length * 0.16,
+      );
+      pectoralFin.rotation.z = side * (Math.PI / 2 + 0.22);
+      pectoralFin.userData.restZ = pectoralFin.rotation.z;
+      pectoralFins.push(pectoralFin);
+      fish.add(pectoralFin);
+    }
+    const eyeWhiteMaterial = new THREE.MeshPhysicalMaterial({
+      color: "#eaf7f5",
+      roughness: 0.22,
+      clearcoat: 0.9,
+      clearcoatRoughness: 0.08,
+    });
+    const irisMaterial = new THREE.MeshPhysicalMaterial({
+      color: "#071014",
+      roughness: 0.14,
+      clearcoat: 1,
+      clearcoatRoughness: 0.04,
+    });
+    const highlightMaterial = new THREE.MeshBasicMaterial({ color: "#ffffff" });
+    for (const side of [-1, 1]) {
+      const eye = new THREE.Mesh(
+        new THREE.SphereGeometry(species.height * 0.105, 16, 12),
+        eyeWhiteMaterial,
+      );
+      eye.name = `forkmesh-office-aquarium-fish-eye-${species.id}-${side}`;
+      eye.position.set(
+        side * species.thickness * 0.43,
+        species.height * 0.1,
+        species.length * 0.36,
+      );
+      fish.add(eye);
+      const iris = new THREE.Mesh(
+        new THREE.SphereGeometry(species.height * 0.067, 14, 10),
+        irisMaterial,
+      );
+      iris.name = `forkmesh-office-aquarium-fish-iris-${species.id}-${side}`;
+      iris.position.set(
+        side * species.thickness * 0.49,
+        species.height * 0.1,
+        species.length * 0.372,
+      );
+      fish.add(iris);
+      const highlight = new THREE.Mesh(
+        new THREE.SphereGeometry(species.height * 0.018, 8, 6),
+        highlightMaterial,
+      );
+      highlight.name =
+        `forkmesh-office-aquarium-fish-highlight-${species.id}-${side}`;
+      highlight.position.set(
+        side * species.thickness * 0.535,
+        species.height * 0.125,
+        species.length * 0.392,
+      );
+      fish.add(highlight);
+      const gill = new THREE.Mesh(
+        new THREE.TorusGeometry(
+          species.height * 0.16,
+          species.height * 0.018,
+          6,
+          18,
+          Math.PI * 1.18,
+        ),
+        irisMaterial,
+      );
+      gill.name = `forkmesh-office-aquarium-fish-gill-${species.id}-${side}`;
+      gill.position.set(
+        side * species.thickness * 0.45,
+        0,
+        species.length * 0.22,
+      );
+      gill.rotation.y = Math.PI / 2;
+      gill.rotation.x = side > 0 ? -0.58 : 0.58;
+      fish.add(gill);
+    }
+    const mouth = new THREE.Mesh(
+      new THREE.TorusGeometry(
+        species.height * 0.055,
+        species.height * 0.016,
+        6,
+        12,
+      ),
+      irisMaterial,
+    );
+    mouth.name = `forkmesh-office-aquarium-fish-mouth-${species.id}`;
+    mouth.position.set(0, -species.height * 0.08, species.length * 0.505);
+    fish.add(mouth);
+    const lateralHighlight = new THREE.Mesh(
+      new THREE.SphereGeometry(0.5, 18, 10),
+      new THREE.MeshBasicMaterial({
+        color: "#dfffff",
+        transparent: true,
+        opacity: 0.16,
+        depthWrite: false,
+      }),
+    );
+    lateralHighlight.name =
+      `forkmesh-office-aquarium-fish-highlight-${species.id}`;
+    lateralHighlight.scale.set(
+      species.thickness * 0.035,
+      species.height * 0.12,
+      species.length * 0.56,
+    );
+    lateralHighlight.position.x = species.thickness * 0.52;
+    fish.add(lateralHighlight);
+    return { fish, tail, pectoralFins };
+  }
+
+  function aquariumCylinderBetween(
+    THREE,
+    start,
+    end,
+    startRadius,
+    endRadius,
+    material,
+    radialSegments = 10,
+  ) {
+    const direction = end.clone().sub(start);
+    const branch = new THREE.Mesh(
+      new THREE.CylinderGeometry(
+        endRadius,
+        startRadius,
+        direction.length(),
+        radialSegments,
+      ),
+      material,
+    );
+    branch.position.copy(start).add(end).multiplyScalar(0.5);
+    branch.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0),
+      direction.normalize(),
+    );
+    return branch;
+  }
+
+  function createAquariumLiveRock(THREE, material, scale, seed) {
+    const rock = new THREE.Group();
+    for (let index = 0; index < 5; index += 1) {
+      const fraction = aquariumSeedFraction(seed, index);
+      const mesh = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(1, 2),
+        material,
+      );
+      mesh.position.set(
+        (fraction - 0.5) * scale * 0.72,
+        index * scale * 0.18,
+        (aquariumSeedFraction(seed, index + 7) - 0.5) * scale * 0.7,
+      );
+      mesh.scale.set(
+        scale * (0.58 + fraction * 0.34),
+        scale * (0.38 + fraction * 0.28),
+        scale * (0.7 + fraction * 0.26),
+      );
+      mesh.rotation.set(
+        fraction * 0.48,
+        fraction * Math.PI,
+        (fraction - 0.5) * 0.46,
+      );
+      rock.add(mesh);
+    }
+    return rock;
+  }
+
+  function createBranchingCoral(THREE, materials, scale, seed) {
+    const coral = new THREE.Group();
+    const joints = [
+      [0, 0, 0],
+      [0, 1.15, 0],
+      [-0.46, 1.86, 0.08],
+      [0.48, 2.04, -0.06],
+      [-0.66, 2.48, 0.12],
+      [0.7, 2.72, -0.14],
+      [0.04, 2.42, 0.2],
+    ];
+    for (const [from, to] of [
+      [0, 1],
+      [1, 2],
+      [1, 3],
+      [1, 6],
+      [2, 4],
+      [3, 5],
+    ]) {
+      const start = new THREE.Vector3(...joints[from]).multiplyScalar(scale);
+      const end = new THREE.Vector3(...joints[to]).multiplyScalar(scale);
+      coral.add(
+        aquariumCylinderBetween(
+          THREE,
+          start,
+          end,
+          0.16 * scale,
+          0.1 * scale,
+          materials.base,
+        ),
+      );
+      if (to >= 4) {
+        const tip = new THREE.Mesh(
+          new THREE.SphereGeometry(0.145 * scale, 14, 10),
+          materials.tip,
+        );
+        tip.position.copy(end);
+        coral.add(tip);
+      }
+    }
+    coral.rotation.y = aquariumSeedFraction(seed, 0) * Math.PI;
+    return coral;
+  }
+
+  function createPlateCoral(THREE, materials, scale, seed) {
+    const coral = new THREE.Group();
+    for (let index = 0; index < 4; index += 1) {
+      const plate = new THREE.Mesh(
+        new THREE.CylinderGeometry(
+          (1.06 - index * 0.14) * scale,
+          (0.9 - index * 0.12) * scale,
+          0.1 * scale,
+          32,
+        ),
+        index === 3 ? materials.tip : materials.base,
+      );
+      plate.position.set(
+        (index - 1.5) * 0.16 * scale,
+        index * 0.24 * scale,
+        (aquariumSeedFraction(seed, index) - 0.5) * 0.28 * scale,
+      );
+      plate.rotation.set(
+        (aquariumSeedFraction(seed, index + 3) - 0.5) * 0.16,
+        index * 0.64,
+        (index - 1.5) * 0.075,
+      );
+      coral.add(plate);
+    }
+    return coral;
+  }
+
+  function createBrainCoral(THREE, materials, scale) {
+    const coral = new THREE.Group();
+    const core = new THREE.Mesh(
+      new THREE.SphereGeometry(scale, 24, 16),
+      materials.base,
+    );
+    core.scale.set(1, 0.62, 0.86);
+    coral.add(core);
+    for (let index = 0; index < 5; index += 1) {
+      const ridge = new THREE.Mesh(
+        new THREE.TorusGeometry(
+          scale * (0.38 + index * 0.085),
+          scale * 0.035,
+          8,
+          28,
+        ),
+        materials.tip,
+      );
+      ridge.position.y = scale * (0.12 + index * 0.055);
+      ridge.rotation.set(Math.PI / 2, index * 0.41, index * 0.2);
+      coral.add(ridge);
+    }
+    return coral;
+  }
+
+  function createSeaFan(THREE, materials, scale, seed) {
+    const fan = new THREE.Group();
+    const origin = new THREE.Vector3(0, 0, 0);
+    for (let index = 0; index < 11; index += 1) {
+      const angle = -1.15 + index * 0.23;
+      const length = 1.35 + aquariumSeedFraction(seed, index) * 0.6;
+      const end = new THREE.Vector3(
+        (aquariumSeedFraction(seed, index + 20) - 0.5) * 0.12,
+        Math.cos(angle * 0.62) * length * scale,
+        Math.sin(angle) * length * scale,
+      );
+      fan.add(
+        aquariumCylinderBetween(
+          THREE,
+          origin,
+          end,
+          0.04 * scale,
+          0.018 * scale,
+          index % 2 ? materials.base : materials.tip,
+          7,
+        ),
+      );
+      const crossEnd = end.clone().multiplyScalar(0.78);
+      crossEnd.y += 0.2 * scale;
+      crossEnd.z += (index % 2 ? 0.18 : -0.18) * scale;
+      fan.add(
+        aquariumCylinderBetween(
+          THREE,
+          end.clone().multiplyScalar(0.38),
+          crossEnd,
+          0.024 * scale,
+          0.012 * scale,
+          materials.tip,
+          6,
+        ),
+      );
+    }
+    return fan;
+  }
+
+  function createSoftCoral(THREE, materials, scale, seed) {
+    const coral = new THREE.Group();
+    for (let index = 0; index < 9; index += 1) {
+      const length =
+        (0.42 + aquariumSeedFraction(seed, index) * 0.52) * scale;
+      const lobe = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.12 * scale, length, 6, 12),
+        index % 3 ? materials.base : materials.tip,
+      );
+      lobe.position.set(
+        (index - 4) * 0.14 * scale,
+        length * 0.52,
+        (aquariumSeedFraction(seed, index + 8) - 0.5) * 0.42 * scale,
+      );
+      lobe.rotation.z = (index - 4) * 0.055;
+      coral.add(lobe);
+    }
+    return coral;
+  }
+
+  function createAquariumAnemone(THREE, materials, scale, seed) {
+    const anemone = new THREE.Group();
+    const core = new THREE.Mesh(
+      new THREE.SphereGeometry(0.48 * scale, 20, 12),
+      materials.base,
+    );
+    core.scale.y = 0.34;
+    anemone.add(core);
+    for (let index = 0; index < 24; index += 1) {
+      const angle = (index / 24) * Math.PI * 2;
+      const length =
+        (0.52 + aquariumSeedFraction(seed, index) * 0.46) * scale;
+      const tentacle = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.038 * scale, length, 5, 8),
+        index % 4 ? materials.base : materials.tip,
+      );
+      tentacle.position.set(
+        Math.cos(angle) * 0.29 * scale,
+        length * 0.54,
+        Math.sin(angle) * 0.29 * scale,
+      );
+      tentacle.rotation.set(
+        Math.sin(angle) * 0.34,
+        0,
+        Math.cos(angle) * 0.34,
+      );
+      tentacle.userData.restRotationX = tentacle.rotation.x;
+      tentacle.userData.restRotationZ = tentacle.rotation.z;
+      anemone.add(tentacle);
+    }
+    return anemone;
+  }
+
+  function createSeaGrass(THREE, materials, scale, seed) {
+    const grass = new THREE.Group();
+    for (let index = 0; index < 14; index += 1) {
+      const length =
+        (0.52 + aquariumSeedFraction(seed, index) * 0.68) * scale;
+      const blade = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.018 * scale, length, 4, 6),
+        index % 3 ? materials.base : materials.tip,
+      );
+      blade.position.set(
+        (aquariumSeedFraction(seed, index + 10) - 0.5) * 0.76 * scale,
+        length * 0.5,
+        (aquariumSeedFraction(seed, index + 20) - 0.5) * 0.42 * scale,
+      );
+      blade.rotation.z =
+        (aquariumSeedFraction(seed, index + 30) - 0.5) * 0.28;
+      blade.userData.restRotationZ = blade.rotation.z;
+      grass.add(blade);
+    }
+    return grass;
+  }
+
+  function createAquariumDepthTexture(THREE) {
+    return canvasTexture(THREE, 256, 512, (context, canvas) => {
+      const depth = context.createLinearGradient(0, 0, 0, canvas.height);
+      depth.addColorStop(0, "#0d6783");
+      depth.addColorStop(0.24, "#0a4f70");
+      depth.addColorStop(0.64, "#07334f");
+      depth.addColorStop(1, "#041b2d");
+      context.fillStyle = depth;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      const glow = context.createRadialGradient(
+        canvas.width * 0.55,
+        canvas.height * 0.38,
+        8,
+        canvas.width * 0.55,
+        canvas.height * 0.38,
+        canvas.width * 0.72,
+      );
+      glow.addColorStop(0, "rgba(68,214,228,0.24)");
+      glow.addColorStop(1, "rgba(4,20,36,0)");
+      context.fillStyle = glow;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+    });
+  }
+
+  function createAquariumCausticTexture(THREE) {
+    const texture = canvasTexture(THREE, 256, 256, (context, canvas) => {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.globalCompositeOperation = "screen";
+      context.filter = "blur(2px)";
+      for (let index = 0; index < 13; index += 1) {
+        context.strokeStyle = `rgba(178,248,255,${0.07 + (index % 4) * 0.025})`;
+        context.lineWidth = 2 + (index % 3);
+        context.beginPath();
+        const y = 12 + index * 19;
+        context.moveTo(-20, y);
+        context.bezierCurveTo(55, y - 24, 92, y + 28, 150, y - 4);
+        context.bezierCurveTo(190, y - 26, 222, y + 18, 280, y - 12);
+        context.stroke();
+      }
+      context.filter = "none";
+    });
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(1.6, 2.4);
+    return texture;
+  }
   const frameMaterial = makeMaterial(THREE, "#101d20", {
     metalness: 0.78,
     roughness: 0.22,
@@ -9984,18 +10710,26 @@ function createOfficeMarineAquarium(THREE, animated) {
     emissive: "#173d43",
     emissiveIntensity: 0.25,
   });
-  const glassMaterial = makeMaterial(THREE, "#a8f8ff", {
+  const glassMaterial = new THREE.MeshPhysicalMaterial({
+    color: "#c9fbff",
     transparent: true,
-    opacity: 0.15,
-    metalness: 0.1,
-    roughness: 0.12,
+    opacity: 0.12,
+    metalness: 0,
+    roughness: 0.06,
+    clearcoat: 1,
+    clearcoatRoughness: 0.04,
     depthWrite: false,
   });
-  const waterMaterial = makeMaterial(THREE, "#0b99c6", {
+  const waterMaterial = new THREE.MeshPhysicalMaterial({
+    color: "#137d9c",
     transparent: true,
-    opacity: 0.24,
+    opacity: 0.13,
+    roughness: 0.18,
+    metalness: 0,
+    clearcoat: 0.74,
+    clearcoatRoughness: 0.14,
     emissive: "#087ba8",
-    emissiveIntensity: 0.64,
+    emissiveIntensity: 0.23,
     depthWrite: false,
   });
   const sandMaterial = makeMaterial(THREE, "#d99d61", {
@@ -10003,65 +10737,12 @@ function createOfficeMarineAquarium(THREE, animated) {
     emissive: "#5f3017",
     emissiveIntensity: 0.16,
   });
-  const backdropMaterial = makeMaterial(THREE, "#092d43", {
-    roughness: 0.72,
-    emissive: "#042238",
-    emissiveIntensity: 0.7,
-  });
-  const coralMaterials = ["#fa5a9d", "#a77aff", "#31d5bd"].map(
-    (color) => makeMaterial(THREE, color, {
-      roughness: 0.52,
-      emissive: color,
-      emissiveIntensity: 0.34,
-    }),
-  );
-  const anemoneMaterial = makeMaterial(THREE, "#f49eef", {
-    roughness: 0.46,
-    emissive: "#9c367f",
-    emissiveIntensity: 0.5,
-  });
-  const fishMaterials = [
-    "#f58237",
-    "#2e7ccc",
-    "#f1cd4f",
-    "#7b68bd",
-    "#9cc4c5",
-    "#d36f9f",
-  ].map(
-    (color) => makeMaterial(THREE, color, {
-      roughness: 0.46,
-      emissive: color,
-      emissiveIntensity: 0.12,
-    }),
-  );
-  const fishTailMaterials = [
-    "#f58237",
-    "#2e7ccc",
-    "#f1cd4f",
-    "#7b68bd",
-    "#9cc4c5",
-    "#d36f9f",
-  ].map((color) => makeMaterial(THREE, color, {
-    side: THREE.DoubleSide,
-    roughness: 0.42,
-    emissive: color,
-    emissiveIntensity: 0.1,
-  }));
-  const fishStripeMaterials = [
-    "#fff0c7",
-    "#102a50",
-    "#fbf6d9",
-    "#ddc9ff",
-    "#21344d",
-    "#ffd9ea",
-  ].map((color) => makeMaterial(THREE, color, {
-    roughness: 0.42,
-    emissive: color,
-    emissiveIntensity: 0.08,
-  }));
-  const fishEyeMaterial = makeMaterial(THREE, "#06080c", {
-    roughness: 0.22,
-    metalness: 0.2,
+  const backdropMaterial = new THREE.MeshStandardMaterial({
+    color: "#ffffff",
+    map: createAquariumDepthTexture(THREE),
+    roughness: 0.78,
+    emissive: "#06273b",
+    emissiveIntensity: 0.34,
   });
   const bubbleMaterial = makeMaterial(THREE, "#d9ffff", {
     transparent: true,
@@ -10159,157 +10840,296 @@ function createOfficeMarineAquarium(THREE, animated) {
     sand.add(dune);
   }
   group.add(sand);
-  const coralGeometry = new THREE.ConeGeometry(0.48, 1.38, 6);
-  const coralSpecs = [
-    [-0.48, 0.88, -8.6, 1.15, 0],
-    [0.25, 0.86, -1.5, 0.8, 1],
-    [-0.22, 0.9, 7.2, 1.3, 2],
-  ];
-  const corals = [];
-  for (let index = 0; index < coralSpecs.length; index += 1) {
-    const [x, y, z, scale, materialIndex] = coralSpecs[index];
-    const coral = new THREE.Group();
-    coral.name = `forkmesh-office-aquarium-coral-${index}`;
-    coral.position.set(x, y, z);
-    const trunk = new THREE.Mesh(coralGeometry, coralMaterials[materialIndex]);
-    trunk.scale.set(scale * 0.94, scale * 0.58, scale * 1.14);
-    trunk.position.y = 0.48 * scale;
-    coral.add(trunk);
-    for (const [offsetX, offsetY, rotationX] of [
-      [-0.56, 0.63, -0.78],
-      [0.5, 0.76, 0.7],
-    ]) {
-      const arm = new THREE.Mesh(coralGeometry, coralMaterials[materialIndex]);
-      arm.scale.set(scale * 0.5, scale * 0.42, scale * 0.58);
-      arm.position.set(offsetX * scale, offsetY * scale, 0);
-      arm.rotation.x = rotationX;
-      coral.add(arm);
-    }
-    corals.push({ coral, phase: index * 1.73 });
-    group.add(coral);
+  const rubbleMaterial = makeMaterial(THREE, "#8e765d", {
+    roughness: 0.98,
+  });
+  for (let index = 0; index < 14; index += 1) {
+    const rubble = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(0.16 + (index % 3) * 0.04, 1),
+      index % 4 === 0 ? sandMaterial : rubbleMaterial,
+    );
+    rubble.position.set(
+      -0.8 + (index % 5) * 0.34,
+      0.82 + (index % 2) * 0.05,
+      -11 + index * 1.62,
+    );
+    rubble.scale.set(1, 0.52, 1.3);
+    rubble.rotation.y = index * 1.17;
+    sand.add(rubble);
   }
-  const anemoneGeometry = new THREE.CylinderGeometry(0.06, 0.12, 1.05, 5);
-  const anemones = [];
-  for (const [index, x, z, phase] of [
-    [0, 0.45, -5.1, 0.4],
-    [1, -0.56, 3.4, 2.1],
+  const liveRockMaterial = new THREE.MeshPhysicalMaterial({
+    color: "#4d3f36",
+    roughness: 0.9,
+    metalness: 0,
+    clearcoat: 0.06,
+    emissive: "#151b19",
+    emissiveIntensity: 0.22,
+  });
+  const reef = new THREE.Group();
+  reef.name = "forkmesh-office-aquarium-live-rock";
+  for (const [index, x, y, z, scale] of [
+    [0, -0.36, 0.96, -9.4, 1.42],
+    [1, 0.2, 1.08, -6.6, 1.24],
+    [2, -0.34, 0.88, -3.5, 1.18],
+    [3, 0.16, 0.76, -0.4, 0.96],
+    [4, -0.28, 0.72, 2.5, 0.82],
+    [5, 0.18, 0.68, 5.2, 0.68],
   ]) {
-    const anemone = new THREE.Group();
-    anemone.name = `forkmesh-office-aquarium-anemone-${index}`;
-    anemone.position.set(x, 0.92, z);
-    const core = new THREE.Mesh(
-      new THREE.SphereGeometry(0.55, 8, 6),
-      anemoneMaterial,
+    const rock = createAquariumLiveRock(
+      THREE,
+      liveRockMaterial,
+      scale,
+      index + 3,
     );
-    core.scale.y = 0.36;
-    anemone.add(core);
-    for (let tentacleIndex = 0; tentacleIndex < 9; tentacleIndex += 1) {
-      const angle = (Math.PI * 2 * tentacleIndex) / 9;
-      const tentacle = new THREE.Mesh(anemoneGeometry, anemoneMaterial);
-      tentacle.position.set(
-        Math.cos(angle) * 0.3,
-        0.56,
-        Math.sin(angle) * 0.3,
-      );
-      tentacle.rotation.z = Math.cos(angle) * 0.48;
-      tentacle.rotation.x = Math.sin(angle) * 0.48;
-      anemone.add(tentacle);
-    }
-    anemones.push({ anemone, phase });
-    group.add(anemone);
+    rock.position.set(x, y, z);
+    reef.add(rock);
   }
-  const fishBodyGeometry = new THREE.SphereGeometry(0.5, 12, 8);
-  const fishTailGeometry = new THREE.BufferGeometry();
-  fishTailGeometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute([
-      0, 0, -0.7,
-      0, 0.46, -1.25,
-      0, 0.1, -0.96,
-      0, -0.46, -1.25,
-    ], 3),
-  );
-  fishTailGeometry.setIndex([0, 1, 2, 0, 2, 3]);
-  fishTailGeometry.computeVertexNormals();
-  const fishDorsalFinGeometry = new THREE.ConeGeometry(0.16, 0.52, 3);
-  const fishPectoralFinGeometry = new THREE.ConeGeometry(0.13, 0.42, 3);
-  const fishEyeGeometry = new THREE.SphereGeometry(0.075, 8, 6);
-  const fishStripeGeometry = new THREE.TorusGeometry(0.34, 0.035, 6, 12);
+  group.add(reef);
+  const coralMaterialPair = (base, tip, transparent = false) => ({
+    base: new THREE.MeshPhysicalMaterial({
+      color: base,
+      roughness: transparent ? 0.38 : 0.58,
+      clearcoat: transparent ? 0.42 : 0.14,
+      clearcoatRoughness: 0.3,
+      emissive: base,
+      emissiveIntensity: transparent ? 0.12 : 0.08,
+      transparent,
+      opacity: transparent ? 0.86 : 1,
+      depthWrite: !transparent,
+    }),
+    tip: new THREE.MeshPhysicalMaterial({
+      color: tip,
+      roughness: 0.4,
+      clearcoat: 0.34,
+      clearcoatRoughness: 0.2,
+      emissive: tip,
+      emissiveIntensity: 0.16,
+      transparent,
+      opacity: transparent ? 0.9 : 1,
+      depthWrite: !transparent,
+    }),
+  });
+  const staghornMaterials = coralMaterialPair("#d75b91", "#ffd1e7");
+  const plateMaterials = coralMaterialPair("#ac6be0", "#e6c8ff");
+  const brainMaterials = coralMaterialPair("#d38c3b", "#ffd67a");
+  const fanMaterials = coralMaterialPair("#a84da8", "#f1a9e6", true);
+  const softMaterials = coralMaterialPair("#48bfae", "#b9fff0", true);
+  const anemoneMaterials = coralMaterialPair("#da76bd", "#ffd8f4", true);
+  const grassMaterials = coralMaterialPair("#27977f", "#8fe9c6", true);
+  const coralGarden = new THREE.Group();
+  coralGarden.name = "forkmesh-office-aquarium-coral-garden";
+  group.add(coralGarden);
+  const corals = [];
+  for (const [index, x, y, z, scale] of [
+    [0, -0.28, 1.68, -9.4, 0.74],
+    [1, 0.28, 1.56, -4.4, 0.64],
+  ]) {
+    const staghorn = createBranchingCoral(
+      THREE,
+      staghornMaterials,
+      scale,
+      index + 8,
+    );
+    staghorn.name = `forkmesh-office-aquarium-staghorn-${index}`;
+    staghorn.position.set(x, y, z);
+    coralGarden.add(staghorn);
+  }
+  for (const [index, x, y, z, scale] of [
+    [0, 0.26, 1.52, -6.9, 0.72],
+    [1, -0.24, 1.34, 1.4, 0.62],
+  ]) {
+    const plate = createPlateCoral(THREE, plateMaterials, scale, index + 14);
+    plate.name = `forkmesh-office-aquarium-plate-coral-${index}`;
+    plate.position.set(x, y, z);
+    coralGarden.add(plate);
+  }
+  for (const [index, x, y, z, scale] of [
+    [0, 0.34, 1.42, -2.7, 0.56],
+    [1, -0.24, 1.18, 4.8, 0.44],
+  ]) {
+    const brain = createBrainCoral(THREE, brainMaterials, scale);
+    brain.name = `forkmesh-office-aquarium-brain-coral-${index}`;
+    brain.position.set(x, y, z);
+    coralGarden.add(brain);
+  }
+  for (const [index, x, y, z, scale, phase] of [
+    [0, -0.42, 1.62, -8.1, 0.68, 0.4],
+    [1, -0.46, 1.36, 0.2, 0.56, 2.1],
+  ]) {
+    const coral = createSeaFan(THREE, fanMaterials, scale, index + 21);
+    coral.name = `forkmesh-office-aquarium-sea-fan-${index}`;
+    coral.position.set(x, y, z);
+    corals.push({ coral, phase, amount: 0.045 });
+    coralGarden.add(coral);
+  }
+  for (const [index, x, y, z, scale, phase] of [
+    [0, 0.5, 1.5, -5.4, 0.72, 0.8],
+    [1, -0.34, 1.3, 2.8, 0.62, 2.4],
+    [2, 0.3, 1.08, 6.8, 0.48, 4.2],
+  ]) {
+    const coral = createSoftCoral(THREE, softMaterials, scale, index + 30);
+    coral.name = `forkmesh-office-aquarium-soft-coral-${index}`;
+    coral.position.set(x, y, z);
+    corals.push({ coral, phase, amount: 0.065 });
+    coralGarden.add(coral);
+  }
+  const anemones = [];
+  for (const [index, x, y, z, scale, phase] of [
+    [0, 0.38, 1.46, -1.2, 0.72, 0.4],
+    [1, -0.32, 1.18, 6.1, 0.58, 2.1],
+  ]) {
+    const anemone = createAquariumAnemone(
+      THREE,
+      anemoneMaterials,
+      scale,
+      index + 40,
+    );
+    anemone.name = `forkmesh-office-aquarium-anemone-${index}`;
+    anemone.position.set(x, y, z);
+    anemones.push({ anemone, phase });
+    coralGarden.add(anemone);
+  }
+  const seaGrasses = [];
+  for (const [index, x, y, z, scale, phase] of [
+    [0, -0.56, 0.88, -10.8, 0.76, 0.2],
+    [1, 0.48, 0.88, 3.8, 0.68, 1.8],
+    [2, -0.42, 0.88, 8.2, 0.62, 3.6],
+  ]) {
+    const grass = createSeaGrass(THREE, grassMaterials, scale, index + 50);
+    grass.name = `forkmesh-office-aquarium-seagrass-${index}`;
+    grass.position.set(x, y, z);
+    seaGrasses.push({ grass, phase });
+    coralGarden.add(grass);
+  }
   const fishStates = [];
-  const fishSpecs = [
-    [-0.3, 7.6, -5.2, 4.8, 0.00078, 0.1, 0, 0, [-0.14, 0.28]],
-    [0.52, 5.8, 1.7, 7.6, 0.00054, 1.7, 1, 1, [0.08]],
-    [-0.62, 8.9, 6.5, 3.8, 0.00092, 3.4, 2, 2, [-0.08]],
-    [0.16, 3.8, -1.8, 5.9, 0.00064, 2.6, 3, 3, [-0.2, 0.2]],
-    [0.7, 9.6, -8.4, 2.7, 0.00083, 4.4, 4, 4, [0.02]],
-    [-0.1, 5.0, 8.1, 3.2, 0.00071, 5.1, 5, 5, [-0.12, 0.22]],
+  const fishInstances = [
+    {
+      speciesId: "clownfish",
+      scale: 1.08,
+      speed: 0.000026,
+      phase: 0.06,
+      bank: 0.62,
+      points: [
+        [0.55, 7.5, -8.8],
+        [0.1, 8.2, -4.2],
+        [-0.45, 7.4, 0.8],
+        [-0.2, 6.5, -1.8],
+        [0.48, 6.8, -6.2],
+      ],
+    },
+    {
+      speciesId: "blue-tang",
+      scale: 1.12,
+      speed: 0.000019,
+      phase: 0.38,
+      bank: 0.52,
+      points: [
+        [-0.52, 8.7, -2.8],
+        [0.35, 9.3, 5.8],
+        [0.62, 7.8, 10.2],
+        [-0.18, 6.7, 5.1],
+        [-0.66, 7.5, 0.8],
+      ],
+    },
+    {
+      speciesId: "yellow-tang",
+      scale: 1.03,
+      speed: 0.000023,
+      phase: 0.67,
+      bank: 0.58,
+      points: [
+        [0.48, 9.5, -10.1],
+        [-0.22, 10.1, -5.8],
+        [-0.58, 8.9, -0.6],
+        [0.24, 8.0, -3.8],
+        [0.7, 8.8, -8.2],
+      ],
+    },
+    {
+      speciesId: "royal-gramma",
+      scale: 0.96,
+      speed: 0.000031,
+      phase: 0.22,
+      bank: 0.68,
+      points: [
+        [-0.64, 4.2, -7.4],
+        [0.16, 5.2, -3.7],
+        [0.58, 4.6, 0.4],
+        [-0.12, 3.7, -1.6],
+        [-0.7, 3.5, -5.1],
+      ],
+    },
+    {
+      speciesId: "butterflyfish",
+      scale: 1,
+      speed: 0.000021,
+      phase: 0.82,
+      bank: 0.54,
+      points: [
+        [0.58, 5.8, 2.8],
+        [0.06, 6.7, 7.2],
+        [-0.58, 5.9, 11],
+        [-0.22, 4.8, 8.6],
+        [0.66, 4.9, 5.1],
+      ],
+    },
+    {
+      speciesId: "chromis",
+      scale: 0.92,
+      speed: 0.000035,
+      phase: 0.12,
+      bank: 0.72,
+      points: [[-0.2, 8, 0], [0.48, 8.6, 5], [0.24, 7.7, 9], [-0.48, 7.2, 4]],
+    },
+    {
+      speciesId: "chromis",
+      scale: 0.82,
+      speed: 0.000034,
+      phase: 0.18,
+      bank: 0.74,
+      points: [[0.18, 7.6, -0.5], [0.62, 8.2, 4.3], [0.02, 7.4, 8.3], [-0.62, 6.9, 3.5]],
+    },
+    {
+      speciesId: "chromis",
+      scale: 0.76,
+      speed: 0.000036,
+      phase: 0.24,
+      bank: 0.7,
+      points: [[-0.38, 8.5, 0.8], [0.28, 9, 5.6], [0.52, 8.1, 9.7], [-0.34, 7.6, 4.9]],
+    },
   ];
-  for (let index = 0; index < fishSpecs.length; index += 1) {
-    const [
-      depth,
-      y,
-      centerZ,
-      span,
-      speed,
-      phase,
-      materialIndex,
-      stripeMaterialIndex,
-      stripeOffsets,
-    ] = fishSpecs[index];
-    const fish = new THREE.Group();
-    fish.name = `forkmesh-office-aquarium-fish-${index}`;
-    fish.scale.setScalar(1.04 + (index % 3) * 0.11);
-    const body = new THREE.Mesh(fishBodyGeometry, fishMaterials[materialIndex]);
-    body.scale.set(0.62, 0.44, 1.28);
-    fish.add(body);
-    const tail = new THREE.Mesh(
-      fishTailGeometry,
-      fishTailMaterials[materialIndex],
+  for (let index = 0; index < fishInstances.length; index += 1) {
+    const instance = fishInstances[index];
+    const species = AQUARIUM_FISH_SPECIES.find(
+      (candidate) => candidate.id === instance.speciesId,
     );
-    fish.add(tail);
-    const dorsalFin = new THREE.Mesh(
-      fishDorsalFinGeometry,
-      fishTailMaterials[materialIndex],
+    const speciesIndex = fishInstances
+      .slice(0, index)
+      .filter((candidate) => candidate.speciesId === instance.speciesId)
+      .length;
+    const { fish, tail, pectoralFins } = createReefFish(
+      THREE,
+      species,
+      speciesIndex,
     );
-    dorsalFin.name = `forkmesh-office-aquarium-fish-dorsal-fin-${index}`;
-    dorsalFin.position.set(0, 0.34, -0.05);
-    dorsalFin.rotation.x = Math.PI;
-    fish.add(dorsalFin);
-    for (const side of [-1, 1]) {
-      const pectoralFin = new THREE.Mesh(
-        fishPectoralFinGeometry,
-        fishTailMaterials[materialIndex],
-      );
-      pectoralFin.name =
-        `forkmesh-office-aquarium-fish-pectoral-fin-${index}-${side}`;
-      pectoralFin.position.set(side * 0.32, -0.03, 0.05);
-      pectoralFin.rotation.z = side * Math.PI / 2;
-      fish.add(pectoralFin);
-    }
-    const eye = new THREE.Mesh(fishEyeGeometry, fishEyeMaterial);
-    eye.name = `forkmesh-office-aquarium-fish-eye-${index}`;
-    eye.position.set(0.3, 0.09, 0.38);
-    fish.add(eye);
-    for (let stripeIndex = 0; stripeIndex < stripeOffsets.length; stripeIndex += 1) {
-      const stripe = new THREE.Mesh(
-        fishStripeGeometry,
-        fishStripeMaterials[stripeMaterialIndex],
-      );
-      stripe.name = `forkmesh-office-aquarium-fish-stripe-${index}-${stripeIndex}`;
-      stripe.position.z = stripeOffsets[stripeIndex];
-      stripe.scale.set(0.79, 0.56, 1);
-      fish.add(stripe);
-    }
+    fish.scale.setScalar(instance.scale);
+    const curve = new THREE.CatmullRomCurve3(
+      instance.points.map((point) => new THREE.Vector3(...point)),
+      true,
+      "catmullrom",
+      0.42,
+    );
     fishStates.push({
       fish,
       tail,
-      depth,
-      y,
-      centerZ,
-      span,
-      speed,
-      phase,
-      wander: Math.random() * Math.PI * 2,
+      pectoralFins,
+      curve,
+      speed: instance.speed,
+      phase: instance.phase,
+      bank: instance.bank,
+      tailSpeed: 0.0038 + index * 0.00011,
+      point: new THREE.Vector3(),
+      tangent: new THREE.Vector3(),
     });
     group.add(fish);
   }
@@ -10333,6 +11153,87 @@ function createOfficeMarineAquarium(THREE, animated) {
     bubbles.add(bubble);
   }
   group.add(bubbles);
+  const surfaceGeometry = new THREE.PlaneGeometry(
+    tankDepth - 0.42,
+    tankLength - 0.72,
+    8,
+    42,
+  );
+  surfaceGeometry.rotateX(Math.PI / 2);
+  const surfaceMaterial = new THREE.MeshPhysicalMaterial({
+    color: "#b9f7ff",
+    transparent: true,
+    opacity: 0.2,
+    roughness: 0.08,
+    metalness: 0,
+    clearcoat: 1,
+    clearcoatRoughness: 0.06,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const waterSurface = new THREE.Mesh(surfaceGeometry, surfaceMaterial);
+  waterSurface.name = "forkmesh-office-aquarium-water-surface";
+  waterSurface.position.y = tankHeight - 0.48;
+  group.add(waterSurface);
+  const surfacePositionAttribute = surfaceGeometry.getAttribute("position");
+  const surfaceBaseHeights = new Float32Array(surfacePositionAttribute.count);
+  for (let index = 0; index < surfacePositionAttribute.count; index += 1) {
+    surfaceBaseHeights[index] = surfacePositionAttribute.getY(index);
+  }
+  const particleGeometry = new THREE.BufferGeometry();
+  const particlePositions = new Float32Array(54 * 3);
+  for (let index = 0; index < 54; index += 1) {
+    particlePositions[index * 3] =
+      -1 + aquariumSeedFraction(70, index) * 2;
+    particlePositions[index * 3 + 1] =
+      1.2 + aquariumSeedFraction(71, index) * 9.8;
+    particlePositions[index * 3 + 2] =
+      -12.2 + aquariumSeedFraction(72, index) * 24.4;
+  }
+  particleGeometry.setAttribute(
+    "position",
+    new THREE.BufferAttribute(particlePositions, 3),
+  );
+  const particles = new THREE.Points(
+    particleGeometry,
+    new THREE.PointsMaterial({
+      color: "#d7fbff",
+      size: 0.045,
+      transparent: true,
+      opacity: 0.44,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }),
+  );
+  particles.name = "forkmesh-office-aquarium-particles";
+  group.add(particles);
+  const causticTexture = createAquariumCausticTexture(THREE);
+  const causticMaterial = new THREE.MeshBasicMaterial({
+    color: "#b9f8ff",
+    map: causticTexture,
+    transparent: true,
+    opacity: 0.18,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const caustics = new THREE.Group();
+  caustics.name = "forkmesh-office-aquarium-caustics";
+  const sandCaustics = new THREE.Mesh(
+    new THREE.PlaneGeometry(tankDepth - 0.5, tankLength - 0.9),
+    causticMaterial,
+  );
+  sandCaustics.rotation.x = -Math.PI / 2;
+  sandCaustics.position.y = 0.82;
+  caustics.add(sandCaustics);
+  const backdropCaustics = new THREE.Mesh(
+    new THREE.PlaneGeometry(tankLength - 0.9, tankHeight - 0.9),
+    causticMaterial.clone(),
+  );
+  backdropCaustics.rotation.y = Math.PI / 2;
+  backdropCaustics.position.set(-tankDepth / 2 + 0.13, tankHeight / 2, 0);
+  caustics.add(backdropCaustics);
+  group.add(caustics);
   const topLight = new THREE.Mesh(
     new THREE.BoxGeometry(tankDepth - 0.32, 0.11, tankLength - 1),
     makeMaterial(THREE, "#55edff", {
@@ -10353,41 +11254,74 @@ function createOfficeMarineAquarium(THREE, animated) {
   spillLight.name = "forkmesh-office-aquarium-spill-light";
   spillLight.position.set(1.95, 3.2, -2.5);
   group.add(spillLight);
-  animated.push((time) => {
+  const sandLight = new THREE.PointLight("#ffd08a", 0.7, 8.5, 2);
+  sandLight.name = "forkmesh-office-aquarium-sand-light";
+  sandLight.position.set(0.2, 1.7, -2.8);
+  group.add(sandLight);
+  function updateAquariumFish(time) {
     for (let index = 0; index < fishStates.length; index += 1) {
       const state = fishStates[index];
-      const swim = time * state.speed + state.phase;
+      const progress = (time * state.speed + state.phase) % 1;
+      state.curve.getPointAt(progress, state.point);
+      state.curve.getTangentAt(progress, state.tangent).normalize();
       const fish = state.fish;
-      const wandering =
-        Math.sin(swim) + Math.sin(swim * 2.17 + state.wander) * 0.27;
-      const velocityX =
-        Math.cos(swim * 1.43 + state.wander) * 0.24 * 1.43;
-      const velocityZ =
-        (Math.cos(swim) +
-          Math.cos(swim * 2.17 + state.wander) * 0.27 * 2.17) *
-        state.span *
-        0.8;
-      fish.position.x =
-        state.depth + Math.sin(swim * 1.43 + state.wander) * 0.24;
-      fish.position.y =
-        state.y + Math.sin(swim * 2.3 + state.wander) * 0.29;
-      fish.position.z = state.centerZ + wandering * state.span * 0.8;
-      fish.rotation.y = Math.atan2(velocityX, velocityZ);
-      fish.rotation.z = Math.sin(swim * 2.3 + state.wander) * 0.09;
-      state.tail.rotation.y = Math.sin(swim * 5.2 + state.wander) * 0.32;
+      fish.position.copy(state.point);
+      fish.position.y += Math.sin(time * 0.0017 + state.phase * 11) * 0.08;
+      fish.rotation.y = Math.atan2(state.tangent.x, state.tangent.z);
+      fish.rotation.z = -state.tangent.y * state.bank;
+      fish.rotation.x = Math.sin(time * 0.0011 + state.phase * 8) * 0.035;
+      state.tail.rotation.y =
+        Math.sin(time * state.tailSpeed + state.phase * 9) * 0.38;
+      for (
+        let finIndex = 0;
+        finIndex < state.pectoralFins.length;
+        finIndex += 1
+      ) {
+        const fin = state.pectoralFins[finIndex];
+        fin.rotation.z =
+          fin.userData.restZ +
+          Math.sin(
+            time * 0.004 + state.phase * 7 + finIndex * Math.PI,
+          ) *
+            0.12;
+      }
     }
+  }
+  function updateAquariumReef(time) {
     for (let index = 0; index < corals.length; index += 1) {
-      const { coral, phase } = corals[index];
-      coral.rotation.z = Math.sin(time * 0.00082 + phase) * 0.052;
+      const { coral, phase, amount } = corals[index];
+      coral.rotation.z = Math.sin(time * 0.00082 + phase) * amount;
       coral.rotation.x = Math.cos(time * 0.00067 + phase) * 0.036;
     }
     for (let index = 0; index < anemones.length; index += 1) {
       const state = anemones[index];
-      state.anemone.rotation.z =
-        Math.sin(time * 0.0011 + state.phase) * 0.13;
-      state.anemone.rotation.x =
-        Math.cos(time * 0.0009 + state.phase) * 0.08;
+      const anemone = state.anemone;
+      anemone.rotation.z = Math.sin(time * 0.0011 + state.phase) * 0.1;
+      anemone.rotation.x = Math.cos(time * 0.0009 + state.phase) * 0.055;
+      for (let childIndex = 1; childIndex < anemone.children.length; childIndex += 1) {
+        const tentacle = anemone.children[childIndex];
+        tentacle.rotation.x =
+          tentacle.userData.restRotationX +
+          Math.sin(time * 0.0015 + state.phase + childIndex * 0.31) * 0.055;
+        tentacle.rotation.z =
+          tentacle.userData.restRotationZ +
+          Math.cos(time * 0.0012 + state.phase + childIndex * 0.27) * 0.065;
+      }
     }
+    for (let index = 0; index < seaGrasses.length; index += 1) {
+      const state = seaGrasses[index];
+      const grass = state.grass;
+      grass.rotation.z = Math.sin(time * 0.0009 + state.phase) * 0.055;
+      for (let childIndex = 0; childIndex < grass.children.length; childIndex += 1) {
+        const blade = grass.children[childIndex];
+        blade.rotation.z =
+          blade.userData.restRotationZ +
+          Math.sin(time * 0.0013 + state.phase + childIndex * 0.22) * 0.08;
+      }
+    }
+  }
+
+  function updateAquariumBubbles(time) {
     for (let index = 0; index < bubbleStates.length; index += 1) {
       const state = bubbleStates[index];
       const rise = (time * state.speed + state.phase) % 1;
@@ -10397,11 +11331,44 @@ function createOfficeMarineAquarium(THREE, animated) {
       bubble.position.y = 1 + rise * 9.8;
       bubble.position.z = state.z;
     }
+  }
+
+  function updateAquariumAtmosphere(time) {
+    for (let index = 0; index < surfacePositionAttribute.count; index += 1) {
+      const x = surfacePositionAttribute.getX(index);
+      const z = surfacePositionAttribute.getZ(index);
+      surfacePositionAttribute.setY(
+        index,
+        surfaceBaseHeights[index] +
+          Math.sin(time * 0.0014 + z * 0.72) * 0.035 +
+          Math.cos(time * 0.0011 + x * 2.1 + z * 0.28) * 0.022,
+      );
+    }
+    surfacePositionAttribute.needsUpdate = true;
+    particles.position.y = Math.sin(time * 0.00022) * 0.16;
+    particles.position.z = Math.cos(time * 0.00017) * 0.12;
+    particles.rotation.y = Math.sin(time * 0.00011) * 0.025;
+    causticTexture.offset.x = (time * 0.000006) % 1;
+    causticTexture.offset.y = (time * -0.000004) % 1;
     const pulse = Math.sin(time * 0.0015);
-    waterLight.intensity = 3.1 + pulse * 0.28;
-    spillLight.intensity = 1.1 + pulse * 0.1;
-    topLight.material.emissiveIntensity = 1.3 + pulse * 0.14;
-    waterMaterial.emissiveIntensity = 0.64 + pulse * 0.05;
+    sandCaustics.material.opacity = 0.17 + pulse * 0.025;
+    backdropCaustics.material.opacity = 0.095 + pulse * 0.018;
+    waterLight.intensity = 2.7 + pulse * 0.18;
+    spillLight.intensity = 0.9 + pulse * 0.07;
+    sandLight.intensity = 0.7 + pulse * 0.045;
+    topLight.material.emissiveIntensity = 1.18 + pulse * 0.08;
+    waterMaterial.emissiveIntensity = 0.23 + pulse * 0.025;
+  }
+
+  function initializeAquariumState(time) {
+    updateAquariumFish(time);
+    updateAquariumReef(time);
+    updateAquariumBubbles(time);
+    updateAquariumAtmosphere(time);
+  }
+  initializeAquariumState(0);
+  animated.push((time) => {
+    initializeAquariumState(time);
   });
   group.traverse((child) => {
     if (!child.isMesh) return;

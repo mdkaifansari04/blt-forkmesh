@@ -47,17 +47,15 @@ def test_marine_aquarium_stays_ambient_and_reuses_the_scene_animation_queue():
     assert "anemone.rotation.z" in aquarium
 
 
-def test_marine_fish_have_species_detail_and_individual_wandering_paths():
+def test_marine_fish_have_smooth_species_detail_and_individual_curved_paths():
     aquarium = _aquarium_block()
-    assert "new THREE.SphereGeometry(0.5, 12, 8)" in aquarium
+    assert "new THREE.LatheGeometry(profile, 24)" in aquarium
     assert "forkmesh-office-aquarium-fish-eye" in aquarium
     assert "forkmesh-office-aquarium-fish-dorsal-fin" in aquarium
     assert "forkmesh-office-aquarium-fish-pectoral-fin" in aquarium
-    assert "forkmesh-office-aquarium-fish-stripe" in aquarium
-    assert "fishTailGeometry.setAttribute" in aquarium
-    assert "state.wander" in aquarium
-    assert "Math.sin(swim * 2.17 + state.wander)" in aquarium
-    assert "Math.atan2(velocityX, velocityZ)" in aquarium
+    assert "createAquariumFishTexture" in aquarium
+    assert "new THREE.CatmullRomCurve3" in aquarium
+    assert "Math.atan2(state.tangent.x, state.tangent.z)" in aquarium
 
 
 def test_cinematic_reef_builds_recognizable_fish_species():
