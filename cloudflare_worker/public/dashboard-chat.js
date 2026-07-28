@@ -1206,6 +1206,18 @@
   const WORLD_EMBED_BUBBLES =
     requestedParams.get("worldEmbed") === "1" && window.parent !== window;
 
+  // Authored by the signed-in account, but not necessarily by this browser —
+  // another tab, a phone, or the desktop client counts too. Kept apart from
+  // `self` (a strict senderId match) because only `self` may raise a bubble
+  // over the local avatar; a display name alone is not proof of identity.
+  // The World uses this to keep your own lines out of its unread count.
+  function isOwnChatLine(sender, senderId) {
+    if (senderId === selfId) return true;
+    const account = String(userSession()?.nodeName || "").trim().toLowerCase();
+    if (!account) return false;
+    return String(sender || "").trim().toLowerCase() === account;
+  }
+
   function emitWorldChatBubble(sender, senderId, text, history = false) {
     if (!WORLD_EMBED_BUBBLES) return;
     if (orgAgentIdentity(sender, senderId) && !orgAgentEngineeringAccess) return;
@@ -1217,6 +1229,7 @@
           type: "forkmesh:world-chat",
           sender: String(sender || "").slice(0, MAX_NAME),
           self: senderId === selfId,
+          own: isOwnChatLine(sender, senderId),
           text: line,
           history,
         },

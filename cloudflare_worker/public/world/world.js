@@ -3642,6 +3642,12 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <summary aria-label="Open World chat in a terminal panel">
             <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
             <strong>CHAT</strong>
+            <span
+              class="world-chat-terminal-unread"
+              data-world-chat-terminal-unread
+              role="status"
+              hidden
+            ></span>
             <span data-world-chat-terminal-last>Connecting to global #general…</span>
             <span class="world-diagnostics-toggle" aria-hidden="true">⌃</span>
           </summary>
@@ -4511,6 +4517,10 @@ class ForkMeshWorld extends HTMLElement {
     this.publicVisitCount = sessionVisitCount(true);
     this.chatBubblesEnabledAt = Date.now() + CHAT_BUBBLE_JOIN_GRACE_MS;
     this.activityArrivalRecorded = false;
+    // Unread badge on the collapsed bottom CHAT bar. Counts live lines from
+    // other people only — replayed history and this browser's own messages
+    // never bump it — and resets whenever the panel is opened.
+    this.chatTerminalUnread = 0;
     this.visitedPlaces = new Set(["town-square"]);
     this.tourIndex = -1;
     this.lastMovement = {
@@ -4728,6 +4738,9 @@ class ForkMeshWorld extends HTMLElement {
     // Replayed history updates only the collapsed CHAT bar — never a bubble,
     // so reconnects do not resurrect old messages above avatars.
     if (data.history === true) return;
+    // Own lines never count as unread — `self` is this browser, `own` also
+    // covers the signed-in account talking from another tab or device.
+    if (data.self !== true && data.own !== true) this.bumpChatTerminalUnread();
     if (Date.now() < this.chatBubblesEnabledAt) return;
     if (data.self === true) {
       this.world?.showChatBubble?.(this.identity?.id, text, true);
@@ -7601,6 +7614,7 @@ class ForkMeshWorld extends HTMLElement {
       if (chatTerminal.open) {
         this.$("[data-world-diagnostics]")?.removeAttribute("open");
         this.loadChatTerminalFrame();
+        this.clearChatTerminalUnread();
       }
     });
     // Load the chat frame immediately so the collapsed CHAT bar always shows
@@ -18751,6 +18765,9 @@ class ForkMeshWorld extends HTMLElement {
     // composer can never end up underneath an open CHAT or DEBUG drawer.
     this.$("[data-world-chat-terminal]")?.removeAttribute("open");
     this.$("[data-world-diagnostics]")?.removeAttribute("open");
+    // The full overlay shows the same #general room, so it reads the backlog
+    // the collapsed bar was counting.
+    this.clearChatTerminalUnread();
     panel.dataset.open = "true";
     panel.setAttribute("aria-hidden", "false");
     backdrop.dataset.open = "true";
@@ -18802,6 +18819,41 @@ class ForkMeshWorld extends HTMLElement {
     const label = this.$("[data-world-chat-terminal-last]");
     if (!label) return;
     label.textContent = sender ? `${sender}: ${text}` : text;
+  }
+
+  // Unread pill on the collapsed CHAT bar: on mobile the bar shrinks to the
+  // word CHAT, so the count is the only hint that someone is talking.
+  bumpChatTerminalUnread() {
+    if (this.$("[data-world-chat-terminal]")?.open) return;
+    this.chatTerminalUnread += 1;
+    this.renderChatTerminalUnread();
+  }
+
+  clearChatTerminalUnread() {
+    if (!this.chatTerminalUnread) return;
+    this.chatTerminalUnread = 0;
+    this.renderChatTerminalUnread();
+  }
+
+  renderChatTerminalUnread() {
+    const badge = this.$("[data-world-chat-terminal-unread]");
+    if (!badge) return;
+    const count = Math.max(0, this.chatTerminalUnread);
+    badge.hidden = count <= 0;
+    badge.textContent = count > 99 ? "99+" : String(count);
+    badge.setAttribute(
+      "aria-label",
+      `${count} unread chat message${count === 1 ? "" : "s"}`,
+    );
+    const summary = this.$("[data-world-chat-terminal] > summary");
+    summary?.setAttribute(
+      "aria-label",
+      count > 0
+        ? `Open World chat in a terminal panel — ${count} unread message${
+            count === 1 ? "" : "s"
+          }`
+        : "Open World chat in a terminal panel",
+    );
   }
 
   closeWorldChat() {
