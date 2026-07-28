@@ -8584,14 +8584,30 @@ void MainWindow::openHostAgentLoginTerminal(const QString &node,
         "This is a live shell on <b>%1@%2</b>. Run <code>claude</code> and then "
         "<code>/login</code> inside it, and <code>codex login</code>, and paste "
         "each provider's code here. ForkMesh never reads or stores what you "
-        "type in this window.")
+        "type in this window. Drag to select text and it's copied "
+        "automatically (or use Ctrl+Shift+C / right-click).")
                                   .arg(user.toHtmlEscaped(), ip.toHtmlEscaped()),
                               dialog);
     notice->setWordWrap(true);
     layout->addWidget(notice);
+    auto *autoOpenStatus = new QLabel(dialog);
+    autoOpenStatus->setObjectName(QStringLiteral("hostAgentLoginAutoOpenStatus"));
+    autoOpenStatus->setWordWrap(true);
+    autoOpenStatus->hide();
+    layout->addWidget(autoOpenStatus);
     auto *terminal = new TerminalWidget(dialog);
     terminal->setObjectName(QStringLiteral("hostAgentLoginTerminal"));
     layout->addWidget(terminal, 1);
+    // The CLI prints its own "paste this URL" fallback for when it can't open
+    // a browser itself; that's exactly the case here, on a headless remote
+    // shell, so open it for the operator instead of leaving them to select
+    // and copy the wrapped, multi-line URL by hand.
+    connect(terminal, &TerminalWidget::signInUrlDetected, autoOpenStatus,
+            [autoOpenStatus](const QUrl &) {
+                autoOpenStatus->setText(QStringLiteral(
+                    "Opened the Claude sign-in page in your browser."));
+                autoOpenStatus->show();
+            });
     auto *buttons = new QHBoxLayout;
     buttons->addStretch(1);
     auto *close = new QPushButton(QStringLiteral("Close"), dialog);
