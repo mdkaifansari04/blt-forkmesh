@@ -1983,10 +1983,13 @@ private:
     void updateQuickAddEnterTarget();
     // Whether Enter in the quick-add composer should follow up on the agent
     // session open above ("add") rather than start a fresh one ("new"). This
-    // requires the Agents tab to actually be the one on screen — otherwise a
+    // requires the agent output panel to actually be on screen — otherwise a
     // session selected on a previous visit to that tab would keep stealing
-    // Enter from every other section (Chat, Issues, ...). Shared by the key
-    // handler and updateQuickAddEnterTarget so the two can never drift apart.
+    // Enter from every other section (Chat, Issues, ...). Tested by that
+    // panel's own visibility, not by stack indexes, so Enter follows up
+    // wherever the transcript is shown from, exactly like the "add" button it
+    // mirrors. Shared by the key handler and updateQuickAddEnterTarget so the
+    // two can never drift apart.
     bool quickAddShouldFollowUpAgent() const;
     void updateIssueAgentUi(const Issue &issue);
     // Issue #145: populate the issue detail's "Files changed" tab from a linked

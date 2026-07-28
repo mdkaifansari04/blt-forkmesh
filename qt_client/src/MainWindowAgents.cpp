@@ -9795,14 +9795,23 @@ void MainWindow::updateAgentActionState()
 
 // Whether Enter in the quick-add composer should follow up on the agent
 // session open above ("add") rather than start a fresh one ("new"). Requires
-// both a selected session AND the Agents tab itself to be the one currently
-// on screen — otherwise a session selected on an earlier visit to that tab
-// would keep stealing Enter from Chat, Issues, or any other section.
+// both a selected session AND the agent's own output panel to be the thing
+// currently on screen — otherwise a session selected on an earlier visit to
+// that tab would keep stealing Enter from Chat, Issues, or any other section.
+//
+// The on-screen test is that panel's own visibility rather than a pair of
+// stack indexes: comparing m_sectionStack/m_repoDetailStack indexes only
+// recognised one route to the transcript, so on any other way of reaching it
+// the transcript sat in plain view, clicking "add" followed up on it — and
+// Enter quietly started a brand-new agent instead (or, with an empty
+// composer, did nothing at all). Keying off the widget makes Enter agree with
+// the button it mirrors, wherever that panel is shown from.
 bool MainWindow::quickAddShouldFollowUpAgent() const
 {
-    const bool onAgentsTab = m_sectionStack && m_sectionStack->currentIndex() == 0 &&
-                             m_repoDetailStack && m_repoDetailStack->currentIndex() == 3;
-    return onAgentsTab && m_selectedAgentSessionId >= 0;
+    if (m_selectedAgentSessionId < 0)
+        return false;
+    const QWidget *agentOutput = m_agentOutputStack;
+    return agentOutput && agentOutput->isVisible();
 }
 
 // Restyle the quick-add "new"/"add" send buttons (adhoc #89) so the one Enter

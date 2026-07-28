@@ -2,17 +2,24 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QContextMenuEvent>
+#include <QDesktopServices>
 #include <QFocusEvent>
 #include <QFontDatabase>
 #include <QKeyEvent>
+#include <QMenu>
+#include <QMouseEvent>
 #include <QPainter>
+#include <QRegularExpression>
 #include <QResizeEvent>
 #include <QSocketNotifier>
+#include <QStringList>
 #include <QWheelEvent>
 
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
+#include <utility>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
@@ -73,6 +80,7 @@ TerminalWidget::TerminalWidget(QWidget *parent) : QWidget(parent)
     m_curFg = kDefaultFg;
     m_curBg = kDefaultBg;
     resizeGrid(m_rows, m_cols);
+    setContextMenuPolicy(Qt::DefaultContextMenu);
 }
 
 TerminalWidget::~TerminalWidget() { stop(); }
@@ -140,6 +148,9 @@ void TerminalWidget::runCommand(const QString &commandLine, const QString &cwd,
     m_appCursorKeys = m_bracketedPaste = false;
     m_autoWrap = true;
     m_cursorVisible = true;
+    clearSelection();
+    m_urlScanBuffer.clear();
+    m_signInUrlEmitted = false;
     recomputeGrid();
     for (Row &r : m_screen)
         clearRow(r);
@@ -276,7 +287,9 @@ void TerminalWidget::onReadyRead()
     for (;;) {
         const ssize_t n = ::read(m_master, buf, sizeof(buf));
         if (n > 0) {
-            feed(QByteArray(buf, (int)n));
+            const QByteArray chunk(buf, (int)n);
+            feed(chunk);
+            scanForSignInUrl(chunk);
             if (n < (ssize_t)sizeof(buf))
                 break;
         } else if (n == 0) {
@@ -321,6 +334,47 @@ void TerminalWidget::writeToPty(const QByteArray &bytes)
         else
             break;
     }
+}
+
+void TerminalWidget::scanForSignInUrl(const QByteArray &chunk)
+{
+    if (m_signInUrlEmitted)
+        return;
+    // The CLI prints one long unwrapped line; only the terminal's own render
+    // wraps it across rows, so scanning the raw child output (rather than the
+    // rendered grid) is the reliable way to recover the whole URL.
+    m_urlScanBuffer.append(chunk);
+    constexpr int kMaxScan = 8192;
+    if (m_urlScanBuffer.size() > kMaxScan)
+        m_urlScanBuffer.remove(0, m_urlScanBuffer.size() - kMaxScan);
+
+    static const QRegularExpression re(
+        QStringLiteral("https://claude\\.com/oauth/authorize"
+                       "[A-Za-z0-9:/?&=%._~+-]*"));
+    const QRegularExpressionMatch m =
+        re.match(QString::fromUtf8(m_urlScanBuffer));
+    if (!m.hasMatch())
+        return;
+    const QUrl url(m.captured(0));
+    if (!url.isValid())
+        return;
+    m_signInUrlEmitted = true;
+    QDesktopServices::openUrl(url);
+    emit signInUrlDetected(url);
+}
+
+void TerminalWidget::pasteFromClipboard()
+{
+    const QString text = QApplication::clipboard()->text();
+    if (text.isEmpty())
+        return;
+    QByteArray out;
+    if (m_bracketedPaste)
+        out += "\x1b[200~";
+    out += text.toUtf8();
+    if (m_bracketedPaste)
+        out += "\x1b[201~";
+    writeToPty(out);
 }
 
 void TerminalWidget::applyWinSize()
@@ -792,6 +846,80 @@ void TerminalWidget::applySgr()
     }
 }
 
+// ---- selection / clipboard --------------------------------------------------
+
+int TerminalWidget::streamRowCount() const
+{
+    const int sb = m_altActive ? 0 : m_scrollback.size();
+    const QVector<Row> &buf = m_altActive ? m_alt : m_screen;
+    return sb + buf.size();
+}
+
+const TerminalWidget::Row *TerminalWidget::rowAt(int absRow) const
+{
+    const int sb = m_altActive ? 0 : m_scrollback.size();
+    const QVector<Row> &buf = m_altActive ? m_alt : m_screen;
+    if (absRow < 0 || absRow >= sb + buf.size())
+        return nullptr;
+    return absRow < sb ? &m_scrollback[absRow] : &buf[absRow - sb];
+}
+
+TerminalWidget::CellPos TerminalWidget::cellPosAt(const QPoint &widgetPos) const
+{
+    const int sb = m_altActive ? 0 : m_scrollback.size();
+    const int off = m_altActive ? 0 : qBound(0, m_viewOffset, sb);
+    const int sy = qBound(0, widgetPos.y() / qMax(1, m_cellH), m_rows - 1);
+    const int sx = qBound(0, widgetPos.x() / qMax(1, m_cellW), m_cols - 1);
+    CellPos pos;
+    pos.row = qBound(0, sb - off + sy, qMax(0, streamRowCount() - 1));
+    pos.col = sx;
+    return pos;
+}
+
+QString TerminalWidget::selectedText() const
+{
+    if (!m_hasSelection)
+        return QString();
+    CellPos start = m_selAnchor;
+    CellPos end = m_selCursor;
+    if (start.row > end.row || (start.row == end.row && start.col > end.col))
+        std::swap(start, end);
+
+    QStringList lines;
+    for (int r = start.row; r <= end.row; ++r) {
+        const Row *row = rowAt(r);
+        if (!row)
+            continue;
+        const int fromCol = (r == start.row) ? start.col : 0;
+        const int toCol = (r == end.row) ? end.col : row->size() - 1;
+        QString line;
+        for (int c = fromCol; c <= toCol && c < row->size(); ++c) {
+            const char32_t ch = (*row)[c].ch;
+            line += ch == 0 ? QChar(' ') : QString::fromUcs4(&ch, 1);
+        }
+        while (line.endsWith(QLatin1Char(' ')))
+            line.chop(1);
+        lines << line;
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
+void TerminalWidget::copySelection() const
+{
+    const QString text = selectedText();
+    if (!text.isEmpty())
+        QApplication::clipboard()->setText(text);
+}
+
+void TerminalWidget::clearSelection()
+{
+    m_selecting = false;
+    if (!m_hasSelection)
+        return;
+    m_hasSelection = false;
+    update();
+}
+
 // ---- rendering -------------------------------------------------------------
 
 void TerminalWidget::paintEvent(QPaintEvent *)
@@ -808,6 +936,12 @@ void TerminalWidget::paintEvent(QPaintEvent *)
     // m_viewOffset counts lines shifted up from the bottom; alt screen has none.
     const int sb = m_altActive ? 0 : m_scrollback.size();
     const int off = m_altActive ? 0 : qBound(0, m_viewOffset, sb);
+
+    CellPos selStart = m_selAnchor;
+    CellPos selEnd = m_selCursor;
+    if (selStart.row > selEnd.row ||
+        (selStart.row == selEnd.row && selStart.col > selEnd.col))
+        std::swap(selStart, selEnd);
 
     for (int sy = 0; sy < m_rows; ++sy) {
         // Index into the combined scrollback+screen stream.
@@ -828,6 +962,14 @@ void TerminalWidget::paintEvent(QPaintEvent *)
             QColor bg = c.bg.isValid() ? c.bg : kDefaultBg;
             if (c.inverse)
                 std::swap(fg, bg);
+            const bool selected = m_hasSelection && streamIdx >= selStart.row &&
+                streamIdx <= selEnd.row &&
+                (streamIdx > selStart.row || x >= selStart.col) &&
+                (streamIdx < selEnd.row || x <= selEnd.col);
+            if (selected) {
+                bg = QColor(0x3a, 0x6e, 0xa5);
+                fg = Qt::white;
+            }
             const int px = x * m_cellW;
             if (bg != kDefaultBg)
                 painter.fillRect(px, y, m_cellW, m_cellH, bg);
@@ -881,20 +1023,19 @@ void TerminalWidget::keyPressEvent(QKeyEvent *event)
     const int key = event->key();
     const Qt::KeyboardModifiers mods = event->modifiers();
 
+    // Copy (Ctrl+Shift+C). Plain Ctrl+C stays SIGINT, so this only fires with
+    // Shift held, mirroring the Ctrl+Shift+V paste binding below.
+    if (mods.testFlag(Qt::ControlModifier) && mods.testFlag(Qt::ShiftModifier) &&
+        key == Qt::Key_C) {
+        copySelection();
+        return;
+    }
+
     // Paste (Ctrl+Shift+V or Shift+Insert).
     if ((mods.testFlag(Qt::ControlModifier) && mods.testFlag(Qt::ShiftModifier) &&
          key == Qt::Key_V) ||
         (mods.testFlag(Qt::ShiftModifier) && key == Qt::Key_Insert)) {
-        const QString text = QApplication::clipboard()->text();
-        if (!text.isEmpty()) {
-            QByteArray out;
-            if (m_bracketedPaste)
-                out += "\x1b[200~";
-            out += text.toUtf8();
-            if (m_bracketedPaste)
-                out += "\x1b[201~";
-            writeToPty(out);
-        }
+        pasteFromClipboard();
         return;
     }
 
@@ -957,6 +1098,86 @@ void TerminalWidget::focusOutEvent(QFocusEvent *)
 {
     m_hasFocus = false;
     update();
+}
+
+void TerminalWidget::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton) {
+        QWidget::mousePressEvent(event);
+        return;
+    }
+    setFocus(Qt::MouseFocusReason);
+    m_selecting = true;
+    m_hasSelection = false;
+    m_selAnchor = m_selCursor = cellPosAt(event->position().toPoint());
+    update();
+}
+
+void TerminalWidget::mouseMoveEvent(QMouseEvent *event)
+{
+    if (!m_selecting) {
+        QWidget::mouseMoveEvent(event);
+        return;
+    }
+    const CellPos pos = cellPosAt(event->position().toPoint());
+    if (pos.row != m_selCursor.row || pos.col != m_selCursor.col) {
+        m_selCursor = pos;
+        m_hasSelection =
+            m_selAnchor.row != m_selCursor.row || m_selAnchor.col != m_selCursor.col;
+        update();
+    }
+}
+
+void TerminalWidget::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton || !m_selecting) {
+        QWidget::mouseReleaseEvent(event);
+        return;
+    }
+    m_selecting = false;
+    // Selecting with the mouse copies immediately, matching the terminal
+    // convention users already expect (xterm/gnome-terminal select-to-copy).
+    if (m_hasSelection)
+        copySelection();
+}
+
+void TerminalWidget::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton)
+        return;
+    const CellPos pos = cellPosAt(event->position().toPoint());
+    const Row *row = rowAt(pos.row);
+    if (!row || pos.col >= row->size())
+        return;
+    auto isWordChar = [](char32_t ch) { return ch != U' ' && ch != 0; };
+    if (!isWordChar((*row)[pos.col].ch))
+        return;
+    int startCol = pos.col;
+    int endCol = pos.col;
+    while (startCol > 0 && isWordChar((*row)[startCol - 1].ch))
+        --startCol;
+    while (endCol + 1 < row->size() && isWordChar((*row)[endCol + 1].ch))
+        ++endCol;
+    m_selAnchor = {pos.row, startCol};
+    m_selCursor = {pos.row, endCol};
+    m_hasSelection = true;
+    update();
+    copySelection();
+}
+
+void TerminalWidget::contextMenuEvent(QContextMenuEvent *event)
+{
+    QMenu menu(this);
+    QAction *copyAction = menu.addAction(QStringLiteral("Copy"));
+    copyAction->setEnabled(m_hasSelection);
+    QAction *pasteAction = menu.addAction(QStringLiteral("Paste"));
+    pasteAction->setEnabled(!QApplication::clipboard()->text().isEmpty());
+    QAction *chosen = menu.exec(event->globalPos());
+    if (chosen == copyAction) {
+        copySelection();
+    } else if (chosen == pasteAction) {
+        pasteFromClipboard();
+    }
 }
 
 bool TerminalWidget::event(QEvent *event)
