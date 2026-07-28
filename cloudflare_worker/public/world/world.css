@@ -649,6 +649,39 @@ forkmesh-world {
   font-weight: 600;
 }
 
+/* The hand mirrors the gesture the avatar plays in the scene. */
+.world-wave-button span[aria-hidden="true"] {
+  display: inline-block;
+  transform-origin: 70% 80%;
+}
+
+.world-wave-button:hover span[aria-hidden="true"],
+.world-wave-button:focus-visible span[aria-hidden="true"] {
+  animation: world-wave-hand 900ms ease-in-out infinite;
+}
+
+@keyframes world-wave-hand {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+
+  25% {
+    transform: rotate(16deg);
+  }
+
+  75% {
+    transform: rotate(-16deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-wave-button:hover span[aria-hidden="true"],
+  .world-wave-button:focus-visible span[aria-hidden="true"] {
+    animation: none;
+  }
+}
+
 [data-world-sound-toggle] {
   /* Sound consent must remain reachable while a landmark detail is open.
      Only this explicit media control rises above the dismissing backdrop. */
@@ -6310,6 +6343,12 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     display: none;
   }
 
+  .world-top-actions {
+    /* The wave chip is one more icon in an already tight phone row; a 6px
+       gutter keeps the whole row, settings badge included, on screen. */
+    gap: 6px;
+  }
+
   .world-icon-button {
     min-width: 38px;
     min-height: 38px;
@@ -6462,6 +6501,15 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
   .world-tour {
     bottom: calc(var(--safe-bottom) + 122px);
+  }
+}
+
+@media (max-width: 375px) {
+  .world-top-actions > .world-wave-button {
+    /* The narrowest phones have no room left in the tool row. Alerts, sound
+       consent, and settings keep their slots; the wave is the one control
+       here that has no consequence when it is out of reach. */
+    display: none;
   }
 }
 
