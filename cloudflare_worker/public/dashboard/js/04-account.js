@@ -716,11 +716,12 @@
           '<section><strong class="block text-foreground">Every organization member can</strong>' +
             '<ul class="mt-1 list-disc space-y-1 pl-5">' +
               '<li>View the organization, linked repositories, member directory, and teams.</li>' +
-              '<li>Enter member-restricted World floors and see organization agents.</li>' +
-              '<li>Start, review, and continue Claude or Codex sessions on approved headless mirrors.</li>' +
+              '<li>Enter member-restricted World floors and see non-private organization activity.</li>' +
             "</ul></section>" +
+          '<section><strong class="block text-foreground">Engineering team members can</strong>' +
+            '<p class="mt-1">View organization agents and start, review, re-prompt, and continue Claude or Codex sessions on approved headless mirrors. This is checked server-side on every agent request; organization role alone does not grant access.</p></section>' +
           '<section><strong class="block text-foreground">Member role cannot</strong>' +
-            '<p class="mt-1">Change organization settings, membership, teams, or repository links. Team permissions can grant repository work, but protected mirror approval and merge remain owner-only.</p></section>' +
+            '<p class="mt-1">Change organization settings, membership, teams, or repository links. Members outside Engineering also cannot view or control Claude/Codex sessions. Team permissions can grant repository work, but protected mirror approval and merge remain owner-only.</p></section>' +
           '<section><strong class="block text-foreground">Admin role adds</strong>' +
             '<p class="mt-1">Organization settings, members, teams, linked repositories, World access, and federation controls. Admins cannot remove the final owner.</p></section>' +
           '<section><strong class="block text-foreground">Owner role adds</strong>' +

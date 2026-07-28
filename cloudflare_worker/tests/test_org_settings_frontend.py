@@ -93,6 +93,9 @@ def test_org_detail_explains_member_role_and_team_access_on_the_right():
     for copy in (
         "What organization access means",
         "Every organization member can",
+        "Engineering team members can",
+        "organization role alone does not grant access",
+        "Members outside Engineering also cannot view or control Claude/Codex sessions",
         "Member role cannot",
         "Admin role adds",
         "Owner role adds",

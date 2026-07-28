@@ -202,8 +202,8 @@ the implementation and its focused verification are complete.
 - [x] Queue Claude organization-agent work only on mirrors that have reported the Claude Code binary installed; currently only mirror6 is eligible.
 - [x] Restore the World fresh-code effect.
 - [ ] Add an executive floor to the Office building.
-- [ ] Update the organization-access explanation so Claude/Codex session access is described as Engineering-team-only.
-- [ ] Verify and enforce that non-Engineering organization members cannot start, review, continue, or view Claude/Codex sessions.
+- [x] Update the organization-access explanation so Claude/Codex session access is described as Engineering-team-only.
+- [x] Verify and enforce that non-Engineering organization members cannot start, review, continue, or view Claude/Codex sessions.
 - [ ] Show each node cabinet's Actions runs, logs, and running/done/error state on its back with restrained status animations.
 - [ ] Add an admin-only error-log analytics view that groups equivalent errors and charts their occurrences over the previous 24 hours.
 - [x] Move the recent roughly 50-repository bulk-import set back onto its own World island before considering deletion.

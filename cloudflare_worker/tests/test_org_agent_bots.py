@@ -40,6 +40,11 @@ def test_org_agents_are_separate_member_scoped_encrypted_records():
         "visible and controllable only by current members"
         in ENTRY
     )
+    assert ENTRY.count("context, error = await _org_agent_member_context(") >= 1
+    assert (
+        "if not engineering:\n"
+        "        return None, json_response("
+    ) in ENTRY
 
 
 def test_only_a_fresh_signed_provider_capable_mirror_receives_bounded_jobs():
