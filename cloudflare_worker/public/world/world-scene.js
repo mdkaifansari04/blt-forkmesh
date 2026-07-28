@@ -4029,6 +4029,15 @@ const ANTENNA_STALK_COLOR = "#1aa856";
 const ANTENNA_BLINK_MIN_HZ = 0.9;
 const ANTENNA_BLINK_MAX_HZ = 5.4;
 
+// A wave is a short right-arm pose rather than a stored animation: the arm
+// lifts out to roughly shoulder-over-head, shakes a couple of times, and
+// drops back. It rides on top of whatever the avatar is otherwise doing, so
+// visitors can wave while walking, sitting, or riding a swing.
+const AVATAR_WAVE_DURATION_MS = 2000;
+const AVATAR_WAVE_LIFT = 2.35;
+const AVATAR_WAVE_SWEEP = 0.34;
+const AVATAR_WAVE_SHAKE_RATE = 0.014;
+
 // Unified-card border: one darker, node-light-style colour per coarse
 // account-recency bucket from the server ("active within …").
 const ACTIVITY_LIGHT_COLORS = Object.freeze({
@@ -4700,8 +4709,55 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
   syncAvatarStatus(THREE, avatar, identity);
 }
 
+// Starts (or restarts) the wave on one avatar. The pose itself is played by
+// animateAvatarActivity, which every walk/sit/ride path already calls after it
+// has written the arm rotations for the frame.
+function startAvatarWave(avatar, startedAt = performance.now()) {
+  if (!avatar?.userData?.rightArm) return false;
+  avatar.userData.waveStartedAt = startedAt;
+  return true;
+}
+
+// Rotating the arm box around its own centre would pull the shoulder end out
+// of the torso, so the mesh is nudged along the arc that keeps the shoulder
+// pinned where it hangs at rest.
+function poseWavingArm(arm, rest, angle) {
+  const halfLength = (arm.geometry?.parameters?.height || 1.25) / 2;
+  arm.rotation.x = 0;
+  arm.rotation.z = angle;
+  arm.position.set(
+    rest.x + halfLength * Math.sin(angle),
+    rest.y + halfLength * (1 - Math.cos(angle)),
+    rest.z,
+  );
+}
+
 function animateAvatarActivity(avatar, time, delta, reducedMotion) {
   if (!avatar?.userData) return;
+  const waveStartedAt = avatar.userData.waveStartedAt || 0;
+  const waveArm = waveStartedAt ? avatar.userData.rightArm : null;
+  if (waveArm) {
+    // The rest pose is captured on the first wave: nothing else ever moves an
+    // arm's position, only its rotation.
+    const rest =
+      avatar.userData.rightArmRest ||
+      (avatar.userData.rightArmRest = waveArm.position.clone());
+    const elapsed = time - waveStartedAt;
+    const progress = elapsed / AVATAR_WAVE_DURATION_MS;
+    if (!(progress >= 0) || progress >= 1) {
+      avatar.userData.waveStartedAt = 0;
+      waveArm.rotation.z = 0;
+      waveArm.position.copy(rest);
+    } else {
+      // One half sine lifts the arm and lowers it again; the shake rides on
+      // top of the lift so it fades in and out with the raise.
+      const lift = Math.sin(Math.PI * progress);
+      const shake = reducedMotion
+        ? 0
+        : Math.sin(elapsed * AVATAR_WAVE_SHAKE_RATE) * AVATAR_WAVE_SWEEP;
+      poseWavingArm(waveArm, rest, lift * (AVATAR_WAVE_LIFT + shake));
+    }
+  }
   const antenna = avatar.userData.antenna;
   const bulb = avatar.userData.antennaBulb;
   if (antenna?.visible && bulb) {
@@ -20047,6 +20103,10 @@ export function createWorldScene({
       ? player
       : remotePlayers.get(peerId) || (peerId === identity.id ? player : null);
     if (!avatar) return;
+    // A wave is the one emote with a body pose behind the floating glyph, and
+    // it plays the same way whether the gesture came from this browser or off
+    // the relay.
+    if (emote === "wave") startAvatarWave(avatar);
     const glyphs = { wave: "WAVE", idea: "IDEA ✦", celebrate: "NICE ★" };
     const sprite = makeLabelSprite(
       THREE,
