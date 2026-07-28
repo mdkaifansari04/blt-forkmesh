@@ -1449,6 +1449,11 @@ private:
     // lazy tab-click path that reuses the last scan of the same repo.
     QWidget *buildSizeMapTab();
     void refreshSizeMapTab(bool force);
+    // Folder the size map scans: m_sizeMapRootOverride when the user picked one
+    // with "Choose folder…", otherwise this repository's working copy.
+    QString sizeMapRoot() const;
+    void chooseSizeMapFolder();
+    void setSizeMapRootOverride(const QString &path);
     QWidget *buildPlaceholderTab(const QString &name);
 
     // Discussions tab (signed repository discussions with inbox fallback).
@@ -4414,6 +4419,12 @@ private:
     QLabel *m_sizeMapStatus = nullptr;
     // Checkbox that drops .gitignored paths from the scan (adhoc #197).
     QCheckBox *m_sizeMapHideIgnored = nullptr;
+    // Folder picked with "Choose folder…" so the map can size any directory on
+    // disk, not just this repository's working copy. Empty means "the working
+    // copy"; the reset button clears it back to that.
+    QString m_sizeMapRootOverride;
+    QLabel *m_sizeMapRootLabel = nullptr;
+    QPushButton *m_sizeMapResetRoot = nullptr;
     QString m_sizeMapScannedPath;
     bool m_sizeMapScanning = false;
     int m_sizeMapScanEpoch = 0;
