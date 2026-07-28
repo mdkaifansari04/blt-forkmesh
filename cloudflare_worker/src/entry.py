@@ -8382,8 +8382,15 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-17"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-18"
 WORLD_QA_CARDS = (
+    ("world-connected-mixed-landscape", "Connected city and woodland landscape",
+     "Walk from Town Square to the repository district and Office. Confirm "
+     "both routes are broad continuous pieces of land with no narrow bridge "
+     "or invisible gap. Look across the Town Square for warm stone plazas, "
+     "edged paths, varied grass pockets, and trees instead of one flat green "
+     "surface. Pull the camera below an island edge and confirm finished dirt "
+     "layers and hanging roots are visible."),
     ("world-aquarium-control-panel", "Aquarium control panel",
      "Walk to the Office lobby aquarium and confirm one compact panel is "
      "mounted at its bottom-right corner. Feed the fish, switch the backdrop "

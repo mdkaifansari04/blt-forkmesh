@@ -197,6 +197,7 @@ the implementation and its focused verification are complete.
 
 ## Requested follow-up work
 
+- [x] Redesign the exterior World as a mixed city-and-woodland landscape with stone plazas, paths, varied grass patches, trees, broad continuous land connections, finished edges, and visible dirt/roots underneath.
 - [x] Make mirror4 appear automatically in Qt, the World, and the repository mirror catalog after provisioning.
 - [x] Make future Vultr mirrors complete first-run setup automatically, including dependencies, state directories, capacity checks, signed catalog publication, and a truthful readiness probe.
 - [x] Retire the exact mirror4 and mirror5 Vultr instances and remove their saved Qt Host entries after confirming their identities.

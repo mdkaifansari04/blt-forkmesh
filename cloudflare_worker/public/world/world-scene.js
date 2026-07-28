@@ -48,6 +48,15 @@ const WORLD_GROUND_RADIUS = 88;
 const REPOSITORY_ISLAND_CENTER_X = 130;
 const REPOSITORY_ISLAND_RADIUS = 38;
 const REPOSITORY_ISLAND_RING_RADIUS = 31;
+// The satellite districts are joined by broad landscaped causeways, not
+// narrow bridges. These same dimensions drive both geometry and movement so
+// the visible land and the avatar's walkable surface cannot drift apart.
+const REPOSITORY_CONNECTION_MIN_X = 78;
+const REPOSITORY_CONNECTION_MAX_X = 103;
+const REPOSITORY_CONNECTION_HALF_WIDTH = 26;
+const OFFICE_CONNECTION_MIN_Z = -116;
+const OFFICE_CONNECTION_MAX_Z = -78;
+const OFFICE_CONNECTION_HALF_WIDTH = 36;
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
 const PLAYER_SPEED = 6.4;
@@ -214,13 +223,16 @@ function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
     return true;
   }
   if (
-    px >= WORLD_GROUND_RADIUS - 4 - margin &&
-    px <=
-      REPOSITORY_ISLAND_CENTER_X -
-      REPOSITORY_ISLAND_RADIUS +
-      4 +
-      margin &&
-    Math.abs(pz) <= 2.4 - margin
+    px >= REPOSITORY_CONNECTION_MIN_X + margin &&
+    px <= REPOSITORY_CONNECTION_MAX_X - margin &&
+    Math.abs(pz) <= REPOSITORY_CONNECTION_HALF_WIDTH - margin
+  ) {
+    return true;
+  }
+  if (
+    Math.abs(px) <= OFFICE_CONNECTION_HALF_WIDTH - margin &&
+    pz >= OFFICE_CONNECTION_MIN_Z + margin &&
+    pz <= OFFICE_CONNECTION_MAX_Z - margin
   ) {
     return true;
   }
@@ -434,7 +446,7 @@ function deterministicTreeLayout() {
   LANDMARKS.forEach((landmark) => {
     // The campfire's clearing is filled by its bench circle, whose radius
     // reaches past where these trees would stand.
-    if (landmark.id === "campfire") return;
+    if (["campfire", "office"].includes(landmark.id)) return;
     for (let treeIndex = 0; treeIndex < TREES_PER_LANDMARK; treeIndex += 1) {
       const angle =
         deterministicFraction(`tree-angle:${landmark.id}:${treeIndex}`) * Math.PI * 2;
@@ -6260,6 +6272,221 @@ function createTree(THREE, x, z, scale = 1, color = "#2f8c5f") {
   group.add(crown);
   group.position.set(x, 0, z);
   setShadows(group);
+  return group;
+}
+
+function createTerrainFoundation(
+  THREE,
+  name,
+  radius,
+  depth,
+  seed = name,
+) {
+  const group = new THREE.Group();
+  group.name = name;
+  const earth = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius, radius * 0.91, depth, 128, 1),
+    makeMaterial(THREE, "#5b4433", {
+      roughness: 1,
+      metalness: 0,
+    }),
+  );
+  earth.name = `${name}-earth`;
+  // Keep the earthen cap below the designed town/district surface. The cap
+  // remains visible from underneath without z-fighting through the paving.
+  earth.position.y = -depth / 2 - 0.12;
+  earth.receiveShadow = true;
+  group.add(earth);
+  const strata = [
+    { y: -0.18, color: "#4f514b", size: 0.24 },
+    { y: -1.25, color: "#745844", size: 0.17 },
+    { y: -2.65, color: "#49372c", size: 0.2 },
+    { y: -4.35, color: "#806044", size: 0.14 },
+  ];
+  strata.forEach((layer, index) => {
+    if (Math.abs(layer.y) >= depth) return;
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(
+        radius * (0.975 - index * 0.018),
+        layer.size,
+        7,
+        128,
+      ),
+      makeMaterial(THREE, layer.color, { roughness: 1 }),
+    );
+    ring.name = `${name}-strata-${index + 1}`;
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = layer.y;
+    group.add(ring);
+  });
+  const rootMaterial = makeMaterial(THREE, "#4b3020", {
+    roughness: 1,
+  });
+  const rootCount = Math.max(12, Math.round(radius / 5));
+  for (let index = 0; index < rootCount; index += 1) {
+    const angle =
+      (index / rootCount) * Math.PI * 2 +
+      deterministicFraction(`${seed}:root-angle:${index}`) * 0.18;
+    const length =
+      1.8 + deterministicFraction(`${seed}:root-length:${index}`) * 3.7;
+    const root = new THREE.Mesh(
+      new THREE.CylinderGeometry(
+        0.05 + length * 0.012,
+        0.17 + length * 0.018,
+        length,
+        7,
+      ),
+      rootMaterial,
+    );
+    root.name = `${name}-root-${index + 1}`;
+    const rootRadius =
+      radius *
+      (0.64 + deterministicFraction(`${seed}:root-radius:${index}`) * 0.23);
+    root.position.set(
+      Math.cos(angle) * rootRadius,
+      -depth - length * 0.42,
+      Math.sin(angle) * rootRadius,
+    );
+    root.rotation.z = Math.cos(angle) * 0.16;
+    root.rotation.x = Math.sin(angle) * 0.16;
+    group.add(root);
+  }
+  setShadows(group);
+  return group;
+}
+
+function createLandscapePath(
+  THREE,
+  name,
+  start,
+  end,
+  width,
+  material,
+) {
+  const dx = end[0] - start[0];
+  const dz = end[1] - start[1];
+  const length = Math.max(0.1, Math.hypot(dx, dz));
+  const path = new THREE.Mesh(
+    new THREE.BoxGeometry(width, 0.08, length),
+    material,
+  );
+  path.name = name;
+  path.position.set(
+    (start[0] + end[0]) / 2,
+    0.065,
+    (start[1] + end[1]) / 2,
+  );
+  path.rotation.y = Math.atan2(dx, dz);
+  path.receiveShadow = true;
+  path.userData.ground = true;
+  return path;
+}
+
+function createTownLandscape(THREE) {
+  const group = new THREE.Group();
+  group.name = "forkmesh-town-mixed-landscape";
+  const plazaMaterial = makeMaterial(THREE, "#8a857a", {
+    roughness: 0.94,
+  });
+  const pathMaterial = makeMaterial(THREE, "#b29a76", {
+    roughness: 0.98,
+  });
+  const pathEdgeMaterial = makeMaterial(THREE, "#625f59", {
+    roughness: 0.9,
+  });
+  const grassMaterials = [
+    "#536348",
+    "#68714b",
+    "#405847",
+    "#74734d",
+  ].map((color) => makeMaterial(THREE, color, { roughness: 1 }));
+  const plaza = new THREE.Mesh(
+    new THREE.CircleGeometry(20, 64),
+    plazaMaterial,
+  );
+  plaza.name = "forkmesh-town-stone-plaza";
+  plaza.rotation.x = -Math.PI / 2;
+  plaza.position.y = 0.045;
+  plaza.receiveShadow = true;
+  plaza.userData.ground = true;
+  group.add(plaza);
+  const plazaEdge = new THREE.Mesh(
+    new THREE.TorusGeometry(20, 0.28, 8, 96),
+    pathEdgeMaterial,
+  );
+  plazaEdge.name = "forkmesh-town-plaza-edge";
+  plazaEdge.rotation.x = Math.PI / 2;
+  plazaEdge.position.y = 0.08;
+  group.add(plazaEdge);
+
+  [
+    ["arrival", [0, 12], [0, 20], 5.6],
+    ["repositories", [8, 4], [38, 39], 4.8],
+    ["repository-causeway", [18, 0], [86, 0], 6.4],
+    ["office-promenade", [0, -16], [0, -86], 7.2],
+    ["west-garden", [-8, 4], [-47, 31], 4.2],
+    ["east-garden", [9, 8], [52, 26], 4.2],
+  ].forEach(([id, start, end, width]) => {
+    const edge = createLandscapePath(
+      THREE,
+      `forkmesh-town-path-edge-${id}`,
+      start,
+      end,
+      width + 0.7,
+      pathEdgeMaterial,
+    );
+    edge.position.y = 0.035;
+    group.add(edge);
+    group.add(
+      createLandscapePath(
+        THREE,
+        `forkmesh-town-path-${id}`,
+        start,
+        end,
+        width,
+        pathMaterial,
+      ),
+    );
+  });
+
+  const grassPatches = [
+    [-42, -37, 18, 11, 0.2],
+    [-61, -6, 14, 19, -0.35],
+    [-36, 25, 18, 12, 0.55],
+    [-8, 49, 21, 12, -0.1],
+    [24, 55, 18, 10, 0.35],
+    [57, 34, 16, 13, -0.5],
+    [59, -29, 17, 12, 0.3],
+    [27, -54, 21, 11, -0.25],
+    [-18, -58, 17, 12, 0.45],
+    [-63, 43, 12, 9, 0.1],
+  ];
+  grassPatches.forEach(([x, z, scaleX, scaleZ, rotation], index) => {
+    const patch = new THREE.Mesh(
+      new THREE.CircleGeometry(1, 40),
+      grassMaterials[index % grassMaterials.length],
+    );
+    patch.name = `forkmesh-town-grass-patch-${index + 1}`;
+    patch.rotation.x = -Math.PI / 2;
+    patch.rotation.z = rotation;
+    patch.position.set(x, 0.04 + (index % 2) * 0.006, z);
+    patch.scale.set(scaleX, scaleZ, 1);
+    patch.receiveShadow = true;
+    group.add(patch);
+  });
+
+  const treeColors = ["#365443", "#486247", "#596d49", "#3f5949"];
+  deterministicTreeLayout().forEach((tree) => {
+    group.add(
+      createTree(
+        THREE,
+        tree.x,
+        tree.z,
+        tree.scale,
+        treeColors[tree.colorIndex % treeColors.length],
+      ),
+    );
+  });
   return group;
 }
 
@@ -12498,21 +12725,32 @@ export function createWorldScene({
 
   const ground = new THREE.Mesh(
     new THREE.CircleGeometry(WORLD_GROUND_RADIUS, 128),
-    makeMaterial(THREE, "#174434", { roughness: 1 }),
+    makeMaterial(THREE, "#716f66", { roughness: 0.98 }),
   );
+  ground.name = "forkmesh-town-terrain-top";
   ground.rotation.x = -Math.PI / 2;
+  ground.position.y = 0.015;
   ground.receiveShadow = true;
   ground.userData.ground = true;
   world.add(ground);
+  const townFoundation = createTerrainFoundation(
+    THREE,
+    "forkmesh-town-terrain-foundation",
+    WORLD_GROUND_RADIUS,
+    6.4,
+    "town",
+  );
+  world.add(townFoundation);
+  const townLandscape = createTownLandscape(THREE);
+  world.add(townLandscape);
 
   // Every repository imported from an external provider lives on its own
-  // repository island, whether it is already hosted by a mirror or remains an
-  // external stub. The bridge overlaps both shorelines, so it is a real,
-  // raycastable walking surface rather than scenery visitors have to teleport
-  // across.
+  // district, whether it is already hosted by a mirror or remains an external
+  // stub. Broad earth connects it to town; the legacy "bridge" group is now a
+  // paved promenade on that continuous causeway.
   const repositoryIsland = new THREE.Mesh(
     new THREE.CircleGeometry(REPOSITORY_ISLAND_RADIUS, 96),
-    makeMaterial(THREE, "#215c42", { roughness: 1 }),
+    makeMaterial(THREE, "#746c5d", { roughness: 0.98 }),
   );
   repositoryIsland.name = "hosted-repository-island";
   repositoryIsland.rotation.x = -Math.PI / 2;
@@ -12520,44 +12758,67 @@ export function createWorldScene({
   repositoryIsland.receiveShadow = true;
   repositoryIsland.userData.ground = true;
   world.add(repositoryIsland);
+  const repositoryFoundation = createTerrainFoundation(
+    THREE,
+    "hosted-repository-terrain-foundation",
+    REPOSITORY_ISLAND_RADIUS,
+    5.8,
+    "repositories",
+  );
+  repositoryFoundation.position.x = REPOSITORY_ISLAND_CENTER_X;
+  world.add(repositoryFoundation);
 
   const repositoryBridge = new THREE.Group();
   repositoryBridge.name = "hosted-repository-bridge";
   repositoryBridge.position.set(
-    (WORLD_GROUND_RADIUS +
-      REPOSITORY_ISLAND_CENTER_X -
-      REPOSITORY_ISLAND_RADIUS) /
-      2,
+    (REPOSITORY_CONNECTION_MIN_X + REPOSITORY_CONNECTION_MAX_X) / 2,
     0,
     0,
   );
+  const repositoryConnectionLength =
+    REPOSITORY_CONNECTION_MAX_X - REPOSITORY_CONNECTION_MIN_X;
+  const repositoryConnectionFoundation = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      repositoryConnectionLength,
+      5.8,
+      REPOSITORY_CONNECTION_HALF_WIDTH * 2,
+    ),
+    makeMaterial(THREE, "#5b4433", { roughness: 1 }),
+  );
+  repositoryConnectionFoundation.name =
+    "hosted-repository-causeway-earth";
+  repositoryConnectionFoundation.position.y = -2.9;
+  repositoryConnectionFoundation.receiveShadow = true;
+  repositoryBridge.add(repositoryConnectionFoundation);
   const bridgeDeck = new THREE.Mesh(
-    new THREE.BoxGeometry(12, 0.22, 4.8),
-    makeMaterial(THREE, "#70563b", { roughness: 0.88 }),
+    new THREE.BoxGeometry(
+      repositoryConnectionLength,
+      0.16,
+      REPOSITORY_CONNECTION_HALF_WIDTH * 2,
+    ),
+    makeMaterial(THREE, "#766f5d", { roughness: 0.98 }),
   );
-  bridgeDeck.position.y = 0.1;
+  bridgeDeck.position.y = 0.08;
   bridgeDeck.receiveShadow = true;
   bridgeDeck.userData.ground = true;
   repositoryBridge.add(bridgeDeck);
-  for (let x = -5.4; x <= 5.4; x += 1.2) {
-    const plank = new THREE.Mesh(
-      new THREE.BoxGeometry(0.92, 0.12, 4.55),
-      makeMaterial(THREE, x % 2.4 ? "#98724b" : "#aa8053", {
-        roughness: 0.92,
-      }),
-    );
-    plank.position.set(x, 0.25, 0);
-    plank.userData.ground = true;
-    repositoryBridge.add(plank);
-  }
+  const repositoryPromenade = new THREE.Mesh(
+    new THREE.BoxGeometry(repositoryConnectionLength, 0.08, 7.2),
+    makeMaterial(THREE, "#b29a76", { roughness: 0.98 }),
+  );
+  repositoryPromenade.name = "hosted-repository-promenade";
+  repositoryPromenade.position.y = 0.19;
+  repositoryPromenade.receiveShadow = true;
+  repositoryPromenade.userData.ground = true;
+  repositoryBridge.add(repositoryPromenade);
   world.add(repositoryBridge);
 
-  // The Office is a real campus island, not another interior scene. Its glass
-  // bridge overlaps both shores so walking, camera framing, and multiplayer
-  // presence remain continuous from the Town Square all the way to the roof.
+  // The Office is a real campus district, not another interior scene. Its
+  // wooded earth joins town across a broad continuous neck, with a stone
+  // promenade down the middle for visual wayfinding.
   const officeIsland = new THREE.Mesh(
     new THREE.CircleGeometry(OFFICE_ISLAND_RADIUS, 128),
-    makeMaterial(THREE, "#183f38", { roughness: 0.96 }),
+    makeMaterial(THREE, "#625e4d", { roughness: 0.98 }),
   );
   officeIsland.name = "forkmesh-office-island";
   officeIsland.rotation.x = -Math.PI / 2;
@@ -12569,6 +12830,63 @@ export function createWorldScene({
   officeIsland.receiveShadow = true;
   officeIsland.userData.ground = true;
   world.add(officeIsland);
+  const officeFoundation = createTerrainFoundation(
+    THREE,
+    "forkmesh-office-terrain-foundation",
+    OFFICE_ISLAND_RADIUS,
+    7.2,
+    "office",
+  );
+  officeFoundation.position.set(
+    OFFICE_ISLAND_CENTER[0],
+    0,
+    OFFICE_ISLAND_CENTER[2],
+  );
+  world.add(officeFoundation);
+
+  const officeLandConnection = new THREE.Group();
+  officeLandConnection.name = "forkmesh-office-land-connection";
+  officeLandConnection.position.set(
+    0,
+    0,
+    (OFFICE_CONNECTION_MIN_Z + OFFICE_CONNECTION_MAX_Z) / 2,
+  );
+  const officeConnectionLength =
+    OFFICE_CONNECTION_MAX_Z - OFFICE_CONNECTION_MIN_Z;
+  const officeConnectionEarth = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      OFFICE_CONNECTION_HALF_WIDTH * 2,
+      6.4,
+      officeConnectionLength,
+    ),
+    makeMaterial(THREE, "#594332", { roughness: 1 }),
+  );
+  officeConnectionEarth.name = "forkmesh-office-land-connection-earth";
+  officeConnectionEarth.position.y = -3.2;
+  officeLandConnection.add(officeConnectionEarth);
+  const officeConnectionTop = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      OFFICE_CONNECTION_HALF_WIDTH * 2,
+      0.14,
+      officeConnectionLength,
+    ),
+    makeMaterial(THREE, "#69644f", { roughness: 1 }),
+  );
+  officeConnectionTop.name = "forkmesh-office-land-connection-top";
+  officeConnectionTop.position.y = 0.07;
+  officeConnectionTop.receiveShadow = true;
+  officeConnectionTop.userData.ground = true;
+  officeLandConnection.add(officeConnectionTop);
+  for (const x of [-OFFICE_CONNECTION_HALF_WIDTH, OFFICE_CONNECTION_HALF_WIDTH]) {
+    const edge = new THREE.Mesh(
+      new THREE.BoxGeometry(0.55, 0.5, officeConnectionLength),
+      makeMaterial(THREE, "#4f514b", { roughness: 0.94 }),
+    );
+    edge.name = "forkmesh-office-land-connection-edge";
+    edge.position.set(x, -0.14, 0);
+    officeLandConnection.add(edge);
+  }
+  world.add(officeLandConnection);
 
   const officeBridge = new THREE.Group();
   officeBridge.name = "forkmesh-office-bridge";
@@ -12581,9 +12899,9 @@ export function createWorldScene({
   );
   const officeBridgeDeck = new THREE.Mesh(
     new THREE.BoxGeometry(OFFICE_BRIDGE_WIDTH, 0.3, officeBridgeLength),
-    makeMaterial(THREE, "#567a72", {
-      metalness: 0.44,
-      roughness: 0.35,
+    makeMaterial(THREE, "#aa9272", {
+      metalness: 0.05,
+      roughness: 0.92,
     }),
   );
   officeBridgeDeck.name = "forkmesh-office-bridge-deck";
@@ -12591,23 +12909,6 @@ export function createWorldScene({
   officeBridgeDeck.receiveShadow = true;
   officeBridgeDeck.userData.ground = true;
   officeBridge.add(officeBridgeDeck);
-  const bridgeGlass = makeMaterial(THREE, "#b9fff0", {
-    transparent: true,
-    opacity: 0.34,
-    metalness: 0.12,
-    roughness: 0.08,
-  });
-  for (const x of [
-    -OFFICE_BRIDGE_WIDTH / 2 + 0.16,
-    OFFICE_BRIDGE_WIDTH / 2 - 0.16,
-  ]) {
-    const rail = new THREE.Mesh(
-      new THREE.BoxGeometry(0.18, 2.4, officeBridgeLength),
-      bridgeGlass,
-    );
-    rail.position.set(x, OFFICE_LOBBY_SURFACE_Y + 1.2, 0);
-    officeBridge.add(rail);
-  }
   world.add(officeBridge);
   const officeEntranceZ =
     OFFICE_ISLAND_CENTER[2] + OFFICE_FRONT_Z;
@@ -12626,9 +12927,9 @@ export function createWorldScene({
       0.18,
       officeApproachLength,
     ),
-    makeMaterial(THREE, "#294e46", {
-      metalness: 0.24,
-      roughness: 0.62,
+    makeMaterial(THREE, "#786f61", {
+      metalness: 0.08,
+      roughness: 0.9,
     }),
   );
   approachDeck.name = "forkmesh-office-island-approach-deck";
