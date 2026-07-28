@@ -2317,8 +2317,8 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:member-unified-card", task: "Unified identity + Fedi + wallet QR card", estimate: "deployed", done: true },
   { key: "task:mirror2-agent-claim", task: "Provision mirror2 agent auth + claim jobs", estimate: "human action", done: false },
   { key: "task:review-open-prs", task: "Review every open PR + disposition", estimate: "queued", done: false },
-  { key: "task:repo-social-orbits", task: "Test follower + contributor avatar orbits", estimate: "testing", done: false },
-  { key: "task:issue-agent-models", task: "Issue buttons for Claude/Codex model choice", estimate: "testing", done: false },
+  { key: "task:repo-social-orbits", task: "Test follower + contributor avatar orbits", estimate: "deployed · verified", done: true },
+  { key: "task:issue-agent-models", task: "Issue buttons for Claude/Codex model choice", estimate: "deployed · verified", done: true },
   { key: "task:qt-agent-installers", task: "Qt mirror Claude + Codex installers", estimate: "deployed", done: true },
   { key: "task:marketing-room-wall", task: "Marketing wall, desks, calendar + table", estimate: "testing", done: false },
   { key: "task:avatar-team-badges", task: "Team badges on each avatar's left arm", estimate: "deployed", done: true },
@@ -6869,6 +6869,7 @@ function repositoryIssueCardTexture(THREE, issue) {
 
 function repositoryPullCardTexture(THREE, pull) {
   return canvasTexture(THREE, 1024, 300, (context) => {
+    const metadataAvailable = pull.metadataAvailable !== false;
     context.fillStyle = "#171429";
     context.fillRect(0, 0, 1024, 300);
     const reviewStatus = repositoryPullReviewStatus(pull);
@@ -6912,7 +6913,9 @@ function repositoryPullCardTexture(THREE, pull) {
       .join(" · ");
     context.fillText(meta.slice(0, 62), 52, 220);
     context.fillStyle =
-      reviewStatus === "unavailable" ? "#f0c66f" : "#9e8cff";
+      !metadataAvailable || reviewStatus === "unavailable"
+        ? "#f0c66f"
+        : "#9e8cff";
     context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
       mergeability.factors.join(" · ").slice(0, 86),

@@ -52,7 +52,8 @@ def test_issue_and_pull_cards_show_commit_pinned_metadata():
         APP.index("  flagshipCatalogCommits(")
     ]
     assert "selectedIssues" in loader
-    assert 'issueQuery.set("ref", commit)' in loader
+    assert "this.loadRepositoryBlobBatches(" in loader
+    assert "base,\n          commit,\n          issuePaths," in loader
     assert "issue metadata batch commit mismatch" in loader
     assert "record.metadataAvailable = true" in loader
 

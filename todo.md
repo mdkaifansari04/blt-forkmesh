@@ -51,8 +51,8 @@ the implementation and its focused verification are complete.
 - [x] Verify the ForkMesh X timeline feed and keep the in-world board sourced from the public `@forkmesh` profile without third-party tracking script injection.
 - [x] Render recent ForkMesh Twitter/X posts like Mastodon; if public retrieval or credentials fail, show the reason on-board and add a Human TODO.
 - [x] Make mirror agent installers exclusively use the saved ForkMesh SSH key when present and clearly distinguish an unreachable host from rejected authentication.
-- [ ] Finish and test the repository Mastodon-follower and Git-contributor avatar orbits.
-- [ ] Finish and test Claude/Codex/model assignment controls on World issue cards.
+- [x] Finish and test the repository Mastodon-follower and Git-contributor avatar orbits.
+- [x] Finish and test Claude/Codex/model assignment controls on World issue cards.
 - [x] Finish and test the Qt host buttons that install the official Claude Code and Codex CLIs.
 - [ ] Finish and test the Marketing wall, member desks, attendance calendar, and sealed reclaimed-wood logo table.
 - [x] Add server-authoritative team badges to each user's left arm.
