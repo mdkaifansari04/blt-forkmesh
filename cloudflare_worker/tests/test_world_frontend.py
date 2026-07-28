@@ -2494,6 +2494,39 @@ def test_forkbot_mention_excites_the_droid_with_echo_screen_and_thinking_dots():
     assert APP.count("this.world?.exciteForkbot?.(") == 2
 
 
+def test_collapsed_chat_bar_shows_an_unread_count_excluding_own_lines():
+    # adhoc #426: the docked CHAT bar showed only the newest line, so a visitor
+    # walking around had no idea how much they had missed. It now carries an
+    # unread pill that counts live remote lines and resets whenever chat opens.
+    assert "data-world-chat-terminal-unread" in APP
+    assert ".world-chat-terminal-unread {" in CSS
+    # Replayed history and this browser's own messages never bump it, and
+    # neither does the signed-in account talking from another tab or device
+    # (`own`, which dashboard-chat.js resolves by account name).
+    handler = APP[
+        APP.index("  handleWorldChatMessage = (event) => {"):
+        APP.index("\n  };", APP.index("  handleWorldChatMessage = (event) => {"))
+    ]
+    assert "if (data.history === true) return;" in handler
+    assert (
+        "if (data.self !== true && data.own !== true) "
+        "this.bumpChatTerminalUnread();"
+    ) in handler
+    assert "own: isOwnChatLine(sender, senderId)," in DASHBOARD_CHAT
+    # `self` stays a strict senderId match: only the browser's own line may
+    # raise a bubble over the local avatar.
+    assert "self: senderId === selfId," in DASHBOARD_CHAT
+    # An already-open panel never accumulates, and both doors into the room
+    # (the bar itself and the full overlay) clear the count.
+    assert (
+        'if (this.$("[data-world-chat-terminal]")?.open) return;' in APP
+    )
+    assert APP.count("this.clearChatTerminalUnread();") == 2
+    # The mobile layout shrinks the collapsed bar to the word CHAT; the pill
+    # gets room there rather than being clipped or hidden.
+    assert ".world-chat-terminal-unread:not([hidden])" in CSS
+
+
 def test_clicking_forkbot_opens_the_terminal_bar_with_a_mention_prefilled():
     # adhoc #284: ForkBot should drop a visitor into the small, docked CHAT
     # bar (not the full-screen chat overlay), with "@forkbot " already typed
