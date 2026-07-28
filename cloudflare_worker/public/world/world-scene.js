@@ -2331,6 +2331,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "done:chest-fediverse", task: "Fix chest Fedi load + activity border", estimate: "deployed", done: true },
   { key: "done:qt-host-probes", task: "Live host + Claude/Codex capability checks", estimate: "deployed", done: true },
   { key: "done:alert-management-link", task: "Alert mail opens the real management switch", estimate: "deployed", done: true },
+  { key: "done:qa-history-routing", task: "QA result tabs + Todo/Issue routing", estimate: "deployed", done: true },
   { key: "done:follower-orbit-visible", task: "Visible Mastodon follower orbit", estimate: "deployed", done: true },
   { key: "done:bot-full-status", task: "Engineering bot status + controls", estimate: "deployed", done: true },
   { key: "done:agent-diagnostics", task: "Stalled agent diagnostics → Human TODO", estimate: "deployed", done: true },
@@ -13143,31 +13144,31 @@ export function createWorldScene({
     metalness: 0.8,
     roughness: 0.2,
   });
-  const elevatorButtonGeometry = new THREE.BoxGeometry(1.25, 0.72, 0.24);
+  const elevatorButtonGeometry = new THREE.BoxGeometry(1.62, 0.78, 0.28);
   const elevatorButtonMaterials = new Map(
     OFFICE_FLOORS.map((destination) => {
-      const texture = canvasTexture(THREE, 192, 112, (context) => {
-        context.fillStyle = "#10261f";
-        context.fillRect(0, 0, 192, 112);
-        context.strokeStyle = "#8ff1c3";
-        context.lineWidth = 8;
-        context.strokeRect(5, 5, 182, 102);
+      const texture = canvasTexture(THREE, 256, 144, (context) => {
+        context.fillStyle = "#06140f";
+        context.fillRect(0, 0, 256, 144);
+        context.strokeStyle = "#9ef7c6";
+        context.lineWidth = 12;
+        context.strokeRect(7, 7, 242, 130);
         context.fillStyle = "#effff8";
         context.textAlign = "center";
         context.textBaseline = "middle";
         context.font =
-          '900 52px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText(String(destination.level + 1), 96, 39);
-        context.fillStyle = "#b9f8da";
+          '900 72px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(String(destination.level + 1), 128, 48);
+        context.fillStyle = "#9ef7c6";
         context.font =
-          '800 17px "ForkMesh Mono", ui-monospace, monospace';
+          '800 23px "ForkMesh Mono", ui-monospace, monospace';
         const teamLabel = (
           destination.team ||
           (destination.id === "rooftop" ? "ROOF" : destination.label)
         )
           .replaceAll("-", " ")
           .toUpperCase();
-        context.fillText(teamLabel, 96, 85, 172);
+        context.fillText(teamLabel, 128, 107, 226);
       });
       return [
         destination.id,
@@ -13175,7 +13176,7 @@ export function createWorldScene({
           color: "#2d8063",
           map: texture,
           emissive: "#1f9c6a",
-          emissiveIntensity: 0.9,
+          emissiveIntensity: 1.25,
           metalness: 0.46,
           roughness: 0.35,
         }),
@@ -13184,8 +13185,10 @@ export function createWorldScene({
   );
   const elevatorPanel = new THREE.Group();
   elevatorPanel.name = "forkmesh-office-elevator-cabin-panel";
-  elevatorPanel.position.set(4.34, 3.3, -0.6);
-  elevatorPanel.rotation.y = -Math.PI / 2;
+  // Put the controls on the front-right wall. The locked cabin camera shares
+  // this front plane, looks outward, and still keeps the large labels in frame.
+  elevatorPanel.position.set(2.0, 3.3, -3.25);
+  elevatorPanel.rotation.y = 0;
   const panelBody = new THREE.Mesh(
     elevatorPanelGeometry,
     elevatorPanelMaterial,
@@ -13201,8 +13204,8 @@ export function createWorldScene({
     // Conventional lift ordering: floor 1 starts at the lower-left, rises
     // left-to-right, and the rooftop ends at the top.
     button.position.set(
-      (column - 0.5) * 2.2,
-      -1.65 + rowFromBottom * 0.78,
+      (column - 0.5) * 2.35,
+      -1.7 + rowFromBottom * 0.82,
       0.3,
     );
     button.name = `forkmesh-office-elevator-button-${destination.id}`;
@@ -13329,6 +13332,7 @@ export function createWorldScene({
   let officeElevatorCameraLocked = false;
   let officeElevatorCameraReleased = false;
   let officeElevatorPriorCameraMode = null;
+  let officeElevatorPriorCameraFov = null;
   let officeAttendance = { visits: [] };
   let officeAttendanceObservedAt = performance.now();
   let officeAttendanceRenderedBucket = 0;
@@ -14746,11 +14750,16 @@ export function createWorldScene({
   function lockOfficeElevatorCamera() {
     if (!officeElevatorCameraLocked) {
       officeElevatorPriorCameraMode = cameraMode;
+      officeElevatorPriorCameraFov = camera.fov;
     }
     officeElevatorCameraLocked = true;
     officeElevatorCameraReleased = false;
     if (cameraMode !== "first-person") {
       setCameraMode("first-person", "office-elevator-enter");
+    }
+    if (camera.fov !== 58) {
+      camera.fov = 58;
+      camera.updateProjectionMatrix();
     }
   }
 
@@ -14762,6 +14771,11 @@ export function createWorldScene({
       if (cameraMode !== prior) {
         setCameraMode(prior, "office-elevator-exit");
       }
+      if (Number.isFinite(officeElevatorPriorCameraFov)) {
+        camera.fov = officeElevatorPriorCameraFov;
+        camera.updateProjectionMatrix();
+      }
+      officeElevatorPriorCameraFov = null;
     }
     officeElevatorCameraReleased = Boolean(released);
   }
@@ -15975,18 +15989,17 @@ export function createWorldScene({
       releaseOfficeElevatorCamera(false);
     }
     if (officeElevatorCameraLocked) {
-      // Security-camera framing from the upper rear-left corner of the moving
-      // glass car. It keeps the right-wall controls and the open front/outside
-      // in one stable first-person frame instead of pinning the eye to the
-      // avatar and looking directly into the panel.
+      // Stable first-person framing from the upper front-left corner of the
+      // moving glass car. The camera faces outward from the door side while
+      // the widened field of view keeps the front-right controls readable.
       const eye = officeElevatorCar.localToWorld(
-        new THREE.Vector3(-3.72, 6.46, 2.7),
+        new THREE.Vector3(-3.72, 6.46, -2.72),
       );
-      const panelTarget = officeElevatorCar.localToWorld(
-        new THREE.Vector3(2.45, 2.9, -3.7),
+      const outsideTarget = officeElevatorCar.localToWorld(
+        new THREE.Vector3(0.85, 3.15, -11.5),
       );
       camera.position.copy(eye);
-      camera.lookAt(panelTarget);
+      camera.lookAt(outsideTarget);
       return;
     }
     if (cameraMode === "first-person") {
