@@ -29,6 +29,8 @@ ENTRY = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
 CHAT = (ROOT / "public" / "chat.js").read_text(encoding="utf-8")
 HEADER_JS = (ROOT / "public" / "site-header.js").read_text(encoding="utf-8")
 HEADER_CSS = (ROOT / "public" / "site-header.css").read_text(encoding="utf-8")
+DASHBOARD_CHAT = (ROOT / "public" / "dashboard-chat.js").read_text(
+    encoding="utf-8")
 
 
 def _function_source(name: str) -> str:
@@ -158,6 +160,15 @@ def test_own_messages_advance_the_header_baseline():
     ) in CHAT
     # Without an existing baseline the header still seeds one silently.
     assert "if (!raw) return;" in CHAT
+    # The World and dashboard talk to the same room through their own client,
+    # so it keeps the same baseline (this is where the World's CHAT bar sends).
+    assert "function noteOwnChatActivity()" in DASHBOARD_CHAT
+    assert 'const CHAT_ACTIVITY_SEEN_KEY = "forkmesh.chat.activitySeen";' in (
+        DASHBOARD_CHAT
+    )
+    assert (
+        "if (envelope.persist && PUBLIC_WORLD_GENERAL && !plain.file) {"
+    ) in DASHBOARD_CHAT
 
 
 def test_own_account_messages_never_bump_a_room_badge():

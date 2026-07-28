@@ -134,6 +134,26 @@
     return fresh;
   })();
 
+  // Baseline behind the site-header chat badge, shared with chat.js and
+  // site-header.js. Every retained #general line this browser contributes
+  // advances it, so talking here never leaves an unread pill on the rest of
+  // the site. No baseline yet means the header seeds one silently.
+  const CHAT_ACTIVITY_SEEN_KEY = "forkmesh.chat.activitySeen";
+
+  function noteOwnChatActivity() {
+    try {
+      const raw = localStorage.getItem(CHAT_ACTIVITY_SEEN_KEY);
+      if (!raw) return;
+      const seenActivity = JSON.parse(raw);
+      if (!seenActivity || typeof seenActivity !== "object") return;
+      localStorage.setItem(CHAT_ACTIVITY_SEEN_KEY, JSON.stringify({
+        ...seenActivity,
+        messageCount: (Number(seenActivity.messageCount) || 0) + 1,
+        at: Date.now(),
+      }));
+    } catch (_) {}
+  }
+
   let roomKey = null;
   let socket = null;
   let connecting = false;
@@ -1416,7 +1436,17 @@
     }
     return encryptObject(plain).then((envelope) => {
       if (DURABLE_TYPES.has(plain && plain.type)) envelope.persist = true;
-      if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(envelope));
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(envelope));
+        // You have already read what you just typed, so it must not light the
+        // site-header chat badge on every other page. That badge is a delta
+        // against a stored baseline, and only retained public-world frames
+        // reach the counter behind it (oversized file frames are dropped
+        // before retention).
+        if (envelope.persist && PUBLIC_WORLD_GENERAL && !plain.file) {
+          noteOwnChatActivity();
+        }
+      }
     });
   }
 
