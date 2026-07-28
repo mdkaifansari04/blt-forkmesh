@@ -2332,6 +2332,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "done:chest-auth-refresh", task: "Reload chest Fedi after guest → account", estimate: "ready for deploy · in QA", done: true },
   { key: "done:add-wallet-route", task: "Add Wallet opens payout editor", estimate: "ready for deploy · in QA", done: true },
   { key: "done:qt-host-probes", task: "Live host + Claude/Codex capability checks", estimate: "deployed", done: true },
+  { key: "done:host-plan-cost", task: "Qt Hosts provider + plan + monthly cost", estimate: "ready for release · in QA", done: true },
   { key: "done:alert-management-link", task: "Admin-only alerts + exact email deep link", estimate: "ready for deploy · in QA", done: true },
   { key: "done:qa-history-routing", task: "QA result tabs + Todo/Issue routing", estimate: "deployed", done: true },
   { key: "done:qa-history-detail", task: "QA history opens full verdict cards", estimate: "deployed", done: true },

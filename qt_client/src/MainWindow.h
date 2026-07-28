@@ -1267,7 +1267,8 @@ private:
     void addHostFromForm();
     void rememberHost(const QString &name, const QString &ip, const QString &user,
                       const QString &pass, const QString &status = QStringLiteral("installed"),
-                      const QString &identityFile = QString());
+                      const QString &identityFile = QString(),
+                      const QJsonObject &metadata = QJsonObject());
     // The managed private-key path configured for a host. The SSH command
     // builder validates that it still exists and fails closed instead of
     // silently falling back to a password.
@@ -3982,6 +3983,10 @@ private:
     // toggling it mid-provision cannot change what the run does.
     bool m_vultrInstallAgentClis = false;
     QString m_vultrDnsHostname;      // Cloudflare name provisioned this run
+    // Non-secret billing/provenance facts captured from Vultr's selected plan
+    // and created instance. These are persisted with the saved Host row so an
+    // operator can identify the plan and expected monthly cost later.
+    QJsonObject m_vultrHostMetadata;
     // "Attempt N of M at HH:mm:ss — outcome" per install attempt this run, so
     // the window can show what every attempt did instead of only the last one.
     QStringList m_vultrInstallAttemptLog;

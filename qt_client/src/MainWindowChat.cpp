@@ -7831,10 +7831,31 @@ void MainWindow::refreshHostsTable()
         m_hostsTable->setItem(i, 2,
             new QTableWidgetItem(user));
         const QString reachability = m_hostReachability.value(key);
+        const QString provider = h.value(QStringLiteral("provider")).toString();
+        const QString planType = h.value(QStringLiteral("planType")).toString();
+        const QString region = h.value(QStringLiteral("region")).toString();
+        const double monthlyCost =
+            h.value(QStringLiteral("monthlyCost")).toDouble(-1.0);
+        QStringList hostFacts;
+        if (!provider.isEmpty())
+            hostFacts.append(provider);
+        if (!planType.isEmpty())
+            hostFacts.append(planType);
+        if (!region.isEmpty())
+            hostFacts.append(region);
+        if (monthlyCost >= 0.0)
+            hostFacts.append(QStringLiteral("$%1/mo").arg(
+                QString::number(monthlyCost, 'f',
+                                monthlyCost == qFloor(monthlyCost) ? 0 : 2)));
+        const QString displayedStatus =
+            reachability.isEmpty() ? status : reachability;
         m_hostsTable->setItem(
             i, 3,
             new QTableWidgetItem(
-                reachability.isEmpty() ? status : reachability));
+                hostFacts.isEmpty()
+                    ? displayedStatus
+                    : displayedStatus + QStringLiteral("\n") +
+                          hostFacts.join(QStringLiteral(" · "))));
         m_hostsTable->setItem(
             i, 4,
             new QTableWidgetItem(
@@ -11635,7 +11656,8 @@ void MainWindow::addHostFromForm()
 
 void MainWindow::rememberHost(const QString &name, const QString &ip,
                               const QString &user, const QString &pass, const QString &status,
-                              const QString &identityFile)
+                              const QString &identityFile,
+                              const QJsonObject &metadata)
 {
     QSettings settings;
     QJsonArray hosts = forkmesh::control::loadSavedHosts(
@@ -11659,6 +11681,20 @@ void MainWindow::rememberHost(const QString &name, const QString &ip,
                 entry.insert(QStringLiteral("identityFile"),
                              old.value(QStringLiteral("identityFile")));
             }
+            for (const QString &field : {
+                     QStringLiteral("provider"),
+                     QStringLiteral("planType"),
+                     QStringLiteral("displayName"),
+                     QStringLiteral("region"),
+                     QStringLiteral("monthlyCost"),
+                     QStringLiteral("ramMb"),
+                     QStringLiteral("diskGb"),
+                     QStringLiteral("instanceId")}) {
+                if (old.contains(field))
+                    entry.insert(field, old.value(field));
+            }
+            for (auto it = metadata.constBegin(); it != metadata.constEnd(); ++it)
+                entry.insert(it.key(), it.value());
             const QString oldCredentialKey =
                 forkmesh::control::savedHostCredentialKey(
                     old.value(QStringLiteral("name")).toString(),
@@ -12274,6 +12310,10 @@ void MainWindow::createVultrMirrorFromForm()
         m_vultrAgentClisCheck && m_vultrAgentClisCheck->isChecked();
     m_vultrInstallAttemptLog.clear();
     m_vultrDnsHostname.clear();
+    m_vultrHostMetadata = QJsonObject{
+        {QStringLiteral("provider"), QStringLiteral("Vultr")},
+        {QStringLiteral("displayName"), node},
+    };
     m_hostInstallAttemptBanner.clear();
     if (m_vultrCreateButton)
         m_vultrCreateButton->setEnabled(false);
@@ -12353,6 +12393,20 @@ void MainWindow::createVultrMirrorFromForm()
                             "account."));
                         return;
                     }
+                    m_vultrHostMetadata.insert(
+                        QStringLiteral("planType"),
+                        plan.value(QStringLiteral("id")));
+                    m_vultrHostMetadata.insert(
+                        QStringLiteral("region"), region);
+                    m_vultrHostMetadata.insert(
+                        QStringLiteral("monthlyCost"),
+                        plan.value(QStringLiteral("monthly_cost")));
+                    m_vultrHostMetadata.insert(
+                        QStringLiteral("ramMb"),
+                        plan.value(QStringLiteral("ram")));
+                    m_vultrHostMetadata.insert(
+                        QStringLiteral("diskGb"),
+                        plan.value(QStringLiteral("disk")));
                     appendHostInstallLog(
                         QStringLiteral(
                             "Cheapest supported plan: %1 ($%2/month, %3 MB RAM, %4 GB "
@@ -12423,6 +12477,9 @@ void MainWindow::createVultrMirrorFromForm()
                                                 "instance id."));
                                         return;
                                     }
+                                    m_vultrHostMetadata.insert(
+                                        QStringLiteral("instanceId"),
+                                        instanceId);
                                     appendHostInstallLog(QString::fromUtf8(
                                         "Instance %1 created \xE2\x80\x94 "
                                         "waiting for it to boot\xE2\x80\xA6\n")
@@ -12503,7 +12560,8 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
             // so every later SSH action (install, logs, uninstall, Actions)
             // authenticates with that key. Vultr Debian images boot as root.
             rememberHost(node, ip, QStringLiteral("root"), QString(),
-                         QStringLiteral("vultr booting"), identityFile);
+                         QStringLiteral("vultr booting"), identityFile,
+                         m_vultrHostMetadata);
             // Name the node in the operator's Cloudflare zone while SSH is
             // still coming up, so it joins the mesh the way the other mirrors
             // do rather than as a bare address (adhoc #331).

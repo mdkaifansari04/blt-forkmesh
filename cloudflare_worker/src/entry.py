@@ -8377,7 +8377,7 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-4"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-5"
 WORLD_QA_CARDS = (
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
@@ -8542,6 +8542,10 @@ WORLD_QA_CARDS = (
      "to become your account. Confirm the chest changes from Loading to your "
      "actual @account Fediverse details without a page refresh. On a walletless "
      "self card, select Add Wallet and confirm the payout editor opens."),
+    ("qt-host-plan-cost", "Qt Host provider and plan provenance",
+     "Provision a new Vultr mirror, reopen Hosts, and confirm its status row "
+     "retains Vultr, plan type, region, and expected monthly cost after the "
+     "install finishes and after restarting Qt."),
 )
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
 
