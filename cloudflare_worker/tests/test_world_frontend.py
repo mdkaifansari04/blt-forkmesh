@@ -2708,3 +2708,14 @@ def test_arrival_grid_sign_is_a_front_plaque_with_visit_counters():
     assert "updateArrivalStats" in APP
     assert '"/api/world/visitors", "/api/world/visitors/"' in ENTRY
     assert "record_world_visit" in ENTRY
+
+
+def test_world_presence_socket_has_a_bounded_open_deadline_and_retirement():
+    connect = APP[
+        APP.index("  async connectPresence() {"):
+        APP.index("  setPresenceState(", APP.index("  async connectPresence() {"))
+    ]
+    assert "this.socketRecovery.adopt(socket" in connect
+    assert "this.socketRecovery.markOpen(socket)" in connect
+    assert "this.socketRecovery.retire(socket)" in connect
+    assert "this.socketRecovery.scheduleReconnect(" in APP

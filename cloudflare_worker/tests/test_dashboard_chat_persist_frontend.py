@@ -180,6 +180,24 @@ def test_dashboard_chat_composer_offers_mention_autocomplete():
     )
 
 
+def test_dashboard_enter_sends_without_blocking_shift_enter_newlines():
+    wire = CHAT[CHAT.index("function wireInput("):CHAT.index("async function initChat(")]
+    assert 'event.key === "Enter" && !event.shiftKey' in wire
+
+
+def test_dashboard_picker_and_paste_attachments_send_without_an_extra_click():
+    picker = CHAT[
+        CHAT.index('fileInput.addEventListener("change"'):
+        CHAT.index("control.button.disabled", CHAT.index('fileInput.addEventListener("change"'))
+    ]
+    paste = CHAT[
+        CHAT.index('inputEl.addEventListener("paste"'):
+        CHAT.index('inputEl.addEventListener("keydown"')
+    ]
+    assert "void sendDashboardDraft(control);" in picker
+    assert "void sendDashboardDraft(attachmentControl);" in paste
+
+
 def test_chat_mention_styles_are_available_on_all_chat_surfaces():
     for source in (DASHBOARD_HTML, PUBLIC_CHAT_CSS, STYLES):
         assert ".chat-mention {" in source

@@ -966,7 +966,7 @@
       }
 
       .chat-person {
-        flex: 1;
+        flex: 0 0 auto;
         min-width: 0;
         display: flex;
         align-items: center;
@@ -976,6 +976,21 @@
         color: inherit;
         text-decoration: none;
       }
+
+      .chat-loading::before {
+        content: "";
+        display: inline-block;
+        width: 0.8em;
+        height: 0.8em;
+        margin-right: 0.55em;
+        border: 2px solid currentColor;
+        border-right-color: transparent;
+        border-radius: 50%;
+        vertical-align: -0.08em;
+        animation: chat-loading-spin 0.75s linear infinite;
+      }
+
+      @keyframes chat-loading-spin { to { transform: rotate(360deg); } }
 
       .chat-person:hover { background: var(--surface2); }
       a.chat-person:hover .chat-person-name { text-decoration: underline; text-underline-offset: 2px; }

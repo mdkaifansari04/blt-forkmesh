@@ -119,6 +119,36 @@ def test_direct_message_rendering_uses_distinct_labels_and_no_forkbot():
     )
 
 
+def test_direct_message_controls_are_wired_before_async_chat_hydration():
+    init = _function_source("initChat")
+    assert "function wireChatControls()" in CHAT
+    assert init.index("wireChatControls();") < init.index("await hydrateUserSession();")
+    assert "function wireChatComposer()" in CHAT
+    assert init.index("wireChatComposer();") < init.index("await hydrateUserSession();")
+    controls = _function_source("wireChatControls")
+    assert "directCreateBtn?.addEventListener(\"click" in controls
+    assert "openDirectMessageDialog" in controls
+    assert "directSearch?.addEventListener(\"input" in controls
+    assert "scheduleDirectMessageSearch" in controls
+    assert 'sendBtn.addEventListener("click", sendCurrentMessage)' in controls
+    assert 'attachmentInput.addEventListener("change"' in controls
+    assert "void sendAttachmentDraft();" in controls
+    composer = _function_source("wireChatComposer")
+    assert 'input.addEventListener("input"' in composer
+    assert "updateMentionSuggest();" in composer
+    assert 'input.addEventListener("keydown"' in composer
+    assert 'event.key === "Enter" && !event.shiftKey' in composer
+    refresh = _function_source("refreshDirectMessages")
+    start = _function_source("startDirectMessage")
+    assert "let directMessagesRevision = 0" in CHAT
+    assert "const requestRevision = directMessagesRevision" in refresh
+    assert "requestRevision !== directMessagesRevision" in refresh
+    assert "directMessagesRevision += 1" in start
+    assert start.index("if (!conversation?.id)") < start.index(
+        "directMessagesRevision += 1"
+    ) < start.index("reconcileDirectMessages(")
+
+
 def test_protocol_documents_participant_only_direct_messages():
     for marker in (
         'id="personal-direct-messages"',

@@ -54,6 +54,42 @@ async function accountPage(browser, account) {
 }
 
 
+test("suggests registered people after typing an at-sign in the chat composer", async ({
+  browser,
+  request,
+}) => {
+  const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+  const aliceName = `mentionalice${suffix}`.slice(0, 30);
+  const bobName = `mentionbob${suffix}`.slice(0, 30);
+  const sourceSubnet = 1 + Math.floor(Math.random() * 250);
+  const alice = await signup(request, aliceName, `198.18.${sourceSubnet}.11`);
+  await signup(request, bobName, `198.18.${sourceSubnet}.12`);
+
+  const aliceBrowser = await accountPage(browser, alice);
+  await aliceBrowser.page.goto("/chat.html");
+  const input = aliceBrowser.page.locator("#chat-input");
+  await input.fill(`@${bobName}`);
+  const suggestion = aliceBrowser.page.locator(".chat-mention-suggest-item", {
+    hasText: bobName,
+  });
+  await expect(suggestion).toBeVisible();
+  await input.press("Tab");
+  await expect(input).toHaveValue(`@${bobName} `);
+  await input.press("Shift+Enter");
+  await input.type("follow-up");
+  await expect(input).toHaveValue(`@${bobName} \nfollow-up`);
+
+  await expect(aliceBrowser.page.locator("#chat-status")).toContainText(
+    "Connected",
+  );
+  await input.fill("Enter sends this message");
+  await input.press("Enter");
+  await expect(input).toHaveValue("");
+
+  await aliceBrowser.context.close();
+});
+
+
 test("real participants create, replay, and isolate an encrypted direct message", async ({
   browser,
   request,

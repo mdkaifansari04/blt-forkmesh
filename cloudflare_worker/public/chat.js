@@ -205,6 +205,7 @@ const directReadPending = new Set();
 let directNextCursor = "";
 let directSearchTimer = null;
 let directSearchRequest = 0;
+let directMessagesRevision = 0;
 let roomTransport = null;
 let openCallbacks = [];
 let cachedUserSession = null;
@@ -226,6 +227,10 @@ let activeThreadRootId = "";
 let threadReturnFocus = null;
 // channel -> ts-ordered array of message records (newest last).
 const channelMessages = new Map();
+// channel -> idle while unseen, loading while its socket is opening, ready once
+// the room has connected or supplied a frame. Cached messages remain usable
+// across room switches even while the next room is synchronizing.
+const channelSyncState = new Map();
 // channel -> { unread } for the rooms list badges.
 const channelMeta = new Map();
 // messageId -> Map(emoji -> Map(reactorId -> reactorName)); same shape as the
@@ -838,6 +843,16 @@ function mentionCandidates(partial) {
       byName.set(key, person);
     }
   }
+  for (const person of registeredUsers.values()) {
+    const key = mentionName(person.name);
+    if (!key || key === self || byName.has(key)) continue;
+    byName.set(key, {
+      id: "account:" + key,
+      name: person.name,
+      kind: "user",
+      lastSeenMs: 0,
+    });
+  }
   if (!byName.has(FORKBOT_SENDER_ID)) {
     byName.set(FORKBOT_SENDER_ID, {
       id: FORKBOT_SENDER_ID, name: "forkbot", kind: "bot", lastSeenMs: Date.now(),
@@ -956,9 +971,17 @@ function ensureChannel(channelKey) {
   if (!channelMeta.has(channel)) {
     channelMeta.set(channel, { unread: 0 });
     if (!channelMessages.has(channel)) channelMessages.set(channel, []);
+    if (!channelSyncState.has(channel)) channelSyncState.set(channel, "idle");
     renderRooms();
   }
   return channel;
+}
+
+function markChannelLoading(channel = activeChannel) {
+  if ((channelMessages.get(channel) || []).length) return;
+  if (channelSyncState.get(channel) !== "ready") {
+    channelSyncState.set(channel, "loading");
+  }
 }
 
 // A line is "mine" when this browser sent it (senderId) OR when the signed-in
@@ -1099,6 +1122,7 @@ function setActiveChannel(name, options = {}) {
   closeThread({ restoreFocus: false });
   const previousScope = roomScopeForChannel(activeChannel);
   activeChannel = channel;
+  if (canJoinChannel(channel)) markChannelLoading(channel);
   renderAttachmentDraft();
   try {
     const record = privateChannelForKey(channel);
@@ -1146,6 +1170,7 @@ function releaseChannelMessages(channelKey) {
     reactions.delete(record.id);
   }
   channelMessages.delete(channelKey);
+  channelSyncState.delete(channelKey);
   channelMeta.delete(channelKey);
 }
 
@@ -1267,11 +1292,13 @@ async function refreshDirectMessages(options = {}) {
     return;
   }
   try {
+    const requestRevision = directMessagesRevision;
     const cursor = String(options.cursor || "");
     const endpoint = cursor
       ? DIRECT_MESSAGES_ENDPOINT + "?cursor=" + encodeURIComponent(cursor)
       : DIRECT_MESSAGES_ENDPOINT;
     const data = await privateChannelRequest(endpoint);
+    if (requestRevision !== directMessagesRevision) return;
     reconcileDirectMessages(data.conversations || [], {
       ...options,
       append: Boolean(cursor) || options.preserve === true,
@@ -1567,6 +1594,7 @@ async function startDirectMessage(username) {
     });
     const conversation = data.conversation;
     if (!conversation?.id) throw new Error("Direct message unavailable.");
+    directMessagesRevision += 1;
     reconcileDirectMessages(
       [...directMessages.values(), conversation],
       { selectSaved: false, connect: false },
@@ -1716,6 +1744,9 @@ async function refreshUsersDirectory() {
   directorySeeded = true;
   renderDirectMessagePicker();
   schedulePeopleRender();
+  if (input === document.activeElement && mentionTokenAtCaret()) {
+    updateMentionSuggest();
+  }
 }
 
 // Record the current activity counters as "seen" so the chat icon in the site
@@ -2338,7 +2369,7 @@ function sendThreadReply() {
   if (text) {
     const plain = makePlain("thread-reply", {
       rootId,
-      channel: channelDisplayLabel(activeChannel),
+      channel: channelWireLabel(activeChannel),
       text,
       richText: { v: 1, source },
     });
@@ -2605,6 +2636,15 @@ function renderActiveChannel() {
   if (!list.length) {
     const empty = document.createElement("div");
     empty.className = "chat-empty";
+    const syncState = channelSyncState.get(activeChannel);
+    if (canJoinChannel() && syncState === "loading") {
+      empty.classList.add("chat-loading");
+      empty.setAttribute("role", "status");
+      empty.setAttribute("aria-live", "polite");
+      empty.textContent = "Loading messages…";
+      logEl.append(empty);
+      return;
+    }
     empty.textContent = canJoinChannel()
       ? `No messages in ${channelDisplayLabel(activeChannel)} yet. Say hi!`
       : (
@@ -2635,6 +2675,7 @@ function renderActiveChannel() {
 // rebuilds the visible channel so ordering and grouping stay correct.
 function insertMessage(record) {
   const channel = record.channel;
+  channelSyncState.set(channel, "ready");
   const list = channelMessages.get(channel) || [];
   channelMessages.set(channel, list);
   let index = list.length;
@@ -3113,6 +3154,9 @@ function handleTransportState(state, detail) {
       return;
     }
     if (!officeAuthorizationExpired) showOfficeFailure("");
+    const connectedChannel = scope === "public-world-general" ? "#general" : scope;
+    channelSyncState.set(connectedChannel, "ready");
+    if (connectedChannel === activeChannel) renderActiveChannel();
     const direct = directMessageForKey(scope);
     setStatus(scope === "public-world-general"
       ? "Connected · public World #general"
@@ -3617,7 +3661,85 @@ if (isOfficeEmbed) {
   window.addEventListener("message", receiveOfficeMessage);
 }
 
+let chatControlsWired = false;
+function wireChatControls() {
+  if (chatControlsWired) return;
+  chatControlsWired = true;
+  sendBtn.addEventListener("click", sendCurrentMessage);
+  directCreateBtn?.addEventListener("click", openDirectMessageDialog);
+  directSearch?.addEventListener("input", scheduleDirectMessageSearch);
+  if (attachmentBtn && attachmentInput) {
+    attachmentBtn.addEventListener("click", () => attachmentInput.click());
+    attachmentInput.addEventListener("change", () => {
+      const files = Array.from(attachmentInput.files || []);
+      attachmentInput.value = "";
+      if (files.length) {
+        stageAttachments(files);
+        void sendAttachmentDraft();
+      }
+    });
+  }
+}
+
+let chatComposerWired = false;
+function wireChatComposer() {
+  if (chatComposerWired) return;
+  chatComposerWired = true;
+  input.addEventListener("paste", (event) => {
+    const file = clipboardImage(event);
+    if (!file) return;
+    event.preventDefault();
+    stageAttachments([file]);
+    void sendAttachmentDraft();
+  });
+  input.addEventListener("keydown", (event) => {
+    // While the @mention popup is open it owns the keyboard: Tab (or Enter)
+    // accepts the highlighted name, arrows move, Escape dismisses - only then
+    // does Enter fall through to send.
+    if (mentionSuggest) {
+      const acceptsMention = event.key === "Tab" || event.key === "Enter";
+      if (acceptsMention && !event.shiftKey) {
+        event.preventDefault();
+        acceptMentionSuggest();
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        moveMentionSuggest(event.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeMentionSuggest();
+        return;
+      }
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendCurrentMessage();
+    }
+  });
+  // Track the "@partial" token under the caret as it changes - typing, caret
+  // moves (arrows/click), and focus loss (delayed so a suggestion mousedown
+  // still lands).
+  input.addEventListener("input", () => {
+    resizeComposer();
+    updateMentionSuggest();
+  });
+  input.addEventListener("click", updateMentionSuggest);
+  input.addEventListener("keyup", (event) => {
+    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      updateMentionSuggest();
+    }
+  });
+  input.addEventListener("blur", () => {
+    setTimeout(closeMentionSuggest, 120);
+  });
+}
+
 async function initChat() {
+  wireChatControls();
+  wireChatComposer();
   await hydrateUserSession();
   ensureChannel("#general");
   await refreshPrivateChannels({ connect: false });
@@ -3643,18 +3765,16 @@ async function initChat() {
   // Public World #general connects for everyone. Private channels remain
   // session-gated and each uses its own ticketed room and current key version.
   if (canJoinChannel()) {
+    markChannelLoading();
     unlockChatForUser();
     connect();
     renderActiveChannel();
   } else {
     lockChatForNonUser();
   }
-  sendBtn.addEventListener("click", sendCurrentMessage);
   if (clearBtn) clearBtn.addEventListener("click", clearChat);
-  directCreateBtn?.addEventListener("click", openDirectMessageDialog);
   directMoreBtn?.addEventListener("click", loadMoreDirectMessages);
   directDialogClose?.addEventListener("click", () => directDialog?.close());
-  directSearch?.addEventListener("input", scheduleDirectMessageSearch);
   threadSendBtn?.addEventListener("click", sendThreadReply);
   threadCloseBtn?.addEventListener("click", () => closeThread());
   threadInput?.addEventListener("input", resizeThreadComposer);
@@ -3718,14 +3838,6 @@ async function initChat() {
     showOfficeFailure("");
     connect();
   });
-  if (attachmentBtn && attachmentInput) {
-    attachmentBtn.addEventListener("click", () => attachmentInput.click());
-    attachmentInput.addEventListener("change", () => {
-      const files = Array.from(attachmentInput.files || []);
-      attachmentInput.value = "";
-      if (files.length) stageAttachments(files);
-    });
-  }
   if (threadAttachmentBtn && threadAttachmentInput) {
     threadAttachmentBtn.addEventListener("click", () => threadAttachmentInput.click());
     threadAttachmentInput.addEventListener("change", () => {
@@ -3736,12 +3848,6 @@ async function initChat() {
       }
     });
   }
-  input.addEventListener("paste", (event) => {
-    const file = clipboardImage(event);
-    if (!file) return;
-    event.preventDefault();
-    stageAttachments([file]);
-  });
   threadInput?.addEventListener("paste", (event) => {
     const file = clipboardImage(event);
     if (!file || !activeThreadRootId) return;
@@ -3756,49 +3862,6 @@ async function initChat() {
       return;
     }
     if (event.key === "Escape" && dragDepth) clearDropState();
-  });
-  input.addEventListener("keydown", (event) => {
-    // While the @mention popup is open it owns the keyboard: Tab (or Enter)
-    // accepts the highlighted name, arrows move, Escape dismisses — only then
-    // does Enter fall through to send.
-    if (mentionSuggest) {
-      const acceptsMention = event.key === "Tab" || event.key === "Enter";
-      if (acceptsMention && !event.shiftKey) {
-        event.preventDefault();
-        acceptMentionSuggest();
-        return;
-      }
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        moveMentionSuggest(event.key === "ArrowDown" ? 1 : -1);
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        closeMentionSuggest();
-        return;
-      }
-    }
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      sendCurrentMessage();
-    }
-  });
-  // Track the "@partial" token under the caret as it changes — typing, caret
-  // moves (arrows/click), and focus loss (delayed so a suggestion mousedown
-  // still lands).
-  input.addEventListener("input", () => {
-    resizeComposer();
-    updateMentionSuggest();
-  });
-  input.addEventListener("click", updateMentionSuggest);
-  input.addEventListener("keyup", (event) => {
-    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
-      updateMentionSuggest();
-    }
-  });
-  input.addEventListener("blur", () => {
-    setTimeout(closeMentionSuggest, 120);
   });
   resizeComposer();
   scheduleDateDividerRefresh();

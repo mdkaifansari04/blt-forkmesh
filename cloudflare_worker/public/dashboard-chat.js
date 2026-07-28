@@ -2138,7 +2138,10 @@
     fileInput.addEventListener("change", () => {
       const files = Array.from(fileInput.files || []);
       fileInput.value = "";
-      if (files.length) stageDashboardAttachments(control, files);
+      if (files.length) {
+        stageDashboardAttachments(control, files);
+        void sendDashboardDraft(control);
+      }
     });
     control.button.disabled = !canJoinChat();
     control.input.disabled = !canJoinChat();
@@ -2202,6 +2205,7 @@
       if (!file) return;
       event.preventDefault();
       stageDashboardAttachments(attachmentControl, [file]);
+      void sendDashboardDraft(attachmentControl);
     });
     inputEl.addEventListener("keydown", (event) => {
       // While the mention list is open it owns Enter/Tab/arrows, so accepting a
@@ -2228,7 +2232,7 @@
           return;
         }
       }
-      if (event.key === "Enter") {
+      if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         sendFrom(inputEl, attachmentControl);
       }

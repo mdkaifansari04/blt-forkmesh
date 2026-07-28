@@ -32202,6 +32202,10 @@ async def _privacy_safe_log_path(env, path):
     if path == "/api/private-replicas" or path.startswith(
             "/api/private-replicas/"):
         return "/api/private-replicas/[opaque]"
+    if path.startswith("/api/chat/channels/"):
+        return "/api/chat/channels/[opaque]"
+    if path.startswith("/api/chat/direct-messages/"):
+        return "/api/chat/direct-messages/[opaque]"
     match = REPO_API_PREFIX_RE.match(path)
     if not match:
         for pattern in (

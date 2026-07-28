@@ -16,6 +16,7 @@ RICH_TEXT = PUBLIC / "chat-rich-text.js"
 THREAD_MODEL = PUBLIC / "chat-thread-model.js"
 CHAT = PUBLIC / "chat.js"
 HTML = PUBLIC / "chat.html"
+FULL_CHAT = CHAT.read_text(encoding="utf-8")
 
 
 def _run_module(script):
@@ -337,3 +338,54 @@ def test_attachment_module_sanitizes_and_digests_bounded_entries():
     assert result["normalized"]["size"] == 13
     assert len(result["normalized"]["digest"]) == 43
     assert result["oversized"] is None
+
+
+def test_full_chat_mentions_include_directory_users_and_refresh_open_popup():
+    candidates = FULL_CHAT[
+        FULL_CHAT.index("function mentionCandidates("):
+        FULL_CHAT.index("function renderMentionSuggest(")
+    ]
+    directory = FULL_CHAT[
+        FULL_CHAT.index("async function refreshUsersDirectory("):
+        FULL_CHAT.index("async function markChatActivitySeen(")
+    ]
+    assert "registeredUsers.values()" in candidates
+    assert "updateMentionSuggest();" in directory
+
+
+def test_direct_thread_replies_use_the_canonical_room_wire_label():
+    reply = FULL_CHAT[
+        FULL_CHAT.index("function sendThreadReply("):
+        FULL_CHAT.index("function cancelMessageEdit(")
+    ]
+    attachment = FULL_CHAT[
+        FULL_CHAT.index("async function sendAttachment("):
+        FULL_CHAT.index("async function sendAttachments(")
+    ]
+    assert "channel: channelWireLabel(activeChannel)" in reply
+    assert "channel: channelWireLabel(channelAtSend)" in attachment
+
+
+def test_channel_switching_preserves_cached_messages_and_labels_cache_misses():
+    render = FULL_CHAT[
+        FULL_CHAT.index("function renderActiveChannel()"):
+        FULL_CHAT.index("// Insert a message record", FULL_CHAT.index("function renderActiveChannel()"))
+    ]
+    transport = FULL_CHAT[
+        FULL_CHAT.index("function handleTransportState("):
+        FULL_CHAT.index("function newRoomTransport(")
+    ]
+    assert "const channelSyncState = new Map()" in FULL_CHAT
+    assert 'syncState === "loading"' in render
+    assert "Loading messages" in render
+    assert 'channelSyncState.set(connectedChannel, "ready")' in transport
+
+
+def test_people_cards_do_not_grow_to_fill_an_empty_sidebar():
+    css = (PUBLIC / "chat.css").read_text(encoding="utf-8")
+    html = HTML.read_text(encoding="utf-8")
+    for source in (html, css):
+        start = source.index(".chat-person {")
+        rule = source[start:source.index("}", start)]
+        assert "flex: 0 0 auto" in rule
+        assert "flex: 1" not in rule

@@ -43,6 +43,7 @@ import { createWorldOfficeController } from "./world-office.js";
 import { createWorldOfficeMeeting } from "./world-office-meeting.js";
 import { createWorldOfficeTasksController } from "./world-office-tasks.js";
 import { officeFloorsForTeam } from "./world-office-tower.js";
+import { createWorldSocketRecoveryTimers } from "./world-socket-recovery.js";
 import {
   CAMPFIRE_SEATED_ACTIVITY,
   SWING_RIDING_ACTIVITY,
@@ -146,6 +147,7 @@ const POSITION_FLOORS = Object.freeze({
   west: 0.38,
 });
 const SOCKET_RETRY_MAX_MS = 20000;
+const SOCKET_CONNECT_TIMEOUT_MS = 12000;
 const SOCKET_STABLE_MS = 5000;
 const SOCKET_PEER_GRACE_MS = 8000;
 // The relay retired this socket because the same account joined from another
@@ -4600,6 +4602,8 @@ class ForkMeshWorld extends HTMLElement {
     this.socketRetry = 1000;
     this.socketTimer = 0;
     this.socketStableTimer = 0;
+    this.socketRecovery = createWorldSocketRecoveryTimers();
+    this.socketRecoveryAttempts = 0;
     this.socketConnectionAttempts = 0;
     this.socketInboundFrames = 0;
     this.socketOutboundFrames = 0;
@@ -20632,7 +20636,7 @@ class ForkMeshWorld extends HTMLElement {
       socketState = this.serverPeerId ? "online" : "handshaking";
     } else if (readyState === 2) {
       socketState = "closing";
-    } else if (this.socketTimer) {
+    } else if (this.socketRecovery.hasReconnect) {
       socketState = "reconnecting";
     }
     const socketOnline = readyState === 1 && Boolean(this.serverPeerId);
@@ -20697,7 +20701,7 @@ class ForkMeshWorld extends HTMLElement {
           0,
           Math.min(
             WORLD_DIAGNOSTICS_COUNTER_MAX,
-            this.socketConnectionAttempts - 1,
+            this.socketRecoveryAttempts,
           ),
         ),
         bufferedBytes: Math.max(
@@ -21422,7 +21426,7 @@ class ForkMeshWorld extends HTMLElement {
   // tab brings it back here.
   handlePresenceTakeover() {
     this.presenceTakenOver = true;
-    window.clearTimeout(this.socketTimer);
+    this.socketRecovery.cancelReconnect();
     this.socketTimer = 0;
     this.socketRetry = 1000;
     this.setPresenceState("offline", "Active on your other device");
@@ -21441,13 +21445,17 @@ class ForkMeshWorld extends HTMLElement {
 
   schedulePresenceReconnect() {
     if (this.destroyed || document.hidden || this.presenceTakenOver) return;
-    window.clearTimeout(this.socketTimer);
     const jitter = 0.75 + Math.random() * 0.5;
     const delay = Math.max(250, Math.round(this.socketRetry * jitter));
-    this.socketTimer = window.setTimeout(() => {
+    const scheduled = this.socketRecovery.scheduleReconnect(delay, () => {
       this.socketTimer = 0;
+      this.socketRecoveryAttempts = incrementDiagnosticCounter(
+        this.socketRecoveryAttempts,
+      );
       this.connectPresence();
-    }, delay);
+    });
+    if (!scheduled) return;
+    this.socketTimer = 1;
     this.socketRetry = Math.min(
       SOCKET_RETRY_MAX_MS,
       Math.round(this.socketRetry * 1.8),
@@ -21520,6 +21528,12 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     this.socket = socket;
+    this.socketRecovery.adopt(socket, SOCKET_CONNECT_TIMEOUT_MS, (stalled) => {
+      if (this.socket !== stalled) return;
+      try {
+        stalled.close(4000, "connection timeout");
+      } catch (_) {}
+    });
     this.setPresenceState("connecting", "Joining world");
     socket.addEventListener("open", () => {
       if (this.destroyed || this.socket !== socket) {
@@ -21528,12 +21542,14 @@ class ForkMeshWorld extends HTMLElement {
         } catch (_) {}
         return;
       }
+      if (!this.socketRecovery.markOpen(socket)) return;
       this.presenceConnecting = false;
       this.setPresenceState("online", "World online");
       window.clearTimeout(this.socketStableTimer);
       this.socketStableTimer = window.setTimeout(() => {
         if (this.socket === socket && socket.readyState === WebSocket.OPEN) {
           this.socketRetry = 1000;
+          this.socketRecoveryAttempts = 0;
         }
       }, SOCKET_STABLE_MS);
       window.clearTimeout(this.profilePresenceTimer);
@@ -21561,6 +21577,7 @@ class ForkMeshWorld extends HTMLElement {
     });
     socket.addEventListener("close", (event) => {
       if (this.socket !== socket) return;
+      this.socketRecovery.retire(socket);
       this.presenceConnecting = false;
       this.socket = null;
       window.clearTimeout(this.socketStableTimer);
@@ -22343,7 +22360,7 @@ class ForkMeshWorld extends HTMLElement {
       "click",
       this.refreshWorldForUpdate,
     );
-    window.clearTimeout(this.socketTimer);
+    this.socketRecovery.clearAll();
     window.clearTimeout(this.socketStableTimer);
     window.clearTimeout(this.peerGraceTimer);
     window.clearTimeout(this.profilePresenceTimer);
