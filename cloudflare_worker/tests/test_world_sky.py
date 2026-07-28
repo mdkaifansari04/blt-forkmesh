@@ -270,8 +270,18 @@ def test_sky_module_keeps_rendering_and_lifecycle_work_bounded():
     assert "solveEccentricAnomaly" not in source
     assert "EARTH_MU_KM3_S2" not in source
     assert "transform.updateMatrix();" in source
+    assert "const sunInstanceIndex = WORLD_SKY_PLANETS.length;" in source
+    assert "const moonInstanceIndex = sunInstanceIndex + 1;" in source
+    assert "function setDaylightMinute(" in source
+    assert "sunAndMoon: 2" in source
     assert "drawCalls: 3" in source
-    for method in ("update,", "tick,", "dispose,", "getState,"):
+    for method in (
+        "setDaylightMinute,",
+        "update,",
+        "tick,",
+        "dispose,",
+        "getState,",
+    ):
         assert method in source
 
     # Fetch ownership stays in world.js. This rendering module has no timers,

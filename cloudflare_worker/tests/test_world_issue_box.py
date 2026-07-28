@@ -39,7 +39,7 @@ def test_scene_builds_a_bounded_desk_from_verified_records_only():
     assert "localStorage" not in DESK
     assert "sessionStorage" not in DESK
     assert "repositoryRecordPage(kind, allItems.length)" in DESK
-    assert "allItems.slice(pageInfo.start, pageInfo.end)" in DESK
+    assert ".slice(pageInfo.start, pageInfo.end)" in DESK
     assert "repositoryRecordPageTexture(THREE, pageInfo, accent)" in DESK
 
 
@@ -112,6 +112,20 @@ def test_shell_opens_issue_cards_in_the_live_world_workbench():
 
 def test_shell_routes_pull_cards_into_the_exact_ref_diff_review():
     assert "this.loadRepositoryPullReview(meta.repositoryPullPage.number)" in APP
+    assert "openRepositoryPullWorkbench()" in APP
+    pull_workbench = APP[
+        APP.index("  openRepositoryPullWorkbench("):
+        APP.index("  async fetchRepositoryPullReview(")
+    ]
+    assert 'detail.dataset.openLandmark = "repository-pull"' in pull_workbench
+    assert "this.repositoryExplorerHTML(active)" in pull_workbench
+    assert "this.repositoryPanelHTML()" not in pull_workbench
+    assert "Repository portals" not in pull_workbench
+    issue_workbench = APP[
+        APP.index("  openRepositoryIssueWorkbench("):
+        APP.index("  selectRepositorySizeNode(")
+    ]
+    assert 'detail.dataset.openLandmark = "repository-issue"' in issue_workbench
     # The desk is fed the same commit-matched records as the explorer panel.
     assert "pulls: this.repositoryPullRecords(active)" in APP
     assert "expandedIssue: this.expandedRepositoryIssuePage" in APP

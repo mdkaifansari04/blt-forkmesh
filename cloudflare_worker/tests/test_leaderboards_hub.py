@@ -52,8 +52,8 @@ def test_world_has_the_full_connected_leaderboard_district():
     assert 'fetchJSON("/api/leaderboards"' in WORLD
     assert "this.world.updateLeaderboards" in WORLD
     assert "const WORLD_LEADERBOARD_BOARD_STUBS" in SCENE
-    assert "const LEADERBOARD_ISLAND_BOARD_RADIUS = 25;" in SCENE
-    assert 'leaderboardIsland.name = "forkmesh-leaderboard-island"' in SCENE
+    assert 'leaderboardSuperPanel.name = "forkmesh-leaderboard-super-panel"' in SCENE
+    assert 'continuousCityLand.name = "forkmesh-continuous-city-land"' in SCENE
     assert 'leaderboardConnection.name = "forkmesh-leaderboard-island-connection"' in SCENE
     assert 'leaderboardPromenade.name = "forkmesh-leaderboard-promenade"' in SCENE
     assert "function updateLeaderboards(boards = [])" in SCENE

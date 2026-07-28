@@ -491,21 +491,15 @@ def test_marketing_task_board_is_blank_while_the_room_is_empty():
     assert "officeMarketingTaskSnapshot = normalizeOfficeMarketingTasks(payload)" in update
 
 
-def test_office_is_a_remote_district_reached_by_a_broad_land_connection():
+def test_office_is_a_remote_district_on_continuous_land_with_a_paved_route():
     scene = source(SCENE_PATH)
     tower = source(TOWER_PATH)
     for contract in (
-        'officeIsland.name = "forkmesh-office-island"',
-        "new THREE.CircleGeometry(OFFICE_ISLAND_RADIUS, 128)",
+        '"forkmesh-continuous-city-land"',
         'officeLandConnection.name = "forkmesh-office-land-connection"',
-        'officeConnectionEarth.name = "forkmesh-office-land-connection-earth"',
-        'officeConnectionTop.name = "forkmesh-office-land-connection-top"',
-        "OFFICE_CONNECTION_HALF_WIDTH * 2",
+        'officePromenade.name = "forkmesh-office-land-promenade"',
         'officeBridge.name = "forkmesh-office-bridge"',
         "new THREE.BoxGeometry(OFFICE_BRIDGE_WIDTH, 0.3, officeBridgeLength)",
-        "createTerrainFoundation(",
-        '"forkmesh-office-terrain-foundation"',
-        "world.add(officeIsland)",
         "world.add(officeLandConnection)",
         "world.add(officeBridge)",
     ):
@@ -1224,7 +1218,8 @@ def test_walk_surfaces_and_every_floor_use_real_collision_constraints():
     scene = source(SCENE_PATH)
     for contract in (
         "function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS)",
-        "return officeCampusSurfaceContains(px, pz, margin)",
+        "const cityRadiusX = CONTINUOUS_CITY_RADIUS_X - margin;",
+        "const cityRadiusZ = CONTINUOUS_CITY_RADIUS_Z - margin;",
         "function constrainTownOfficeWalls(previousPosition)",
         "function constrainOfficeInteriorWalls(avatar, previousPosition)",
         "officeInteriorPointIsWalkable(",

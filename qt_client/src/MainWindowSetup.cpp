@@ -1038,6 +1038,80 @@ int MainWindow::testTopNavTrailingGap() const
     }
     return rightEdge >= 0 ? width() - rightEdge - 1 : -1;
 }
+
+void MainWindow::testSetDirectoryUserNodes(const QString &user,
+                                           const QStringList &nodes)
+{
+    MemberInfo member;
+    member.id = QStringLiteral("user:") + user.toLower();
+    member.name = user;
+    member.ownerUser = user;
+    member.accountKind = QStringLiteral("user");
+    member.nodeName = nodes.join(QStringLiteral(", "));
+    m_chatDirectoryUsers.insert(user.toLower(), member);
+    m_chatDirectoryLoaded = true;
+}
+
+void MainWindow::testShowNodesSection()
+{
+    showSection(kNodesSectionIndex);
+    refreshNodesTable();
+}
+
+QStringList MainWindow::testNodeDirectoryNames() const
+{
+    QStringList names;
+    if (!m_nodesTable)
+        return names;
+    for (int row = 0; row < m_nodesTable->rowCount(); ++row) {
+        if (QTableWidgetItem *item = m_nodesTable->item(row, 0))
+            names.append(item->data(Qt::UserRole).toString());
+    }
+    names.sort(Qt::CaseInsensitive);
+    return names;
+}
+
+void MainWindow::testRenderNetworkRepos(const QJsonArray &repos)
+{
+    showSection(kNetworkReposSectionIndex);
+    // Any real request started by opening the lazy section is now stale; the
+    // fixture below owns the table deterministically.
+    ++m_networkReposLoadGen;
+    renderNetworkRepos(repos);
+}
+
+QStringList MainWindow::testNetworkRepoNames() const
+{
+    QStringList names;
+    if (!m_networkReposTable)
+        return names;
+    for (int row = 0; row < m_networkReposTable->rowCount(); ++row) {
+        if (QTableWidgetItem *item = m_networkReposTable->item(row, 0))
+            names.append(item->data(Qt::UserRole).toString());
+    }
+    return names;
+}
+
+QString MainWindow::testNetworkRepoActionText(int row) const
+{
+    if (!m_networkReposTable || row < 0 ||
+        row >= m_networkReposTable->rowCount())
+        return QString();
+    QWidget *cell = m_networkReposTable->cellWidget(row, 3);
+    if (!cell)
+        return QString();
+    const QList<QPushButton *> buttons =
+        cell->findChildren<QPushButton *>(QString(), Qt::FindDirectChildrenOnly);
+    return buttons.isEmpty() ? QString() : buttons.first()->text();
+}
+
+QString MainWindow::testNetworkRepoMirrorHeader() const
+{
+    if (!m_networkReposTable ||
+        !m_networkReposTable->horizontalHeaderItem(2))
+        return QString();
+    return m_networkReposTable->horizontalHeaderItem(2)->text();
+}
 #endif
 
 void MainWindow::setHeadlessMode(bool headless)
@@ -1821,6 +1895,12 @@ void MainWindow::startOfficeChannelMirror()
                     // setChannels() rebuilds the sidebar from the mesh rooms
                     // plus these mirrors, so re-entering it merges them in.
                     setChannels(m_channels);
+                    refreshChatMembers();
+                });
+        connect(m_officeChannelMirror, &OfficeChannelMirror::roomMembersChanged,
+                this, [this](const QString &conversation, const QStringList &) {
+                    if (conversation == m_currentConversation)
+                        refreshChatMembers();
                 });
     }
     m_officeChannelMirror->setApiBase(catalogApiUrl());

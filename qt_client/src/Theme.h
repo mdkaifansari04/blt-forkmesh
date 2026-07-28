@@ -279,6 +279,9 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #appNavigationRail, #appNavigationRailContent {
     background-color: #0d1117; border-right: 1px solid #30363d;
 }
+QTableWidget#issueTable[nodesDirectory="true"]::item:selected {
+    background-color: #21262d; color: #e6edf3;
+}
 QPushButton[railUtility="true"] {
     background: transparent; border: 1px solid transparent; border-radius: 6px;
     color: #8b949e; padding: 0;
@@ -334,7 +337,11 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
 #appVersionLabel {
     background: transparent; color: #e6edf3; font-size: 13px; font-weight: 700;
 }
+#chromeVersionLabel {
+    background: transparent; color: #8b949e; font-size: 9px; font-weight: 600;
+}
 #breadcrumb { background: transparent; font-size: 14px; font-weight: 600; }
+#issueDetailOverlay { background-color: #0d1117; }
 #connectionStatus { background: transparent; font-size: 13px; font-weight: 600; }
 /* Presence dot overlaid on the avatar: ring matches the bar so it reads as a cut-out. */
 #connectionDot { border: 2px solid #0d1117; }
@@ -1486,6 +1493,9 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #appNavigationRail, #appNavigationRailContent {
     background-color: #ffffff; border-right: 1px solid #d0d7de;
 }
+QTableWidget#issueTable[nodesDirectory="true"]::item:selected {
+    background-color: #eaeef2; color: #1f2328;
+}
 QPushButton[railUtility="true"] {
     background: transparent; border: 1px solid transparent; border-radius: 6px;
     color: #656d76; padding: 0;
@@ -1540,6 +1550,10 @@ QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328
 #appVersionLabel {
     background: transparent; color: #1f2328; font-size: 13px; font-weight: 700;
 }
+#chromeVersionLabel {
+    background: transparent; color: #656d76; font-size: 9px; font-weight: 600;
+}
+#issueDetailOverlay { background-color: #ffffff; }
 #globalSearch {
     background-color: #ffffff; border: 1px solid #d0d7de;
     border-radius: 6px; padding: 4px 8px; color: #1f2328;

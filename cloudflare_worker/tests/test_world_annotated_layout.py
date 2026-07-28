@@ -16,7 +16,9 @@ def test_town_has_four_solid_cardinal_paved_routes():
         '"south-members", [0, 16], [0, 88], 8.4',
     ):
         assert route in SCENE
-    assert "function addRoundedCausewayEnds(" in SCENE
+    assert "function addRoundedCausewayEnds(" not in SCENE
+    assert '"forkmesh-continuous-city-land"' in SCENE
+    assert "concreteBrickMaterial(THREE)" in SCENE
     for district in ("repository", "leaderboard", "office", "member"):
         assert f"{district}" in SCENE
 
@@ -54,12 +56,13 @@ def test_billboards_use_one_aligned_perimeter_and_ignore_legacy_coordinates():
         )
 
 
-def test_members_have_a_walkable_south_island_and_campfire():
+def test_members_share_continuous_land_with_a_south_promenade_and_campfire():
     assert "const MEMBER_ISLAND_CENTER_Z = 130;" in SCENE
-    assert '"forkmesh-member-island"' in SCENE
+    assert '"forkmesh-continuous-city-land"' in SCENE
+    assert '"forkmesh-member-island"' not in SCENE
     assert '"forkmesh-member-island-connection"' in SCENE
     assert '"forkmesh-member-promenade"' in SCENE
-    assert "Math.hypot(px, pz - MEMBER_ISLAND_CENTER_Z)" in SCENE
+    assert "function worldWalkSurfaceContains(x, z" in SCENE
     assert "position: [0, 0, 130]" in DATA
     assert 'registerMovableObject("south-members:campfire", campfire);' in SCENE
     assert "const POSITION_RADIUS = 620;" in APP

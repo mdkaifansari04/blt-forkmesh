@@ -195,6 +195,23 @@ def safe_catalog_record(data):
         )
     ):
         return None
+    changed_files = []
+    raw_changed_files = data.get("changedFiles")
+    if isinstance(raw_changed_files, list):
+        for value in raw_changed_files[:16]:
+            path = clean_string(value, 160).strip().replace("\\", "/")
+            if (
+                not path
+                or path.startswith("/")
+                or path == ".."
+                or path.startswith("../")
+                or path in changed_files
+                or any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in path)
+            ):
+                continue
+            changed_files.append(path)
+            if len(changed_files) >= 8:
+                break
     record = {
         "owner": owner,
         "name": name,
@@ -263,6 +280,8 @@ def safe_catalog_record(data):
     if actions_fields:
         record["actionsEnabled"] = actions_enabled
         record["actionsState"] = actions_state
+    if changed_files:
+        record["changedFiles"] = changed_files
     # Keep absent telemetry absent (rather than adding null fields) so a
     # catalog-v2 signature produced by an older, opted-out client continues to
     # verify after this schema extension. Consumers still expose unknown values

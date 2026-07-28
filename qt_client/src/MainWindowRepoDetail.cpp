@@ -92,28 +92,6 @@ void MainWindow::startIssueInIde(int issueNumber, const QString &title,
                          false);
 }
 
-// The repository chrome — the header row (repo switcher plus the
-// Notify/Fork/Mirror/Source/Open actions) and the Code/Issues/PRs… tab bar — is
-// about the repository as a whole. On the Agents tab (m_repoDetailStack index
-// 3) none of it applies: the session list is its own workspace, and the git nav
-// only pushed it down the page. Hide the whole band there and show it again on
-// every other tab; the activity rail's Code/Git entries stay the way back out.
-// Wired to m_repoDetailStack::currentChanged so it tracks tab switches however
-// they happen (click, programmatic jump, Back/Forward).
-void MainWindow::updateRepoChromeVisibility(int stackIndex)
-{
-    const bool onAgentsTab = stackIndex == 3;
-    for (QPushButton *b : {m_notifyButton, m_forkButton, m_mirrorButton,
-                           m_sourceButton, m_repoOpenButton}) {
-        if (b)
-            b->setVisible(!onAgentsTab);
-    }
-    if (m_repoHeaderBar)
-        m_repoHeaderBar->setVisible(!onAgentsTab);
-    if (m_repoTabBarScroll)
-        m_repoTabBarScroll->setVisible(!onAgentsTab);
-}
-
 // Show/hide the issue-detail "run in IDE" buttons based on the toggle + whether
 // a live extension is detected. Called whenever an issue is rendered.
 void MainWindow::updateIssueIdeButtons()
@@ -441,7 +419,8 @@ QWidget *MainWindow::buildRepoFilesPanel()
     m_footerGitIdentity->setToolTip(
         "Git author identity configured for the repository you're viewing");
 
-    auto *modeRow = new QHBoxLayout;
+    m_repoFilesModeBar = new QWidget;
+    auto *modeRow = new QHBoxLayout(m_repoFilesModeBar);
     modeRow->setContentsMargins(16, 6, 16, 0);
     modeRow->setSpacing(2);
     modeRow->addWidget(m_filesModeOverviewButton);
@@ -455,7 +434,7 @@ QWidget *MainWindow::buildRepoFilesPanel()
     auto *layout = new QVBoxLayout(panel);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-    layout->addLayout(modeRow);
+    layout->addWidget(m_repoFilesModeBar);
     layout->addWidget(m_filesStack, 1);
     return panel;
 }
@@ -688,13 +667,22 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_overviewBodyStack->setSizePolicy(
         QSizePolicy::Expanding, QSizePolicy::Ignored);
 
-    // Left column: toolbar, latest commit, then the swappable body.
+    // Left column: toolbar, latest commit, then the swappable body. The first
+    // two live in one wrapper so the activity-rail Git view can remove the
+    // entire Code-only upper section and give its commits/changes workspace
+    // the full available height.
+    m_repoOverviewChrome = new QWidget;
+    auto *overviewChromeLayout = new QVBoxLayout(m_repoOverviewChrome);
+    overviewChromeLayout->setContentsMargins(0, 0, 0, 0);
+    overviewChromeLayout->setSpacing(8);
+    overviewChromeLayout->addLayout(toolbar);
+    overviewChromeLayout->addWidget(commitCard);
+
     auto *leftColumn = new QWidget;
     auto *leftLayout = new QVBoxLayout(leftColumn);
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(8);
-    leftLayout->addLayout(toolbar);
-    leftLayout->addWidget(commitCard);
+    leftLayout->addWidget(m_repoOverviewChrome);
     leftLayout->addWidget(m_overviewBodyStack, 1);
 
     auto *layout = new QVBoxLayout(page);
@@ -8265,8 +8253,6 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabBarScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     tabBarScroll->setMinimumWidth(0);
     tabBarScroll->setFixedHeight(48);
-    // Handle for updateRepoChromeVisibility: the Agents tab hides the git nav.
-    m_repoTabBarScroll = tabBarScroll;
 
     // The integrity-pin warning ("clones are being rejected — reset the pin")
     // doesn't live in an in-page banner here; refreshRepoPinBanner surfaces it as
@@ -8366,13 +8352,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     // every such move is a step the arrows can return to. Debounced and guarded
     // against replays, so it coalesces a repo-open's tab churn into one entry.
     connect(m_repoDetailStack, &QStackedWidget::currentChanged, this,
-            [this](int index) {
-                scheduleNavRecord();
-                // The repo header row and tab bar act on the repository itself
-                // and are irrelevant on the Agents tab (index 3) — hide the
-                // whole band there so the session list starts at the top.
-                updateRepoChromeVisibility(index);
-            });
+            [this](int) { scheduleNavRecord(); });
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         ensureRepoDetailTabBuilt(id);
         m_repoDetailStack->setCurrentIndex(id);
@@ -8529,17 +8509,19 @@ QWidget *MainWindow::buildRepoDetailSection()
                 [this](int) { updateRepoActivityRail(); });
     updateRepoActivityRail();
 
+    m_repoDetailChrome = new QWidget;
+    auto *chromeLayout = new QVBoxLayout(m_repoDetailChrome);
+    chromeLayout->setContentsMargins(0, 0, 0, 0);
+    chromeLayout->setSpacing(6);
+    chromeLayout->addLayout(headerRow);
+    chromeLayout->addWidget(m_repoDetailNotice);
+    chromeLayout->addWidget(metaBand);
+    chromeLayout->addWidget(tabBarScroll);
+
     auto *content = new QVBoxLayout;
     content->setContentsMargins(0, 0, 0, 0);
     content->setSpacing(6);
-    // The header row lives in its own widget so the Agents tab can hide the
-    // whole band in one call (a bare layout would leave its margins behind).
-    m_repoHeaderBar = new QWidget;
-    m_repoHeaderBar->setLayout(headerRow);
-    content->addWidget(m_repoHeaderBar);
-    content->addWidget(m_repoDetailNotice);
-    content->addWidget(metaBand);
-    content->addWidget(tabBarScroll);
+    content->addWidget(m_repoDetailChrome);
     content->addWidget(m_repoDetailStack, 1);
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -8563,12 +8545,27 @@ void MainWindow::updateRepoActivityRail()
     const bool onChanges =
         onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
+    const bool onAgents =
+        onHome && m_repoDetailStack && m_repoDetailStack->currentIndex() == 3;
+    // Git is its own activity-rail destination. Hide every Code/repository
+    // header above the source-control workspace instead of leaving several
+    // rows of unrelated repository navigation on screen. The Agents tab gets
+    // the same treatment for the repository band: the session list is its own
+    // workspace, and the repo switcher, repo actions and Code/Issues/PRs… tabs
+    // only pushed it down the page. The activity rail's Code/Git entries stay
+    // the way back out of both.
+    if (m_repoDetailChrome)
+        m_repoDetailChrome->setVisible(!onChanges && !onAgents);
+    if (m_repoFilesModeBar)
+        m_repoFilesModeBar->setVisible(!onChanges);
+    if (m_repoOverviewChrome)
+        m_repoOverviewChrome->setVisible(!onChanges);
+    if (m_footerDock)
+        m_footerDock->setVisible(!onChanges);
     m_railCodeButton->setChecked(onCode && !onChanges);
     m_railGitButton->setChecked(onChanges);
     if (m_agentsNavButton)
-        m_agentsNavButton->setChecked(
-            onHome && m_repoDetailStack &&
-            m_repoDetailStack->currentIndex() == 3);
+        m_agentsNavButton->setChecked(onAgents);
 }
 
 

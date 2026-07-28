@@ -124,7 +124,7 @@ def test_entity_records_fail_closed_on_commit_mismatch_and_remain_bounded():
     assert all("Leak" not in json.dumps(node) for node in nodes)
 
 
-def test_three_scene_creates_selectable_distinct_entity_meshes_and_edges():
+def test_three_scene_creates_selectable_distinct_entity_meshes_without_lines():
     assert "function updateRepositoryGraph(entries = [], entities = [])" in SCENE
     assert "repository-entity-layer" in SCENE
     assert "new THREE.SphereGeometry" in SCENE
@@ -132,7 +132,9 @@ def test_three_scene_creates_selectable_distinct_entity_meshes_and_edges():
     assert "new THREE.TorusGeometry" in SCENE
     assert "mesh.userData.graphNode" in SCENE
     assert "interactive.push(mesh)" in SCENE
-    assert "entityRelationships.push([mesh, meshes[targetIndex]])" in SCENE
     assert "repositoryEntityMeshes" in SCENE
+    assert "new THREE.Line(" not in SCENE
+    assert "new THREE.LineSegments(" not in SCENE
+    assert "new THREE.LineBasicMaterial(" not in SCENE
     assert "meta.graphNode" in APP
     assert "selectRepositoryGraphNode" in APP

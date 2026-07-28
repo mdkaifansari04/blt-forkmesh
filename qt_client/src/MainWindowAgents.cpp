@@ -935,7 +935,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *listPane = new QWidget;
     listPane->setMinimumWidth(260);
     // The heading shares the toolbar row rather than owning a line of its own:
-    // with the repo tab bar hidden on this tab (updateRepoChromeVisibility) the
+    // with the repository band hidden on this tab (updateRepoActivityRail) the
     // session list starts at the top of the page, and a one-line header keeps it
     // there instead of spending two rows on chrome.
     auto *heading = new QLabel("Agent sessions");
@@ -4015,8 +4015,10 @@ void MainWindow::initAgents()
             m_agentStore->appendLog(
                 session, QStringLiteral("\n==> Resuming after ForkMesh restart."));
             m_agentQueue.append(session.id);
+            m_startupQuietAgentSessions.insert(session.id);
         } else if (session.status == AgentStatus::Queued) {
             m_agentQueue.append(session.id);
+            m_startupQuietAgentSessions.insert(session.id);
         }
     }
     m_agentSessions = m_agentStore->loadAllSessions();
@@ -7504,7 +7506,9 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // pressed Enter in the composer on the Agents tab): switchToAgentsTab fires
     // extra reloadAgents() calls that can reset the table selection to row 0 and
     // navigate away from the session the user was working with.
-    if (!m_agentQuietResume) {
+    const bool startupQuiet =
+        m_startupQuietAgentSessions.remove(sid) || m_agentQuietResume;
+    if (!startupQuiet) {
         m_terminalSessionId = sid;
         if (m_selectedAgentSessionId != sid)
             switchToAgentsTab(sid);

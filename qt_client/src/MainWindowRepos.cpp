@@ -338,6 +338,31 @@ QJsonObject normalizedCatalogV2Record(const QJsonObject &data)
         {QStringLiteral("stateSig"),
          cleanCatalogString(data, QStringLiteral("stateSig"), 220)},
     };
+    QJsonArray changedFiles;
+    for (const QJsonValue &value :
+         data.value(QStringLiteral("changedFiles")).toArray()) {
+        QString path =
+            QDir::fromNativeSeparators(value.toString()).trimmed().left(160);
+        if (path.isEmpty() || path.startsWith(QLatin1Char('/')) ||
+            path == QLatin1String("..") ||
+            path.startsWith(QLatin1String("../")) ||
+            changedFiles.contains(path)) {
+            continue;
+        }
+        bool safe = true;
+        for (const QChar ch : path) {
+            if (ch.unicode() < 0x20 || ch.unicode() == 0x7f) {
+                safe = false;
+                break;
+            }
+        }
+        if (safe)
+            changedFiles.append(path);
+        if (changedFiles.size() >= 8)
+            break;
+    }
+    if (!changedFiles.isEmpty())
+        record.insert(QStringLiteral("changedFiles"), changedFiles);
     // Optional extension fields are omitted when not shared. Besides preserving
     // a truthful "unknown", this keeps catalog-v2 signatures from older clients
     // valid after the Worker learns about host telemetry.
@@ -3939,6 +3964,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     const QString name = repoSegment(repo.name, QStringLiteral("repository"));
     QString updatedAt = QString::number(now);
     QJsonObject contributionFields;
+    QStringList changedFiles;
     // A stable identity for the logical repo: its first (root) commit, shared by
     // every node mirroring it. The network page groups mirrors by this so the same
     // repo under different owners shows as one card. Not part of the signature.
@@ -4183,6 +4209,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
         }
 
         if (cachedSnapshot->complete && cachedSnapshot->error.isEmpty()) {
+            changedFiles = cachedSnapshot->changedFiles;
             contributionLogoPayload = cachedSnapshot->payload;
             const qint64 capturedAt = qint64(
                 cachedSnapshot->payload.value(QStringLiteral("capturedAt"))
@@ -4418,6 +4445,11 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     for (auto it = contributionFields.constBegin();
          it != contributionFields.constEnd(); ++it) {
         metadata.insert(it.key(), it.value());
+    }
+    if (!repo.isPrivate && !changedFiles.isEmpty()) {
+        metadata.insert(
+            QStringLiteral("changedFiles"),
+            QJsonArray::fromStringList(changedFiles.mid(0, 8)));
     }
     const bool contributionSubmitted =
         metadata.contains(QStringLiteral("contributionPayload")) &&
