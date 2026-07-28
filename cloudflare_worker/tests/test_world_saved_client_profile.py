@@ -98,6 +98,17 @@ def test_public_directory_carries_the_saved_client_profile():
     assert "world_os" in fields
 
 
+def test_public_account_lookup_enriches_the_chest_without_a_roster_wait():
+    lookup = ast.unparse(_top_level_node("accounts_handler"))
+    assert "_account_world_client_fields(rec)" in lookup
+    profile = APP.split("async loadWorldFediverseProfile", 1)[1].split(
+        "async toggleWorldFediverseFollow", 1
+    )[0]
+    assert "emailVerified: profile.emailVerified === true" in profile
+    assert "countryCode:" in profile
+    assert "avatarUrl:" in profile
+
+
 def test_client_profile_route_is_registered():
     routes = ast.unparse(_top_level_node("Default"))
     assert "/api/world/client" in routes

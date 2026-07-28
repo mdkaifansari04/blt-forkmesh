@@ -2512,12 +2512,12 @@ function officeReclaimedWoodTexture(THREE) {
 // completed task moves to a varied slot on the right with a hand-drawn X.
 // Keep the ordering stable so a repaint never makes notes jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
-  { key: "wip:flagship-expanded", task: "Keep flagship repo expanded without sync delay", estimate: "in progress · testing", done: false },
-  { key: "wip:avatar-identity", task: "Immediate flags + verified email pins", estimate: "in progress · testing", done: false },
-  { key: "wip:avatar-faces", task: "Unique faces + compact avatar upload", estimate: "in progress · building", done: false },
-  { key: "wip:repo-work-list", task: "One issue + PR list with big totals", estimate: "in progress · testing", done: false },
-  { key: "wip:top-avatar", task: "Top-right account avatar button", estimate: "in progress · building", done: false },
-  { key: "wip:cabinet-panel-swap", task: "Swap cabinet faces + split agent sides", estimate: "in progress · testing", done: false },
+  { key: "done:flagship-expanded", task: "Keep flagship repo expanded without sync delay", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:avatar-identity", task: "Immediate flags + verified email pins", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:avatar-faces", task: "Unique faces + compact avatar upload", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:repo-work-list", task: "One issue + PR list with big totals", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:top-avatar", task: "Top-right account avatar button", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:cabinet-panel-swap", task: "Swap cabinet faces + split agent sides", estimate: "ready for deploy · in QA", done: true },
   { key: "task:status-deploy-semaphore", task: "Skip false status incidents during deploys", estimate: "deployed", done: true },
   { key: "task:mobile-home-world", task: "Mobile home live count + Join World", estimate: "deployed", done: true },
   { key: "task:qa-physical-deck", task: "Global physical QA deck + clear swipe arrows", estimate: "deployed", done: true },

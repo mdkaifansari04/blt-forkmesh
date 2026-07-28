@@ -7,6 +7,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCENE = (ROOT / "public" / "world" / "world-scene.js").read_text(
     encoding="utf-8")
+APP = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
+CSS = (ROOT / "public" / "world" / "world.css").read_text(encoding="utf-8")
 
 
 def test_repository_issues_and_pulls_share_one_paginated_board():
@@ -45,3 +47,17 @@ def test_cabinet_faces_are_swapped_and_agent_sides_are_provider_specific():
     assert 'rearPanel.position.set(0, 1.72, 0.735)' in cabinet
     assert 'const provider = side < 0 ? "claude-code" : "codex";' in cabinet
     assert "task.provider === providerLabel" in agents
+
+
+def test_top_right_identity_control_uses_account_avatar_not_country_flag():
+    assert "data-world-shirt-avatar" in APP
+    assert "data-world-shirt-initial" in APP
+    assert "data-world-shirt-flag" not in APP
+    badge = CSS[
+        CSS.index(".world-shirt-badge {"):
+        CSS.index(".world-shirt-badge:hover")
+    ]
+    assert "width: 40px" in badge
+    assert "height: 40px" in badge
+    assert ".world-shirt-avatar" in CSS
+    assert "object-fit: cover" in CSS

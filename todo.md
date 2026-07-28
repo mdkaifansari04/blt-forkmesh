@@ -5,12 +5,12 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
-- [ ] Keep the flagship repository wheel expanded immediately and remove mirror-metadata render delay.
-- [ ] Restore country flags immediately, add verified-email front pins, and keep privacy choices intact.
-- [ ] Give every user a stable unique generated face plus a compact account-avatar upload override.
-- [ ] Combine repository issues and pull requests into one paginated World list with large totals and contained card text.
-- [ ] Show the signed-in user's uploaded avatar in the top-right control at the same size as neighboring buttons.
-- [ ] Swap cabinet Actions/server-info faces and split Claude/Codex work onto opposite side panels.
+- [x] Keep the flagship repository wheel expanded immediately and remove mirror-metadata render delay.
+- [x] Restore country flags immediately, add verified-email front pins, and keep privacy choices intact.
+- [x] Give every user a stable unique generated face plus a compact account-avatar upload override.
+- [x] Combine repository issues and pull requests into one paginated World list with large totals and contained card text.
+- [x] Show the signed-in user's uploaded avatar in the top-right control at the same size as neighboring buttons.
+- [x] Swap cabinet Actions/server-info faces and split Claude/Codex work onto opposite side panels.
 - [x] Consolidate aquarium feed, opaque/clear backdrop, and light controls into a clickable bottom-right tank panel.
 - [x] Represent every public user as a small deterministic fish, with active/recent fish in upper lanes and inactive fish near the bottom.
 - [x] Let platform admins drag any World object's visible base to move it, with handle-free right-drag / Shift-drag rotation.
