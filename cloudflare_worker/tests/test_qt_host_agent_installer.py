@@ -125,11 +125,12 @@ def test_orphaned_headless_node_redeems_its_installer_link_code():
         in setup
     )
     assert (
-        "!hasOwnerSigningCapability(name) || installerLinkPending"
+        "if (shouldHost && (!hostingReady || installerLinkPending))"
         in setup
     )
     assert (
-        "if (installerLinkPending)\n            return false;"
+        'if (installerLinkPending &&\n'
+        '            lookup.value("owner").toString().trimmed().isEmpty())'
         in setup
     )
     assert (
@@ -137,6 +138,8 @@ def test_orphaned_headless_node_redeems_its_installer_link_code():
         "                        !installerLinkPending"
         in setup
     )
+    assert "if (shouldHost && hostingReady)" in setup
+    assert "returning headless node after every service" in setup
 
 
 def test_vultr_success_waits_for_mirror_nodes_and_world_catalog():

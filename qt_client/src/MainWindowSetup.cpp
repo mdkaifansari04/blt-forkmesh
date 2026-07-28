@@ -1131,42 +1131,36 @@ void MainWindow::startSession()
         m_headless &&
         installerLinkCodeRe.match(installerLinkCode).hasMatch() &&
         m_nodeOwnerUser.trimmed().isEmpty();
-    if ((m_headless || publishesMirror) &&
-        (!hasOwnerSigningCapability(name) || installerLinkPending) &&
-        isValidNodeName(name)) {
-        bool registered = false;
+    const bool shouldHost =
+        (m_headless || publishesMirror) && isValidNodeName(name);
+    bool hostingReady = hasOwnerSigningCapability(name);
+    if (shouldHost && (!hostingReady || installerLinkPending)) {
 #ifdef FORKMESH_WINDOW_TESTS
         if (!m_testBypassServerStart)
-            registered = registerNodeAccountSilently(name);
+            hostingReady = registerNodeAccountSilently(name);
 #else
-        registered = registerNodeAccountSilently(name);
+        hostingReady = registerNodeAccountSilently(name);
 #endif
-        // A just-registered node has no catalog record yet, and an already-synced
-        // mirror won't re-publish on the next (quiet, unchanged) auto-sync — so
-        // seed the catalog now for every mirror we already hold. The repo page
-        // builds its mirror rows from catalog records, so without this the node
-        // would host (host_presence) yet never appear in the list.
-        if (registered) {
-            if (m_headless)
-                ensureFlagshipRepo();
-            for (int i = 0; i < m_repositories.size(); ++i) {
-                const RepositoryRecord &r = m_repositories.at(i);
-                if (!r.previewOnly && r.publishToNetwork &&
-                    !r.mirrorPath.isEmpty() && QDir(r.mirrorPath).exists())
-                    publishRepository(i, false);
-            }
-        } else if (m_headless || publishesMirror) {
-            // Nothing else in an unattended run ever calls
-            // registerNodeAccountSilently() again — so a transient failure here
-            // (relay unreachable right at boot is the common case on a fresh
-            // VPS) would otherwise strand the node unregistered forever, even
-            // though it keeps mirroring/chatting fine: no account means no host
-            // token, so it never marks host_presence and never appears on the
-            // website. This covers both a headless VM and a node that only
-            // qualified via publishesMirror — the same set registered above.
-            // Retry with backoff.
-            scheduleHeadlessRegisterRetry(name);
+    }
+    // A just-registered node—and a returning headless node after every service
+    // restart—needs a fresh catalog row. An unchanged mirror does not naturally
+    // re-publish during a quiet sync, so seeding only inside the registration
+    // branch makes a healthy cabinet disappear when the prior row ages out.
+    if (shouldHost && hostingReady) {
+        if (m_headless)
+            ensureFlagshipRepo();
+        for (int i = 0; i < m_repositories.size(); ++i) {
+            const RepositoryRecord &r = m_repositories.at(i);
+            if (!r.previewOnly && r.publishToNetwork &&
+                !r.mirrorPath.isEmpty() && QDir(r.mirrorPath).exists())
+                publishRepository(i, false);
         }
+    } else if (shouldHost) {
+        // Nothing else in an unattended run ever calls
+        // registerNodeAccountSilently() again — so a transient failure here
+        // (relay unreachable right at boot is the common case on a fresh VPS)
+        // would otherwise strand the node unregistered forever.
+        scheduleHeadlessRegisterRetry(name);
     }
 
     if (m_serverUrlEdit->text().trimmed().isEmpty())
@@ -2670,7 +2664,8 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
         // offer. Do not declare this orphan account ready: keep the bounded
         // retry alive until the rendezvous attaches an owner, otherwise the
         // node can chat while every authenticated catalog write is rejected.
-        if (installerLinkPending)
+        if (installerLinkPending &&
+            lookup.value("owner").toString().trimmed().isEmpty())
             return false;
         activateSession(lookup.value("owner").toString(),
                         lookup.value("emailVerified").toBool());
