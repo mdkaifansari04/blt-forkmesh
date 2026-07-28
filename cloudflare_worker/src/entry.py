@@ -8373,6 +8373,11 @@ WORLD_QA_CARDS = (
      "In Qt Hosts, run Install Claude + Codex on a reachable mirror. Confirm the "
      "saved managed SSH identity is used, and unreachable versus rejected-key "
      "failures produce different actionable messages."),
+    ("mirror-agent-provider-routing", "Signed mirror agent-provider routing",
+     "Open Qt Hosts and confirm mirror6 reports both Claude Code and Codex for "
+     "the forkmesh-node service account. Start a Claude task from an Engineering "
+     "account and confirm it targets mirror6; confirm an offline, stale, or "
+     "Claude-missing mirror is never offered or selected."),
     ("mirror-agent-status", "Mirror cabinet agent status",
      "Inspect each mirror cabinet side. Confirm agent tasks show running, "
      "stopped, merged, or attention and the authorized detail panel agrees."),

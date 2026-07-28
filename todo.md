@@ -11,6 +11,8 @@ the implementation and its focused verification are complete.
 - [x] Let authorized QA reviewers file a reviewed card into the `forkmesh/forkmesh` issues list.
 - [x] Keep newly provisioned Hosts rows checking until each mirror is reachable, with clear provisioning/online/attention state.
 - [x] Show separate Claude Code and Codex installed/missing status beside every saved host.
+- [x] Install/probe Claude Code and Codex as the actual `forkmesh-node` service account, including copied device logins.
+- [x] Route Claude/Codex organization jobs only to fresh mirrors whose signed catalog advertises that provider.
 - [ ] Show a visible Terms-of-Service moderation flag on repositories that violate ForkMesh policy.
 - [x] Initial front-wall elevator camera placement (superseded after live QA).
 - [x] Increase the in-elevator button labels and contrast for clear floor selection.
@@ -197,7 +199,7 @@ the implementation and its focused verification are complete.
 - [x] Use 1 GB as the minimum Vultr mirror plan for all future provisioning.
 - [ ] Persist and show each managed host's provider, plan/type, display name, and estimated cost in the Qt Hosts list.
 - [ ] Restore each node's Clones and Websites metrics and verify that newly provisioned mirrors report both values.
-- [ ] Queue Claude organization-agent work only on mirrors that have reported the Claude Code binary installed; currently only mirror6 is eligible.
+- [x] Queue Claude organization-agent work only on mirrors that have reported the Claude Code binary installed; currently only mirror6 is eligible.
 - [x] Restore the World fresh-code effect.
 - [ ] Add an executive floor to the Office building.
 - [ ] Update the organization-access explanation so Claude/Codex session access is described as Engineering-team-only.

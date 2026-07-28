@@ -2387,6 +2387,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:engineering-agent-workspace", task: "Engineering-only agent prompt workspace", estimate: "deployed", done: true },
   { key: "task:pr-mergeability-score", task: "Evidence-based PR mergeability scores", estimate: "deployed", done: true },
   { key: "task:engineering-agent-chat", task: "Engineering-only Claude/Codex chat", estimate: "deployed", done: true },
+  { key: "done:mirror6-agent-routing", task: "Mirror6 signed Claude/Codex routing", estimate: "deployed · in QA", done: true },
 ]);
 
 function worldTaskBulletinSeed(value) {
