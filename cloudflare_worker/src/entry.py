@@ -9546,6 +9546,17 @@ SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
     """ALTER TABLE chat_direct_participants
        ADD COLUMN initiated INTEGER NOT NULL DEFAULT 0
        CHECK (initiated IN (0, 1))""",
+    # These columns must exist before SCHEMA_STATEMENTS creates their live and
+    # scoped attendance indexes on databases that predate migration 0090.
+    """ALTER TABLE world_office_attendance
+       ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0
+       CHECK (last_seen_at >= 0)""",
+    """ALTER TABLE world_office_attendance
+       ADD COLUMN floor_id TEXT NOT NULL DEFAULT ''
+       CHECK (length(floor_id) <= 32)""",
+    """ALTER TABLE world_office_attendance
+       ADD COLUMN visit_scope TEXT NOT NULL DEFAULT 'legacy'
+       CHECK (visit_scope IN ('legacy', 'office'))""",
 ]
 
 # Post-CREATE column additions for tables that predate them. Idempotent: a
@@ -9571,21 +9582,6 @@ SCHEMA_ALTER_STATEMENTS = [
     """CREATE INDEX IF NOT EXISTS idx_world_office_marketing_tasks_completion
        ON world_office_marketing_tasks(
            org_bi, completed_at, updated_at DESC)""",
-    # A bounded heartbeat closes interrupted Office visits and carries only the
-    # public floor label used by the lobby board.
-    """ALTER TABLE world_office_attendance
-       ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0
-       CHECK (last_seen_at >= 0)""",
-    """ALTER TABLE world_office_attendance
-       ADD COLUMN floor_id TEXT NOT NULL DEFAULT ''
-       CHECK (length(floor_id) <= 32)""",
-    """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_live
-       ON world_office_attendance(out_at, last_seen_at DESC)""",
-    """ALTER TABLE world_office_attendance
-       ADD COLUMN visit_scope TEXT NOT NULL DEFAULT 'legacy'
-       CHECK (visit_scope IN ('legacy', 'office'))""",
-    """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_scope
-       ON world_office_attendance(visit_scope, account_bi, in_at)""",
     # Assigned issue titles are already public repository metadata; retain a
     # bounded copy so the build-board card survives the recent-issues window.
     """ALTER TABLE world_build_board_items

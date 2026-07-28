@@ -22,6 +22,19 @@ SCOPE_MIGRATION = (
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 
 
+def _literal_assignment(path, name):
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if any(
+            isinstance(target, ast.Name) and target.id == name
+            for target in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"missing {name}")
+
+
 def _load_handler(extra_globals):
     names = {
         "_office_attendance_floor",
@@ -204,6 +217,48 @@ def test_schema_and_idempotent_migration_store_only_bounded_visit_fields():
         pass
     else:
         raise AssertionError("an account must have at most one open visit")
+
+
+def test_lazy_schema_upgrades_office_columns_before_dependent_indexes():
+    pre_alters = _literal_assignment(
+        ENTRY, "SCHEMA_PRE_CREATE_ALTER_STATEMENTS"
+    )
+    schema_statements = _literal_assignment(SCHEMA, "SCHEMA_STATEMENTS")
+    database = sqlite3.connect(":memory:")
+    try:
+        database.executescript(
+            """
+            CREATE TABLE world_office_attendance (
+                visit_id TEXT PRIMARY KEY,
+                account_bi TEXT NOT NULL,
+                account_name TEXT NOT NULL,
+                in_at INTEGER NOT NULL,
+                out_at INTEGER
+            );
+            """
+        )
+        for statement in pre_alters:
+            if "world_office_attendance" in statement:
+                database.execute(statement)
+        for statement in schema_statements:
+            if "world_office_attendance" in statement:
+                database.execute(statement)
+        columns = {
+            row[1]
+            for row in database.execute("PRAGMA table_info(world_office_attendance)")
+        }
+        indexes = {
+            row[1]
+            for row in database.execute("PRAGMA index_list(world_office_attendance)")
+        }
+    finally:
+        database.close()
+
+    assert {"last_seen_at", "floor_id", "visit_scope"}.issubset(columns)
+    assert {
+        "idx_world_office_attendance_live",
+        "idx_world_office_attendance_scope",
+    }.issubset(indexes)
 
 
 def test_get_returns_only_the_newest_twenty_bounded_public_visits():
