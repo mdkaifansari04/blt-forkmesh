@@ -2524,13 +2524,12 @@ def _attention_email_with_logs(text, html, log_tail):
 
 
 def _status_alert_manage_url(system_id=""):
-    safe_id = re.sub(
-        r"[^a-z0-9_-]+", "-",
-        str(system_id or "").strip().lower(),
-    ).strip("-")
+    # Alert mail is controlled from the flagship repository's owner-only
+    # Settings tab. The old /status#system-* destination only explained the
+    # failing check and offered no way to enable/disable the alert.
     return (
-        "https://forkmesh.com/status#system-" + safe_id
-        if safe_id else "https://forkmesh.com/status"
+        "https://forkmesh.com/forkmesh/forkmesh/settings"
+        "#operational-alerts"
     )
 
 
@@ -8424,6 +8423,18 @@ WORLD_QA_CARDS = (
      "Fediverse leaves Loading, the card is slightly larger, no separate "
      "activity dot remains, and the darker node-style border reflects account "
      "activity recency."),
+    ("qt-host-live-capabilities", "Qt live host and agent CLI status",
+     "Add or reopen a saved Qt Host. Confirm its row keeps checking while SSH "
+     "comes online, distinguishes provisioning, unreachable, and rejected-key "
+     "states, then shows Claude and Codex as Installed or Not installed."),
+    ("alert-management-link", "Alert email management destination",
+     "Open Manage this alert from a component or scheduled-job email. Confirm "
+     "it opens forkmesh/forkmesh Settings, scrolls to Operational alerts, and "
+     "focuses the checkbox used to enable or disable those emails."),
+    ("qa-history-routing", "QA history tabs and routing",
+     "Use the physical Cards, Pass, Fail, and Unsure tabs. Page the shared task "
+     "lists, select a task, then as an authorized maintainer send one back to "
+     "What we're building and another into forkmesh/forkmesh issues."),
 )
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
 
@@ -8528,24 +8539,113 @@ async def world_qa_handler(env, request):
                       "total": len(deck_cards)},
             "globalReviews": global_reviews,
             "globalStats": global_stats,
+            "canRoute": False,
         }, cache_control="no-store")
+    actor = clean_string(
+        (record or {}).get("name"), MAX_NODE_NAME).strip().lower()
+    can_route = False
+    if actor:
+        org_bi, org_row = await _org_row(env, "forkmesh")
+        if org_row:
+            role = await _org_role(env, org_bi, actor)
+            permission = await _org_permission(env, org_bi, actor)
+            can_route = (
+                role in ("owner", "admin")
+                or permission in ("maintain", "admin")
+            )
     if method == "POST":
         item_key = clean_string(data.get("key"), 80)
-        verdict = clean_string(data.get("verdict"), 12).lower()
         if item_key not in deck_keys:
             return json_response({"ok": False, "error": "unknown_qa_item"},
                                  status=400)
-        if verdict not in ("pass", "fail", "unsure"):
-            return json_response({"ok": False, "error": "invalid_verdict"},
-                                 status=400)
-        await d1_run(
-            env,
-            "INSERT INTO world_qa_reviews("
-            "account_bi,item_key,verdict,reviewed_at) VALUES(?,?,?,?) "
-            "ON CONFLICT(account_bi,item_key) DO UPDATE SET "
-            "verdict=excluded.verdict,reviewed_at=excluded.reviewed_at",
-            account_bi, item_key, verdict, int(Date.now()),
-        )
+        action = clean_string(data.get("action"), 24).lower()
+        if action in ("route_todo", "route_issue"):
+            if not can_route:
+                return json_response(
+                    {"ok": False, "error": "forbidden"}, status=403)
+            card = next(
+                (item for item in deck_cards if item[0] == item_key),
+                None,
+            )
+            if not card:
+                return json_response(
+                    {"ok": False, "error": "unknown_qa_item"}, status=400)
+            _, title, how_to_test = card
+            now = int(Date.now())
+            if action == "route_todo":
+                task_suffix = re.sub(
+                    r"[^a-z0-9-]+", "-", item_key.lower()).strip("-")
+                task_key = ("task:qa-" + task_suffix)[:53].rstrip("-")
+                peak = await d1_first(
+                    env,
+                    "SELECT COALESCE(MAX(priority),0) AS priority "
+                    "FROM world_build_board_items",
+                )
+                priority = min(
+                    64, max(1, int((peak or {}).get("priority") or 0) + 1))
+                await d1_run(
+                    env,
+                    "INSERT INTO world_build_board_items "
+                    "(item_key,kind,owner,repo,issue_number,title,priority,"
+                    "updated_by_bi,updated_at,completed_at,completed_by_bi) "
+                    "VALUES (?,'task','','',0,?,?,?,?,0,'') "
+                    "ON CONFLICT(item_key) DO UPDATE SET "
+                    "title=excluded.title,priority=excluded.priority,"
+                    "updated_by_bi=excluded.updated_by_bi,"
+                    "updated_at=excluded.updated_at,completed_at=0,"
+                    "completed_by_bi=''",
+                    task_key, title, priority, account_bi, now,
+                )
+                route_result = {
+                    "target": "todo",
+                    "key": task_key,
+                }
+            else:
+                body = (
+                    "QA follow-up requested from the 24-hour World deck.\n\n"
+                    "How to test:\n" + how_to_test
+                )
+                queued, result = await _forkbot_enqueue_issue(
+                    env,
+                    "forkmesh",
+                    "forkmesh",
+                    "QA follow-up: " + title,
+                    body,
+                    actor,
+                    source="qa-deck",
+                    labels=["qa"],
+                )
+                if not queued:
+                    return json_response(
+                        {"ok": False, "error": str(result or "issue_failed")},
+                        status=409,
+                    )
+                route_result = {
+                    "target": "issues",
+                    "number": int((result or {}).get("issueNumber") or 0),
+                }
+            await _audit_sensitive_action(
+                env,
+                actor,
+                "world.qa_" + action,
+                "world_qa_item",
+                item_key,
+                "success",
+                route_result,
+            )
+        else:
+            verdict = clean_string(data.get("verdict"), 12).lower()
+            if verdict not in ("pass", "fail", "unsure"):
+                return json_response(
+                    {"ok": False, "error": "invalid_verdict"}, status=400)
+            await d1_run(
+                env,
+                "INSERT INTO world_qa_reviews("
+                "account_bi,item_key,verdict,reviewed_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(account_bi,item_key) DO UPDATE SET "
+                "verdict=excluded.verdict,reviewed_at=excluded.reviewed_at",
+                account_bi, item_key, verdict, int(Date.now()),
+            )
         global_reviews, global_stats = await global_qa_snapshot()
     rows = await d1_all(
         env,
@@ -8591,6 +8691,9 @@ async def world_qa_handler(env, request):
         "stats": stats,
         "globalReviews": global_reviews,
         "globalStats": global_stats,
+        "canRoute": can_route,
+        **({"routeResult": route_result}
+           if method == "POST" and "route_result" in locals() else {}),
     }, cache_control="no-store")
 
 

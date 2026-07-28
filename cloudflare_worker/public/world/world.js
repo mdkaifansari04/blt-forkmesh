@@ -4443,6 +4443,9 @@ class ForkMeshWorld extends HTMLElement {
       stats: { pass: 0, fail: 0, unsure: 0, reviewed: 0, total: 0 },
     };
     this.qaCardIndex = 0;
+    this.qaDeckView = "cards";
+    this.qaDeckPage = 0;
+    this.qaDeckSelectedKey = "";
     this.qaLoad = null;
     this.qaSaving = false;
     this.updateCheckTimer = 0;
@@ -5243,6 +5246,7 @@ class ForkMeshWorld extends HTMLElement {
         onBuildSendQa: ({ key, title }) =>
           void this.sendBuildTaskToQa(key, title),
         onQaVerdict: ({ verdict }) => void this.recordQaVerdict(verdict),
+        onQaAction: (action) => void this.handleQaAction(action),
         onRepositoryIssueOpen: (issue) =>
           this.openRepositoryIssueWorkbench(issue),
         onRendererStateChange: (state) => {
@@ -5661,6 +5665,7 @@ class ForkMeshWorld extends HTMLElement {
         testers: Math.max(0, Number(payload?.globalStats?.testers) || 0),
         total: cards.length,
       },
+      canRoute: payload?.canRoute === true,
       stats: {
         ...counts,
         reviewed: cards.filter((card) => card.verdict).length,
@@ -5681,14 +5686,120 @@ class ForkMeshWorld extends HTMLElement {
     } else {
       this.qaCardIndex = 0;
     }
+    this.renderQaDeck();
+    return this.qaDeck;
+  }
+
+  qaDeckCardsForView(view = this.qaDeckView) {
+    const verdict = ["pass", "fail", "unsure"].includes(view) ? view : "";
+    if (!verdict) return [];
+    return this.qaDeck.cards.filter(
+      (card) =>
+        (Number(card?.global?.[verdict]) || 0) > 0 ||
+        String(card?.verdict || "") === verdict,
+    );
+  }
+
+  renderQaDeck() {
+    const view = ["pass", "fail", "unsure"].includes(this.qaDeckView)
+      ? this.qaDeckView
+      : "cards";
+    const filtered = this.qaDeckCardsForView(view);
+    const pageSize = 5;
+    const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    this.qaDeckPage = Math.min(Math.max(0, this.qaDeckPage), pages - 1);
+    const list = filtered.slice(
+      this.qaDeckPage * pageSize,
+      (this.qaDeckPage + 1) * pageSize,
+    );
+    if (
+      this.qaDeckSelectedKey &&
+      !filtered.some((card) => card.key === this.qaDeckSelectedKey)
+    ) {
+      this.qaDeckSelectedKey = "";
+    }
     this.world?.updateQaBoard?.({
       authenticated: this.qaDeck.authenticated,
-      current: cards[this.qaCardIndex] || null,
+      current: this.qaDeck.cards[this.qaCardIndex] || null,
       currentIndex: this.qaCardIndex,
       stats: this.qaDeck.stats,
       globalStats: this.qaDeck.globalStats,
+      canRoute: this.qaDeck.canRoute,
+      view,
+      list,
+      selectedKey: this.qaDeckSelectedKey,
+      page: this.qaDeckPage,
+      pages,
     });
-    return this.qaDeck;
+  }
+
+  async handleQaAction(detail = {}) {
+    const action = String(detail?.action || "");
+    if (action === "tab") {
+      const view = String(detail?.view || "cards");
+      if (!["cards", "pass", "fail", "unsure"].includes(view)) return;
+      this.qaDeckView = view;
+      this.qaDeckPage = 0;
+      this.qaDeckSelectedKey = "";
+      this.renderQaDeck();
+      return;
+    }
+    if (action === "select") {
+      const key = String(detail?.key || "");
+      if (!this.qaDeck.cards.some((card) => card.key === key)) return;
+      this.qaDeckSelectedKey = key;
+      this.renderQaDeck();
+      return;
+    }
+    if (action === "page") {
+      const delta = Math.sign(Number(detail?.delta) || 0);
+      if (!delta) return;
+      this.qaDeckPage += delta;
+      this.qaDeckSelectedKey = "";
+      this.renderQaDeck();
+      return;
+    }
+    if (action === "route") {
+      await this.routeQaCard(String(detail?.target || ""));
+    }
+  }
+
+  async routeQaCard(target) {
+    if (!["todo", "issues"].includes(target)) return false;
+    const card = this.qaDeck.cards.find(
+      (entry) => entry.key === this.qaDeckSelectedKey,
+    );
+    if (!card) {
+      this.toast("Select a QA task first.");
+      return false;
+    }
+    if (!this.qaDeck.canRoute || !validWorldSession()) {
+      this.toast("Owner, admin, or maintain access is required to route QA.");
+      return false;
+    }
+    try {
+      const payload = await this.postJSON(
+        WORLD_QA_ENDPOINT,
+        {
+          action: target === "todo" ? "route_todo" : "route_issue",
+          key: card.key,
+        },
+        { timeout: 12_000 },
+      );
+      this.applyQaDeck(payload);
+      await this.refreshBuildBoard({ quiet: true });
+      this.toast(
+        target === "todo"
+          ? `${card.title} was sent back to What we're building.`
+          : `${card.title} was queued in forkmesh/forkmesh issues.`,
+      );
+      return true;
+    } catch (error) {
+      this.toast(
+        String(error?.message || "The QA task could not be routed."),
+      );
+      return false;
+    }
   }
 
   async refreshQaDeck({ afterKey = "", quiet = false } = {}) {
