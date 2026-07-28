@@ -124,3 +124,15 @@ def test_aquarium_registers_a_lobby_only_collision_footprint():
     assert 'floorId !== "lobby"' in SCENE
     assert "officeInteriorPointIsWalkable(" in SCENE
     assert "pointHitsOfficeAquarium(" in SCENE
+
+
+def test_aquarium_feeding_is_timed_and_reuses_scene_animation():
+    aquarium = _aquarium_block()
+    assert "AQUARIUM_FEEDING_DURATION_MS = 60_000" in aquarium
+    assert 'food.name = "forkmesh-office-aquarium-food"' in aquarium
+    assert "function feed(time = performance.now())" in aquarium
+    assert "function updateFeeding(time, animate = true)" in aquarium
+    assert "feedingBlend" in aquarium
+    assert "return { group, feed, updateFeeding, getFeedingState }" in aquarium
+    assert "setTimeout(" not in aquarium
+    assert "setInterval(" not in aquarium

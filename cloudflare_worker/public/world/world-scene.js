@@ -10004,6 +10004,12 @@ function createOfficeMarineAquarium(THREE, animated) {
   const tankLength = 27;
   const tankHeight = 12;
   const tankDepth = 3;
+  const AQUARIUM_FEEDING_DURATION_MS = 60_000;
+  const AQUARIUM_FEEDING_APPROACH_MS = 4_200;
+  const AQUARIUM_FEEDING_RETURN_MS = 6_500;
+  const feedingCenter = new THREE.Vector3(0.68, 9.7, -1.8);
+  let feedingStartedAt = -Infinity;
+  let feedingActive = false;
   const AQUARIUM_FISH_SPECIES = Object.freeze([
     {
       id: "clownfish",
@@ -11246,6 +11252,20 @@ function createOfficeMarineAquarium(THREE, animated) {
       tailSpeed: 0.0038 + index * 0.00011,
       point: new THREE.Vector3(),
       tangent: new THREE.Vector3(),
+      feedingPoint: new THREE.Vector3(),
+      feedingAhead: new THREE.Vector3(),
+      feedingTangent: new THREE.Vector3(),
+      feedingRadius:
+        instance.speciesId === "chromis"
+          ? 1.5 + speciesIndex * 0.28
+          : 0.72 + index * 0.22,
+      feedingHeight:
+        instance.speciesId === "chromis"
+          ? 0.45 + speciesIndex * 0.24
+          : (index % 3 - 1) * 0.42,
+      feedingPhase: instance.phase * Math.PI * 2 + index * 0.74,
+      feedingSpeed: 0.00105 + (index % 4) * 0.00009,
+      feedingDelay: index * 260,
     });
     group.add(fish);
   }
@@ -11269,6 +11289,38 @@ function createOfficeMarineAquarium(THREE, animated) {
     bubbles.add(bubble);
   }
   group.add(bubbles);
+  const food = new THREE.Group();
+  food.name = "forkmesh-office-aquarium-food";
+  food.visible = false;
+  const foodGeometry = new THREE.SphereGeometry(0.055, 8, 6);
+  const foodMaterial = new THREE.MeshStandardMaterial({
+    color: "#d7a14b",
+    emissive: "#80521f",
+    emissiveIntensity: 0.32,
+    roughness: 0.82,
+    metalness: 0,
+    transparent: true,
+    opacity: 0.96,
+  });
+  const foodStates = [];
+  for (let index = 0; index < 28; index += 1) {
+    const pellet = new THREE.Mesh(foodGeometry, foodMaterial);
+    pellet.name = `forkmesh-office-aquarium-food-pellet-${index}`;
+    pellet.scale.set(
+      0.7 + aquariumSeedFraction(91, index) * 0.8,
+      0.65 + aquariumSeedFraction(92, index) * 0.55,
+      0.7 + aquariumSeedFraction(93, index) * 0.8,
+    );
+    foodStates.push({
+      pellet,
+      x: (aquariumSeedFraction(94, index) - 0.5) * 0.82,
+      z: (aquariumSeedFraction(95, index) - 0.5) * 2.35,
+      drift: 3.8 + aquariumSeedFraction(96, index) * 3.1,
+      phase: aquariumSeedFraction(97, index) * Math.PI * 2,
+    });
+    food.add(pellet);
+  }
+  group.add(food);
   const surfaceGeometry = new THREE.PlaneGeometry(
     tankDepth - 0.42,
     tankLength - 0.72,
@@ -11374,20 +11426,80 @@ function createOfficeMarineAquarium(THREE, animated) {
   sandLight.name = "forkmesh-office-aquarium-sand-light";
   sandLight.position.set(0.2, 1.7, -2.8);
   group.add(sandLight);
-  function updateAquariumFish(time) {
+  function aquariumSmoothstep(value) {
+    const amount = clamp(value, 0, 1);
+    return amount * amount * (3 - 2 * amount);
+  }
+
+  function aquariumFeedingTarget(state, elapsed, target) {
+    const angle = elapsed * state.feedingSpeed + state.feedingPhase;
+    target.set(
+      feedingCenter.x + Math.sin(angle * 1.7) * 0.22,
+      feedingCenter.y +
+        state.feedingHeight +
+        Math.sin(angle * 2.35 + state.feedingPhase) * 0.42,
+      feedingCenter.z + Math.cos(angle) * state.feedingRadius,
+    );
+    return target;
+  }
+
+  function updateAquariumFish(time, animate = true) {
     for (let index = 0; index < fishStates.length; index += 1) {
       const state = fishStates[index];
       const progress = (time * state.speed + state.phase) % 1;
       state.curve.getPointAt(progress, state.point);
       state.curve.getTangentAt(progress, state.tangent).normalize();
+      let feedingBlend = 0;
+      if (feedingActive) {
+        const elapsed = Math.max(0, time - feedingStartedAt);
+        const feedingElapsed = animate ? elapsed : 8_500;
+        const approach = aquariumSmoothstep(
+          (feedingElapsed - state.feedingDelay) /
+            AQUARIUM_FEEDING_APPROACH_MS,
+        );
+        const returnWindow = aquariumSmoothstep(
+          (AQUARIUM_FEEDING_DURATION_MS - feedingElapsed) /
+            AQUARIUM_FEEDING_RETURN_MS,
+        );
+        feedingBlend = animate ? approach * returnWindow : 1;
+        aquariumFeedingTarget(
+          state,
+          feedingElapsed,
+          state.feedingPoint,
+        );
+        aquariumFeedingTarget(
+          state,
+          feedingElapsed + 28,
+          state.feedingAhead,
+        );
+        state.feedingTangent
+          .subVectors(state.feedingAhead, state.feedingPoint)
+          .normalize();
+        state.tangent
+          .lerp(state.feedingTangent, feedingBlend)
+          .normalize();
+      }
       const fish = state.fish;
       fish.position.copy(state.point);
-      fish.position.y += Math.sin(time * 0.0017 + state.phase * 11) * 0.08;
+      if (feedingBlend > 0) {
+        fish.position.lerp(state.feedingPoint, feedingBlend);
+      }
+      if (animate) {
+        fish.position.y +=
+          Math.sin(time * 0.0017 + state.phase * 11) *
+          (0.08 + feedingBlend * 0.035);
+      }
       fish.rotation.y = Math.atan2(state.tangent.x, state.tangent.z);
       fish.rotation.z = -state.tangent.y * state.bank;
-      fish.rotation.x = Math.sin(time * 0.0011 + state.phase * 8) * 0.035;
+      fish.rotation.x = animate
+        ? Math.sin(time * 0.0011 + state.phase * 8) * 0.035
+        : 0;
       state.tail.rotation.y =
-        Math.sin(time * state.tailSpeed + state.phase * 9) * 0.38;
+        Math.sin(
+          time * state.tailSpeed * (1 + feedingBlend * 0.62) +
+            state.phase * 9,
+        ) *
+        (0.38 + feedingBlend * 0.08);
       for (
         let finIndex = 0;
         finIndex < state.pectoralFins.length;
@@ -11397,9 +11509,11 @@ function createOfficeMarineAquarium(THREE, animated) {
         fin.rotation.z =
           fin.userData.restZ +
           Math.sin(
-            time * 0.004 + state.phase * 7 + finIndex * Math.PI,
+            time * (0.004 + feedingBlend * 0.0014) +
+              state.phase * 7 +
+              finIndex * Math.PI,
           ) *
-            0.12;
+            (0.12 + feedingBlend * 0.035);
       }
     }
   }
@@ -11476,6 +11590,96 @@ function createOfficeMarineAquarium(THREE, animated) {
     waterMaterial.emissiveIntensity = 0.23 + pulse * 0.025;
   }
 
+  function updateAquariumFood(time, animate = true) {
+    if (!feedingActive) {
+      food.visible = false;
+      return;
+    }
+    const elapsed = clamp(
+      time - feedingStartedAt,
+      0,
+      AQUARIUM_FEEDING_DURATION_MS,
+    );
+    const progress = elapsed / AQUARIUM_FEEDING_DURATION_MS;
+    const visualProgress = animate ? progress : 0.14;
+    const fade =
+      progress < 0.82
+        ? 1
+        : aquariumSmoothstep((1 - progress) / 0.18);
+    feedingCenter.set(0.68, 9.7 - visualProgress * 3.6, -1.8);
+    food.visible = true;
+    foodMaterial.opacity = 0.96 * fade;
+    for (let index = 0; index < foodStates.length; index += 1) {
+      const state = foodStates[index];
+      const wobble = animate
+        ? Math.sin(time * 0.0012 + state.phase) * 0.1
+        : Math.sin(state.phase) * 0.1;
+      state.pellet.position.set(
+        feedingCenter.x + state.x + wobble,
+        10.75 - visualProgress * state.drift - (index % 5) * 0.055,
+        feedingCenter.z + state.z + wobble * 0.55,
+      );
+      state.pellet.rotation.set(
+        state.phase + visualProgress * Math.PI * 2,
+        state.phase * 0.7 + visualProgress * Math.PI * 3,
+        state.phase * 0.4,
+      );
+    }
+  }
+
+  function updateFeeding(time, animate = true) {
+    const now = Number.isFinite(Number(time)) ? Number(time) : performance.now();
+    if (
+      feedingActive &&
+      now - feedingStartedAt >= AQUARIUM_FEEDING_DURATION_MS
+    ) {
+      feedingActive = false;
+      feedingStartedAt = -Infinity;
+      food.visible = false;
+      foodMaterial.opacity = 0.96;
+    }
+    updateAquariumFood(now, animate);
+    if (!animate) updateAquariumFish(now, false);
+    return feedingActive;
+  }
+
+  function feed(time = performance.now()) {
+    const now = Number.isFinite(Number(time)) ? Number(time) : performance.now();
+    updateFeeding(now, true);
+    if (feedingActive) return false;
+    feedingStartedAt = now;
+    feedingActive = true;
+    updateFeeding(now, false);
+    return true;
+  }
+
+  function getFeedingState(time = performance.now()) {
+    const now = Number.isFinite(Number(time)) ? Number(time) : performance.now();
+    if (
+      feedingActive &&
+      now - feedingStartedAt >= AQUARIUM_FEEDING_DURATION_MS
+    ) {
+      updateFeeding(now, true);
+    }
+    const elapsedMs = feedingActive
+      ? clamp(now - feedingStartedAt, 0, AQUARIUM_FEEDING_DURATION_MS)
+      : 0;
+    return {
+      active: feedingActive,
+      startedAt: feedingActive ? feedingStartedAt : null,
+      endsAt: feedingActive
+        ? feedingStartedAt + AQUARIUM_FEEDING_DURATION_MS
+        : null,
+      elapsedMs,
+      remainingMs: feedingActive
+        ? AQUARIUM_FEEDING_DURATION_MS - elapsedMs
+        : 0,
+      durationMs: AQUARIUM_FEEDING_DURATION_MS,
+      foodVisible: food.visible,
+      foodPosition: feedingCenter.toArray(),
+    };
+  }
+
   function initializeAquariumState(time) {
     updateAquariumFish(time);
     updateAquariumReef(time);
@@ -11491,7 +11695,7 @@ function createOfficeMarineAquarium(THREE, animated) {
     child.castShadow = child.material?.transparent !== true;
     child.receiveShadow = child.material?.transparent !== true;
   });
-  return group;
+  return { group, feed, updateFeeding, getFeedingState };
 }
 
 function createForkMeshOffice(THREE, position, interactive, animated) {
@@ -13591,7 +13795,18 @@ export function createWorldScene({
   }
   addOfficeFloorSurface(officeInterior, officeLobbyFloorMaterial);
   const officeAquarium = createOfficeMarineAquarium(THREE, animated);
-  officeInterior.add(officeAquarium);
+  officeInterior.add(officeAquarium.group);
+
+  function feedOfficeAquarium(time = performance.now()) {
+    const started = officeAquarium.feed(time);
+    officeAquarium.updateFeeding(time, !reducedMotion);
+    return started;
+  }
+
+  function getOfficeAquariumState(time = performance.now()) {
+    officeAquarium.updateFeeding(time, !reducedMotion);
+    return officeAquarium.getFeedingState(time);
+  }
   OFFICE_FLOORS.slice(1).forEach((floor) => {
     const floorGroup = new THREE.Group();
     floorGroup.name = `forkmesh-office-floor-${floor.id}`;
@@ -24136,6 +24351,7 @@ export function createWorldScene({
     updateBuildBoardProximity();
     updateOfficeReceptionGuide(time);
     updateOfficeAttendanceClock(time);
+    officeAquarium.updateFeeding(time, !reducedMotion);
     // The Office is part of the same live World. Neighbours and ForkBot keep
     // animating while the local visitor is in the tower instead of freezing
     // the landscape visible through its glass walls.
@@ -24556,6 +24772,8 @@ export function createWorldScene({
     setSelfWorkBadgeVisibility,
     travelToOfficeFloor,
     sitOnOfficeChair,
+    feedOfficeAquarium,
+    getOfficeAquariumState,
     setOfficeParticipants,
     updateOfficeMarketingTasks,
     isOfficeInterior: () => officeSceneMode !== "town",
