@@ -264,7 +264,7 @@ def test_team_plaque_texture_carries_no_secret():
 
 # --- The team checkboxes the plaque opens ------------------------------------
 
-def test_only_org_owners_and_admins_build_the_plaque():
+def test_all_org_members_get_team_badges_but_only_admins_get_controls():
     managed = APP[
         APP.index("  managedOrganizations() {"):
         APP.index("  managedOrganization(name) {")
@@ -274,13 +274,30 @@ def test_only_org_owners_and_admins_build_the_plaque():
         APP.index("  rebuildOrgTeamIndex() {"):
         APP.index("  orgTeamAssignmentFor(name) {")
     ]
-    assert "this.managedOrganizations().forEach" in index
+    assert "this.organizations.forEach" in index
+    assert "const canManage" in index
+    assert "canManage," in index
     assert "WORLD_ACCOUNT_NAME_RE.test(account)" in index
     # A guest may type any display name; only server-stamped accounts resolve.
     assert 'String(player?.accountStatus || "Guest") === "Guest"' in APP
     assert "orgTeam ? { orgTeam } : {}" in APP
     assert "onOrgTeamAssign: (target) => this.openOrgTeamAssignment(target)" \
         in APP
+
+    sync = SCENE[
+        SCENE.index("  function syncRemoteOrgTeamControl"):
+        SCENE.index("  function setLocalOrgTeam")
+    ]
+    assert "if (assignment.canManage)" in sync
+    assert "if (assignment.teams.length && avatar.userData.leftArm)" in sync
+    badges = SCENE[
+        SCENE.index("function createAvatarTeamBadges"):
+        SCENE.index("function orgTeamControlTexture")
+    ]
+    assert "forkmesh-avatar-left-arm-team-badges" in badges
+    assert "badge.rotation.y = Math.PI" in badges
+    assert "badge.position.set(0, 0.43 - index * 0.19, -0.166)" in badges
+    assert "setLocalOrgTeam," in SCENE
 
 
 def test_campfire_directory_hands_offline_members_the_same_assignment():

@@ -7727,21 +7727,24 @@ QWidget *MainWindow::buildHostsSection()
     hostsHint->setWordWrap(true);
     bodyCol->addWidget(hostsHint);
 
-    m_hostsTable = new QTableWidget(0, 5);
+    m_hostsTable = new QTableWidget(0, 7);
     installColumnHeaderMenu(m_hostsTable); // 3-dots per-column menu (issue #318)
     m_hostsTable->setObjectName("issueTable");
     m_hostsTable->setHorizontalHeaderLabels(
         {QStringLiteral("Node name"), QStringLiteral("Address"),
-         QStringLiteral("User"), QStringLiteral("Status"), QString()});
+         QStringLiteral("User"), QStringLiteral("Status"),
+         QStringLiteral("Claude"), QStringLiteral("Codex"), QString()});
     m_hostsTable->verticalHeader()->setVisible(false);
     m_hostsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_hostsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_hostsTable->setShowGrid(false);
-    // Stretch the Status column and let the trailing Update-button column size to
-    // its contents.
+    // Stretch the Status column and keep the two agent capability columns and
+    // trailing action column compact.
     m_hostsTable->horizontalHeader()->setStretchLastSection(false);
     m_hostsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     m_hostsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_hostsTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    m_hostsTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_hostsTable); // spreadsheet-style draggable columns (#263)
     // Double-clicking a saved host reloads its server info into the install
     // form so the installer can be re-run. A password is available only if it
@@ -7749,11 +7752,19 @@ QWidget *MainWindow::buildHostsSection()
     connect(m_hostsTable, &QTableWidget::cellDoubleClicked, this,
             &MainWindow::loadHostIntoForm);
     bodyCol->addWidget(m_hostsTable);
+    if (!m_hostProbeTimer) {
+        m_hostProbeTimer = new QTimer(this);
+        m_hostProbeTimer->setInterval(30000);
+        connect(m_hostProbeTimer, &QTimer::timeout, this,
+                &MainWindow::probeSavedHosts);
+        m_hostProbeTimer->start();
+    }
 
     scroll->setWidget(body);
     outer->addWidget(scroll, 1);
 
     refreshHostsTable();
+    QTimer::singleShot(0, this, &MainWindow::probeSavedHosts);
     return page;
 }
 
@@ -7768,13 +7779,33 @@ void MainWindow::refreshHostsTable()
     for (int i = 0; i < hosts.size(); ++i) {
         const QJsonObject h = hosts.at(i).toObject();
         const QString status = h.value("status").toString(QStringLiteral("installed"));
-        m_hostsTable->setItem(i, 0,
-            new QTableWidgetItem(h.value("name").toString()));
+        const QString name = h.value("name").toString();
+        const QString ip = h.value("ip").toString();
+        const QString user = h.value("user").toString();
+        const QString key =
+            forkmesh::control::savedHostCredentialKey(name, ip, user);
+        auto *nameItem = new QTableWidgetItem(name);
+        nameItem->setData(Qt::UserRole, key);
+        m_hostsTable->setItem(i, 0, nameItem);
         m_hostsTable->setItem(i, 1,
-            new QTableWidgetItem(h.value("ip").toString()));
+            new QTableWidgetItem(ip));
         m_hostsTable->setItem(i, 2,
-            new QTableWidgetItem(h.value("user").toString()));
-        m_hostsTable->setItem(i, 3, new QTableWidgetItem(status));
+            new QTableWidgetItem(user));
+        const QString reachability = m_hostReachability.value(key);
+        m_hostsTable->setItem(
+            i, 3,
+            new QTableWidgetItem(
+                reachability.isEmpty() ? status : reachability));
+        m_hostsTable->setItem(
+            i, 4,
+            new QTableWidgetItem(
+                m_hostClaudeAvailability.value(
+                    key, QString::fromUtf8("Checking\xE2\x80\xA6"))));
+        m_hostsTable->setItem(
+            i, 5,
+            new QTableWidgetItem(
+                m_hostCodexAvailability.value(
+                    key, QString::fromUtf8("Checking\xE2\x80\xA6"))));
 
         // Per-row Update button: reload the saved host into the install form and
         // re-run the hosted installer against it. The installer is idempotent, so
@@ -7926,7 +7957,7 @@ void MainWindow::refreshHostsTable()
         // "sm" size keeps them inside a table row so the words stay visible.
         for (QPushButton *b : cell->findChildren<QPushButton *>())
             b->setProperty("buttonSize", "sm");
-        m_hostsTable->setCellWidget(i, 4, cell);
+        m_hostsTable->setCellWidget(i, 6, cell);
     }
     // ...and the rows still have to be tall enough for the buttons, and the
     // action column wide enough that no label is elided. The view lays a cell
@@ -7937,15 +7968,15 @@ void MainWindow::refreshHostsTable()
         // rowsInserted from its own singleShot(0), and would otherwise land
         // after this and undo it.
         QTimer::singleShot(0, m_hostsTable, [this] {
-            QWidget *cell = m_hostsTable ? m_hostsTable->cellWidget(0, 4) : nullptr;
+            QWidget *cell = m_hostsTable ? m_hostsTable->cellWidget(0, 6) : nullptr;
             if (!cell)
                 return;
             // setColumnWidth() only takes on an Interactive section; that is
             // also the mode makeColumnsResizable() leaves behind, so this just
             // gets there whether or not it has run yet.
             m_hostsTable->horizontalHeader()->setSectionResizeMode(
-                4, QHeaderView::Interactive);
-            m_hostsTable->setColumnWidth(4, cell->sizeHint().width() + 16);
+                6, QHeaderView::Interactive);
+            m_hostsTable->setColumnWidth(6, cell->sizeHint().width() + 16);
             const int rowHeight = cell->sizeHint().height() + 12;
             for (int r = 0; r < m_hostsTable->rowCount(); ++r)
                 m_hostsTable->setRowHeight(r, rowHeight);
@@ -7956,6 +7987,236 @@ void MainWindow::refreshHostsTable()
         m_hostsNavButton->setText(hosts.isEmpty()
             ? QStringLiteral("Hosts")
             : QStringLiteral("Hosts (%1)").arg(hosts.size()));
+}
+
+void MainWindow::probeSavedHosts()
+{
+    if (!m_hostsTable)
+        return;
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    for (const QJsonValue &value : hosts) {
+        const QJsonObject host = value.toObject();
+        probeSavedHost(
+            host.value(QStringLiteral("name")).toString().trimmed(),
+            host.value(QStringLiteral("ip")).toString().trimmed(),
+            host.value(QStringLiteral("user")).toString().trimmed(),
+            host.value(QStringLiteral("status")).toString().trimmed());
+    }
+}
+
+void MainWindow::probeSavedHost(const QString &name, const QString &ip,
+                                const QString &user,
+                                const QString &savedStatus)
+{
+    if (!m_hostsTable || name.isEmpty() || ip.isEmpty() || user.isEmpty())
+        return;
+    const QString key =
+        forkmesh::control::savedHostCredentialKey(name, ip, user);
+    if (m_hostProbesInFlight.contains(key))
+        return;
+    m_hostProbesInFlight.insert(key);
+
+    const auto rowForKey = [this](const QString &candidate) -> int {
+        if (!m_hostsTable)
+            return -1;
+        for (int row = 0; row < m_hostsTable->rowCount(); ++row) {
+            const QTableWidgetItem *item = m_hostsTable->item(row, 0);
+            if (item && item->data(Qt::UserRole).toString() == candidate)
+                return row;
+        }
+        return -1;
+    };
+    const auto render = [this, rowForKey, key](
+                            const QString &status,
+                            const QString &claude,
+                            const QString &codex,
+                            const QColor &color) {
+        m_hostReachability.insert(key, status);
+        m_hostClaudeAvailability.insert(key, claude);
+        m_hostCodexAvailability.insert(key, codex);
+        const int row = rowForKey(key);
+        if (row < 0 || !m_hostsTable)
+            return;
+        for (const auto &entry : {
+                 qMakePair(3, status),
+                 qMakePair(4, claude),
+                 qMakePair(5, codex),
+             }) {
+            if (QTableWidgetItem *item =
+                    m_hostsTable->item(row, entry.first)) {
+                item->setText(entry.second);
+                item->setForeground(color);
+            }
+        }
+    };
+    render(QString::fromUtf8("\xE2\x97\x8C Checking\xE2\x80\xA6"),
+           QString::fromUtf8("Checking\xE2\x80\xA6"),
+           QString::fromUtf8("Checking\xE2\x80\xA6"),
+           QColor(QStringLiteral("#8b949e")));
+
+    QString password;
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    for (const QJsonValue &value : hosts) {
+        const QJsonObject host = value.toObject();
+        if (host.value(QStringLiteral("name")).toString().trimmed() == name &&
+            host.value(QStringLiteral("ip")).toString().trimmed() == ip &&
+            host.value(QStringLiteral("user")).toString().trimmed() == user) {
+            password = m_hostSessionPasswords.value(key);
+            break;
+        }
+    }
+    const QString identityFile = savedHostIdentityFile(name, ip, user);
+    if (!identityFile.isEmpty())
+        password.clear();
+    const QString remoteCommand = QStringLiteral(
+        "sh -lc 'printf \"FORKMESH=%s CLAUDE=%s CODEX=%s\\\\n\" "
+        "\"$(command -v forkmesh >/dev/null 2>&1 && echo 1 || echo 0)\" "
+        "\"$(command -v claude >/dev/null 2>&1 && echo 1 || echo 0)\" "
+        "\"$(command -v codex >/dev/null 2>&1 && echo 1 || echo 0)\"'");
+    QString error;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostSshCommand(
+            ip, user, password, remoteCommand, &error, identityFile);
+    if (ssh.program.isEmpty()) {
+        m_hostProbesInFlight.remove(key);
+        render(
+            QString::fromUtf8("\xE2\x97\x8F Attention"),
+            QString::fromUtf8("\xE2\x80\x94"),
+            QString::fromUtf8("\xE2\x80\x94"),
+            QColor(QStringLiteral("#d29922")));
+        const int row = rowForKey(key);
+        if (row >= 0) {
+            if (QTableWidgetItem *item = m_hostsTable->item(row, 3))
+                item->setToolTip(error);
+        }
+        return;
+    }
+
+    auto *process = new QProcess(this);
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    process->setProcessEnvironment(ssh.environment);
+    connect(process, &QProcess::readyReadStandardOutput, this,
+            [process] {
+        QByteArray output = process->property("forkmeshHostProbe").toByteArray();
+        output += process->readAllStandardOutput();
+        if (output.size() > 4096)
+            output = output.right(4096);
+        process->setProperty("forkmeshHostProbe", output);
+    });
+    auto *deadline = new QTimer(process);
+    deadline->setSingleShot(true);
+    deadline->setInterval(35000);
+    connect(deadline, &QTimer::timeout, process, [process] {
+        process->setProperty("forkmeshHostProbeTimedOut", true);
+        process->kill();
+    });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, deadline, key, render](
+                QProcess::ProcessError processError) {
+        if (processError != QProcess::FailedToStart ||
+            process->property("forkmeshHostProbeDone").toBool()) {
+            return;
+        }
+        process->setProperty("forkmeshHostProbeDone", true);
+        deadline->stop();
+        m_hostProbesInFlight.remove(key);
+        render(
+            QString::fromUtf8("\xE2\x97\x8F Attention \xC2\xB7 SSH unavailable"),
+            QString::fromUtf8("\xE2\x80\x94"),
+            QString::fromUtf8("\xE2\x80\x94"),
+            QColor(QStringLiteral("#cf222e")));
+        process->deleteLater();
+    });
+    connect(process, &QProcess::finished, this,
+            [this, process, deadline, key, savedStatus, render, rowForKey](
+                int exitCode, QProcess::ExitStatus exitStatus) {
+        if (process->property("forkmeshHostProbeDone").toBool())
+            return;
+        process->setProperty("forkmeshHostProbeDone", true);
+        deadline->stop();
+        QByteArray bytes =
+            process->property("forkmeshHostProbe").toByteArray();
+        bytes += process->readAllStandardOutput();
+        const QString output = QString::fromUtf8(bytes);
+        const bool online =
+            exitStatus == QProcess::NormalExit &&
+            exitCode == 0 &&
+            output.contains(QStringLiteral("FORKMESH="));
+        if (online) {
+            const bool forkmesh =
+                output.contains(QStringLiteral("FORKMESH=1"));
+            const bool claude =
+                output.contains(QStringLiteral("CLAUDE=1"));
+            const bool codex =
+                output.contains(QStringLiteral("CODEX=1"));
+            render(
+                forkmesh
+                    ? QString::fromUtf8("\xE2\x97\x8F Online")
+                    : QString::fromUtf8("\xE2\x97\x8F Online \xC2\xB7 ForkMesh missing"),
+                claude
+                    ? QString::fromUtf8("\xE2\x9C\x93 Installed")
+                    : QStringLiteral("Not installed"),
+                codex
+                    ? QString::fromUtf8("\xE2\x9C\x93 Installed")
+                    : QStringLiteral("Not installed"),
+                forkmesh
+                    ? QColor(QStringLiteral("#2da44e"))
+                    : QColor(QStringLiteral("#d29922")));
+            const int row = rowForKey(key);
+            if (row >= 0 && m_hostsTable) {
+                if (QTableWidgetItem *item = m_hostsTable->item(row, 4)) {
+                    item->setForeground(QColor(
+                        claude ? QStringLiteral("#2da44e")
+                               : QStringLiteral("#8b949e")));
+                }
+                if (QTableWidgetItem *item = m_hostsTable->item(row, 5)) {
+                    item->setForeground(QColor(
+                        codex ? QStringLiteral("#2da44e")
+                              : QStringLiteral("#8b949e")));
+                }
+            }
+        } else {
+            const bool rejected =
+                output.contains(QStringLiteral("Permission denied"),
+                                Qt::CaseInsensitive);
+            const bool timedOut =
+                process->property("forkmeshHostProbeTimedOut").toBool() ||
+                output.contains(QStringLiteral("Connection timed out"),
+                                Qt::CaseInsensitive);
+            const bool provisioning =
+                savedStatus.contains(QStringLiteral("install"),
+                                     Qt::CaseInsensitive) ||
+                savedStatus.contains(QStringLiteral("vultr"),
+                                     Qt::CaseInsensitive) ||
+                savedStatus == QStringLiteral("added");
+            const QString status =
+                rejected
+                    ? QString::fromUtf8("\xE2\x97\x8F Attention \xC2\xB7 SSH key rejected")
+                    : timedOut && provisioning
+                        ? QString::fromUtf8("\xE2\x97\x8C Provisioning \xC2\xB7 waiting for SSH")
+                        : QString::fromUtf8("\xE2\x97\x8F Offline \xC2\xB7 unreachable");
+            render(
+                status,
+                QString::fromUtf8("\xE2\x80\x94"),
+                QString::fromUtf8("\xE2\x80\x94"),
+                rejected
+                    ? QColor(QStringLiteral("#cf222e"))
+                    : QColor(QStringLiteral("#8b949e")));
+            const int row = rowForKey(key);
+            if (row >= 0) {
+                if (QTableWidgetItem *item = m_hostsTable->item(row, 3))
+                    item->setToolTip(output.trimmed().left(1000));
+            }
+        }
+        m_hostProbesInFlight.remove(key);
+        process->deleteLater();
+    });
+    process->start(ssh.program, ssh.arguments);
+    deadline->start();
 }
 
 void MainWindow::installAgentClisForHost(int row)
@@ -8098,6 +8359,7 @@ void MainWindow::installAgentClisForHost(int row)
                           "Agent CLI installation failed on %1; see Live output.")
                           .arg(node));
         }
+        QTimer::singleShot(0, this, &MainWindow::probeSavedHosts);
         proc->deleteLater();
     });
     proc->start(ssh.program, ssh.arguments);
@@ -11208,9 +11470,11 @@ QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip
         }
         const QString identity =
             host.value(QStringLiteral("identityFile")).toString().trimmed();
-        if (!identity.isEmpty() && QFileInfo(identity).isFile())
-            return identity;
-        return {};
+        // Return the configured path even when the file has gone missing.
+        // buildHostSshCommand() owns validation and will then fail closed with
+        // "The managed SSH key for this host is missing." Treating the path as
+        // absent here would silently fall back to a session password.
+        return identity;
     }
     return {};
 }

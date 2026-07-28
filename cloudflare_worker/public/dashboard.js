@@ -11191,7 +11191,7 @@
                 <span class="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">${escapeHtml(payload.memberRole || "member")}</span>
                 <button type="button" data-org-agent-refresh class="ml-auto inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs hover:bg-secondary"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button>
               </div>
-              <p class="max-w-3xl text-xs leading-5 text-muted-foreground">Start Claude Code or Codex on an integrity-approved headless mirror. Every new or revised prompt must receive an exact tool-free Claude Haiku approval before the coding agent runs. Sessions and audit history stay scoped to this organization.</p>
+              <p class="max-w-3xl text-xs leading-5 text-muted-foreground">Start Claude Code or Codex on an integrity-approved headless mirror. Every new or revised prompt must receive an exact tool-free Claude Haiku approval before the coding agent runs. Sessions, transcripts, controls, and audit history are restricted to current Engineering team members.</p>
               <form data-org-agent-start class="grid gap-2 rounded-md border border-border bg-secondary/20 p-3">
                 <textarea name="prompt" required maxlength="8000" rows="3" class="w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-xs text-foreground" placeholder="Describe the repository task…"></textarea>
                 <input name="taskKey" maxlength="96" pattern="(?:task:[a-z0-9-]{1,48}|issue:[a-z0-9-]{1,40}/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})" class="h-9 rounded-md border border-input bg-background px-3 font-mono text-xs text-foreground" placeholder="Optional tracked board key, e.g. task:codex-world" />
@@ -13016,7 +13016,7 @@
             <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="settings" class="h-3.5 w-3.5 text-primary"></i>Repository settings</span>
           </div>
           <form data-repo-settings-form class="grid gap-4 p-4">
-            <fieldset class="grid gap-2 rounded-md border border-border p-3 text-xs text-muted-foreground">
+            <fieldset id="operational-alerts" data-repo-operational-alerts tabindex="-1" class="grid gap-2 scroll-mt-20 rounded-md border border-border p-3 text-xs text-muted-foreground outline-none focus:ring-2 focus:ring-primary/50">
               <legend class="px-1 text-[11px] font-semibold uppercase tracking-wide">ActivityPub federation</legend>
               <label class="inline-flex items-start gap-2"><input data-repo-ap-federate type="checkbox" class="mt-0.5 h-3.5 w-3.5" checked />Federate this repository (fediverse actor and handle)</label>
               <label class="inline-flex items-start gap-2"><input data-repo-ap-broadcast type="checkbox" class="mt-0.5 h-3.5 w-3.5" checked />Include meaningful public updates in one automated digest at most every 24 hours</label>
@@ -13318,6 +13318,16 @@
     // markup underneath) is already on the right tab.
     const initialTab = repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code";
     setRepoTab(initialTab);
+    if (
+      initialTab === "settings" &&
+      window.location.hash === "#operational-alerts"
+    ) {
+      window.requestAnimationFrame(() => {
+        const alerts = document.querySelector("[data-repo-operational-alerts]");
+        alerts?.scrollIntoView({ block: "center" });
+        alerts?.focus({ preventScroll: true });
+      });
+    }
     window.lucide?.createIcons();
     // When the URL restored a feature tab (or a record detail), the tree/README
     // load is only a warm-up for a later click on Code — run it in background

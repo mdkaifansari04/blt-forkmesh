@@ -5,29 +5,41 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [x] Add physical Pass / Fail / Unsure tabs to the QA deck with verdict-filtered task pages.
+- [x] Let authorized QA reviewers send a reviewed card back to “What we're building”.
+- [x] Let authorized QA reviewers file a reviewed card into the `forkmesh/forkmesh` issues list.
+- [x] Keep newly provisioned Hosts rows checking until each mirror is reachable, with clear provisioning/online/attention state.
+- [x] Show separate Claude Code and Codex installed/missing status beside every saved host.
+- [ ] Show a visible Terms-of-Service moderation flag on repositories that violate ForkMesh policy.
+- [ ] Move the elevator's locked first-person camera to the front wall at the same height, facing outward.
+- [ ] Increase the in-elevator button labels and contrast for clear floor selection.
+- [ ] Add tasteful scene-native flowers, trees, and bushes around the Office exterior.
 - [x] Add a direct “Manage this alert” link to component and scheduled-job alert emails, opening the affected expanded status row.
-- [ ] Fix the production `/api/world/deploy-status` response error that made API and Worker status red, then verify live recovery.
-- [ ] Use the deploy lifecycle singleton as a status semaphore so rollout minutes do not create false Website/API/Worker incidents or emails.
-- [ ] Show the live World user count and a Join World button between the homepage logo and hamburger on mobile.
-- [ ] Make the 24-hour QA deck a direct physical grab/swipe board with left Fail, right Pass, down Unsure, test instructions, and private cross-device totals.
-- [ ] Add “Done → send for QA” to each active build sticky and enqueue its test instructions into the QA deck.
-- [ ] Keep Share exact view on the right rail, restore the normal right-click menu, and keep Saved Views collapsed with small thumbnails and a +Map control.
-- [ ] Show admin-only copyable full IP and User-Agent details on guest backs without persisting or broadcasting them to other users.
-- [ ] Keep repository follower and contributor avatar orbits coplanar with the repository wheel and spaced farther out.
-- [ ] Consolidate member Info/Fedi into one compact front card with short relative times, Solana wallet QR/copy/balance, and no mode buttons.
-- [ ] Show every server-authoritative team badge as a stacked list on the avatar's left arm.
-- [ ] Restore the Marketing task wall to room scale and put create, Marketing-only assign, start/stop, done, and delete controls directly on the physical wall.
+- [x] Make QA arrows permanently visible and large (red Fail, green Pass, grey Unsure), publish global aggregate stats, and continuously intake newly completed tasks.
+- [x] Fix the production `/api/world/deploy-status` response error that made API and Worker status red, then verify live recovery.
+- [x] Use the deploy lifecycle singleton as a status semaphore so rollout minutes do not create false Website/API/Worker incidents or emails.
+- [x] Show the live World user count and a Join World button between the homepage logo and hamburger on mobile.
+- [x] Make the 24-hour QA deck a direct physical grab/swipe board with left Fail, right Pass, down Unsure, test instructions, and private cross-device totals.
+- [x] Add “Done → send for QA” to each active build sticky and enqueue its test instructions into the QA deck.
+- [x] Keep Share exact view on the right rail, restore the normal right-click menu, and keep Saved Views collapsed with small thumbnails and a +Map control.
+- [x] Show admin-only copyable full IP and User-Agent details on guest backs without persisting or broadcasting them to other users.
+- [x] Keep repository follower and contributor avatar orbits coplanar with the repository wheel and spaced farther out.
+- [x] Consolidate member Info/Fedi into one compact front card with short relative times, Solana wallet QR/copy/balance, and no mode buttons.
+- [x] Show every server-authoritative team badge as a stacked list on the avatar's left arm.
+- [x] Restore the Marketing task wall to room scale and put create, Marketing-only assign, start/stop, done, and delete controls directly on the physical wall.
+- [x] Restore the Fresh Code mirror-push beam and shockwave after a signed catalog commit confirms the push.
+- [x] Fix chest Fediverse loading, enlarge the unified card, and use its dark node-style border as the activity indicator.
 - [ ] Set up `CLOUDFLARE_OBSERVABILITY_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` so attention emails can include the prior two minutes of logs.
-- [ ] Deploy an instant World-wide deployment-start indicator, animated activity state, and explicit ready-to-refresh action without auto-refreshing.
-- [ ] Switch the elevator to an upper-corner first-person view that frames the controls and outside, then restore the prior view on arrival or exit.
-- [ ] Refresh “What we're building” whenever a player approaches and show its physical updating spinner.
+- [x] Deploy an instant World-wide deployment-start indicator, animated activity state, and explicit ready-to-refresh action without auto-refreshing.
+- [x] Switch the elevator to an upper-corner first-person view that frames the controls and outside, then restore the prior view on arrival or exit.
+- [x] Refresh “What we're building” whenever a player approaches and show its physical updating spinner.
 - [ ] Verify the ForkMesh X timeline feed and keep the in-world board sourced from the public `@forkmesh` profile without third-party tracking script injection.
-- [ ] Make mirror agent installers exclusively use the saved ForkMesh SSH key when present and clearly distinguish an unreachable host from rejected authentication.
+- [x] Make mirror agent installers exclusively use the saved ForkMesh SSH key when present and clearly distinguish an unreachable host from rejected authentication.
 - [ ] Finish and test the repository Mastodon-follower and Git-contributor avatar orbits.
 - [ ] Finish and test Claude/Codex/model assignment controls on World issue cards.
-- [ ] Finish and test the Qt host buttons that install the official Claude Code and Codex CLIs.
+- [x] Finish and test the Qt host buttons that install the official Claude Code and Codex CLIs.
 - [ ] Finish and test the Marketing wall, member desks, attendance calendar, and sealed reclaimed-wood logo table.
-- [ ] Add server-authoritative team badges to each user's left arm.
+- [x] Add server-authoritative team badges to each user's left arm.
 - [ ] Let Marketing members submit private social proof-of-work links from their own desk and show those items only to Marketing.
 - [ ] Run the focused Worker, browser-module, mirror gateway, and Qt tests for this round.
 - [ ] Deploy this round, verify the production revision/assets, and move each completed sticky to Done.
@@ -92,11 +104,11 @@ the implementation and its focused verification are complete.
 - [x] Include the last two minutes of Cloudflare logs in non-green component-attention emails.
 - [x] Keep component-attention email delivery working when log retrieval is unavailable.
 - [x] Make every status-history cell use the same height.
-- [x] Add an organization-member-visible Claude Code bot to repository Agents.
-- [x] Let an organization member start its session on an eligible headless mirror.
-- [x] Let organization members revise and send follow-up prompts to that session.
+- [x] Add an Engineering-team-only Claude Code bot to repository Agents.
+- [x] Let a current Engineering team member start its session on an eligible headless mirror.
+- [x] Let current Engineering team members revise and send follow-up prompts to that session.
 - [x] Fail closed until a Haiku intent check approves each submitted prompt.
-- [x] Keep bot authorization, mirror dispatch, session history, and audit data organization-scoped.
+- [x] Keep bot authorization, mirror dispatch, session history, and audit data encrypted and restricted to the current Engineering team.
 - [x] Give the Claude bot an in-world avatar that walks around using Forkbot's bot-presence pattern.
 - [x] Route `@claude` chat mentions into the same organization-scoped, Haiku-gated bot workflow.
 - [x] Close stale Office attendance rows so absent members never remain “IN BUILDING”.

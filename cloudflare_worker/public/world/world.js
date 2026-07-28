@@ -4443,6 +4443,9 @@ class ForkMeshWorld extends HTMLElement {
       stats: { pass: 0, fail: 0, unsure: 0, reviewed: 0, total: 0 },
     };
     this.qaCardIndex = 0;
+    this.qaDeckView = "cards";
+    this.qaDeckPage = 0;
+    this.qaDeckSelectedKey = "";
     this.qaLoad = null;
     this.qaSaving = false;
     this.updateCheckTimer = 0;
@@ -5198,6 +5201,9 @@ class ForkMeshWorld extends HTMLElement {
         // The physical wall is now the complete Marketing task view. Selecting
         // it no longer covers the room with the legacy task drawer.
         onOfficeTaskBoardSelect: () => {},
+        onOfficeTaskWallAction: (action) => {
+          void this.officeTasks?.physicalAction?.(action);
+        },
         onOfficeMeetingBoardSelect: () => {
           void this.officeMeeting?.joinRoom?.("general");
         },
@@ -5237,7 +5243,10 @@ class ForkMeshWorld extends HTMLElement {
           void this.reorderBuildBoard(order),
         onBuildIssueAssign: ({ key, title }) =>
           void this.assignBuildIssue(key, title),
+        onBuildSendQa: ({ key, title }) =>
+          void this.sendBuildTaskToQa(key, title),
         onQaVerdict: ({ verdict }) => void this.recordQaVerdict(verdict),
+        onQaAction: (action) => void this.handleQaAction(action),
         onRepositoryIssueOpen: (issue) =>
           this.openRepositoryIssueWorkbench(issue),
         onRendererStateChange: (state) => {
@@ -5363,6 +5372,9 @@ class ForkMeshWorld extends HTMLElement {
       await Promise.allSettled([contextPromise, dataPromise]);
       this.setLoadingProgress(86, "Adding mirrors, members, and boards…");
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
+      this.world.setLocalOrgTeam?.(
+        this.orgTeamAssignmentFor(this.identity?.name),
+      );
       this.syncRecentIssueAssignments();
       this.officeTasks?.prime?.();
       this.applyWorldLayoutEditor();
@@ -5618,8 +5630,16 @@ class ForkMeshWorld extends HTMLElement {
         )
           ? String(card?.verdict || reviews?.[key]?.verdict)
           : "";
+        const global = card?.global && typeof card.global === "object"
+          ? {
+              pass: Math.max(0, Number(card.global.pass) || 0),
+              fail: Math.max(0, Number(card.global.fail) || 0),
+              unsure: Math.max(0, Number(card.global.unsure) || 0),
+              total: Math.max(0, Number(card.global.total) || 0),
+            }
+          : { pass: 0, fail: 0, unsure: 0, total: 0 };
         return key && title && howToTest
-          ? { key, title, howToTest, verdict }
+          ? { key, title, howToTest, verdict, global }
           : null;
       })
       .filter(Boolean)
@@ -5633,6 +5653,19 @@ class ForkMeshWorld extends HTMLElement {
       revision: sanitizePresenceText(payload?.revision, "", 80),
       cards,
       reviews,
+      globalReviews:
+        payload?.globalReviews && typeof payload.globalReviews === "object"
+          ? payload.globalReviews
+          : {},
+      globalStats: {
+        pass: Math.max(0, Number(payload?.globalStats?.pass) || 0),
+        fail: Math.max(0, Number(payload?.globalStats?.fail) || 0),
+        unsure: Math.max(0, Number(payload?.globalStats?.unsure) || 0),
+        reviewed: Math.max(0, Number(payload?.globalStats?.reviewed) || 0),
+        testers: Math.max(0, Number(payload?.globalStats?.testers) || 0),
+        total: cards.length,
+      },
+      canRoute: payload?.canRoute === true,
       stats: {
         ...counts,
         reviewed: cards.filter((card) => card.verdict).length,
@@ -5653,13 +5686,120 @@ class ForkMeshWorld extends HTMLElement {
     } else {
       this.qaCardIndex = 0;
     }
+    this.renderQaDeck();
+    return this.qaDeck;
+  }
+
+  qaDeckCardsForView(view = this.qaDeckView) {
+    const verdict = ["pass", "fail", "unsure"].includes(view) ? view : "";
+    if (!verdict) return [];
+    return this.qaDeck.cards.filter(
+      (card) =>
+        (Number(card?.global?.[verdict]) || 0) > 0 ||
+        String(card?.verdict || "") === verdict,
+    );
+  }
+
+  renderQaDeck() {
+    const view = ["pass", "fail", "unsure"].includes(this.qaDeckView)
+      ? this.qaDeckView
+      : "cards";
+    const filtered = this.qaDeckCardsForView(view);
+    const pageSize = 5;
+    const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    this.qaDeckPage = Math.min(Math.max(0, this.qaDeckPage), pages - 1);
+    const list = filtered.slice(
+      this.qaDeckPage * pageSize,
+      (this.qaDeckPage + 1) * pageSize,
+    );
+    if (
+      this.qaDeckSelectedKey &&
+      !filtered.some((card) => card.key === this.qaDeckSelectedKey)
+    ) {
+      this.qaDeckSelectedKey = "";
+    }
     this.world?.updateQaBoard?.({
       authenticated: this.qaDeck.authenticated,
-      current: cards[this.qaCardIndex] || null,
+      current: this.qaDeck.cards[this.qaCardIndex] || null,
       currentIndex: this.qaCardIndex,
       stats: this.qaDeck.stats,
+      globalStats: this.qaDeck.globalStats,
+      canRoute: this.qaDeck.canRoute,
+      view,
+      list,
+      selectedKey: this.qaDeckSelectedKey,
+      page: this.qaDeckPage,
+      pages,
     });
-    return this.qaDeck;
+  }
+
+  async handleQaAction(detail = {}) {
+    const action = String(detail?.action || "");
+    if (action === "tab") {
+      const view = String(detail?.view || "cards");
+      if (!["cards", "pass", "fail", "unsure"].includes(view)) return;
+      this.qaDeckView = view;
+      this.qaDeckPage = 0;
+      this.qaDeckSelectedKey = "";
+      this.renderQaDeck();
+      return;
+    }
+    if (action === "select") {
+      const key = String(detail?.key || "");
+      if (!this.qaDeck.cards.some((card) => card.key === key)) return;
+      this.qaDeckSelectedKey = key;
+      this.renderQaDeck();
+      return;
+    }
+    if (action === "page") {
+      const delta = Math.sign(Number(detail?.delta) || 0);
+      if (!delta) return;
+      this.qaDeckPage += delta;
+      this.qaDeckSelectedKey = "";
+      this.renderQaDeck();
+      return;
+    }
+    if (action === "route") {
+      await this.routeQaCard(String(detail?.target || ""));
+    }
+  }
+
+  async routeQaCard(target) {
+    if (!["todo", "issues"].includes(target)) return false;
+    const card = this.qaDeck.cards.find(
+      (entry) => entry.key === this.qaDeckSelectedKey,
+    );
+    if (!card) {
+      this.toast("Select a QA task first.");
+      return false;
+    }
+    if (!this.qaDeck.canRoute || !validWorldSession()) {
+      this.toast("Owner, admin, or maintain access is required to route QA.");
+      return false;
+    }
+    try {
+      const payload = await this.postJSON(
+        WORLD_QA_ENDPOINT,
+        {
+          action: target === "todo" ? "route_todo" : "route_issue",
+          key: card.key,
+        },
+        { timeout: 12_000 },
+      );
+      this.applyQaDeck(payload);
+      await this.refreshBuildBoard({ quiet: true });
+      this.toast(
+        target === "todo"
+          ? `${card.title} was sent back to What we're building.`
+          : `${card.title} was queued in forkmesh/forkmesh issues.`,
+      );
+      return true;
+    } catch (error) {
+      this.toast(
+        String(error?.message || "The QA task could not be routed."),
+      );
+      return false;
+    }
   }
 
   async refreshQaDeck({ afterKey = "", quiet = false } = {}) {
@@ -5706,7 +5846,7 @@ class ForkMeshWorld extends HTMLElement {
       );
       this.applyQaDeck(payload, { afterKey: card.key });
       this.toast(
-        `${card.title}: ${verdict}. Your private QA totals were updated.`,
+        `${card.title}: ${verdict}. Your result and the shared QA totals were updated.`,
       );
       return true;
     } catch (error) {
@@ -5845,6 +5985,39 @@ class ForkMeshWorld extends HTMLElement {
       await this.refreshBuildBoard({ quiet: true });
       this.toast(
         String(error?.message || "The issue could not be assigned."),
+      );
+      return false;
+    }
+  }
+
+  async sendBuildTaskToQa(key, title) {
+    const taskKey = String(key || "");
+    const taskTitle = sanitizePresenceText(title, "Completed task", 160);
+    if (!/^(?:task:[a-z0-9-]{1,48}|issue:[a-z0-9-]{1,40}\/[a-z0-9._-]{1,60}#[1-9]\d{0,8})$/.test(taskKey)) {
+      return false;
+    }
+    try {
+      const payload = await this.postJSON(
+        "/api/world/build-board",
+        {
+          action: "send_qa",
+          key: taskKey,
+          title: taskTitle,
+          howToTest:
+            `Open the completed ${taskTitle} feature and follow its normal ` +
+            "user flow. Confirm the requested behavior works, existing " +
+            "behavior did not regress, and no console or network error appears.",
+        },
+        { timeout: 12_000 },
+      );
+      this.world?.updateBuildBoard?.(payload);
+      await this.refreshQaDeck({ quiet: true });
+      this.toast(`${taskTitle} moved to Done and was added to shared QA.`);
+      return true;
+    } catch (error) {
+      await this.refreshBuildBoard({ quiet: true });
+      this.toast(
+        String(error?.message || "The task could not be sent to QA."),
       );
       return false;
     }
@@ -7165,17 +7338,22 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-  // One plaque per member of an organization the viewer administers. Built
-  // once per organization reload rather than per presence frame: the roster is
-  // capped at 50 organizations x 40 members, and presence redraws are frequent.
+  // Server-authoritative team marks are visible to every organization member
+  // allowed to read the roster. The separate canManage bit controls whether
+  // the owner/admin assignment plaque is interactive.
   rebuildOrgTeamIndex() {
     const index = new Map();
-    this.managedOrganizations().forEach((organization) => {
+    this.organizations.forEach((organization) => {
       const org = sanitizePresenceText(
         organization.name || organization.org,
         "",
         50,
       ).toLowerCase();
+      const canManage = ["owner", "admin"].includes(
+        String(
+          organization?.viewerRole || organization?.role || "",
+        ).toLowerCase(),
+      );
       const teams = Array.isArray(organization.teamList)
         ? organization.teamList
         : [];
@@ -7195,6 +7373,7 @@ class ForkMeshWorld extends HTMLElement {
         index.set(account, {
           org,
           member: account,
+          canManage,
           assigned: assigned.length,
           total: teamNames.size,
           teams: assigned.slice(0, 6),
@@ -7202,6 +7381,9 @@ class ForkMeshWorld extends HTMLElement {
       });
     });
     this.orgTeamIndex = index;
+    this.world?.setLocalOrgTeam?.(
+      this.orgTeamAssignmentFor(this.identity?.name),
+    );
   }
 
   orgTeamAssignmentFor(name) {
@@ -21188,7 +21370,8 @@ class ForkMeshWorld extends HTMLElement {
     // re-fetched signed mirror payload, never from unauthenticated frame data.
     const node = sanitizePresenceText(message?.node, "", 40);
     const repo = sanitizePresenceText(message?.repo, "", 60);
-    if (!node || !repo) return;
+    const commit = sanitizePresenceText(message?.commit, "", 12).toLowerCase();
+    if (!node || !repo || !/^[0-9a-f]{12}$/.test(commit)) return;
     // The publisher can be a user-backed source or a mirror node. Neither is
     // the public repository owner. Keep that internal routing identity out of
     // visitor-facing copy; the flagship organization remains forkmesh.
@@ -21199,6 +21382,9 @@ class ForkMeshWorld extends HTMLElement {
     this.toast(
       `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
     );
+    // This only arms the scene. No frame directly creates an effect: the next
+    // signed catalog payload must confirm the node and commit prefix first.
+    this.world?.armMirrorPushEffect?.(node, commit);
     // One coalesced refresh replaces waiting out the steady mirror poll, so
     // the yard updates near-instantly without adding steady-state traffic.
     window.clearTimeout(this.mirrorPushRefreshTimer);

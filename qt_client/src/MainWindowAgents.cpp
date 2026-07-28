@@ -1076,10 +1076,29 @@ QWidget *MainWindow::buildAgentsTab()
         const int repoIndex = repoIndexFor(s->owner, s->name);
         if (repoIndex < 0)
             return;
+        const int sessionId = s->id;
         const QString branch = s->branchName;
-        const QString wt =
-            worktreePathForBranch(m_repositories.at(repoIndex).localPath, branch);
-        deleteWorktreeBranchAndAgentInBackground(wt, branch);
+        const QString repoPath = m_repositories.at(repoIndex).localPath;
+        // Every step of the teardown — looking the worktree up, clearing the
+        // issue, dropping the stored session, the reloads — is synchronous git,
+        // so the click used to sit there for seconds with nothing to show it
+        // registered (adhoc #417). Log it, say so and grey the button out now,
+        // then let the event loop paint before any of that work starts.
+        logSystem(QStringLiteral("Agents: \"Delete all\" clicked for session #%1 (%2).")
+                      .arg(sessionId)
+                      .arg(branch));
+        flashMessage(
+            QStringLiteral("Deleting agent session and cleaning up %1\xE2\x80\xA6")
+                .arg(branch));
+        m_agentDeleteAllButton->setEnabled(false);
+        QTimer::singleShot(0, this, [this, repoPath, branch] {
+            GitKeepAlive keepAlive; // window keeps painting across the git reads
+            deleteWorktreeBranchAndAgentInBackground(
+                worktreePathForBranch(repoPath, branch), branch);
+            // Re-derive the button state: the guards inside can bail early (no
+            // session on that branch, main checkout) without a reload.
+            updateAgentActionState();
+        });
     });
 
     // "View PR" — appears once the session produced a pull request.
