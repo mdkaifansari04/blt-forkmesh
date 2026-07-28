@@ -5,6 +5,19 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [ ] Deploy an instant World-wide deployment-start indicator, animated activity state, and explicit ready-to-refresh action without auto-refreshing.
+- [ ] Lock the camera onto the elevator controls while entering/riding, then release it on arrival or after stepping out.
+- [ ] Refresh “What we're building” whenever a player approaches and show its physical updating spinner.
+- [ ] Verify the ForkMesh X timeline feed and keep the in-world board sourced from the public `@forkmesh` profile without third-party tracking script injection.
+- [ ] Make mirror agent installers exclusively use the saved ForkMesh SSH key when present and clearly distinguish an unreachable host from rejected authentication.
+- [ ] Finish and test the repository Mastodon-follower and Git-contributor avatar orbits.
+- [ ] Finish and test Claude/Codex/model assignment controls on World issue cards.
+- [ ] Finish and test the Qt host buttons that install the official Claude Code and Codex CLIs.
+- [ ] Finish and test the Marketing wall, member desks, attendance calendar, and sealed reclaimed-wood logo table.
+- [ ] Add server-authoritative team badges to each user's left arm.
+- [ ] Let Marketing members submit private social proof-of-work links from their own desk and show those items only to Marketing.
+- [ ] Run the focused Worker, browser-module, mirror gateway, and Qt tests for this round.
+- [ ] Deploy this round, verify the production revision/assets, and move each completed sticky to Done.
 - [x] Keep Mastodon follower avatars visibly orbiting the selected repository file circle at every normal camera angle.
 - [x] Make clicking the Claude or Codex world bot open its complete Engineering-only live status, work, transcript, runtime, and prompt controls.
 - [x] Surface stalled mirror-agent diagnostics as actionable notes on the Engineering-only Human TODO board.

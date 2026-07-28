@@ -7992,6 +7992,13 @@ void MainWindow::installAgentClisForHost(int row)
             break;
         }
     }
+    const QString identityFile = savedHostIdentityFile(node, ip, user);
+    // A Vultr mirror provisioned by ForkMesh has a pinned per-host identity.
+    // Use only that identity even if this process still has an old session
+    // password in memory; this avoids an opaque password fallback and makes
+    // the authentication path match every later headless-agent connection.
+    const QString sshPassword =
+        identityFile.isEmpty() ? pass : QString();
     const QString remoteCmd = QStringLiteral(
         "sh -lc 'set -eu; "
         "echo \"Installing Claude Code from claude.ai...\"; "
@@ -8007,8 +8014,7 @@ void MainWindow::installAgentClisForHost(int row)
     QString sshError;
     const forkmesh::control::HostSshCommand ssh =
         forkmesh::control::buildHostSshCommand(
-            ip, user, pass, remoteCmd, &sshError,
-            savedHostIdentityFile(node, ip, user));
+            ip, user, sshPassword, remoteCmd, &sshError, identityFile);
     if (ssh.program.isEmpty()) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(sshError);
@@ -8019,6 +8025,13 @@ void MainWindow::installAgentClisForHost(int row)
     appendHostInstallLog(
         QStringLiteral("Installing Claude Code and Codex on %1 (%2@%3)...\n")
             .arg(node, user, ip));
+    appendHostInstallLog(
+        identityFile.isEmpty()
+            ? QStringLiteral(
+                  "No managed key is saved for this host; using the current "
+                  "session credential or the system SSH agent.\n")
+            : QStringLiteral(
+                  "Using the ForkMesh-managed SSH identity for this host.\n"));
     if (m_hostInstallStatus)
         m_hostInstallStatus->setText(
             QStringLiteral("Installing agent CLIs on %1...").arg(node));
@@ -8027,7 +8040,14 @@ void MainWindow::installAgentClisForHost(int row)
     proc->setProcessChannelMode(QProcess::MergedChannels);
     proc->setProcessEnvironment(ssh.environment);
     connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
-        appendHostInstallLog(QString::fromUtf8(proc->readAllStandardOutput()));
+        const QByteArray chunk = proc->readAllStandardOutput();
+        QByteArray transcript =
+            proc->property("forkmeshAgentInstallOutput").toByteArray();
+        transcript += chunk;
+        if (transcript.size() > 8192)
+            transcript = transcript.right(8192);
+        proc->setProperty("forkmeshAgentInstallOutput", transcript);
+        appendHostInstallLog(QString::fromUtf8(chunk));
     });
     connect(proc, &QProcess::errorOccurred, this,
             [this](QProcess::ProcessError error) {
@@ -8037,7 +8057,8 @@ void MainWindow::installAgentClisForHost(int row)
         }
     });
     connect(proc, &QProcess::finished, this,
-            [this, proc, node](int code, QProcess::ExitStatus status) {
+            [this, proc, node, ip, identityFile](
+                int code, QProcess::ExitStatus status) {
         if (m_hostAgentInstallProcess == proc)
             m_hostAgentInstallProcess = nullptr;
         const bool ok =
@@ -8047,12 +8068,32 @@ void MainWindow::installAgentClisForHost(int row)
                : QStringLiteral("\nAgent CLI installation failed (exit %1).\n")
                      .arg(code));
         if (m_hostInstallStatus) {
+            const QString output = QString::fromUtf8(
+                proc->property("forkmeshAgentInstallOutput").toByteArray());
+            const bool timedOut = output.contains(
+                QStringLiteral("Connection timed out"),
+                Qt::CaseInsensitive);
+            const bool keyRejected = output.contains(
+                QStringLiteral("Permission denied"),
+                Qt::CaseInsensitive);
             m_hostInstallStatus->setText(
                 ok
                     ? QStringLiteral(
                           "Claude Code and Codex are installed on %1. Sign in "
                           "on that mirror before starting sessions.")
                           .arg(node)
+                    : timedOut
+                        ? QStringLiteral(
+                              "SSH could not reach %1 on port 22. The saved "
+                              "key was not reached; use the host's reachable "
+                              "public/stable address or connect this device to "
+                              "the private network, then retry.")
+                              .arg(ip)
+                        : keyRejected && !identityFile.isEmpty()
+                            ? QStringLiteral(
+                                  "The mirror rejected its saved ForkMesh SSH "
+                                  "key. Re-provision or replace that host key, "
+                                  "then retry.")
                     : QStringLiteral(
                           "Agent CLI installation failed on %1; see Live output.")
                           .arg(node));

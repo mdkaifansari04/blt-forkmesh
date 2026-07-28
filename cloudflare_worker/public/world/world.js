@@ -160,6 +160,7 @@ const WORLD_ACTIVITY_CONTINUATION_HEADER = "x-forkmesh-world-activity";
 // Code revisions are offered with an explicit refresh button. Shared object
 // placements are data-only updates and are applied to the running scene.
 const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const WORLD_DEPLOY_STATUS_POLL_MS = 2500;
 const WORLD_LAYOUT_LIVE_REFRESH_MS = 60 * 1000;
 const REPOSITORY_IMPORT_POLL_MS = 2 * 60 * 1000;
 // forkmesh/forkmesh opens by default, but its commit pin needs the repository
@@ -1237,6 +1238,25 @@ function remotePlayer(peer) {
       }
     }
   }
+  const adminGuestNetwork = {};
+  if (
+    peer.adminGuestNetwork &&
+    typeof peer.adminGuestNetwork === "object" &&
+    String(peer.accountStatus || "Guest") === "Guest"
+  ) {
+    const ipAddress = String(
+      peer.adminGuestNetwork.ipAddress || "",
+    ).slice(0, 64);
+    const userAgent = String(
+      peer.adminGuestNetwork.userAgent || "",
+    ).slice(0, 1024);
+    if (/^[0-9a-f:.]{2,64}$/i.test(ipAddress)) {
+      adminGuestNetwork.ipAddress = ipAddress;
+    }
+    if (userAgent && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(userAgent)) {
+      adminGuestNetwork.userAgent = userAgent;
+    }
+  }
   return {
     id: String(peer.id),
     name: sanitizePresenceText(peer.name, "visitor", 32),
@@ -1299,6 +1319,7 @@ function remotePlayer(peer) {
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
     moderationHandles,
+    adminGuestNetwork,
     updatedAt: Math.max(0, Number(peer.updatedAt) || 0),
     solana: WORLD_SOLANA_ADDRESS_RE.test(String(peer.solana || ""))
       ? String(peer.solana)
@@ -3421,7 +3442,8 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         <button type="button" data-world-renderer-reload hidden>Reload World</button>
       </div>
       <div class="world-update-notice" data-world-update-notice role="status" aria-live="polite" hidden>
-        <span><strong>A new World build is ready.</strong> Refresh when you are ready; your position will be preserved.</span>
+        <span class="world-update-activity" data-world-update-activity aria-hidden="true"></span>
+        <span data-world-update-copy><strong>A new World build is ready.</strong> Refresh when you are ready; your position will be preserved.</span>
         <button type="button" data-world-update-refresh>Refresh World</button>
       </div>
       <div class="world-share-menu" data-world-share-menu role="menu" hidden>
@@ -4283,6 +4305,7 @@ class ForkMeshWorld extends HTMLElement {
     this.systemCapacityFocus = "";
     this.systemCapacitySort = { key: "rowCount", direction: "desc" };
     this.buildBoardTimer = 0;
+    this.buildBoardLoad = null;
     this.orgAgentTimer = 0;
     this.sessionWatchTimer = 0;
     this.sessionWatchActive = false;
@@ -4401,6 +4424,8 @@ class ForkMeshWorld extends HTMLElement {
     this.rendererRecoveryTimer = 0;
     this.buildDiagnostics = { version: "", revision: "" };
     this.updateCheckTimer = 0;
+    this.deployStatusTimer = 0;
+    this.deployObservedRevision = "";
     this.layoutRefreshTimer = 0;
     this.worldLayoutFingerprint = "";
     this.pendingWorldShare = null;
@@ -4574,6 +4599,7 @@ class ForkMeshWorld extends HTMLElement {
     this.bootstrap();
     this.startWorldTicketRefresh();
     this.startUpdateWatch();
+    this.startDeployStatusWatch();
     this.startWorldLayoutWatch();
   }
 
@@ -5183,6 +5209,8 @@ class ForkMeshWorld extends HTMLElement {
           this.openSystemCapacityTables(table),
         onInfrastructureConsoleToggle: ({ enabled }) =>
           this.setInfrastructureConsoleEnabled(enabled),
+        onBuildBoardNearby: () =>
+          void this.refreshBuildBoard({ quiet: true }),
         onBuildBoardReorder: ({ order }) =>
           void this.reorderBuildBoard(order),
         onBuildIssueAssign: ({ key, title }) =>
@@ -5228,6 +5256,8 @@ class ForkMeshWorld extends HTMLElement {
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
+        onAdminGuestCopy: (detail) =>
+          void this.copyAdminGuestDetail(detail),
         onOrgTeamAssign: (target) => this.openOrgTeamAssignment(target),
         onFediverseProfile: (target) =>
           void this.loadWorldFediverseProfile(target),
@@ -5450,7 +5480,10 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async refreshBuildBoard({ quiet = false } = {}) {
-    try {
+    if (this.buildBoardLoad) return this.buildBoardLoad;
+    this.world?.setBuildBoardLoading?.(true);
+    this.buildBoardLoad = (async () => {
+      try {
       const payload = await this.fetchJSON("/api/world/build-board", {
         timeout: 12_000,
         cache: "no-store",
@@ -5515,12 +5548,17 @@ class ForkMeshWorld extends HTMLElement {
       }
       this.world?.updateBuildBoard?.(payload);
       return payload;
-    } catch (_) {
-      if (!quiet) {
-        this.toast("The shared build board is temporarily unavailable.");
+      } catch (_) {
+        if (!quiet) {
+          this.toast("The shared build board is temporarily unavailable.");
+        }
+        return null;
+      } finally {
+        this.world?.setBuildBoardLoading?.(false);
+        this.buildBoardLoad = null;
       }
-      return null;
-    }
+    })();
+    return this.buildBoardLoad;
   }
 
   async refreshOrgAgentBots() {
@@ -7001,6 +7039,7 @@ class ForkMeshWorld extends HTMLElement {
           member: account,
           assigned: assigned.length,
           total: teamNames.size,
+          teams: assigned.slice(0, 6),
         });
       });
     });
@@ -8783,6 +8822,31 @@ class ForkMeshWorld extends HTMLElement {
       );
     } catch (error) {
       this.toast(`Temporary block was not applied: ${error.message}`);
+    }
+  }
+
+  async copyAdminGuestDetail(detail = {}) {
+    if (!this.identity?.isAdmin) {
+      this.toast("Platform administrator access is required.");
+      return;
+    }
+    const field = String(detail?.field || "");
+    const value = String(detail?.value || "");
+    if (
+      !["ipAddress", "userAgent"].includes(field) ||
+      !value ||
+      value.length > 1024
+    ) {
+      this.toast("That guest connection detail is no longer available.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(value);
+      this.toast(
+        `${field === "ipAddress" ? "Guest IP address" : "Full User-Agent"} copied.`,
+      );
+    } catch (_) {
+      this.toast("Clipboard access was denied by this browser.");
     }
   }
 
@@ -19526,6 +19590,94 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
+  startDeployStatusWatch() {
+    window.clearInterval(this.deployStatusTimer);
+    void this.checkDeployStatus();
+    this.deployStatusTimer = window.setInterval(
+      () => void this.checkDeployStatus(),
+      WORLD_DEPLOY_STATUS_POLL_MS,
+    );
+  }
+
+  renderDeployStatus(state) {
+    const notice = this.$("[data-world-update-notice]");
+    const copy = this.$("[data-world-update-copy]");
+    const refresh = this.$("[data-world-update-refresh]");
+    if (!notice || !copy || !refresh) return;
+    notice.dataset.state = state;
+    if (state === "deploying") {
+      notice.hidden = false;
+      refresh.hidden = true;
+      copy.innerHTML =
+        "<strong>ForkMesh is deploying now.</strong> The World stays live while the new build rolls out.";
+      return;
+    }
+    if (state === "failed") {
+      notice.hidden = false;
+      refresh.hidden = true;
+      copy.innerHTML =
+        "<strong>The deployment needs attention.</strong> This World remains on the current stable build.";
+      return;
+    }
+    if (state === "ready") {
+      this.updateReloadPending = true;
+      notice.hidden = false;
+      refresh.hidden = false;
+      copy.innerHTML =
+        "<strong>The new World build is ready.</strong> Refresh when you are ready; your position will be preserved.";
+      return;
+    }
+    if (!this.updateReloadPending) notice.hidden = true;
+  }
+
+  async checkDeployStatus() {
+    if (this.destroyed || document.hidden) return;
+    let status;
+    try {
+      status = await this.fetchJSON("/api/world/deploy-status", {
+        auth: false,
+        timeout: 4000,
+        cache: "no-store",
+      });
+    } catch (_) {
+      return;
+    }
+    const state = String(status?.state || "idle");
+    const revision = String(status?.revision || "");
+    const known = String(this.buildDiagnostics?.revision || "");
+    if (state === "deploying") {
+      this.deployObservedRevision = revision;
+      this.renderDeployStatus("deploying");
+      return;
+    }
+    if (
+      state === "ready" &&
+      revision &&
+      (
+        (known && revision !== known) ||
+        revision === this.deployObservedRevision
+      )
+    ) {
+      const announce = !this.updateReloadPending;
+      this.renderDeployStatus("ready");
+      if (announce) {
+        this.toast(
+          "✨ The new World build is ready. Refresh when you are ready.",
+        );
+      }
+      return;
+    }
+    if (
+      state === "failed" &&
+      revision &&
+      revision === this.deployObservedRevision
+    ) {
+      this.renderDeployStatus("failed");
+      return;
+    }
+    this.renderDeployStatus("idle");
+  }
+
   async checkForWorldUpdate() {
     if (this.destroyed || this.updateReloadPending || document.hidden) return;
     // Visibility flips can arrive in bursts; keep the check to at most one
@@ -19552,8 +19704,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     if (build.revision === known) return;
     this.updateReloadPending = true;
-    const notice = this.$("[data-world-update-notice]");
-    if (notice) notice.hidden = false;
+    this.renderDeployStatus("ready");
     this.toast("✨ A new World build is ready. Refresh when you are ready.");
   }
 
@@ -21325,6 +21476,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.worldTicketTimer);
     window.clearInterval(this.diagnosticsTimer);
     window.clearInterval(this.updateCheckTimer);
+    window.clearInterval(this.deployStatusTimer);
     window.clearInterval(this.layoutRefreshTimer);
     window.clearInterval(this.mastodonRefreshTimer);
     window.clearInterval(this.socialFeedsTimer);
