@@ -128,15 +128,6 @@ def test_orphaned_headless_node_redeems_its_installer_link_code():
         "!hasOwnerSigningCapability(name) || installerLinkPending"
         in setup
     )
-    assert (
-        "if (installerLinkPending)\n            return false;"
-        in setup
-    )
-    assert (
-        "hasOwnerSigningCapability(accountName) &&\n"
-        "                        !installerLinkPending"
-        in setup
-    )
 
 
 def test_vultr_success_waits_for_mirror_nodes_and_world_catalog():

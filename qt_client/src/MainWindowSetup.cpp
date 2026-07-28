@@ -2666,12 +2666,6 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
         lookup.value("pubkey").toString() == m_profileIdentity.publicKey()) {
         if (reclaimWithInstallerLinkCode())
             return true;
-        // The node half may arrive before the installing desktop's signed
-        // offer. Do not declare this orphan account ready: keep the bounded
-        // retry alive until the rendezvous attaches an owner, otherwise the
-        // node can chat while every authenticated catalog write is rejected.
-        if (installerLinkPending)
-            return false;
         activateSession(lookup.value("owner").toString(),
                         lookup.value("emailVerified").toBool());
         return true;
@@ -2756,15 +2750,7 @@ void MainWindow::scheduleHeadlessRegisterRetry(const QString &accountName)
         m_headlessRegisterRetryTimer->setSingleShot(true);
         connect(m_headlessRegisterRetryTimer, &QTimer::timeout, this,
                 [this, accountName] {
-                    const QString linkCode =
-                        qEnvironmentVariable("FORKMESH_LINK_CODE").trimmed();
-                    static const QRegularExpression linkCodeRe(
-                        QStringLiteral("^[0-9]{6}$"));
-                    const bool installerLinkPending =
-                        linkCodeRe.match(linkCode).hasMatch() &&
-                        m_nodeOwnerUser.trimmed().isEmpty();
-                    if (hasOwnerSigningCapability(accountName) &&
-                        !installerLinkPending)
+                    if (hasOwnerSigningCapability(accountName))
                         return;
                     if (registerNodeAccountSilently(accountName)) {
                         m_headlessRegisterAttempt = 0;
