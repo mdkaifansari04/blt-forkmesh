@@ -32,21 +32,23 @@
 
 :root {
   color-scheme: dark;
-  --world-ink: #07110f;
-  --world-ink-soft: #0c1a17;
-  --world-panel: rgb(8 20 17 / 0.9);
-  --world-panel-solid: #0a1815;
-  --world-panel-light: rgb(232 252 239 / 0.96);
-  --world-line: rgb(185 255 219 / 0.2);
-  --world-line-strong: rgb(185 255 219 / 0.42);
-  --world-copy: #f1fff6;
-  --world-muted: #a3b9ad;
-  --world-mint: #9ef7c6;
-  --world-mint-deep: #39c783;
-  --world-sun: #f7c96b;
-  --world-sky: #77d9ff;
-  --world-danger: #ff8e78;
-  --world-violet: #d5b6ff;
+  /* GitHub dark primitives: every overlay, drawer, kiosk, and HUD panel
+     inherits one coherent border/background/action system. */
+  --world-ink: #0d1117;
+  --world-ink-soft: #161b22;
+  --world-panel: rgb(22 27 34 / 0.96);
+  --world-panel-solid: #161b22;
+  --world-panel-light: rgb(240 246 252 / 0.98);
+  --world-line: rgb(48 54 61 / 0.82);
+  --world-line-strong: #30363d;
+  --world-copy: #f0f6fc;
+  --world-muted: #8c959f;
+  --world-mint: #58a6ff;
+  --world-mint-deep: #2f81f7;
+  --world-sun: #d29922;
+  --world-sky: #79c0ff;
+  --world-danger: #f85149;
+  --world-violet: #a371f7;
   --safe-top: max(14px, env(safe-area-inset-top));
   --safe-right: max(14px, env(safe-area-inset-right));
   --safe-bottom: max(14px, env(safe-area-inset-bottom));
@@ -591,6 +593,29 @@ forkmesh-world {
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
+}
+
+/* Shared GitHub-style panel chrome; a final cascade pass below catches
+   feature-specific surfaces declared later in this file. */
+.fm-world :is(
+  .world-detail,
+  .world-map,
+  .world-office-lobby,
+  .world-office-room,
+  .world-office-task-panel,
+  .world-office-chat,
+  .world-settings,
+  .world-account,
+  .world-feature-card,
+  .world-notice
+) {
+  border-color: var(--world-line-strong);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgb(1 4 9 / 0.36);
+}
+
+.fm-world :is(button, input, select, textarea) {
+  border-radius: 6px;
 }
 
 @keyframes world-connection-spin {
@@ -1281,8 +1306,8 @@ forkmesh-world {
   position: relative;
   display: grid;
   place-items: center;
-  width: 50px;
-  height: 50px;
+  width: 40px;
+  height: 40px;
   overflow: hidden;
   border: 1px solid rgb(255 255 255 / 0.22);
   border-radius: 0;
@@ -1308,9 +1333,20 @@ forkmesh-world {
   color: #9ef7c6;
 }
 
-.world-shirt-flag {
-  font-size: 1.6rem;
-  line-height: 1;
+.world-shirt-avatar {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.world-shirt-initial {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  background: linear-gradient(145deg, #1c4c3a, #0c2019);
+  color: #eafff5;
+  font: 800 1rem/1 "ForkMesh Mono", monospace;
 }
 
 .world-diagnostics {
@@ -3509,6 +3545,15 @@ forkmesh-world.world-office-active .world-quick-dock {
   width: 7px;
   height: 7px;
   background: var(--detail-color);
+}
+
+.world-status-pill-danger {
+  border-color: #ff6b6b;
+  color: #ff8f8f;
+}
+
+.world-status-pill-danger::before {
+  background: #ff4d4d;
 }
 
 .world-truth-grid {
@@ -6052,6 +6097,27 @@ forkmesh-world.world-office-active .world-quick-dock {
   accent-color: var(--world-mint-deep);
 }
 
+.world-avatar-upload {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+  color: var(--world-muted);
+  font-size: 0.7rem;
+}
+
+.world-avatar-upload input {
+  width: 100%;
+  border: 1px dashed var(--world-line);
+  background: #0b1c17;
+  padding: 8px;
+  color: var(--world-copy);
+  font: 600 0.62rem/1.3 "ForkMesh Mono", monospace;
+}
+
+.world-avatar-upload input:disabled {
+  opacity: 0.45;
+}
+
 .world-setting-note {
   margin: 14px 0 0;
   color: #80978b;
@@ -6318,6 +6384,122 @@ forkmesh-world.world-office-active .world-quick-dock {
   cursor: default;
 }
 
+.world-profile-social {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  border-top: 1px solid var(--world-panel-border, #30363d);
+  padding-top: 16px;
+}
+
+.world-profile-followers,
+.world-profile-publisher {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  border: 1px solid var(--world-panel-border, #30363d);
+  border-radius: 6px;
+  background: rgb(13 17 23 / 0.76);
+  padding: 12px;
+}
+
+.world-profile-social-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.world-profile-social-heading h4 {
+  margin: 0;
+}
+
+.world-profile-social-heading span {
+  border-radius: 2em;
+  background: #21262d;
+  padding: 2px 8px;
+  color: #c9d1d9;
+  font: 700 0.7rem/1.5 "ForkMesh Mono", ui-monospace, monospace;
+}
+
+.world-profile-follower-strip {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 7px;
+  overflow-x: auto;
+  padding: 2px 1px 6px;
+  scrollbar-width: thin;
+}
+
+.world-profile-follower {
+  display: grid;
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  place-items: center;
+  overflow: hidden;
+  border: 2px solid #30363d;
+  border-radius: 50%;
+  background: #161b22;
+  color: #79c0ff;
+  font: 800 0.84rem/1 "ForkMesh Mono", ui-monospace, monospace;
+  text-decoration: none;
+}
+
+.world-profile-follower:hover,
+.world-profile-follower:focus-visible {
+  border-color: #58a6ff;
+  outline: none;
+}
+
+.world-profile-follower img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.world-profile-publisher > label,
+.world-profile-selfie-preview label {
+  color: #f0f6fc;
+  font-weight: 650;
+}
+
+.world-profile-publisher textarea {
+  min-height: 76px;
+  resize: vertical;
+}
+
+.world-profile-selfie-actions,
+.world-profile-selfie-preview {
+  display: grid;
+  gap: 8px;
+}
+
+.world-profile-selfie-actions {
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+}
+
+.world-profile-selfie-preview[hidden] {
+  display: none;
+}
+
+.world-profile-selfie-preview img {
+  width: 100%;
+  max-height: 220px;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  background: #010409;
+  object-fit: contain;
+}
+
+.world-profile-selfie-actions span,
+.world-profile-publisher [data-world-profile-publish-status] {
+  color: #8c959f;
+  font-size: 0.76rem;
+}
+
 .world-dashboard-embed {
   min-height: calc(100svh - 3.5rem);
 }
@@ -6498,6 +6680,11 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     /* The wave chip is one more icon in an already tight phone row; a 6px
        gutter keeps the whole row, settings badge included, on screen. */
     gap: 6px;
+  }
+
+  .world-shirt-badge {
+    width: 38px;
+    height: 38px;
   }
 
   .world-icon-button {
@@ -7193,4 +7380,33 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font: 0.75rem/1.55 var(--world-mono, ui-monospace, monospace);
+}
+
+/* Final shared chrome pass: feature-specific rules may control layout, but
+   every user-facing surface finishes with the same GitHub dark primitives. */
+.fm-world :is(
+  dialog,
+  aside,
+  [class*="world-panel"],
+  [class*="world-drawer"],
+  [class*="world-dialog"],
+  [class*="world-card"],
+  [class*="world-terminal"],
+  [class*="world-popover"]
+) {
+  border-color: var(--world-line-strong);
+  border-radius: 6px;
+  background-color: var(--world-panel-solid);
+  color: var(--world-copy);
+  box-shadow: 0 8px 24px rgb(1 4 9 / 0.36);
+}
+
+.fm-world :is(button, input, select, textarea) {
+  border-color: var(--world-line-strong);
+  border-radius: 6px;
+}
+
+.fm-world :is(button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--world-mint);
+  outline-offset: 2px;
 }

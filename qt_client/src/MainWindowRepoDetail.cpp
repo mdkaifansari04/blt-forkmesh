@@ -1313,6 +1313,13 @@ void MainWindow::openRepoDetail(int repoIndex)
     if (repoIndex < 0 || repoIndex >= m_repositories.size())
         return;
     ensureRepoDetailSectionBuilt();
+    const int defaultTab = defaultRepoTabIndex();
+    const int landingTab = defaultTab == 1 ? 0 : defaultTab;
+    ensureRepoDetailTabBuilt(landingTab);
+    // Agent rows and notification paths share PR controls/menus even when the
+    // Pulls tab is not the landing page. Build that comparatively small page as
+    // part of the first repo transition, still within the click budget.
+    ensureRepoDetailTabBuilt(4);
     // Guard against re-entrancy: a node switch yields the event loop between load
     // steps (see nodeSwitchStep), so a queued call must not start a second load
     // on top of this one.
@@ -1378,31 +1385,39 @@ void MainWindow::openRepoDetail(int repoIndex)
             m_agentComposeRepo->setCurrentIndex(combo);
     }
     logStartup(QStringLiteral("  openRepo: info+branches+codeSize done"));
-    // Pulls load before agents on purpose: the Agents table annotates each
-    // session with its PR status (open/merged/closed) read from m_currentPulls,
-    // so loading pulls first lets a single reloadAgents() render the right state.
-    // (Previously pulls came last and the Agents tab paid for a second full
-    // reloadAgents() — the heaviest per-open step, a git probe per session.)
-    nodeSwitchStep(QStringLiteral("Loading pull requests…"));
-    m_currentPulls = pullStoreForCurrentRepo().loadAll();
+    // Never read pull metadata synchronously during a repo switch. Clear the
+    // previous repo's rows/badge now and let the coalesced worker load them after
+    // the first frame; applyLoadedPulls refreshes the Agents annotations too.
+    m_currentPulls.clear();
+    if (m_pullTable)
+        m_pullTable->setRowCount(0);
     updateRepoPullCount();
-    logStartup(QStringLiteral("  openRepo: pulls loaded"));
-    nodeSwitchStep(QStringLiteral("Loading issues & agents…"));
-    reloadIssues();
-    reloadAgents();
+    reloadPullsInBackground();
+
+    // Hidden tabs are loaded on demand below/the tab click handler. The old
+    // eager sequence made every repository switch pay for all metadata stores
+    // and all their table layouts before the selected page could paint.
+    m_currentIssues.clear();
+    m_issuesLoadedSig.clear();
+    if (m_issueTable)
+        m_issueTable->setRowCount(0);
     updateRepoIssueCount();
-    logStartup(QStringLiteral("  openRepo: issues+agents loaded"));
+    if (defaultTab == 2)
+        reloadIssuesInBackground();
+    if (defaultTab == 3)
+        reloadAgents();
     m_currentDiscussions.clear();
-    reloadDiscussions();
+    if (m_discussionTable)
+        m_discussionTable->setRowCount(0);
     updateRepoDiscussionCount();
+    if (defaultTab == 5)
+        reloadDiscussions();
+    logStartup(QStringLiteral("  openRepo: selected metadata scheduled"));
 
     // Land on the user's preferred default tab (Settings → General; Agents by
-    // default). Each candidate tab's data was eagerly loaded above, so we only
-    // need to select it. Reset the editor tabs/tree for the new repo.
-    const int defaultTab = defaultRepoTabIndex();
+    // default). Reset the editor tabs/tree for the new repo.
     // "Commits" (1) lives inside the Code overview now, under the latest-commit
     // bar — land on Code and swap the overview body to the commits panel below.
-    const int landingTab = defaultTab == 1 ? 0 : defaultTab;
     if (m_repoDetailTabs && m_repoDetailTabs->button(landingTab))
         m_repoDetailTabs->button(landingTab)->setChecked(true);
     if (m_repoDetailStack)
@@ -1468,17 +1483,26 @@ void MainWindow::openRepoDetail(int repoIndex)
     // doesn't pay for them up front.
     // Land on the GitHub-style overview at the repo root by default; the
     // explorer + editor is one click away via the persistent "Explorer" toggle.
-    nodeSwitchStep(QStringLiteral("Rendering overview…"));
-    loadRepoOverview(QString());
-    logStartup(QStringLiteral("  openRepo: overview loaded"));
+    m_overviewLoadedKey.clear();
+    if (m_overviewList)
+        m_overviewList->clear();
+    if (landingTab == 0) {
+        nodeSwitchStep(QStringLiteral("Rendering overview…"));
+        loadRepoOverview(QString());
+        logStartup(QStringLiteral("  openRepo: overview loaded"));
+    }
     showRepoOverview();
     // The detail panel lives inside Home next to the columns now, so just make
     // sure Home is the active section and refresh the breadcrumb.
     showSection(0);
     updateBreadcrumb();
-    // Populate the workflow list now so the "Actions (N)" badge is correct from
-    // the start, rather than reading 0 until the Actions tab is first opened.
-    refreshRepoActions();
+    // Workflow discovery shells Git and scans YAML. Only do it when Actions is
+    // actually the landing page; other tabs load it on click.
+    m_repoWorkflows.clear();
+    if (m_actionsTable)
+        m_actionsTable->setRowCount(0);
+    if (landingTab == 6)
+        refreshRepoActions();
     updateActionsTabIndicator(); // reflect any in-flight runs for this repo
     refreshRepoPinBanner();      // warn if the relay's integrity pin is stale
     // The rail's Git badge is visible from the first paint, so give it this
@@ -4667,7 +4691,6 @@ void MainWindow::rebuildGlobalSearchResults()
         {"Chat", "comment", 2},
         {"Notifications", "bell", 3},
         {"Network log", "list-unordered", 4},
-        {"Leaderboards", "graph", 5},
         {"Hosts", "server", 7},
         {"Relays", "broadcast", 8},
         {"Network", "workflow", kNetworkDiagnosticsSectionIndex},
@@ -5971,7 +5994,7 @@ void MainWindow::openBodyReference(const QString &href)
         if (kind == QLatin1String("issue")) {
             if (m_repoDetailTabs && m_repoDetailTabs->button(2))
                 m_repoDetailTabs->button(2)->click();
-            reloadIssues();
+            reloadIssuesInBackground();
             showIssue(id.toInt());
         } else if (kind == QLatin1String("pull")) {
             reloadPulls();
@@ -7931,6 +7954,74 @@ void MainWindow::ensureRepoDetailSectionBuilt()
         placeholder->deleteLater();
 }
 
+void MainWindow::ensureRepoDetailTabBuilt(int index)
+{
+    if (!m_repoDetailStack || index < 0 ||
+        index >= m_repoDetailStack->count())
+        return;
+    QWidget *placeholder = m_repoDetailStack->widget(index);
+    if (!placeholder ||
+        !placeholder->property("forkmeshDeferredRepoTab").toBool())
+        return;
+    QElapsedTimer buildTimer;
+    buildTimer.start();
+    const forkmesh::BackgroundScope buildAction(
+        QStringLiteral("ui-build"),
+        QStringLiteral("build repository tab %1").arg(index),
+        forkmesh::ActionTelemetry::Execution::UiBlocking);
+
+    QWidget *page = nullptr;
+    if (index == 0)
+        page = buildRepoFilesPanel();
+    else if (index == 2)
+        page = buildIssuesSection();
+    else if (index == 3)
+        page = buildAgentsTab();
+    else if (index == 4)
+        page = buildPullsTab();
+    else if (index == 5)
+        page = buildDiscussionsTab();
+    else if (index == 6)
+        page = buildRepoActionsTab();
+    else if (index == 7)
+        page = buildRepoSecurityTab();
+    else if (index == 8)
+        page = buildRepoQualityTab();
+    else if (index == m_insightsTabIndex)
+        page = buildInsightsTab();
+    else if (index == m_releasesTabIndex)
+        page = buildReleasesTab();
+    else if (index == m_mirrorNodesTabIndex)
+        page = buildMirrorNodesTab();
+    else if (index == m_artifactsTabIndex)
+        page = buildArtifactsTab();
+    else if (index == m_shortcutsTabIndex)
+        page = buildShortcutsTab();
+    else if (index == m_settingsTabIndex)
+        page = buildRepoSettingsTab();
+    else if (index == m_projectsTabIndex)
+        page = buildProjectsSection();
+    else if (index == m_sizeMapTabIndex)
+        page = buildSizeMapTab();
+    if (!page)
+        return;
+
+    const bool wasCurrent = m_repoDetailStack->currentIndex() == index;
+    m_repoDetailStack->insertWidget(index, page);
+    m_repoDetailStack->removeWidget(placeholder);
+    placeholder->deleteLater();
+    if (wasCurrent)
+        m_repoDetailStack->setCurrentIndex(index);
+
+    // These controls normally receive the current repo during openRepoDetail();
+    // a lazily-created page needs the same binding at construction time.
+    if (index == 2)
+        refreshIssuesRepoCombo();
+    logStartup(QStringLiteral("  repo tab %1 built in %2ms")
+                   .arg(index)
+                   .arg(buildTimer.elapsed()));
+}
+
 QWidget *MainWindow::buildRepoDetailSection()
 {
     auto *page = new QWidget;
@@ -7993,6 +8084,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoHeaderLeft = new QHBoxLayout;
     m_repoHeaderLeft->setContentsMargins(0, 0, 0, 0);
     m_repoHeaderLeft->setSpacing(8);
+    // Repository identity belongs to repository detail, not the global chrome.
+    // updateRepoSwitcher renders owner/repo and only adds a caret when this
+    // owner/organization has another repository available.
+    m_repoHeaderLeft->addWidget(m_repoMenuButton);
     headerRow->addLayout(m_repoHeaderLeft);
     headerRow->addStretch();
     headerRow->addWidget(notifyButton);
@@ -8194,20 +8289,25 @@ QWidget *MainWindow::buildRepoDetailSection()
     // buttons on every tab switch, not just on agent selection changes.
     connect(m_repoDetailStack, &QStackedWidget::currentChanged, this,
             [this](int) { updateQuickAddEnterTarget(); });
-    m_repoDetailStack->addWidget(buildRepoFilesPanel());                 // 0 Code
+    auto addDeferredRepoTab = [this] {
+        auto *placeholder = new QWidget;
+        placeholder->setProperty("forkmeshDeferredRepoTab", true);
+        m_repoDetailStack->addWidget(placeholder);
+    };
+    addDeferredRepoTab();                                                // 0 Code
     // 1 — placeholder. The commits panel lives inside the Code overview (built
     // by buildRepoOverviewPage, under the latest-commit bar); this empty page
     // keeps the positional ids of every later tab (Issues=2 …) unchanged.
     m_repoDetailStack->addWidget(new QWidget);
-    m_repoDetailStack->addWidget(buildIssuesSection());                  // 2 Issues
-    m_repoDetailStack->addWidget(buildAgentsTab());                      // 3 Agents
-    m_repoDetailStack->addWidget(buildPullsTab());                       // 4 Pull requests
-    m_repoDetailStack->addWidget(buildDiscussionsTab());                 // 5 Discussions
-    m_repoDetailStack->addWidget(buildRepoActionsTab());                 // 6 Actions
-    m_repoDetailStack->addWidget(buildRepoSecurityTab());                // 7 Security
-    m_repoDetailStack->addWidget(buildRepoQualityTab());                 // 8 Quality
+    addDeferredRepoTab();                                                // 2 Issues
+    addDeferredRepoTab();                                                // 3 Agents
+    addDeferredRepoTab();                                                // 4 Pull requests
+    addDeferredRepoTab();                                                // 5 Discussions
+    addDeferredRepoTab();                                                // 6 Actions
+    addDeferredRepoTab();                                                // 7 Security
+    addDeferredRepoTab();                                                // 8 Quality
     m_insightsTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildInsightsTab());                    // 9
+    addDeferredRepoTab();                                                // 9 Insights
     m_branchesTabIndex = m_repoDetailStack->count();
     // Branches has no top-level tab: its panel lives inside the Code overview
     // (built above in buildRepoOverviewPage). This placeholder keeps the
@@ -8219,19 +8319,21 @@ QWidget *MainWindow::buildRepoDetailSection()
     // placeholder keeps the positional ids of every later tab unchanged.
     m_repoDetailStack->addWidget(new QWidget);                           // 11 Worktrees (moved)
     m_releasesTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildReleasesTab());                    // 12 Releases
+    addDeferredRepoTab();                                                // 12 Releases
     m_mirrorNodesTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildMirrorNodesTab());                 // 13 Mirror nodes
+    addDeferredRepoTab();                                                // 13 Mirror nodes
     m_artifactsTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildArtifactsTab());                   // 14 Artifacts
+    addDeferredRepoTab();                                                // 14 Artifacts
     m_shortcutsTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildShortcutsTab());                   // 15 Shortcuts
+    addDeferredRepoTab();                                                // 15 Shortcuts
     m_settingsTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildRepoSettingsTab());                // 16 Settings
+    addDeferredRepoTab();                                                // 16 Settings
     m_projectsTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildProjectsSection());                // 17 Projects
+    addDeferredRepoTab();                                                // 17 Projects
     m_sizeMapTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildSizeMapTab());                     // 18 Size map
+    addDeferredRepoTab();                                                // 18 Size map
+    connect(m_repoDetailStack, &QStackedWidget::currentChanged, this,
+            [this](int index) { ensureRepoDetailTabBuilt(index); });
     // Chat is no longer part of the repo hierarchy: it's a top-level section
     // (m_sectionStack index 2), reached from the always-visible nav.
     m_chatStackIndex = -1;
@@ -8248,6 +8350,7 @@ QWidget *MainWindow::buildRepoDetailSection()
                 updateRepoActionButtonsVisibility(index);
             });
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
+        ensureRepoDetailTabBuilt(id);
         m_repoDetailStack->setCurrentIndex(id);
         // Update the Agents nav button state to show when the Agents tab is active (adhoc #201).
         if (m_agentsNavButton)
@@ -8257,6 +8360,9 @@ QWidget *MainWindow::buildRepoDetailSection()
             // body was left on the commits panel, swap it back (and dim the
             // commit strip's toggle). The explorer/overview mode is untouched.
             showOverviewFiles();
+            if (m_overviewLoadedKey.isEmpty())
+                QTimer::singleShot(0, this,
+                                   [this] { loadRepoOverview(QString()); });
         } else if (m_historyButton) {
             // The commit toggle belongs to the Code overview. Do not leave it
             // visually armed after navigating to another repository tab: a
@@ -8269,6 +8375,7 @@ QWidget *MainWindow::buildRepoDetailSection()
             // Opening Issues: clear any filter the user left set on a prior visit
             // (status/label/milestone/search) so the full list shows again.
             resetIssueFilters();
+            reloadIssuesInBackground();
             if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
                 // Drain this repo's inbox now (owner-only) so incoming issues from
                 // other nodes show immediately instead of next poll tick.
@@ -8288,12 +8395,12 @@ QWidget *MainWindow::buildRepoDetailSection()
             // Load pulls first so the agents list can show each session's PR
             // status (open/merged/closed) from m_currentPulls.
             QTimer::singleShot(0, this, [this] {
-                reloadPulls();
+                reloadPullsInBackground();
                 reloadAgents();
             });
         }
         else if (id == 4) {
-            reloadPulls();
+            reloadPullsInBackground();
             if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
                 drainPullsInboxFor(m_repositories.at(m_repoDetailIndex), false);
         }
@@ -8347,26 +8454,30 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->setMinimumHeight(0);
     m_repoDetailStack->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
 
-    // --- Thin activity rail down the page's left edge (adhoc #357): a Code
-    // entry (file browser) and a Git entry (current changes), VS-Code style.
+    // --- Repository tools in the app-wide activity rail (adhoc #357): Code and
+    // Git are contextual entries directly below the global Repo destination.
     // The Git icon carries a blue badge with the working-tree change count
     // (kept fresh by refreshSourceControl) that flips to a spinner while a
     // sync/publish is in flight (refreshRepoSyncIndicators); the selected entry
     // shows a 2px line along its left edge.
     m_railCodeButton = new ActivityRailButton(QStringLiteral("code"),
                                               QStringLiteral("Code"));
+    m_railCodeButton->setFixedSize(58, 40);
     m_railCodeButton->setToolTip(QStringLiteral("Browse the repository files"));
     connect(m_railCodeButton, &QPushButton::clicked, this, [this] {
+        showSection(0);
         // Same path as clicking the Code tab: land on the file browser.
         if (m_repoDetailTabs && m_repoDetailTabs->button(0))
             m_repoDetailTabs->button(0)->click();
         updateRepoActivityRail();
     });
     m_railGitButton = new ActivityRailButton(QStringLiteral("git-branch"),
-                                             QString());
+                                             QStringLiteral("Git"));
+    m_railGitButton->setFixedSize(58, 40);
     m_railGitButton->setToolTip(
         QStringLiteral("Source control \xE2\x80\x94 view the current changes"));
     connect(m_railGitButton, &QPushButton::clicked, this, [this] {
+        showSection(0);
         // Open the commits/changes workspace inside the Code overview. Going
         // through the commit strip's toggle runs its deferred list build and
         // change rescan; when it's already showing, just re-assert the view.
@@ -8376,15 +8487,12 @@ QWidget *MainWindow::buildRepoDetailSection()
             showOverviewCommits();
         updateRepoActivityRail();
     });
-    auto *rail = new QWidget;
-    rail->setObjectName("repoActivityRail");
-    rail->setFixedWidth(46);
-    auto *railLayout = new QVBoxLayout(rail);
-    railLayout->setContentsMargins(0, 8, 0, 8);
-    railLayout->setSpacing(2);
-    railLayout->addWidget(m_railCodeButton, 0, Qt::AlignHCenter);
-    railLayout->addWidget(m_railGitButton, 0, Qt::AlignHCenter);
-    railLayout->addStretch();
+    if (m_appNavigationRailLayout) {
+        m_appNavigationRailLayout->insertWidget(
+            0, m_railCodeButton, 0, Qt::AlignLeft);
+        m_appNavigationRailLayout->insertWidget(
+            1, m_railGitButton, 0, Qt::AlignLeft);
+    }
     // The checked states mirror the visible view (Code tab, and which body the
     // overview shows), so track every stack the navigation helpers drive.
     connect(m_repoDetailStack, &QStackedWidget::currentChanged, this,
@@ -8405,10 +8513,9 @@ QWidget *MainWindow::buildRepoDetailSection()
     content->addWidget(metaBand);
     content->addWidget(tabBarScroll);
     content->addWidget(m_repoDetailStack, 1);
-    auto *layout = new QHBoxLayout(page);
+    auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-    layout->addWidget(rail);
     layout->addLayout(content, 1);
     return page;
 }
@@ -8421,13 +8528,19 @@ void MainWindow::updateRepoActivityRail()
 {
     if (!m_railCodeButton || !m_railGitButton)
         return;
+    const bool onHome =
+        !m_sectionStack || m_sectionStack->currentIndex() == 0;
     const bool onCode =
-        m_repoDetailStack && m_repoDetailStack->currentIndex() == 0;
+        onHome && m_repoDetailStack && m_repoDetailStack->currentIndex() == 0;
     const bool onChanges =
         onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
     m_railCodeButton->setChecked(onCode && !onChanges);
     m_railGitButton->setChecked(onChanges);
+    if (m_agentsNavButton)
+        m_agentsNavButton->setChecked(
+            onHome && m_repoDetailStack &&
+            m_repoDetailStack->currentIndex() == 3);
 }
 
 

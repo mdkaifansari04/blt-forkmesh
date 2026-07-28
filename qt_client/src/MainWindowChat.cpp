@@ -358,6 +358,7 @@ void MainWindow::fetchFaviconFromUrl(const QString &host, const QUrl &url)
 QWidget *MainWindow::buildChatPage()
 {
     auto *page = new QWidget;
+    auto *shell = new QWidget;
 
     // One page per "place": Home holds the repos, quest board and chat all at
     // once (no nav bar — you click a server to see everything). Repo detail and
@@ -367,7 +368,10 @@ QWidget *MainWindow::buildChatPage()
     // (quickAddShouldFollowUpAgent), which includes being on the Home section
     // at all — refresh the "new"/"add" styling when the section changes too.
     connect(m_sectionStack, &QStackedWidget::currentChanged, this,
-            [this](int) { updateQuickAddEnterTarget(); });
+            [this](int) {
+                updateQuickAddEnterTarget();
+                updateRepoActivityRail();
+            });
     // Home now hosts the nodes column, repositories column and the repo detail
     // panel (with Chat as a tab) all at once, so there is no separate repo-detail
     // section any more.
@@ -392,8 +396,6 @@ QWidget *MainWindow::buildChatPage()
         addDeferredSection();
     logStartup(QStringLiteral("  buildChatPage: secondary sections deferred"));
 
-    // No left rails any more: relays and nodes are top-bar dropdowns, so the
-    // section fills the whole width.
     auto *content = new QWidget;
     auto *contentLayout = new QHBoxLayout(content);
     contentLayout->setContentsMargins(0, 0, 0, 0);
@@ -402,10 +404,12 @@ QWidget *MainWindow::buildChatPage()
 
     // Optional public payout-address notice. It is hidden outside explicit
     // reward settings and never gates entry or core repository features.
-    auto *layout = new QVBoxLayout(page);
+    // The complete header is laid out above the rail below, so the custom
+    // window-chrome line spans edge-to-edge instead of starting after the rail.
+    QWidget *header = buildBreadcrumb();
+    auto *layout = new QVBoxLayout(shell);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-    layout->addWidget(buildBreadcrumb());
     layout->addWidget(buildSolanaNotice());
     layout->addWidget(buildWalletVerifyNotice());
     // No page-wide QScrollArea around the sections any more (adhoc #108).
@@ -437,8 +441,110 @@ QWidget *MainWindow::buildChatPage()
     // never reflows, it is just no longer the old oversized 240px.
     bodyLayout->addWidget(logDock, 0);
     layout->addLayout(bodyLayout, 1);
-    // Thin one-line strip under everything else (adhoc #2).
-    layout->addWidget(buildStatusBar());
+
+    // One persistent VS Code-style rail owns app navigation. It begins below
+    // the edge-to-edge header and remains visible beside every app view.
+    auto *rail = new QWidget;
+    rail->setObjectName(QStringLiteral("appNavigationRailContent"));
+    rail->setMinimumWidth(58);
+    m_appNavigationRailLayout = new QVBoxLayout(rail);
+    m_appNavigationRailLayout->setContentsMargins(0, 4, 0, 4);
+    m_appNavigationRailLayout->setSpacing(1);
+    for (QPushButton *button :
+         {m_reposNavButton, m_agentsNavButton, m_chatButton,
+          m_controlNodeNavButton, m_hostsNavButton, m_nodesNavButton,
+          m_relaysNavButton, m_networkNavButton}) {
+        if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
+            railButton->setCompact(false);
+            railButton->setFixedSize(58, 40);
+        }
+        m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
+    }
+    // Repo is redundant with the contextual Code entry. Keep the hidden button
+    // as section 0's QButtonGroup state carrier for programmatic navigation.
+    m_repoViewButton->setParent(header);
+    m_repoViewButton->hide();
+    m_appNavigationRailLayout->addStretch();
+
+    // Settings and screen/dev tools form the bottom utility group. Their normal
+    // QPushButton icon handling (notably the rebuild spinner) is retained inside
+    // a tiny icon-over-caption wrapper so every rail destination is named.
+    auto addUtility = [this](QPushButton *button, const QString &caption) {
+        button->setProperty("railUtility", true);
+        button->setFixedSize(58, 18);
+        auto *label = new QLabel(caption);
+        label->setObjectName(QStringLiteral("railItemLabel"));
+        label->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
+        auto *host = new QWidget;
+        host->setFixedSize(58, 28);
+        auto *hostLayout = new QVBoxLayout(host);
+        hostLayout->setContentsMargins(0, 0, 0, 0);
+        hostLayout->setSpacing(0);
+        hostLayout->addWidget(button);
+        hostLayout->addWidget(label, 0, Qt::AlignHCenter);
+        if (button == m_navRebuildButton) {
+            m_navRebuildRailHost = host;
+            host->setVisible(!button->isHidden());
+        }
+        m_appNavigationRailLayout->addWidget(host, 0, Qt::AlignHCenter);
+    };
+    addUtility(m_settingsNavButton, QStringLiteral("Settings"));
+    addUtility(m_navRebuildButton, QStringLiteral("Restart"));
+    addUtility(m_navDrawButton, QStringLiteral("Draw"));
+    addUtility(m_navScreenshotButton, QStringLiteral("Capture"));
+    addUtility(m_navResizeButton, QStringLiteral("Resize"));
+    addUtility(m_notificationButton, QStringLiteral("Alerts"));
+
+    // Pending approvals use the same corner-count language as Chat and Agents.
+    m_notificationRailBadge = new QLabel(m_notificationButton);
+    m_notificationRailBadge->setObjectName(QStringLiteral("chatUnreadBadge"));
+    m_notificationRailBadge->setAlignment(Qt::AlignCenter);
+    m_notificationRailBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_notificationRailBadge->hide();
+
+    // The account avatar is intentionally the bottom-most rail destination.
+    auto *accountLabel = new QLabel(QStringLiteral("Account"));
+    accountLabel->setObjectName(QStringLiteral("railItemLabel"));
+    accountLabel->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
+    auto *accountHost = new QWidget;
+    accountHost->setFixedSize(58, 52);
+    auto *accountLayout = new QVBoxLayout(accountHost);
+    accountLayout->setContentsMargins(0, 0, 0, 0);
+    accountLayout->setSpacing(0);
+    accountLayout->addWidget(m_userAvatarNavButton, 0, Qt::AlignHCenter);
+    accountLayout->addWidget(accountLabel, 0, Qt::AlignHCenter);
+    m_appNavigationRailLayout->addWidget(accountHost);
+    updateNotificationButton();
+
+    // A short window can scroll the rail without forcing the whole app taller.
+    // At normal heights every caption and count remains simultaneously visible.
+    auto *railScroll = new QScrollArea;
+    railScroll->setObjectName(QStringLiteral("appNavigationRail"));
+    railScroll->setWidget(rail);
+    railScroll->setWidgetResizable(true);
+    railScroll->setFrameShape(QFrame::NoFrame);
+    railScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    railScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    railScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
+    railScroll->setFixedWidth(66);
+    railScroll->setMinimumHeight(0);
+    railScroll->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Ignored);
+
+    auto *lower = new QWidget;
+    auto *lowerLayout = new QHBoxLayout(lower);
+    lowerLayout->setContentsMargins(0, 0, 0, 0);
+    lowerLayout->setSpacing(0);
+    lowerLayout->addWidget(railScroll);
+    lowerLayout->addWidget(shell, 1);
+
+    auto *root = new QVBoxLayout(page);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
+    root->addWidget(header);
+    root->addWidget(lower, 1);
+    // Thin one-line strip under everything else, spanning the rail as well as
+    // the content shell so it reads as the window's own bottom edge (adhoc #2).
+    root->addWidget(buildStatusBar());
     return page;
 }
 
@@ -1277,7 +1383,8 @@ quint64 MainWindow::beginBackgroundTask(const QString &kind,
 void MainWindow::finishBackgroundTask(quint64 id, bool success,
                                       const QString &detail)
 {
-    forkmesh::BackgroundActivity::end(id);
+    forkmesh::BackgroundActivity::end(
+        id, success ? QStringLiteral("succeeded") : QStringLiteral("failed"));
     if (!detail.trimmed().isEmpty())
         logSystem(QStringLiteral("Background: %1").arg(detail.trimmed()));
     if (!success && !detail.trimmed().isEmpty())
@@ -2103,11 +2210,6 @@ void MainWindow::createWorldSpeechPairing()
                 .arg(capability.value(QStringLiteral("expiresAt")).toString(),
                      capability.value(QStringLiteral("origin")).toString()));
 
-    // Open only the public World URL. The port and capability are intentionally
-    // absent from the URL, query, fragment, argv, and process environment.
-    QUrl world(capability.value(QStringLiteral("origin")).toString());
-    world.setPath(QStringLiteral("/world/"));
-    QDesktopServices::openUrl(world);
 }
 
 void MainWindow::revokeWorldSpeechPairing()
@@ -2769,7 +2871,7 @@ void MainWindow::updateFooterGitIdentity()
 {
     if (!m_footerGitIdentity)
         return;
-    // No repo open (Log/Leaderboards/etc.): nothing repo-specific to show.
+    // No repo open (Log/Settings/etc.): nothing repo-specific to show.
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
         m_footerGitIdentity->clear();
         return;
@@ -3609,7 +3711,7 @@ QWidget *MainWindow::buildBreadcrumb()
     bar->setObjectName("breadcrumbBar");
 
     // --- Relay switcher: a "favicon  domain ▾ count" dropdown (search / switch
-    // / add) plus a separate open-in-browser icon. ----------------------------
+    // / add). -----------------------------------------------------------------
     m_relayMenuButton = new QPushButton;
     m_relayMenuButton->setObjectName("relayMenuButton");
     m_relayMenuButton->setCursor(Qt::PointingHandCursor);
@@ -3621,17 +3723,6 @@ QWidget *MainWindow::buildBreadcrumb()
     // Spinning radar + once-a-minute latency readout, sitting just left of the
     // relay name (issue #144). The probe itself is driven by m_relayLatencyTimer.
     m_relayRadar = new RelayRadarWidget;
-
-    m_relayOpenButton = new QPushButton;
-    m_relayOpenButton->setObjectName("relayOpenButton");
-    m_relayOpenButton->setCursor(Qt::PointingHandCursor);
-    m_relayOpenButton->setFixedSize(30, 30);
-    setOcticon(m_relayOpenButton, "link", 16);
-    // The relay root is the ForkMesh World, so this always-visible main-nav
-    // control is the desktop node's direct portal into the browser experience.
-    m_relayOpenButton->setToolTip("Open ForkMesh World in your browser");
-    connect(m_relayOpenButton, &QPushButton::clicked, this,
-            [this] { openServerWebsite(m_activeServer); });
 
     // Node switcher, to the right of the relay switcher: "node ▾ count".
     m_nodeMenuButton = new QPushButton;
@@ -3726,7 +3817,8 @@ QWidget *MainWindow::buildBreadcrumb()
 
     // "Code" button: show the repo detail (Home section). When a repo is open it
     // jumps to that repo's Code view; otherwise it just lands on Home.
-    m_repoViewButton = new QPushButton(QStringLiteral("Repo"));
+    m_repoViewButton = new ActivityRailButton(QStringLiteral("code"),
+                                              QStringLiteral("Repo"));
     m_repoViewButton->setObjectName("topNavButton");
     m_repoViewButton->setCheckable(true);
     m_repoViewButton->setCursor(Qt::PointingHandCursor);
@@ -3745,7 +3837,8 @@ QWidget *MainWindow::buildBreadcrumb()
     });
 
     // Repos: network-wide catalog of repositories known by the active relay.
-    m_reposNavButton = new QPushButton(QStringLiteral("Repos"));
+    m_reposNavButton = new ActivityRailButton(QStringLiteral("repo"),
+                                              QStringLiteral("Repos"));
     m_reposNavButton->setObjectName("topNavButton");
     m_reposNavButton->setCheckable(true);
     m_reposNavButton->setCursor(Qt::PointingHandCursor);
@@ -3931,7 +4024,8 @@ QWidget *MainWindow::buildBreadcrumb()
     // section of its own — it just jumps via openAgentsOverview() the same way
     // the footer "Agents:" label does. Sits between Repo and Chat in the nav
     // row. Checkable to show when the Agents tab is active (adhoc #201).
-    m_agentsNavButton = new QPushButton(QStringLiteral("Agents"));
+    m_agentsNavButton = new ActivityRailButton(QStringLiteral("terminal"),
+                                               QStringLiteral("Agents"));
     m_agentsNavButton->setObjectName("topNavButton");
     m_agentsNavButton->setCheckable(true);
     m_agentsNavButton->setCursor(Qt::PointingHandCursor);
@@ -3941,7 +4035,8 @@ QWidget *MainWindow::buildBreadcrumb()
             &MainWindow::openAgentsOverview);
 
     // Chat: its own top-level section (m_sectionStack index 2).
-    m_chatButton = new QPushButton(QStringLiteral("Chat"));
+    m_chatButton = new ActivityRailButton(QStringLiteral("comment"),
+                                          QStringLiteral("Chat"));
     m_chatButton->setObjectName("topNavButton");
     m_chatButton->setCheckable(true);
     m_chatButton->setCursor(Qt::PointingHandCursor);
@@ -3975,21 +4070,10 @@ QWidget *MainWindow::buildBreadcrumb()
     // nav (adhoc #137): it's opened via the floating "Log" button overlaid on
     // the always-on live-log strip, created in buildNetworkLogDock().
 
-    // Leaderboards: the public network rankings (issue #11), section index 5.
-    m_leaderboardNavButton = new QPushButton(QStringLiteral("Leaderboards"));
-    m_leaderboardNavButton->setObjectName("topNavButton");
-    m_leaderboardNavButton->setCheckable(true);
-    m_leaderboardNavButton->setCursor(Qt::PointingHandCursor);
-    m_leaderboardNavButton->setToolTip(
-        QString::fromUtf8("Leaderboards \xE2\x80\x94 network rankings"));
-    setOcticon(m_leaderboardNavButton, "graph", 16);
-    m_navGroup->addButton(m_leaderboardNavButton, 5); // section 5: Leaderboards
-    connect(m_leaderboardNavButton, &QPushButton::clicked, this,
-            [this] { showSection(5); });
-
     // Control node: this desktop's operational surface for local mirrors,
     // permissions, keys, wallet public address, Cloudflare, and connected hosts.
-    m_controlNodeNavButton = new QPushButton(QStringLiteral("Control"));
+    m_controlNodeNavButton = new ActivityRailButton(QStringLiteral("server"),
+                                                    QStringLiteral("Control"));
     m_controlNodeNavButton->setObjectName("topNavButton");
     m_controlNodeNavButton->setCheckable(true);
     m_controlNodeNavButton->setCursor(Qt::PointingHandCursor);
@@ -4000,20 +4084,10 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_controlNodeNavButton, &QPushButton::clicked, this,
             [this] { showSection(kControlNodeSectionIndex); });
 
-    // The browser World is a destination rather than a local stacked section, so
-    // it stays out of the exclusive button group and opens the active relay.
-    m_worldNavButton = new QPushButton(QStringLiteral("World"));
-    m_worldNavButton->setObjectName("topNavButton");
-    m_worldNavButton->setCursor(Qt::PointingHandCursor);
-    m_worldNavButton->setToolTip(
-        QStringLiteral("Open ForkMesh World in your browser"));
-    setOcticon(m_worldNavButton, "home", 16);
-    connect(m_worldNavButton, &QPushButton::clicked, this,
-            &MainWindow::openForkMeshWorld);
-
     // Hosts (adhoc #263): provision a remote machine by SSHing in and running the
-    // ForkMesh installer over ansible. Sits right next to Leaderboards, section 7.
-    m_hostsNavButton = new QPushButton(QStringLiteral("Hosts"));
+    // ForkMesh installer over ansible, section 7.
+    m_hostsNavButton = new ActivityRailButton(QStringLiteral("server"),
+                                              QStringLiteral("Hosts"));
     m_hostsNavButton->setObjectName("topNavButton");
     m_hostsNavButton->setCheckable(true);
     m_hostsNavButton->setCursor(Qt::PointingHandCursor);
@@ -4027,7 +4101,8 @@ QWidget *MainWindow::buildBreadcrumb()
     // Nodes (adhoc #9): a sortable directory of every node this client knows
     // about (the same nodes in the top-bar node dropdown). Sits between Hosts
     // and Relays, section 13.
-    m_nodesNavButton = new QPushButton(QStringLiteral("Nodes"));
+    m_nodesNavButton = new ActivityRailButton(QStringLiteral("server"),
+                                              QStringLiteral("Nodes"));
     m_nodesNavButton->setObjectName("topNavButton");
     m_nodesNavButton->setCheckable(true);
     m_nodesNavButton->setCursor(Qt::PointingHandCursor);
@@ -4041,7 +4116,8 @@ QWidget *MainWindow::buildBreadcrumb()
     // Relays: a live list of the configured mainnode relays with their online
     // status, round-trip response time and running version. Sits next to Hosts,
     // section 8.
-    m_relaysNavButton = new QPushButton(QStringLiteral("Relays"));
+    m_relaysNavButton = new ActivityRailButton(QStringLiteral("broadcast"),
+                                               QStringLiteral("Relays"));
     m_relaysNavButton->setObjectName("topNavButton");
     m_relaysNavButton->setCheckable(true);
     m_relaysNavButton->setCursor(Qt::PointingHandCursor);
@@ -4053,7 +4129,8 @@ QWidget *MainWindow::buildBreadcrumb()
             [this] { showSection(8); });
 
     // Network: websocket / Durable Object diagnostics plus outbound firewall.
-    m_networkNavButton = new QPushButton(QStringLiteral("Network"));
+    m_networkNavButton = new ActivityRailButton(QStringLiteral("workflow"),
+                                                QStringLiteral("Network"));
     m_networkNavButton->setObjectName("topNavButton");
     m_networkNavButton->setCheckable(true);
     m_networkNavButton->setCursor(Qt::PointingHandCursor);
@@ -4118,57 +4195,6 @@ QWidget *MainWindow::buildBreadcrumb()
         resize(1280, 720);
     });
 
-    // Donate + social cluster, moved up out of the footer (adhoc #117). A standout
-    // donate button (opens the public reward-pool QR) sits beside a compact row of two
-    // icon-only social buttons — the ForkMesh Reddit and Twitter/X links —
-    // matched to the donate button height so the whole cluster reads as one line.
-    auto *donateButton = new QPushButton(QString::fromUtf8("\xE2\x99\xA5 Donate"));
-    donateButton->setObjectName("donateButton");
-    donateButton->setCursor(Qt::PointingHandCursor);
-    donateButton->setToolTip(
-        "Voluntarily send SOL from your own wallet to the transparent community "
-        "reward pool. ForkMesh never receives your wallet key.");
-    connect(donateButton, &QPushButton::clicked, this,
-            &MainWindow::showTreasuryDonateDialog);
-    constexpr int kSocialButtonSize = 34;
-
-    auto *redditButton = new QPushButton;
-    redditButton->setObjectName("socialIconButton");
-    redditButton->setCursor(Qt::PointingHandCursor);
-    redditButton->setToolTip("ForkMesh on Reddit");
-    redditButton->setFixedSize(kSocialButtonSize, kSocialButtonSize);
-    setOcticon(redditButton, "reddit", 16);
-    connect(redditButton, &QPushButton::clicked, this, [] {
-        QDesktopServices::openUrl(QUrl("https://www.reddit.com/user/forkmesh"));
-    });
-
-    auto *twitterButton = new QPushButton;
-    twitterButton->setObjectName("socialIconButton");
-    twitterButton->setCursor(Qt::PointingHandCursor);
-    twitterButton->setToolTip("ForkMesh on X (Twitter)");
-    twitterButton->setFixedSize(kSocialButtonSize, kSocialButtonSize);
-    setOcticon(twitterButton, "twitter-bird", 16);
-    connect(twitterButton, &QPushButton::clicked, this, [] {
-        QDesktopServices::openUrl(QUrl("https://x.com/forkmesh"));
-    });
-
-    auto *mastodonButton = new QPushButton;
-    mastodonButton->setObjectName("socialIconButton");
-    mastodonButton->setCursor(Qt::PointingHandCursor);
-    mastodonButton->setToolTip("ForkMesh on Mastodon");
-    mastodonButton->setFixedSize(kSocialButtonSize, kSocialButtonSize);
-    setOcticon(mastodonButton, "mastodon", 16);
-    connect(mastodonButton, &QPushButton::clicked, this, [] {
-        QDesktopServices::openUrl(QUrl("https://mastodon.social/@forkmesh"));
-    });
-
-    auto *socialRow = new QHBoxLayout;
-    socialRow->setContentsMargins(0, 0, 0, 0);
-    socialRow->setSpacing(4);
-    socialRow->addWidget(redditButton);
-    socialRow->addWidget(twitterButton);
-    socialRow->addWidget(mastodonButton);
-
     // UI-stall indicator (adhoc #117/#145): an octicon that sits beside the
     // CPU/MEM/DISK sparklines on the window-chrome line and shows the count of
     // detected UI stalls. Click to see the stall details.
@@ -4201,8 +4227,8 @@ QWidget *MainWindow::buildBreadcrumb()
     m_diskChart = diskChart;
 
     auto *layout = new QVBoxLayout(bar);
-    layout->setContentsMargins(0, 0, 0, 12);
-    layout->setSpacing(8);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
 
     auto *appVersionLabel = new QLabel(QStringLiteral("ForkMesh v" FORKMESH_VERSION));
     appVersionLabel->setObjectName("appVersionLabel");
@@ -4211,11 +4237,15 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *chromeRow = new QHBoxLayout(chrome);
     chromeRow->setContentsMargins(14, 0, 8, 0);
     chromeRow->setSpacing(8);
-    // The relay switcher (favicon + host dropdown) and its open-in-browser link
-    // now head the window-chrome line in place of the app-version label, which
-    // has moved down to the right-hand end of the row below (adhoc #407).
+    // The instance/relay switcher heads the edge-to-edge chrome. The compact
+    // user/node identity and public SOL balance sit immediately to its right.
     chromeRow->addWidget(m_relayMenuButton);
-    chromeRow->addWidget(m_relayOpenButton);
+    auto *balanceColumn = new QVBoxLayout;
+    balanceColumn->setContentsMargins(0, 0, 0, 0);
+    balanceColumn->setSpacing(0);
+    balanceColumn->addWidget(m_navNodeName);
+    balanceColumn->addWidget(m_navSolanaBalance);
+    chromeRow->addLayout(balanceColumn);
     chromeRow->addStretch();
 
     auto *searchCluster = new QWidget;
@@ -4226,6 +4256,8 @@ QWidget *MainWindow::buildBreadcrumb()
     searchClusterRow->addWidget(createGlobalSearchBox());
     chromeRow->addWidget(searchCluster, 0, Qt::AlignCenter);
     chromeRow->addStretch();
+    chromeRow->addWidget(m_topMessageContainer);
+    chromeRow->addWidget(appVersionLabel);
     // Relay radar, moved up onto the window-chrome line just left of the
     // CPU/MEM/DISK sparklines so its latency readout reads the same way as
     // theirs (adhoc #87).
@@ -4268,146 +4300,33 @@ QWidget *MainWindow::buildBreadcrumb()
     chromeRow->addWidget(minimizeButton);
     chromeRow->addWidget(maximizeButton);
     chromeRow->addWidget(closeButton);
-    layout->addWidget(chrome);
+    chrome->setMinimumWidth(0);
+    chrome->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto *chromeScroll = new QScrollArea;
+    chromeScroll->setObjectName(QStringLiteral("topChromeScroll"));
+    chromeScroll->setWidget(chrome);
+    chromeScroll->setWidgetResizable(true);
+    chromeScroll->setFrameShape(QFrame::NoFrame);
+    chromeScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    chromeScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    chromeScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
+    chromeScroll->setMinimumWidth(0);
+    chromeScroll->setFixedHeight(54);
+    chromeScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    layout->addWidget(chromeScroll);
 
-    // Main app navigation row: relay > node > repo navigation, breadcrumb,
-    // centered toast, and the right-aligned connection / balance / avatar cluster.
-    auto *mainRow = new QHBoxLayout;
-    mainRow->setContentsMargins(16, 0, 16, 0);
-    mainRow->setSpacing(8);
-    // m_relayRadar (radar + latency) now lives on the window-chrome line, just
-    // left of the CPU/MEM/DISK sparklines (adhoc #87); the relay switcher and its
-    // link button moved up there too (adhoc #407), so this row starts at the node.
-    mainRow->addWidget(m_nodeLabel);
-    mainRow->addWidget(m_nodeMenuButton);
-    mainRow->addSpacing(10);
-    mainRow->addWidget(m_repoLabel);
-    mainRow->addWidget(m_repoMenuButton);
-    mainRow->addSpacing(12);
-    mainRow->addWidget(m_breadcrumb);
-    mainRow->addStretch();
-    mainRow->addWidget(m_topMessageContainer);
-    mainRow->addStretch();
-    // Donate button + the Reddit/X icons, sat just left of the account cluster
-    // (adhoc #117).
-    mainRow->addWidget(donateButton);
-    mainRow->addSpacing(4);
-    mainRow->addLayout(socialRow);
-    mainRow->addSpacing(10);
-    // Stack the node name above the user-owned public wallet balance. The
-    // online/reward toggle that used to sit here now lives in the node profile
-    // panel, under Mirror reward settings.
-    auto *balanceColumn = new QVBoxLayout;
-    balanceColumn->setContentsMargins(0, 0, 0, 0);
-    balanceColumn->setSpacing(0);
-    balanceColumn->addWidget(m_navNodeName);
-    balanceColumn->addWidget(m_navSolanaBalance);
-    mainRow->addLayout(balanceColumn);
-    // The provider usage gauges used to tuck in here; they now live in the
-    // prompt toolbar next to the send buttons (adhoc #47, see buildNetworkLogDock).
-    mainRow->addSpacing(4);
-    // Notification bell, tucked just left of the account avatar (adhoc #137).
-    mainRow->addWidget(m_notificationButton);
-    mainRow->addWidget(m_userAvatarNavButton);
-    // App version, moved off the window-chrome line so the relay switcher can head
-    // it; it now sits at the right-hand end of this row, under the stall/resource
-    // indicators (adhoc #407).
-    mainRow->addSpacing(10);
-    mainRow->addWidget(appVersionLabel);
-    auto *mainRowHost = new QWidget;
-    mainRowHost->setLayout(mainRow);
-    mainRowHost->setMinimumWidth(0);
-    mainRowHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    auto *mainRowScroll = new QScrollArea;
-    mainRowScroll->setObjectName("topBarScroll");
-    mainRowScroll->setWidget(mainRowHost);
-    mainRowScroll->setWidgetResizable(true);
-    mainRowScroll->setFrameShape(QFrame::NoFrame);
-    mainRowScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    mainRowScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    mainRowScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
-    mainRowScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    mainRowScroll->setMinimumWidth(0);
-    // 40 matches the row's tallest element (the 40x40 avatar buttons); this used
-    // to be 56 to fit the online/reward toggle that has since moved into the
-    // node profile panel, leaving a dead strip of empty space below the row.
-    mainRowScroll->setFixedHeight(40);
-    layout->addWidget(mainRowScroll);
+    // The node switcher was retired from the global header. Keep its object
+    // parented for the existing node-selection code paths, but do not render it;
+    // Nodes are reached from the rail and repository selection lives in detail.
+    m_nodeLabel->setParent(bar);
+    m_nodeLabel->hide();
+    m_nodeMenuButton->setParent(bar);
+    m_nodeMenuButton->hide();
+    m_repoLabel->setParent(bar);
+    m_repoLabel->hide();
+    m_breadcrumb->setParent(bar);
+    m_breadcrumb->hide();
 
-    // Hairline divider separating the relay/node row from the section nav below.
-    auto *navDivider = new QFrame;
-    navDivider->setObjectName("navDivider");
-    navDivider->setFrameShape(QFrame::HLine);
-    navDivider->setFixedHeight(1);
-    layout->addWidget(navDivider);
-
-    // The primary section nav (Code / Chat / Notifications / Settings / Log)
-    // lives in its own row in the always-visible top bar, so these buttons stay
-    // put above whatever section they open — they don't disappear when you leave
-    // the repo view, and the log is one click away next to Settings.
-    auto *navRow = new QHBoxLayout;
-    navRow->setContentsMargins(16, 0, 16, 0);
-    navRow->setSpacing(8);
-    navRow->addWidget(m_repoViewButton);
-    navRow->addWidget(m_reposNavButton);
-    navRow->addWidget(m_agentsNavButton);
-    navRow->addWidget(m_chatButton);
-    // Notifications (bell) and Settings (gear) moved out of the section nav
-    // (adhoc #137): the bell rides beside the avatar in mainRow, and the gear
-    // sits in the right-hand utility cluster next to the rebuild button. Log is
-    // now a floating button on the live-log strip.
-    navRow->addWidget(m_leaderboardNavButton);
-    navRow->addWidget(m_controlNodeNavButton);
-    navRow->addWidget(m_worldNavButton);
-    navRow->addWidget(m_hostsNavButton);
-    navRow->addWidget(m_nodesNavButton);
-    navRow->addWidget(m_relaysNavButton);
-    navRow->addWidget(m_networkNavButton);
-    // The live-diagnostics indicator moved up onto the window-chrome line next to
-    // the CPU/MEM/DISK sparklines (adhoc #145).
-    navRow->addStretch();
-    auto *navRowHost = new QWidget;
-    navRowHost->setLayout(navRow);
-    navRowHost->setMinimumWidth(0);
-    navRowHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    auto *navRowScroll = new QScrollArea;
-    navRowScroll->setObjectName("topBarScroll");
-    navRowScroll->setWidget(navRowHost);
-    navRowScroll->setWidgetResizable(true);
-    navRowScroll->setFrameShape(QFrame::NoFrame);
-    navRowScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    navRowScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    navRowScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
-    navRowScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    navRowScroll->setMinimumWidth(0);
-    navRowScroll->setFixedHeight(50);
-
-    // Keep the screen tools anchored at the right edge while the growing set of
-    // section links scrolls independently. Otherwise adding one section can push
-    // every utility button beyond the viewport even on a laptop-width window.
-    // Settings/rebuild come first so the three directly manipulated screen tools
-    // remain the right-edge cluster even when the optional rebuild button is
-    // hidden; putting Settings after them left a misleading 70px dead tail.
-    auto *navUtilityRow = new QHBoxLayout;
-    navUtilityRow->setContentsMargins(8, 0, 16, 0);
-    navUtilityRow->setSpacing(8);
-    navUtilityRow->addWidget(m_settingsNavButton);
-    navUtilityRow->addWidget(m_navRebuildButton);
-    navUtilityRow->addWidget(m_navDrawButton);
-    navUtilityRow->addWidget(m_navScreenshotButton);
-    navUtilityRow->addWidget(m_navResizeButton);
-    auto *navUtilityHost = new QWidget;
-    navUtilityHost->setLayout(navUtilityRow);
-    navUtilityHost->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-
-    auto *navBand = new QWidget;
-    auto *navBandRow = new QHBoxLayout(navBand);
-    navBandRow->setContentsMargins(0, 0, 0, 0);
-    navBandRow->setSpacing(0);
-    navBandRow->addWidget(navRowScroll, 1);
-    navBandRow->addWidget(navUtilityHost);
-    navBand->setFixedHeight(50);
-    layout->addWidget(navBand);
     // Home/Code is the initial section, so show its nav button selected up front.
     m_repoViewButton->setChecked(true);
 
@@ -4424,9 +4343,12 @@ QWidget *MainWindow::buildBreadcrumb()
 
 void MainWindow::updateNavRebuildButton()
 {
+    const bool visible =
+        QSettings().value(kShowRebuildButtonSetting, false).toBool();
     if (m_navRebuildButton)
-        m_navRebuildButton->setVisible(
-            QSettings().value(kShowRebuildButtonSetting, false).toBool());
+        m_navRebuildButton->setVisible(visible);
+    if (m_navRebuildRailHost)
+        m_navRebuildRailHost->setVisible(visible);
 }
 
 // Pin the floating "Log" button to the bottom-right corner of the live-log
@@ -4680,6 +4602,9 @@ void MainWindow::updateRelaySwitcher()
 {
     if (!m_relayMenuButton)
         return;
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_relaysNavButton))
+        railButton->setBadgeCount(m_servers.size());
     QString host;
     if (m_activeServer >= 0 && m_activeServer < m_servers.size())
         host = serverHost(m_servers.at(m_activeServer).url);
@@ -4689,9 +4614,6 @@ void MainWindow::updateRelaySwitcher()
             ? QIcon(faviconFor(m_servers.at(m_activeServer)))
             : QIcon(letterFavicon(host.isEmpty() ? QStringLiteral("ForkMesh")
                                                  : host)));
-    if (m_relayOpenButton)
-        m_relayOpenButton->setEnabled(!host.isEmpty());
-
     if (host.isEmpty())
         host = QStringLiteral("ForkMesh");
     // "domain ▾ count": the caret signals it drops down; the count is the
@@ -4991,6 +4913,9 @@ void MainWindow::updateNodeSwitcher()
     updateUserSwitcher();
     // Keep the Nodes directory in step with the dropdown's node list.
     refreshNodesTable();
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_nodesNavButton))
+        railButton->setBadgeCount(m_nodeMenuEntries.size());
     if (!m_nodeMenuButton)
         return;
     const QString caret = QString::fromUtf8("\xE2\x96\xBE");
@@ -5519,6 +5444,9 @@ void MainWindow::updateRepoSwitcher()
 {
     if (!m_repoMenuButton)
         return;
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_reposNavButton))
+        railButton->setBadgeCount(m_repoMenuEntries.size());
     // Mid node-switch: the repo list belongs to the node being loaded, so keep
     // the button visible with a "Loading…" label (the spinner icon is driven by
     // startRepoSwitchSpin) instead of revealing a count or repo name until the
@@ -5526,7 +5454,7 @@ void MainWindow::updateRepoSwitcher()
     if (m_nodeSwitching) {
         m_repoMenuButton->setVisible(true);
         if (m_repoLabel)
-            m_repoLabel->setVisible(true);
+            m_repoLabel->hide();
         m_repoMenuButton->setText(QString::fromUtf8("Loading\xE2\x80\xA6"));
         return;
     }
@@ -5536,15 +5464,29 @@ void MainWindow::updateRepoSwitcher()
     // The Code button is primary section nav now, so it stays visible even with
     // no repos (it just lands on the empty Home view).
     if (m_repoLabel)
-        m_repoLabel->setVisible(hasRepos);
+        m_repoLabel->hide();
     if (!hasRepos)
         return;
     const QString caret = QString::fromUtf8("\xE2\x96\xBE");
-    QString label = QStringLiteral("Repos");
-    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
-        label = m_repositories.at(m_repoDetailIndex).name;
-    m_repoMenuButton->setText(label + "  " + caret + "  " +
-                              QString::number(m_repoMenuEntries.size()));
+    QString label = QStringLiteral("Repositories");
+    QString owner;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        owner = repo.owner;
+        label = repo.owner + QLatin1Char('/') + repo.name;
+    }
+    int ownerRepoCount = 0;
+    for (const RepoMenuEntry &entry : std::as_const(m_repoMenuEntries)) {
+        if (entry.index >= 0 && entry.index < m_repositories.size() &&
+            m_repositories.at(entry.index).owner == owner)
+            ++ownerRepoCount;
+    }
+    // Read like a Git hosting identity. It becomes a switcher only when the
+    // current user/organization actually has another repository to choose.
+    if (ownerRepoCount > 1)
+        label += QStringLiteral("  ") + caret;
+    m_repoMenuButton->setText(label);
+    m_repoMenuButton->setEnabled(ownerRepoCount > 1);
 }
 
 bool MainWindow::relayPublishRepo(const RepositoryRecord &repo,
@@ -6204,13 +6146,24 @@ void MainWindow::startRepoPush(int index, const RepositoryRecord &repo,
 
 void MainWindow::showRepoMenu()
 {
-    if (!m_repoMenuButton)
+    if (!m_repoMenuButton || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const QString owner = m_repositories.at(m_repoDetailIndex).owner;
+    QList<const RepoMenuEntry *> choices;
+    for (const RepoMenuEntry &entry : std::as_const(m_repoMenuEntries)) {
+        if (entry.index >= 0 && entry.index < m_repositories.size() &&
+            m_repositories.at(entry.index).owner == owner)
+            choices.append(&entry);
+    }
+    if (choices.size() <= 1)
         return;
     QMenu menu(this);
     menu.setToolTipsVisible(true);
 
     QAction *header = menu.addAction(
-        QStringLiteral("Repositories (%1)").arg(formatCount(m_repoMenuEntries.size())));
+        QStringLiteral("%1 repositories (%2)")
+            .arg(owner, formatCount(choices.size())));
     header->setEnabled(false);
 
     auto *searchEdit = new QLineEdit(&menu);
@@ -6223,14 +6176,10 @@ void MainWindow::showRepoMenu()
     menu.addAction(searchAction);
     menu.addSeparator();
 
-    if (m_repoMenuEntries.isEmpty()) {
-        QAction *empty = menu.addAction(QStringLiteral("No repositories yet"));
-        empty->setEnabled(false);
-    }
-
     QList<QAction *> repoActions;
     QStringList repoNames;
-    for (const RepoMenuEntry &e : std::as_const(m_repoMenuEntries)) {
+    for (const RepoMenuEntry *entry : std::as_const(choices)) {
+        const RepoMenuEntry &e = *entry;
         QAction *act = menu.addAction(e.icon, e.label);
         if (!e.detail.isEmpty())
             act->setToolTip(e.detail);
@@ -6594,7 +6543,6 @@ void MainWindow::ensureSectionBuilt(int index)
     case 2: section = buildChatSection(); break;
     case 3: section = buildNotificationsSection(); break;
     case 4: section = buildLogSection(); break;
-    case 5: section = buildLeaderboardsSection(); break;
     case 6: section = buildSearchResultsSection(); break;
     case 7: section = buildHostsSection(); break;
     case 8: section = buildRelaysSection(); break;
@@ -6616,6 +6564,10 @@ void MainWindow::showSection(int index)
 {
     if (index == 9)
         index = kNetworkDiagnosticsSectionIndex;
+    // Section 5 was a retired desktop rankings page. Preserve fixed stack
+    // indexes for saved navigation state, but land stale history safely at Home.
+    if (index == 5)
+        index = 0;
     ensureSectionBuilt(index);
     // Leaving Settings (index 1) while the mic test is recording would otherwise
     // leave the recorder holding the microphone open in the background; stop it.
@@ -6652,9 +6604,6 @@ void MainWindow::showSection(int index)
         }
         // Jump to the newest log line whenever the Log section opens.
         m_settingsLog->moveCursor(QTextCursor::End);
-    } else if (index == 5) {
-        // Pull the latest rankings each time the Leaderboards section opens.
-        refreshLeaderboards();
     } else if (index == 7) {
         // Re-read the saved host list whenever the Hosts section opens.
         refreshHostsTable();
@@ -7237,237 +7186,6 @@ void MainWindow::mirrorNetworkRepo(const QString &owner, const QString &name,
     mirrorCatalogRepo(owner, name, source, isPrivate);
     flashMessage(QStringLiteral("Mirroring %1/%2.").arg(owner, name));
     refreshNetworkReposPage();
-}
-
-// --- Leaderboards (issue #11) ----------------------------------------------
-// A scrollable grid of ranking cards mirroring the website's /network/
-// leaderboards: mainnode uptime, top owners, most-mirrored and longest-hosted
-// repositories, contributor activity, and funds received by mainnodes,
-// contributors and projects. Data comes from /api/network/leaderboards.
-
-QWidget *MainWindow::buildLeaderboardsSection()
-{
-    auto *page = new QWidget;
-    auto *outer = new QVBoxLayout(page);
-    outer->setContentsMargins(24, 20, 24, 24);
-    outer->setSpacing(12);
-
-    auto *title = new QLabel(QStringLiteral("Leaderboards"));
-    title->setObjectName("sectionTitle");
-    QFont titleFont = title->font();
-    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
-    titleFont.setBold(true);
-    title->setFont(titleFont);
-    outer->addWidget(title);
-
-    auto *subtitle = new QLabel(QString::fromUtf8(
-        "Mainnode uptime, top owners, the most-mirrored and longest-hosted "
-        "repositories, contributor activity, and funds received \xE2\x80\x94 "
-        "across the whole network."));
-    subtitle->setObjectName("mutedLabel");
-    subtitle->setWordWrap(true);
-    outer->addWidget(subtitle);
-
-    m_leaderboardsStatus = new QLabel(QString::fromUtf8("Loading leaderboards\xE2\x80\xA6"));
-    m_leaderboardsStatus->setObjectName("mutedLabel");
-    outer->addWidget(m_leaderboardsStatus);
-
-    // The boards themselves live in a grid of cards inside a scroll area so a
-    // tall list never forces the window taller.
-    m_leaderboardsContent = new QWidget;
-    auto *grid = new QGridLayout(m_leaderboardsContent);
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setHorizontalSpacing(20);
-    grid->setVerticalSpacing(20);
-
-    auto *scroll = new QScrollArea;
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll->setWidget(m_leaderboardsContent);
-    outer->addWidget(scroll, 1);
-
-    return page;
-}
-
-void MainWindow::refreshLeaderboards()
-{
-    if (m_leaderboardsStatus)
-        m_leaderboardsStatus->setText(QString::fromUtf8("Loading leaderboards\xE2\x80\xA6"));
-
-    QUrl url = catalogApiUrl(); // same relay host, http(s) scheme
-    url.setPath(QStringLiteral("/api/network/leaderboards"));
-    url.setQuery(QString());
-    QNetworkRequest request(url);
-    request.setRawHeader("accept", "application/json");
-    QNetworkReply *reply = m_networkAccess->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            if (m_leaderboardsStatus)
-                m_leaderboardsStatus->setText(
-                    QStringLiteral("Leaderboards unavailable right now."));
-            return;
-        }
-        const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
-        populateLeaderboards(obj);
-    });
-}
-
-void MainWindow::populateLeaderboards(const QJsonObject &data)
-{
-    if (!m_leaderboardsContent)
-        return;
-    auto *grid = qobject_cast<QGridLayout *>(m_leaderboardsContent->layout());
-    if (!grid)
-        return;
-
-    // Clear any boards from a previous refresh.
-    QLayoutItem *old = nullptr;
-    while ((old = grid->takeAt(0))) {
-        if (old->widget())
-            old->widget()->deleteLater();
-        delete old;
-    }
-
-    // Build one board card from a JSON array, formatting each row's value.
-    auto makeBoard = [](const QString &boardTitle, const QString &boardSub,
-                        const QJsonArray &rows,
-                        const std::function<QString(const QJsonObject &)> &fmt)
-        -> QWidget * {
-        auto *card = new QFrame;
-        card->setObjectName("leaderboardCard");
-        card->setFrameShape(QFrame::StyledPanel);
-        auto *col = new QVBoxLayout(card);
-        col->setContentsMargins(16, 14, 16, 14);
-        col->setSpacing(2);
-
-        auto *h = new QLabel(boardTitle);
-        QFont hf = h->font();
-        hf.setBold(true);
-        hf.setPointSizeF(hf.pointSizeF() + 1);
-        h->setFont(hf);
-        col->addWidget(h);
-
-        auto *sub = new QLabel(boardSub);
-        sub->setObjectName("mutedLabel");
-        sub->setWordWrap(true);
-        QFont sf = sub->font();
-        sf.setPointSizeF(sf.pointSizeF() - 1);
-        sub->setFont(sf);
-        col->addWidget(sub);
-        col->addSpacing(6);
-
-        if (rows.isEmpty()) {
-            auto *empty = new QLabel(QStringLiteral("No data yet."));
-            empty->setObjectName("mutedLabel");
-            col->addWidget(empty);
-            return card;
-        }
-
-        int rank = 0;
-        for (const QJsonValue &v : rows) {
-            const QJsonObject row = v.toObject();
-            ++rank;
-            auto *line = new QHBoxLayout;
-            line->setContentsMargins(0, 2, 0, 2);
-            line->setSpacing(8);
-
-            auto *rankLabel = new QLabel(QString::number(rank));
-            rankLabel->setObjectName("mutedLabel");
-            rankLabel->setFixedWidth(20);
-            line->addWidget(rankLabel);
-
-            auto *name = new QLabel(row.value("name").toString(QStringLiteral("node")));
-            name->setTextInteractionFlags(Qt::TextSelectableByMouse);
-            line->addWidget(name, 1);
-
-            auto *value = new QLabel(fmt(row));
-            QFont vf = value->font();
-            vf.setBold(true);
-            value->setFont(vf);
-            value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            line->addWidget(value);
-
-            col->addLayout(line);
-        }
-        return card;
-    };
-
-    auto arr = [&](const char *key) { return data.value(QLatin1String(key)).toArray(); };
-    auto numVal = [](const QJsonObject &o, const char *k) {
-        return o.value(QLatin1String(k)).toDouble();
-    };
-    auto plural = [](double n, const QString &word) {
-        const long long v = static_cast<long long>(n);
-        return QString::number(v) + " " + word + (v == 1 ? "" : "s");
-    };
-    auto fmtMinutes = [](double m) {
-        const long long mins = static_cast<long long>(m);
-        const long long h = mins / 60, rem = mins % 60;
-        if (h && rem) return QStringLiteral("%1h %2m").arg(h).arg(rem);
-        if (h) return QStringLiteral("%1h").arg(h);
-        return QStringLiteral("%1m").arg(rem);
-    };
-    auto fmtAge = [](double ms) {
-        const long long days = static_cast<long long>(ms / 86400000.0);
-        if (days >= 1) return QString::number(days) + (days == 1 ? " day" : " days");
-        const long long hrs = static_cast<long long>(ms / 3600000.0);
-        return QString::number(hrs) + (hrs == 1 ? " hour" : " hours");
-    };
-    auto fmtSol = [numVal](const QJsonObject &o) {
-        double sol = o.value(QLatin1String("sol")).toDouble();
-        if (sol <= 0)
-            sol = numVal(o, "lamports") / 1e9;
-        return QString::number(sol, 'f', sol >= 1 ? 2 : 4) + " SOL";
-    };
-
-    const int hours = data.value("windowHours").toInt(48);
-
-    struct Board {
-        QString title, sub;
-        QJsonArray rows;
-        std::function<QString(const QJsonObject &)> fmt;
-    };
-    QList<Board> boards = {
-        {QStringLiteral("Mainnode uptime"),
-         QStringLiteral("Most minutes online \xC2\xB7 last %1h").arg(hours), arr("uptime"),
-         [fmtMinutes, numVal](const QJsonObject &o) { return fmtMinutes(numVal(o, "minutes")); }},
-        {QStringLiteral("Top owners"), QStringLiteral("Most public repositories"),
-         arr("repos"),
-         [plural, numVal](const QJsonObject &o) { return plural(numVal(o, "repos"), "repo"); }},
-        {QStringLiteral("Most mirrored"),
-         QStringLiteral("Repositories hosted under the most owners"), arr("mirrors"),
-         [plural, numVal](const QJsonObject &o) { return plural(numVal(o, "mirrors"), "owner"); }},
-        {QStringLiteral("Longest hosted"),
-         QStringLiteral("Repositories online the longest"), arr("hosted"),
-         [fmtAge, numVal](const QJsonObject &o) { return fmtAge(numVal(o, "ageMs")); }},
-        {QStringLiteral("Contributor activity"),
-         QStringLiteral("Issues + pull requests + commits"), arr("contributors"),
-         [plural, numVal](const QJsonObject &o) { return plural(numVal(o, "total"), "contribution"); }},
-        {QString::fromUtf8("Funds \xC2\xB7 mainnodes"),
-         QStringLiteral("Most received from the node split"), arr("fundsMainnodes"),
-         fmtSol},
-        {QString::fromUtf8("Funds \xC2\xB7 contributors"),
-         QStringLiteral("Most received from bounties"), arr("fundsContributors"),
-         fmtSol},
-        {QString::fromUtf8("Funds \xC2\xB7 projects"),
-         QStringLiteral("Most bounty funds earned"), arr("fundsProjects"), fmtSol},
-    };
-
-    const int columns = 2;
-    for (int i = 0; i < boards.size(); ++i) {
-        const Board &b = boards.at(i);
-        auto *card = makeBoard(b.title, b.sub, b.rows, b.fmt);
-        card->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-        grid->addWidget(card, i / columns, i % columns, Qt::AlignTop);
-    }
-    grid->setColumnStretch(0, 1);
-    grid->setColumnStretch(1, 1);
-    grid->setRowStretch(grid->rowCount(), 1);
-
-    if (m_leaderboardsStatus)
-        m_leaderboardsStatus->setText(QString());
 }
 
 // --- Hosts (adhoc #263) -----------------------------------------------------
@@ -8122,6 +7840,9 @@ void MainWindow::refreshHostsTable()
         m_hostsNavButton->setText(hosts.isEmpty()
             ? QStringLiteral("Hosts")
             : QStringLiteral("Hosts (%1)").arg(hosts.size()));
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_hostsNavButton))
+        railButton->setBadgeCount(hosts.size());
 }
 
 forkmesh::control::AgentCliCredentials MainWindow::localAgentCliCredentials()
@@ -9469,6 +9190,9 @@ void MainWindow::refreshNodesTable()
         m_nodesNavButton->setText(visible.isEmpty()
             ? QStringLiteral("Nodes")
             : QStringLiteral("Nodes (%1)").arg(visible.size()));
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_nodesNavButton))
+        railButton->setBadgeCount(visible.size());
 
     // Re-open the previously shown node's detail (find it by name post-sort), or
     // default to the first row.
@@ -9851,6 +9575,9 @@ void MainWindow::refreshRelaysTable()
         m_relaysNavButton->setText(m_servers.isEmpty()
             ? QStringLiteral("Relays")
             : QStringLiteral("Relays (%1)").arg(m_servers.size()));
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_relaysNavButton))
+        railButton->setBadgeCount(m_servers.size());
     for (int i = 0; i < m_servers.size(); ++i)
         probeRelayRow(i);
 }

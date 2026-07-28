@@ -1,6 +1,10 @@
 #pragma once
 
+#include "ActionTelemetry.h"
+
 #include <QAtomicInteger>
+#include <QDateTime>
+#include <QHash>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QString>
@@ -30,18 +34,45 @@ public:
     using Listener = std::function<void(quint64 id, const QString &kind,
                                         const QString &detail, bool started)>;
 
-    static quint64 begin(const QString &kind, const QString &detail = QString())
+    static quint64 begin(
+        const QString &kind, const QString &detail = QString(),
+        ActionTelemetry::Execution execution = ActionTelemetry::Execution::Async)
     {
         const quint64 id = state().nextId.fetchAndAddOrdered(1);
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        {
+            QMutexLocker lock(&state().mutex);
+            state().tickets.insert(id, Ticket{kind, detail, execution, now});
+        }
+        ActionTelemetry::started(id, kind, detail, execution, now);
         notify(id, kind, detail, true);
         return id;
     }
 
-    static void end(quint64 id)
+    static void end(quint64 id,
+                    const QString &outcome = QStringLiteral("completed"))
     {
         if (id == 0)
             return;
-        notify(id, QString(), QString(), false);
+        Ticket ticket;
+        bool found = false;
+        {
+            QMutexLocker lock(&state().mutex);
+            const auto it = state().tickets.find(id);
+            if (it != state().tickets.end()) {
+                ticket = *it;
+                state().tickets.erase(it);
+                found = true;
+            }
+        }
+        if (found) {
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            ActionTelemetry::finished(id, ticket.kind, ticket.detail,
+                                      ticket.execution, ticket.startedAtMs, now,
+                                      outcome);
+        }
+        if (found)
+            notify(id, QString(), QString(), false);
     }
 
     // Only the window installs a listener; passing a default-constructed
@@ -53,9 +84,18 @@ public:
     }
 
 private:
+    struct Ticket {
+        QString kind;
+        QString detail;
+        ActionTelemetry::Execution execution =
+            ActionTelemetry::Execution::Async;
+        qint64 startedAtMs = 0;
+    };
+
     struct State {
         QMutex mutex;
         Listener listener;
+        QHash<quint64, Ticket> tickets;
         QAtomicInteger<quint64> nextId = 1;
     };
 
@@ -149,8 +189,10 @@ class BackgroundScope
 {
 public:
     explicit BackgroundScope(const QString &kind,
-                             const QString &detail = QString())
-        : m_id(BackgroundActivity::begin(kind, detail))
+                             const QString &detail = QString(),
+                             ActionTelemetry::Execution execution =
+                                 ActionTelemetry::Execution::Async)
+        : m_id(BackgroundActivity::begin(kind, detail, execution))
     {
     }
     ~BackgroundScope() { BackgroundActivity::end(m_id); }

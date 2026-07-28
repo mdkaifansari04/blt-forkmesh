@@ -730,6 +730,55 @@ QString PullRequest::reviewSummary() const
     return approved ? QStringLiteral("approved") : QString();
 }
 
+int PullRequest::independentApprovalCount() const
+{
+    QHash<QString, QString> latest;
+    for (const PullEvent &ev : events) {
+        if (ev.type != QLatin1String("review") || ev.author.isEmpty() ||
+            ev.author == author)
+            continue;
+        if (ev.state == QLatin1String("approved") ||
+            ev.state == QLatin1String("changes_requested"))
+            latest.insert(ev.author, ev.state);
+        else
+            latest.remove(ev.author);
+    }
+    int approvals = 0;
+    for (auto it = latest.constBegin(); it != latest.constEnd(); ++it) {
+        if (it.value() == QLatin1String("changes_requested"))
+            return 0;
+        if (it.value() == QLatin1String("approved"))
+            ++approvals;
+    }
+    return approvals;
+}
+
+bool PullRequest::hasIndependentChangesRequested() const
+{
+    QHash<QString, QString> latest;
+    for (const PullEvent &ev : events) {
+        if (ev.type != QLatin1String("review") || ev.author.isEmpty() ||
+            ev.author == author)
+            continue;
+        if (ev.state == QLatin1String("approved") ||
+            ev.state == QLatin1String("changes_requested"))
+            latest.insert(ev.author, ev.state);
+        else
+            latest.remove(ev.author);
+    }
+    return std::any_of(
+        latest.constBegin(), latest.constEnd(),
+        [](const QString &state) {
+            return state == QLatin1String("changes_requested");
+        });
+}
+
+bool PullRequest::independentReviewGateSatisfied() const
+{
+    return !hasIndependentChangesRequested() &&
+           independentApprovalCount() > 0;
+}
+
 // ---- PullStore -------------------------------------------------------------
 
 PullStore::PullStore(QString workTreePath, QString mirrorPath,
@@ -760,6 +809,16 @@ QString PullStore::metaWorkTree() const
 {
     if (m_workTree.isEmpty())
         return QString();
+    // Mirror intake already opens a short-lived worktree directly on the
+    // dedicated metadata branch. Reuse it instead of creating a second,
+    // persistent linked worktree whose path is keyed to a temporary directory.
+    QByteArray currentBranch;
+    if (runGit(m_workTree, {"symbolic-ref", "--short", "-q", "HEAD"},
+               &currentBranch) &&
+        QString::fromUtf8(currentBranch).trimmed() ==
+            QLatin1String("forkmesh/pulls")) {
+        return m_workTree;
+    }
     // One linked worktree per repo, keyed by a hash of its path, under app
     // data so it persists across restarts (unlike the /tmp agent-session
     // worktrees elsewhere in this file, this one holds the live PR metadata,
@@ -1583,7 +1642,7 @@ bool PullStore::updateBranchFromBase(int number, QString *error)
     return true;
 }
 
-bool PullStore::mergePull(int number, QString *error)
+bool PullStore::mergePull(int number, QString *error, bool requirePeerReview)
 {
     if (!canWrite()) {
         if (error)
@@ -1599,6 +1658,15 @@ bool PullStore::mergePull(int number, QString *error)
     if (pr.status != "open") {
         if (error)
             *error = QStringLiteral("This pull request is already %1.").arg(pr.status);
+        return false;
+    }
+    if (requirePeerReview && !pr.independentReviewGateSatisfied()) {
+        if (error) {
+            *error = QStringLiteral(
+                "At least one approval from a peer other than the pull "
+                "request author is required, with no unresolved peer "
+                "request for changes.");
+        }
         return false;
     }
     QString err;

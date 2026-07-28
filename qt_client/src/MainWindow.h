@@ -753,13 +753,14 @@ private:
     // longer a public constant baked into the client. Cached in m_roomPassphrase
     // and passed to ServerNode; empty falls back to the legacy app key.
     void fetchRoomPassphrase();
-    // Start (once the account identity is known) the read-only poll that brings
-    // the World virtual office's channel conversations into the chat sidebar.
+    // Start (once the account identity is known) the asynchronous bridge that
+    // brings World-office channels into chat and opens their send sockets.
     // The office's #general room needs nothing here: it is the same mainnode
     // room this client already joins, so it lands in #general.
     void startOfficeChannelMirror();
-    // True for a conversation this client can read but never publish into.
-    bool isReadOnlyConversation(const QString &conversation) const;
+    // True for a World-office conversation whose text sends use the office
+    // bridge rather than the primary mesh backend.
+    bool isOfficeConversation(const QString &conversation) const;
     void showAdminVerifyDialog();
     bool adminVerifyEmail(const QString &target);
     void verifyWallet();
@@ -1061,10 +1062,6 @@ private:
     void stopLiveServicesForDataOp();
     void relaunchForkMesh();
     QWidget *buildNotificationsSection();
-    // Network leaderboards (issue #11): fetched from /api/network/leaderboards.
-    QWidget *buildLeaderboardsSection();
-    void refreshLeaderboards();
-    void populateLeaderboards(const QJsonObject &data);
     // Network repository catalog: all repos known by the active relay, with local
     // fork/mirror actions and the relay's mirror-node list per repo.
     QWidget *buildNetworkReposSection();
@@ -1087,6 +1084,7 @@ private:
     // permissions, Cloudflare relay bootstrap, and remote host deployment.
     QWidget *buildControlNodeSection();
     void refreshControlNode();
+    void refreshControlMirrorReadiness();
     void runControlNodeHealthCheck();
     void startControlNodeServing();
     void stopControlNodeServing();
@@ -1104,7 +1102,6 @@ private:
     void checkDirectMirrorGatewayHealth();
     void appendControlNodeOutput(const QString &text);
     void connectToDeployedRelay(const QString &hostname);
-    void openForkMeshWorld();
     void deploySavedHostsFromControl();
     // First-instance-owner community reward-pool signer. The Solana private key
     // is imported into an encrypted local vault and never leaves this desktop;
@@ -1374,6 +1371,7 @@ private:
 
     // Repo detail view (files + issues tabs), opened by clicking a repository.
     void ensureRepoDetailSectionBuilt();
+    void ensureRepoDetailTabBuilt(int index);
     QWidget *buildRepoDetailSection();
     QWidget *buildRepoFilesPanel();
     QWidget *buildRepoOverviewPage();
@@ -1476,6 +1474,11 @@ private:
     QWidget *buildPullsTab();
     PullStore pullStoreForCurrentRepo() const;
     void reloadPulls();
+    // Push/sync refreshes use the worker-backed variant so deriving every PR's
+    // patch/commit series never serializes git on the event thread.
+    void reloadPullsInBackground();
+    void applyLoadedPulls(const PullStore &store, QList<PullRequest> pulls,
+                          const QString &baseTip);
     // Drains m_pendingPullConflictChecks one PR per event-loop turn so the (slow)
     // `git apply --check` dry-runs never block the GUI thread in a single sweep.
     void processPendingPullConflicts(quint64 gen);
@@ -1709,10 +1712,9 @@ private:
     // message re-refreshes it (adhoc #74).
     void applyAgentRowCells(int row, const AgentSession &session,
                             const QString &agentGitDir, const QString &agentBase);
-    // Files-changed + branch ahead/behind summary for a session's Diff cell
-    // (issue #170), computed against the given git dir / base branch and memoised
-    // in m_agentDiffStats. Both git args are hoisted by the caller so the per-row
-    // loop doesn't re-resolve them.
+    // Files-changed + branch ahead/behind summary for a session's Diff cell.
+    // This is deliberately a cache-only UI accessor: cold disk/git probes are
+    // gathered by refreshAgentTable() on its worker and delivered later.
     AgentDiffStat agentDiffStat(const AgentSession &session, const QString &gitDir,
                                 const QString &base);
     void updateAgentTokenCell(int sessionId);  // live Tokens-column update
@@ -2895,6 +2897,10 @@ private:
     IssueStore issueStoreForCurrentRepo() const; // build a store for that repo
     void refreshIssuesRepoCombo();
     void reloadIssues();        // load issues + label/milestone filters from the store
+    void reloadIssuesInBackground();
+    void applyLoadedIssues(const QString &signature, QList<Issue> issues,
+                           QList<IssueLabel> labels,
+                           QList<IssueMilestone> milestones);
     // Splice a just-created issue into m_currentIssues and redisplay it, without
     // the full loadAll() reloadIssues() would do — that re-reads every issue
     // file in the repo, which is what made the redirect to the new issue feel
@@ -3254,10 +3260,12 @@ private:
                                  const QJsonArray &pending, bool interactive,
                                  bool mirrorIntake = false);
     void applyPullsInboxPayload(const RepositoryRecord &repo,
-                                const QJsonArray &pending, bool interactive);
+                                const QJsonArray &pending, bool interactive,
+                                bool mirrorIntake = false);
     void applyDiscussionsInboxPayload(const RepositoryRecord &repo,
                                       const QJsonArray &pending,
-                                      bool interactive);
+                                      bool interactive,
+                                      bool mirrorIntake = false);
     void applyCommitInboxPayload(const RepositoryRecord &repo,
                                  const QJsonArray &pending, bool interactive);
     void applyAgentPromptsPayload(const RepositoryRecord &repo,
@@ -3634,6 +3642,10 @@ private:
     QStackedWidget *m_stack;
     QStackedWidget *m_sectionStack = nullptr;
     QButtonGroup *m_navGroup = nullptr;
+    // Full-height, app-wide activity rail. Primary section buttons are created
+    // by buildBreadcrumb(), then placed here by buildChatPage(); repository-only
+    // tools (currently Git) are inserted when the lazy repo detail is built.
+    QVBoxLayout *m_appNavigationRailLayout = nullptr;
     QSystemTrayIcon *m_trayIcon;
 
     // Configured mainnode relays (switched via the top-bar relay dropdown).
@@ -3656,9 +3668,8 @@ private:
     // Top breadcrumb bar (active server favicon + server > section).
     QLabel *m_breadcrumb = nullptr;
     // Top-bar relay switcher: a "favicon  domain ▾ count" dropdown button
-    // (search/switch/add relays), plus a separate open-in-browser icon.
+    // (search/switch/add relays).
     QPushButton *m_relayMenuButton = nullptr;
-    QPushButton *m_relayOpenButton = nullptr;
     // Spinning-radar + latency readout sitting on the window-chrome line just
     // left of the CPU/MEM/DISK sparklines: probes the active relay once a
     // minute and shows the round-trip time (e.g. "33ms") centered in the dish,
@@ -3824,14 +3835,13 @@ private:
     QPushButton *m_settingsNavButton = nullptr; // Settings button on the repo header row
     QPushButton *m_logNavButton = nullptr; // retired (adhoc #137): Log now opens via m_floatingLogButton
     QPushButton *m_floatingLogButton = nullptr; // "Log" button floating over the live-log strip
-    QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
     QPushButton *m_controlNodeNavButton = nullptr; // local control-node operations
-    QPushButton *m_worldNavButton = nullptr; // opens the active relay's 3D world
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
     QPushButton *m_nodesNavButton = nullptr;  // "Nodes" top-nav button (adhoc #9)
     QPushButton *m_relaysNavButton = nullptr; // "Relays" top-nav button
     QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
+    QWidget *m_navRebuildRailHost = nullptr; // captioned rail wrapper for rebuild
     QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
     QPushButton *m_navDrawButton = nullptr; // pencil -> draw freehand on the screen
     QPushButton *m_navResizeButton = nullptr; // snap window to a common minimal size
@@ -3843,8 +3853,6 @@ private:
     // for agent-completion paths that miss their maybeStartQueuedRebuild() call
     // (adhoc #104/#111/#116/#134/#143 each found one more).
     QTimer *m_rebuildQueuePollTimer = nullptr;
-    QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
-    QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
     QTableWidget *m_networkReposTable = nullptr;
     QLabel *m_networkReposStatus = nullptr;
     QPushButton *m_networkReposRefreshButton = nullptr;
@@ -3893,6 +3901,13 @@ private:
     bool m_cloudflareConnectAfterDeploy = false;
     QTimer *m_controlNodeRefreshTimer = nullptr;
     QTimer *m_directMirrorRegistrationTimer = nullptr;
+    // Full encrypted-archive authentication hashes hundreds of megabytes for a
+    // large mirror. Keep it off the GUI thread and let the Control page render
+    // the most recent completed snapshot.
+    QHash<QString, bool> m_controlMirrorReadyCache;
+    bool m_controlMirrorProbeInFlight = false;
+    qint64 m_controlMirrorProbeCompletedAtMs = 0;
+    QString m_controlPermissionsSignature;
     // Community reward pool: no private material is held in these widgets or
     // members. Only the vault's public address, public chain intents, and public
     // submitted transaction identifiers are retained in memory/settings.
@@ -5034,6 +5049,9 @@ private:
     // Generation counter: each reloadPulls() bumps it so any in-flight async
     // conflict pass aborts once the repo/list it was started for has changed.
     quint64 m_pullConflictGen = 0;
+    quint64 m_pullLoadGen = 0;
+    bool m_pullBackgroundLoadInFlight = false;
+    bool m_pullBackgroundReloadQueued = false;
     // (PR number, patch fingerprint) pairs whose dry-run apply is still pending,
     // drained one per event-loop turn by processPendingPullConflicts() so a cold
     // cache never blocks the GUI in a single sweep.
@@ -5085,6 +5103,7 @@ private:
     qint64 m_lastExternalActionsScanMs = 0;
     QList<AppNotification> m_notifications;
     QPushButton *m_notificationButton = nullptr;
+    QLabel *m_notificationRailBadge = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page
     int m_selectedRunId = -1;
     QListWidget *m_actionWorkflowList = nullptr; // available actions (left column)
@@ -5395,11 +5414,8 @@ private:
     // it survives full table rebuilds) and the timer that animates the active ones.
     QHash<int, AgentScannerState> m_scannerStates;
     QTimer *m_scannerTimer = nullptr;
-    // Cached agents-list diff summaries keyed by sessionId (issue #170), so the
-    // search-as-you-type refresh reuses them instead of re-shelling git per row.
-    // No longer wiped wholesale on reloadAgents(): a plain tab switch (issue #289)
-    // re-validates each entry against m_agentDiffSig and only re-shells the rows
-    // whose state actually moved, so an idle Issues→Agents switch runs zero git.
+    // Cached agents-list diff summaries keyed by sessionId (issue #170). Cold
+    // values are computed on a worker; table painting only reads this map.
     QHash<int, AgentDiffStat> m_agentDiffStats;
     // Per-session fingerprint of the inputs the cached AgentDiffStat was computed
     // from (status/branch/merge/finish + the base tip). reloadAgents() flips
@@ -5407,6 +5423,9 @@ private:
     // entries whose fingerprint changed (issue #289).
     QHash<int, QString> m_agentDiffSig;
     bool m_agentDiffRefreshPending = false;
+    bool m_agentDiffStatsRefreshing = false;
+    bool m_agentDiffStatsRefreshQueued = false;
+    int m_agentDiffStatsGen = 0;
     // Sessions maybeAutoFixAgentConflict() has already auto-triggered a fix for.
     // Prevents an unresolved conflict from re-queuing the agent on every refresh;
     // cleared once the session's AgentDiffStat stops reporting conflicted.
@@ -5716,6 +5735,10 @@ private:
     // onRequestServed (adhoc #83); skip the rebuild while the signature is
     // unchanged. Reset by attachBackend so a freshly attached backend is re-pushed.
     QString m_mirrorAdvertSig;
+    QString m_mirrorAdvertInputSig;
+    bool m_mirrorAdvertRefreshInFlight = false;
+    qint64 m_mirrorAdvertCompletedAtMs = 0;
+    void refreshMirrorAdverts();
     int m_repoOpenPending = -1;        // repo index queued by openRepoDetailDeferred
     // True while a user-driven repo load (a node switch or opening a repo) runs,
     // so nodeSwitchStep narrates progress for both, not just node switches.
@@ -5864,6 +5887,9 @@ private:
     // nothing changed (a rebuild mid-interaction drops the click/keystroke the user
     // aimed at a row or the search box). Empty = "unknown", never skip.
     QString m_issuesLoadedSig;
+    int m_issueLoadGen = 0;
+    bool m_issueBackgroundLoadInFlight = false;
+    bool m_issueBackgroundReloadQueued = false;
     QStringList m_pendingIssueAttachments; // images queued for the next comment
 
     // Projects tab widgets + state (issue #384).
@@ -5964,8 +5990,8 @@ private:
     QString m_profileSolanaValue;
 
     QStringList m_channels;
-    // Read-only mirrors of the World virtual office's channel rooms, merged
-    // into the sidebar beside the mesh rooms (adhoc #412).
+    // World virtual-office channel conversations, merged into the sidebar
+    // beside the mesh rooms and carried by OfficeChannelMirror (adhoc #412).
     QStringList m_officeConversations;
     // Invite-only rooms this node owns or was invited to. Badged in the sidebar
     // and persisted so they reappear after a reconnect (the backend clears its

@@ -558,6 +558,7 @@ import world_workshops  # noqa: E402
 # and its human-readable task/check-in data is encrypted at rest.
 import world_office_tasks  # noqa: E402
 import world_build_board  # noqa: E402
+import world_link_kiosk  # noqa: E402
 # Private administrator-created channel policy is kept in a pure module and
 # receives only this Worker's narrow session, crypto, D1, and audit adapter.
 import chat_channels_api  # noqa: E402
@@ -1953,6 +1954,10 @@ INSTALLER_CHECK_INTERVAL_MS = 10 * 60 * 1000
 # Worker/static activation can briefly interrupt the flagship's mirror-routed
 # tree and blob reads. Do not turn that expected handoff into an outage.
 STATUS_DEPLOY_GRACE_MS = 5 * 60 * 1000
+# A crashed deploy client must not suppress genuine incidents indefinitely.
+# deploy.sh refreshes started_at for every rollout, so anything older than this
+# is a stale semaphore and monitoring fails open.
+STATUS_DEPLOY_MAX_MS = 30 * 60 * 1000
 
 STATUS_MONITOR_GUIDANCE = {
     "website": (
@@ -2929,16 +2934,39 @@ def _status_minute(minute_ts, current_minute_ts, row):
     }
 
 
-async def _status_deploy_semaphore_active(env):
-    """True only while deploy.sh owns the live deployment semaphore."""
+async def _status_deploy_semaphore_active(env, now=None):
+    """Suppress alerts during a bounded deploy and its activation grace.
+
+    D1 is shared by the retiring and newly activated Workers, unlike a build
+    timestamp environment variable. That makes this lifecycle the authority
+    for every health monitor during the rollout handoff.
+    """
     try:
         row = await d1_first(
             env,
-            "SELECT state FROM world_deploy_status WHERE singleton=1",
+            "SELECT state,started_at,finished_at "
+            "FROM world_deploy_status WHERE singleton=1",
         )
     except Exception:
         return False
-    return str((row or {}).get("state") or "") == "deploying"
+    if not row:
+        return False
+    if now is None:
+        now = int(Date.now())
+    try:
+        now = int(now)
+        started_at = int(row.get("started_at") or 0)
+        finished_at = int(row.get("finished_at") or 0)
+    except (TypeError, ValueError):
+        return False
+    state = str(row.get("state") or "")
+    if state == "deploying":
+        age = now - started_at
+        return started_at > 0 and 0 <= age < STATUS_DEPLOY_MAX_MS
+    if state == "ready":
+        age = now - finished_at
+        return finished_at > 0 and 0 <= age < STATUS_DEPLOY_GRACE_MS
+    return False
 
 
 async def _record_status_deploy_sample(env, now):
@@ -3013,7 +3041,7 @@ async def record_status_sample(env):
     # system so one failing check can't blank the rest of the page.
     await ensure_schema(env)
     now = int(Date.now())
-    if await _status_deploy_semaphore_active(env):
+    if await _status_deploy_semaphore_active(env, now):
         await _record_status_deploy_sample(env, now)
         return
     day_ts = (now // 86400000) * 86400000
@@ -4341,6 +4369,133 @@ async def site_referrer_leaderboard(env):
         cache_seconds=SITE_REFERRER_LEADERBOARD_TTL)
     await edge_cache_put(SITE_REFERRER_LEADERBOARD_CACHE_KEY, resp)
     return resp
+
+
+async def leaderboards_overview(env):
+    """One public leaderboard model shared by the website and World.
+
+    Source endpoints keep their own cache and privacy boundaries. This view
+    only normalizes their already-public rows so clients cannot drift on which
+    boards exist, how they are titled, or which value each board ranks.
+    """
+    # These four public sources are independent. Resolve them concurrently so
+    # the combined endpoint costs the slowest cache/database read, not the sum
+    # of all four, which keeps both the page and World island quick at startup.
+    network_response, referral_response, site_response, users_response = (
+        await asyncio.gather(
+            network_leaderboards(env),
+            referral_leaderboard(env),
+            site_referrer_leaderboard(env),
+            _account_users_directory(env, None),
+        )
+    )
+    network, referrals, sites, users = await asyncio.gather(
+        _response_json(network_response),
+        _response_json(referral_response),
+        _response_json(site_response),
+        _response_json(users_response),
+    )
+    activity_rows = []
+    for user in users.get("users", []):
+        if not isinstance(user, dict):
+            continue
+        name = clean_string(user.get("name", ""), MAX_NODE_NAME)
+        total_active_ms = _world_public_total_active_ms(
+            user.get("totalActiveMs", 0))
+        if not name or total_active_ms <= 0:
+            continue
+        activity_rows.append({
+            "name": name,
+            "totalActiveMs": total_active_ms,
+            "activityBucket": clean_string(
+                user.get("activityBucket", ""), 24),
+        })
+    activity_rows.sort(
+        key=lambda row: (-row["totalActiveMs"], row["name"].lower()))
+    activity_rows = activity_rows[:LEADERBOARD_LIMIT]
+
+    def board(board_id, title, subtitle, value_kind, rows, category):
+        return {
+            "id": board_id,
+            "title": title,
+            "subtitle": subtitle,
+            "valueKind": value_kind,
+            "category": category,
+            "rows": rows if isinstance(rows, list) else [],
+        }
+
+    window_hours = int(network.get("windowHours") or 48)
+    boards = [
+        board(
+            "activity", "World activity",
+            "Registered members by total public active time",
+            "duration", activity_rows, "community"),
+        board(
+            "uptime", "Mainnode uptime",
+            "Most minutes online · last %dh" % window_hours,
+            "minutes", network.get("uptime"), "network"),
+        board(
+            "node-storage", "Node storage",
+            "Public mirror bytes reported by each connected node",
+            "bytes", network.get("nodes"), "network"),
+        board(
+            "repos", "Top owners", "Most public repositories",
+            "repos", network.get("repos"), "repositories"),
+        board(
+            "mirrors", "Most mirrored",
+            "Repositories hosted under the most owners",
+            "mirrors", network.get("mirrors"), "repositories"),
+        board(
+            "hosted", "Longest hosted", "Repositories online the longest",
+            "age", network.get("hosted"), "repositories"),
+        board(
+            "largest", "Largest repositories",
+            "Most mirror data per repository",
+            "bytes", network.get("largest"), "repositories"),
+        board(
+            "data-hosted", "Most data hosted",
+            "Public mirror data hosted per owner",
+            "bytes", network.get("dataHosted"), "network"),
+        board(
+            "contributors", "Contributor activity",
+            "Issues + pull requests + commits",
+            "contributions", network.get("contributors"), "community"),
+        board(
+            "referrals", "Member referrals",
+            "Signups first; clicks break ties",
+            "referrals", referrals.get("board"), "community"),
+        board(
+            "referring-sites", "Referring websites",
+            "External sites sending visits to ForkMesh",
+            "visits", sites.get("board"), "community"),
+        board(
+            "funds-mainnodes", "Legacy funds · mainnodes",
+            "Historical reporting aggregate; not a balance",
+            "sol", network.get("fundsMainnodes"), "historical"),
+        board(
+            "funds-contributors", "Legacy funds · contributors",
+            "Historical reporting aggregate; not pending funds",
+            "sol", network.get("fundsContributors"), "historical"),
+        board(
+            "funds-projects", "Legacy funds · projects",
+            "Historical migration records; not current funding",
+            "sol", network.get("fundsProjects"), "historical"),
+    ]
+    return json_response(
+        {
+            "ok": True,
+            "observedAt": int(Date.now()),
+            "boards": boards,
+            "network": network,
+            "activity": {"board": activity_rows},
+            "referrals": referrals,
+            "sites": sites,
+            "fundsNotice": network.get("fundsNotice", ""),
+            "fundsState": network.get("fundsState", ""),
+            "fundsCustody": network.get("fundsCustody", ""),
+        },
+        cache_seconds=NETWORK_STATS_TTL,
+    )
 
 
 async def prune_site_referrers(env):
@@ -7710,6 +7865,12 @@ class _WorldCommunityRuntime:
     def method(self):
         return method_name(self.request) if self.request is not None else "GET"
 
+    def same_origin(self):
+        return bool(
+            self.request is not None
+            and _request_same_origin(self.request)
+        )
+
     def now(self):
         return int(Date.now())
 
@@ -8352,6 +8513,11 @@ async def world_build_board_handler(env, request, path):
     return await world_build_board.handle(runtime, path, [])
 
 
+async def world_link_kiosk_handler(env, request, path):
+    return await world_link_kiosk.handle(
+        _WorldCommunityRuntime(env, request), path)
+
+
 async def world_deploy_status_handler(env, request):
     if method_name(request) != "GET":
         return json_response(
@@ -8382,8 +8548,129 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-18"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-24"
 WORLD_QA_CARDS = (
+    ("world-repository-agent-live-terminals",
+     "Interactive repository agent terminals",
+     "As an Engineering team member, open a repository with a running Claude "
+     "or Codex session. Confirm its small robot screen shows the exact task, "
+     "status, mirror, and latest terminal line. Click it and confirm the exact "
+     "session opens with transcript plus a working secure follow-up prompt. "
+     "Repeat as a non-engineer and confirm the controls remain inaccessible."),
+    ("world-repository-record-view-pads",
+     "Repository list order, footer, and viewing pads",
+     "Open forkmesh/forkmesh in the World. Confirm the PR and Issue boards "
+     "each grow only as tall as the records on the current page, the newest "
+     "record is at the bottom, and the large open count plus pagination sit "
+     "below the list. Click the floor pad beneath each board and confirm the "
+     "World enters first-person at a distance and pitch that frame the complete "
+     "panel; walk away and confirm ordinary first-person controls still work."),
+    ("world-continuous-city-round", "Continuous World city foundation",
+     "Walk between the central nodes, repositories, users, billboards, and "
+     "Office without jumping a gap. Confirm every route rests on one finished "
+     "city foundation with grass and concrete textures and no visible seam."),
+    ("world-start-here-progress", "START HERE destination progress",
+     "Open a fresh World profile and use the START HERE map. Visit the users "
+     "circle, nodes, repository district, Office, and an exploration stop. "
+     "Confirm each bounded step checks once and remains checked after reload."),
+    ("world-roof-jump-seating", "Roof jump and universal seating",
+     "Ride to the Office roof, press Space, clear the perimeter, and confirm "
+     "the avatar returns outdoors with an attendance checkout. Click several "
+     "park benches and chairs and confirm each seats and releases the avatar."),
+    ("world-connected-beach-car", "Connected beach and driveable car",
+     "Follow the eastern road to the beach, drive the car both directions, "
+     "then dismount. Confirm sand, water, the local horizon, and seating load "
+     "without a remote request, invisible wall, or disconnected land."),
+    ("world-perimeter-bike-loop", "Perimeter bicycle route",
+     "Ride both bicycles around the complete outer loop. Confirm the lane "
+     "stays outside activity areas, remains on solid land, and reconnects "
+     "without a narrow bridge or collision stop."),
+    ("world-billboard-circle", "Circular public billboard layout",
+     "Visit the billboard district from the center and perimeter. Confirm all "
+     "public boards form one readable tangent circle, only one leaderboard "
+     "panel exists, and no obsolete center monument remains."),
+    ("world-github-dark-system", "Shared GitHub-dark World controls",
+     "Open the map, settings, account, repository detail, Office task, and "
+     "notice panels. Confirm they share the same dark surfaces, borders, "
+     "button radii, focus states, and readable contrast."),
+    ("world-local-daylight-textures", "Local daylight and optimized textures",
+     "Compare the World at daytime and nighttime or simulate the local clock. "
+     "Confirm sky and sun follow local time, chest time is local, organization "
+     "stars render, and grass, path, and beach textures load from local WebP."),
+    ("world-node-delete-alias-regression", "Canonical World node deletion",
+     "As is_admin, delete a disposable cabinet whose visible machine name, "
+     "account, and node ID differ. Confirm the API resolves the canonical node, "
+     "removes only that cabinet and owner link, and plays the removal effect."),
+    ("world-admin-member-detail-email-state",
+     "Admin member detail and email state",
+     "Open a registered member from their World avatar. Confirm the side "
+     "panel always shows either a green VERIFIED EMAIL check or a red EMAIL "
+     "NOT VERIFIED mark. As is_admin, select Open admin user detail and "
+     "confirm the secret admin console opens directly to only that user's "
+     "record with prefilled password-reset and verification tools. Repeat as "
+     "a non-admin and confirm the link is absent."),
+    ("world-repository-split-panels-agent-dock",
+     "Split repository work panels and agent dock",
+     "Open forkmesh/forkmesh in the World. Confirm pull requests occupy the "
+     "left panel and issues the right panel, each uses one 25-record column, "
+     "shows a star-sized OPEN count, and only bottom controls contain Prev, "
+     "Next, page, and range. Page each side independently and open one card "
+     "from each. Confirm the "
+     "repository name is part of the angled commit-activity pedestal. While "
+     "an Engineering-authorized Claude or Codex session runs for this repo, "
+     "confirm one compact 45-degree robot screen appears in front with its "
+     "provider, live state, task snapshot, and target node; confirm a "
+     "non-Engineering member sees no agent terminal."),
+    ("world-object-click-keyboard-layout", "Click-selected World object editing",
+     "Click a movable Town object and confirm a restrained mint outline appears "
+     "while its related information opens in the side panel. As an is_admin "
+     "user, use all four arrow keys and confirm they nudge the selected object "
+     "relative to the camera; press R and Shift+R to rotate both ways. Confirm "
+     "the placement persists in a second browser. Drag the camera and use the "
+     "mouse wheel to confirm neither gesture moves or rotates the object."),
+    ("world-member-click-detail", "Clickable World member information",
+     "Click the body or chest of your own avatar and two other visible users, "
+     "including one inside the Office. Confirm a subtle blue outline follows "
+     "the selected avatar and the side panel shows the privacy-filtered member, "
+     "status, verified-email state, public teams, activity, nodes, and "
+     "Fediverse information. Confirm private IP and full User-Agent never "
+     "appear in this general member panel."),
+    ("world-admin-node-delete-machine-name", "Admin World node deletion",
+     "As is_admin, open a mirror cabinet whose operator account differs from "
+     "its machine name. Confirm the danger zone asks for DELETE plus the mirror "
+     "machine name, rejects a mismatched confirmation, and deletes only after "
+     "the browser confirmation. Confirm the cabinet list force-refreshes and "
+     "the removed mirror disappears; verify a non-admin sees no delete form."),
+    ("world-annotated-cardinal-districts", "Cardinal World district layout",
+     "From an overhead view confirm exactly four broad paved routes leave the "
+     "central live-node plaza. Walk each route and confirm its rounded join is "
+     "seamless: east reaches every fully expanded repository, west reaches all "
+     "bulletins and boards, south reaches the member/campfire circle, and north "
+     "reaches the Office. Confirm no mirror cabinet moved out of the center and "
+     "that old saved board coordinates do not pull a board back into town."),
+    ("world-flagship-always-expanded", "Flagship repository opens without mirror delay",
+     "Open a fresh World tab with normal network throttling. Confirm the "
+     "forkmesh/forkmesh repository wheel expands as soon as its tree arrives "
+     "and never collapses to a flat MIRRORS SYNCING disc while mirror status "
+     "metadata converges. Confirm files remain clickable after the mirror "
+     "details finish loading."),
+    ("world-avatar-identity-refresh", "Immediate avatar flags and verified pin",
+     "Join from a newly verified account with country sharing enabled. From a "
+     "second World tab, confirm its country flag appears without reloading and "
+     "a small green verified check pin is visible on the avatar front. Disable "
+     "country sharing and confirm the country is removed without exposing an "
+     "email address."),
+    ("world-unique-uploaded-faces", "Unique generated and uploaded avatar faces",
+     "Compare several users who have no account photo and confirm each gets a "
+     "stable, visibly different generated face after reload. In World settings "
+     "upload a JPEG, WebP, or PNG and confirm it is center-cropped, reported as "
+     "at most 128px/64 KiB, replaces the generated face, and appears in the "
+     "top-right account button at the same size as neighboring controls."),
+    ("world-cabinet-side-layout", "Cabinet operational and agent side layout",
+     "Walk around a live mirror cabinet. Confirm Actions runs face the "
+     "operational walkway, server information is on the opposite face, Claude "
+     "tasks appear only on the left side, and Codex tasks only on the right. "
+     "Open each panel and confirm its existing authorized detail action works."),
     ("world-connected-mixed-landscape", "Connected city and woodland landscape",
      "Walk from Town Square to the repository district and Office. Confirm "
      "both routes are broad continuous pieces of land with no narrow bridge "
@@ -8435,7 +8722,7 @@ WORLD_QA_CARDS = (
     ("mirror-actions-cabinet", "Mirror cabinet Actions runs",
      "Sign in as a repository owner or organization writer and walk behind "
      "the active mirror cabinet. Confirm recent Actions runs show running, "
-     "done, or error plus a bounded redacted log tail. Click the rear panel "
+     "done, or error plus a bounded redacted log tail. Click the Actions face "
      "and confirm the full authorized run list opens. Repeat without write "
      "access and confirm no private run or log data appears."),
     ("executive-office-floor", "Executive Office floor",
@@ -8991,7 +9278,7 @@ def _clean_world_saved_view(raw, now):
     if (
         any(not math.isfinite(value) for value in (
             x, y, z, heading, yaw, pitch, zoom))
-        or abs(x) > 100 or abs(y) > 100 or abs(z) > 100
+        or abs(x) > 620 or abs(y) > 100 or abs(z) > 620
         or abs(heading) > math.pi or abs(yaw) > math.pi * 2
         or abs(pitch) > math.pi / 2 or not 0.2 <= zoom <= 8
     ):
@@ -9623,8 +9910,16 @@ SCHEMA_ALTER_STATEMENTS = [
        ADD COLUMN title TEXT NOT NULL DEFAULT ''
        CHECK (length(title) <= 160)""",
     "ALTER TABLE pull_inbox ADD COLUMN submitter_bi TEXT",
+    "ALTER TABLE pull_inbox ADD COLUMN claimed_by_bi TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE pull_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE pull_inbox ADD COLUMN mirrored_by_bi TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE pull_inbox ADD COLUMN mirrored_at INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE commit_inbox ADD COLUMN submitter_bi TEXT",
     "ALTER TABLE discussion_inbox ADD COLUMN submitter_bi TEXT",
+    "ALTER TABLE discussion_inbox ADD COLUMN claimed_by_bi TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE discussion_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE discussion_inbox ADD COLUMN mirrored_by_bi TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE discussion_inbox ADD COLUMN mirrored_at INTEGER NOT NULL DEFAULT 0",
     # Raw User-Agent of each release download, shown in the admin list (migration 0034).
     "ALTER TABLE release_downloads ADD COLUMN ua TEXT",
     # Operator-settable flag granting a user access to the /outreach console
@@ -13927,6 +14222,7 @@ async def _account_public_payload(
     }
     payload.update(social)
     payload.update(_account_profile_fields(rec))
+    payload.update(_account_world_client_fields(rec))
     if is_admin:
         admin_path = _admin_path(env)
         if admin_path:
@@ -13967,6 +14263,9 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         "status": rec.get("status", "active"),
         "avatarPng": rec.get("avatar_png", ""),
         "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
+        # Public boolean only; the email address itself never enters the
+        # directory or World. It drives the verified pin on the avatar front.
+        "emailVerified": bool(rec.get("email_verified")),
         "createdAt": rec.get("created_at", 0),
         "kind": "user",
         "nodes": _owned_nodes(rec),
@@ -14648,10 +14947,14 @@ async def world_admin_delete_node_handler(env, request):
             {"error": "not_admin"}, status=403,
             cache_control="no-store, max-age=0, must-revalidate")
     target = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    requested_target = target
+    node_id = clean_string(data.get("nodeId", ""), 120)
+    machine_name = clean_string(
+        data.get("machineName", ""), MAX_NODE_NAME).lower()
     confirmation = clean_string(data.get("confirmation", ""), 128)
     if not valid_node_name(target):
         return json_response({"error": "invalid_node_name"}, status=400)
-    required = "DELETE " + target
+    required = "DELETE " + requested_target
     if confirmation != required:
         return json_response(
             {"error": "confirmation_mismatch",
@@ -14665,7 +14968,33 @@ async def world_admin_delete_node_handler(env, request):
     node_row = await d1_first(
         env, "SELECT node_bi FROM nodes WHERE node_bi=?", target_bi)
     if not record or not node_row:
+        # Public mirror catalogs distinguish an operator account name, a
+        # machine label, and a cryptographic node id. Older World panels used
+        # the machine label as if it were the account key, so deletion could
+        # fail with node_not_found even while the cabinet was visibly online.
+        # Resolve either bounded public identifier back to the canonical node
+        # row, then perform every destructive operation on that canonical key.
+        resolved = await d1_first(
+            env,
+            "SELECT node_bi,name FROM nodes "
+            "WHERE lower(name) IN (?,?) OR pubkey=? LIMIT 1",
+            requested_target, machine_name, node_id)
+        canonical = clean_string(
+            (resolved or {}).get("name", ""), MAX_NODE_NAME).lower()
+        if resolved and canonical and valid_node_name(canonical):
+            resolved_bi, resolved_record = await _account_row(env, canonical)
+            if resolved_record and resolved_bi == resolved.get("node_bi"):
+                target = canonical
+                target_bi = resolved_bi
+                record = resolved_record
+                node_row = resolved
+    if not record or not node_row:
         return json_response({"error": "node_not_found"}, status=404)
+    if target == actor or target in ("forkmesh", "forkmesh-mainnode"):
+        await _audit_sensitive_action(
+            env, actor, "world.node_delete", "node", target, "denied",
+            {"reason": "protected_node"})
+        return json_response({"error": "protected_node"}, status=409)
     if await _is_admin(env, target):
         await _audit_sensitive_action(
             env, actor, "world.node_delete", "node", target, "denied",
@@ -23995,6 +24324,11 @@ async def accounts_handler(env, request):
             env, rec.get("name", name), viewer)
         payload = {**payload, "social": social, **social}
         payload = {**payload, **_account_profile_fields(rec)}
+        # The account explicitly controls these three coarse World fields.
+        # Including them in this no-store/public profile lookup lets a newly
+        # arrived avatar paint its flag immediately instead of waiting for the
+        # next directory-cache cycle.
+        payload = {**payload, **_account_world_client_fields(rec)}
         if cacheable_guest:
             resp = json_response(payload, cache_seconds=60)
             await edge_cache_put(lookup_cache_key, resp)
@@ -24301,32 +24635,13 @@ async def _ap_repo_is_official_actor(env, owner, repo):
 
 
 async def _ap_prune_actor_inventory(env):
-    # Old deployments minted an instance actor and accepted remote-clone
-    # mirrors as repository actors. Reconcile the small local actor inventory
-    # on schema startup so the admin table reflects only official repos.
-    rows = await d1_all(
-        env, "SELECT actor_bi, kind, data FROM ap_actors")
-    for row in rows or []:
-        actor_bi = str(row.get("actor_bi") or "")
-        kind = str(row.get("kind") or "")
-        rec = await decrypt_row(env, row.get("data"))
-        handle = str((rec or {}).get("handle") or "").lower()
-        parsed = ap.split_handle(handle)
-        keep = (
-            kind == AP_ACTOR_REPO
-            and bool(parsed)
-            and parsed[0] != "user"
-            and await _ap_repo_is_official_actor(
-                env, parsed[1], parsed[2])
-        )
-        if keep or not actor_bi:
-            continue
-        await d1_run(
-            env, "DELETE FROM ap_followers WHERE actor_bi=?", actor_bi)
-        await d1_run(
-            env, "DELETE FROM ap_objects WHERE actor_bi=?", actor_bi)
-        await d1_run(
-            env, "DELETE FROM ap_actors WHERE actor_bi=?", actor_bi)
+    # Actor visibility is enforced by the public resolution/federation gates,
+    # not by erasing the durable social graph during schema startup. Catalog
+    # records and org aliases can be temporarily unavailable or misclassified;
+    # deleting here previously turned that transient state into permanent loss
+    # of followers, actors, signing identities, and posts. Keep this hook for
+    # callers from older deployments, but make reconciliation non-destructive.
+    return
 
 
 async def _ap_repo_federates(env, owner, repo):
@@ -25527,6 +25842,193 @@ async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
             queued = True
     if queued:
         await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
+
+
+async def world_profile_social_handler(env, request):
+    """Authenticated self-profile social controls used by the World drawer.
+
+    The follower list exposes only the same active, non-private public avatar
+    fields used elsewhere in the World. Publishing writes the Note to the
+    user's durable ActivityPub object collection before attempting delivery,
+    so a temporarily unavailable remote inbox cannot lose the update.
+    """
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            extra_headers={"allow": "POST"})
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    account_bi, account = await _account_session_record(env, request, data)
+    if not account_bi or not account:
+        return json_response({"error": "invalid_session"}, status=401)
+    name = clean_string(
+        account.get("name", ""), MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(name):
+        return json_response({"error": "invalid_session"}, status=401)
+
+    action = clean_string(data.get("action", "load"), 24).strip().lower()
+    if action == "load":
+        rows = await d1_all(
+            env,
+            "SELECT follower_name FROM profile_follows "
+            "WHERE target_bi=? ORDER BY created_at DESC LIMIT 24",
+            account_bi)
+        followers = []
+        seen = set()
+        for row in rows or []:
+            follower_name = clean_string(
+                row.get("follower_name", ""), MAX_NODE_NAME
+            ).strip().lower()
+            if not valid_node_name(follower_name) or follower_name in seen:
+                continue
+            seen.add(follower_name)
+            _, follower = await _account_row(env, follower_name)
+            if (
+                not follower
+                or follower.get("status") != "active"
+                or bool(follower.get("profile_private"))
+            ):
+                continue
+            followers.append({
+                "name": follower_name,
+                "avatarPng": follower.get("avatar_png", ""),
+            })
+        social = await _account_social_counts(env, name)
+        return json_response({
+            "ok": True,
+            "followers": followers,
+            "followerCount": social["followers"],
+        }, cache_control="no-store")
+
+    if action != "publish":
+        return json_response({"error": "invalid_action"}, status=400)
+    if not await _ap_enabled(env):
+        return _ap_disabled_response()
+    if not await _ap_user_federates(env, name):
+        return json_response({"error": "profile_not_public"}, status=403)
+
+    text = clean_string(data.get("text", ""), 500).strip()
+    image_data = clean_string(
+        data.get("imageData", ""), ap.MAX_NOTE_IMAGE_BYTES * 2).strip()
+    alt_text = clean_string(data.get("altText", ""), 420).strip()
+    if not text and not image_data:
+        return json_response({"error": "empty_update"}, status=400)
+
+    images = []
+    if image_data:
+        _unused, images = ap.extract_body_images(
+            "![world-selfie](%s)" % image_data, max_images=1)
+        if not images:
+            return json_response({"error": "invalid_or_large_image"}, status=400)
+        images[0]["name"] = alt_text or "A selfie from ForkMesh World."
+
+    origin = _ap_origin(env, request)
+    actor = await _ap_local_actor(env, AP_ACTOR_USER, name, create=True)
+    actor_bi = actor.get("actorBi") if actor else ""
+    if not actor or not actor_bi:
+        return json_response({"error": "actor_unavailable"}, status=503)
+
+    # Keep accidental double-clicks bounded without making the composer feel
+    # sluggish. This count is over encrypted objects' public timestamps only.
+    now = int(Date.now())
+    recent = await d1_first(
+        env,
+        "SELECT COUNT(*) AS n FROM ap_objects "
+        "WHERE actor_bi=? AND published>=?",
+        actor_bi, now - 60 * 1000)
+    if int((recent or {}).get("n", 0) or 0) >= 5:
+        return json_response({"error": "publish_rate_limited"}, status=429)
+
+    actor_url = _ap_actor_url(origin, AP_ACTOR_USER, name)
+    object_uuid = _ap_uuid()
+    object_url = origin + "/ap/o/" + object_uuid
+    web_url = origin + "/@" + quote(name)
+    attachments = []
+    for index, image in enumerate(images):
+        item = ap.image_object(
+            "%s/media/%d" % (object_url, index),
+            media_type=image["mediaType"])
+        item["name"] = image.get("name", "")
+        attachments.append(item)
+    note = ap.note_doc(
+        object_url,
+        actor_url,
+        actor_url + "/followers",
+        ap.note_html_from_text(text),
+        now,
+        web_url=web_url,
+        attachments=attachments,
+    )
+    context_bi = await blind_index(
+        env, "ap-context:user-update:" + name + ":" + object_uuid)
+    await d1_run(
+        env,
+        "INSERT INTO ap_objects (object_uuid, actor_bi, context_bi, data,"
+        " published) VALUES (?,?,?,?,?)",
+        object_uuid,
+        actor_bi,
+        context_bi,
+        await encrypt_row(env, {
+            "note": note,
+            "context": {
+                "kind": "user-update",
+                "author": name,
+                "key": object_uuid,
+            },
+            "media": images,
+        }),
+        now,
+    )
+
+    followers = await d1_all(
+        env,
+        "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
+        actor_bi)
+    body_str = json.dumps(ap.create_activity(note))
+    out_data = await encrypt_row(env, {
+        "body": body_str,
+        "actorKind": AP_ACTOR_USER,
+        "actorHandle": name,
+        "actorUrl": actor_url,
+    })
+    queued = 0
+    seen_inboxes = set()
+    for follower in followers or []:
+        inbox = (
+            str(follower.get("shared_inbox") or "").strip()
+            or str(follower.get("inbox") or "").strip()
+        )
+        if not inbox or inbox in seen_inboxes:
+            continue
+        seen_inboxes.add(inbox)
+        await d1_run(
+            env,
+            "INSERT INTO ap_outbox (inbox, data, attempts, next_ts, created_at)"
+            " VALUES (?,?,0,?,?)",
+            inbox, out_data, now, now)
+        queued += 1
+
+    await _audit_sensitive_action(
+        env,
+        name,
+        "world.activitypub.publish",
+        "activitypub_note",
+        object_uuid,
+        details={
+            "hasImage": bool(images),
+            "queuedDeliveries": queued,
+        },
+    )
+    if queued:
+        await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
+    return json_response({
+        "ok": True,
+        "published": True,
+        "objectUrl": object_url,
+        "queuedDeliveries": queued,
+    }, status=201, cache_control="no-store")
 
 
 # --- Inbound: the shared/actor inbox --------------------------------------------
@@ -29368,6 +29870,56 @@ async def _materialize_issue_inbox_on_mirror(
     return count
 
 
+async def _claim_collaboration_inbox_on_mirror(
+        env, table, repo_bi, signing_key):
+    """Lease unmaterialized PR/discussion rows to one approved mirror."""
+    if table not in ("pull_inbox", "discussion_inbox") or not signing_key:
+        return ""
+    claimant_bi = await blind_index(
+        env, "collaboration-inbox-claim:" + table + ":" + signing_key)
+    now = int(Date.now())
+    await d1_run(
+        env,
+        "UPDATE %s SET claimed_by_bi=?, claim_expires_at=? "
+        "WHERE repo_bi=? AND mirrored_at=0 AND "
+        "(claimed_by_bi='' OR claim_expires_at<=? OR claimed_by_bi=?)" % table,
+        claimant_bi, now + ISSUE_INBOX_CLAIM_TTL_MS, repo_bi, now,
+        claimant_bi,
+    )
+    return claimant_bi
+
+
+async def _materialize_collaboration_inbox_on_mirror(
+        env, request, table, repo_bi, claimant_bi, mirror_node):
+    """Mark exact PR/discussion rows browsable without consuming source sync."""
+    if table not in ("pull_inbox", "discussion_inbox"):
+        return 0
+    ids = _drain_ids_from_request(request)
+    if not ids or not claimant_bi or not mirror_node:
+        return 0
+    marks = ",".join("?" for _ in ids)
+    mirror_bi = await blind_index(
+        env, "collaboration-mirror:" + table + ":" + mirror_node)
+    row = await d1_first(
+        env,
+        "SELECT COUNT(*) AS c FROM %s WHERE repo_bi=? "
+        "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0"
+        % (table, marks),
+        repo_bi, *ids, claimant_bi,
+    )
+    count = int((row or {}).get("c") or 0)
+    if count:
+        await d1_run(
+            env,
+            "UPDATE %s SET mirrored_by_bi=?,mirrored_at=?,"
+            "claimed_by_bi='',claim_expires_at=0 WHERE repo_bi=? "
+            "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0"
+            % (table, marks),
+            mirror_bi, int(Date.now()), repo_bi, *ids, claimant_bi,
+        )
+    return count
+
+
 async def _drain_issue_inbox(env, request, repo_bi, claimant_bi=""):
     """Ack (delete) the exact issue-inbox rows named by ?ids=, returning how many
     were removed, and record the drain in inbox_drain_log. Rows the node did not
@@ -29696,6 +30248,7 @@ async def pulls_handler(env, request, owner, repo):
                                      repo_web_href(owner, repo))
             await subscribe_thread(env, owner, repo, "pull", number, actor)
             await notify_repo_host(env, owner, repo, "pulls")
+            await notify_repo_mirrors(env, owner, repo, "pulls")
             if event.get("type") in ("comment", "review"):
                 await _best_effort_inbox_side_effect(_ap_publish_repo_event(
                     env, request, owner, repo, "pull", event.get("type"),
@@ -29754,6 +30307,7 @@ async def pulls_handler(env, request, owner, repo):
         await notify_mentions(env, owner, repo, actor, title, description,
                               repo_web_href(owner, repo), "pull")
         await notify_repo_host(env, owner, repo, "pulls")
+        await notify_repo_mirrors(env, owner, repo, "pulls")
         # Badge (adhoc #44): render the PR's visual fingerprint from the
         # signed patch and attach it to the federated note as its lead image.
         # Best-effort — a badge failure must never block the submission.
@@ -29776,18 +30330,68 @@ async def pulls_handler(env, request, owner, repo):
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
-        if not await _authorize_repo_inbox_owner(
-                env, request, owner, repo):
-            return json_response({"error": "unauthorized"}, status=401)
-        rows = await d1_all(
-            env, "SELECT data FROM pull_inbox WHERE repo_bi=? ORDER BY id ASC",
-            repo_bi,
-        )
-        pending = [rec for rec in
-                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
-        return json_response({"ok": True, "pending": pending})
+        mirror_intake = (
+            parse_qs(urlparse(request.url).query).get("mirror", [""])[0]
+            == "1")
+        mirror_node = ""
+        if mirror_intake:
+            signing_key, mirror_node = (
+                await _authorized_mirror_issue_signing_key(
+                    env, request, owner, repo))
+            claimant_bi = await _claim_collaboration_inbox_on_mirror(
+                env, "pull_inbox", repo_bi, signing_key)
+            if not claimant_bi:
+                return json_response({"error": "unauthorized"}, status=401)
+            rows = await d1_all(
+                env,
+                "SELECT id,data FROM pull_inbox WHERE repo_bi=? "
+                "AND claimed_by_bi=? AND mirrored_at=0 ORDER BY id ASC",
+                repo_bi, claimant_bi,
+            )
+        else:
+            if not await _authorize_repo_inbox_owner(
+                    env, request, owner, repo):
+                return json_response({"error": "unauthorized"}, status=401)
+            rows = await d1_all(
+                env,
+                "SELECT id,data FROM pull_inbox WHERE repo_bi=? ORDER BY id ASC",
+                repo_bi,
+            )
+        pending = []
+        for row in rows:
+            rec = await decrypt_row(env, row["data"])
+            if rec:
+                rec["id"] = row.get("id")
+                pending.append(rec)
+        return json_response({
+            "ok": True,
+            "pending": pending,
+            "mirrorIntake": mirror_intake,
+            "mirror": mirror_node,
+        })
 
     if method == "DELETE":
+        mirror_intake = (
+            parse_qs(urlparse(request.url).query).get("mirror", [""])[0]
+            == "1")
+        if mirror_intake:
+            signing_key, mirror_node = (
+                await _authorized_mirror_issue_signing_key(
+                    env, request, owner, repo))
+            claimant_bi = await blind_index(
+                env, "collaboration-inbox-claim:pull_inbox:" + signing_key
+            ) if signing_key else ""
+            if not claimant_bi:
+                return json_response({"error": "unauthorized"}, status=401)
+            materialized = await _materialize_collaboration_inbox_on_mirror(
+                env, request, "pull_inbox", repo_bi, claimant_bi,
+                mirror_node)
+            return json_response({
+                "ok": True,
+                "drained": 0,
+                "materialized": materialized,
+                "retainedForSource": True,
+            })
         if not await _authorize_repo_inbox_owner(
                 env, request, owner, repo):
             return json_response({"error": "unauthorized"}, status=401)
@@ -29914,6 +30518,7 @@ async def discussions_handler(env, request, owner, repo):
         await notify_mentions(env, owner, repo, actor, title, event.get("body", ""),
                               repo_web_href(owner, repo), "discussion", number=number)
         await notify_repo_host(env, owner, repo, "discussions")
+        await notify_repo_mirrors(env, owner, repo, "discussions")
         if event.get("type") in ("open", "comment"):
             await _best_effort_inbox_side_effect(_ap_publish_repo_event(
                 env, request, owner, repo, "discussion", event.get("type"),
@@ -29922,18 +30527,73 @@ async def discussions_handler(env, request, owner, repo):
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
-        if not await _authorize_owner(env, request, owner):
-            return json_response({"error": "unauthorized"}, status=401)
-        rows = await d1_all(
-            env, "SELECT data FROM discussion_inbox WHERE repo_bi=? ORDER BY id ASC",
-            repo_bi,
-        )
-        pending = [rec for rec in
-                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
-        return json_response({"ok": True, "pending": pending})
+        mirror_intake = (
+            parse_qs(urlparse(request.url).query).get("mirror", [""])[0]
+            == "1")
+        mirror_node = ""
+        if mirror_intake:
+            signing_key, mirror_node = (
+                await _authorized_mirror_issue_signing_key(
+                    env, request, owner, repo))
+            claimant_bi = await _claim_collaboration_inbox_on_mirror(
+                env, "discussion_inbox", repo_bi, signing_key)
+            if not claimant_bi:
+                return json_response({"error": "unauthorized"}, status=401)
+            rows = await d1_all(
+                env,
+                "SELECT id,data FROM discussion_inbox WHERE repo_bi=? "
+                "AND claimed_by_bi=? AND mirrored_at=0 ORDER BY id ASC",
+                repo_bi, claimant_bi,
+            )
+        else:
+            signing_key = await _authorized_repo_inbox_signing_key(
+                env, request, owner, repo)
+            if not signing_key:
+                return json_response({"error": "unauthorized"}, status=401)
+            rows = await d1_all(
+                env,
+                "SELECT id,data FROM discussion_inbox "
+                "WHERE repo_bi=? ORDER BY id ASC",
+                repo_bi,
+            )
+        pending = []
+        for row in rows:
+            rec = await decrypt_row(env, row["data"])
+            if rec:
+                rec["id"] = row.get("id")
+                pending.append(rec)
+        return json_response({
+            "ok": True,
+            "pending": pending,
+            "mirrorIntake": mirror_intake,
+            "mirror": mirror_node,
+        })
 
     if method == "DELETE":
-        if not await _authorize_owner(env, request, owner):
+        mirror_intake = (
+            parse_qs(urlparse(request.url).query).get("mirror", [""])[0]
+            == "1")
+        if mirror_intake:
+            signing_key, mirror_node = (
+                await _authorized_mirror_issue_signing_key(
+                    env, request, owner, repo))
+            claimant_bi = await blind_index(
+                env,
+                "collaboration-inbox-claim:discussion_inbox:" + signing_key,
+            ) if signing_key else ""
+            if not claimant_bi:
+                return json_response({"error": "unauthorized"}, status=401)
+            materialized = await _materialize_collaboration_inbox_on_mirror(
+                env, request, "discussion_inbox", repo_bi, claimant_bi,
+                mirror_node)
+            return json_response({
+                "ok": True,
+                "drained": 0,
+                "materialized": materialized,
+                "retainedForSource": True,
+            })
+        if not await _authorize_repo_inbox_signing_key(
+                env, request, owner, repo):
             return json_response({"error": "unauthorized"}, status=401)
         await d1_run(env, "DELETE FROM discussion_inbox WHERE repo_bi=?", repo_bi)
         return json_response({"ok": True})
@@ -29962,8 +30622,10 @@ async def repo_pending_counts_handler(env, request, owner, repo):
         env,
         "SELECT 'issues' AS k, COUNT(*) AS c FROM issue_inbox "
         "WHERE repo_bi=? AND mirrored_at=0 "
-        "UNION ALL SELECT 'pulls', COUNT(*) FROM pull_inbox WHERE repo_bi=? "
-        "UNION ALL SELECT 'discussions', COUNT(*) FROM discussion_inbox WHERE repo_bi=? "
+        "UNION ALL SELECT 'pulls', COUNT(*) FROM pull_inbox "
+        "WHERE repo_bi=? AND mirrored_at=0 "
+        "UNION ALL SELECT 'discussions', COUNT(*) FROM discussion_inbox "
+        "WHERE repo_bi=? AND mirrored_at=0 "
         "UNION ALL SELECT 'commits', COUNT(*) FROM commit_inbox WHERE repo_bi=?",
         repo_bi, repo_bi, repo_bi, repo_bi,
     )
@@ -34200,7 +34862,8 @@ def _render_install_diag_overview(summary):
     )
 
 
-async def _render_table_view(env, table, csrf_field="", admin_query=""):
+async def _render_table_view(
+        env, table, csrf_field="", admin_query="", user_filter=""):
     # Generic "show all rows" view for one D1 table. The encrypted `data` column
     # (users/nodes/repos/inboxes store an AES-GCM blob there) is decrypted in place
     # so the admin can actually read it. The table name is validated by the
@@ -34212,23 +34875,52 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
     # every table — including the error log, which reads from these rows.
     if table in ADMIN_HIDDEN_TABLES:
         return '<div class="empty">This table is restricted.</div>'
-    rows = await d1_all(
-        env, "SELECT rowid AS _rowid_, * FROM " + table
-        + " ORDER BY rowid DESC LIMIT 500")
-    count_row = await d1_first(env, "SELECT COUNT(*) AS n FROM " + table)
-    total = int((count_row or {}).get("n", 0) or 0)
+    requested_user = (
+        clean_string(user_filter or "", MAX_NODE_NAME).strip().lower()
+        if table == "users" else ""
+    )
+    if requested_user:
+        requested_user_bi = await blind_index(env, requested_user)
+        rows = await d1_all(
+            env,
+            "SELECT rowid AS _rowid_, * FROM users "
+            "WHERE user_bi=? LIMIT 1",
+            requested_user_bi,
+        )
+        total = len(rows)
+    else:
+        rows = await d1_all(
+            env, "SELECT rowid AS _rowid_, * FROM " + table
+            + " ORDER BY rowid DESC LIMIT 500")
+        count_row = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM " + table)
+        total = int((count_row or {}).get("n", 0) or 0)
 
     # Admin tool: reset any user account's login password. Shown above the
     # users table; posts back to ?action=set_password (handled in _admin).
     prefix = ""
     if table == "users":
+        user_value = (
+            ' value="%s"' % _html_escape(requested_user)
+            if requested_user else ""
+        )
+        detail_heading = (
+            '<div class="title" id="user-detail">User detail · %s · '
+            '<a class="navlink" href="%s">Back to all users</a></div>'
+            % (
+                _html_escape(requested_user),
+                _admin_href(admin_query, table="users"),
+            )
+            if requested_user else ""
+        )
         prefix = (
+            detail_heading +
             '<div class="tools">'
             '<form method="post" action="%s" '
             'onsubmit="return confirm(\'Set a new login password for this '
             'account?\')">'
             + csrf_field +
-            '<input type="text" name="name" placeholder="user name" '
+            '<input type="text" name="name" placeholder="user name"%s '
             'autocomplete="off" required>'
             '<input type="password" name="password" '
             'placeholder="new password (min 8 chars)" minlength="8" required>'
@@ -34240,7 +34932,7 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             'onsubmit="return confirm(\'Resend the verification email for this '
             'account?\')">'
             + csrf_field +
-            '<input type="text" name="name" placeholder="user name" '
+            '<input type="text" name="name" placeholder="user name"%s '
             'autocomplete="off" required>'
             '<button type="submit">Resend verify email</button>'
             '</form>'
@@ -34248,8 +34940,12 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             'stored address; queues it for manual verification if email is not '
             'configured.</span>'
             '</div>'
-        ) % (_admin_href(admin_query, table="users", action="set_password"),
-             _admin_href(admin_query, table="users", action="resend_verify"))
+        ) % (
+            _admin_href(admin_query, table="users", action="set_password"),
+            user_value,
+            _admin_href(admin_query, table="users", action="resend_verify"),
+            user_value,
+        )
 
     if table == "install_diag":
         # Purpose-built anonymous install funnel + recent events, newest first.
@@ -36516,6 +37212,7 @@ def _https_mirror_merge_result(value, request):
         error = str(value.get("error") or "")
         if error not in {
             "merge_conflict", "pull_not_found", "pull_not_open",
+            "review_required",
             "stale_base", "stale_head", "stale_pull_metadata",
             "unsupported_pull",
         }:
@@ -38007,7 +38704,8 @@ class Default(WorkerEntrypoint):
                 self.env, active, None, csrf_field, admin_query)
         else:
             table_html = (await _render_table_view(
-                              self.env, active, csrf_field, admin_query)
+                              self.env, active, csrf_field, admin_query,
+                              params.get("user", [""])[0])
                           if active
                           else '<div class="empty">No tables found.</div>')
 
@@ -38167,6 +38865,10 @@ class Default(WorkerEntrypoint):
             return await world_social_posts_handler(self.env, request)
 
         if url.path in (
+                "/api/world/profile-social", "/api/world/profile-social/"):
+            return await world_profile_social_handler(self.env, request)
+
+        if url.path in (
                 "/api/world/satellites", "/api/world/satellites/"):
             return await world_satellites_handler(self.env, request)
 
@@ -38239,6 +38941,11 @@ class Default(WorkerEntrypoint):
         if url.path in (
                 "/api/world/build-board", "/api/world/build-board/"):
             return await world_build_board_handler(
+                self.env, request, url.path)
+
+        if url.path in (
+                "/api/world/link-kiosk", "/api/world/link-kiosk/"):
+            return await world_link_kiosk_handler(
                 self.env, request, url.path)
 
         if url.path in (
@@ -38410,6 +39117,8 @@ class Default(WorkerEntrypoint):
         # Public ranking boards (node uptime + repos per owner) for /network/.
         if url.path in ("/api/network/leaderboards", "/api/network/leaderboards/"):
             return await network_leaderboards(self.env)
+        if url.path in ("/api/leaderboards", "/api/leaderboards/"):
+            return await leaderboards_overview(self.env)
 
         # Referral-program board (clicks + signups per share link) for the
         # /referrals page and the World's referral leaderboard sign.
@@ -39731,6 +40440,14 @@ class ForkMeshCronWatchdog(DurableObject):
             # A heartbeat raced an already-dispatched alarm. Keep the newer
             # deadline instead of manufacturing an outage.
             await self.ctx.storage.setAlarm(deadline)
+            return
+        if await _status_deploy_semaphore_active(self.env, now):
+            # A Worker rollout can interrupt the cron runner long enough to
+            # trip this independent watchdog. Keep observing, but do not turn
+            # expected deployment handoff time into an incident. The shared
+            # semaphore also includes the bounded post-activation grace.
+            await self.ctx.storage.setAlarm(
+                now + CRON_WATCHDOG_GRACE_MS)
             return
 
         outage_started_at = int(

@@ -5,9 +5,36 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [x] Straighten the World “What we're building” cards, show the complete active task set, and add readable scope/status detail to every card.
+- [x] Size the World PR and Issue panels to their visible records, move open counts below the lists, put the newest record at the bottom, and add one-click first-person viewing pads.
+- [x] Stop signed-in mobile World pans from clearing or visually refreshing the WebGL scene.
+- [ ] Restore the cached spawn pose before scene hydration and keep Office travel attached to the avatar.
+- [x] Show each live repository agent task on its tiny terminal and open that exact engineering-only transcript with prompt and re-prompt controls when clicked.
+- [x] Join the World districts into one continuous city landscape with seamless concrete paths.
+- [x] Add a visible START HERE progress map from the users area to the centered mirror nodes.
+- [x] Make Space jump off the roof, check the user out on exit, and allow every chair or bench to seat a visitor.
+- [x] Add a connected driveable road, car, beach environment, water, horizon, and beach seating.
+- [x] Move the perimeter bike route outside activity areas while retaining two usable bicycles.
+- [x] Circle-align the public billboards, retain one leaderboard panel, and remove the obsolete center marker.
+- [x] Apply a shared GitHub-like interface system across World panels and controls.
+- [x] Add local daylight, stars, chest time, organization-level stars, and optimized local scene textures.
+- [x] Finish the canonical World node-delete resolution and cabinet-removal animation regression fix.
+- [x] Make the separate World PR and Issue panels single-column while retaining 25 records per independently paginated page.
+- [x] Show explicit verified/unverified email state in the World member panel and give `is_admin` viewers a direct, filtered admin user-detail link.
+- [x] Split the selected-repository World exhibit into left PR and right Issue panels with large open counts, bottom-only pagination, an angled named commit-activity pedestal, and compact per-repository live agent terminals.
+- [x] Replace World object dragging with click selection, a subtle selection highlight, automatic detail-panel opening, admin arrow-key nudging, and `R` rotation.
+- [x] Make every visible user avatar clickable, subtly highlight the selected person, and open their privacy-filtered member information in the side panel.
+- [x] Fix the `is_admin` World cabinet delete action to target the physical mirror name (not its operator account), report failures, and force-refresh cabinets after deletion.
+- [x] Apply the annotated World plan: four broad paved cardinal paths with curved joins; nodes in the center; every repository on the east island and always expanded; billboards on the west island; and the member/campfire circle on its own south island.
+- [x] Keep the flagship repository wheel expanded immediately and remove mirror-metadata render delay.
+- [x] Restore country flags immediately, add verified-email front pins, and keep privacy choices intact.
+- [x] Give every user a stable unique generated face plus a compact account-avatar upload override.
+- [x] Superseded: the initial combined repository work list was replaced by independent single-column PR and Issue panels.
+- [x] Show the signed-in user's uploaded avatar in the top-right control at the same size as neighboring buttons.
+- [x] Swap cabinet Actions/server-info faces and split Claude/Codex work onto opposite side panels.
 - [x] Consolidate aquarium feed, opaque/clear backdrop, and light controls into a clickable bottom-right tank panel.
 - [x] Represent every public user as a small deterministic fish, with active/recent fish in upper lanes and inactive fish near the bottom.
-- [x] Let platform admins drag any World object's visible base to move it, with handle-free right-drag / Shift-drag rotation.
+- [x] Superseded: initial handle-free drag layout control, now replaced by click selection plus keyboard nudge/rotation.
 - [x] Keep mirror2 visible as a live green World cabinet when its recent signed endpoint health proves the machine is reachable, while preserving blocked clone/integrity detail.
 - [x] Make live mirror cabinets use green for physical node liveness instead of conflating it with per-repository clone eligibility.
 - [x] Show the latest commit's relative age beside its hash in both live and catalog-backed Qt Mirror nodes rows.

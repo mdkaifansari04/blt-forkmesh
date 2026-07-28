@@ -300,6 +300,8 @@ def test_all_org_members_get_team_badges_but_only_admins_get_controls():
     assert "new THREE.PlaneGeometry(0.26, 0.09)" in badges
     assert "badge.rotation.y = -Math.PI / 2" in badges
     assert "badge.position.set(-0.148, 0.36 - index * 0.105, 0)" in badges
+    assert "forkmesh-avatar-organization-level-stars" in badges
+    assert '"★".repeat(organizationLevel)' in badges
     assert "setLocalOrgTeam," in SCENE
 
 

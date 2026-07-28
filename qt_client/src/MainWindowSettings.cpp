@@ -709,7 +709,7 @@ QWidget *MainWindow::buildSettingsSection()
     m_worldSpeechPairCodeEdit->setToolTip(
         "One-use capability. It expires in two minutes and is never saved.");
     m_worldSpeechPairButton =
-        new QPushButton(QStringLiteral("Open World + create code"));
+        new QPushButton(QStringLiteral("Create pairing code"));
     m_worldSpeechPairButton->setObjectName("ghostButton");
     m_worldSpeechPairButton->setCursor(Qt::PointingHandCursor);
     connect(m_worldSpeechPairButton, &QPushButton::clicked, this,
@@ -773,7 +773,7 @@ QWidget *MainWindow::buildSettingsSection()
     rebuildButtonCheck->setChecked(
         QSettings().value(kShowRebuildButtonSetting, false).toBool());
     rebuildButtonCheck->setToolTip(
-        "Adds a small rebuild & restart button beside Leaderboards (under the "
+        "Adds a small rebuild & restart button in the top navigation (under the "
         "avatar) for a fast local rebuild and relaunch. Off by default.");
     connect(rebuildButtonCheck, &QCheckBox::toggled, this, [this](bool enabled) {
         QSettings().setValue(kShowRebuildButtonSetting, enabled);

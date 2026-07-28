@@ -89,15 +89,16 @@ def test_office_exit_preserves_heading_instead_of_reversing_the_visitor():
     assert "Math.sin(player.rotation.y)" in leave
     assert "Math.cos(player.rotation.y)" in leave
     assert "cameraYaw = 0" not in leave
-    assert "cameraZoom = 1" in leave
+    assert "cameraZoom = OFFICE_EXIT_CAMERA_ZOOM" in leave
     assert "setCameraMode(\"third-person\", \"office-exit\")" in leave
 
 
 def test_repository_circle_uses_avatar_orbit_and_external_record_boards():
-    assert 'icon.scale.set(0.82, 0.82, 1)' in SCENE
-    assert "const orbitRadius = nodeRadius * 2.65" in SCENE
-    assert 'addRecordBoard(issues, "issue", 9.4' in SCENE
-    assert 'addRecordBoard(pulls, "pull", -9.4' in SCENE
+    assert 'icon.scale.set(1.14, 1.14, 1)' in SCENE
+    assert "const orbitRadius = 4.25" in SCENE
+    assert "const pullBoard = addRecordBoard(" in SCENE
+    assert 'pulls,\n      "pull",\n      -5.25,' in SCENE
+    assert 'issues,\n      "issue",\n      5.25,' in SCENE
     assert '"repository-create-button"' not in SCENE
     follower_texture = _function_body(SCENE, "repositoryFollowerIconTexture")
     assert "256, 256" in follower_texture
@@ -120,7 +121,10 @@ def test_repository_record_boards_show_verified_status_and_page_by_twenty_five()
         '"unavailable"',
     ):
         assert status in _function_body(SCENE, "repositoryPullReviewStatus")
-    assert "MOSTLY ${statusSummary.mostly.toUpperCase()}" in SCENE
+    assert "repositoryRecordCountTexture(" in SCENE
+    assert '"OPEN ISSUES"' in SCENE
+    assert '"OPEN PRS"' in SCENE
+    assert "repositoryRecordPageTexture(" in SCENE
     assert "function changeRepositoryRecordPage(kind, direction)" in SCENE
     assert (
         "`repository-${kind}-page-${direction < 0 ? \"prev\" : \"next\"}`"

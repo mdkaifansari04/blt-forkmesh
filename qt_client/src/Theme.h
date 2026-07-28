@@ -287,6 +287,20 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 /* Thin activity rail down the repo detail page's left edge (adhoc #357); its
    Code/Git items paint themselves (ActivityRailButton). */
 #repoActivityRail { background-color: #010409; border-right: 1px solid #30363d; }
+#appNavigationRail, #appNavigationRailContent {
+    background-color: #0d1117; border-right: 1px solid #30363d;
+}
+QPushButton[railUtility="true"] {
+    background: transparent; border: 1px solid transparent; border-radius: 6px;
+    color: #8b949e; padding: 0;
+}
+QPushButton[railUtility="true"]:hover,
+QPushButton[railUtility="true"]:checked {
+    background-color: #161b22; color: #e6edf3; border-color: #30363d;
+}
+#railItemLabel {
+    background: transparent; color: #8b949e; font-size: 8px; font-weight: 600;
+}
 #commitsList {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
 }
@@ -355,6 +369,9 @@ QPushButton#topNavButton {
 QPushButton#topNavButton:hover { background-color: #161b22; color: #e6edf3; }
 QPushButton#topNavButton:checked {
     background-color: #21262d; color: #e6edf3; border-color: #30363d;
+}
+QPushButton#topNavButton[railUtility="true"]:checked {
+    border-left: 2px solid #2ea043;
 }
 QPushButton#topNavButton[alert="true"] { color: #d29922; border-color: #9e6a03; }
 QPushButton#topNavButton[alert="true"]:checked {
@@ -1477,6 +1494,20 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #repoTabBar { border-bottom: 1px solid #d0d7de; }
 /* Thin activity rail down the repo detail page's left edge (adhoc #357). */
 #repoActivityRail { background-color: #f6f8fa; border-right: 1px solid #d0d7de; }
+#appNavigationRail, #appNavigationRailContent {
+    background-color: #ffffff; border-right: 1px solid #d0d7de;
+}
+QPushButton[railUtility="true"] {
+    background: transparent; border: 1px solid transparent; border-radius: 6px;
+    color: #656d76; padding: 0;
+}
+QPushButton[railUtility="true"]:hover,
+QPushButton[railUtility="true"]:checked {
+    background-color: #eaeef2; color: #1f2328; border-color: #d0d7de;
+}
+#railItemLabel {
+    background: transparent; color: #656d76; font-size: 8px; font-weight: 600;
+}
 #commitsList {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
 }
@@ -1572,6 +1603,9 @@ QPushButton#topNavButton {
 QPushButton#topNavButton:hover { background-color: #eaeef2; color: #1f2328; }
 QPushButton#topNavButton:checked {
     background-color: #eaeef2; color: #1f2328; border-color: #d0d7de;
+}
+QPushButton#topNavButton[railUtility="true"]:checked {
+    border-left: 2px solid #2ea043;
 }
 QPushButton#topNavButton[alert="true"] { color: #9a6700; border-color: #d4a72c; }
 QPushButton#topNavButton[alert="true"]:checked {

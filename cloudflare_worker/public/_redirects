@@ -19,6 +19,7 @@
 /reset-password /reset-password.html 200
 /mirror-payouts /mirror-payouts.html 200
 /referrals /referrals.html 200
+/leaderboards /leaderboards.html 200
 /outreach /outreach.html 200
 /security-report /security-report.html 200
 /docs /docs/index.html 200

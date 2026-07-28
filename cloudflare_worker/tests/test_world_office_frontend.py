@@ -824,6 +824,27 @@ def test_office_walkers_share_world_movement_tuning_and_heading():
         assert heading.search(body), f"{name} uses a different avatar heading"
 
 
+def test_shift_sprints_through_the_shared_collision_aware_movement_path():
+    scene = source(SCENE_PATH)
+    speed = function_body(scene, "movementSpeedForInput")
+    movement = function_body(scene, "movementInput")
+    key_down = function_body(scene, "handleKeyDown")
+    key_up = function_body(scene, "handleKeyUp")
+
+    assert "const PLAYER_SPRINT_MULTIPLIER = 2.6;" in scene
+    assert 'const SPRINT_KEYS = new Set(["ShiftLeft", "ShiftRight"]);' in scene
+    assert "input.sprinting ? PLAYER_SPRINT_MULTIPLIER : 1" in speed
+    assert 'keys.has("ShiftLeft") || keys.has("ShiftRight")' in movement
+    assert "SPRINT_KEYS.has(event.code)" in key_down
+    assert "SPRINT_KEYS.has(event.code)" in key_up
+    for name in (
+        "walkPlayer",
+        "walkOfficeLobbyPlayer",
+        "walkOfficeParticipant",
+    ):
+        assert "movementSpeedForInput(" in function_body(scene, name)
+
+
 def test_meeting_handoff_projects_the_live_player_out_of_collidable_furniture():
     scene = source(SCENE_PATH)
     enter = function_body(scene, "enterOfficeLobby")
@@ -1171,7 +1192,7 @@ def test_elevator_has_one_stable_car_glass_layer_and_idle_lobby_reflections():
     assert "logoReflectionIntervalMs" not in reflection
 
 
-def test_rooftop_has_glass_safety_barriers_and_office_jumping_is_disabled():
+def test_rooftop_has_glass_safety_barriers_and_explicit_exit_jump():
     scene = source(SCENE_PATH)
     assert 'const rooftop = officeFloorGroups.get("rooftop")' in scene
     assert 'const roofGlass = makeMaterial(THREE, "#d8ffff"' in scene
@@ -1194,8 +1215,9 @@ def test_rooftop_has_glass_safety_barriers_and_office_jumping_is_disabled():
         scene.index('if (event.code === "Space")'):
         scene.index('if (event.code === "KeyR"')
     ]
+    assert "const roofJumpStarted = beginOfficeRoofJump();" in jump
     assert 'officeSceneMode === "town"' in jump
-    assert "!officeCampusSurfaceContains(player.position.x, player.position.z)" in jump
+    assert "if (!roofJumpStarted && canJump)" in jump
 
 
 def test_walk_surfaces_and_every_floor_use_real_collision_constraints():

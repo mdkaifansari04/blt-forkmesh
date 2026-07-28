@@ -92,7 +92,11 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_issue_inbox_repo ON issue_inbox(repo_bi)",
     """CREATE TABLE IF NOT EXISTS pull_inbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
-        data TEXT NOT NULL)""",
+        data TEXT NOT NULL, submitter_bi TEXT,
+        claimed_by_bi TEXT NOT NULL DEFAULT '',
+        claim_expires_at INTEGER NOT NULL DEFAULT 0,
+        mirrored_by_bi TEXT NOT NULL DEFAULT '',
+        mirrored_at INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_pull_inbox_repo ON pull_inbox(repo_bi)",
     """CREATE TABLE IF NOT EXISTS commit_inbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
@@ -100,7 +104,11 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_commit_inbox_repo ON commit_inbox(repo_bi)",
     """CREATE TABLE IF NOT EXISTS discussion_inbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
-        data TEXT NOT NULL, submitter_bi TEXT)""",
+        data TEXT NOT NULL, submitter_bi TEXT,
+        claimed_by_bi TEXT NOT NULL DEFAULT '',
+        claim_expires_at INTEGER NOT NULL DEFAULT 0,
+        mirrored_by_bi TEXT NOT NULL DEFAULT '',
+        mirrored_at INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_discussion_inbox_repo ON discussion_inbox(repo_bi)",
     # Agent-session sync (website "Agents" tab, adhoc #182): the desktop app
     # pushes a full-replace snapshot of its running/finished Claude Code agent
@@ -2167,6 +2175,24 @@ SCHEMA_STATEMENTS = [
         last_url TEXT NOT NULL DEFAULT '')""",
     "CREATE INDEX IF NOT EXISTS idx_site_referrers_rank "
     "ON site_referrers(visits DESC, last_ts DESC)",
+    # Consented World lobby link submissions. URLs/account names live only in
+    # encrypted data; public score/range values are bounded (migration 0103).
+    """CREATE TABLE IF NOT EXISTS world_lobby_links (
+        link_id TEXT PRIMARY KEY,
+        account_bi TEXT NOT NULL,
+        url_bi TEXT NOT NULL,
+        data TEXT NOT NULL,
+        score INTEGER NOT NULL CHECK (score BETWEEN 0 AND 100),
+        potential_low INTEGER NOT NULL CHECK (potential_low >= 0),
+        potential_high INTEGER NOT NULL CHECK (
+            potential_high >= potential_low),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(account_bi, url_bi))""",
+    "CREATE INDEX IF NOT EXISTS idx_world_lobby_links_recent "
+    "ON world_lobby_links(created_at DESC, link_id DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_world_lobby_links_account "
+    "ON world_lobby_links(account_bi, created_at DESC)",
     # Aggregate-only reach for public blog posts (migration 0094). Unique
     # counts use a fixed 64-register HLL per slug; no visitor identifier or
     # digest is stored. Referrers retain only the normalized external host.

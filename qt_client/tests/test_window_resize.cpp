@@ -655,10 +655,10 @@ int main(int argc, char *argv[])
               QStringLiteral("retired Claude import cannot modify the clipboard"));
     }
 
-    // Plan §5.1: the desktop exposes a real local control-node surface and a
-    // main-navigation World portal. Navigate to the deferred page exactly as a
-    // user does, then verify that its controls exist before a session connects
-    // and that the Cloudflare credential input remains a password field.
+    // Plan §5.1: the desktop exposes a real local control-node surface. Navigate
+    // to the deferred page exactly as a user does, then verify that its controls
+    // exist before a session connects and that the Cloudflare credential input
+    // remains a password field.
     check(window.testControlNodeSectionIndex() == 14,
           QStringLiteral("local control node has a stable top-level section"));
     window.testShowControlNode();
@@ -688,10 +688,16 @@ int main(int argc, char *argv[])
     check(window.findChild<QTableWidget *>(
               QStringLiteral("controlPermissionsTable")) != nullptr &&
               window.findChild<QPushButton *>(
-                  QStringLiteral("controlManageHostsButton")) != nullptr &&
+                  QStringLiteral("controlManageHostsButton")) != nullptr,
+          QStringLiteral("control node exposes permissions and hosts"));
+    check(window.findChild<QPushButton *>(
+              QStringLiteral("controlOpenWorldButton")) == nullptr &&
               window.findChild<QPushButton *>(
-                  QStringLiteral("controlOpenWorldButton")) != nullptr,
-          QStringLiteral("control node exposes permissions, hosts and World"));
+                  QStringLiteral("relayOpenButton")) == nullptr &&
+              findButtonStartingWith(window, QStringLiteral("World")) == nullptr &&
+              findButtonStartingWith(
+                  window, QStringLiteral("Open World")) == nullptr,
+          QStringLiteral("Qt client does not expose World browser links"));
     QLineEdit *rewardRpc =
         window.findChild<QLineEdit *>(QStringLiteral("rewardPoolRpc"));
     QPushButton *rewardFetch = window.findChild<QPushButton *>(

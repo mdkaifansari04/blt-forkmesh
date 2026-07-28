@@ -51,13 +51,13 @@ def test_unknown_outfit_cut_resets_to_seeded():
     assert _presence({"outfitStyle": "tuxedo"})["outfitStyle"] == ""
 
 
-def test_face_image_is_a_boolean_and_supporting_member_only():
+def test_face_image_is_a_boolean_for_authenticated_members_only():
     assert _presence({"faceImage": True})["faceImage"] is True
     assert _presence({"faceImage": "yes"})["faceImage"] is False
     assert _presence({"faceImage": 1})["faceImage"] is False
     assert _presence({"faceImage": True}, status="Guest")["faceImage"] is False
     assert _presence(
-        {"faceImage": True}, status="Registered")["faceImage"] is False
+        {"faceImage": True}, status="Registered")["faceImage"] is True
 
 
 def test_outfit_and_face_fields_are_public_presence_fields():
@@ -74,6 +74,22 @@ def test_presence_frames_never_carry_image_bytes():
     assert "/api/accounts/" in APP
     assert "avatarPng" not in SCENE
     assert "base64" not in SCENE
+
+
+def test_every_identity_has_a_stable_generated_face_and_verified_pin():
+    assert "function proceduralAvatarFaceTexture" in SCENE
+    assert "faceIdentityKey: identity.id || identity.name" in SCENE
+    assert 'verifiedPin.name = "forkmesh-verified-email-pin"' in SCENE
+    assert "identity?.emailVerified === true" in SCENE
+
+
+def test_signed_in_members_can_upload_a_compact_face_photo():
+    assert "function compactWorldAvatar" in APP
+    assert "WORLD_AVATAR_MAX_BYTES = 64 * 1024" in APP
+    assert "for (const size of [128, 112, 96, 80, 64, 48])" in APP
+    assert "data-world-avatar-upload" in APP
+    assert '"/api/accounts/profile"' in APP
+    assert "this.identity.accountStatus === \"Guest\"" in APP
 
 
 def test_outfits_are_tailored_from_the_public_name():

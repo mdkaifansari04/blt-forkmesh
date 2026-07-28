@@ -330,9 +330,9 @@ def test_signup_handler_and_page_carry_the_referral_code():
 def test_web_and_world_surfaces_show_the_board_and_share_link():
     assert '"/api/referrals/leaderboard"' in REFERRALS_JS
     assert "/r/" in REFERRALS_JS
-    assert '"/api/referrals/leaderboard"' in WORLD
+    assert '"/api/leaderboards"' in WORLD
     assert "copyReferralLink" in WORLD
-    assert 'registerMovableObject("referral-leaderboard-sign"' in SCENE
+    assert "placeLeaderboardIslandSign(referralLeaderboardSign, 1)" in SCENE
     assert "updateReferralLeaderboard" in SCENE
 
 

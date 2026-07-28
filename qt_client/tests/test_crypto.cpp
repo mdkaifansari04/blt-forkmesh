@@ -3811,7 +3811,7 @@ int main(int argc, char *argv[])
                       "historical pull merge resolves the advanced branch head");
                 const bool merged = creationRefRemoved &&
                                     historicalPullStore.mergePull(
-                                        pullNumber, &mergeError);
+                                        pullNumber, &mergeError, false);
                 check(merged && mergeError.isEmpty(),
                       "advanced historical branch pull is merged");
                 if (merged) {
@@ -4772,7 +4772,7 @@ int main(int argc, char *argv[])
         check(browserPullNumber > 0,
               "owner drain assigns the browser pull a local number");
         check(browserPullNumber > 0 &&
-                  pulls.mergePull(browserPullNumber, &err),
+                  pulls.mergePull(browserPullNumber, &err, false),
               "portable browser pull merges after inbox drain");
         QFile mergedWebFile(tmp.path() + "/web-wire.txt");
         check(mergedWebFile.open(QIODevice::ReadOnly) &&
@@ -4820,6 +4820,7 @@ int main(int argc, char *argv[])
 
         PullRequest reviewPr;
         reviewPr.number = 99;
+        reviewPr.author = "reviewer-a";
         PullEvent approvingReview;
         approvingReview.type = "review";
         approvingReview.author = "reviewer-a";
@@ -4830,6 +4831,14 @@ int main(int argc, char *argv[])
         blockingReview.author = "reviewer-b";
         blockingReview.state = "changes_requested";
         blockingReview.ts = 110;
+        reviewPr.events = {approvingReview, blockingReview};
+        check(!reviewPr.independentReviewGateSatisfied() &&
+                  reviewPr.independentApprovalCount() == 0,
+              "pull author approval is ignored and a peer change request blocks merge");
+        reviewPr.events.last().state = "approved";
+        check(reviewPr.independentReviewGateSatisfied() &&
+                  reviewPr.independentApprovalCount() == 1,
+              "one distinct peer approval satisfies the merge gate");
         PullEvent openThread;
         openThread.type = "thread-comment";
         openThread.id = "event-open";
@@ -4996,7 +5005,7 @@ int main(int argc, char *argv[])
                   "a commit touching only the deleted file is dropped from the series");
 
             // The trimmed commit series must still be a valid, appliable patch.
-            check(pulls.mergePull(dn, &err),
+            check(pulls.mergePull(dn, &err, false),
                   "the PR still merges cleanly after a file was deleted from it");
             check(QFile::exists(tmp.path() + "/alpha.txt") &&
                       QFile::exists(tmp.path() + "/gamma.txt") &&
@@ -5100,7 +5109,7 @@ int main(int argc, char *argv[])
             check(bb.filesChanged == 2,
                   "branch-backed stats come from the reconstructed diff");
 
-            check(pulls.mergePull(bn, &err),
+            check(pulls.mergePull(bn, &err, false),
                   "a branch-backed PR merges by replaying its commits");
             check(QFile::exists(tmp.path() + "/bb1.txt") &&
                       QFile::exists(tmp.path() + "/bb2.txt"),
@@ -5385,13 +5394,13 @@ int main(int argc, char *argv[])
             // With no reachable refs, the corrupt blob is the only source: fail.
             PullStore noMirror(tmp.path(), QString(), &identity, "tester");
             QString blobErr;
-            check(!noMirror.mergePull(pbn, &blobErr),
+            check(!noMirror.mergePull(pbn, &blobErr, false),
                   "a branch-backed PR with no reachable refs and a corrupt blob "
                   "fails to apply");
 
             // With the mirror, the commits come from real objects and apply.
             PullStore viaMirror(tmp.path(), mirror, &identity, "tester");
-            check(viaMirror.mergePull(pbn, &err),
+            check(viaMirror.mergePull(pbn, &err, false),
                   "the PR merges once its commits are rebuilt from the mirror");
             QFile applied(tmp.path() + "/asset.bin");
             check(applied.open(QIODevice::ReadOnly) &&
