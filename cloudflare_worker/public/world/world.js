@@ -177,6 +177,8 @@ const WORLD_EVENT_POLL_MS = 3 * 60 * 1000;
 const WORLD_REWARD_POLL_MS = 5 * 60 * 1000;
 const WORLD_MEDIA_PLAYBACK_POLL_MS = 15 * 1000;
 const WORLD_SOCKET_PING_MS = 40 * 1000;
+// One broadcast wave per pose; the local arm still replays on every click.
+const WORLD_WAVE_COOLDOWN_MS = 2000;
 const WORLD_STATUS_POLL_MS = 5 * 60 * 1000;
 const WORLD_BUILD_BOARD_POLL_MS = 60 * 1000;
 const WORLD_AGENT_BOT_POLL_MS = 8 * 1000;
@@ -3480,6 +3482,15 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               title="Enter first-person view"
             >
               <span aria-hidden="true">⌖</span><span data-world-camera-label>First person</span>
+            </button>
+            <button
+              class="world-top-link world-wave-button"
+              type="button"
+              data-world-wave
+              title="Wave to everyone in the world"
+              aria-label="Wave your avatar's arm"
+            >
+              <span aria-hidden="true">👋</span><span>Wave</span>
             </button>
             <button
               class="world-top-link"
@@ -7689,6 +7700,10 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-camera-toggle]")) {
         this.toggleWorldCameraMode();
+        return;
+      }
+      if (event.target.closest("[data-world-wave]")) {
+        this.waveToWorld();
         return;
       }
       if (event.target.closest("[data-world-swing-dismount]")) {
@@ -12962,6 +12977,26 @@ class ForkMeshWorld extends HTMLElement {
           kind,
           target: String(target).slice(0, 32),
         }),
+      );
+    } catch (_) {}
+  }
+
+  // A wave is the text-free "emote" gesture the relay already broadcasts: the
+  // arm pose plays here immediately and every other visitor receives the same
+  // tiny frame. The cooldown is the length of the pose, so holding the button
+  // down cannot turn one gesture into a stream of socket frames.
+  waveToWorld() {
+    this.world?.playEmote?.(this.identity?.id || "", "wave", true);
+    const now = Date.now();
+    if (now - (this.lastWaveSentAt || 0) < WORLD_WAVE_COOLDOWN_MS) return;
+    this.lastWaveSentAt = now;
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      this.toast("Realtime is offline; your wave stayed on this device.");
+      return;
+    }
+    try {
+      this.socket.send(
+        JSON.stringify({ type: "interaction", kind: "emote", emote: "wave" }),
       );
     } catch (_) {}
   }

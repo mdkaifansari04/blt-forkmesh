@@ -1098,12 +1098,185 @@
     if (content && renderedAttachment) content.append(renderedAttachment);
     fullLog.append(row);
     fullLog.scrollTop = fullLog.scrollHeight;
-    if (id) rows.set(id, {
+    if (!id) return;
+    const record = {
+      id,
       el: row,
       senderId: senderId || "",
       textEl,
+      contentEl: content,
       attachment,
+      text: text || "",
+      self,
+    };
+    rows.set(id, record);
+    if (self && senderId === selfId) row.append(buildMessageActions(record));
+  }
+
+  // ---- edit / delete own messages ----------------------------------------
+  // The relay already replays "edit"/"delete" frames (handlePlain below, and
+  // the desktop client's kDurableTypes), so the dashboard only needs the
+  // author-side controls. Both frames are honoured by peers only when the
+  // sender id matches the original message's, so the same guard is applied
+  // here before anything is broadcast.
+
+  function messageActionButton(label, onClick, { danger = false, ariaLabel } = {}) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className =
+      "rounded border border-border bg-background px-1.5 py-0.5 text-[10px] font-semibold " +
+      "hover:bg-secondary " +
+      (danger ? "text-destructive" : "text-muted-foreground hover:text-foreground");
+    button.textContent = label;
+    button.setAttribute("aria-label", ariaLabel || `${label} message`);
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
+  function buildMessageActions(record) {
+    const actions = document.createElement("div");
+    // .chat-message-actions is revealed on row hover / keyboard focus by the
+    // dashboard shell stylesheet (Tailwind's group-hover variant is not in the
+    // pre-built dashboard/tailwind.css, so the reveal is hand-written CSS).
+    actions.className = "chat-message-actions ml-auto flex shrink-0 items-center gap-1";
+    if (record.text) {
+      actions.append(messageActionButton("Edit", () => beginMessageEdit(record)));
+    }
+    actions.append(
+      messageActionButton("Delete", () => requestMessageDelete(record), { danger: true })
+    );
+    record.actionsEl = actions;
+    return actions;
+  }
+
+  // An "(edited)" marker so a rewritten message never silently replaces what
+  // peers already read (matches the full chat page).
+  function markEdited(record, editedAt) {
+    if (!record?.textEl) return;
+    const stamp = Number(editedAt) || Date.now();
+    let marker = record.textEl.querySelector(".chat-edited");
+    if (!marker) {
+      marker = document.createElement("span");
+      marker.className = "chat-edited ml-1 text-[10px] text-muted-foreground/50";
+      marker.textContent = "(edited)";
+      record.textEl.append(marker);
+    }
+    marker.title = `Edited ${new Date(stamp).toLocaleString()}`;
+  }
+
+  // The action rows carry Tailwind's `flex` utility, which outranks the
+  // [hidden] preflight rule in the pre-built stylesheet — toggle display
+  // directly rather than the attribute.
+  function showElement(el, visible) {
+    if (el) el.style.display = visible ? "" : "none";
+  }
+
+  function closeMessageEditor(record, { restoreActions = true } = {}) {
+    record.editorEl?.remove();
+    record.editorEl = null;
+    showElement(record.textEl, true);
+    if (restoreActions) showElement(record.actionsEl, true);
+  }
+
+  function beginMessageEdit(record) {
+    if (!record?.textEl || record.senderId !== selfId) return;
+    if (record.editorEl) {
+      record.editorEl.querySelector("textarea")?.focus();
+      return;
+    }
+    showElement(record.textEl, false);
+    showElement(record.actionsEl, false);
+    const editor = document.createElement("div");
+    editor.className = "chat-inline-editor mt-1 flex flex-col gap-1.5";
+    const textarea = document.createElement("textarea");
+    textarea.className =
+      "w-full resize-y rounded-md border border-border bg-background px-2 py-1 text-sm";
+    textarea.rows = 2;
+    textarea.maxLength = MAX_TEXT;
+    textarea.value = record.text || "";
+    textarea.setAttribute("aria-label", "Edit message");
+    const controls = document.createElement("div");
+    controls.className = "flex items-center gap-2";
+    const cancel = messageActionButton(
+      "Cancel", () => closeMessageEditor(record), { ariaLabel: "Cancel edit" });
+    const save = messageActionButton(
+      "Save", () => saveMessageEdit(record, textarea.value), { ariaLabel: "Save edit" });
+    textarea.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeMessageEditor(record);
+      } else if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        saveMessageEdit(record, textarea.value);
+      }
     });
+    controls.append(cancel, save);
+    editor.append(textarea, controls);
+    record.editorEl = editor;
+    (record.contentEl || record.el).append(editor);
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }
+
+  function saveMessageEdit(record, source) {
+    if (record.senderId !== selfId) return;
+    const text = String(source || "").trim().slice(0, MAX_TEXT);
+    if (!text) return;
+    const editedAt = Date.now();
+    const plain = makePlain("edit", {
+      conversation: CHANNEL_LABEL,
+      target: record.id,
+      text,
+      editedAt,
+    });
+    record.text = text;
+    renderMessageText(record.textEl, text);
+    markEdited(record, editedAt);
+    closeMessageEditor(record);
+    const sideEntry = sideEntries.find((entry) => entry.id === record.id);
+    if (sideEntry) {
+      sideEntry.text = text;
+      renderSideMessages();
+    }
+    seen.add(plain.id);
+    runWhenConnected(() => send(plain));
+  }
+
+  // Deleting is irreversible for every reader, so ask first — inline, because
+  // this chat also runs inside the World's same-origin embed where a blocking
+  // window.confirm() would freeze the host frame.
+  function requestMessageDelete(record) {
+    if (record.senderId !== selfId || !record.actionsEl) return;
+    if (record.confirmEl) return;
+    showElement(record.actionsEl, false);
+    const confirmBar = document.createElement("div");
+    confirmBar.className =
+      "chat-delete-confirm ml-auto flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground";
+    const label = document.createElement("span");
+    label.textContent = "Delete?";
+    const cancel = messageActionButton("Cancel", () => {
+      confirmBar.remove();
+      record.confirmEl = null;
+      showElement(record.actionsEl, true);
+    }, { ariaLabel: "Cancel delete" });
+    const confirm = messageActionButton(
+      "Delete", () => confirmMessageDelete(record), { danger: true, ariaLabel: "Confirm delete" });
+    confirmBar.append(label, cancel, confirm);
+    record.confirmEl = confirmBar;
+    record.el.append(confirmBar);
+    confirm.focus();
+  }
+
+  function confirmMessageDelete(record) {
+    if (record.senderId !== selfId) return;
+    const plain = makePlain("delete", {
+      conversation: CHANNEL_LABEL,
+      target: record.id,
+    });
+    record.confirmEl = null;
+    seen.add(plain.id);
+    removeMessage(record.id);
+    runWhenConnected(() => send(plain));
   }
 
   // The rail's mini chat mirrors the full view at a smaller scale: avatar +
@@ -1384,7 +1557,9 @@
     } else if (type === "edit") {
       const rec = rows.get(plain.target);
       if (rec && rec.senderId === plain.senderId && rec.textEl) {
-        renderMessageText(rec.textEl, plain.text || "");
+        rec.text = plain.text || "";
+        renderMessageText(rec.textEl, rec.text);
+        markEdited(rec, plain.editedAt || plain.ts);
         const sideEntry = sideEntries.find((entry) => entry.id === plain.target);
         if (sideEntry) {
           sideEntry.text = plain.text || "";
