@@ -44,6 +44,17 @@
             "sig": "UL5eIUoiedVb17WEj8U4yDH-rJALKXi7TXGqTtyZoywnl0l-CoS0LNZYu8UoVJCz_7j7EN9a9yttTIiUx0OmAg",
             "ts": 1785207701429,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-536-add-edit-and-delete-message-options\".",
+            "id": "fbddd68e-7792-4fa6-85b7-8db239254fe1",
+            "sig": "XMrowwLGNnPRgCJeFA0O-zPl6hxDRR51sS2MRbiaRZbNJQcqaRCbzUVL0M2rJl7Vasq_6F5BjaxEsUo4q5m6Cg",
+            "ts": 1785210480033,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -57,6 +68,6 @@
     "startDate": 0,
     "status": "open",
     "title": "Add edit and delete message options",
-    "updatedAt": 1785207701429,
+    "updatedAt": 1785210480033,
     "votes": 0
 }
