@@ -480,7 +480,14 @@ def _delete_catalog(
             }
         )
     )
-    request = urlrequest.Request(url, method="DELETE")
+    request = urlrequest.Request(
+        url,
+        headers={
+            "accept": "application/json",
+            "user-agent": "ForkMesh-hosted-import-sync/1.0",
+        },
+        method="DELETE",
+    )
     try:
         with urlrequest.urlopen(request, timeout=30) as result:
             payload = json.loads(

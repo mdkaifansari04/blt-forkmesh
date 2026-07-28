@@ -2,6 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from urllib import request as urlrequest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -64,3 +65,43 @@ def test_prepare_keeps_healthy_imports_when_one_provider_clone_fails(
         (gateway / sync.SIDECAR_FILE).read_text(encoding="utf-8")
     )
     assert [item["name"] for item in sidecar["repositories"]] == ["healthy"]
+
+
+def test_delete_catalog_identifies_the_headless_sync_client(monkeypatch):
+    config = SimpleNamespace(
+        worker_origin="https://forkmesh.com",
+    )
+    monkeypatch.setattr(
+        sync.refresh,
+        "_helper_call",
+        lambda *_args: {"signature": "signed-delete"},
+    )
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            return b'{"ok":true,"deleted":true}'
+
+    def open_request(request, timeout):
+        assert isinstance(request, urlrequest.Request)
+        assert timeout == 30
+        requests.append(request)
+        return Response()
+
+    monkeypatch.setattr(sync.urlrequest, "urlopen", open_request)
+
+    sync._delete_catalog(config, "mirror2", "example")
+
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.method == "DELETE"
+    assert request.get_header("Accept") == "application/json"
+    assert request.get_header("User-agent") == "ForkMesh-hosted-import-sync/1.0"
+    assert "owner=mirror2" in request.full_url
+    assert "name=example" in request.full_url
