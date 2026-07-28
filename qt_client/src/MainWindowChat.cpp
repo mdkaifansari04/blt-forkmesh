@@ -7668,6 +7668,26 @@ QWidget *MainWindow::buildHostsSection()
     vultrForm->addRow(QStringLiteral("Node name"), m_vultrNameEdit);
     vultrCol->addLayout(vultrForm);
 
+    // Agent CLIs on the new mirror (adhoc #418). A headless VPS has no browser
+    // to sign either provider in with, so the installed binaries would sit
+    // there unusable; copying this device's own logins is what makes the fresh
+    // node able to run agent sessions on our access from the first minute.
+    m_vultrAgentClisCheck = new QCheckBox(QString::fromUtf8(
+        "Also install Claude Code + Codex and sign them in with this device's "
+        "access"));
+    m_vultrAgentClisCheck->setObjectName(
+        QStringLiteral("vultrInstallAgentClisCheck"));
+    m_vultrAgentClisCheck->setChecked(true);
+    m_vultrAgentClisCheck->setToolTip(QString::fromUtf8(
+        "After ForkMesh is installed, the official Claude Code and Codex CLIs "
+        "are installed on the new mirror and this device's own logins "
+        "(~/.claude/.credentials.json, ~/.codex/auth.json, and the agent API "
+        "keys from Settings for a provider you have no CLI login for) are "
+        "copied to it, so it can run agent sessions immediately. The "
+        "credentials travel only on the SSH session's stdin \xE2\x80\x94 never "
+        "in a command line or in the log below."));
+    vultrCol->addWidget(m_vultrAgentClisCheck);
+
     auto *vultrRow = new QHBoxLayout;
     vultrRow->setContentsMargins(0, 0, 0, 0);
     m_vultrCreateButton = new QPushButton(QStringLiteral("Create Vultr mirror"));
@@ -8011,6 +8031,37 @@ void MainWindow::refreshHostsTable()
             : QStringLiteral("Hosts (%1)").arg(hosts.size()));
 }
 
+forkmesh::control::AgentCliCredentials MainWindow::localAgentCliCredentials()
+{
+    forkmesh::control::AgentCliCredentials credentials;
+    const auto readFile = [](const QString &path) {
+        QFile file(path);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+    };
+    credentials.claudeCredentials = readFile(
+        QDir::homePath() + QStringLiteral("/.claude/.credentials.json"));
+    credentials.codexAuth =
+        readFile(QDir::homePath() + QStringLiteral("/.codex/auth.json"));
+    // Only fall back to an API key for the provider whose CLI login we could
+    // not copy: Claude Code warns that auth "may not work as expected" when an
+    // ANTHROPIC_API_KEY sits next to a logged-in session, and Codex would
+    // bypass the ChatGPT plan the same way (see agentRunConfig).
+    QSettings settings;
+    if (credentials.claudeCredentials.trimmed().isEmpty()) {
+        const QString key =
+            settings.value(kClaudeApiKeySetting).toString().trimmed();
+        if (!key.isEmpty())
+            credentials.env.insert(QStringLiteral("ANTHROPIC_API_KEY"), key);
+    }
+    if (credentials.codexAuth.trimmed().isEmpty()) {
+        const QString key =
+            settings.value(kCodexApiKeySetting).toString().trimmed();
+        if (!key.isEmpty())
+            credentials.env.insert(QStringLiteral("OPENAI_API_KEY"), key);
+    }
+    return credentials;
+}
+
 void MainWindow::probeSavedHosts()
 {
     if (!m_hostsTable)
@@ -8136,9 +8187,29 @@ void MainWindow::probeSavedHost(const QString &name, const QString &ip,
         process->setProperty("forkmeshHostProbeTimedOut", true);
         process->kill();
     });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, deadline, key, render](
+                QProcess::ProcessError processError) {
+        if (processError != QProcess::FailedToStart ||
+            process->property("forkmeshHostProbeDone").toBool()) {
+            return;
+        }
+        process->setProperty("forkmeshHostProbeDone", true);
+        deadline->stop();
+        m_hostProbesInFlight.remove(key);
+        render(
+            QString::fromUtf8("\xE2\x97\x8F Attention \xC2\xB7 SSH unavailable"),
+            QString::fromUtf8("\xE2\x80\x94"),
+            QString::fromUtf8("\xE2\x80\x94"),
+            QColor(QStringLiteral("#cf222e")));
+        process->deleteLater();
+    });
     connect(process, &QProcess::finished, this,
             [this, process, deadline, key, savedStatus, render, rowForKey](
                 int exitCode, QProcess::ExitStatus exitStatus) {
+        if (process->property("forkmeshHostProbeDone").toBool())
+            return;
+        process->setProperty("forkmeshHostProbeDone", true);
         deadline->stop();
         QByteArray bytes =
             process->property("forkmeshHostProbe").toByteArray();
@@ -8168,6 +8239,19 @@ void MainWindow::probeSavedHost(const QString &name, const QString &ip,
                 forkmesh
                     ? QColor(QStringLiteral("#2da44e"))
                     : QColor(QStringLiteral("#d29922")));
+            const int row = rowForKey(key);
+            if (row >= 0 && m_hostsTable) {
+                if (QTableWidgetItem *item = m_hostsTable->item(row, 4)) {
+                    item->setForeground(QColor(
+                        claude ? QStringLiteral("#2da44e")
+                               : QStringLiteral("#8b949e")));
+                }
+                if (QTableWidgetItem *item = m_hostsTable->item(row, 5)) {
+                    item->setForeground(QColor(
+                        codex ? QStringLiteral("#2da44e")
+                              : QStringLiteral("#8b949e")));
+                }
+            }
         } else {
             const bool rejected =
                 output.contains(QStringLiteral("Permission denied"),
@@ -8249,29 +8333,71 @@ void MainWindow::installAgentClisForHost(int row)
     // the authentication path match every later headless-agent connection.
     const QString sshPassword =
         identityFile.isEmpty() ? pass : QString();
-    const QString remoteCmd = QStringLiteral(
-        "sh -lc 'set -eu; "
-        "echo \"Installing Claude Code from claude.ai...\"; "
-        "curl -fsSL https://claude.ai/install.sh | bash; "
-        "echo \"Installing Codex from chatgpt.com...\"; "
-        "curl -fsSL https://chatgpt.com/codex/install.sh | sh; "
-        "export PATH=\"$HOME/.local/bin:$HOME/.claude/bin:$PATH\"; "
-        "echo \"Claude Code:\"; "
-        "command -v claude; claude --version; "
-        "echo \"Codex:\"; "
-        "command -v codex; codex --version; "
-        "echo \"Installation complete. Provider login is still required on this mirror.\"'");
+    if (m_hostInstallLog)
+        m_hostInstallLog->clear();
+    if (m_hostInstallStatus)
+        m_hostInstallStatus->setText(
+            QStringLiteral("Installing agent CLIs on %1...").arg(node));
+    // This button deliberately installs the binaries only; the Vultr flow's
+    // opt-in is what copies logins to a node this device just created.
+    runAgentCliInstall(node, ip, user, sshPassword, identityFile,
+                       /*copyCredentials=*/false,
+                       [this](bool, QString message) {
+                           if (m_hostInstallStatus)
+                               m_hostInstallStatus->setText(message);
+                       });
+}
+
+void MainWindow::runAgentCliInstall(
+    const QString &node, const QString &ip, const QString &user,
+    const QString &sshPassword, const QString &identityFile,
+    bool copyCredentials, std::function<void(bool, QString)> onFinished)
+{
+    const auto report = [onFinished](bool ok, const QString &message) {
+        if (onFinished)
+            onFinished(ok, message);
+    };
+    if (m_hostAgentInstallProcess &&
+        m_hostAgentInstallProcess->state() != QProcess::NotRunning) {
+        report(false,
+               QStringLiteral("A mirror agent-CLI install is already running."));
+        return;
+    }
+    // Secrets are collected here and live only in the payload byte array and
+    // the child's stdin pipe; the remote command below is fixed and secret-free.
+    QByteArray payload;
+    QString credentialSummary;
+    if (copyCredentials) {
+        const forkmesh::control::AgentCliCredentials credentials =
+            localAgentCliCredentials();
+        if (forkmesh::control::agentCliCredentialsAreEmpty(credentials)) {
+            report(false, QStringLiteral(
+                "This device has no Claude Code or Codex login to copy to %1. "
+                "Sign in here first, then use Install Claude + Codex on that "
+                "host.").arg(node));
+            return;
+        }
+        QString payloadError;
+        payload = forkmesh::control::buildAgentCliBootstrapPayload(
+            credentials, &payloadError);
+        if (payload.isEmpty()) {
+            report(false, payloadError);
+            return;
+        }
+        credentialSummary =
+            forkmesh::control::describeAgentCliCredentials(credentials);
+    }
+    const QString remoteCmd =
+        forkmesh::control::agentCliBootstrapRemoteCommand(copyCredentials);
     QString sshError;
     const forkmesh::control::HostSshCommand ssh =
         forkmesh::control::buildHostSshCommand(
             ip, user, sshPassword, remoteCmd, &sshError, identityFile);
     if (ssh.program.isEmpty()) {
-        if (m_hostInstallStatus)
-            m_hostInstallStatus->setText(sshError);
+        payload.fill('\0');
+        report(false, sshError);
         return;
     }
-    if (m_hostInstallLog)
-        m_hostInstallLog->clear();
     appendHostInstallLog(
         QStringLiteral("Installing Claude Code and Codex on %1 (%2@%3)...\n")
             .arg(node, user, ip));
@@ -8282,9 +8408,11 @@ void MainWindow::installAgentClisForHost(int row)
                   "session credential or the system SSH agent.\n")
             : QStringLiteral(
                   "Using the ForkMesh-managed SSH identity for this host.\n"));
-    if (m_hostInstallStatus)
-        m_hostInstallStatus->setText(
-            QStringLiteral("Installing agent CLIs on %1...").arg(node));
+    if (copyCredentials)
+        appendHostInstallLog(
+            QStringLiteral("Copying this device's agent access (%1) over the "
+                           "SSH session's stdin.\n")
+                .arg(credentialSummary));
     auto *proc = new QProcess(this);
     m_hostAgentInstallProcess = proc;
     proc->setProcessChannelMode(QProcess::MergedChannels);
@@ -8300,14 +8428,16 @@ void MainWindow::installAgentClisForHost(int row)
         appendHostInstallLog(QString::fromUtf8(chunk));
     });
     connect(proc, &QProcess::errorOccurred, this,
-            [this](QProcess::ProcessError error) {
-        if (error == QProcess::FailedToStart && m_hostInstallStatus) {
-            m_hostInstallStatus->setText(
-                QStringLiteral("Could not start the pinned SSH installer."));
-        }
+            [this, proc, report](QProcess::ProcessError error) {
+        if (error != QProcess::FailedToStart)
+            return;
+        if (m_hostAgentInstallProcess == proc)
+            m_hostAgentInstallProcess = nullptr;
+        report(false,
+               QStringLiteral("Could not start the pinned SSH installer."));
     });
     connect(proc, &QProcess::finished, this,
-            [this, proc, node, ip, identityFile](
+            [this, proc, node, ip, identityFile, copyCredentials, report](
                 int code, QProcess::ExitStatus status) {
         if (m_hostAgentInstallProcess == proc)
             m_hostAgentInstallProcess = nullptr;
@@ -8317,40 +8447,51 @@ void MainWindow::installAgentClisForHost(int row)
             ok ? QStringLiteral("\nAgent CLI installation finished.\n")
                : QStringLiteral("\nAgent CLI installation failed (exit %1).\n")
                      .arg(code));
-        if (m_hostInstallStatus) {
-            const QString output = QString::fromUtf8(
-                proc->property("forkmeshAgentInstallOutput").toByteArray());
-            const bool timedOut = output.contains(
-                QStringLiteral("Connection timed out"),
-                Qt::CaseInsensitive);
-            const bool keyRejected = output.contains(
-                QStringLiteral("Permission denied"),
-                Qt::CaseInsensitive);
-            m_hostInstallStatus->setText(
-                ok
+        const QString output = QString::fromUtf8(
+            proc->property("forkmeshAgentInstallOutput").toByteArray());
+        const bool timedOut = output.contains(
+            QStringLiteral("Connection timed out"),
+            Qt::CaseInsensitive);
+        const bool keyRejected = output.contains(
+            QStringLiteral("Permission denied"),
+            Qt::CaseInsensitive);
+        report(ok,
+            ok
+                ? (copyCredentials
+                       ? QStringLiteral(
+                             "Claude Code and Codex are installed on %1 and "
+                             "signed in with this device's access.")
+                             .arg(node)
+                       : QStringLiteral(
+                             "Claude Code and Codex are installed on %1. Sign "
+                             "in on that mirror before starting sessions.")
+                             .arg(node))
+                : timedOut
                     ? QStringLiteral(
-                          "Claude Code and Codex are installed on %1. Sign in "
-                          "on that mirror before starting sessions.")
-                          .arg(node)
-                    : timedOut
+                          "SSH could not reach %1 on port 22. The saved "
+                          "key was not reached; use the host's reachable "
+                          "public/stable address or connect this device to "
+                          "the private network, then retry.")
+                          .arg(ip)
+                    : keyRejected && !identityFile.isEmpty()
                         ? QStringLiteral(
-                              "SSH could not reach %1 on port 22. The saved "
-                              "key was not reached; use the host's reachable "
-                              "public/stable address or connect this device to "
-                              "the private network, then retry.")
-                              .arg(ip)
-                        : keyRejected && !identityFile.isEmpty()
-                            ? QStringLiteral(
-                                  "The mirror rejected its saved ForkMesh SSH "
-                                  "key. Re-provision or replace that host key, "
-                                  "then retry.")
-                    : QStringLiteral(
-                          "Agent CLI installation failed on %1; see Live output.")
-                          .arg(node));
-        }
+                              "The mirror rejected its saved ForkMesh SSH "
+                              "key. Re-provision or replace that host key, "
+                              "then retry.")
+                : QStringLiteral(
+                      "Agent CLI installation failed on %1; see Live output.")
+                      .arg(node));
+        QTimer::singleShot(0, this, &MainWindow::probeSavedHosts);
         proc->deleteLater();
     });
     proc->start(ssh.program, ssh.arguments);
+    // The credentials leave this process only here, on the child's stdin, and
+    // the buffer is wiped as soon as it is handed over.
+    if (!payload.isEmpty()) {
+        proc->write(payload);
+        payload.fill('\0');
+    }
+    proc->closeWriteChannel();
 }
 
 void MainWindow::configureHostActionsForSelection(int row)
@@ -11918,6 +12059,8 @@ void MainWindow::createVultrMirrorFromForm()
          forkmesh::control::localBinaryRunsOnVultrMirror(
              QSysInfo::kernelType(), QSysInfo::currentCpuArchitecture()) &&
          QFileInfo(QCoreApplication::applicationFilePath()).isReadable();
+    m_vultrInstallAgentClis =
+        m_vultrAgentClisCheck && m_vultrAgentClisCheck->isChecked();
     m_vultrInstallAttemptLog.clear();
     m_vultrDnsHostname.clear();
     m_hostInstallAttemptBanner.clear();
@@ -11939,6 +12082,19 @@ void MainWindow::createVultrMirrorFromForm()
         appendHostInstallLog(QString::fromUtf8(
             "This app's own binary will be uploaded over SSH, so the new "
             "mirror needs no published release to install.\n"));
+    if (m_vultrInstallAgentClis) {
+        const QString agentAccess = forkmesh::control::describeAgentCliCredentials(
+            localAgentCliCredentials());
+        appendHostInstallLog(
+            agentAccess.isEmpty()
+                ? QString::fromUtf8(
+                      "Claude Code and Codex will be installed, but this device "
+                      "has no provider login to copy \xE2\x80\x94 the mirror "
+                      "will need its own sign-in.\n")
+                : QStringLiteral(
+                      "Claude Code and Codex will be installed and signed in "
+                      "with this device's access (%1).\n").arg(agentAccess));
+    }
     if (m_vultrStatus)
         m_vultrStatus->setText(
             QString::fromUtf8("Preparing the managed SSH key\xE2\x80\xA6"));
@@ -12230,10 +12386,39 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                 m_vultrDnsHostname.isEmpty()
                     ? ip
                     : QStringLiteral("%1, %2").arg(m_vultrDnsHostname, ip);
-            finishVultrProvision(true, QString::fromUtf8(
+            const QString done = QString::fromUtf8(
                 "Vultr mirror \"%1\" (%2) is installed and linking to your "
                 "account \xE2\x80\x94 it will start mirroring and syncing "
-                "shortly.").arg(node, address));
+                "shortly.").arg(node, address);
+            if (!m_vultrInstallAgentClis) {
+                finishVultrProvision(true, done);
+                return;
+            }
+            // The node is up and authenticated to the mesh; give it this
+            // device's agent access too so it can run sessions immediately
+            // (adhoc #418). A failure here does not undo the mirror itself.
+            // With no login to copy the CLIs are still installed, so the
+            // mirror only needs its own sign-in rather than everything.
+            const bool copyLogins =
+                !forkmesh::control::agentCliCredentialsAreEmpty(
+                    localAgentCliCredentials());
+            if (m_vultrStatus)
+                m_vultrStatus->setText(QString::fromUtf8(
+                    "Installing Claude Code and Codex\xE2\x80\xA6"));
+            runAgentCliInstall(
+                node, ip, QStringLiteral("root"), QString(), identityFile,
+                copyLogins,
+                [this, done](bool agentOk, QString agentMessage) {
+                    if (!m_vultrProvisionActive)
+                        return;
+                    finishVultrProvision(
+                        true,
+                        agentOk
+                            ? QStringLiteral("%1 %2").arg(done, agentMessage)
+                            : QString::fromUtf8(
+                                  "%1 The agent CLIs were not set up: %2")
+                                  .arg(done, agentMessage));
+                });
             return;
         }
         // An address outside the routable internet will never answer, however

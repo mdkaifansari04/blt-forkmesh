@@ -20,6 +20,26 @@
             "title": "Incorrect Member Count Increment",
             "ts": 1785061246324,
             "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "seems fine now",
+            "id": "52e612fe-65bc-4c5e-b64e-3bb238f81732",
+            "sig": "fTnHV1oRXa0vOnh1LdJ0JacZKa5YPE6psQziOo4lYHQsABHxpeA-VBlss7J7vPuehoSUS0b_ooZtitHfLHwRBQ",
+            "ts": 1785207649472,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "5a250aff-402e-499f-ac50-9b0fed08b775",
+            "sig": "UpMNQKE3u2HMrDULvhc1CEeA7h5udhTbFaStkMw-LS6I9kKW_AF335NHX6vmZNPn2nrfPxNB2ZUkpERkLnviBA",
+            "status": "closed",
+            "ts": 1785207649547,
+            "type": "status"
         }
     ],
     "labels": [
@@ -31,8 +51,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "Incorrect Member Count Increment",
-    "updatedAt": 1785061246324,
+    "updatedAt": 1785207649547,
     "votes": 0
 }

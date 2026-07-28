@@ -1413,21 +1413,39 @@ void MainWindow::deleteWorktreeBranchAndAgentInBackground(
     // The visible/session-store deletion is the foreground part. Retaining the
     // worktree here avoids racing deleteStoredAgentSession's detached teardown
     // against the explicit worktree + branch cleanup queued below.
+    QElapsedTimer storeTimer;
+    storeTimer.start();
     for (const int id : std::as_const(agentIds)) {
         if (!deleteStoredAgentSession(id, /*cleanupWorktree=*/false)) {
+            logSystem(QStringLiteral("Agents: delete of session #%1 (%2) stopped "
+                                     "before cleanup started.")
+                          .arg(id)
+                          .arg(branch));
             reloadAgents();
             return;
         }
     }
-    reloadAgents();
-    reloadIssues();
-    refreshIssueList();
-    updateIssueActionState();
+    logSystem(QStringLiteral("Agents: dropped %1 stored session%2 on %3 in %4 ms; "
+                             "worktree and branch cleanup runs in the background.")
+                  .arg(agentIds.size())
+                  .arg(agentIds.size() == 1 ? QString() : QStringLiteral("s"))
+                  .arg(branch)
+                  .arg(storeTimer.elapsed()));
     flashMessage(
         agentIds.size() == 1
             ? QStringLiteral("Agent session deleted. Cleanup is running in the background.")
             : QStringLiteral("%1 agent sessions deleted. Cleanup is running in the background.")
                   .arg(agentIds.size()));
+    // The reload trio re-shells git per session (merge state) and re-reads the
+    // issue store, which is the slowest thing left on this path. Run it on the
+    // next tick so the message above and the queued background ticket land first
+    // (adhoc #417) instead of after several seconds of git.
+    QTimer::singleShot(0, this, [this] {
+        reloadAgents();
+        reloadIssues();
+        refreshIssueList();
+        updateIssueActionState();
+    });
 
     const quint64 taskId = beginBackgroundTask(
         QStringLiteral("cleanup"),
@@ -1435,9 +1453,15 @@ void MainWindow::deleteWorktreeBranchAndAgentInBackground(
     const QString base = repoDefaultBranch(repoBranches());
     const bool deleteBranch = !branch.isEmpty() && branch != base;
     auto completed = std::make_shared<bool>(false);
+    auto cleanupTimer = std::make_shared<QElapsedTimer>();
+    cleanupTimer->start();
+    logSystem(QStringLiteral("Agents: cleaning up worktree %1 and branch %2 in the "
+                             "background.")
+                  .arg(worktreePath.isEmpty() ? QStringLiteral("(none)") : worktreePath)
+                  .arg(branch));
 
-    auto finish = [this, repo, issueNumbers, branch, taskId,
-                   completed](bool success, const QString &error) {
+    auto finish = [this, repo, issueNumbers, branch, taskId, completed,
+                   cleanupTimer](bool success, const QString &error) {
         if (*completed)
             return;
         *completed = true;
@@ -1479,9 +1503,11 @@ void MainWindow::deleteWorktreeBranchAndAgentInBackground(
         refreshIssueList();
         updateIssueActionState();
         updateRepoIssueCount();
+        // On the happy path the elapsed time rides along in the log line; a
+        // failure keeps the bare reason so the error toast stays readable.
         const QString detail =
             success
-                ? QStringLiteral("Deleted worktree and branch %1%2.")
+                ? QStringLiteral("Deleted worktree and branch %1%2 (%3 ms).")
                       .arg(branch,
                            closedIssues > 0
                                ? QStringLiteral("; closed %1 linked issue%2")
@@ -1489,6 +1515,7 @@ void MainWindow::deleteWorktreeBranchAndAgentInBackground(
                                      .arg(closedIssues == 1 ? QString()
                                                            : QStringLiteral("s"))
                                : QString())
+                      .arg(cleanupTimer->elapsed())
                 : (error.trimmed().isEmpty()
                        ? QStringLiteral("Could not finish deleting %1.").arg(branch)
                        : error.trimmed());
