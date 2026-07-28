@@ -92,12 +92,15 @@ void MainWindow::startIssueInIde(int issueNumber, const QString &title,
                          false);
 }
 
-// The repo header's action buttons (Notify/Fork/Mirror/Source/Open) operate on
-// the repository as a whole. On the Agents tab (m_repoDetailStack index 3) they
-// have no bearing and just crowd the tab bar, so hide them there and show them
-// on every other tab. Wired to m_repoDetailStack::currentChanged so it tracks
-// tab switches however they happen (click, programmatic jump, Back/Forward).
-void MainWindow::updateRepoActionButtonsVisibility(int stackIndex)
+// The repository chrome — the header row (repo switcher plus the
+// Notify/Fork/Mirror/Source/Open actions) and the Code/Issues/PRs… tab bar — is
+// about the repository as a whole. On the Agents tab (m_repoDetailStack index
+// 3) none of it applies: the session list is its own workspace, and the git nav
+// only pushed it down the page. Hide the whole band there and show it again on
+// every other tab; the activity rail's Code/Git entries stay the way back out.
+// Wired to m_repoDetailStack::currentChanged so it tracks tab switches however
+// they happen (click, programmatic jump, Back/Forward).
+void MainWindow::updateRepoChromeVisibility(int stackIndex)
 {
     const bool onAgentsTab = stackIndex == 3;
     for (QPushButton *b : {m_notifyButton, m_forkButton, m_mirrorButton,
@@ -105,6 +108,10 @@ void MainWindow::updateRepoActionButtonsVisibility(int stackIndex)
         if (b)
             b->setVisible(!onAgentsTab);
     }
+    if (m_repoHeaderBar)
+        m_repoHeaderBar->setVisible(!onAgentsTab);
+    if (m_repoTabBarScroll)
+        m_repoTabBarScroll->setVisible(!onAgentsTab);
 }
 
 // Show/hide the issue-detail "run in IDE" buttons based on the toggle + whether
@@ -8258,6 +8265,8 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabBarScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     tabBarScroll->setMinimumWidth(0);
     tabBarScroll->setFixedHeight(48);
+    // Handle for updateRepoChromeVisibility: the Agents tab hides the git nav.
+    m_repoTabBarScroll = tabBarScroll;
 
     // The integrity-pin warning ("clones are being rejected — reset the pin")
     // doesn't live in an in-page banner here; refreshRepoPinBanner surfaces it as
@@ -8359,10 +8368,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     connect(m_repoDetailStack, &QStackedWidget::currentChanged, this,
             [this](int index) {
                 scheduleNavRecord();
-                // The repo action buttons (Notify/Fork/Mirror/Source/Open) act on
-                // the repository itself and are irrelevant on the Agents tab
-                // (index 3), where they crowd the tab bar — hide them there.
-                updateRepoActionButtonsVisibility(index);
+                // The repo header row and tab bar act on the repository itself
+                // and are irrelevant on the Agents tab (index 3) — hide the
+                // whole band there so the session list starts at the top.
+                updateRepoChromeVisibility(index);
             });
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         ensureRepoDetailTabBuilt(id);
@@ -8523,7 +8532,11 @@ QWidget *MainWindow::buildRepoDetailSection()
     auto *content = new QVBoxLayout;
     content->setContentsMargins(0, 0, 0, 0);
     content->setSpacing(6);
-    content->addLayout(headerRow);
+    // The header row lives in its own widget so the Agents tab can hide the
+    // whole band in one call (a bare layout would leave its margins behind).
+    m_repoHeaderBar = new QWidget;
+    m_repoHeaderBar->setLayout(headerRow);
+    content->addWidget(m_repoHeaderBar);
     content->addWidget(m_repoDetailNotice);
     content->addWidget(metaBand);
     content->addWidget(tabBarScroll);

@@ -934,12 +934,12 @@ QWidget *MainWindow::buildAgentsTab()
 
     auto *listPane = new QWidget;
     listPane->setMinimumWidth(260);
+    // The heading shares the toolbar row rather than owning a line of its own:
+    // with the repo tab bar hidden on this tab (updateRepoChromeVisibility) the
+    // session list starts at the top of the page, and a one-line header keeps it
+    // there instead of spending two rows on chrome.
     auto *heading = new QLabel("Agent sessions");
     heading->setObjectName("channelTitle");
-    auto *headingRow = new QHBoxLayout;
-    headingRow->setContentsMargins(0, 0, 0, 0);
-    headingRow->setSpacing(8);
-    headingRow->addWidget(heading, 1);
 
     m_agentTable = new QTableWidget(0, 9);
     m_agentTable->setObjectName("issueTable");
@@ -1016,9 +1016,8 @@ QWidget *MainWindow::buildAgentsTab()
     m_externalClaudeTimer->start();
 
     auto *listLayout = new QVBoxLayout(listPane);
-    listLayout->setContentsMargins(18, 18, 12, 18);
+    listLayout->setContentsMargins(18, 12, 12, 14);
     listLayout->setSpacing(8);
-    listLayout->addLayout(headingRow);
 
     // The top-of-list "Start agent" compose row (adhoc #234) was removed from
     // the desktop app (adhoc #271) — starting a new ad-hoc agent now happens
@@ -1089,6 +1088,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *agentListToolbar = new QHBoxLayout;
     agentListToolbar->setContentsMargins(0, 0, 0, 0);
     agentListToolbar->setSpacing(8);
+    agentListToolbar->addWidget(heading, 0);
     agentListToolbar->addWidget(m_agentSearch, 1);
     agentListToolbar->addWidget(m_agentStopAllButton, 0);
     agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
@@ -1737,7 +1737,7 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentNetPanel->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
     auto *detailLayout = new QVBoxLayout(detailPane);
-    detailLayout->setContentsMargins(12, 18, 22, 18);
+    detailLayout->setContentsMargins(12, 12, 22, 14);
     detailLayout->setSpacing(8);
     detailLayout->addLayout(topRow);
     detailLayout->addWidget(m_agentMeta);

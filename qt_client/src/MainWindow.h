@@ -2174,7 +2174,7 @@ private:
     void clearRepoDetail();
     // Show/hide the repo header action buttons (Notify/Fork/Mirror/Source/Open)
     // for the given m_repoDetailStack index; hidden on the Agents tab.
-    void updateRepoActionButtonsVisibility(int stackIndex);
+    void updateRepoChromeVisibility(int stackIndex);
     void openRepositoryWebsite(); // open the current repo's page in the browser
     void forkCurrentRepo();       // clone the open repo into your own node
     void downloadCurrentRepoZip();
@@ -3594,6 +3594,7 @@ private:
     QString catalogPublishKey(const RepositoryRecord &repo) const;
     void updateRepoActionMenus();
     void deleteCurrentMirror();
+    void deleteRepositoryAt(int index, bool reopenRepoDetail);
     void updateRepoDetailStatus();
     void startRepoHosts();
     void stopRepoHosts();
@@ -4069,6 +4070,9 @@ private:
     bool m_networkEndpointFadeScheduled = false;
     bool m_networkEndpointsUserSorted = false;
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
+    // Repo-detail chrome the Agents tab hides (see updateRepoChromeVisibility).
+    QWidget *m_repoHeaderBar = nullptr;      // repo switcher + repo action buttons
+    QWidget *m_repoTabBarScroll = nullptr;   // Code/Issues/PRs… tab bar
     int m_repoPinCheckIndex = -1;            // repo index an in-flight pin check belongs to
     // One row per repo of the selected node, shown in the repo dropdown.
     struct RepoMenuEntry {

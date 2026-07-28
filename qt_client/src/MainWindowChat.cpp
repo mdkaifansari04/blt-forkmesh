@@ -6812,23 +6812,34 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         const bool isPrivate = repo.value("private").toBool(false) ||
                                repo.value("isPrivate").toBool(false);
         const bool liveHost = repo.value("liveHost").toBool(false);
-        const QString description = repo.value("description").toString().trimmed();
         const QString commit = repo.value("commit").toString().trimmed();
         const QString branch = repo.value("branch").toString().trimmed();
+        // The catalog publishes the HEAD commit date as epoch milliseconds, as
+        // a string on nodes that advertise it (older nodes omit the key).
+        const QJsonValue commitAtValue = repo.value(QStringLiteral("commitAt"));
+        const qint64 commitAtMs =
+            commitAtValue.isDouble()
+                ? qint64(commitAtValue.toDouble())
+                : commitAtValue.toString().trimmed().toLongLong();
 
+        // No "about" blurb on the row: what matters here is where the
+        // repository stands (commit, branch, when it last moved), and the
+        // description only ever pushed that off the end of the line. It still
+        // shows on the repository's own page.
         QStringList details;
         if (!commit.isEmpty()) {
             QString commitLine = QStringLiteral("commit %1").arg(commit.left(12));
             if (!branch.isEmpty())
                 commitLine += QStringLiteral(" on %1").arg(branch);
+            if (commitAtMs > 0)
+                commitLine += QStringLiteral(" \xC2\xB7 %1")
+                                  .arg(formatIssueRelativeTime(commitAtMs));
             details << commitLine;
         }
         if (isPrivate)
             details << QStringLiteral("private");
         if (liveHost)
             details << QStringLiteral("live");
-        if (!description.isEmpty())
-            details << description.left(120);
 
         auto *repoItem = new QTableWidgetItem(
             details.isEmpty() ? key : key + "\n" + details.join(QStringLiteral(" | ")));
@@ -6841,6 +6852,9 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
             repoToolTip << QStringLiteral("Commit: %1").arg(commit);
         if (!branch.isEmpty())
             repoToolTip << QStringLiteral("Branch: %1").arg(branch);
+        if (commitAtMs > 0)
+            repoToolTip << QStringLiteral("Last commit: %1")
+                               .arg(formatRepoDate(commitAtMs));
         if (!cloneUrl.isEmpty())
             repoToolTip << cloneUrl;
         repoItem->setToolTip(repoToolTip.join('\n'));
@@ -6872,6 +6886,8 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         actionRow->setContentsMargins(4, 2, 4, 2);
         actionRow->setSpacing(6);
 
+        // Three groups, left to right: open it, get a copy of it (fork/mirror),
+        // then — set apart by a gap — remove this machine's copy.
         auto *openButton = new QPushButton(localFork >= 0
                                                ? QStringLiteral("Open fork")
                                                : QStringLiteral("Open"));
@@ -6925,6 +6941,47 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
                     });
         }
         actionRow->addWidget(mirrorButton);
+
+        // Delete this machine's copy without first opening the repository and
+        // digging into its Settings tab. It targets the record for this exact
+        // owner/name, falling back to the local fork when the row is only
+        // present here as a fork; with neither, there is nothing to delete.
+        const int localIndex = findNetworkRepoIndex(owner, name, true);
+        const int deleteIndex = localIndex >= 0 ? localIndex : localFork;
+        auto *deleteButton = new QPushButton(QStringLiteral("Delete"));
+        deleteButton->setObjectName("dangerButton");
+        deleteButton->setCursor(Qt::PointingHandCursor);
+        setOcticon(deleteButton, "trash", 13);
+        if (deleteIndex < 0) {
+            deleteButton->setEnabled(false);
+            deleteButton->setToolTip(
+                QStringLiteral("This repository is not on this machine"));
+        } else {
+            const RepositoryRecord &target = m_repositories.at(deleteIndex);
+            deleteButton->setToolTip(
+                QStringLiteral("Delete %1/%2 from this machine")
+                    .arg(target.owner, target.name));
+            connect(deleteButton, &QPushButton::clicked, this,
+                    [this, owner, name] {
+                        // Re-resolve by owner/name rather than capturing the
+                        // index: it is only valid for the m_repositories
+                        // snapshot this row was built from, which a
+                        // fork/mirror/delete elsewhere may since have shifted.
+                        int index = findNetworkRepoIndex(owner, name, true);
+                        if (index < 0)
+                            index = findNetworkLocalForkIndex(owner, name);
+                        if (index >= 0)
+                            deleteRepositoryAt(index, false);
+                        // Next tick: re-listing the table tears down this very
+                        // button's row, so don't do it from inside its own
+                        // click handler. Runs even when the record had already
+                        // gone, so the row stops offering a stale action.
+                        QTimer::singleShot(0, this,
+                                           [this] { refreshNetworkReposPage(); });
+                    });
+        }
+        actionRow->addSpacing(10);
+        actionRow->addWidget(deleteButton);
         actionRow->addStretch();
         m_networkReposTable->setCellWidget(row, 3, actions);
 
