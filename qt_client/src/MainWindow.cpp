@@ -640,6 +640,11 @@ void MainWindow::runDeferredStartup()
     // recomputes from the locally tracked window on every launch via
     // buildBreadcrumb's refreshCodexUsageRemaining() call).
     refreshClaudeCodeUsage();
+
+    // Hourly snapshot of the live database to the local drive (Settings -> Data
+    // -> Automatic backups). Armed for every launch, headless included — an
+    // unattended mirror is exactly where a lost identity key hurts most.
+    startAutoBackups();
 }
 
 void MainWindow::applyTheme()

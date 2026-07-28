@@ -135,6 +135,7 @@ class QProgressBar;
 class QPropertyAnimation;
 class QPushButton;
 class QScrollArea;
+class QSpinBox;
 class QStackedWidget;
 class QSystemTrayIcon;
 class QTableWidget;
@@ -1059,6 +1060,20 @@ private:
     void setDataStatus(const QString &text, bool error = false);
     void stopLiveServicesForDataOp();
     void relaunchForkMesh();
+    // Settings -> Data tab: hourly local snapshots of the live database.
+    // startAutoBackups() arms the hourly timer (and catches up when the app was
+    // shut for longer than an hour), takeBackupNow() runs one `tar` in the
+    // background, and restoreConfigArchive() unpacks any snapshot over the live
+    // data through the same swap-and-relaunch path as a manual import.
+    void startAutoBackups();
+    void takeBackupNow(bool automatic);
+    void refreshBackupTable();
+    void pruneOldBackups();
+    void restoreConfigArchive(const QString &archivePath);
+    void setBackupStatus(const QString &text, bool error = false);
+    QString backupRoot() const;
+    bool autoBackupEnabled() const;
+    int backupKeepCount() const;
     QWidget *buildNotificationsSection();
     // Network leaderboards (issue #11): fetched from /api/network/leaderboards.
     QWidget *buildLeaderboardsSection();
@@ -4128,6 +4143,14 @@ private:
     // Settings -> Data tab: storage breakdown table and backup/cleanup status.
     QTableWidget *m_dataDirTable = nullptr;
     QLabel *m_dataStatus = nullptr;
+    // Settings -> Data tab: the hourly backup panel.
+    QTableWidget *m_backupTable = nullptr;
+    QCheckBox *m_backupEnabledCheck = nullptr;
+    QSpinBox *m_backupKeepSpin = nullptr;
+    QLabel *m_backupStatus = nullptr;
+    QPushButton *m_backupNowButton = nullptr;
+    QTimer *m_backupTimer = nullptr;     // hourly tick
+    QProcess *m_backupProcess = nullptr; // the in-flight `tar` (one at a time)
     // Import-a-repo (GitHub/GitLab) controls.
     QLineEdit *m_importUrlEdit = nullptr;
     QPushButton *m_importButton = nullptr;

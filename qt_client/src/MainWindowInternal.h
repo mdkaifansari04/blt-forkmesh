@@ -137,6 +137,7 @@
 #include <QSize>
 #include <QSysInfo>
 #include <QSplitter>
+#include <QSpinBox>
 #include <QStackedWidget>
 #include <QStringList>
 #include <QStringListModel>
@@ -2484,6 +2485,13 @@ const QString kAutoSyncOnMergeSetting = QStringLiteral("repos/autoSyncOnMerge");
 // desktop; seeded on for headless installs in main.cpp (an operator-run VM has
 // no one around to click "update").
 const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
+// Hourly local snapshots of the live database (Settings -> Data -> Automatic
+// backups). On by default: the snapshot is small (identity, account and every
+// local store, minus the re-downloadable mirrors) and it is the only thing
+// standing between a corrupted store and a lost account key.
+const QString kAutoBackupEnabledSetting = QStringLiteral("backup/hourlyEnabled");
+// How many hourly snapshots are kept before the oldest is pruned.
+const QString kAutoBackupKeepSetting = QStringLiteral("backup/keepCount");
 // When a new UI stall is detected, hand its backtrace to a coding agent so the
 // freeze gets fixed automatically. On by default (adhoc #205).
 const QString kAutoAgentOnStallSetting =

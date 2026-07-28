@@ -233,6 +233,8 @@ set(FORKMESH_APP_SOURCES
     src/StallWatchdog.cpp
     src/SystemStats.h
     src/SystemStats.cpp
+    src/LocalBackupStore.h
+    src/LocalBackupStore.cpp
     src/MainWindowInternal.h
     src/MainWindow.h
     src/MainWindow.cpp
@@ -508,6 +510,8 @@ if(FORKMESH_BUILD_TESTS)
         src/ActionStore.cpp
         src/RepoSecurity.h
         src/RepoSecurity.cpp
+        src/LocalBackupStore.h
+        src/LocalBackupStore.cpp
         src/ReferenceLinks.h
         src/ChatHistoryLimits.h
         src/ChatVisitorPresence.h
