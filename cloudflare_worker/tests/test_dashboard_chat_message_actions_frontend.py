@@ -61,7 +61,7 @@ def test_delete_is_confirmed_without_blocking_the_world_embed():
     assert "window.confirm" not in code
     assert "chat-delete-confirm" in code
     assert 'messageActionButton("Cancel"' in code
-    assert 'messageActionButton("Delete", () => confirmMessageDelete(record), true)' in code
+    assert "confirmMessageDelete(record)" in code
 
 
 def test_edited_messages_are_marked_for_readers():

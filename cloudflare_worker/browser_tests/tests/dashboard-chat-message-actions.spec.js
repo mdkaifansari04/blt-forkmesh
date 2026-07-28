@@ -62,7 +62,7 @@ test("dashboard chat edits and deletes your own message", async ({ page }) => {
   // an "(edited)" marker so readers see it was rewritten.
   await row.getByRole("button", { name: "Edit message" }).click();
   await row.locator("textarea").fill("second draft of my message");
-  await row.getByRole("button", { name: "Save message" }).click();
+  await row.getByRole("button", { name: "Save edit" }).click();
   await expect(row).toContainText("second draft of my message");
   await expect(row.locator(".chat-edited")).toHaveText("(edited)");
   await expect(row.locator("textarea")).toHaveCount(0);
@@ -72,9 +72,7 @@ test("dashboard chat edits and deletes your own message", async ({ page }) => {
   // Delete: confirmed inline (never a blocking window.confirm, which would
   // freeze the World's same-origin chat embed), then the row is gone.
   await row.getByRole("button", { name: "Delete message" }).click();
-  await row.locator(".chat-delete-confirm")
-    .getByRole("button", { name: "Delete message" })
-    .click();
+  await row.getByRole("button", { name: "Confirm delete" }).click();
   await expect(page.locator("#fullChatMessages")).not.toContainText(
     "second draft of my message",
   );

@@ -1100,7 +1100,7 @@
   // sender id matches the original message's, so the same guard is applied
   // here before anything is broadcast.
 
-  function messageActionButton(label, onClick, danger = false) {
+  function messageActionButton(label, onClick, { danger = false, ariaLabel } = {}) {
     const button = document.createElement("button");
     button.type = "button";
     button.className =
@@ -1108,7 +1108,7 @@
       "hover:bg-secondary " +
       (danger ? "text-destructive" : "text-muted-foreground hover:text-foreground");
     button.textContent = label;
-    button.setAttribute("aria-label", `${label} message`);
+    button.setAttribute("aria-label", ariaLabel || `${label} message`);
     button.addEventListener("click", onClick);
     return button;
   }
@@ -1123,7 +1123,7 @@
       actions.append(messageActionButton("Edit", () => beginMessageEdit(record)));
     }
     actions.append(
-      messageActionButton("Delete", () => requestMessageDelete(record), true)
+      messageActionButton("Delete", () => requestMessageDelete(record), { danger: true })
     );
     record.actionsEl = actions;
     return actions;
@@ -1177,8 +1177,10 @@
     textarea.setAttribute("aria-label", "Edit message");
     const controls = document.createElement("div");
     controls.className = "flex items-center gap-2";
-    const cancel = messageActionButton("Cancel", () => closeMessageEditor(record));
-    const save = messageActionButton("Save", () => saveMessageEdit(record, textarea.value));
+    const cancel = messageActionButton(
+      "Cancel", () => closeMessageEditor(record), { ariaLabel: "Cancel edit" });
+    const save = messageActionButton(
+      "Save", () => saveMessageEdit(record, textarea.value), { ariaLabel: "Save edit" });
     textarea.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -1236,8 +1238,9 @@
       confirmBar.remove();
       record.confirmEl = null;
       showElement(record.actionsEl, true);
-    });
-    const confirm = messageActionButton("Delete", () => confirmMessageDelete(record), true);
+    }, { ariaLabel: "Cancel delete" });
+    const confirm = messageActionButton(
+      "Delete", () => confirmMessageDelete(record), { danger: true, ariaLabel: "Confirm delete" });
     confirmBar.append(label, cancel, confirm);
     record.confirmEl = confirmBar;
     record.el.append(confirmBar);
