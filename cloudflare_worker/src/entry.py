@@ -2524,13 +2524,12 @@ def _attention_email_with_logs(text, html, log_tail):
 
 
 def _status_alert_manage_url(system_id=""):
-    safe_id = re.sub(
-        r"[^a-z0-9_-]+", "-",
-        str(system_id or "").strip().lower(),
-    ).strip("-")
+    # Alert mail is controlled from the flagship repository's owner-only
+    # Settings tab. The old /status#system-* destination only explained the
+    # failing check and offered no way to enable/disable the alert.
     return (
-        "https://forkmesh.com/status#system-" + safe_id
-        if safe_id else "https://forkmesh.com/status"
+        "https://forkmesh.com/forkmesh/forkmesh/settings"
+        "#operational-alerts"
     )
 
 
@@ -8424,6 +8423,14 @@ WORLD_QA_CARDS = (
      "Fediverse leaves Loading, the card is slightly larger, no separate "
      "activity dot remains, and the darker node-style border reflects account "
      "activity recency."),
+    ("qt-host-live-capabilities", "Qt live host and agent CLI status",
+     "Add or reopen a saved Qt Host. Confirm its row keeps checking while SSH "
+     "comes online, distinguishes provisioning, unreachable, and rejected-key "
+     "states, then shows Claude and Codex as Installed or Not installed."),
+    ("alert-management-link", "Alert email management destination",
+     "Open Manage this alert from a component or scheduled-job email. Confirm "
+     "it opens forkmesh/forkmesh Settings, scrolls to Operational alerts, and "
+     "focuses the checkbox used to enable or disable those emails."),
 )
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
 
