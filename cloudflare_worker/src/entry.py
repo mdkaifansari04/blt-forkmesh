@@ -8431,6 +8431,10 @@ WORLD_QA_CARDS = (
      "Open Manage this alert from a component or scheduled-job email. Confirm "
      "it opens forkmesh/forkmesh Settings, scrolls to Operational alerts, and "
      "focuses the checkbox used to enable or disable those emails."),
+    ("qa-history-routing", "QA history tabs and routing",
+     "Use the physical Cards, Pass, Fail, and Unsure tabs. Page the shared task "
+     "lists, select a task, then as an authorized maintainer send one back to "
+     "What we're building and another into forkmesh/forkmesh issues."),
 )
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
 
