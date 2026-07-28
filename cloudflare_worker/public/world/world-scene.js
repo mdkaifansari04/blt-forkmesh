@@ -2329,6 +2329,8 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:twitter-feed", task: "ForkMesh X posts on the Twitter board", estimate: "ready for deploy · in QA", done: true },
   { key: "done:fresh-code-surge", task: "Restore verified Fresh Code beam + shockwave", estimate: "deployed", done: true },
   { key: "done:chest-fediverse", task: "Fix chest Fedi load + activity border", estimate: "deployed", done: true },
+  { key: "done:chest-auth-refresh", task: "Reload chest Fedi after guest → account", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:add-wallet-route", task: "Add Wallet opens payout editor", estimate: "ready for deploy · in QA", done: true },
   { key: "done:qt-host-probes", task: "Live host + Claude/Codex capability checks", estimate: "deployed", done: true },
   { key: "done:alert-management-link", task: "Admin-only alerts + exact email deep link", estimate: "ready for deploy · in QA", done: true },
   { key: "done:qa-history-routing", task: "QA result tabs + Todo/Issue routing", estimate: "deployed", done: true },
@@ -18363,6 +18365,8 @@ export function createWorldScene({
   }
 
   function updateIdentity(nextIdentity) {
+    const previousName = String(identity.name || "").trim().toLowerCase();
+    const previousStatus = String(identity.accountStatus || "Guest");
     Object.assign(identity, nextIdentity);
     // The visitor's own chest reads exactly like everyone else's: their live
     // activity ticket wins, and the directory record fills the rest in.
@@ -18376,6 +18380,30 @@ export function createWorldScene({
       identity.nodes?.length || 0,
     );
     updatePlayerLabel(playerLabel, identity);
+    const nextName = String(identity.name || "").trim().toLowerCase();
+    const nextStatus = String(identity.accountStatus || "Guest");
+    if (
+      nextName &&
+      (nextName !== previousName || nextStatus !== previousStatus)
+    ) {
+      const loadingProfile = {
+        state: "loading",
+        account: nextName,
+        handle: `@${nextName}`,
+      };
+      player.userData.fediverseProfile = loadingProfile;
+      officeLobbyPlayer.userData.fediverseProfile = loadingProfile;
+      updateAvatarBadge(THREE, player, badgeIdentity, false);
+      updateAvatarBadge(THREE, officeLobbyPlayer, badgeIdentity, false);
+      queueMicrotask(() =>
+        onFediverseProfile({
+          peerId: identity.id,
+          name: nextName,
+          accountStatus: nextStatus,
+          self: true,
+        }),
+      );
+    }
     if (identity.isAdmin !== true) {
       remotePlayers.forEach((avatar, peerId) => {
         removeRemoteModerationControls(avatar, peerId);

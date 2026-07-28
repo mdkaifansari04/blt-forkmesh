@@ -370,6 +370,11 @@ def test_unified_chest_card_uses_public_profile_wallet_and_explicit_follow():
     ):
         assert contract in SCENE
     assert '"account-activity-light"' not in SCENE
+    assert 'window.location.assign("/dashboard/settings/payout")' in APP
+    assert "const previousName = String(identity.name" in SCENE
+    assert "nextName !== previousName || nextStatus !== previousStatus" in SCENE
+    assert "player.userData.fediverseProfile = loadingProfile;" in SCENE
+    assert "onFediverseProfile({" in SCENE
     # The unified card is loaded when an avatar is registered; there are no
     # runtime mode buttons to hide identity fields from seated members.
     register = SCENE[

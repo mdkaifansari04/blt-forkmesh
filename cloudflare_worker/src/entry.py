@@ -8377,7 +8377,7 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-3"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-4"
 WORLD_QA_CARDS = (
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
@@ -8537,6 +8537,11 @@ WORLD_QA_CARDS = (
      "text, age, likes, and reposts render. If X returns no public timeline, "
      "confirm the board explains why and the Engineering Human TODO board "
      "shows the read-only X API setup action."),
+    ("chest-auth-profile-reload", "Authenticated chest profile reload",
+     "Open the World while signed in and wait for the temporary guest identity "
+     "to become your account. Confirm the chest changes from Loading to your "
+     "actual @account Fediverse details without a page refresh. On a walletless "
+     "self card, select Add Wallet and confirm the payout editor opens."),
 )
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
 

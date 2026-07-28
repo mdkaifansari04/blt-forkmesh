@@ -210,8 +210,8 @@ the implementation and its focused verification are complete.
 - [x] Identify and delete only the 54 repositories imported in that batch after verifying the exact cohort, temporarily isolating it in the World, and preserving a checksum-verified upstream/HEAD recovery archive.
 - [ ] Move Marketing desks to the front windows, face them outward, correct chair orientation, and use small desktop name plaques.
 - [ ] Crop and embed the supplied ForkMesh cube logo beneath the epoxy surface of the round Marketing table.
-- [ ] Fix the member chest Fediverse feed when it reports unavailable.
-- [ ] Make Add wallet open the signed-in user's profile wallet editor.
+- [x] Fix the member chest Fediverse feed when it reports unavailable.
+- [x] Make Add wallet open the signed-in user's profile wallet editor.
 - [x] Allow all users to enter the building.
 - [x] Keep the full Marketing tasks board blank unless someone is in the room.
 - [x] Stop the mobile world view from refreshing while the user moves.

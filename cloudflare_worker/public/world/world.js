@@ -5412,7 +5412,7 @@ class ForkMeshWorld extends HTMLElement {
             return;
           }
           if (self) {
-            window.location.assign("/dashboard/settings#profile");
+            window.location.assign("/dashboard/settings/payout");
             return;
           }
           this.toast("This member has not added a Solana wallet yet.");
