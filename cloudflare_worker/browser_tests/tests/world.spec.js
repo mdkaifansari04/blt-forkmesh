@@ -2047,6 +2047,76 @@ test("Office lobby marine aquarium is visible, ambient, and animated", async ({
   expect(second.lightIntensity).not.toBe(first.lightIntensity);
 });
 
+test("aquarium blocks lobby movement and double-click travel", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-aquarium-collision");
+  await waitForWorld(page);
+  const placeAtGlass = () =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      shell.world.enterOfficeLobby({ floorId: "lobby" });
+      shell.world.setCameraView({
+        mode: "third-person",
+        yaw: Math.PI / 2,
+        pitch: 0.35,
+        zoom: 0.9,
+      });
+      const interior = shell.world.scene.getObjectByName(
+        "forkmesh-office-interior",
+      );
+      const position = interior.localToWorld(
+        shell.world.player.position.clone().set(-79.7, 0.38, -10.5),
+      );
+      shell.world.player.position.copy(position);
+      shell.world.setPaused(false);
+    });
+
+  const readLocalPosition = () =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      const interior = shell.world.scene.getObjectByName(
+        "forkmesh-office-interior",
+      );
+      return interior.worldToLocal(
+        shell.world.player.getWorldPosition(shell.world.player.position.clone()),
+      ).toArray();
+    });
+
+  await placeAtGlass();
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setControl("forward", true);
+  });
+  await page.waitForTimeout(450);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setControl("forward", false);
+  });
+  const walked = await readLocalPosition();
+
+  await placeAtGlass();
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const canvas = shell.world.renderer.domElement;
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior",
+    );
+    const target = interior.localToWorld(
+      shell.world.player.position.clone().set(-82.9, 0.38, -10.5),
+    );
+    target.project(shell.world.camera);
+    const bounds = canvas.getBoundingClientRect();
+    canvas.dispatchEvent(new MouseEvent("dblclick", {
+      bubbles: true,
+      button: 0,
+      clientX: bounds.left + (target.x * 0.5 + 0.5) * bounds.width,
+      clientY: bounds.top + (-target.y * 0.5 + 0.5) * bounds.height,
+    }));
+  });
+  await page.waitForTimeout(450);
+  const dashed = await readLocalPosition();
+  const aquariumFrontLimit = -81.24 + 0.46;
+
+  expect(walked[0]).toBeGreaterThanOrEqual(aquariumFrontLimit);
+  expect(dashed[0]).toBeGreaterThanOrEqual(aquariumFrontLimit);
+});
+
 test("Office cinematic reef remains composed with reduced motion", async ({
   page,
 }) => {

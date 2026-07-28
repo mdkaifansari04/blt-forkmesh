@@ -109,6 +109,15 @@ const OFFICE_INTERIOR_EXIT_Z =
 const OFFICE_ELEVATOR_HALF_WIDTH = 5;
 const OFFICE_ELEVATOR_HALF_DEPTH = 4;
 const OFFICE_ELEVATOR_CUT_MARGIN = 0.35;
+// The reef is a scene-owned lobby exhibit rather than part of the reusable
+// tower shell. Keep its physical footprint beside its scene integration so
+// every movement path observes the same cabinet and glass boundary.
+const OFFICE_AQUARIUM_BOUNDS = Object.freeze({
+  minX: -84.56,
+  maxX: -81.24,
+  minZ: -24.3,
+  maxZ: 3.3,
+});
 const LIGHT_LEVEL_MIN = 40;
 const LIGHT_LEVEL_MAX = 140;
 const LIGHT_LEVEL_DEFAULT = 100;
@@ -170,6 +179,27 @@ const WORLD_SPACE_FLOORS = Object.freeze({
   central: 0.38,
   west: 0.38,
 });
+
+function pointHitsOfficeAquarium(floorId, x, z, radius = 0) {
+  if (floorId !== "lobby") return false;
+  const px = Number(x);
+  const pz = Number(z);
+  const margin = Math.max(0, Number(radius) || 0);
+  if (!Number.isFinite(px) || !Number.isFinite(pz)) return false;
+  return (
+    px >= OFFICE_AQUARIUM_BOUNDS.minX - margin &&
+    px <= OFFICE_AQUARIUM_BOUNDS.maxX + margin &&
+    pz >= OFFICE_AQUARIUM_BOUNDS.minZ - margin &&
+    pz <= OFFICE_AQUARIUM_BOUNDS.maxZ + margin
+  );
+}
+
+function officeScenePointIsWalkable(floorId, x, z, radius) {
+  return (
+    officeInteriorPointIsWalkable(floorId, x, z, radius) &&
+    !pointHitsOfficeAquarium(floorId, x, z, radius)
+  );
+}
 
 function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
   const px = Number(x);
@@ -15767,7 +15797,7 @@ export function createWorldScene({
   function nearestOfficeWalkablePosition(floorId, localPosition) {
     const origin = localPosition.clone();
     if (
-      officeInteriorPointIsWalkable(
+      officeScenePointIsWalkable(
         floorId,
         origin.x,
         origin.z,
@@ -15786,7 +15816,7 @@ export function createWorldScene({
         const x = origin.x + Math.cos(angle) * distance;
         const z = origin.z + Math.sin(angle) * distance;
         if (
-          officeInteriorPointIsWalkable(
+          officeScenePointIsWalkable(
             floorId,
             x,
             z,
@@ -16135,7 +16165,7 @@ export function createWorldScene({
         z <= OFFICE_DOORWAY_APPROACH_Z + 0.08;
       return (
         inLobbyDoorway ||
-        officeInteriorPointIsWalkable(
+        officeScenePointIsWalkable(
           officeCurrentFloorId,
           x,
           z,
@@ -23560,7 +23590,7 @@ export function createWorldScene({
     if (officeSceneMode === "lobby") {
       const localPoint = officeInterior.worldToLocal(point.clone());
       if (
-        !officeInteriorPointIsWalkable(
+        !officeScenePointIsWalkable(
           officeCurrentFloorId,
           localPoint.x,
           localPoint.z,

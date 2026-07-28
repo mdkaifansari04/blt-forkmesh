@@ -116,3 +116,11 @@ def test_cinematic_reef_uses_curved_motion_and_initialized_atmosphere():
     assert "forkmesh-office-aquarium-particles" in aquarium
     assert "forkmesh-office-aquarium-water-surface" in aquarium
     assert "forkmesh-office-aquarium-caustics" in aquarium
+
+
+def test_aquarium_registers_a_lobby_only_collision_footprint():
+    assert "OFFICE_AQUARIUM_BOUNDS" in SCENE
+    assert "function officeScenePointIsWalkable" in SCENE
+    assert 'floorId !== "lobby"' in SCENE
+    assert "officeInteriorPointIsWalkable(" in SCENE
+    assert "pointHitsOfficeAquarium(" in SCENE
