@@ -12346,12 +12346,17 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
             // The node is up and authenticated to the mesh; give it this
             // device's agent access too so it can run sessions immediately
             // (adhoc #418). A failure here does not undo the mirror itself.
+            // With no login to copy the CLIs are still installed, so the
+            // mirror only needs its own sign-in rather than everything.
+            const bool copyLogins =
+                !forkmesh::control::agentCliCredentialsAreEmpty(
+                    localAgentCliCredentials());
             if (m_vultrStatus)
                 m_vultrStatus->setText(QString::fromUtf8(
                     "Installing Claude Code and Codex\xE2\x80\xA6"));
             runAgentCliInstall(
                 node, ip, QStringLiteral("root"), QString(), identityFile,
-                /*copyCredentials=*/true,
+                copyLogins,
                 [this, done](bool agentOk, QString agentMessage) {
                     if (!m_vultrProvisionActive)
                         return;
