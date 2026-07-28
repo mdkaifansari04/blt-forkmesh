@@ -427,6 +427,8 @@ install(PROGRAMS
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/cloudflare_bootstrap.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/cloudflare_tunnel_bootstrap.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/cloudflared_install.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/headless_mirror_refresh.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/hosted_repository_sync.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/mirror_gateway.py"
     DESTINATION "${FORKMESH_RESOURCE_INSTALL_ROOT}/tools")
 install(FILES

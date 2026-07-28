@@ -8382,8 +8382,15 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-13"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-14"
 WORLD_QA_CARDS = (
+    ("mirror-service-counters", "Mirror clone and website counters",
+     "Open the repository Mirror nodes table and the matching World cabinet. "
+     "Confirm mirror6 shows numeric Clones and Websites values, including "
+     "truthful zeroes before its first request. Browse one repository page and "
+     "complete one clone through an eligible direct mirror, wait for its signed "
+     "catalog refresh, and confirm only the corresponding counters increase. "
+     "Provision or restart a mirror and confirm both values remain available."),
     ("mirror-actions-cabinet", "Mirror cabinet Actions runs",
      "Sign in as a repository owner or organization writer and walk behind "
      "the active mirror cabinet. Confirm recent Actions runs show running, "

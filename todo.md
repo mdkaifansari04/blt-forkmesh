@@ -198,7 +198,7 @@ the implementation and its focused verification are complete.
 - [x] Require successful Vultr provisioning to wait for the mirror's signed public catalog record instead of stopping at SSH/systemd success.
 - [x] Use 1 GB as the minimum Vultr mirror plan for all future provisioning.
 - [x] Persist and show each managed host's provider, plan/type, display name, and estimated cost in the Qt Hosts list.
-- [ ] Restore each node's Clones and Websites metrics and verify that newly provisioned mirrors report both values.
+- [x] Restore each node's Clones and Websites metrics and verify that newly provisioned mirrors report both values.
 - [x] Queue Claude organization-agent work only on mirrors that have reported the Claude Code binary installed; currently only mirror6 is eligible.
 - [x] Restore the World fresh-code effect.
 - [x] Add an Executive-team-only Office floor with a strategy room, organization map, decision table, chairs, collision footprint, elevator destination, and attendance label.

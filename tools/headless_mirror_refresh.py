@@ -65,6 +65,10 @@ MAX_PULL_METADATA_BYTES = 256 * 1024
 MAX_ACTIONS_CONFIGURATION_BYTES = 1024
 MAX_ACTIONS_STATE_BYTES = 4096
 MAX_ACTIONS_STATE_LEASE_MS = 15 * 60 * 1000
+SERVICE_COUNTERS_FILE = "service-counters.json"
+SERVICE_COUNTERS_TYPE = "forkmesh.mirror-service-counters"
+MAX_SERVICE_COUNTERS_BYTES = 1024 * 1024
+MAX_SERVICE_COUNTER = 999_999_999_999
 MAX_MERGE_QUARANTINE_OBJECTS = 100_000
 MAX_MERGE_QUARANTINE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_LOCAL_MERGE_JOBS = 10_000
@@ -1571,10 +1575,9 @@ def _sample_repository_statistics(
 ) -> dict[str, str]:
     """Read public, repository-scoped facts from the validated bare source.
 
-    Each fact fails independently. Headless mirrors have no controller working
-    copy and the gateway currently has no durable per-repository request
-    counters, so worktree/clones/website fields intentionally remain absent
-    instead of being published as misleading zeroes.
+    Each fact fails independently. Gateway service counters are content-free,
+    repository-scoped totals persisted beside the protected gateway config.
+    Their absence remains unknown rather than becoming a misleading zero.
     """
     result: dict[str, str] = {}
 
@@ -1604,11 +1607,62 @@ def _sample_repository_statistics(
     sample("discussionCount", lambda: _source_discussion_count(config))
     sample("artifactCount", lambda: _source_artifact_count(config))
     try:
+        result.update(_sample_gateway_service_counters(config))
+    except Exception:
+        pass
+    try:
         result.update(_source_commit_identity(config))
     except Exception:
         # Same independence rule as the counts above: an unreadable commit
         # message must not cost the mirror its lease renewal.
         pass
+    return result
+
+
+def _sample_gateway_service_counters(
+    config: RefreshConfig,
+) -> dict[str, str]:
+    path = config.gateway_config_path.parent / SERVICE_COUNTERS_FILE
+    try:
+        info = path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or not 0 < info.st_size <= MAX_SERVICE_COUNTERS_BYTES
+        ):
+            return {}
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schemaVersion", "type", "repositories"}
+        or value.get("schemaVersion") != SCHEMA_VERSION
+        or value.get("type") != SERVICE_COUNTERS_TYPE
+        or not isinstance(value.get("repositories"), dict)
+    ):
+        return {}
+    key = config.node_owner.lower() + "/" + config.repository_name.lower()
+    row = value["repositories"].get(key)
+    if (
+        not isinstance(row, dict)
+        or set(row) != {"clonesServed", "websiteServed", "updatedAt"}
+    ):
+        return {}
+    result: dict[str, str] = {}
+    for field in ("clonesServed", "websiteServed"):
+        raw = row.get(field)
+        if isinstance(raw, bool):
+            return {}
+        try:
+            count = int(raw)
+        except (TypeError, ValueError, OverflowError):
+            return {}
+        if not 0 <= count <= MAX_SERVICE_COUNTER:
+            return {}
+        result[field] = str(count)
     return result
 
 

@@ -2472,7 +2472,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:member-unified-card", task: "Unified identity + Fedi + wallet QR card", estimate: "deployed", done: true },
   { key: "task:mirror2-agent-claim", task: "Retire mirror2 agent route; use ready mirror6", estimate: "superseded safely", done: true },
   { key: "task:review-open-prs", task: "Review every open PR + disposition", estimate: "queued", done: false },
-  { key: "task:node-service-metrics", task: "Restore node Clones + Websites metrics", estimate: "in progress", done: false },
+  { key: "task:node-service-metrics", task: "Restore node Clones + Websites metrics", estimate: "ready for deploy · in QA", done: true },
   { key: "task:cabinet-action-runs", task: "Cabinet backs show Actions runs + logs", estimate: "ready for deploy · in QA", done: true },
   { key: "task:repo-social-orbits", task: "Test follower + contributor avatar orbits", estimate: "deployed · verified", done: true },
   { key: "task:issue-agent-models", task: "Issue buttons for Claude/Codex model choice", estimate: "deployed · verified", done: true },
