@@ -12936,6 +12936,7 @@ export function createWorldScene({
   onOrgTeamAssign = () => {},
   onFediverseProfile = () => {},
   onFediverseFollow = () => {},
+  onAvatarSelect = () => {},
   onAvatarWalletAction = () => {},
   onLayoutObjectMoved = () => {},
   onLayoutObjectSelect = () => {},
@@ -14682,6 +14683,21 @@ export function createWorldScene({
   const moderationControlKeys = new Map();
   const orgTeamActions = new WeakMap();
   const orgTeamControlKeys = new Map();
+  const avatarSelections = new WeakMap();
+  const avatarSelectionBounds = new THREE.Box3();
+  const avatarSelectionHighlight = new THREE.Box3Helper(
+    avatarSelectionBounds,
+    "#77d9ff",
+  );
+  avatarSelectionHighlight.name = "forkmesh-avatar-selection-highlight";
+  avatarSelectionHighlight.visible = false;
+  avatarSelectionHighlight.renderOrder = 41;
+  avatarSelectionHighlight.material.transparent = true;
+  avatarSelectionHighlight.material.opacity = 0.42;
+  avatarSelectionHighlight.material.depthTest = false;
+  avatarSelectionHighlight.material.depthWrite = false;
+  scene.add(avatarSelectionHighlight);
+  let activeAvatarSelection = null;
   // Badge plane and tab buttons -> the avatar they belong to, so one click
   // handler can switch chest tabs and hit the follow pill.
   const chestControls = new WeakMap();
@@ -20166,11 +20182,19 @@ export function createWorldScene({
   // It contains identity, Fediverse and wallet controls without mode tabs.
   function registerAvatarChestControls(avatar, peerId) {
     if (!avatar?.userData?.badge || avatar.userData.chestRegistered) return;
-    const meshes = [avatar.userData.badge];
-    meshes.forEach((mesh) => {
-      chestControls.set(mesh, { avatar, peerId: String(peerId || "") });
-      interactive.push(mesh);
+    const meshes = [];
+    avatar.traverse((child) => {
+      if (child.isMesh) meshes.push(child);
     });
+    meshes.forEach((mesh) => {
+      avatarSelections.set(mesh, { avatar, peerId: String(peerId || "") });
+      if (!interactive.includes(mesh)) interactive.push(mesh);
+    });
+    chestControls.set(avatar.userData.badge, {
+      avatar,
+      peerId: String(peerId || ""),
+    });
+    avatar.userData.avatarSelectionMeshes = meshes;
     avatar.userData.chestRegistered = true;
     if (!avatar.userData.fediverseProfile) {
       avatar.userData.fediverseProfile = { state: "loading" };
@@ -20191,13 +20215,81 @@ export function createWorldScene({
 
   function unregisterAvatarChestControls(avatar) {
     if (!avatar?.userData?.chestRegistered) return;
-    [avatar.userData.badge].forEach((mesh) => {
+    (avatar.userData.avatarSelectionMeshes || []).forEach((mesh) => {
       if (!mesh) return;
+      avatarSelections.delete(mesh);
       chestControls.delete(mesh);
       const index = interactive.indexOf(mesh);
       if (index >= 0) interactive.splice(index, 1);
     });
+    delete avatar.userData.avatarSelectionMeshes;
+    if (activeAvatarSelection === avatar) setActiveAvatarSelection(null);
     avatar.userData.chestRegistered = false;
+  }
+
+  function setActiveAvatarSelection(avatar) {
+    activeAvatarSelection = avatar || null;
+    refreshAvatarSelectionHighlight();
+  }
+
+  function refreshAvatarSelectionHighlight() {
+    if (
+      !activeAvatarSelection ||
+      !objectIsEffectivelyVisible(activeAvatarSelection)
+    ) {
+      avatarSelectionHighlight.visible = false;
+      return;
+    }
+    avatarSelectionBounds.setFromObject(activeAvatarSelection);
+    avatarSelectionHighlight.visible = !avatarSelectionBounds.isEmpty();
+  }
+
+  function avatarSelectionPayload(control) {
+    const avatar = control?.avatar;
+    const member = avatar?.userData?.badgeIdentity || {};
+    const profile = avatar?.userData?.fediverseProfile || {};
+    const assignment = avatar?.userData?.orgTeamAssignment || {};
+    return {
+      peerId: String(control?.peerId || "").slice(0, 96),
+      self: String(control?.peerId || "") === String(identity.id || ""),
+      name: String(member.name || "World visitor").slice(0, 32),
+      accountStatus: String(member.accountStatus || "Guest").slice(0, 32),
+      flag: String(member.flag || "").slice(0, 8),
+      countryCode: String(member.countryCode || "").slice(0, 2),
+      browser: String(member.browser || "Browser").slice(0, 32),
+      os: String(member.os || "Device").slice(0, 32),
+      status: String(member.status || "exploring").slice(0, 64),
+      statusEmoji: String(member.statusEmoji || "").slice(0, 16),
+      statusNote: String(member.statusNote || "").slice(0, 80),
+      emailVerified: member.emailVerified === true,
+      firstVisitAge: String(member.firstVisitAge || "hidden").slice(0, 24),
+      joinedAt: Math.max(0, Number(member.joinedAt) || 0),
+      visitCount: Math.max(0, Number(member.visitCount) || 0),
+      totalActiveMs: Math.max(0, Number(member.totalActiveMs) || 0),
+      nodes: (Array.isArray(member.nodes) ? member.nodes : [])
+        .map((node) => String(node || "").slice(0, 48))
+        .slice(0, 6),
+      teams: (Array.isArray(assignment.teams) ? assignment.teams : [])
+        .map((team) => String(team || "").slice(0, 40))
+        .slice(0, 12),
+      fediverse:
+        profile.state === "ready"
+          ? {
+              state: "ready",
+              handle: String(profile.fediverse || profile.handle || "")
+                .slice(0, 80),
+              bio: String(profile.bio || "").slice(0, 160),
+              followers: Math.max(0, Number(profile.followers) || 0),
+              following: Math.max(0, Number(profile.following) || 0),
+              posts: (Array.isArray(profile.posts) ? profile.posts : [])
+                .slice(0, 5)
+                .map((post) => ({
+                  label: String(post?.label || post?.title || "").slice(0, 100),
+                  href: String(post?.href || post?.url || "").slice(0, 500),
+                })),
+            }
+          : { state: String(profile.state || "loading").slice(0, 24) },
+    };
   }
 
   /** Attach a loaded (or failed) fediverse card to one avatar's chest. */
@@ -20288,13 +20380,13 @@ export function createWorldScene({
         self: control.peerId === identity.id,
         address: String(avatar.userData.badgeIdentity?.solana || ""),
       });
-      return;
+      return true;
     }
     if (!badgeFollowPillHit(hit.uv)) {
-      return;
+      return false;
     }
     const profile = avatar.userData.fediverseProfile || {};
-    if (profile.state !== "ready" || profile.canFollow !== true) return;
+    if (profile.state !== "ready" || profile.canFollow !== true) return false;
     avatar.userData.fediverseProfile = { ...profile, pending: true };
     renderAvatarBadge(THREE, avatar, avatar.userData.badgeRemote === true);
     onFediverseFollow({
@@ -20302,6 +20394,7 @@ export function createWorldScene({
       name: String(profile.account || avatar.userData.badgeIdentity?.name || ""),
       following: profile.isFollowing === true,
     });
+    return true;
   }
 
   function removeRemoteModerationControls(avatar, peerId) {
@@ -20406,6 +20499,7 @@ export function createWorldScene({
       delete avatar.userData.teamBadges;
     }
     orgTeamControlKeys.delete(String(peerId || ""));
+    delete avatar.userData.orgTeamAssignment;
   }
 
   // The organization-admin counterpart of the moderation plaques: one plaque
@@ -20442,6 +20536,11 @@ export function createWorldScene({
     }
     removeRemoteOrgTeamControl(avatar, peerId);
     if (!assignment) return;
+    avatar.userData.orgTeamAssignment = {
+      org: assignment.org,
+      member: assignment.member,
+      teams: [...assignment.teams],
+    };
 
     if (assignment.canManage) {
       const controls = createAvatarOrgTeamControl(THREE, assignment);
