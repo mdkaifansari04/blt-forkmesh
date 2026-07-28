@@ -206,7 +206,7 @@ the implementation and its focused verification are complete.
 - [ ] Verify and enforce that non-Engineering organization members cannot start, review, continue, or view Claude/Codex sessions.
 - [ ] Show each node cabinet's Actions runs, logs, and running/done/error state on its back with restrained status animations.
 - [ ] Add an admin-only error-log analytics view that groups equivalent errors and charts their occurrences over the previous 24 hours.
-- [ ] Move the recent roughly 50-repository bulk-import set back onto its own World island before considering deletion.
+- [x] Move the recent roughly 50-repository bulk-import set back onto its own World island before considering deletion.
 - [ ] Identify and delete only the roughly 50 repositories imported in that batch, after verifying the exact targets, isolated island, and recovery path.
 - [ ] Move Marketing desks to the front windows, face them outward, correct chair orientation, and use small desktop name plaques.
 - [ ] Crop and embed the supplied ForkMesh cube logo beneath the epoxy surface of the round Marketing table.

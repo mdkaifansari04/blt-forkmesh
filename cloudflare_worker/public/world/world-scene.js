@@ -10251,9 +10251,11 @@ export function createWorldScene({
   ground.userData.ground = true;
   world.add(ground);
 
-  // Fully hosted imports live on their own repository island. The bridge
-  // overlaps both shorelines, so it is a real, raycastable walking surface
-  // rather than scenery visitors have to teleport across.
+  // Every repository imported from an external provider lives on its own
+  // repository island, whether it is already hosted by a mirror or remains an
+  // external stub. The bridge overlaps both shorelines, so it is a real,
+  // raycastable walking surface rather than scenery visitors have to teleport
+  // across.
   const repositoryIsland = new THREE.Mesh(
     new THREE.CircleGeometry(REPOSITORY_ISLAND_RADIUS, 96),
     makeMaterial(THREE, "#215c42", { roughness: 1 }),
@@ -18421,12 +18423,14 @@ export function createWorldScene({
 
     const layer = new THREE.Group();
     layer.name = "repository-perimeter-portals";
+    const isImportedRepository = (record) =>
+      ["external-import", "hosted-import", "bulk-import"].includes(
+        record?.source,
+      );
     const coreRecords = records.filter(
-      (record) => record.source !== "hosted-import",
+      (record) => !isImportedRepository(record),
     );
-    const hostedRecords = records.filter(
-      (record) => record.source === "hosted-import",
-    );
+    const hostedRecords = records.filter(isImportedRepository);
     [
       ["repository-perimeter-guide", REPOSITORY_EDGE_RADIUS, 0, coreRecords],
       [
@@ -18504,7 +18508,7 @@ export function createWorldScene({
     const portalMeshes = [];
     const orderedRecords = [...coreRecords, ...hostedRecords];
     orderedRecords.forEach((record, index) => {
-      const islandRecord = record.source === "hosted-import";
+      const islandRecord = isImportedRepository(record);
       const cohort = islandRecord ? hostedRecords : coreRecords;
       const cohortIndex = cohort.findIndex(
         (candidate) => candidate.key === record.key,
@@ -18554,14 +18558,18 @@ export function createWorldScene({
       );
       node.rotation.y = -angle - Math.PI / 2;
       if (
-        ["external-import", "hosted-import"].includes(record.source) &&
+        ["external-import", "hosted-import", "bulk-import"].includes(
+          record.source,
+        ) &&
         !previousPortalKeys.has(record.key)
       ) {
         const importedBefore = records
           .slice(0, index)
           .filter(
             (candidate) =>
-              ["external-import", "hosted-import"].includes(candidate.source) &&
+              ["external-import", "hosted-import", "bulk-import"].includes(
+                candidate.source,
+              ) &&
               !previousPortalKeys.has(candidate.key),
           ).length;
         repositoryPortalBornAt.set(

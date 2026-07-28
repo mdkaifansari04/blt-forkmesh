@@ -2724,6 +2724,7 @@ function cleanRepositories(payload) {
             ? Math.min(reportedSizeBytes, 2 ** 50)
             : 0,
         cloneUrl: String(repo.cloneUrl || "").slice(0, 500),
+        hostedSince: Math.max(0, Number(repo.hostedSince) || 0),
         updatedAt: Number(repo.updatedAt || repo.lastSync || 0) || 0,
         status: String(repo.status || "").slice(0, 40),
         externalUrl: String(
@@ -2862,9 +2863,92 @@ function mergeHostedRepositoryImports(repositories, externalRepositories) {
       source: "hosted-import",
     };
   });
+  // The July bulk import predates repository_imports metadata: each imported
+  // repo exists as the same remote clone on mirror2 and mirror3. Recover that
+  // exact 54-repository cohort from its two-node shape, coalesce the duplicate
+  // catalog rows into one portal, and keep the flagship repo out. This is also
+  // the bounded inventory used before any later deletion. The cohort must be
+  // a burst of at least ten two-mirror imports in one ten-minute window, so
+  // single mirror rows, local repos, private repos, and ordinary mirror pairs
+  // are untouched.
+  const legacyBulkGroups = new Map();
+  native.forEach((record, index) => {
+    if (
+      consumed.has(index) ||
+      record?.isPrivate === true ||
+      record?.source !== "remote-clone" ||
+      String(record?.name || "").toLowerCase() === "forkmesh"
+    ) {
+      return;
+    }
+    const mirrorOwner = String(record?.owner || "").toLowerCase();
+    if (!["mirror2", "mirror3"].includes(mirrorOwner)) return;
+    const name = String(record?.name || "").toLowerCase();
+    if (!name) return;
+    const group = legacyBulkGroups.get(name) || [];
+    group.push({ record, index, mirrorOwner });
+    legacyBulkGroups.set(name, group);
+  });
+  const legacyBulkCohorts = new Map();
+  legacyBulkGroups.forEach((group) => {
+    const owners = new Set(group.map((entry) => entry.mirrorOwner));
+    const hosted = group
+      .map((entry) => Number(entry.record?.hostedSince || 0))
+      .filter((value) => Number.isSafeInteger(value) && value > 0);
+    if (
+      !owners.has("mirror2") ||
+      !owners.has("mirror3") ||
+      hosted.length !== group.length
+    ) {
+      return;
+    }
+    const bucket = Math.floor(Math.min(...hosted) / (10 * 60 * 1000));
+    const cohort = legacyBulkCohorts.get(bucket) || [];
+    cohort.push(group);
+    legacyBulkCohorts.set(bucket, cohort);
+  });
+  const legacyBulkCohort = [...legacyBulkCohorts.entries()]
+    .filter(([, groups]) => groups.length >= 10)
+    .sort(
+      (left, right) =>
+        right[1].length - left[1].length || right[0] - left[0],
+    )[0]?.[1] || [];
+  const legacyBulkNames = new Set(
+    legacyBulkCohort.map(
+      (group) => String(group[0]?.record?.name || "").toLowerCase(),
+    ),
+  );
+  const legacyBulkImports = [];
+  legacyBulkGroups.forEach((group, name) => {
+    if (!legacyBulkNames.has(name)) return;
+    const owners = new Set(group.map((entry) => entry.mirrorOwner));
+    if (!owners.has("mirror2") || !owners.has("mirror3")) return;
+    group.forEach(({ index }) => consumed.add(index));
+    const selected = group
+      .slice()
+      .sort(
+        (left, right) =>
+          Number(Boolean(right.record?.liveHost)) -
+            Number(Boolean(left.record?.liveHost)) ||
+          Number(right.record?.updatedAt || 0) -
+            Number(left.record?.updatedAt || 0) ||
+          left.mirrorOwner.localeCompare(right.mirrorOwner),
+      )[0].record;
+    legacyBulkImports.push({
+      ...selected,
+      servingOwner: selected.owner,
+      servingName: selected.name,
+      source: "bulk-import",
+      hostedByForkMesh: true,
+      bulkImport: true,
+      importStatus: "legacy_bulk_import",
+      mirrorOwners: ["mirror2", "mirror3"],
+    });
+  });
   return [
     ...native.filter((_record, index) => !consumed.has(index)),
     ...imports,
+    ...legacyBulkImports,
   ];
 }
 

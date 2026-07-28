@@ -1094,7 +1094,10 @@ def test_repository_world_uses_authorized_https_metadata_and_size_aware_nodes():
     assert "hydrateHostedRepositorySizeMaps" in APP
     assert "repositorySizeTrees" in APP
     assert "repository-mini-size-map:" in SCENE
-    assert 'record.source === "hosted-import"' in SCENE
+    assert '"bulk-import"' in SCENE
+    assert "isImportedRepository(record)" in SCENE
+    assert "legacyBulkGroups" in APP
+    assert 'mirrorOwners: ["mirror2", "mirror3"]' in APP
     assert 'repositoryIsland.name = "hosted-repository-island"' in SCENE
     assert 'repositoryBridge.name = "hosted-repository-bridge"' in SCENE
     assert "REPOSITORY_ISLAND_CENTER_X" in SCENE
@@ -1120,6 +1123,65 @@ def test_repository_world_uses_authorized_https_metadata_and_size_aware_nodes():
     assert 'data-world-repo-filter="frequency" disabled' not in APP
     assert 'data-world-repo-filter="dependency" disabled' not in APP
     assert 'data-world-repo-filter="coverage" disabled' not in APP
+
+
+def test_legacy_bulk_import_pair_is_coalesced_onto_import_island_only():
+    script = "const SOURCE = " + json.dumps(APP) + ";\n" + r"""
+const assert = require("assert");
+function extract(name) {
+  const start = SOURCE.indexOf(`function ${name}(`);
+  assert(start >= 0);
+  const open = SOURCE.indexOf("{", start);
+  let depth = 0;
+  for (let i = open; i < SOURCE.length; i += 1) {
+    if (SOURCE[i] === "{") depth += 1;
+    if (SOURCE[i] === "}" && --depth === 0) return SOURCE.slice(start, i + 1);
+  }
+  throw new Error(`unterminated ${name}`);
+}
+eval(extract("mergeHostedRepositoryImports"));
+const base = 1785054296350;
+const repositories = [];
+for (let index = 0; index < 54; index += 1) {
+  for (const owner of ["mirror2", "mirror3"]) {
+    repositories.push({
+      owner,
+      name: `import-${index}`,
+      source: "remote-clone",
+      hostedSince: base + index * 3000,
+      updatedAt: base + index,
+      liveHost: owner === "mirror2",
+    });
+  }
+}
+repositories.push(
+  { owner: "jett", name: "forkmesh", source: "local-node", hostedSince: 1 },
+  { owner: "mirror2", name: "forkmesh", source: "remote-clone", hostedSince: 2 },
+  {
+    owner: "mirror2",
+    name: "ordinary",
+    source: "remote-clone",
+    hostedSince: base + 86400000,
+  },
+  {
+    owner: "mirror3",
+    name: "ordinary",
+    source: "remote-clone",
+    hostedSince: base + 86401000,
+  },
+);
+const output = mergeHostedRepositoryImports(repositories, []);
+assert.equal(output.filter((record) => record.source === "bulk-import").length, 54);
+assert.equal(output.filter((record) => record.name === "ordinary").length, 2);
+assert.equal(output.filter((record) => record.name === "forkmesh").length, 2);
+"""
+    subprocess.run(
+        ["node"],
+        input=script,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_repository_world_reuses_the_star_api_and_keeps_login_in_world():
