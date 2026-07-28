@@ -304,3 +304,22 @@ def test_status_beacons_are_open_topped_and_alert_colours_sweep():
     assert 'statusColor === "#ff0000" || statusColor === "#ffcc00"' in SCENE
     assert "group.userData.beaconSweep = beaconSweep" in SCENE
     assert "sweep.rotation.y = time * 0.0038" in SCENE
+
+
+def test_cabinet_back_shows_authorized_actions_runs_and_bounded_log_tails():
+    assert (
+        '"/api/repo/forkmesh/forkmesh/actions/runs"' in APP
+    )
+    assert "const MIRROR_ACTIONS_POLL_MS = 20 * 1000" in APP
+    assert "normalizeMirrorActionRuns" in APP
+    assert "this.sessionAuthenticated" in APP
+    assert "actionRunsAvailable: actionRunsByNode.has(name)" in APP
+    assert "mirrorNodeActionsHTML(node)" in APP
+    assert "No authorized, fresh Actions summary" in APP
+    assert "bounded, already-redacted log tail" in APP
+    assert "function mirrorActionsPanelTexture" in SCENE
+    assert '"ACTIONS RUNS"' in SCENE
+    assert '"SIGNED · REDACTED LOG TAILS · CLICK FOR ALL"' in SCENE
+    assert "mirror-server-rear-panel" in SCENE
+    assert "actionPulseAttention" in SCENE
+    assert "Math.sin(time * 0.0065)" in SCENE

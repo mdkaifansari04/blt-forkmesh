@@ -8382,8 +8382,14 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-12"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-13"
 WORLD_QA_CARDS = (
+    ("mirror-actions-cabinet", "Mirror cabinet Actions runs",
+     "Sign in as a repository owner or organization writer and walk behind "
+     "the active mirror cabinet. Confirm recent Actions runs show running, "
+     "done, or error plus a bounded redacted log tail. Click the rear panel "
+     "and confirm the full authorized run list opens. Repeat without write "
+     "access and confirm no private run or log data appears."),
     ("executive-office-floor", "Executive Office floor",
      "Sign in as an Executive-team member and ride the elevator to Executive. "
      "Confirm the strategy table, ten chairs, organization map and floor label "

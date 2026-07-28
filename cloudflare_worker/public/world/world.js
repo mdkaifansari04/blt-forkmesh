@@ -173,6 +173,7 @@ const FLAGSHIP_PORTAL_RETRY_LIMIT = 20;
 const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
 const WORLD_NOTIFICATION_POLL_MS = 60 * 1000;
 const MIRROR_STATUS_POLL_MS = 5 * 60 * 1000;
+const MIRROR_ACTIONS_POLL_MS = 20 * 1000;
 const WORLD_EVENT_POLL_MS = 3 * 60 * 1000;
 const WORLD_REWARD_POLL_MS = 5 * 60 * 1000;
 const WORLD_MEDIA_PLAYBACK_POLL_MS = 15 * 1000;
@@ -3274,6 +3275,77 @@ function liveNodeRecords(network, mirrorCatalogs = []) {
   return buildLiveMirrorNodes(network, mirrorCatalogs);
 }
 
+function liveNodeRecordsWithActions(
+  network,
+  mirrorCatalogs = [],
+  actionRunsByNode = new Map(),
+) {
+  return liveNodeRecords(network, mirrorCatalogs).map((node) => {
+    const name = String(node?.name || node?.label || "").trim().toLowerCase();
+    return {
+      ...node,
+      actionRunsAvailable: actionRunsByNode.has(name),
+      actionRuns: Array.isArray(actionRunsByNode.get(name))
+        ? actionRunsByNode.get(name).map((run) => ({ ...run }))
+        : [],
+    };
+  });
+}
+
+function normalizeMirrorActionRuns(payload) {
+  const node = String(payload?.node || "").trim().toLowerCase();
+  if (
+    payload?.ok !== true ||
+    !/^[a-z0-9][a-z0-9.-]{0,79}$/.test(node) ||
+    !Array.isArray(payload?.runs)
+  ) {
+    return null;
+  }
+  const statuses = new Set([
+    "awaiting-approval",
+    "queued",
+    "running",
+    "success",
+    "failed",
+    "rejected",
+    "cancelled",
+    "skipped",
+  ]);
+  const runs = payload.runs.slice(0, 12).map((run) => {
+    const id = Number(run?.id);
+    const status = String(run?.status || "");
+    const workflow = String(run?.workflow || "")
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 160);
+    const logTail = String(run?.logTail || "")
+      .replace(/\u0000/g, "")
+      .trim()
+      .slice(-4096);
+    if (
+      !Number.isSafeInteger(id) ||
+      id <= 0 ||
+      !workflow ||
+      !statuses.has(status)
+    ) {
+      return null;
+    }
+    return {
+      id,
+      workflow,
+      status,
+      commit: String(run?.commit || "").slice(0, 64),
+      ref: String(run?.ref || "").slice(0, 160),
+      createdAt: Math.max(0, Number(run?.createdAt) || 0),
+      startedAt: Math.max(0, Number(run?.startedAt) || 0),
+      finishedAt: Math.max(0, Number(run?.finishedAt) || 0),
+      logTail,
+    };
+  }).filter(Boolean);
+  return { node, runs };
+}
+
 const LOCAL_LIVE_LANDMARKS = new Set([
   "campfire",
   "neighborhood",
@@ -4481,6 +4553,8 @@ class ForkMeshWorld extends HTMLElement {
     this.pendingKnocks = new Map();
     this.serverPeerId = "";
     this.sessionAuthenticated = false;
+    this.mirrorActionRunsByNode = new Map();
+    this.mirrorActionsTimer = 0;
     this.worldTicket = "";
     this.worldTicketExpires = 0;
     this.worldTicketTimer = 0;
@@ -5568,7 +5642,11 @@ class ForkMeshWorld extends HTMLElement {
       this.officeTasks?.prime?.();
       this.applyWorldLayoutEditor();
       this.world.updateNetworkNodes(
-        liveNodeRecords(this.network, this.mirrorCatalogs),
+        liveNodeRecordsWithActions(
+          this.network,
+          this.mirrorCatalogs,
+          this.mirrorActionRunsByNode,
+        ),
       );
       this.world.updateFederatedInstances?.(this.federatedInstances);
       if (this.visitorStats) {
@@ -5644,6 +5722,7 @@ class ForkMeshWorld extends HTMLElement {
       this.startActivityTicker();
       this.startRewardPolling();
       this.startMirrorPolling();
+      this.startMirrorActionsPolling();
       this.startRepositoryImportPolling();
       this.startEventPolling();
       this.startNotificationPolling();
@@ -6979,7 +7058,11 @@ class ForkMeshWorld extends HTMLElement {
     if (statusResult.status === "fulfilled") {
       this.world?.updateSystemStatusBoard?.(statusResult.value);
     }
-    const liveMirrors = liveNodeRecords(this.network, this.mirrorCatalogs);
+    const liveMirrors = liveNodeRecordsWithActions(
+      this.network,
+      this.mirrorCatalogs,
+      this.mirrorActionRunsByNode,
+    );
     const rewardAddress = String(this.rewardState?.address || "").trim();
     this.landmarkCapabilities.fountain = {
       live:
@@ -7921,9 +8004,10 @@ class ForkMeshWorld extends HTMLElement {
         const nodeName = String(
           mirrorNodeButton.dataset.worldMirrorNode || "",
         ).toLowerCase();
-        const node = liveNodeRecords(
+        const node = liveNodeRecordsWithActions(
           this.network,
           this.mirrorCatalogs,
+          this.mirrorActionRunsByNode,
         ).find((candidate) => candidate.name.toLowerCase() === nodeName);
         if (node) {
           this.openMirrorNodeDetail(node, {
@@ -9871,7 +9955,11 @@ class ForkMeshWorld extends HTMLElement {
         requestedRepo: FLAGSHIP_REPOSITORY.repo,
       },
     ];
-    const liveMirrors = liveNodeRecords(this.network, this.mirrorCatalogs);
+    const liveMirrors = liveNodeRecordsWithActions(
+      this.network,
+      this.mirrorCatalogs,
+      this.mirrorActionRunsByNode,
+    );
     this.world?.updateNetworkNodes(liveMirrors);
   }
 
@@ -9883,6 +9971,62 @@ class ForkMeshWorld extends HTMLElement {
         // Preserve the last verified snapshot during a transient HTTPS failure.
       });
     }, MIRROR_STATUS_POLL_MS);
+  }
+
+  async refreshMirrorActionRuns() {
+    if (
+      this.destroyed ||
+      !this.sessionAuthenticated ||
+      !validWorldSession()
+    ) {
+      if (this.mirrorActionRunsByNode.size) {
+        this.mirrorActionRunsByNode.clear();
+        this.world?.updateNetworkNodes(
+          liveNodeRecordsWithActions(
+            this.network,
+            this.mirrorCatalogs,
+            this.mirrorActionRunsByNode,
+          ),
+        );
+      }
+      return false;
+    }
+    let payload = null;
+    try {
+      payload = await this.fetchJSON(
+        "/api/repo/forkmesh/forkmesh/actions/runs",
+        {
+          auth: true,
+          timeout: 8000,
+          maxAge: 0,
+          backoff: true,
+          staleIfError: false,
+        },
+      );
+    } catch (_) {
+      return false;
+    }
+    const normalized = normalizeMirrorActionRuns(payload);
+    if (!normalized) return false;
+    this.mirrorActionRunsByNode.clear();
+    this.mirrorActionRunsByNode.set(normalized.node, normalized.runs);
+    this.world?.updateNetworkNodes(
+      liveNodeRecordsWithActions(
+        this.network,
+        this.mirrorCatalogs,
+        this.mirrorActionRunsByNode,
+      ),
+    );
+    return true;
+  }
+
+  startMirrorActionsPolling() {
+    window.clearInterval(this.mirrorActionsTimer);
+    void this.refreshMirrorActionRuns();
+    this.mirrorActionsTimer = window.setInterval(() => {
+      if (this.destroyed || document.hidden) return;
+      void this.refreshMirrorActionRuns();
+    }, MIRROR_ACTIONS_POLL_MS);
   }
 
   startRepositoryImportPolling() {
@@ -10780,11 +10924,67 @@ class ForkMeshWorld extends HTMLElement {
       <div class="world-detail-scroll">
         <p class="world-detail-summary">The readable technical equivalent of this server cabinet’s front display.</p>
         ${this.mirrorNodeTechnicalHTML(node)}
+        ${this.mirrorNodeActionsHTML(node)}
         ${this.mirrorNodeAgentSessionsHTML(node)}
       </div>`;
     this.showDetailOverlay(detail, backdrop, { returnFocus });
     this.wireMirrorNodeAgentWorkspace(node);
     this.wireMirrorNodeAdminDelete(node);
+  }
+
+  mirrorNodeActionsHTML(node) {
+    const available = node?.actionRunsAvailable === true;
+    const runs = Array.isArray(node?.actionRuns) ? node.actionRuns : [];
+    if (!available) {
+      return `
+        <section class="world-feature-card" aria-label="Mirror Actions runs">
+          <h3>Actions runs</h3>
+          <p class="world-empty-state">No authorized, fresh Actions summary is available from this node. The mirror must advertise the actions-status operation and publish its protected redacted summary.</p>
+        </section>`;
+    }
+    return `
+      <section class="world-feature-card" aria-label="Mirror Actions runs">
+        <h3>Actions runs · ${runs.length}</h3>
+        ${
+          runs.length
+            ? `<div class="world-agent-session-list">${runs
+                .map((run) => {
+                  const status = String(run.status || "unknown");
+                  const endedAt =
+                    Number(run.finishedAt) ||
+                    Number(run.startedAt) ||
+                    Number(run.createdAt) ||
+                    0;
+                  return `<article class="world-agent-session-card">
+                    <header>
+                      <strong>#${escapeHTML(String(run.id))} · ${escapeHTML(
+                        String(run.workflow || "Action"),
+                      )}</strong>
+                      <span>${escapeHTML(status.toUpperCase())}</span>
+                    </header>
+                    <dl class="world-technical-list">
+                      <div><dt>Ref</dt><dd>${escapeHTML(
+                        String(run.ref || "Not reported"),
+                      )}</dd></div>
+                      <div><dt>Commit</dt><dd class="world-break">${escapeHTML(
+                        String(run.commit || "Not reported"),
+                      )}</dd></div>
+                      <div><dt>Updated</dt><dd>${
+                        endedAt
+                          ? escapeHTML(new Date(endedAt).toLocaleString())
+                          : "Not reported"
+                      }</dd></div>
+                    </dl>
+                    <pre class="world-agent-raw-output">${escapeHTML(
+                      String(run.logTail || "No redacted log tail reported."),
+                    )}</pre>
+                  </article>`;
+                })
+                .join("")}</div>`
+            : '<p class="world-empty-state">This node reports no recent Actions runs.</p>'
+        }
+        <p class="world-panel-footnote">The node supplies a bounded, already-redacted log tail through its signed actions-status capability. ForkMesh does not expose workflow secrets or unbounded logs.</p>
+      </section>`;
   }
 
   wireMirrorNodeAdminDelete(node) {
@@ -22160,6 +22360,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.pingTimer);
     window.clearInterval(this.rewardTimer);
     window.clearInterval(this.mirrorTimer);
+    window.clearInterval(this.mirrorActionsTimer);
     window.clearInterval(this.repositoryImportTimer);
     window.clearTimeout(this.mirrorPushRefreshTimer);
     window.clearInterval(this.eventsTimer);

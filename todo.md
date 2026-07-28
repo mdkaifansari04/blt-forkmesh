@@ -204,7 +204,7 @@ the implementation and its focused verification are complete.
 - [x] Add an Executive-team-only Office floor with a strategy room, organization map, decision table, chairs, collision footprint, elevator destination, and attendance label.
 - [x] Update the organization-access explanation so Claude/Codex session access is described as Engineering-team-only.
 - [x] Verify and enforce that non-Engineering organization members cannot start, review, continue, or view Claude/Codex sessions.
-- [ ] Show each node cabinet's Actions runs, logs, and running/done/error state on its back with restrained status animations.
+- [x] Show each node cabinet's recent Actions runs, bounded redacted log tails, and running/done/error state on its back with restrained status animations and a full authorized detail list.
 - [x] Add an admin-only error-log analytics view that groups equivalent errors and charts their occurrences over the previous 24 hours.
 - [x] Move the recent roughly 50-repository bulk-import set back onto its own World island before considering deletion.
 - [x] Identify and delete only the 54 repositories imported in that batch after verifying the exact cohort, temporarily isolating it in the World, and preserving a checksum-verified upstream/HEAD recovery archive.

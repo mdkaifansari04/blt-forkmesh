@@ -2473,7 +2473,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:mirror2-agent-claim", task: "Retire mirror2 agent route; use ready mirror6", estimate: "superseded safely", done: true },
   { key: "task:review-open-prs", task: "Review every open PR + disposition", estimate: "queued", done: false },
   { key: "task:node-service-metrics", task: "Restore node Clones + Websites metrics", estimate: "in progress", done: false },
-  { key: "task:cabinet-action-runs", task: "Cabinet backs show Actions runs + logs", estimate: "queued", done: false },
+  { key: "task:cabinet-action-runs", task: "Cabinet backs show Actions runs + logs", estimate: "ready for deploy · in QA", done: true },
   { key: "task:repo-social-orbits", task: "Test follower + contributor avatar orbits", estimate: "deployed · verified", done: true },
   { key: "task:issue-agent-models", task: "Issue buttons for Claude/Codex model choice", estimate: "deployed · verified", done: true },
   { key: "task:qt-agent-installers", task: "Qt mirror Claude + Codex installers", estimate: "deployed", done: true },
@@ -5092,6 +5092,8 @@ function nodeDataKey(node) {
     diskTotalBytes: node?.diskTotalBytes,
     repositories: node?.repositories,
     agentTasks: node?.agentTasks,
+    actionRunsAvailable: node?.actionRunsAvailable === true,
+    actionRuns: node?.actionRuns,
   });
 }
 
@@ -5428,6 +5430,108 @@ const MIRROR_AGENT_TASK_STATUS = Object.freeze({
   attention: { label: "ATTENTION", color: "#ffb56b" },
 });
 
+const MIRROR_ACTION_STATUS = Object.freeze({
+  "awaiting-approval": { label: "APPROVAL", color: "#ffcc72" },
+  queued: { label: "QUEUED", color: "#77d9ff" },
+  running: { label: "RUNNING", color: "#77d9ff" },
+  success: { label: "DONE", color: "#73f0ad" },
+  failed: { label: "ERROR", color: "#ff7189" },
+  rejected: { label: "REJECTED", color: "#ff7189" },
+  cancelled: { label: "CANCELLED", color: "#91a39a" },
+  skipped: { label: "SKIPPED", color: "#91a39a" },
+});
+
+function mirrorActionsPanelTexture(THREE, node) {
+  const available = node?.actionRunsAvailable === true;
+  const runs = (Array.isArray(node?.actionRuns) ? node.actionRuns : [])
+    .slice(0, 6);
+  return canvasTexture(THREE, 768, 1024, (context, canvas) => {
+    context.fillStyle = "#07110f";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.strokeStyle = "#526c61";
+    context.lineWidth = 9;
+    roundedRect(context, 9, 9, canvas.width - 18, canvas.height - 18, 24);
+    context.stroke();
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#f1fff6";
+    context.fillText("ACTIONS RUNS", 36, 54);
+    context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#73f0ad";
+    context.fillText("SIGNED · REDACTED LOG TAILS · CLICK FOR ALL", 36, 94);
+    context.strokeStyle = "#294339";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(36, 125);
+    context.lineTo(732, 125);
+    context.stroke();
+
+    if (!available || !runs.length) {
+      context.textAlign = "center";
+      context.font = '800 30px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillStyle = available ? "#91a39a" : "#ffcc72";
+      context.fillText(
+        available ? "NO RECENT ACTIONS RUNS" : "ACTIONS SUMMARY UNAVAILABLE",
+        canvas.width / 2,
+        260,
+      );
+      context.font = '600 21px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillStyle = "#8ca99a";
+      context.fillText(
+        available
+          ? "The protected feed is ready."
+          : "Enable the signed actions-status capability.",
+        canvas.width / 2,
+        310,
+      );
+      return;
+    }
+
+    runs.forEach((run, index) => {
+      const status =
+        MIRROR_ACTION_STATUS[String(run?.status || "")] ||
+        MIRROR_ACTION_STATUS.cancelled;
+      const y = 146 + index * 137;
+      context.fillStyle = index % 2 ? "#0b1915" : "#0d1e19";
+      roundedRect(context, 24, y, 720, 121, 10);
+      context.fill();
+      context.fillStyle = status.color;
+      context.fillRect(24, y, 8, 121);
+      context.font = '800 22px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillStyle = "#f1fff6";
+      context.fillText(
+        `#${Number(run?.id) || 0} ${String(run?.workflow || "Action")
+          .replace(/[\u0000-\u001f\u007f]/g, " ")
+          .slice(0, 38)}`,
+        48,
+        y + 27,
+      );
+      context.textAlign = "right";
+      context.fillStyle = status.color;
+      context.fillText(status.label, 720, y + 27);
+      context.textAlign = "left";
+      const logLine = String(run?.logTail || "No log tail reported")
+        .replace(/[\r\n\t]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(-76);
+      context.font = '600 19px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillStyle = "#a9c0b4";
+      context.fillText(logLine, 48, y + 69, 664);
+      context.fillStyle = "#6f8579";
+      context.font = '600 17px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `${String(run?.ref || "ref unavailable").slice(0, 46)} · ${String(
+          run?.commit || "",
+        ).slice(0, 12)}`,
+        48,
+        y + 99,
+      );
+    });
+  });
+}
+
 function normalizeMirrorAgentTask(task) {
   if (!task || typeof task !== "object") return null;
   const title = String(task.title || task.task || "")
@@ -5651,12 +5755,43 @@ function createMirrorServerCabinet(THREE, node, id) {
   // A mirrored service panel on the rear keeps the technical display readable
   // from the third-person camera while the physical front remains oriented
   // toward the routing-station walkway.
-  const rearPanel = new THREE.Mesh(panelGeometry, panelMaterial);
+  const actionsPanelMaterial = new THREE.MeshBasicMaterial({
+    map: mirrorActionsPanelTexture(THREE, node),
+    toneMapped: false,
+  });
+  const rearPanel = new THREE.Mesh(panelGeometry, actionsPanelMaterial);
   rearPanel.position.set(0, 1.72, -0.735);
   rearPanel.rotation.y = Math.PI;
   rearPanel.name = "mirror-server-rear-panel";
   rearPanel.userData.nodeCabinet = { ...node };
   group.add(rearPanel);
+  const actionStatuses = (Array.isArray(node?.actionRuns)
+    ? node.actionRuns
+    : []).map((run) => String(run?.status || ""));
+  const actionAttention = actionStatuses.some((status) =>
+    ["failed", "rejected"].includes(status),
+  );
+  const actionRunning = actionStatuses.some((status) =>
+    ["awaiting-approval", "queued", "running"].includes(status),
+  );
+  if (actionAttention || actionRunning) {
+    const actionPulseMaterial = new THREE.MeshBasicMaterial({
+      color: actionAttention ? "#ff7189" : "#77d9ff",
+      toneMapped: false,
+      transparent: true,
+      opacity: 0.78,
+    });
+    for (const x of [-1.01, 1.01]) {
+      const pulse = new THREE.Mesh(
+        new THREE.BoxGeometry(0.055, 2.5, 0.04),
+        actionPulseMaterial,
+      );
+      pulse.position.set(x, 1.72, -0.758);
+      group.add(pulse);
+    }
+    group.userData.actionPulseMaterial = actionPulseMaterial;
+    group.userData.actionPulseAttention = actionAttention;
+  }
 
   const agentTaskPanelMaterial = new THREE.MeshBasicMaterial({
     map: mirrorAgentTaskPanelTexture(THREE, node),
@@ -22533,6 +22668,12 @@ export function createWorldScene({
       nodeInfrastructure.forEach((cabinet) => {
         const sweep = cabinet.userData?.beaconSweep;
         if (sweep) sweep.rotation.y = time * 0.0038;
+        const actionPulse = cabinet.userData?.actionPulseMaterial;
+        if (actionPulse) {
+          const base = cabinet.userData?.actionPulseAttention ? 0.62 : 0.44;
+          actionPulse.opacity =
+            base + (Math.sin(time * 0.0065) + 1) * 0.16;
+        }
       });
       botAgents.forEach((robot, id) => {
         const phase = hashNumber(id) * 0.0001;
