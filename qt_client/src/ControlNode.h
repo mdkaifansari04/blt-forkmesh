@@ -79,6 +79,29 @@ HostSshCommand buildHostSshCommand(const QString &host,
                                    QString *error = nullptr,
                                    const QString &identityFile = QString());
 
+// Same authenticated transport as buildHostSshCommand, but with a remote TTY
+// forced (-tt). ssh only allocates one automatically for a bare login; a call
+// that carries a remote command needs this before any interactive remote
+// program — a provider sign-in prompt, for instance — can read a keystroke.
+HostSshCommand buildHostInteractiveSshCommand(
+    const QString &host, const QString &sshUser, const QString &sshPassword,
+    const QString &remoteCommand, QString *error = nullptr,
+    const QString &identityFile = QString());
+
+// Flatten a built command into one single-quoted POSIX shell command line, for
+// the callers that hand it to a shell (the embedded PTY terminal) instead of
+// running it through QProcess argv. Every word is quoted, so no argument value
+// can re-enter that shell as syntax.
+QString hostSshCommandLine(const HostSshCommand &command);
+
+// The interactive shell an operator lands in after ForkMesh installs the agent
+// CLIs on a mirror. It puts both user-scoped install prefixes on PATH, prints
+// the two provider sign-in commands, and then execs a login shell so
+// `claude` /login and `codex login` can be completed by hand — the installer
+// deliberately copies no tokens, so this is where credentials are entered. The
+// command itself never carries a credential.
+QString buildHostAgentLoginRemoteCommand();
+
 // Stable, metadata-only key for a password retained in MainWindow memory for
 // this process lifetime. It is never written to QSettings.
 QString savedHostCredentialKey(const QString &nodeName, const QString &host,

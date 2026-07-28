@@ -2333,7 +2333,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "done:alert-management-link", task: "Alert mail opens the real management switch", estimate: "deployed", done: true },
   { key: "done:qa-history-routing", task: "QA result tabs + Todo/Issue routing", estimate: "deployed", done: true },
   { key: "done:qa-history-detail", task: "QA history opens full verdict cards", estimate: "deployed", done: true },
-  { key: "done:elevator-front-camera", task: "Elevator front camera + clear controls", estimate: "deployed", done: true },
+  { key: "done:elevator-front-camera", task: "Upper elevator camera + side controls", estimate: "ready", done: true },
   { key: "done:office-only-hours", task: "Office-only Marketing attendance", estimate: "deployed", done: true },
   { key: "done:marketing-furniture", task: "Window desks + visible table chairs", estimate: "deployed", done: true },
   { key: "done:office-landscaping", task: "Trees, bushes + flowers around Office", estimate: "deployed", done: true },
@@ -13362,10 +13362,11 @@ export function createWorldScene({
   );
   const elevatorPanel = new THREE.Group();
   elevatorPanel.name = "forkmesh-office-elevator-cabin-panel";
-  // Put the controls on the front-right wall. The locked cabin camera shares
-  // this front plane, looks outward, and still keeps the large labels in frame.
-  elevatorPanel.position.set(2.0, 3.3, -3.25);
-  elevatorPanel.rotation.y = 0;
+  // Keep the controls on the right-side wall. The upper-corner cabin camera
+  // looks diagonally across these large labels and through the exterior-facing
+  // opening, so riders can choose a floor without staring back into the Office.
+  elevatorPanel.position.set(4.34, 3.3, -0.6);
+  elevatorPanel.rotation.y = -Math.PI / 2;
   const panelBody = new THREE.Mesh(
     elevatorPanelGeometry,
     elevatorPanelMaterial,
@@ -16192,14 +16193,15 @@ export function createWorldScene({
       releaseOfficeElevatorCamera(false);
     }
     if (officeElevatorCameraLocked) {
-      // Stable first-person framing from the upper front-left corner of the
-      // moving glass car. The camera faces outward from the door side while
-      // the widened field of view keeps the front-right controls readable.
+      // Elevator security-camera framing from the upper rear-left corner of
+      // the moving glass car. It looks diagonally across the right-wall
+      // controls and out through the exterior-facing opening, never back into
+      // the Office interior.
       const eye = officeElevatorCar.localToWorld(
-        new THREE.Vector3(-3.72, 6.46, -2.72),
+        new THREE.Vector3(-3.72, 6.46, 2.7),
       );
       const outsideTarget = officeElevatorCar.localToWorld(
-        new THREE.Vector3(0.85, 3.15, -11.5),
+        new THREE.Vector3(3.4, 3.15, -5.4),
       );
       camera.position.copy(eye);
       camera.lookAt(outsideTarget);

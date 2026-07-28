@@ -11,8 +11,9 @@ the implementation and its focused verification are complete.
 - [x] Keep newly provisioned Hosts rows checking until each mirror is reachable, with clear provisioning/online/attention state.
 - [x] Show separate Claude Code and Codex installed/missing status beside every saved host.
 - [ ] Show a visible Terms-of-Service moderation flag on repositories that violate ForkMesh policy.
-- [x] Move the elevator's locked first-person camera to the front wall at the same height, facing outward.
+- [x] Initial front-wall elevator camera placement (superseded after live QA).
 - [x] Increase the in-elevator button labels and contrast for clear floor selection.
+- [x] Follow-up: restore elevator buttons to the side wall and use an upper security-camera view that frames them with the World outside.
 - [x] Add tasteful scene-native flowers, trees, and bushes around the Office exterior.
 - [x] Count Marketing Office Hours from explicit Office-building punches only, never general World presence.
 - [x] Put Marketing desks against the windows with chairs, raise the round table, and seat it clearly.
@@ -42,6 +43,7 @@ the implementation and its focused verification are complete.
 - [x] Switch the elevator to an upper-corner first-person view that frames the controls and outside, then restore the prior view on arrival or exit.
 - [x] Refresh “What we're building” whenever a player approaches and show its physical updating spinner.
 - [ ] Verify the ForkMesh X timeline feed and keep the in-world board sourced from the public `@forkmesh` profile without third-party tracking script injection.
+- [ ] Render recent ForkMesh Twitter/X posts like Mastodon; if public retrieval or credentials fail, show the reason on-board and add a Human TODO.
 - [x] Make mirror agent installers exclusively use the saved ForkMesh SSH key when present and clearly distinguish an unreachable host from rejected authentication.
 - [ ] Finish and test the repository Mastodon-follower and Git-contributor avatar orbits.
 - [ ] Finish and test Claude/Codex/model assignment controls on World issue cards.
