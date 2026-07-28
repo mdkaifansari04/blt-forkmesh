@@ -9967,6 +9967,450 @@ function officeDoorStatusTexture(THREE, state = "open") {
   });
 }
 
+function createOfficeMarineAquarium(THREE, animated) {
+  const group = new THREE.Group();
+  group.name = "forkmesh-office-marine-aquarium";
+  group.position.set(-82.9, 0, -10.5);
+  const tankLength = 27;
+  const tankHeight = 12;
+  const tankDepth = 3;
+  const frameMaterial = makeMaterial(THREE, "#101d20", {
+    metalness: 0.78,
+    roughness: 0.22,
+  });
+  const edgeMaterial = makeMaterial(THREE, "#8fbfbe", {
+    metalness: 0.72,
+    roughness: 0.18,
+    emissive: "#173d43",
+    emissiveIntensity: 0.25,
+  });
+  const glassMaterial = makeMaterial(THREE, "#a8f8ff", {
+    transparent: true,
+    opacity: 0.15,
+    metalness: 0.1,
+    roughness: 0.12,
+    depthWrite: false,
+  });
+  const waterMaterial = makeMaterial(THREE, "#0b99c6", {
+    transparent: true,
+    opacity: 0.24,
+    emissive: "#087ba8",
+    emissiveIntensity: 0.64,
+    depthWrite: false,
+  });
+  const sandMaterial = makeMaterial(THREE, "#d99d61", {
+    roughness: 0.92,
+    emissive: "#5f3017",
+    emissiveIntensity: 0.16,
+  });
+  const backdropMaterial = makeMaterial(THREE, "#092d43", {
+    roughness: 0.72,
+    emissive: "#042238",
+    emissiveIntensity: 0.7,
+  });
+  const coralMaterials = ["#fa5a9d", "#a77aff", "#31d5bd"].map(
+    (color) => makeMaterial(THREE, color, {
+      roughness: 0.52,
+      emissive: color,
+      emissiveIntensity: 0.34,
+    }),
+  );
+  const anemoneMaterial = makeMaterial(THREE, "#f49eef", {
+    roughness: 0.46,
+    emissive: "#9c367f",
+    emissiveIntensity: 0.5,
+  });
+  const fishMaterials = [
+    "#f58237",
+    "#2e7ccc",
+    "#f1cd4f",
+    "#7b68bd",
+    "#9cc4c5",
+    "#d36f9f",
+  ].map(
+    (color) => makeMaterial(THREE, color, {
+      roughness: 0.46,
+      emissive: color,
+      emissiveIntensity: 0.12,
+    }),
+  );
+  const fishTailMaterials = [
+    "#f58237",
+    "#2e7ccc",
+    "#f1cd4f",
+    "#7b68bd",
+    "#9cc4c5",
+    "#d36f9f",
+  ].map((color) => makeMaterial(THREE, color, {
+    side: THREE.DoubleSide,
+    roughness: 0.42,
+    emissive: color,
+    emissiveIntensity: 0.1,
+  }));
+  const fishStripeMaterials = [
+    "#fff0c7",
+    "#102a50",
+    "#fbf6d9",
+    "#ddc9ff",
+    "#21344d",
+    "#ffd9ea",
+  ].map((color) => makeMaterial(THREE, color, {
+    roughness: 0.42,
+    emissive: color,
+    emissiveIntensity: 0.08,
+  }));
+  const fishEyeMaterial = makeMaterial(THREE, "#06080c", {
+    roughness: 0.22,
+    metalness: 0.2,
+  });
+  const bubbleMaterial = makeMaterial(THREE, "#d9ffff", {
+    transparent: true,
+    opacity: 0.72,
+    metalness: 0.12,
+    roughness: 0.08,
+    emissive: "#75d9ef",
+    emissiveIntensity: 0.5,
+    depthWrite: false,
+  });
+  const frame = new THREE.Group();
+  frame.name = "forkmesh-office-aquarium-frame";
+  const addFramePiece = (width, height, depth, x, y, z, material) => {
+    const piece = new THREE.Mesh(
+      new THREE.BoxGeometry(width, height, depth),
+      material,
+    );
+    piece.position.set(x, y, z);
+    frame.add(piece);
+  };
+  addFramePiece(
+    tankDepth + 0.32,
+    0.5,
+    tankLength + 0.6,
+    0,
+    0.25,
+    0,
+    frameMaterial,
+  );
+  addFramePiece(
+    tankDepth + 0.32,
+    0.44,
+    tankLength + 0.6,
+    0,
+    tankHeight + 0.02,
+    0,
+    frameMaterial,
+  );
+  for (const x of [-tankDepth / 2, tankDepth / 2]) {
+    for (const z of [-tankLength / 2, tankLength / 2]) {
+      addFramePiece(
+        0.25,
+        tankHeight,
+        0.25,
+        x,
+        tankHeight / 2,
+        z,
+        edgeMaterial,
+      );
+    }
+  }
+  group.add(frame);
+  const backdrop = new THREE.Mesh(
+    new THREE.BoxGeometry(0.08, tankHeight - 0.56, tankLength - 0.48),
+    backdropMaterial,
+  );
+  backdrop.name = "forkmesh-office-aquarium-backdrop";
+  backdrop.position.set(-tankDepth / 2 + 0.08, tankHeight / 2, 0);
+  group.add(backdrop);
+  const water = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      tankDepth - 0.3,
+      tankHeight - 0.62,
+      tankLength - 0.5,
+    ),
+    waterMaterial,
+  );
+  water.name = "forkmesh-office-aquarium-water";
+  water.position.y = tankHeight / 2;
+  group.add(water);
+  const frontGlass = new THREE.Mesh(
+    new THREE.BoxGeometry(0.06, tankHeight - 0.48, tankLength - 0.24),
+    glassMaterial,
+  );
+  frontGlass.name = "forkmesh-office-aquarium-front-glass";
+  frontGlass.position.set(tankDepth / 2 + 0.01, tankHeight / 2, 0);
+  group.add(frontGlass);
+  const sand = new THREE.Group();
+  sand.name = "forkmesh-office-aquarium-sand";
+  const sandBed = new THREE.Mesh(
+    new THREE.BoxGeometry(tankDepth - 0.44, 0.4, tankLength - 0.8),
+    sandMaterial,
+  );
+  sandBed.position.y = 0.55;
+  sand.add(sandBed);
+  const duneGeometry = new THREE.DodecahedronGeometry(1, 0);
+  for (const [x, y, z, scale] of [
+    [-0.35, 0.62, -8.8, 1.25],
+    [0.24, 0.68, -1.6, 1.45],
+    [-0.1, 0.6, 7.1, 1.08],
+  ]) {
+    const dune = new THREE.Mesh(duneGeometry, sandMaterial);
+    dune.scale.set(0.74 * scale, 0.13 * scale, 0.96 * scale);
+    dune.position.set(x, y, z);
+    sand.add(dune);
+  }
+  group.add(sand);
+  const coralGeometry = new THREE.ConeGeometry(0.48, 1.38, 6);
+  const coralSpecs = [
+    [-0.48, 0.88, -8.6, 1.15, 0],
+    [0.25, 0.86, -1.5, 0.8, 1],
+    [-0.22, 0.9, 7.2, 1.3, 2],
+  ];
+  const corals = [];
+  for (let index = 0; index < coralSpecs.length; index += 1) {
+    const [x, y, z, scale, materialIndex] = coralSpecs[index];
+    const coral = new THREE.Group();
+    coral.name = `forkmesh-office-aquarium-coral-${index}`;
+    coral.position.set(x, y, z);
+    const trunk = new THREE.Mesh(coralGeometry, coralMaterials[materialIndex]);
+    trunk.scale.set(scale * 0.94, scale * 0.58, scale * 1.14);
+    trunk.position.y = 0.48 * scale;
+    coral.add(trunk);
+    for (const [offsetX, offsetY, rotationX] of [
+      [-0.56, 0.63, -0.78],
+      [0.5, 0.76, 0.7],
+    ]) {
+      const arm = new THREE.Mesh(coralGeometry, coralMaterials[materialIndex]);
+      arm.scale.set(scale * 0.5, scale * 0.42, scale * 0.58);
+      arm.position.set(offsetX * scale, offsetY * scale, 0);
+      arm.rotation.x = rotationX;
+      coral.add(arm);
+    }
+    corals.push({ coral, phase: index * 1.73 });
+    group.add(coral);
+  }
+  const anemoneGeometry = new THREE.CylinderGeometry(0.06, 0.12, 1.05, 5);
+  const anemones = [];
+  for (const [index, x, z, phase] of [
+    [0, 0.45, -5.1, 0.4],
+    [1, -0.56, 3.4, 2.1],
+  ]) {
+    const anemone = new THREE.Group();
+    anemone.name = `forkmesh-office-aquarium-anemone-${index}`;
+    anemone.position.set(x, 0.92, z);
+    const core = new THREE.Mesh(
+      new THREE.SphereGeometry(0.55, 8, 6),
+      anemoneMaterial,
+    );
+    core.scale.y = 0.36;
+    anemone.add(core);
+    for (let tentacleIndex = 0; tentacleIndex < 9; tentacleIndex += 1) {
+      const angle = (Math.PI * 2 * tentacleIndex) / 9;
+      const tentacle = new THREE.Mesh(anemoneGeometry, anemoneMaterial);
+      tentacle.position.set(
+        Math.cos(angle) * 0.3,
+        0.56,
+        Math.sin(angle) * 0.3,
+      );
+      tentacle.rotation.z = Math.cos(angle) * 0.48;
+      tentacle.rotation.x = Math.sin(angle) * 0.48;
+      anemone.add(tentacle);
+    }
+    anemones.push({ anemone, phase });
+    group.add(anemone);
+  }
+  const fishBodyGeometry = new THREE.SphereGeometry(0.5, 12, 8);
+  const fishTailGeometry = new THREE.BufferGeometry();
+  fishTailGeometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute([
+      0, 0, -0.7,
+      0, 0.46, -1.25,
+      0, 0.1, -0.96,
+      0, -0.46, -1.25,
+    ], 3),
+  );
+  fishTailGeometry.setIndex([0, 1, 2, 0, 2, 3]);
+  fishTailGeometry.computeVertexNormals();
+  const fishDorsalFinGeometry = new THREE.ConeGeometry(0.16, 0.52, 3);
+  const fishPectoralFinGeometry = new THREE.ConeGeometry(0.13, 0.42, 3);
+  const fishEyeGeometry = new THREE.SphereGeometry(0.075, 8, 6);
+  const fishStripeGeometry = new THREE.TorusGeometry(0.34, 0.035, 6, 12);
+  const fishStates = [];
+  const fishSpecs = [
+    [-0.3, 7.6, -5.2, 4.8, 0.00078, 0.1, 0, 0, [-0.14, 0.28]],
+    [0.52, 5.8, 1.7, 7.6, 0.00054, 1.7, 1, 1, [0.08]],
+    [-0.62, 8.9, 6.5, 3.8, 0.00092, 3.4, 2, 2, [-0.08]],
+    [0.16, 3.8, -1.8, 5.9, 0.00064, 2.6, 3, 3, [-0.2, 0.2]],
+    [0.7, 9.6, -8.4, 2.7, 0.00083, 4.4, 4, 4, [0.02]],
+    [-0.1, 5.0, 8.1, 3.2, 0.00071, 5.1, 5, 5, [-0.12, 0.22]],
+  ];
+  for (let index = 0; index < fishSpecs.length; index += 1) {
+    const [
+      depth,
+      y,
+      centerZ,
+      span,
+      speed,
+      phase,
+      materialIndex,
+      stripeMaterialIndex,
+      stripeOffsets,
+    ] = fishSpecs[index];
+    const fish = new THREE.Group();
+    fish.name = `forkmesh-office-aquarium-fish-${index}`;
+    fish.scale.setScalar(1.04 + (index % 3) * 0.11);
+    const body = new THREE.Mesh(fishBodyGeometry, fishMaterials[materialIndex]);
+    body.scale.set(0.62, 0.44, 1.28);
+    fish.add(body);
+    const tail = new THREE.Mesh(
+      fishTailGeometry,
+      fishTailMaterials[materialIndex],
+    );
+    fish.add(tail);
+    const dorsalFin = new THREE.Mesh(
+      fishDorsalFinGeometry,
+      fishTailMaterials[materialIndex],
+    );
+    dorsalFin.name = `forkmesh-office-aquarium-fish-dorsal-fin-${index}`;
+    dorsalFin.position.set(0, 0.34, -0.05);
+    dorsalFin.rotation.x = Math.PI;
+    fish.add(dorsalFin);
+    for (const side of [-1, 1]) {
+      const pectoralFin = new THREE.Mesh(
+        fishPectoralFinGeometry,
+        fishTailMaterials[materialIndex],
+      );
+      pectoralFin.name =
+        `forkmesh-office-aquarium-fish-pectoral-fin-${index}-${side}`;
+      pectoralFin.position.set(side * 0.32, -0.03, 0.05);
+      pectoralFin.rotation.z = side * Math.PI / 2;
+      fish.add(pectoralFin);
+    }
+    const eye = new THREE.Mesh(fishEyeGeometry, fishEyeMaterial);
+    eye.name = `forkmesh-office-aquarium-fish-eye-${index}`;
+    eye.position.set(0.3, 0.09, 0.38);
+    fish.add(eye);
+    for (let stripeIndex = 0; stripeIndex < stripeOffsets.length; stripeIndex += 1) {
+      const stripe = new THREE.Mesh(
+        fishStripeGeometry,
+        fishStripeMaterials[stripeMaterialIndex],
+      );
+      stripe.name = `forkmesh-office-aquarium-fish-stripe-${index}-${stripeIndex}`;
+      stripe.position.z = stripeOffsets[stripeIndex];
+      stripe.scale.set(0.79, 0.56, 1);
+      fish.add(stripe);
+    }
+    fishStates.push({
+      fish,
+      tail,
+      depth,
+      y,
+      centerZ,
+      span,
+      speed,
+      phase,
+      wander: Math.random() * Math.PI * 2,
+    });
+    group.add(fish);
+  }
+  const bubbles = new THREE.Group();
+  bubbles.name = "forkmesh-office-aquarium-bubbles";
+  const bubbleGeometry = new THREE.SphereGeometry(0.1, 8, 6);
+  const bubbleStates = [];
+  for (let index = 0; index < 14; index += 1) {
+    const bubble = new THREE.Mesh(bubbleGeometry, bubbleMaterial);
+    bubble.name = `forkmesh-office-aquarium-bubble-${index}`;
+    const phase = index / 14;
+    const speed = 0.000045 + (index % 4) * 0.000009;
+    bubble.scale.setScalar(0.55 + (index % 3) * 0.22);
+    bubbleStates.push({
+      bubble,
+      x: -0.4 + (index % 5) * 0.22,
+      z: 6.3 + (index % 4) * 0.56,
+      phase,
+      speed,
+    });
+    bubbles.add(bubble);
+  }
+  group.add(bubbles);
+  const topLight = new THREE.Mesh(
+    new THREE.BoxGeometry(tankDepth - 0.32, 0.11, tankLength - 1),
+    makeMaterial(THREE, "#55edff", {
+      emissive: "#29d4e6",
+      emissiveIntensity: 1.3,
+      metalness: 0.28,
+      roughness: 0.24,
+    }),
+  );
+  topLight.name = "forkmesh-office-aquarium-top-light";
+  topLight.position.y = tankHeight - 0.34;
+  group.add(topLight);
+  const waterLight = new THREE.PointLight("#44e8ff", 3.1, 17, 1.8);
+  waterLight.name = "forkmesh-office-aquarium-light";
+  waterLight.position.set(0.45, 6.6, -1.5);
+  group.add(waterLight);
+  const spillLight = new THREE.PointLight("#7df0c6", 1.1, 9, 1.9);
+  spillLight.name = "forkmesh-office-aquarium-spill-light";
+  spillLight.position.set(1.95, 3.2, -2.5);
+  group.add(spillLight);
+  animated.push((time) => {
+    for (let index = 0; index < fishStates.length; index += 1) {
+      const state = fishStates[index];
+      const swim = time * state.speed + state.phase;
+      const fish = state.fish;
+      const wandering =
+        Math.sin(swim) + Math.sin(swim * 2.17 + state.wander) * 0.27;
+      const velocityX =
+        Math.cos(swim * 1.43 + state.wander) * 0.24 * 1.43;
+      const velocityZ =
+        (Math.cos(swim) +
+          Math.cos(swim * 2.17 + state.wander) * 0.27 * 2.17) *
+        state.span *
+        0.8;
+      fish.position.x =
+        state.depth + Math.sin(swim * 1.43 + state.wander) * 0.24;
+      fish.position.y =
+        state.y + Math.sin(swim * 2.3 + state.wander) * 0.29;
+      fish.position.z = state.centerZ + wandering * state.span * 0.8;
+      fish.rotation.y = Math.atan2(velocityX, velocityZ);
+      fish.rotation.z = Math.sin(swim * 2.3 + state.wander) * 0.09;
+      state.tail.rotation.y = Math.sin(swim * 5.2 + state.wander) * 0.32;
+    }
+    for (let index = 0; index < corals.length; index += 1) {
+      const { coral, phase } = corals[index];
+      coral.rotation.z = Math.sin(time * 0.00082 + phase) * 0.052;
+      coral.rotation.x = Math.cos(time * 0.00067 + phase) * 0.036;
+    }
+    for (let index = 0; index < anemones.length; index += 1) {
+      const state = anemones[index];
+      state.anemone.rotation.z =
+        Math.sin(time * 0.0011 + state.phase) * 0.13;
+      state.anemone.rotation.x =
+        Math.cos(time * 0.0009 + state.phase) * 0.08;
+    }
+    for (let index = 0; index < bubbleStates.length; index += 1) {
+      const state = bubbleStates[index];
+      const rise = (time * state.speed + state.phase) % 1;
+      const bubble = state.bubble;
+      bubble.position.x =
+        state.x + Math.sin(time * 0.0014 + state.phase) * 0.09;
+      bubble.position.y = 1 + rise * 9.8;
+      bubble.position.z = state.z;
+    }
+    const pulse = Math.sin(time * 0.0015);
+    waterLight.intensity = 3.1 + pulse * 0.28;
+    spillLight.intensity = 1.1 + pulse * 0.1;
+    topLight.material.emissiveIntensity = 1.3 + pulse * 0.14;
+    waterMaterial.emissiveIntensity = 0.64 + pulse * 0.05;
+  });
+  group.traverse((child) => {
+    if (!child.isMesh) return;
+    child.castShadow = child.material?.transparent !== true;
+    child.receiveShadow = child.material?.transparent !== true;
+  });
+  return group;
+}
+
 function createForkMeshOffice(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const wallThickness = 0.35;
@@ -12063,6 +12507,8 @@ export function createWorldScene({
     });
   }
   addOfficeFloorSurface(officeInterior, officeLobbyFloorMaterial);
+  const officeAquarium = createOfficeMarineAquarium(THREE, animated);
+  officeInterior.add(officeAquarium);
   OFFICE_FLOORS.slice(1).forEach((floor) => {
     const floorGroup = new THREE.Group();
     floorGroup.name = `forkmesh-office-floor-${floor.id}`;

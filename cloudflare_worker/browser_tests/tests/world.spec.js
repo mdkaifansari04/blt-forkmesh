@@ -1916,6 +1916,86 @@ test("Office bridge, approach, and lobby meet on one continuous plane", async ({
   expect(surfaces.bridge.minZ).toBeLessThan(surfaces.approach.maxZ);
 });
 
+test("Office lobby marine aquarium is visible, ambient, and animated", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-marine-aquarium");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await waitForWorld(page);
+  const first = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.enterOfficeLobby({ floorId: "lobby" });
+    shell.world.setPaused(false);
+    const aquarium = shell.world.scene.getObjectByName(
+      "forkmesh-office-marine-aquarium",
+    );
+    const fish = aquarium.getObjectByName("forkmesh-office-aquarium-fish-0");
+    const bubble = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-bubble-0",
+    );
+    const anemone = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-anemone-0",
+    );
+    const light = aquarium.getObjectByName("forkmesh-office-aquarium-light");
+    const interactive = [];
+    aquarium.traverse((child) => {
+      if (child.userData?.interactive) interactive.push(child.name);
+    });
+    return {
+      visible: aquarium.visible,
+      fish: fish.position.toArray(),
+      bubbleY: bubble.position.y,
+      anemoneRotation: anemone.rotation.z,
+      lightIntensity: light.intensity,
+      interactive,
+    };
+  });
+  await page.waitForTimeout(220);
+  const second = await page.locator("forkmesh-world").evaluate((shell) => {
+    const aquarium = shell.world.scene.getObjectByName(
+      "forkmesh-office-marine-aquarium",
+    );
+    const fish = aquarium.getObjectByName("forkmesh-office-aquarium-fish-0");
+    const bubble = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-bubble-0",
+    );
+    const anemone = aquarium.getObjectByName(
+      "forkmesh-office-aquarium-anemone-0",
+    );
+    const light = aquarium.getObjectByName("forkmesh-office-aquarium-light");
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior",
+    );
+    const cameraPosition = interior.localToWorld(
+      shell.world.camera.position.clone().set(-47, 9.4, 13),
+    );
+    const target = interior.localToWorld(
+      shell.world.camera.position.clone().set(-82.4, 6.1, -10.5),
+    );
+    shell.world.setPaused(true);
+    shell.world.camera.fov = 57;
+    shell.world.camera.updateProjectionMatrix();
+    shell.world.camera.position.copy(cameraPosition);
+    shell.world.camera.lookAt(target);
+    shell.world.renderer.render(shell.world.scene, shell.world.camera);
+    return {
+      fish: fish.position.toArray(),
+      bubbleY: bubble.position.y,
+      anemoneRotation: anemone.rotation.z,
+      lightIntensity: light.intensity,
+    };
+  });
+  await page.locator("canvas.world-canvas").screenshot({
+    path: "/tmp/forkmesh-office-marine-aquarium.png",
+    animations: "disabled",
+  });
+  expect(first.visible).toBe(true);
+  expect(first.interactive).toEqual([]);
+  expect(second.fish).not.toEqual(first.fish);
+  expect(second.bubbleY).not.toBe(first.bubbleY);
+  expect(second.anemoneRotation).not.toBe(first.anemoneRotation);
+  expect(second.lightIntensity).not.toBe(first.lightIntensity);
+});
+
 test("a first-frame doorway crossing enters before proximity catches up", async ({
   page,
 }) => {
