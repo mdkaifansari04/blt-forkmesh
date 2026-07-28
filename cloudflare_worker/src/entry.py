@@ -2523,6 +2523,36 @@ def _attention_email_with_logs(text, html, log_tail):
     return text + "\n\n" + heading + "\n" + safe_tail, rendered_html
 
 
+def _status_alert_manage_url(system_id=""):
+    safe_id = re.sub(
+        r"[^a-z0-9_-]+", "-",
+        str(system_id or "").strip().lower(),
+    ).strip("-")
+    return (
+        "https://forkmesh.com/status#system-" + safe_id
+        if safe_id else "https://forkmesh.com/status"
+    )
+
+
+def _email_with_status_alert_manage_link(text, html, system_id=""):
+    manage_url = _status_alert_manage_url(system_id)
+    manage_text = "\n\nManage this alert: " + manage_url
+    manage_html = (
+        "<p class=\"fm-actions\" style=\"margin:20px 0 0\">"
+        "<a class=\"fm-button\" style=\"display:inline-block;"
+        "border-radius:7px;background:#15803d;color:#fff;"
+        "font-size:14px;font-weight:800;padding:10px 14px;"
+        "text-decoration:none\" href=\"" +
+        _html_escape(manage_url) + "\">Manage this alert</a></p>"
+    )
+    closing = "</div></div></body></html>"
+    rendered_html = (
+        html.replace(closing, manage_html + closing, 1)
+        if closing in html else html + manage_html
+    )
+    return text + manage_text, rendered_html
+
+
 def _cron_watchdog_email_content(recovered, outage_started_at, now):
     duration = _flagship_monitor_duration(
         max(0, int(now) - int(outage_started_at or now)))
@@ -2577,6 +2607,8 @@ def _cron_watchdog_email_content(recovered, outage_started_at, now):
         "font-size:12px\"><a class=\"fm-link\" style=\"color:#15803d\" "
         "href=\"https://forkmesh.com/status\">Open ForkMesh status</a>"
         "</p>")
+    text, html = _email_with_status_alert_manage_link(
+        text, html, "scheduled-jobs")
     return subject, text, html
 
 
@@ -2791,6 +2823,8 @@ async def _record_status_monitor_transitions(
         if not alert["is_up"]:
             text, html = _attention_email_with_logs(
                 text, html, attention_log_tail)
+        text, html = _email_with_status_alert_manage_link(
+            text, html, system_id)
         delivered = True
         for email in recipients:
             delivered = bool(await _send_email(
@@ -2894,11 +2928,93 @@ def _status_minute(minute_ts, current_minute_ts, row):
     }
 
 
+async def _status_deploy_semaphore_active(env):
+    """True only while deploy.sh owns the live deployment semaphore."""
+    try:
+        row = await d1_first(
+            env,
+            "SELECT state FROM world_deploy_status WHERE singleton=1",
+        )
+    except Exception:
+        return False
+    return str((row or {}).get("state") or "") == "deploying"
+
+
+async def _record_status_deploy_sample(env, now):
+    """Record a neutral maintenance minute without probing or alerting.
+
+    Missing cron samples are deliberately shown as down on /status, so simply
+    returning while a deploy semaphore is set would still manufacture a red
+    minute. Record one successful maintenance sample for every currently known
+    status row instead. We intentionally do not call the transition mailer:
+    rollout handoffs are neither incidents nor recoveries.
+    """
+    day_ts = (now // STATUS_DAY_MS) * STATUS_DAY_MS
+    hour_ts = (now // STATUS_HOUR_MS) * STATUS_HOUR_MS
+    minute_ts = (now // STATUS_SAMPLE_WINDOW_MS) * STATUS_SAMPLE_WINDOW_MS
+    systems = [system_id for system_id, _label in STATUS_SYSTEMS]
+    try:
+        rows = await d1_all(
+            env,
+            "SELECT DISTINCT system FROM system_status_minute "
+            "WHERE system LIKE ? AND minute_ts>=? LIMIT ?",
+            STATUS_MIRROR_PREFIX + "%",
+            now - STATUS_HISTORY_RETAIN_MS,
+            STATUS_MIRROR_MAX,
+        )
+        for row in rows or []:
+            system_id = str(row.get("system") or "")
+            if (
+                system_id.startswith(STATUS_MIRROR_PREFIX)
+                and system_id not in systems
+            ):
+                systems.append(system_id)
+    except Exception:
+        pass
+    daily_args = []
+    hourly_args = []
+    minute_args = []
+    for system_id in systems:
+        daily_args.extend([day_ts, system_id])
+        hourly_args.extend([hour_ts, system_id])
+        minute_args.extend([minute_ts, system_id])
+    count = len(systems)
+    await d1_run(
+        env,
+        "INSERT INTO system_status_daily (day_ts, system, checks, failures) "
+        "VALUES " + ", ".join(["(?, ?, 1, 0)"] * count) + " "
+        "ON CONFLICT(day_ts, system) DO UPDATE SET "
+        "checks=checks+1",
+        *daily_args,
+    )
+    await d1_run(
+        env,
+        "INSERT INTO system_status_hourly "
+        "(hour_ts, system, checks, failures, reason) "
+        "VALUES " + ", ".join(["(?, ?, 1, 0, NULL)"] * count) + " "
+        "ON CONFLICT(hour_ts, system) DO UPDATE SET "
+        "checks=checks+1",
+        *hourly_args,
+    )
+    await d1_run(
+        env,
+        "INSERT INTO system_status_minute "
+        "(minute_ts, system, ok, reason) "
+        "VALUES " + ", ".join(["(?, ?, 1, NULL)"] * count) + " "
+        "ON CONFLICT(minute_ts, system) DO UPDATE SET "
+        "ok=1, reason=NULL",
+        *minute_args,
+    )
+
+
 async def record_status_sample(env):
     # Called once a minute by the scheduled (cron) handler. Best-effort per
     # system so one failing check can't blank the rest of the page.
     await ensure_schema(env)
     now = int(Date.now())
+    if await _status_deploy_semaphore_active(env):
+        await _record_status_deploy_sample(env, now)
+        return
     day_ts = (now // 86400000) * 86400000
     hour_ts = (now // 3600000) * 3600000
     minute_ts = (now // 60000) * 60000
@@ -4817,8 +4933,9 @@ async def world_durable_object_request(
     for target_type in ("ip", "agent"):
         token = str(tokens.get(target_type) or "")
         if re.fullmatch(r"[a-f0-9]{64}", token):
-            # Only keyed opaque tokens cross this boundary. The source address
-            # and raw client fingerprint remain in the outer Worker call frame.
+            # Opaque tokens are the only values used by the persistent manual
+            # block plane. Raw connection detail crosses separately below only
+            # into ephemeral socket memory for the verified-admin guest view.
             headers["x-forkmesh-world-%s-token" % target_type] = token
     client_ip = _account_session_client_ip(request)
     if client_ip:
@@ -8180,8 +8297,8 @@ async def world_deploy_status_handler(env, request):
     if method_name(request) != "GET":
         return json_response(
             {"ok": False, "error": "method_not_allowed"},
-            405,
-            {"Allow": "GET"},
+            status=405,
+            extra_headers={"Allow": "GET"},
         )
     row = await d1_first(
         env,
@@ -8201,9 +8318,201 @@ async def world_deploy_status_handler(env, request):
             "finishedAt": max(0, int(row.get("finished_at") or 0)),
             "now": Date.now(),
         },
-        200,
-        {"Cache-Control": "no-store, max-age=0"},
+        status=200,
+        cache_control="no-store, max-age=0",
     )
+
+
+WORLD_QA_DECK_REVISION = "2026-07-27-24h-1"
+WORLD_QA_CARDS = (
+    ("deploy-lifecycle", "World deployment lifecycle",
+     "Start a deployment while the World is open. Confirm the deploy notice "
+     "appears immediately, animates while work is active, and ends with a "
+     "Refresh button without refreshing the page by itself."),
+    ("elevator-camera-lock", "Elevator button camera lock",
+     "Enter the Office elevator from two angles. Confirm the camera frames the "
+     "buttons during the ride, unlocks on the destination floor, and never "
+     "rotates your heading when you step out."),
+    ("build-board-nearby", "Nearby build-board refresh",
+     "Walk away from What we're building, then approach it. Confirm its small "
+     "spinner appears while the latest open tasks load and the scene does not "
+     "refresh or jump."),
+    ("mobile-movement-stability", "Stable mobile movement",
+     "On a signed-in phone, walk continuously for at least two minutes. Confirm "
+     "the page never reloads and your position is not reset."),
+    ("account-world-settings", "Cross-device World preferences",
+     "Change speed or save a view on one signed-in device, then open the World "
+     "on another. Confirm the setting and saved view follow the account."),
+    ("office-doorway", "Smooth Office doorway",
+     "Walk through the Office entrance and back out at normal speed without "
+     "twitching. Confirm there is no ledge, invisible stop, delay, gap, zoom "
+     "jump, or 180-degree turn."),
+    ("sound-toggle", "Master sound button",
+     "Start a World audio item, toggle sound off and on, and confirm active "
+     "playback actually mutes and restores without starting audio automatically."),
+    ("repo-social-orbits", "Repository social avatar orbits",
+     "Open the forkmesh/forkmesh repository circle. Confirm Mastodon follower "
+     "avatars form the outer orbit and individual Git contributor avatars form "
+     "the inner orbit at normal camera angles."),
+    ("repo-pr-board", "Pull-request status and mergeability",
+     "Page and scroll through the PR board. Confirm each card shows its actual "
+     "state, mergeability score and evidence, and that 25 records fit each page."),
+    ("repo-issue-workbench", "In-World issue workbench",
+     "Select an issue card. Confirm its full details and comments open in the "
+     "sidebar and authorized management actions match the web issue view."),
+    ("issue-agent-models", "Issue-to-agent model controls",
+     "On an issue card, open both Claude and Codex assignment controls. Confirm "
+     "Claude offers Haiku/Sonnet/Opus/Fable and Codex offers Sol/Luna/Terra, "
+     "with authorization enforced server-side."),
+    ("engineering-agent-access", "Engineering-only agent workspace",
+     "As an Engineering member, open Claude and Codex and verify prompt, "
+     "re-prompt, transcript and runtime details. Repeat as a non-Engineering "
+     "member and confirm neither chat nor controls are visible."),
+    ("mirror-agent-installer", "Mirror Claude/Codex installer",
+     "In Qt Hosts, run Install Claude + Codex on a reachable mirror. Confirm the "
+     "saved managed SSH identity is used, and unreachable versus rejected-key "
+     "failures produce different actionable messages."),
+    ("mirror-agent-status", "Mirror cabinet agent status",
+     "Inspect each mirror cabinet side. Confirm agent tasks show running, "
+     "stopped, merged, or attention and the authorized detail panel agrees."),
+    ("marketing-room-wall", "Marketing task wall and desks",
+     "Enter the Marketing floor as a Marketing member. Confirm tasks live on "
+     "the wall, only Marketing assignees are offered, each member has a named "
+     "desk and attendance calendar, and the old guide/banner are absent."),
+    ("marketing-table", "Marketing reclaimed-wood table",
+     "Inspect the Marketing room table from above and at seated height. Confirm "
+     "it is round reclaimed wood with the ForkMesh cube embedded beneath a "
+     "clear epoxy-like surface."),
+    ("marketing-proof", "Private Marketing proof links",
+     "As a Marketing member, submit an HTTPS social proof link from your own "
+     "desk and confirm it appears there. Verify a non-Marketing account cannot "
+     "read or submit any proof records."),
+    ("avatar-team-badges", "Avatar team badges",
+     "View members from the front-left and confirm each authorized team appears "
+     "as a readable badge on the member's left arm, without exposing private "
+     "organization data to outsiders."),
+    ("admin-guest-network", "Admin-only guest network detail",
+     "Join once as a guest. From a verified is_admin account, confirm the "
+     "guest's full IP and user-agent appear on their back and copy exactly. "
+     "From a regular account, confirm neither value exists in UI or presence."),
+    ("http-referrer-board", "HTTP referrer detail",
+     "Open the HTTP referrer board. Confirm domains are grouped, the bottom "
+     "line shows the actual latest safe full URL, and selecting it opens only "
+     "that validated HTTP(S) destination."),
+    ("blog-reach", "Blog reach and sharing details",
+     "Inspect each blog card and post. Confirm views, unique views, referrer "
+     "stats and network distribution are present when available, with bounded "
+     "prefilled Mastodon, X and Reddit share drafts."),
+    ("repository-settings", "Repository Settings tab",
+     "Open a repository. Confirm federation options moved beneath Settings, "
+     "About uses a pencil, and only the owner sees the guarded delete-repository "
+     "danger action."),
+    ("saved-location-share", "Exact saved and shared views",
+     "Save a view, rename it, reopen it, then share a right-click location link. "
+     "Confirm position, perspective, Office check-in state and camera heading "
+     "restore correctly."),
+    ("world-loader", "Live World startup preview",
+     "Hard-load the World on desktop and mobile. Confirm the real scene remains "
+     "visible behind a small animated progress cover and objects do not shift "
+     "noticeably as initial data arrives."),
+)
+WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
+
+
+async def world_qa_handler(env, request):
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return json_response(
+            {"ok": False, "error": "method_not_allowed"},
+            status=405,
+            extra_headers={"Allow": "GET, POST"},
+        )
+    data = {}
+    if method == "POST":
+        if not _request_same_origin(request):
+            return json_response({"ok": False, "error": "origin_not_allowed"},
+                                 status=403)
+        try:
+            data = await bounded_json_request(request, 2048)
+        except RequestBodyTooLarge:
+            return json_response({"ok": False, "error": "payload_too_large"},
+                                 status=413)
+        except Exception:
+            return json_response({"ok": False, "error": "invalid_json"},
+                                 status=400)
+    account_bi, record = await _account_session_record(env, request, data)
+    if not account_bi or not record:
+        return json_response({
+            "ok": True,
+            "authenticated": False,
+            "revision": WORLD_QA_DECK_REVISION,
+            "cards": [
+                {"key": key, "title": title, "howToTest": how_to_test}
+                for key, title, how_to_test in WORLD_QA_CARDS
+            ],
+            "reviews": {},
+            "stats": {"pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
+                      "total": len(WORLD_QA_CARDS)},
+        }, cache_control="no-store")
+    if method == "POST":
+        item_key = clean_string(data.get("key"), 80)
+        verdict = clean_string(data.get("verdict"), 12).lower()
+        if item_key not in WORLD_QA_CARD_KEYS:
+            return json_response({"ok": False, "error": "unknown_qa_item"},
+                                 status=400)
+        if verdict not in ("pass", "fail", "unsure"):
+            return json_response({"ok": False, "error": "invalid_verdict"},
+                                 status=400)
+        await d1_run(
+            env,
+            "INSERT INTO world_qa_reviews("
+            "account_bi,item_key,verdict,reviewed_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(account_bi,item_key) DO UPDATE SET "
+            "verdict=excluded.verdict,reviewed_at=excluded.reviewed_at",
+            account_bi, item_key, verdict, int(Date.now()),
+        )
+    rows = await d1_all(
+        env,
+        "SELECT item_key,verdict,reviewed_at FROM world_qa_reviews "
+        "WHERE account_bi=? ORDER BY reviewed_at DESC LIMIT 128",
+        account_bi,
+    )
+    reviews = {}
+    for row in rows:
+        key = clean_string(row.get("item_key"), 80)
+        verdict = clean_string(row.get("verdict"), 12).lower()
+        if key in WORLD_QA_CARD_KEYS and verdict in ("pass", "fail", "unsure"):
+            reviews[key] = {
+                "verdict": verdict,
+                "reviewedAt": max(0, int(row.get("reviewed_at") or 0)),
+            }
+    stats = {
+        "pass": sum(1 for item in reviews.values()
+                    if item["verdict"] == "pass"),
+        "fail": sum(1 for item in reviews.values()
+                    if item["verdict"] == "fail"),
+        "unsure": sum(1 for item in reviews.values()
+                      if item["verdict"] == "unsure"),
+        "reviewed": len(reviews),
+        "total": len(WORLD_QA_CARDS),
+    }
+    return json_response({
+        "ok": True,
+        "authenticated": True,
+        "revision": WORLD_QA_DECK_REVISION,
+        "cards": [
+            {
+                "key": key,
+                "title": title,
+                "howToTest": how_to_test,
+                **reviews.get(key, {}),
+            }
+            for key, title, how_to_test in WORLD_QA_CARDS
+        ],
+        "reviews": reviews,
+        "stats": stats,
+    }, cache_control="no-store")
 
 
 WORLD_PREFERENCES_MAX_BYTES = 320 * 1024
@@ -37176,6 +37485,9 @@ class Default(WorkerEntrypoint):
                 "/api/world/deploy-status", "/api/world/deploy-status/"):
             return await world_deploy_status_handler(self.env, request)
 
+        if url.path in ("/api/world/qa", "/api/world/qa/"):
+            return await world_qa_handler(self.env, request)
+
         if url.path in (
                 "/api/world/preferences", "/api/world/preferences/"):
             return await world_preferences_handler(self.env, request)
@@ -37214,6 +37526,28 @@ class Default(WorkerEntrypoint):
         if office_channel_socket:
             return await _office_channel_socket_handler(
                 self.env, request, office_channel_socket.group(1))
+
+        if url.path in ("/api/world/online", "/api/world/online/"):
+            if method_name(request) != "GET":
+                return json_response(
+                    {"error": "method_not_allowed"},
+                    status=405,
+                    extra_headers={"allow": "GET"},
+                )
+            world_id = self.env.FORKMESH_WORLD.idFromName("town-square-v1")
+            try:
+                return await self.env.FORKMESH_WORLD.get(world_id).fetch(
+                    JsRequest.new(
+                        str(request.url),
+                        to_js({"method": "GET"}),
+                    )
+                )
+            except Exception:
+                return json_response(
+                    {"ok": False, "online": 0, "error": "unavailable"},
+                    status=503,
+                    extra_headers=EXPECTED_DEGRADED_HEADERS,
+                )
 
         if url.path in ("/api/world/ws", "/api/world/ws/"):
             if method_name(request) != "GET":
@@ -38737,6 +39071,21 @@ class ForkMeshWorld(DurableObject):
 
     async def fetch(self, request):
         path = urlparse(request.url).path
+        if path.rstrip("/") == "/api/world/online":
+            if method_name(request) != "GET":
+                return json_response(
+                    {"error": "method_not_allowed"},
+                    status=405,
+                    extra_headers={"allow": "GET"},
+                )
+            return json_response(
+                {
+                    "ok": True,
+                    "online": len(self._live_sockets(cleanup=True)),
+                    "now": int(Date.now()),
+                },
+                cache_seconds=10,
+            )
         if path.rstrip("/") == "/api/world/manual-block":
             return await self._manual_block(request)
         if path.rstrip("/") == "/api/world/mirror-push":

@@ -2199,6 +2199,14 @@ SCHEMA_STATEMENTS = [
         revision TEXT NOT NULL DEFAULT '' CHECK (length(revision) <= 96),
         started_at INTEGER NOT NULL DEFAULT 0 CHECK (started_at >= 0),
         finished_at INTEGER NOT NULL DEFAULT 0 CHECK (finished_at >= 0))""",
+    """CREATE TABLE IF NOT EXISTS world_qa_reviews (
+        account_bi TEXT NOT NULL,
+        item_key TEXT NOT NULL CHECK (length(item_key) BETWEEN 1 AND 80),
+        verdict TEXT NOT NULL CHECK (verdict IN ('pass','fail','unsure')),
+        reviewed_at INTEGER NOT NULL CHECK (reviewed_at >= 0),
+        PRIMARY KEY (account_bi, item_key))""",
+    "CREATE INDEX IF NOT EXISTS idx_world_qa_reviews_account_time "
+    "ON world_qa_reviews(account_bi, reviewed_at DESC)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

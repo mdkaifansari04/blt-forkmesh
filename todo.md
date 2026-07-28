@@ -5,8 +5,21 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [x] Add a direct “Manage this alert” link to component and scheduled-job alert emails, opening the affected expanded status row.
+- [ ] Fix the production `/api/world/deploy-status` response error that made API and Worker status red, then verify live recovery.
+- [ ] Use the deploy lifecycle singleton as a status semaphore so rollout minutes do not create false Website/API/Worker incidents or emails.
+- [ ] Show the live World user count and a Join World button between the homepage logo and hamburger on mobile.
+- [ ] Make the 24-hour QA deck a direct physical grab/swipe board with left Fail, right Pass, down Unsure, test instructions, and private cross-device totals.
+- [ ] Add “Done → send for QA” to each active build sticky and enqueue its test instructions into the QA deck.
+- [ ] Keep Share exact view on the right rail, restore the normal right-click menu, and keep Saved Views collapsed with small thumbnails and a +Map control.
+- [ ] Show admin-only copyable full IP and User-Agent details on guest backs without persisting or broadcasting them to other users.
+- [ ] Keep repository follower and contributor avatar orbits coplanar with the repository wheel and spaced farther out.
+- [ ] Consolidate member Info/Fedi into one compact front card with short relative times, Solana wallet QR/copy/balance, and no mode buttons.
+- [ ] Show every server-authoritative team badge as a stacked list on the avatar's left arm.
+- [ ] Restore the Marketing task wall to room scale and put create, Marketing-only assign, start/stop, done, and delete controls directly on the physical wall.
+- [ ] Set up `CLOUDFLARE_OBSERVABILITY_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` so attention emails can include the prior two minutes of logs.
 - [ ] Deploy an instant World-wide deployment-start indicator, animated activity state, and explicit ready-to-refresh action without auto-refreshing.
-- [ ] Lock the camera onto the elevator controls while entering/riding, then release it on arrival or after stepping out.
+- [ ] Switch the elevator to an upper-corner first-person view that frames the controls and outside, then restore the prior view on arrival or exit.
 - [ ] Refresh “What we're building” whenever a player approaches and show its physical updating spinner.
 - [ ] Verify the ForkMesh X timeline feed and keep the in-world board sourced from the public `@forkmesh` profile without third-party tracking script injection.
 - [ ] Make mirror agent installers exclusively use the saved ForkMesh SSH key when present and clearly distinguish an unreachable host from rejected authentication.
