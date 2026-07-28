@@ -130,6 +130,41 @@ async def handle(runtime, path, issues=None):
                 "updated_at=excluded.updated_at,completed_at=0,completed_by_bi=''",
                 key, "issue", issue["owner"], issue["repo"], issue["number"],
                 issue["title"], priority, account_bi, int(runtime.now()))
+        elif action == "send_qa":
+            key = str(data.get("key") or "")
+            title = " ".join(str(data.get("title") or "").split())[:160]
+            how_to_test = " ".join(
+                str(data.get("howToTest") or "").split())[:720]
+            if (
+                not KEY_RE.fullmatch(key)
+                or not title
+                or not how_to_test
+            ):
+                return _response(
+                    runtime, {"error": "invalid_qa_item"}, status=400)
+            now = int(runtime.now())
+            kind = "issue" if key.startswith("issue:") else "task"
+            await runtime.d1_run(
+                "INSERT INTO world_build_board_items "
+                "(item_key,kind,owner,repo,issue_number,title,priority,"
+                "updated_by_bi,updated_at,completed_at,completed_by_bi) "
+                "VALUES (?,?, '', '',0,?,64,?,?,?,?) "
+                "ON CONFLICT(item_key) DO UPDATE SET "
+                "title=excluded.title,updated_by_bi=excluded.updated_by_bi,"
+                "updated_at=excluded.updated_at,"
+                "completed_at=excluded.completed_at,"
+                "completed_by_bi=excluded.completed_by_bi",
+                key, kind, title, account_bi, now, now, account_bi,
+            )
+            await runtime.d1_run(
+                "INSERT INTO world_qa_items("
+                "item_key,title,how_to_test,source_key,added_at,active) "
+                "VALUES(?,?,?,?,?,1) ON CONFLICT(item_key) DO UPDATE SET "
+                "title=excluded.title,how_to_test=excluded.how_to_test,"
+                "source_key=excluded.source_key,added_at=excluded.added_at,"
+                "active=1",
+                key, title, how_to_test, key, now,
+            )
         elif action == "reorder":
             order = data.get("order")
             if not isinstance(order, list) or not order or len(order) > MAX_ITEMS:
@@ -202,6 +237,15 @@ async def handle(runtime, path, issues=None):
             str(row.get("item_key") or "") for row in completed_rows
         ],
         "assignedIssues": assigned_issues,
+        "customTasks": [
+            {
+                "key": str(row.get("item_key") or ""),
+                "title": str(row.get("title") or "QA follow-up")[:160],
+            }
+            for row in active_rows
+            if str(row.get("kind") or "") == "task"
+            and str(row.get("item_key") or "") not in BUILTIN_KEYS
+        ],
         "issues": [
             {**issue, "assigned": key in assigned}
             for key, issue in available_issues.items()

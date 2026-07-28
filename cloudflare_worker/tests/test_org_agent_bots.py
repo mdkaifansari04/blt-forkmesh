@@ -32,6 +32,11 @@ def test_org_agents_are_separate_member_scoped_encrypted_records():
     assert "engineering_team_required" in ENTRY
     assert "team='engineering'" in ENTRY
     assert '"engineeringAccess": True' in ENTRY
+    assert '"privacyBoundary": "engineering-team-encrypted-at-rest"' in ENTRY
+    assert (
+        "visible and controllable only by current members"
+        in ENTRY
+    )
 
 
 def test_only_an_integrity_approved_mirror_receives_bounded_jobs():
@@ -90,6 +95,8 @@ def test_agent_chat_fails_closed_and_never_enters_the_shared_room():
     assert "avatar.visible = false" in SCENE
     assert "this.world?.setAgentBotAccess?.(false)" in WORLD
     assert 'this.orgAgentAccess?.state !== "allowed"' in WORLD
+    assert 'if (!agentBotAccessAllowed) return false;' in SCENE
+    assert "record.state === \"open\" && agentBotAccessAllowed" in SCENE
 
 
 def test_qt_reports_full_session_and_runtime_availability_to_world():
@@ -106,7 +113,49 @@ def test_qt_reports_full_session_and_runtime_availability_to_world():
         assert marker in QT
     assert "_org_agent_info_projection" in ENTRY
     assert "_org_agent_availability_projection" in ENTRY
-    assert '"agentInfo": _org_agent_info_projection' in ENTRY
+    assert '"agentInfo": agent_info' in ENTRY
+
+
+def test_world_explains_stalled_agent_jobs_and_bot_clicks_open_full_status():
+    assert '"code": "mirror_not_claiming_jobs"' in ENTRY
+    assert '"diagnostic": diagnostic' in ENTRY
+    assert "session?.diagnostic" in SCENE
+    assert 'diagnostic.level || "").toLowerCase() === "attention"' in SCENE
+    assert "openAgentBotDetail(name)" in WORLD
+    assert "ENGINEERING AGENT / LIVE SESSION STATUS" in WORLD
+    assert "{ provider, allNodes: true }" in WORLD
+    assert "data-world-agent-open-chat" in WORLD
+
+
+def test_qt_accepts_supported_headless_credential_sources_without_relaying_secrets():
+    for marker in (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "credentialSource",
+    ):
+        assert marker in QT
+    assert '"credentialSource": clean_string' in ENTRY
+
+
+def test_issue_agent_model_choice_is_allowlisted_and_bound_to_the_qt_issue():
+    for marker in (
+        '"haiku": "claude-haiku-4-5"',
+        '"sonnet": "claude-sonnet-4-6"',
+        '"opus": "claude-opus-4-8"',
+        '"fable": "claude-fable-5"',
+        '"sol": "gpt-5.6-sol"',
+        '"luna": "gpt-5.6-luna"',
+        '"terra": "gpt-5.6-terra"',
+        '"invalid_model"',
+        '"invalid_issue_task_key"',
+        '"issueNumber": issue_number',
+        '"model": model or ""',
+    ):
+        assert marker in ENTRY
+    assert "allowedWebsiteModels" in QT
+    assert "startAgentForIssue(" in QT
+    assert "requestedModel" in QT
 
 
 def test_only_successful_codex_results_complete_a_valid_tracked_board_key():

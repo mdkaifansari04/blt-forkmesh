@@ -2523,6 +2523,35 @@ def _attention_email_with_logs(text, html, log_tail):
     return text + "\n\n" + heading + "\n" + safe_tail, rendered_html
 
 
+def _status_alert_manage_url(system_id=""):
+    # Alert mail is controlled from the flagship repository's owner-only
+    # Settings tab. The old /status#system-* destination only explained the
+    # failing check and offered no way to enable/disable the alert.
+    return (
+        "https://forkmesh.com/forkmesh/forkmesh/settings"
+        "#operational-alerts"
+    )
+
+
+def _email_with_status_alert_manage_link(text, html, system_id=""):
+    manage_url = _status_alert_manage_url(system_id)
+    manage_text = "\n\nManage this alert: " + manage_url
+    manage_html = (
+        "<p class=\"fm-actions\" style=\"margin:20px 0 0\">"
+        "<a class=\"fm-button\" style=\"display:inline-block;"
+        "border-radius:7px;background:#15803d;color:#fff;"
+        "font-size:14px;font-weight:800;padding:10px 14px;"
+        "text-decoration:none\" href=\"" +
+        _html_escape(manage_url) + "\">Manage this alert</a></p>"
+    )
+    closing = "</div></div></body></html>"
+    rendered_html = (
+        html.replace(closing, manage_html + closing, 1)
+        if closing in html else html + manage_html
+    )
+    return text + manage_text, rendered_html
+
+
 def _cron_watchdog_email_content(recovered, outage_started_at, now):
     duration = _flagship_monitor_duration(
         max(0, int(now) - int(outage_started_at or now)))
@@ -2577,6 +2606,8 @@ def _cron_watchdog_email_content(recovered, outage_started_at, now):
         "font-size:12px\"><a class=\"fm-link\" style=\"color:#15803d\" "
         "href=\"https://forkmesh.com/status\">Open ForkMesh status</a>"
         "</p>")
+    text, html = _email_with_status_alert_manage_link(
+        text, html, "scheduled-jobs")
     return subject, text, html
 
 
@@ -2791,6 +2822,8 @@ async def _record_status_monitor_transitions(
         if not alert["is_up"]:
             text, html = _attention_email_with_logs(
                 text, html, attention_log_tail)
+        text, html = _email_with_status_alert_manage_link(
+            text, html, system_id)
         delivered = True
         for email in recipients:
             delivered = bool(await _send_email(
@@ -2894,11 +2927,93 @@ def _status_minute(minute_ts, current_minute_ts, row):
     }
 
 
+async def _status_deploy_semaphore_active(env):
+    """True only while deploy.sh owns the live deployment semaphore."""
+    try:
+        row = await d1_first(
+            env,
+            "SELECT state FROM world_deploy_status WHERE singleton=1",
+        )
+    except Exception:
+        return False
+    return str((row or {}).get("state") or "") == "deploying"
+
+
+async def _record_status_deploy_sample(env, now):
+    """Record a neutral maintenance minute without probing or alerting.
+
+    Missing cron samples are deliberately shown as down on /status, so simply
+    returning while a deploy semaphore is set would still manufacture a red
+    minute. Record one successful maintenance sample for every currently known
+    status row instead. We intentionally do not call the transition mailer:
+    rollout handoffs are neither incidents nor recoveries.
+    """
+    day_ts = (now // STATUS_DAY_MS) * STATUS_DAY_MS
+    hour_ts = (now // STATUS_HOUR_MS) * STATUS_HOUR_MS
+    minute_ts = (now // STATUS_SAMPLE_WINDOW_MS) * STATUS_SAMPLE_WINDOW_MS
+    systems = [system_id for system_id, _label in STATUS_SYSTEMS]
+    try:
+        rows = await d1_all(
+            env,
+            "SELECT DISTINCT system FROM system_status_minute "
+            "WHERE system LIKE ? AND minute_ts>=? LIMIT ?",
+            STATUS_MIRROR_PREFIX + "%",
+            now - STATUS_HISTORY_RETAIN_MS,
+            STATUS_MIRROR_MAX,
+        )
+        for row in rows or []:
+            system_id = str(row.get("system") or "")
+            if (
+                system_id.startswith(STATUS_MIRROR_PREFIX)
+                and system_id not in systems
+            ):
+                systems.append(system_id)
+    except Exception:
+        pass
+    daily_args = []
+    hourly_args = []
+    minute_args = []
+    for system_id in systems:
+        daily_args.extend([day_ts, system_id])
+        hourly_args.extend([hour_ts, system_id])
+        minute_args.extend([minute_ts, system_id])
+    count = len(systems)
+    await d1_run(
+        env,
+        "INSERT INTO system_status_daily (day_ts, system, checks, failures) "
+        "VALUES " + ", ".join(["(?, ?, 1, 0)"] * count) + " "
+        "ON CONFLICT(day_ts, system) DO UPDATE SET "
+        "checks=checks+1",
+        *daily_args,
+    )
+    await d1_run(
+        env,
+        "INSERT INTO system_status_hourly "
+        "(hour_ts, system, checks, failures, reason) "
+        "VALUES " + ", ".join(["(?, ?, 1, 0, NULL)"] * count) + " "
+        "ON CONFLICT(hour_ts, system) DO UPDATE SET "
+        "checks=checks+1",
+        *hourly_args,
+    )
+    await d1_run(
+        env,
+        "INSERT INTO system_status_minute "
+        "(minute_ts, system, ok, reason) "
+        "VALUES " + ", ".join(["(?, ?, 1, NULL)"] * count) + " "
+        "ON CONFLICT(minute_ts, system) DO UPDATE SET "
+        "ok=1, reason=NULL",
+        *minute_args,
+    )
+
+
 async def record_status_sample(env):
     # Called once a minute by the scheduled (cron) handler. Best-effort per
     # system so one failing check can't blank the rest of the page.
     await ensure_schema(env)
     now = int(Date.now())
+    if await _status_deploy_semaphore_active(env):
+        await _record_status_deploy_sample(env, now)
+        return
     day_ts = (now // 86400000) * 86400000
     hour_ts = (now // 3600000) * 3600000
     minute_ts = (now // 60000) * 60000
@@ -4767,12 +4882,14 @@ def world_websocket_origin_allowed(request):
 
 async def world_durable_object_request(
         request, trusted_claim=None, moderation_tokens=None):
-    """Rebuild the world upgrade with no identifying connection headers.
+    """Rebuild the world upgrade with tightly scoped connection headers.
 
     The general tunnel helper forwards Authorization and User-Agent because Git
-    hosts need them. World presence does not. It receives only WebSocket
-    handshake headers plus the already-sanitized, approximate country code and
-    opaque moderation subjects.
+    hosts need them. Public World presence does not. The live room receives
+    WebSocket handshake headers, the approximate country code, opaque
+    moderation subjects, and an ephemeral edge IP/raw agent pair that its
+    server-verified admin projection may reveal for guest moderation only.
+    Those two values are never persisted or emitted to ordinary sockets.
     """
     headers = {}
     for name in (
@@ -4815,9 +4932,20 @@ async def world_durable_object_request(
     for target_type in ("ip", "agent"):
         token = str(tokens.get(target_type) or "")
         if re.fullmatch(r"[a-f0-9]{64}", token):
-            # Only keyed opaque tokens cross this boundary. The source address
-            # and raw client fingerprint remain in the outer Worker call frame.
+            # Opaque tokens are the only values used by the persistent manual
+            # block plane. Raw connection detail crosses separately below only
+            # into ephemeral socket memory for the verified-admin guest view.
             headers["x-forkmesh-world-%s-token" % target_type] = token
+    client_ip = _account_session_client_ip(request)
+    if client_ip:
+        headers["x-forkmesh-world-private-ip"] = client_ip
+    try:
+        raw_agent = clean_string(
+            request.headers.get("user-agent") or "", 1024)
+    except Exception:
+        raw_agent = ""
+    if raw_agent:
+        headers["x-forkmesh-world-private-agent"] = raw_agent
     source_url = urlparse(request.url)
     # Strip query/fragment data as an additional privacy boundary. The world
     # protocol has no tokens or user-selected URL state.
@@ -6949,8 +7077,8 @@ async def office_attendance_handler(env, request):
             env,
             "INSERT OR IGNORE INTO world_office_attendance "
             "(visit_id, account_bi, account_name, in_at, out_at, "
-            "last_seen_at, floor_id) "
-            "VALUES (?, ?, ?, ?, NULL, ?, ?)",
+            "last_seen_at, floor_id, visit_scope) "
+            "VALUES (?, ?, ?, ?, NULL, ?, ?, 'office')",
             new_world_peer_id(),
             str(account_bi),
             world_protocol.clean_display_name(
@@ -7853,6 +7981,122 @@ class _OfficeMarketingTasksRuntime:
                 members.append(name)
         return members
 
+    async def marketing_members(self, org_bi):
+        """Return active users on an authoritative Marketing floor team."""
+        rows = await d1_all(
+            self.env,
+            "SELECT DISTINCT tm.member_bi AS member_bi,tm.name AS name,"
+            "tm.team AS team "
+            "FROM org_team_members tm "
+            "INNER JOIN org_members om "
+            "ON om.org_bi=tm.org_bi AND om.member_bi=tm.member_bi "
+            "INNER JOIN org_teams ot "
+            "ON ot.org_bi=tm.org_bi AND ot.team=tm.team "
+            "WHERE tm.org_bi=? "
+            "AND om.role IN ('owner','admin','member') "
+            "AND ot.permission IN ('read','write','maintain','admin') "
+            "ORDER BY tm.name COLLATE NOCASE LIMIT 1000",
+            str(org_bi or ""),
+        )
+        aliases = OFFICE_FLOOR_TEAM_ALIASES["marketing"]
+        members = []
+        seen = set()
+        for row in rows or []:
+            if _office_team_slug(row.get("team")) not in aliases:
+                continue
+            name = clean_string(
+                row.get("name") or "", MAX_NODE_NAME
+            ).strip().lower()
+            member = await self.active_user(name)
+            if not member or name in seen:
+                continue
+            seen.add(name)
+            members.append(member)
+        return members
+
+    async def marketing_member(self, org_bi, name):
+        requested = clean_string(
+            name or "", MAX_NODE_NAME
+        ).strip().lower()
+        if not requested:
+            return None
+        for member in await self.marketing_members(org_bi):
+            if str(member.get("name") or "").lower() == requested:
+                return member
+        return None
+
+    async def marketing_attendance(self, members, now):
+        """Aggregate the last seven UTC calendar days for Marketing desks."""
+        day_ms = 24 * 60 * 60 * 1000
+        now = max(0, int(now or 0))
+        today = now // day_ms
+        first_day = max(0, today - 6)
+        start_ms = first_day * day_ms
+        totals = {}
+        valid_members = []
+        for member in members or []:
+            account_bi = str((member or {}).get("bi") or "")
+            name = clean_string(
+                (member or {}).get("name") or "", MAX_NODE_NAME
+            ).strip().lower()
+            if not account_bi or not name:
+                continue
+            valid_members.append(name)
+            rows = await d1_all(
+                self.env,
+                "SELECT in_at,out_at,last_seen_at "
+                "FROM world_office_attendance "
+                "WHERE account_bi=? "
+                "AND visit_scope='office' "
+                "AND in_at<? "
+                "AND COALESCE(out_at,NULLIF(last_seen_at,0),?)>=? "
+                "ORDER BY in_at ASC LIMIT 500",
+                account_bi,
+                now + 1,
+                now,
+                start_ms,
+            )
+            for row in rows or []:
+                entered = max(start_ms, int(row.get("in_at") or 0))
+                exited = row.get("out_at")
+                if exited is None:
+                    exited = min(
+                        now,
+                        max(
+                            entered,
+                            int(row.get("last_seen_at") or now),
+                        ),
+                    )
+                exited = min(now, max(entered, int(exited or entered)))
+                cursor = entered
+                while cursor < exited:
+                    bucket = cursor // day_ms
+                    boundary = (bucket + 1) * day_ms
+                    portion = min(exited, boundary) - cursor
+                    totals[(name, bucket)] = (
+                        totals.get((name, bucket), 0) + portion
+                    )
+                    cursor += portion
+        days = []
+        for bucket in range(first_day, today + 1):
+            stamp = time.gmtime(bucket * 24 * 60 * 60)
+            days.append({
+                "date": time.strftime("%Y-%m-%d", stamp),
+                "label": time.strftime("%a %m/%d", stamp).upper(),
+                "hours": [
+                    {
+                        "member": name,
+                        "hours": round(
+                            totals.get((name, bucket), 0) / 3600000, 2),
+                    }
+                    for name in valid_members
+                ],
+            })
+        return days
+
+    async def blind(self, value):
+        return await blind_index(self.env, str(value or ""))
+
     async def seal(self, value):
         return await encrypt_row(self.env, value)
 
@@ -8047,6 +8291,432 @@ async def world_build_board_handler(env, request, path):
         ):
             return await world_build_board.handle(runtime, path, [])
     return await world_build_board.handle(runtime, path, [])
+
+
+async def world_deploy_status_handler(env, request):
+    if method_name(request) != "GET":
+        return json_response(
+            {"ok": False, "error": "method_not_allowed"},
+            status=405,
+            extra_headers={"Allow": "GET"},
+        )
+    row = await d1_first(
+        env,
+        "SELECT state,revision,started_at,finished_at "
+        "FROM world_deploy_status WHERE singleton=1",
+    )
+    row = row or {}
+    state = str(row.get("state") or "idle")
+    if state not in ("idle", "deploying", "ready", "failed"):
+        state = "idle"
+    return json_response(
+        {
+            "ok": True,
+            "state": state,
+            "revision": clean_string(row.get("revision") or "", 96),
+            "startedAt": max(0, int(row.get("started_at") or 0)),
+            "finishedAt": max(0, int(row.get("finished_at") or 0)),
+            "now": Date.now(),
+        },
+        status=200,
+        cache_control="no-store, max-age=0",
+    )
+
+
+WORLD_QA_DECK_REVISION = "2026-07-27-24h-1"
+WORLD_QA_CARDS = (
+    ("deploy-lifecycle", "World deployment lifecycle",
+     "Start a deployment while the World is open. Confirm the deploy notice "
+     "appears immediately, animates while work is active, and ends with a "
+     "Refresh button without refreshing the page by itself."),
+    ("elevator-camera-lock", "Elevator button camera lock",
+     "Enter the Office elevator from two angles. Confirm the camera frames the "
+     "buttons during the ride, unlocks on the destination floor, and never "
+     "rotates your heading when you step out."),
+    ("build-board-nearby", "Nearby build-board refresh",
+     "Walk away from What we're building, then approach it. Confirm its small "
+     "spinner appears while the latest open tasks load and the scene does not "
+     "refresh or jump."),
+    ("mobile-movement-stability", "Stable mobile movement",
+     "On a signed-in phone, walk continuously for at least two minutes. Confirm "
+     "the page never reloads and your position is not reset."),
+    ("account-world-settings", "Cross-device World preferences",
+     "Change speed or save a view on one signed-in device, then open the World "
+     "on another. Confirm the setting and saved view follow the account."),
+    ("office-doorway", "Smooth Office doorway",
+     "Walk through the Office entrance and back out at normal speed without "
+     "twitching. Confirm there is no ledge, invisible stop, delay, gap, zoom "
+     "jump, or 180-degree turn."),
+    ("sound-toggle", "Master sound button",
+     "Start a World audio item, toggle sound off and on, and confirm active "
+     "playback actually mutes and restores without starting audio automatically."),
+    ("repo-social-orbits", "Repository social avatar orbits",
+     "Open the forkmesh/forkmesh repository circle. Confirm Mastodon follower "
+     "avatars form the outer orbit and individual Git contributor avatars form "
+     "the inner orbit at normal camera angles."),
+    ("repo-pr-board", "Pull-request status and mergeability",
+     "Page and scroll through the PR board. Confirm each card shows its actual "
+     "state, mergeability score and evidence, and that 25 records fit each page."),
+    ("repo-issue-workbench", "In-World issue workbench",
+     "Select an issue card. Confirm its full details and comments open in the "
+     "sidebar and authorized management actions match the web issue view."),
+    ("issue-agent-models", "Issue-to-agent model controls",
+     "On an issue card, open both Claude and Codex assignment controls. Confirm "
+     "Claude offers Haiku/Sonnet/Opus/Fable and Codex offers Sol/Luna/Terra, "
+     "with authorization enforced server-side."),
+    ("engineering-agent-access", "Engineering-only agent workspace",
+     "As an Engineering member, open Claude and Codex and verify prompt, "
+     "re-prompt, transcript and runtime details. Repeat as a non-Engineering "
+     "member and confirm neither chat nor controls are visible."),
+    ("mirror-agent-installer", "Mirror Claude/Codex installer",
+     "In Qt Hosts, run Install Claude + Codex on a reachable mirror. Confirm the "
+     "saved managed SSH identity is used, and unreachable versus rejected-key "
+     "failures produce different actionable messages."),
+    ("mirror-agent-status", "Mirror cabinet agent status",
+     "Inspect each mirror cabinet side. Confirm agent tasks show running, "
+     "stopped, merged, or attention and the authorized detail panel agrees."),
+    ("marketing-room-wall", "Marketing task wall and desks",
+     "Enter the Marketing floor as a Marketing member. Confirm tasks live on "
+     "the wall, only Marketing assignees are offered, each member has a named "
+     "desk and attendance calendar, and the old guide/banner are absent."),
+    ("marketing-table", "Marketing reclaimed-wood table",
+     "Inspect the Marketing room table from above and at seated height. Confirm "
+     "it is round reclaimed wood with the ForkMesh cube embedded beneath a "
+     "clear epoxy-like surface."),
+    ("marketing-proof", "Private Marketing proof links",
+     "As a Marketing member, submit an HTTPS social proof link from your own "
+     "desk and confirm it appears there. Verify a non-Marketing account cannot "
+     "read or submit any proof records."),
+    ("avatar-team-badges", "Avatar team badges",
+     "View members from the front-left and confirm each authorized team appears "
+     "as a readable badge on the member's left arm, without exposing private "
+     "organization data to outsiders."),
+    ("admin-guest-network", "Admin-only guest network detail",
+     "Join once as a guest. From a verified is_admin account, confirm the "
+     "guest's full IP and user-agent appear on their back and copy exactly. "
+     "From a regular account, confirm neither value exists in UI or presence."),
+    ("http-referrer-board", "HTTP referrer detail",
+     "Open the HTTP referrer board. Confirm domains are grouped, the bottom "
+     "line shows the actual latest safe full URL, and selecting it opens only "
+     "that validated HTTP(S) destination."),
+    ("blog-reach", "Blog reach and sharing details",
+     "Inspect each blog card and post. Confirm views, unique views, referrer "
+     "stats and network distribution are present when available, with bounded "
+     "prefilled Mastodon, X and Reddit share drafts."),
+    ("repository-settings", "Repository Settings tab",
+     "Open a repository. Confirm federation options moved beneath Settings, "
+     "About uses a pencil, and only the owner sees the guarded delete-repository "
+     "danger action."),
+    ("saved-location-share", "Exact saved and shared views",
+     "Save a view, rename it, reopen it, then share a right-click location link. "
+     "Confirm position, perspective, Office check-in state and camera heading "
+     "restore correctly."),
+    ("world-loader", "Live World startup preview",
+     "Hard-load the World on desktop and mobile. Confirm the real scene remains "
+     "visible behind a small animated progress cover and objects do not shift "
+     "noticeably as initial data arrives."),
+    ("fresh-code-surge", "Fresh Code mirror-push effect",
+     "Keep the World open while a mirror publishes a new verified commit. "
+     "Confirm the cabinet emits the tall green beam and expanding ground "
+     "shockwave once the refreshed signed catalog confirms that commit."),
+    ("chest-fediverse-activity", "Unified chest Fediverse and activity card",
+     "Open your own and another registered member's chest card. Confirm "
+     "Fediverse leaves Loading, the card is slightly larger, no separate "
+     "activity dot remains, and the darker node-style border reflects account "
+     "activity recency."),
+    ("qt-host-live-capabilities", "Qt live host and agent CLI status",
+     "Add or reopen a saved Qt Host. Confirm its row keeps checking while SSH "
+     "comes online, distinguishes provisioning, unreachable, and rejected-key "
+     "states, then shows Claude and Codex as Installed or Not installed."),
+    ("alert-management-link", "Alert email management destination",
+     "Open Manage this alert from a component or scheduled-job email. Confirm "
+     "it opens forkmesh/forkmesh Settings, scrolls to Operational alerts, and "
+     "focuses the checkbox used to enable or disable those emails."),
+    ("qa-history-routing", "QA history tabs and routing",
+     "Use the physical Cards, Pass, Fail, and Unsure tabs. Page the shared task "
+     "lists, select a task, then as an authorized maintainer send one back to "
+     "What we're building and another into forkmesh/forkmesh issues."),
+    ("qa-history-detail", "QA history full-card review",
+     "Open Pass, Fail, or Unsure, select a prior task, and confirm its full "
+     "title and test instructions appear. Change its verdict with the large "
+     "buttons, then use Back to Cards and confirm shared totals update."),
+    ("elevator-front-camera", "Front-facing elevator camera and controls",
+     "Enter the elevator and confirm its upper-corner security-camera view "
+     "frames the large high-contrast buttons on the right wall while looking "
+     "out into the World, not back into the Office. Confirm the old view "
+     "returns after arrival or exit."),
+    ("marketing-office-hours", "Office-only Marketing attendance",
+     "Spend time in the World outside the building, then enter and leave the "
+     "Office. Confirm Marketing Office Hours increases only for the interval "
+     "between the explicit building entry and exit punches."),
+    ("marketing-furniture", "Marketing window desks and seating",
+     "Visit Marketing and confirm named desks sit against the rear windows "
+     "with chairs, while the raised round sealed-wood table has eight visible "
+     "chairs and no green floor showing through its top."),
+    ("office-landscaping", "Office exterior landscaping",
+     "Walk around and through the Office approach. Confirm flowers, bushes, "
+     "and low-poly trees surround the island without blocking the bridge, "
+     "doorway, or smooth entry and exit."),
+)
+WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
+
+
+async def world_qa_handler(env, request):
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return json_response(
+            {"ok": False, "error": "method_not_allowed"},
+            status=405,
+            extra_headers={"Allow": "GET, POST"},
+        )
+    data = {}
+    if method == "POST":
+        if not _request_same_origin(request):
+            return json_response({"ok": False, "error": "origin_not_allowed"},
+                                 status=403)
+        try:
+            data = await bounded_json_request(request, 2048)
+        except RequestBodyTooLarge:
+            return json_response({"ok": False, "error": "payload_too_large"},
+                                 status=413)
+        except Exception:
+            return json_response({"ok": False, "error": "invalid_json"},
+                                 status=400)
+    dynamic_rows = await d1_all(
+        env,
+        "SELECT item_key,title,how_to_test,added_at FROM world_qa_items "
+        "WHERE active=1 ORDER BY added_at DESC,item_key LIMIT 64",
+    )
+    deck_cards = list(WORLD_QA_CARDS)
+    deck_keys = set(WORLD_QA_CARD_KEYS)
+    for row in dynamic_rows or []:
+        key = clean_string(row.get("item_key"), 80)
+        title = clean_string(row.get("title"), 160)
+        how_to_test = clean_string(row.get("how_to_test"), 720)
+        if not key or key in deck_keys or not title or not how_to_test:
+            continue
+        deck_cards.append((key, title, how_to_test))
+        deck_keys.add(key)
+    deck_cards = deck_cards[:64]
+    deck_keys = {item[0] for item in deck_cards}
+
+    async def global_qa_snapshot():
+        global_rows = await d1_all(
+            env,
+            "SELECT item_key,verdict,COUNT(*) AS count "
+            "FROM world_qa_reviews GROUP BY item_key,verdict",
+        )
+        global_reviews = {}
+        for row in global_rows or []:
+            key = clean_string(row.get("item_key"), 80)
+            verdict = clean_string(row.get("verdict"), 12).lower()
+            if (
+                key not in deck_keys
+                or verdict not in ("pass", "fail", "unsure")
+            ):
+                continue
+            counts = global_reviews.setdefault(
+                key, {"pass": 0, "fail": 0, "unsure": 0, "total": 0})
+            count = max(0, int(row.get("count") or 0))
+            counts[verdict] += count
+            counts["total"] += count
+        tester_rows = await d1_all(
+            env,
+            "SELECT COUNT(DISTINCT account_bi) AS testers "
+            "FROM world_qa_reviews",
+        )
+        return global_reviews, {
+            "pass": sum(item["pass"] for item in global_reviews.values()),
+            "fail": sum(item["fail"] for item in global_reviews.values()),
+            "unsure": sum(item["unsure"] for item in global_reviews.values()),
+            "reviewed": sum(item["total"] for item in global_reviews.values()),
+            "testers": max(
+                0, int(((tester_rows or [{}])[0]).get("testers") or 0)),
+            "total": len(deck_cards),
+        }
+
+    global_reviews, global_stats = await global_qa_snapshot()
+
+    account_bi, record = await _account_session_record(env, request, data)
+    if not account_bi or not record:
+        return json_response({
+            "ok": True,
+            "authenticated": False,
+            "revision": WORLD_QA_DECK_REVISION,
+            "cards": [
+                {
+                    "key": key,
+                    "title": title,
+                    "howToTest": how_to_test,
+                    "global": global_reviews.get(
+                        key,
+                        {"pass": 0, "fail": 0, "unsure": 0, "total": 0},
+                    ),
+                }
+                for key, title, how_to_test in deck_cards
+            ],
+            "reviews": {},
+            "stats": {"pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
+                      "total": len(deck_cards)},
+            "globalReviews": global_reviews,
+            "globalStats": global_stats,
+            "canRoute": False,
+        }, cache_control="no-store")
+    actor = clean_string(
+        (record or {}).get("name"), MAX_NODE_NAME).strip().lower()
+    can_route = False
+    if actor:
+        org_bi, org_row = await _org_row(env, "forkmesh")
+        if org_row:
+            role = await _org_role(env, org_bi, actor)
+            permission = await _org_permission(env, org_bi, actor)
+            can_route = (
+                role in ("owner", "admin")
+                or permission in ("maintain", "admin")
+            )
+    if method == "POST":
+        item_key = clean_string(data.get("key"), 80)
+        if item_key not in deck_keys:
+            return json_response({"ok": False, "error": "unknown_qa_item"},
+                                 status=400)
+        action = clean_string(data.get("action"), 24).lower()
+        if action in ("route_todo", "route_issue"):
+            if not can_route:
+                return json_response(
+                    {"ok": False, "error": "forbidden"}, status=403)
+            card = next(
+                (item for item in deck_cards if item[0] == item_key),
+                None,
+            )
+            if not card:
+                return json_response(
+                    {"ok": False, "error": "unknown_qa_item"}, status=400)
+            _, title, how_to_test = card
+            now = int(Date.now())
+            if action == "route_todo":
+                task_suffix = re.sub(
+                    r"[^a-z0-9-]+", "-", item_key.lower()).strip("-")
+                task_key = ("task:qa-" + task_suffix)[:53].rstrip("-")
+                peak = await d1_first(
+                    env,
+                    "SELECT COALESCE(MAX(priority),0) AS priority "
+                    "FROM world_build_board_items",
+                )
+                priority = min(
+                    64, max(1, int((peak or {}).get("priority") or 0) + 1))
+                await d1_run(
+                    env,
+                    "INSERT INTO world_build_board_items "
+                    "(item_key,kind,owner,repo,issue_number,title,priority,"
+                    "updated_by_bi,updated_at,completed_at,completed_by_bi) "
+                    "VALUES (?,'task','','',0,?,?,?,?,0,'') "
+                    "ON CONFLICT(item_key) DO UPDATE SET "
+                    "title=excluded.title,priority=excluded.priority,"
+                    "updated_by_bi=excluded.updated_by_bi,"
+                    "updated_at=excluded.updated_at,completed_at=0,"
+                    "completed_by_bi=''",
+                    task_key, title, priority, account_bi, now,
+                )
+                route_result = {
+                    "target": "todo",
+                    "key": task_key,
+                }
+            else:
+                body = (
+                    "QA follow-up requested from the 24-hour World deck.\n\n"
+                    "How to test:\n" + how_to_test
+                )
+                queued, result = await _forkbot_enqueue_issue(
+                    env,
+                    "forkmesh",
+                    "forkmesh",
+                    "QA follow-up: " + title,
+                    body,
+                    actor,
+                    source="qa-deck",
+                    labels=["qa"],
+                )
+                if not queued:
+                    return json_response(
+                        {"ok": False, "error": str(result or "issue_failed")},
+                        status=409,
+                    )
+                route_result = {
+                    "target": "issues",
+                    "number": int((result or {}).get("issueNumber") or 0),
+                }
+            await _audit_sensitive_action(
+                env,
+                actor,
+                "world.qa_" + action,
+                "world_qa_item",
+                item_key,
+                "success",
+                route_result,
+            )
+        else:
+            verdict = clean_string(data.get("verdict"), 12).lower()
+            if verdict not in ("pass", "fail", "unsure"):
+                return json_response(
+                    {"ok": False, "error": "invalid_verdict"}, status=400)
+            await d1_run(
+                env,
+                "INSERT INTO world_qa_reviews("
+                "account_bi,item_key,verdict,reviewed_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(account_bi,item_key) DO UPDATE SET "
+                "verdict=excluded.verdict,reviewed_at=excluded.reviewed_at",
+                account_bi, item_key, verdict, int(Date.now()),
+            )
+        global_reviews, global_stats = await global_qa_snapshot()
+    rows = await d1_all(
+        env,
+        "SELECT item_key,verdict,reviewed_at FROM world_qa_reviews "
+        "WHERE account_bi=? ORDER BY reviewed_at DESC LIMIT 128",
+        account_bi,
+    )
+    reviews = {}
+    for row in rows:
+        key = clean_string(row.get("item_key"), 80)
+        verdict = clean_string(row.get("verdict"), 12).lower()
+        if key in deck_keys and verdict in ("pass", "fail", "unsure"):
+            reviews[key] = {
+                "verdict": verdict,
+                "reviewedAt": max(0, int(row.get("reviewed_at") or 0)),
+            }
+    stats = {
+        "pass": sum(1 for item in reviews.values()
+                    if item["verdict"] == "pass"),
+        "fail": sum(1 for item in reviews.values()
+                    if item["verdict"] == "fail"),
+        "unsure": sum(1 for item in reviews.values()
+                      if item["verdict"] == "unsure"),
+        "reviewed": len(reviews),
+        "total": len(deck_cards),
+    }
+    return json_response({
+        "ok": True,
+        "authenticated": True,
+        "revision": WORLD_QA_DECK_REVISION,
+        "cards": [
+            {
+                "key": key,
+                "title": title,
+                "howToTest": how_to_test,
+                "global": global_reviews.get(
+                    key, {"pass": 0, "fail": 0, "unsure": 0, "total": 0}),
+                **reviews.get(key, {}),
+            }
+            for key, title, how_to_test in deck_cards
+        ],
+        "reviews": reviews,
+        "stats": stats,
+        "globalReviews": global_reviews,
+        "globalStats": global_stats,
+        "canRoute": can_route,
+        **({"routeResult": route_result}
+           if method == "POST" and "route_result" in locals() else {}),
+    }, cache_control="no-store")
 
 
 WORLD_PREFERENCES_MAX_BYTES = 320 * 1024
@@ -8765,6 +9435,11 @@ SCHEMA_ALTER_STATEMENTS = [
        CHECK (length(floor_id) <= 32)""",
     """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_live
        ON world_office_attendance(out_at, last_seen_at DESC)""",
+    """ALTER TABLE world_office_attendance
+       ADD COLUMN visit_scope TEXT NOT NULL DEFAULT 'legacy'
+       CHECK (visit_scope IN ('legacy', 'office'))""",
+    """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_scope
+       ON world_office_attendance(visit_scope, account_bi, in_at)""",
     # Assigned issue titles are already public repository metadata; retain a
     # bounded copy so the build-board card survives the recent-issues window.
     """ALTER TABLE world_build_board_items
@@ -30076,9 +30751,23 @@ async def agents_ack_handler(env, request, owner, repo):
 #
 # This is intentionally NOT an authorization shortcut into repo_agents. Those
 # rows remain owner-device E2EE. Organization bots have their own encrypted-at-
-# rest session/job tables, are visible only to current org members, and execute
-# only after the selected mirror runs a tool-free Claude Haiku safety preflight.
+# rest session/job tables, are visible and controllable only by current members
+# of the organization's Engineering team, and execute only after the selected
+# mirror runs a tool-free Claude Haiku safety preflight.
 ORG_AGENT_PROVIDERS = ("claude-code", "codex")
+ORG_AGENT_MODEL_ALIASES = {
+    "claude-code": {
+        "haiku": "claude-haiku-4-5",
+        "sonnet": "claude-sonnet-4-6",
+        "opus": "claude-opus-4-8",
+        "fable": "claude-fable-5",
+    },
+    "codex": {
+        "sol": "gpt-5.6-sol",
+        "luna": "gpt-5.6-luna",
+        "terra": "gpt-5.6-terra",
+    },
+}
 ORG_AGENT_SESSION_STATUSES = (
     "security_pending", "queued", "running", "completed", "failed", "rejected",
 )
@@ -30304,6 +30993,9 @@ def _org_agent_session_projection(row, record):
         "completedAt": int(row.get("completed_at") or 0),
         "localAgentId": int(record.get("localAgentId") or 0),
         "taskKey": clean_string(record.get("taskKey"), 96),
+        "issueNumber": max(0, min(
+            int(record.get("issueNumber") or 0), 10_000_000)),
+        "requestedModel": clean_string(record.get("requestedModel"), 60),
         "history": history[-ORG_AGENT_MAX_HISTORY:],
         "security": record.get("security") or {},
         "agentInfo": agent_info,
@@ -30374,8 +31066,12 @@ async def org_agent_bots_handler(env, request, org, repo):
             "requiredTeam": "engineering",
             "engineeringAccess": True,
             "providers": list(ORG_AGENT_PROVIDERS),
+            "models": {
+                provider: list(ORG_AGENT_MODEL_ALIASES[provider].keys())
+                for provider in ORG_AGENT_PROVIDERS
+            },
             "sessions": sessions,
-            "privacyBoundary": "organization-members-encrypted-at-rest",
+            "privacyBoundary": "engineering-team-encrypted-at-rest",
             "securityGate": "claude-haiku-tool-free-fail-closed",
         }, cache_control="no-store")
 
@@ -30383,6 +31079,10 @@ async def org_agent_bots_handler(env, request, org, repo):
     prompt = clean_string(data.get("prompt"), ORG_AGENT_MAX_PROMPT).strip()
     if provider not in ORG_AGENT_PROVIDERS:
         return json_response({"error": "invalid_provider"}, status=400)
+    model_alias = clean_string(data.get("model"), 30).strip().lower()
+    model = ORG_AGENT_MODEL_ALIASES.get(provider, {}).get(model_alias)
+    if model_alias and not model:
+        return json_response({"error": "invalid_model"}, status=400)
     if not prompt:
         return json_response({"error": "prompt_required"}, status=400)
     preferred_node = clean_string(
@@ -30404,6 +31104,16 @@ async def org_agent_bots_handler(env, request, org, repo):
         task_key,
     ):
         return json_response({"error": "invalid_task_key"}, status=400)
+    try:
+        issue_number = int(data.get("issueNumber") or 0)
+    except (TypeError, ValueError):
+        issue_number = 0
+    if issue_number < 0 or issue_number > 10_000_000:
+        return json_response({"error": "invalid_issue_number"}, status=400)
+    if issue_number and task_key != (
+        "issue:%s/%s#%d" % (context["org"], context["repo"], issue_number)
+    ):
+        return json_response({"error": "invalid_issue_task_key"}, status=400)
     title = clean_string(
         data.get("title") or prompt.split("\n", 1)[0], 160).strip()
     record = {
@@ -30416,6 +31126,9 @@ async def org_agent_bots_handler(env, request, org, repo):
         "createdBy": context["actor"],
         "localAgentId": 0,
         "taskKey": task_key,
+        "issueNumber": issue_number,
+        "requestedModel": model or "",
+        "requestedModelAlias": model_alias,
         "security": {"state": "pending", "model": "haiku"},
         "history": [{
             "role": "user",
@@ -30434,6 +31147,8 @@ async def org_agent_bots_handler(env, request, org, repo):
         "provider": provider,
         "prompt": prompt,
         "taskKey": task_key,
+        "issueNumber": issue_number,
+        "model": model or "",
         "requestedBy": context["actor"],
         "securityCheck": {
             "provider": "claude-code",
@@ -30463,7 +31178,12 @@ async def org_agent_bots_handler(env, request, org, repo):
         env, context["actor"], "organization.agent_start",
         "organization_agent", context["org"] + "/" + context["repo"] +
         "/" + session_id, "success",
-        {"provider": provider, "targetNode": target_node})
+        {
+            "provider": provider,
+            "model": model or "provider-default",
+            "issueNumber": issue_number,
+            "targetNode": target_node,
+        })
     await notify_repo_host(env, target_node, context["repo"], "org-agents")
     return json_response({
         "ok": True,
@@ -30735,6 +31455,28 @@ async def repo_org_agent_job_result_handler(
             "updated_by_bi=excluded.updated_by_bi,updated_at=excluded.updated_at",
             task_key, board_kind, session_row.get("created_by_bi") or "",
             now, now, session_row.get("created_by_bi") or "",
+        )
+        qa_title = clean_string(
+            session.get("prompt") or task_key.replace("task:", ""),
+            160,
+        ).strip()
+        await d1_run(
+            env,
+            "INSERT INTO world_qa_items("
+            "item_key,title,how_to_test,source_key,added_at,active) "
+            "VALUES(?,?,?,?,?,1) ON CONFLICT(item_key) DO UPDATE SET "
+            "title=excluded.title,how_to_test=excluded.how_to_test,"
+            "source_key=excluded.source_key,added_at=excluded.added_at,"
+            "active=1",
+            task_key,
+            qa_title or "Completed agent task",
+            (
+                "Open the completed feature and follow its normal user flow. "
+                "Confirm the requested behavior works, existing behavior did "
+                "not regress, and no console or network error appears."
+            ),
+            task_key,
+            now,
         )
     await _audit_sensitive_action(
         env, owner, "organization.agent_job_result", "organization_agent",
@@ -36972,6 +37714,13 @@ class Default(WorkerEntrypoint):
                 self.env, request, url.path)
 
         if url.path in (
+                "/api/world/deploy-status", "/api/world/deploy-status/"):
+            return await world_deploy_status_handler(self.env, request)
+
+        if url.path in ("/api/world/qa", "/api/world/qa/"):
+            return await world_qa_handler(self.env, request)
+
+        if url.path in (
                 "/api/world/preferences", "/api/world/preferences/"):
             return await world_preferences_handler(self.env, request)
 
@@ -37009,6 +37758,28 @@ class Default(WorkerEntrypoint):
         if office_channel_socket:
             return await _office_channel_socket_handler(
                 self.env, request, office_channel_socket.group(1))
+
+        if url.path in ("/api/world/online", "/api/world/online/"):
+            if method_name(request) != "GET":
+                return json_response(
+                    {"error": "method_not_allowed"},
+                    status=405,
+                    extra_headers={"allow": "GET"},
+                )
+            world_id = self.env.FORKMESH_WORLD.idFromName("town-square-v1")
+            try:
+                return await self.env.FORKMESH_WORLD.get(world_id).fetch(
+                    JsRequest.new(
+                        str(request.url),
+                        to_js({"method": "GET"}),
+                    )
+                )
+            except Exception:
+                return json_response(
+                    {"ok": False, "online": 0, "error": "unavailable"},
+                    status=503,
+                    extra_headers=EXPECTED_DEGRADED_HEADERS,
+                )
 
         if url.path in ("/api/world/ws", "/api/world/ws/"):
             if method_name(request) != "GET":
@@ -38532,6 +39303,21 @@ class ForkMeshWorld(DurableObject):
 
     async def fetch(self, request):
         path = urlparse(request.url).path
+        if path.rstrip("/") == "/api/world/online":
+            if method_name(request) != "GET":
+                return json_response(
+                    {"error": "method_not_allowed"},
+                    status=405,
+                    extra_headers={"allow": "GET"},
+                )
+            return json_response(
+                {
+                    "ok": True,
+                    "online": len(self._live_sockets(cleanup=True)),
+                    "now": int(Date.now()),
+                },
+                cache_seconds=10,
+            )
         if path.rstrip("/") == "/api/world/manual-block":
             return await self._manual_block(request)
         if path.rstrip("/") == "/api/world/mirror-push":
@@ -38658,6 +39444,18 @@ class ForkMeshWorld(DurableObject):
                 token = ""
             moderation_tokens[target_type] = (
                 token if re.fullmatch(r"[a-f0-9]{64}", token) else "")
+        try:
+            client_ip = str(
+                request.headers.get("x-forkmesh-world-private-ip") or "")
+            client_ip = str(ipaddress.ip_address(client_ip))[:64]
+        except Exception:
+            client_ip = ""
+        try:
+            client_user_agent = clean_string(
+                request.headers.get(
+                    "x-forkmesh-world-private-agent") or "", 1024)
+        except Exception:
+            client_user_agent = ""
         if trusted_claim:
             # The name and operator count remain private attachment fields
             # until the owner's first presence frame opts into each one.
@@ -38673,6 +39471,8 @@ class ForkMeshWorld(DurableObject):
             arrival_slot=arrival_slot, is_admin=is_admin,
             ip_token=moderation_tokens["ip"],
             agent_token=moderation_tokens["agent"],
+            client_ip=client_ip,
+            client_user_agent=client_user_agent,
             ticket_nonce=ticket_nonce)
 
         # The only snapshot is the state of sockets alive right now. It is sent
@@ -38790,7 +39590,8 @@ class ForkMeshWorld(DurableObject):
                          departed=False, country_source=None,
                          trusted_name=None, trusted_node_count=None,
                          pending_knocks=None, arrival_slot=None, is_admin=None,
-                         ip_token=None, agent_token=None, ticket_nonce=None):
+                         ip_token=None, agent_token=None, ticket_nonce=None,
+                         client_ip=None, client_user_agent=None):
         if country_source is None:
             country_source = _ws_attr(ws, "country_source", "")
         if trusted_name is None:
@@ -38809,6 +39610,10 @@ class ForkMeshWorld(DurableObject):
             agent_token = _ws_attr(ws, "agent_token", "")
         if ticket_nonce is None:
             ticket_nonce = _ws_attr(ws, "ticket_nonce", "")
+        if client_ip is None:
+            client_ip = _ws_attr(ws, "client_ip", "")
+        if client_user_agent is None:
+            client_user_agent = _ws_attr(ws, "client_user_agent", "")
         pending_knocks = [
             str(peer_id)
             for peer_id in list(pending_knocks or [])[-8:]
@@ -38845,6 +39650,13 @@ class ForkMeshWorld(DurableObject):
                 str(agent_token)
                 if re.fullmatch(r"[a-f0-9]{64}", str(agent_token or ""))
                 else ""),
+            # Ephemeral guest-moderation detail. These fields live only in the
+            # active socket attachment and are projected only to a
+            # server-verified platform administrator by
+            # `_presence_for_viewer`.
+            "client_ip": clean_string(client_ip or "", 64),
+            "client_user_agent": clean_string(
+                client_user_agent or "", 1024),
             "ticket_nonce": (
                 str(ticket_nonce)
                 if re.fullmatch(
@@ -38879,6 +39691,16 @@ class ForkMeshWorld(DurableObject):
                 handles[target_type] = token
         if handles:
             public["moderationHandles"] = handles
+        if str(public.get("accountStatus") or "Guest") == "Guest":
+            ip_value = clean_string(
+                _ws_attr(subject, "client_ip", "") or "", 64)
+            agent_value = clean_string(
+                _ws_attr(subject, "client_user_agent", "") or "", 1024)
+            if ip_value or agent_value:
+                public["adminGuestNetwork"] = {
+                    "ipAddress": ip_value,
+                    "userAgent": agent_value,
+                }
         return public
 
     def _mark_departed(self, ws):

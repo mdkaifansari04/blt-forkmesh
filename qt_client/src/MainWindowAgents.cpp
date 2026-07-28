@@ -1037,23 +1037,6 @@ QWidget *MainWindow::buildAgentsTab()
         stopStreamSession(m_selectedAgentSessionId);
     });
 
-    // Small icon-only button (adhoc #139): lives in the footer's "Agents:"
-    // status strip (see buildNetworkLogDock in MainWindowChat.cpp).
-    m_agentFixConflictsButton = new QPushButton;
-    m_agentFixConflictsButton->setObjectName("agentStatusFixButton");
-    m_agentFixConflictsButton->setFlat(true);
-    m_agentFixConflictsButton->setFixedSize(22, 22);
-    m_agentFixConflictsButton->setIconSize(QSize(14, 14));
-    m_agentFixConflictsButton->setCursor(Qt::PointingHandCursor);
-    m_agentFixConflictsButton->setToolTip(
-        "Fix conflicts with agent \xE2\x80\x94 ask it to merge the base branch "
-        "into this branch and resolve conflicts");
-    setOcticon(m_agentFixConflictsButton, "git-merge", 14);
-    m_agentFixConflictsButton->hide();
-    connect(m_agentFixConflictsButton, &QPushButton::clicked, this, [this] {
-        fixAgentConflictsWithAgent(m_selectedAgentSessionId);
-    });
-
     m_agentDeleteButton = new QPushButton("Delete");
     m_agentDeleteButton->setObjectName("dangerButton");
     m_agentDeleteButton->setCursor(Qt::PointingHandCursor);
@@ -1076,10 +1059,29 @@ QWidget *MainWindow::buildAgentsTab()
         const int repoIndex = repoIndexFor(s->owner, s->name);
         if (repoIndex < 0)
             return;
+        const int sessionId = s->id;
         const QString branch = s->branchName;
-        const QString wt =
-            worktreePathForBranch(m_repositories.at(repoIndex).localPath, branch);
-        deleteWorktreeBranchAndAgentInBackground(wt, branch);
+        const QString repoPath = m_repositories.at(repoIndex).localPath;
+        // Every step of the teardown — looking the worktree up, clearing the
+        // issue, dropping the stored session, the reloads — is synchronous git,
+        // so the click used to sit there for seconds with nothing to show it
+        // registered (adhoc #417). Log it, say so and grey the button out now,
+        // then let the event loop paint before any of that work starts.
+        logSystem(QStringLiteral("Agents: \"Delete all\" clicked for session #%1 (%2).")
+                      .arg(sessionId)
+                      .arg(branch));
+        flashMessage(
+            QStringLiteral("Deleting agent session and cleaning up %1\xE2\x80\xA6")
+                .arg(branch));
+        m_agentDeleteAllButton->setEnabled(false);
+        QTimer::singleShot(0, this, [this, repoPath, branch] {
+            GitKeepAlive keepAlive; // window keeps painting across the git reads
+            deleteWorktreeBranchAndAgentInBackground(
+                worktreePathForBranch(repoPath, branch), branch);
+            // Re-derive the button state: the guards inside can bail early (no
+            // session on that branch, main checkout) without a reload.
+            updateAgentActionState();
+        });
     });
 
     // "View PR" — appears once the session produced a pull request.
@@ -2280,12 +2282,28 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
             job.value(QStringLiteral("provider")).toString();
         const QString prompt =
             job.value(QStringLiteral("prompt")).toString();
+        const QString requestedModel =
+            job.value(QStringLiteral("model")).toString().trimmed();
+        const int issueNumber =
+            job.value(QStringLiteral("issueNumber")).toInt();
+        const QSet<QString> allowedWebsiteModels = {
+            QStringLiteral("claude-haiku-4-5"),
+            QStringLiteral("claude-sonnet-4-6"),
+            QStringLiteral("claude-opus-4-8"),
+            QStringLiteral("claude-fable-5"),
+            QStringLiteral("gpt-5.6-sol"),
+            QStringLiteral("gpt-5.6-luna"),
+            QStringLiteral("gpt-5.6-terra"),
+        };
         const QJsonObject security =
             job.value(QStringLiteral("securityCheck")).toObject();
         if (jobId <= 0 || leaseId.isEmpty() || sessionId.isEmpty() ||
             prompt.trimmed().isEmpty() || prompt.size() > 8000 ||
             (provider != QLatin1String("claude-code") &&
              !agentIsCodexProvider(provider)) ||
+            (!requestedModel.isEmpty() &&
+             !allowedWebsiteModels.contains(requestedModel)) ||
+            issueNumber < 0 || issueNumber > 10000000 ||
             security.value(QStringLiteral("model")).toString() !=
                 QLatin1String("haiku") ||
             security.value(QStringLiteral("tools")).toBool(true) ||
@@ -2443,10 +2461,41 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
                     break;
                 }
             }
-            localAgentId = startAdHocAgentForRepo(
-                repoIndex, job.value(QStringLiteral("prompt")).toString(),
-                job.value(QStringLiteral("provider")).toString(),
-                /*createPr=*/true);
+            const QString provider =
+                job.value(QStringLiteral("provider")).toString();
+            const QString requestedModel =
+                job.value(QStringLiteral("model")).toString().trimmed();
+            const int issueNumber =
+                job.value(QStringLiteral("issueNumber")).toInt();
+            if (issueNumber > 0) {
+                const RepositoryRecord &localRepo = m_repositories.at(repoIndex);
+                const QList<Issue> issues =
+                    IssueStore(localRepo.localPath, localRepo.mirrorPath,
+                               &m_profileIdentity, m_userName)
+                        .loadAll();
+                const Issue *selectedIssue = nullptr;
+                for (const Issue &candidate : issues) {
+                    if (candidate.number == issueNumber) {
+                        selectedIssue = &candidate;
+                        break;
+                    }
+                }
+                if (!selectedIssue) {
+                    reportOrgAgentJob(
+                        repo, job, QStringLiteral("approved"),
+                        QStringLiteral("failed"), 0,
+                        QStringLiteral(
+                            "The commit-pinned issue record is unavailable on this mirror."));
+                    return;
+                }
+                localAgentId = startAgentForIssue(
+                    *selectedIssue, provider, /*createPr=*/true,
+                    /*quiet=*/true, requestedModel, &localRepo);
+            } else {
+                localAgentId = startAdHocAgentForRepo(
+                    repoIndex, job.value(QStringLiteral("prompt")).toString(),
+                    provider, /*createPr=*/true, requestedModel);
+            }
             if (localAgentId <= 0) {
                 reportOrgAgentJob(
                     repo, job, QStringLiteral("approved"),
@@ -4978,8 +5027,6 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentNetPanel->clear();
         if (m_agentViewPrButton)
             m_agentViewPrButton->hide();
-        if (m_agentFixConflictsButton)
-            m_agentFixConflictsButton->hide();
         if (m_agentCreateIssueButton)
             m_agentCreateIssueButton->hide();
         if (m_agentModeSelector)
@@ -5052,15 +5099,6 @@ void MainWindow::showAgentSession(int sessionId)
         if (session->prNumber > 0)
             m_agentViewPrButton->setText(
                 QStringLiteral("View PR #%1").arg(session->prNumber));
-    }
-    // "Fix conflicts with agent": visible only when the cached diff stat says this
-    // branch conflicts with base (adhoc #28). The button is hidden until a stat is
-    // available; it becomes visible on the next refreshAgentTable() that computes it.
-    if (m_agentFixConflictsButton) {
-        auto statIt = m_agentDiffStats.constFind(sessionId);
-        const bool hasConflict =
-            statIt != m_agentDiffStats.constEnd() && statIt->conflicted;
-        m_agentFixConflictsButton->setVisible(hasConflict);
     }
     // "Create linked issue" only makes sense for an ad-hoc, owner-side session
     // that isn't already tracked by one. External (watch-only) sessions and
@@ -5944,9 +5982,8 @@ void MainWindow::continueAgentSession(int sessionId)
 }
 
 // Ask sessionId's agent to merge base and resolve conflicts, then resume it.
-// Used both by the "Fix conflicts with agent" button (selected session) and by
-// maybeAutoFixAgentConflict() (any idle session whose branch conflicts with
-// base, when the auto-fix setting is on).
+// Used by maybeAutoFixAgentConflict() (any idle session whose branch conflicts
+// with base, when the auto-fix setting is on).
 void MainWindow::fixAgentConflictsWithAgent(int sessionId)
 {
     AgentSession *s = findAgentSession(sessionId);
@@ -9758,14 +9795,23 @@ void MainWindow::updateAgentActionState()
 
 // Whether Enter in the quick-add composer should follow up on the agent
 // session open above ("add") rather than start a fresh one ("new"). Requires
-// both a selected session AND the Agents tab itself to be the one currently
-// on screen — otherwise a session selected on an earlier visit to that tab
-// would keep stealing Enter from Chat, Issues, or any other section.
+// both a selected session AND the agent's own output panel to be the thing
+// currently on screen — otherwise a session selected on an earlier visit to
+// that tab would keep stealing Enter from Chat, Issues, or any other section.
+//
+// The on-screen test is that panel's own visibility rather than a pair of
+// stack indexes: comparing m_sectionStack/m_repoDetailStack indexes only
+// recognised one route to the transcript, so on any other way of reaching it
+// the transcript sat in plain view, clicking "add" followed up on it — and
+// Enter quietly started a brand-new agent instead (or, with an empty
+// composer, did nothing at all). Keying off the widget makes Enter agree with
+// the button it mirrors, wherever that panel is shown from.
 bool MainWindow::quickAddShouldFollowUpAgent() const
 {
-    const bool onAgentsTab = m_sectionStack && m_sectionStack->currentIndex() == 0 &&
-                             m_repoDetailStack && m_repoDetailStack->currentIndex() == 3;
-    return onAgentsTab && m_selectedAgentSessionId >= 0;
+    if (m_selectedAgentSessionId < 0)
+        return false;
+    const QWidget *agentOutput = m_agentOutputStack;
+    return agentOutput && agentOutput->isVisible();
 }
 
 // Restyle the quick-add "new"/"add" send buttons (adhoc #89) so the one Enter

@@ -741,6 +741,45 @@ int main(int argc, char **argv)
               .program.isEmpty(),
           "a missing managed identity file fails closed");
 
+    // Provider sign-in terminal (adhoc #422): the agent-CLI installer copies no
+    // tokens, so ForkMesh opens a real interactive shell on the mirror right
+    // after it finishes. That needs a forced remote TTY and a shell-safe
+    // command line, and the remote command itself must stay credential-free.
+    QString loginError;
+    const auto loginCommand =
+        forkmesh::control::buildHostInteractiveSshCommand(
+            QStringLiteral("203.0.113.10"), QStringLiteral("root"), QString(),
+            forkmesh::control::buildHostAgentLoginRemoteCommand(), &loginError,
+            identityPath);
+    check(loginError.isEmpty() &&
+              loginCommand.program == QStringLiteral("ssh") &&
+              loginCommand.arguments.contains(QStringLiteral("-tt")) &&
+              loginCommand.arguments.indexOf(QStringLiteral("-tt")) ==
+                  loginCommand.arguments.size() - 3 &&
+              loginCommand.arguments.at(loginCommand.arguments.size() - 2) ==
+                  QStringLiteral("root@203.0.113.10"),
+          "the sign-in shell forces a remote TTY before user@host");
+    const QString loginRemote =
+        forkmesh::control::buildHostAgentLoginRemoteCommand();
+    check(loginRemote.contains(QStringLiteral("$HOME/.local/bin")) &&
+              loginRemote.contains(QStringLiteral("codex login")) &&
+              loginRemote.contains(QStringLiteral("exec \"${SHELL:-/bin/sh}\"")),
+          "the sign-in shell puts the CLI prefixes on PATH and execs a login shell");
+    const QString loginLine =
+        forkmesh::control::hostSshCommandLine(loginCommand);
+    check(loginLine.startsWith(QStringLiteral("'ssh' ")) &&
+              loginLine.contains(QStringLiteral("'-tt'")) &&
+              loginLine.contains(QStringLiteral("'\\''")),
+          "the flattened sign-in command line quotes every word and escapes the "
+          "remote command's own quotes");
+    check(forkmesh::control::hostSshCommandLine(
+              forkmesh::control::buildHostInteractiveSshCommand(
+                  QStringLiteral("-oProxyCommand=bad"),
+                  QStringLiteral("root"), QString(),
+                  QStringLiteral("true"), &loginError))
+              .isEmpty(),
+          "a rejected sign-in host flattens to no command line at all");
+
     // Host size map (adhoc #390): a read-only `du` browser over the same
     // authenticated SSH channel.
     check(forkmesh::control::normalizeRemoteDiskPath(
@@ -838,6 +877,13 @@ int main(int argc, char **argv)
                     {QStringLiteral("locations"),
                      QJsonArray{QStringLiteral("fra"),
                                 QStringLiteral("ams")}}},
+        // Cheapest IPv4 plan, but too small for the encrypted temporary
+        // repository materialization. Automatic provisioning must skip it.
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-1c-0.5gb")},
+                    {QStringLiteral("monthly_cost"), 2.5},
+                    {QStringLiteral("ram"), 512},
+                    {QStringLiteral("locations"),
+                     QJsonArray{QStringLiteral("ewr")}}},
         // Cheaper but sold out everywhere: not deployable, must be skipped.
         QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-old")},
                     {QStringLiteral("monthly_cost"), 3},
@@ -863,7 +909,7 @@ int main(int argc, char **argv)
           "cheapest Vultr plan skips undeployable plans and breaks ties on RAM");
     check(forkmesh::control::vultrPlanHasIpv4(cheapest) &&
               !forkmesh::control::vultrPlanHasIpv4(
-                  vultrPlans.at(4).toObject()) &&
+                  vultrPlans.at(5).toObject()) &&
               !forkmesh::control::vultrPlanHasIpv4(QJsonObject()),
           "IPv6-only Vultr plans are never eligible, however cheap");
     check(forkmesh::control::vultrPlanRegion(cheapest) ==
@@ -1021,6 +1067,101 @@ int main(int argc, char **argv)
                   "refused")),
           "an install that found nothing to download escalates to the "
           "direct upload, an unreachable host does not");
+
+    // --- Agent CLIs on a fresh mirror (adhoc #418) -------------------------
+    forkmesh::control::AgentCliCredentials agentCredentials;
+    check(forkmesh::control::agentCliCredentialsAreEmpty(agentCredentials) &&
+              forkmesh::control::describeAgentCliCredentials(agentCredentials)
+                  .isEmpty(),
+          "a device with no agent login has nothing to copy to a new mirror");
+
+    agentCredentials.claudeCredentials =
+        QByteArrayLiteral("{\"claudeAiOauth\":{\"accessToken\":\"tok-claude\"}}");
+    agentCredentials.env.insert(QStringLiteral("OPENAI_API_KEY"),
+                                QStringLiteral("sk-it's-quoted"));
+    agentCredentials.env.insert(QStringLiteral("bad name"),
+                                QStringLiteral("dropped"));
+    agentCredentials.env.insert(QStringLiteral("CONTROL_CHARS"),
+                                QStringLiteral("line\nbreak"));
+    check(!forkmesh::control::agentCliCredentialsAreEmpty(agentCredentials) &&
+              forkmesh::control::describeAgentCliCredentials(
+                  agentCredentials) ==
+                  QStringLiteral("Claude Code login, OPENAI_API_KEY"),
+          "the copy summary names the login and the usable keys only");
+
+    const QByteArray envFile =
+        forkmesh::control::agentCliEnvFileContents(agentCredentials.env);
+    check(envFile ==
+              QByteArrayLiteral("export OPENAI_API_KEY='sk-it'\\''s-quoted'\n"),
+          "the sourced env file single-quotes values and drops unusable names");
+
+    QString agentPayloadError;
+    const QByteArray agentPayload =
+        forkmesh::control::buildAgentCliBootstrapPayload(agentCredentials,
+                                                         &agentPayloadError);
+    check(agentPayloadError.isEmpty() && !agentPayload.isEmpty() &&
+              !agentPayload.contains(QByteArrayLiteral("tok-claude")) &&
+              !agentPayload.contains(QByteArrayLiteral("sk-it")) &&
+              agentPayload.startsWith(QByteArrayLiteral("claude ")) &&
+              agentPayload.contains(QByteArrayLiteral("\nenv ")) &&
+              !agentPayload.contains(QByteArrayLiteral("codex ")),
+          "the stdin payload carries one base64 line per present section");
+    QByteArray decodedClaude;
+    QByteArray decodedEnv;
+    for (const QByteArray &line : agentPayload.split('\n')) {
+        const int space = line.indexOf(' ');
+        if (space <= 0)
+            continue;
+        const QByteArray decoded =
+            QByteArray::fromBase64(line.mid(space + 1));
+        if (line.startsWith(QByteArrayLiteral("claude ")))
+            decodedClaude = decoded;
+        else if (line.startsWith(QByteArrayLiteral("env ")))
+            decodedEnv = decoded;
+    }
+    check(decodedClaude == agentCredentials.claudeCredentials.trimmed() &&
+              decodedEnv == envFile,
+          "each payload section round-trips to the exact file the mirror writes");
+
+    forkmesh::control::AgentCliCredentials malformedCredentials;
+    malformedCredentials.codexAuth = QByteArrayLiteral("not json");
+    QString malformedError;
+    check(forkmesh::control::buildAgentCliBootstrapPayload(
+              malformedCredentials, &malformedError).isEmpty() &&
+              !malformedError.isEmpty(),
+          "a login file that is not a credential document is never sent");
+    QString emptyError;
+    check(forkmesh::control::buildAgentCliBootstrapPayload(
+              forkmesh::control::AgentCliCredentials{}, &emptyError)
+                  .isEmpty() &&
+              !emptyError.isEmpty(),
+          "an empty bundle is refused rather than sent as a blank payload");
+
+    const QString agentInstallOnly =
+        forkmesh::control::agentCliBootstrapRemoteCommand(false);
+    const QString agentWithLogins =
+        forkmesh::control::agentCliBootstrapRemoteCommand(true);
+    check(agentInstallOnly.contains(
+              QStringLiteral("https://claude.ai/install.sh")) &&
+              agentInstallOnly.contains(
+                  QStringLiteral("https://chatgpt.com/codex/install.sh")) &&
+              !agentInstallOnly.contains(QStringLiteral("credentials.json")) &&
+              !agentInstallOnly.contains(QStringLiteral("cat >")),
+          "the install-only command reads no stdin and writes no login file");
+    check(agentWithLogins.contains(QStringLiteral("cat > \"$tmp\"")) &&
+              agentWithLogins.contains(
+                  QStringLiteral("$home/.claude/.credentials.json")) &&
+              agentWithLogins.contains(
+                  QStringLiteral("$home/.codex/auth.json")) &&
+              agentWithLogins.contains(
+                  QStringLiteral("$home/.forkmesh/agent-env")) &&
+              agentWithLogins.contains(QStringLiteral("chmod 600")) &&
+              agentWithLogins.contains(QStringLiteral("umask 077")),
+          "the credential command writes each login file with private modes");
+    check(agentWithLogins.startsWith(QStringLiteral("sh -lc '")) &&
+              agentWithLogins.endsWith(QLatin1Char('\'')) &&
+              agentWithLogins.count(QLatin1Char('\'')) == 2,
+          "the remote command is one shell word, so no section can escape it");
 
     // --- Cloudflare DNS for a fresh Vultr mirror (adhoc #331) --------------
     QMap<QString, QString> zoneVariables;

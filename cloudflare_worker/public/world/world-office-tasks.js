@@ -169,6 +169,8 @@ export function createWorldOfficeTasksController({
   let tasks = [];
   let recentIssues = [];
   let assignable = [];
+  let marketingMembers = [];
+  let attendanceDays = [];
   let syncedAt = performance.now();
   let serverNowAtSync = Date.now();
   let lastRefreshAt = 0;
@@ -253,12 +255,21 @@ export function createWorldOfficeTasksController({
       authorized,
       state,
       message: text(message, 80),
-      tasks: tasks.slice(0, 8).map((task) => ({
+      actor,
+      canManage,
+      tasks: tasks.map((task) => ({
+        id: task.id,
         title: task.title,
         assignee: task.assignee,
         status: task.status,
         elapsed: formatOfficeTaskElapsed(currentElapsed(task)),
+        canStartStop: task.assignee === actor && task.status !== "done",
+        canComplete:
+          (task.assignee === actor || canManage) && task.status !== "done",
+        canDelete: canManage,
       })),
+      members: canManage ? assignable : marketingMembers,
+      attendanceDays,
     });
     selfWorkState(state, message);
   }
@@ -356,7 +367,7 @@ export function createWorldOfficeTasksController({
     if (assigneeOptions) {
       const selected = text(assigneeInput?.value, 64).toLowerCase();
       assigneeOptions.innerHTML =
-        `<option value="">Select an active ForkMesh user</option>` +
+        `<option value="">Select a Marketing team member</option>` +
         assignable
           .map(
             (name) =>
@@ -382,7 +393,7 @@ export function createWorldOfficeTasksController({
     if (!loading) {
       setStatus(
         canManage
-          ? `${tasks.length} task${tasks.length === 1 ? "" : "s"} · managers can assign any active ForkMesh user`
+          ? `${tasks.length} task${tasks.length === 1 ? "" : "s"} · assignment is limited to Marketing team members`
           : tasks.length
             ? "Only tasks assigned to you are shown."
             : "No tasks are currently assigned to you.",
@@ -544,6 +555,8 @@ export function createWorldOfficeTasksController({
       canManage = false;
       authorized = false;
       assignable = [];
+      marketingMembers = [];
+      attendanceDays = [];
       loading = false;
       if (!quiet) setStatus("Sign in to access organization marketing tasks.");
       physicalState("locked", "Organization access required");
@@ -565,11 +578,20 @@ export function createWorldOfficeTasksController({
         actor = text(payload?.actor, 64).toLowerCase();
         canManage = payload?.canManage === true;
         authorized = payload?.authorized !== false;
-      assignable = Array.isArray(payload?.members)
+        assignable = Array.isArray(payload?.members)
           ? payload.members
               .map((name) => text(name, 64).toLowerCase())
               .filter(Boolean)
-            .slice(0, 1000)
+              .slice(0, 1000)
+          : [];
+        marketingMembers = Array.isArray(payload?.marketingMembers)
+          ? payload.marketingMembers
+              .map((name) => text(name, 64).toLowerCase())
+              .filter(Boolean)
+              .slice(0, 100)
+          : [];
+        attendanceDays = Array.isArray(payload?.attendanceDays)
+          ? payload.attendanceDays.slice(-7)
           : [];
         tasks = Array.isArray(payload?.tasks)
           ? payload.tasks.map(normalizedTask).filter(Boolean).slice(0, 100)
@@ -588,6 +610,8 @@ export function createWorldOfficeTasksController({
         canManage = false;
         authorized = false;
         assignable = [];
+        marketingMembers = [];
+        attendanceDays = [];
         loading = false;
         render();
         setStatus(
@@ -705,6 +729,77 @@ export function createWorldOfficeTasksController({
               : "Task deleted.",
       );
     }
+  }
+
+  async function physicalAction(payload = {}) {
+    const action = text(payload?.action, 24).toLowerCase();
+    if (action === "create") {
+      if (!canManage) {
+        toast("Only an organization manager can create Marketing tasks.");
+        return false;
+      }
+      const assignee = text(payload?.assignee, 64).toLowerCase();
+      if (!assignable.includes(assignee)) {
+        toast("Choose a current Marketing team member.");
+        return false;
+      }
+      const entered = window.prompt(`New task for @${assignee}:`, "");
+      const title = text(entered);
+      if (!title) return false;
+      const saved = await mutate(OFFICE_TASKS_PATH, { title, assignee });
+      if (saved) toast("Marketing task added to the physical wall.");
+      return saved;
+    }
+    const id = safeTaskId(payload?.id);
+    const task = tasks.find((item) => item.id === id);
+    if (
+      !task ||
+      !["start", "stop", "complete", "delete"].includes(action)
+    ) {
+      return false;
+    }
+    if (
+      ["start", "stop"].includes(action) &&
+      (task.assignee !== actor || task.status === "done")
+    ) {
+      toast("Only the assignee can run this timer.");
+      return false;
+    }
+    if (
+      action === "complete" &&
+      task.assignee !== actor &&
+      !canManage
+    ) {
+      toast("Only the assignee or an organization manager can finish it.");
+      return false;
+    }
+    if (action === "delete" && !canManage) return false;
+    if (
+      action === "delete" &&
+      !window.confirm("Delete this task and its private check-in history?")
+    ) {
+      return false;
+    }
+    const saved = await mutate(
+      action === "delete"
+        ? `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}`
+        : `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}/${action}`,
+      {},
+      id,
+      action === "delete" ? { method: "DELETE" } : {},
+    );
+    if (saved) {
+      toast(
+        action === "start"
+          ? "Task timer started."
+          : action === "stop"
+            ? "Task timer stopped."
+            : action === "complete"
+              ? "Task marked done."
+              : "Task deleted.",
+      );
+    }
+    return saved;
   }
 
   function open() {
@@ -861,6 +956,7 @@ export function createWorldOfficeTasksController({
     close,
     destroy,
     open,
+    physicalAction,
     prime,
     refresh,
     setActive,

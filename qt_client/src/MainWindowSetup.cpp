@@ -93,6 +93,9 @@ void MainWindow::loadCachedAvatars()
         refreshChatMembers();
     });
     watcher->setFuture(QtConcurrent::run([paths] {
+        const forkmesh::BackgroundScope activity(
+            QStringLiteral("avatars"),
+            QStringLiteral("Decoding %1 avatar image(s)").arg(paths.size()));
         QList<QPair<QString, QImage>> decoded;
         for (const QString &path : paths) {
             QFile f(path);
@@ -1120,8 +1123,16 @@ void MainWindow::startSession()
         }
         return false;
     }();
+    const QString installerLinkCode =
+        qEnvironmentVariable("FORKMESH_LINK_CODE").trimmed();
+    static const QRegularExpression installerLinkCodeRe(
+        QStringLiteral("^[0-9]{6}$"));
+    const bool installerLinkPending =
+        m_headless &&
+        installerLinkCodeRe.match(installerLinkCode).hasMatch() &&
+        m_nodeOwnerUser.trimmed().isEmpty();
     if ((m_headless || publishesMirror) &&
-        !hasOwnerSigningCapability(name) &&
+        (!hasOwnerSigningCapability(name) || installerLinkPending) &&
         isValidNodeName(name)) {
         bool registered = false;
 #ifdef FORKMESH_WINDOW_TESTS
@@ -2560,7 +2571,17 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
         return false;
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load())
         return false;
-    if (hasOwnerSigningCapability(accountName))
+
+    const QString linkCode =
+        qEnvironmentVariable("FORKMESH_LINK_CODE").trimmed();
+    static const QRegularExpression linkCodeRe(QStringLiteral("^[0-9]{6}$"));
+    const bool installerLinkPending =
+        linkCodeRe.match(linkCode).hasMatch() &&
+        m_nodeOwnerUser.trimmed().isEmpty();
+    // A node account can already be bound to this exact local key while still
+    // being an orphan (no owner). Redeem a fresh installer link code in that
+    // state instead of treating the local capability marker as completion.
+    if (hasOwnerSigningCapability(accountName) && !installerLinkPending)
         return true;
 
     auto activateSession = [&](const QString &owner, bool emailVerified) {
@@ -2577,9 +2598,6 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
         updateChatIdentity();
     };
 
-    const QString linkCode =
-        qEnvironmentVariable("FORKMESH_LINK_CODE").trimmed();
-    static const QRegularExpression linkCodeRe(QStringLiteral("^[0-9]{6}$"));
     auto reclaimWithInstallerLinkCode = [&]() -> bool {
         if (!linkCodeRe.match(linkCode).hasMatch())
             return false;
@@ -3311,7 +3329,7 @@ QString MainWindow::footerLogLineHtml(const QString &clean)
                 "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
                 "<span style='color:#1f2328'>%3</span>")
                 .arg(accent, badge.leftJustified(7).toHtmlEscaped(),
-                     message.toHtmlEscaped());
+                     forkmesh::colorizeBackgroundMarker(message.toHtmlEscaped()));
     return html;
 }
 

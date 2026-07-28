@@ -1,0 +1,94 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785062259664,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "Add the ability to edit messages and an option to delete messages.\n\n---\n_Filed by ForkBot at @mdkaifansari04's request via chat._",
+            "id": "forkbot-1785062259664",
+            "sig": "",
+            "title": "Add edit and delete message options",
+            "ts": 1785062259664,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 424,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "5f1cb711-2005-4426-9004-7c3e59e801bf",
+            "sig": "Zhz9JtQEzPRbwQyfKBDx_uFI91Gfeiq3ku-0MiXtRkWsAQv3KmdspxhzcDuWC_YZW5b7uleYESZJIfFHijF9AQ",
+            "ts": 1785207701352,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "3c5aa374-cdd3-44bf-8ece-4324e997d019",
+            "sig": "UL5eIUoiedVb17WEj8U4yDH-rJALKXi7TXGqTtyZoywnl0l-CoS0LNZYu8UoVJCz_7j7EN9a9yttTIiUx0OmAg",
+            "ts": 1785207701429,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-536-add-edit-and-delete-message-options\".",
+            "id": "fbddd68e-7792-4fa6-85b7-8db239254fe1",
+            "sig": "XMrowwLGNnPRgCJeFA0O-zPl6hxDRR51sS2MRbiaRZbNJQcqaRCbzUVL0M2rJl7Vasq_6F5BjaxEsUo4q5m6Cg",
+            "ts": 1785210480033,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "423d862b-b8df-47e8-a645-83e935daed08",
+            "sig": "vQe2JUnsB16YYi2nqzulfgZz6ghhnmt4RJsYFDQPlXOHlgwu1k60XjtGobXEOFJIFGTvXdzfAuKt5XBypZJNBw",
+            "status": "closed",
+            "ts": 1785210480113,
+            "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "9b0cfab5-fbf1-4f33-9227-6ac571a7c150",
+            "sig": "XuiBXadbE--BhynT2lPYVV_loich4-rHIL4fTq3QaH54UKlUyNXeT-MuSmkvF3D6om_I_vw657K8LJCQvlJrDQ",
+            "ts": 1785210480321,
+            "type": "agent"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 536,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "Add edit and delete message options",
+    "updatedAt": 1785210480321,
+    "votes": 0
+}

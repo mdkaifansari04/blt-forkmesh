@@ -79,6 +79,29 @@ HostSshCommand buildHostSshCommand(const QString &host,
                                    QString *error = nullptr,
                                    const QString &identityFile = QString());
 
+// Same authenticated transport as buildHostSshCommand, but with a remote TTY
+// forced (-tt). ssh only allocates one automatically for a bare login; a call
+// that carries a remote command needs this before any interactive remote
+// program — a provider sign-in prompt, for instance — can read a keystroke.
+HostSshCommand buildHostInteractiveSshCommand(
+    const QString &host, const QString &sshUser, const QString &sshPassword,
+    const QString &remoteCommand, QString *error = nullptr,
+    const QString &identityFile = QString());
+
+// Flatten a built command into one single-quoted POSIX shell command line, for
+// the callers that hand it to a shell (the embedded PTY terminal) instead of
+// running it through QProcess argv. Every word is quoted, so no argument value
+// can re-enter that shell as syntax.
+QString hostSshCommandLine(const HostSshCommand &command);
+
+// The interactive shell an operator lands in after ForkMesh installs the agent
+// CLIs on a mirror. It puts both user-scoped install prefixes on PATH, prints
+// the two provider sign-in commands, and then execs a login shell so
+// `claude` /login and `codex login` can be completed by hand — the installer
+// deliberately copies no tokens, so this is where credentials are entered. The
+// command itself never carries a credential.
+QString buildHostAgentLoginRemoteCommand();
+
 // Stable, metadata-only key for a password retained in MainWindow memory for
 // this process lifetime. It is never written to QSettings.
 QString savedHostCredentialKey(const QString &nodeName, const QString &host,
@@ -357,9 +380,10 @@ QString validateVultrMirrorRequest(const QString &apiKey,
 // never win the cheapest-plan race (adhoc #344).
 bool vultrPlanHasIpv4(const QJsonObject &plan);
 
-// From GET /v2/plans: the cheapest plan that can actually be deployed
-// (monthly_cost > 0, at least one location, and IPv4). Ties break toward more
-// RAM, then the lexicographically smallest id, so selection is deterministic.
+// From GET /v2/plans: the cheapest plan that can actually run an encrypted
+// mirror (at least 1 GiB RAM, monthly_cost > 0, a location, and IPv4). Ties
+// break toward more RAM, then the lexicographically smallest id, so selection
+// is deterministic.
 QJsonObject cheapestVultrPlan(const QJsonArray &plans);
 
 // Deterministic region for a chosen plan: its lexicographically first
@@ -413,6 +437,51 @@ QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables);
 // either, so the provisioning flow switches to uploading this app's own binary
 // (adhoc #408).
 bool vultrInstallNeedsLocalBinary(const QString &installOutput);
+
+// --- Agent CLIs on a fresh mirror (adhoc #418) -----------------------------
+// A brand-new mirror can install the Claude Code and Codex CLIs, but until it
+// is signed in they cannot run a single session — and there is no browser on a
+// headless VPS to sign in with. These helpers copy this device's own logins to
+// the new node so it comes up able to run agent sessions on our access.
+//
+// Everything sensitive lives in the stdin payload only: the remote helper
+// command is fixed and secret-free, exactly like the Actions configuration
+// path, so nothing ever reaches argv, the process table or the install log.
+struct AgentCliCredentials {
+    QByteArray claudeCredentials;  // verbatim ~/.claude/.credentials.json
+    QByteArray codexAuth;          // verbatim ~/.codex/auth.json
+    // API-key fallbacks (ANTHROPIC_API_KEY, OPENAI_API_KEY) for the providers
+    // this device has no CLI login for. A key is deliberately NOT sent
+    // alongside that provider's login: the CLI then warns that auth "may not
+    // work as expected" and silently switches to API billing.
+    QMap<QString, QString> env;
+};
+
+// True when there is nothing to copy, so the caller can install the binaries
+// and say plainly that the mirror still needs a login of its own.
+bool agentCliCredentialsAreEmpty(const AgentCliCredentials &credentials);
+
+// One log line naming what is being copied ("Claude Code login, OPENAI_API_KEY")
+// — names only, never a value.
+QString describeAgentCliCredentials(const AgentCliCredentials &credentials);
+
+// Contents of the ~/.forkmesh/agent-env file sourced by the mirror's shells:
+// one `export NAME='value'` per variable, single-quote escaped so no value can
+// re-enter the remote shell as syntax. Invalid names are dropped.
+QByteArray agentCliEnvFileContents(const QMap<QString, QString> &env);
+
+// Serialize the credentials into the "<section> <base64>" lines the remote
+// helper reads on stdin. Secrets appear only in these bytes; callers should
+// overwrite and clear the array right after QProcess::write(). Returns an empty
+// array (with *error set) when the bundle is malformed or implausibly large.
+QByteArray buildAgentCliBootstrapPayload(const AgentCliCredentials &credentials,
+                                         QString *error = nullptr);
+
+// The fixed remote command that installs the official user-scoped Claude Code
+// and Codex CLIs. With withCredentials the same command also consumes the
+// stdin payload above and writes the login files; without it, no stdin is sent
+// and the mirror is left unauthenticated (the per-host button's behaviour).
+QString agentCliBootstrapRemoteCommand(bool withCredentials);
 
 // --- Cloudflare DNS for a fresh Vultr mirror (adhoc #331) ------------------
 // A brand-new Vultr instance is only reachable at a raw address, so it never

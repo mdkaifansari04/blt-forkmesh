@@ -287,12 +287,14 @@ def test_follower_gallery_orbits_real_follower_icons_around_file_circle():
     gallery = SCENE.split(
         "// Who follows this repository over ActivityPub", 1)
     assert len(gallery) == 2
-    body = gallery[1][:3200]
+    body = gallery[1][:5200]
     assert "repository-fediverse-follower-icons:" in body
     assert "record.fediverseFollowers" in body
     assert "makeRepositoryFollowerIcon(THREE, follower)" in body
-    assert "orbitRadius = nodeRadius * 2.05" in body
-    assert "face.add(gallery)" in body
+    assert "const orbitRadius = 4.25" in body
+    assert "gallery.position.set(0, 0.55, 0.18)" in body
+    assert "caption.material.depthTest = false" in body
+    assert "node.add(gallery)" in body
     # Followers are social records, not in-world physical visitors.
     assert "makeRepositoryFollowerFigure" not in body
     assert "figure.rotation.y" not in body
@@ -327,3 +329,19 @@ def test_remote_avatar_load_is_anonymous_and_optional():
     icon = SCENE.split("function makeRepositoryFollowerIcon(", 1)[1][:1600]
     # An icon detached by a catalog rebuild is dropped, never repainted.
     assert "if (!icon.parent) return;" in icon
+    # File wedges never occlude the identity badge at common camera angles.
+    assert "depthTest: false" in icon
+    assert "icon.renderOrder = 40" in icon
+    assert "new THREE.PlaneGeometry(1, 1)" in icon
+
+
+def test_repository_social_graph_has_outer_followers_inner_contributors_and_follow():
+    assert "repository-contributor-inner-ring" in SCENE
+    assert "makeRepositoryContributorIcon(THREE, contributor)" in SCENE
+    assert "const radius = 2.7" in SCENE
+    assert "contributorOrbit.position.set(0, 0.55, 0.17)" in SCENE
+    assert "repository-fediverse-follow:" in SCENE
+    assert "repositoryFollowButtonTexture" in SCENE
+    assert "repositoryFediverseFollow" in SCENE
+    assert "followRepositoryOnFediverse" in WORLD
+    assert "Copy Mastodon handle" in WORLD

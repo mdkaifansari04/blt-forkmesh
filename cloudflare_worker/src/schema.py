@@ -1701,7 +1701,9 @@ SCHEMA_STATEMENTS = [
         in_at INTEGER NOT NULL CHECK (in_at > 0),
         out_at INTEGER CHECK (out_at IS NULL OR out_at >= in_at),
         last_seen_at INTEGER NOT NULL DEFAULT 0 CHECK (last_seen_at >= 0),
-        floor_id TEXT NOT NULL DEFAULT '' CHECK (length(floor_id) <= 32))""",
+        floor_id TEXT NOT NULL DEFAULT '' CHECK (length(floor_id) <= 32),
+        visit_scope TEXT NOT NULL DEFAULT 'office'
+            CHECK (visit_scope IN ('legacy', 'office')))""",
     """CREATE UNIQUE INDEX IF NOT EXISTS idx_world_office_attendance_open
         ON world_office_attendance(account_bi)
         WHERE out_at IS NULL""",
@@ -1709,6 +1711,35 @@ SCHEMA_STATEMENTS = [
         ON world_office_attendance(in_at DESC, visit_id DESC)""",
     """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_live
         ON world_office_attendance(out_at, last_seen_at DESC)""",
+    """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_scope
+        ON world_office_attendance(visit_scope, account_bi, in_at)""",
+    # Marketing proof-of-work links (migration 0096). Public social URLs and
+    # labels remain inside encrypted payloads and are disclosed only to a
+    # currently authorized Marketing-team member.
+    """CREATE TABLE IF NOT EXISTS world_office_marketing_proofs (
+        proof_id TEXT PRIMARY KEY CHECK (
+            length(proof_id) = 32
+            AND proof_id NOT GLOB '*[^0-9a-f]*'
+        ),
+        org_bi TEXT NOT NULL,
+        account_bi TEXT NOT NULL,
+        url_bi TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_at INTEGER NOT NULL CHECK (created_at > 0))""",
+    """CREATE INDEX IF NOT EXISTS idx_world_office_marketing_proofs_org
+        ON world_office_marketing_proofs(
+            org_bi, created_at DESC, proof_id DESC)""",
+    """CREATE INDEX IF NOT EXISTS idx_world_office_marketing_proofs_member
+        ON world_office_marketing_proofs(
+            org_bi, account_bi, created_at DESC, proof_id DESC)""",
+    """CREATE TRIGGER IF NOT EXISTS
+        trg_world_office_marketing_proofs_capacity
+        BEFORE INSERT ON world_office_marketing_proofs
+        WHEN (SELECT COUNT(*) FROM world_office_marketing_proofs) >= 10000
+        BEGIN
+            SELECT RAISE(
+                ABORT, 'world_office_marketing_proof_catalog_full');
+        END""",
     # Evidence-reviewed contextual placements. The accounting table is
     # deliberately isolated from every wallet/reward ledger.
     """CREATE TABLE IF NOT EXISTS community_ad_instance_policy (
@@ -2165,6 +2196,33 @@ SCHEMA_STATEMENTS = [
         completed_by_bi TEXT NOT NULL DEFAULT '')""",
     "CREATE INDEX IF NOT EXISTS idx_world_build_board_priority "
     "ON world_build_board_items(priority, item_key)",
+    """CREATE TABLE IF NOT EXISTS world_deploy_status (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        state TEXT NOT NULL
+            CHECK (state IN ('idle', 'deploying', 'ready', 'failed')),
+        revision TEXT NOT NULL DEFAULT '' CHECK (length(revision) <= 96),
+        started_at INTEGER NOT NULL DEFAULT 0 CHECK (started_at >= 0),
+        finished_at INTEGER NOT NULL DEFAULT 0 CHECK (finished_at >= 0))""",
+    """CREATE TABLE IF NOT EXISTS world_qa_reviews (
+        account_bi TEXT NOT NULL,
+        item_key TEXT NOT NULL CHECK (length(item_key) BETWEEN 1 AND 80),
+        verdict TEXT NOT NULL CHECK (verdict IN ('pass','fail','unsure')),
+        reviewed_at INTEGER NOT NULL CHECK (reviewed_at >= 0),
+        PRIMARY KEY (account_bi, item_key))""",
+    "CREATE INDEX IF NOT EXISTS idx_world_qa_reviews_account_time "
+    "ON world_qa_reviews(account_bi, reviewed_at DESC)",
+    """CREATE TABLE IF NOT EXISTS world_qa_items (
+        item_key TEXT PRIMARY KEY
+            CHECK (length(item_key) BETWEEN 1 AND 80),
+        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 160),
+        how_to_test TEXT NOT NULL
+            CHECK (length(how_to_test) BETWEEN 1 AND 720),
+        source_key TEXT NOT NULL DEFAULT ''
+            CHECK (length(source_key) <= 80),
+        added_at INTEGER NOT NULL CHECK (added_at >= 0),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)))""",
+    "CREATE INDEX IF NOT EXISTS idx_world_qa_items_active_time "
+    "ON world_qa_items(active, added_at DESC)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

@@ -535,6 +535,58 @@ const QList<SecretPattern> &secretPatterns()
     return kPatterns;
 }
 
+// The generic assignment rule is the only pattern with no provider-specific
+// prefix to anchor it, so it is the one that trips over test fixtures and
+// documentation samples (e.g. the XKCD example password in the browser tests).
+// A value that advertises itself as a placeholder is not a credential worth
+// blocking a push over.
+bool looksLikePlaceholderValue(const QString &value)
+{
+    static const QStringList kMarkers{
+        QStringLiteral("correct-horse-battery-staple"),
+        QStringLiteral("changeme"),
+        QStringLiteral("change-me"),
+        QStringLiteral("change_me"),
+        QStringLiteral("placeholder"),
+        QStringLiteral("example"),
+        QStringLiteral("sample"),
+        QStringLiteral("dummy"),
+        QStringLiteral("redacted"),
+        QStringLiteral("notreal"),
+        QStringLiteral("not-a-real"),
+        QStringLiteral("not_a_real"),
+        QStringLiteral("fake"),
+        QStringLiteral("your-"),
+        QStringLiteral("your_"),
+        QStringLiteral("test-password"),
+        QStringLiteral("test_password"),
+        QStringLiteral("testpassword"),
+        // Template holes: "${API_TOKEN}", "{{ secret }}", "<your-token-here>".
+        QStringLiteral("${"),
+        QStringLiteral("{{"),
+        QStringLiteral("<"),
+    };
+    const QString lower = value.toLower();
+    for (const QString &marker : kMarkers) {
+        if (lower.contains(marker))
+            return true;
+    }
+    // Filler runs like "xxxxxxxxxxxxxxxxxxxx" or "aaaaaaaaaaaaaaaaaaaa".
+    return !lower.isEmpty() &&
+           std::all_of(lower.cbegin(), lower.cend(),
+                       [&lower](QChar c) { return c == lower.at(0); });
+}
+
+// True when this match is the generic assignment rule firing on a placeholder
+// value. Provider-prefixed patterns are left alone: an "AKIA…" or "ghp_…" hit
+// is high-confidence regardless of the surrounding words.
+bool isPlaceholderAssignment(const SecretPattern &pattern,
+                             const QRegularExpressionMatch &match)
+{
+    return pattern.name == QLatin1String("Secret/token assignment") &&
+           looksLikePlaceholderValue(match.captured(1));
+}
+
 QList<RepoSecurityFinding> secretFindings(const QList<RepoFile> &files)
 {
     QList<RepoSecurityFinding> findings;
@@ -545,6 +597,8 @@ QList<RepoSecurityFinding> secretFindings(const QList<RepoFile> &files)
             while (matches.hasNext()) {
                 const QRegularExpressionMatch match = matches.next();
                 if (lineHasIgnoreMarker(text, match.capturedStart()))
+                    continue;
+                if (isPlaceholderAssignment(pattern, match))
                     continue;
                 RepoSecurityFinding finding;
                 finding.id = QStringLiteral("secret:%1:%2")
@@ -607,6 +661,8 @@ QList<RepoSecurityFinding> secretFindingsFromDiff(const QString &diff)
                 auto matches = p.re.globalMatch(content);
                 while (matches.hasNext()) {
                     const QRegularExpressionMatch m = matches.next();
+                    if (isPlaceholderAssignment(p, m))
+                        continue;
                     RepoSecurityFinding finding;
                     finding.id = QStringLiteral("secret:%1:%2:%3")
                                      .arg(currentFile)

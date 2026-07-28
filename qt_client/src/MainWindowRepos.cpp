@@ -1496,6 +1496,9 @@ void MainWindow::mirrorPreviewRepository(int index)
                 setRepoDetailNotice("Could not run git. Install Git and try again.",
                                     true);
             });
+    trackProcessActivity(process, QStringLiteral("fork"),
+                         QStringLiteral("Mirroring %1/%2")
+                             .arg(preview.owner, preview.name));
     process->start(QStringLiteral("git"),
                    {QStringLiteral("clone"), QStringLiteral("--mirror"), source,
                     permanentPath});
@@ -2007,6 +2010,8 @@ void MainWindow::importRemoteRepository()
                 if (m_importUrlEdit)
                     m_importUrlEdit->clear();
             });
+    trackProcessActivity(process, QStringLiteral("clone"),
+                         QStringLiteral("Cloning %1").arg(url));
     process->start();
 }
 
@@ -4103,6 +4108,9 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 watcher->setFuture(QtConcurrent::run(
                     [snapshotInput, expectedDependencyFingerprint,
                      cachedSnapshotAvailable] {
+                        const forkmesh::BackgroundScope activity(
+                            QStringLiteral("scan"),
+                            QStringLiteral("Preparing the contribution graph"));
                         return prepareRepoContributionSnapshot(
                             snapshotInput, expectedDependencyFingerprint,
                             cachedSnapshotAvailable);
@@ -5852,6 +5860,18 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
     const QString legacyMirrorPath = repo.mirrorPath;
     const QString managedMirrorRoot = repositoryMirrorRoot();
     QString source = repositorySource(repo);
+    // A sealed mirror deliberately does not persist its plaintext
+    // materialization. On process startup mirrorPath is therefore empty while
+    // publicArchiveId remains available. Reopen that authenticated archive
+    // first instead of cloning and re-encrypting the entire upstream before
+    // this node can serve or publish anything. A later normal sync sees the
+    // live temporary mirrorPath and refreshes from the upstream as usual.
+    const bool reopeningSealedArchive =
+        PublicMirrorRuntime::isArchiveId(existingArchiveId) &&
+        (legacyMirrorPath.trimmed().isEmpty() ||
+         !QDir(legacyMirrorPath).exists());
+    if (reopeningSealedArchive)
+        source.clear();
     // During a private→public transition, the authenticated private
     // materialization is the only name-free source. Prefer it over the legacy
     // named relay clone URL, which is intentionally inert for private bytes.
@@ -6050,18 +6070,29 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
             scanRepoMentionsFor(current);
             if (current.publishToNetwork) {
                 QString gatewayError;
-                if (rebuildDirectMirrorGatewayConfiguration(
+                if (!rebuildDirectMirrorGatewayConfiguration(
                         &gatewayError, true)) {
-                    publishRepository(index, false);
-                } else {
                     logSystem(
                         QStringLiteral(
-                            "Public publication remains blocked until the "
-                            "direct HTTPS gateway is configured: %1")
+                            "Public mirror has no direct HTTPS gateway yet; "
+                            "publishing its signed catalog state so the node "
+                            "remains visible while endpoint setup is pending: %1")
                             .arg(gatewayError));
                     if (!quiet)
-                        flashMessage(gatewayError, true);
+                        flashMessage(
+                            QStringLiteral(
+                                "Mirror is synced and visible; direct HTTPS "
+                                "serving is still being configured."),
+                            false);
                 }
+                // A public mirror's signed metadata is safe and useful even
+                // before its optional direct endpoint is ready: the catalog
+                // keeps the provisioning node visible but independently marks
+                // it non-cloneable until endpoint health succeeds. Previously
+                // this gate hid a fully registered/synced node from both Qt
+                // and the World, making a successful one-click install look
+                // lost whenever DNS/Tunnel setup lagged behind.
+                publishRepository(index, false);
             }
             startRepoHosts();
             replicateReleaseArtifacts(index);
@@ -6211,6 +6242,9 @@ void MainWindow::pushToSshMirrorRemotes(int index)
         // relay's pin history every public read of the repo hard-fails with
         // mirror_unavailable (the gateway hides its internal refs from the
         // push, so prune can only drop refs this node stopped serving).
+        trackProcessActivity(process, QStringLiteral("push"),
+                             QStringLiteral("Pushing %1/%2 to %3")
+                                 .arg(repo.owner, repo.name, url));
         process->start(QStringLiteral("git"),
                        {QStringLiteral("-C"), repo.mirrorPath,
                         QStringLiteral("push"), QStringLiteral("--porcelain"),
@@ -6542,6 +6576,8 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         "Could not run git. Install Git and try again.",
                         /*error=*/true);
             });
+    trackProcessActivity(process, QStringLiteral("sync"),
+                         QStringLiteral("git ") + args.join(QLatin1Char(' ')));
     process->start("git", args);
 }
 

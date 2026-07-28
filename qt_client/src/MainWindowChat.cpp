@@ -19,6 +19,7 @@
 #include "ScreenCaptureOverlay.h"
 #include "ScreenDrawOverlay.h"
 #include "ScreenshotMarkupWindow.h"
+#include "TerminalWidget.h"
 #include "WorldSpeechBridge.h"
 
 #include <QBrush>
@@ -38,6 +39,26 @@
 #include <algorithm>
 
 using namespace forkmesh::ui;
+
+namespace {
+// Background strip geometry (adhoc #421): five one-word rows are visible, the
+// sixth kind of work scrolls.
+constexpr int kBackgroundTaskVisibleRows = 5;
+constexpr int kBackgroundTaskRowSpacing = 3;
+// Work that finishes inside this window never gets a row. Almost every git read
+// lands well under it, so the strip shows genuinely slow jobs and no widget is
+// created (let alone destroyed) for the hundreds of fast ones.
+constexpr qint64 kBackgroundTaskShowAfterMs = forkmesh::kBackgroundShowAfterMs;
+// Idle ticks kept before the spin timer stands down, so a burst of short jobs
+// doesn't start/stop it repeatedly. The panel itself stays on screen either way
+// (adhoc #419) — only the spinner animation stands down.
+constexpr int kBackgroundTaskIdleTicksBeforeStop = 12;
+// Tickets too fast to be backgrounded are logged as one ✕ summary per kind
+// instead of one line each: the hot git path opens hundreds of them and the log
+// is persisted line by line. A kind's pending summary is flushed once its first
+// fast ticket is this old, or as soon as the strip goes quiet.
+constexpr qint64 kBackgroundTaskFastFlushMs = 2000;
+} // namespace
 
 // -------------------------------------------------------------- server rail
 
@@ -974,12 +995,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     agentStatusRowLayout->addWidget(m_agentStatusIconsHost, 0);
     agentStatusRowLayout->addStretch(1);
     agentStatusRowLayout->addWidget(m_agentStatusMoreButton, 0);
-    // Small "fix conflicts with agent" icon button (adhoc #139): built earlier
-    // by buildAgentsTab() (called from buildHomeSection(), which runs before
-    // this dock in buildChatPage()); it stays hidden until the selected
-    // session's branch is flagged as conflicted (see showAgentSession()).
-    if (m_agentFixConflictsButton)
-        agentStatusRowLayout->addWidget(m_agentFixConflictsButton);
     m_agentStatusRow->setVisible(false); // shown once refreshAgentStatusRow() finds sessions
 
     // Card (right half): the "Agents:" strip on top of the prompt frame, whose
@@ -1082,16 +1097,20 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_footerUpdateLog->installEventFilter(this);
     positionFloatingLogButton();
 
-    // Slow cleanup is visible without taking over the app: this narrow queue sits
-    // exactly between the live log and the agent prompt, and disappears when its
-    // last job finishes.
+    // Background work is visible without taking over the app: this narrow strip
+    // sits exactly between the live log and the agent prompt and lists one
+    // spinner plus one-word tag per kind of job in flight. Five tags fit; past
+    // that the list scrolls (adhoc #421). The panel is permanent (adhoc #419):
+    // it holds its slot in the footer and reads "idle" when nothing is running,
+    // so it never appears/disappears under the pointer and the row it would use
+    // is never borrowed by the log or the prompt.
     m_backgroundQueue = new QFrame;
     m_backgroundQueue->setObjectName("backgroundTaskQueue");
     m_backgroundQueue->setFrameShape(QFrame::StyledPanel);
-    m_backgroundQueue->setFixedWidth(250);
+    m_backgroundQueue->setFixedWidth(132);
     auto *backgroundLayout = new QVBoxLayout(m_backgroundQueue);
-    backgroundLayout->setContentsMargins(10, 8, 10, 8);
-    backgroundLayout->setSpacing(5);
+    backgroundLayout->setContentsMargins(9, 6, 6, 6);
+    backgroundLayout->setSpacing(4);
     m_backgroundQueueTitle = new QLabel(QStringLiteral("Background"));
     m_backgroundQueueTitle->setObjectName("backgroundTaskQueueTitle");
     QFont backgroundTitleFont = m_backgroundQueueTitle->font();
@@ -1104,16 +1123,52 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_backgroundQueueRowsLayout =
         new QVBoxLayout(m_backgroundQueueRowsHost);
     m_backgroundQueueRowsLayout->setContentsMargins(0, 0, 0, 0);
-    m_backgroundQueueRowsLayout->setSpacing(4);
+    m_backgroundQueueRowsLayout->setSpacing(kBackgroundTaskRowSpacing);
+    // Placeholder for the (common) case of nothing in flight: an always-visible
+    // panel with an empty body would read as broken, and the dimmed word keeps
+    // the list's height stable as rows come and go.
+    m_backgroundQueueIdleLabel = new QLabel(QStringLiteral("idle"));
+    m_backgroundQueueIdleLabel->setObjectName("backgroundTaskIdle");
+    m_backgroundQueueIdleLabel->setToolTip(
+        QStringLiteral("No background work in flight"));
+    m_backgroundQueueRowsLayout->addWidget(m_backgroundQueueIdleLabel);
     m_backgroundQueueRowsLayout->addStretch(1);
-    auto *backgroundScroll = new QScrollArea;
-    backgroundScroll->setObjectName("backgroundTaskQueueScroll");
-    backgroundScroll->setFrameShape(QFrame::NoFrame);
-    backgroundScroll->setWidgetResizable(true);
-    backgroundScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    backgroundScroll->setWidget(m_backgroundQueueRowsHost);
-    backgroundLayout->addWidget(backgroundScroll, 1);
-    m_backgroundQueue->hide();
+    m_backgroundQueueScroll = new QScrollArea;
+    m_backgroundQueueScroll->setObjectName("backgroundTaskQueueScroll");
+    m_backgroundQueueScroll->setFrameShape(QFrame::NoFrame);
+    m_backgroundQueueScroll->setWidgetResizable(true);
+    m_backgroundQueueScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_backgroundQueueScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_backgroundQueueScroll->setWidget(m_backgroundQueueRowsHost);
+    // Height for exactly kBackgroundTaskVisibleRows rows: the sixth kind of work
+    // pushes the list into its scrollbar instead of stretching the footer.
+    QFont backgroundRowFont = m_backgroundQueue->font();
+    backgroundRowFont.setPointSizeF(
+        qMax(7.5, backgroundRowFont.pointSizeF() - 1.0));
+    m_backgroundTaskRowHeight = QFontMetrics(backgroundRowFont).height() + 2;
+    m_backgroundQueueIdleLabel->setFont(backgroundRowFont);
+    m_backgroundQueueIdleLabel->setFixedHeight(m_backgroundTaskRowHeight);
+    m_backgroundQueueIdleLabel->setStyleSheet(
+        QStringLiteral("color:#6e7681;"));
+    m_backgroundQueueScroll->setMaximumHeight(
+        kBackgroundTaskVisibleRows * m_backgroundTaskRowHeight +
+        (kBackgroundTaskVisibleRows - 1) * kBackgroundTaskRowSpacing);
+    backgroundLayout->addWidget(m_backgroundQueueScroll, 1);
+
+    // Every announcement in the process lands here. The hop through
+    // invokeMethod() is what lets tickets be opened off the GUI thread (mirror
+    // scans, contribution snapshots) while all queue state stays on one thread;
+    // posted events are dropped if the window dies first.
+    forkmesh::BackgroundActivity::setListener(
+        [this](quint64 id, const QString &kind, const QString &detail,
+               bool started) {
+            QMetaObject::invokeMethod(
+                this,
+                [this, id, kind, detail, started] {
+                    noteBackgroundActivity(id, kind, detail, started);
+                },
+                Qt::QueuedConnection);
+        });
 
     // Horizontal split: live-log strip, transient background queue, then prompt.
     auto *dockRow = new QHBoxLayout(dock);
@@ -1138,89 +1193,238 @@ QWidget *MainWindow::buildNetworkLogDock()
     return dock;
 }
 
-quint64 MainWindow::beginBackgroundTask(const QString &note)
+// One-word tag for the strip: callers may hand over a phrase, the row shows the
+// first word ("git", "net", "fork" …) and keeps the rest for the tooltip.
+QString MainWindow::backgroundTaskWord(const QString &kind)
 {
-    if (!m_backgroundQueueRowsLayout || !m_backgroundQueue)
-        return 0;
-    const quint64 id = m_nextBackgroundTaskId++;
-    auto *row = new QWidget(m_backgroundQueueRowsHost);
-    row->setObjectName("backgroundTaskRow");
-    auto *layout = new QHBoxLayout(row);
-    layout->setContentsMargins(0, 2, 0, 2);
-    layout->setSpacing(6);
-    auto *spinner = new QLabel(QString::fromUtf8("\xE2\xA0\x8B"));
-    spinner->setObjectName("backgroundTaskSpinner");
-    spinner->setStyleSheet(QStringLiteral("color:#3fb950;font-weight:700;"));
-    spinner->setFixedWidth(14);
-    auto *label = new QLabel(note.trimmed());
-    label->setObjectName("backgroundTaskNote");
-    label->setToolTip(note.trimmed());
-    label->setWordWrap(true);
-    QFont noteFont = label->font();
-    noteFont.setPointSizeF(qMax(7.0, noteFont.pointSizeF() - 1.0));
-    label->setFont(noteFont);
-    layout->addWidget(spinner, 0, Qt::AlignTop);
-    layout->addWidget(label, 1);
-    m_backgroundQueueRowsLayout->insertWidget(
-        qMax(0, m_backgroundQueueRowsLayout->count() - 1), row);
-    m_backgroundTaskRows.insert(id, row);
-    m_backgroundTaskSpinners.insert(id, spinner);
-    m_backgroundQueueTitle->setText(
-        QStringLiteral("Background \xC2\xB7 %1").arg(m_backgroundTaskRows.size()));
-    m_backgroundQueue->show();
-    if (!m_backgroundTaskSpinTimer) {
-        m_backgroundTaskSpinTimer = new QTimer(this);
-        m_backgroundTaskSpinTimer->setInterval(90);
-        connect(m_backgroundTaskSpinTimer, &QTimer::timeout, this, [this] {
-            static const QStringList frames{
-                QString::fromUtf8("\xE2\xA0\x8B"),
-                QString::fromUtf8("\xE2\xA0\x99"),
-                QString::fromUtf8("\xE2\xA0\xB9"),
-                QString::fromUtf8("\xE2\xA0\xB8"),
-                QString::fromUtf8("\xE2\xA0\xBC"),
-                QString::fromUtf8("\xE2\xA0\xB4"),
-                QString::fromUtf8("\xE2\xA0\xA6"),
-                QString::fromUtf8("\xE2\xA0\xA7"),
-                QString::fromUtf8("\xE2\xA0\x87"),
-                QString::fromUtf8("\xE2\xA0\x8F"),
-            };
-            m_backgroundTaskSpinFrame =
-                (m_backgroundTaskSpinFrame + 1) % frames.size();
-            for (QLabel *spinner : std::as_const(m_backgroundTaskSpinners)) {
-                if (spinner)
-                    spinner->setText(frames.at(m_backgroundTaskSpinFrame));
-            }
-        });
+    QString word;
+    for (const QChar ch : kind.simplified()) {
+        if (ch.isSpace())
+            break;
+        if (ch.isLetterOrNumber())
+            word.append(ch.toLower());
     }
-    if (!m_backgroundTaskSpinTimer->isActive())
-        m_backgroundTaskSpinTimer->start();
-    return id;
+    if (word.isEmpty())
+        word = QStringLiteral("work");
+    return word.left(10);
+}
+
+quint64 MainWindow::beginBackgroundTask(const QString &kind,
+                                        const QString &detail)
+{
+    // Route even in-window callers through the bus so there is exactly one path
+    // into the strip, whoever opened the ticket.
+    return forkmesh::BackgroundActivity::begin(kind, detail);
 }
 
 void MainWindow::finishBackgroundTask(quint64 id, bool success,
                                       const QString &detail)
 {
+    forkmesh::BackgroundActivity::end(id);
     if (!detail.trimmed().isEmpty())
         logSystem(QStringLiteral("Background: %1").arg(detail.trimmed()));
-    QWidget *row = m_backgroundTaskRows.take(id);
-    m_backgroundTaskSpinners.remove(id);
-    if (row)
-        row->deleteLater();
-    if (m_backgroundTaskRows.isEmpty()) {
-        if (m_backgroundTaskSpinTimer)
-            m_backgroundTaskSpinTimer->stop();
-        if (m_backgroundQueue)
-            m_backgroundQueue->hide();
-        if (m_backgroundQueueTitle)
-            m_backgroundQueueTitle->setText(QStringLiteral("Background"));
-    } else {
-        if (m_backgroundQueueTitle)
-            m_backgroundQueueTitle->setText(
-            QStringLiteral("Background \xC2\xB7 %1")
-                .arg(m_backgroundTaskRows.size()));
-    }
     if (!success && !detail.trimmed().isEmpty())
         flashMessage(detail.trimmed(), true);
+}
+
+// A finished run of one kind of work goes into a pending tally rather than
+// straight into the log (adhoc #419): the hot paths retire hundreds of tickets a
+// minute and one line each would bury every other event (and rewrite the log
+// file that often). flushBackgroundOutcomes() turns each tally into a single
+// entry — ✓ for work that was actually backgrounded, red ✕ for work that came
+// and went too fast to ever be.
+void MainWindow::recordBackgroundOutcome(const QString &word, qint64 elapsedMs,
+                                         const QString &detail, qint64 now)
+{
+    QHash<QString, BackgroundOutcomeTally> &bucket =
+        elapsedMs >= kBackgroundTaskShowAfterMs ? m_backgroundTaskDone
+                                                : m_backgroundTaskFast;
+    BackgroundOutcomeTally &tally = bucket[word];
+    if (tally.runs == 0)
+        tally.firstAt = now;
+    ++tally.runs;
+    tally.longestMs = qMax(tally.longestMs, elapsedMs);
+    const QString note = detail.trimmed();
+    if (!note.isEmpty())
+        tally.detail = note;
+}
+
+// Emit the tallies that have been open long enough to be worth summarising (or
+// all of them, when the strip is about to go quiet).
+void MainWindow::flushBackgroundOutcomes(bool force)
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (QHash<QString, BackgroundOutcomeTally> *bucket :
+         {&m_backgroundTaskDone, &m_backgroundTaskFast}) {
+        for (auto it = bucket->begin(); it != bucket->end();) {
+            if (!force && now - it->firstAt < kBackgroundTaskFastFlushMs) {
+                ++it;
+                continue;
+            }
+            logSystem(forkmesh::backgroundOutcomeLine(
+                it.key(), it->runs, it->longestMs, it->detail));
+            it = bucket->erase(it);
+        }
+    }
+}
+
+// Ticket bookkeeping. Rows are *not* touched here: a job that finishes inside
+// kBackgroundTaskShowAfterMs must never create a widget, so the sweep below owns
+// what is on screen and this only maintains the counts it reads.
+void MainWindow::noteBackgroundActivity(quint64 id, const QString &kind,
+                                        const QString &detail, bool started)
+{
+    if (!m_backgroundQueue || !m_backgroundQueueRowsLayout)
+        return;
+    if (started) {
+        const QString word = backgroundTaskWord(kind);
+        m_backgroundTaskWords.insert(id, word);
+        const int count = m_backgroundTaskCounts.value(word) + 1;
+        m_backgroundTaskCounts.insert(word, count);
+        if (count == 1)
+            m_backgroundTaskSince.insert(word, QDateTime::currentMSecsSinceEpoch());
+        const QString note = detail.trimmed();
+        if (!note.isEmpty())
+            m_backgroundTaskDetails.insert(word, note);
+    } else {
+        const QString word = m_backgroundTaskWords.take(id);
+        if (word.isEmpty())
+            return;
+        const int count = m_backgroundTaskCounts.value(word) - 1;
+        if (count > 0) {
+            m_backgroundTaskCounts.insert(word, count);
+        } else {
+            // Last ticket of this kind: hand the run to the log's ✓ / ✕ tally.
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            recordBackgroundOutcome(word,
+                                    now - m_backgroundTaskSince.value(word, now),
+                                    m_backgroundTaskDetails.value(word), now);
+            m_backgroundTaskCounts.remove(word);
+            m_backgroundTaskSince.remove(word);
+            m_backgroundTaskDetails.remove(word);
+        }
+    }
+    if (!m_backgroundTaskSpinTimer) {
+        m_backgroundTaskSpinTimer = new QTimer(this);
+        m_backgroundTaskSpinTimer->setInterval(90);
+        connect(m_backgroundTaskSpinTimer, &QTimer::timeout, this,
+                &MainWindow::tickBackgroundQueue);
+    }
+    if (!m_backgroundTaskSpinTimer->isActive()) {
+        m_backgroundTaskIdleTicks = 0;
+        m_backgroundTaskSpinTimer->start();
+    }
+}
+
+// Advance the spinner glyphs and reconcile the visible rows with the open
+// tickets. Cheap: at most a handful of kinds are ever in flight at once.
+void MainWindow::tickBackgroundQueue()
+{
+    static const QStringList frames{
+        QString::fromUtf8("\xE2\xA0\x8B"), QString::fromUtf8("\xE2\xA0\x99"),
+        QString::fromUtf8("\xE2\xA0\xB9"), QString::fromUtf8("\xE2\xA0\xB8"),
+        QString::fromUtf8("\xE2\xA0\xBC"), QString::fromUtf8("\xE2\xA0\xB4"),
+        QString::fromUtf8("\xE2\xA0\xA6"), QString::fromUtf8("\xE2\xA0\xA7"),
+        QString::fromUtf8("\xE2\xA0\x87"), QString::fromUtf8("\xE2\xA0\x8F"),
+    };
+    if (!m_backgroundQueue || !m_backgroundQueueRowsLayout)
+        return;
+    m_backgroundTaskSpinFrame = (m_backgroundTaskSpinFrame + 1) % frames.size();
+    const QString glyph = frames.at(m_backgroundTaskSpinFrame);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+    // Retire rows whose last ticket closed.
+    const QStringList shown = m_backgroundTaskRows.keys();
+    for (const QString &word : shown) {
+        if (m_backgroundTaskCounts.contains(word))
+            continue;
+        if (QWidget *row = m_backgroundTaskRows.take(word)) {
+            // Drop it from the layout now: deleteLater() alone would leave the
+            // dead row occupying a slot until the next event-loop pass, and a
+            // fresh ticket for the same word would draw a second one beside it.
+            m_backgroundQueueRowsLayout->removeWidget(row);
+            row->hide();
+            row->deleteLater();
+        }
+        m_backgroundTaskSpinners.remove(word);
+        m_backgroundTaskLabels.remove(word);
+    }
+
+    // Add or refresh a row per kind that has outlived the show delay.
+    for (auto it = m_backgroundTaskCounts.constBegin();
+         it != m_backgroundTaskCounts.constEnd(); ++it) {
+        const QString &word = it.key();
+        if (now - m_backgroundTaskSince.value(word, now) <
+            kBackgroundTaskShowAfterMs)
+            continue;
+        QLabel *spinner = m_backgroundTaskSpinners.value(word);
+        QLabel *label = m_backgroundTaskLabels.value(word);
+        if (!spinner || !label) {
+            auto *row = new QWidget(m_backgroundQueueRowsHost);
+            row->setObjectName("backgroundTaskRow");
+            row->setFixedHeight(m_backgroundTaskRowHeight);
+            auto *layout = new QHBoxLayout(row);
+            layout->setContentsMargins(0, 0, 0, 0);
+            layout->setSpacing(6);
+            spinner = new QLabel(glyph);
+            spinner->setObjectName("backgroundTaskSpinner");
+            spinner->setStyleSheet(QStringLiteral("color:#3fb950;font-weight:700;"));
+            spinner->setFixedWidth(14);
+            label = new QLabel(word);
+            label->setObjectName("backgroundTaskNote");
+            QFont noteFont = label->font();
+            noteFont.setPointSizeF(qMax(7.5, noteFont.pointSizeF() - 1.0));
+            label->setFont(noteFont);
+            spinner->setFont(noteFont);
+            layout->addWidget(spinner, 0, Qt::AlignVCenter);
+            layout->addWidget(label, 1);
+            m_backgroundQueueRowsLayout->insertWidget(
+                qMax(0, m_backgroundQueueRowsLayout->count() - 1), row);
+            m_backgroundTaskRows.insert(word, row);
+            m_backgroundTaskSpinners.insert(word, spinner);
+            m_backgroundTaskLabels.insert(word, label);
+        }
+        spinner->setText(glyph);
+        const int count = it.value();
+        label->setText(count > 1 ? QStringLiteral("%1 %2%3")
+                                       .arg(word)
+                                       .arg(QChar(0x00D7))
+                                       .arg(count)
+                                 : word);
+        const QString note = m_backgroundTaskDetails.value(word);
+        label->setToolTip(note.isEmpty() ? word : note);
+    }
+
+    // The panel itself never hides (adhoc #419); the placeholder stands in for
+    // the rows while nothing is in flight.
+    const int visible = m_backgroundTaskRows.size();
+    m_backgroundQueue->show();
+    if (m_backgroundQueueIdleLabel)
+        m_backgroundQueueIdleLabel->setVisible(visible == 0);
+    if (m_backgroundQueueTitle) {
+        m_backgroundQueueTitle->setText(
+            visible > 0 ? QStringLiteral("Background %1 %2")
+                              .arg(QChar(0x00B7))
+                              .arg(visible)
+                        : QStringLiteral("Background"));
+    }
+
+    // Stand the timer down once nothing is running and nothing is drawn, with a
+    // grace period so a stream of short jobs doesn't flap it. The pending ✓ / ✕
+    // tallies are flushed unconditionally on the way down, since nothing will be
+    // ticking to flush them later.
+    if (m_backgroundTaskCounts.isEmpty() && visible == 0) {
+        const bool standingDown =
+            ++m_backgroundTaskIdleTicks >= kBackgroundTaskIdleTicksBeforeStop;
+        flushBackgroundOutcomes(standingDown);
+        if (standingDown && m_backgroundTaskSpinTimer) {
+            m_backgroundTaskSpinTimer->stop();
+            m_backgroundTaskIdleTicks = 0;
+        }
+    } else {
+        m_backgroundTaskIdleTicks = 0;
+        flushBackgroundOutcomes(false);
+    }
 }
 
 // Footer slash-actions popup (adhoc #116): opened by the "/" box left of the
@@ -5819,12 +6023,34 @@ void MainWindow::pushCurrentRepoUpstream()
                         .arg(scan.findings.size())
                         .arg(scan.findings.size() == 1 ? QString() : QStringLiteral("s"))
                         .arg(repo.owner, repo.name, detail));
+                auto *viewBtn = box.addButton(QStringLiteral("View code"),
+                                              QMessageBox::ActionRole);
                 auto *cancelBtn = box.addButton(QStringLiteral("Cancel push"),
                                                 QMessageBox::RejectRole);
                 auto *bypassBtn = box.addButton(QStringLiteral("Push anyway"),
                                                 QMessageBox::DestructiveRole);
                 box.setDefaultButton(cancelBtn);
                 box.exec();
+                if (box.clickedButton() == viewBtn) {
+                    // Jumping to the code cancels the push: the point is to remove
+                    // the credential first. Copy the path/line out before the
+                    // navigation below, which pumps the event loop (and can rebuild
+                    // the findings' owning state) across its git reads.
+                    const QString path = scan.findings.first().path;
+                    const int line = scan.findings.first().line;
+                    m_pushingRepos.remove(index);
+                    refreshRepoSyncIndicators();
+                    openRepoDetail(index);
+                    // Switch to the Code tab (index 0) so the highlighted line is
+                    // visible; openRepoFileAtLine alone only touches the (currently
+                    // hidden) files panel.
+                    if (m_repoDetailTabs && m_repoDetailTabs->button(0))
+                        m_repoDetailTabs->button(0)->setChecked(true);
+                    if (m_repoDetailStack)
+                        m_repoDetailStack->setCurrentIndex(0);
+                    openRepoFileAtLine(path, line);
+                    return;
+                }
                 if (box.clickedButton() != bypassBtn) {
                     m_pushingRepos.remove(index);
                     refreshRepoSyncIndicators();
@@ -7386,7 +7612,7 @@ QWidget *MainWindow::buildHostsSection()
 
     // --- Create a Vultr mirror (adhoc #315) --------------------------------
     // Fully automated alternative to the manual form above: given only a Vultr
-    // API key, deploy a brand-new VPS (cheapest plan, newest Debian), with the
+    // API key, deploy a brand-new VPS (cheapest supported plan, newest Debian), with the
     // SSH key created and managed by ForkMesh, then run the same hosted
     // installer over SSH so the node auto-links to this account and starts
     // mirroring/syncing on its own.
@@ -7405,8 +7631,10 @@ QWidget *MainWindow::buildHostsSection()
 
     auto *vultrHint = new QLabel(QString::fromUtf8(
         "One click deploys a brand-new cloud mirror on your Vultr account: "
-        "ForkMesh picks the cheapest available IPv4 plan (Vultr's IPv6-only "
-        "tiers are unreachable for the mesh) running the latest Debian, "
+        "ForkMesh picks the cheapest available IPv4 plan with at least 1 GB "
+        "RAM (smaller plans cannot hold the encrypted mirror's temporary "
+        "working set; Vultr's IPv6-only tiers are also unreachable for the "
+        "mesh) running the latest Debian, "
         "creates and manages the SSH key for it automatically, boots the "
         "instance, installs ForkMesh over SSH and links the new node to your "
         "account so it starts mirroring and syncing right away. The API key "
@@ -7436,6 +7664,26 @@ QWidget *MainWindow::buildHostsSection()
         "(mirror5, mirror6, \xE2\x80\xA6)"));
     vultrForm->addRow(QStringLiteral("Node name"), m_vultrNameEdit);
     vultrCol->addLayout(vultrForm);
+
+    // Agent CLIs on the new mirror (adhoc #418). A headless VPS has no browser
+    // to sign either provider in with, so the installed binaries would sit
+    // there unusable; copying this device's own logins is what makes the fresh
+    // node able to run agent sessions on our access from the first minute.
+    m_vultrAgentClisCheck = new QCheckBox(QString::fromUtf8(
+        "Also install Claude Code + Codex and sign them in with this device's "
+        "access"));
+    m_vultrAgentClisCheck->setObjectName(
+        QStringLiteral("vultrInstallAgentClisCheck"));
+    m_vultrAgentClisCheck->setChecked(true);
+    m_vultrAgentClisCheck->setToolTip(QString::fromUtf8(
+        "After ForkMesh is installed, the official Claude Code and Codex CLIs "
+        "are installed on the new mirror and this device's own logins "
+        "(~/.claude/.credentials.json, ~/.codex/auth.json, and the agent API "
+        "keys from Settings for a provider you have no CLI login for) are "
+        "copied to it, so it can run agent sessions immediately. The "
+        "credentials travel only on the SSH session's stdin \xE2\x80\x94 never "
+        "in a command line or in the log below."));
+    vultrCol->addWidget(m_vultrAgentClisCheck);
 
     auto *vultrRow = new QHBoxLayout;
     vultrRow->setContentsMargins(0, 0, 0, 0);
@@ -7518,21 +7766,24 @@ QWidget *MainWindow::buildHostsSection()
     hostsHint->setWordWrap(true);
     bodyCol->addWidget(hostsHint);
 
-    m_hostsTable = new QTableWidget(0, 5);
+    m_hostsTable = new QTableWidget(0, 7);
     installColumnHeaderMenu(m_hostsTable); // 3-dots per-column menu (issue #318)
     m_hostsTable->setObjectName("issueTable");
     m_hostsTable->setHorizontalHeaderLabels(
         {QStringLiteral("Node name"), QStringLiteral("Address"),
-         QStringLiteral("User"), QStringLiteral("Status"), QString()});
+         QStringLiteral("User"), QStringLiteral("Status"),
+         QStringLiteral("Claude"), QStringLiteral("Codex"), QString()});
     m_hostsTable->verticalHeader()->setVisible(false);
     m_hostsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_hostsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_hostsTable->setShowGrid(false);
-    // Stretch the Status column and let the trailing Update-button column size to
-    // its contents.
+    // Stretch the Status column and keep the two agent capability columns and
+    // trailing action column compact.
     m_hostsTable->horizontalHeader()->setStretchLastSection(false);
     m_hostsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     m_hostsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_hostsTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    m_hostsTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_hostsTable); // spreadsheet-style draggable columns (#263)
     // Double-clicking a saved host reloads its server info into the install
     // form so the installer can be re-run. A password is available only if it
@@ -7540,11 +7791,19 @@ QWidget *MainWindow::buildHostsSection()
     connect(m_hostsTable, &QTableWidget::cellDoubleClicked, this,
             &MainWindow::loadHostIntoForm);
     bodyCol->addWidget(m_hostsTable);
+    if (!m_hostProbeTimer) {
+        m_hostProbeTimer = new QTimer(this);
+        m_hostProbeTimer->setInterval(30000);
+        connect(m_hostProbeTimer, &QTimer::timeout, this,
+                &MainWindow::probeSavedHosts);
+        m_hostProbeTimer->start();
+    }
 
     scroll->setWidget(body);
     outer->addWidget(scroll, 1);
 
     refreshHostsTable();
+    QTimer::singleShot(0, this, &MainWindow::probeSavedHosts);
     return page;
 }
 
@@ -7559,13 +7818,33 @@ void MainWindow::refreshHostsTable()
     for (int i = 0; i < hosts.size(); ++i) {
         const QJsonObject h = hosts.at(i).toObject();
         const QString status = h.value("status").toString(QStringLiteral("installed"));
-        m_hostsTable->setItem(i, 0,
-            new QTableWidgetItem(h.value("name").toString()));
+        const QString name = h.value("name").toString();
+        const QString ip = h.value("ip").toString();
+        const QString user = h.value("user").toString();
+        const QString key =
+            forkmesh::control::savedHostCredentialKey(name, ip, user);
+        auto *nameItem = new QTableWidgetItem(name);
+        nameItem->setData(Qt::UserRole, key);
+        m_hostsTable->setItem(i, 0, nameItem);
         m_hostsTable->setItem(i, 1,
-            new QTableWidgetItem(h.value("ip").toString()));
+            new QTableWidgetItem(ip));
         m_hostsTable->setItem(i, 2,
-            new QTableWidgetItem(h.value("user").toString()));
-        m_hostsTable->setItem(i, 3, new QTableWidgetItem(status));
+            new QTableWidgetItem(user));
+        const QString reachability = m_hostReachability.value(key);
+        m_hostsTable->setItem(
+            i, 3,
+            new QTableWidgetItem(
+                reachability.isEmpty() ? status : reachability));
+        m_hostsTable->setItem(
+            i, 4,
+            new QTableWidgetItem(
+                m_hostClaudeAvailability.value(
+                    key, QString::fromUtf8("Checking\xE2\x80\xA6"))));
+        m_hostsTable->setItem(
+            i, 5,
+            new QTableWidgetItem(
+                m_hostCodexAvailability.value(
+                    key, QString::fromUtf8("Checking\xE2\x80\xA6"))));
 
         // Per-row Update button: reload the saved host into the install form and
         // re-run the hosted installer against it. The installer is idempotent, so
@@ -7693,6 +7972,41 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(actionsBtn);
+
+        auto *installAgentsBtn =
+            new QPushButton(QStringLiteral("Install Claude + Codex"));
+        installAgentsBtn->setObjectName(
+            QStringLiteral("hostInstallAgentClisButton"));
+        installAgentsBtn->setCursor(Qt::PointingHandCursor);
+        installAgentsBtn->setToolTip(QStringLiteral(
+            "Install the official user-scoped Claude Code and Codex CLI "
+            "binaries on this mirror over its pinned SSH connection. This "
+            "does not copy tokens or sign either provider in."));
+        setOcticon(installAgentsBtn, "terminal", 12);
+        connect(installAgentsBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] {
+                installAgentClisForHost(i);
+            });
+        });
+        cellRow->addWidget(installAgentsBtn);
+
+        // The installer copies no provider tokens, so signing in is a separate
+        // interactive step. This opens the same live shell the install opens on
+        // its own, for a host whose CLIs are already there.
+        auto *signInBtn = new QPushButton(QStringLiteral("Sign in"));
+        signInBtn->setObjectName(QStringLiteral("hostAgentLoginButton"));
+        signInBtn->setCursor(Qt::PointingHandCursor);
+        signInBtn->setToolTip(QStringLiteral(
+            "Open a live terminal on this mirror to finish the Claude Code and "
+            "Codex sign-ins. What you type goes only to the host over its "
+            "pinned SSH connection."));
+        setOcticon(signInBtn, "key", 12);
+        connect(signInBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] {
+                openHostAgentLoginTerminalForSelection(i);
+            });
+        });
+        cellRow->addWidget(signInBtn);
         // Table-row sizing: the default QPushButton padding makes each of these
         // 35px tall, far more than a text row, so the view squashed the whole
         // action cell down to the item height and Qt silently dropped every
@@ -7700,7 +8014,7 @@ void MainWindow::refreshHostsTable()
         // "sm" size keeps them inside a table row so the words stay visible.
         for (QPushButton *b : cell->findChildren<QPushButton *>())
             b->setProperty("buttonSize", "sm");
-        m_hostsTable->setCellWidget(i, 4, cell);
+        m_hostsTable->setCellWidget(i, 6, cell);
     }
     // ...and the rows still have to be tall enough for the buttons, and the
     // action column wide enough that no label is elided. The view lays a cell
@@ -7711,15 +8025,15 @@ void MainWindow::refreshHostsTable()
         // rowsInserted from its own singleShot(0), and would otherwise land
         // after this and undo it.
         QTimer::singleShot(0, m_hostsTable, [this] {
-            QWidget *cell = m_hostsTable ? m_hostsTable->cellWidget(0, 4) : nullptr;
+            QWidget *cell = m_hostsTable ? m_hostsTable->cellWidget(0, 6) : nullptr;
             if (!cell)
                 return;
             // setColumnWidth() only takes on an Interactive section; that is
             // also the mode makeColumnsResizable() leaves behind, so this just
             // gets there whether or not it has run yet.
             m_hostsTable->horizontalHeader()->setSectionResizeMode(
-                4, QHeaderView::Interactive);
-            m_hostsTable->setColumnWidth(4, cell->sizeHint().width() + 16);
+                6, QHeaderView::Interactive);
+            m_hostsTable->setColumnWidth(6, cell->sizeHint().width() + 16);
             const int rowHeight = cell->sizeHint().height() + 12;
             for (int r = 0; r < m_hostsTable->rowCount(); ++r)
                 m_hostsTable->setRowHeight(r, rowHeight);
@@ -7730,6 +8044,585 @@ void MainWindow::refreshHostsTable()
         m_hostsNavButton->setText(hosts.isEmpty()
             ? QStringLiteral("Hosts")
             : QStringLiteral("Hosts (%1)").arg(hosts.size()));
+}
+
+forkmesh::control::AgentCliCredentials MainWindow::localAgentCliCredentials()
+{
+    forkmesh::control::AgentCliCredentials credentials;
+    const auto readFile = [](const QString &path) {
+        QFile file(path);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+    };
+    credentials.claudeCredentials = readFile(
+        QDir::homePath() + QStringLiteral("/.claude/.credentials.json"));
+    credentials.codexAuth =
+        readFile(QDir::homePath() + QStringLiteral("/.codex/auth.json"));
+    // Only fall back to an API key for the provider whose CLI login we could
+    // not copy: Claude Code warns that auth "may not work as expected" when an
+    // ANTHROPIC_API_KEY sits next to a logged-in session, and Codex would
+    // bypass the ChatGPT plan the same way (see agentRunConfig).
+    QSettings settings;
+    if (credentials.claudeCredentials.trimmed().isEmpty()) {
+        const QString key =
+            settings.value(kClaudeApiKeySetting).toString().trimmed();
+        if (!key.isEmpty())
+            credentials.env.insert(QStringLiteral("ANTHROPIC_API_KEY"), key);
+    }
+    if (credentials.codexAuth.trimmed().isEmpty()) {
+        const QString key =
+            settings.value(kCodexApiKeySetting).toString().trimmed();
+        if (!key.isEmpty())
+            credentials.env.insert(QStringLiteral("OPENAI_API_KEY"), key);
+    }
+    return credentials;
+}
+
+void MainWindow::probeSavedHosts()
+{
+    if (!m_hostsTable)
+        return;
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    for (const QJsonValue &value : hosts) {
+        const QJsonObject host = value.toObject();
+        probeSavedHost(
+            host.value(QStringLiteral("name")).toString().trimmed(),
+            host.value(QStringLiteral("ip")).toString().trimmed(),
+            host.value(QStringLiteral("user")).toString().trimmed(),
+            host.value(QStringLiteral("status")).toString().trimmed());
+    }
+}
+
+void MainWindow::probeSavedHost(const QString &name, const QString &ip,
+                                const QString &user,
+                                const QString &savedStatus)
+{
+    if (!m_hostsTable || name.isEmpty() || ip.isEmpty() || user.isEmpty())
+        return;
+    const QString key =
+        forkmesh::control::savedHostCredentialKey(name, ip, user);
+    if (m_hostProbesInFlight.contains(key))
+        return;
+    m_hostProbesInFlight.insert(key);
+
+    const auto rowForKey = [this](const QString &candidate) -> int {
+        if (!m_hostsTable)
+            return -1;
+        for (int row = 0; row < m_hostsTable->rowCount(); ++row) {
+            const QTableWidgetItem *item = m_hostsTable->item(row, 0);
+            if (item && item->data(Qt::UserRole).toString() == candidate)
+                return row;
+        }
+        return -1;
+    };
+    const auto render = [this, rowForKey, key](
+                            const QString &status,
+                            const QString &claude,
+                            const QString &codex,
+                            const QColor &color) {
+        m_hostReachability.insert(key, status);
+        m_hostClaudeAvailability.insert(key, claude);
+        m_hostCodexAvailability.insert(key, codex);
+        const int row = rowForKey(key);
+        if (row < 0 || !m_hostsTable)
+            return;
+        for (const auto &entry : {
+                 qMakePair(3, status),
+                 qMakePair(4, claude),
+                 qMakePair(5, codex),
+             }) {
+            if (QTableWidgetItem *item =
+                    m_hostsTable->item(row, entry.first)) {
+                item->setText(entry.second);
+                item->setForeground(color);
+            }
+        }
+    };
+    render(QString::fromUtf8("\xE2\x97\x8C Checking\xE2\x80\xA6"),
+           QString::fromUtf8("Checking\xE2\x80\xA6"),
+           QString::fromUtf8("Checking\xE2\x80\xA6"),
+           QColor(QStringLiteral("#8b949e")));
+
+    QString password;
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    for (const QJsonValue &value : hosts) {
+        const QJsonObject host = value.toObject();
+        if (host.value(QStringLiteral("name")).toString().trimmed() == name &&
+            host.value(QStringLiteral("ip")).toString().trimmed() == ip &&
+            host.value(QStringLiteral("user")).toString().trimmed() == user) {
+            password = m_hostSessionPasswords.value(key);
+            break;
+        }
+    }
+    const QString identityFile = savedHostIdentityFile(name, ip, user);
+    if (!identityFile.isEmpty())
+        password.clear();
+    const QString remoteCommand = QStringLiteral(
+        "sh -lc 'export PATH=\"$HOME/.local/bin:$HOME/.claude/bin:$PATH\"; "
+        "printf \"FORKMESH=%s CLAUDE=%s CODEX=%s\\\\n\" "
+        "\"$(command -v forkmesh >/dev/null 2>&1 && echo 1 || echo 0)\" "
+        "\"$(command -v claude >/dev/null 2>&1 && echo 1 || echo 0)\" "
+        "\"$(command -v codex >/dev/null 2>&1 && echo 1 || echo 0)\"'");
+    QString error;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostSshCommand(
+            ip, user, password, remoteCommand, &error, identityFile);
+    if (ssh.program.isEmpty()) {
+        m_hostProbesInFlight.remove(key);
+        render(
+            QString::fromUtf8("\xE2\x97\x8F Attention"),
+            QString::fromUtf8("\xE2\x80\x94"),
+            QString::fromUtf8("\xE2\x80\x94"),
+            QColor(QStringLiteral("#d29922")));
+        const int row = rowForKey(key);
+        if (row >= 0) {
+            if (QTableWidgetItem *item = m_hostsTable->item(row, 3))
+                item->setToolTip(error);
+        }
+        return;
+    }
+
+    auto *process = new QProcess(this);
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    process->setProcessEnvironment(ssh.environment);
+    connect(process, &QProcess::readyReadStandardOutput, this,
+            [process] {
+        QByteArray output = process->property("forkmeshHostProbe").toByteArray();
+        output += process->readAllStandardOutput();
+        if (output.size() > 4096)
+            output = output.right(4096);
+        process->setProperty("forkmeshHostProbe", output);
+    });
+    auto *deadline = new QTimer(process);
+    deadline->setSingleShot(true);
+    deadline->setInterval(35000);
+    connect(deadline, &QTimer::timeout, process, [process] {
+        process->setProperty("forkmeshHostProbeTimedOut", true);
+        process->kill();
+    });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, deadline, key, render](
+                QProcess::ProcessError processError) {
+        if (processError != QProcess::FailedToStart ||
+            process->property("forkmeshHostProbeDone").toBool()) {
+            return;
+        }
+        process->setProperty("forkmeshHostProbeDone", true);
+        deadline->stop();
+        m_hostProbesInFlight.remove(key);
+        render(
+            QString::fromUtf8("\xE2\x97\x8F Attention \xC2\xB7 SSH unavailable"),
+            QString::fromUtf8("\xE2\x80\x94"),
+            QString::fromUtf8("\xE2\x80\x94"),
+            QColor(QStringLiteral("#cf222e")));
+        process->deleteLater();
+    });
+    connect(process, &QProcess::finished, this,
+            [this, process, deadline, key, savedStatus, render, rowForKey](
+                int exitCode, QProcess::ExitStatus exitStatus) {
+        if (process->property("forkmeshHostProbeDone").toBool())
+            return;
+        process->setProperty("forkmeshHostProbeDone", true);
+        deadline->stop();
+        QByteArray bytes =
+            process->property("forkmeshHostProbe").toByteArray();
+        bytes += process->readAllStandardOutput();
+        const QString output = QString::fromUtf8(bytes);
+        const bool online =
+            exitStatus == QProcess::NormalExit &&
+            exitCode == 0 &&
+            output.contains(QStringLiteral("FORKMESH="));
+        if (online) {
+            const bool forkmesh =
+                output.contains(QStringLiteral("FORKMESH=1"));
+            const bool claude =
+                output.contains(QStringLiteral("CLAUDE=1"));
+            const bool codex =
+                output.contains(QStringLiteral("CODEX=1"));
+            render(
+                forkmesh
+                    ? QString::fromUtf8("\xE2\x97\x8F Online")
+                    : QString::fromUtf8("\xE2\x97\x8F Online \xC2\xB7 ForkMesh missing"),
+                claude
+                    ? QString::fromUtf8("\xE2\x9C\x93 Installed")
+                    : QStringLiteral("Not installed"),
+                codex
+                    ? QString::fromUtf8("\xE2\x9C\x93 Installed")
+                    : QStringLiteral("Not installed"),
+                forkmesh
+                    ? QColor(QStringLiteral("#2da44e"))
+                    : QColor(QStringLiteral("#d29922")));
+            const int row = rowForKey(key);
+            if (row >= 0 && m_hostsTable) {
+                if (QTableWidgetItem *item = m_hostsTable->item(row, 4)) {
+                    item->setForeground(QColor(
+                        claude ? QStringLiteral("#2da44e")
+                               : QStringLiteral("#8b949e")));
+                }
+                if (QTableWidgetItem *item = m_hostsTable->item(row, 5)) {
+                    item->setForeground(QColor(
+                        codex ? QStringLiteral("#2da44e")
+                              : QStringLiteral("#8b949e")));
+                }
+            }
+        } else {
+            const bool rejected =
+                output.contains(QStringLiteral("Permission denied"),
+                                Qt::CaseInsensitive);
+            const bool timedOut =
+                process->property("forkmeshHostProbeTimedOut").toBool() ||
+                output.contains(QStringLiteral("Connection timed out"),
+                                Qt::CaseInsensitive);
+            const bool provisioning =
+                savedStatus.contains(QStringLiteral("install"),
+                                     Qt::CaseInsensitive) ||
+                savedStatus.contains(QStringLiteral("vultr"),
+                                     Qt::CaseInsensitive) ||
+                savedStatus == QStringLiteral("added");
+            const QString status =
+                rejected
+                    ? QString::fromUtf8("\xE2\x97\x8F Attention \xC2\xB7 SSH key rejected")
+                    : timedOut && provisioning
+                        ? QString::fromUtf8("\xE2\x97\x8C Provisioning \xC2\xB7 waiting for SSH")
+                        : QString::fromUtf8("\xE2\x97\x8F Offline \xC2\xB7 unreachable");
+            render(
+                status,
+                QString::fromUtf8("\xE2\x80\x94"),
+                QString::fromUtf8("\xE2\x80\x94"),
+                rejected
+                    ? QColor(QStringLiteral("#cf222e"))
+                    : QColor(QStringLiteral("#8b949e")));
+            const int row = rowForKey(key);
+            if (row >= 0) {
+                if (QTableWidgetItem *item = m_hostsTable->item(row, 3))
+                    item->setToolTip(output.trimmed().left(1000));
+            }
+        }
+        m_hostProbesInFlight.remove(key);
+        process->deleteLater();
+    });
+    process->start(ssh.program, ssh.arguments);
+    deadline->start();
+}
+
+void MainWindow::installAgentClisForHost(int row)
+{
+    if (m_hostAgentInstallProcess &&
+        m_hostAgentInstallProcess->state() != QProcess::NotRunning) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("A mirror agent-CLI install is already running."));
+        return;
+    }
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+    const auto cellText = [this, row](int column) {
+        const QTableWidgetItem *item = m_hostsTable->item(row, column);
+        return item ? item->text().trimmed() : QString();
+    };
+    const QString node = cellText(0);
+    const QString ip = cellText(1);
+    const QString user = cellText(2);
+    if (node.isEmpty() || ip.isEmpty() || user.isEmpty())
+        return;
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    QString pass;
+    for (const QJsonValue &value : hosts) {
+        const QJsonObject host = value.toObject();
+        if (host.value(QStringLiteral("name")).toString() == node &&
+            host.value(QStringLiteral("ip")).toString() == ip &&
+            host.value(QStringLiteral("user")).toString() == user) {
+            pass = m_hostSessionPasswords.value(
+                forkmesh::control::savedHostCredentialKey(node, ip, user));
+            break;
+        }
+    }
+    const QString identityFile = savedHostIdentityFile(node, ip, user);
+    // A Vultr mirror provisioned by ForkMesh has a pinned per-host identity.
+    // Use only that identity even if this process still has an old session
+    // password in memory; this avoids an opaque password fallback and makes
+    // the authentication path match every later headless-agent connection.
+    const QString sshPassword =
+        identityFile.isEmpty() ? pass : QString();
+    if (m_hostInstallLog)
+        m_hostInstallLog->clear();
+    if (m_hostInstallStatus)
+        m_hostInstallStatus->setText(
+            QStringLiteral("Installing agent CLIs on %1...").arg(node));
+    // This button deliberately installs the binaries only; the Vultr flow's
+    // opt-in is what copies logins to a node this device just created.
+    runAgentCliInstall(node, ip, user, sshPassword, identityFile,
+                       /*copyCredentials=*/false,
+                       [this](bool, QString message) {
+                           if (m_hostInstallStatus)
+                               m_hostInstallStatus->setText(message);
+                       });
+}
+
+void MainWindow::runAgentCliInstall(
+    const QString &node, const QString &ip, const QString &user,
+    const QString &sshPassword, const QString &identityFile,
+    bool copyCredentials, std::function<void(bool, QString)> onFinished)
+{
+    const auto report = [onFinished](bool ok, const QString &message) {
+        if (onFinished)
+            onFinished(ok, message);
+    };
+    if (m_hostAgentInstallProcess &&
+        m_hostAgentInstallProcess->state() != QProcess::NotRunning) {
+        report(false,
+               QStringLiteral("A mirror agent-CLI install is already running."));
+        return;
+    }
+    // Secrets are collected here and live only in the payload byte array and
+    // the child's stdin pipe; the remote command below is fixed and secret-free.
+    QByteArray payload;
+    QString credentialSummary;
+    if (copyCredentials) {
+        const forkmesh::control::AgentCliCredentials credentials =
+            localAgentCliCredentials();
+        if (forkmesh::control::agentCliCredentialsAreEmpty(credentials)) {
+            report(false, QStringLiteral(
+                "This device has no Claude Code or Codex login to copy to %1. "
+                "Sign in here first, then use Install Claude + Codex on that "
+                "host.").arg(node));
+            return;
+        }
+        QString payloadError;
+        payload = forkmesh::control::buildAgentCliBootstrapPayload(
+            credentials, &payloadError);
+        if (payload.isEmpty()) {
+            report(false, payloadError);
+            return;
+        }
+        credentialSummary =
+            forkmesh::control::describeAgentCliCredentials(credentials);
+    }
+    const QString remoteCmd =
+        forkmesh::control::agentCliBootstrapRemoteCommand(copyCredentials);
+    QString sshError;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostSshCommand(
+            ip, user, sshPassword, remoteCmd, &sshError, identityFile);
+    if (ssh.program.isEmpty()) {
+        payload.fill('\0');
+        report(false, sshError);
+        return;
+    }
+    appendHostInstallLog(
+        QStringLiteral("Installing Claude Code and Codex on %1 (%2@%3)...\n")
+            .arg(node, user, ip));
+    appendHostInstallLog(
+        identityFile.isEmpty()
+            ? QStringLiteral(
+                  "No managed key is saved for this host; using the current "
+                  "session credential or the system SSH agent.\n")
+            : QStringLiteral(
+                  "Using the ForkMesh-managed SSH identity for this host.\n"));
+    if (copyCredentials)
+        appendHostInstallLog(
+            QStringLiteral("Copying this device's agent access (%1) over the "
+                           "SSH session's stdin.\n")
+                .arg(credentialSummary));
+    auto *proc = new QProcess(this);
+    m_hostAgentInstallProcess = proc;
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    proc->setProcessEnvironment(ssh.environment);
+    connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
+        const QByteArray chunk = proc->readAllStandardOutput();
+        QByteArray transcript =
+            proc->property("forkmeshAgentInstallOutput").toByteArray();
+        transcript += chunk;
+        if (transcript.size() > 8192)
+            transcript = transcript.right(8192);
+        proc->setProperty("forkmeshAgentInstallOutput", transcript);
+        appendHostInstallLog(QString::fromUtf8(chunk));
+    });
+    connect(proc, &QProcess::errorOccurred, this,
+            [this, proc, report](QProcess::ProcessError error) {
+        if (error != QProcess::FailedToStart)
+            return;
+        if (m_hostAgentInstallProcess == proc)
+            m_hostAgentInstallProcess = nullptr;
+        report(false,
+               QStringLiteral("Could not start the pinned SSH installer."));
+    });
+    connect(proc, &QProcess::finished, this,
+            [this, proc, node, ip, user, identityFile, copyCredentials,
+             report](
+                int code, QProcess::ExitStatus status) {
+        if (m_hostAgentInstallProcess == proc)
+            m_hostAgentInstallProcess = nullptr;
+        const bool ok =
+            code == 0 && status == QProcess::NormalExit;
+        appendHostInstallLog(
+            ok ? QStringLiteral("\nAgent CLI installation finished.\n")
+               : QStringLiteral("\nAgent CLI installation failed (exit %1).\n")
+                     .arg(code));
+        const QString output = QString::fromUtf8(
+            proc->property("forkmeshAgentInstallOutput").toByteArray());
+        const bool timedOut = output.contains(
+            QStringLiteral("Connection timed out"),
+            Qt::CaseInsensitive);
+        const bool keyRejected = output.contains(
+            QStringLiteral("Permission denied"),
+            Qt::CaseInsensitive);
+        report(ok,
+            ok
+                ? (copyCredentials
+                       ? QStringLiteral(
+                             "Claude Code and Codex are installed on %1 and "
+                             "signed in with this device's access.")
+                             .arg(node)
+                       : QStringLiteral(
+                             "Claude Code and Codex are installed on %1. "
+                             "Finish the provider sign-ins in the terminal "
+                             "that just opened.")
+                             .arg(node))
+                : timedOut
+                    ? QStringLiteral(
+                          "SSH could not reach %1 on port 22. The saved "
+                          "key was not reached; use the host's reachable "
+                          "public/stable address or connect this device to "
+                          "the private network, then retry.")
+                          .arg(ip)
+                    : keyRejected && !identityFile.isEmpty()
+                        ? QStringLiteral(
+                              "The mirror rejected its saved ForkMesh SSH "
+                              "key. Re-provision or replace that host key, "
+                              "then retry.")
+                : QStringLiteral(
+                      "Agent CLI installation failed on %1; see Live output.")
+                      .arg(node));
+        QTimer::singleShot(0, this, &MainWindow::probeSavedHosts);
+        proc->deleteLater();
+        // A run without copied credentials leaves the mirror with the binaries
+        // and no provider session. Hand the operator the shell to enter them in
+        // as soon as the binaries exist, instead of leaving "login is still
+        // required" as a dead end. A copyCredentials run is already signed in,
+        // so it gets no window.
+        if (ok && !copyCredentials)
+            openHostAgentLoginTerminal(node, ip, user);
+    });
+    proc->start(ssh.program, ssh.arguments);
+    // The credentials leave this process only here, on the child's stdin, and
+    // the buffer is wiped as soon as it is handed over.
+    if (!payload.isEmpty()) {
+        proc->write(payload);
+        payload.fill('\0');
+    }
+    proc->closeWriteChannel();
+}
+
+void MainWindow::openHostAgentLoginTerminalForSelection(int row)
+{
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+    const auto cellText = [this, row](int column) {
+        const QTableWidgetItem *item = m_hostsTable->item(row, column);
+        return item ? item->text().trimmed() : QString();
+    };
+    openHostAgentLoginTerminal(cellText(0), cellText(1), cellText(2));
+}
+
+void MainWindow::openHostAgentLoginTerminal(const QString &node,
+                                            const QString &ip,
+                                            const QString &user)
+{
+    if (node.isEmpty() || ip.isEmpty() || user.isEmpty())
+        return;
+    // A headless node has no desktop to show a sign-in window on; it would
+    // strand a live SSH child behind an invisible dialog.
+    if (m_headless)
+        return;
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    QString pass;
+    for (const QJsonValue &value : hosts) {
+        const QJsonObject host = value.toObject();
+        if (host.value(QStringLiteral("name")).toString() == node &&
+            host.value(QStringLiteral("ip")).toString() == ip &&
+            host.value(QStringLiteral("user")).toString() == user) {
+            pass = m_hostSessionPasswords.value(
+                forkmesh::control::savedHostCredentialKey(node, ip, user));
+            break;
+        }
+    }
+    const QString identityFile = savedHostIdentityFile(node, ip, user);
+    // Same rule as the installer: a pinned managed key is the only credential
+    // used when one exists, so the sign-in shell rides the exact transport
+    // every later headless-agent connection does.
+    const QString sshPassword = identityFile.isEmpty() ? pass : QString();
+    QString sshError;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostInteractiveSshCommand(
+            ip, user, sshPassword,
+            forkmesh::control::buildHostAgentLoginRemoteCommand(), &sshError,
+            identityFile);
+    if (ssh.program.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(sshError);
+        return;
+    }
+
+    auto *dialog = new QDialog(this);
+    dialog->setObjectName(QStringLiteral("hostAgentLoginDialog"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(QStringLiteral("Sign in \xE2\x80\x94 %1").arg(node));
+    dialog->resize(900, 560);
+    auto *layout = new QVBoxLayout(dialog);
+    auto *notice = new QLabel(QStringLiteral(
+        "This is a live shell on <b>%1@%2</b>. Run <code>claude</code> and then "
+        "<code>/login</code> inside it, and <code>codex login</code>, and paste "
+        "each provider's code here. ForkMesh never reads or stores what you "
+        "type in this window. Drag to select text and it's copied "
+        "automatically (or use Ctrl+Shift+C / right-click).")
+                                  .arg(user.toHtmlEscaped(), ip.toHtmlEscaped()),
+                              dialog);
+    notice->setWordWrap(true);
+    layout->addWidget(notice);
+    auto *autoOpenStatus = new QLabel(dialog);
+    autoOpenStatus->setObjectName(QStringLiteral("hostAgentLoginAutoOpenStatus"));
+    autoOpenStatus->setWordWrap(true);
+    autoOpenStatus->hide();
+    layout->addWidget(autoOpenStatus);
+    auto *terminal = new TerminalWidget(dialog);
+    terminal->setObjectName(QStringLiteral("hostAgentLoginTerminal"));
+    layout->addWidget(terminal, 1);
+    // The CLI prints its own "paste this URL" fallback for when it can't open
+    // a browser itself; that's exactly the case here, on a headless remote
+    // shell, so open it for the operator instead of leaving them to select
+    // and copy the wrapped, multi-line URL by hand.
+    connect(terminal, &TerminalWidget::signInUrlDetected, autoOpenStatus,
+            [autoOpenStatus](const QUrl &) {
+                autoOpenStatus->setText(QStringLiteral(
+                    "Opened the Claude sign-in page in your browser."));
+                autoOpenStatus->show();
+            });
+    auto *buttons = new QHBoxLayout;
+    buttons->addStretch(1);
+    auto *close = new QPushButton(QStringLiteral("Close"), dialog);
+    close->setObjectName(QStringLiteral("hostAgentLoginCloseButton"));
+    connect(close, &QPushButton::clicked, dialog, &QDialog::close);
+    buttons->addWidget(close);
+    layout->addLayout(buttons);
+
+    // sshpass reads the session password from SSHPASS only; it never becomes a
+    // word of the command line the PTY shell sees.
+    QStringList extraEnv;
+    if (!sshPassword.isEmpty())
+        extraEnv << QStringLiteral("SSHPASS=") + sshPassword;
+    dialog->show();
+    dialog->raise();
+    terminal->runCommand(forkmesh::control::hostSshCommandLine(ssh),
+                         QDir::homePath(), extraEnv);
+    terminal->setFocus();
 }
 
 void MainWindow::configureHostActionsForSelection(int row)
@@ -10837,9 +11730,11 @@ QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip
         }
         const QString identity =
             host.value(QStringLiteral("identityFile")).toString().trimmed();
-        if (!identity.isEmpty() && QFileInfo(identity).isFile())
-            return identity;
-        return {};
+        // Return the configured path even when the file has gone missing.
+        // buildHostSshCommand() owns validation and will then fail closed with
+        // "The managed SSH key for this host is missing." Treating the path as
+        // absent here would silently fall back to a session password.
+        return identity;
     }
     return {};
 }
@@ -10868,6 +11763,83 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
             (ok ? QString::fromUtf8("\n\xE2\x9C\x94 ")
                 : QString::fromUtf8("\n\xE2\x9C\x98 ")) +
             message + QStringLiteral("\n"));
+}
+
+void MainWindow::waitForVultrMirrorPublication(
+    const QString &node, const QString &successMessage, int attempt)
+{
+    constexpr int kMaxPublicationPolls = 30; // five minutes at 10 seconds
+    if (!m_vultrProvisionActive)
+        return;
+    if (m_vultrStatus) {
+        m_vultrStatus->setText(QString::fromUtf8(
+            "ForkMesh is running on %1 \xE2\x80\x94 waiting for its signed "
+            "Mirror nodes / World catalog record (%2/%3)\xE2\x80\xA6")
+            .arg(node)
+            .arg(attempt + 1)
+            .arg(kMaxPublicationPolls));
+    }
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repo/forkmesh/forkmesh/mirrors"));
+    url.setQuery(QString());
+    QNetworkRequest request(url);
+    request.setRawHeader(QByteArrayLiteral("accept"),
+                         QByteArrayLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, node, successMessage, attempt] {
+        const QJsonObject payload =
+            QJsonDocument::fromJson(reply->readAll()).object();
+        const bool requestOk =
+            reply->error() == QNetworkReply::NoError &&
+            payload.value(QStringLiteral("ok")).toBool();
+        reply->deleteLater();
+
+        bool published = false;
+        if (requestOk) {
+            for (const QJsonValue &value :
+                 payload.value(QStringLiteral("mirrors")).toArray()) {
+                const QJsonObject mirror = value.toObject();
+                QString candidate =
+                    mirror.value(QStringLiteral("node")).toString().trimmed();
+                if (candidate.isEmpty())
+                    candidate =
+                        mirror.value(QStringLiteral("owner")).toString().trimmed();
+                if (candidate.compare(node, Qt::CaseInsensitive) == 0 &&
+                    mirror.value(QStringLiteral("integrity"))
+                            .toString()
+                            .compare(QStringLiteral("ok"),
+                                     Qt::CaseInsensitive) == 0 &&
+                    mirror.value(QStringLiteral("lastSync")).toVariant()
+                            .toLongLong() > 0) {
+                    published = true;
+                    break;
+                }
+            }
+        }
+        if (published) {
+            appendHostInstallLog(QString::fromUtf8(
+                "\n\xE2\x9C\x94 Verified %1 in the public Mirror nodes / World "
+                "catalog.\n").arg(node));
+            finishVultrProvision(true, successMessage);
+            return;
+        }
+        if (attempt + 1 >= kMaxPublicationPolls) {
+            finishVultrProvision(false, QString::fromUtf8(
+                "ForkMesh is installed on %1, but its signed repository "
+                "catalog did not appear within five minutes. The host remains "
+                "saved and will keep retrying; check its Logs and account link "
+                "before treating the mirror as ready.").arg(node));
+            return;
+        }
+        QTimer::singleShot(
+            10000, this,
+            [this, node, successMessage, attempt] {
+                waitForVultrMirrorPublication(
+                    node, successMessage, attempt + 1);
+            });
+    });
 }
 
 void MainWindow::vultrApiCall(const QString &apiKey, const QString &path,
@@ -11295,6 +12267,8 @@ void MainWindow::createVultrMirrorFromForm()
          forkmesh::control::localBinaryRunsOnVultrMirror(
              QSysInfo::kernelType(), QSysInfo::currentCpuArchitecture()) &&
          QFileInfo(QCoreApplication::applicationFilePath()).isReadable();
+    m_vultrInstallAgentClis =
+        m_vultrAgentClisCheck && m_vultrAgentClisCheck->isChecked();
     m_vultrInstallAttemptLog.clear();
     m_vultrDnsHostname.clear();
     m_hostInstallAttemptBanner.clear();
@@ -11307,7 +12281,7 @@ void MainWindow::createVultrMirrorFromForm()
         m_hostInstallLogBold = false;
     }
     appendHostInstallLog(QString::fromUtf8(
-        "Creating Vultr mirror \"%1\" \xE2\x80\x94 cheapest plan, latest "
+        "Creating Vultr mirror \"%1\" \xE2\x80\x94 cheapest supported plan, latest "
         "Debian, managed SSH key\xE2\x80\xA6\n").arg(node));
     if (storedKey)
         appendHostInstallLog(QStringLiteral(
@@ -11316,6 +12290,19 @@ void MainWindow::createVultrMirrorFromForm()
         appendHostInstallLog(QString::fromUtf8(
             "This app's own binary will be uploaded over SSH, so the new "
             "mirror needs no published release to install.\n"));
+    if (m_vultrInstallAgentClis) {
+        const QString agentAccess = forkmesh::control::describeAgentCliCredentials(
+            localAgentCliCredentials());
+        appendHostInstallLog(
+            agentAccess.isEmpty()
+                ? QString::fromUtf8(
+                      "Claude Code and Codex will be installed, but this device "
+                      "has no provider login to copy \xE2\x80\x94 the mirror "
+                      "will need its own sign-in.\n")
+                : QStringLiteral(
+                      "Claude Code and Codex will be installed and signed in "
+                      "with this device's access (%1).\n").arg(agentAccess));
+    }
     if (m_vultrStatus)
         m_vultrStatus->setText(
             QString::fromUtf8("Preparing the managed SSH key\xE2\x80\xA6"));
@@ -11341,7 +12328,7 @@ void MainWindow::createVultrMirrorFromForm()
             }
             if (m_vultrStatus)
                 m_vultrStatus->setText(QString::fromUtf8(
-                    "Choosing the cheapest plan\xE2\x80\xA6"));
+                    "Choosing the cheapest supported plan\xE2\x80\xA6"));
             vultrApiCall(
                 apiKey, QStringLiteral("/v2/plans?per_page=500"),
                 QByteArrayLiteral("GET"), {},
@@ -11365,7 +12352,7 @@ void MainWindow::createVultrMirrorFromForm()
                     }
                     appendHostInstallLog(
                         QStringLiteral(
-                            "Cheapest plan: %1 ($%2/month, %3 MB RAM, %4 GB "
+                            "Cheapest supported plan: %1 ($%2/month, %3 MB RAM, %4 GB "
                             "disk) in region %5\n")
                             .arg(plan.value(QStringLiteral("id")).toString())
                             .arg(plan.value(QStringLiteral("monthly_cost"))
@@ -11607,10 +12594,38 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                 m_vultrDnsHostname.isEmpty()
                     ? ip
                     : QStringLiteral("%1, %2").arg(m_vultrDnsHostname, ip);
-            finishVultrProvision(true, QString::fromUtf8(
-                "Vultr mirror \"%1\" (%2) is installed and linking to your "
-                "account \xE2\x80\x94 it will start mirroring and syncing "
-                "shortly.").arg(node, address));
+            const QString done = QString::fromUtf8(
+                "Vultr mirror \"%1\" (%2) is installed, linked, and published "
+                "to Mirror nodes and the World.").arg(node, address);
+            if (!m_vultrInstallAgentClis) {
+                waitForVultrMirrorPublication(node, done);
+                return;
+            }
+            // The node is up and authenticated to the mesh; give it this
+            // device's agent access too so it can run sessions immediately
+            // (adhoc #418). A failure here does not undo the mirror itself.
+            // With no login to copy the CLIs are still installed, so the
+            // mirror only needs its own sign-in rather than everything.
+            const bool copyLogins =
+                !forkmesh::control::agentCliCredentialsAreEmpty(
+                    localAgentCliCredentials());
+            if (m_vultrStatus)
+                m_vultrStatus->setText(QString::fromUtf8(
+                    "Installing Claude Code and Codex\xE2\x80\xA6"));
+            runAgentCliInstall(
+                node, ip, QStringLiteral("root"), QString(), identityFile,
+                copyLogins,
+                [this, node, done](bool agentOk, QString agentMessage) {
+                    if (!m_vultrProvisionActive)
+                        return;
+                    waitForVultrMirrorPublication(
+                        node,
+                        agentOk
+                            ? QStringLiteral("%1 %2").arg(done, agentMessage)
+                            : QString::fromUtf8(
+                                  "%1 The agent CLIs were not set up: %2")
+                                  .arg(done, agentMessage));
+                });
             return;
         }
         // An address outside the routable internet will never answer, however

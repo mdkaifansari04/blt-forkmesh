@@ -30,12 +30,38 @@ def test_world_renders_and_drags_priority_and_issue_stickies():
     assert "draggedBuildCard" in SCENE
     assert "onBuildBoardReorder" in SCENE
     assert "onBuildIssueAssign" in SCENE
+    assert "onBuildSendQa" in SCENE
+    assert "DONE → QA" in SCENE
+    assert "buildBoardSendQaHit" in SCENE
     assert "updateBuildBoard," in SCENE
     assert '"/api/world/build-board"' in WORLD
     assert "reorderBuildBoard(order)" in WORLD
     assert "assignBuildIssue(key, title)" in WORLD
+    assert "sendBuildTaskToQa(key, title)" in WORLD
+    assert 'action: "send_qa"' in WORLD
+    assert 'action == "send_qa"' in API
     assert "`.forkmesh/issues/open/${number}/issue-${number}.json`" in WORLD
     assert "WORLD_BUILD_BOARD_POLL_MS = 60 * 1000" in WORLD
+
+
+def test_build_board_refreshes_on_approach_with_a_scene_native_spinner():
+    assert 'buildBoardSpinner.name = "forkmesh-build-board-updating-spinner"' in SCENE
+    assert "buildBoardSpinner.visible = false;" in SCENE
+    assert "function setBuildBoardLoading(loading)" in SCENE
+    assert "function updateBuildBoardProximity()" in SCENE
+    assert "if (distance <= 18 && !buildBoardWasNearby)" in SCENE
+    assert "else if (distance >= 23)" in SCENE
+    assert "onBuildBoardNearby();" in SCENE
+    assert "updateBuildBoardProximity();" in SCENE
+    assert "onBuildBoardNearby: () =>" in WORLD
+    assert "void this.refreshBuildBoard({ quiet: true })" in WORLD
+    refresh = WORLD[
+        WORLD.index("  async refreshBuildBoard("):
+        WORLD.index("\n  applyQaDeck(", WORLD.index("  async refreshBuildBoard("))
+    ]
+    assert "this.world?.setBuildBoardLoading?.(true);" in refresh
+    assert "this.world?.setBuildBoardLoading?.(false);" in refresh
+    assert "location.reload()" not in refresh
 
 
 def test_engineering_agent_signals_feed_a_separate_human_todo_board():

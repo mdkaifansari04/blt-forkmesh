@@ -5,7 +5,8 @@ encryption, and D1 access.  This module deliberately receives no platform
 administrator primitive: only active members of the configured organization
 can manage the board, while any active registered user can read and operate
 only work assigned to that account. Organization owner/admin or maintain+
-members can create or reassign work to any active registered user.
+members can create or reassign work only to active members of the Marketing
+team.
 
 Task copy, assignee labels, and check-in notes are encrypted at rest.  The
 plaintext columns contain only opaque blind indexes, bounded state, and
@@ -14,6 +15,7 @@ published through the Office Durable Object.
 """
 
 import re
+from urllib.parse import urlsplit
 
 
 PREFIX = "/api/world/office/marketing-tasks"
@@ -24,6 +26,8 @@ MAX_TITLE = 160
 MAX_DETAILS = 4000
 MAX_CHECKIN_NOTE = 500
 MAX_ELAPSED_MS = 10 * 365 * 24 * 60 * 60 * 1000
+MAX_PROOFS = 5000
+MAX_PROOFS_PER_MEMBER = 100
 CHECKIN_MIN_MS = 4 * 60 * 1000
 CHECKIN_MAX_MS = 9 * 60 * 1000
 
@@ -75,6 +79,8 @@ def _route(path):
     # Collection actions must be resolved before the opaque task-id parser.
     if clean == PREFIX + "/stop-active":
         return ("stop-active", "", "stop-active")
+    if clean == PREFIX + "/proofs":
+        return ("proofs", "", "proofs")
     if not clean.startswith(PREFIX + "/"):
         return None
     parts = clean[len(PREFIX) + 1:].split("/")
@@ -260,17 +266,154 @@ async def _list(runtime, org_bi, account_bi, actor, can_manage, now):
         )
         if task is not None:
             tasks.append(task)
+    marketing_members = await runtime.marketing_members(org_bi)
+    marketing_actor = await runtime.marketing_member(org_bi, actor)
+    marketing_names = [
+        _text(member.get("name"), 64).lower()
+        for member in marketing_members
+        if isinstance(member, dict) and _text(member.get("name"), 64)
+    ]
     result = {
         "ok": True,
         "actor": actor,
         "canManage": bool(can_manage),
         "serverNow": int(now),
         "tasks": tasks,
+        "marketingMembers": marketing_names if marketing_actor else [],
+        "attendanceDays": (
+            await runtime.marketing_attendance(marketing_members, now)
+            if marketing_actor else []
+        ),
+        "proofs": (
+            await _proof_records(runtime, org_bi)
+            if marketing_actor else []
+        ),
     }
     if can_manage:
-        # The active-only roster is intentionally absent for plain members.
-        result["members"] = await runtime.eligible_users()
+        # Assignment is deliberately narrower than organization management:
+        # even an owner may only place Marketing work onto a Marketing member.
+        result["members"] = marketing_names
     return _response(runtime, result)
+
+
+def _proof_url(value):
+    raw = str(value or "").strip()
+    if not raw or len(raw) > 500:
+        return ""
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+    except (TypeError, ValueError):
+        return ""
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+        or port not in (None, 443)
+    ):
+        return ""
+    host = parsed.hostname.lower().rstrip(".")
+    if (
+        host in ("localhost", "localhost.localdomain")
+        or host.endswith(".local")
+        or host.endswith(".internal")
+        or re.fullmatch(r"\d+(?:\.\d+){3}", host)
+        or ":" in host
+    ):
+        return ""
+    return raw
+
+
+async def _proof_records(runtime, org_bi):
+    rows = await runtime.d1_all(
+        "SELECT proof_id,account_bi,data,created_at "
+        "FROM world_office_marketing_proofs "
+        "WHERE org_bi=? "
+        "ORDER BY created_at DESC,proof_id DESC LIMIT ?",
+        org_bi,
+        MAX_PROOFS,
+    )
+    records = []
+    for row in rows or []:
+        try:
+            data = await runtime.open(row.get("data"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        url = _proof_url(data.get("url"))
+        member = _text(data.get("member"), 64).lower()
+        if not url or not member or not valid_id(row.get("proof_id")):
+            continue
+        records.append({
+            "id": str(row.get("proof_id")),
+            "member": member,
+            "url": url,
+            "host": _text(urlsplit(url).hostname, 120),
+            "label": _text(data.get("label"), 120, urlsplit(url).hostname),
+            "createdAt": int(row.get("created_at") or 0),
+        })
+    return records
+
+
+async def _proof_create(
+        runtime, org_bi, account_bi, actor, data, now):
+    if not await runtime.marketing_member(org_bi, actor):
+        return _response(runtime, {"error": "marketing_team_only"}, status=403)
+    url = _proof_url(data.get("url"))
+    if not url:
+        return _response(runtime, {"error": "invalid_social_url"}, status=400)
+    label = _text(
+        data.get("label"), 120, urlsplit(url).hostname or "Social post")
+    count = await runtime.d1_first(
+        "SELECT COUNT(*) AS count FROM world_office_marketing_proofs "
+        "WHERE org_bi=? AND account_bi=?",
+        org_bi,
+        account_bi,
+    )
+    if int((count or {}).get("count") or 0) >= MAX_PROOFS_PER_MEMBER:
+        return _response(runtime, {"error": "proof_capacity_reached"}, status=409)
+    proof_id = runtime.new_id()
+    if not valid_id(proof_id):
+        return _response(runtime, {"error": "id_generation_failed"}, status=500)
+    sealed = await runtime.seal({
+        "member": actor,
+        "url": url,
+        "label": label,
+    })
+    try:
+        await runtime.d1_run(
+            "INSERT INTO world_office_marketing_proofs "
+            "(proof_id,org_bi,account_bi,url_bi,data,created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            proof_id,
+            org_bi,
+            account_bi,
+            await runtime.blind("office-marketing-proof:" + url.lower()),
+            sealed,
+            now,
+        )
+    except Exception as error:
+        if "catalog_full" in str(error):
+            return _response(
+                runtime, {"error": "proof_capacity_reached"}, status=409)
+        raise
+    await runtime.audit(
+        actor,
+        "office.marketing_proof_created",
+        "office_marketing_proof",
+        proof_id,
+        details={"host": urlsplit(url).hostname},
+    )
+    records = await _proof_records(runtime, org_bi)
+    proof = next(
+        (record for record in records if record["id"] == proof_id),
+        None,
+    )
+    return _response(
+        runtime, {"ok": True, "proof": proof}, status=201)
 
 
 async def _create(
@@ -283,10 +426,10 @@ async def _create(
     if not title or not assignee:
         return _response(
             runtime, {"error": "title_and_assignee_required"}, status=400)
-    member = await runtime.active_user(assignee)
+    member = await runtime.marketing_member(org_bi, assignee)
     if not member:
         return _response(
-            runtime, {"error": "assignee_not_active_user"}, status=400)
+            runtime, {"error": "assignee_not_marketing_member"}, status=400)
     count = await runtime.d1_first(
         "SELECT COUNT(*) AS count FROM world_office_marketing_tasks "
         "WHERE org_bi=?",
@@ -375,10 +518,10 @@ async def _update(
     if not title or not assignee:
         return _response(
             runtime, {"error": "title_and_assignee_required"}, status=400)
-    member = await runtime.active_user(assignee)
+    member = await runtime.marketing_member(org_bi, assignee)
     if not member:
         return _response(
-            runtime, {"error": "assignee_not_active_user"}, status=400)
+            runtime, {"error": "assignee_not_marketing_member"}, status=400)
     if int(row.get("completed_at") or 0) > 0:
         return _response(
             runtime, {"error": "completed_task_cannot_be_updated"}, status=409)
@@ -733,7 +876,7 @@ async def handle(runtime, path):
     method = runtime.method()
     allowed = (
         ("GET", "POST")
-        if route[0] == "collection"
+        if route[0] in ("collection", "proofs")
         else ("POST",)
         if route[0] == "stop-active"
         else ("GET", "PATCH", "DELETE")
@@ -769,6 +912,18 @@ async def handle(runtime, path):
     now = int(runtime.now())
 
     kind, task_id, action = route
+    if kind == "proofs":
+        if not await runtime.marketing_member(org_bi, actor):
+            return _response(
+                runtime, {"error": "marketing_team_only"}, status=403)
+        if method == "POST":
+            return await _proof_create(
+                runtime, org_bi, account_bi, actor, data, now)
+        return _response(runtime, {
+            "ok": True,
+            "actor": actor,
+            "proofs": await _proof_records(runtime, org_bi),
+        })
     if kind == "stop-active":
         return await _stop_active(
             runtime, org_bi, account_bi, actor, now)

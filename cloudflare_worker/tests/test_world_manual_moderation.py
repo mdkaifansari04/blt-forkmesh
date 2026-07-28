@@ -292,6 +292,7 @@ def test_durable_object_exposes_handles_only_to_verified_admin_viewer():
         "world_protocol": world,
         "_ws_attachment": lambda socket: SimpleNamespace(**socket),
         "_ws_attr": lambda socket, key, default=None: socket.get(key, default),
+        "clean_string": lambda value, limit: str(value or "")[:limit],
         "re": re,
     })
     instance = runtime["ForkMeshWorld"]()
@@ -299,15 +300,64 @@ def test_durable_object_exposes_handles_only_to_verified_admin_viewer():
         **world.default_presence("peer", 1000),
         "ip_token": "a" * 64,
         "agent_token": "b" * 64,
+        "client_ip": "203.0.113.42",
+        "client_user_agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36"
+        ),
     }
     regular = instance._presence_for_viewer({"is_admin": False}, subject)
     admin = instance._presence_for_viewer({"is_admin": True}, subject)
     assert "moderationHandles" not in regular
+    assert "adminGuestNetwork" not in regular
+    assert "203.0.113.42" not in repr(regular)
+    assert "Chrome/140" not in repr(regular)
     assert "a" * 64 not in repr(regular)
     assert admin["moderationHandles"] == {
         "ip": "a" * 64,
         "agent": "b" * 64,
     }
+    assert admin["adminGuestNetwork"] == {
+        "ipAddress": "203.0.113.42",
+        "userAgent": subject["client_user_agent"],
+    }
+
+    verified_member = {
+        **subject,
+        "accountStatus": "Member",
+        "trusted_name": "alice",
+    }
+    member_admin_view = instance._presence_for_viewer(
+        {"is_admin": True}, verified_member)
+    assert "adminGuestNetwork" not in member_admin_view
+    assert "203.0.113.42" not in repr(member_admin_view)
+
+
+def test_guest_network_detail_is_ephemeral_admin_only_frontend_data():
+    app = (ROOT / "public" / "world" / "world.js").read_text(
+        encoding="utf-8")
+    scene = (ROOT / "public" / "world" / "world-scene.js").read_text(
+        encoding="utf-8")
+    bridge = ast.unparse(next(
+        node for node in ast.parse(ENTRY_TEXT).body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "world_durable_object_request"
+    ))
+    assert "x-forkmesh-world-private-ip" in bridge
+    assert "x-forkmesh-world-private-agent" in bridge
+    assert "client_ip=client_ip" in ENTRY_TEXT
+    assert "client_user_agent=client_user_agent" in ENTRY_TEXT
+    assert "adminGuestNetwork" in ENTRY_TEXT
+    assert "adminGuestNetwork" in app
+    assert "sanitizedAdminGuestNetwork" in scene
+    assert 'identity?.isAdmin === true' in scene
+    assert 'String(remote?.accountStatus || "Guest") !== "Guest"' in scene
+    assert "CLICK TO COPY" in scene
+    assert "navigator.clipboard.writeText" in app
+    # Raw network strings are never columns in the persistent moderation table.
+    migration = MIGRATION.read_text(encoding="utf-8").lower()
+    assert "client_ip" not in migration
+    assert "user_agent" not in migration
 
 
 def test_route_checks_manual_block_before_world_admission():

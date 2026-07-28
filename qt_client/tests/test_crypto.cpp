@@ -3,6 +3,7 @@
 #include "../src/AccountCapability.h"
 #include "../src/AgentJail.h"
 #include "../src/AgentStore.h"
+#include "../src/BackgroundActivity.h"
 #include "../src/BackoffNetworkAccessManager.h"
 #include "../src/ChatHistoryLimits.h"
 #include "../src/ChatVisitorPresence.h"
@@ -17,6 +18,7 @@
 #include "../src/MirrorCrypto.h"
 #include "../src/PrivateMirrorStore.h"
 #include "../src/NetworkBackoff.h"
+#include "../src/PlatformLogFilter.h"
 #include "../src/ProjectStore.h"
 #include "../src/PullAiReview.h"
 #include "../src/PullReviewModel.h"
@@ -60,6 +62,15 @@
 namespace {
 
 int failures = 0;
+
+QStringList *capturedMessages = nullptr;
+
+void captureMessages(QtMsgType, const QMessageLogContext &,
+                     const QString &message)
+{
+    if (capturedMessages)
+        *capturedMessages << message;
+}
 
 void check(bool condition, const char *what)
 {
@@ -6095,6 +6106,28 @@ int main(int argc, char *argv[])
                   QStringLiteral("Secret/token assignment")),
               "secret scan detects generic quoted secret assignment");
 
+        // The generic assignment rule has no provider prefix to anchor it, so
+        // recognisable placeholders (test fixtures, docs samples, template
+        // holes) must not block a push.
+        check(!runSecretTest(
+                  "password: \"correct-horse-battery-staple\"\n",
+                  QStringLiteral("Secret/token assignment")),
+              "secret scan ignores the XKCD example password");
+        check(!runSecretTest("API_TOKEN=\"your-token-goes-here-abcdef\"\n",
+                             QStringLiteral("Secret/token assignment")),
+              "secret scan ignores your-… placeholder token values");
+        check(!runSecretTest("API_KEY=\"${FORKMESH_API_KEY_FROM_ENV}\"\n",
+                             QStringLiteral("Secret/token assignment")),
+              "secret scan ignores ${VAR} template holes");
+        check(!runSecretTest("password=\"xxxxxxxxxxxxxxxxxxxxxxxx\"\n",
+                             QStringLiteral("Secret/token assignment")),
+              "secret scan ignores single-character filler runs");
+        // A provider-prefixed hit stays high-confidence even next to
+        // placeholder-ish wording.
+        check(runSecretTest("EXAMPLE_TOKEN=ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n",  // forkmesh-secret-scan:ignore-line
+                            QStringLiteral("GitHub token")),
+              "secret scan still flags prefixed tokens in example wording");
+
         // Benign content must not trigger a false positive
         {
             QTemporaryDir td;
@@ -6315,6 +6348,124 @@ int main(int argc, char *argv[])
                       "agent metadata excludes provider credential field %1")
                                  .arg(forbidden)));
         }
+    }
+
+    {
+        // Background-activity bus (adhoc #421): the footer strip is driven purely
+        // by these tickets, so a lost or double-retired one leaves a spinner
+        // running forever (or hides work that is still going).
+        QStringList seen;
+        forkmesh::BackgroundActivity::setListener(
+            [&seen](quint64 id, const QString &kind, const QString &detail,
+                    bool started) {
+                seen.append(QStringLiteral("%1:%2:%3:%4")
+                                .arg(started ? QStringLiteral("+")
+                                             : QStringLiteral("-"))
+                                .arg(id)
+                                .arg(kind, detail));
+            });
+        const quint64 first =
+            forkmesh::BackgroundActivity::begin(QStringLiteral("git"),
+                                                QStringLiteral("git log"));
+        const quint64 second =
+            forkmesh::BackgroundActivity::begin(QStringLiteral("net"));
+        check(first != second && first != 0 && second != 0,
+              "each background ticket gets its own non-zero id");
+        forkmesh::BackgroundActivity::end(first);
+        forkmesh::BackgroundActivity::end(second);
+        forkmesh::BackgroundActivity::end(0); // no-op guard for untracked work
+        check(seen == QStringList({QStringLiteral("+:%1:git:git log").arg(first),
+                                   QStringLiteral("+:%1:net:").arg(second),
+                                   QStringLiteral("-:%1::").arg(first),
+                                   QStringLiteral("-:%1::").arg(second)}),
+              "every begin/end pair reaches the listener exactly once, in order");
+
+        {
+            const forkmesh::BackgroundScope scope(QStringLiteral("scan"));
+            check(seen.size() == 5 && seen.last().startsWith(QLatin1Char('+')),
+                  "a background scope opens its ticket on construction");
+        }
+        check(seen.size() == 6 && seen.last().startsWith(QLatin1Char('-')),
+              "a background scope retires its ticket when it unwinds");
+
+        forkmesh::BackgroundActivity::setListener(nullptr);
+        forkmesh::BackgroundActivity::end(
+            forkmesh::BackgroundActivity::begin(QStringLiteral("git")));
+        check(seen.size() == 6,
+              "a detached bus drops announcements instead of calling a dead "
+              "listener");
+    }
+
+    {
+        // Log outcome lines (adhoc #419): the ✓ / ✕ marker is what tells the user
+        // which work actually made it into the background strip, so the threshold
+        // it is derived from has to match the strip's own show delay.
+        const QString ok = forkmesh::backgroundOkGlyph();
+        const QString no = forkmesh::backgroundNotGlyph();
+        check(forkmesh::backgroundOutcomeLine(QStringLiteral("git"), 1, 1400,
+                                              QStringLiteral("git log")) ==
+                  QStringLiteral("Background %1 git backgrounded (1.4s) - git log")
+                      .arg(ok),
+              "slow work logs a checkmark, its duration and the caller's note");
+        check(forkmesh::backgroundOutcomeLine(QStringLiteral("git"), 24, 61,
+                                              QString()) ==
+                  QStringLiteral("Background %1 git %2%3 not backgrounded "
+                                 "(longest 61ms)")
+                      .arg(no)
+                      .arg(QChar(0x00D7))
+                      .arg(24),
+              "a burst of too-fast tickets logs one red-x summary for the kind");
+        check(forkmesh::backgroundOutcomeLine(
+                  QString(), 1, forkmesh::kBackgroundShowAfterMs, QString())
+                  .startsWith(QStringLiteral("Background %1 work").arg(ok)),
+              "work exactly at the show delay counts as backgrounded, and an "
+              "unnamed kind still reads as something");
+        check(forkmesh::backgroundElapsedText(-5) == QStringLiteral("0ms") &&
+                  forkmesh::backgroundElapsedText(999) ==
+                      QStringLiteral("999ms") &&
+                  forkmesh::backgroundElapsedText(1000) ==
+                      QStringLiteral("1.0s"),
+              "elapsed text stays short and never renders a negative clock skew");
+
+        // Both log views paint the message body in one colour, so the marker is
+        // recoloured after escaping — green for ✓, red for ✕, and only the first
+        // of each so a note that happens to contain one can't smear the line.
+        const QString painted = forkmesh::colorizeBackgroundMarker(
+            QStringLiteral("Background %1 net %2").arg(no, ok));
+        check(painted.contains(QStringLiteral("#f85149")) &&
+                  painted.contains(QStringLiteral("#3fb950")),
+              "the outcome marker is lifted into its own coloured span");
+        check(forkmesh::colorizeBackgroundMarker(QStringLiteral("no marker")) ==
+                  QStringLiteral("no marker"),
+              "a line without a marker is passed through untouched");
+    }
+
+    // QFontDatabase logs "OpenType support missing for \"<family>\", script N"
+    // once per installed family every time it walks the fallback list for a
+    // codepoint the system fonts can't shape, burying the console. The log
+    // filter (installed for every launch, not just headless) must swallow
+    // exactly those lines and forward everything else.
+    {
+        QStringList captured;
+        capturedMessages = &captured;
+        QtMessageHandler previous = qInstallMessageHandler(captureMessages);
+        forkmesh::installPlatformLogFilter(); // chains to captureMessages
+        qWarning("OpenType support missing for \"DejaVu Sans Mono\", script 9");
+        qWarning("OpenType support missing for \"\", script 9");
+        qWarning("forkmesh-419-control-line");
+        qInstallMessageHandler(previous); // restore so PASS/FAIL output prints
+        capturedMessages = nullptr;
+
+        const QString joined = captured.join(QLatin1Char('\n'));
+        check(!joined.contains(QStringLiteral("OpenType support missing")),
+              "the log filter drops QFontDatabase OpenType fallback warnings");
+        check(joined.contains(QStringLiteral("forkmesh-419-control-line")),
+              "the log filter still forwards unrelated warnings");
+        check(forkmesh::isFontDatabaseNoise(QStringLiteral(
+                  "OpenType support missing for \"Noto Mono\", script 9")) &&
+                  !forkmesh::isFontDatabaseNoise(
+                      QStringLiteral("forkmesh-419-control-line")),
+              "isFontDatabaseNoise matches only the font-database warning");
     }
 
     if (failures) {

@@ -1,0 +1,58 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785048926526,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "Add a tab to show notifications and mentions next to other tabs at the top of the page.\n\n---\n_Filed by ForkBot at @jett's request via chat._",
+            "id": "forkbot-1785048926526",
+            "sig": "",
+            "title": "Add notifications tab",
+            "ts": 1785048926526,
+            "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "done",
+            "id": "b2678c51-ec95-491e-9ea8-e2b2d846eb17",
+            "sig": "aqRhgBTYQnRg1D6zCHUJl93B6EH4k-SAabzJi7pPGNG0s0IssSsNx_7si311eAvgP5n-SdR64kHHwn-mFfE7BQ",
+            "ts": 1785207552836,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "09bc162d-6f5f-4f92-a71a-1ade5f985922",
+            "sig": "Qzn7fhba2oZyV2YvW96PQyY-xutwn1XkLunE5l1fj1_muXaV3JjBQPXplIeMeGb3oYgOhTNXwEmHts_KBzojCw",
+            "status": "closed",
+            "ts": 1785207552910,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 531,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "Add notifications tab",
+    "updatedAt": 1785207552910,
+    "votes": 0
+}

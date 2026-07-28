@@ -444,6 +444,12 @@
           systems.forEach((system) => {
             const row = document.createElement("div");
             row.className = "status-row";
+            const safeSystemId = String(system.id || "")
+              .trim()
+              .toLowerCase()
+              .replace(/[^a-z0-9_-]+/g, "-")
+              .replace(/^-+|-+$/g, "");
+            row.id = "system-" + safeSystemId;
 
             const fmtPct = (value) =>
               typeof value === "number" ? value.toFixed(2) + "%" : "—";
@@ -538,6 +544,13 @@
                 toggleInfo();
               }
             });
+            if (window.location.hash === "#" + row.id) {
+              toggleInfo();
+              row.classList.add("is-alert-target");
+              window.requestAnimationFrame(() => {
+                row.scrollIntoView({ behavior: "smooth", block: "center" });
+              });
+            }
             row.appendChild(infoPanel);
 
             if (system.status !== "operational" && system.reason) {

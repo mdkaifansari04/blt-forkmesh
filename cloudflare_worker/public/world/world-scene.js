@@ -470,16 +470,16 @@ function joinedAgoLabel(joinedAt, now = Date.now()) {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return "";
   const elapsed = Math.max(0, now - timestamp);
   const units = [
-    [365 * 24 * 60 * 60 * 1000, "YEAR"],
-    [30 * 24 * 60 * 60 * 1000, "MONTH"],
-    [7 * 24 * 60 * 60 * 1000, "WEEK"],
-    [24 * 60 * 60 * 1000, "DAY"],
-    [60 * 60 * 1000, "HOUR"],
-    [60 * 1000, "MINUTE"],
+    [365 * 24 * 60 * 60 * 1000, "Y"],
+    [30 * 24 * 60 * 60 * 1000, "MO"],
+    [7 * 24 * 60 * 60 * 1000, "W"],
+    [24 * 60 * 60 * 1000, "D"],
+    [60 * 60 * 1000, "H"],
+    [60 * 1000, "M"],
   ];
   for (const [size, unit] of units) {
     const count = Math.floor(elapsed / size);
-    if (count) return `JOINED ${count} ${unit}${count === 1 ? "" : "S"} AGO`;
+    if (count) return `JOINED ${count}${unit} AGO`;
   }
   return "JOINED JUST NOW";
 }
@@ -500,17 +500,17 @@ function firstSeenAgoLabel(minutes) {
   if (!Number.isFinite(total) || total < 0) return "";
   if (total === 0) return "FIRST SEEN JUST NOW";
   const units = [
-    [365 * 24 * 60, "YEAR"],
-    [30 * 24 * 60, "MONTH"],
-    [7 * 24 * 60, "WEEK"],
-    [24 * 60, "DAY"],
-    [60, "HOUR"],
-    [1, "MINUTE"],
+    [365 * 24 * 60, "Y"],
+    [30 * 24 * 60, "MO"],
+    [7 * 24 * 60, "W"],
+    [24 * 60, "D"],
+    [60, "H"],
+    [1, "M"],
   ];
   for (const [size, unit] of units) {
     const count = Math.floor(total / size);
     if (count) {
-      return `FIRST SEEN ${count} ${unit}${count === 1 ? "" : "S"} AGO`;
+      return `FIRST SEEN ${count}${unit} AGO`;
     }
   }
   return "";
@@ -535,7 +535,12 @@ function badgeStatusLabel(identity) {
   return `${emoji} ${note}`.trim().slice(0, 24);
 }
 
-function badgeTexture(THREE, identity, accent = "#9ef7c6") {
+function badgeTexture(
+  THREE,
+  identity,
+  accent = "#9ef7c6",
+  profile = {},
+) {
   const activityLabels = {
     "browsing-code-visualization": "CODE MAP",
     "exploring-town-square": "TOWN SQUARE",
@@ -554,31 +559,93 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
     "over-a-year": "FIRST SEEN 1Y+ AGO",
     hidden: "FIRST SEEN HIDDEN",
   };
-  const statusColors = {
-    online: "#9ef7c6",
-    available: "#9ef7c6",
-    away: "#f7c96b",
-    inactive: "#91a39a",
-    recent: "#91a39a",
-    returning: "#77d9ff",
-    hidden: "#65776f",
-  };
   return canvasTexture(THREE, 512, 512, (context) => {
     context.fillStyle = "#0c2019";
     context.fillRect(0, 0, 512, 512);
-    context.strokeStyle = accent;
+    // The card border itself is the account-activity indicator. This keeps
+    // the signal inside the box and replaces the detached shirt lamp.
+    const activityBorder =
+      String(identity.accountStatus || "Guest") !== "Guest" &&
+      ACTIVITY_LIGHT_COLORS[identity.activityBucket]
+        ? ACTIVITY_LIGHT_COLORS[identity.activityBucket]
+        : accent;
+    context.strokeStyle = activityBorder;
     context.lineWidth = 12;
     context.strokeRect(8, 8, 496, 496);
 
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.font = '104px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
+    context.font = '62px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
     context.fillStyle = "#ffffff";
-    context.fillText(identity.flag || "◌", 256, 88);
+    context.fillText(identity.flag || "◌", 70, 62);
 
-    context.font = '700 42px "ForkMesh Mono", ui-monospace, monospace';
+    context.textAlign = "left";
+    context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#ffffff";
-    context.fillText(String(identity.name || "guest").slice(0, 15), 256, 172);
+    context.fillText(String(identity.name || "guest").slice(0, 14), 112, 54);
+    context.font = '700 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#a9b8ff";
+    context.fillText(
+      String(profile.handle || `@${identity.name || "guest"}`).slice(0, 27),
+      112,
+      82,
+    );
+    context.fillStyle = "#9ef7c6";
+    context.fillText(
+      profile.state === "ready"
+        ? `${Math.max(0, Number(profile.followers) || 0)} FOLLOWERS · ${
+            Math.max(0, Number(profile.following) || 0)
+          } FOLLOWING`
+        : profile.state === "unavailable"
+          ? "FEDIVERSE · UNAVAILABLE"
+          : "FEDIVERSE · LOADING",
+      112,
+      106,
+    );
+
+    const walletAddress = AVATAR_SOLANA_ADDRESS_RE.test(
+      String(identity.solana || ""),
+    )
+      ? String(identity.solana)
+      : "";
+    context.setLineDash(walletAddress ? [] : [7, 6]);
+    context.strokeStyle = walletAddress ? "#f7c96b" : "#708078";
+    context.lineWidth = 4;
+    context.strokeRect(400, 20, 88, 88);
+    context.setLineDash([]);
+    if (walletAddress) {
+      drawQrModules(context, walletAddress, 406, 26, 76);
+    } else {
+      context.textAlign = "center";
+      context.fillStyle = "#708078";
+      context.font = '900 28px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("+", 444, 57);
+      context.font = '700 11px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        identity.walletEditable ? "ADD WALLET" : "NO WALLET",
+        444,
+        84,
+      );
+    }
+    context.textAlign = "center";
+    context.fillStyle = "#f7c96b";
+    context.font = '700 14px "ForkMesh Mono", ui-monospace, monospace';
+    const walletSol = Number(identity.walletSol);
+    context.fillText(
+      walletAddress && Number.isFinite(walletSol)
+        ? `${walletSol.toLocaleString("en-US", {
+            maximumFractionDigits: 4,
+          })} SOL`
+        : "",
+      444,
+      124,
+    );
+    context.strokeStyle = "rgba(158,247,198,0.28)";
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(30, 142);
+    context.lineTo(482, 142);
+    context.stroke();
 
     const joined = joinedAgoLabel(identity.joinedAt);
     const firstSeen =
@@ -617,11 +684,22 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
       ],
     ].filter(([text]) => text);
     // Five rows still have to clear the status pill at y=374.
-    const step = rows.length > 4 ? 30 : 34;
-    context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
+    const step = rows.length > 4 ? 25 : 29;
+    context.textAlign = "left";
+    context.font = '700 17px "ForkMesh Mono", ui-monospace, monospace';
     rows.forEach(([text, color], index) => {
       context.fillStyle = color;
-      context.fillText(text, 256, 224 + index * step);
+      context.fillText(text, 34, 172 + index * step);
+    });
+
+    const posts = Array.isArray(profile.posts) ? profile.posts.slice(0, 2) : [];
+    context.fillStyle = "#a9b8ff";
+    context.font = '800 15px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("RECENT FEDIVERSE", 34, 312);
+    context.font = '600 14px "ForkMesh Mono", ui-monospace, monospace';
+    posts.forEach((post, index) => {
+      context.fillStyle = index ? "#93a4c8" : "#dfe8ff";
+      context.fillText(String(post).slice(0, 48), 34, 337 + index * 23);
     });
 
     // The world status the visitor set for themselves, on the chest rather
@@ -630,20 +708,17 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
     if (status) {
       context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
       const width = Math.min(452, context.measureText(status).width + 44);
-      roundedRect(context, 256 - width / 2, 374, width, 46, 22);
+      roundedRect(context, 28, 386, width, 38, 19);
       context.fillStyle = "rgba(158,247,198,0.14)";
       context.fill();
       context.strokeStyle = "rgba(158,247,198,0.5)";
       context.lineWidth = 2;
       context.stroke();
       context.fillStyle = "#eafff2";
-      context.fillText(status, 256, 398);
+      context.textAlign = "left";
+      context.fillText(status, 48, 405);
     }
 
-    context.beginPath();
-    context.arc(60, 452, 12, 0, Math.PI * 2);
-    context.fillStyle = statusColors[identity.status] || "#9ef7c6";
-    context.fill();
     context.textAlign = "left";
     context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#b9cfc4";
@@ -655,19 +730,39 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
         `${ACCOUNT_STATUS_ICONS[account] || "○"} ${account}`,
         identity.localTime,
       ].filter(Boolean).join(" · "),
-      86,
+      52,
       453,
     );
+
+    const followLabel = fediverseFollowLabel(profile);
+    if (followLabel) {
+      roundedRect(context, 300, 438, 184, 46, 22);
+      context.fillStyle = "rgba(169,184,255,0.18)";
+      context.fill();
+      context.strokeStyle = "#a9b8ff";
+      context.lineWidth = 2;
+      context.stroke();
+      context.textAlign = "center";
+      context.fillStyle = "#eaefff";
+      context.font = '700 16px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(followLabel, 392, 461);
+    }
   });
 }
 
 // The follow control lives inside the fediverse tab's canvas rather than on a
 // separate sliver of chest: the click handler hits it by UV rectangle.
 const BADGE_FOLLOW_PILL = Object.freeze({
-  minU: 96 / 512,
-  maxU: 416 / 512,
-  minV: 1 - 476 / 512,
-  maxV: 1 - 424 / 512,
+  minU: 300 / 512,
+  maxU: 484 / 512,
+  minV: 1 - 484 / 512,
+  maxV: 1 - 438 / 512,
+});
+const BADGE_WALLET_SQUARE = Object.freeze({
+  minU: 394 / 512,
+  maxU: 494 / 512,
+  minV: 1 - 132 / 512,
+  maxV: 1 - 14 / 512,
 });
 
 function badgeFollowPillHit(uv) {
@@ -677,6 +772,16 @@ function badgeFollowPillHit(uv) {
       uv.x <= BADGE_FOLLOW_PILL.maxU &&
       uv.y >= BADGE_FOLLOW_PILL.minV &&
       uv.y <= BADGE_FOLLOW_PILL.maxV,
+  );
+}
+
+function badgeWalletSquareHit(uv) {
+  return Boolean(
+    uv &&
+      uv.x >= BADGE_WALLET_SQUARE.minU &&
+      uv.x <= BADGE_WALLET_SQUARE.maxU &&
+      uv.y >= BADGE_WALLET_SQUARE.minV &&
+      uv.y <= BADGE_WALLET_SQUARE.maxV,
   );
 }
 
@@ -1797,7 +1902,7 @@ function makeSiteReferrerLeaderboardSign(THREE) {
   return sign;
 }
 
-const OFFICE_MARKETING_TASK_LIMIT = 6;
+const OFFICE_MARKETING_TASK_LIMIT = 250;
 
 function boundedOfficeMarketingTaskText(value, maxLength, fallback = "") {
   const normalized = String(value ?? "")
@@ -1824,6 +1929,7 @@ function normalizeOfficeMarketingTasks(payload = {}) {
         .filter((task) => task && typeof task === "object" && !Array.isArray(task))
         .slice(0, OFFICE_MARKETING_TASK_LIMIT)
         .map((task) => ({
+          id: boundedOfficeMarketingTaskText(task.id, 64),
           title: boundedOfficeMarketingTaskText(
             task.title,
             42,
@@ -1844,6 +1950,41 @@ function normalizeOfficeMarketingTasks(payload = {}) {
             18,
             "Not started",
           ),
+          canStartStop: task.canStartStop === true,
+          canComplete: task.canComplete === true,
+          canDelete: task.canDelete === true,
+        }))
+    : [];
+  const members = authorized
+    ? (Array.isArray(source.members) ? source.members : [])
+        .map((member) =>
+          boundedOfficeMarketingTaskText(member, 24).toLowerCase(),
+        )
+        .filter(Boolean)
+        .slice(0, 100)
+    : [];
+  const attendanceDays = authorized
+    ? (Array.isArray(source.attendanceDays) ? source.attendanceDays : [])
+        .filter((day) => day && typeof day === "object" && !Array.isArray(day))
+        .slice(-7)
+        .map((day) => ({
+          date: boundedOfficeMarketingTaskText(day.date, 10),
+          label: boundedOfficeMarketingTaskText(day.label, 16),
+          hours: (Array.isArray(day.hours) ? day.hours : [])
+            .filter(
+              (entry) =>
+                entry &&
+                typeof entry === "object" &&
+                !Array.isArray(entry),
+            )
+            .slice(0, 100)
+            .map((entry) => ({
+              member: boundedOfficeMarketingTaskText(
+                entry.member,
+                24,
+              ).toLowerCase(),
+              hours: Math.max(0, Math.min(24, Number(entry.hours) || 0)),
+            })),
         }))
     : [];
   const state =
@@ -1854,14 +1995,20 @@ function normalizeOfficeMarketingTasks(payload = {}) {
         : tasks.length
           ? "ready"
           : "empty";
-  return { authorized, state, tasks };
+  return {
+    authorized, state, tasks,
+    members,
+    attendanceDays,
+    actor: boundedOfficeMarketingTaskText(source.actor, 24).toLowerCase(),
+    canManage: authorized && source.canManage === true,
+  };
 }
 
 function officeMarketingTasksTexture(THREE, payload = {}) {
   const snapshot = normalizeOfficeMarketingTasks(payload);
-  return canvasTexture(THREE, 1024, 768, (context) => {
-    context.clearRect(0, 0, 1024, 768);
-    roundedRect(context, 5, 5, 1014, 758, 18);
+  return canvasTexture(THREE, 2048, 1024, (context) => {
+    context.clearRect(0, 0, 2048, 1024);
+    roundedRect(context, 5, 5, 2038, 1014, 18);
     context.fillStyle = "rgba(5,17,14,0.97)";
     context.fill();
     context.strokeStyle = "#9ef7c6";
@@ -1872,15 +2019,19 @@ function officeMarketingTasksTexture(THREE, payload = {}) {
     context.textBaseline = "middle";
     context.fillStyle = "#f1fff6";
     context.font = '700 54px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText("MARKETING TASKS", 52, 64);
+    context.fillText("MARKETING TASK BOARD", 52, 64);
     context.fillStyle = "#9ef7c6";
     context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("AUTHORIZED OFFICE VIEW · SELECT BOARD FOR DETAILS", 52, 112);
+    context.fillText(
+      `${snapshot.tasks.length} TASK${snapshot.tasks.length === 1 ? "" : "S"} · LIVE ORGANIZATION VIEW`,
+      52,
+      112,
+    );
     context.strokeStyle = "rgba(158,247,198,0.28)";
     context.lineWidth = 2;
     context.beginPath();
     context.moveTo(52, 142);
-    context.lineTo(972, 142);
+    context.lineTo(1996, 142);
     context.stroke();
 
     if (snapshot.state !== "ready") {
@@ -1899,39 +2050,259 @@ function officeMarketingTasksTexture(THREE, payload = {}) {
       return;
     }
 
-    snapshot.tasks.forEach((task, index) => {
-      const top = 180 + index * 91;
+    let rowsTop = 174;
+    if (snapshot.canManage) {
+      context.fillStyle = "rgba(158,247,198,0.075)";
+      roundedRect(context, 42, 164, 1954, 108, 10);
+      context.fill();
+      context.fillStyle = "#91a39a";
+      context.font = '700 18px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("ASSIGN TO", 68, 190);
+      context.fillStyle = "#f1fff6";
+      context.font = '700 29px "ForkMesh Favorit", system-ui, sans-serif';
+      context.fillText(
+        `@${snapshot.members[0] || snapshot.actor || "marketing"}`,
+        68,
+        232,
+        780,
+      );
+      context.fillStyle = "#9ef7c6";
+      roundedRect(context, 1030, 181, 920, 72, 10);
+      context.fill();
+      context.fillStyle = "#071712";
+      context.textAlign = "center";
+      context.font = '800 29px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("+ ADD MARKETING TASK", 1490, 218);
+      context.textAlign = "left";
+      rowsTop = 298;
+    }
+
+    const visibleTasks = snapshot.tasks.slice(0, snapshot.canManage ? 6 : 7);
+    visibleTasks.forEach((task, index) => {
+      const top = rowsTop + index * 112;
       context.fillStyle = index % 2
         ? "rgba(255,255,255,0.025)"
         : "rgba(158,247,198,0.045)";
-      roundedRect(context, 42, top - 30, 940, 80, 10);
+      roundedRect(context, 42, top, 1954, 96, 8);
       context.fill();
       context.fillStyle = "#d9ffea";
       context.font = '700 27px "ForkMesh Favorit", system-ui, sans-serif';
-      context.fillText(task.title, 62, top - 4, 600);
+      context.fillText(task.title, 68, top + 30, 940);
       context.fillStyle = "#91a39a";
-      context.font = '400 19px "ForkMesh Mono", ui-monospace, monospace';
+      context.font = '400 18px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
-        `${task.assignee} · ${task.elapsed}`,
-        62,
-        top + 27,
-        600,
+        `@${task.assignee} · ${task.elapsed} · ${task.status.toUpperCase()}`,
+        68,
+        top + 68,
+        930,
       );
-      context.textAlign = "right";
+      const controls = [
+        task.canStartStop
+          ? {
+              label: task.status === "active" ? "STOP" : "START",
+              left: 1110,
+              color: "#79d9ff",
+            }
+          : null,
+        task.canComplete && task.status !== "done"
+          ? { label: "DONE", left: 1405, color: "#9ef7c6" }
+          : null,
+        task.canDelete
+          ? { label: "DELETE", left: 1700, color: "#ff9d86" }
+          : null,
+      ].filter(Boolean);
+      controls.forEach((control) => {
+        context.strokeStyle = control.color;
+        context.lineWidth = 3;
+        roundedRect(context, control.left, top + 18, 260, 60, 7);
+        context.stroke();
+        context.fillStyle = control.color;
+        context.textAlign = "center";
+        context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(control.label, control.left + 130, top + 49);
+      });
+      context.textAlign = "left";
+    });
+    if (snapshot.tasks.length > visibleTasks.length) {
+      context.fillStyle = "#91a39a";
+      context.font = '700 18px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `+ ${snapshot.tasks.length - visibleTasks.length} MORE TASKS · COMPLETE OR DELETE ITEMS TO REVEAL`,
+        52,
+        984,
+      );
+    }
+  });
+}
+
+function officeMarketingTasksBlankTexture(THREE) {
+  return canvasTexture(THREE, 2048, 1024, (context) => {
+    context.clearRect(0, 0, 2048, 1024);
+    context.fillStyle = "rgba(5,17,14,0.97)";
+    context.fillRect(0, 0, 2048, 1024);
+  });
+}
+
+function officeMarketingDeskNameTexture(THREE, member) {
+  return canvasTexture(THREE, 768, 192, (context) => {
+    context.fillStyle = "#06150f";
+    context.fillRect(0, 0, 768, 192);
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 8;
+    context.strokeRect(6, 6, 756, 180);
+    context.fillStyle = "#dffff0";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '800 58px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(member || "MARKETING").toUpperCase(), 384, 82, 690);
+    context.fillStyle = "#7eb899";
+    context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("MARKETING · RESERVED DESK", 384, 145, 690);
+  });
+}
+
+function officeMarketingAttendanceTexture(THREE, snapshot) {
+  const members = snapshot.members || [];
+  const days = snapshot.attendanceDays || [];
+  return canvasTexture(THREE, 2048, 1024, (context) => {
+    context.fillStyle = "#06150f";
+    context.fillRect(0, 0, 2048, 1024);
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 14;
+    context.strokeRect(8, 8, 2032, 1008);
+    context.fillStyle = "#effff6";
+    context.font = '800 66px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("MARKETING · OFFICE HOURS", 56, 86);
+    context.fillStyle = "#80bda0";
+    context.font = '700 26px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("LAST 7 UTC DAYS · SERVER ATTENDANCE", 56, 132);
+    if (!members.length) {
+      context.fillStyle = "#91a39a";
+      context.font = '600 42px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO MARKETING MEMBERS ASSIGNED", 56, 250);
+      return;
+    }
+    const labelWidth = 360;
+    const dayWidth = (1940 - labelWidth) / Math.max(1, days.length);
+    context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
+    days.forEach((day, index) => {
       context.fillStyle = "#9ef7c6";
-      context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(task.status.toUpperCase(), 954, top + 10, 260);
+      context.textAlign = "center";
+      context.fillText(
+        day.label || day.date,
+        46 + labelWidth + index * dayWidth + dayWidth / 2,
+        190,
+        dayWidth - 12,
+      );
+    });
+    context.textAlign = "left";
+    const rowHeight = Math.min(94, 760 / Math.max(1, members.length));
+    members.forEach((member, row) => {
+      const y = 245 + row * rowHeight;
+      context.fillStyle =
+        row % 2 ? "rgba(255,255,255,0.025)" : "rgba(158,247,198,0.05)";
+      context.fillRect(40, y - rowHeight * 0.55, 1968, rowHeight * 0.84);
+      context.fillStyle = "#e8fff2";
+      context.font = `700 ${Math.max(17, Math.min(31, rowHeight * 0.34))}px "ForkMesh Mono", ui-monospace, monospace`;
+      context.fillText(member.toUpperCase(), 58, y, labelWidth - 32);
+      days.forEach((day, index) => {
+        const entry = day.hours?.find((item) => item.member === member);
+        context.fillStyle = Number(entry?.hours) > 0 ? "#9ef7c6" : "#668276";
+        context.textAlign = "center";
+        context.fillText(
+          `${Number(entry?.hours || 0).toFixed(1)}h`,
+          46 + labelWidth + index * dayWidth + dayWidth / 2,
+          y,
+        );
+      });
       context.textAlign = "left";
     });
   });
 }
 
-function officeMarketingTasksBlankTexture(THREE) {
-  return canvasTexture(THREE, 1024, 768, (context) => {
-    context.clearRect(0, 0, 1024, 768);
-    context.fillStyle = "rgba(5,17,14,0.97)";
-    context.fillRect(0, 0, 1024, 768);
+function officeReclaimedWoodTexture(THREE) {
+  const texture = canvasTexture(THREE, 1024, 1024, (context) => {
+    context.fillStyle = "#68452f";
+    context.fillRect(0, 0, 1024, 1024);
+    const plankColors = ["#6e4931", "#82563a", "#5c3b2b", "#76503a"];
+    for (let plank = 0; plank < 10; plank += 1) {
+      const y = plank * 103;
+      context.fillStyle = plankColors[plank % plankColors.length];
+      context.fillRect(0, y, 1024, 100);
+      context.strokeStyle = "rgba(35,18,10,0.72)";
+      context.lineWidth = 5;
+      context.beginPath();
+      context.moveTo(0, y + 100);
+      context.lineTo(1024, y + 100);
+      context.stroke();
+      for (let grain = 0; grain < 16; grain += 1) {
+        const offset = (grain * 79 + plank * 37) % 1024;
+        context.strokeStyle =
+          grain % 3 ? "rgba(35,18,10,0.24)" : "rgba(220,157,98,0.18)";
+        context.lineWidth = 2 + (grain % 2);
+        context.beginPath();
+        context.moveTo(offset - 180, y + 18 + (grain % 5) * 14);
+        context.bezierCurveTo(
+          offset,
+          y + 4 + (grain % 4) * 17,
+          offset + 140,
+          y + 82 - (grain % 3) * 11,
+          offset + 310,
+          y + 40 + (grain % 4) * 13,
+        );
+        context.stroke();
+      }
+    }
+    // Chrome ForkMesh cube medallion: the branch graph is the cube's top face,
+    // with the F/M side reliefs retained from the supplied mark.
+    context.save();
+    context.translate(512, 512);
+    context.fillStyle = "#071018";
+    context.strokeStyle = "#dce8f7";
+    context.lineWidth = 15;
+    context.beginPath();
+    context.moveTo(0, -210);
+    context.lineTo(210, -90);
+    context.lineTo(210, 140);
+    context.lineTo(0, 260);
+    context.lineTo(-210, 140);
+    context.lineTo(-210, -90);
+    context.closePath();
+    context.fill();
+    context.stroke();
+    context.beginPath();
+    context.moveTo(-210, -90);
+    context.lineTo(0, 32);
+    context.lineTo(210, -90);
+    context.moveTo(0, 32);
+    context.lineTo(0, 260);
+    context.stroke();
+    context.fillStyle = "#f1f6ff";
+    context.font = '900 138px "ForkMesh Favorit", system-ui, sans-serif';
+    context.textAlign = "center";
+    context.fillText("F", -102, 110);
+    context.fillText("M", 105, 112);
+    context.strokeStyle = "#c7e8ff";
+    context.lineWidth = 18;
+    context.lineCap = "round";
+    context.beginPath();
+    context.moveTo(0, -152);
+    context.lineTo(0, -30);
+    context.moveTo(0, -92);
+    context.lineTo(-94, -38);
+    context.moveTo(0, -92);
+    context.lineTo(94, -38);
+    context.stroke();
+    for (const [x, y] of [[0, -152], [-94, -38], [94, -38], [0, -30]]) {
+      context.beginPath();
+      context.arc(x, y, 21, 0, Math.PI * 2);
+      context.fillStyle = "#f5fbff";
+      context.fill();
+    }
+    context.restore();
   });
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
 }
 
 // Public build-progress wall in the Office lobby. This intentionally mirrors
@@ -1939,10 +2310,39 @@ function officeMarketingTasksBlankTexture(THREE) {
 // completed task moves to a varied slot on the right with a hand-drawn X.
 // Keep the ordering stable so a repaint never makes notes jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
-  { key: "task:referrer-full-url", task: "Show latest full HTTP referrer URLs", estimate: "in progress", done: false },
-  { key: "task:blog-board-reach", task: "Show every blog reach statistic", estimate: "in progress", done: false },
-  { key: "task:human-todo-board", task: "Bot-driven Human TODO board", estimate: "in progress", done: false },
+  { key: "task:status-deploy-semaphore", task: "Skip false status incidents during deploys", estimate: "deployed", done: true },
+  { key: "task:mobile-home-world", task: "Mobile home live count + Join World", estimate: "deployed", done: true },
+  { key: "task:qa-physical-deck", task: "Global physical QA deck + clear swipe arrows", estimate: "deployed", done: true },
+  { key: "task:build-send-qa", task: "Done → send build sticky to QA", estimate: "deployed", done: true },
+  { key: "task:member-unified-card", task: "Unified identity + Fedi + wallet QR card", estimate: "deployed", done: true },
+  { key: "task:mirror2-agent-claim", task: "Provision mirror2 agent auth + claim jobs", estimate: "human action", done: false },
   { key: "task:review-open-prs", task: "Review every open PR + disposition", estimate: "queued", done: false },
+  { key: "task:repo-social-orbits", task: "Test follower + contributor avatar orbits", estimate: "testing", done: false },
+  { key: "task:issue-agent-models", task: "Issue buttons for Claude/Codex model choice", estimate: "testing", done: false },
+  { key: "task:qt-agent-installers", task: "Qt mirror Claude + Codex installers", estimate: "deployed", done: true },
+  { key: "task:marketing-room-wall", task: "Marketing wall, desks, calendar + table", estimate: "testing", done: false },
+  { key: "task:avatar-team-badges", task: "Team badges on each avatar's left arm", estimate: "deployed", done: true },
+  { key: "task:marketing-proof", task: "Private Marketing proof-of-work links", estimate: "building", done: false },
+  { key: "task:deploy-lifecycle", task: "Live deploy spinner + ready refresh button", estimate: "deployed", done: true },
+  { key: "task:elevator-camera-lock", task: "Elevator button camera lock + release", estimate: "deployed", done: true },
+  { key: "task:build-board-nearby", task: "Refresh task wall when a player approaches", estimate: "deployed", done: true },
+  { key: "task:twitter-feed", task: "ForkMesh X posts on the Twitter board", estimate: "verifying feed", done: false },
+  { key: "done:fresh-code-surge", task: "Restore verified Fresh Code beam + shockwave", estimate: "deployed", done: true },
+  { key: "done:chest-fediverse", task: "Fix chest Fedi load + activity border", estimate: "deployed", done: true },
+  { key: "done:qt-host-probes", task: "Live host + Claude/Codex capability checks", estimate: "deployed", done: true },
+  { key: "done:alert-management-link", task: "Alert mail opens the real management switch", estimate: "deployed", done: true },
+  { key: "done:qa-history-routing", task: "QA result tabs + Todo/Issue routing", estimate: "deployed", done: true },
+  { key: "done:qa-history-detail", task: "QA history opens full verdict cards", estimate: "deployed", done: true },
+  { key: "done:elevator-front-camera", task: "Upper elevator camera + side controls", estimate: "ready", done: true },
+  { key: "done:office-only-hours", task: "Office-only Marketing attendance", estimate: "deployed", done: true },
+  { key: "done:marketing-furniture", task: "Window desks + visible table chairs", estimate: "deployed", done: true },
+  { key: "done:office-landscaping", task: "Trees, bushes + flowers around Office", estimate: "deployed", done: true },
+  { key: "done:follower-orbit-visible", task: "Visible Mastodon follower orbit", estimate: "deployed", done: true },
+  { key: "done:bot-full-status", task: "Engineering bot status + controls", estimate: "deployed", done: true },
+  { key: "done:agent-diagnostics", task: "Stalled agent diagnostics → Human TODO", estimate: "deployed", done: true },
+  { key: "done:referrer-full-url", task: "Latest safe full referrer URLs", estimate: "deployed", done: true },
+  { key: "done:blog-board-reach", task: "Every blog reach statistic", estimate: "deployed", done: true },
+  { key: "done:human-todo-board", task: "Engineering Human TODO board", estimate: "deployed", done: true },
   { key: "done:infrastructure-capacity", task: "Capacity moved to Infrastructure", estimate: "deployed", done: true },
   { key: "done:local-console", task: "Opt-in local console observatory", estimate: "deployed", done: true },
   { key: "done:near-elevator", task: "Elevator moved beside entrance", estimate: "deployed", done: true },
@@ -2073,18 +2473,303 @@ function worldTaskBulletinTexture(THREE, source = WORLD_TASK_BULLETIN_ITEMS) {
       if (!item.done) {
         context.fillStyle = "#22634f";
         context.font =
-          '800 25px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+          '800 22px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
         context.fillText(
-          `◌ IN PROGRESS · ${String(item.estimate || "estimating")}`,
+          `◌ IN PROGRESS · ${String(
+            item.estimate || "estimating",
+          ).toUpperCase()}`,
           -width / 2 + 16,
           height / 2 - 25,
         );
+        roundedRect(context, width / 2 - 184, height / 2 - 48, 168, 36, 12);
+        context.fillStyle = "#1b6c4f";
+        context.fill();
+        context.strokeStyle = "#0b3a2a";
+        context.lineWidth = 2;
+        context.stroke();
+        context.fillStyle = "#effff7";
+        context.textAlign = "center";
+        context.font =
+          '900 19px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+        context.fillText("DONE → QA", width / 2 - 100, height / 2 - 25);
       }
       context.restore();
     };
     pending.forEach((item, index) => {
       drawNote(item, index, "pending");
     });
+  });
+}
+
+function worldQaCardTexture(THREE, snapshot = {}) {
+  const current = snapshot?.current && typeof snapshot.current === "object"
+    ? snapshot.current
+    : null;
+  const view = ["detail", "pass", "fail", "unsure"].includes(String(snapshot?.view || ""))
+    ? String(snapshot.view)
+    : "cards";
+  const list = (Array.isArray(snapshot?.list) ? snapshot.list : []).slice(0, 5);
+  const selectedKey = String(snapshot?.selectedKey || "");
+  const page = Math.max(0, Number(snapshot?.page) || 0);
+  const pages = Math.max(1, Number(snapshot?.pages) || 1);
+  const canRoute = snapshot?.canRoute === true;
+  const stats = snapshot?.stats && typeof snapshot.stats === "object"
+    ? snapshot.stats
+    : {};
+  const globalStats =
+    snapshot?.globalStats && typeof snapshot.globalStats === "object"
+      ? snapshot.globalStats
+      : {};
+  const currentGlobal =
+    current?.global && typeof current.global === "object"
+      ? current.global
+      : {};
+  const total = Math.max(0, Number(stats.total) || 0);
+  const currentIndex = Math.max(0, Number(snapshot?.currentIndex) || 0);
+  return canvasTexture(THREE, 1200, 1050, (context) => {
+    context.fillStyle = "#2b1f17";
+    context.fillRect(0, 0, 1200, 1050);
+    context.strokeStyle = "#a5764d";
+    context.lineWidth = 8;
+    for (let y = 10; y < 1050; y += 30) {
+      context.beginPath();
+      context.moveTo(0, y);
+      context.bezierCurveTo(300, y - 7, 860, y + 8, 1200, y - 2);
+      context.stroke();
+    }
+    context.fillStyle = "#f4e8ce";
+    roundedRect(context, 62, 52, 1076, 782, 42);
+    context.fill();
+    context.strokeStyle = "#111d1a";
+    context.lineWidth = 10;
+    context.stroke();
+    context.fillStyle = "#14392e";
+    context.font = '900 48px "ForkMesh Mono", ui-monospace, monospace';
+    context.textAlign = "center";
+    context.fillText("24-HOUR QA DECK", 600, 128);
+    context.fillStyle = "#396b5b";
+    context.font = '800 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      view === "cards" || view === "detail"
+        ? current
+          ? view === "detail"
+            ? "QA RESULT DETAIL · REVIEW OR RETURN"
+            : `CARD ${Math.min(total, currentIndex + 1)} OF ${total} · ONE AT A TIME`
+          : total
+            ? `ALL ${total} CARDS REVIEWED · TAP TO RECHECK`
+            : "SIGN IN TO SAVE YOUR RESULTS"
+        : `${view.toUpperCase()} HISTORY · PAGE ${page + 1}/${pages}`,
+      600,
+      174,
+    );
+    context.strokeStyle = "#9e7652";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(120, 204);
+    context.lineTo(1080, 204);
+    context.stroke();
+    if (view === "cards" || view === "detail") {
+      context.fillStyle = "#16211d";
+      context.textAlign = "left";
+      context.font = '900 48px "ForkMesh Mono", ui-monospace, monospace';
+      wrapCanvasText(
+        context,
+        String(current?.title || "Open the QA deck"),
+        120,
+        248,
+        960,
+        58,
+        3,
+      );
+      context.fillStyle = "#2f5a4d";
+      context.font = '900 25px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("HOW TO TEST", 120, 438);
+      context.fillStyle = "#1f2c27";
+      context.font = '600 30px "ForkMesh Mono", ui-monospace, monospace';
+      wrapCanvasText(
+        context,
+        String(
+          current?.howToTest ||
+            "Tap this board to review the recent work one card at a time.",
+        ),
+        120,
+        486,
+        960,
+        42,
+        6,
+      );
+      context.fillStyle = "#365c50";
+      context.font = '800 23px "ForkMesh Mono", ui-monospace, monospace';
+      context.textAlign = "center";
+      context.fillText(
+        current?.verdict
+          ? `YOUR RESULT · ${String(current.verdict).toUpperCase()}`
+          : `THIS CARD · ${Number(currentGlobal.pass) || 0} PASS · ${
+              Number(currentGlobal.fail) || 0
+            } FAIL · ${Number(currentGlobal.unsure) || 0} UNSURE`,
+        600,
+        view === "detail" ? 684 : 810,
+      );
+      if (view === "detail") {
+        [
+          { action: "fail", label: "← FAIL", x: 100, color: "#b63b3f" },
+          { action: "unsure", label: "↓ UNSURE", x: 355, color: "#68736e" },
+          { action: "pass", label: "PASS →", x: 610, color: "#168a4d" },
+          { action: "back", label: "BACK TO CARDS", x: 865, color: "#315b52" },
+        ].forEach((control) => {
+          context.fillStyle = control.color;
+          roundedRect(context, control.x, 720, 235, 76, 12);
+          context.fill();
+          context.fillStyle = "#effff7";
+          context.font = '900 21px "ForkMesh Mono", ui-monospace, monospace';
+          context.fillText(control.label, control.x + 117.5, 760);
+        });
+      }
+    } else {
+      context.textAlign = "left";
+      if (!list.length) {
+        context.fillStyle = "#365c50";
+        context.font = '800 32px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(`NO ${view.toUpperCase()} RESULTS YET`, 120, 300);
+        context.font = '600 25px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("Use CARDS to test recent work.", 120, 350);
+      }
+      list.forEach((card, index) => {
+        const y = 230 + index * 98;
+        const selected = String(card?.key || "") === selectedKey;
+        context.fillStyle = selected ? "#d7f5e5" : "#eadfc6";
+        roundedRect(context, 105, y, 990, 82, 12);
+        context.fill();
+        context.strokeStyle = selected ? "#168a4d" : "#b89b73";
+        context.lineWidth = selected ? 5 : 2;
+        context.stroke();
+        context.fillStyle = "#16211d";
+        context.font = '800 25px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(
+          String(card?.title || "QA task").slice(0, 62),
+          130,
+          y + 35,
+        );
+        context.fillStyle = "#47675b";
+        context.font = '700 19px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(
+          `${Number(card?.global?.pass) || 0} PASS · ${
+            Number(card?.global?.fail) || 0
+          } FAIL · ${Number(card?.global?.unsure) || 0} UNSURE`,
+          130,
+          y + 66,
+        );
+      });
+      context.textAlign = "center";
+      context.font = '800 22px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillStyle = "#365c50";
+      context.fillText("◀ PREV", 175, 758);
+      context.fillText("NEXT ▶", 1025, 758);
+      if (selectedKey && canRoute) {
+        for (const action of [
+          { label: "SEND TO TODO", x: 300, color: "#168a4d" },
+          { label: "SEND TO ISSUES", x: 620, color: "#315f91" },
+        ]) {
+          context.fillStyle = action.color;
+          roundedRect(context, action.x, 720, 280, 70, 12);
+          context.fill();
+          context.fillStyle = "#effff7";
+          context.fillText(action.label, action.x + 140, 764);
+        }
+      } else if (selectedKey) {
+        context.fillText("OWNER / MAINTAIN ACCESS REQUIRED TO ROUTE", 600, 810);
+      } else {
+        context.fillText("SELECT A TASK FOR ROUTING ACTIONS", 600, 810);
+      }
+    }
+
+    const tabData = [
+      { key: "cards", label: "CARDS", count: total, color: "#315b52" },
+      { key: "pass", label: "PASS", count: globalStats.pass, color: "#168a4d" },
+      { key: "fail", label: "FAIL", count: globalStats.fail, color: "#b63b3f" },
+      { key: "unsure", label: "UNSURE", count: globalStats.unsure, color: "#68736e" },
+    ];
+    tabData.forEach((tab, index) => {
+      const x = 70 + index * 266;
+      context.fillStyle = view === tab.key ? tab.color : "#10251e";
+      roundedRect(context, x, 872, 252, 100, 18);
+      context.fill();
+      context.strokeStyle = tab.color;
+      context.lineWidth = view === tab.key ? 6 : 3;
+      context.stroke();
+      context.fillStyle = "#effff7";
+      context.textAlign = "center";
+      context.font = '900 25px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `${tab.label} ${Number(tab.count) || 0}`,
+        x + 126,
+        932,
+      );
+    });
+    context.fillStyle = "#c9e7da";
+    context.font = '700 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.textAlign = "center";
+    context.fillText(
+      `${Number(globalStats.testers) || 0} TESTERS · YOUR CARDS ${
+        Number(stats.reviewed) || 0
+      }/${total}${view === "cards" ? " · GRAB + SWIPE" : " · SHARED HISTORY"}`,
+      600,
+      1010,
+    );
+  });
+}
+
+function qaBoardHitAction(uv, snapshot = {}) {
+  if (!uv) return null;
+  const x = clamp(Number(uv.x) || 0, 0, 1) * 1200;
+  const y = (1 - clamp(Number(uv.y) || 0, 0, 1)) * 1050;
+  if (y >= 872 && y <= 972) {
+    const index = Math.floor((x - 70) / 266);
+    const views = ["cards", "pass", "fail", "unsure"];
+    if (index >= 0 && index < views.length) {
+      return { action: "tab", view: views[index] };
+    }
+  }
+  const view = String(snapshot?.view || "cards");
+  if (view === "detail" && y >= 720 && y <= 796) {
+    if (x >= 100 && x <= 335) return { action: "verdict", verdict: "fail" };
+    if (x >= 355 && x <= 590) return { action: "verdict", verdict: "unsure" };
+    if (x >= 610 && x <= 845) return { action: "verdict", verdict: "pass" };
+    if (x >= 865 && x <= 1100) return { action: "back" };
+  }
+  if (view === "cards") return { action: "swipe" };
+  if (y >= 230 && y <= 720) {
+    const index = Math.floor((y - 230) / 98);
+    const card = (Array.isArray(snapshot?.list) ? snapshot.list : [])[index];
+    if (card?.key) {
+      return { action: "select", key: String(card.key) };
+    }
+  }
+  if (y >= 720 && y <= 800) {
+    if (x >= 110 && x <= 240) return { action: "page", delta: -1 };
+    if (x >= 960 && x <= 1090) return { action: "page", delta: 1 };
+    if (x >= 300 && x <= 580) return { action: "route", target: "todo" };
+    if (x >= 620 && x <= 900) return { action: "route", target: "issues" };
+  }
+  return null;
+}
+
+function worldQaArrowTexture(THREE, direction, label, color) {
+  return canvasTexture(THREE, 512, 260, (context) => {
+    context.clearRect(0, 0, 512, 260);
+    roundedRect(context, 8, 8, 496, 244, 40);
+    context.fillStyle = "rgba(5,18,15,0.94)";
+    context.fill();
+    context.strokeStyle = color;
+    context.lineWidth = 10;
+    context.stroke();
+    context.fillStyle = color;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '900 116px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(direction, 150, 128);
+    context.font = '900 40px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(label, 340, 128);
   });
 }
 
@@ -2147,8 +2832,17 @@ function worldRepoIssuesTexture(THREE, issues = []) {
 }
 
 function humanTodoItemsFromAgentSessions(sessions = []) {
-  const items = [];
-  const seen = new Set();
+  const cloudflareLogSetup = {
+    id: "system:cloudflare-observability-key",
+    provider: "SYSTEM",
+    title: "Cloudflare attention-email logs",
+    action:
+      "Set CLOUDFLARE_OBSERVABILITY_API_TOKEN and CLOUDFLARE_ACCOUNT_ID in the deploy environment so attention emails include the prior two minutes of Worker logs.",
+    reason: "SETUP",
+    updatedAt: Number.MAX_SAFE_INTEGER,
+  };
+  const items = [cloudflareLogSetup];
+  const seen = new Set([cloudflareLogSetup.action.toLowerCase()]);
   const add = (session, text, reason) => {
     const action = String(text || "")
       .replace(/[\u0000-\u001f\u007f]/g, " ")
@@ -2190,6 +2884,16 @@ function humanTodoItemsFromAgentSessions(sessions = []) {
           `${session?.provider === "codex" ? "Codex" : "Claude Code"} needs installation or login on ${session?.targetNode || "the mirror"}.`,
         "SETUP",
       );
+    }
+    const diagnostic =
+      session?.diagnostic && typeof session.diagnostic === "object"
+        ? session.diagnostic
+        : {};
+    if (
+      String(diagnostic.level || "").toLowerCase() === "attention" &&
+      String(diagnostic.message || "").trim()
+    ) {
+      add(session, diagnostic.message, "ATTENTION");
     }
     const error = String(session?.agentInfo?.lastError || "").trim();
     if (error) add(session, error, "ATTENTION");
@@ -2474,7 +3178,63 @@ function sanitizedModerationHandles(remote, isAdmin) {
   return handles;
 }
 
-function createAvatarModerationControls(THREE, handles) {
+function sanitizedAdminGuestNetwork(remote, isAdmin) {
+  if (
+    isAdmin !== true ||
+    String(remote?.accountStatus || "Guest") !== "Guest" ||
+    !remote?.adminGuestNetwork ||
+    typeof remote.adminGuestNetwork !== "object" ||
+    Array.isArray(remote.adminGuestNetwork)
+  ) {
+    return {};
+  }
+  const ipAddress = String(
+    remote.adminGuestNetwork.ipAddress || "",
+  ).slice(0, 64);
+  const userAgent = String(
+    remote.adminGuestNetwork.userAgent || "",
+  ).slice(0, 1024);
+  return {
+    ipAddress: /^[0-9a-f:.]{2,64}$/i.test(ipAddress) ? ipAddress : "",
+    userAgent:
+      userAgent &&
+      !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(userAgent)
+        ? userAgent
+        : "",
+  };
+}
+
+function guestNetworkTexture(THREE, label, value, color, height = 220) {
+  return canvasTexture(THREE, 1024, height, (context) => {
+    context.clearRect(0, 0, 1024, height);
+    roundedRect(context, 4, 4, 1016, height - 8, 22);
+    context.fillStyle = "rgba(4,16,14,0.97)";
+    context.fill();
+    context.strokeStyle = color;
+    context.lineWidth = 9;
+    context.stroke();
+    context.textAlign = "left";
+    context.textBaseline = "top";
+    context.fillStyle = color;
+    context.font = '800 28px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(`${label} · CLICK TO COPY`, 28, 20);
+    context.fillStyle = "#effff7";
+    context.font = `${
+      label === "FULL USER AGENT" ? 19 : 34
+    }px "ForkMesh Mono", ui-monospace, monospace`;
+    wrapCanvasText(
+      context,
+      value || "Not reported",
+      28,
+      label === "FULL USER AGENT" ? 62 : 66,
+      968,
+      label === "FULL USER AGENT" ? 24 : 38,
+      label === "FULL USER AGENT" ? 16 : 2,
+    );
+  });
+}
+
+function createAvatarModerationControls(THREE, handles, guestNetwork = {}) {
   const group = new THREE.Group();
   group.name = "forkmesh-world-moderation-controls";
   const specs = [
@@ -2516,6 +3276,46 @@ function createAvatarModerationControls(THREE, handles) {
     control.renderOrder = 3;
     group.add(control);
   });
+  for (const spec of [
+    {
+      field: "ipAddress",
+      label: "GUEST IP",
+      color: "#80e8ff",
+      y: 1.63,
+      width: 1.18,
+      height: 0.3,
+      textureHeight: 220,
+    },
+    {
+      field: "userAgent",
+      label: "FULL USER AGENT",
+      color: "#b8a8ff",
+      y: 1.12,
+      width: 1.18,
+      height: 0.68,
+      textureHeight: 600,
+    },
+  ]) {
+    const value = String(guestNetwork[spec.field] || "");
+    if (!value) continue;
+    const control = new THREE.Mesh(
+      new THREE.PlaneGeometry(spec.width, spec.height),
+      new THREE.MeshBasicMaterial({
+        map: guestNetworkTexture(
+          THREE,
+          spec.label,
+          value,
+          spec.color,
+          spec.textureHeight,
+        ),
+        depthWrite: true,
+      }),
+    );
+    control.position.set(0, spec.y, 0.322);
+    control.userData.worldGuestCopy = spec.field;
+    control.renderOrder = 3;
+    group.add(control);
+  }
   return group;
 }
 
@@ -2550,9 +3350,54 @@ function sanitizedOrgTeamAssignment(remote) {
   return {
     org,
     member,
+    canManage: assignment.canManage === true,
     assigned: Math.max(0, Math.min(total, Number(assignment.assigned) || 0)),
     total,
+    teams: (Array.isArray(assignment.teams) ? assignment.teams : [])
+      .map((team) => String(team || "").toLowerCase())
+      .filter((team) => WORLD_ORG_NAME_PATTERN.test(team))
+      .slice(0, 6),
   };
+}
+
+function avatarTeamBadgeTexture(THREE, team, index) {
+  const colors = ["#9ef7c6", "#80e8ff", "#ffc279", "#d8b7ff", "#ff9ca4"];
+  const accent = colors[index % colors.length];
+  return canvasTexture(THREE, 512, 176, (context) => {
+    roundedRect(context, 4, 4, 504, 168, 42);
+    context.fillStyle = "rgba(5,20,17,0.97)";
+    context.fill();
+    context.strokeStyle = accent;
+    context.lineWidth = 10;
+    context.stroke();
+    context.fillStyle = accent;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '900 54px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(team || "").toUpperCase(), 256, 88, 452);
+  });
+}
+
+function createAvatarTeamBadges(THREE, assignment) {
+  const group = new THREE.Group();
+  group.name = "forkmesh-avatar-left-arm-team-badges";
+  assignment.teams.slice(0, 4).forEach((team, index) => {
+    const badge = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.26, 0.09),
+      new THREE.MeshBasicMaterial({
+        map: avatarTeamBadgeTexture(THREE, team, index),
+        depthWrite: true,
+      }),
+    );
+    // The anatomical left arm sits at group x -0.73, so its outward face is
+    // local -X. Mount the marks there — sized to the 0.32-deep sleeve so they
+    // never overhang it — stacked down the upper arm like cloth patches.
+    badge.position.set(-0.148, 0.36 - index * 0.105, 0);
+    badge.rotation.y = -Math.PI / 2;
+    badge.renderOrder = 3;
+    group.add(badge);
+  });
+  return group;
 }
 
 function orgTeamControlTexture(THREE, title, subtitle) {
@@ -3185,20 +4030,26 @@ const ANTENNA_STALK_COLOR = "#1aa856";
 const ANTENNA_BLINK_MIN_HZ = 0.9;
 const ANTENNA_BLINK_MAX_HZ = 5.4;
 
-// Chest activity light: one colour per coarse account-recency bucket from the
-// server ("active within …"). The freshest bucket breathes softly in
-// animateAvatarActivity; every older bucket holds a steady colour, stepping
-// bright green → dim green → green-orange → green-red → orange → red → grey.
+// A wave is a short right-arm pose rather than a stored animation: the arm
+// lifts out to roughly shoulder-over-head, shakes a couple of times, and
+// drops back. It rides on top of whatever the avatar is otherwise doing, so
+// visitors can wave while walking, sitting, or riding a swing.
+const AVATAR_WAVE_DURATION_MS = 2000;
+const AVATAR_WAVE_LIFT = 2.35;
+const AVATAR_WAVE_SWEEP = 0.34;
+const AVATAR_WAVE_SHAKE_RATE = 0.014;
+
+// Unified-card border: one darker, node-light-style colour per coarse
+// account-recency bucket from the server ("active within …").
 const ACTIVITY_LIGHT_COLORS = Object.freeze({
-  hour: "#3ce97f",
-  "5h": "#2e8054",
-  "24h": "#94b23a",
-  "3d": "#b1892f",
-  "5d": "#e0762c",
-  "10d": "#d63b30",
-  stale: "#767c85",
+  hour: "#168a4d",
+  "5h": "#205f43",
+  "24h": "#607b2e",
+  "3d": "#806628",
+  "5d": "#a95525",
+  "10d": "#9e302b",
+  stale: "#555f5b",
 });
-const ACTIVITY_LIGHT_BREATH_HZ = 0.33;
 
 const AVATAR_SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
@@ -3502,20 +4353,6 @@ function createAvatar(THREE, identity, options = {}) {
   antenna.visible = identity.inputActive === true;
   group.add(antenna);
 
-  // Account activity light: a small lamp pinned high on the chest whose
-  // colour steps through ACTIVITY_LIGHT_COLORS as the account's coarse
-  // recency bucket ages. syncAvatarActivity keeps it current and it stays
-  // dark on anonymous guests.
-  const activityLight = new THREE.Mesh(
-    new THREE.SphereGeometry(0.055, 14, 12),
-    new THREE.MeshBasicMaterial({ color: ACTIVITY_LIGHT_COLORS.hour }),
-  );
-  activityLight.name = "account-activity-light";
-  // Avatar fronts face -Z; half-sunk into the torso above the badge corner.
-  activityLight.position.set(-0.4, 2.82, -0.31);
-  activityLight.visible = false;
-  group.add(activityLight);
-
   // Each leg is a hip pivot carrying a thigh, and a knee pivot carrying the
   // shin plus that leg's shoe. Standing (every pitch at zero) the two segments
   // stack into the same block the single-box leg used to be, but the joints let
@@ -3548,36 +4385,22 @@ function createAvatar(THREE, identity, options = {}) {
   const rightLeg = rightLegRig.hip;
 
   const badge = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.76, 0.76),
+    new THREE.PlaneGeometry(0.88, 0.88),
     new THREE.MeshBasicMaterial({
-      map: badgeTexture(THREE, identity, remote ? "#77d9ff" : "#9ef7c6"),
+      map: badgeTexture(
+        THREE,
+        { ...identity, walletEditable: remote !== true },
+        remote ? "#77d9ff" : "#9ef7c6",
+        { state: "loading" },
+      ),
       transparent: false,
     }),
   );
-  badge.scale.set(1, 1.14, 1);
-  badge.position.set(0, 2.32, -0.316);
+  badge.scale.set(1, 1.12, 1);
+  badge.position.set(0, 2.3, -0.316);
   badge.rotation.y = Math.PI;
   badge.userData.chestBadge = true;
   group.add(badge);
-
-  const chestTabs = createAvatarChestTabs(THREE);
-  group.add(chestTabs);
-
-  // Wallet chip: a small QR of the account's published Solana address worn
-  // on the lower chest under the tabs. Hidden until the identity carries an
-  // address; syncAvatarWallet paints the QR, balance, and recency ring.
-  const walletChip = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.28, 0.28),
-    new THREE.MeshBasicMaterial({ transparent: true }),
-  );
-  walletChip.name = "wallet-chip";
-  // Slightly proud of the torso (and any operator belt) so nothing occludes
-  // the QR; avatar fronts face -Z like the badge above it.
-  walletChip.position.set(0, 1.54, -0.345);
-  walletChip.rotation.y = Math.PI;
-  walletChip.renderOrder = 3;
-  walletChip.visible = false;
-  group.add(walletChip);
 
   group.scale.setScalar(scale);
   group.userData = {
@@ -3592,18 +4415,16 @@ function createAvatar(THREE, identity, options = {}) {
     badge,
     badgeIdentity: identity,
     badgeRemote: remote,
-    chestTabs,
-    chestTab: "info",
-    chestTabRendered: "info",
+    chestTabs: null,
     fediverseProfile: null,
     shirt,
     shirtMeshes: [torso, leftArm, rightArm],
     skin,
     antenna,
     antennaBulb,
-    activityLight,
+    activityLight: null,
     activityBucket: "",
-    walletChip,
+    walletChip: null,
     walletKey: "",
     inputEnergy: 0,
     phase: (seed % 100) / 10,
@@ -3845,22 +4666,11 @@ function syncAvatarActivity(avatar, identity) {
   avatar.userData.inputActive = active;
   avatar.userData.accountStatus = identity.accountStatus || "Guest";
   if (avatar.userData.antenna) avatar.userData.antenna.visible = active;
-  const light = avatar.userData.activityLight;
-  if (light) {
-    const bucket = ACTIVITY_LIGHT_COLORS[identity.activityBucket]
-      ? String(identity.activityBucket)
-      : "";
-    avatar.userData.activityBucket = bucket;
-    // The light reads account recency, so it stays dark on anonymous guests.
-    light.visible =
-      Boolean(bucket) && avatar.userData.accountStatus !== "Guest";
-    if (light.visible) {
-      // The "hour" breath overrides colour and scale every frame; older
-      // buckets hold their steady step here.
-      light.material.color.set(ACTIVITY_LIGHT_COLORS[bucket]);
-      light.scale.setScalar(1);
-    }
-  }
+  avatar.userData.activityBucket = ACTIVITY_LIGHT_COLORS[
+    identity.activityBucket
+  ]
+    ? String(identity.activityBucket)
+    : "";
 }
 
 function renderAvatarBadge(THREE, avatar, remote = false) {
@@ -3869,18 +4679,17 @@ function renderAvatarBadge(THREE, avatar, remote = false) {
   const identity = avatar.userData.badgeIdentity || {};
   const accent = remote ? "#77d9ff" : "#9ef7c6";
   const old = badge.material.map;
-  badge.material.map =
-    avatar.userData.chestTab === "fediverse"
-      ? fediverseBadgeTexture(
-          THREE,
-          identity,
-          accent,
-          avatar.userData.fediverseProfile || { state: "loading" },
-        )
-      : badgeTexture(THREE, identity, accent);
+  badge.material.map = badgeTexture(
+    THREE,
+    {
+      ...identity,
+      walletEditable: remote !== true,
+    },
+    accent,
+    avatar.userData.fediverseProfile || { state: "loading" },
+  );
   badge.material.needsUpdate = true;
   old?.dispose?.();
-  syncChestTabs(THREE, avatar);
 }
 
 function updateAvatarBadge(THREE, avatar, identity, remote = false) {
@@ -3901,8 +4710,55 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
   syncAvatarStatus(THREE, avatar, identity);
 }
 
+// Starts (or restarts) the wave on one avatar. The pose itself is played by
+// animateAvatarActivity, which every walk/sit/ride path already calls after it
+// has written the arm rotations for the frame.
+function startAvatarWave(avatar, startedAt = performance.now()) {
+  if (!avatar?.userData?.rightArm) return false;
+  avatar.userData.waveStartedAt = startedAt;
+  return true;
+}
+
+// Rotating the arm box around its own centre would pull the shoulder end out
+// of the torso, so the mesh is nudged along the arc that keeps the shoulder
+// pinned where it hangs at rest.
+function poseWavingArm(arm, rest, angle) {
+  const halfLength = (arm.geometry?.parameters?.height || 1.25) / 2;
+  arm.rotation.x = 0;
+  arm.rotation.z = angle;
+  arm.position.set(
+    rest.x + halfLength * Math.sin(angle),
+    rest.y + halfLength * (1 - Math.cos(angle)),
+    rest.z,
+  );
+}
+
 function animateAvatarActivity(avatar, time, delta, reducedMotion) {
   if (!avatar?.userData) return;
+  const waveStartedAt = avatar.userData.waveStartedAt || 0;
+  const waveArm = waveStartedAt ? avatar.userData.rightArm : null;
+  if (waveArm) {
+    // The rest pose is captured on the first wave: nothing else ever moves an
+    // arm's position, only its rotation.
+    const rest =
+      avatar.userData.rightArmRest ||
+      (avatar.userData.rightArmRest = waveArm.position.clone());
+    const elapsed = time - waveStartedAt;
+    const progress = elapsed / AVATAR_WAVE_DURATION_MS;
+    if (!(progress >= 0) || progress >= 1) {
+      avatar.userData.waveStartedAt = 0;
+      waveArm.rotation.z = 0;
+      waveArm.position.copy(rest);
+    } else {
+      // One half sine lifts the arm and lowers it again; the shake rides on
+      // top of the lift so it fades in and out with the raise.
+      const lift = Math.sin(Math.PI * progress);
+      const shake = reducedMotion
+        ? 0
+        : Math.sin(elapsed * AVATAR_WAVE_SHAKE_RATE) * AVATAR_WAVE_SWEEP;
+      poseWavingArm(waveArm, rest, lift * (AVATAR_WAVE_LIFT + shake));
+    }
+  }
   const antenna = avatar.userData.antenna;
   const bulb = avatar.userData.antennaBulb;
   if (antenna?.visible && bulb) {
@@ -3915,23 +4771,6 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
     const cycle = (time * 0.001 * hz + avatar.userData.phase) % 1;
     const lit = reducedMotion || cycle < 0.5;
     bulb.material.color.set(lit ? ANTENNA_LIT_COLOR : ANTENNA_DARK_COLOR);
-  }
-  const light = avatar.userData.activityLight;
-  if (light?.visible && avatar.userData.activityBucket === "hour") {
-    // Accounts active within the hour breathe: a slow sine swell rather than
-    // the antenna's hard blink, easing between dimmed and full green.
-    const breath = reducedMotion
-      ? 1
-      : 0.5 +
-        0.5 *
-          Math.sin(
-            time * 0.001 * ACTIVITY_LIGHT_BREATH_HZ * Math.PI * 2 +
-              avatar.userData.phase,
-          );
-    light.material.color
-      .set(ACTIVITY_LIGHT_COLORS.hour)
-      .multiplyScalar(0.55 + 0.45 * breath);
-    light.scale.setScalar(0.92 + 0.16 * breath);
   }
   const inactiveFor = avatar.userData.inactiveSince
     ? Math.max(0, time - avatar.userData.inactiveSince)
@@ -5521,6 +6360,46 @@ function repositoryRecordPagerTexture(THREE, title, subtitle, color) {
   });
 }
 
+function repositoryIssueAgentProviderTexture(THREE, provider, active = false) {
+  const claude = provider === "claude-code";
+  const color = claude ? "#ef9f74" : "#8fffe0";
+  return canvasTexture(THREE, 256, 256, (context) => {
+    context.clearRect(0, 0, 256, 256);
+    context.beginPath();
+    context.arc(128, 128, 106, 0, Math.PI * 2);
+    context.fillStyle = active ? color : "#071b17";
+    context.fill();
+    context.lineWidth = active ? 18 : 12;
+    context.strokeStyle = color;
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = active ? "#07120e" : color;
+    context.font = '900 82px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(claude ? "✣" : "<>", 128, 120);
+    context.font = '800 28px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(claude ? "CLAUDE" : "CODEX", 128, 190);
+  });
+}
+
+function repositoryIssueAgentModelTexture(THREE, model, provider) {
+  const color = provider === "claude-code" ? "#ef9f74" : "#8fffe0";
+  return canvasTexture(THREE, 320, 144, (context) => {
+    context.clearRect(0, 0, 320, 144);
+    roundedRect(context, 5, 5, 310, 134, 28);
+    context.fillStyle = "#071b17";
+    context.fill();
+    context.lineWidth = 8;
+    context.strokeStyle = color;
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = color;
+    context.font = '900 42px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(model || "").toUpperCase().slice(0, 6), 160, 74);
+  });
+}
+
 function repositoryStarPlaneTexture(THREE, count, starred = false) {
   // A single, fixed upright plane avoids the chunky extruded-star silhouette
   // at close range. Its transparent texture preserves the actual star shape
@@ -5916,12 +6795,20 @@ function repositoryIssueCardTexture(THREE, issue) {
     context.textAlign = "right";
     context.fillStyle = accent;
     context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText((issue.state || "recorded").toUpperCase(), 980, 58);
+    context.fillText((issue.state || "recorded").toUpperCase(), 710, 58);
+    context.fillStyle = "rgba(143,255,224,0.07)";
+    context.fillRect(742, 18, 264, 264);
+    context.strokeStyle = "rgba(143,255,224,0.28)";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(742, 24);
+    context.lineTo(742, 276);
+    context.stroke();
     context.textAlign = "left";
     context.fillStyle = "#f1fff6";
     context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
-      String(issue.title || `Issue #${issue.number}`).slice(0, 43),
+      String(issue.title || `Issue #${issue.number}`).slice(0, 31),
       52,
       138,
     );
@@ -5939,7 +6826,7 @@ function repositoryIssueCardTexture(THREE, issue) {
     ]
       .filter(Boolean)
       .join(" · ");
-    context.fillText(meta.slice(0, 62), 52, 220);
+    context.fillText(meta.slice(0, 46), 52, 220);
     context.fillStyle = issue.metadataAvailable === false ? "#f0c66f" : "#70d99d";
     context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
@@ -6187,18 +7074,28 @@ function makeRepositoryFollowerIcon(THREE, follower) {
   const seed = repositoryFollowerSeed(follower);
   const accent =
     REPOSITORY_FOLLOWER_ACCENTS[seed % REPOSITORY_FOLLOWER_ACCENTS.length];
-  const icon = new THREE.Sprite(
-    new THREE.SpriteMaterial({
+  // Use the same fixed face-aligned plane geometry as the repository star.
+  // A Sprite nested under the rotated portal face was present in the scene but
+  // could disappear entirely at the elevated camera angles used for the
+  // sunburst. The plane remains a real circular portrait at every angle.
+  const icon = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
       map: repositoryFollowerIconTexture(THREE, follower, accent),
       transparent: true,
-      depthTest: true,
+      // These are UI-like identity badges pinned to the perimeter of a dense
+      // stack of file wedges. Letting the depth buffer participate caused the
+      // repository disk to erase the badges from common elevated camera
+      // angles even though their scene objects were present and visible.
+      depthTest: false,
       depthWrite: false,
+      side: THREE.DoubleSide,
       toneMapped: false,
     }),
   );
   icon.name = `repository-follower-icon:${follower.handle || follower.profileUrl}`;
-  icon.scale.set(0.82, 0.82, 1);
-  icon.renderOrder = 13;
+  icon.scale.set(1.14, 1.14, 1);
+  icon.renderOrder = 40;
   icon.userData.repositoryFollower = { ...follower };
   loadRepositoryFollowerAvatar(follower.avatar, (image) => {
     if (!icon.parent) return;
@@ -6208,6 +7105,109 @@ function makeRepositoryFollowerIcon(THREE, follower) {
     icon.material.needsUpdate = true;
   });
   return icon;
+}
+
+function repositoryContributorIconTexture(THREE, contributor, image = null) {
+  const label = String(contributor?.label || "Contributor").trim();
+  const initials = label
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || "")
+    .join("") || "C";
+  return canvasTexture(THREE, 192, 192, (context) => {
+    context.clearRect(0, 0, 192, 192);
+    if (image) {
+      context.save();
+      context.beginPath();
+      context.arc(96, 96, 78, 0, Math.PI * 2);
+      context.clip();
+      const ratio = Math.max(156 / image.width, 156 / image.height);
+      const width = image.width * ratio;
+      const height = image.height * ratio;
+      context.drawImage(image, 96 - width / 2, 96 - height / 2, width, height);
+      context.restore();
+    } else {
+      const seed = repositoryFollowerSeed({
+        handle: label,
+        name: label,
+      });
+      context.beginPath();
+      context.arc(96, 96, 78, 0, Math.PI * 2);
+      context.fillStyle =
+        REPOSITORY_FOLLOWER_ACCENTS[
+          seed % REPOSITORY_FOLLOWER_ACCENTS.length
+        ];
+      context.fill();
+      context.fillStyle = "#07120e";
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.font = '900 62px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(initials.slice(0, 2), 96, 99);
+    }
+    context.beginPath();
+    context.arc(96, 96, 84, 0, Math.PI * 2);
+    context.lineWidth = 12;
+    context.strokeStyle = "#9ef7c6";
+    context.stroke();
+  });
+}
+
+function makeRepositoryContributorIcon(THREE, contributor) {
+  const icon = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      map: repositoryContributorIconTexture(THREE, contributor),
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    }),
+  );
+  icon.name = `repository-contributor-icon:${contributor?.id || contributor?.label || ""}`;
+  icon.scale.set(0.64, 0.64, 1);
+  icon.renderOrder = 39;
+  icon.userData.landmark = "repositories";
+  icon.userData.graphNode = {
+    id: String(contributor?.id || "").slice(0, 96),
+    kind: "contributor",
+    label: String(contributor?.label || "Contributor").slice(0, 100),
+    detail: String(contributor?.detail || "").slice(0, 240),
+    href: "",
+  };
+  loadRepositoryFollowerAvatar(contributor?.avatarUrl, (image) => {
+    if (!icon.parent) return;
+    const next = repositoryContributorIconTexture(
+      THREE,
+      contributor,
+      image,
+    );
+    icon.material.map?.dispose?.();
+    icon.material.map = next;
+    icon.material.needsUpdate = true;
+  });
+  return icon;
+}
+
+function repositoryFollowButtonTexture(THREE, handle = "") {
+  return canvasTexture(THREE, 512, 224, (context) => {
+    context.clearRect(0, 0, 512, 224);
+    roundedRect(context, 12, 12, 488, 200, 74);
+    context.fillStyle = "#6364ff";
+    context.fill();
+    context.lineWidth = 12;
+    context.strokeStyle = "#b8b9ff";
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = "#ffffff";
+    context.font = '900 68px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("FOLLOW", 256, 88);
+    context.fillStyle = "#e8e8ff";
+    context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(handle || "ON MASTODON").slice(0, 34), 256, 154);
+  });
 }
 
 function makeRepositoryFollowerFigure(THREE, follower) {
@@ -8988,6 +9988,7 @@ export function createWorldScene({
   onOfficeProximity = () => {},
   onOfficeEnter = () => {},
   onOfficeTaskBoardSelect = () => {},
+  onOfficeTaskWallAction = () => {},
   onOfficeMeetingBoardSelect = () => {},
   onOfficeRooftopLaptopSelect = () => {},
   onWorldBulletinSelect = () => {},
@@ -8997,8 +9998,12 @@ export function createWorldScene({
   onSiteReferrerOpen = () => {},
   onSystemCapacityTableSelect = () => {},
   onInfrastructureConsoleToggle = () => {},
+  onBuildBoardNearby = () => {},
   onBuildBoardReorder = () => {},
   onBuildIssueAssign = () => {},
+  onBuildSendQa = () => {},
+  onQaVerdict = () => {},
+  onQaAction = () => {},
   onRepositoryIssueOpen = () => {},
   onRendererStateChange = () => {},
   onOfficeChairSelect = () => {},
@@ -9008,9 +10013,11 @@ export function createWorldScene({
   onRegionChange = () => {},
   onMovement = () => {},
   onModeration = () => {},
+  onAdminGuestCopy = () => {},
   onOrgTeamAssign = () => {},
   onFediverseProfile = () => {},
   onFediverseFollow = () => {},
+  onAvatarWalletAction = () => {},
   onLayoutObjectMoved = () => {},
   onForkbotChat = () => {},
   onAgentBotChat = () => {},
@@ -9018,7 +10025,6 @@ export function createWorldScene({
   onCreateRepository = () => {},
   onSwingRide = () => {},
   onCameraMode = () => {},
-  onShareLocation = () => {},
 }) {
   // Phones frequently expose a high-density screen to a comparatively small
   // GPU.  Use the same scene, but avoid allocating multisample and shadow-map
@@ -9449,6 +10455,97 @@ export function createWorldScene({
       registerMovableObject("landmark-" + landmark.id, object);
     }
   });
+  // Decorative landscaping lives on the Office island but owns no walkable
+  // surface or collision metadata. The doorway and its full bridge-width
+  // approach remain completely clear.
+  const officeLandscaping = new THREE.Group();
+  officeLandscaping.name = "forkmesh-office-landscaping";
+  officeLandscaping.position.set(
+    OFFICE_ISLAND_CENTER[0],
+    OFFICE_ISLAND_CENTER[1],
+    OFFICE_ISLAND_CENTER[2],
+  );
+  const treeTrunkMaterial = makeMaterial(THREE, "#513824", {
+    roughness: 0.92,
+  });
+  const treeCanopyMaterials = ["#174f34", "#226947", "#2d7a50"].map(
+    (color) => makeMaterial(THREE, color, { roughness: 0.88 }),
+  );
+  [
+    [-97, -26], [-97, 4], [-96, 31],
+    [97, -30], [97, 1], [96, 29],
+    [-42, -73], [0, -78], [42, -73],
+  ].forEach(([x, z], index) => {
+    const tree = new THREE.Group();
+    tree.name = `forkmesh-office-landscape-tree-${index + 1}`;
+    const trunk = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.55, 0.75, 5.2, 9),
+      treeTrunkMaterial,
+    );
+    trunk.position.y = 2.6;
+    tree.add(trunk);
+    const lowerCanopy = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(3.8, 0),
+      treeCanopyMaterials[index % treeCanopyMaterials.length],
+    );
+    lowerCanopy.position.y = 6.5;
+    lowerCanopy.scale.set(1.1, 0.92, 1.1);
+    tree.add(lowerCanopy);
+    const upperCanopy = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(2.8, 0),
+      treeCanopyMaterials[(index + 1) % treeCanopyMaterials.length],
+    );
+    upperCanopy.position.set(0.35, 9.2, -0.2);
+    tree.add(upperCanopy);
+    tree.position.set(x, 0.38, z);
+    officeLandscaping.add(tree);
+  });
+  const bushMaterial = makeMaterial(THREE, "#246b42", { roughness: 0.9 });
+  [
+    [-72, 52], [-58, 53], [-44, 52], [-29, 53], [-18, 52],
+    [18, 52], [29, 53], [44, 52], [58, 53], [72, 52],
+    [-91, -3], [-91, 17], [91, -4], [91, 18],
+  ].forEach(([x, z], index) => {
+    const bush = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(2.25, 0),
+      bushMaterial,
+    );
+    bush.name = `forkmesh-office-landscape-bush-${index + 1}`;
+    bush.position.set(x, 2.05, z);
+    bush.scale.set(1.45, 0.78, 1);
+    officeLandscaping.add(bush);
+  });
+  const flowerStemMaterial = makeMaterial(THREE, "#3d8b50", {
+    roughness: 0.9,
+  });
+  const flowerColors = ["#f28fb8", "#ffd76f", "#a99cff", "#f58e6d"];
+  [
+    [-52, 57], [-42, 57], [-30, 57], [-20, 57],
+    [20, 57], [30, 57], [42, 57], [52, 57],
+  ].forEach(([x, z], index) => {
+    const flower = new THREE.Group();
+    flower.name = `forkmesh-office-landscape-flower-${index + 1}`;
+    const stem = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.1, 1.15, 7),
+      flowerStemMaterial,
+    );
+    stem.position.y = 0.72;
+    flower.add(stem);
+    const bloom = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(0.48, 0),
+      makeMaterial(THREE, flowerColors[index % flowerColors.length], {
+        roughness: 0.68,
+        emissive: flowerColors[index % flowerColors.length],
+        emissiveIntensity: 0.08,
+      }),
+    );
+    bloom.position.y = 1.42;
+    flower.add(bloom);
+    flower.position.set(x, 0.38, z);
+    officeLandscaping.add(flower);
+  });
+  setShadows(officeLandscaping);
+  world.add(officeLandscaping);
   const mastodonKiosk = createMastodonKiosk(THREE, interactive);
   world.add(mastodonKiosk);
   registerMovableObject("mastodon-kiosk", mastodonKiosk);
@@ -10252,6 +11349,11 @@ export function createWorldScene({
   const agentBots = new Map();
   const agentBotStates = new Map();
   let agentBotAccessAllowed = false;
+  let repositoryIssueAgentPicker = null;
+  // A mirror-push socket frame is only a doorbell. It may arm a short-lived
+  // expectation, but the visual effect is released only after the next signed
+  // catalog record confirms that exact node and commit prefix.
+  const pendingMirrorPushEffects = new Map();
   for (const config of WORLD_AGENT_BOTS) {
     const avatar = new THREE.Group();
     avatar.name = `${config.id}-agent-droid`;
@@ -10337,6 +11439,7 @@ export function createWorldScene({
   const remotePlayers = new Map();
   const remoteLabels = new Map();
   const moderationActions = new WeakMap();
+  const adminGuestCopyActions = new WeakMap();
   const moderationControlKeys = new Map();
   const orgTeamActions = new WeakMap();
   const orgTeamControlKeys = new Map();
@@ -10963,20 +12066,45 @@ export function createWorldScene({
   }
 
   const officeTable = new THREE.Mesh(
-    new THREE.BoxGeometry(7.4, 0.34, 3.6),
-    makeMaterial(THREE, "#715238", { roughness: 0.66 }),
+    new THREE.CylinderGeometry(5.9, 5.65, 0.5, 48),
+    new THREE.MeshPhysicalMaterial({
+      color: "#ffffff",
+      map: officeReclaimedWoodTexture(THREE),
+      roughness: 0.48,
+      metalness: 0.04,
+      clearcoat: 0.72,
+      clearcoatRoughness: 0.16,
+    }),
   );
   officeTable.name = "forkmesh-office-marketing-tabletop";
-  officeTable.position.set(0, officeFloorY("marketing") + 1.8, 0);
+  // Lift the sealed top clear of the floor plane so the green floor can never
+  // z-fight through it at shallow camera angles.
+  officeTable.position.set(0, officeFloorY("marketing") + 2.1, 0);
   officeInterior.add(officeTable);
-  for (const x of [-3, 3]) {
-    for (const z of [-1.2, 1.2]) {
+  const officeTableEpoxy = new THREE.Mesh(
+    new THREE.CylinderGeometry(2.28, 2.28, 0.09, 48),
+    new THREE.MeshPhysicalMaterial({
+      color: "#dff9ff",
+      transparent: true,
+      opacity: 0.3,
+      roughness: 0.03,
+      metalness: 0,
+      clearcoat: 1,
+      clearcoatRoughness: 0.015,
+      depthWrite: false,
+    }),
+  );
+  officeTableEpoxy.name = "forkmesh-office-marketing-logo-epoxy";
+  officeTableEpoxy.position.set(0, officeFloorY("marketing") + 2.395, 0);
+  officeInterior.add(officeTableEpoxy);
+  for (const x of [-2.5, 2.5]) {
+    for (const z of [-2.5, 2.5]) {
       const tableLeg = new THREE.Mesh(
-        new THREE.BoxGeometry(0.22, 1.2, 0.22),
-        makeMaterial(THREE, "#10231e", { metalness: 0.35 }),
+        new THREE.CylinderGeometry(0.19, 0.25, 1.6, 12),
+        makeMaterial(THREE, "#10231e", { metalness: 0.42 }),
       );
       tableLeg.name = "forkmesh-office-marketing-table-leg";
-      tableLeg.position.set(x, officeFloorY("marketing") + 1.02, z);
+      tableLeg.position.set(x, officeFloorY("marketing") + 1.2, z);
       officeInterior.add(tableLeg);
     }
   }
@@ -10984,14 +12112,14 @@ export function createWorldScene({
   // office floor (0.4), so their sitters' shins reach the floor unchanged.
   const OFFICE_CHAIR_SEAT_TOP_Y = 0.91;
   const chairTransforms = [
-    [-5.15, 0],
-    [-2.35, -3.35],
-    [0, -3.35],
-    [2.35, -3.35],
-    [5.15, 0],
-    [2.35, 3.35],
-    [0, 3.35],
-    [-2.35, 3.35],
+    [-7.4, 0],
+    [-5.25, -5.25],
+    [0, -7.4],
+    [5.25, -5.25],
+    [7.4, 0],
+    [5.25, 5.25],
+    [0, 7.4],
+    [-5.25, 5.25],
   ];
   chairTransforms.forEach(([x, z], index) => {
     const chairId = `chair-${index + 1}`;
@@ -11049,6 +12177,7 @@ export function createWorldScene({
   officeMarketingTaskBoardFrame.userData.officeFloorId = "marketing";
   officeMarketingTaskBoardFrame.userData.interactive =
     "office-marketing-task-board";
+  interactive.push(officeMarketingTaskBoardFrame);
   officeMarketingTaskBoard.add(officeMarketingTaskBoardFrame);
   const officeMarketingTaskBoardFace = new THREE.Mesh(
     new THREE.PlaneGeometry(18.12, 11.02),
@@ -11062,47 +12191,37 @@ export function createWorldScene({
   officeMarketingTaskBoardFace.userData.officeFloorId = "marketing";
   officeMarketingTaskBoardFace.userData.interactive =
     "office-marketing-task-board";
+  interactive.push(officeMarketingTaskBoardFace);
   officeMarketingTaskBoard.add(officeMarketingTaskBoardFace);
   officeMarketingTaskBoard.userData.face = officeMarketingTaskBoardFace;
   officeMarketingTaskBoard.userData.taskState = "vacant";
   officeMarketingTaskBoard.userData.taskCount = 0;
-  interactive.push(
-    officeMarketingTaskBoardFrame,
-    officeMarketingTaskBoardFace,
-  );
   officeInterior.add(officeMarketingTaskBoard);
-  const officeGuideBoard = new THREE.Mesh(
-    new THREE.PlaneGeometry(18.5, 12.72),
+  // Marketing roster furniture is rebuilt from the authoritative team list.
+  // It never rides multiplayer presence and disappears when the room is empty.
+  const officeMarketingRosterGroup = new THREE.Group();
+  officeMarketingRosterGroup.name = "forkmesh-office-marketing-roster-desks";
+  officeInterior.add(officeMarketingRosterGroup);
+  const officeMarketingAttendanceBoard = new THREE.Mesh(
+    new THREE.PlaneGeometry(25, 12.5),
     new THREE.MeshBasicMaterial({
-      map: officeGuideBoardTexture(THREE),
+      map: officeMarketingAttendanceTexture(
+        THREE,
+        normalizeOfficeMarketingTasks({ authorized: false }),
+      ),
       toneMapped: false,
     }),
   );
-  officeGuideBoard.name = "forkmesh-office-guide-board";
-  officeGuideBoard.position.set(
-    24,
-    officeFloorY("marketing") + 6.65,
-    -OFFICE_FRONT_Z + 0.56,
+  officeMarketingAttendanceBoard.name =
+    "forkmesh-office-marketing-attendance-calendar";
+  officeMarketingAttendanceBoard.position.set(
+    OFFICE_WIDTH / 2 - 0.52,
+    officeFloorY("marketing") + 7,
+    -8,
   );
-  officeGuideBoard.userData.officeFloorId = "marketing";
-  officeGuideBoard.userData.interactive = "office-meeting-board";
-  interactive.push(officeGuideBoard);
-  officeInterior.add(officeGuideBoard);
-  const officeRoomSign = makeOfficeWallPlacard(
-    THREE,
-    "MARKETING STUDIO",
-    "campaigns · task wall · encrypted meeting",
-    "#9ef7c6",
-    28,
-    3.8,
-  );
-  officeRoomSign.name = "forkmesh-office-marketing-wall-title";
-  officeRoomSign.position.set(
-    0,
-    officeFloorY("marketing") + 13.25,
-    -OFFICE_FRONT_Z + 0.58,
-  );
-  officeInterior.add(officeRoomSign);
+  officeMarketingAttendanceBoard.rotation.y = -Math.PI / 2;
+  officeMarketingAttendanceBoard.userData.officeFloorId = "marketing";
+  officeInterior.add(officeMarketingAttendanceBoard);
   const officeLight = new THREE.PointLight("#ffd8a3", 5.5, 28, 1.6);
   officeLight.position.set(0, officeFloorY("marketing") + 6.2, 0);
   officeInterior.add(officeLight);
@@ -11241,6 +12360,22 @@ export function createWorldScene({
   officeTaskBulletinFace.position.z = 0.18;
   officeTaskBulletinFace.userData.interactive = "build-task-board";
   officeTaskBulletin.add(officeTaskBulletinFace);
+  const buildBoardSpinner = new THREE.Mesh(
+    new THREE.TorusGeometry(0.2, 0.055, 10, 28, Math.PI * 1.55),
+    new THREE.MeshBasicMaterial({
+      color: "#8ff1c3",
+      toneMapped: false,
+    }),
+  );
+  buildBoardSpinner.name = "forkmesh-build-board-updating-spinner";
+  buildBoardSpinner.position.set(5.28, 2.34, 0.27);
+  buildBoardSpinner.visible = false;
+  officeTaskBulletin.add(buildBoardSpinner);
+  animated.push((time) => {
+    if (buildBoardSpinner.visible) {
+      buildBoardSpinner.rotation.z = -time * 0.006;
+    }
+  });
   const officeTaskDoneFace = new THREE.Mesh(
     new THREE.PlaneGeometry(12.1, 1.48),
     new THREE.MeshBasicMaterial({
@@ -11327,6 +12462,31 @@ export function createWorldScene({
     issues: [],
   };
   let draggedBuildCard = null;
+  let buildBoardWasNearby = false;
+
+  function setBuildBoardLoading(loading) {
+    buildBoardSpinner.visible = loading === true;
+  }
+
+  function updateBuildBoardProximity() {
+    if (officeSceneMode !== "town") {
+      buildBoardWasNearby = false;
+      return;
+    }
+    const position = officeTaskBulletin.getWorldPosition(
+      new THREE.Vector3(),
+    );
+    const distance = Math.hypot(
+      player.position.x - position.x,
+      player.position.z - position.z,
+    );
+    if (distance <= 18 && !buildBoardWasNearby) {
+      buildBoardWasNearby = true;
+      onBuildBoardNearby();
+    } else if (distance >= 23) {
+      buildBoardWasNearby = false;
+    }
+  }
 
   function repaintBuildBoards() {
     const previousTasks = officeTaskBulletinFace.material.map;
@@ -11369,6 +12529,17 @@ export function createWorldScene({
         .filter((item) => !item.done && !completedKeys.has(item.key))
         .map((item) => [item.key, { ...item }]),
     );
+    (Array.isArray(payload?.customTasks) ? payload.customTasks : [])
+      .forEach((task) => {
+        const key = String(task?.key || "");
+        if (!/^task:[a-z0-9-]{1,48}$/.test(key)) return;
+        byKey.set(key, {
+          key,
+          task: String(task?.title || "QA follow-up").slice(0, 92),
+          estimate: "QA follow-up",
+          done: false,
+        });
+      });
     assigned.forEach((issue) => {
       const key = String(issue?.key || "");
       if (!key) return;
@@ -11425,8 +12596,129 @@ export function createWorldScene({
     const index = row * 3 + column;
     return index < count ? index : -1;
   }
+
+  function buildBoardSendQaHit(uv, index) {
+    if (!uv || index < 0) return false;
+    const fromTop = 1 - clamp(Number(uv.y) || 0, 0, 1);
+    const rowOffset = (fromTop - 0.17) % 0.205;
+    const columnOffset =
+      (clamp(Number(uv.x) || 0, 0, 0.999) * 3) % 1;
+    return rowOffset >= 0.125 && rowOffset <= 0.185 &&
+      columnOffset >= 0.62;
+  }
   world.add(officeTaskBulletin);
   registerMovableObject("office-task-bulletin", officeTaskBulletin);
+
+  const worldQaBoard = new THREE.Group();
+  worldQaBoard.name = "forkmesh-world-qa-board";
+  worldQaBoard.position.set(-15.5, 3.2, -33);
+  worldQaBoard.rotation.y = Math.atan2(
+    -worldQaBoard.position.x,
+    -worldQaBoard.position.z,
+  );
+  const qaBoardFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(8.2, 7.25, 0.38),
+    makeMaterial(THREE, "#332318", { roughness: 0.82 }),
+  );
+  worldQaBoard.add(qaBoardFrame);
+  const qaBoardFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(7.8, 6.8),
+    new THREE.MeshBasicMaterial({
+      map: worldQaCardTexture(THREE),
+      toneMapped: false,
+    }),
+  );
+  qaBoardFace.name = "forkmesh-world-qa-board-face";
+  qaBoardFace.position.z = 0.21;
+  qaBoardFace.userData.interactive = "world-qa-board";
+  worldQaBoard.add(qaBoardFace);
+  const qaBoardBase = new THREE.Mesh(
+    new THREE.BoxGeometry(8.7, 0.3, 1.55),
+    makeMaterial(THREE, "#332318", { roughness: 0.86 }),
+  );
+  qaBoardBase.position.y = -3.76;
+  worldQaBoard.add(qaBoardBase);
+  for (const x of [-3.5, 3.5]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.24, 7.6, 0.24),
+      makeMaterial(THREE, "#332318", { roughness: 0.82 }),
+    );
+    post.position.set(x, -0.25, -0.1);
+    worldQaBoard.add(post);
+  }
+  const qaSwipeCues = new THREE.Group();
+  qaSwipeCues.name = "forkmesh-world-qa-swipe-cues";
+  for (const cue of [
+    { name: "fail", arrow: "←", label: "FAIL", color: "#ff3f46", x: -5.65, y: 0 },
+    { name: "pass", arrow: "→", label: "PASS", color: "#27df78", x: 5.65, y: 0 },
+    { name: "unsure", arrow: "↓", label: "UNSURE", color: "#aeb7b2", x: 0, y: -4.82 },
+  ]) {
+    const arrow = new THREE.Mesh(
+      new THREE.PlaneGeometry(3.15, 1.62),
+      new THREE.MeshBasicMaterial({
+        map: worldQaArrowTexture(
+          THREE,
+          cue.arrow,
+          cue.label,
+          cue.color,
+        ),
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    );
+    arrow.name = `forkmesh-world-qa-${cue.name}-arrow`;
+    arrow.position.set(cue.x, cue.y, 0.3);
+    arrow.renderOrder = 48;
+    qaSwipeCues.add(arrow);
+  }
+  qaSwipeCues.visible = true;
+  worldQaBoard.add(qaSwipeCues);
+  interactive.push(qaBoardFace);
+  world.add(worldQaBoard);
+  registerMovableObject("world-qa-board", worldQaBoard);
+
+  let qaBoardSnapshot = { view: "cards", list: [] };
+
+  function updateQaBoard(snapshot = {}) {
+    qaBoardSnapshot = {
+      ...snapshot,
+      view: String(snapshot?.view || "cards"),
+      list: Array.isArray(snapshot?.list) ? snapshot.list : [],
+    };
+    const previous = qaBoardFace.material.map;
+    qaBoardFace.material.map = worldQaCardTexture(THREE, qaBoardSnapshot);
+    qaBoardFace.material.needsUpdate = true;
+    previous?.dispose?.();
+    qaSwipeCues.visible = qaBoardSnapshot.view === "cards";
+  }
+
+  let draggedQaCard = null;
+  let qaCueTimer = 0;
+
+  function showQaSwipeCues(visible, linger = false) {
+    if (qaCueTimer) {
+      clearTimeout(qaCueTimer);
+      qaCueTimer = 0;
+    }
+    // These large red/green/grey directions stay visible for every tester.
+    // Grabbing the card enlarges them briefly without hiding them afterward.
+    qaSwipeCues.visible = true;
+    qaSwipeCues.scale.setScalar(visible ? 1.08 : 1);
+    if (visible && linger) {
+      qaCueTimer = setTimeout(() => {
+        qaSwipeCues.visible = true;
+        qaSwipeCues.scale.setScalar(1);
+        qaCueTimer = 0;
+      }, 1800);
+    }
+  }
+
+  function resetQaCardTransform() {
+    qaBoardFace.position.set(0, 0, 0.21);
+    qaBoardFace.rotation.z = 0;
+  }
 
   // Shared, bounded time clock on the left lobby wall. Authenticated punches
   // are server-timestamped; the public board exposes only the latest 20 visits.
@@ -12030,31 +13322,31 @@ export function createWorldScene({
     metalness: 0.8,
     roughness: 0.2,
   });
-  const elevatorButtonGeometry = new THREE.BoxGeometry(1.25, 0.72, 0.24);
+  const elevatorButtonGeometry = new THREE.BoxGeometry(1.62, 0.78, 0.28);
   const elevatorButtonMaterials = new Map(
     OFFICE_FLOORS.map((destination) => {
-      const texture = canvasTexture(THREE, 192, 112, (context) => {
-        context.fillStyle = "#10261f";
-        context.fillRect(0, 0, 192, 112);
-        context.strokeStyle = "#8ff1c3";
-        context.lineWidth = 8;
-        context.strokeRect(5, 5, 182, 102);
+      const texture = canvasTexture(THREE, 256, 144, (context) => {
+        context.fillStyle = "#06140f";
+        context.fillRect(0, 0, 256, 144);
+        context.strokeStyle = "#9ef7c6";
+        context.lineWidth = 12;
+        context.strokeRect(7, 7, 242, 130);
         context.fillStyle = "#effff8";
         context.textAlign = "center";
         context.textBaseline = "middle";
         context.font =
-          '900 52px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText(String(destination.level + 1), 96, 39);
-        context.fillStyle = "#b9f8da";
+          '900 72px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(String(destination.level + 1), 128, 48);
+        context.fillStyle = "#9ef7c6";
         context.font =
-          '800 17px "ForkMesh Mono", ui-monospace, monospace';
+          '800 23px "ForkMesh Mono", ui-monospace, monospace';
         const teamLabel = (
           destination.team ||
           (destination.id === "rooftop" ? "ROOF" : destination.label)
         )
           .replaceAll("-", " ")
           .toUpperCase();
-        context.fillText(teamLabel, 96, 85, 172);
+        context.fillText(teamLabel, 128, 107, 226);
       });
       return [
         destination.id,
@@ -12062,7 +13354,7 @@ export function createWorldScene({
           color: "#2d8063",
           map: texture,
           emissive: "#1f9c6a",
-          emissiveIntensity: 0.9,
+          emissiveIntensity: 1.25,
           metalness: 0.46,
           roughness: 0.35,
         }),
@@ -12071,6 +13363,9 @@ export function createWorldScene({
   );
   const elevatorPanel = new THREE.Group();
   elevatorPanel.name = "forkmesh-office-elevator-cabin-panel";
+  // Keep the controls on the right-side wall. The upper-corner cabin camera
+  // looks diagonally across these large labels and through the exterior-facing
+  // opening, so riders can choose a floor without staring back into the Office.
   elevatorPanel.position.set(4.34, 3.3, -0.6);
   elevatorPanel.rotation.y = -Math.PI / 2;
   const panelBody = new THREE.Mesh(
@@ -12088,8 +13383,8 @@ export function createWorldScene({
     // Conventional lift ordering: floor 1 starts at the lower-left, rises
     // left-to-right, and the rooftop ends at the top.
     button.position.set(
-      (column - 0.5) * 2.2,
-      -1.65 + rowFromBottom * 0.78,
+      (column - 0.5) * 2.35,
+      -1.7 + rowFromBottom * 0.82,
       0.3,
     );
     button.name = `forkmesh-office-elevator-button-${destination.id}`;
@@ -12213,6 +13508,10 @@ export function createWorldScene({
   let officeFloorAccess = normalizeOfficeFloorAccess();
   let officeFloorHandler = null;
   let officeElevatorRide = null;
+  let officeElevatorCameraLocked = false;
+  let officeElevatorCameraReleased = false;
+  let officeElevatorPriorCameraMode = null;
+  let officeElevatorPriorCameraFov = null;
   let officeAttendance = { visits: [] };
   let officeAttendanceObservedAt = performance.now();
   let officeAttendanceRenderedBucket = 0;
@@ -12550,6 +13849,7 @@ export function createWorldScene({
       duration: 1400 + Math.abs(floor.level -
         (officeFloorById(officeCurrentFloorId)?.level || 0)) * 360,
     };
+    lockOfficeElevatorCamera();
     cancelDash();
     jumpQueued = false;
     jumpVelocity = 0;
@@ -13122,6 +14422,94 @@ export function createWorldScene({
     );
   }
 
+  function rebuildOfficeMarketingRoster() {
+    officeMarketingRosterGroup.traverse((child) => {
+      if (!child.isMesh) return;
+      child.geometry?.dispose?.();
+      child.material?.map?.dispose?.();
+      child.material?.dispose?.();
+    });
+    officeMarketingRosterGroup.clear();
+    const members = officeMarketingTaskSnapshot.members || [];
+    const columns = Math.max(1, Math.min(12, members.length));
+    members.forEach((member, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      const desk = new THREE.Group();
+      desk.name = `forkmesh-office-marketing-desk:${member}`;
+      const desktop = new THREE.Mesh(
+        new THREE.BoxGeometry(7.4, 0.34, 3.6),
+        new THREE.MeshPhysicalMaterial({
+          color: "#76503a",
+          map: officeReclaimedWoodTexture(THREE),
+          roughness: 0.56,
+          clearcoat: 0.42,
+          clearcoatRoughness: 0.18,
+        }),
+      );
+      desktop.position.y = 1.7;
+      desk.add(desktop);
+      for (const x of [-3, 3]) {
+        const leg = new THREE.Mesh(
+          new THREE.BoxGeometry(0.22, 1.45, 2.4),
+          makeMaterial(THREE, "#10231e", { metalness: 0.38 }),
+        );
+        leg.position.set(x, 0.8, 0);
+        desk.add(leg);
+      }
+      const nameplate = new THREE.Mesh(
+        new THREE.PlaneGeometry(5.9, 1.46),
+        new THREE.MeshBasicMaterial({
+          map: officeMarketingDeskNameTexture(THREE, member),
+          toneMapped: false,
+        }),
+      );
+      nameplate.position.set(0, 1.2, 1.82);
+      desk.add(nameplate);
+      // Desks line the rear windows rather than floating in the middle of the
+      // room. Additional rows move inward while retaining a broad aisle.
+      desk.position.set(
+        (column - (columns - 1) / 2) * 10.6,
+        officeFloorY("marketing"),
+        -38 + row * 6.8,
+      );
+      desk.userData.officeFloorId = "marketing";
+      desk.traverse((child) => {
+        if (child.isMesh) child.userData.officeFloorId = "marketing";
+      });
+      officeMarketingRosterGroup.add(desk);
+      const deskChair = new THREE.Group();
+      deskChair.name = `forkmesh-office-marketing-desk-chair:${member}`;
+      const deskSeat = new THREE.Mesh(
+        new THREE.BoxGeometry(1.25, 0.2, 1.25),
+        makeMaterial(THREE, "#2f6d56", { roughness: 0.72 }),
+      );
+      deskSeat.position.y = 0.86;
+      deskChair.add(deskSeat);
+      const deskBack = new THREE.Mesh(
+        new THREE.BoxGeometry(1.25, 1.55, 0.2),
+        makeMaterial(THREE, "#347a61", { roughness: 0.7 }),
+      );
+      deskBack.position.set(0, 1.5, -0.56);
+      deskChair.add(deskBack);
+      deskChair.position.set(
+        desk.position.x,
+        officeFloorY("marketing"),
+        desk.position.z + 3.0,
+      );
+      deskChair.userData.officeFloorId = "marketing";
+      deskChair.traverse((child) => {
+        if (child.isMesh) child.userData.officeFloorId = "marketing";
+      });
+      officeMarketingRosterGroup.add(deskChair);
+    });
+    const previous = officeMarketingAttendanceBoard.material.map;
+    officeMarketingAttendanceBoard.material.map =
+      officeMarketingAttendanceTexture(THREE, officeMarketingTaskSnapshot);
+    officeMarketingAttendanceBoard.material.needsUpdate = true;
+    previous?.dispose?.();
+  }
+
   function renderOfficeMarketingTasks() {
     const occupied = officeMarketingRoomOccupied();
     const key = JSON.stringify({
@@ -13144,12 +14532,64 @@ export function createWorldScene({
     officeMarketingTaskBoard.userData.taskCount = occupied
       ? officeMarketingTaskSnapshot.tasks.length
       : 0;
+    officeMarketingRosterGroup.visible =
+      occupied && officeMarketingTaskSnapshot.authorized;
+    officeMarketingAttendanceBoard.visible =
+      occupied && officeMarketingTaskSnapshot.authorized;
     return officeMarketingTaskSnapshot;
   }
 
   function updateOfficeMarketingTasks(payload = {}) {
     officeMarketingTaskSnapshot = normalizeOfficeMarketingTasks(payload);
+    rebuildOfficeMarketingRoster();
     return renderOfficeMarketingTasks();
+  }
+
+  function marketingTaskWallAction(uv) {
+    if (
+      !uv ||
+      !officeMarketingRoomOccupied() ||
+      !officeMarketingTaskSnapshot.authorized
+    ) {
+      return null;
+    }
+    const x = clamp(Number(uv.x) || 0, 0, 1) * 2048;
+    const y = (1 - clamp(Number(uv.y) || 0, 0, 1)) * 1024;
+    const snapshot = officeMarketingTaskSnapshot;
+    if (snapshot.canManage && y >= 164 && y <= 272) {
+      if (x < 1010 && snapshot.members.length) {
+        const first = snapshot.members.shift();
+        snapshot.members.push(first);
+        officeMarketingTaskBoard.userData.taskKey = "";
+        renderOfficeMarketingTasks();
+        return { action: "select-assignee", assignee: snapshot.members[0] };
+      }
+      if (x >= 1010) {
+        return {
+          action: "create",
+          assignee: snapshot.members[0] || snapshot.actor,
+        };
+      }
+    }
+    const rowsTop = snapshot.canManage ? 298 : 174;
+    const row = Math.floor((y - rowsTop) / 112);
+    const tasks = snapshot.tasks.slice(0, snapshot.canManage ? 6 : 7);
+    const task = tasks[row];
+    if (!task || y < rowsTop || y > rowsTop + row * 112 + 96) return null;
+    let action = "";
+    if (x >= 1110 && x <= 1370 && task.canStartStop) {
+      action = task.status === "active" ? "stop" : "start";
+    } else if (
+      x >= 1405 &&
+      x <= 1665 &&
+      task.canComplete &&
+      task.status !== "done"
+    ) {
+      action = "complete";
+    } else if (x >= 1700 && x <= 1960 && task.canDelete) {
+      action = "delete";
+    }
+    return action ? { action, id: task.id } : null;
   }
 
   function updateWorldBulletin(events = []) {
@@ -13412,6 +14852,7 @@ export function createWorldScene({
     officeSceneMode = "town";
     officeCurrentFloorId = "lobby";
     officeElevatorRide = null;
+    releaseOfficeElevatorCamera(false);
     currentSpace = "town-square";
     localPosition.x = clamp(
       localPosition.x,
@@ -13509,6 +14950,39 @@ export function createWorldScene({
     renderer.domElement.dataset.cameraMode = cameraMode;
     if (changed) onCameraMode({ mode: cameraMode, reason });
     return cameraMode;
+  }
+
+  function lockOfficeElevatorCamera() {
+    if (!officeElevatorCameraLocked) {
+      officeElevatorPriorCameraMode = cameraMode;
+      officeElevatorPriorCameraFov = camera.fov;
+    }
+    officeElevatorCameraLocked = true;
+    officeElevatorCameraReleased = false;
+    if (cameraMode !== "first-person") {
+      setCameraMode("first-person", "office-elevator-enter");
+    }
+    if (camera.fov !== 58) {
+      camera.fov = 58;
+      camera.updateProjectionMatrix();
+    }
+  }
+
+  function releaseOfficeElevatorCamera(released = true) {
+    if (officeElevatorCameraLocked || officeElevatorPriorCameraMode) {
+      const prior = officeElevatorPriorCameraMode || "third-person";
+      officeElevatorCameraLocked = false;
+      officeElevatorPriorCameraMode = null;
+      if (cameraMode !== prior) {
+        setCameraMode(prior, "office-elevator-exit");
+      }
+      if (Number.isFinite(officeElevatorPriorCameraFov)) {
+        camera.fov = officeElevatorPriorCameraFov;
+        camera.updateProjectionMatrix();
+      }
+      officeElevatorPriorCameraFov = null;
+    }
+    officeElevatorCameraReleased = Boolean(released);
   }
 
   function setCameraView(view = {}) {
@@ -13867,6 +15341,7 @@ export function createWorldScene({
     officeElevatorDoors[1].position.x = 4.36;
     currentSpace = `office-${ride.floorId}`;
     officeElevatorRide = null;
+    releaseOfficeElevatorCamera(true);
     renderOfficeMarketingTasks();
     onOfficeElevatorSound("arrive", {
       floor: ride.floorId,
@@ -14524,6 +15999,10 @@ export function createWorldScene({
       state.completion = null;
       state.target.copy(avatar.position);
     }
+    const deskData = world.userData.repositoryRecordDeskData;
+    if (deskData) {
+      updateRepositoryRecordDesk(deskData.selection, deskData.records);
+    }
     return agentBotAccessAllowed;
   }
 
@@ -14699,6 +16178,36 @@ export function createWorldScene({
         : officeSceneMode === "lobby"
           ? player
           : null;
+    if (officeSceneMode === "lobby") {
+      const localPosition = officeAvatarLocalPosition(player);
+      const insideElevator = officeElevatorCabinContains(
+        localPosition.x,
+        localPosition.z,
+        OFFICE_AVATAR_RADIUS,
+      );
+      if (!insideElevator) {
+        releaseOfficeElevatorCamera(false);
+      } else if (officeElevatorRide || !officeElevatorCameraReleased) {
+        lockOfficeElevatorCamera();
+      }
+    } else {
+      releaseOfficeElevatorCamera(false);
+    }
+    if (officeElevatorCameraLocked) {
+      // Elevator security-camera framing from the upper rear-left corner of
+      // the moving glass car. It looks diagonally across the right-wall
+      // controls and out through the exterior-facing opening, never back into
+      // the Office interior.
+      const eye = officeElevatorCar.localToWorld(
+        new THREE.Vector3(-3.72, 6.46, 2.7),
+      );
+      const outsideTarget = officeElevatorCar.localToWorld(
+        new THREE.Vector3(3.4, 3.15, -5.4),
+      );
+      camera.position.copy(eye);
+      camera.lookAt(outsideTarget);
+      return;
+    }
     if (cameraMode === "first-person") {
       const firstPersonAvatar = officeAvatar || player;
       const eye = firstPersonAvatar
@@ -14858,42 +16367,42 @@ export function createWorldScene({
     return true;
   }
 
-  // The chest is clickable on the local player and on live peers: the two
-  // tabs under the badge swap the display, and the fediverse tab's follow
-  // pill is hit by UV inside the badge plane itself.
+  // One unified chest card is clickable on the local player and live peers.
+  // It contains identity, Fediverse and wallet controls without mode tabs.
   function registerAvatarChestControls(avatar, peerId) {
     if (!avatar?.userData?.badge || avatar.userData.chestRegistered) return;
-    const meshes = [
-      avatar.userData.badge,
-      ...(avatar.userData.chestTabs?.children || []),
-    ];
+    const meshes = [avatar.userData.badge];
     meshes.forEach((mesh) => {
       chestControls.set(mesh, { avatar, peerId: String(peerId || "") });
       interactive.push(mesh);
     });
     avatar.userData.chestRegistered = true;
+    if (!avatar.userData.fediverseProfile) {
+      avatar.userData.fediverseProfile = { state: "loading" };
+      const target = {
+        peerId: String(peerId || ""),
+        name: String(avatar.userData.badgeIdentity?.name || ""),
+        accountStatus: String(
+          avatar.userData.badgeIdentity?.accountStatus || "Guest",
+        ),
+        self: String(peerId || "") === identity.id,
+      };
+      // The local player registers while createWorldScene is still returning.
+      // Defer one microtask so world.js has stored the scene handle before a
+      // fast cached profile response tries to paint this card.
+      queueMicrotask(() => onFediverseProfile(target));
+    }
   }
 
   function unregisterAvatarChestControls(avatar) {
     if (!avatar?.userData?.chestRegistered) return;
-    [
-      avatar.userData.badge,
-      ...(avatar.userData.chestTabs?.children || []),
-    ].forEach((mesh) => {
+    [avatar.userData.badge].forEach((mesh) => {
       if (!mesh) return;
       chestControls.delete(mesh);
       const index = interactive.indexOf(mesh);
       if (index >= 0) interactive.splice(index, 1);
     });
     avatar.userData.chestRegistered = false;
-  }
-
-  function setAvatarChestTab(avatar, tab) {
-    if (!avatar?.userData?.badge) return;
-    const next = tab === "fediverse" ? "fediverse" : "info";
-    if (avatar.userData.chestTab === next) return;
-    avatar.userData.chestTab = next;
-    renderAvatarBadge(THREE, avatar, avatar.userData.badgeRemote === true);
   }
 
   /** Attach a loaded (or failed) fediverse card to one avatar's chest. */
@@ -14906,15 +16415,11 @@ export function createWorldScene({
     if (!avatar?.userData?.badge) return;
     avatar.userData.fediverseProfile =
       profile && typeof profile === "object" ? profile : { state: "unavailable" };
-    if (avatar.userData.chestTab === "fediverse") {
-      renderAvatarBadge(THREE, avatar, avatar.userData.badgeRemote === true);
-    }
+    renderAvatarBadge(THREE, avatar, avatar.userData.badgeRemote === true);
     if (avatar === player && officeLobbyPlayer?.userData?.badge) {
       officeLobbyPlayer.userData.fediverseProfile =
         avatar.userData.fediverseProfile;
-      if (officeLobbyPlayer.userData.chestTab === "fediverse") {
-        renderAvatarBadge(THREE, officeLobbyPlayer, false);
-      }
+      renderAvatarBadge(THREE, officeLobbyPlayer, false);
     }
   }
 
@@ -14933,28 +16438,15 @@ export function createWorldScene({
 
   function handleChestControl(control, hit) {
     const avatar = control.avatar;
-    const tab = hit.object.userData?.chestTab;
-    if (tab) {
-      setAvatarChestTab(avatar, tab);
-      if (tab === "fediverse" && !avatar.userData.fediverseProfile) {
-        avatar.userData.fediverseProfile = { state: "loading" };
-        renderAvatarBadge(THREE, avatar, avatar.userData.badgeRemote === true);
-        onFediverseProfile({
-          peerId: control.peerId,
-          name: String(avatar.userData.badgeIdentity?.name || ""),
-          accountStatus: String(
-            avatar.userData.badgeIdentity?.accountStatus || "Guest",
-          ),
-          self: control.peerId === identity.id,
-        });
-      }
+    if (badgeWalletSquareHit(hit.uv)) {
+      onAvatarWalletAction({
+        peerId: control.peerId,
+        self: control.peerId === identity.id,
+        address: String(avatar.userData.badgeIdentity?.solana || ""),
+      });
       return;
     }
-    // The badge plane: only the fediverse tab's follow pill is actionable.
-    if (
-      avatar.userData.chestTab !== "fediverse" ||
-      !badgeFollowPillHit(hit.uv)
-    ) {
+    if (!badgeFollowPillHit(hit.uv)) {
       return;
     }
     const profile = avatar.userData.fediverseProfile || {};
@@ -14973,6 +16465,7 @@ export function createWorldScene({
     if (controls) {
       controls.traverse((child) => {
         moderationActions.delete(child);
+        adminGuestCopyActions.delete(child);
         const interactiveIndex = interactive.indexOf(child);
         if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
       });
@@ -14990,10 +16483,16 @@ export function createWorldScene({
       remote,
       identity?.isAdmin === true,
     );
+    const guestNetwork = sanitizedAdminGuestNetwork(
+      remote,
+      identity?.isAdmin === true,
+    );
     const key = JSON.stringify([
       name,
       handles.ip || "",
       handles.agent || "",
+      guestNetwork.ipAddress || "",
+      guestNetwork.userAgent || "",
     ]);
     if (
       moderationControlKeys.get(peerId) === key &&
@@ -15002,10 +16501,32 @@ export function createWorldScene({
       return;
     }
     removeRemoteModerationControls(avatar, peerId);
-    if (!handles.ip && !handles.agent) return;
+    if (
+      !handles.ip &&
+      !handles.agent &&
+      !guestNetwork.ipAddress &&
+      !guestNetwork.userAgent
+    ) {
+      return;
+    }
 
-    const controls = createAvatarModerationControls(THREE, handles);
+    const controls = createAvatarModerationControls(
+      THREE,
+      handles,
+      guestNetwork,
+    );
     controls.children.forEach((control) => {
+      const copyField = control.userData.worldGuestCopy;
+      if (copyField && guestNetwork[copyField]) {
+        adminGuestCopyActions.set(control, {
+          field: copyField,
+          value: guestNetwork[copyField],
+          peerId,
+          name,
+        });
+        interactive.push(control);
+        return;
+      }
       const targetType = control.userData.worldModerationControl;
       const handle = handles[targetType];
       if (!WORLD_MODERATION_HANDLE_PATTERN.test(handle || "")) return;
@@ -15034,6 +16555,12 @@ export function createWorldScene({
       disposeObject3D(controls);
       delete avatar.userData.orgTeamControls;
     }
+    const teamBadges = avatar?.userData?.teamBadges;
+    if (teamBadges) {
+      avatar.userData.leftArm?.remove(teamBadges);
+      disposeObject3D(teamBadges);
+      delete avatar.userData.teamBadges;
+    }
     orgTeamControlKeys.delete(String(peerId || ""));
   }
 
@@ -15054,29 +16581,57 @@ export function createWorldScene({
       assignment?.member || "",
       assignment?.assigned ?? -1,
       assignment?.total ?? -1,
+      assignment?.canManage === true,
+      ...(assignment?.teams || []),
     ]);
+    const hasExpectedControl =
+      assignment?.canManage !== true ||
+      Boolean(avatar?.userData?.orgTeamControls);
+    const hasExpectedBadges =
+      !assignment?.teams?.length || Boolean(avatar?.userData?.teamBadges);
     if (
       orgTeamControlKeys.get(peerId) === key &&
-      avatar?.userData?.orgTeamControls
+      hasExpectedControl &&
+      hasExpectedBadges
     ) {
       return;
     }
     removeRemoteOrgTeamControl(avatar, peerId);
     if (!assignment) return;
 
-    const controls = createAvatarOrgTeamControl(THREE, assignment);
-    controls.children.forEach((control) => {
-      orgTeamActions.set(control, {
-        org: assignment.org,
-        member: assignment.member,
-        peerId,
-        name,
+    if (assignment.canManage) {
+      const controls = createAvatarOrgTeamControl(THREE, assignment);
+      controls.children.forEach((control) => {
+        orgTeamActions.set(control, {
+          org: assignment.org,
+          member: assignment.member,
+          peerId,
+          name,
+        });
+        interactive.push(control);
       });
-      interactive.push(control);
-    });
-    avatar.add(controls);
-    avatar.userData.orgTeamControls = controls;
+      avatar.add(controls);
+      avatar.userData.orgTeamControls = controls;
+    }
+    if (assignment.teams.length && avatar.userData.leftArm) {
+      const teamBadges = createAvatarTeamBadges(THREE, assignment);
+      avatar.userData.leftArm.add(teamBadges);
+      avatar.userData.teamBadges = teamBadges;
+    }
     orgTeamControlKeys.set(peerId, key);
+  }
+
+  function setLocalOrgTeam(orgTeam) {
+    const localRecord = {
+      id: identity.id,
+      name: identity.name,
+      accountStatus: identity.accountStatus || "Registered",
+      orgTeam,
+    };
+    syncRemoteOrgTeamControl(player, localRecord);
+    if (officeLobbyPlayer) {
+      syncRemoteOrgTeamControl(officeLobbyPlayer, localRecord);
+    }
   }
 
   // Fill in the directory-only rows for an avatar's badge. A guest can type
@@ -15934,7 +17489,24 @@ export function createWorldScene({
         cameraFocus.y += 1.65;
       }
       const nextCommit = String(node?.commit || "");
-      if (priorCommit && nextCommit && nextCommit !== priorCommit) {
+      const pendingPush = pendingMirrorPushEffects.get(
+        nodeName.toLowerCase(),
+      );
+      const verifiedPendingPush = Boolean(
+        pendingPush &&
+        pendingPush.expiresAt > Date.now() &&
+        nextCommit.toLowerCase().startsWith(pendingPush.commit),
+      );
+      if (pendingPush && pendingPush.expiresAt <= Date.now()) {
+        pendingMirrorPushEffects.delete(nodeName.toLowerCase());
+      }
+      if (
+        verifiedPendingPush ||
+        (priorCommit && nextCommit && nextCommit !== priorCommit)
+      ) {
+        if (verifiedPendingPush) {
+          pendingMirrorPushEffects.delete(nodeName.toLowerCase());
+        }
         spawnPushSurge(cabinet.position);
       }
       const nextServed = mirrorServedTotal(node);
@@ -15951,6 +17523,28 @@ export function createWorldScene({
       removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
+  }
+
+  function armMirrorPushEffect(nodeName, commitPrefix) {
+    const node = String(nodeName || "").trim().toLowerCase();
+    const commit = String(commitPrefix || "").trim().toLowerCase();
+    if (
+      !/^[a-z0-9][a-z0-9.-]{0,79}$/.test(node) ||
+      !/^[0-9a-f]{12}$/.test(commit)
+    ) {
+      return false;
+    }
+    pendingMirrorPushEffects.set(node, {
+      commit,
+      // The push frame arrives immediately after the relay accepts the signed
+      // publication, but edge caches and a busy mirror can take longer than
+      // the old 15-second window to expose the matching catalog snapshot.
+      // Keep the doorbell armed through two normal catalog polls; the effect
+      // still cannot fire unless that signed record confirms this exact node
+      // and commit prefix.
+      expiresAt: Date.now() + 120_000,
+    });
+    return true;
   }
 
   function relayoutNetworkNodes() {
@@ -16749,6 +18343,11 @@ export function createWorldScene({
           fediverseFollowerStatus: String(
             record.fediverseFollowerStatus || "idle",
           ).slice(0, 20),
+          fediverseHandle: String(record.fediverseHandle || "").slice(0, 120),
+          fediverseActorUrl: String(record.fediverseActorUrl || "").slice(
+            0,
+            500,
+          ),
           fediverseFollowers: Array.isArray(record.fediverseFollowers)
             ? record.fediverseFollowers.slice(0, REPOSITORY_FOLLOWERS_VISIBLE)
             : [],
@@ -16763,6 +18362,7 @@ export function createWorldScene({
         activeRepository?.repo || activeRepository?.name || "",
       ).toLocaleLowerCase()
     }`;
+    world.userData.repositoryActiveKey = activeKey;
     const catalogSignature = JSON.stringify([
       activeKey,
       records.map((record) => [
@@ -16777,6 +18377,8 @@ export function createWorldScene({
         record.starred,
         record.fediverseFollowerCount,
         record.fediverseFollowerStatus,
+        record.fediverseHandle,
+        record.fediverseActorUrl,
         record.sizeTree
           ? [
               String(record.sizeTree.commit || "").slice(0, 64),
@@ -17194,19 +18796,25 @@ export function createWorldScene({
         const followerStatus = String(record.fediverseFollowerStatus || "idle");
         const gallery = new THREE.Group();
         gallery.name = `repository-fediverse-follower-icons:${record.owner}/${record.name}`;
-        gallery.position.z = 0.46;
+        // Keep the social portraits on the wheel's local face plane. A deep
+        // positive-Z offset made them parallax toward the camera and appear
+        // detached from the circle at elevated viewing angles.
+        gallery.position.set(0, 0.55, 0.18);
         const visibleFollowers = followers.slice(
           0,
           REPOSITORY_FOLLOWERS_VISIBLE,
         );
         visibleFollowers.forEach((follower, followerIndex) => {
           const icon = makeRepositoryFollowerIcon(THREE, follower);
+          // A broad upper arc makes the large follower portraits an explicit
+          // OUTER social ring while keeping the stone plaque clear.
           const orbitAngle =
-            -Math.PI / 2 +
-            (followerIndex / Math.max(1, visibleFollowers.length)) *
+            Math.PI * 1.08 -
+            (followerIndex /
+              Math.max(1, visibleFollowers.length - 1)) *
               Math.PI *
-              2;
-          const orbitRadius = nodeRadius * 2.65;
+              1.16;
+          const orbitRadius = 4.25;
           icon.position.set(
             Math.cos(orbitAngle) * orbitRadius,
             Math.sin(orbitAngle) * orbitRadius,
@@ -17234,10 +18842,45 @@ export function createWorldScene({
         );
         caption.name = `repository-fediverse-follower-caption:${record.owner}/${record.name}`;
         caption.scale.set(2.8, 0.74, 1);
-        caption.position.set(0, -nodeRadius * 2.85, 0);
+        caption.position.set(0, -3.45, 0);
+        caption.material.depthTest = false;
+        caption.material.depthWrite = false;
+        caption.renderOrder = 39;
         gallery.add(caption);
-        face.add(gallery);
+        // The size-map view hides the original portal face. Keep the social
+        // ring on the persistent portal mount so real followers remain visible
+        // around the live file sunburst.
+        node.add(gallery);
         node.userData.fediverseFollowers = visibleFollowers;
+
+        if (record.fediverseActorUrl || record.fediverseHandle) {
+          const follow = new THREE.Mesh(
+            new THREE.PlaneGeometry(1.5, 0.66),
+            new THREE.MeshBasicMaterial({
+              map: repositoryFollowButtonTexture(
+                THREE,
+                record.fediverseHandle,
+              ),
+              transparent: true,
+              depthTest: false,
+              depthWrite: false,
+              side: THREE.DoubleSide,
+              toneMapped: false,
+            }),
+          );
+          follow.name = `repository-fediverse-follow:${record.owner}/${record.name}`;
+          follow.position.set(1.8, 5.18, 0.2);
+          follow.renderOrder = 42;
+          follow.userData.landmark = "repositories";
+          follow.userData.repositoryFediverseFollow = {
+            owner: record.owner,
+            name: record.name,
+            handle: String(record.fediverseHandle || "").slice(0, 120),
+            actorUrl: String(record.fediverseActorUrl || "").slice(0, 500),
+          };
+          node.add(follow);
+          interactive.push(follow);
+        }
       }
       node.userData.repositoryPortal = repositoryPortal;
       node.userData.repositoryFace = face;
@@ -17712,6 +19355,7 @@ export function createWorldScene({
     if (world.userData.repositoryRecordPageKey !== repositoryKey) {
       world.userData.repositoryRecordPageKey = repositoryKey;
       world.userData.repositoryRecordPages = { issue: 0, pull: 0 };
+      repositoryIssueAgentPicker = null;
     }
     const issues = (Array.isArray(records?.issues) ? records.issues : [])
       .map((record) => ({
@@ -17833,6 +19477,9 @@ export function createWorldScene({
       items.forEach((record, index) => {
         const column = Math.floor(index / rows);
         const row = index % rows;
+        const cardX = columns === 2 ? (column - 0.5) * 3.5 : 0;
+        const cardY =
+          groundY + 0.8 + boardHeight - 0.62 - row * 0.62;
         const card = new THREE.Mesh(
           new THREE.PlaneGeometry(3.28, 0.56),
           new THREE.MeshBasicMaterial({
@@ -17843,11 +19490,7 @@ export function createWorldScene({
           }),
         );
         card.name = `repository-${kind}-card:${record.number}`;
-        card.position.set(
-          columns === 2 ? (column - 0.5) * 3.5 : 0,
-          groundY + 0.8 + boardHeight - 0.62 - row * 0.62,
-          0.08,
-        );
+        card.position.set(cardX, cardY, 0.08);
         card.userData.landmark = "repositories";
         card.userData.repositoryRecordPageKind = kind;
         const page = {
@@ -17860,6 +19503,95 @@ export function createWorldScene({
         else card.userData.repositoryPullPage = page;
         desk.add(card);
         interactive.push(card);
+        if (isIssue && record.state === "open" && agentBotAccessAllowed) {
+          const selectedProvider =
+            repositoryIssueAgentPicker?.repositoryKey === repositoryKey &&
+            repositoryIssueAgentPicker?.number === record.number
+              ? repositoryIssueAgentPicker.provider
+              : "";
+          [
+            { provider: "claude-code", x: 1.14 },
+            { provider: "codex", x: 1.47 },
+          ].forEach(({ provider, x }) => {
+            const providerButton = new THREE.Mesh(
+              new THREE.PlaneGeometry(0.28, 0.28),
+              new THREE.MeshBasicMaterial({
+                map: repositoryIssueAgentProviderTexture(
+                  THREE,
+                  provider,
+                  selectedProvider === provider,
+                ),
+                transparent: true,
+                depthTest: false,
+                depthWrite: false,
+                toneMapped: false,
+              }),
+            );
+            providerButton.name =
+              `repository-issue-agent-provider:${record.number}:${provider}`;
+            providerButton.position.set(cardX + x, cardY + 0.1, 0.18);
+            providerButton.renderOrder = 45;
+            providerButton.userData.landmark = "repositories";
+            providerButton.userData.repositoryIssueAgentProvider = {
+              owner,
+              name,
+              number: record.number,
+              title: record.title,
+              provider,
+            };
+            desk.add(providerButton);
+            interactive.push(providerButton);
+          });
+          if (selectedProvider) {
+            const models =
+              selectedProvider === "claude-code"
+                ? ["haiku", "sonnet", "opus", "fable"]
+                : ["sol", "luna", "terra"];
+            const chipWidth = selectedProvider === "claude-code" ? 0.29 : 0.38;
+            const chipGap = 0.02;
+            const totalWidth =
+              models.length * chipWidth + (models.length - 1) * chipGap;
+            models.forEach((model, modelIndex) => {
+              const modelButton = new THREE.Mesh(
+                new THREE.PlaneGeometry(chipWidth, 0.15),
+                new THREE.MeshBasicMaterial({
+                  map: repositoryIssueAgentModelTexture(
+                    THREE,
+                    model,
+                    selectedProvider,
+                  ),
+                  transparent: true,
+                  depthTest: false,
+                  depthWrite: false,
+                  toneMapped: false,
+                }),
+              );
+              modelButton.name =
+                `repository-issue-agent-model:${record.number}:${selectedProvider}:${model}`;
+              modelButton.position.set(
+                cardX +
+                  0.84 +
+                  modelIndex * (chipWidth + chipGap) -
+                  totalWidth / 2 +
+                  chipWidth / 2,
+                cardY - 0.14,
+                0.2,
+              );
+              modelButton.renderOrder = 46;
+              modelButton.userData.landmark = "repositories";
+              modelButton.userData.repositoryIssueAgentAssignment = {
+                owner,
+                name,
+                number: record.number,
+                title: record.title,
+                provider: selectedProvider,
+                model,
+              };
+              desk.add(modelButton);
+              interactive.push(modelButton);
+            });
+          }
+        }
       });
       const caption = repositoryRecordCaptionSprite(
         THREE,
@@ -17982,6 +19714,29 @@ export function createWorldScene({
     });
   }
 
+  function setRepositoryIssueAgentPicker(picker = null) {
+    if (!agentBotAccessAllowed) return false;
+    const data = world.userData.repositoryRecordDeskData;
+    if (!data) return false;
+    const number = safeRecordNumber(picker?.number);
+    const provider = ["claude-code", "codex"].includes(picker?.provider)
+      ? picker.provider
+      : "";
+    const repositoryKey = `${String(picker?.owner || "").toLowerCase()}/${String(
+      picker?.name || "",
+    ).toLowerCase()}`;
+    repositoryIssueAgentPicker =
+      number && provider
+        ? {
+            repositoryKey,
+            number,
+            provider,
+          }
+        : null;
+    updateRepositoryRecordDesk(data.selection, data.records);
+    return true;
+  }
+
   function updateRepositoryGraph(entries = [], entities = []) {
     const district = landmarkObjects.get("repositories");
     const meshes = district?.userData?.fileMeshes || [];
@@ -17997,6 +19752,50 @@ export function createWorldScene({
           )
           .slice(0, 32)
       : [];
+    // Contributors occupy their own smaller INNER portrait ring on the
+    // selected repository face. This is deliberately separate from the large
+    // outer Mastodon-follower ring so the two relationships are immediately
+    // distinguishable.
+    const activePortal = repositoryPortals.get(
+      String(world.userData.repositoryActiveKey || ""),
+    )?.group;
+    const previousContributorOrbit =
+      activePortal?.getObjectByName?.("repository-contributor-inner-ring");
+    removeGeneratedLayer(
+      activePortal,
+      previousContributorOrbit,
+      interactive,
+    );
+    if (activePortal) {
+      const contributors = safeEntities
+        .filter((entity) => String(entity?.kind || "") === "contributor")
+        .slice(0, 8);
+      if (contributors.length) {
+        const contributorOrbit = new THREE.Group();
+        contributorOrbit.name = "repository-contributor-inner-ring";
+        contributorOrbit.position.set(0, 0.55, 0.17);
+        contributors.forEach((contributor, contributorIndex) => {
+          const icon = makeRepositoryContributorIcon(THREE, contributor);
+          const angle =
+            Math.PI * 1.04 -
+            (contributorIndex /
+              Math.max(1, contributors.length - 1)) *
+              Math.PI *
+              1.08;
+          const radius = 2.7;
+          icon.position.set(
+            Math.cos(angle) * radius,
+            Math.sin(angle) * radius,
+            0,
+          );
+          contributorOrbit.add(icon);
+          interactive.push(icon);
+        });
+        // Like the follower orbit, this must survive the portal-face swap that
+        // displays the repository size map.
+        activePortal.add(contributorOrbit);
+      }
+    }
     const maxSize = Math.max(
       1,
       ...safeEntries.map((entry) => Math.max(0, Number(entry?.size) || 0)),
@@ -18311,6 +20110,10 @@ export function createWorldScene({
       ? player
       : remotePlayers.get(peerId) || (peerId === identity.id ? player : null);
     if (!avatar) return;
+    // A wave is the one emote with a body pose behind the floating glyph, and
+    // it plays the same way whether the gesture came from this browser or off
+    // the relay.
+    if (emote === "wave") startAvatarWave(avatar);
     const glyphs = { wave: "WAVE", idea: "IDEA ✦", celebrate: "NICE ★" };
     const sprite = makeLabelSprite(
       THREE,
@@ -18627,6 +20430,7 @@ export function createWorldScene({
 
   function rotateCamera(deltaX, deltaY) {
     if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return;
+    if (officeElevatorCameraLocked) return;
     // The canvas behaves like a grabbed world: pull the scene with the
     // pointer, so the camera turns opposite to the hand's travel direction.
     cameraYaw -= deltaX * CAMERA_LOOK_SENSITIVITY;
@@ -18700,6 +20504,18 @@ export function createWorldScene({
       draggedCampfireLog.material.emissiveIntensity = 0.5;
     }
     if (!draggedLayoutObject && !draggedCampfireLog) {
+      const qaHit = pressHits.find(
+        ({ object }) => object === qaBoardFace,
+      );
+      if (qaHit) {
+        const qaAction = qaBoardHitAction(qaHit.uv, qaBoardSnapshot);
+        if (qaAction?.action === "swipe") {
+          draggedQaCard = { moved: false };
+          showQaSwipeCues(true);
+        } else if (qaAction) {
+          onQaAction(qaAction);
+        }
+      }
       const boardHit = pressHits.find(
         ({ object }) =>
           object === officeTaskBulletinFace ||
@@ -18723,6 +20539,10 @@ export function createWorldScene({
             source,
             key: String(list[index].key),
             index,
+            sendQa:
+              source === "task" &&
+              buildBoardState.canManage &&
+              buildBoardSendQaHit(boardHit.uv, index),
             canDrag:
               buildBoardState.canManage &&
               !(source === "issue" && list[index].assigned),
@@ -18826,6 +20646,18 @@ export function createWorldScene({
         );
       }
       pointerGestureMoved = true;
+      return;
+    }
+    if (draggedQaCard) {
+      const deltaX = event.clientX - pointerStart.x;
+      const deltaY = event.clientY - pointerStart.y;
+      draggedQaCard.moved =
+        draggedQaCard.moved || Math.hypot(deltaX, deltaY) > 5;
+      qaBoardFace.position.x = clamp(deltaX / 110, -1.35, 1.35);
+      qaBoardFace.position.y = clamp(-deltaY / 110, -1.1, 1.1);
+      qaBoardFace.rotation.z = clamp(-deltaX * 0.0022, -0.2, 0.2);
+      pointerGestureMoved = true;
+      event.preventDefault();
       return;
     }
     if (draggedBuildCard) {
@@ -18987,12 +20819,58 @@ export function createWorldScene({
       pointerGestureMoved = false;
       return;
     }
+    if (draggedQaCard) {
+      const deltaX = event.clientX - pointerStart.x;
+      const deltaY = event.clientY - pointerStart.y;
+      draggedQaCard = null;
+      resetQaCardTransform();
+      let verdict = "";
+      if (
+        !cancelled &&
+        Math.abs(deltaX) >= 70 &&
+        Math.abs(deltaX) > Math.abs(deltaY)
+      ) {
+        verdict = deltaX > 0 ? "pass" : "fail";
+      } else if (
+        !cancelled &&
+        deltaY >= 70 &&
+        Math.abs(deltaY) > Math.abs(deltaX)
+      ) {
+        verdict = "unsure";
+      }
+      if (verdict) {
+        showQaSwipeCues(false);
+        onQaVerdict({ verdict });
+      } else {
+        showQaSwipeCues(true, true);
+      }
+      lastGestureDragged = true;
+      pointerGestureMoved = false;
+      return;
+    }
     if (draggedBuildCard) {
       const card = draggedBuildCard;
       draggedBuildCard = null;
+      const task = buildBoardState.items.find(
+        (item) => item.key === card.key,
+      );
       const issue = buildBoardState.issues.find(
         (item) => item.key === card.key,
       );
+      if (
+        !cancelled &&
+        card.source === "task" &&
+        card.sendQa &&
+        !card.moved
+      ) {
+        onBuildSendQa({
+          key: card.key,
+          title: String(task?.task || "Completed task").slice(0, 160),
+        });
+        lastGestureDragged = false;
+        pointerGestureMoved = false;
+        return;
+      }
       if (!cancelled && card.source === "issue" && !card.moved) {
         onRepositoryIssueOpen({
           owner: String(issue?.owner || "forkmesh").slice(0, 40),
@@ -19058,10 +20936,21 @@ export function createWorldScene({
       officeSceneMode !== "town" &&
       hit?.object?.userData?.interactive === "office-marketing-task-board"
     ) {
-      onOfficeTaskBoardSelect({
-        state: officeMarketingTaskBoard.userData.taskState,
-        count: officeMarketingTaskBoard.userData.taskCount,
-      });
+      const action =
+        hit.object === officeMarketingTaskBoard.userData.face
+          ? marketingTaskWallAction(hit.uv)
+          : null;
+      if (action?.action === "select-assignee") {
+        return;
+      }
+      if (action) {
+        onOfficeTaskWallAction(action);
+      } else {
+        onOfficeTaskBoardSelect({
+          state: officeMarketingTaskBoard.userData.taskState,
+          count: officeMarketingTaskBoard.userData.taskCount,
+        });
+      }
       return;
     }
     if (hit?.object?.userData?.interactive === "world-bulletin-scroll-up") {
@@ -19172,6 +21061,13 @@ export function createWorldScene({
     const moderationAction = hit?.object
       ? moderationActions.get(hit.object)
       : null;
+    const guestCopyAction = hit?.object
+      ? adminGuestCopyActions.get(hit.object)
+      : null;
+    if (guestCopyAction) {
+      onAdminGuestCopy({ ...guestCopyAction });
+      return;
+    }
     if (moderationAction) {
       onModeration({
         targetType: moderationAction.targetType,
@@ -19275,9 +21171,24 @@ export function createWorldScene({
         id === "repositories" && hit.object.userData.repositoryBase
           ? { ...hit.object.userData.repositoryBase }
           : null;
+      const repositoryFediverseFollow =
+        id === "repositories" &&
+        hit.object.userData.repositoryFediverseFollow
+          ? { ...hit.object.userData.repositoryFediverseFollow }
+          : null;
       const repositoryIssuePage =
         id === "repositories" && hit.object.userData.repositoryIssuePage
           ? { ...hit.object.userData.repositoryIssuePage }
+          : null;
+      const repositoryIssueAgentProvider =
+        id === "repositories" &&
+        hit.object.userData.repositoryIssueAgentProvider
+          ? { ...hit.object.userData.repositoryIssueAgentProvider }
+          : null;
+      const repositoryIssueAgentAssignment =
+        id === "repositories" &&
+        hit.object.userData.repositoryIssueAgentAssignment
+          ? { ...hit.object.userData.repositoryIssueAgentAssignment }
           : null;
       const repositoryPullPage =
         id === "repositories" && hit.object.userData.repositoryPullPage
@@ -19288,7 +21199,10 @@ export function createWorldScene({
         !repositorySizeNode &&
         !repositoryStar &&
         !repositoryBase &&
+        !repositoryFediverseFollow &&
         !repositoryIssuePage &&
+        !repositoryIssueAgentProvider &&
+        !repositoryIssueAgentAssignment &&
         !repositoryPullPage
       ) {
         focusLandmark(id);
@@ -19305,7 +21219,10 @@ export function createWorldScene({
         repositorySizeNode,
         repositoryStar,
         repositoryBase,
+        repositoryFediverseFollow,
         repositoryIssuePage,
+        repositoryIssueAgentProvider,
+        repositoryIssueAgentAssignment,
         repositoryPullPage,
         graphNode:
           id === "repositories" && hit.object.userData.graphNode
@@ -19752,49 +21669,7 @@ export function createWorldScene({
     renderer.domElement.dataset.dragging = "false";
   }
 
-  function handleContextMenu(event) {
-    event.preventDefault();
-    pointerCoordinates(event);
-    raycaster.setFromCamera(pointer, camera);
-    const plane = new THREE.Plane(
-      new THREE.Vector3(0, 1, 0),
-      -currentFloorY,
-    );
-    const point = raycaster.ray.intersectPlane(
-      plane,
-      new THREE.Vector3(),
-    ) || player.position.clone();
-    point.x = clamp(point.x, -WORLD_RADIUS, WORLD_RADIUS);
-    point.z = clamp(point.z, -WORLD_RADIUS, WORLD_RADIUS);
-    if (officeSceneMode === "town" && currentSpace === "town-square") {
-      constrainTownOfficeWalls(point);
-    }
-    onShareLocation({
-      clientX: event.clientX,
-      clientY: event.clientY,
-      x: Number(point.x.toFixed(2)),
-      z: Number(point.z.toFixed(2)),
-      heading: Number(player.rotation.y.toFixed(3)),
-      space: Object.hasOwn(WORLD_SPACE_FLOORS, currentSpace)
-        ? currentSpace
-        : "town-square",
-      cameraMode,
-      yaw: Number(cameraYaw.toFixed(3)),
-      pitch: Number(
-        (cameraMode === "first-person"
-          ? firstPersonPitch
-          : cameraPitch).toFixed(3),
-      ),
-      zoom: Number(
-        (cameraMode === "first-person"
-          ? firstPersonZoom
-          : cameraZoom).toFixed(3),
-      ),
-    });
-  }
-
   renderer.domElement.addEventListener("pointerdown", handlePointerDown);
-  renderer.domElement.addEventListener("contextmenu", handleContextMenu);
   renderer.domElement.addEventListener("dblclick", handleDoubleClick);
   renderer.domElement.addEventListener("pointermove", handlePointerMove, {
     passive: false,
@@ -19921,6 +21796,7 @@ export function createWorldScene({
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
     }
+    updateBuildBoardProximity();
     updateOfficeReceptionGuide(time);
     updateOfficeAttendanceClock(time);
     // The Office is part of the same live World. Neighbours and ForkBot keep
@@ -20272,7 +22148,6 @@ export function createWorldScene({
     window.removeEventListener("resize", resize);
     window.visualViewport?.removeEventListener("resize", resize);
     renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
-    renderer.domElement.removeEventListener("contextmenu", handleContextMenu);
     renderer.domElement.removeEventListener("dblclick", handleDoubleClick);
     renderer.domElement.removeEventListener("pointermove", handlePointerMove);
     renderer.domElement.removeEventListener("wheel", handleWheel);
@@ -20340,6 +22215,7 @@ export function createWorldScene({
     sitOnOfficeChair,
     setOfficeParticipants,
     updateOfficeMarketingTasks,
+    isOfficeInterior: () => officeSceneMode !== "town",
     updateWorldBulletin,
     updateSatelliteSky: (snapshot, sgp4Engine) =>
       worldSky.update(snapshot, sgp4Engine),
@@ -20379,6 +22255,7 @@ export function createWorldScene({
       })),
     }),
     setRemotePlayers,
+    setLocalOrgTeam,
     setAvatarFediverseProfile,
     setAvatarFaceImage,
     updateArrivalStats,
@@ -20386,13 +22263,16 @@ export function createWorldScene({
     updateReferralLeaderboard,
     updateSiteReferrerLeaderboard,
     updateNetworkNodes,
+    armMirrorPushEffect,
     focusNetworkNode,
     updateFederatedInstances,
     updateBots,
     updateMirrorAgentTasks,
     updateSystemCapacity,
     setInfrastructureConsoleLogs,
+    setBuildBoardLoading,
     updateBuildBoard,
+    updateQaBoard,
     updateOrganizations,
     updateFediverseDirectory,
     updateMediaSpaces,
@@ -20404,6 +22284,7 @@ export function createWorldScene({
     updateRepositorySizeMap,
     updateRepositoryRecordDesk,
     setRepositoryIssuePageExpanded,
+    setRepositoryIssueAgentPicker,
     setRepositorySizeLoading,
     applyWorldLayout,
     setLayoutEditor,

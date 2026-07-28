@@ -40,7 +40,7 @@ def test_marketing_board_has_accessible_create_assign_and_timer_controls():
         "data-world-office-task-form",
         "data-world-office-task-name",
         "data-world-office-task-assignee",
-        "Select an active ForkMesh user",
+        "Select a Marketing team member",
         "data-world-office-task-list",
         "data-world-office-task-checkin",
         'role="status"',
@@ -143,14 +143,43 @@ def test_only_assignees_receive_start_stop_and_checkin_controls():
     assert "showCheckin" in tasks
 
 
-def test_manager_assignment_control_renders_every_returned_active_user():
+def test_manager_assignment_control_renders_only_returned_marketing_members():
     tasks = source(TASKS)
     world = source(WORLD)
     assert "<select" in world
     assert "data-world-office-task-assignees" in world
-    assert ".slice(0, 1000)" in tasks
+    assert "Select a Marketing team member" in tasks
+    assert "marketingMembers" in tasks
     assert "<option value=" in tasks
     assert "<datalist" not in world
+
+
+def test_physical_wall_has_direct_bounded_marketing_task_controls():
+    tasks = source(TASKS)
+    scene = source(SCENE)
+    world = source(WORLD)
+    for contract in (
+        "async function physicalAction(payload = {})",
+        "canStartStop: task.assignee === actor",
+        "canComplete:",
+        "canDelete: canManage",
+        "members: canManage ? assignable : marketingMembers",
+        "physicalAction,",
+    ):
+        assert contract in tasks
+    for contract in (
+        "function marketingTaskWallAction(uv)",
+        '"+ ADD MARKETING TASK"',
+        '"START"',
+        '"DONE"',
+        '"DELETE"',
+        'action = task.status === "active" ? "stop" : "start"',
+        "onOfficeTaskWallAction(action)",
+    ):
+        assert contract in scene
+    assert "this.officeTasks?.physicalAction?.(action)" in world
+    assert "new THREE.BoxGeometry(18.5, 11.4, 0.18)" in scene
+    assert "new THREE.PlaneGeometry(18.12, 11.02)" in scene
 
 
 def test_assignment_control_has_explicit_contrast_and_tasks_can_finish_or_delete():
@@ -197,5 +226,8 @@ def test_physical_board_displays_bounded_authorized_summaries_only():
     scene = source(SCENE)
     assert "normalizeOfficeMarketingTasks(payload)" in scene
     assert "const authorized = source.authorized === true" in scene
-    assert "const OFFICE_MARKETING_TASK_LIMIT = 6" in scene
+    assert "const OFFICE_MARKETING_TASK_LIMIT = 250" in scene
     assert "task.elapsed" in scene
+    assert "officeMarketingRosterGroup" in scene
+    assert "officeMarketingAttendanceTexture" in scene
+    assert "officeReclaimedWoodTexture" in scene

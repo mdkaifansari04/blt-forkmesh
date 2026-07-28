@@ -83,6 +83,7 @@ function loadSatelliteSgp4Module() {
 }
 const SETTINGS_KEY = "forkmesh.world.settings.v1";
 const WORLD_PREFERENCES_ENDPOINT = "/api/world/preferences";
+const WORLD_QA_ENDPOINT = "/api/world/qa";
 const WORLD_PREFERENCES_SYNC_DELAY_MS = 700;
 const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
 const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
@@ -160,6 +161,7 @@ const WORLD_ACTIVITY_CONTINUATION_HEADER = "x-forkmesh-world-activity";
 // Code revisions are offered with an explicit refresh button. Shared object
 // placements are data-only updates and are applied to the running scene.
 const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const WORLD_DEPLOY_STATUS_POLL_MS = 2500;
 const WORLD_LAYOUT_LIVE_REFRESH_MS = 60 * 1000;
 const REPOSITORY_IMPORT_POLL_MS = 2 * 60 * 1000;
 // forkmesh/forkmesh opens by default, but its commit pin needs the repository
@@ -175,6 +177,8 @@ const WORLD_EVENT_POLL_MS = 3 * 60 * 1000;
 const WORLD_REWARD_POLL_MS = 5 * 60 * 1000;
 const WORLD_MEDIA_PLAYBACK_POLL_MS = 15 * 1000;
 const WORLD_SOCKET_PING_MS = 40 * 1000;
+// One broadcast wave per pose; the local arm still replays on every click.
+const WORLD_WAVE_COOLDOWN_MS = 2000;
 const WORLD_STATUS_POLL_MS = 5 * 60 * 1000;
 const WORLD_BUILD_BOARD_POLL_MS = 60 * 1000;
 const WORLD_AGENT_BOT_POLL_MS = 8 * 1000;
@@ -1237,6 +1241,25 @@ function remotePlayer(peer) {
       }
     }
   }
+  const adminGuestNetwork = {};
+  if (
+    peer.adminGuestNetwork &&
+    typeof peer.adminGuestNetwork === "object" &&
+    String(peer.accountStatus || "Guest") === "Guest"
+  ) {
+    const ipAddress = String(
+      peer.adminGuestNetwork.ipAddress || "",
+    ).slice(0, 64);
+    const userAgent = String(
+      peer.adminGuestNetwork.userAgent || "",
+    ).slice(0, 1024);
+    if (/^[0-9a-f:.]{2,64}$/i.test(ipAddress)) {
+      adminGuestNetwork.ipAddress = ipAddress;
+    }
+    if (userAgent && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(userAgent)) {
+      adminGuestNetwork.userAgent = userAgent;
+    }
+  }
   return {
     id: String(peer.id),
     name: sanitizePresenceText(peer.name, "visitor", 32),
@@ -1299,6 +1322,7 @@ function remotePlayer(peer) {
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
     moderationHandles,
+    adminGuestNetwork,
     updatedAt: Math.max(0, Number(peer.updatedAt) || 0),
     solana: WORLD_SOLANA_ADDRESS_RE.test(String(peer.solana || ""))
       ? String(peer.solana)
@@ -3421,13 +3445,9 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         <button type="button" data-world-renderer-reload hidden>Reload World</button>
       </div>
       <div class="world-update-notice" data-world-update-notice role="status" aria-live="polite" hidden>
-        <span><strong>A new World build is ready.</strong> Refresh when you are ready; your position will be preserved.</span>
+        <span class="world-update-activity" data-world-update-activity aria-hidden="true"></span>
+        <span data-world-update-copy><strong>A new World build is ready.</strong> Refresh when you are ready; your position will be preserved.</span>
         <button type="button" data-world-update-refresh>Refresh World</button>
-      </div>
-      <div class="world-share-menu" data-world-share-menu role="menu" hidden>
-        <button type="button" role="menuitem" data-world-share-view>
-          🔗 Share this exact view
-        </button>
       </div>
       <div class="world-label-layer" data-world-label-layer></div>
 
@@ -3462,6 +3482,15 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               title="Enter first-person view"
             >
               <span aria-hidden="true">⌖</span><span data-world-camera-label>First person</span>
+            </button>
+            <button
+              class="world-top-link world-wave-button"
+              type="button"
+              data-world-wave
+              title="Wave to everyone in the world"
+              aria-label="Wave your avatar's arm"
+            >
+              <span aria-hidden="true">👋</span><span>Wave</span>
             </button>
             <button
               class="world-top-link"
@@ -3523,17 +3552,34 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </div>
             <ul class="world-map-list">${mapItems}</ul>
           </section>
-          <section class="world-saved-views" data-world-saved-views aria-label="Saved World views">
+          <button
+            class="world-share-view-button"
+            type="button"
+            data-world-share-current
+            title="Share a link to this exact location and camera view"
+          >
+            <span aria-hidden="true">🔗</span>
+            <span>Share exact view</span>
+          </button>
+          <section class="world-saved-views" data-world-saved-views data-expanded="false" aria-label="Saved World views">
             <div class="world-saved-views-heading">
-              <span>Saved views</span>
+              <button
+                class="world-saved-views-toggle"
+                type="button"
+                data-world-saved-views-toggle
+                aria-expanded="false"
+              >
+                <span aria-hidden="true">▸</span>
+                <span>Saved views</span>
+              </button>
               <button
                 type="button"
                 data-world-save-view
                 aria-label="Save this location and perspective"
                 title="Save this view"
-              >＋</button>
+              ><span aria-hidden="true">⌖＋</span><span>Map</span></button>
             </div>
-            <div class="world-saved-view-list" data-world-saved-view-list></div>
+            <div class="world-saved-view-list" data-world-saved-view-list hidden></div>
           </section>
           <section
             class="world-community-placement"
@@ -3607,6 +3653,12 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <summary aria-label="Open World chat in a terminal panel">
             <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
             <strong>CHAT</strong>
+            <span
+              class="world-chat-terminal-unread"
+              data-world-chat-terminal-unread
+              role="status"
+              hidden
+            ></span>
             <span data-world-chat-terminal-last>Connecting to global #general…</span>
             <span class="world-diagnostics-toggle" aria-hidden="true">⌃</span>
           </summary>
@@ -3726,7 +3778,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                   name="assignee"
                   required
                 >
-                  <option value="">Select an active ForkMesh user</option>
+                  <option value="">Select a Marketing team member</option>
                 </select>
               </label>
               <button type="submit">Add task</button>
@@ -4283,6 +4335,7 @@ class ForkMeshWorld extends HTMLElement {
     this.systemCapacityFocus = "";
     this.systemCapacitySort = { key: "rowCount", direction: "desc" };
     this.buildBoardTimer = 0;
+    this.buildBoardLoad = null;
     this.orgAgentTimer = 0;
     this.sessionWatchTimer = 0;
     this.sessionWatchActive = false;
@@ -4323,6 +4376,7 @@ class ForkMeshWorld extends HTMLElement {
     this.pullViewedFiles = new Map();
     this.pullReviewScrollCleanup = null;
     this.expandedRepositoryIssuePage = 0;
+    this.repositoryIssueAgentAssignments = new Set();
     this.securityTriage = null;
     this.remotePlayers = new Map();
     this.localPeers = new Map();
@@ -4399,7 +4453,21 @@ class ForkMeshWorld extends HTMLElement {
     this.lastDiagnosticsSnapshot = null;
     this.rendererRecoveryTimer = 0;
     this.buildDiagnostics = { version: "", revision: "" };
+    this.qaDeck = {
+      authenticated: false,
+      cards: [],
+      reviews: {},
+      stats: { pass: 0, fail: 0, unsure: 0, reviewed: 0, total: 0 },
+    };
+    this.qaCardIndex = 0;
+    this.qaDeckView = "cards";
+    this.qaDeckPage = 0;
+    this.qaDeckSelectedKey = "";
+    this.qaLoad = null;
+    this.qaSaving = false;
     this.updateCheckTimer = 0;
+    this.deployStatusTimer = 0;
+    this.deployObservedRevision = "";
     this.layoutRefreshTimer = 0;
     this.worldLayoutFingerprint = "";
     this.pendingWorldShare = null;
@@ -4460,6 +4528,10 @@ class ForkMeshWorld extends HTMLElement {
     this.publicVisitCount = sessionVisitCount(true);
     this.chatBubblesEnabledAt = Date.now() + CHAT_BUBBLE_JOIN_GRACE_MS;
     this.activityArrivalRecorded = false;
+    // Unread badge on the collapsed bottom CHAT bar. Counts live lines from
+    // other people only — replayed history and this browser's own messages
+    // never bump it — and resets whenever the panel is opened.
+    this.chatTerminalUnread = 0;
     this.visitedPlaces = new Set(["town-square"]);
     this.tourIndex = -1;
     this.lastMovement = {
@@ -4573,6 +4645,7 @@ class ForkMeshWorld extends HTMLElement {
     this.bootstrap();
     this.startWorldTicketRefresh();
     this.startUpdateWatch();
+    this.startDeployStatusWatch();
     this.startWorldLayoutWatch();
   }
 
@@ -4676,6 +4749,9 @@ class ForkMeshWorld extends HTMLElement {
     // Replayed history updates only the collapsed CHAT bar — never a bubble,
     // so reconnects do not resurrect old messages above avatars.
     if (data.history === true) return;
+    // Own lines never count as unread — `self` is this browser, `own` also
+    // covers the signed-in account talking from another tab or device.
+    if (data.self !== true && data.own !== true) this.bumpChatTerminalUnread();
     if (Date.now() < this.chatBubblesEnabledAt) return;
     if (data.self === true) {
       this.world?.showChatBubble?.(this.identity?.id, text, true);
@@ -5100,8 +5176,26 @@ class ForkMeshWorld extends HTMLElement {
             void this.toggleRepositoryStar(meta.repositoryStar);
             return;
           }
+          if (id === "repositories" && meta.repositoryFediverseFollow) {
+            void this.followRepositoryOnFediverse(
+              meta.repositoryFediverseFollow,
+            );
+            return;
+          }
           if (id === "repositories" && meta.repositorySizeNode) {
             this.selectRepositorySizeNode(meta.repositorySizeNode);
+            return;
+          }
+          if (id === "repositories" && meta.repositoryIssueAgentProvider) {
+            this.selectRepositoryIssueAgentProvider(
+              meta.repositoryIssueAgentProvider,
+            );
+            return;
+          }
+          if (id === "repositories" && meta.repositoryIssueAgentAssignment) {
+            void this.assignRepositoryIssueToAgent(
+              meta.repositoryIssueAgentAssignment,
+            );
             return;
           }
           if (id === "repositories" && meta.repositoryIssuePage) {
@@ -5128,8 +5222,11 @@ class ForkMeshWorld extends HTMLElement {
         onOfficeEnter: (entry = {}) => {
           this.officeController?.enterOffice?.(entry);
         },
-        onOfficeTaskBoardSelect: () => {
-          this.officeTasks?.open();
+        // The physical wall is now the complete Marketing task view. Selecting
+        // it no longer covers the room with the legacy task drawer.
+        onOfficeTaskBoardSelect: () => {},
+        onOfficeTaskWallAction: (action) => {
+          void this.officeTasks?.physicalAction?.(action);
         },
         onOfficeMeetingBoardSelect: () => {
           void this.officeMeeting?.joinRoom?.("general");
@@ -5164,10 +5261,16 @@ class ForkMeshWorld extends HTMLElement {
           this.openSystemCapacityTables(table),
         onInfrastructureConsoleToggle: ({ enabled }) =>
           this.setInfrastructureConsoleEnabled(enabled),
+        onBuildBoardNearby: () =>
+          void this.refreshBuildBoard({ quiet: true }),
         onBuildBoardReorder: ({ order }) =>
           void this.reorderBuildBoard(order),
         onBuildIssueAssign: ({ key, title }) =>
           void this.assignBuildIssue(key, title),
+        onBuildSendQa: ({ key, title }) =>
+          void this.sendBuildTaskToQa(key, title),
+        onQaVerdict: ({ verdict }) => void this.recordQaVerdict(verdict),
+        onQaAction: (action) => void this.handleQaAction(action),
         onRepositoryIssueOpen: (issue) =>
           this.openRepositoryIssueWorkbench(issue),
         onRendererStateChange: (state) => {
@@ -5186,7 +5289,7 @@ class ForkMeshWorld extends HTMLElement {
           const name = String(botId || "").toLowerCase() === "codex"
             ? "codex"
             : "claude";
-          this.openChatTerminal(`@${name} `);
+          this.openAgentBotDetail(name);
         },
         onPlayForkmeshSong: () => {
           void this.playForkmeshSong();
@@ -5195,7 +5298,6 @@ class ForkMeshWorld extends HTMLElement {
           this.openRepositoryCreateForm(options),
         onSwingRide: (state) => this.handleSwingRide(state),
         onCameraMode: (state) => this.handleWorldCameraMode(state),
-        onShareLocation: (view) => this.openWorldShareMenu(view),
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
         },
@@ -5209,11 +5311,28 @@ class ForkMeshWorld extends HTMLElement {
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
+        onAdminGuestCopy: (detail) =>
+          void this.copyAdminGuestDetail(detail),
         onOrgTeamAssign: (target) => this.openOrgTeamAssignment(target),
         onFediverseProfile: (target) =>
           void this.loadWorldFediverseProfile(target),
         onFediverseFollow: (target) =>
           void this.toggleWorldFediverseFollow(target),
+        onAvatarWalletAction: ({ self, address } = {}) => {
+          const wallet = String(address || "").trim();
+          if (wallet) {
+            void navigator.clipboard.writeText(wallet).then(
+              () => this.toast("Solana wallet address copied."),
+              () => this.toast(wallet),
+            );
+            return;
+          }
+          if (self) {
+            window.location.assign("/dashboard/settings#profile");
+            return;
+          }
+          this.toast("This member has not added a Solana wallet yet.");
+        },
         onLayoutObjectMoved: (move) => {
           void this.lockWorldObjectPlacement(move);
         },
@@ -5221,6 +5340,7 @@ class ForkMeshWorld extends HTMLElement {
       this.setLoadingProgress(68, "World is live · syncing nearby activity…");
       this.syncWorldCameraModeButton();
       void this.refreshBuildBoard();
+      void this.refreshQaDeck();
       this.buildBoardTimer = window.setInterval(
         () => void this.refreshBuildBoard({ quiet: true }),
         WORLD_BUILD_BOARD_POLL_MS,
@@ -5276,6 +5396,9 @@ class ForkMeshWorld extends HTMLElement {
       await Promise.allSettled([contextPromise, dataPromise]);
       this.setLoadingProgress(86, "Adding mirrors, members, and boards…");
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
+      this.world.setLocalOrgTeam?.(
+        this.orgTeamAssignmentFor(this.identity?.name),
+      );
       this.syncRecentIssueAssignments();
       this.officeTasks?.prime?.();
       this.applyWorldLayoutEditor();
@@ -5431,7 +5554,10 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async refreshBuildBoard({ quiet = false } = {}) {
-    try {
+    if (this.buildBoardLoad) return this.buildBoardLoad;
+    this.world?.setBuildBoardLoading?.(true);
+    this.buildBoardLoad = (async () => {
+      try {
       const payload = await this.fetchJSON("/api/world/build-board", {
         timeout: 12_000,
         cache: "no-store",
@@ -5496,11 +5622,284 @@ class ForkMeshWorld extends HTMLElement {
       }
       this.world?.updateBuildBoard?.(payload);
       return payload;
-    } catch (_) {
-      if (!quiet) {
-        this.toast("The shared build board is temporarily unavailable.");
+      } catch (_) {
+        if (!quiet) {
+          this.toast("The shared build board is temporarily unavailable.");
+        }
+        return null;
+      } finally {
+        this.world?.setBuildBoardLoading?.(false);
+        this.buildBoardLoad = null;
       }
-      return null;
+    })();
+    return this.buildBoardLoad;
+  }
+
+  applyQaDeck(payload = {}, { afterKey = "" } = {}) {
+    const reviews =
+      payload?.reviews && typeof payload.reviews === "object"
+        ? payload.reviews
+        : {};
+    const cards = (Array.isArray(payload?.cards) ? payload.cards : [])
+      .map((card) => {
+        const key = sanitizePresenceText(card?.key, "", 80);
+        const title = sanitizePresenceText(card?.title, "", 120);
+        const howToTest = sanitizePresenceText(
+          card?.howToTest,
+          "",
+          720,
+        );
+        const verdict = ["pass", "fail", "unsure"].includes(
+          String(card?.verdict || reviews?.[key]?.verdict || ""),
+        )
+          ? String(card?.verdict || reviews?.[key]?.verdict)
+          : "";
+        const global = card?.global && typeof card.global === "object"
+          ? {
+              pass: Math.max(0, Number(card.global.pass) || 0),
+              fail: Math.max(0, Number(card.global.fail) || 0),
+              unsure: Math.max(0, Number(card.global.unsure) || 0),
+              total: Math.max(0, Number(card.global.total) || 0),
+            }
+          : { pass: 0, fail: 0, unsure: 0, total: 0 };
+        return key && title && howToTest
+          ? { key, title, howToTest, verdict, global }
+          : null;
+      })
+      .filter(Boolean)
+      .slice(0, 64);
+    const counts = { pass: 0, fail: 0, unsure: 0 };
+    cards.forEach((card) => {
+      if (card.verdict) counts[card.verdict] += 1;
+    });
+    this.qaDeck = {
+      authenticated: payload?.authenticated === true,
+      revision: sanitizePresenceText(payload?.revision, "", 80),
+      cards,
+      reviews,
+      globalReviews:
+        payload?.globalReviews && typeof payload.globalReviews === "object"
+          ? payload.globalReviews
+          : {},
+      globalStats: {
+        pass: Math.max(0, Number(payload?.globalStats?.pass) || 0),
+        fail: Math.max(0, Number(payload?.globalStats?.fail) || 0),
+        unsure: Math.max(0, Number(payload?.globalStats?.unsure) || 0),
+        reviewed: Math.max(0, Number(payload?.globalStats?.reviewed) || 0),
+        testers: Math.max(0, Number(payload?.globalStats?.testers) || 0),
+        total: cards.length,
+      },
+      canRoute: payload?.canRoute === true,
+      stats: {
+        ...counts,
+        reviewed: cards.filter((card) => card.verdict).length,
+        total: cards.length,
+      },
+    };
+    const previousIndex = cards.findIndex((card) => card.key === afterKey);
+    const unreviewed = cards
+      .map((card, index) => ({ card, index }))
+      .filter(({ card }) => !card.verdict);
+    if (unreviewed.length) {
+      this.qaCardIndex =
+        unreviewed.find(({ index }) => index > previousIndex)?.index ??
+        unreviewed[0].index;
+    } else if (cards.length) {
+      this.qaCardIndex =
+        previousIndex >= 0 ? (previousIndex + 1) % cards.length : 0;
+    } else {
+      this.qaCardIndex = 0;
+    }
+    this.renderQaDeck();
+    return this.qaDeck;
+  }
+
+  qaDeckCardsForView(view = this.qaDeckView) {
+    const verdict = ["pass", "fail", "unsure"].includes(view) ? view : "";
+    if (!verdict) return [];
+    return this.qaDeck.cards.filter(
+      (card) =>
+        (Number(card?.global?.[verdict]) || 0) > 0 ||
+        String(card?.verdict || "") === verdict,
+    );
+  }
+
+  renderQaDeck() {
+    const view = ["detail", "pass", "fail", "unsure"].includes(this.qaDeckView)
+      ? this.qaDeckView
+      : "cards";
+    const filtered = this.qaDeckCardsForView(view);
+    const pageSize = 5;
+    const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    this.qaDeckPage = Math.min(Math.max(0, this.qaDeckPage), pages - 1);
+    const list = filtered.slice(
+      this.qaDeckPage * pageSize,
+      (this.qaDeckPage + 1) * pageSize,
+    );
+    if (
+      this.qaDeckSelectedKey &&
+      !filtered.some((card) => card.key === this.qaDeckSelectedKey)
+    ) {
+      this.qaDeckSelectedKey = "";
+    }
+    this.world?.updateQaBoard?.({
+      authenticated: this.qaDeck.authenticated,
+      current:
+        (view === "detail"
+          ? this.qaDeck.cards.find(
+              (card) => card.key === this.qaDeckSelectedKey,
+            )
+          : null) ||
+        this.qaDeck.cards[this.qaCardIndex] ||
+        null,
+      currentIndex: this.qaCardIndex,
+      stats: this.qaDeck.stats,
+      globalStats: this.qaDeck.globalStats,
+      canRoute: this.qaDeck.canRoute,
+      view,
+      list,
+      selectedKey: this.qaDeckSelectedKey,
+      page: this.qaDeckPage,
+      pages,
+    });
+  }
+
+  async handleQaAction(detail = {}) {
+    const action = String(detail?.action || "");
+    if (action === "tab") {
+      const view = String(detail?.view || "cards");
+      if (!["cards", "pass", "fail", "unsure"].includes(view)) return;
+      this.qaDeckView = view;
+      this.qaDeckPage = 0;
+      this.qaDeckSelectedKey = "";
+      this.renderQaDeck();
+      return;
+    }
+    if (action === "select") {
+      const key = String(detail?.key || "");
+      const index = this.qaDeck.cards.findIndex((card) => card.key === key);
+      if (index < 0) return;
+      this.qaDeckSelectedKey = key;
+      this.qaCardIndex = index;
+      this.qaDeckView = "detail";
+      this.renderQaDeck();
+      return;
+    }
+    if (action === "back") {
+      this.qaDeckView = "cards";
+      this.qaDeckSelectedKey = "";
+      this.renderQaDeck();
+      return;
+    }
+    if (action === "verdict") {
+      await this.recordQaVerdict(String(detail?.verdict || ""));
+      return;
+    }
+    if (action === "page") {
+      const delta = Math.sign(Number(detail?.delta) || 0);
+      if (!delta) return;
+      this.qaDeckPage += delta;
+      this.qaDeckSelectedKey = "";
+      this.renderQaDeck();
+      return;
+    }
+    if (action === "route") {
+      await this.routeQaCard(String(detail?.target || ""));
+    }
+  }
+
+  async routeQaCard(target) {
+    if (!["todo", "issues"].includes(target)) return false;
+    const card = this.qaDeck.cards.find(
+      (entry) => entry.key === this.qaDeckSelectedKey,
+    );
+    if (!card) {
+      this.toast("Select a QA task first.");
+      return false;
+    }
+    if (!this.qaDeck.canRoute || !validWorldSession()) {
+      this.toast("Owner, admin, or maintain access is required to route QA.");
+      return false;
+    }
+    try {
+      const payload = await this.postJSON(
+        WORLD_QA_ENDPOINT,
+        {
+          action: target === "todo" ? "route_todo" : "route_issue",
+          key: card.key,
+        },
+        { timeout: 12_000 },
+      );
+      this.applyQaDeck(payload);
+      await this.refreshBuildBoard({ quiet: true });
+      this.toast(
+        target === "todo"
+          ? `${card.title} was sent back to What we're building.`
+          : `${card.title} was queued in forkmesh/forkmesh issues.`,
+      );
+      return true;
+    } catch (error) {
+      this.toast(
+        String(error?.message || "The QA task could not be routed."),
+      );
+      return false;
+    }
+  }
+
+  async refreshQaDeck({ afterKey = "", quiet = false } = {}) {
+    if (this.qaLoad) return this.qaLoad;
+    this.qaLoad = (async () => {
+      try {
+        const payload = await this.fetchJSON(WORLD_QA_ENDPOINT, {
+          timeout: 8000,
+          cache: "no-store",
+          dedupe: true,
+        });
+        return this.applyQaDeck(payload, { afterKey });
+      } catch (_) {
+        if (!quiet) {
+          this.toast("The personal QA deck is temporarily unavailable.");
+        }
+        return this.qaDeck;
+      } finally {
+        this.qaLoad = null;
+      }
+    })();
+    return this.qaLoad;
+  }
+
+  async recordQaVerdict(verdict) {
+    if (
+      this.qaSaving ||
+      !["pass", "fail", "unsure"].includes(verdict)
+    ) {
+      return false;
+    }
+    const card = this.qaDeck.cards[this.qaCardIndex];
+    if (!card) return false;
+    if (!this.qaDeck.authenticated || !validWorldSession()) {
+      this.toast("Sign in to save QA results to your account.");
+      return false;
+    }
+    this.qaSaving = true;
+    try {
+      const payload = await this.postJSON(
+        WORLD_QA_ENDPOINT,
+        { key: card.key, verdict },
+        { timeout: 8000 },
+      );
+      this.applyQaDeck(payload, { afterKey: card.key });
+      this.toast(
+        `${card.title}: ${verdict}. Your result and the shared QA totals were updated.`,
+      );
+      return true;
+    } catch (error) {
+      this.toast(
+        String(error?.message || "The QA result could not be saved."),
+      );
+      return false;
+    } finally {
+      this.qaSaving = false;
     }
   }
 
@@ -5630,6 +6029,39 @@ class ForkMeshWorld extends HTMLElement {
       await this.refreshBuildBoard({ quiet: true });
       this.toast(
         String(error?.message || "The issue could not be assigned."),
+      );
+      return false;
+    }
+  }
+
+  async sendBuildTaskToQa(key, title) {
+    const taskKey = String(key || "");
+    const taskTitle = sanitizePresenceText(title, "Completed task", 160);
+    if (!/^(?:task:[a-z0-9-]{1,48}|issue:[a-z0-9-]{1,40}\/[a-z0-9._-]{1,60}#[1-9]\d{0,8})$/.test(taskKey)) {
+      return false;
+    }
+    try {
+      const payload = await this.postJSON(
+        "/api/world/build-board",
+        {
+          action: "send_qa",
+          key: taskKey,
+          title: taskTitle,
+          howToTest:
+            `Open the completed ${taskTitle} feature and follow its normal ` +
+            "user flow. Confirm the requested behavior works, existing " +
+            "behavior did not regress, and no console or network error appears.",
+        },
+        { timeout: 12_000 },
+      );
+      this.world?.updateBuildBoard?.(payload);
+      await this.refreshQaDeck({ quiet: true });
+      this.toast(`${taskTitle} moved to Done and was added to shared QA.`);
+      return true;
+    } catch (error) {
+      await this.refreshBuildBoard({ quiet: true });
+      this.toast(
+        String(error?.message || "The task could not be sent to QA."),
       );
       return false;
     }
@@ -6950,17 +7382,22 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-  // One plaque per member of an organization the viewer administers. Built
-  // once per organization reload rather than per presence frame: the roster is
-  // capped at 50 organizations x 40 members, and presence redraws are frequent.
+  // Server-authoritative team marks are visible to every organization member
+  // allowed to read the roster. The separate canManage bit controls whether
+  // the owner/admin assignment plaque is interactive.
   rebuildOrgTeamIndex() {
     const index = new Map();
-    this.managedOrganizations().forEach((organization) => {
+    this.organizations.forEach((organization) => {
       const org = sanitizePresenceText(
         organization.name || organization.org,
         "",
         50,
       ).toLowerCase();
+      const canManage = ["owner", "admin"].includes(
+        String(
+          organization?.viewerRole || organization?.role || "",
+        ).toLowerCase(),
+      );
       const teams = Array.isArray(organization.teamList)
         ? organization.teamList
         : [];
@@ -6980,12 +7417,17 @@ class ForkMeshWorld extends HTMLElement {
         index.set(account, {
           org,
           member: account,
+          canManage,
           assigned: assigned.length,
           total: teamNames.size,
+          teams: assigned.slice(0, 6),
         });
       });
     });
     this.orgTeamIndex = index;
+    this.world?.setLocalOrgTeam?.(
+      this.orgTeamAssignmentFor(this.identity?.name),
+    );
   }
 
   orgTeamAssignmentFor(name) {
@@ -7183,6 +7625,7 @@ class ForkMeshWorld extends HTMLElement {
       if (chatTerminal.open) {
         this.$("[data-world-diagnostics]")?.removeAttribute("open");
         this.loadChatTerminalFrame();
+        this.clearChatTerminalUnread();
       }
     });
     // Load the chat frame immediately so the collapsed CHAT bar always shows
@@ -7191,6 +7634,12 @@ class ForkMeshWorld extends HTMLElement {
     this.addEventListener("click", (event) => {
       if (event.target.closest("[data-world-save-view]")) {
         this.saveCurrentWorldView();
+        this.setSavedViewsExpanded(true);
+        return;
+      }
+      if (event.target.closest("[data-world-saved-views-toggle]")) {
+        const section = this.$("[data-world-saved-views]");
+        this.setSavedViewsExpanded(section?.dataset.expanded !== "true");
         return;
       }
       const savedViewEdit = event.target.closest("[data-world-saved-view-edit]");
@@ -7203,12 +7652,9 @@ class ForkMeshWorld extends HTMLElement {
         void this.restoreSavedWorldView(savedView.dataset.worldSavedView);
         return;
       }
-      if (event.target.closest("[data-world-share-view]")) {
-        void this.sharePendingWorldView();
+      if (event.target.closest("[data-world-share-current]")) {
+        void this.shareCurrentWorldView();
         return;
-      }
-      if (!event.target.closest("[data-world-share-menu]")) {
-        this.closeWorldShareMenu();
       }
       // Keep chat inside the World: any /dashboard/chat link (or explicit
       // opener) opens the embedded panel rather than navigating away. The
@@ -7254,6 +7700,10 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-camera-toggle]")) {
         this.toggleWorldCameraMode();
+        return;
+      }
+      if (event.target.closest("[data-world-wave]")) {
+        this.waveToWorld();
         return;
       }
       if (event.target.closest("[data-world-swing-dismount]")) {
@@ -7916,30 +8366,6 @@ class ForkMeshWorld extends HTMLElement {
     });
   }
 
-  openWorldShareMenu(view) {
-    const menu = this.$("[data-world-share-menu]");
-    if (!menu || !view) return;
-    this.pendingWorldShare = view;
-    const rootRect = this.getBoundingClientRect();
-    const left = Math.max(
-      8,
-      Math.min(rootRect.width - 220, Number(view.clientX) - rootRect.left),
-    );
-    const top = Math.max(
-      8,
-      Math.min(rootRect.height - 64, Number(view.clientY) - rootRect.top),
-    );
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
-    menu.hidden = false;
-    menu.querySelector("button")?.focus();
-  }
-
-  closeWorldShareMenu() {
-    const menu = this.$("[data-world-share-menu]");
-    if (menu) menu.hidden = true;
-  }
-
   worldShareURL(view) {
     const url = new URL("/world/", location.origin);
     const fixed = (value, places = 3) =>
@@ -7960,7 +8386,6 @@ class ForkMeshWorld extends HTMLElement {
     const view = this.pendingWorldShare;
     if (!view) return;
     const url = this.worldShareURL(view);
-    this.closeWorldShareMenu();
     try {
       if (navigator.share) {
         await navigator.share({
@@ -7977,6 +8402,38 @@ class ForkMeshWorld extends HTMLElement {
       if (String(error?.name || "") === "AbortError") return;
       this.toast(`Share this World view: ${url}`);
     }
+  }
+
+  async shareCurrentWorldView() {
+    const state = this.world?.getSavedViewState?.();
+    if (!state) {
+      this.toast("This view is still loading. Try again in a moment.");
+      return;
+    }
+    this.pendingWorldShare = {
+      x: state.x,
+      z: state.z,
+      heading: state.heading,
+      space: state.office ? "town-square" : state.space,
+      cameraMode: state.camera?.mode || "third-person",
+      yaw: state.camera?.yaw,
+      pitch: state.camera?.pitch,
+      zoom: state.camera?.zoom,
+    };
+    await this.sharePendingWorldView();
+  }
+
+  setSavedViewsExpanded(expanded) {
+    const section = this.$("[data-world-saved-views]");
+    const list = this.$("[data-world-saved-view-list]");
+    const toggle = this.$("[data-world-saved-views-toggle]");
+    if (!section || !list || !toggle) return;
+    const active = expanded === true;
+    section.dataset.expanded = String(active);
+    list.hidden = !active;
+    toggle.setAttribute("aria-expanded", String(active));
+    const icon = toggle.querySelector("span");
+    if (icon) icon.textContent = active ? "▾" : "▸";
   }
 
   savedViewsStorageKey() {
@@ -8767,6 +9224,31 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  async copyAdminGuestDetail(detail = {}) {
+    if (!this.identity?.isAdmin) {
+      this.toast("Platform administrator access is required.");
+      return;
+    }
+    const field = String(detail?.field || "");
+    const value = String(detail?.value || "");
+    if (
+      !["ipAddress", "userAgent"].includes(field) ||
+      !value ||
+      value.length > 1024
+    ) {
+      this.toast("That guest connection detail is no longer available.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(value);
+      this.toast(
+        `${field === "ipAddress" ? "Guest IP address" : "Full User-Agent"} copied.`,
+      );
+    } catch (_) {
+      this.toast("Clipboard access was denied by this browser.");
+    }
+  }
+
   // The chest's second tab. Everything shown is public profile data the
   // account already publishes at /@name and to the fediverse; it is fetched
   // only when a visitor actually opens the tab, never polled.
@@ -9526,6 +10008,7 @@ class ForkMeshWorld extends HTMLElement {
       detail.dataset.open = "false";
       detail.dataset.repositoryReview = "false";
       detail.dataset.issueWorkbench = "false";
+      detail.dataset.qaDeck = "false";
       detail.setAttribute("aria-hidden", "true");
     }
     if (backdrop) {
@@ -9597,7 +10080,7 @@ class ForkMeshWorld extends HTMLElement {
       : base;
   }
 
-  mirrorNodeAgentSessionsHTML(node) {
+  mirrorNodeAgentSessionsHTML(node, options = {}) {
     const requiredTeam = escapeHTML(
       this.orgAgentAccess?.requiredTeam || "engineering",
     );
@@ -9617,10 +10100,19 @@ class ForkMeshWorld extends HTMLElement {
     const nodeName = String(node?.name || node?.machineName || "")
       .trim()
       .toLowerCase();
+    const providerFilter = ["claude-code", "codex"].includes(
+      String(options?.provider || ""),
+    )
+      ? String(options.provider)
+      : "";
+    const allNodes = options?.allNodes === true;
     const sessions = this.orgAgentSessions
       .filter(
         (session) =>
-          String(session?.targetNode || "").trim().toLowerCase() === nodeName,
+          (allNodes ||
+            String(session?.targetNode || "").trim().toLowerCase() ===
+              nodeName) &&
+          (!providerFilter || session?.provider === providerFilter),
       )
       .slice(0, 50);
     const date = (value) => {
@@ -9669,10 +10161,27 @@ class ForkMeshWorld extends HTMLElement {
             <strong>${escapeHTML(
               session?.title || `${session?.provider || "Agent"} session`,
             )}</strong>
-            <span>${escapeHTML(session?.status || "unknown")} · ${escapeHTML(
+            <span>${escapeHTML(
+              session?.displayStatus || session?.status || "unknown",
+            )} · ${escapeHTML(
               session?.provider === "codex" ? "Codex" : "Claude Code",
             )}</span>
           </summary>
+          ${
+            session?.diagnostic?.message
+              ? `<div class="world-notice ${
+                  session.diagnostic.level === "attention"
+                    ? "world-notice-warning"
+                    : "world-notice-safe"
+                }"><strong>${escapeHTML(
+                  session.diagnostic.level === "attention"
+                    ? "Action needed"
+                    : "Session status",
+                )}</strong><span>${escapeHTML(
+                  session.diagnostic.message,
+                )}</span></div>`
+              : ""
+          }
           ${
             availability.message
               ? `<div class="world-notice ${
@@ -9700,9 +10209,22 @@ class ForkMeshWorld extends HTMLElement {
             <div><dt>Haiku gate</dt><dd>${escapeHTML(
               session?.security?.state || "pending",
             )}${session?.security?.reason ? ` · ${escapeHTML(session.security.reason)}` : ""}</dd></div>
-            <div><dt>Model</dt><dd>${escapeHTML(
-              info.model || "Provider default",
+            <div><dt>Target mirror</dt><dd>${escapeHTML(
+              session?.targetNode || "Not assigned",
             )}</dd></div>
+            <div><dt>Credential source</dt><dd>${escapeHTML(
+              availability.credentialSource || "Not reported",
+            )}</dd></div>
+            <div><dt>Model</dt><dd>${escapeHTML(
+              info.model ||
+                session?.requestedModel ||
+                "Provider default",
+            )}</dd></div>
+            <div><dt>Issue</dt><dd>${
+              Number(session?.issueNumber) > 0
+                ? `#${Number(session.issueNumber)}`
+                : "Ad-hoc task"
+            }</dd></div>
             <div><dt>Permission mode</dt><dd>${escapeHTML(
               info.mode || "Node default",
             )}</dd></div>
@@ -9784,9 +10306,24 @@ class ForkMeshWorld extends HTMLElement {
     }).join("");
     return `
       <section class="world-feature-card" data-world-mirror-agent-workspace>
-        <h3>Engineering agent workspace</h3>
+        <h3>${
+          providerFilter
+            ? `${providerFilter === "codex" ? "Codex" : "Claude Code"} engineering workspace`
+            : "Engineering agent workspace"
+        }</h3>
         <p>Full mirror-reported session detail, transcript, and prompt controls. Every new prompt is re-checked by the tool-free Haiku gate.</p>
-        <form class="world-agent-prompt-form" data-world-agent-start>
+        ${
+          allNodes && providerFilter
+            ? `<div class="world-detail-actions">
+                <button class="world-primary-action" type="button" data-world-agent-open-chat="${
+                  providerFilter === "codex" ? "@codex " : "@claude "
+                }">Open ${providerFilter === "codex" ? "Codex" : "Claude"} chat</button>
+              </div>`
+            : ""
+        }
+        ${
+          nodeName
+            ? `<form class="world-agent-prompt-form" data-world-agent-start>
           <label>Start a session on ${escapeHTML(nodeName || "this mirror")}
             <textarea name="prompt" maxlength="8000" required rows="3" placeholder="Describe the repository task…"></textarea>
           </label>
@@ -9795,9 +10332,17 @@ class ForkMeshWorld extends HTMLElement {
             <button class="world-secondary-action" type="submit" name="provider" value="codex">Start Codex</button>
           </div>
           <span data-world-agent-form-status></span>
-        </form>
+        </form>`
+            : ""
+        }
         <div class="world-agent-session-list">
-          ${sessionHTML || '<p class="world-empty-state">No agent prompt sessions are assigned to this mirror yet.</p>'}
+          ${sessionHTML || `<p class="world-empty-state">No ${
+            providerFilter
+              ? providerFilter === "codex"
+                ? "Codex"
+                : "Claude Code"
+              : "agent prompt"
+          } sessions are available here yet.</p>`}
         </div>
       </section>`;
   }
@@ -9805,6 +10350,13 @@ class ForkMeshWorld extends HTMLElement {
   wireMirrorNodeAgentWorkspace(node) {
     const workspace = this.$("[data-world-mirror-agent-workspace]");
     if (!workspace || this.orgAgentAccess?.state !== "allowed") return;
+    workspace
+      .querySelector("[data-world-agent-open-chat]")
+      ?.addEventListener("click", (event) => {
+        this.openChatTerminal(
+          String(event.currentTarget.dataset.worldAgentOpenChat || ""),
+        );
+      });
     const send = async (form, endpoint, extra = {}) => {
       const prompt = String(new FormData(form).get("prompt") || "").trim();
       if (!prompt) return;
@@ -10046,6 +10598,46 @@ class ForkMeshWorld extends HTMLElement {
       </div>`;
     this.showDetailOverlay(detail, backdrop, { returnFocus });
     this.wireMirrorNodeAgentWorkspace(node);
+  }
+
+  openAgentBotDetail(botId, { returnFocus = null } = {}) {
+    if (this.orgAgentAccess?.state !== "allowed") {
+      this.toast(
+        "Claude and Codex status is available only to the Engineering team.",
+      );
+      return;
+    }
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop) return;
+    const provider =
+      String(botId || "").toLowerCase() === "codex"
+        ? "codex"
+        : "claude-code";
+    const label = provider === "codex" ? "Codex" : "Claude Code";
+    detail.dataset.openLandmark = "agent-bot";
+    detail.dataset.agentProvider = provider;
+    detail.style.setProperty(
+      "--detail-color",
+      provider === "codex" ? "#8fffe0" : "#ffb37f",
+    );
+    detail.innerHTML = `
+      <header class="world-detail-header">
+        <div>
+          <p class="world-eyebrow">ENGINEERING AGENT / LIVE SESSION STATUS</p>
+          <h2 id="world-detail-title">${label}</h2>
+        </div>
+        <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close ${label} details">×</button>
+      </header>
+      <div class="world-detail-scroll">
+        <p class="world-detail-summary">What ${label} is working on across eligible mirrors, with the complete authorized runtime and transcript data reported by Qt.</p>
+        ${this.mirrorNodeAgentSessionsHTML(
+          {},
+          { provider, allNodes: true },
+        )}
+      </div>`;
+    this.showDetailOverlay(detail, backdrop, { returnFocus });
+    this.wireMirrorNodeAgentWorkspace({});
   }
 
   async fetchMastodonJSON(url) {
@@ -12389,6 +12981,26 @@ class ForkMeshWorld extends HTMLElement {
     } catch (_) {}
   }
 
+  // A wave is the text-free "emote" gesture the relay already broadcasts: the
+  // arm pose plays here immediately and every other visitor receives the same
+  // tiny frame. The cooldown is the length of the pose, so holding the button
+  // down cannot turn one gesture into a stream of socket frames.
+  waveToWorld() {
+    this.world?.playEmote?.(this.identity?.id || "", "wave", true);
+    const now = Date.now();
+    if (now - (this.lastWaveSentAt || 0) < WORLD_WAVE_COOLDOWN_MS) return;
+    this.lastWaveSentAt = now;
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      this.toast("Realtime is offline; your wave stayed on this device.");
+      return;
+    }
+    try {
+      this.socket.send(
+        JSON.stringify({ type: "interaction", kind: "emote", emote: "wave" }),
+      );
+    } catch (_) {}
+  }
+
   enterNeighborhoodHome(ownerId, granted) {
     const owner = this.remotePlayers.get(String(ownerId || ""));
     if (!owner || (!granted && owner.publicDoor !== "open")) {
@@ -13694,6 +14306,14 @@ class ForkMeshWorld extends HTMLElement {
         typeof nextState?.federates === "boolean"
           ? nextState.federates
           : previous.federates === true,
+      handle: sanitizeNotificationText(
+        nextState?.handle || previous.handle,
+        "",
+        120,
+      ),
+      actorUrl:
+        safePublicHTTPSURL(nextState?.actorUrl) ||
+        safePublicHTTPSURL(previous.actorUrl),
       followers: Array.isArray(nextState?.followers)
         ? nextState.followers
         : Array.isArray(previous.followers)
@@ -13749,6 +14369,8 @@ class ForkMeshWorld extends HTMLElement {
             ? reported
             : followers.length,
         federates: fediverse.enabled === true,
+        handle: fediverse.handle,
+        actorUrl: fediverse.actorUrl,
         followers,
       });
       this.refreshRepositoryFollowerUI();
@@ -13760,6 +14382,69 @@ class ForkMeshWorld extends HTMLElement {
       this.refreshRepositoryFollowerUI();
       return state;
     }
+  }
+
+  async followRepositoryOnFediverse(repository = {}) {
+    const handle = sanitizeNotificationText(
+      repository?.handle,
+      "",
+      120,
+    );
+    const actorUrl = safePublicHTTPSURL(repository?.actorUrl);
+    if (!handle && !actorUrl) {
+      this.toast("This repository has not published a fediverse actor yet.");
+      return false;
+    }
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop) return false;
+    detail.dataset.openLandmark = "repository-follow";
+    detail.style.setProperty("--detail-color", "#8c8dff");
+    detail.innerHTML = `
+      <header class="world-detail-header">
+        <div>
+          <p class="world-eyebrow">MASTODON / ACTIVITYPUB</p>
+          <h2 id="world-detail-title">Follow this repository</h2>
+        </div>
+        <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close follow instructions">×</button>
+      </header>
+      <div class="world-detail-scroll">
+        <section class="world-feature-card">
+          <h3>${escapeHTML(handle || "Repository actor")}</h3>
+          <p>Search for this complete handle from your Mastodon app, then press Follow. The outer portrait ring updates from the repository actor’s real ActivityPub followers.</p>
+          <div class="world-detail-actions">
+            ${
+              handle
+                ? '<button class="world-primary-action" type="button" data-world-copy-repository-handle>Copy Mastodon handle</button>'
+                : ""
+            }
+            ${
+              actorUrl
+                ? `<a class="world-secondary-action" href="${escapeHTML(
+                    actorUrl,
+                  )}" target="_blank" rel="noopener noreferrer">Open actor record ↗</a>`
+                : ""
+            }
+          </div>
+          <p class="world-empty-state" data-world-follow-status></p>
+        </section>
+      </div>`;
+    this.showDetailOverlay(detail, backdrop);
+    detail
+      .querySelector("[data-world-copy-repository-handle]")
+      ?.addEventListener("click", async () => {
+        const status = detail.querySelector("[data-world-follow-status]");
+        try {
+          await navigator.clipboard.writeText(handle);
+          if (status) {
+            status.textContent =
+              "Copied. Paste it into Mastodon search and choose Follow.";
+          }
+        } catch (_) {
+          if (status) status.textContent = handle;
+        }
+      });
+    return true;
   }
 
   refreshRepositoryFollowerUI() {
@@ -14170,6 +14855,8 @@ class ForkMeshWorld extends HTMLElement {
           ? followers.count
           : null,
         fediverseFollowerStatus: followers?.status || "idle",
+        fediverseHandle: followers?.handle || "",
+        fediverseActorUrl: followers?.actorUrl || "",
         fediverseFollowers: Array.isArray(followers?.followers)
           ? followers.followers
           : [],
@@ -14206,6 +14893,10 @@ class ForkMeshWorld extends HTMLElement {
         : records[recordIndex].fediverseFollowerCount,
       fediverseFollowerStatus:
         followers?.status || records[recordIndex].fediverseFollowerStatus,
+      fediverseHandle:
+        followers?.handle || records[recordIndex].fediverseHandle || "",
+      fediverseActorUrl:
+        followers?.actorUrl || records[recordIndex].fediverseActorUrl || "",
       fediverseFollowers: Array.isArray(followers?.followers)
         ? followers.followers
         : records[recordIndex].fediverseFollowers,
@@ -14288,6 +14979,108 @@ class ForkMeshWorld extends HTMLElement {
     this.toast(
       `Issue #${number}${page?.state ? ` (${page.state})` : ""}: click the expanded page to open the full thread.`,
     );
+  }
+
+  selectRepositoryIssueAgentProvider(issue = {}) {
+    if (this.orgAgentAccess?.state !== "allowed") {
+      this.toast(
+        "Only Engineering team members can assign issues to Claude or Codex.",
+      );
+      return false;
+    }
+    const provider = ["claude-code", "codex"].includes(issue?.provider)
+      ? issue.provider
+      : "";
+    const number = safePullNumber(issue?.number);
+    if (!provider || !number) return false;
+    this.world?.setRepositoryIssueAgentPicker?.({
+      owner: issue.owner,
+      name: issue.name,
+      number,
+      provider,
+    });
+    this.toast(
+      `Choose a ${provider === "codex" ? "Codex" : "Claude"} model for issue #${number}.`,
+    );
+    return true;
+  }
+
+  async assignRepositoryIssueToAgent(issue = {}) {
+    if (this.orgAgentAccess?.state !== "allowed") {
+      this.toast(
+        "Only Engineering team members can assign issues to Claude or Codex.",
+      );
+      return false;
+    }
+    const owner = sanitizePresenceText(issue?.owner, "", 40).toLowerCase();
+    const name = sanitizePresenceText(issue?.name, "", 60).toLowerCase();
+    const number = safePullNumber(issue?.number);
+    const title = sanitizeNotificationText(
+      issue?.title,
+      `Issue #${number || ""}`,
+      160,
+    );
+    const provider = ["claude-code", "codex"].includes(issue?.provider)
+      ? issue.provider
+      : "";
+    const allowedModels =
+      provider === "claude-code"
+        ? new Set(["haiku", "sonnet", "opus", "fable"])
+        : new Set(["sol", "luna", "terra"]);
+    const model = String(issue?.model || "").toLowerCase();
+    if (
+      owner !== "forkmesh" ||
+      name !== "forkmesh" ||
+      !number ||
+      !provider ||
+      !allowedModels.has(model)
+    ) {
+      this.toast("That issue-agent assignment is not valid.");
+      return false;
+    }
+    const assignmentKey = `${owner}/${name}#${number}:${provider}:${model}`;
+    if (this.repositoryIssueAgentAssignments.has(assignmentKey)) return false;
+    this.repositoryIssueAgentAssignments.add(assignmentKey);
+    this.toast(
+      `Assigning issue #${number} to ${
+        provider === "codex" ? "Codex" : "Claude"
+      } · ${model}…`,
+    );
+    try {
+      await this.postJSON(
+        this.organizationAgentEndpoint(),
+        {
+          provider,
+          model,
+          issueNumber: number,
+          taskKey: `issue:${owner}/${name}#${number}`,
+          title: `Issue #${number}: ${title}`,
+          prompt:
+            `Resolve ForkMesh issue #${number}: ${title}\n\n` +
+            `Read the commit-pinned issue record and its comments, implement a secure focused fix, run the relevant tests, and create a pull request that references and closes issue #${number}.`,
+        },
+        { timeout: 12_000 },
+      );
+      this.world?.setRepositoryIssueAgentPicker?.(null);
+      await this.refreshOrgAgentBots();
+      this.toast(
+        `Issue #${number} queued for ${
+          provider === "codex" ? "Codex" : "Claude"
+        } · ${model}; Haiku security review runs first.`,
+      );
+      return true;
+    } catch (error) {
+      this.toast(
+        String(error?.message || "") === "no_eligible_headless_mirror"
+          ? "No eligible headless mirror is online for this assignment."
+          : `Could not assign issue #${number}: ${String(
+              error?.message || "unknown error",
+            )}`,
+      );
+      return false;
+    } finally {
+      this.repositoryIssueAgentAssignments.delete(assignmentKey);
+    }
   }
 
   openRepositoryIssueWorkbench(page) {
@@ -18007,6 +18800,9 @@ class ForkMeshWorld extends HTMLElement {
     // composer can never end up underneath an open CHAT or DEBUG drawer.
     this.$("[data-world-chat-terminal]")?.removeAttribute("open");
     this.$("[data-world-diagnostics]")?.removeAttribute("open");
+    // The full overlay shows the same #general room, so it reads the backlog
+    // the collapsed bar was counting.
+    this.clearChatTerminalUnread();
     panel.dataset.open = "true";
     panel.setAttribute("aria-hidden", "false");
     backdrop.dataset.open = "true";
@@ -18058,6 +18854,41 @@ class ForkMeshWorld extends HTMLElement {
     const label = this.$("[data-world-chat-terminal-last]");
     if (!label) return;
     label.textContent = sender ? `${sender}: ${text}` : text;
+  }
+
+  // Unread pill on the collapsed CHAT bar: on mobile the bar shrinks to the
+  // word CHAT, so the count is the only hint that someone is talking.
+  bumpChatTerminalUnread() {
+    if (this.$("[data-world-chat-terminal]")?.open) return;
+    this.chatTerminalUnread += 1;
+    this.renderChatTerminalUnread();
+  }
+
+  clearChatTerminalUnread() {
+    if (!this.chatTerminalUnread) return;
+    this.chatTerminalUnread = 0;
+    this.renderChatTerminalUnread();
+  }
+
+  renderChatTerminalUnread() {
+    const badge = this.$("[data-world-chat-terminal-unread]");
+    if (!badge) return;
+    const count = Math.max(0, this.chatTerminalUnread);
+    badge.hidden = count <= 0;
+    badge.textContent = count > 99 ? "99+" : String(count);
+    badge.setAttribute(
+      "aria-label",
+      `${count} unread chat message${count === 1 ? "" : "s"}`,
+    );
+    const summary = this.$("[data-world-chat-terminal] > summary");
+    summary?.setAttribute(
+      "aria-label",
+      count > 0
+        ? `Open World chat in a terminal panel — ${count} unread message${
+            count === 1 ? "" : "s"
+          }`
+        : "Open World chat in a terminal panel",
+    );
   }
 
   closeWorldChat() {
@@ -19217,6 +20048,94 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
+  startDeployStatusWatch() {
+    window.clearInterval(this.deployStatusTimer);
+    void this.checkDeployStatus();
+    this.deployStatusTimer = window.setInterval(
+      () => void this.checkDeployStatus(),
+      WORLD_DEPLOY_STATUS_POLL_MS,
+    );
+  }
+
+  renderDeployStatus(state) {
+    const notice = this.$("[data-world-update-notice]");
+    const copy = this.$("[data-world-update-copy]");
+    const refresh = this.$("[data-world-update-refresh]");
+    if (!notice || !copy || !refresh) return;
+    notice.dataset.state = state;
+    if (state === "deploying") {
+      notice.hidden = false;
+      refresh.hidden = true;
+      copy.innerHTML =
+        "<strong>ForkMesh is deploying now.</strong> The World stays live while the new build rolls out.";
+      return;
+    }
+    if (state === "failed") {
+      notice.hidden = false;
+      refresh.hidden = true;
+      copy.innerHTML =
+        "<strong>The deployment needs attention.</strong> This World remains on the current stable build.";
+      return;
+    }
+    if (state === "ready") {
+      this.updateReloadPending = true;
+      notice.hidden = false;
+      refresh.hidden = false;
+      copy.innerHTML =
+        "<strong>The new World build is ready.</strong> Refresh when you are ready; your position will be preserved.";
+      return;
+    }
+    if (!this.updateReloadPending) notice.hidden = true;
+  }
+
+  async checkDeployStatus() {
+    if (this.destroyed || document.hidden) return;
+    let status;
+    try {
+      status = await this.fetchJSON("/api/world/deploy-status", {
+        auth: false,
+        timeout: 4000,
+        cache: "no-store",
+      });
+    } catch (_) {
+      return;
+    }
+    const state = String(status?.state || "idle");
+    const revision = String(status?.revision || "");
+    const known = String(this.buildDiagnostics?.revision || "");
+    if (state === "deploying") {
+      this.deployObservedRevision = revision;
+      this.renderDeployStatus("deploying");
+      return;
+    }
+    if (
+      state === "ready" &&
+      revision &&
+      (
+        (known && revision !== known) ||
+        revision === this.deployObservedRevision
+      )
+    ) {
+      const announce = !this.updateReloadPending;
+      this.renderDeployStatus("ready");
+      if (announce) {
+        this.toast(
+          "✨ The new World build is ready. Refresh when you are ready.",
+        );
+      }
+      return;
+    }
+    if (
+      state === "failed" &&
+      revision &&
+      revision === this.deployObservedRevision
+    ) {
+      this.renderDeployStatus("failed");
+      return;
+    }
+    this.renderDeployStatus("idle");
+  }
+
   async checkForWorldUpdate() {
     if (this.destroyed || this.updateReloadPending || document.hidden) return;
     // Visibility flips can arrive in bursts; keep the check to at most one
@@ -19243,8 +20162,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     if (build.revision === known) return;
     this.updateReloadPending = true;
-    const notice = this.$("[data-world-update-notice]");
-    if (notice) notice.hidden = false;
+    this.renderDeployStatus("ready");
     this.toast("✨ A new World build is ready. Refresh when you are ready.");
   }
 
@@ -20559,7 +21477,8 @@ class ForkMeshWorld extends HTMLElement {
     // re-fetched signed mirror payload, never from unauthenticated frame data.
     const node = sanitizePresenceText(message?.node, "", 40);
     const repo = sanitizePresenceText(message?.repo, "", 60);
-    if (!node || !repo) return;
+    const commit = sanitizePresenceText(message?.commit, "", 12).toLowerCase();
+    if (!node || !repo || !/^[0-9a-f]{12}$/.test(commit)) return;
     // The publisher can be a user-backed source or a mirror node. Neither is
     // the public repository owner. Keep that internal routing identity out of
     // visitor-facing copy; the flagship organization remains forkmesh.
@@ -20570,6 +21489,9 @@ class ForkMeshWorld extends HTMLElement {
     this.toast(
       `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
     );
+    // This only arms the scene. No frame directly creates an effect: the next
+    // signed catalog payload must confirm the node and commit prefix first.
+    this.world?.armMirrorPushEffect?.(node, commit);
     // One coalesced refresh replaces waiting out the steady mirror poll, so
     // the yard updates near-instantly without adding steady-state traffic.
     window.clearTimeout(this.mirrorPushRefreshTimer);
@@ -20580,7 +21502,10 @@ class ForkMeshWorld extends HTMLElement {
         // Preserve the last verified snapshot during a transient HTTPS
         // failure; the regular poll retries on its own cadence.
       });
-    }, 600);
+    // Give the catalog purge/publication transaction a moment to become
+    // visible at the edge. The verified-effect arm remains live through the
+    // regular fallback polls if this eager read is still early.
+    }, 1_500);
   }
 
   setupBroadcastChannel() {
@@ -21016,6 +21941,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.worldTicketTimer);
     window.clearInterval(this.diagnosticsTimer);
     window.clearInterval(this.updateCheckTimer);
+    window.clearInterval(this.deployStatusTimer);
     window.clearInterval(this.layoutRefreshTimer);
     window.clearInterval(this.mastodonRefreshTimer);
     window.clearInterval(this.socialFeedsTimer);

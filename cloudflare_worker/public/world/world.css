@@ -399,6 +399,32 @@ forkmesh-world {
   font-size: 12px;
 }
 
+.world-update-activity {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border: 2px solid rgb(158 247 198 / 0.25);
+  border-top-color: var(--world-mint);
+  border-radius: 50%;
+  animation: world-deploy-spin 650ms linear infinite;
+}
+
+.world-update-notice:not([data-state="deploying"]) .world-update-activity {
+  display: none;
+}
+
+.world-update-notice[data-state="ready"] {
+  border-color: #a8f7c8;
+}
+
+.world-update-notice[data-state="failed"] {
+  border-color: #ffb37c;
+}
+
+@keyframes world-deploy-spin {
+  to { transform: rotate(360deg); }
+}
+
 .world-update-notice[hidden] {
   display: none;
 }
@@ -414,37 +440,10 @@ forkmesh-world {
   cursor: pointer;
 }
 
-.world-share-menu {
-  position: absolute;
-  z-index: 90;
-  min-width: 210px;
-  border: 1px solid var(--world-line-strong);
-  border-radius: 9px;
-  background: rgb(5 24 18 / 0.98);
-  padding: 5px;
-  box-shadow: 0 16px 46px rgb(0 0 0 / 0.44);
-}
-
-.world-share-menu[hidden] {
-  display: none;
-}
-
-.world-share-menu button {
-  width: 100%;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  padding: 9px 10px;
-  color: var(--world-copy);
-  text-align: left;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.world-share-menu button:hover,
-.world-share-menu button:focus-visible {
-  background: rgb(158 247 198 / 0.14);
-  outline: none;
+@media (prefers-reduced-motion: reduce) {
+  .world-update-activity {
+    animation-duration: 1.8s;
+  }
 }
 
 .world-canvas {
@@ -650,6 +649,39 @@ forkmesh-world {
   font-weight: 600;
 }
 
+/* The hand mirrors the gesture the avatar plays in the scene. */
+.world-wave-button span[aria-hidden="true"] {
+  display: inline-block;
+  transform-origin: 70% 80%;
+}
+
+.world-wave-button:hover span[aria-hidden="true"],
+.world-wave-button:focus-visible span[aria-hidden="true"] {
+  animation: world-wave-hand 900ms ease-in-out infinite;
+}
+
+@keyframes world-wave-hand {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+
+  25% {
+    transform: rotate(16deg);
+  }
+
+  75% {
+    transform: rotate(-16deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-wave-button:hover span[aria-hidden="true"],
+  .world-wave-button:focus-visible span[aria-hidden="true"] {
+    animation: none;
+  }
+}
+
 [data-world-sound-toggle] {
   /* Sound consent must remain reachable while a landmark detail is open.
      Only this explicit media control rises above the dismissing backdrop. */
@@ -766,6 +798,28 @@ forkmesh-world {
   backdrop-filter: blur(18px);
 }
 
+.world-share-view-button {
+  justify-self: end;
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--world-line);
+  background: var(--world-panel);
+  padding: 7px 10px;
+  color: var(--world-copy);
+  font: 700 0.62rem/1.2 "ForkMesh Mono", monospace;
+  cursor: pointer;
+  backdrop-filter: blur(18px);
+}
+
+.world-share-view-button:hover,
+.world-share-view-button:focus-visible {
+  border-color: var(--world-mint);
+  color: var(--world-mint);
+  outline: none;
+}
+
 .world-saved-views-heading {
   display: flex;
   min-height: 30px;
@@ -780,14 +834,33 @@ forkmesh-world {
   text-transform: uppercase;
 }
 
-.world-saved-views-heading button {
+.world-saved-views-heading > button:last-child {
   display: grid;
-  width: 23px;
-  height: 23px;
-  place-items: center;
+  grid-template-columns: auto auto;
+  min-height: 23px;
+  align-items: center;
+  gap: 3px;
   border: 1px solid var(--world-line);
   background: rgb(158 247 198 / 0.08);
+  padding: 3px 5px;
   color: var(--world-mint);
+  font: 700 0.51rem/1 "ForkMesh Mono", monospace;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.world-saved-views-toggle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  padding: 5px 0;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
   cursor: pointer;
 }
 
@@ -862,8 +935,8 @@ forkmesh-world {
 
 .world-saved-view button:hover,
 .world-saved-view button:focus-visible,
-.world-saved-views-heading button:hover,
-.world-saved-views-heading button:focus-visible {
+.world-saved-views-heading > button:hover,
+.world-saved-views-heading > button:focus-visible {
   border-color: var(--world-mint);
   outline: none;
 }
@@ -1469,6 +1542,25 @@ forkmesh-world {
 }
 
 .world-chat-terminal[open] [data-world-chat-terminal-last] {
+  display: none;
+}
+
+/* Unread count on the collapsed CHAT bar. Opening the panel zeroes it, so it
+   is only ever visible while the bar is closed. */
+.world-chat-terminal-unread {
+  flex: 0 0 auto;
+  min-width: 14px;
+  border-radius: 999px;
+  background: var(--world-mint);
+  padding: 0 4px;
+  color: #06130d;
+  font-size: 0.42rem;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+
+.world-chat-terminal-unread[hidden] {
   display: none;
 }
 
@@ -6270,6 +6362,12 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     display: none;
   }
 
+  .world-top-actions {
+    /* The wave chip is one more icon in an already tight phone row; a 6px
+       gutter keeps the whole row, settings badge included, on screen. */
+    gap: 6px;
+  }
+
   .world-icon-button {
     min-width: 38px;
     min-height: 38px;
@@ -6425,6 +6523,15 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 }
 
+@media (max-width: 375px) {
+  .world-top-actions > .world-wave-button {
+    /* The narrowest phones have no room left in the tool row. Alerts, sound
+       consent, and settings keep their slots; the wave is the one control
+       here that has no consequence when it is out of reach. */
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .world-office-chat,
   .world-office-lobby,
@@ -6485,6 +6592,14 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
   .world-chat-terminal:not([open]) {
     width: 58px;
+  }
+
+  /* The collapsed bar shrinks to the word CHAT here; give the unread pill room
+     rather than letting it clip. */
+  .world-chat-terminal:not([open]):has(
+      .world-chat-terminal-unread:not([hidden])
+    ) {
+    width: 86px;
   }
 
   .world-chat-terminal:not([open]) > summary {

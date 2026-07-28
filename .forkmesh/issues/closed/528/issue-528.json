@@ -1,0 +1,58 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785000579284,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "Some users, such as mdkaifansari04, are reporting issues with moving around after recent remodeling changes. They are unable to navigate and attempting to refresh or log in again does not resolve the issue. Further investigation is needed to determine the cause and implement a fix to ensure smooth navigation for all users.\n\n---\n_Filed by ForkBot at @jett's request via chat._",
+            "id": "forkbot-1785000579284",
+            "sig": "",
+            "title": "Users unable to navigate the space",
+            "ts": 1785000579284,
+            "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "this has been fixed ",
+            "id": "773a6e99-bae3-4379-b94b-4d4d5b550a1a",
+            "sig": "H0ZzHedf_QmDbv1voBZYs6vZbVtrldGrhsPqnDvRcGukys95BEQZJLgDCUAXZBtnQ7LX9QseJVt9zV-7saK9Aw",
+            "ts": 1785207478596,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "19bdd6bf-4b3b-4c5e-9b59-89834c252d9d",
+            "sig": "h0ni6rmZ-6ti5lr839Xvd9jn8BTorekCk5rDllfoRMmzs6BMBUsMP63X7itsxkEmQzOrs-jiUeiZNT4Iy0saBw",
+            "status": "closed",
+            "ts": 1785207478665,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 528,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "Users unable to navigate the space",
+    "updatedAt": 1785207478665,
+    "votes": 0
+}

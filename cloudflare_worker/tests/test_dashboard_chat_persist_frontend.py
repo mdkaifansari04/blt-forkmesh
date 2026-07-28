@@ -149,7 +149,11 @@ def test_web_chat_mentions_link_to_public_profiles_with_hover_cards():
     assert "function makeMentionAnchor" in PUBLIC_CHAT
     assert "renderRichText(container, record" in PUBLIC_CHAT
     assert "renderRecordBody(rec)" in PUBLIC_CHAT
-    assert "renderMessageText(rec.textEl, plain.text || \"\")" in CHAT
+    # An edited message is re-rendered through the mention renderer (the record
+    # keeps the new text so a later edit starts from it), never set as raw
+    # textContent, so mentions stay linked after an edit.
+    assert "rec.text = plain.text || \"\"" in CHAT
+    assert "renderMessageText(rec.textEl, rec.text)" in CHAT
     assert "sideEntry.text = plain.text || \"\"" in CHAT
 
 
