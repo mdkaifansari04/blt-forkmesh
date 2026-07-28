@@ -19,6 +19,7 @@
 #include "ScreenCaptureOverlay.h"
 #include "ScreenDrawOverlay.h"
 #include "ScreenshotMarkupWindow.h"
+#include "TerminalWidget.h"
 #include "WorldSpeechBridge.h"
 
 #include <QBrush>
@@ -6028,12 +6029,34 @@ void MainWindow::pushCurrentRepoUpstream()
                         .arg(scan.findings.size())
                         .arg(scan.findings.size() == 1 ? QString() : QStringLiteral("s"))
                         .arg(repo.owner, repo.name, detail));
+                auto *viewBtn = box.addButton(QStringLiteral("View code"),
+                                              QMessageBox::ActionRole);
                 auto *cancelBtn = box.addButton(QStringLiteral("Cancel push"),
                                                 QMessageBox::RejectRole);
                 auto *bypassBtn = box.addButton(QStringLiteral("Push anyway"),
                                                 QMessageBox::DestructiveRole);
                 box.setDefaultButton(cancelBtn);
                 box.exec();
+                if (box.clickedButton() == viewBtn) {
+                    // Jumping to the code cancels the push: the point is to remove
+                    // the credential first. Copy the path/line out before the
+                    // navigation below, which pumps the event loop (and can rebuild
+                    // the findings' owning state) across its git reads.
+                    const QString path = scan.findings.first().path;
+                    const int line = scan.findings.first().line;
+                    m_pushingRepos.remove(index);
+                    refreshRepoSyncIndicators();
+                    openRepoDetail(index);
+                    // Switch to the Code tab (index 0) so the highlighted line is
+                    // visible; openRepoFileAtLine alone only touches the (currently
+                    // hidden) files panel.
+                    if (m_repoDetailTabs && m_repoDetailTabs->button(0))
+                        m_repoDetailTabs->button(0)->setChecked(true);
+                    if (m_repoDetailStack)
+                        m_repoDetailStack->setCurrentIndex(0);
+                    openRepoFileAtLine(path, line);
+                    return;
+                }
                 if (box.clickedButton() != bypassBtn) {
                     m_pushingRepos.remove(index);
                     refreshRepoSyncIndicators();
@@ -7970,6 +7993,24 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(installAgentsBtn);
+
+        // The installer copies no provider tokens, so signing in is a separate
+        // interactive step. This opens the same live shell the install opens on
+        // its own, for a host whose CLIs are already there.
+        auto *signInBtn = new QPushButton(QStringLiteral("Sign in"));
+        signInBtn->setObjectName(QStringLiteral("hostAgentLoginButton"));
+        signInBtn->setCursor(Qt::PointingHandCursor);
+        signInBtn->setToolTip(QStringLiteral(
+            "Open a live terminal on this mirror to finish the Claude Code and "
+            "Codex sign-ins. What you type goes only to the host over its "
+            "pinned SSH connection."));
+        setOcticon(signInBtn, "key", 12);
+        connect(signInBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] {
+                openHostAgentLoginTerminalForSelection(i);
+            });
+        });
+        cellRow->addWidget(signInBtn);
         // Table-row sizing: the default QPushButton padding makes each of these
         // 35px tall, far more than a text row, so the view squashed the whole
         // action cell down to the item height and Qt silently dropped every
@@ -8415,7 +8456,8 @@ void MainWindow::runAgentCliInstall(
                QStringLiteral("Could not start the pinned SSH installer."));
     });
     connect(proc, &QProcess::finished, this,
-            [this, proc, node, ip, identityFile, copyCredentials, report](
+            [this, proc, node, ip, user, identityFile, copyCredentials,
+             report](
                 int code, QProcess::ExitStatus status) {
         if (m_hostAgentInstallProcess == proc)
             m_hostAgentInstallProcess = nullptr;
@@ -8441,8 +8483,9 @@ void MainWindow::runAgentCliInstall(
                              "signed in with this device's access.")
                              .arg(node)
                        : QStringLiteral(
-                             "Claude Code and Codex are installed on %1. Sign "
-                             "in on that mirror before starting sessions.")
+                             "Claude Code and Codex are installed on %1. "
+                             "Finish the provider sign-ins in the terminal "
+                             "that just opened.")
                              .arg(node))
                 : timedOut
                     ? QStringLiteral(
@@ -8461,6 +8504,13 @@ void MainWindow::runAgentCliInstall(
                       .arg(node));
         QTimer::singleShot(0, this, &MainWindow::probeSavedHosts);
         proc->deleteLater();
+        // A run without copied credentials leaves the mirror with the binaries
+        // and no provider session. Hand the operator the shell to enter them in
+        // as soon as the binaries exist, instead of leaving "login is still
+        // required" as a dead end. A copyCredentials run is already signed in,
+        // so it gets no window.
+        if (ok && !copyCredentials)
+            openHostAgentLoginTerminal(node, ip, user);
     });
     proc->start(ssh.program, ssh.arguments);
     // The credentials leave this process only here, on the child's stdin, and
@@ -8470,6 +8520,96 @@ void MainWindow::runAgentCliInstall(
         payload.fill('\0');
     }
     proc->closeWriteChannel();
+}
+
+void MainWindow::openHostAgentLoginTerminalForSelection(int row)
+{
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+    const auto cellText = [this, row](int column) {
+        const QTableWidgetItem *item = m_hostsTable->item(row, column);
+        return item ? item->text().trimmed() : QString();
+    };
+    openHostAgentLoginTerminal(cellText(0), cellText(1), cellText(2));
+}
+
+void MainWindow::openHostAgentLoginTerminal(const QString &node,
+                                            const QString &ip,
+                                            const QString &user)
+{
+    if (node.isEmpty() || ip.isEmpty() || user.isEmpty())
+        return;
+    // A headless node has no desktop to show a sign-in window on; it would
+    // strand a live SSH child behind an invisible dialog.
+    if (m_headless)
+        return;
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    QString pass;
+    for (const QJsonValue &value : hosts) {
+        const QJsonObject host = value.toObject();
+        if (host.value(QStringLiteral("name")).toString() == node &&
+            host.value(QStringLiteral("ip")).toString() == ip &&
+            host.value(QStringLiteral("user")).toString() == user) {
+            pass = m_hostSessionPasswords.value(
+                forkmesh::control::savedHostCredentialKey(node, ip, user));
+            break;
+        }
+    }
+    const QString identityFile = savedHostIdentityFile(node, ip, user);
+    // Same rule as the installer: a pinned managed key is the only credential
+    // used when one exists, so the sign-in shell rides the exact transport
+    // every later headless-agent connection does.
+    const QString sshPassword = identityFile.isEmpty() ? pass : QString();
+    QString sshError;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostInteractiveSshCommand(
+            ip, user, sshPassword,
+            forkmesh::control::buildHostAgentLoginRemoteCommand(), &sshError,
+            identityFile);
+    if (ssh.program.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(sshError);
+        return;
+    }
+
+    auto *dialog = new QDialog(this);
+    dialog->setObjectName(QStringLiteral("hostAgentLoginDialog"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(QStringLiteral("Sign in \xE2\x80\x94 %1").arg(node));
+    dialog->resize(900, 560);
+    auto *layout = new QVBoxLayout(dialog);
+    auto *notice = new QLabel(QStringLiteral(
+        "This is a live shell on <b>%1@%2</b>. Run <code>claude</code> and then "
+        "<code>/login</code> inside it, and <code>codex login</code>, and paste "
+        "each provider's code here. ForkMesh never reads or stores what you "
+        "type in this window.")
+                                  .arg(user.toHtmlEscaped(), ip.toHtmlEscaped()),
+                              dialog);
+    notice->setWordWrap(true);
+    layout->addWidget(notice);
+    auto *terminal = new TerminalWidget(dialog);
+    terminal->setObjectName(QStringLiteral("hostAgentLoginTerminal"));
+    layout->addWidget(terminal, 1);
+    auto *buttons = new QHBoxLayout;
+    buttons->addStretch(1);
+    auto *close = new QPushButton(QStringLiteral("Close"), dialog);
+    close->setObjectName(QStringLiteral("hostAgentLoginCloseButton"));
+    connect(close, &QPushButton::clicked, dialog, &QDialog::close);
+    buttons->addWidget(close);
+    layout->addLayout(buttons);
+
+    // sshpass reads the session password from SSHPASS only; it never becomes a
+    // word of the command line the PTY shell sees.
+    QStringList extraEnv;
+    if (!sshPassword.isEmpty())
+        extraEnv << QStringLiteral("SSHPASS=") + sshPassword;
+    dialog->show();
+    dialog->raise();
+    terminal->runCommand(forkmesh::control::hostSshCommandLine(ssh),
+                         QDir::homePath(), extraEnv);
+    terminal->setFocus();
 }
 
 void MainWindow::configureHostActionsForSelection(int row)

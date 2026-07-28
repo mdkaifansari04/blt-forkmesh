@@ -1176,6 +1176,13 @@ private:
     // one selected mirror over its existing TOFU-pinned SSH connection.
     // Authentication is intentionally separate and never copied by this action.
     void installAgentClisForHost(int row);
+    // Open a live in-app terminal on one mirror so the provider sign-ins an
+    // install without copied credentials skips (`claude` then /login,
+    // `codex login`) can be completed by hand. Opened automatically once such
+    // an install finishes, and available on demand from the host row.
+    void openHostAgentLoginTerminalForSelection(int row);
+    void openHostAgentLoginTerminal(const QString &node, const QString &ip,
+                                    const QString &user);
     // Shared driver behind that button and the one-click Vultr flow's "also
     // install the agent CLIs" option (adhoc #418). With copyCredentials the
     // run additionally hands the mirror this device's provider logins on the
