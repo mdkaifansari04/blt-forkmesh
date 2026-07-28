@@ -11,6 +11,7 @@ BUILTIN_KEYS = frozenset({
     "task:world-board-detail",
     "task:world-mobile-pan-stability",
     "task:world-stable-hydration",
+    "task:repo-board-view-pads",
     "task:world-continuous-city",
     "task:world-start-here-map",
     "task:world-roof-and-seating",

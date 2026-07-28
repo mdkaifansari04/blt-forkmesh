@@ -63,6 +63,7 @@ def test_build_board_lists_active_work_on_straight_detailed_cards():
         "task:world-board-detail",
         "task:world-mobile-pan-stability",
         "task:world-stable-hydration",
+        "task:repo-board-view-pads",
         "task:world-continuous-city",
         "task:world-start-here-map",
         "task:world-roof-and-seating",

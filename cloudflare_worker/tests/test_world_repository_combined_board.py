@@ -23,16 +23,57 @@ def test_repository_issues_and_pulls_have_separate_left_right_panels():
     assert "repository-${kind}-open-count:" in desk
 
 
-def test_each_repository_panel_uses_one_compact_25_record_column():
+def test_each_repository_panel_uses_one_content_height_25_record_column():
     desk = SCENE[
         SCENE.index("function updateRepositoryRecordDesk("):
         SCENE.index("function setRepositoryIssuePageExpanded(")
     ]
     assert "const rows = items.length;" in desk
     assert "const rowPitch = 0.52;" in desk
+    assert "const boardHeight = 0.74 + rows * rowPitch;" in desk
     assert "const cardX = 0;" in desk
     assert "new THREE.PlaneGeometry(3.78, 0.46)" in desk
     assert "items.length > 13 ? 2 : 1" not in desk
+
+
+def test_repository_lists_read_chronologically_downward_with_counts_below():
+    desk = SCENE[
+        SCENE.index("function updateRepositoryRecordDesk("):
+        SCENE.index("function setRepositoryIssuePageExpanded(")
+    ]
+    assert ".slice(pageInfo.start, pageInfo.end)" in desk
+    assert ".reverse();" in desk
+    assert "right.updatedAt || right.createdAt || right.number" in desk
+    assert "right.createdAt || right.number" in desk
+    assert "const boardBottomY = groundY + 2.62;" in desk
+    assert "groundY + 1.75" in desk
+    assert "groundY + 0.7" in desk
+    assert "groundY + boardHeight + 1.72" not in desk
+
+
+def test_each_repository_panel_has_a_first_person_reading_pad():
+    desk = SCENE[
+        SCENE.index("function updateRepositoryRecordDesk("):
+        SCENE.index("function setRepositoryIssuePageExpanded(")
+    ]
+    assert "repository-${kind}-viewing-pad:" in desk
+    assert '"FIRST PERSON"' in desk
+    assert "Math.max(4.4, visualHeight * 1.28)" in desk
+    assert "repository-${kind}-viewing-target:" in desk
+    assert "(countBottomY + boardTopY) / 2" in desk
+    assert "repositoryViewingPad = viewingPadData" in desk
+    assert "interactive.push(object)" in desk
+    focus = SCENE[
+        SCENE.index("function focusRepositoryViewingPad("):
+        SCENE.index("function lockOfficeElevatorCamera(")
+    ]
+    assert 'setCameraMode("first-person"' in focus
+    assert "pad.getWorldPosition" in focus
+    assert "target.getWorldPosition" in focus
+    assert "cameraYaw = Math.atan2(-delta.x, -delta.z)" in focus
+    assert "firstPersonPitch = clamp(" in focus
+    assert "queueMovementEvent({" in focus
+    assert "focusRepositoryViewingPad(hit.object)" in SCENE
 
 
 def test_repository_cards_clip_text_to_their_physical_bounds():
@@ -55,7 +96,8 @@ def test_counts_are_large_open_only_headers_and_paging_is_at_panel_bottom():
     assert 'context.font = \'900 205px "ForkMesh Mono"' in SCENE
     assert 'String(item?.state || "").toLowerCase() === "open"' in SCENE
     assert "function repositoryRecordPageTexture(" in SCENE
-    assert "groundY + 1.02" in SCENE
+    assert "groundY + 1.75" in SCENE
+    assert "groundY + 0.7" in SCENE
     assert "groundY + boardHeight + 2.04" not in SCENE
 
 

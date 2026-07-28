@@ -137,7 +137,7 @@ const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
 // islands plus the southern member garden. Keep restored/shared positions
 // inside the scene's 340-unit boundary instead of rejecting valid island
 // coordinates with the old town-square-only limit.
-const POSITION_RADIUS = 340;
+const POSITION_RADIUS = 620;
 const POSITION_FLOOR_TOLERANCE = 0.5;
 // Mirrors the server's WORLD_ARRIVAL_CLEARANCE: a restored spot this close to
 // another visitor is treated as occupied and the fresh server slot wins.
@@ -1040,7 +1040,7 @@ function defaultSettings() {
       os: true,
       activity: true,
       inactivity: false,
-      localTime: false,
+      localTime: true,
       nodes: true,
     },
     labels: true,
@@ -5713,6 +5713,12 @@ class ForkMeshWorld extends HTMLElement {
           this.openRepositoryCreateForm(options),
         onSwingRide: (state) => this.handleSwingRide(state),
         onCameraMode: (state) => this.handleWorldCameraMode(state),
+        onStartHereSelect: ({ completed = 0, total = 0 } = {}) => {
+          this.toast(
+            `${completed}/${total} World stops complete · WASD or arrows move · Shift runs · Space jumps · click seats and vehicles to use them.`,
+            { priority: 1, lockMs: 3200 },
+          );
+        },
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
         },
@@ -11348,6 +11354,42 @@ class ForkMeshWorld extends HTMLElement {
                   String(fediverse.state || "loading"),
                 )}.</p>`
           }
+          ${
+            record.self === true
+              ? `<div class="world-profile-social" data-world-profile-social>
+                  <section class="world-profile-followers" aria-labelledby="world-profile-followers-title">
+                    <div class="world-profile-social-heading">
+                      <h4 id="world-profile-followers-title">Your followers</h4>
+                      <span data-world-profile-follower-count>${Math.max(
+                        0,
+                        Number(fediverse.followers) || 0,
+                      ).toLocaleString()}</span>
+                    </div>
+                    <div class="world-profile-follower-strip" data-world-profile-followers aria-live="polite">
+                      <span class="world-empty-state">Loading follower avatars…</span>
+                    </div>
+                  </section>
+                  <form class="world-profile-publisher" data-world-profile-publisher>
+                    <label for="world-profile-update">Publish an ActivityPub update</label>
+                    <textarea id="world-profile-update" name="update" maxlength="500" rows="3" placeholder="What’s happening in the World?"></textarea>
+                    <div class="world-profile-selfie-actions">
+                      <button type="button" class="world-secondary-action" data-world-profile-selfie aria-label="Take a selfie of the current World view">📷 Take selfie</button>
+                      <span data-world-profile-camera-status aria-live="polite"></span>
+                    </div>
+                    <div class="world-profile-selfie-preview" data-world-profile-selfie-preview hidden>
+                      <img data-world-profile-selfie-image alt="">
+                      <label for="world-profile-alt-text">Image description</label>
+                      <input id="world-profile-alt-text" name="altText" maxlength="420" placeholder="Describe the image for people who cannot see it">
+                      <button type="button" class="world-link-action" data-world-profile-selfie-remove>Remove selfie</button>
+                    </div>
+                    <div class="world-detail-actions">
+                      <button type="submit" class="world-primary-action">Publish update</button>
+                      <span data-world-profile-publish-status aria-live="polite"></span>
+                    </div>
+                  </form>
+                </div>`
+              : ""
+          }
         </section>
         ${
           adminUserUrl
@@ -11361,6 +11403,183 @@ class ForkMeshWorld extends HTMLElement {
         <p class="world-panel-footnote">This panel contains the same privacy-filtered member, presence, and public profile fields already visible in the World. Private account and connection data are never added here.</p>
       </div>`;
     this.showDetailOverlay(detail, backdrop, { returnFocus });
+    if (record.self === true) {
+      this.wireWorldProfileSocial(detail, backdrop);
+    }
+  }
+
+  wireWorldProfileSocial(detail, backdrop) {
+    const root = detail?.querySelector("[data-world-profile-social]");
+    const followers = root?.querySelector("[data-world-profile-followers]");
+    const followerCount = root?.querySelector(
+      "[data-world-profile-follower-count]",
+    );
+    const form = root?.querySelector("[data-world-profile-publisher]");
+    const cameraButton = root?.querySelector("[data-world-profile-selfie]");
+    const cameraStatus = root?.querySelector(
+      "[data-world-profile-camera-status]",
+    );
+    const preview = root?.querySelector(
+      "[data-world-profile-selfie-preview]",
+    );
+    const previewImage = root?.querySelector(
+      "[data-world-profile-selfie-image]",
+    );
+    const removeButton = root?.querySelector(
+      "[data-world-profile-selfie-remove]",
+    );
+    const altInput = form?.elements?.altText;
+    const textInput = form?.elements?.update;
+    const publishStatus = root?.querySelector(
+      "[data-world-profile-publish-status]",
+    );
+    const publishButton = form?.querySelector('button[type="submit"]');
+    if (!root || !form || !followers) return;
+
+    let selfieData = "";
+    const renderFollowers = (items = [], total = 0) => {
+      if (!followers.isConnected) return;
+      if (followerCount) {
+        followerCount.textContent = Math.max(
+          0,
+          Number(total) || 0,
+        ).toLocaleString();
+      }
+      const records = Array.isArray(items) ? items.slice(0, 24) : [];
+      followers.innerHTML = records.length
+        ? records
+            .map((follower) => {
+              const followerName = String(follower?.name || "").slice(0, 32);
+              const avatarPng = /^[A-Za-z0-9+/=]+$/.test(
+                String(follower?.avatarPng || ""),
+              )
+                ? String(follower.avatarPng)
+                : "";
+              return `<a class="world-profile-follower" href="/@${encodeURIComponent(
+                followerName,
+              )}" title="@${escapeHTML(followerName)}" aria-label="Open @${escapeHTML(
+                followerName,
+              )}’s profile">${
+                avatarPng
+                  ? `<img src="data:image/png;base64,${avatarPng}" alt="">`
+                  : `<span aria-hidden="true">${escapeHTML(
+                      followerName.slice(0, 1).toUpperCase() || "?",
+                    )}</span>`
+              }</a>`;
+            })
+            .join("")
+        : '<span class="world-empty-state">No public followers yet.</span>';
+    };
+    this.postJSON(
+      "/api/world/profile-social",
+      { action: "load" },
+      { timeout: 8000 },
+    )
+      .then((payload) =>
+        renderFollowers(payload?.followers, payload?.followerCount),
+      )
+      .catch(() => {
+        if (followers.isConnected) {
+          followers.innerHTML =
+            '<span class="world-empty-state">Follower avatars are temporarily unavailable.</span>';
+        }
+      });
+
+    const clearSelfie = () => {
+      selfieData = "";
+      if (previewImage) {
+        previewImage.removeAttribute("src");
+        previewImage.alt = "";
+      }
+      if (altInput) altInput.value = "";
+      if (preview) preview.hidden = true;
+      if (cameraStatus) cameraStatus.textContent = "";
+    };
+    removeButton?.addEventListener("click", clearSelfie);
+    cameraButton?.addEventListener("click", async () => {
+      if (cameraButton.disabled) return;
+      cameraButton.disabled = true;
+      if (cameraStatus) cameraStatus.textContent = "Capturing…";
+      try {
+        const shot = await this.captureWorldSelfie(detail, backdrop);
+        if (!shot) throw new Error("capture_failed");
+        selfieData = await this.compactWorldSelfie(shot);
+        if (!selfieData) throw new Error("image_too_large");
+        const place = String(
+          this.currentActivityCategory || "exploring ForkMesh World",
+        )
+          .replace(/[-_]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        const description = `A selfie from ForkMesh World while ${place}.`;
+        if (previewImage) {
+          previewImage.src = selfieData;
+          previewImage.alt = description;
+        }
+        if (altInput) altInput.value = description;
+        if (preview) preview.hidden = false;
+        if (cameraStatus) cameraStatus.textContent = "Selfie ready";
+      } catch (_) {
+        clearSelfie();
+        if (cameraStatus) {
+          cameraStatus.textContent =
+            "Could not capture this view. Please try again.";
+        }
+      } finally {
+        cameraButton.disabled = false;
+      }
+    });
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const text = String(textInput?.value || "").trim();
+      if (!text && !selfieData) {
+        if (publishStatus) {
+          publishStatus.textContent = "Write an update or take a selfie first.";
+        }
+        textInput?.focus();
+        return;
+      }
+      if (selfieData && !String(altInput?.value || "").trim()) {
+        if (publishStatus) {
+          publishStatus.textContent = "Add an image description first.";
+        }
+        altInput?.focus();
+        return;
+      }
+      if (publishButton) publishButton.disabled = true;
+      if (publishStatus) publishStatus.textContent = "Publishing…";
+      try {
+        await this.postJSON(
+          "/api/world/profile-social",
+          {
+            action: "publish",
+            text,
+            imageData: selfieData,
+            altText: String(altInput?.value || "").trim(),
+          },
+          { timeout: 15_000 },
+        );
+        if (textInput) textInput.value = "";
+        clearSelfie();
+        if (publishStatus) {
+          publishStatus.textContent = "Published to ActivityPub.";
+        }
+        this.toast("ActivityPub update published.");
+      } catch (error) {
+        const code = String(error?.message || "");
+        if (publishStatus) {
+          publishStatus.textContent =
+            code === "publish_rate_limited"
+              ? "Please wait a moment before publishing again."
+              : code === "invalid_or_large_image"
+                ? "The selfie is too large. Take it again to recompress it."
+                : "The update could not be published. Please try again.";
+        }
+      } finally {
+        if (publishButton) publishButton.disabled = false;
+      }
+    });
   }
 
   mirrorNodeActionsHTML(node) {
@@ -20270,6 +20489,80 @@ class ForkMeshWorld extends HTMLElement {
       this.closeScreenshotUI();
     });
     this.appendChild(overlay);
+  }
+
+  async captureWorldSelfie(detail, backdrop) {
+    const canvas = this.world?.renderer?.domElement;
+    if (!canvas) return null;
+    const detailVisibility = detail?.style?.visibility || "";
+    const backdropVisibility = backdrop?.style?.visibility || "";
+    try {
+      // Keep the public World HUD in the image, but omit the private profile
+      // drawer and its backdrop. Two paint frames ensure the cloned HUD sees
+      // the temporary visibility before rasterization begins.
+      if (detail) detail.style.visibility = "hidden";
+      if (backdrop) backdrop.style.visibility = "hidden";
+      await new Promise((resolve) =>
+        window.requestAnimationFrame(() =>
+          window.requestAnimationFrame(resolve),
+        ),
+      );
+      const bounds = canvas.getBoundingClientRect();
+      return await this.captureWorldRegion({
+        left: bounds.left,
+        top: bounds.top,
+        width: bounds.width,
+        height: bounds.height,
+      });
+    } finally {
+      if (detail) detail.style.visibility = detailVisibility;
+      if (backdrop) backdrop.style.visibility = backdropVisibility;
+    }
+  }
+
+  async compactWorldSelfie(source) {
+    if (!source?.width || !source?.height) return "";
+    const blobDataURL = (blob) =>
+      new Promise((resolve) => {
+        if (!blob) {
+          resolve("");
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => resolve("");
+        reader.readAsDataURL(blob);
+      });
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return "";
+    // ActivityPub's bounded inline-media path accepts 64 KiB. Encode
+    // asynchronously and progressively reduce the frame so even mobile
+    // captures remain below that limit without stalling the render loop.
+    for (const maxSide of [960, 800, 640, 520, 420]) {
+      const scale = Math.min(1, maxSide / Math.max(source.width, source.height));
+      canvas.width = Math.max(1, Math.round(source.width * scale));
+      canvas.height = Math.max(1, Math.round(source.height * scale));
+      context.fillStyle = "#06100f";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(source, 0, 0, canvas.width, canvas.height);
+      for (const quality of [0.72, 0.58, 0.44]) {
+        const blob = await new Promise((resolve) =>
+          canvas.toBlob(resolve, "image/webp", quality),
+        );
+        if (blob && blob.size > 0 && blob.size < 63 * 1024) {
+          return await blobDataURL(blob);
+        }
+      }
+      await new Promise((resolve) => {
+        if (typeof window.requestIdleCallback === "function") {
+          window.requestIdleCallback(() => resolve(), { timeout: 50 });
+        } else {
+          window.setTimeout(resolve, 0);
+        }
+      });
+    }
+    return "";
   }
 
   async captureWorldRegion(rect) {

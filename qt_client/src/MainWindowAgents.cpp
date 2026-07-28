@@ -4074,6 +4074,9 @@ void MainWindow::updateAgentsNavBadge()
     if (!m_agentsNavButton)
         return;
     const int total = m_agentSessions.size();
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_agentsNavButton))
+        railButton->setBadgeCount(total);
     if (total > 0) {
         m_agentsNavButton->setText(
             QStringLiteral("Agents (%1)").arg(formatCount(total)));

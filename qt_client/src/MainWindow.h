@@ -3640,6 +3640,10 @@ private:
     QStackedWidget *m_stack;
     QStackedWidget *m_sectionStack = nullptr;
     QButtonGroup *m_navGroup = nullptr;
+    // Full-height, app-wide activity rail. Primary section buttons are created
+    // by buildBreadcrumb(), then placed here by buildChatPage(); repository-only
+    // tools (currently Git) are inserted when the lazy repo detail is built.
+    QVBoxLayout *m_appNavigationRailLayout = nullptr;
     QSystemTrayIcon *m_trayIcon;
 
     // Configured mainnode relays (switched via the top-bar relay dropdown).
@@ -3835,6 +3839,7 @@ private:
     QPushButton *m_relaysNavButton = nullptr; // "Relays" top-nav button
     QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
+    QWidget *m_navRebuildRailHost = nullptr; // captioned rail wrapper for rebuild
     QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
     QPushButton *m_navDrawButton = nullptr; // pencil -> draw freehand on the screen
     QPushButton *m_navResizeButton = nullptr; // snap window to a common minimal size
@@ -5093,6 +5098,7 @@ private:
     qint64 m_lastExternalActionsScanMs = 0;
     QList<AppNotification> m_notifications;
     QPushButton *m_notificationButton = nullptr;
+    QLabel *m_notificationRailBadge = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page
     int m_selectedRunId = -1;
     QListWidget *m_actionWorkflowList = nullptr; // available actions (left column)

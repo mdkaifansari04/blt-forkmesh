@@ -141,11 +141,12 @@ def test_aquarium_feeding_is_timed_and_reuses_scene_animation():
     assert "setInterval(" not in aquarium
 
 
-def test_aquarium_feeding_action_is_proximity_scoped_and_accessible():
+def test_aquarium_feeding_action_is_persistently_available_and_accessible():
     assert 'aquariumFeedAction.type = "button"' in SCENE
     assert 'aquariumFeedAction.textContent = "FEED"' in SCENE
     assert 'aquariumFeedAction.dataset.worldAquariumFeed = ""' in SCENE
     assert "updateOfficeAquariumProximity" in SCENE
+    assert 'aquariumControlPanel.style.left = "50%"' in SCENE
     assert 'removeEventListener("click", handleAquariumFeed)' in SCENE
 
 
@@ -158,13 +159,22 @@ def test_aquarium_bottom_right_control_panel_combines_all_three_actions():
     assert "handleAquariumLight" in SCENE
     assert "setBackdropOpaque(!current)" in SCENE
     assert "setLightEnabled(!current)" in SCENE
-    # It chooses the projected screen-right end of the tank rather than
-    # following the player's position along the glass.
-    assert "aquariumControlCandidate.x >= aquariumControlOpposite.x" in SCENE
-    assert "aquariumControlLocalPosition.z -" not in SCENE
+    # The exhibit controls remain pinned within the lobby viewport instead of
+    # disappearing when the player leaves the narrow glass-side trigger.
+    assert 'aquariumControlPanel.style.visibility = "visible"' in SCENE
+    assert "aquariumDistance / 9" in SCENE
     assert ".world-aquarium-control-panel" in CSS
     assert "grid-template-columns: repeat(3" in CSS
     assert ".world-aquarium-feed-action" not in CSS
+
+
+def test_aquarium_fish_react_to_a_nearby_visitor_without_a_second_loop():
+    aquarium = _aquarium_block()
+    assert "let visitorReaction = 0" in aquarium
+    assert "setVisitorProximity(value)" in aquarium
+    assert "state.speed * (1 + reaction * 0.68)" in aquarium
+    assert "fish.position.x -= reaction" in aquarium
+    assert "setVisitorProximity(" in SCENE
 
 
 def test_aquarium_background_and_light_are_real_scene_toggles():

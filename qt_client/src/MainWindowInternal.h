@@ -6229,23 +6229,23 @@ inline void setOcticon(QPushButton *button, const QString &name, int size = 16,
     applyStoredOcticon(button);
 }
 
-// One entry in the thin vertical activity rail down the repo detail page's left
-// edge (adhoc #357): an octicon over an optional small label, VS-Code style,
-// with the selected state drawn as a 2px accent line along the item's left
-// edge. The Git entry rides a blue count badge on the icon's corner (the
-// working-tree change count) which a small rotating sync glyph replaces while
-// the repo is publishing/syncing. Fully custom-painted (icon tint follows the
-// live theme on every repaint), so no QSS or stored-octicon re-tinting applies.
+// One entry in the app-wide activity rail: an octicon over an optional small
+// label, VS-Code style, with the selected state drawn as a 2px accent line along
+// the item's left edge. A blue count badge rides above the icon, where it cannot
+// obscure the caption; a small rotating sync glyph can replace it while a repo
+// is publishing/syncing. Fully custom-painted (icon tint follows the live theme
+// on every repaint), so no QSS or stored-octicon re-tinting applies.
 class ActivityRailButton : public QPushButton
 {
 public:
     explicit ActivityRailButton(const QString &iconName, const QString &label,
                                 QWidget *parent = nullptr)
-        : QPushButton(parent), m_iconName(iconName), m_label(label)
+        : QPushButton(label, parent), m_iconName(iconName), m_label(label)
     {
         setCheckable(true);
         setCursor(Qt::PointingHandCursor);
         setFlat(true);
+        setAccessibleName(m_label);
         setFixedSize(44, m_label.isEmpty() ? 40 : 48);
         // The sync spinner's timer only runs while syncing *and* visible (see
         // show/hideEvent), so an idle or hidden item costs nothing.
@@ -6255,6 +6255,18 @@ public:
             m_spinAngle = (m_spinAngle + 30) % 360;
             update();
         });
+    }
+
+    // The app-wide rail has more destinations than the old repo-only rail.
+    // Its compact mode keeps the same icon, badge, selection line, tooltip and
+    // accessible text while omitting the painted caption.
+    void setCompact(bool compact)
+    {
+        if (m_compact == compact)
+            return;
+        m_compact = compact;
+        setFixedSize(44, m_compact ? 30 : (m_label.isEmpty() ? 40 : 48));
+        update();
     }
 
     // The count riding the icon's corner (0 hides the badge).
@@ -6298,6 +6310,7 @@ protected:
         const bool lit = isChecked() || underMouse();
         const QColor fg = dark ? QColor(lit ? "#e6edf3" : "#8b949e")
                                : QColor(lit ? "#1f2328" : "#656d76");
+        const bool showLabel = !m_compact && !m_label.isEmpty();
 
         // Selection line along the left edge — same accent green as the repo
         // tabs' checked underline.
@@ -6306,12 +6319,12 @@ protected:
 
         const int iconPx = 20;
         const QRect iconRect((width() - iconPx) / 2,
-                             m_label.isEmpty() ? (height() - iconPx) / 2 : 6,
+                             showLabel ? 6 : (height() - iconPx) / 2,
                              iconPx, iconPx);
         p.drawPixmap(iconRect.topLeft(),
                      tintedOcticonPixmap(m_iconName, fg, iconPx));
 
-        if (!m_label.isEmpty()) {
+        if (showLabel) {
             QFont f = font();
             f.setPixelSize(10);
             f.setWeight(QFont::DemiBold);
@@ -6321,10 +6334,11 @@ protected:
                        Qt::AlignHCenter | Qt::AlignTop, m_label);
         }
 
-        // Badge / sync spinner overlapping the icon's bottom-right corner.
+        // Badge / sync spinner on the icon's upper-right corner.
         if (m_syncing) {
             const int s = 14;
-            const QPoint at(iconRect.right() - s / 2 + 4, iconRect.bottom() - s / 2 + 4);
+            const QPoint at(iconRect.right() - s / 2 + 4,
+                            qMax(0, iconRect.top() - 4));
             // Knock out a disc behind the glyph so it reads over the icon.
             p.setPen(Qt::NoPen);
             p.setBrush(QColor(dark ? "#0d1117" : "#ffffff"));
@@ -6339,8 +6353,10 @@ protected:
             p.setFont(f);
             const int h = 14;
             const int w = qMax(h, QFontMetrics(f).horizontalAdvance(text) + 8);
-            const QRectF badge(iconRect.right() - w + h / 2.0 + 2,
-                               iconRect.bottom() - h / 2.0 + 2, w, h);
+            const QRectF badge(
+                iconRect.right() - w + h / 2.0 + 2,
+                qMax(0.0, double(iconRect.top() - 5)),
+                w, h);
             p.setPen(Qt::NoPen);
             p.setBrush(QColor("#1f6feb"));
             p.drawRoundedRect(badge, h / 2.0, h / 2.0);
@@ -6364,6 +6380,7 @@ private:
     QString m_label;
     int m_badge = 0;
     bool m_syncing = false;
+    bool m_compact = false;
     QTimer *m_spinTimer = nullptr;
     int m_spinAngle = 0;
 };

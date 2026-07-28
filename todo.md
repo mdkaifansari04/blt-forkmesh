@@ -6,6 +6,7 @@ the implementation and its focused verification are complete.
 ## Current focus
 
 - [x] Straighten the World “What we're building” cards, show the complete active task set, and add readable scope/status detail to every card.
+- [x] Size the World PR and Issue panels to their visible records, move open counts below the lists, put the newest record at the bottom, and add one-click first-person viewing pads.
 - [ ] Stop signed-in mobile World pans from clearing or visually refreshing the WebGL scene.
 - [ ] Restore the cached spawn pose before scene hydration and keep Office travel attached to the avatar.
 - [ ] Join the World districts into one continuous city landscape with seamless concrete paths.

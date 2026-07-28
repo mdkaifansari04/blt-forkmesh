@@ -30,13 +30,13 @@ def test_all_repositories_live_expanded_on_the_east_island():
     assert "label.visible = true;" in SCENE
 
 
-def test_billboards_use_the_west_island_and_ignore_legacy_coordinates():
+def test_billboards_use_one_aligned_perimeter_and_ignore_legacy_coordinates():
     assert "function placeBillboardOnIsland(object, layoutId)" in SCENE
     assert "movableWorldObjects.delete(layoutId);" in SCENE
-    assert (
-        "const districtLayoutId = `west-billboards-row-v2:${layoutId}`;"
-        in SCENE
-    )
+    assert "const relayoutBillboardCircle = () =>" in SCENE
+    assert "billboardIslandObjects.push({ object, layoutId });" in SCENE
+    assert "Math.cos(angle) * radius" in SCENE
+    assert "Math.sin(angle) * radius" in SCENE
     for object_name in (
         "worldBulletin",
         "worldGeneralChatBoard",
@@ -62,8 +62,8 @@ def test_members_have_a_walkable_south_island_and_campfire():
     assert "Math.hypot(px, pz - MEMBER_ISLAND_CENTER_Z)" in SCENE
     assert "position: [0, 0, 130]" in DATA
     assert 'registerMovableObject("south-members:campfire", campfire);' in SCENE
-    assert "const POSITION_RADIUS = 340;" in APP
-    assert "or abs(x) > 340 or abs(y) > 100 or abs(z) > 340" in ENTRY
+    assert "const POSITION_RADIUS = 620;" in APP
+    assert "or abs(x) > 620 or abs(y) > 100 or abs(z) > 620" in ENTRY
 
 
 def test_live_nodes_remain_in_the_central_service_yard():

@@ -605,7 +605,6 @@ def test_avatar_faces_keyboard_travel_direction_without_an_entry_gate():
         SCENE.index("  function handlePointerUp")
     ]
     assert "dashTarget" not in single_tap
-    assert "player.rotation.y = Math.PI" in SCENE
     assert "function arrivalFacingHeading(x, z, heading)" in SCENE
     assert "isArrivalGridPosition(x, z) ? Math.PI : heading" in SCENE
     assert "player.rotation.y = arrivalFacingHeading(x, z, heading)" in SCENE
@@ -2061,7 +2060,8 @@ def test_world_overview_zoom_keeps_the_finite_ground_inside_camera_depth():
 
 
 def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
-    assert "const WORLD_RADIUS = 340" in SCENE
+    assert "const WORLD_RADIUS = 620" in SCENE
+    assert '"forkmesh-continuous-city-land"' in SCENE
     assert "const WORLD_GROUND_RADIUS = 88" in SCENE
     assert "electric-mesh-city-block-grid" not in SCENE
     assert "electricMeshConduit" not in SCENE

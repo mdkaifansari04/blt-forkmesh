@@ -1192,7 +1192,7 @@ def test_elevator_has_one_stable_car_glass_layer_and_idle_lobby_reflections():
     assert "logoReflectionIntervalMs" not in reflection
 
 
-def test_rooftop_has_glass_safety_barriers_and_office_jumping_is_disabled():
+def test_rooftop_has_glass_safety_barriers_and_explicit_exit_jump():
     scene = source(SCENE_PATH)
     assert 'const rooftop = officeFloorGroups.get("rooftop")' in scene
     assert 'const roofGlass = makeMaterial(THREE, "#d8ffff"' in scene
@@ -1215,8 +1215,9 @@ def test_rooftop_has_glass_safety_barriers_and_office_jumping_is_disabled():
         scene.index('if (event.code === "Space")'):
         scene.index('if (event.code === "KeyR"')
     ]
+    assert "const roofJumpStarted = beginOfficeRoofJump();" in jump
     assert 'officeSceneMode === "town"' in jump
-    assert "!officeCampusSurfaceContains(player.position.x, player.position.z)" in jump
+    assert "if (!roofJumpStarted && canJump)" in jump
 
 
 def test_walk_surfaces_and_every_floor_use_real_collision_constraints():

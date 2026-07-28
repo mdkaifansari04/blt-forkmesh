@@ -8548,8 +8548,16 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-23"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-24"
 WORLD_QA_CARDS = (
+    ("world-repository-record-view-pads",
+     "Repository list order, footer, and viewing pads",
+     "Open forkmesh/forkmesh in the World. Confirm the PR and Issue boards "
+     "each grow only as tall as the records on the current page, the newest "
+     "record is at the bottom, and the large open count plus pagination sit "
+     "below the list. Click the floor pad beneath each board and confirm the "
+     "World enters first-person at a distance and pitch that frame the complete "
+     "panel; walk away and confirm ordinary first-person controls still work."),
     ("world-admin-member-detail-email-state",
      "Admin member detail and email state",
      "Open a registered member from their World avatar. Confirm the side "
@@ -9227,7 +9235,7 @@ def _clean_world_saved_view(raw, now):
     if (
         any(not math.isfinite(value) for value in (
             x, y, z, heading, yaw, pitch, zoom))
-        or abs(x) > 340 or abs(y) > 100 or abs(z) > 340
+        or abs(x) > 620 or abs(y) > 100 or abs(z) > 620
         or abs(heading) > math.pi or abs(yaw) > math.pi * 2
         or abs(pitch) > math.pi / 2 or not 0.2 <= zoom <= 8
     ):
@@ -25793,6 +25801,193 @@ async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
         await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
 
 
+async def world_profile_social_handler(env, request):
+    """Authenticated self-profile social controls used by the World drawer.
+
+    The follower list exposes only the same active, non-private public avatar
+    fields used elsewhere in the World. Publishing writes the Note to the
+    user's durable ActivityPub object collection before attempting delivery,
+    so a temporarily unavailable remote inbox cannot lose the update.
+    """
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            extra_headers={"allow": "POST"})
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    account_bi, account = await _account_session_record(env, request, data)
+    if not account_bi or not account:
+        return json_response({"error": "invalid_session"}, status=401)
+    name = clean_string(
+        account.get("name", ""), MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(name):
+        return json_response({"error": "invalid_session"}, status=401)
+
+    action = clean_string(data.get("action", "load"), 24).strip().lower()
+    if action == "load":
+        rows = await d1_all(
+            env,
+            "SELECT follower_name FROM profile_follows "
+            "WHERE target_bi=? ORDER BY created_at DESC LIMIT 24",
+            account_bi)
+        followers = []
+        seen = set()
+        for row in rows or []:
+            follower_name = clean_string(
+                row.get("follower_name", ""), MAX_NODE_NAME
+            ).strip().lower()
+            if not valid_node_name(follower_name) or follower_name in seen:
+                continue
+            seen.add(follower_name)
+            _, follower = await _account_row(env, follower_name)
+            if (
+                not follower
+                or follower.get("status") != "active"
+                or bool(follower.get("profile_private"))
+            ):
+                continue
+            followers.append({
+                "name": follower_name,
+                "avatarPng": follower.get("avatar_png", ""),
+            })
+        social = await _account_social_counts(env, name)
+        return json_response({
+            "ok": True,
+            "followers": followers,
+            "followerCount": social["followers"],
+        }, cache_control="no-store")
+
+    if action != "publish":
+        return json_response({"error": "invalid_action"}, status=400)
+    if not await _ap_enabled(env):
+        return _ap_disabled_response()
+    if not await _ap_user_federates(env, name):
+        return json_response({"error": "profile_not_public"}, status=403)
+
+    text = clean_string(data.get("text", ""), 500).strip()
+    image_data = clean_string(
+        data.get("imageData", ""), ap.MAX_NOTE_IMAGE_BYTES * 2).strip()
+    alt_text = clean_string(data.get("altText", ""), 420).strip()
+    if not text and not image_data:
+        return json_response({"error": "empty_update"}, status=400)
+
+    images = []
+    if image_data:
+        _unused, images = ap.extract_body_images(
+            "![world-selfie](%s)" % image_data, max_images=1)
+        if not images:
+            return json_response({"error": "invalid_or_large_image"}, status=400)
+        images[0]["name"] = alt_text or "A selfie from ForkMesh World."
+
+    origin = _ap_origin(env, request)
+    actor = await _ap_local_actor(env, AP_ACTOR_USER, name, create=True)
+    actor_bi = actor.get("actorBi") if actor else ""
+    if not actor or not actor_bi:
+        return json_response({"error": "actor_unavailable"}, status=503)
+
+    # Keep accidental double-clicks bounded without making the composer feel
+    # sluggish. This count is over encrypted objects' public timestamps only.
+    now = int(Date.now())
+    recent = await d1_first(
+        env,
+        "SELECT COUNT(*) AS n FROM ap_objects "
+        "WHERE actor_bi=? AND published>=?",
+        actor_bi, now - 60 * 1000)
+    if int((recent or {}).get("n", 0) or 0) >= 5:
+        return json_response({"error": "publish_rate_limited"}, status=429)
+
+    actor_url = _ap_actor_url(origin, AP_ACTOR_USER, name)
+    object_uuid = _ap_uuid()
+    object_url = origin + "/ap/o/" + object_uuid
+    web_url = origin + "/@" + quote(name)
+    attachments = []
+    for index, image in enumerate(images):
+        item = ap.image_object(
+            "%s/media/%d" % (object_url, index),
+            media_type=image["mediaType"])
+        item["name"] = image.get("name", "")
+        attachments.append(item)
+    note = ap.note_doc(
+        object_url,
+        actor_url,
+        actor_url + "/followers",
+        ap.note_html_from_text(text),
+        now,
+        web_url=web_url,
+        attachments=attachments,
+    )
+    context_bi = await blind_index(
+        env, "ap-context:user-update:" + name + ":" + object_uuid)
+    await d1_run(
+        env,
+        "INSERT INTO ap_objects (object_uuid, actor_bi, context_bi, data,"
+        " published) VALUES (?,?,?,?,?)",
+        object_uuid,
+        actor_bi,
+        context_bi,
+        await encrypt_row(env, {
+            "note": note,
+            "context": {
+                "kind": "user-update",
+                "author": name,
+                "key": object_uuid,
+            },
+            "media": images,
+        }),
+        now,
+    )
+
+    followers = await d1_all(
+        env,
+        "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
+        actor_bi)
+    body_str = json.dumps(ap.create_activity(note))
+    out_data = await encrypt_row(env, {
+        "body": body_str,
+        "actorKind": AP_ACTOR_USER,
+        "actorHandle": name,
+        "actorUrl": actor_url,
+    })
+    queued = 0
+    seen_inboxes = set()
+    for follower in followers or []:
+        inbox = (
+            str(follower.get("shared_inbox") or "").strip()
+            or str(follower.get("inbox") or "").strip()
+        )
+        if not inbox or inbox in seen_inboxes:
+            continue
+        seen_inboxes.add(inbox)
+        await d1_run(
+            env,
+            "INSERT INTO ap_outbox (inbox, data, attempts, next_ts, created_at)"
+            " VALUES (?,?,0,?,?)",
+            inbox, out_data, now, now)
+        queued += 1
+
+    await _audit_sensitive_action(
+        env,
+        name,
+        "world.activitypub.publish",
+        "activitypub_note",
+        object_uuid,
+        details={
+            "hasImage": bool(images),
+            "queuedDeliveries": queued,
+        },
+    )
+    if queued:
+        await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
+    return json_response({
+        "ok": True,
+        "published": True,
+        "objectUrl": object_url,
+        "queuedDeliveries": queued,
+    }, status=201, cache_control="no-store")
+
+
 # --- Inbound: the shared/actor inbox --------------------------------------------
 
 async def _ap_forget_remote(env, actor_id):
@@ -38625,6 +38820,10 @@ class Default(WorkerEntrypoint):
         if url.path in (
                 "/api/world/social-posts", "/api/world/social-posts/"):
             return await world_social_posts_handler(self.env, request)
+
+        if url.path in (
+                "/api/world/profile-social", "/api/world/profile-social/"):
+            return await world_profile_social_handler(self.env, request)
 
         if url.path in (
                 "/api/world/satellites", "/api/world/satellites/"):

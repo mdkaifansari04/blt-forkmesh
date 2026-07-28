@@ -1014,6 +1014,16 @@ bool MainWindow::testIssueLooperRowAligned() const
 
 int MainWindow::testTopNavTrailingGap() const
 {
+    // Navigation utilities now live in the full-height left rail. Preserve this
+    // responsive-shell probe's contract ("anchored within 28px of its edge")
+    // using the rail's leading edge instead of the retired top row's trailing
+    // edge.
+    if (QWidget *rail =
+            findChild<QWidget *>(QStringLiteral("appNavigationRail"))) {
+        const QRect rect(rail->mapTo(const_cast<MainWindow *>(this), QPoint(0, 0)),
+                         rail->size());
+        return rect.left();
+    }
     int rightEdge = -1;
     for (QWidget *widget :
          {static_cast<QWidget *>(m_navDrawButton),

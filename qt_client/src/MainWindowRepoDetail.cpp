@@ -8099,6 +8099,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoHeaderLeft = new QHBoxLayout;
     m_repoHeaderLeft->setContentsMargins(0, 0, 0, 0);
     m_repoHeaderLeft->setSpacing(8);
+    // Repository identity belongs to repository detail, not the global chrome.
+    // updateRepoSwitcher renders owner/repo and only adds a caret when this
+    // owner/organization has another repository available.
+    m_repoHeaderLeft->addWidget(m_repoMenuButton);
     headerRow->addLayout(m_repoHeaderLeft);
     headerRow->addStretch();
     headerRow->addWidget(notifyButton);
@@ -8465,26 +8469,30 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->setMinimumHeight(0);
     m_repoDetailStack->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
 
-    // --- Thin activity rail down the page's left edge (adhoc #357): a Code
-    // entry (file browser) and a Git entry (current changes), VS-Code style.
+    // --- Repository tools in the app-wide activity rail (adhoc #357): Code and
+    // Git are contextual entries directly below the global Repo destination.
     // The Git icon carries a blue badge with the working-tree change count
     // (kept fresh by refreshSourceControl) that flips to a spinner while a
     // sync/publish is in flight (refreshRepoSyncIndicators); the selected entry
     // shows a 2px line along its left edge.
     m_railCodeButton = new ActivityRailButton(QStringLiteral("code"),
                                               QStringLiteral("Code"));
+    m_railCodeButton->setFixedSize(58, 40);
     m_railCodeButton->setToolTip(QStringLiteral("Browse the repository files"));
     connect(m_railCodeButton, &QPushButton::clicked, this, [this] {
+        showSection(0);
         // Same path as clicking the Code tab: land on the file browser.
         if (m_repoDetailTabs && m_repoDetailTabs->button(0))
             m_repoDetailTabs->button(0)->click();
         updateRepoActivityRail();
     });
     m_railGitButton = new ActivityRailButton(QStringLiteral("git-branch"),
-                                             QString());
+                                             QStringLiteral("Git"));
+    m_railGitButton->setFixedSize(58, 40);
     m_railGitButton->setToolTip(
         QStringLiteral("Source control \xE2\x80\x94 view the current changes"));
     connect(m_railGitButton, &QPushButton::clicked, this, [this] {
+        showSection(0);
         // Open the commits/changes workspace inside the Code overview. Going
         // through the commit strip's toggle runs its deferred list build and
         // change rescan; when it's already showing, just re-assert the view.
@@ -8494,15 +8502,12 @@ QWidget *MainWindow::buildRepoDetailSection()
             showOverviewCommits();
         updateRepoActivityRail();
     });
-    auto *rail = new QWidget;
-    rail->setObjectName("repoActivityRail");
-    rail->setFixedWidth(46);
-    auto *railLayout = new QVBoxLayout(rail);
-    railLayout->setContentsMargins(0, 8, 0, 8);
-    railLayout->setSpacing(2);
-    railLayout->addWidget(m_railCodeButton, 0, Qt::AlignHCenter);
-    railLayout->addWidget(m_railGitButton, 0, Qt::AlignHCenter);
-    railLayout->addStretch();
+    if (m_appNavigationRailLayout) {
+        m_appNavigationRailLayout->insertWidget(
+            0, m_railCodeButton, 0, Qt::AlignLeft);
+        m_appNavigationRailLayout->insertWidget(
+            1, m_railGitButton, 0, Qt::AlignLeft);
+    }
     // The checked states mirror the visible view (Code tab, and which body the
     // overview shows), so track every stack the navigation helpers drive.
     connect(m_repoDetailStack, &QStackedWidget::currentChanged, this,
@@ -8523,10 +8528,9 @@ QWidget *MainWindow::buildRepoDetailSection()
     content->addWidget(metaBand);
     content->addWidget(tabBarScroll);
     content->addWidget(m_repoDetailStack, 1);
-    auto *layout = new QHBoxLayout(page);
+    auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-    layout->addWidget(rail);
     layout->addLayout(content, 1);
     return page;
 }
@@ -8539,13 +8543,19 @@ void MainWindow::updateRepoActivityRail()
 {
     if (!m_railCodeButton || !m_railGitButton)
         return;
+    const bool onHome =
+        !m_sectionStack || m_sectionStack->currentIndex() == 0;
     const bool onCode =
-        m_repoDetailStack && m_repoDetailStack->currentIndex() == 0;
+        onHome && m_repoDetailStack && m_repoDetailStack->currentIndex() == 0;
     const bool onChanges =
         onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
     m_railCodeButton->setChecked(onCode && !onChanges);
     m_railGitButton->setChecked(onChanges);
+    if (m_agentsNavButton)
+        m_agentsNavButton->setChecked(
+            onHome && m_repoDetailStack &&
+            m_repoDetailStack->currentIndex() == 3);
 }
 
 
