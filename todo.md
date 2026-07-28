@@ -5,6 +5,7 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [ ] Replace World object dragging with click selection, a subtle selection highlight, automatic detail-panel opening, admin arrow-key nudging, and `R` rotation.
 - [x] Keep the flagship repository wheel expanded immediately and remove mirror-metadata render delay.
 - [x] Restore country flags immediately, add verified-email front pins, and keep privacy choices intact.
 - [x] Give every user a stable unique generated face plus a compact account-avatar upload override.

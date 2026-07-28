@@ -5737,6 +5737,10 @@ class ForkMeshWorld extends HTMLElement {
         onLayoutObjectMoved: (move) => {
           void this.lockWorldObjectPlacement(move);
         },
+        onLayoutObjectSelect: ({ landmarkId } = {}) => {
+          const detailId = String(landmarkId || "");
+          if (detailId) this.openLandmark(detailId);
+        },
       });
       this.setLoadingProgress(68, "World is live · syncing nearby activity…");
       this.syncWorldCameraModeButton();
@@ -5837,6 +5841,7 @@ class ForkMeshWorld extends HTMLElement {
       this.startSocialBannersRefresh();
       this.syncMemberLounge();
       void this.loadReferralLeaderboard();
+      void this.loadLobbyLinkBoard();
       this.syncRepositoryScene();
       void this.hydrateHostedRepositorySizeMaps();
       // Do not fan out a star request for every perimeter portal at startup.
@@ -9797,12 +9802,11 @@ class ForkMeshWorld extends HTMLElement {
     const enabled = this.identity?.isAdmin === true;
     this.world?.setLayoutEditor?.(enabled);
     if (!enabled || this.layoutEditorAnnounced) return;
-    // Direct base dragging is intentionally handle-free, so mention the
-    // rotation gestures once without leaving permanent editing chrome behind.
+    // Selection is handle-free and preserves the camera's drag/wheel gestures.
     this.layoutEditorAnnounced = true;
     this.toast(
-      "Layout editing on: drag an object's base to move it. Right-drag or " +
-        "Shift-drag left/right to rotate; the mouse wheel and R key also turn it.",
+      "Layout editing on: click an object to select it, use arrow keys to " +
+        "move it, and R or Shift+R to rotate it.",
     );
   }
 
@@ -22382,6 +22386,22 @@ class ForkMeshWorld extends HTMLElement {
     this.renderPeers();
   }
 
+  async loadLobbyLinkBoard() {
+    if (!this.world?.updateLobbyLinkBoard) return [];
+    try {
+      const payload = await this.fetchJSON("/api/world/link-kiosk", {
+        auth: false,
+        timeout: 6000,
+        cache: "no-store",
+      });
+      const links = Array.isArray(payload?.links) ? payload.links : [];
+      this.world.updateLobbyLinkBoard(links);
+      return links;
+    } catch (_) {
+      return [];
+    }
+  }
+
   async openLobbyLinkKiosk() {
     document.querySelector("[data-world-link-kiosk-dialog]")?.remove();
     const dialog = document.createElement("dialog");
@@ -22393,14 +22413,37 @@ class ForkMeshWorld extends HTMLElement {
       if (!rows.length) {
         return '<p style="color:#8eb8aa">No links have been submitted yet.</p>';
       }
-      return `<ol style="display:grid;gap:10px;margin:0;padding:0;list-style:none">${rows.map((link) => {
+      return `<ol style="display:grid;gap:10px;margin:0;padding:0;list-style:none">${rows.map((link, index) => {
         const low = Math.max(0, Number(link?.potentialTraffic?.low) || 0);
         const high = Math.max(low, Number(link?.potentialTraffic?.high) || 0);
-        return `<li style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;padding:12px;border:1px solid #245044;border-radius:12px;background:#071915">
-          <span style="min-width:0"><a href="${escapeHTML(link?.url || "")}" target="_blank" rel="noopener noreferrer" style="display:block;color:#dffff1;font-weight:800;overflow-wrap:anywhere">${escapeHTML(link?.title || link?.host || "Public link")}</a><small style="color:#84b4a3">by ${escapeHTML(link?.submittedBy || "member")} · ${escapeHTML(link?.channel || "other")} · potential visits ${low.toLocaleString()}–${high.toLocaleString()}</small></span>
-          <strong style="align-self:center;color:#9ef7c6;font:900 24px ForkMesh Mono,monospace" aria-label="Estimated reach score ${Math.max(0, Math.min(100, Number(link?.score) || 0))} out of 100">${Math.max(0, Math.min(100, Number(link?.score) || 0))}</strong>
+        const reward = Math.max(0, Number(link?.rewardSol) || 0);
+        const wallet = WORLD_SOLANA_ADDRESS_RE.test(String(link?.walletAddress || ""))
+          ? String(link.walletAddress)
+          : "";
+        const payment = String(link?.paymentStatus || "unpaid") === "paid"
+          ? "PAID"
+          : "UNPAID";
+        const payUri = wallet
+          ? `solana:${wallet}?amount=${reward.toFixed(8)}&label=${encodeURIComponent("ForkMesh Link Lab")}`
+          : "";
+        return `<li style="display:grid;grid-template-columns:minmax(0,1fr) 116px;gap:14px;padding:13px;border:1px solid #245044;border-radius:12px;background:#071915">
+          <span style="min-width:0"><a href="${escapeHTML(link?.url || "")}" target="_blank" rel="noopener noreferrer" style="display:block;color:#dffff1;font-weight:800;overflow-wrap:anywhere">${escapeHTML(link?.title || link?.host || "Public link")}</a><small style="display:block;margin-top:5px;color:#84b4a3">by ${escapeHTML(link?.submittedBy || "member")} · ${escapeHTML(link?.channel || "other")} · reach ${Math.max(0, Math.min(100, Number(link?.score) || 0))}/100 · potential visits ${low.toLocaleString()}–${high.toLocaleString()}</small><strong style="display:block;margin-top:8px;color:#f7c96b;font:850 13px ForkMesh Mono,monospace">${reward.toFixed(5)} SOL · ${payment}</strong>${wallet ? `<a href="${escapeHTML(payUri)}" style="display:inline-block;margin-top:8px;color:#9ef7c6;font-weight:850">Donate estimated SOL directly →</a>` : `<a href="/dashboard/settings" style="display:inline-block;margin-top:8px;border-bottom:2px dotted #708078;color:#9bb4aa">No SOL address linked · add one</a>`}</span>
+          <span data-world-link-reward-qr="${index}" data-value="${escapeHTML(wallet)}" style="display:grid;place-items:center;align-self:center;width:104px;height:104px;border:2px ${wallet ? "solid #f7c96b" : "dotted #708078"};border-radius:8px;color:#708078;font:800 11px ForkMesh Mono,monospace;text-align:center">${wallet ? "" : "ADD SOL<br>ADDRESS"}</span>
         </li>`;
       }).join("")}</ol>`;
+    };
+    const hydrateLinkQrs = (links = []) => {
+      (Array.isArray(links) ? links : []).slice(0, 25).forEach((link, index) => {
+        const address = String(link?.walletAddress || "");
+        if (!WORLD_SOLANA_ADDRESS_RE.test(address)) return;
+        const target = dialog.querySelector(
+          `[data-world-link-reward-qr="${index}"]`,
+        );
+        if (!target || !globalThis.ForkMeshQR?.render) return;
+        try {
+          globalThis.ForkMeshQR.render(address, target, 94);
+        } catch (_) {}
+      });
     };
     const signedIn = validWorldSession();
     dialog.innerHTML = `
@@ -22409,7 +22452,7 @@ class ForkMeshWorld extends HTMLElement {
         <button type="button" data-world-link-kiosk-close aria-label="Close Link Lab" style="border:0;background:transparent;color:#e9fff6;font-size:28px;cursor:pointer">×</button>
       </header>
       <div style="display:grid;gap:20px;padding:22px 24px">
-        <p style="margin:0;color:#a8cfc0;line-height:1.6">The 0–100 estimate combines your server-side ForkMesh follower count, aggregate visits already observed from the submitted hostname, and a verified-domain bonus. ForkMesh does not fetch the URL. This score never controls merges, access, rewards, or governance.</p>
+        <p style="margin:0;color:#a8cfc0;line-height:1.6">The 0–100 estimate combines your server-side ForkMesh follower count, aggregate visits already observed from the submitted hostname, and a verified-domain bonus. ForkMesh does not fetch the URL. The separate SOL figure is an optional direct appreciation estimate, not a guaranteed payout; the score never controls merges, access, or governance.</p>
         ${signedIn ? `
           <form data-world-link-kiosk-form style="display:grid;gap:12px;padding:16px;border:1px solid #245044;border-radius:14px;background:#071915">
             <label style="display:grid;gap:5px"><span>Public HTTPS link</span><input name="url" type="url" required maxlength="1200" placeholder="https://example.com/campaign" style="min-height:42px;border:1px solid #35695a;border-radius:9px;background:#04100d;color:#e9fff6;padding:8px 10px"></label>
@@ -22435,7 +22478,12 @@ class ForkMeshWorld extends HTMLElement {
         timeout: 8000,
         cache: "no-store",
       });
-      if (list) list.innerHTML = renderLinks(payload?.links);
+      const links = Array.isArray(payload?.links) ? payload.links : [];
+      this.world?.updateLobbyLinkBoard?.(links);
+      if (list) {
+        list.innerHTML = renderLinks(links);
+        hydrateLinkQrs(links);
+      }
     } catch (_) {
       if (list) list.innerHTML = '<p style="color:#f4a6a6">The Link Lab is temporarily unavailable.</p>';
     }
@@ -22460,7 +22508,12 @@ class ForkMeshWorld extends HTMLElement {
             },
             { timeout: 10_000 },
           );
-          if (list) list.innerHTML = renderLinks(payload?.links);
+          const links = Array.isArray(payload?.links) ? payload.links : [];
+          this.world?.updateLobbyLinkBoard?.(links);
+          if (list) {
+            list.innerHTML = renderLinks(links);
+            hydrateLinkQrs(links);
+          }
           const result = payload?.submission || {};
           const low = Math.max(0, Number(result?.potentialTraffic?.low) || 0);
           const high = Math.max(low, Number(result?.potentialTraffic?.high) || 0);
@@ -22499,44 +22552,38 @@ class ForkMeshWorld extends HTMLElement {
     )}`;
   }
 
-  // One paired fetch at boot (and after each member-board tap) keeps both
-  // neighboring signs fresh without adding another polling loop. Both public
-  // endpoints are edge-cached server-side and fail independently.
+  // One edge-cached snapshot keeps every island sign synchronized with the
+  // website hub. Custom referral faces still retain their richer tap actions.
   async loadReferralLeaderboard() {
     if (
+      !this.world?.updateLeaderboards &&
       !this.world?.updateReferralLeaderboard &&
       !this.world?.updateSiteReferrerLeaderboard
     ) {
       return;
     }
-    const [memberResult, siteResult] = await Promise.allSettled([
-      this.fetchJSON("/api/referrals/leaderboard", {
+    try {
+      const snapshot = await this.fetchJSON("/api/leaderboards", {
         auth: false,
-        timeout: 5000,
-      }),
-      this.fetchJSON("/api/referrals/sites", {
-        auth: false,
-        timeout: 5000,
-      }),
-    ]);
-    if (memberResult.status === "fulfilled") {
-      this.referralBoard = Array.isArray(memberResult.value?.board)
-        ? memberResult.value.board
+        timeout: 7000,
+      });
+      this.world.updateLeaderboards?.(
+        Array.isArray(snapshot?.boards) ? snapshot.boards : [],
+      );
+      this.referralBoard = Array.isArray(snapshot?.referrals?.board)
+        ? snapshot.referrals.board
         : [];
-    } else {
+      this.siteReferralBoard = Array.isArray(snapshot?.sites?.board)
+        ? snapshot.sites.board
+        : [];
+      this.siteReferralTotals = {
+        sites: Math.max(0, Number(snapshot?.sites?.sites) || 0),
+        visits: Math.max(0, Number(snapshot?.sites?.visits) || 0),
+      };
+    } catch (_) {
       this.referralBoard = Array.isArray(this.referralBoard)
         ? this.referralBoard
         : [];
-    }
-    if (siteResult.status === "fulfilled") {
-      this.siteReferralBoard = Array.isArray(siteResult.value?.board)
-        ? siteResult.value.board
-        : [];
-      this.siteReferralTotals = {
-        sites: Math.max(0, Number(siteResult.value?.sites) || 0),
-        visits: Math.max(0, Number(siteResult.value?.visits) || 0),
-      };
-    } else {
       this.siteReferralBoard = Array.isArray(this.siteReferralBoard)
         ? this.siteReferralBoard
         : [];

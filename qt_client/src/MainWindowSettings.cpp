@@ -773,7 +773,7 @@ QWidget *MainWindow::buildSettingsSection()
     rebuildButtonCheck->setChecked(
         QSettings().value(kShowRebuildButtonSetting, false).toBool());
     rebuildButtonCheck->setToolTip(
-        "Adds a small rebuild & restart button beside Leaderboards (under the "
+        "Adds a small rebuild & restart button in the top navigation (under the "
         "avatar) for a fast local rebuild and relaunch. Off by default.");
     connect(rebuildButtonCheck, &QCheckBox::toggled, this, [this](bool enabled) {
         QSettings().setValue(kShowRebuildButtonSetting, enabled);
