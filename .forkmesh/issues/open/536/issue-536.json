@@ -20,6 +20,18 @@
             "title": "Add edit and delete message options",
             "ts": 1785062259664,
             "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 424,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "5f1cb711-2005-4426-9004-7c3e59e801bf",
+            "sig": "Zhz9JtQEzPRbwQyfKBDx_uFI91Gfeiq3ku-0MiXtRkWsAQv3KmdspxhzcDuWC_YZW5b7uleYESZJIfFHijF9AQ",
+            "ts": 1785207701352,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -33,6 +45,6 @@
     "startDate": 0,
     "status": "open",
     "title": "Add edit and delete message options",
-    "updatedAt": 1785062259664,
+    "updatedAt": 1785207701352,
     "votes": 0
 }
