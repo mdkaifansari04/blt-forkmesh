@@ -44,7 +44,6 @@ const OUTFIT_COLOR_HEX = Object.fromEntries(
 const OUTFIT_STYLE_IDS = OUTFIT_STYLE_OPTIONS.map((option) => option.id);
 
 const WORLD_RADIUS = 620;
-const WORLD_GROUND_RADIUS = 88;
 const CONTINUOUS_CITY_RADIUS_X = 260;
 const CONTINUOUS_CITY_RADIUS_Z = 365;
 const CONTINUOUS_CITY_CENTER_Z = -45;
@@ -55,27 +54,20 @@ const BEACH_ROAD_MIN_X = 225;
 const BEACH_ROAD_MAX_X = BEACH_CENTER_X - BEACH_RADIUS + 12;
 const BEACH_ROAD_HALF_WIDTH = 14;
 const REPOSITORY_ISLAND_CENTER_X = 130;
-const REPOSITORY_ISLAND_RADIUS = 38;
 const REPOSITORY_ISLAND_RING_RADIUS = 31;
 // The satellite districts are joined by broad landscaped causeways, not
 // narrow bridges. These same dimensions drive both geometry and movement so
 // the visible land and the avatar's walkable surface cannot drift apart.
 const REPOSITORY_CONNECTION_MIN_X = 78;
 const REPOSITORY_CONNECTION_MAX_X = 103;
-const REPOSITORY_CONNECTION_HALF_WIDTH = 32;
 const LEADERBOARD_ISLAND_CENTER_X = -130;
-const LEADERBOARD_ISLAND_RADIUS = 54;
 const LEADERBOARD_CONNECTION_MIN_X = -103;
 const LEADERBOARD_CONNECTION_MAX_X = -78;
-const LEADERBOARD_CONNECTION_HALF_WIDTH = 32;
 const MEMBER_ISLAND_CENTER_Z = 130;
-const MEMBER_ISLAND_RADIUS = 42;
 const MEMBER_CONNECTION_MIN_Z = 78;
 const MEMBER_CONNECTION_MAX_Z = 103;
-const MEMBER_CONNECTION_HALF_WIDTH = 32;
 const OFFICE_CONNECTION_MIN_Z = -116;
 const OFFICE_CONNECTION_MAX_Z = -78;
-const OFFICE_CONNECTION_HALF_WIDTH = 36;
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
 const PLAYER_SPEED = 6.4;
@@ -86,21 +78,12 @@ const PLAYER_ACCELERATION = 5.4;
 const PLAYER_SPRINT_MULTIPLIER = 2.6;
 const BIKE_RIDE_SPEED_MULTIPLIER = 2.15;
 const BIKE_RIDING_ACTIVITY = "riding the World bike lane";
+const WORLD_BIKE_LANE_RADIUS = 242;
+const WORLD_BIKE_LANE_CENTER_X = 0;
+const WORLD_BIKE_LANE_CENTER_Z = CONTINUOUS_CITY_CENTER_Z;
+const WORLD_BIKE_MOUNT_DISTANCE = 5;
 const CAR_RIDE_SPEED_MULTIPLIER = 3.2;
 const CAR_RIDING_ACTIVITY = "driving the beach road";
-const WORLD_LOOP_LAND_HALF_WIDTH = 10;
-const WORLD_LOOP_CONTROL_POINTS = Object.freeze([
-  Object.freeze([0, -310]),
-  Object.freeze([150, -270]),
-  Object.freeze([225, -120]),
-  Object.freeze([225, 80]),
-  Object.freeze([130, 220]),
-  Object.freeze([0, 255]),
-  Object.freeze([-130, 220]),
-  Object.freeze([-225, 80]),
-  Object.freeze([-225, -120]),
-  Object.freeze([-150, -270]),
-]);
 // Double-clicking the ground sends the avatar to that spot at a dash speed far
 // above the walking cap, so crossing the whole square takes a couple of seconds
 // without teleporting the avatar out from under the camera.
@@ -113,7 +96,7 @@ const CAMERA_DISTANCE = Math.hypot(...CAMERA_OFFSET);
 // clipping the ground and distant landmarks.
 const CAMERA_ZOOM_MIN = 0.06;
 const CAMERA_ZOOM_MAX = 28;
-const CAMERA_FAR_PLANE = 1200;
+const CAMERA_FAR_PLANE = 1800;
 const CAMERA_LOOK_SENSITIVITY = 0.0022;
 const RENDER_STALL_THRESHOLD_MS = 150;
 const RENDER_STALL_LOG_COOLDOWN_MS = 1000;
@@ -239,30 +222,6 @@ function pointHitsOfficeAquarium(floorId, x, z, radius = 0) {
   const pz = Number(z);
   const margin = Math.max(0, Number(radius) || 0);
   if (!Number.isFinite(px) || !Number.isFinite(pz)) return false;
-  const cityRadiusX = CONTINUOUS_CITY_RADIUS_X - margin;
-  const cityRadiusZ = CONTINUOUS_CITY_RADIUS_Z - margin;
-  if (
-    cityRadiusX > 0 &&
-    cityRadiusZ > 0 &&
-    (px / cityRadiusX) ** 2 +
-      ((pz - CONTINUOUS_CITY_CENTER_Z) / cityRadiusZ) ** 2 <=
-      1
-  ) {
-    return true;
-  }
-  if (
-    px >= BEACH_ROAD_MIN_X + margin &&
-    px <= BEACH_ROAD_MAX_X - margin &&
-    Math.abs(pz - BEACH_CENTER_Z) <= BEACH_ROAD_HALF_WIDTH - margin
-  ) {
-    return true;
-  }
-  if (
-    Math.hypot(px - BEACH_CENTER_X, pz - BEACH_CENTER_Z) <=
-    BEACH_RADIUS - margin
-  ) {
-    return true;
-  }
   return (
     px >= OFFICE_AQUARIUM_BOUNDS.minX - margin &&
     px <= OFFICE_AQUARIUM_BOUNDS.maxX + margin &&
@@ -283,85 +242,28 @@ function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
   const pz = Number(z);
   const margin = Math.max(0, Number(radius) || 0);
   if (!Number.isFinite(px) || !Number.isFinite(pz)) return false;
-  const loopLimit = WORLD_LOOP_LAND_HALF_WIDTH - margin;
-  if (loopLimit > 0) {
-    for (let index = 0; index < WORLD_LOOP_CONTROL_POINTS.length; index += 1) {
-      const start = WORLD_LOOP_CONTROL_POINTS[index];
-      const end =
-        WORLD_LOOP_CONTROL_POINTS[
-          (index + 1) % WORLD_LOOP_CONTROL_POINTS.length
-        ];
-      const dx = end[0] - start[0];
-      const dz = end[1] - start[1];
-      const lengthSquared = dx * dx + dz * dz;
-      const along = lengthSquared
-        ? Math.max(
-            0,
-            Math.min(
-              1,
-              ((px - start[0]) * dx + (pz - start[1]) * dz) /
-                lengthSquared,
-            ),
-          )
-        : 0;
-      if (
-        Math.hypot(
-          px - (start[0] + dx * along),
-          pz - (start[1] + dz * along),
-        ) <= loopLimit
-      ) {
-        return true;
-      }
-    }
-  }
-  if (Math.hypot(px, pz) <= WORLD_GROUND_RADIUS - margin) return true;
+  const cityRadiusX = CONTINUOUS_CITY_RADIUS_X - margin;
+  const cityRadiusZ = CONTINUOUS_CITY_RADIUS_Z - margin;
   if (
-    Math.hypot(px - REPOSITORY_ISLAND_CENTER_X, pz) <=
-    REPOSITORY_ISLAND_RADIUS - margin
+    cityRadiusX > 0 &&
+    cityRadiusZ > 0 &&
+    ((px - WORLD_BIKE_LANE_CENTER_X) / cityRadiusX) ** 2 +
+      ((pz - CONTINUOUS_CITY_CENTER_Z) / cityRadiusZ) ** 2 <=
+      1
   ) {
     return true;
   }
   if (
-    px >= REPOSITORY_CONNECTION_MIN_X + margin &&
-    px <= REPOSITORY_CONNECTION_MAX_X - margin &&
-    Math.abs(pz) <= REPOSITORY_CONNECTION_HALF_WIDTH - margin
+    px >= BEACH_ROAD_MIN_X + margin &&
+    px <= BEACH_ROAD_MAX_X - margin &&
+    Math.abs(pz - BEACH_CENTER_Z) <= BEACH_ROAD_HALF_WIDTH - margin
   ) {
     return true;
   }
-  if (
-    Math.hypot(px - LEADERBOARD_ISLAND_CENTER_X, pz) <=
-    LEADERBOARD_ISLAND_RADIUS - margin
-  ) {
-    return true;
-  }
-  if (
-    px >= LEADERBOARD_CONNECTION_MIN_X + margin &&
-    px <= LEADERBOARD_CONNECTION_MAX_X - margin &&
-    Math.abs(pz) <= LEADERBOARD_CONNECTION_HALF_WIDTH - margin
-  ) {
-    return true;
-  }
-  if (
-    Math.hypot(px, pz - MEMBER_ISLAND_CENTER_Z) <=
-    MEMBER_ISLAND_RADIUS - margin
-  ) {
-    return true;
-  }
-  if (
-    Math.abs(px) <= MEMBER_CONNECTION_HALF_WIDTH - margin &&
-    pz >= MEMBER_CONNECTION_MIN_Z + margin &&
-    pz <= MEMBER_CONNECTION_MAX_Z - margin
-  ) {
-    return true;
-  }
-  if (
-    Math.abs(px) <= OFFICE_CONNECTION_HALF_WIDTH - margin &&
-    pz >= OFFICE_CONNECTION_MIN_Z + margin &&
-    pz <= OFFICE_CONNECTION_MAX_Z - margin
-  ) {
-    return true;
-  }
-  return officeCampusSurfaceContains(px, pz, margin);
+  return (
+    Math.hypot(px - BEACH_CENTER_X, pz - BEACH_CENTER_Z) <=
+    BEACH_RADIUS - margin
+  );
 }
 const MOVEMENT_KEYS = new Set([
   "KeyW",
@@ -2924,9 +2826,18 @@ function officeReclaimedWoodTexture(THREE) {
 // the active implementation queue in a fixed, readable grid. Keep the ordering
 // stable so a repaint never makes cards jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
+  { key: "task:world-ground-cleanup", task: "Clean, continuous World ground", detail: "Removed zoom-distance relationship lines, connector end pads, colored grass overlays, disjoint terrain layers, and obstructive agent-terminal blocks while keeping one fast walkable grass foundation.", estimate: "verified · ready for QA", done: true },
+  { key: "task:world-bike-groove", task: "Groove-locked circular bikes", detail: "Replaced the wandering perimeter spline with one true circular lane; E mounts or dismounts and forward/backward movement remains locked to the center groove.", estimate: "verified · ready for QA", done: true },
+  { key: "task:world-record-detail", task: "Focused PR and Issue details", detail: "PR and Issue selections now open a record-only drawer without inheriting the generic Repository portals introduction, repository list, or unrelated actions.", estimate: "verified · ready for QA", done: true },
+  { key: "task:world-node-delete-cleanup", task: "Idempotent complete node deletion", detail: "Physical and account aliases resolve together, dependent node registration/session/repository records are cleared, and all matching World cabinets disappear even when the primary node row is already missing.", estimate: "verified · ready for QA", done: true },
+  { key: "task:world-sky-hud", task: "Sun, moon, and compact HUD", detail: "The local sky renders a sun and moon, Auto/Day/Night can be locked in Settings, the right controls default to one narrow expandable rail, and saved-view thumbnails have no visible location captions.", estimate: "verified · ready for QA", done: true },
   { key: "task:world-board-detail", task: "Straight, detailed build board", detail: "Aligned every card to a fixed grid and exposed the active scope and status until QA.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-mobile-pan-stability", task: "Stop mobile pan refreshes", detail: "Viewport changes are coalesced outside active gestures so walking never clears the live WebGL scene.", estimate: "deployed · verified", done: true },
-  { key: "task:world-stable-hydration", task: "Stable spawn and Office travel", detail: "Preload the cached pose, prevent reconnect jumps, and keep the camera attached to the avatar.", estimate: "implementation active", done: false },
+  { key: "task:world-stable-hydration", task: "Stable spawn and Office travel", detail: "The cached pose now hydrates before first paint, reconnects stay anchored, and Office travel follows the avatar.", estimate: "ready for deploy · in QA", done: true },
+  { key: "task:qt-execution-aware-stalls", task: "Qt execution-aware stall diagnostics", detail: "Every logged action is classified as async, worker, or UI-blocking; fast background work no longer produces false alerts.", estimate: "ready for release · verified", done: true },
+  { key: "task:world-profile-social", task: "Follower avatars + ActivityPub selfies", detail: "Show local and federated follower avatars, publish durable signed updates, capture the current World view, and prefill editable alt text.", estimate: "ready for deploy · in QA", done: true },
+  { key: "task:world-reactive-reef", task: "Persistent reef controls + reactive fish", detail: "Keep the aquarium controls clickable throughout the lobby and make the school dart gently as a visitor approaches the glass.", estimate: "ready for deploy · in QA", done: true },
+  { key: "task:repo-code-landing", task: "Changed files land in repository rings", detail: "Verified changed-file tiles fly into the matching repository with night lightning or daylight shadows, then sizzle and fade for ten seconds.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:repo-agent-live-terminals", task: "Interactive repository agent terminals", detail: "Each robot screen now shows its active task, mirror, status, and latest terminal line; clicking opens that exact engineering session with transcript and secure prompt or re-prompt controls.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:repo-board-view-pads", task: "Content-height repo boards + view pads", detail: "Each list now fits its page, reads newest at the bottom, carries a lower count footer, and has a height-aware first-person pad.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-continuous-city", task: "One continuous city landscape", detail: "The districts now share one walkable foundation, textured grass, and seamless concrete connections.", estimate: "ready for deploy · in QA", done: true },
@@ -6911,35 +6822,6 @@ function createTree(THREE, x, z, scale = 1, color = "#2f8c5f") {
   return group;
 }
 
-function createTerrainFoundation(
-  THREE,
-  name,
-  radius,
-  depth,
-  seed = name,
-) {
-  const group = new THREE.Group();
-  group.name = name;
-  const earth = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius, radius * 0.94, depth, 64, 1),
-    makeMaterial(THREE, "#5b4433", {
-      roughness: 1,
-      metalness: 0,
-    }),
-  );
-  earth.name = `${name}-earth`;
-  // Keep the earthen cap below the designed town/district surface. The cap
-  // remains visible from underneath without z-fighting through the paving.
-  earth.position.y = -depth / 2 - 0.12;
-  earth.receiveShadow = true;
-  group.add(earth);
-  // A single clean foundation replaces the old strata/root decoration. Those
-  // details multiplied draw calls at map zoom and produced overlapping edges
-  // as the camera crossed the land plane.
-  setShadows(group);
-  return group;
-}
-
 function createLandscapePath(
   THREE,
   name,
@@ -7114,108 +6996,6 @@ function bikeLaneMaterial(THREE) {
   });
 }
 
-function curvedRibbonGeometry(
-  THREE,
-  curve,
-  halfWidth,
-  topY,
-  depth,
-  segments = 96,
-) {
-  const positions = [];
-  const uvs = [];
-  const indices = [];
-  for (let index = 0; index < segments; index += 1) {
-    const along = index / segments;
-    const point = curve.getPointAt(along);
-    const tangent = curve.getTangentAt(along).normalize();
-    const normalX = -tangent.z;
-    const normalZ = tangent.x;
-    for (const [side, y] of [
-      [-1, topY],
-      [1, topY],
-      [-1, topY - depth],
-      [1, topY - depth],
-    ]) {
-      positions.push(
-        point.x + normalX * halfWidth * side,
-        y,
-        point.z + normalZ * halfWidth * side,
-      );
-      uvs.push(along * 16, side > 0 ? 1 : 0);
-    }
-  }
-  for (let index = 0; index < segments; index += 1) {
-    const next = (index + 1) % segments;
-    const base = index * 4;
-    const nextBase = next * 4;
-    indices.push(
-      base, nextBase, base + 1,
-      base + 1, nextBase, nextBase + 1,
-      base + 2, base + 3, nextBase + 2,
-      base + 3, nextBase + 3, nextBase + 2,
-      base, base + 2, nextBase,
-      base + 2, nextBase + 2, nextBase,
-      base + 1, nextBase + 1, base + 3,
-      base + 3, nextBase + 1, nextBase + 3,
-    );
-  }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute(positions, 3),
-  );
-  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
-  geometry.setIndex(indices);
-  geometry.computeVertexNormals();
-  return geometry;
-}
-
-function addRoundedCausewayEnds(
-  THREE,
-  group,
-  {
-    name,
-    axis = "x",
-    length,
-    radius,
-    depth,
-    topColor,
-    earthColor,
-  },
-) {
-  const topMaterial = makeMaterial(THREE, topColor, { roughness: 0.96 });
-  const earthMaterial = makeMaterial(THREE, earthColor, { roughness: 1 });
-  for (const direction of [-1, 1]) {
-    const offset = (length / 2) * direction;
-    const earth = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius, radius, depth, 48),
-      earthMaterial,
-    );
-    earth.name = `${name}-rounded-earth-${direction < 0 ? "town" : "island"}`;
-    earth.position.set(
-      axis === "x" ? offset : 0,
-      -depth / 2,
-      axis === "z" ? offset : 0,
-    );
-    group.add(earth);
-    const top = new THREE.Mesh(
-      new THREE.CircleGeometry(radius, 48),
-      topMaterial,
-    );
-    top.name = `${name}-rounded-pavement-${direction < 0 ? "town" : "island"}`;
-    top.rotation.x = -Math.PI / 2;
-    top.position.set(
-      axis === "x" ? offset : 0,
-      0.085,
-      axis === "z" ? offset : 0,
-    );
-    top.receiveShadow = true;
-    top.userData.ground = true;
-    group.add(top);
-  }
-}
-
 function createTownLandscape(THREE) {
   const group = new THREE.Group();
   group.name = "forkmesh-town-mixed-landscape";
@@ -7230,12 +7010,6 @@ function createTownLandscape(THREE) {
   const pathEdgeMaterial = makeMaterial(THREE, "#625f59", {
     roughness: 0.9,
   });
-  const grassMaterials = [
-    "#536348",
-    "#68714b",
-    "#405847",
-    "#74734d",
-  ].map((color) => makeMaterial(THREE, color, { roughness: 1 }));
   const plaza = new THREE.Mesh(
     new THREE.CircleGeometry(20, 64),
     plazaMaterial,
@@ -7281,32 +7055,6 @@ function createTownLandscape(THREE) {
         pathMaterial,
       ),
     );
-  });
-
-  const grassPatches = [
-    [-42, -37, 18, 11, 0.2],
-    [-61, -6, 14, 19, -0.35],
-    [-36, 25, 18, 12, 0.55],
-    [-8, 49, 21, 12, -0.1],
-    [24, 55, 18, 10, 0.35],
-    [57, 34, 16, 13, -0.5],
-    [59, -29, 17, 12, 0.3],
-    [27, -54, 21, 11, -0.25],
-    [-18, -58, 17, 12, 0.45],
-    [-63, 43, 12, 9, 0.1],
-  ];
-  grassPatches.forEach(([x, z, scaleX, scaleZ, rotation], index) => {
-    const patch = new THREE.Mesh(
-      new THREE.CircleGeometry(1, 40),
-      grassMaterials[index % grassMaterials.length],
-    );
-    patch.name = `forkmesh-town-grass-patch-${index + 1}`;
-    patch.rotation.x = -Math.PI / 2;
-    patch.rotation.z = rotation;
-    patch.position.set(x, 0.04 + (index % 2) * 0.006, z);
-    patch.scale.set(scaleX, scaleZ, 1);
-    patch.receiveShadow = true;
-    group.add(patch);
   });
 
   const treeColors = ["#365443", "#486247", "#596d49", "#3f5949"];
@@ -7915,57 +7663,26 @@ function createRepositoryAgentTerminal(THREE, task = {}) {
       ? "codex"
       : "claude";
   const accent = provider === "codex" ? "#8fffe0" : "#ef9f74";
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(1.32, 0.66, 0.92),
-    makeMaterial(THREE, "#111c19", {
-      emissive: "#17322b",
-      emissiveIntensity: 0.32,
-      metalness: 0.28,
-      roughness: 0.55,
-    }),
-  );
-  body.position.y = 0.47;
-  group.add(body);
-  for (const x of [-0.46, 0.46]) {
-    const foot = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.16, 0.2, 0.22, 10),
-      makeMaterial(THREE, accent, {
-        emissive: accent,
-        emissiveIntensity: 0.34,
-        roughness: 0.48,
-      }),
-    );
-    foot.position.set(x, 0.11, 0.1);
-    group.add(foot);
-  }
-  const neck = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.08, 0.1, 0.45, 8),
-    makeMaterial(THREE, "#71857d", { metalness: 0.55 }),
-  );
-  neck.position.set(0, 0.93, -0.08);
-  neck.rotation.x = -Math.PI / 4;
-  group.add(neck);
   const screenShell = new THREE.Mesh(
-    new THREE.BoxGeometry(1.62, 1.18, 0.14),
+    new THREE.BoxGeometry(1.62, 1.18, 0.08),
     makeMaterial(THREE, "#0b1714", {
       emissive: "#102820",
       emissiveIntensity: 0.3,
       metalness: 0.24,
     }),
   );
-  screenShell.position.set(0, 1.27, 0.14);
-  screenShell.rotation.x = -Math.PI / 4;
+  screenShell.position.set(0, 0.72, 0);
   group.add(screenShell);
   const screen = new THREE.Mesh(
     new THREE.PlaneGeometry(1.48, 1.04),
     new THREE.MeshBasicMaterial({
       map: repositoryAgentTerminalTexture(THREE, task),
+      side: THREE.DoubleSide,
       toneMapped: false,
     }),
   );
   screen.name = `repository-agent-terminal-screen:${String(task.id || "")}`;
-  screen.position.set(0, 1.275, 0.22);
-  screen.rotation.x = -Math.PI / 4;
+  screen.position.set(0, 0.72, 0.045);
   screen.userData.landmark = "repositories";
   screen.userData.agentBotChat = provider;
   screen.userData.repositoryAgentSession = {
@@ -7976,15 +7693,16 @@ function createRepositoryAgentTerminal(THREE, task = {}) {
     status: String(task.displayStatus || task.status || "running"),
   };
   group.add(screen);
-  const antenna = new THREE.Mesh(
-    new THREE.SphereGeometry(0.1, 10, 8),
+  const status = new THREE.Mesh(
+    new THREE.BoxGeometry(1.62, 0.045, 0.1),
     makeMaterial(THREE, accent, {
       emissive: accent,
-      emissiveIntensity: 1.4,
+      emissiveIntensity: 0.9,
+      roughness: 0.44,
     }),
   );
-  antenna.position.set(0, 1.98, -0.18);
-  group.add(antenna);
+  status.position.set(0, 1.31, 0);
+  group.add(status);
   group.userData.screen = screen;
   return group;
 }
@@ -9348,26 +9066,6 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
       file.position.y = 3.1 + Math.sin(angle * 2 + index) * 0.42;
       file.rotation.z = Math.sin(phase * 2 + index) * 0.25;
     });
-    const relationshipLines = portal.userData.relationshipLines;
-    const relationshipPairs = portal.userData.relationshipPairs || [];
-    const positions = relationshipLines?.geometry?.attributes?.position;
-    if (positions && relationshipPairs.length * 2 === positions.count) {
-      relationshipPairs.forEach(([source, target], index) => {
-        positions.setXYZ(
-          index * 2,
-          source.position.x,
-          source.position.y,
-          source.position.z,
-        );
-        positions.setXYZ(
-          index * 2 + 1,
-          target.position.x,
-          target.position.y,
-          target.position.z,
-        );
-      });
-      positions.needsUpdate = true;
-    }
   });
   return group;
 }
@@ -9488,18 +9186,6 @@ function createFediverseCenter(THREE, position, interactive, animated) {
   );
   hub.position.y = 2.2;
   group.add(hub);
-  const connections = new THREE.Group();
-  orbs.forEach((orb) => {
-    const points = [new THREE.Vector3(0, 2.2, 0), orb.position.clone()];
-    const geometry = new THREE.BufferGeometry().setFromPoints(points);
-    connections.add(
-      new THREE.Line(
-        geometry,
-        new THREE.LineBasicMaterial({ color: "#ff9eb7", transparent: true, opacity: 0.48 }),
-      ),
-    );
-  });
-  group.add(connections);
   addSectionPlaque(THREE, group, position, "FEDIVERSE", "consent-aware social center", "#ff9eb7", 6.4);
   group.userData.socialOrbs = orbs;
 
@@ -13860,73 +13546,64 @@ export function createWorldScene({
   continuousCityLand.userData.ground = true;
   world.add(continuousCityLand);
 
-  const ground = new THREE.Mesh(
-    new THREE.CircleGeometry(WORLD_GROUND_RADIUS, 128),
-    cityGrassMaterial(THREE),
-  );
-  ground.name = "forkmesh-town-terrain-top";
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.y = 0.015;
-  ground.receiveShadow = true;
-  ground.userData.ground = true;
-  world.add(ground);
-  const townFoundation = createTerrainFoundation(
-    THREE,
-    "forkmesh-town-terrain-foundation",
-    WORLD_GROUND_RADIUS,
-    6.4,
-    "town",
-  );
-  world.add(townFoundation);
   const townLandscape = createTownLandscape(THREE);
   world.add(townLandscape);
 
-  // One closed, curved land ribbon joins every district edge. The top, earth
-  // foundation, and bike lane share a single sampled curve, eliminating the
-  // tiny zoomed-out gaps that appeared between independently rounded meshes.
-  const worldLoopCurve = new THREE.CatmullRomCurve3(
-    WORLD_LOOP_CONTROL_POINTS.map(
-      ([x, z]) => new THREE.Vector3(x, 0, z),
-    ),
-    true,
-    "centripetal",
-  );
-  const worldLoopFoundation = new THREE.Mesh(
-    curvedRibbonGeometry(
-      THREE,
-      worldLoopCurve,
-      WORLD_LOOP_LAND_HALF_WIDTH,
-      0,
-      5.8,
-    ),
-    makeMaterial(THREE, "#5b4433", { roughness: 1 }),
-  );
-  worldLoopFoundation.name = "forkmesh-curved-district-land-loop";
-  worldLoopFoundation.receiveShadow = true;
-  world.add(worldLoopFoundation);
-  const worldLoopTop = new THREE.Mesh(
-    curvedRibbonGeometry(
-      THREE,
-      worldLoopCurve,
-      WORLD_LOOP_LAND_HALF_WIDTH,
-      0.075,
-      0.16,
-    ),
-    makeMaterial(THREE, "#716f66", { roughness: 0.98 }),
-  );
-  worldLoopTop.name = "forkmesh-curved-district-land-top";
-  worldLoopTop.receiveShadow = true;
-  worldLoopTop.userData.ground = true;
-  world.add(worldLoopTop);
+  // The bike street is one exact circle on top of the shared grass slab.
+  // RingGeometry avoids the spline seams and overlapping land ribbons that
+  // produced long lines and sluggish overdraw in distant camera views.
   const worldBikeLane = new THREE.Mesh(
-    curvedRibbonGeometry(THREE, worldLoopCurve, 3.6, 0.18, 0.08),
+    new THREE.RingGeometry(
+      WORLD_BIKE_LANE_RADIUS - 3.6,
+      WORLD_BIKE_LANE_RADIUS + 3.6,
+      192,
+    ),
     bikeLaneMaterial(THREE),
   );
   worldBikeLane.name = "forkmesh-world-bike-lane";
+  worldBikeLane.rotation.x = -Math.PI / 2;
+  worldBikeLane.position.set(
+    WORLD_BIKE_LANE_CENTER_X,
+    0.18,
+    WORLD_BIKE_LANE_CENTER_Z,
+  );
   worldBikeLane.receiveShadow = true;
   worldBikeLane.userData.ground = true;
   world.add(worldBikeLane);
+  const worldBikeGroove = new THREE.Mesh(
+    new THREE.RingGeometry(
+      WORLD_BIKE_LANE_RADIUS - 0.16,
+      WORLD_BIKE_LANE_RADIUS + 0.16,
+      192,
+    ),
+    makeMaterial(THREE, "#30363d", {
+      roughness: 0.86,
+      metalness: 0.08,
+    }),
+  );
+  worldBikeGroove.name = "forkmesh-world-bike-center-groove";
+  worldBikeGroove.rotation.x = -Math.PI / 2;
+  worldBikeGroove.position.set(
+    WORLD_BIKE_LANE_CENTER_X,
+    0.225,
+    WORLD_BIKE_LANE_CENTER_Z,
+  );
+  world.add(worldBikeGroove);
   const bikeStates = [];
+  function placeBikeOnLane(state, angle) {
+    const normalizedAngle =
+      ((Number(angle) || 0) % (Math.PI * 2) + Math.PI * 2) %
+      (Math.PI * 2);
+    state.angle = normalizedAngle;
+    state.bike.position.set(
+      WORLD_BIKE_LANE_CENTER_X +
+        Math.cos(normalizedAngle) * WORLD_BIKE_LANE_RADIUS,
+      0.24,
+      WORLD_BIKE_LANE_CENTER_Z +
+        Math.sin(normalizedAngle) * WORLD_BIKE_LANE_RADIUS,
+    );
+    state.bike.rotation.y = Math.PI - normalizedAngle;
+  }
   function addWorldBike(index, color, along) {
     const bike = new THREE.Group();
     bike.name = `forkmesh-world-bike-${index + 1}`;
@@ -13974,15 +13651,13 @@ export function createWorldScene({
     seat.userData.bikeIndex = index;
     bike.add(seat);
     interactive.push(seat);
-    const point = worldLoopCurve.getPointAt(along);
-    const tangent = worldLoopCurve.getTangentAt(along);
-    bike.position.set(point.x, 0.02, point.z);
-    bike.rotation.y = Math.atan2(-tangent.x, -tangent.z);
     bike.userData.bikeIndex = index;
-    bike.userData.layoutBaseRotation = bike.rotation.y;
     setShadows(bike);
     world.add(bike);
-    bikeStates.push({ bike, wheels, seat, moving: false });
+    const state = { bike, wheels, seat, moving: false, angle: 0 };
+    placeBikeOnLane(state, along * Math.PI * 2);
+    bike.userData.layoutBaseRotation = bike.rotation.y;
+    bikeStates.push(state);
   }
   addWorldBike(0, "#77d9ff", 0.38);
   addWorldBike(1, "#9ef7c6", 0.43);
@@ -14178,26 +13853,6 @@ export function createWorldScene({
   // district, whether it is already hosted by a mirror or remains an external
   // stub. Broad earth connects it to town; the legacy "bridge" group is now a
   // paved promenade on that continuous causeway.
-  const repositoryIsland = new THREE.Mesh(
-    new THREE.CircleGeometry(REPOSITORY_ISLAND_RADIUS, 96),
-    cityGrassMaterial(THREE),
-  );
-  repositoryIsland.name = "hosted-repository-island";
-  repositoryIsland.rotation.x = -Math.PI / 2;
-  repositoryIsland.position.set(REPOSITORY_ISLAND_CENTER_X, 0.01, 0);
-  repositoryIsland.receiveShadow = true;
-  repositoryIsland.userData.ground = true;
-  world.add(repositoryIsland);
-  const repositoryFoundation = createTerrainFoundation(
-    THREE,
-    "hosted-repository-terrain-foundation",
-    REPOSITORY_ISLAND_RADIUS,
-    5.8,
-    "repositories",
-  );
-  repositoryFoundation.position.x = REPOSITORY_ISLAND_CENTER_X;
-  world.add(repositoryFoundation);
-
   const repositoryBridge = new THREE.Group();
   repositoryBridge.name = "hosted-repository-bridge";
   repositoryBridge.position.set(
@@ -14207,40 +13862,6 @@ export function createWorldScene({
   );
   const repositoryConnectionLength =
     REPOSITORY_CONNECTION_MAX_X - REPOSITORY_CONNECTION_MIN_X;
-  const repositoryConnectionFoundation = new THREE.Mesh(
-    new THREE.BoxGeometry(
-      repositoryConnectionLength,
-      5.8,
-      REPOSITORY_CONNECTION_HALF_WIDTH * 2,
-    ),
-    makeMaterial(THREE, "#5b4433", { roughness: 1 }),
-  );
-  repositoryConnectionFoundation.name =
-    "hosted-repository-causeway-earth";
-  repositoryConnectionFoundation.position.y = -2.9;
-  repositoryConnectionFoundation.receiveShadow = true;
-  repositoryBridge.add(repositoryConnectionFoundation);
-  const bridgeDeck = new THREE.Mesh(
-    new THREE.BoxGeometry(
-      repositoryConnectionLength,
-      0.16,
-      REPOSITORY_CONNECTION_HALF_WIDTH * 2,
-    ),
-    makeMaterial(THREE, "#766f5d", { roughness: 0.98 }),
-  );
-  bridgeDeck.position.y = 0.08;
-  bridgeDeck.receiveShadow = true;
-  bridgeDeck.userData.ground = true;
-  repositoryBridge.add(bridgeDeck);
-  addRoundedCausewayEnds(THREE, repositoryBridge, {
-    name: "hosted-repository-causeway",
-    axis: "x",
-    length: repositoryConnectionLength,
-    radius: REPOSITORY_CONNECTION_HALF_WIDTH,
-    depth: 5.8,
-    topColor: "#766f5d",
-    earthColor: "#5b4433",
-  });
   const repositoryPromenade = new THREE.Mesh(
     new THREE.BoxGeometry(repositoryConnectionLength, 0.08, 7.2),
     concreteBrickMaterial(THREE),
@@ -14255,26 +13876,6 @@ export function createWorldScene({
   // A purpose-built public rankings district balances the repository island
   // across town. The broad earth connection is always walkable, with an
   // illuminated promenade making the route legible at every sky theme.
-  const leaderboardIsland = new THREE.Mesh(
-    new THREE.CircleGeometry(LEADERBOARD_ISLAND_RADIUS, 96),
-    cityGrassMaterial(THREE),
-  );
-  leaderboardIsland.name = "forkmesh-leaderboard-island";
-  leaderboardIsland.rotation.x = -Math.PI / 2;
-  leaderboardIsland.position.set(LEADERBOARD_ISLAND_CENTER_X, 0.012, 0);
-  leaderboardIsland.receiveShadow = true;
-  leaderboardIsland.userData.ground = true;
-  world.add(leaderboardIsland);
-  const leaderboardFoundation = createTerrainFoundation(
-    THREE,
-    "forkmesh-leaderboard-island-foundation",
-    LEADERBOARD_ISLAND_RADIUS,
-    5.8,
-    "leaderboards",
-  );
-  leaderboardFoundation.position.x = LEADERBOARD_ISLAND_CENTER_X;
-  world.add(leaderboardFoundation);
-
   const leaderboardConnection = new THREE.Group();
   leaderboardConnection.name = "forkmesh-leaderboard-island-connection";
   leaderboardConnection.position.set(
@@ -14284,40 +13885,6 @@ export function createWorldScene({
   );
   const leaderboardConnectionLength =
     LEADERBOARD_CONNECTION_MAX_X - LEADERBOARD_CONNECTION_MIN_X;
-  const leaderboardConnectionEarth = new THREE.Mesh(
-    new THREE.BoxGeometry(
-      leaderboardConnectionLength,
-      5.8,
-      LEADERBOARD_CONNECTION_HALF_WIDTH * 2,
-    ),
-    makeMaterial(THREE, "#314f46", { roughness: 1 }),
-  );
-  leaderboardConnectionEarth.name =
-    "forkmesh-leaderboard-connection-earth";
-  leaderboardConnectionEarth.position.y = -2.9;
-  leaderboardConnection.add(leaderboardConnectionEarth);
-  const leaderboardConnectionTop = new THREE.Mesh(
-    new THREE.BoxGeometry(
-      leaderboardConnectionLength,
-      0.16,
-      LEADERBOARD_CONNECTION_HALF_WIDTH * 2,
-    ),
-    makeMaterial(THREE, "#4d7065", { roughness: 0.94 }),
-  );
-  leaderboardConnectionTop.name = "forkmesh-leaderboard-connection-top";
-  leaderboardConnectionTop.position.y = 0.08;
-  leaderboardConnectionTop.receiveShadow = true;
-  leaderboardConnectionTop.userData.ground = true;
-  leaderboardConnection.add(leaderboardConnectionTop);
-  addRoundedCausewayEnds(THREE, leaderboardConnection, {
-    name: "forkmesh-leaderboard-causeway",
-    axis: "x",
-    length: leaderboardConnectionLength,
-    radius: LEADERBOARD_CONNECTION_HALF_WIDTH,
-    depth: 5.8,
-    topColor: "#4d7065",
-    earthColor: "#314f46",
-  });
   const leaderboardPromenade = new THREE.Mesh(
     new THREE.BoxGeometry(leaderboardConnectionLength, 0.08, 7.2),
     concreteBrickMaterial(THREE),
@@ -14435,26 +14002,6 @@ export function createWorldScene({
   // Registered members and their named campfire benches have a dedicated
   // southern garden. It is the fourth cardinal district, leaving the live
   // mirror cabinets and reward pool unobstructed in the central plaza.
-  const memberIsland = new THREE.Mesh(
-    new THREE.CircleGeometry(MEMBER_ISLAND_RADIUS, 96),
-    cityGrassMaterial(THREE),
-  );
-  memberIsland.name = "forkmesh-member-island";
-  memberIsland.rotation.x = -Math.PI / 2;
-  memberIsland.position.set(0, 0.012, MEMBER_ISLAND_CENTER_Z);
-  memberIsland.receiveShadow = true;
-  memberIsland.userData.ground = true;
-  world.add(memberIsland);
-  const memberFoundation = createTerrainFoundation(
-    THREE,
-    "forkmesh-member-island-foundation",
-    MEMBER_ISLAND_RADIUS,
-    5.8,
-    "members",
-  );
-  memberFoundation.position.z = MEMBER_ISLAND_CENTER_Z;
-  world.add(memberFoundation);
-
   const memberConnection = new THREE.Group();
   memberConnection.name = "forkmesh-member-island-connection";
   memberConnection.position.set(
@@ -14464,39 +14011,6 @@ export function createWorldScene({
   );
   const memberConnectionLength =
     MEMBER_CONNECTION_MAX_Z - MEMBER_CONNECTION_MIN_Z;
-  const memberConnectionEarth = new THREE.Mesh(
-    new THREE.BoxGeometry(
-      MEMBER_CONNECTION_HALF_WIDTH * 2,
-      5.8,
-      memberConnectionLength,
-    ),
-    makeMaterial(THREE, "#394b35", { roughness: 1 }),
-  );
-  memberConnectionEarth.name = "forkmesh-member-causeway-earth";
-  memberConnectionEarth.position.y = -2.9;
-  memberConnection.add(memberConnectionEarth);
-  const memberConnectionTop = new THREE.Mesh(
-    new THREE.BoxGeometry(
-      MEMBER_CONNECTION_HALF_WIDTH * 2,
-      0.16,
-      memberConnectionLength,
-    ),
-    makeMaterial(THREE, "#66725a", { roughness: 0.96 }),
-  );
-  memberConnectionTop.name = "forkmesh-member-causeway-top";
-  memberConnectionTop.position.y = 0.08;
-  memberConnectionTop.receiveShadow = true;
-  memberConnectionTop.userData.ground = true;
-  memberConnection.add(memberConnectionTop);
-  addRoundedCausewayEnds(THREE, memberConnection, {
-    name: "forkmesh-member-causeway",
-    axis: "z",
-    length: memberConnectionLength,
-    radius: MEMBER_CONNECTION_HALF_WIDTH,
-    depth: 5.8,
-    topColor: "#66725a",
-    earthColor: "#394b35",
-  });
   const memberPromenade = new THREE.Mesh(
     new THREE.BoxGeometry(8.4, 0.08, memberConnectionLength),
     concreteBrickMaterial(THREE),
@@ -14588,34 +14102,6 @@ export function createWorldScene({
   // The Office is a real campus district, not another interior scene. Its
   // wooded earth joins town across a broad continuous neck, with a stone
   // promenade down the middle for visual wayfinding.
-  const officeIsland = new THREE.Mesh(
-    new THREE.CircleGeometry(OFFICE_ISLAND_RADIUS, 128),
-    cityGrassMaterial(THREE),
-  );
-  officeIsland.name = "forkmesh-office-island";
-  officeIsland.rotation.x = -Math.PI / 2;
-  officeIsland.position.set(
-    OFFICE_ISLAND_CENTER[0],
-    0.015,
-    OFFICE_ISLAND_CENTER[2],
-  );
-  officeIsland.receiveShadow = true;
-  officeIsland.userData.ground = true;
-  world.add(officeIsland);
-  const officeFoundation = createTerrainFoundation(
-    THREE,
-    "forkmesh-office-terrain-foundation",
-    OFFICE_ISLAND_RADIUS,
-    7.2,
-    "office",
-  );
-  officeFoundation.position.set(
-    OFFICE_ISLAND_CENTER[0],
-    0,
-    OFFICE_ISLAND_CENTER[2],
-  );
-  world.add(officeFoundation);
-
   const officeLandConnection = new THREE.Group();
   officeLandConnection.name = "forkmesh-office-land-connection";
   officeLandConnection.position.set(
@@ -14625,48 +14111,15 @@ export function createWorldScene({
   );
   const officeConnectionLength =
     OFFICE_CONNECTION_MAX_Z - OFFICE_CONNECTION_MIN_Z;
-  const officeConnectionEarth = new THREE.Mesh(
-    new THREE.BoxGeometry(
-      OFFICE_CONNECTION_HALF_WIDTH * 2,
-      6.4,
-      officeConnectionLength,
-    ),
-    makeMaterial(THREE, "#594332", { roughness: 1 }),
+  const officePromenade = new THREE.Mesh(
+    new THREE.BoxGeometry(8.4, 0.08, officeConnectionLength),
+    concreteBrickMaterial(THREE),
   );
-  officeConnectionEarth.name = "forkmesh-office-land-connection-earth";
-  officeConnectionEarth.position.y = -3.2;
-  officeLandConnection.add(officeConnectionEarth);
-  const officeConnectionTop = new THREE.Mesh(
-    new THREE.BoxGeometry(
-      OFFICE_CONNECTION_HALF_WIDTH * 2,
-      0.14,
-      officeConnectionLength,
-    ),
-    makeMaterial(THREE, "#69644f", { roughness: 1 }),
-  );
-  officeConnectionTop.name = "forkmesh-office-land-connection-top";
-  officeConnectionTop.position.y = 0.07;
-  officeConnectionTop.receiveShadow = true;
-  officeConnectionTop.userData.ground = true;
-  officeLandConnection.add(officeConnectionTop);
-  addRoundedCausewayEnds(THREE, officeLandConnection, {
-    name: "forkmesh-office-causeway",
-    axis: "z",
-    length: officeConnectionLength,
-    radius: OFFICE_CONNECTION_HALF_WIDTH,
-    depth: 6.4,
-    topColor: "#69644f",
-    earthColor: "#594332",
-  });
-  for (const x of [-OFFICE_CONNECTION_HALF_WIDTH, OFFICE_CONNECTION_HALF_WIDTH]) {
-    const edge = new THREE.Mesh(
-      new THREE.BoxGeometry(0.55, 0.5, officeConnectionLength),
-      makeMaterial(THREE, "#4f514b", { roughness: 0.94 }),
-    );
-    edge.name = "forkmesh-office-land-connection-edge";
-    edge.position.set(x, -0.14, 0);
-    officeLandConnection.add(edge);
-  }
+  officePromenade.name = "forkmesh-office-land-promenade";
+  officePromenade.position.y = 0.19;
+  officePromenade.receiveShadow = true;
+  officePromenade.userData.ground = true;
+  officeLandConnection.add(officePromenade);
   world.add(officeLandConnection);
 
   const officeBridge = new THREE.Group();
@@ -18289,6 +17742,7 @@ export function createWorldScene({
   officeElevatorCar.add(elevatorPanel);
   const neighborhoodHomes = new Map();
   const nodeInfrastructure = new Map();
+  const deletedNodeIdentifiers = new Set();
   // Slot ownership is session-stable: a health refresh, response-time reorder,
   // or another node joining must not make every cabinet jump to a new place.
   // Positions remain derived from the live reward-pool location, so moving
@@ -18311,6 +17765,7 @@ export function createWorldScene({
   const emoteSprites = [];
   const rewardFlights = [];
   const pushSurges = [];
+  const repositoryCodeLandings = [];
   const serveFlights = [];
   const forkbotWanderTarget = new THREE.Vector3(...FORKBOT_HOME);
   let forkbotNextWanderAt = 0;
@@ -18417,6 +17872,7 @@ export function createWorldScene({
   let pinchStartZoom = cameraZoom;
   let pinchActive = false;
   let lightLevel = LIGHT_LEVEL_DEFAULT;
+  let daylightMode = "auto";
   let localDaylightMinute = -1;
   let nextEnvironmentCheckAt = 0;
   let officeSceneMode = "town";
@@ -18451,7 +17907,13 @@ export function createWorldScene({
 
   function updateWorldEnvironment() {
     const now = new Date();
-    const minuteOfDay = now.getHours() * 60 + now.getMinutes();
+    const observedMinute = now.getHours() * 60 + now.getMinutes();
+    const minuteOfDay =
+      daylightMode === "day"
+        ? 12 * 60
+        : daylightMode === "night"
+          ? 0
+          : observedMinute;
     localDaylightMinute = minuteOfDay;
     const localHour = minuteOfDay / 60;
     // Smooth civil-time daylight: sunrise ramps from 06:00–08:00 and sunset
@@ -18460,6 +17922,7 @@ export function createWorldScene({
     const sunset = clamp((20 - localHour) / 2, 0, 1);
     const daylight = Math.min(sunrise, sunset);
     const easedDaylight = daylight * daylight * (3 - 2 * daylight);
+    worldSky.setDaylightMinute?.(minuteOfDay, easedDaylight);
     const solarAngle = ((localHour - 6) / 14) * Math.PI;
     const state = {
       background: new THREE.Color(DAYLIGHT_ENVIRONMENT.background),
@@ -18523,6 +17986,13 @@ export function createWorldScene({
     );
     updateWorldEnvironment();
     return lightLevel;
+  }
+
+  function setDaylightMode(value) {
+    daylightMode =
+      value === "day" || value === "night" ? value : "auto";
+    updateWorldEnvironment();
+    return daylightMode;
   }
 
   function baseMoveSpeed() {
@@ -20375,6 +19845,14 @@ export function createWorldScene({
     if (touchKeys.has("KeyA")) movement.x -= 1;
     if (touchKeys.has("KeyD")) movement.x += 1;
     const keyboardActive = Boolean(forwardInput || rightInput);
+    const bikeDirection = clamp(
+      forwardInput +
+        Number(touchKeys.has("KeyW")) -
+        Number(touchKeys.has("KeyS")) -
+        touchMovement.y,
+      -1,
+      1,
+    );
     const sprinting =
       keys.has("ShiftLeft") || keys.has("ShiftRight");
     const legacyTouchActive = touchKeys.size > 0;
@@ -20382,6 +19860,7 @@ export function createWorldScene({
       keyboardActive || legacyTouchActive ? 1 : touchStrength;
     return {
       keyboardActive,
+      bikeDirection,
       ridingBike: Boolean(bikeRide),
       ridingCar: Boolean(carRide),
       sprinting,
@@ -20848,6 +20327,27 @@ export function createWorldScene({
     });
   }
 
+  function toggleNearestBikeRide() {
+    if (bikeRide) {
+      dismountBike();
+      return true;
+    }
+    if (officeSceneMode !== "town") return false;
+    let nearestIndex = -1;
+    let nearestDistanceSquared = WORLD_BIKE_MOUNT_DISTANCE ** 2;
+    bikeStates.forEach((state, index) => {
+      const distanceSquared =
+        (state.bike.position.x - player.position.x) ** 2 +
+        (state.bike.position.z - player.position.z) ** 2;
+      if (distanceSquared > nearestDistanceSquared) return;
+      nearestDistanceSquared = distanceSquared;
+      nearestIndex = index;
+    });
+    if (nearestIndex < 0) return false;
+    rideBike(nearestIndex);
+    return true;
+  }
+
   function applyBikeRidePose(moving, delta) {
     if (!bikeRide) return;
     const state = bikeStates[bikeRide.index];
@@ -20857,7 +20357,11 @@ export function createWorldScene({
     state.bike.rotation.y = player.rotation.y;
     state.moving = Boolean(moving);
     if (moving) {
-      const rotation = Math.max(0, delta) * keyboardMovementSpeed / 0.58;
+      const rotation =
+        Math.max(0, delta) *
+        keyboardMovementSpeed *
+        (state.travelDirection || 1) /
+        0.58;
       state.wheels.forEach((wheel) => {
         wheel.rotation.x -= rotation;
       });
@@ -20876,6 +20380,7 @@ export function createWorldScene({
     const state = bikeStates[bikeRide.index];
     bikeRide = null;
     if (state) state.moving = false;
+    if (state) state.travelDirection = 0;
     player.rotation.x = 0;
     player.userData.leftArm.rotation.x = 0;
     player.userData.rightArm.rotation.x = 0;
@@ -20987,6 +20492,7 @@ export function createWorldScene({
     const previousHorizontalPosition =
       movementPreviousPosition.copy(player.position);
     const {
+      bikeDirection,
       keyboardActive,
       ridingBike,
       ridingCar,
@@ -21045,7 +20551,40 @@ export function createWorldScene({
       jumpVelocity = 0;
     }
     let walking = false;
-    if (movement.lengthSq()) {
+    if (bikeRide) {
+      cameraFocus = null;
+      cancelDash();
+      focusedRepositoryKey = "";
+      const state = bikeStates[bikeRide.index];
+      const rideDirection = Math.sign(bikeDirection);
+      if (state && rideDirection) {
+        movementSpeedForInput(
+          {
+            keyboardActive: keyboardActive || Boolean(rideDirection),
+            ridingBike: true,
+            ridingCar: false,
+            sprinting,
+            touchStrength,
+            inputStrength: Math.abs(bikeDirection),
+          },
+          delta,
+        );
+        state.travelDirection = rideDirection;
+        placeBikeOnLane(
+          state,
+          state.angle +
+            (rideDirection * keyboardMovementSpeed * delta) /
+              WORLD_BIKE_LANE_RADIUS,
+        );
+        player.position.x = state.bike.position.x;
+        player.position.z = state.bike.position.z;
+        player.rotation.y = state.bike.rotation.y;
+        walking = true;
+      } else {
+        keyboardMovementSpeed = baseMoveSpeed();
+        if (state) state.travelDirection = 0;
+      }
+    } else if (movement.lengthSq()) {
       cameraFocus = null;
       // Any manual input takes the wheel back from a double-click dash.
       cancelDash();
@@ -22984,14 +22523,13 @@ export function createWorldScene({
         target?.name,
         target?.machineName,
         target?.nodeId,
+        ...(Array.isArray(target?.identifiers) ? target.identifiers : []),
       ]
         .map((value) => String(value || "").trim().toLowerCase())
         .filter(Boolean),
     );
-    let matchId = "";
-    let cabinet = null;
+    const matches = [];
     nodeInfrastructure.forEach((candidate, id) => {
-      if (cabinet) return;
       const record = candidate?.userData?.nodeRecord || {};
       const candidateIds = [
         id.replace(/^node:/, ""),
@@ -23000,56 +22538,58 @@ export function createWorldScene({
         record.nodeId,
       ].map((value) => String(value || "").trim().toLowerCase());
       if (candidateIds.some((value) => identifiers.has(value))) {
-        matchId = id;
-        cabinet = candidate;
+        candidateIds.filter(Boolean).forEach((value) => identifiers.add(value));
+        matches.push([id, candidate]);
       }
     });
-    if (!cabinet || !matchId) return false;
-    nodeInfrastructure.delete(matchId);
-    cabinet.traverse((child) => {
-      if (!child.userData?.nodeCabinet) return;
-      const index = interactive.indexOf(child);
-      if (index >= 0) interactive.splice(index, 1);
-      if (child.material?.emissive) {
-        child.material.emissive.set("#ff3b4f");
-        child.material.emissiveIntensity = 1.8;
-      }
+    identifiers.forEach((value) => deletedNodeIdentifiers.add(value));
+    matches.forEach(([matchId, cabinet]) => {
+      nodeInfrastructure.delete(matchId);
+      cabinet.traverse((child) => {
+        if (!child.userData?.nodeCabinet) return;
+        const index = interactive.indexOf(child);
+        if (index >= 0) interactive.splice(index, 1);
+        if (child.material?.emissive) {
+          child.material.emissive.set("#ff3b4f");
+          child.material.emissiveIntensity = 1.8;
+        }
+      });
+      const origin = cabinet.position.clone();
+      const shockwave = new THREE.Mesh(
+        new THREE.RingGeometry(0.8, 1.2, 48),
+        new THREE.MeshBasicMaterial({
+          color: "#ff5d6c",
+          transparent: true,
+          opacity: 0.92,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        }),
+      );
+      shockwave.name = `forkmesh-node-delete-effect:${matchId}`;
+      shockwave.rotation.x = -Math.PI / 2;
+      shockwave.position.set(origin.x, 0.24, origin.z);
+      world.add(shockwave);
+      const startedAt = performance.now();
+      const duration = 720;
+      const animateDeletion = (time) => {
+        const progress = clamp((time - startedAt) / duration, 0, 1);
+        const scale = Math.max(0.001, 1 - progress ** 1.4);
+        cabinet.scale.set(scale, scale * (1 + progress * 0.8), scale);
+        cabinet.position.y = origin.y + Math.sin(progress * Math.PI) * 2.8;
+        cabinet.rotation.y += 0.12;
+        shockwave.scale.setScalar(1 + progress * 18);
+        shockwave.material.opacity = 0.92 * (1 - progress);
+        if (progress < 1) return;
+        const callbackIndex = animated.indexOf(animateDeletion);
+        if (callbackIndex >= 0) animated.splice(callbackIndex, 1);
+        world.remove(cabinet, shockwave);
+        disposeObject3D(cabinet);
+        shockwave.geometry.dispose();
+        shockwave.material.dispose();
+      };
+      animated.push(animateDeletion);
     });
-    const origin = cabinet.position.clone();
-    const shockwave = new THREE.Mesh(
-      new THREE.RingGeometry(0.8, 1.2, 48),
-      new THREE.MeshBasicMaterial({
-        color: "#ff5d6c",
-        transparent: true,
-        opacity: 0.92,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      }),
-    );
-    shockwave.name = `forkmesh-node-delete-effect:${matchId}`;
-    shockwave.rotation.x = -Math.PI / 2;
-    shockwave.position.set(origin.x, 0.24, origin.z);
-    world.add(shockwave);
-    const startedAt = performance.now();
-    const duration = 720;
-    const animateDeletion = (time) => {
-      const progress = clamp((time - startedAt) / duration, 0, 1);
-      const scale = Math.max(0.001, 1 - progress ** 1.4);
-      cabinet.scale.set(scale, scale * (1 + progress * 0.8), scale);
-      cabinet.position.y = origin.y + Math.sin(progress * Math.PI) * 2.8;
-      cabinet.rotation.y += 0.12;
-      shockwave.scale.setScalar(1 + progress * 18);
-      shockwave.material.opacity = 0.92 * (1 - progress);
-      if (progress < 1) return;
-      const callbackIndex = animated.indexOf(animateDeletion);
-      if (callbackIndex >= 0) animated.splice(callbackIndex, 1);
-      world.remove(cabinet, shockwave);
-      disposeObject3D(cabinet);
-      shockwave.geometry.dispose();
-      shockwave.material.dispose();
-    };
-    animated.push(animateDeletion);
-    return true;
+    return matches.length > 0;
   }
 
   function updateNetworkNodes(nodes = networkNodeSnapshot) {
@@ -23090,6 +22630,18 @@ export function createWorldScene({
         name: String(node?.name || node?.label || "").trim().slice(0, 80),
       }))
       .filter((entry) => entry.name)
+      .filter(({ node, name }) =>
+        [
+          name,
+          node?.machineName,
+          node?.nodeId,
+        ].every(
+          (value) =>
+            !deletedNodeIdentifiers.has(
+              String(value || "").trim().toLowerCase(),
+            ),
+        ),
+      )
       .sort((left, right) => {
         const leftKey = left.name.toLowerCase();
         const rightKey = right.name.toLowerCase();
@@ -23230,6 +22782,7 @@ export function createWorldScene({
       ) {
         if (verifiedPendingPush) {
           pendingMirrorPushEffects.delete(nodeName.toLowerCase());
+          spawnRepositoryCodeLanding(pendingPush);
         }
         spawnPushSurge(cabinet.position);
       }
@@ -23249,7 +22802,13 @@ export function createWorldScene({
     });
   }
 
-  function armMirrorPushEffect(nodeName, commitPrefix) {
+  function armMirrorPushEffect(
+    nodeName,
+    commitPrefix,
+    repositoryOwner = "",
+    repositoryName = "",
+    changedFiles = [],
+  ) {
     const node = String(nodeName || "").trim().toLowerCase();
     const commit = String(commitPrefix || "").trim().toLowerCase();
     if (
@@ -23260,6 +22819,15 @@ export function createWorldScene({
     }
     pendingMirrorPushEffects.set(node, {
       commit,
+      owner: String(repositoryOwner || "").trim().toLowerCase().slice(0, 80),
+      repo: String(repositoryName || "").trim().toLowerCase().slice(0, 120),
+      changedFiles: (Array.isArray(changedFiles) ? changedFiles : [])
+        .map((path) => safeRepositoryPath(path).slice(0, 160))
+        .filter(
+          (path, index, paths) =>
+            path && paths.indexOf(path) === index,
+        )
+        .slice(0, 8),
       // The push frame arrives immediately after the relay accepts the signed
       // publication, but edge caches and a busy mirror can take longer than
       // the old 15-second window to expose the matching catalog snapshot.
@@ -24705,6 +24273,7 @@ export function createWorldScene({
         name: record.name,
         angle,
         key: record.key,
+        record,
       });
     });
 
@@ -24835,10 +24404,6 @@ export function createWorldScene({
     }
     if (districtPortal.userData.repositoryEntityLayer) {
       districtPortal.userData.repositoryEntityLayer.visible =
-        repositoryPortals.size === 0;
-    }
-    if (districtPortal.userData.relationshipLines) {
-      districtPortal.userData.relationshipLines.visible =
         repositoryPortals.size === 0;
     }
 
@@ -25055,9 +24620,6 @@ export function createWorldScene({
     }
     if (districtPortal.userData.repositoryEntityLayer) {
       districtPortal.userData.repositoryEntityLayer.visible = false;
-    }
-    if (districtPortal.userData.relationshipLines) {
-      districtPortal.userData.relationshipLines.visible = false;
     }
   }
 
@@ -25900,7 +25462,6 @@ export function createWorldScene({
       if (mesh.material) {
         mesh.material.emissiveIntensity =
           entry.frequency === "high" ? 0.9 : entry.frequency === "medium" ? 0.5 : 0.18;
-        mesh.material.wireframe = entry.redundantCandidate === true;
       }
     });
     const previousEntityLayer = portal?.userData?.repositoryEntityLayer;
@@ -25916,7 +25477,6 @@ export function createWorldScene({
       portal.userData.repositoryEntityLayer = null;
       portal.userData.repositoryEntityMeshes = [];
     }
-    const entityRelationships = [];
     if (portal && safeEntities.length) {
       const layer = new THREE.Group();
       layer.name = "repository-entity-layer";
@@ -25927,24 +25487,6 @@ export function createWorldScene({
         "issue-collection": "#f7c96b",
         "pull-request": "#d5b6ff",
         "pull-request-collection": "#d5b6ff",
-      };
-      const targetIndexFor = (target) => {
-        const normalized = String(target || "");
-        if (byPath.has(normalized)) return byPath.get(normalized);
-        let bestIndex;
-        let bestLength = -1;
-        safeEntries.forEach((entry, index) => {
-          const path = String(entry.path || "");
-          if (
-            path &&
-            (normalized === path || normalized.startsWith(`${path}/`)) &&
-            path.length > bestLength
-          ) {
-            bestIndex = index;
-            bestLength = path.length;
-          }
-        });
-        return bestIndex;
       };
       safeEntities.forEach((entity, index) => {
         const kind = String(entity.kind || "");
@@ -26001,80 +25543,10 @@ export function createWorldScene({
         label.position.copy(mesh.position);
         label.position.y += 0.48;
         layer.add(label);
-        const seenTargets = new Set();
-        (Array.isArray(entity.targetPaths) ? entity.targetPaths : [])
-          .slice(0, 24)
-          .forEach((target) => {
-            const targetIndex = targetIndexFor(target);
-            if (
-              targetIndex === undefined ||
-              seenTargets.has(targetIndex) ||
-              !meshes[targetIndex]?.visible
-            ) {
-              return;
-            }
-            seenTargets.add(targetIndex);
-            entityRelationships.push([mesh, meshes[targetIndex]]);
-          });
       });
       portal.add(layer);
       portal.userData.repositoryEntityLayer = layer;
       portal.userData.repositoryEntityMeshes = entityMeshes;
-    }
-    if (portal?.userData?.relationshipLines) {
-      portal.remove(portal.userData.relationshipLines);
-      portal.userData.relationshipLines.geometry?.dispose?.();
-      portal.userData.relationshipLines.material?.dispose?.();
-      portal.userData.relationshipLines = null;
-      portal.userData.relationshipPairs = [];
-    }
-    if (portal && (safeEntries.length > 1 || entityRelationships.length)) {
-      const positions = [];
-      edgeIndexes.forEach(([sourceIndex, targetIndex]) => {
-        positions.push(
-          meshes[sourceIndex].position.x,
-          meshes[sourceIndex].position.y,
-          meshes[sourceIndex].position.z,
-          meshes[targetIndex].position.x,
-          meshes[targetIndex].position.y,
-          meshes[targetIndex].position.z,
-        );
-      });
-      entityRelationships.forEach(([source, target]) => {
-        positions.push(
-          source.position.x,
-          source.position.y,
-          source.position.z,
-          target.position.x,
-          target.position.y,
-          target.position.z,
-        );
-      });
-      if (positions.length) {
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute(
-          "position",
-          new THREE.Float32BufferAttribute(positions, 3),
-        );
-        const relationships = new THREE.LineSegments(
-          geometry,
-          new THREE.LineBasicMaterial({
-            color: "#77d9ff",
-            transparent: true,
-            opacity: 0.34,
-          }),
-        );
-        relationships.name = "repository-relationship-lines";
-        portal.add(relationships);
-        portal.userData.relationshipLines = relationships;
-        portal.userData.relationshipPairs = [
-          ...edgeIndexes.map(([sourceIndex, targetIndex]) => [
-            meshes[sourceIndex],
-            meshes[targetIndex],
-          ]),
-          ...entityRelationships,
-        ];
-      }
     }
     portal?.scale.setScalar(safeEntries.length ? 1.05 : 1);
   }
@@ -26254,6 +25726,233 @@ export function createWorldScene({
       startedAt: performance.now(),
       duration: 4200,
     });
+  }
+
+  function repositoryLandingTexture(path) {
+    return canvasTexture(THREE, 512, 144, (context, canvas) => {
+      context.fillStyle = "#0d1117";
+      roundedRect(context, 3, 3, canvas.width - 6, canvas.height - 6, 18);
+      context.fill();
+      context.strokeStyle = "#58a6ff";
+      context.lineWidth = 7;
+      context.stroke();
+      context.fillStyle = "#3fb950";
+      context.fillRect(24, 26, 12, canvas.height - 52);
+      context.fillStyle = "#f0f6fc";
+      context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
+      context.textAlign = "left";
+      context.textBaseline = "middle";
+      const label = String(path || "changed file");
+      const compact =
+        label.length > 26 ? `…${label.slice(-25)}` : label;
+      context.fillText(compact, 58, canvas.height / 2, canvas.width - 78);
+    });
+  }
+
+  function spawnRepositoryCodeLanding(pending = {}) {
+    if (repositoryCodeLandings.length >= 4) return false;
+    const owner = String(pending.owner || "").toLowerCase();
+    const repo = String(pending.repo || "").toLowerCase();
+    let portal =
+      repositoryPortals.get(`${owner}/${repo}`) || null;
+    if (!portal && repo) {
+      portal =
+        [...repositoryPortals.values()].find(
+          (candidate) =>
+            String(candidate?.name || "").toLowerCase() === repo,
+        ) || null;
+    }
+    if (!portal?.group) return false;
+    const target = new THREE.Vector3();
+    portal.group.getWorldPosition(target);
+    target.y += 0.25;
+    const files = (Array.isArray(pending.changedFiles)
+      ? pending.changedFiles
+      : []
+    ).slice(0, 8);
+    if (!files.length && portal.record?.sizeTree) {
+      repositorySizeMapSegments(portal.record.sizeTree, "")
+        .segments.filter((segment) => segment.type === "file")
+        .slice(0, 4)
+        .forEach((segment) => files.push(segment.path || segment.name));
+    }
+    if (!files.length) files.push("changed files");
+
+    const commitSeed = hashNumber(String(pending.commit || repo || "code"));
+    const direction = commitSeed % 2 ? -1 : 1;
+    const start = target.clone().add(
+      new THREE.Vector3(
+        direction * (88 + (commitSeed % 24)),
+        34 + (commitSeed % 13),
+        -64 + (commitSeed % 31),
+      ),
+    );
+    const group = new THREE.Group();
+    group.name = `repository-code-landing:${owner}/${repo}`;
+    const fileTiles = [];
+    const shadows = [];
+    const portalQuaternion = new THREE.Quaternion();
+    portal.group.getWorldQuaternion(portalQuaternion);
+    files.forEach((path, index) => {
+      const tile = new THREE.Mesh(
+        new THREE.PlaneGeometry(3.4, 0.96),
+        new THREE.MeshBasicMaterial({
+          map: repositoryLandingTexture(path),
+          transparent: true,
+          opacity: 1,
+          toneMapped: false,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }),
+      );
+      tile.name = `repository-changed-file:${path}`;
+      const angle =
+        (index / Math.max(1, files.length)) * Math.PI * 2 +
+        (commitSeed % 17) * 0.08;
+      const ringOffset = new THREE.Vector3(
+        Math.cos(angle) * 1.72,
+        Math.sin(angle) * 1.72,
+        0.38,
+      ).applyQuaternion(portalQuaternion);
+      const fileTarget = target.clone().add(ringOffset);
+      const fileStart = start.clone().add(
+        new THREE.Vector3(index * direction * 3.1, index * 1.4, index * -2.4),
+      );
+      tile.position.copy(fileStart);
+      group.add(tile);
+      fileTiles.push({
+        tile,
+        start: fileStart,
+        target: fileTarget,
+        phase: index * 1.73 + (commitSeed % 11),
+      });
+
+      const shadow = new THREE.Mesh(
+        new THREE.PlaneGeometry(4.2, 1.4),
+        new THREE.MeshBasicMaterial({
+          color: "#010409",
+          transparent: true,
+          opacity: 0.34,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        }),
+      );
+      shadow.name = `repository-file-shadow:${path}`;
+      shadow.rotation.x = -Math.PI / 2;
+      shadow.position.set(fileStart.x, 0.19, fileStart.z);
+      group.add(shadow);
+      shadows.push(shadow);
+    });
+
+    const collisionRing = new THREE.Mesh(
+      new THREE.TorusGeometry(2.05, 0.1, 8, 48),
+      new THREE.MeshBasicMaterial({
+        color: "#79c0ff",
+        emissive: "#58a6ff",
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    );
+    collisionRing.name = `repository-ring-collision:${owner}/${repo}`;
+    collisionRing.position.copy(target);
+    group.add(collisionRing);
+
+    const sparkleCount = 36;
+    const sparklePositions = new Float32Array(sparkleCount * 3);
+    const sparkleSeeds = new Float32Array(sparkleCount * 3);
+    for (let index = 0; index < sparkleCount; index += 1) {
+      const angle = (index / sparkleCount) * Math.PI * 2;
+      sparkleSeeds[index * 3] = Math.cos(angle) * (1.2 + (index % 5) * 0.22);
+      sparkleSeeds[index * 3 + 1] =
+        Math.sin(angle * 2.7) * 0.65 + (index % 4) * 0.25;
+      sparkleSeeds[index * 3 + 2] =
+        Math.sin(angle) * (1.2 + (index % 5) * 0.22);
+    }
+    const sparkleGeometry = new THREE.BufferGeometry();
+    sparkleGeometry.setAttribute(
+      "position",
+      new THREE.BufferAttribute(sparklePositions, 3),
+    );
+    const sparkles = new THREE.Points(
+      sparkleGeometry,
+      new THREE.PointsMaterial({
+        color: "#a5f3fc",
+        size: 0.19,
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    );
+    sparkles.name = `repository-file-sizzle:${owner}/${repo}`;
+    sparkles.position.copy(target);
+    group.add(sparkles);
+
+    const night =
+      localDaylightMinute < 6 * 60 || localDaylightMinute >= 20 * 60;
+    let lightning = null;
+    if (night) {
+      const points = [];
+      for (let index = 0; index <= 12; index += 1) {
+        const progress = index / 12;
+        points.push(
+          new THREE.Vector3(
+            target.x + Math.sin(index * 4.7) * (1 - progress) * 2.6,
+            target.y + (1 - progress) * 62,
+            target.z + Math.cos(index * 3.9) * (1 - progress) * 2.2,
+          ),
+        );
+      }
+      lightning = new THREE.Group();
+      const lightningMaterial = new THREE.MeshBasicMaterial({
+        color: "#dbeafe",
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false,
+      });
+      for (let index = 1; index < points.length; index += 1) {
+        const start = points[index - 1];
+        const end = points[index];
+        const direction = end.clone().sub(start);
+        const segment = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.055, 0.055, direction.length(), 5),
+          lightningMaterial,
+        );
+        segment.position.copy(start).add(end).multiplyScalar(0.5);
+        segment.quaternion.setFromUnitVectors(
+          new THREE.Vector3(0, 1, 0),
+          direction.normalize(),
+        );
+        lightning.add(segment);
+      }
+      lightning.userData.material = lightningMaterial;
+      lightning.name = `repository-night-lightning:${owner}/${repo}`;
+      group.add(lightning);
+    }
+    shadows.forEach((shadow) => {
+      shadow.visible = !night;
+    });
+    world.add(group);
+    repositoryCodeLandings.push({
+      group,
+      fileTiles,
+      shadows,
+      collisionRing,
+      sparkles,
+      sparkleSeeds,
+      lightning,
+      target,
+      startedAt: performance.now(),
+      flightDuration: reducedMotion ? 120 : 1800,
+      sizzleDuration: 10_000,
+    });
+    return true;
   }
 
   // Serving reads as traffic leaving the rack: each clone or repository page a
@@ -27700,6 +27399,9 @@ export function createWorldScene({
       }
       event.preventDefault();
     }
+    if (event.code === "KeyE" && !event.repeat) {
+      if (toggleNearestBikeRide()) event.preventDefault();
+    }
     // R turns the selected object a step at a time; hold Shift to turn it back
     // the other way. Selection never changes the behavior for non-admins.
     if (event.code === "KeyR" && layoutEditingEnabled) {
@@ -27809,7 +27511,11 @@ export function createWorldScene({
       nextEnvironmentCheckAt = time + 15_000;
       const localNow = new Date();
       const minuteOfDay =
-        localNow.getHours() * 60 + localNow.getMinutes();
+        daylightMode === "day"
+          ? 12 * 60
+          : daylightMode === "night"
+            ? 0
+            : localNow.getHours() * 60 + localNow.getMinutes();
       if (minuteOfDay !== localDaylightMinute) updateWorldEnvironment();
     }
     refreshAvatarSelectionHighlight();
@@ -28036,6 +27742,110 @@ export function createWorldScene({
           child.material?.dispose?.();
         });
         rewardFlights.splice(index, 1);
+      }
+    }
+    for (
+      let index = repositoryCodeLandings.length - 1;
+      index >= 0;
+      index -= 1
+    ) {
+      const effect = repositoryCodeLandings[index];
+      const elapsed = performance.now() - effect.startedAt;
+      const flightProgress = clamp(
+        elapsed / effect.flightDuration,
+        0,
+        1,
+      );
+      const easedFlight = 1 - (1 - flightProgress) ** 3;
+      const landedFor = Math.max(0, elapsed - effect.flightDuration);
+      const fade =
+        landedFor <= effect.sizzleDuration - 2_000
+          ? 1
+          : clamp(
+              (effect.sizzleDuration - landedFor) / 2_000,
+              0,
+              1,
+            );
+      effect.fileTiles.forEach((state, fileIndex) => {
+        if (flightProgress < 1) {
+          state.tile.position.lerpVectors(
+            state.start,
+            state.target,
+            easedFlight,
+          );
+          state.tile.position.y +=
+            Math.sin(flightProgress * Math.PI) *
+            (8 + fileIndex * 0.7);
+        } else {
+          state.tile.position.copy(state.target);
+          state.tile.position.x +=
+            Math.sin(time * 0.022 + state.phase) * 0.055;
+          state.tile.position.y +=
+            Math.cos(time * 0.019 + state.phase) * 0.05;
+          state.tile.position.z +=
+            Math.sin(time * 0.025 + state.phase * 1.4) * 0.045;
+        }
+        state.tile.quaternion.copy(camera.quaternion);
+        state.tile.material.opacity = fade;
+        const shadow = effect.shadows[fileIndex];
+        if (shadow?.visible) {
+          shadow.position.x =
+            state.start.x +
+            (state.target.x - state.start.x) * easedFlight;
+          shadow.position.z =
+            state.start.z +
+            (state.target.z - state.start.z) * easedFlight;
+          shadow.material.opacity = 0.34 * (1 - flightProgress);
+          shadow.scale.setScalar(0.75 + flightProgress * 0.4);
+        }
+      });
+      effect.collisionRing.quaternion.copy(camera.quaternion);
+      if (landedFor > 0) {
+        const collisionPulse = clamp(landedFor / 620, 0, 1);
+        effect.collisionRing.scale.setScalar(1 + collisionPulse * 2.8);
+        effect.collisionRing.material.opacity =
+          (1 - collisionPulse) * 0.94;
+      }
+      if (effect.lightning) {
+        const lightningProgress = clamp(landedFor / 760, 0, 1);
+        effect.lightning.userData.material.opacity =
+          landedFor > 0
+            ? (1 - lightningProgress) *
+              (0.62 + Math.abs(Math.sin(time * 0.071)) * 0.38)
+            : 0;
+      }
+      const sparkleAttribute =
+        effect.sparkles.geometry.getAttribute("position");
+      if (landedFor > 0 && sparkleAttribute) {
+        const values = sparkleAttribute.array;
+        for (
+          let sparkleIndex = 0;
+          sparkleIndex < values.length / 3;
+          sparkleIndex += 1
+        ) {
+          const offset = sparkleIndex * 3;
+          const pulse =
+            1 +
+            Math.sin(time * 0.015 + sparkleIndex * 2.17) * 0.22;
+          values[offset] = effect.sparkleSeeds[offset] * pulse;
+          values[offset + 1] =
+            effect.sparkleSeeds[offset + 1] +
+            Math.sin(time * 0.024 + sparkleIndex) * 0.22;
+          values[offset + 2] =
+            effect.sparkleSeeds[offset + 2] * pulse;
+        }
+        sparkleAttribute.needsUpdate = true;
+        effect.sparkles.material.opacity =
+          fade * (0.45 + Math.abs(Math.sin(time * 0.028)) * 0.55);
+      }
+      if (landedFor >= effect.sizzleDuration) {
+        world.remove(effect.group);
+        effect.group.traverse((child) => {
+          child.material?.map?.dispose?.();
+          child.geometry?.dispose?.();
+          child.material?.dispose?.();
+        });
+        repositoryCodeLandings.splice(index, 1);
       }
     }
     for (let index = pushSurges.length - 1; index >= 0; index -= 1) {
@@ -28389,6 +28199,7 @@ export function createWorldScene({
     restoreSavedViewState,
     setTheme,
     setLightLevel,
+    setDaylightMode,
     setMovementTuning,
     setControl,
     setTouchMovement,

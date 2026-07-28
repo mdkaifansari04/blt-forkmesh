@@ -28,7 +28,7 @@ def response(payload, status=200, **kwargs):
     return {"data": payload, "status": status, **kwargs}
 
 
-def runtime(admin=True, alias=False):
+def runtime(admin=True, alias=False, missing=False, endpoint_alias=False):
     node_record = {"name": "mirror6", "owner": "jett", "pubkey": "p" * 64}
     owner_record = {"name": "jett", "nodes": ["mirror6", "mirror7"]}
     writes = []
@@ -37,13 +37,13 @@ def runtime(admin=True, alias=False):
     deleted = []
 
     async def account_row(_env, name):
-        if name == "mirror6" and not alias:
+        if name == "mirror6" and not alias and not missing:
             return "bi:mirror6", dict(node_record)
-        if name == "mirror6" and alias:
+        if name == "mirror6" and alias and not missing:
             return "bi:mirror6", dict(node_record)
         if name == "jett":
             return "bi:jett", dict(owner_record)
-        return "", None
+        return f"bi:{name}", None
 
     async def d1_first(_env, sql, *params):
         if "FROM nodes" in sql and params == ("bi:mirror6",):
@@ -54,6 +54,11 @@ def runtime(admin=True, alias=False):
             "p" * 64,
         ):
             return {"node_bi": "bi:mirror6", "name": "mirror6"}
+        if "FROM mirror_https_endpoints" in sql and endpoint_alias:
+            return {
+                "node_bi": "bi:meshed-mirror-1271",
+                "node_name": "meshed-mirror-1271",
+            }
         return None
 
     async def d1_run(_env, sql, *params):
@@ -151,8 +156,51 @@ def test_admin_delete_resolves_visible_machine_and_node_ids_to_canonical_node():
     assert result["data"]["nodeDeleted"] == "mirror6"
     assert saved == [("bi:jett", {"name": "jett", "nodes": ["mirror7"]})]
     assert any(params == ("bi:mirror6",) for _, params in writes)
-    assert deleted and deleted[0][0] == "bi:mirror6"
+    assert {key for key, _ in deleted} == {
+        "bi:threaded-lantern-2584",
+        "bi:mirror6",
+    }
     assert audits[-1][3:5] == ("mirror6", "success")
+
+
+def test_admin_delete_finishes_partially_missing_node_and_all_related_state():
+    handler, writes, audits, saved, deleted = runtime(
+        missing=True, endpoint_alias=True)
+    result = asyncio.run(handler(None, Request({
+        "nodeName": "meshed-mirror-1271",
+        "machineName": "meshed-mirror-1271",
+        "confirmation": "DELETE meshed-mirror-1271",
+    })))
+    assert result["status"] == 200
+    assert result["data"]["nodeDeleted"] == "meshed-mirror-1271"
+    assert "meshed-mirror-1271" in result["data"]["identifiers"]
+    for table in (
+        "reward_node_observations",
+        "private_mirror_routes",
+        "mirror_https_endpoints",
+        "org_agent_jobs",
+        "org_agent_sessions",
+    ):
+        assert any(table in sql for sql, _ in writes)
+    assert deleted == [(
+        "bi:meshed-mirror-1271",
+        {"name": "meshed-mirror-1271", "kind": "node"},
+    )]
+    assert audits[-1][4] == "success"
+
+
+def test_admin_node_delete_is_idempotent_after_every_primary_row_is_gone():
+    handler, writes, audits, saved, deleted = runtime(missing=True)
+    result = asyncio.run(handler(None, Request({
+        "nodeName": "old-mirror",
+        "confirmation": "DELETE old-mirror",
+    })))
+    assert result["status"] == 200
+    assert result["data"]["alreadyAbsent"] is True
+    assert deleted == [
+        ("bi:old-mirror", {"name": "old-mirror", "kind": "node"})
+    ]
+    assert audits[-1][4] == "success"
 
 
 def test_world_ui_only_renders_delete_action_for_admins():
@@ -163,6 +211,7 @@ def test_world_ui_only_renders_delete_action_for_admins():
     assert "DELETE ${nodeName}" in world
     assert 'this.postJSON("/api/world/admin/nodes/delete"' in world
     assert "this.world?.deleteNetworkNode?.({" in world
+    assert "identifiers: Array.isArray(result?.identifiers)" in world
     assert "await this.loadWorldData({ forceMirrors: true });" in world
     assert 'cache: force ? "no-store" : "default"' in world
     assert "/api/world/admin/nodes/delete" in ENTRY_TEXT

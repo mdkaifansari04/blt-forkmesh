@@ -17,6 +17,7 @@
 #include <QLayoutItem>
 #include <QPair>
 #include <QPixmap>
+#include <QStackedLayout>
 
 using namespace forkmesh::ui;
 
@@ -424,6 +425,13 @@ QWidget *MainWindow::buildIssuesSection()
     issueTitleRow->addWidget(m_issueTitleCancelButton, 0, Qt::AlignTop);
     issueTitleRow->addWidget(m_issueTitleEditButton, 0, Qt::AlignTop);
     issueTitleRow->addStretch();
+    auto *closeDetailButton = new QPushButton;
+    closeDetailButton->setObjectName("issueIconButton");
+    closeDetailButton->setFixedSize(30, 30);
+    closeDetailButton->setCursor(Qt::PointingHandCursor);
+    closeDetailButton->setToolTip("Close issue detail");
+    setOcticon(closeDetailButton, "x", 16);
+    issueTitleRow->addWidget(closeDetailButton, 0, Qt::AlignTop);
     issueTitleRow->addWidget(m_issueNewButton, 0, Qt::AlignTop);
     issueTitleRow->addWidget(m_issueCopyButton, 0, Qt::AlignTop);
     issueTitleRow->addWidget(m_issueCopyAllButton, 0, Qt::AlignTop);
@@ -1103,6 +1111,7 @@ QWidget *MainWindow::buildIssuesSection()
     detailLayout->addWidget(m_issueDetailTabs);
 
     m_issueDetailStack = new QStackedWidget;
+    m_issueDetailStack->setObjectName(QStringLiteral("issueDetailOverlay"));
     m_issueDetailStack->addWidget(issueDetailView);
     m_issueDetail = m_issueDetailStack;
     // QSplitter otherwise adds the complete nested detail-page size hint
@@ -1114,33 +1123,28 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueDetail->setMinimumWidth(0);
     m_issueDetail->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
 
-    // The table and the detail panel share a draggable divider; hiding the
-    // detail lets the table use the full width.
-    auto *splitter = new QSplitter(Qt::Horizontal);
-    splitter->setObjectName("issuesSplitter");
-    splitter->setChildrenCollapsible(true);
-    splitter->addWidget(listPane);
-    splitter->addWidget(m_issueDetail);
-    splitter->setCollapsible(0, false);
-    splitter->setCollapsible(1, true);
-    // The table is the primary surface: it keeps the width and the detail panel
-    // opens at a minimal size beside it (the divider is still draggable).
-    splitter->setStretchFactor(0, 1);
-    splitter->setStretchFactor(1, 0);
-    splitter->setSizes({900, 440});
-    // Open full width: the table fills the page until an issue is selected, at
-    // which point showIssue() reveals the detail pane beside it.
+    // The issue page overlays the list instead of sharing a splitter with it.
+    // This keeps the detail full-width regardless of how far the user expanded
+    // a table column. Hiding it reveals the untouched list immediately below.
     m_issueDetail->hide();
-
-    auto *layout = new QHBoxLayout(page);
+    auto *layout = new QStackedLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-    layout->addWidget(splitter);
+    layout->setStackingMode(QStackedLayout::StackAll);
+    layout->addWidget(listPane);
+    layout->addWidget(m_issueDetail);
 
     connect(m_issueDetailToggle, &QPushButton::clicked, this, [this] {
         const bool show = !m_issueDetail->isVisible();
         m_issueDetail->setVisible(show);
+        if (show)
+            m_issueDetail->raise();
         m_issueDetailToggle->setText(show ? "Hide detail" : "Show detail");
+    });
+    connect(closeDetailButton, &QPushButton::clicked, this, [this] {
+        if (m_issueDetail)
+            m_issueDetail->hide();
+        if (m_issueDetailToggle)
+            m_issueDetailToggle->setText("Show detail");
     });
     connect(m_issuesRepoCombo, &QComboBox::currentIndexChanged, this,
             [this](int) { reloadIssues(); });
@@ -2588,6 +2592,7 @@ void MainWindow::showIssue(int number)
             m_currentIssueNumber = number;
             if (m_issueDetail && !m_issueDetail->isVisible()) {
                 m_issueDetail->show();
+                m_issueDetail->raise();
                 if (m_issueDetailToggle)
                     m_issueDetailToggle->setText("Hide detail");
             }
@@ -3372,8 +3377,10 @@ void MainWindow::showIssueComposePage(QWidget *page)
     m_issueComposePage = scroll; // removeIssueComposePage deletes this (and page)
     m_issueDetailStack->addWidget(scroll);
     m_issueDetailStack->setCurrentWidget(scroll);
-    if (m_issueDetail)
+    if (m_issueDetail) {
         m_issueDetail->setVisible(true);
+        m_issueDetail->raise();
+    }
     if (m_issueDetailToggle)
         m_issueDetailToggle->setText("Hide detail");
 }
@@ -4794,7 +4801,9 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             return true;
     }
     // Click the top-bar balance to cycle its display currency (SOL/USD/INR).
-    if (obj == m_navSolanaBalance && event->type() == QEvent::MouseButtonRelease) {
+    if (obj == m_navSolanaBalance &&
+        event->type() == QEvent::MouseButtonRelease &&
+        !m_navSolanaBalanceAddress.isEmpty()) {
         cycleNavSolanaCurrency();
         return true;
     }
@@ -8027,8 +8036,8 @@ QWidget *MainWindow::buildChatSection()
     m_dmList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     m_dmList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_dmList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
-    // Direct messages still route to live peer ids. The right-side users column
-    // shows all known people, including offline account-directory users.
+    // Direct messages still route to live peer ids. The header popup below is
+    // deliberately narrower: it shows only live users in the active room.
 
     auto *roomsScroll = new QScrollArea;
     roomsScroll->setObjectName("messageView");
@@ -8075,11 +8084,19 @@ QWidget *MainWindow::buildChatSection()
     m_inviteButton->hide();
     connect(m_inviteButton, &QPushButton::clicked, this,
             &MainWindow::promptInviteToPrivateChannel);
+    m_chatMembersButton = new QPushButton(QStringLiteral("0"));
+    m_chatMembersButton->setObjectName("ghostButton");
+    m_chatMembersButton->setProperty("buttonSize", "sm");
+    m_chatMembersButton->setCursor(Qt::PointingHandCursor);
+    m_chatMembersButton->setToolTip(
+        QStringLiteral("Show users in this room"));
+    setOcticon(m_chatMembersButton, "people", 15);
     auto *headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(18, 12, 18, 12);
     headerLayout->addWidget(m_channelTitle);
     headerLayout->addStretch();
     headerLayout->addWidget(m_inviteButton);
+    headerLayout->addWidget(m_chatMembersButton);
     headerLayout->addWidget(m_encryptionLabel);
 
     // Firewall banner: hidden until the backend reports the host firewall is
@@ -8270,19 +8287,20 @@ QWidget *MainWindow::buildChatSection()
     mainColumn->addWidget(m_typingLabel);
     mainColumn->addWidget(composer);
 
-    // Right column: users, with live/offline status and profile avatars.
-    // Live roster updates come from setRoster(); offline users come from the
-    // account directory and stay chat-only so node views are unaffected.
+    // Room members are available on demand from the compact count button in the
+    // header. Keeping the panel in a popup gives the transcript the full width.
     auto *membersPanel = new QWidget;
-    membersPanel->setObjectName("sidebar");
-    membersPanel->setFixedWidth(220);
-    m_chatMembersHeading = new QLabel("USERS \xE2\x80\x94 0 \xC2\xB7 0 online");
+    membersPanel->setObjectName("chatMembersPopup");
+    membersPanel->setFixedWidth(270);
+    m_chatMembersHeading =
+        new QLabel("DATABASE USERS IN THIS ROOM \xE2\x80\x94 0");
     m_chatMembersHeading->setObjectName("sectionLabel");
     auto *membersScroll = new QScrollArea;
     membersScroll->setObjectName("messageView");
     membersScroll->setWidgetResizable(true);
     membersScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     membersScroll->setFrameShape(QFrame::NoFrame);
+    membersScroll->setFixedHeight(460);
     auto *membersContainer = new QWidget;
     m_chatMembersLayout = new QVBoxLayout(membersContainer);
     m_chatMembersLayout->setContentsMargins(0, 0, 0, 0);
@@ -8294,13 +8312,25 @@ QWidget *MainWindow::buildChatSection()
     membersLayout->setSpacing(8);
     membersLayout->addWidget(m_chatMembersHeading);
     membersLayout->addWidget(membersScroll, 1);
+    auto *membersMenu = new QMenu(m_chatMembersButton);
+    membersMenu->setObjectName(QStringLiteral("chatMembersMenu"));
+    auto *membersAction = new QWidgetAction(membersMenu);
+    membersAction->setDefaultWidget(membersPanel);
+    membersMenu->addAction(membersAction);
+    connect(m_chatMembersButton, &QPushButton::clicked, this,
+            [membersMenu, button = m_chatMembersButton] {
+                membersMenu->adjustSize();
+                const QPoint below =
+                    button->mapToGlobal(QPoint(button->width(), button->height()));
+                membersMenu->popup(
+                    QPoint(below.x() - membersMenu->sizeHint().width(), below.y()));
+            });
 
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(sidebar);
     layout->addWidget(mainColumnHost, 1);
-    layout->addWidget(membersPanel);
 
     refreshChatMembers();
     refreshChatUserDirectory();

@@ -108,7 +108,8 @@ def test_repo_exhibit_has_angled_named_pedestal_and_live_agent_terminals():
     assert "`${owner}/${name}`" in SCENE
     assert "repository-agent-control-dock:" in SCENE
     assert "function createRepositoryAgentTerminal(" in SCENE
-    assert "screenShell.rotation.x = -Math.PI / 4;" in SCENE
+    assert "screenShell.rotation.x = -Math.PI / 4;" not in SCENE
+    assert "side: THREE.DoubleSide" in SCENE
     assert "repositoryAgentTasksByRepository" in SCENE
     assert "task.status === \"running\"" in SCENE
     assert "task.targetNode" in SCENE

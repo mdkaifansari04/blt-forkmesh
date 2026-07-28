@@ -434,7 +434,8 @@ QWidget *MainWindow::buildRepoFilesPanel()
     m_footerGitIdentity->setToolTip(
         "Git author identity configured for the repository you're viewing");
 
-    auto *modeRow = new QHBoxLayout;
+    m_repoFilesModeBar = new QWidget;
+    auto *modeRow = new QHBoxLayout(m_repoFilesModeBar);
     modeRow->setContentsMargins(16, 6, 16, 0);
     modeRow->setSpacing(2);
     modeRow->addWidget(m_filesModeOverviewButton);
@@ -448,7 +449,7 @@ QWidget *MainWindow::buildRepoFilesPanel()
     auto *layout = new QVBoxLayout(panel);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-    layout->addLayout(modeRow);
+    layout->addWidget(m_repoFilesModeBar);
     layout->addWidget(m_filesStack, 1);
     return panel;
 }
@@ -681,13 +682,22 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_overviewBodyStack->setSizePolicy(
         QSizePolicy::Expanding, QSizePolicy::Ignored);
 
-    // Left column: toolbar, latest commit, then the swappable body.
+    // Left column: toolbar, latest commit, then the swappable body. The first
+    // two live in one wrapper so the activity-rail Git view can remove the
+    // entire Code-only upper section and give its commits/changes workspace
+    // the full available height.
+    m_repoOverviewChrome = new QWidget;
+    auto *overviewChromeLayout = new QVBoxLayout(m_repoOverviewChrome);
+    overviewChromeLayout->setContentsMargins(0, 0, 0, 0);
+    overviewChromeLayout->setSpacing(8);
+    overviewChromeLayout->addLayout(toolbar);
+    overviewChromeLayout->addWidget(commitCard);
+
     auto *leftColumn = new QWidget;
     auto *leftLayout = new QVBoxLayout(leftColumn);
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(8);
-    leftLayout->addLayout(toolbar);
-    leftLayout->addWidget(commitCard);
+    leftLayout->addWidget(m_repoOverviewChrome);
     leftLayout->addWidget(m_overviewBodyStack, 1);
 
     auto *layout = new QVBoxLayout(page);
@@ -8520,13 +8530,19 @@ QWidget *MainWindow::buildRepoDetailSection()
                 [this](int) { updateRepoActivityRail(); });
     updateRepoActivityRail();
 
+    m_repoDetailChrome = new QWidget;
+    auto *chromeLayout = new QVBoxLayout(m_repoDetailChrome);
+    chromeLayout->setContentsMargins(0, 0, 0, 0);
+    chromeLayout->setSpacing(6);
+    chromeLayout->addLayout(headerRow);
+    chromeLayout->addWidget(m_repoDetailNotice);
+    chromeLayout->addWidget(metaBand);
+    chromeLayout->addWidget(tabBarScroll);
+
     auto *content = new QVBoxLayout;
     content->setContentsMargins(0, 0, 0, 0);
     content->setSpacing(6);
-    content->addLayout(headerRow);
-    content->addWidget(m_repoDetailNotice);
-    content->addWidget(metaBand);
-    content->addWidget(tabBarScroll);
+    content->addWidget(m_repoDetailChrome);
     content->addWidget(m_repoDetailStack, 1);
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -8550,6 +8566,17 @@ void MainWindow::updateRepoActivityRail()
     const bool onChanges =
         onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
+    // Git is its own activity-rail destination. Hide every Code/repository
+    // header above the source-control workspace instead of leaving several
+    // rows of unrelated repository navigation on screen.
+    if (m_repoDetailChrome)
+        m_repoDetailChrome->setVisible(!onChanges);
+    if (m_repoFilesModeBar)
+        m_repoFilesModeBar->setVisible(!onChanges);
+    if (m_repoOverviewChrome)
+        m_repoOverviewChrome->setVisible(!onChanges);
+    if (m_footerDock)
+        m_footerDock->setVisible(!onChanges);
     m_railCodeButton->setChecked(onCode && !onChanges);
     m_railGitButton->setChecked(onChanges);
     if (m_agentsNavButton)

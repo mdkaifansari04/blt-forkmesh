@@ -201,6 +201,7 @@ const DEFAULT_FOCUS_MUSIC_VOLUME = 35;
 const WORLD_LIGHT_LEVEL_MIN = 40;
 const WORLD_LIGHT_LEVEL_MAX = 140;
 const WORLD_LIGHT_LEVEL_DEFAULT = 100;
+const WORLD_DAYLIGHT_MODES = new Set(["auto", "day", "night"]);
 // Movement tuning, stored per device as a percentage of the shared defaults.
 const WORLD_MOVE_SPEED_MIN = 50;
 const WORLD_MOVE_SPEED_MAX = 300;
@@ -1019,6 +1020,7 @@ function hashSuffix(value) {
 function defaultSettings() {
   return {
     theme: "world",
+    daylightMode: "auto",
     lightLevel: WORLD_LIGHT_LEVEL_DEFAULT,
     moveSpeed: WORLD_MOVE_SPEED_DEFAULT,
     moveAccel: WORLD_MOVE_ACCEL_DEFAULT,
@@ -1055,6 +1057,9 @@ function mergeSettings(stored) {
   const theme = THEME_OPTIONS.some((option) => option.id === requestedTheme)
     ? requestedTheme
     : defaults.theme;
+  const requestedDaylightMode = String(
+    stored?.daylightMode || defaults.daylightMode,
+  );
   const publicStatus = normalizeWorldStatus(
     stored?.statusEmoji,
     stored?.statusNote,
@@ -1066,6 +1071,9 @@ function mergeSettings(stored) {
     ...defaults,
     ...(stored || {}),
     theme,
+    daylightMode: WORLD_DAYLIGHT_MODES.has(requestedDaylightMode)
+      ? requestedDaylightMode
+      : defaults.daylightMode,
     lightLevel: Math.min(
       WORLD_LIGHT_LEVEL_MAX,
       Math.max(
@@ -3822,7 +3830,12 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </nav>
         </header>
 
-        <aside class="world-right-rail" aria-label="World navigation and activity">
+        <aside
+          class="world-right-rail"
+          data-world-right-rail
+          data-expanded="false"
+          aria-label="World navigation and activity"
+        >
           <section class="world-map" data-world-map>
             <div class="world-panel-heading">
               <h2>World map</h2>
@@ -3832,7 +3845,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 type="button"
                 data-world-map-toggle
                 aria-expanded="false"
-                aria-label="Expand world map"
+                aria-label="Expand World controls"
               >☰</button>
             </div>
             <ul class="world-map-list">${mapItems}</ul>
@@ -4366,6 +4379,31 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <fieldset class="world-setting-group">
             <legend>Personal environment · synced to your account</legend>
             <div class="world-theme-grid">${themes}</div>
+            <div class="world-daylight-control">
+              <strong>Time of day</strong>
+              <div
+                class="world-daylight-options"
+                role="group"
+                aria-label="Time of day"
+              >
+                <button
+                  type="button"
+                  data-world-daylight-mode="auto"
+                  aria-pressed="${settings.daylightMode === "auto"}"
+                ><span aria-hidden="true">◐</span> Auto</button>
+                <button
+                  type="button"
+                  data-world-daylight-mode="day"
+                  aria-pressed="${settings.daylightMode === "day"}"
+                ><span aria-hidden="true">☀</span> Day</button>
+                <button
+                  type="button"
+                  data-world-daylight-mode="night"
+                  aria-pressed="${settings.daylightMode === "night"}"
+                ><span aria-hidden="true">☾</span> Night</button>
+              </div>
+              <small>Auto follows your local time. Day and Night hold the sky until you switch back.</small>
+            </div>
             <label class="world-light-control">
               <span>
                 <strong>Light level</strong>
@@ -5815,6 +5853,7 @@ class ForkMeshWorld extends HTMLElement {
         () => this.officeController?.authorizeMeeting?.() || false,
       );
       this.world.setTheme(this.settings.theme);
+      this.world.setDaylightMode?.(this.settings.daylightMode);
       this.world.setLightLevel(this.settings.lightLevel);
       this.world.setMovementTuning?.(this.movementTuning());
       void layoutPromise.then((layout) => {
@@ -8177,13 +8216,8 @@ class ForkMeshWorld extends HTMLElement {
       }
       const mapToggle = event.target.closest("[data-world-map-toggle]");
       if (mapToggle) {
-        const map = this.$("[data-world-map]");
-        const expanded = map?.classList.toggle("is-expanded") || false;
-        mapToggle.setAttribute("aria-expanded", String(expanded));
-        mapToggle.setAttribute(
-          "aria-label",
-          expanded ? "Collapse world map" : "Expand world map",
-        );
+        const rail = this.$("[data-world-right-rail]");
+        this.setWorldRightRailExpanded(rail?.dataset.expanded !== "true");
         return;
       }
       const landmarkButton = event.target.closest("[data-world-landmark]");
@@ -8304,6 +8338,13 @@ class ForkMeshWorld extends HTMLElement {
       const themeButton = event.target.closest("[data-world-theme]");
       if (themeButton) {
         this.setTheme(themeButton.dataset.worldTheme);
+        return;
+      }
+      const daylightButton = event.target.closest(
+        "[data-world-daylight-mode]",
+      );
+      if (daylightButton) {
+        this.setDaylightMode(daylightButton.dataset.worldDaylightMode);
         return;
       }
       const capacitySort = event.target.closest("[data-world-capacity-sort]");
@@ -8899,6 +8940,22 @@ class ForkMeshWorld extends HTMLElement {
     if (icon) icon.textContent = active ? "▾" : "▸";
   }
 
+  setWorldRightRailExpanded(expanded) {
+    const rail = this.$("[data-world-right-rail]");
+    const map = this.$("[data-world-map]");
+    const toggle = this.$("[data-world-map-toggle]");
+    if (!rail || !map || !toggle) return false;
+    const active = expanded === true;
+    rail.dataset.expanded = String(active);
+    map.classList.toggle("is-expanded", active);
+    toggle.setAttribute("aria-expanded", String(active));
+    toggle.setAttribute(
+      "aria-label",
+      active ? "Collapse World controls" : "Expand World controls",
+    );
+    return active;
+  }
+
   savedViewsStorageKey() {
     return `${SAVED_VIEWS_KEY_PREFIX}${this.identity?.id || "guest"}`;
   }
@@ -8976,6 +9033,7 @@ class ForkMeshWorld extends HTMLElement {
       this.persistSavedViews(false);
       this.renderSavedViews();
       this.world?.setTheme?.(this.settings.theme);
+      this.world?.setDaylightMode?.(this.settings.daylightMode);
       this.world?.setLightLevel?.(this.settings.lightLevel);
       this.world?.setMovementTuning?.(this.movementTuning());
       this.world?.updateIdentity?.(publicIdentity(this.identity, this.settings));
@@ -9015,6 +9073,15 @@ class ForkMeshWorld extends HTMLElement {
         control.checked = selected;
         control.setAttribute("aria-checked", String(selected));
         control.setAttribute("aria-pressed", String(selected));
+      });
+      this.$$("[data-world-daylight-mode]").forEach((control) => {
+        control.setAttribute(
+          "aria-pressed",
+          String(
+            control.dataset.worldDaylightMode ===
+              this.settings.daylightMode,
+          ),
+        );
       });
       this.$$("[data-world-outfit]").forEach((control) => {
         control.setAttribute(
@@ -9135,13 +9202,13 @@ class ForkMeshWorld extends HTMLElement {
               type="button"
               data-world-saved-view="${escapeHTML(view.id)}"
               title="Return to ${escapeHTML(view.label)}"
+              aria-label="Return to ${escapeHTML(view.label)}"
             >
               ${
                 view.thumbnail
                   ? `<img src="${escapeHTML(view.thumbnail)}" alt="" width="72" height="42" />`
                   : '<span class="world-saved-view-placeholder" aria-hidden="true">⌖</span>'
               }
-              <span>${escapeHTML(view.label)}</span>
             </button>
             <button
               type="button"
@@ -11393,7 +11460,7 @@ class ForkMeshWorld extends HTMLElement {
                     <div class="world-profile-selfie-preview" data-world-profile-selfie-preview hidden>
                       <img data-world-profile-selfie-image alt="">
                       <label for="world-profile-alt-text">Image description</label>
-                      <input id="world-profile-alt-text" name="altText" maxlength="420" placeholder="Describe the image for people who cannot see it">
+                      <input id="world-profile-alt-text" name="altText" data-world-profile-alt-text maxlength="420" placeholder="Describe the image for people who cannot see it">
                       <button type="button" class="world-link-action" data-world-profile-selfie-remove>Remove selfie</button>
                     </div>
                     <div class="world-detail-actions">
@@ -11469,13 +11536,30 @@ class ForkMeshWorld extends HTMLElement {
               )
                 ? String(follower.avatarPng)
                 : "";
-              return `<a class="world-profile-follower" href="/@${encodeURIComponent(
-                followerName,
-              )}" title="@${escapeHTML(followerName)}" aria-label="Open @${escapeHTML(
-                followerName,
-              )}’s profile">${
+              const remoteAvatar = safePublicHTTPSURL(
+                follower?.avatarUrl || "",
+              );
+              const profileUrl =
+                safePublicHTTPSURL(follower?.profileUrl || "") ||
+                (String(follower?.profileUrl || "").startsWith("/@")
+                  ? String(follower.profileUrl)
+                  : `/@${encodeURIComponent(followerName)}`);
+              const displayHandle = String(
+                follower?.handle || `@${followerName}`,
+              ).slice(0, 120);
+              return `<a class="world-profile-follower" href="${escapeHTML(
+                profileUrl,
+              )}" title="${escapeHTML(displayHandle)}" aria-label="Open ${escapeHTML(
+                displayHandle,
+              )}’s profile"${
+                /^https:\/\//i.test(profileUrl)
+                  ? ' target="_blank" rel="noopener noreferrer"'
+                  : ""
+              }>${
                 avatarPng
                   ? `<img src="data:image/png;base64,${avatarPng}" alt="">`
+                  : remoteAvatar
+                    ? `<img src="${escapeHTML(remoteAvatar)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">`
                   : `<span aria-hidden="true">${escapeHTML(
                       followerName.slice(0, 1).toUpperCase() || "?",
                     )}</span>`
@@ -11672,7 +11756,7 @@ class ForkMeshWorld extends HTMLElement {
       controls.forEach((control) => { control.disabled = true; });
       if (status) status.textContent = "Deleting node and scoped state…";
       try {
-        await this.postJSON("/api/world/admin/nodes/delete", {
+        const result = await this.postJSON("/api/world/admin/nodes/delete", {
           nodeName,
           machineName: String(form.dataset.nodeMachineName || ""),
           nodeId: String(form.dataset.nodeId || ""),
@@ -11683,6 +11767,9 @@ class ForkMeshWorld extends HTMLElement {
           name: nodeName,
           machineName: String(form.dataset.nodeMachineName || ""),
           nodeId: String(form.dataset.nodeId || ""),
+          identifiers: Array.isArray(result?.identifiers)
+            ? result.identifiers
+            : [],
         });
         this.closeLandmark();
         if (effectStarted) {
@@ -16210,7 +16297,7 @@ class ForkMeshWorld extends HTMLElement {
     const backdrop = this.$("[data-world-detail-backdrop]");
     if (!detail || !backdrop) return false;
     const repository = `${owner}/${name}`;
-    detail.dataset.openLandmark = "repositories";
+    detail.dataset.openLandmark = "repository-issue";
     detail.dataset.repositoryReview = "false";
     detail.style.setProperty("--detail-color", "var(--world-mint)");
     detail.innerHTML = `
@@ -17446,7 +17533,8 @@ class ForkMeshWorld extends HTMLElement {
     const detail = this.$("[data-world-detail]");
     if (!detail) return;
     detail.dataset.repositoryReview = String(
-      detail.dataset.openLandmark === "repositories" &&
+      (detail.dataset.openLandmark === "repositories" ||
+        detail.dataset.openLandmark === "repository-pull") &&
         this.repositoryView === "review",
     );
   }
@@ -17754,12 +17842,60 @@ class ForkMeshWorld extends HTMLElement {
     this.repositoryView = "list";
     this.clearPullReviewScrollTracking();
     if (
-      this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+      this.$("[data-world-detail]")?.dataset.openLandmark !==
+      "repository-pull"
     ) {
-      this.openLandmark("repositories");
+      this.openRepositoryPullWorkbench();
       return;
     }
     this.renderRepositoryExplorer();
+  }
+
+  openRepositoryPullWorkbench() {
+    const active = this.activeRepository;
+    if (!active) return false;
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop) return false;
+    const number = safePullNumber(this.pullReview?.number);
+    const repository = `${active.owner}/${active.repo}`;
+    detail.dataset.openLandmark = "repository-pull";
+    detail.dataset.issueWorkbench = "false";
+    detail.style.setProperty("--detail-color", "var(--world-blue)");
+    detail.innerHTML = `
+      <header class="world-detail-header">
+        <div>
+          <p class="world-eyebrow">LIVE PULL REQUEST</p>
+          <h2 id="world-detail-title">${escapeHTML(repository)}${
+            number ? ` #${number}` : " pull requests"
+          }</h2>
+        </div>
+        <button
+          class="world-detail-close"
+          type="button"
+          data-world-detail-close
+          aria-label="Close ${escapeHTML(repository)} pull request"
+        >×</button>
+      </header>
+      <div class="world-detail-scroll">
+        <div data-world-repo-explorer>
+          ${this.repositoryExplorerHTML(active)}
+        </div>
+      </div>`;
+    this.showDetailOverlay(detail, backdrop, {
+      returnFocus:
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null,
+      focusDelay: 80,
+    });
+    this.updateRepositoryReviewMode();
+    if (this.repositoryView === "review" && this.pullReview?.state === "ready") {
+      window.requestAnimationFrame(() =>
+        this.setupPullReviewScrollTracking(),
+      );
+    }
+    return true;
   }
 
   async fetchRepositoryPullReview(active, record, metadataCommit) {
@@ -17869,9 +18005,10 @@ class ForkMeshWorld extends HTMLElement {
           "That pull request is not present in the exact pinned metadata index. No alternate ref was queried.",
       };
       if (
-        this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+        this.$("[data-world-detail]")?.dataset.openLandmark !==
+        "repository-pull"
       ) {
-        this.openLandmark("repositories");
+        this.openRepositoryPullWorkbench();
       } else {
         this.renderRepositoryExplorer();
       }
@@ -17883,9 +18020,10 @@ class ForkMeshWorld extends HTMLElement {
       metadataCommit,
     };
     if (
-      this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+      this.$("[data-world-detail]")?.dataset.openLandmark !==
+      "repository-pull"
     ) {
-      this.openLandmark("repositories");
+      this.openRepositoryPullWorkbench();
     } else {
       this.renderRepositoryExplorer();
     }
@@ -20029,6 +20167,25 @@ class ForkMeshWorld extends HTMLElement {
     });
     const label = THEME_OPTIONS.find((option) => option.id === theme)?.label || theme;
     this.toast(`${label} is saved to your account and never changes anyone else's World.`);
+  }
+
+  setDaylightMode(value) {
+    const mode = WORLD_DAYLIGHT_MODES.has(String(value))
+      ? String(value)
+      : "auto";
+    this.settings.daylightMode = mode;
+    this.saveSettings();
+    this.world?.setDaylightMode?.(mode);
+    this.$$("[data-world-daylight-mode]").forEach((button) => {
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.worldDaylightMode === mode),
+      );
+    });
+    const label =
+      mode === "day" ? "Daytime" : mode === "night" ? "Nighttime" : "Local time";
+    this.toast(`${label} lighting is saved to your account.`);
+    return mode;
   }
 
   setOutfitColor(outfit) {
@@ -22769,12 +22926,32 @@ class ForkMeshWorld extends HTMLElement {
       repo.toLowerCase() === FLAGSHIP_REPOSITORY.repo
         ? FLAGSHIP_REPOSITORY.owner
         : sanitizePresenceText(message?.repositoryOwner, "", 40);
+    const changedFiles = (Array.isArray(message?.changedFiles)
+      ? message.changedFiles
+      : []
+    )
+      .map((path) => sanitizePresenceText(path, "", 160))
+      .filter(
+        (path, index, paths) =>
+          path &&
+          !path.startsWith("/") &&
+          path !== ".." &&
+          !path.startsWith("../") &&
+          paths.indexOf(path) === index,
+      )
+      .slice(0, 8);
     this.toast(
       `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
     );
     // This only arms the scene. No frame directly creates an effect: the next
     // signed catalog payload must confirm the node and commit prefix first.
-    this.world?.armMirrorPushEffect?.(node, commit);
+    this.world?.armMirrorPushEffect?.(
+      node,
+      commit,
+      publicOwner,
+      repo,
+      changedFiles,
+    );
     // One coalesced refresh replaces waiting out the steady mirror poll, so
     // the yard updates near-instantly without adding steady-state traffic.
     window.clearTimeout(this.mirrorPushRefreshTimer);

@@ -388,6 +388,35 @@ def test_unified_chest_card_uses_public_profile_wallet_and_explicit_follow():
     assert (
         '`/api/accounts/${encodeURIComponent(account)}/follow`' in APP
     )
+
+
+def test_self_profile_has_follower_avatars_and_activitypub_selfie_composer():
+    for contract in (
+        "data-world-profile-followers",
+        "data-world-profile-publisher",
+        "data-world-profile-selfie",
+        "data-world-profile-alt-text",
+        '"/api/world/profile-social"',
+        "wireWorldProfileSocial(detail, backdrop)",
+        "captureWorldSelfie(detail, backdrop)",
+        "compactWorldSelfie(source)",
+        '"image/webp"',
+        "A selfie from ForkMesh World while",
+        "Published to ActivityPub.",
+    ):
+        assert contract in APP
+    assert "requestIdleCallback" in APP
+    assert "blob.size < 63 * 1024" in APP
+    assert ".world-profile-follower-strip" in CSS
+    assert ".world-profile-selfie-preview" in CSS
+    # The private profile drawer is omitted from the selfie while the rest of
+    # the current World view and public HUD are captured.
+    selfie = APP[
+        APP.index("  async captureWorldSelfie"):
+        APP.index("  async compactWorldSelfie")
+    ]
+    assert 'detail.style.visibility = "hidden"' in selfie
+    assert 'backdrop.style.visibility = "hidden"' in selfie
     assert 'method: following ? "DELETE" : "POST"' in APP
     assert "function worldFediverseFeedLines(recentActivity)" in APP
     for timer in ("setInterval", "setTimeout"):
@@ -896,6 +925,12 @@ def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
         assert contract in SCENE
     assert ".world-saved-views {" in CSS
     assert ".world-saved-view img," in CSS
+    saved_view_render = APP[
+        APP.index("  renderSavedViews() {"):
+        APP.index("\n  captureSavedViewThumbnail()", APP.index("  renderSavedViews() {"))
+    ]
+    assert 'aria-label="Return to ${escapeHTML(view.label)}"' in saved_view_render
+    assert "<span>${escapeHTML(view.label)}</span>" not in saved_view_render
 
 
 def test_toolbar_sound_button_is_the_master_switch_for_all_local_audio():
@@ -1097,7 +1132,7 @@ def test_repository_world_uses_authorized_https_metadata_and_size_aware_nodes():
     assert "const islandRecord = true;" in SCENE
     assert "legacyBulkGroups" in APP
     assert 'mirrorOwners: ["mirror2", "mirror3"]' in APP
-    assert 'repositoryIsland.name = "hosted-repository-island"' in SCENE
+    assert '"forkmesh-continuous-city-land"' in SCENE
     assert 'repositoryBridge.name = "hosted-repository-bridge"' in SCENE
     assert "REPOSITORY_ISLAND_CENTER_X" in SCENE
     for entity in (
@@ -1114,9 +1149,9 @@ def test_repository_world_uses_authorized_https_metadata_and_size_aware_nodes():
         "modificationBand",
         "redundantCandidate",
         "dependencyDepth",
-        "repository-relationship-lines",
     ):
         assert graph_feature in APP or graph_feature in SCENE
+    assert "repository-relationship-lines" not in SCENE
     for data_filter in ("frequency", "dependency", "security", "coverage"):
         assert f'data-world-repo-filter="{data_filter}"' in APP
     assert 'data-world-repo-filter="frequency" disabled' not in APP
@@ -1542,11 +1577,11 @@ def test_repository_graph_uses_commit_produced_edges_coverage_and_scan_state():
         assert contract in APP
     for graph_contract in (
         "edgeIndexes",
-        "relationshipPairs",
         "forces",
-        "repository-relationship-lines",
     ):
         assert graph_contract in SCENE
+    assert "relationshipPairs" not in SCENE
+    assert "repository-relationship-lines" not in SCENE
     assert "currentRoot" not in SCENE
     assert "previousRoot" not in SCENE
     assert "security: \"unavailable\"" in APP
@@ -2039,11 +2074,11 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
 
 
 def test_world_overview_zoom_keeps_the_finite_ground_inside_camera_depth():
-    assert "const WORLD_GROUND_RADIUS = 88;" in SCENE
+    assert "const CONTINUOUS_CITY_RADIUS_Z = 365;" in SCENE
     assert "const CAMERA_OFFSET = [17, 16, 21];" in SCENE
     assert "const CAMERA_ZOOM_MIN = 0.06;" in SCENE
     assert "const CAMERA_ZOOM_MAX = 28;" in SCENE
-    assert "const CAMERA_FAR_PLANE = 1200;" in SCENE
+    assert "const CAMERA_FAR_PLANE = 1800;" in SCENE
     assert (
         "new THREE.PerspectiveCamera(\n"
         "    44,\n"
@@ -2056,13 +2091,13 @@ def test_world_overview_zoom_keeps_the_finite_ground_inside_camera_depth():
     # At maximum strategic zoom, a camera looking at the world center can still
     # see through the opposite edge of the finite ground before its far plane.
     camera_distance = math.hypot(17, 16, 21)
-    assert camera_distance * 28 + 88 < 1200
+    assert camera_distance * 28 + 365 < 1800
 
 
 def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
     assert "const WORLD_RADIUS = 620" in SCENE
     assert '"forkmesh-continuous-city-land"' in SCENE
-    assert "const WORLD_GROUND_RADIUS = 88" in SCENE
+    assert "const CONTINUOUS_CITY_RADIUS_X = 260" in SCENE
     assert "electric-mesh-city-block-grid" not in SCENE
     assert "electricMeshConduit" not in SCENE
     assert "electricMeshJunction" not in SCENE
@@ -2079,17 +2114,16 @@ def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
     assert 'avatar.userData.loungeActivity === "recent"' in SCENE
 
 
-def test_leaderboards_have_a_walkable_island_and_inward_facing_ring():
+def test_leaderboards_share_walkable_grass_and_keep_an_inward_facing_ring():
     assert "const LEADERBOARD_ISLAND_CENTER_X = -130;" in SCENE
-    assert "const LEADERBOARD_ISLAND_RADIUS = 54;" in SCENE
     assert "const LEADERBOARD_CONNECTION_MIN_X = -103;" in SCENE
-    assert 'leaderboardIsland.name = "forkmesh-leaderboard-island"' in SCENE
+    assert '"forkmesh-continuous-city-land"' in SCENE
     assert (
         'leaderboardConnection.name = "forkmesh-leaderboard-island-connection"'
         in SCENE
     )
     assert 'leaderboardPromenade.name = "forkmesh-leaderboard-promenade"' in SCENE
-    assert "Math.hypot(px - LEADERBOARD_ISLAND_CENTER_X, pz)" in SCENE
+    assert "CONTINUOUS_CITY_RADIUS_X - margin" in SCENE
     assert "Math.atan2(-x, -z)" in SCENE
     assert "placeLeaderboardIslandSign(" in SCENE
 
@@ -2274,10 +2308,14 @@ def test_detail_panels_resize_from_their_left_border_and_never_drift():
     assert "scrollIntoView({ block: \"center\" })" not in APP
 
 
-def test_world_lighting_is_static_daylight_with_a_local_persisted_control():
+def test_world_lighting_supports_local_auto_day_night_and_brightness_controls():
     assert "DAYLIGHT_ENVIRONMENT" in SCENE
     assert "function updateWorldEnvironment" in SCENE
     assert "function setLightLevel" in SCENE
+    assert "function setDaylightMode" in SCENE
+    assert 'daylightMode === "day"' in SCENE
+    assert 'daylightMode === "night"' in SCENE
+    assert "worldSky.setDaylightMinute?.(minuteOfDay, easedDaylight)" in SCENE
     assert "lightLevel / LIGHT_LEVEL_DEFAULT" in SCENE
     assert "setLightLevel," in SCENE
     assert "getEnvironmentState" in SCENE
@@ -2291,6 +2329,11 @@ def test_world_lighting_is_static_daylight_with_a_local_persisted_control():
     assert "LOCAL_ENVIRONMENT_OVERLAYS" in SCENE
     assert "data-world-light-level" in APP
     assert "data-world-light-level-output" in APP
+    assert 'data-world-daylight-mode="auto"' in APP
+    assert 'data-world-daylight-mode="day"' in APP
+    assert 'data-world-daylight-mode="night"' in APP
+    assert "this.settings.daylightMode = mode" in APP
+    assert "this.world?.setDaylightMode?.(mode)" in APP
     assert "this.settings.lightLevel = next" in APP
     assert "this.world?.setLightLevel(next)" in APP
     assert "writeJSON(localStorage, SETTINGS_KEY, {" in APP
@@ -2299,6 +2342,15 @@ def test_world_lighting_is_static_daylight_with_a_local_persisted_control():
     ]
     for overlay in ("rain", "snow", "winter", "cyberpunk", '"low-light"'):
         assert overlay in SCENE
+
+
+def test_world_right_rail_is_compact_by_default_and_expands_as_one_control():
+    assert "data-world-right-rail" in APP
+    assert 'data-expanded="false"' in APP
+    assert "setWorldRightRailExpanded(expanded)" in APP
+    assert "rail.dataset.expanded = String(active)" in APP
+    assert ".world-right-rail[data-expanded=\"false\"]" in CSS
+    assert "width: 44px;" in CSS
 
 
 def test_world_movement_speed_and_acceleration_are_locally_adjustable():

@@ -53,10 +53,10 @@ constexpr qint64 kBackgroundTaskShowAfterMs = forkmesh::kBackgroundShowAfterMs;
 // doesn't start/stop it repeatedly. The panel itself stays on screen either way
 // (adhoc #419) — only the spinner animation stands down.
 constexpr int kBackgroundTaskIdleTicksBeforeStop = 12;
-// Tickets too fast to be backgrounded are logged as one ✕ summary per kind
-// instead of one line each: the hot git path opens hundreds of them and the log
-// is persisted line by line. A kind's pending summary is flushed once its first
-// fast ticket is this old, or as soon as the strip goes quiet.
+// Completed tickets are logged as one execution-aware summary per kind instead
+// of one line each: the hot async git/network paths open hundreds of them and
+// the log is persisted line by line. A pending summary is flushed once its
+// first ticket is this old, or as soon as the strip goes quiet.
 constexpr qint64 kBackgroundTaskFastFlushMs = 2000;
 } // namespace
 
@@ -482,14 +482,9 @@ QWidget *MainWindow::buildChatPage()
         hostLayout->setSpacing(0);
         hostLayout->addWidget(button);
         hostLayout->addWidget(label, 0, Qt::AlignHCenter);
-        if (button == m_navRebuildButton) {
-            m_navRebuildRailHost = host;
-            host->setVisible(!button->isHidden());
-        }
         m_appNavigationRailLayout->addWidget(host, 0, Qt::AlignHCenter);
     };
     addUtility(m_settingsNavButton, QStringLiteral("Settings"));
-    addUtility(m_navRebuildButton, QStringLiteral("Restart"));
     addUtility(m_navDrawButton, QStringLiteral("Draw"));
     addUtility(m_navScreenshotButton, QStringLiteral("Capture"));
     addUtility(m_navResizeButton, QStringLiteral("Resize"));
@@ -556,6 +551,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     // left, then a flexible gap pushes the donate/Reddit/X cluster to the far
     // right.
     auto *dock = new QWidget;
+    m_footerDock = dock;
     dock->setObjectName("logDock");
 
     auto *card = new QWidget;
@@ -1266,11 +1262,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     // posted events are dropped if the window dies first.
     forkmesh::BackgroundActivity::setListener(
         [this](quint64 id, const QString &kind, const QString &detail,
-               bool started) {
+               forkmesh::ActionTelemetry::Execution execution, bool started) {
+            const bool backgrounded =
+                execution != forkmesh::ActionTelemetry::Execution::UiBlocking;
             QMetaObject::invokeMethod(
                 this,
-                [this, id, kind, detail, started] {
-                    noteBackgroundActivity(id, kind, detail, started);
+                [this, id, kind, detail, backgrounded, started] {
+                    noteBackgroundActivity(id, kind, detail, backgrounded,
+                                           started);
                 },
                 Qt::QueuedConnection);
         });
@@ -1337,14 +1336,14 @@ void MainWindow::finishBackgroundTask(quint64 id, bool success,
 // straight into the log (adhoc #419): the hot paths retire hundreds of tickets a
 // minute and one line each would bury every other event (and rewrite the log
 // file that often). flushBackgroundOutcomes() turns each tally into a single
-// entry — ✓ for work that was actually backgrounded, red ✕ for work that came
-// and went too fast to ever be.
+// entry — ✓ for async/worker execution, red ✕ only for work explicitly marked
+// as running synchronously on the GUI thread.
 void MainWindow::recordBackgroundOutcome(const QString &word, qint64 elapsedMs,
-                                         const QString &detail, qint64 now)
+                                         const QString &detail, qint64 now,
+                                         bool backgrounded)
 {
     QHash<QString, BackgroundOutcomeTally> &bucket =
-        elapsedMs >= kBackgroundTaskShowAfterMs ? m_backgroundTaskDone
-                                                : m_backgroundTaskFast;
+        backgrounded ? m_backgroundTaskDone : m_backgroundTaskUiBlocking;
     BackgroundOutcomeTally &tally = bucket[word];
     if (tally.runs == 0)
         tally.firstAt = now;
@@ -1361,14 +1360,16 @@ void MainWindow::flushBackgroundOutcomes(bool force)
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     for (QHash<QString, BackgroundOutcomeTally> *bucket :
-         {&m_backgroundTaskDone, &m_backgroundTaskFast}) {
+         {&m_backgroundTaskDone, &m_backgroundTaskUiBlocking}) {
+        const bool backgrounded = bucket == &m_backgroundTaskDone;
         for (auto it = bucket->begin(); it != bucket->end();) {
             if (!force && now - it->firstAt < kBackgroundTaskFastFlushMs) {
                 ++it;
                 continue;
             }
             logSystem(forkmesh::backgroundOutcomeLine(
-                it.key(), it->runs, it->longestMs, it->detail));
+                it.key(), it->runs, it->longestMs, it->detail,
+                backgrounded));
             it = bucket->erase(it);
         }
     }
@@ -1378,13 +1379,16 @@ void MainWindow::flushBackgroundOutcomes(bool force)
 // kBackgroundTaskShowAfterMs must never create a widget, so the sweep below owns
 // what is on screen and this only maintains the counts it reads.
 void MainWindow::noteBackgroundActivity(quint64 id, const QString &kind,
-                                        const QString &detail, bool started)
+                                        const QString &detail,
+                                        bool backgrounded, bool started)
 {
     if (!m_backgroundQueue || !m_backgroundQueueRowsLayout)
         return;
     if (started) {
         const QString word = backgroundTaskWord(kind);
         m_backgroundTaskWords.insert(id, word);
+        if (!backgrounded)
+            m_backgroundTaskHadUiBlocking.insert(word, true);
         const int count = m_backgroundTaskCounts.value(word) + 1;
         m_backgroundTaskCounts.insert(word, count);
         if (count == 1)
@@ -1404,10 +1408,12 @@ void MainWindow::noteBackgroundActivity(quint64 id, const QString &kind,
             const qint64 now = QDateTime::currentMSecsSinceEpoch();
             recordBackgroundOutcome(word,
                                     now - m_backgroundTaskSince.value(word, now),
-                                    m_backgroundTaskDetails.value(word), now);
+                                    m_backgroundTaskDetails.value(word), now,
+                                    !m_backgroundTaskHadUiBlocking.value(word));
             m_backgroundTaskCounts.remove(word);
             m_backgroundTaskSince.remove(word);
             m_backgroundTaskDetails.remove(word);
+            m_backgroundTaskHadUiBlocking.remove(word);
         }
     }
     if (!m_backgroundTaskSpinTimer) {
@@ -3376,6 +3382,13 @@ QWidget *MainWindow::buildLogSection()
     clearButton->setCursor(Qt::PointingHandCursor);
     clearButton->setToolTip("Clear the network log");
     setOcticon(clearButton, "trash", 14);
+    m_logScrollLockButton = new QPushButton(QStringLiteral("Pause scroll"));
+    m_logScrollLockButton->setObjectName("ghostButton");
+    m_logScrollLockButton->setCheckable(true);
+    m_logScrollLockButton->setCursor(Qt::PointingHandCursor);
+    m_logScrollLockButton->setToolTip(
+        QStringLiteral("Keep the current log position when new entries arrive"));
+    setOcticon(m_logScrollLockButton, "stop", 14);
     auto *cloudflareButton = new QPushButton("Cloudflare logs");
     cloudflareButton->setObjectName(
         QStringLiteral("cloudflareWorkerLogsButton"));
@@ -3396,6 +3409,22 @@ QWidget *MainWindow::buildLogSection()
     // itself (capped at kNetworkLogLimit) is the real bound on total history.
     connect(m_settingsLog->verticalScrollBar(), &QScrollBar::valueChanged, this,
             &MainWindow::onNetworkLogScrolled);
+    connect(m_logScrollLockButton, &QPushButton::toggled, this,
+            [this](bool locked) {
+                m_logScrollLocked = locked;
+                m_logScrollLockButton->setText(
+                    locked ? QStringLiteral("Resume scroll")
+                           : QStringLiteral("Pause scroll"));
+                m_logScrollLockButton->setToolTip(
+                    locked
+                        ? QStringLiteral(
+                              "Resume following new log entries at the bottom")
+                        : QStringLiteral(
+                              "Keep the current log position when new entries arrive"));
+                if (!locked && m_settingsLog && m_settingsLog->verticalScrollBar())
+                    m_settingsLog->verticalScrollBar()->setValue(
+                        m_settingsLog->verticalScrollBar()->maximum());
+            });
 
     // Quick-filter chips that narrow the log to a single event category. The row
     // scrolls horizontally so a long set of categories never clips the log.
@@ -3442,6 +3471,7 @@ QWidget *MainWindow::buildLogSection()
     headerRow->setContentsMargins(0, 0, 0, 0);
     headerRow->addWidget(label);
     headerRow->addStretch();
+    headerRow->addWidget(m_logScrollLockButton);
     headerRow->addWidget(cloudflareButton);
     headerRow->addWidget(clearButton);
 
@@ -3665,6 +3695,15 @@ QWidget *MainWindow::buildBreadcrumb()
     // Spinning radar + once-a-minute latency readout, sitting just left of the
     // relay name (issue #144). The probe itself is driven by m_relayLatencyTimer.
     m_relayRadar = new RelayRadarWidget;
+    static_cast<RelayRadarWidget *>(m_relayRadar)->onClicked = [this] {
+        if (!m_repoDetailStack || m_mirrorNodesTabIndex < 0 ||
+            !m_repoDetailTabs)
+            return;
+        showSection(0);
+        if (QAbstractButton *button =
+                m_repoDetailTabs->button(m_mirrorNodesTabIndex))
+            button->click();
+    };
 
     // Node switcher, to the right of the relay switcher: "node ▾ count".
     m_nodeMenuButton = new QPushButton;
@@ -3677,13 +3716,14 @@ QWidget *MainWindow::buildBreadcrumb()
     // "user/node" (the user account, if any, plus this node's own name).
     m_navNodeName = new QLabel;
     m_navNodeName->setObjectName("navNodeName");
-    m_navNodeName->setAlignment(Qt::AlignCenter);
-    m_navNodeName->setFixedWidth(148);
+    m_navNodeName->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
-    m_navSolanaBalance = new QLabel(QStringLiteral("SOL --"));
+    m_navSolanaBalance = new QLabel(QStringLiteral("0.000000000 SOL"));
     m_navSolanaBalance->setObjectName("navSolanaBalance");
-    m_navSolanaBalance->setAlignment(Qt::AlignCenter);
-    m_navSolanaBalance->setFixedWidth(148);
+    m_navSolanaBalance->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_navSolanaBalance->setTextFormat(Qt::RichText);
+    m_navSolanaBalance->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+    m_navSolanaBalance->setOpenExternalLinks(false);
     m_navSolanaBalance->setCursor(Qt::PointingHandCursor);
     m_navSolanaBalance->setToolTip(
         "Your Solana wallet balance \xE2\x80\x94 click to switch "
@@ -3693,6 +3733,14 @@ QWidget *MainWindow::buildBreadcrumb()
     // Clicking the balance itself cycles its display currency, so the control
     // sits right on the value instead of needing a separate swap icon.
     m_navSolanaBalance->installEventFilter(this);
+    connect(m_navSolanaBalance, &QLabel::linkActivated, this,
+            [this](const QString &) {
+                QUrl url = catalogApiUrl();
+                url.setPath(QStringLiteral("/dashboard/settings"));
+                url.setQuery(QString());
+                url.setFragment(QString());
+                QDesktopServices::openUrl(url);
+            });
 
     // The reward-availability toggle (online/offline switch, status line, uptime)
     // used to live here beside the balance; it's now built in
@@ -4092,6 +4140,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_navRebuildButton->setToolTip(
         QString::fromUtf8("Rebuild & restart \xE2\x80\x94 fast local rebuild, "
                           "then relaunch"));
+    m_navRebuildButton->setFixedSize(30, 30);
     setOcticon(m_navRebuildButton, "sync", 14);
     connect(m_navRebuildButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_navRebuildButton); quickRebuildRestart(); });
@@ -4149,8 +4198,9 @@ QWidget *MainWindow::buildBreadcrumb()
         "prompt land here. Click for the recorded stall details.");
     m_footerDiagnostics->setStyleSheet(
         "QPushButton#footerDiagnostics{color:#d29922;border:none;background:transparent;"
-        "font-size:11px;padding:2px 6px;spacing:4px;}"
+        "font-size:10px;padding:0 3px;spacing:2px;}"
         "QPushButton#footerDiagnostics:hover{color:#e6edf3;}");
+    m_footerDiagnostics->setFixedHeight(18);
     setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
     connect(m_footerDiagnostics, &QPushButton::clicked, this,
             &MainWindow::showDiagnosticsDialog);
@@ -4172,8 +4222,9 @@ QWidget *MainWindow::buildBreadcrumb()
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    auto *appVersionLabel = new QLabel(QStringLiteral("ForkMesh v" FORKMESH_VERSION));
-    appVersionLabel->setObjectName("appVersionLabel");
+    auto *appVersionLabel = new QLabel(QStringLiteral("v" FORKMESH_VERSION));
+    appVersionLabel->setObjectName("chromeVersionLabel");
+    appVersionLabel->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
 
     auto *chrome = new WindowChromeBar;
     auto *chromeRow = new QHBoxLayout(chrome);
@@ -4182,12 +4233,12 @@ QWidget *MainWindow::buildBreadcrumb()
     // The instance/relay switcher heads the edge-to-edge chrome. The compact
     // user/node identity and public SOL balance sit immediately to its right.
     chromeRow->addWidget(m_relayMenuButton);
-    auto *balanceColumn = new QVBoxLayout;
-    balanceColumn->setContentsMargins(0, 0, 0, 0);
-    balanceColumn->setSpacing(0);
-    balanceColumn->addWidget(m_navNodeName);
-    balanceColumn->addWidget(m_navSolanaBalance);
-    chromeRow->addLayout(balanceColumn);
+    auto *identityBalanceRow = new QHBoxLayout;
+    identityBalanceRow->setContentsMargins(0, 0, 0, 0);
+    identityBalanceRow->setSpacing(8);
+    identityBalanceRow->addWidget(m_navNodeName);
+    identityBalanceRow->addWidget(m_navSolanaBalance);
+    chromeRow->addLayout(identityBalanceRow);
     chromeRow->addStretch();
 
     auto *searchCluster = new QWidget;
@@ -4199,7 +4250,6 @@ QWidget *MainWindow::buildBreadcrumb()
     chromeRow->addWidget(searchCluster, 0, Qt::AlignCenter);
     chromeRow->addStretch();
     chromeRow->addWidget(m_topMessageContainer);
-    chromeRow->addWidget(appVersionLabel);
     // Relay radar, moved up onto the window-chrome line just left of the
     // CPU/MEM/DISK sparklines so its latency readout reads the same way as
     // theirs (adhoc #87).
@@ -4209,9 +4259,17 @@ QWidget *MainWindow::buildBreadcrumb()
     chromeRow->addWidget(cpuChart);
     chromeRow->addWidget(memChart);
     chromeRow->addWidget(diskChart);
-    // UI-stall diagnostics indicator, moved up beside the CPU/MEM/DISK sparklines
-    // (adhoc #145) with a proper octicon in place of the old emoji glyphs.
-    chromeRow->addWidget(m_footerDiagnostics);
+    // Compact diagnostics stack: the stall indicator stays high on the chrome
+    // line, its bare version number sits directly beneath it, and the opt-in
+    // restart action is immediately to the right.
+    auto *diagnosticsStack = new QWidget;
+    auto *diagnosticsLayout = new QVBoxLayout(diagnosticsStack);
+    diagnosticsLayout->setContentsMargins(0, 1, 0, 1);
+    diagnosticsLayout->setSpacing(0);
+    diagnosticsLayout->addWidget(m_footerDiagnostics, 0, Qt::AlignHCenter);
+    diagnosticsLayout->addWidget(appVersionLabel, 0, Qt::AlignHCenter);
+    chromeRow->addWidget(diagnosticsStack, 0, Qt::AlignVCenter);
+    chromeRow->addWidget(m_navRebuildButton, 0, Qt::AlignVCenter);
     chromeRow->addSpacing(8);
 
     auto makeWindowButton = [this](QStyle::StandardPixmap icon, const QString &tip) {
@@ -4289,8 +4347,6 @@ void MainWindow::updateNavRebuildButton()
         QSettings().value(kShowRebuildButtonSetting, false).toBool();
     if (m_navRebuildButton)
         m_navRebuildButton->setVisible(visible);
-    if (m_navRebuildRailHost)
-        m_navRebuildRailHost->setVisible(visible);
 }
 
 // Pin the floating "Log" button to the bottom-right corner of the live-log
@@ -4948,7 +5004,9 @@ void MainWindow::updateNavSolanaBalance()
     m_navSolanaBalanceAddress = addr;
     if (addr.isEmpty()) {
         m_navSolanaLamports = -1;
-        m_navSolanaBalance->setText(QStringLiteral("SOL --"));
+        m_navSolanaBalance->setText(
+            QStringLiteral("0.000000000 SOL &nbsp;&middot;&nbsp; "
+                           "<a href=\"settings\">Add address online</a>"));
         m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
             QStringLiteral(
                 "Add a public self-custodial Solana address to show its balance.")));
@@ -6575,8 +6633,8 @@ QWidget *MainWindow::buildNetworkReposSection()
 {
     auto *page = new QWidget;
     auto *outer = new QVBoxLayout(page);
-    outer->setContentsMargins(24, 20, 24, 24);
-    outer->setSpacing(12);
+    outer->setContentsMargins(20, 18, 20, 20);
+    outer->setSpacing(10);
 
     auto *header = new QHBoxLayout;
     header->setContentsMargins(0, 0, 0, 0);
@@ -6620,8 +6678,8 @@ QWidget *MainWindow::buildNetworkReposSection()
     outer->addLayout(header);
 
     auto *subtitle = new QLabel(QStringLiteral(
-        "Source-of-truth repositories advertised by the active relay, with your "
-        "local fork, mirror nodes, and one-click fork/mirror actions."));
+        "Repositories grouped by user or organization across the active relay. "
+        "Mirror hosts are combined into one repository row."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
     outer->addWidget(subtitle);
@@ -6631,21 +6689,25 @@ QWidget *MainWindow::buildNetworkReposSection()
     m_networkReposTable->setObjectName("issueTable");
     m_networkReposTable->setHorizontalHeaderLabels(
         {QStringLiteral("Repository"), QStringLiteral("Local fork"),
-         QStringLiteral("Mirror nodes"), QStringLiteral("Actions")});
+         QStringLiteral("Mirrors"), QStringLiteral("Actions")});
     m_networkReposTable->verticalHeader()->setVisible(false);
     m_networkReposTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_networkReposTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_networkReposTable->setShowGrid(false);
+    m_networkReposTable->setWordWrap(false);
+    m_networkReposTable->setAlternatingRowColors(true);
     m_networkReposTable->setSortingEnabled(false);
     m_networkReposTable->horizontalHeader()->setStretchLastSection(false);
     m_networkReposTable->horizontalHeader()->setSectionResizeMode(
-        0, QHeaderView::ResizeToContents);
+        0, QHeaderView::Stretch);
     m_networkReposTable->horizontalHeader()->setSectionResizeMode(
         1, QHeaderView::ResizeToContents);
     m_networkReposTable->horizontalHeader()->setSectionResizeMode(
-        2, QHeaderView::Stretch);
+        2, QHeaderView::ResizeToContents);
     m_networkReposTable->horizontalHeader()->setSectionResizeMode(
         3, QHeaderView::ResizeToContents);
+    m_networkReposTable->verticalHeader()->setDefaultSectionSize(52);
+    m_networkReposTable->verticalHeader()->setMinimumSectionSize(44);
     makeColumnsResizable(m_networkReposTable);
     connect(m_networkReposTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int column) {
@@ -6655,15 +6717,21 @@ QWidget *MainWindow::buildNetworkReposSection()
                 if (!item)
                     return;
                 const QString key = item->data(Qt::UserRole).toString();
-                const int slash = key.indexOf('/');
-                if (slash <= 0)
+                const QString owner =
+                    item->data(Qt::UserRole + 3).toString();
+                const QString name =
+                    item->data(Qt::UserRole + 4).toString();
+                if (owner.isEmpty() || name.isEmpty())
                     return;
-                openNetworkRepo(key.left(slash), key.mid(slash + 1),
+                openNetworkRepo(owner, name,
                                 item->data(Qt::UserRole + 1).toString(),
                                 item->data(Qt::UserRole + 2).toBool());
             });
     outer->addWidget(m_networkReposTable, 1);
 
+    // Node -> user ownership lets renderNetworkRepos collapse machine
+    // namespaces into user namespaces even when those nodes are offline.
+    refreshChatUserDirectory();
     return page;
 }
 
@@ -6701,7 +6769,112 @@ void MainWindow::refreshNetworkReposPage()
             return;
         }
         const QJsonObject obj = QJsonDocument::fromJson(body).object();
-        renderNetworkRepos(obj.value("repositories").toArray());
+        const QJsonArray catalog = obj.value("repositories").toArray();
+
+        // Public organization aliases are routing identities (for example
+        // forkmesh/forkmesh backed by jett/forkmesh). Fold those aliases into
+        // the catalog before rendering so the backing node never becomes the
+        // repository's visible owner.
+        QUrl orgsUrl = catalogApiUrl();
+        orgsUrl.setPath(QStringLiteral("/api/world/organizations"));
+        orgsUrl.setQuery(QString());
+        QNetworkReply *orgsReply =
+            m_networkAccess->get(QNetworkRequest(orgsUrl));
+        connect(orgsReply, &QNetworkReply::finished, this,
+                [this, orgsReply, catalog, generation] {
+            const QByteArray orgBody = orgsReply->readAll();
+            const bool orgsOk =
+                orgsReply->error() == QNetworkReply::NoError;
+            orgsReply->deleteLater();
+            if (generation != m_networkReposLoadGen)
+                return;
+            const QJsonArray organizations =
+                QJsonDocument::fromJson(orgBody)
+                    .object()
+                    .value(QStringLiteral("organizations"))
+                    .toArray();
+            if (!orgsOk || organizations.isEmpty()) {
+                renderNetworkRepos(catalog);
+                return;
+            }
+
+            auto combined = std::make_shared<QJsonArray>(catalog);
+            auto pending = std::make_shared<int>(0);
+            for (const QJsonValue &value : organizations) {
+                const QString organization =
+                    value.toObject().value(QStringLiteral("name"))
+                        .toString().trimmed().toLower();
+                if (organization.isEmpty())
+                    continue;
+                ++*pending;
+                QUrl reposUrl = catalogApiUrl();
+                reposUrl.setPath(QStringLiteral("/api/orgs/%1/repos")
+                                     .arg(organization));
+                reposUrl.setQuery(QString());
+                QNetworkReply *reposReply =
+                    m_networkAccess->get(QNetworkRequest(reposUrl));
+                connect(reposReply, &QNetworkReply::finished, this,
+                        [this, reposReply, catalog, combined, pending,
+                         organization, generation] {
+                    const QByteArray repoBody = reposReply->readAll();
+                    const bool reposOk =
+                        reposReply->error() == QNetworkReply::NoError;
+                    reposReply->deleteLater();
+                    if (generation != m_networkReposLoadGen)
+                        return;
+                    if (reposOk) {
+                        const QJsonArray aliases =
+                            QJsonDocument::fromJson(repoBody)
+                                .object()
+                                .value(QStringLiteral("repos"))
+                                .toArray();
+                        for (const QJsonValue &aliasValue : aliases) {
+                            const QJsonObject alias = aliasValue.toObject();
+                            const QString name =
+                                alias.value(QStringLiteral("repo"))
+                                    .toString().trimmed();
+                            const QString node =
+                                alias.value(QStringLiteral("node"))
+                                    .toString().trimmed();
+                            if (name.isEmpty() || node.isEmpty())
+                                continue;
+                            for (const QJsonValue &catalogValue : catalog) {
+                                const QJsonObject base =
+                                    catalogValue.toObject();
+                                if (base.value(QStringLiteral("owner"))
+                                            .toString()
+                                            .compare(node,
+                                                     Qt::CaseInsensitive) != 0 ||
+                                    base.value(QStringLiteral("name"))
+                                            .toString()
+                                            .compare(name,
+                                                     Qt::CaseInsensitive) != 0)
+                                    continue;
+                                QJsonObject publicAlias = base;
+                                publicAlias.insert(QStringLiteral("owner"),
+                                                   organization);
+                                publicAlias.insert(QStringLiteral("name"), name);
+                                publicAlias.insert(
+                                    QStringLiteral("source"),
+                                    QStringLiteral("organization-alias"));
+                                publicAlias.insert(
+                                    QStringLiteral("servingOwner"), node);
+                                publicAlias.insert(
+                                    QStringLiteral("cloneUrl"),
+                                    hostedCloneUrl(organization, name));
+                                combined->append(publicAlias);
+                                break;
+                            }
+                        }
+                    }
+                    --*pending;
+                    if (*pending == 0)
+                        renderNetworkRepos(*combined);
+                });
+            }
+            if (*pending == 0)
+                renderNetworkRepos(catalog);
+        });
     });
 }
 
@@ -6740,32 +6913,44 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
 {
     if (!m_networkReposTable || !m_networkReposStatus)
         return;
+    m_networkReposLastPayload = repos;
 
-    QList<QJsonObject> rows;
-    QSet<QString> seen;
+    // Public user-directory ownership turns machine namespaces back into the
+    // account that owns them. Organization aliases inserted by
+    // refreshNetworkReposPage take precedence over this map below.
+    QHash<QString, QString> nodeOwner;
+    for (const MemberInfo &user : std::as_const(m_chatDirectoryUsers)) {
+        const QString owner = user.name.trimmed();
+        for (const QString &node :
+             user.nodeName.split(QStringLiteral(", "), Qt::SkipEmptyParts)) {
+            const QString key = node.trimmed().toLower();
+            if (!key.isEmpty())
+                nodeOwner.insert(key, owner);
+        }
+    }
+
+    QList<QJsonObject> records;
+    QSet<QString> seenRecords;
     m_privateCatalogAccessIds.clear();
     static const QRegularExpression opaqueAccessIdPattern(
         QStringLiteral("^[0-9a-f]{64}$"));
     for (const QJsonValue &value : repos) {
         QJsonObject repo = value.toObject();
-        const QString owner =
-            repo.value("owner").toString().trimmed();
-        const QString name =
-            repo.value("name").toString().trimmed();
+        const QString owner = repo.value("owner").toString().trimmed();
+        const QString name = repo.value("name").toString().trimmed();
         if (owner.isEmpty() || name.isEmpty())
             continue;
-        const QString key = owner + "/" + name;
-        if (seen.contains(key))
+        const QString recordKey =
+            owner.toLower() + QLatin1Char('/') + name.toLower() +
+            QLatin1Char('|') + repo.value("source").toString() +
+            QLatin1Char('|') + repo.value("servingOwner").toString();
+        if (seenRecords.contains(recordKey))
             continue;
-        seen.insert(key);
+        seenRecords.insert(recordKey);
+        const QString key = owner + "/" + name;
         const bool isPrivate =
             repo.value("private").toBool(false) ||
             repo.value("isPrivate").toBool(false);
-        const QString source = repo.value("source").toString().trimmed();
-        if (!source.isEmpty() && source != QLatin1String("local-node") &&
-            !(isPrivate &&
-              source == QLatin1String("owner-sealed-opaque")))
-            continue;
         if (isPrivate) {
             const QString accessId =
                 repo.value(QStringLiteral("privateAccessId"))
@@ -6789,7 +6974,139 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         if (cloneUrl.isEmpty())
             cloneUrl = hostedCloneUrl(owner, name);
         repo.insert("cloneUrl", cloneUrl);
-        rows.append(repo);
+        records.append(repo);
+    }
+
+    // A root commit is the catalog's logical repository identity. Legacy
+    // records without one fold into the rooted group with the same repo name,
+    // matching the web catalog's compatibility behavior.
+    QHash<QString, QString> rootedByName;
+    for (const QJsonObject &repo : std::as_const(records)) {
+        const QString root =
+            repo.value("rootCommit").toString().trimmed().toLower();
+        const QString name =
+            repo.value("name").toString().trimmed().toLower();
+        if (!root.isEmpty() && !name.isEmpty() && !rootedByName.contains(name))
+            rootedByName.insert(name, root);
+    }
+    QList<QList<QJsonObject>> groups;
+    QHash<QString, int> groupIndexes;
+    for (const QJsonObject &repo : std::as_const(records)) {
+        const QString name =
+            repo.value("name").toString().trimmed().toLower();
+        QString root =
+            repo.value("rootCommit").toString().trimmed().toLower();
+        if (root.isEmpty())
+            root = rootedByName.value(name);
+        const QString groupKey = root.isEmpty()
+                                     ? QStringLiteral("name:") + name
+                                     : QStringLiteral("root:") + root;
+        int index = groupIndexes.value(groupKey, -1);
+        if (index < 0) {
+            index = groups.size();
+            groupIndexes.insert(groupKey, index);
+            groups.append(QList<QJsonObject>());
+        }
+        groups[index].append(repo);
+    }
+
+    auto cloneIdentity = [](const QString &raw) {
+        QString path = raw.trimmed();
+        if (path.startsWith(QStringLiteral("git@")) && path.contains(':'))
+            path = path.section(':', 1);
+        else {
+            const QUrl url(path);
+            if (url.isValid() && !url.path().isEmpty())
+                path = url.path();
+        }
+        path = path.section('?', 0, 0).section('#', 0, 0);
+        const QStringList parts =
+            path.split('/', Qt::SkipEmptyParts);
+        if (parts.size() < 2)
+            return QPair<QString, QString>();
+        QString name = parts.last();
+        if (name.endsWith(QStringLiteral(".git"), Qt::CaseInsensitive))
+            name.chop(4);
+        return qMakePair(parts.at(parts.size() - 2), name);
+    };
+
+    QList<QJsonObject> rows;
+    QSet<QString> shownKeys;
+    for (const QList<QJsonObject> &group : std::as_const(groups)) {
+        if (group.isEmpty())
+            continue;
+        int best = 0;
+        int bestScore = std::numeric_limits<int>::min();
+        for (int i = 0; i < group.size(); ++i) {
+            const QJsonObject &candidate = group.at(i);
+            const QString source =
+                candidate.value("source").toString().trimmed();
+            const QString owner =
+                candidate.value("owner").toString().trimmed().toLower();
+            int score = 0;
+            if (source == QLatin1String("organization-alias"))
+                score += 1000;
+            if (source == QLatin1String("local-node"))
+                score += 100;
+            if (!nodeOwner.contains(owner))
+                score += 20;
+            if (candidate.value("liveHost").toBool(false))
+                score += 5;
+            if (score > bestScore) {
+                best = i;
+                bestScore = score;
+            }
+        }
+
+        QJsonObject canonical = group.at(best);
+        const QString source =
+            canonical.value("source").toString().trimmed();
+        const QString rawOwner =
+            canonical.value("owner").toString().trimmed();
+        QString displayOwner = rawOwner;
+        QString routeOwner = rawOwner;
+        QString routeName =
+            canonical.value("name").toString().trimmed();
+        if (source == QLatin1String("organization-alias")) {
+            routeOwner = displayOwner;
+        } else if (source == QLatin1String("remote-clone")) {
+            const auto identity =
+                cloneIdentity(canonical.value("cloneUrl").toString());
+            if (!identity.first.isEmpty() && !identity.second.isEmpty()) {
+                displayOwner = identity.first;
+                routeOwner = identity.first;
+                routeName = identity.second;
+            }
+        } else {
+            displayOwner =
+                nodeOwner.value(rawOwner.toLower(), rawOwner);
+        }
+        const QString displayName =
+            canonical.value("name").toString().trimmed();
+        const QString displayKey = displayOwner + "/" + displayName;
+        if (displayOwner.isEmpty() || displayName.isEmpty() ||
+            shownKeys.contains(displayKey.toLower()))
+            continue;
+        shownKeys.insert(displayKey.toLower());
+
+        QJsonArray memberOwners;
+        QSet<QString> memberOwnerSet;
+        for (const QJsonObject &member : group) {
+            QString owner = member.value("servingOwner").toString().trimmed();
+            if (owner.isEmpty())
+                owner = member.value("owner").toString().trimmed();
+            const QString key = owner.toLower();
+            if (!owner.isEmpty() && !memberOwnerSet.contains(key)) {
+                memberOwnerSet.insert(key);
+                memberOwners.append(owner);
+            }
+        }
+        canonical.insert("owner", displayOwner);
+        canonical.insert("name", displayName);
+        canonical.insert("_routeOwner", routeOwner);
+        canonical.insert("_routeName", routeName);
+        canonical.insert("_memberOwners", memberOwners);
+        rows.append(canonical);
     }
 
     std::sort(rows.begin(), rows.end(), [](const QJsonObject &a,
@@ -6808,6 +7125,10 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         const QString owner = repo.value("owner").toString().trimmed();
         const QString name = repo.value("name").toString().trimmed();
         const QString key = owner + "/" + name;
+        const QString routeOwner =
+            repo.value("_routeOwner").toString(owner).trimmed();
+        const QString routeName =
+            repo.value("_routeName").toString(name).trimmed();
         const QString cloneUrl = repo.value("cloneUrl").toString().trimmed();
         const bool isPrivate = repo.value("private").toBool(false) ||
                                repo.value("isPrivate").toBool(false);
@@ -6828,13 +7149,15 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         if (liveHost)
             details << QStringLiteral("live");
         if (!description.isEmpty())
-            details << description.left(120);
+            details << description.left(90);
 
         auto *repoItem = new QTableWidgetItem(
             details.isEmpty() ? key : key + "\n" + details.join(QStringLiteral(" | ")));
         repoItem->setData(Qt::UserRole, key);
         repoItem->setData(Qt::UserRole + 1, cloneUrl);
         repoItem->setData(Qt::UserRole + 2, isPrivate);
+        repoItem->setData(Qt::UserRole + 3, routeOwner);
+        repoItem->setData(Qt::UserRole + 4, routeName);
         QStringList repoToolTip;
         repoToolTip << key;
         if (!commit.isEmpty())
@@ -6846,46 +7169,61 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         repoItem->setToolTip(repoToolTip.join('\n'));
         m_networkReposTable->setItem(row, 0, repoItem);
 
-        const int localFork = findNetworkLocalForkIndex(owner, name);
+        int localFork = -1;
+        int mirroredIndex = -1;
+        for (const QJsonValue &memberOwner :
+             repo.value("_memberOwners").toArray()) {
+            const QString member = memberOwner.toString();
+            if (localFork < 0)
+                localFork = findNetworkLocalForkIndex(member, name);
+            if (mirroredIndex < 0)
+                mirroredIndex = findNetworkRepoIndex(member, name, false);
+        }
+        if (localFork < 0)
+            localFork = findNetworkLocalForkIndex(routeOwner, routeName);
+        if (mirroredIndex < 0)
+            mirroredIndex =
+                findNetworkRepoIndex(routeOwner, routeName, false);
         if (localFork >= 0) {
             const RepositoryRecord &fork = m_repositories.at(localFork);
             const QString path = fork.localPath.isEmpty()
                                      ? QStringLiteral("No checkout path")
                                      : QDir::toNativeSeparators(fork.localPath);
-            auto *forkItem = new QTableWidgetItem(
+            auto *forkItem = new QTableWidgetItem(QStringLiteral("Available"));
+            forkItem->setToolTip(
                 QStringLiteral("%1/%2\n%3").arg(fork.owner, fork.name, path));
-            forkItem->setToolTip(path);
             m_networkReposTable->setItem(row, 1, forkItem);
         } else {
-            auto *forkItem = new QTableWidgetItem(QStringLiteral("No local fork"));
+            auto *forkItem = new QTableWidgetItem(QStringLiteral("Not local"));
             forkItem->setForeground(QColor("#8b949e"));
             m_networkReposTable->setItem(row, 1, forkItem);
         }
 
-        auto *mirrorsItem = new QTableWidgetItem(QStringLiteral("Loading..."));
+        auto *mirrorsItem = new QTableWidgetItem(
+            QString::fromUtf8("\xE2\x80\xA6"));
         mirrorsItem->setForeground(QColor("#8b949e"));
+        mirrorsItem->setTextAlignment(Qt::AlignCenter);
         m_networkReposTable->setItem(row, 2, mirrorsItem);
 
-        const int mirroredIndex = findNetworkRepoIndex(owner, name, false);
         auto *actions = new QWidget;
         auto *actionRow = new QHBoxLayout(actions);
         actionRow->setContentsMargins(4, 2, 4, 2);
         actionRow->setSpacing(6);
 
-        auto *openButton = new QPushButton(localFork >= 0
-                                               ? QStringLiteral("Open fork")
-                                               : QStringLiteral("Open"));
-        openButton->setObjectName("ghostButton");
+        auto *openButton = new QPushButton(QStringLiteral("Switch"));
+        openButton->setObjectName("primaryButton");
         openButton->setCursor(Qt::PointingHandCursor);
-        openButton->setToolTip(localFork >= 0 ? QStringLiteral("Open your local fork")
-                                              : QStringLiteral("Open this repository"));
+        openButton->setToolTip(
+            localFork >= 0 ? QStringLiteral("Switch to your local copy")
+                           : QStringLiteral("Switch to this repository"));
         setOcticon(openButton, localFork >= 0 ? "repo-forked" : "repo", 13);
         connect(openButton, &QPushButton::clicked, this,
-                [this, owner, name, cloneUrl, isPrivate, localFork] {
+                [this, routeOwner, routeName, cloneUrl, isPrivate, localFork] {
                     if (localFork >= 0)
                         openRepoDetail(localFork);
                     else
-                        openNetworkRepo(owner, name, cloneUrl, isPrivate);
+                        openNetworkRepo(routeOwner, routeName, cloneUrl,
+                                        isPrivate);
                 });
         actionRow->addWidget(openButton);
 
@@ -6899,10 +7237,11 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         if (localFork >= 0) {
             forkButton->setEnabled(false);
         } else {
-            forkButton->setObjectName("primaryButton");
+            forkButton->setObjectName("ghostButton");
             connect(forkButton, &QPushButton::clicked, this,
-                    [this, owner, name, cloneUrl, isPrivate] {
-                        forkNetworkRepo(owner, name, cloneUrl, isPrivate);
+                    [this, routeOwner, routeName, cloneUrl, isPrivate] {
+                        forkNetworkRepo(routeOwner, routeName, cloneUrl,
+                                        isPrivate);
                     });
         }
         actionRow->addWidget(forkButton);
@@ -6920,18 +7259,18 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
             mirrorButton->setEnabled(false);
         } else {
             connect(mirrorButton, &QPushButton::clicked, this,
-                    [this, owner, name, cloneUrl, isPrivate] {
-                        mirrorNetworkRepo(owner, name, cloneUrl, isPrivate);
+                    [this, routeOwner, routeName, cloneUrl, isPrivate] {
+                        mirrorNetworkRepo(routeOwner, routeName, cloneUrl,
+                                          isPrivate);
                     });
         }
         actionRow->addWidget(mirrorButton);
         actionRow->addStretch();
         m_networkReposTable->setCellWidget(row, 3, actions);
 
-        fetchNetworkRepoMirrors(owner, name, row, generation);
+        fetchNetworkRepoMirrors(routeOwner, routeName, row, generation);
     }
 
-    m_networkReposTable->resizeRowsToContents();
     m_networkReposStatus->setText(
         rows.isEmpty() ? QStringLiteral("No repositories advertised.")
                        : QStringLiteral("%1 repositories").arg(formatCount(rows.size())));
@@ -6964,7 +7303,10 @@ void MainWindow::fetchNetworkRepoMirrors(const QString &owner, const QString &na
                     return;
                 QTableWidgetItem *repoItem = m_networkReposTable->item(row, 0);
                 if (!repoItem ||
-                    repoItem->data(Qt::UserRole).toString() != owner + "/" + name)
+                    repoItem->data(Qt::UserRole + 3).toString()
+                            .compare(owner, Qt::CaseInsensitive) != 0 ||
+                    repoItem->data(Qt::UserRole + 4).toString()
+                            .compare(name, Qt::CaseInsensitive) != 0)
                     return;
 
                 QTableWidgetItem *mirrorsItem = m_networkReposTable->item(row, 2);
@@ -6972,25 +7314,23 @@ void MainWindow::fetchNetworkRepoMirrors(const QString &owner, const QString &na
                     return;
 
                 if (error != QNetworkReply::NoError) {
-                    mirrorsItem->setText(QStringLiteral("Mirror list unavailable"));
+                    mirrorsItem->setText(QString::fromUtf8("\xE2\x80\x94"));
                     mirrorsItem->setToolTip(errorString);
                     mirrorsItem->setForeground(QColor("#8b949e"));
-                    m_networkReposTable->resizeRowToContents(row);
                     return;
                 }
 
                 const QJsonObject obj = QJsonDocument::fromJson(body).object();
                 if (obj.contains("ok") && !obj.value("ok").toBool()) {
-                    mirrorsItem->setText(QStringLiteral("Mirror list unavailable"));
+                    mirrorsItem->setText(QString::fromUtf8("\xE2\x80\x94"));
                     mirrorsItem->setToolTip(QString());
                     mirrorsItem->setForeground(QColor("#8b949e"));
-                    m_networkReposTable->resizeRowToContents(row);
                     return;
                 }
 
                 const QJsonArray mirrors = obj.value("mirrors").toArray();
-                QStringList names;
                 QStringList mirrorToolTip;
+                QSet<QString> countedNodes;
                 for (const QJsonValue &value : mirrors) {
                     const QJsonObject mirror = value.toObject();
                     const QString mirrorSource =
@@ -7010,13 +7350,15 @@ void MainWindow::fetchNetworkRepoMirrors(const QString &owner, const QString &na
                         node = mirror.value("id").toString().trimmed();
                     if (node.isEmpty())
                         continue;
+                    const QString nodeKey = node.toLower();
+                    if (countedNodes.contains(nodeKey))
+                        continue;
+                    countedNodes.insert(nodeKey);
                     const QString status =
                         mirror.value("status").toString(
                             mirror.value("cloneStatus").toString()).trimmed();
                     const QString commit =
                         mirror.value("commit").toString().trimmed();
-                    names << (status.isEmpty() ? node
-                                               : QStringLiteral("%1 (%2)").arg(node, status));
                     QString tip = node;
                     if (!status.isEmpty())
                         tip += QStringLiteral(" - %1").arg(status);
@@ -7025,17 +7367,15 @@ void MainWindow::fetchNetworkRepoMirrors(const QString &owner, const QString &na
                     mirrorToolTip << tip;
                 }
 
-                if (names.isEmpty()) {
-                    mirrorsItem->setText(QStringLiteral("No mirror nodes yet"));
-                    mirrorsItem->setToolTip(QString());
-                    mirrorsItem->setForeground(QColor("#8b949e"));
-                } else {
-                    const QString text = names.join(QStringLiteral(", "));
-                    mirrorsItem->setText(text);
-                    mirrorsItem->setToolTip(mirrorToolTip.join('\n'));
-                    mirrorsItem->setForeground(QBrush());
-                }
-                m_networkReposTable->resizeRowToContents(row);
+                const int count = countedNodes.size();
+                mirrorsItem->setData(Qt::DisplayRole, count);
+                mirrorsItem->setTextAlignment(Qt::AlignCenter);
+                mirrorsItem->setToolTip(
+                    count == 0
+                        ? QStringLiteral("No mirror nodes yet")
+                        : mirrorToolTip.join('\n'));
+                mirrorsItem->setForeground(
+                    count == 0 ? QBrush(QColor("#8b949e")) : QBrush());
             });
 }
 
@@ -8763,8 +9103,8 @@ void MainWindow::runHostActionsConfiguration(
 
 // --- Nodes ------------------------------------------------------------------
 //
-// A sortable directory of every node this client currently knows about — the
-// same set offered by the top-bar node dropdown (m_nodeMenuEntries). Each row
+// A sortable directory of every registered node the relay exposes through its
+// public user directory, merged with live roster and serving-only nodes. Each row
 // carries the node's platform badge, name, online state, owner, advertised
 // ForkMesh version, repo/mirror counts and its CPU/RAM/disk telemetry bars.
 // Selecting a row opens a detail panel with the node's full details, the repos
@@ -8813,11 +9153,10 @@ QWidget *MainWindow::buildNodesSection()
     outer->addWidget(title);
 
     auto *subtitle = new QLabel(QString::fromUtf8(
-        "Every node this client knows about \xE2\x80\x94 the same nodes in the "
-        "top-bar node dropdown. Click a column header to sort. Select a node to "
-        "see its details and the repositories it hosts and mirrors. \"Online "
-        "(serving)\" means the relay reports the node live (update channel or "
-        "signed heartbeat) even though it isn't in this client's chat room."));
+        "All registered nodes from the relay directory, including offline "
+        "nodes. Click a column header to sort or select a node for details. "
+        "\"Online (serving)\" means the relay reports it live even when it is "
+        "not connected to this client's chat room."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
     outer->addWidget(subtitle);
@@ -8832,6 +9171,7 @@ QWidget *MainWindow::buildNodesSection()
     m_nodesRefreshButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_nodesRefreshButton, "sync", 14);
     connect(m_nodesRefreshButton, &QPushButton::clicked, this, [this] {
+        refreshChatUserDirectory();
         fetchRelayOnlineNodes(true); // refreshes the table again on reply
         refreshNodesTable();
     });
@@ -8846,6 +9186,7 @@ QWidget *MainWindow::buildNodesSection()
     m_nodesTable = new QTableWidget(0, kNodeColCount);
     installColumnHeaderMenu(m_nodesTable); // 3-dots per-column menu (issue #318)
     m_nodesTable->setObjectName("issueTable");
+    m_nodesTable->setProperty("nodesDirectory", true);
     m_nodesTable->setHorizontalHeaderLabels(
         {QStringLiteral("Node"), QStringLiteral("Status"),
          QStringLiteral("Owner"), QStringLiteral("Version"),
@@ -8883,6 +9224,7 @@ QWidget *MainWindow::buildNodesSection()
 
     outer->addLayout(split, 1);
 
+    refreshChatUserDirectory();
     fetchRelayOnlineNodes();
     refreshNodesTable();
     return page;
@@ -8989,6 +9331,21 @@ void MainWindow::refreshNodesTable()
     // Which node the detail panel is currently showing, so a rebuild can keep it.
     const QString shown = m_nodesTable->property("shownNode").toString();
 
+    // Build the database-backed node -> owning-user map. The public user
+    // directory deliberately exposes linked node names but no private profile
+    // fields, and unlike the live roster it retains offline nodes.
+    QHash<QString, QString> directoryOwner;
+    for (const MemberInfo &user : std::as_const(m_chatDirectoryUsers)) {
+        const QString owner = user.name.trimmed();
+        const QStringList nodes =
+            user.nodeName.split(QStringLiteral(", "), Qt::SkipEmptyParts);
+        for (const QString &node : nodes) {
+            const QString key = node.trimmed().toLower();
+            if (!key.isEmpty())
+                directoryOwner.insert(key, owner);
+        }
+    }
+
     // Drop entries whose roster identity is a plain user account (a chat-only
     // human/bot, accountKind "user") rather than a real serving node — e.g.
     // ForkBot's relayed replies or a desktop profile signed in as a user, not a
@@ -9006,8 +9363,9 @@ void MainWindow::refreshNodesTable()
         m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty();
     QList<NodeMenuEntry> visible;
     QList<MemberInfo> visibleRoster;
+    QSet<QString> visibleNames;
     for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
-        const MemberInfo mi = rosterInfo(e.name);
+        MemberInfo mi = rosterInfo(e.name);
         if (mi.accountKind == QLatin1String("user"))
             continue;
         // Temporary world-chat visitors are filtered before they become menu
@@ -9017,8 +9375,57 @@ void MainWindow::refreshNodesTable()
             continue;
         if (e.self && selfIsUserAccount)
             continue;
+        const QString key = e.name.trimmed().toLower();
+        if (key.isEmpty() || visibleNames.contains(key))
+            continue;
+        if (mi.ownerUser.trimmed().isEmpty())
+            mi.ownerUser = directoryOwner.value(key);
         visible.append(e);
         visibleRoster.append(mi);
+        visibleNames.insert(key);
+    }
+    // Add every linked database node that is not currently in the roster.
+    // Repository counts are filled from the local/catalog cache when available;
+    // the relay's online set supplies liveness for headless nodes.
+    QStringList directoryNodes = directoryOwner.keys();
+    std::sort(directoryNodes.begin(), directoryNodes.end(),
+              [](const QString &a, const QString &b) {
+                  return a.compare(b, Qt::CaseInsensitive) < 0;
+              });
+    for (const QString &key : std::as_const(directoryNodes)) {
+        if (visibleNames.contains(key))
+            continue;
+        NodeMenuEntry entry;
+        entry.name = key;
+        entry.online = relayOnline(key);
+        for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+            if (!repo.previewOnly &&
+                repo.owner.compare(key, Qt::CaseInsensitive) == 0)
+                ++entry.repoCount;
+        }
+        MemberInfo info = rosterInfo(key);
+        info.ownerUser = directoryOwner.value(key);
+        visible.append(entry);
+        visibleRoster.append(info);
+        visibleNames.insert(key);
+    }
+    // A serving-only node can be present in the relay's authoritative live set
+    // before its owning user's cached directory record reaches this client.
+    QStringList servingNodes = m_relayOnlineNodes.values();
+    std::sort(servingNodes.begin(), servingNodes.end(),
+              [](const QString &a, const QString &b) {
+                  return a.compare(b, Qt::CaseInsensitive) < 0;
+              });
+    for (const QString &key : std::as_const(servingNodes)) {
+        if (key.isEmpty() || visibleNames.contains(key))
+            continue;
+        NodeMenuEntry entry;
+        entry.name = key;
+        entry.online = true;
+        MemberInfo info = rosterInfo(key);
+        visible.append(entry);
+        visibleRoster.append(info);
+        visibleNames.insert(key);
     }
 
     // Populate with sorting off so inserted rows don't reshuffle mid-fill.
@@ -9057,6 +9464,10 @@ void MainWindow::refreshNodesTable()
             new QTableWidgetItem(osBadgeIcon(e.platform, isOnline, 16), label);
         // Stash the real node name so a row stays identifiable after re-sorting.
         nameItem->setData(Qt::UserRole, e.name);
+        nameItem->setData(Qt::UserRole + 1, mi.ownerUser.trimmed());
+        nameItem->setData(Qt::UserRole + 2, e.platform.trimmed());
+        nameItem->setData(Qt::UserRole + 3, e.repoCount);
+        nameItem->setData(Qt::UserRole + 4, int(mi.mirrors.size()));
         m_nodesTable->setItem(i, kNodeColName, nameItem);
 
         auto *statusItem = new QTableWidgetItem(
@@ -9174,6 +9585,7 @@ void MainWindow::showNodeDetailForRow(int row)
     }
 
     const QString node = m_nodesTable->item(row, 0)->data(Qt::UserRole).toString();
+    QTableWidgetItem *nodeItem = m_nodesTable->item(row, 0);
     m_nodesTable->setProperty("shownNode", node);
 
     // The dropdown entry (platform / online / repo count) and the roster record
@@ -9208,6 +9620,12 @@ void MainWindow::showNodeDetailForRow(int row)
         }
         inRoster = true;
     }
+    if (mi.ownerUser.trimmed().isEmpty() && nodeItem)
+        mi.ownerUser = nodeItem->data(Qt::UserRole + 1).toString();
+    if (entry.platform.trimmed().isEmpty() && nodeItem)
+        entry.platform = nodeItem->data(Qt::UserRole + 2).toString();
+    if (entry.repoCount == 0 && nodeItem)
+        entry.repoCount = nodeItem->data(Qt::UserRole + 3).toInt();
     // Liveness mirrors refreshNodesTable(): the relay's authoritative live set
     // wins over a lingering roster entry once we have fetched it; our own node
     // trusts the local backend (adhoc #43).

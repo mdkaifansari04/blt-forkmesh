@@ -102,6 +102,71 @@ private:
     int m_hSpace;
     int m_vSpace;
 };
+
+// Compact source-control row: the filename stays prominent, its directory is a
+// muted suffix, and potentially destructive actions only appear while the row
+// is under the pointer. The row paints its own neutral hover because a
+// QTreeWidget item delegate is behind setItemWidget() children.
+class ScmFileRow : public QWidget
+{
+public:
+    explicit ScmFileRow(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setAttribute(Qt::WA_Hover);
+        applyHover(false);
+    }
+
+    void setActionsWidget(QWidget *actions)
+    {
+        m_actions = actions;
+        if (m_actions)
+            m_actions->hide();
+    }
+
+    std::function<void()> onClicked;
+
+protected:
+    void enterEvent(QEnterEvent *event) override
+    {
+        QWidget::enterEvent(event);
+        applyHover(true);
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        QWidget::leaveEvent(event);
+        // Moving from the row into one of its tool buttons can briefly produce
+        // a leave event. Recheck after Qt settles the mouse target.
+        QTimer::singleShot(0, this, [this] {
+            if (!underMouse())
+                applyHover(false);
+        });
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && onClicked)
+            onClicked();
+        QWidget::mousePressEvent(event);
+    }
+
+private:
+    void applyHover(bool hovered)
+    {
+        const bool dark =
+            palette().color(QPalette::Base).lightness() < 128;
+        setStyleSheet(
+            hovered
+                ? QStringLiteral("ScmFileRow{background:%1;border-radius:3px;}")
+                      .arg(dark ? QStringLiteral("#21262d")
+                                : QStringLiteral("#f1f3f5"))
+                : QStringLiteral("ScmFileRow{background:transparent;}"));
+        if (m_actions)
+            m_actions->setVisible(hovered);
+    }
+
+    QWidget *m_actions = nullptr;
+};
 } // namespace
 
 // ---- Source Control panel (working-tree changes) ---------------------------
@@ -353,15 +418,11 @@ QWidget *MainWindow::buildSourceControlPanel()
 
     m_scmTree = new QTreeWidget;
     m_scmTree->setObjectName("fileTree");
-    enableHoverRowHighlight(m_scmTree); // green outline selection (issue #252)
-    m_scmTree->setColumnCount(2);
+    m_scmTree->setColumnCount(1);
     m_scmTree->setHeaderHidden(true);
     m_scmTree->setMinimumWidth(240);
     m_scmTree->setRootIsDecorated(true);
-    m_scmTree->header()->setStretchLastSection(false);
     m_scmTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    m_scmTree->header()->setSectionResizeMode(1, QHeaderView::Fixed);
-    m_scmTree->setColumnWidth(1, 84);
     connect(m_scmTree, &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem *item, QTreeWidgetItem *) {
                 if (!item)
@@ -623,26 +684,52 @@ void MainWindow::refreshSourceControl(bool force)
 
         for (const Row &r : rows) {
             auto *item = new QTreeWidgetItem(group);
-            item->setIcon(0, iconForFile(r.path.section('/', -1)));
-            item->setText(0, r.path);
+            item->setFirstColumnSpanned(true);
             item->setToolTip(0, r.path);
             item->setData(0, Qt::UserRole, r.path);
             item->setData(0, Qt::UserRole + 1, r.staged);
             item->setData(0, Qt::UserRole + 2, r.untracked);
 
-            auto *w = new QWidget;
+            auto *w = new ScmFileRow;
             auto *h = new QHBoxLayout(w);
-            h->setContentsMargins(0, 0, 6, 0);
-            h->setSpacing(0);
+            h->setContentsMargins(4, 1, 6, 1);
+            h->setSpacing(5);
+
+            auto *fileIcon = new QLabel(w);
+            fileIcon->setPixmap(
+                iconForFile(r.path.section('/', -1)).pixmap(14, 14));
+            fileIcon->setFixedSize(14, 14);
+            fileIcon->setAttribute(Qt::WA_TransparentForMouseEvents);
+            h->addWidget(fileIcon);
+
+            const QString fileName = r.path.section('/', -1);
+            QString directory = r.path.left(r.path.size() - fileName.size());
+            if (directory.endsWith('/'))
+                directory.chop(1);
+            auto *fileLabel = new QLabel(fileName, w);
+            fileLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+            h->addWidget(fileLabel);
+            if (!directory.isEmpty()) {
+                auto *directoryLabel = new QLabel(directory, w);
+                directoryLabel->setObjectName("statusLine");
+                directoryLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+                h->addWidget(directoryLabel);
+            }
+            h->addStretch();
+
             auto *statusLabel = new QLabel(QString(r.status), w);
             statusLabel->setToolTip(scmStatusTip(r.status));
             QFont sf = statusLabel->font();
             sf.setBold(true);
             statusLabel->setFont(sf);
             h->addWidget(statusLabel);
-            h->addStretch();
+
+            auto *actions = new QWidget(w);
+            auto *actionsLayout = new QHBoxLayout(actions);
+            actionsLayout->setContentsMargins(0, 0, 0, 0);
+            actionsLayout->setSpacing(0);
             auto makeBtn = [&](const QString &glyph, const QString &tip) {
-                auto *b = new QToolButton(w);
+                auto *b = new QToolButton(actions);
                 b->setText(glyph);
                 b->setToolTip(tip);
                 b->setAutoRaise(true);
@@ -655,7 +742,7 @@ void MainWindow::refreshSourceControl(bool force)
                 auto *u = makeBtn(QString::fromUtf8("\xE2\x88\x92"), "Unstage");
                 connect(u, &QToolButton::clicked, this,
                         [this, path] { scmUnstagePath(path); });
-                h->addWidget(u);
+                actionsLayout->addWidget(u);
             } else {
                 auto *d = makeBtn(QString::fromUtf8("\xE2\x86\xBA"), "Discard changes");
                 connect(d, &QToolButton::clicked, this,
@@ -663,12 +750,21 @@ void MainWindow::refreshSourceControl(bool force)
                 auto *s = makeBtn(QStringLiteral("+"), "Stage");
                 connect(s, &QToolButton::clicked, this,
                         [this, path] { scmStagePath(path); });
-                h->addWidget(d);
-                h->addWidget(s);
+                actionsLayout->addWidget(d);
+                actionsLayout->addWidget(s);
             }
-            // The per-row buttons sit in column 1 (the file label + status stay in
-            // column 0), so both the name and the actions are always visible.
-            m_scmTree->setItemWidget(item, 1, w);
+            auto *open = new QToolButton(actions);
+            open->setIcon(themedOcticon("file", QColor("#8b949e"), 14));
+            open->setToolTip("Open file");
+            open->setAutoRaise(true);
+            open->setCursor(Qt::PointingHandCursor);
+            connect(open, &QToolButton::clicked, this,
+                    [this, path] { openRepoFile(path); });
+            actionsLayout->addWidget(open);
+            h->addWidget(actions);
+            w->setActionsWidget(actions);
+            w->onClicked = [this, item] { m_scmTree->setCurrentItem(item); };
+            m_scmTree->setItemWidget(item, 0, w);
         }
         group->setExpanded(true);
     };
