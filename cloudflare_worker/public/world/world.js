@@ -4756,6 +4756,8 @@ class ForkMeshWorld extends HTMLElement {
     this.diagnosticsOutboundSample = 0;
     this.lastDiagnosticsSnapshot = null;
     this.rendererRecoveryTimer = 0;
+    this.viewportSyncTimer = 0;
+    this.lastStableViewportHeight = 0;
     this.buildDiagnostics = { version: "", revision: "" };
     this.qaDeck = {
       authenticated: false,
@@ -5560,6 +5562,7 @@ class ForkMeshWorld extends HTMLElement {
         container: this.$("[data-world-canvas-wrap]"),
         labelLayer: this.$("[data-world-label-layer]"),
         identity: publicIdentity(this.identity, this.settings),
+        initialSpawn: this.restoredPosition,
         initialWorldLayout: mergedInitialLayout,
         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
         onLandmarkSelect: (id, meta = {}) => {
@@ -6521,18 +6524,34 @@ class ForkMeshWorld extends HTMLElement {
     }
   };
 
-  syncViewportHeight = () => {
+  syncViewportHeight = (event = null) => {
     // Mobile browser chrome can resize visualViewport continuously while a
     // thumbstick drag is in progress. Resizing the WebGL canvas on every one
     // of those samples looks like the whole World is refreshing mid-walk.
     // Hold the last stable viewport until the gesture ends, then reconcile it
     // once without interrupting movement.
     if (this.mobileMovementActive) return;
-    const height = Math.max(
-      240,
-      Math.round(window.visualViewport?.height || window.innerHeight || 0),
-    );
-    this.style.setProperty("--world-viewport-height", `${height}px`);
+    const commit = () => {
+      this.viewportSyncTimer = 0;
+      if (this.mobileMovementActive || this.destroyed) return;
+      const height = Math.max(
+        240,
+        Math.round(window.visualViewport?.height || window.innerHeight || 0),
+      );
+      if (Math.abs(height - this.lastStableViewportHeight) < 2) return;
+      this.lastStableViewportHeight = height;
+      this.style.setProperty("--world-viewport-height", `${height}px`);
+    };
+    window.clearTimeout(this.viewportSyncTimer);
+    // Initial mount and explicit calls commit immediately. Mobile browser
+    // chrome emits a burst of resize events while a finger pans the canvas;
+    // wait for that burst to settle so the WebGL drawing buffer is not
+    // repeatedly cleared underneath an authenticated moving avatar.
+    if (!event?.type) {
+      commit();
+      return;
+    }
+    this.viewportSyncTimer = window.setTimeout(commit, 220);
   };
 
   handlePageHide = (event) => {
@@ -11100,11 +11119,16 @@ class ForkMeshWorld extends HTMLElement {
             ? `<div class="world-danger-zone">
                 <h3>Permanently delete node</h3>
                 <p>This removes the node account, its published repositories, endpoint registration, sessions, and server-side state. It does not destroy the provider VM.</p>
-                <form data-world-admin-delete-node data-node-name="${escapeHTML(
-                  String(node?.machineName || node?.name || "").toLowerCase(),
-                )}">
+                <form data-world-admin-delete-node
+                  data-node-name="${escapeHTML(
+                    String(node?.name || node?.machineName || "").toLowerCase(),
+                  )}"
+                  data-node-machine-name="${escapeHTML(
+                    String(node?.machineName || "").toLowerCase(),
+                  )}"
+                  data-node-id="${escapeHTML(String(node?.nodeId || ""))}">
                   <label>Type <code>DELETE ${escapeHTML(
-                    String(node?.machineName || node?.name || "").toLowerCase(),
+                    String(node?.name || node?.machineName || "").toLowerCase(),
                   )}</code> to confirm
                     <input name="confirmation" autocomplete="off" required />
                   </label>
@@ -11192,6 +11216,22 @@ class ForkMeshWorld extends HTMLElement {
     const posts = (Array.isArray(fediverse.posts) ? fediverse.posts : [])
       .filter((post) => String(post?.label || "").trim())
       .slice(0, 5);
+    let adminUserUrl = "";
+    if (this.identity?.isAdmin === true) {
+      const adminBaseUrl = String(
+        validWorldSession()?.adminUrl || "",
+      ).trim();
+      if (adminBaseUrl) {
+        try {
+          const target = new URL(adminBaseUrl, location.origin);
+          target.searchParams.set("table", "users");
+          target.searchParams.set("user", name);
+          adminUserUrl = `${target.pathname}${target.search}${target.hash}`;
+        } catch (_) {
+          adminUserUrl = "";
+        }
+      }
+    }
     detail.dataset.openLandmark = "world-member";
     detail.style.setProperty("--detail-color", "#77d9ff");
     detail.innerHTML = `
@@ -11215,7 +11255,10 @@ class ForkMeshWorld extends HTMLElement {
           ${
             record.emailVerified === true
               ? '<span class="world-status-pill">✓ VERIFIED EMAIL</span>'
-              : ""
+              : String(record.accountStatus || "").toLowerCase() ===
+                  "registered"
+                ? '<span class="world-status-pill world-status-pill-danger">✕ EMAIL NOT VERIFIED</span>'
+                : ""
           }
           ${
             record.self === true
@@ -11306,6 +11349,15 @@ class ForkMeshWorld extends HTMLElement {
                 )}.</p>`
           }
         </section>
+        ${
+          adminUserUrl
+            ? `<div class="world-detail-actions">
+                <a class="world-primary-action" href="${escapeHTML(
+                  adminUserUrl,
+                )}">Open admin user detail</a>
+              </div>`
+            : ""
+        }
         <p class="world-panel-footnote">This panel contains the same privacy-filtered member, presence, and public profile fields already visible in the World. Private account and connection data are never added here.</p>
       </div>`;
     this.showDetailOverlay(detail, backdrop, { returnFocus });
@@ -11389,10 +11441,20 @@ class ForkMeshWorld extends HTMLElement {
       try {
         await this.postJSON("/api/world/admin/nodes/delete", {
           nodeName,
+          machineName: String(form.dataset.nodeMachineName || ""),
+          nodeId: String(form.dataset.nodeId || ""),
           confirmation,
         });
         this.toast(`${nodeName} was permanently removed from ForkMesh.`);
+        const effectStarted = this.world?.deleteNetworkNode?.({
+          name: nodeName,
+          machineName: String(form.dataset.nodeMachineName || ""),
+          nodeId: String(form.dataset.nodeId || ""),
+        });
         this.closeLandmark();
+        if (effectStarted) {
+          await new Promise((resolve) => window.setTimeout(resolve, 760));
+        }
         await this.loadWorldData({ forceMirrors: true });
       } catch (error) {
         controls.forEach((control) => { control.disabled = false; });
@@ -23006,7 +23068,9 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.socialFeedsTimer);
     window.clearInterval(this.sessionWatchTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
+    window.clearTimeout(this.viewportSyncTimer);
     this.rendererRecoveryTimer = 0;
+    this.viewportSyncTimer = 0;
     this.inflightRequests.clear();
     this.responseCache.clear();
     this.requestFailures.clear();

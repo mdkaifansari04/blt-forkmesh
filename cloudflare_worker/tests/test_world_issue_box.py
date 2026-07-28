@@ -27,10 +27,12 @@ def test_scene_builds_a_bounded_desk_from_verified_records_only():
     assert "number >= 1 && number <= 10_000_000" in SCENE
     assert 'layer.name = "repository-record-desk"' in DESK
     assert "const pullBoard = addRecordBoard(" in DESK
-    assert 'pulls,\n      "pull",\n      -7,' in DESK
-    assert 'issues,\n      "issue",\n      7,' in DESK
+    assert 'pulls,\n      "pull",\n      -5.25,' in DESK
+    assert 'issues,\n      "issue",\n      5.25,' in DESK
+    assert "const rows = items.length;" in DESK
+    assert "const cardX = 0;" in DESK
     assert '"combined"' not in DESK
-    assert "const columns = items.length > 13 ? 2 : 1;" in DESK
+    assert "items.length > 13 ? 2 : 1" not in DESK
     assert "repository-issue-page-expanded:" in DESK
     # Pure projection: no network, no storage, no invented records.
     assert "fetch" not in DESK

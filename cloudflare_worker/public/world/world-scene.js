@@ -2890,6 +2890,8 @@ function officeReclaimedWoodTexture(THREE) {
 // completed task moves to a varied slot on the right with a hand-drawn X.
 // Keep the ordering stable so a repaint never makes notes jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
+  { key: "done:repo-panels-one-column", task: "Single-column PR + Issue panels", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:admin-member-detail", task: "Admin member detail + email state", estimate: "ready for deploy · in QA", done: true },
   { key: "done:repo-exhibit-split", task: "Split PR/Issue panels + repo agent terminals", estimate: "ready for deploy · in QA", done: true },
   { key: "done:object-keyboard-layout", task: "Click-select objects + keyboard layout controls", estimate: "ready for deploy · in QA", done: true },
   { key: "done:member-click-panel", task: "Click a user for public member side panel", estimate: "ready for deploy · in QA", done: true },
@@ -2898,7 +2900,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "done:flagship-expanded", task: "Keep flagship repo expanded without sync delay", estimate: "ready for deploy · in QA", done: true },
   { key: "done:avatar-identity", task: "Immediate flags + verified email pins", estimate: "ready for deploy · in QA", done: true },
   { key: "done:avatar-faces", task: "Unique faces + compact avatar upload", estimate: "ready for deploy · in QA", done: true },
-  { key: "done:repo-work-list", task: "One issue + PR list with big totals", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:repo-work-list", task: "Superseded combined repo work list", estimate: "replaced by split panels", done: true },
   { key: "done:top-avatar", task: "Top-right account avatar button", estimate: "ready for deploy · in QA", done: true },
   { key: "done:cabinet-panel-swap", task: "Swap cabinet faces + split agent sides", estimate: "ready for deploy · in QA", done: true },
   { key: "task:status-deploy-semaphore", task: "Skip false status incidents during deploys", estimate: "deployed", done: true },
@@ -2991,6 +2993,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "done:engineering-agent-authorization", task: "Engineering-only agent access enforced", estimate: "deployed · in QA", done: true },
   { key: "done:dashboard-home-data", task: "Org repos + live blog on Dashboard", estimate: "deployed · in QA", done: true },
   { key: "done:admin-node-delete", task: "Typed-confirmation admin node removal", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:node-delete-effect", task: "Resolve cabinet identity and animate node deletion", estimate: "ready for deploy · in QA", done: true },
   { key: "done:admin-error-analytics", task: "Admin grouped error trends · 24h chart", estimate: "ready for deploy · in QA", done: true },
   { key: "done:repo-terms-flags", task: "Visible repository Terms policy flags", estimate: "ready for deploy · in QA", done: true },
 ]);
@@ -13300,6 +13303,7 @@ export function createWorldScene({
   container,
   labelLayer,
   identity,
+  initialSpawn = null,
   initialWorldLayout = [],
   reducedMotion = false,
   onLandmarkSelect = () => {},
@@ -15143,8 +15147,23 @@ export function createWorldScene({
   });
 
   const player = createAvatar(THREE, identity);
-  player.position.set(-8.1, 0.38, 30);
-  player.rotation.y = Math.PI;
+  const initialSpawnSpace = String(initialSpawn?.space || "");
+  const initialSpawnFloor = Object.hasOwn(
+    WORLD_SPACE_FLOORS,
+    initialSpawnSpace,
+  )
+    ? WORLD_SPACE_FLOORS[initialSpawnSpace]
+    : 0.38;
+  const initialSpawnX = Number.isFinite(Number(initialSpawn?.x))
+    ? clamp(Number(initialSpawn.x), -WORLD_RADIUS, WORLD_RADIUS)
+    : -8.1;
+  const initialSpawnZ = Number.isFinite(Number(initialSpawn?.z))
+    ? clamp(Number(initialSpawn.z), -WORLD_RADIUS, WORLD_RADIUS)
+    : 30;
+  player.position.set(initialSpawnX, initialSpawnFloor, initialSpawnZ);
+  player.rotation.y = Number.isFinite(Number(initialSpawn?.heading))
+    ? clamp(Number(initialSpawn.heading), -Math.PI, Math.PI)
+    : Math.PI;
   world.add(player);
   // The camera used to start at CAMERA_OFFSET relative to the world origin
   // even though the avatar starts elsewhere. It then spent the first visible
@@ -18533,6 +18552,24 @@ export function createWorldScene({
     player.position.y = currentFloorY;
     cancelDash();
     focusedRepositoryKey = "";
+    if (landmark.id === "office") {
+      // Office selection is travel, not a detached spectator camera. The old
+      // focus moved the view to the building while leaving the avatar at its
+      // distant coordinate, which looked like an indoor teleport and broke
+      // the next doorway interaction. Dash along the continuous ground to the
+      // real exterior threshold and keep the ordinary chase camera attached.
+      const doorway = officeInterior.localToWorld(
+        new THREE.Vector3(0, 0, OFFICE_FRONT_Z + 3.2),
+      );
+      selectedLandmark = "office";
+      cameraFocus = null;
+      dashTarget = new THREE.Vector3(
+        doorway.x,
+        currentFloorY,
+        doorway.z,
+      );
+      return;
+    }
     cameraFocus = new THREE.Vector3(
       landmark.position[0],
       1.5,
@@ -22105,6 +22142,80 @@ export function createWorldScene({
     return slots.slice(0, requested);
   }
 
+  function deleteNetworkNode(target = {}) {
+    const identifiers = new Set(
+      [
+        target?.name,
+        target?.machineName,
+        target?.nodeId,
+      ]
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+    let matchId = "";
+    let cabinet = null;
+    nodeInfrastructure.forEach((candidate, id) => {
+      if (cabinet) return;
+      const record = candidate?.userData?.nodeRecord || {};
+      const candidateIds = [
+        id.replace(/^node:/, ""),
+        record.name,
+        record.machineName,
+        record.nodeId,
+      ].map((value) => String(value || "").trim().toLowerCase());
+      if (candidateIds.some((value) => identifiers.has(value))) {
+        matchId = id;
+        cabinet = candidate;
+      }
+    });
+    if (!cabinet || !matchId) return false;
+    nodeInfrastructure.delete(matchId);
+    cabinet.traverse((child) => {
+      if (!child.userData?.nodeCabinet) return;
+      const index = interactive.indexOf(child);
+      if (index >= 0) interactive.splice(index, 1);
+      if (child.material?.emissive) {
+        child.material.emissive.set("#ff3b4f");
+        child.material.emissiveIntensity = 1.8;
+      }
+    });
+    const origin = cabinet.position.clone();
+    const shockwave = new THREE.Mesh(
+      new THREE.RingGeometry(0.8, 1.2, 48),
+      new THREE.MeshBasicMaterial({
+        color: "#ff5d6c",
+        transparent: true,
+        opacity: 0.92,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+    shockwave.name = `forkmesh-node-delete-effect:${matchId}`;
+    shockwave.rotation.x = -Math.PI / 2;
+    shockwave.position.set(origin.x, 0.24, origin.z);
+    world.add(shockwave);
+    const startedAt = performance.now();
+    const duration = 720;
+    const animateDeletion = (time) => {
+      const progress = clamp((time - startedAt) / duration, 0, 1);
+      const scale = Math.max(0.001, 1 - progress ** 1.4);
+      cabinet.scale.set(scale, scale * (1 + progress * 0.8), scale);
+      cabinet.position.y = origin.y + Math.sin(progress * Math.PI) * 2.8;
+      cabinet.rotation.y += 0.12;
+      shockwave.scale.setScalar(1 + progress * 18);
+      shockwave.material.opacity = 0.92 * (1 - progress);
+      if (progress < 1) return;
+      const callbackIndex = animated.indexOf(animateDeletion);
+      if (callbackIndex >= 0) animated.splice(callbackIndex, 1);
+      world.remove(cabinet, shockwave);
+      disposeObject3D(cabinet);
+      shockwave.geometry.dispose();
+      shockwave.material.dispose();
+    };
+    animated.push(animateDeletion);
+    return true;
+  }
+
   function updateNetworkNodes(nodes = networkNodeSnapshot) {
     networkNodeSnapshot = (Array.isArray(nodes) ? nodes : [])
       .slice(0, 64)
@@ -24332,10 +24443,13 @@ export function createWorldScene({
       const items = allItems.slice(pageInfo.start, pageInfo.end);
       desk.name = `repository-${kind}-desk:${repositoryKey}`;
       desk.position.set(x, 0, 2.05);
-      const columns = items.length > 13 ? 2 : 1;
-      const rows = Math.ceil(items.length / columns);
-      const boardWidth = columns === 2 ? 7.15 : 3.65;
-      const boardHeight = 0.74 + rows * 0.62;
+      // A single reading column keeps every record and its controls aligned.
+      // Retain 25 records per page, but tighten the row pitch so the physical
+      // panels remain compact beside the repository wheel.
+      const rows = items.length;
+      const rowPitch = 0.52;
+      const boardWidth = 4.05;
+      const boardHeight = 0.74 + rows * rowPitch;
       const board = new THREE.Mesh(
         new THREE.BoxGeometry(boardWidth, boardHeight, 0.12),
         makeMaterial(THREE, kind === "issue" ? "#10231b" : "#171429", {
@@ -24359,13 +24473,12 @@ export function createWorldScene({
       });
       items.forEach((record, index) => {
         const isIssue = kind === "issue";
-        const column = Math.floor(index / rows);
-        const row = index % rows;
-        const cardX = columns === 2 ? (column - 0.5) * 3.5 : 0;
+        const row = index;
+        const cardX = 0;
         const cardY =
-          groundY + 0.8 + boardHeight - 0.62 - row * 0.62;
+          groundY + 0.8 + boardHeight - 0.52 - row * rowPitch;
         const card = new THREE.Mesh(
-          new THREE.PlaneGeometry(3.28, 0.56),
+          new THREE.PlaneGeometry(3.78, 0.46),
           new THREE.MeshBasicMaterial({
             map: isIssue
               ? repositoryIssueCardTexture(THREE, record)
@@ -24507,7 +24620,7 @@ export function createWorldScene({
 
       const addPagerButton = (direction, label, buttonX, enabled) => {
         const button = new THREE.Mesh(
-          new THREE.PlaneGeometry(1.5, 0.48),
+          new THREE.PlaneGeometry(1.15, 0.48),
           new THREE.MeshBasicMaterial({
             map: repositoryRecordPagerTexture(
               THREE,
@@ -24539,13 +24652,13 @@ export function createWorldScene({
       addPagerButton(
         -1,
         "◀ PREV",
-        -2.45,
+        -1.46,
         pageInfo.page > 0,
       );
       addPagerButton(
         1,
         "NEXT ▶",
-        2.45,
+        1.46,
         pageInfo.page + 1 < pageInfo.pages,
       );
       const pageReadout = new THREE.Mesh(
@@ -24568,13 +24681,13 @@ export function createWorldScene({
     const pullBoard = addRecordBoard(
       pulls,
       "pull",
-      -7,
+      -5.25,
       "#d5b6ff",
     );
     const issueBoard = addRecordBoard(
       issues,
       "issue",
-      7,
+      5.25,
       "#9ef7c6",
     );
 
@@ -26720,31 +26833,44 @@ export function createWorldScene({
   window.addEventListener("keyup", handleKeyUp);
   window.addEventListener("blur", handleWindowBlur);
 
+  let resizeFrame = 0;
   const resize = () => {
-    const rect = container.getBoundingClientRect();
-    const width = Math.max(1, Math.floor(rect.width));
-    const height = Math.max(1, Math.floor(rect.height));
-    viewportRect.width = width;
-    viewportRect.height = height;
-    // Keep the drawing buffer deliberately modest. The previous 1.75 cap made
-    // the GPU shade over three times as many pixels as a 1x canvas on dense
-    // displays, which showed up as movement hitching.
-    renderer.setPixelRatio(
-      Math.min(
-        window.devicePixelRatio || 1,
-        compactRenderer ? 1 : width < 700 ? 1.1 : 1.35,
-      ),
-    );
-    renderer.setSize(width, height, false);
-    camera.aspect = width / height;
-    camera.updateProjectionMatrix();
-    // ResizeObserver fires after the animation-loop rAF but before paint, and
-    // setSize() clears the WebGL drawing buffer — so without an immediate
-    // re-render the browser composites a blank frame, making the whole world
-    // flicker throughout a live drag-resize. Paint the resized frame now.
-    if (running && !disposed) {
-      renderer.render(scene, camera);
-    }
+    if (resizeFrame || disposed) return;
+    resizeFrame = window.requestAnimationFrame(() => {
+      resizeFrame = 0;
+      if (disposed) return;
+      const rect = container.getBoundingClientRect();
+      const width = Math.max(1, Math.floor(rect.width));
+      const height = Math.max(1, Math.floor(rect.height));
+      if (width === viewportRect.width && height === viewportRect.height) {
+        return;
+      }
+      viewportRect.width = width;
+      viewportRect.height = height;
+      // Keep the drawing buffer deliberately modest. The previous 1.75 cap made
+      // the GPU shade over three times as many pixels as a 1x canvas on dense
+      // displays, which showed up as movement hitching.
+      renderer.setPixelRatio(
+        Math.min(
+          window.devicePixelRatio || 1,
+          compactRenderer ? 1 : width < 700 ? 1.1 : 1.35,
+        ),
+      );
+      renderer.setSize(width, height, false);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      // Do not clear and repaint the drawing buffer during a live touch pan.
+      // The animation loop already owns that frame; one settled resize is
+      // enough after the browser chrome and shell height stop moving.
+      if (
+        running &&
+        !disposed &&
+        primaryPointerId === null &&
+        touchPointers.size === 0
+      ) {
+        renderer.render(scene, camera);
+      }
+    });
   };
   // ResizeObserver is unavailable in older mobile WebViews.  A window resize
   // listener still gives those browsers a correctly sized, working World.
@@ -26752,7 +26878,6 @@ export function createWorldScene({
     typeof ResizeObserver === "function" ? new ResizeObserver(resize) : null;
   resizeObserver?.observe(container);
   window.addEventListener("resize", resize, { passive: true });
-  window.visualViewport?.addEventListener("resize", resize, { passive: true });
   resize();
 
   function animate(time) {
@@ -27234,7 +27359,8 @@ export function createWorldScene({
     reflectionTarget.dispose();
     resizeObserver?.disconnect();
     window.removeEventListener("resize", resize);
-    window.visualViewport?.removeEventListener("resize", resize);
+    window.cancelAnimationFrame(resizeFrame);
+    resizeFrame = 0;
     renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
     renderer.domElement.removeEventListener("dblclick", handleDoubleClick);
     renderer.domElement.removeEventListener("pointermove", handlePointerMove);
@@ -27361,6 +27487,7 @@ export function createWorldScene({
     updateLeaderboards,
     updateReferralLeaderboard,
     updateSiteReferrerLeaderboard,
+    deleteNetworkNode,
     updateNetworkNodes,
     armMirrorPushEffect,
     focusNetworkNode,

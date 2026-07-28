@@ -8548,14 +8548,23 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-22"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-23"
 WORLD_QA_CARDS = (
+    ("world-admin-member-detail-email-state",
+     "Admin member detail and email state",
+     "Open a registered member from their World avatar. Confirm the side "
+     "panel always shows either a green VERIFIED EMAIL check or a red EMAIL "
+     "NOT VERIFIED mark. As is_admin, select Open admin user detail and "
+     "confirm the secret admin console opens directly to only that user's "
+     "record with prefilled password-reset and verification tools. Repeat as "
+     "a non-admin and confirm the link is absent."),
     ("world-repository-split-panels-agent-dock",
      "Split repository work panels and agent dock",
      "Open forkmesh/forkmesh in the World. Confirm pull requests occupy the "
-     "left panel and issues the right panel, each shows a star-sized OPEN "
-     "count, and only bottom controls contain Prev, Next, page, and range. "
-     "Page each side independently and open one card from each. Confirm the "
+     "left panel and issues the right panel, each uses one 25-record column, "
+     "shows a star-sized OPEN count, and only bottom controls contain Prev, "
+     "Next, page, and range. Page each side independently and open one card "
+     "from each. Confirm the "
      "repository name is part of the angled commit-activity pedestal. While "
      "an Engineering-authorized Claude or Codex session runs for this repo, "
      "confirm one compact 45-degree robot screen appears in front with its "
@@ -14887,10 +14896,14 @@ async def world_admin_delete_node_handler(env, request):
             {"error": "not_admin"}, status=403,
             cache_control="no-store, max-age=0, must-revalidate")
     target = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    requested_target = target
+    node_id = clean_string(data.get("nodeId", ""), 120)
+    machine_name = clean_string(
+        data.get("machineName", ""), MAX_NODE_NAME).lower()
     confirmation = clean_string(data.get("confirmation", ""), 128)
     if not valid_node_name(target):
         return json_response({"error": "invalid_node_name"}, status=400)
-    required = "DELETE " + target
+    required = "DELETE " + requested_target
     if confirmation != required:
         return json_response(
             {"error": "confirmation_mismatch",
@@ -14904,7 +14917,33 @@ async def world_admin_delete_node_handler(env, request):
     node_row = await d1_first(
         env, "SELECT node_bi FROM nodes WHERE node_bi=?", target_bi)
     if not record or not node_row:
+        # Public mirror catalogs distinguish an operator account name, a
+        # machine label, and a cryptographic node id. Older World panels used
+        # the machine label as if it were the account key, so deletion could
+        # fail with node_not_found even while the cabinet was visibly online.
+        # Resolve either bounded public identifier back to the canonical node
+        # row, then perform every destructive operation on that canonical key.
+        resolved = await d1_first(
+            env,
+            "SELECT node_bi,name FROM nodes "
+            "WHERE lower(name) IN (?,?) OR pubkey=? LIMIT 1",
+            requested_target, machine_name, node_id)
+        canonical = clean_string(
+            (resolved or {}).get("name", ""), MAX_NODE_NAME).lower()
+        if resolved and canonical and valid_node_name(canonical):
+            resolved_bi, resolved_record = await _account_row(env, canonical)
+            if resolved_record and resolved_bi == resolved.get("node_bi"):
+                target = canonical
+                target_bi = resolved_bi
+                record = resolved_record
+                node_row = resolved
+    if not record or not node_row:
         return json_response({"error": "node_not_found"}, status=404)
+    if target == actor or target in ("forkmesh", "forkmesh-mainnode"):
+        await _audit_sensitive_action(
+            env, actor, "world.node_delete", "node", target, "denied",
+            {"reason": "protected_node"})
+        return json_response({"error": "protected_node"}, status=409)
     if await _is_admin(env, target):
         await _audit_sensitive_action(
             env, actor, "world.node_delete", "node", target, "denied",
@@ -34585,7 +34624,8 @@ def _render_install_diag_overview(summary):
     )
 
 
-async def _render_table_view(env, table, csrf_field="", admin_query=""):
+async def _render_table_view(
+        env, table, csrf_field="", admin_query="", user_filter=""):
     # Generic "show all rows" view for one D1 table. The encrypted `data` column
     # (users/nodes/repos/inboxes store an AES-GCM blob there) is decrypted in place
     # so the admin can actually read it. The table name is validated by the
@@ -34597,23 +34637,52 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
     # every table — including the error log, which reads from these rows.
     if table in ADMIN_HIDDEN_TABLES:
         return '<div class="empty">This table is restricted.</div>'
-    rows = await d1_all(
-        env, "SELECT rowid AS _rowid_, * FROM " + table
-        + " ORDER BY rowid DESC LIMIT 500")
-    count_row = await d1_first(env, "SELECT COUNT(*) AS n FROM " + table)
-    total = int((count_row or {}).get("n", 0) or 0)
+    requested_user = (
+        clean_string(user_filter or "", MAX_NODE_NAME).strip().lower()
+        if table == "users" else ""
+    )
+    if requested_user:
+        requested_user_bi = await blind_index(env, requested_user)
+        rows = await d1_all(
+            env,
+            "SELECT rowid AS _rowid_, * FROM users "
+            "WHERE user_bi=? LIMIT 1",
+            requested_user_bi,
+        )
+        total = len(rows)
+    else:
+        rows = await d1_all(
+            env, "SELECT rowid AS _rowid_, * FROM " + table
+            + " ORDER BY rowid DESC LIMIT 500")
+        count_row = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM " + table)
+        total = int((count_row or {}).get("n", 0) or 0)
 
     # Admin tool: reset any user account's login password. Shown above the
     # users table; posts back to ?action=set_password (handled in _admin).
     prefix = ""
     if table == "users":
+        user_value = (
+            ' value="%s"' % _html_escape(requested_user)
+            if requested_user else ""
+        )
+        detail_heading = (
+            '<div class="title" id="user-detail">User detail · %s · '
+            '<a class="navlink" href="%s">Back to all users</a></div>'
+            % (
+                _html_escape(requested_user),
+                _admin_href(admin_query, table="users"),
+            )
+            if requested_user else ""
+        )
         prefix = (
+            detail_heading +
             '<div class="tools">'
             '<form method="post" action="%s" '
             'onsubmit="return confirm(\'Set a new login password for this '
             'account?\')">'
             + csrf_field +
-            '<input type="text" name="name" placeholder="user name" '
+            '<input type="text" name="name" placeholder="user name"%s '
             'autocomplete="off" required>'
             '<input type="password" name="password" '
             'placeholder="new password (min 8 chars)" minlength="8" required>'
@@ -34625,7 +34694,7 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             'onsubmit="return confirm(\'Resend the verification email for this '
             'account?\')">'
             + csrf_field +
-            '<input type="text" name="name" placeholder="user name" '
+            '<input type="text" name="name" placeholder="user name"%s '
             'autocomplete="off" required>'
             '<button type="submit">Resend verify email</button>'
             '</form>'
@@ -34633,8 +34702,12 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             'stored address; queues it for manual verification if email is not '
             'configured.</span>'
             '</div>'
-        ) % (_admin_href(admin_query, table="users", action="set_password"),
-             _admin_href(admin_query, table="users", action="resend_verify"))
+        ) % (
+            _admin_href(admin_query, table="users", action="set_password"),
+            user_value,
+            _admin_href(admin_query, table="users", action="resend_verify"),
+            user_value,
+        )
 
     if table == "install_diag":
         # Purpose-built anonymous install funnel + recent events, newest first.
@@ -38393,7 +38466,8 @@ class Default(WorkerEntrypoint):
                 self.env, active, None, csrf_field, admin_query)
         else:
             table_html = (await _render_table_view(
-                              self.env, active, csrf_field, admin_query)
+                              self.env, active, csrf_field, admin_query,
+                              params.get("user", [""])[0])
                           if active
                           else '<div class="empty">No tables found.</div>')
 

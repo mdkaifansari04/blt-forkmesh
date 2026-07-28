@@ -97,8 +97,8 @@ def test_repository_circle_uses_avatar_orbit_and_external_record_boards():
     assert 'icon.scale.set(1.14, 1.14, 1)' in SCENE
     assert "const orbitRadius = 4.25" in SCENE
     assert "const pullBoard = addRecordBoard(" in SCENE
-    assert 'pulls,\n      "pull",\n      -7,' in SCENE
-    assert 'issues,\n      "issue",\n      7,' in SCENE
+    assert 'pulls,\n      "pull",\n      -5.25,' in SCENE
+    assert 'issues,\n      "issue",\n      5.25,' in SCENE
     assert '"repository-create-button"' not in SCENE
     follower_texture = _function_body(SCENE, "repositoryFollowerIconTexture")
     assert "256, 256" in follower_texture

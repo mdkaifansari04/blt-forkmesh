@@ -3522,6 +3522,15 @@ forkmesh-world.world-office-active .world-quick-dock {
   background: var(--detail-color);
 }
 
+.world-status-pill-danger {
+  border-color: #ff6b6b;
+  color: #ff8f8f;
+}
+
+.world-status-pill-danger::before {
+  background: #ff4d4d;
+}
+
 .world-truth-grid {
   display: grid;
   grid-template-columns: 1fr;

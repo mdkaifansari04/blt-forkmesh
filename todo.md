@@ -5,6 +5,8 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [x] Make the separate World PR and Issue panels single-column while retaining 25 records per independently paginated page.
+- [x] Show explicit verified/unverified email state in the World member panel and give `is_admin` viewers a direct, filtered admin user-detail link.
 - [x] Split the selected-repository World exhibit into left PR and right Issue panels with large open counts, bottom-only pagination, an angled named commit-activity pedestal, and compact per-repository live agent terminals.
 - [x] Replace World object dragging with click selection, a subtle selection highlight, automatic detail-panel opening, admin arrow-key nudging, and `R` rotation.
 - [x] Make every visible user avatar clickable, subtly highlight the selected person, and open their privacy-filtered member information in the side panel.
@@ -13,7 +15,7 @@ the implementation and its focused verification are complete.
 - [x] Keep the flagship repository wheel expanded immediately and remove mirror-metadata render delay.
 - [x] Restore country flags immediately, add verified-email front pins, and keep privacy choices intact.
 - [x] Give every user a stable unique generated face plus a compact account-avatar upload override.
-- [x] Combine repository issues and pull requests into one paginated World list with large totals and contained card text.
+- [x] Superseded: the initial combined repository work list was replaced by independent single-column PR and Issue panels.
 - [x] Show the signed-in user's uploaded avatar in the top-right control at the same size as neighboring buttons.
 - [x] Swap cabinet Actions/server-info faces and split Claude/Codex work onto opposite side panels.
 - [x] Consolidate aquarium feed, opaque/clear backdrop, and light controls into a clickable bottom-right tank panel.

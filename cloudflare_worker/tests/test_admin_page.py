@@ -181,6 +181,26 @@ def test_admin_resend_verify_tool_on_users_table():
     assert "_admin_resend_verification" in admin_calls
 
 
+def test_admin_users_supports_a_direct_filtered_detail_view():
+    table_view = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _render_table_view("):
+        ENTRY_TEXT.index("def _render_admin_stats(")
+    ]
+    assert 'user_filter=""' in table_view
+    assert 'if table == "users" else ""' in table_view
+    assert "requested_user_bi = await blind_index(env, requested_user)" in table_view
+    assert '"WHERE user_bi=? LIMIT 1"' in table_view
+    assert 'id="user-detail"' in table_view
+    assert "Back to all users" in table_view
+
+    admin = ENTRY_TEXT[
+        ENTRY_TEXT.index("    async def _admin(self, request):"):
+        ENTRY_TEXT.index("\n    async def _route(", ENTRY_TEXT.index(
+            "    async def _admin(self, request):"))
+    ]
+    assert 'params.get("user", [""])[0]' in admin
+
+
 def test_admin_error_log_has_grouped_24_hour_occurrence_analytics():
     for contract in (
         "Previous 24 hours",
