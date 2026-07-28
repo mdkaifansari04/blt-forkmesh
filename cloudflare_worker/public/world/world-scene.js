@@ -2326,7 +2326,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:deploy-lifecycle", task: "Live deploy spinner + ready refresh button", estimate: "deployed", done: true },
   { key: "task:elevator-camera-lock", task: "Elevator button camera lock + release", estimate: "deployed", done: true },
   { key: "task:build-board-nearby", task: "Refresh task wall when a player approaches", estimate: "deployed", done: true },
-  { key: "task:twitter-feed", task: "ForkMesh X posts on the Twitter board", estimate: "verifying feed", done: false },
+  { key: "task:twitter-feed", task: "ForkMesh X posts on the Twitter board", estimate: "ready for deploy · in QA", done: true },
   { key: "done:fresh-code-surge", task: "Restore verified Fresh Code beam + shockwave", estimate: "deployed", done: true },
   { key: "done:chest-fediverse", task: "Fix chest Fedi load + activity border", estimate: "deployed", done: true },
   { key: "done:qt-host-probes", task: "Live host + Claude/Codex capability checks", estimate: "deployed", done: true },
@@ -2836,7 +2836,7 @@ function worldRepoIssuesTexture(THREE, issues = []) {
   });
 }
 
-function humanTodoItemsFromAgentSessions(sessions = []) {
+function humanTodoItemsFromAgentSessions(sessions = [], systemItems = []) {
   const cloudflareLogSetup = {
     id: "system:cloudflare-observability-key",
     provider: "SYSTEM",
@@ -2848,6 +2848,26 @@ function humanTodoItemsFromAgentSessions(sessions = []) {
   };
   const items = [cloudflareLogSetup];
   const seen = new Set([cloudflareLogSetup.action.toLowerCase()]);
+  for (const item of Array.isArray(systemItems) ? systemItems : []) {
+    const action = String(item?.action || "")
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 180);
+    if (!action || seen.has(action.toLowerCase())) continue;
+    seen.add(action.toLowerCase());
+    items.push({
+      id: String(item?.id || "system").slice(0, 64),
+      provider: "SYSTEM",
+      title: String(item?.title || "System setup")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 90),
+      action,
+      reason: String(item?.reason || "SETUP").slice(0, 24).toUpperCase(),
+      updatedAt: Math.max(0, Number(item?.updatedAt) || 0),
+    });
+  }
   const add = (session, text, reason) => {
     const action = String(text || "")
       .replace(/[\u0000-\u001f\u007f]/g, " ")
@@ -2936,8 +2956,8 @@ function humanTodoItemsFromAgentSessions(sessions = []) {
     .slice(0, 12);
 }
 
-function worldHumanTodoTexture(THREE, sessions = []) {
-  const items = humanTodoItemsFromAgentSessions(sessions);
+function worldHumanTodoTexture(THREE, sessions = [], systemItems = []) {
+  const items = humanTodoItemsFromAgentSessions(sessions, systemItems);
   return canvasTexture(THREE, 1800, 1120, (context) => {
     context.fillStyle = "#322b4d";
     context.fillRect(0, 0, 1800, 1120);
@@ -8387,6 +8407,41 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
         width,
         height,
       );
+    } else if (snapshot.unavailable) {
+      context.fillStyle = "#ffbd6b";
+      context.font = '800 62px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("PUBLIC FEED UNAVAILABLE", 96, 820);
+      context.fillStyle = "#e8e9ff";
+      context.font = '600 48px "ForkMesh Favorit", sans-serif';
+      wrapCanvasText(
+        context,
+        snapshot.reason || "X did not return a public timeline.",
+        96,
+        920,
+        1344,
+        60,
+        4,
+      );
+      context.fillStyle = "#8b9bf4";
+      context.font = '800 48px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("HUMAN TODO", 96, 1260);
+      context.fillStyle = "#c8c9ff";
+      context.font = '600 43px "ForkMesh Favorit", sans-serif';
+      wrapCanvasText(
+        context,
+        snapshot.humanTodo || "Publish a public @forkmesh post and try again.",
+        96,
+        1340,
+        1344,
+        56,
+        4,
+      );
+      context.fillStyle = "#8b9bf4";
+      context.font = '800 68px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("TAP / CLICK TO OPEN", 96, HEIGHT - 128);
+      context.fillStyle = "#7a7ca8";
+      context.font = '600 44px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(options.footer, 96, HEIGHT - 48);
     } else {
       context.fillStyle = "#43389c";
       context.fillRect(16, 16, 1504, 560);
@@ -10641,9 +10696,30 @@ export function createWorldScene({
       record.snapshot =
         feed && typeof feed === "object" && feed.state === "ready"
           ? { posts: Array.isArray(feed.posts) ? feed.posts : [] }
-          : null;
+          : feed && typeof feed === "object" && record.options.id === "twitter"
+            ? {
+                unavailable: true,
+                reason: String(feed.reason || "").slice(0, 180),
+                humanTodo: String(feed.humanTodo || "").slice(0, 220),
+              }
+            : null;
       repaintSocialBanner(record);
     }
+    const twitter = payload?.twitter;
+    humanTodoSystemItems =
+      twitter &&
+      twitter.state !== "ready" &&
+      String(twitter.humanTodo || "").trim()
+        ? [{
+            id: "system:x-api",
+            provider: "SYSTEM",
+            title: "ForkMesh X board",
+            action: String(twitter.humanTodo).slice(0, 180),
+            reason: "SETUP",
+            updatedAt: Number.MAX_SAFE_INTEGER - 1,
+          }]
+        : [];
+    repaintHumanTodoBoard();
   }
 
   function updateSystemStatusBoard(payload) {
@@ -12460,6 +12536,7 @@ export function createWorldScene({
   }
   interactive.push(officeTaskBulletinFace, repoIssuesBoardFace);
   let humanTodoSessions = [];
+  let humanTodoSystemItems = [];
   let buildBoardState = {
     canManage: false,
     items: WORLD_TASK_BULLETIN_ITEMS.map((item) => ({ ...item })),
@@ -17559,15 +17636,20 @@ export function createWorldScene({
     updateNetworkNodes(networkNodeSnapshot);
   }
 
-  function updateMirrorAgentTasks(sessions = []) {
-    humanTodoSessions = Array.isArray(sessions) ? sessions.slice(0, 80) : [];
+  function repaintHumanTodoBoard() {
     const previousHumanTodos = humanTodoBoardFace.material.map;
     humanTodoBoardFace.material.map = worldHumanTodoTexture(
       THREE,
       humanTodoSessions,
+      humanTodoSystemItems,
     );
     humanTodoBoardFace.material.needsUpdate = true;
     previousHumanTodos?.dispose?.();
+  }
+
+  function updateMirrorAgentTasks(sessions = []) {
+    humanTodoSessions = Array.isArray(sessions) ? sessions.slice(0, 80) : [];
+    repaintHumanTodoBoard();
     const next = new Map();
     for (const session of Array.isArray(sessions) ? sessions.slice(0, 80) : []) {
       const node = String(session?.targetNode || "").trim().toLowerCase();

@@ -11073,6 +11073,8 @@ class ForkMeshWorld extends HTMLElement {
       extra = () => ({}),
     ) => ({
       state: feed?.state === "ready" ? "ready" : "unavailable",
+      reason: String(feed?.reason || "").slice(0, 180),
+      humanTodo: String(feed?.humanTodo || "").slice(0, 220),
       posts: (Array.isArray(feed?.posts) ? feed.posts : []).map((post) => ({
         text: text(post).slice(0, 400),
         meta: meta(post),

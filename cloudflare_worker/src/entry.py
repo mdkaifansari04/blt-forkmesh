@@ -6121,6 +6121,42 @@ async def _world_social_fetch_text(url, headers):
         return None
 
 
+async def _world_x_api_posts(env):
+    """Read @forkmesh through the official X API when a token is configured."""
+    token = clean_string(
+        getattr(env, "X_API_BEARER_TOKEN", ""), 512).strip()
+    if not token:
+        return [], "X public embed returned no posts and no API token is configured."
+    headers = {
+        "accept": "application/json",
+        "authorization": "Bearer " + token,
+    }
+    user_text = await _world_social_fetch_text(
+        world_social_feeds.X_API_USER_URL, headers)
+    try:
+        user_payload = json.loads(user_text) if user_text else {}
+    except ValueError:
+        user_payload = {}
+    user_id = str((user_payload.get("data") or {}).get("id") or "")
+    if not re.fullmatch(r"[0-9]{1,32}", user_id):
+        return [], "The configured X API token could not resolve @forkmesh."
+    posts_url = (
+        world_social_feeds.X_API_POSTS_URL.format(user_id=quote(user_id)) +
+        "?max_results=10&exclude=replies,retweets&"
+        "tweet.fields=created_at,public_metrics"
+    )
+    posts_text = await _world_social_fetch_text(posts_url, headers)
+    try:
+        posts_payload = json.loads(posts_text) if posts_text else {}
+    except ValueError:
+        posts_payload = {}
+    posts = world_social_feeds.normalize_x_api_timeline(
+        posts_payload, world_social_feeds.TWITTER_HANDLE)
+    if not posts:
+        return [], "The X API returned no recent public @forkmesh posts."
+    return posts, ""
+
+
 async def world_social_posts_handler(env, request):
     """Public read-only proxy feeding the Twitter, Reddit, and blog world
     banners.
@@ -6140,6 +6176,8 @@ async def world_social_posts_handler(env, request):
     if cached is not None:
         return cached
     twitter_posts, twitter_ok = [], False
+    twitter_source = "public-syndication"
+    twitter_reason = "The public X timeline could not be reached."
     twitter_html = await _world_social_fetch_text(
         world_social_feeds.TWITTER_SYNDICATION_URL,
         {"accept": "text/html,application/json"},
@@ -6149,7 +6187,19 @@ async def world_social_posts_handler(env, request):
         if next_data is not None:
             twitter_posts = world_social_feeds.normalize_twitter_timeline(
                 next_data)
+            twitter_ok = bool(twitter_posts)
+            if not twitter_ok:
+                twitter_reason = (
+                    "X's public embed returned no recent @forkmesh posts.")
+    if not twitter_ok:
+        api_posts, api_reason = await _world_x_api_posts(env)
+        if api_posts:
+            twitter_posts = api_posts
             twitter_ok = True
+            twitter_source = "x-api-v2"
+            twitter_reason = ""
+        elif api_reason:
+            twitter_reason = api_reason
     reddit_posts, reddit_ok = [], False
     reddit_text = await _world_social_fetch_text(
         world_social_feeds.REDDIT_LISTING_URL,
@@ -6197,7 +6247,9 @@ async def world_social_posts_handler(env, request):
     resp = json_response(
         world_social_feeds.social_posts_payload(
             int(Date.now()), twitter_posts, reddit_posts, blog_posts,
-            twitter_ok, reddit_ok, blog_ok),
+            twitter_ok, reddit_ok, blog_ok,
+            twitter_reason=twitter_reason,
+            twitter_source=twitter_source),
         cache_seconds=WORLD_SOCIAL_POSTS_TTL,
     )
     await edge_cache_put(WORLD_SOCIAL_POSTS_CACHE_KEY, resp)
@@ -8325,7 +8377,7 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-2"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-3"
 WORLD_QA_CARDS = (
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
@@ -8480,6 +8532,11 @@ WORLD_QA_CARDS = (
      "Walk around and through the Office approach. Confirm flowers, bushes, "
      "and low-poly trees surround the island without blocking the bridge, "
      "doorway, or smooth entry and exit."),
+    ("twitter-public-feed", "Twitter/X public board fallback",
+     "Open the Twitter/X board. If public @forkmesh posts exist, confirm their "
+     "text, age, likes, and reposts render. If X returns no public timeline, "
+     "confirm the board explains why and the Engineering Human TODO board "
+     "shows the read-only X API setup action."),
 )
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
 
