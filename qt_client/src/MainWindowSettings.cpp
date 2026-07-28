@@ -3931,6 +3931,9 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
 {
     if (!m_settingsLog)
         return;
+    QScrollBar *scrollBar = m_settingsLog->verticalScrollBar();
+    const int lockedPosition =
+        m_logScrollLocked && scrollBar ? scrollBar->value() : -1;
 
     // The badge accents read on either canvas, but the timestamp, day divider
     // and message body need per-theme greys/text so the log isn't grey text
@@ -3948,6 +3951,8 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
     }
 
     m_settingsLog->append(formatLogLineHtml(time, message, dark, logFaviconTag(message, m_settingsLog)));
+    if (lockedPosition >= 0)
+        scrollBar->setValue(lockedPosition);
 }
 
 // Loads the next older page of matching lines when the user scrolls to the

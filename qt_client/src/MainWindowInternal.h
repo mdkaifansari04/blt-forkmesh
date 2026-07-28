@@ -173,6 +173,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 
@@ -1306,6 +1307,7 @@ public:
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         setFixedSize(kSide, kSide); // same button-sized square as the resource sparklines
+        setCursor(Qt::PointingHandCursor);
         refreshTooltip();
         // Drive the sweep: a slow, steady rotation independent of probe timing.
         m_sweep = new QTimer(this);
@@ -1355,7 +1357,16 @@ public:
         update();
     }
 
+    std::function<void()> onClicked;
+
 protected:
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && onClicked)
+            onClicked();
+        QWidget::mouseReleaseEvent(event);
+    }
+
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
@@ -1508,12 +1519,16 @@ private:
     {
         if (m_unreachable) {
             setToolTip(QStringLiteral(
-                "Relay not responding \xE2\x80\x94 last probe timed out"));
+                "Relay not responding \xE2\x80\x94 last probe timed out\n"
+                "Click to open Mirror nodes"));
         } else if (m_latencyMs < 0) {
-            setToolTip(QStringLiteral("Measuring relay latency\xE2\x80\xA6"));
+            setToolTip(QStringLiteral(
+                "Measuring relay latency\xE2\x80\xA6\n"
+                "Click to open Mirror nodes"));
         } else {
             setToolTip(QStringLiteral(
-                           "Relay round-trip latency: %1 ms\nProbed every minute")
+                           "Relay round-trip latency: %1 ms\n"
+                           "Probed every minute\nClick to open Mirror nodes")
                            .arg(m_latencyMs));
         }
     }

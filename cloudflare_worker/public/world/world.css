@@ -806,6 +806,13 @@ forkmesh-world {
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--world-line-strong) transparent;
+  transition: width 180ms ease;
+}
+
+.world-right-rail[data-expanded="false"] {
+  width: 44px;
+  gap: 4px;
+  overflow: visible;
 }
 
 .world-map {
@@ -821,6 +828,50 @@ forkmesh-world {
   border: 1px solid var(--world-line);
   background: var(--world-panel);
   backdrop-filter: blur(18px);
+}
+
+.world-right-rail[data-expanded="false"] .world-saved-views,
+.world-right-rail[data-expanded="false"] .world-share-view-button {
+  width: 44px;
+}
+
+.world-right-rail[data-expanded="false"] .world-share-view-button {
+  min-height: 40px;
+  justify-content: center;
+  padding: 0;
+}
+
+.world-right-rail[data-expanded="false"]
+  .world-share-view-button
+  span:not([aria-hidden="true"]),
+.world-right-rail[data-expanded="false"] .world-saved-views-toggle,
+.world-right-rail[data-expanded="false"]
+  .world-saved-views-heading
+  > button:last-child
+  span:last-child,
+.world-right-rail[data-expanded="false"] .world-saved-view-list,
+.world-right-rail[data-expanded="false"] .world-community-placement,
+.world-right-rail[data-expanded="false"] .world-fediverse-activity {
+  display: none;
+}
+
+.world-right-rail[data-expanded="false"] .world-saved-views-heading {
+  min-height: 40px;
+  justify-content: center;
+  border-bottom: 0;
+  padding: 0;
+}
+
+.world-right-rail[data-expanded="false"]
+  .world-saved-views-heading
+  > button:last-child {
+  display: grid;
+  width: 100%;
+  min-height: 40px;
+  place-items: center;
+  grid-template-columns: 1fr;
+  border: 0;
+  padding: 0;
 }
 
 .world-share-view-button {
@@ -933,14 +984,6 @@ forkmesh-world {
   display: grid;
   place-items: center;
   color: var(--world-mint);
-}
-
-.world-saved-view > button:first-child > span:last-child {
-  overflow: hidden;
-  padding: 1px 2px 2px;
-  font: 600 0.55rem/1.2 "ForkMesh Mono", monospace;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .world-saved-view-edit {
@@ -5890,6 +5933,58 @@ forkmesh-world.world-office-active .world-quick-dock {
   outline: none;
 }
 
+.world-daylight-control {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--world-line);
+  color: var(--world-muted);
+  font-size: 0.7rem;
+}
+
+.world-daylight-control > strong {
+  color: var(--world-copy);
+  font-family: "ForkMesh Mono", monospace;
+}
+
+.world-daylight-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.world-daylight-options button {
+  display: grid;
+  min-height: 44px;
+  place-items: center;
+  gap: 2px;
+  border: 1px solid var(--world-line);
+  background: #0b1c17;
+  color: var(--world-muted);
+  cursor: pointer;
+  font: 700 0.62rem/1.15 "ForkMesh Mono", monospace;
+}
+
+.world-daylight-options button span {
+  color: var(--world-copy);
+  font-size: 1.05rem;
+}
+
+.world-daylight-options button:hover,
+.world-daylight-options button:focus-visible,
+.world-daylight-options button[aria-pressed="true"] {
+  border-color: var(--world-mint);
+  background: rgb(158 247 198 / 0.1);
+  color: var(--world-copy);
+  outline: none;
+}
+
+.world-daylight-control small {
+  color: #80978b;
+  line-height: 1.45;
+}
+
 .world-outfit-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -6706,6 +6801,10 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
       var(--world-viewport-height, 100dvh) - var(--safe-top) - 118px
     );
     overflow: visible;
+  }
+
+  .world-right-rail[data-expanded="false"] {
+    width: 44px;
   }
 
   .world-right-rail .world-map {

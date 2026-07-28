@@ -938,6 +938,57 @@ int main(int argc, char *argv[])
     check(!window.testAccountAuthenticated(),
           QStringLiteral("start does not require or fake an account"));
 
+    // The Nodes page expands the database-backed user directory's linked-node
+    // lists, so offline fleet members do not vanish just because only one node
+    // is currently in the live room roster.
+    window.testSetDirectoryUserNodes(
+        QStringLiteral("alice"),
+        {QStringLiteral("node-a"), QStringLiteral("node-b")});
+    window.testShowNodesSection();
+    const QStringList directoryNodes = window.testNodeDirectoryNames();
+    check(directoryNodes.contains(QStringLiteral("node-a")) &&
+              directoryNodes.contains(QStringLiteral("node-b")),
+          QStringLiteral("Nodes lists offline linked nodes from the relay directory"));
+
+    // The Repos page groups machine publications by logical repository, prefers
+    // a public organization alias, maps a standalone node back to its user, and
+    // exposes an explicit Switch action.
+    const QString rootA(40, QLatin1Char('a'));
+    const QString rootB(40, QLatin1Char('b'));
+    QJsonArray catalogFixture{
+        QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-a")},
+                    {QStringLiteral("name"), QStringLiteral("widget")},
+                    {QStringLiteral("rootCommit"), rootA},
+                    {QStringLiteral("source"), QStringLiteral("local-node")}},
+        QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-b")},
+                    {QStringLiteral("name"), QStringLiteral("widget")},
+                    {QStringLiteral("rootCommit"), rootA},
+                    {QStringLiteral("source"), QStringLiteral("remote-clone")}},
+        QJsonObject{{QStringLiteral("owner"), QStringLiteral("acme")},
+                    {QStringLiteral("name"), QStringLiteral("widget")},
+                    {QStringLiteral("rootCommit"), rootA},
+                    {QStringLiteral("source"),
+                     QStringLiteral("organization-alias")},
+                    {QStringLiteral("servingOwner"),
+                     QStringLiteral("node-a")}},
+        QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-b")},
+                    {QStringLiteral("name"), QStringLiteral("cli")},
+                    {QStringLiteral("rootCommit"), rootB},
+                    {QStringLiteral("source"), QStringLiteral("local-node")}},
+    };
+    window.testRenderNetworkRepos(catalogFixture);
+    const QStringList renderedRepoNames = window.testNetworkRepoNames();
+    const QSet<QString> repoNames(renderedRepoNames.cbegin(),
+                                  renderedRepoNames.cend());
+    check(repoNames == QSet<QString>{
+                           QStringLiteral("acme/widget"),
+                           QStringLiteral("alice/cli")},
+          QStringLiteral("Repos groups mirrors under user and organization owners"));
+    check(window.testNetworkRepoMirrorHeader() == QStringLiteral("Mirrors"),
+          QStringLiteral("Repos uses a compact mirror-count column"));
+    check(window.testNetworkRepoActionText(0) == QStringLiteral("Switch"),
+          QStringLiteral("Repos provides an explicit Switch button"));
+
     // Reward settings must never launch the former reserve/donation/finalize
     // account funnel. A mock account flow is installed specifically to prove it
     // remains untouched.

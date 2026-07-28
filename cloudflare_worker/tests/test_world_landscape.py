@@ -12,65 +12,65 @@ def source():
 def test_world_uses_a_mixed_city_and_woodland_surface():
     scene = source()
     for contract in (
-        'ground.name = "forkmesh-town-terrain-top"',
+        '"forkmesh-continuous-city-land"',
         'group.name = "forkmesh-town-mixed-landscape"',
         '"forkmesh-town-stone-plaza"',
         "`forkmesh-town-path-${id}`",
-        "`forkmesh-town-grass-patch-${index + 1}`",
         "deterministicTreeLayout().forEach",
-        '"#716f66"',
         '"#b29a76"',
-        '"#536348"',
+        '"/world/assets/city-park-grass-v1.webp"',
     ):
         assert contract in scene
+    assert "forkmesh-town-grass-patch" not in scene
     assert 'makeMaterial(THREE, "#174434"' not in scene
 
 
-def test_world_land_uses_clean_low_draw_call_foundations():
+def test_world_land_uses_one_clean_low_draw_call_foundation():
     scene = source()
     for contract in (
-        "function createTerrainFoundation(",
-        'earth.name = `${name}-earth`',
-        "new THREE.CylinderGeometry(radius, radius * 0.94, depth, 64, 1)",
-        "A single clean foundation replaces the old strata/root decoration",
-        '"forkmesh-town-terrain-foundation"',
-        '"hosted-repository-terrain-foundation"',
-        '"forkmesh-office-terrain-foundation"',
+        '"forkmesh-continuous-city-foundation"',
+        '"forkmesh-continuous-city-land"',
+        "new THREE.CylinderGeometry(1, 1, 6.4, 128)",
+        "CONTINUOUS_CITY_RADIUS_X",
+        "CONTINUOUS_CITY_RADIUS_Z",
     ):
         assert contract in scene
+    assert "function createTerrainFoundation(" not in scene
+    assert "hosted-repository-terrain-foundation" not in scene
+    assert "forkmesh-office-terrain-foundation" not in scene
     assert 'ring.name = `${name}-strata-${index + 1}`' not in scene
     assert 'root.name = `${name}-root-${index + 1}`' not in scene
 
 
-def test_repository_and_office_connections_are_land_not_narrow_bridges():
+def test_repository_and_office_paths_share_the_continuous_grass():
     scene = source()
     for contract in (
-        "const REPOSITORY_CONNECTION_HALF_WIDTH = 32;",
-        "const OFFICE_CONNECTION_HALF_WIDTH = 36;",
-        '"hosted-repository-causeway-earth"',
         '"hosted-repository-promenade"',
-        '"forkmesh-office-land-connection-earth"',
-        '"forkmesh-office-land-connection-top"',
-        "REPOSITORY_CONNECTION_HALF_WIDTH * 2",
-        "OFFICE_CONNECTION_HALF_WIDTH * 2",
-        '"forkmesh-curved-district-land-loop"',
-        '"forkmesh-curved-district-land-top"',
+        '"forkmesh-member-promenade"',
+        '"forkmesh-leaderboard-promenade"',
+        '"forkmesh-office-land-promenade"',
+        "concreteBrickMaterial(THREE)",
     ):
         assert contract in scene
+    assert "addRoundedCausewayEnds" not in scene
+    assert "rounded-pavement" not in scene
+    assert "causeway-earth" not in scene
+    assert "forkmesh-curved-district-land" not in scene
     assert "for (let x = -5.4; x <= 5.4; x += 1.2)" not in scene
 
 
-def test_visible_land_connection_dimensions_drive_walkability():
+def test_continuous_visible_foundation_drives_walkability():
     scene = source()
     for contract in (
-        "px >= REPOSITORY_CONNECTION_MIN_X + margin",
-        "px <= REPOSITORY_CONNECTION_MAX_X - margin",
-        "Math.abs(pz) <= REPOSITORY_CONNECTION_HALF_WIDTH - margin",
-        "Math.abs(px) <= OFFICE_CONNECTION_HALF_WIDTH - margin",
-        "pz >= OFFICE_CONNECTION_MIN_Z + margin",
-        "pz <= OFFICE_CONNECTION_MAX_Z - margin",
+        "const cityRadiusX = CONTINUOUS_CITY_RADIUS_X - margin;",
+        "const cityRadiusZ = CONTINUOUS_CITY_RADIUS_Z - margin;",
+        "((px - WORLD_BIKE_LANE_CENTER_X) / cityRadiusX) ** 2",
+        "((pz - CONTINUOUS_CITY_CENTER_Z) / cityRadiusZ) ** 2",
+        "BEACH_ROAD_MIN_X + margin",
+        "BEACH_RADIUS - margin",
     ):
         assert contract in scene
+    assert "WORLD_LOOP_CONTROL_POINTS" not in scene
 
 
 def test_paths_share_a_concrete_brick_texture_and_closed_bike_lane():
@@ -80,12 +80,14 @@ def test_paths_share_a_concrete_brick_texture_and_closed_bike_lane():
         "function concreteBrickMaterial(THREE)",
         '"/world/assets/concrete-brick-path-v1.webp"',
         "    8,\n    2,",
-        "function curvedRibbonGeometry(",
-        "new THREE.CatmullRomCurve3(",
+        "const WORLD_BIKE_LANE_RADIUS = 242;",
+        "new THREE.RingGeometry(",
         '"forkmesh-world-bike-lane"',
+        '"forkmesh-world-bike-center-groove"',
         "bikeLaneMaterial(THREE)",
     ):
         assert contract in scene
+    assert "WORLD_LOOP_CONTROL_POINTS" not in scene
 
 
 def test_leaderboards_are_one_above_ground_perimeter_panel():
@@ -110,6 +112,9 @@ def test_two_clickable_bikes_use_normal_movement_and_collision():
         "function rideBike(index)",
         "function applyBikeRidePose(moving, delta)",
         "function dismountBike(",
+        "function toggleNearestBikeRide()",
+        'event.code === "KeyE"',
+        "placeBikeOnLane(",
         "BIKE_RIDE_SPEED_MULTIPLIER",
         "input.ridingBike ? BIKE_RIDE_SPEED_MULTIPLIER : 1",
         "worldWalkSurfaceContains(",
@@ -169,7 +174,9 @@ def test_start_here_map_persists_bounded_progress_between_visits():
 
 def test_environment_tracks_the_visitors_local_daylight_without_frame_churn():
     scene = source()
-    assert "const minuteOfDay = now.getHours() * 60 + now.getMinutes();" in scene
+    assert "const observedMinute = now.getHours() * 60 + now.getMinutes();" in scene
+    assert 'daylightMode === "day"' in scene
+    assert 'daylightMode === "night"' in scene
     assert "const easedDaylight =" in scene
     assert "nextEnvironmentCheckAt = time + 15_000;" in scene
     assert "if (minuteOfDay !== localDaylightMinute)" in scene

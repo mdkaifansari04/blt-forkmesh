@@ -23,7 +23,7 @@ def test_preferences_stay_in_the_encrypted_account_record_and_are_bounded():
     assert '"storage": "account-encrypted"' in ENTRY
     assert "WORLD_PREFERENCES_MAX_VIEWS = 4" in ENTRY
     assert "data:image/webp;base64" in ENTRY
-    assert "abs(x) > 340" in ENTRY
+    assert "abs(x) > 620" in ENTRY
     assert "settingsUpdatedAt" in ENTRY
 
 
@@ -41,6 +41,12 @@ def test_signed_in_world_syncs_views_and_movement_with_offline_fallback():
     assert "queueWorldPreferencesSync()" in WORLD
     assert "this.settings.moveSpeed" in WORLD
     assert "this.settings.moveAccel" in WORLD
+    assert "this.settings.daylightMode" in WORLD
     assert "this.savedViews.slice(0, SAVED_VIEWS_MAX)" in WORLD
     assert "Local storage remains the offline source" in WORLD
     assert "synced to your account" in WORLD
+
+
+def test_daylight_lock_is_bounded_before_account_storage():
+    assert '"daylightMode": 8' in ENTRY
+    assert '(None, "auto", "day", "night")' in ENTRY

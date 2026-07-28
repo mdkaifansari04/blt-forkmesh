@@ -5,10 +5,20 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [x] Add a one-line status bar at the bottom of the Qt window carrying the branch switcher, the repository git identity and the running app's on-disk location.
+- [x] Remove zoom-out relationship lines, rounded connector pads, colored grass ovals, disjoint terrain remnants, and obstructive agent-terminal blocks; retain one fast continuous walkable grass foundation.
+- [x] Make the perimeter bike path a true circle and lock mounted bikes to its center groove, with `E` as the explicit mount/dismount control.
+- [x] Make World PR and Issue clicks open record-only detail drawers without unrelated Repository portals content.
+- [x] Make admin node deletion alias-tolerant and idempotent, purge all related node data, and remove every matching cabinet from the World.
+- [x] Add sun/moon sky bodies, an Auto/Day/Night display preference, a collapsed-by-default expandable right HUD rail, and text-free saved-view thumbnails.
 - [x] Straighten the World “What we're building” cards, show the complete active task set, and add readable scope/status detail to every card.
 - [x] Size the World PR and Issue panels to their visible records, move open counts below the lists, put the newest record at the bottom, and add one-click first-person viewing pads.
 - [x] Stop signed-in mobile World pans from clearing or visually refreshing the WebGL scene.
-- [ ] Restore the cached spawn pose before scene hydration and keep Office travel attached to the avatar.
+- [x] Restore the cached spawn pose before scene hydration and keep Office travel attached to the avatar.
+- [x] Finish the Qt execution-aware stall-log regression build so fast async/worker actions never produce false “not backgrounded” alerts.
+- [x] Show follower avatars in the self profile and add a non-blocking ActivityPub composer with selfie capture and auto-filled editable alt text.
+- [x] Keep Reef Control visible throughout the lobby and make fish react gently when a visitor approaches.
+- [x] Animate verified changed files colliding with their repository ring, with night lightning or daylight file shadows followed by a ten-second sizzle/sparkle fade.
 - [x] Show each live repository agent task on its tiny terminal and open that exact engineering-only transcript with prompt and re-prompt controls when clicked.
 - [x] Join the World districts into one continuous city landscape with seamless concrete paths.
 - [x] Add a visible START HERE progress map from the users area to the centered mirror nodes.

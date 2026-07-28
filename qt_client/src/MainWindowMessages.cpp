@@ -851,6 +851,13 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
     }
     m_chatDirectoryLoaded = true;
     m_chatDirectoryUsers = next;
+    // The public user directory is also the database-backed source of each
+    // account's linked node fleet. Keep the Nodes page in step so offline nodes
+    // do not disappear merely because they are absent from this chat roster.
+    if (m_nodesTable)
+        refreshNodesTable();
+    if (m_networkReposTable && !m_networkReposLastPayload.isEmpty())
+        renderNetworkRepos(m_networkReposLastPayload);
     refreshMentionCandidates();
     refreshChatMembers();
     if (m_messageLayout && !m_currentConversation.isEmpty()) {
@@ -864,7 +871,7 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
 void MainWindow::refreshChatMembers()
 {
     // Keep the @-mention candidates in step with the roster (this runs on every
-    // roster update), even before the members column itself exists.
+    // roster update), even before the room-members popup itself exists.
     refreshMentionCandidates();
     if (!m_chatMembersLayout)
         return;
@@ -990,10 +997,64 @@ void MainWindow::refreshChatMembers()
             }
         }
     };
-    for (const MemberInfo &member : std::as_const(m_homeRoster))
-        addMember(member);
-    for (const MemberInfo &member : std::as_const(m_chatDirectoryUsers))
-        addMember(member);
+    // Resolve the live roster to registered accounts first. Roster identities
+    // that have no database directory row are transient nodes/Guest users and
+    // must never appear in the room's user picker.
+    QHash<QString, QList<MemberInfo>> liveByUser;
+    for (const MemberInfo &member : std::as_const(m_homeRoster)) {
+        if (!member.self && !member.online)
+            continue;
+        const QString key = groupKeyFor(member);
+        if (!m_chatDirectoryUsers.contains(key))
+            continue;
+        liveByUser[key].append(member);
+    }
+
+    QSet<QString> roomUserKeys;
+    const bool privateOfficeRoom =
+        m_officeChannelMirror &&
+        m_officeChannelMirror->isPrivateConversation(m_currentConversation);
+    if (privateOfficeRoom) {
+        // The channel list is authorized for this account and returns the
+        // private room's stored database membership. It is deliberately not
+        // inferred from the global presence roster.
+        for (const QString &username :
+             m_officeChannelMirror->membersForConversation(
+                 m_currentConversation)) {
+            const QString key = username.trimmed().toLower();
+            if (!key.isEmpty() && m_chatDirectoryUsers.contains(key))
+                roomUserKeys.insert(key);
+        }
+    } else if (isDirectConversation(m_currentConversation)) {
+        // A direct room contains the two registered accounts, not everyone
+        // currently visible on the relay.
+        const QString selfKey = accountOwner().trimmed().toLower();
+        if (m_chatDirectoryUsers.contains(selfKey))
+            roomUserKeys.insert(selfKey);
+        const QString peerId = dmPeerId(m_currentConversation);
+        for (const MemberInfo &member : std::as_const(m_homeRoster)) {
+            if (member.id != peerId)
+                continue;
+            const QString key = groupKeyFor(member);
+            if (m_chatDirectoryUsers.contains(key))
+                roomUserKeys.insert(key);
+            break;
+        }
+    } else {
+        // Public mesh/office rooms expose live presence, but only database
+        // accounts are users. Guests and unregistered node aliases stay out.
+        for (auto it = liveByUser.constBegin(); it != liveByUser.constEnd(); ++it)
+            roomUserKeys.insert(it.key());
+    }
+
+    for (const QString &key : std::as_const(roomUserKeys)) {
+        const auto directory = m_chatDirectoryUsers.constFind(key);
+        if (directory == m_chatDirectoryUsers.constEnd())
+            continue;
+        addMember(*directory);
+        for (const MemberInfo &member : liveByUser.value(key))
+            addMember(member);
+    }
 
     // Fill in any owned nodes we didn't see live, as offline badges, so a user's
     // full fleet shows even when some (or all) of it is offline.
@@ -1026,11 +1087,8 @@ void MainWindow::refreshChatMembers()
     for (const ChatUserGroup &g : std::as_const(groups))
         ++nameCounts[g.primary.name.toLower()];
 
-    int onlineCount = 0;
     for (const ChatUserGroup &group : std::as_const(groups)) {
         const MemberInfo &member = group.primary;
-        if (group.online)
-            ++onlineCount;
 
         // The whole card is clickable: it opens the user's profile popup with
         // their join date and account info (adhoc #209).
@@ -1147,9 +1205,16 @@ void MainWindow::refreshChatMembers()
 
     if (m_chatMembersHeading)
         m_chatMembersHeading->setText(
-            QString::fromUtf8("USERS \xE2\x80\x94 %1 \xC2\xB7 %2 online")
-                .arg(groups.size())
-                .arg(onlineCount));
+            QString::fromUtf8("DATABASE USERS IN THIS ROOM \xE2\x80\x94 %1")
+                .arg(groups.size()));
+    if (m_chatMembersButton) {
+        m_chatMembersButton->setText(QString::number(groups.size()));
+        m_chatMembersButton->setToolTip(
+            groups.size() == 1
+                ? QStringLiteral("Show the 1 database user in this room")
+                : QStringLiteral("Show the %1 database users in this room")
+                      .arg(groups.size()));
+    }
 }
 
 // Profile popup for a chat users-column row (adhoc #209): identity, when they
@@ -1518,6 +1583,7 @@ void MainWindow::switchConversation(const QString &conversation)
         m_inviteButton->setVisible(m_privateChannels.contains(conversation));
     rebuildConversationView();
     refreshTypingLabel();
+    refreshChatMembers();
 
     // Selection lives in exactly one sidebar list at a time.
     if (isDirectConversation(conversation)) {

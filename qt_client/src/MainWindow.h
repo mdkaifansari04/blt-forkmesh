@@ -312,6 +312,14 @@ public:
     void testShowSettingsSection() { showSection(1); }
     void testShowLogSection() { showSection(4); }
     void testShowHostsSection() { showSection(7); }
+    void testSetDirectoryUserNodes(const QString &user,
+                                   const QStringList &nodes);
+    void testShowNodesSection();
+    QStringList testNodeDirectoryNames() const;
+    void testRenderNetworkRepos(const QJsonArray &repos);
+    QStringList testNetworkRepoNames() const;
+    QString testNetworkRepoActionText(int row) const;
+    QString testNetworkRepoMirrorHeader() const;
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
     // Quick log filter (the chip row above the log): the chips currently offered,
     // and clicking one by category ("" = All).
@@ -955,13 +963,15 @@ private:
                               const QString &detail = QString());
     // BackgroundActivity listener body, always run on the GUI thread.
     void noteBackgroundActivity(quint64 id, const QString &kind,
-                                const QString &detail, bool started);
+                                const QString &detail, bool backgrounded,
+                                bool started);
     // Spin the glyphs and reconcile the visible rows with the open tickets.
     void tickBackgroundQueue();
     // Tally a finished run of one kind of work for the log's ✓ / ✕ outcome line,
     // and emit the tallies that are ready (or all of them, when force is set).
     void recordBackgroundOutcome(const QString &word, qint64 elapsedMs,
-                                 const QString &detail, qint64 now);
+                                 const QString &detail, qint64 now,
+                                 bool backgrounded);
     void flushBackgroundOutcomes(bool force);
     // Collapse a caller's note to the single lowercase word shown in the strip.
     static QString backgroundTaskWord(const QString &kind);
@@ -3404,7 +3414,8 @@ private:
     void openDirectChat(const QString &peerId, const QString &peerName);
     void refreshChannelList();
     void refreshDmList();
-    // Rebuild the chat's right-hand user column from live roster + directory.
+    // Rebuild the current-room members popup from the live roster, enriched by
+    // matching account-directory records.
     void refreshChatMembers();
     void refreshChatUserDirectory();
     void mergeChatUserDirectory(const QJsonArray &users);
@@ -3772,6 +3783,9 @@ private:
     // variant) so each line can lead with the site favicon <img> the full Log
     // view uses — QPlainTextEdit drops images (adhoc #436).
     QTextEdit *m_footerUpdateLog = nullptr;
+    // Whole mini-log/background/agent-prompt footer. The focused Git workspace
+    // hides it to give the changes list and diff the full window height.
+    QWidget *m_footerDock = nullptr;
     // Background-activity strip, wedged between the live log and the prompt. One
     // row per open *kind* of work, not per ticket: dozens of concurrent git reads
     // collapse into a single "git ×12" line, so the strip stays readable and the
@@ -3791,9 +3805,10 @@ private:
     QHash<QString, qint64> m_backgroundTaskSince;        // word -> first ticket ms
     QHash<QString, QString> m_backgroundTaskDetails;     // word -> newest note
     QHash<quint64, QString> m_backgroundTaskWords;       // ticket -> word
-    // Pending log outcome per kind: one tally for work that was backgrounded (✓)
-    // and one for work that finished before the strip would have drawn it (✕), so
-    // a burst of same-kind tickets becomes one summary line instead of hundreds.
+    QHash<QString, bool> m_backgroundTaskHadUiBlocking;  // word -> any UI scope
+    // Pending log outcome per kind: one tally for asynchronous/worker work (✓)
+    // and one for a group that included GUI-thread blocking work (✕), so a burst
+    // of same-kind tickets becomes one accurate summary instead of hundreds.
     struct BackgroundOutcomeTally {
         int runs = 0;
         qint64 longestMs = 0;
@@ -3801,7 +3816,7 @@ private:
         QString detail;
     };
     QHash<QString, BackgroundOutcomeTally> m_backgroundTaskDone; // word -> ✓
-    QHash<QString, BackgroundOutcomeTally> m_backgroundTaskFast; // word -> ✕
+    QHash<QString, BackgroundOutcomeTally> m_backgroundTaskUiBlocking; // word -> ✕
     QTimer *m_backgroundTaskSpinTimer = nullptr;
     int m_backgroundTaskRowHeight = 18;
     int m_backgroundTaskSpinFrame = 0;
@@ -3841,7 +3856,6 @@ private:
     QPushButton *m_relaysNavButton = nullptr; // "Relays" top-nav button
     QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
-    QWidget *m_navRebuildRailHost = nullptr; // captioned rail wrapper for rebuild
     QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
     QPushButton *m_navDrawButton = nullptr; // pencil -> draw freehand on the screen
     QPushButton *m_navResizeButton = nullptr; // snap window to a common minimal size
@@ -3857,6 +3871,7 @@ private:
     QLabel *m_networkReposStatus = nullptr;
     QPushButton *m_networkReposRefreshButton = nullptr;
     int m_networkReposLoadGen = 0;
+    QJsonArray m_networkReposLastPayload; // regroup when user/node ownership arrives
     // Opaque private archive ids are delivered only in an authenticated,
     // ACL-filtered catalog response. They let the client use a name-free
     // /api/private-replicas/<id> URL; no private owner/repository identity is
@@ -4082,8 +4097,10 @@ private:
     };
     QList<RepoMenuEntry> m_repoMenuEntries;
     QListWidget *m_dmList;
-    // Right-hand users column in the chat view: live roster + offline account
-    // directory entries, rendered as people rather than nodes.
+    // Current-room members live in an on-demand popup opened from the chat
+    // header. The public account directory enriches those rows but does not add
+    // people who are absent from the active room.
+    QPushButton *m_chatMembersButton = nullptr;
     QVBoxLayout *m_chatMembersLayout = nullptr;
     QLabel *m_chatMembersHeading = nullptr;
     QWidget *m_firewallBanner;
@@ -4125,6 +4142,8 @@ private:
     QLabel *m_settingsAvatarPreview = nullptr;
     QLabel *m_identityBackupNag = nullptr; // #368: "back up your key" warning
     QTextBrowser *m_settingsLog = nullptr;
+    QPushButton *m_logScrollLockButton = nullptr;
+    bool m_logScrollLocked = false;
     QHBoxLayout *m_logFilterRow = nullptr;    // chip row above the network log
     QButtonGroup *m_logFilterGroup = nullptr; // exclusive group for filter chips
     QString m_logFilter;                      // active category badge ("" = All)
@@ -4383,6 +4402,11 @@ private:
     int m_repoDetailIndex = -1;
     QButtonGroup *m_issueTabGroup = nullptr; // Issues / Milestones / Labels tabs
     QButtonGroup *m_repoDetailTabs = nullptr;
+    // Repository chrome is hidden while the activity-rail Git workspace is
+    // active so source control can use the page's full height.
+    QWidget *m_repoDetailChrome = nullptr;   // repo actions + repository tabs
+    QWidget *m_repoFilesModeBar = nullptr;   // Code overview / Explorer toggles
+    QWidget *m_repoOverviewChrome = nullptr; // branch toolbar + commit strip
     // Thin activity rail down the repo detail page's left edge (adhoc #357):
     // Code (file browser) and Git (current changes) entries. The Git one carries
     // the working-tree change-count badge and spins while a sync is in flight;
@@ -5193,6 +5217,11 @@ private:
     // openRepoDetail() before the first frame (~2s of git reads), which the
     // last-repo restore then redid from scratch moments later.
     bool m_agentQuietResume = false;
+    // Sessions restored from the startup queue stay quiet through asynchronous
+    // worktree preparation. m_agentQuietResume only covers the synchronous
+    // queue drain; without this per-session marker its later continuation could
+    // still switch to Agents after the flag had already been cleared.
+    QSet<int> m_startupQuietAgentSessions;
     int m_selectedAgentSessionId = -1;
     // The session whose detail page last reset the Agent|Files tab selection. Used
     // so showAgentSession() lands on the Agent tab when a *different* session is

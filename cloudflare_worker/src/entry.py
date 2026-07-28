@@ -6682,6 +6682,17 @@ def _office_entry_ticket(env, account_bi):
     return canonical + "." + signature
 
 
+def _desktop_office_session_id(account_bi, actor):
+    """Stable opaque Office session id for an authenticated desktop key."""
+    material = (
+        "forkmesh-desktop-office-session-v1\n"
+        + str(account_bi or "")
+        + "\n"
+        + str(actor or "").strip().lower()
+    ).encode()
+    return "desktop_" + hashlib.sha256(material).hexdigest()[:32]
+
+
 def _office_entry_ticket_claims(env, token):
     """Verify an account-bound Office entry proof without URL credentials."""
     raw = str(token or "")
@@ -8361,7 +8372,15 @@ class _ChatChannelsRuntime(_WorldCommunityRuntime):
         )
         ticket = _chat_channel_ticket(
             self.env, channel_id, key_version, account_bi)
-        session_id = _request_account_session_id(self.request)
+        # Browser requests carry a revocable account-session id. The desktop
+        # client authenticates this read with its account key instead, so give
+        # that already-authorized path a stable opaque session id rather than
+        # passing an empty value into _office_meeting_ticket (which rejects it
+        # and previously escaped as Cloudflare Error 1101).
+        session_id = (
+            _request_account_session_id(self.request)
+            or _desktop_office_session_id(account_bi, actor)
+        )
         meeting_ticket = _office_meeting_ticket(
             self.env, channel_id, key_version, account_bi, actor, session_id)
         return {
@@ -9208,6 +9227,7 @@ def _clean_world_settings(raw):
     result = {}
     string_limits = {
         "theme": 24,
+        "daylightMode": 8,
         "focusMusicTrackId": 80,
         "availability": 20,
         "activityCategory": 48,
@@ -9220,6 +9240,8 @@ def _clean_world_settings(raw):
     for key, limit in string_limits.items():
         if key in source:
             result[key] = clean_string(source.get(key), limit)
+    if result.get("daylightMode") not in (None, "auto", "day", "night"):
+        result.pop("daylightMode", None)
     number_bounds = {
         "lightLevel": (40, 140),
         "moveSpeed": (50, 300),
@@ -11992,7 +12014,8 @@ async def catalog_handler(env, request):
                 and new_commit != prior_commit):
             try:
                 await _world_broadcast_mirror_push(
-                    env, owner, record["name"], new_commit)
+                    env, owner, record["name"], new_commit,
+                    record.get("changedFiles", []))
             except Exception:
                 pass
         payload = {
@@ -14782,20 +14805,47 @@ async def _world_disconnect_manual_block(
     return max(0, min(64, int(result.get("disconnected") or 0)))
 
 
-def _world_mirror_push_signature(env, node, repo, commit):
+def _world_mirror_push_changed_files(value):
+    files = []
+    if isinstance(value, list):
+        for item in value[:16]:
+            path = clean_string(item, 160).strip().replace("\\", "/")
+            if (
+                not path
+                or path.startswith("/")
+                or path == ".."
+                or path.startswith("../")
+                or path in files
+            ):
+                continue
+            files.append(path)
+            if len(files) >= 8:
+                break
+    return files
+
+
+def _world_mirror_push_signature(env, node, repo, commit, changed_files=None):
+    files = _world_mirror_push_changed_files(changed_files)
     canonical = (
-        "forkmesh-world-mirror-push-v1\n%s\n%s\n%s"
-        % (node, repo, commit)
+        "forkmesh-world-mirror-push-v2\n%s\n%s\n%s\n%s"
+        % (node, repo, commit, "\n".join(files))
     ).encode()
     return hmac.new(
         _account_session_secret(env), canonical, "sha256").hexdigest()
 
 
-async def _world_broadcast_mirror_push(env, node, repo, commit):
+async def _world_broadcast_mirror_push(
+        env, node, repo, commit, changed_files=None):
     """Tell the live World room a mirror node's served head just advanced."""
     world_id = env.FORKMESH_WORLD.idFromName("town-square-v1")
     world_object = env.FORKMESH_WORLD.get(world_id)
-    payload = {"node": node, "repo": repo, "commit": commit}
+    files = _world_mirror_push_changed_files(changed_files)
+    payload = {
+        "node": node,
+        "repo": repo,
+        "commit": commit,
+        "changedFiles": files,
+    }
     control_request = JsRequest.new(
         "https://forkmesh.internal/api/world/mirror-push",
         to_js({
@@ -14803,7 +14853,7 @@ async def _world_broadcast_mirror_push(env, node, repo, commit):
             "headers": {
                 "content-type": "application/json",
                 "x-forkmesh-world-control": _world_mirror_push_signature(
-                    env, node, repo, commit),
+                    env, node, repo, commit, files),
             },
             "body": json.dumps(payload, separators=(",", ":")),
         }),
@@ -14965,8 +15015,9 @@ async def world_admin_delete_node_handler(env, request):
             {"reason": "protected_node"})
         return json_response({"error": "protected_node"}, status=409)
     target_bi, record = await _account_row(env, target)
+    requested_bi = target_bi
     node_row = await d1_first(
-        env, "SELECT node_bi FROM nodes WHERE node_bi=?", target_bi)
+        env, "SELECT node_bi,name FROM nodes WHERE node_bi=?", target_bi)
     if not record or not node_row:
         # Public mirror catalogs distinguish an operator account name, a
         # machine label, and a cryptographic node id. Older World panels used
@@ -14983,25 +15034,51 @@ async def world_admin_delete_node_handler(env, request):
             (resolved or {}).get("name", ""), MAX_NODE_NAME).lower()
         if resolved and canonical and valid_node_name(canonical):
             resolved_bi, resolved_record = await _account_row(env, canonical)
-            if resolved_record and resolved_bi == resolved.get("node_bi"):
+            if resolved_bi == resolved.get("node_bi"):
                 target = canonical
                 target_bi = resolved_bi
                 record = resolved_record
                 node_row = resolved
-    if not record or not node_row:
-        return json_response({"error": "node_not_found"}, status=404)
+    if not node_row:
+        # A half-removed node can remain visible through its durable repository
+        # catalog or signed HTTPS endpoint after the account row is gone.
+        # Resolve that endpoint without requiring the already-missing account
+        # ciphertext, then finish the same idempotent scoped cleanup.
+        endpoint = await d1_first(
+            env,
+            "SELECT node_bi,node_name FROM mirror_https_endpoints "
+            "WHERE lower(node_name) IN (?,?) OR public_key=? LIMIT 1",
+            requested_target, machine_name, node_id)
+        endpoint_name = clean_string(
+            (endpoint or {}).get("node_name", ""), MAX_NODE_NAME).lower()
+        if endpoint and endpoint_name and valid_node_name(endpoint_name):
+            target = endpoint_name
+            target_bi = endpoint.get("node_bi") or target_bi
+            _, endpoint_record = await _account_row(env, endpoint_name)
+            record = record or endpoint_record
+            node_row = endpoint
+    if (
+        record
+        and not node_row
+        and (
+            clean_string(record.get("kind", ""), 16).lower() == "user"
+            or bool(record.get("pass_hash"))
+        )
+    ):
+        return json_response({"error": "not_a_node"}, status=409)
     if target == actor or target in ("forkmesh", "forkmesh-mainnode"):
         await _audit_sensitive_action(
             env, actor, "world.node_delete", "node", target, "denied",
             {"reason": "protected_node"})
         return json_response({"error": "protected_node"}, status=409)
-    if await _is_admin(env, target):
+    if record and await _is_admin(env, target):
         await _audit_sensitive_action(
             env, actor, "world.node_delete", "node", target, "denied",
             {"reason": "admin_node"})
         return json_response({"error": "protected_node"}, status=409)
 
-    owner = clean_string(record.get("owner", ""), MAX_NODE_NAME).lower()
+    owner = clean_string(
+        (record or {}).get("owner", ""), MAX_NODE_NAME).lower()
     if owner:
         owner_bi, owner_record = await _account_row(env, owner)
         if owner_record:
@@ -15011,18 +15088,61 @@ async def world_admin_delete_node_handler(env, request):
             ]
             await _save_account(env, owner_bi, owner_record)
 
-    # These node-scoped operational rows do not belong to the account
-    # namespace helper. Private routes cascade from the endpoint row.
-    await d1_run(
-        env, "DELETE FROM reward_node_observations WHERE node_bi=?", target_bi)
-    await d1_run(
-        env, "DELETE FROM mirror_https_endpoints WHERE node_bi=?", target_bi)
-    await _delete_account_namespace(env, target_bi, record)
+    identifiers = {
+        value for value in (requested_target, machine_name, target)
+        if value and valid_node_name(value)
+    }
+    identity_bis = {
+        value for value in (requested_bi, target_bi) if value
+    }
+    # Finish every node-scoped namespace even when an earlier attempt already
+    # removed one of the primary rows. Deleting twice is intentionally safe.
+    for identity_bi in identity_bis:
+        await d1_run(
+            env, "DELETE FROM reward_node_observations WHERE node_bi=?",
+            identity_bi)
+        await d1_run(
+            env, "DELETE FROM private_mirror_routes WHERE node_bi=?",
+            identity_bi)
+        await d1_run(
+            env, "DELETE FROM mirror_https_endpoints WHERE node_bi=?",
+            identity_bi)
+    for identifier in identifiers:
+        await d1_run(
+            env, "DELETE FROM org_agent_jobs WHERE target_node=?",
+            identifier)
+        await d1_run(
+            env, "DELETE FROM org_agent_sessions WHERE target_node=?",
+            identifier)
+        await d1_run(
+            env, "DELETE FROM mirror_https_endpoints "
+            "WHERE lower(node_name)=?",
+            identifier)
+    for identity_bi in identity_bis:
+        cleanup_name = (
+            target if identity_bi == target_bi else requested_target
+        )
+        cleanup_record = (
+            record if identity_bi == target_bi and record
+            else {"name": cleanup_name, "kind": "node"}
+        )
+        await _delete_account_namespace(
+            env, identity_bi, cleanup_record)
     await _audit_sensitive_action(
         env, actor, "world.node_delete", "node", target, "success",
-        {"owner": owner})
+        {
+            "owner": owner,
+            "requestedTarget": requested_target,
+            "identifiers": sorted(identifiers),
+            "idempotent": not bool(node_row),
+        })
     return json_response(
-        {"ok": True, "nodeDeleted": target},
+        {
+            "ok": True,
+            "nodeDeleted": target,
+            "identifiers": sorted(identifiers),
+            "alreadyAbsent": not bool(node_row),
+        },
         cache_control="no-store, max-age=0, must-revalidate")
 
 
@@ -25894,12 +26014,46 @@ async def world_profile_social_handler(env, request):
             followers.append({
                 "name": follower_name,
                 "avatarPng": follower.get("avatar_png", ""),
+                "profileUrl": "/@" + quote(follower_name),
+            })
+        actor_bi = await _ap_actor_bi(env, AP_ACTOR_USER, name)
+        remote_count_row = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM ap_followers WHERE actor_bi=?",
+            actor_bi)
+        remote_rows = await d1_all(
+            env,
+            "SELECT follower_id, follower_handle, display_name, avatar_url,"
+            " url FROM ap_followers "
+            "LEFT JOIN ap_remote_actors ON actor_id=follower_id "
+            "WHERE actor_bi=? ORDER BY created_at DESC LIMIT ?",
+            actor_bi, max(0, 24 - len(followers)))
+        for follower in remote_rows or []:
+            actor_id = str(follower.get("follower_id") or "").strip()
+            profile_url = (
+                ap.public_media_url(follower.get("url") or "") or actor_id)
+            handle = clean_string(
+                follower.get("follower_handle") or "", 120).strip()
+            label = clean_string(
+                follower.get("display_name") or handle or "Fediverse follower",
+                80).strip()
+            if not profile_url:
+                continue
+            followers.append({
+                "name": label,
+                "handle": handle,
+                "avatarUrl": ap.public_media_url(
+                    follower.get("avatar_url") or ""),
+                "profileUrl": profile_url,
             })
         social = await _account_social_counts(env, name)
         return json_response({
             "ok": True,
             "followers": followers,
-            "followerCount": social["followers"],
+            "followerCount": (
+                social["followers"]
+                + int((remote_count_row or {}).get("n", 0) or 0)
+            ),
         }, cache_control="no-store")
 
     if action != "publish":
@@ -40759,12 +40913,15 @@ class ForkMeshWorld(DurableObject):
         node = clean_string(data.get("node", ""), MAX_NODE_NAME).strip()
         repo = clean_string(data.get("repo", ""), 120).strip()
         commit = str(data.get("commit") or "").strip().lower()
+        changed_files = _world_mirror_push_changed_files(
+            data.get("changedFiles"))
         try:
             signature = str(
                 request.headers.get("x-forkmesh-world-control") or "")
         except Exception:
             signature = ""
-        expected = _world_mirror_push_signature(self.env, node, repo, commit)
+        expected = _world_mirror_push_signature(
+            self.env, node, repo, commit, changed_files)
         if (
             not node
             or not re.fullmatch(r"[0-9a-f]{40,64}", commit)
@@ -40778,6 +40935,7 @@ class ForkMeshWorld(DurableObject):
             # A short id is plenty for the announcement; the full head comes
             # from the signed mirror payload each client refreshes.
             "commit": commit[:12],
+            "changedFiles": changed_files,
         })
         return json_response({"ok": True, "delivered": True})
 
@@ -41567,16 +41725,27 @@ class ForkMeshOfficeRoom(DurableObject):
         ):
             return False
         try:
-            account = await d1_first(
-                self.env,
-                "SELECT u.data,u.is_admin FROM account_sessions s "
-                "JOIN users u ON u.user_bi=s.account_bi "
-                "WHERE s.session_id=? AND s.account_bi=? "
-                "AND s.revoked_at=0 AND s.expires_at>?",
-                session_id,
-                account_bi,
-                now,
-            )
+            if session_id.startswith("desktop_"):
+                # Desktop admission was authorized by the account-key signature
+                # before its HMAC ticket was issued. It has no browser
+                # account_sessions row, so recheck the active account directly;
+                # channel version/membership are still checked below each time.
+                account = await d1_first(
+                    self.env,
+                    "SELECT data,is_admin FROM users WHERE user_bi=?",
+                    account_bi,
+                )
+            else:
+                account = await d1_first(
+                    self.env,
+                    "SELECT u.data,u.is_admin FROM account_sessions s "
+                    "JOIN users u ON u.user_bi=s.account_bi "
+                    "WHERE s.session_id=? AND s.account_bi=? "
+                    "AND s.revoked_at=0 AND s.expires_at>?",
+                    session_id,
+                    account_bi,
+                    now,
+                )
             if not account:
                 return False
             account_record = await decrypt_row(self.env, account.get("data"))
