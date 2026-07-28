@@ -71,6 +71,15 @@ def _handler_runtime():
             return None, None
         return request.account, {"name": request.account.split(":")[-1]}
 
+    async def org_row(_env, _org):
+        return "org:forkmesh", {"name": "forkmesh"}
+
+    async def org_role(_env, _org_bi, _actor):
+        return "owner"
+
+    async def org_permission(_env, _org_bi, _actor):
+        return "admin"
+
     async def d1_run(_env, _sql, account_bi, key, verdict, reviewed_at):
         rows[(account_bi, key)] = {
             "item_key": key,
@@ -99,6 +108,9 @@ def _handler_runtime():
             if owner == account_bi
         ]
 
+    async def d1_first(_env, _sql, *_params):
+        return {"priority": 0}
+
     def response(payload, status=200, **_kwargs):
         return {"payload": payload, "status": status}
 
@@ -107,14 +119,19 @@ def _handler_runtime():
 
     namespace = {
         "Date": _Date,
+        "MAX_NODE_NAME": 80,
         "RequestBodyTooLarge": RequestBodyTooLarge,
         "ensure_schema": ensure_schema,
         "method_name": lambda request: request.method,
         "_request_same_origin": lambda request: request.same_origin,
         "bounded_json_request": bounded_json_request,
         "_account_session_record": account_session,
+        "_org_row": org_row,
+        "_org_role": org_role,
+        "_org_permission": org_permission,
         "d1_run": d1_run,
         "d1_all": d1_all,
+        "d1_first": d1_first,
         "clean_string": lambda value, limit: str(value or "")[:limit],
         "json_response": response,
     }
@@ -201,6 +218,9 @@ def test_world_has_one_direct_physical_card_with_swipes_and_stats():
             "onQaVerdict: ({ verdict }) => void this.recordQaVerdict(verdict)",
             "currentIndex: this.qaCardIndex",
             "globalStats: this.qaDeck.globalStats",
+            "handleQaAction(detail = {})",
+            "routeQaCard(target)",
+            'action: target === "todo" ? "route_todo" : "route_issue"',
     ):
         assert contract in WORLD
     for contract in (
@@ -214,18 +234,45 @@ def test_world_has_one_direct_physical_card_with_swipes_and_stats():
         'color: "#27df78"',
         'color: "#aeb7b2"',
         "qaSwipeCues.visible = true",
-        "GLOBAL · PASS ${",
         'verdict = deltaX > 0 ? "pass" : "fail"',
         'verdict = "unsure"',
         "onQaVerdict({ verdict })",
         "updateQaBoard,",
         "HOW TO TEST",
-        "PASS ${",
+        "function qaBoardHitAction(",
+        'const views = ["cards", "pass", "fail", "unsure"]',
+        'return { action: "route", target: "todo" }',
+        'return { action: "route", target: "issues" }',
+        "SEND TO TODO",
+        "SEND TO ISSUES",
+        "onQaAction(qaAction)",
     ):
         assert contract in SCENE
     assert "renderQaBoardPanel" not in WORLD
     assert "data-world-qa-verdict" not in WORLD
     assert ".world-qa-playing-card" not in CSS
+
+
+def test_qa_routing_is_privileged_audited_and_targets_real_work_queues():
+    handler = ENTRY[
+        ENTRY.index("async def world_qa_handler"):
+        ENTRY.index("\n\nWORLD_PREFERENCES_MAX_BYTES")
+    ]
+    for contract in (
+        'action in ("route_todo", "route_issue")',
+        "if not can_route:",
+        "INSERT INTO world_build_board_items",
+        "completed_at=0",
+        "_forkbot_enqueue_issue(",
+        '"forkmesh",',
+        '"QA follow-up: " + title',
+        '"world.qa_" + action',
+    ):
+        assert contract in handler
+    board_api = (ROOT / "src" / "world_build_board.py").read_text(
+        encoding="utf-8")
+    assert '"customTasks": [' in board_api
+    assert "payload?.customTasks" in SCENE
 
 
 def test_completed_build_tasks_can_be_sent_into_the_shared_qa_deck():
