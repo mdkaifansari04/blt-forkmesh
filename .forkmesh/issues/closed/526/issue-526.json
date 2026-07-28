@@ -31,6 +31,15 @@
             "sig": "I10d0OcWdBRUpKWSyYJf6Y0gCcIzplQgFDl7YrstKu8GUKcu0Z0JV9SGrQ4hiyBVLU3tpVqsF7SFpt9HDWWbCw",
             "ts": 1785207342052,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "7afe25c6-2a54-423b-adbe-ad346c8ea01f",
+            "sig": "5QAd1ySP6jyHt-tdW8jQs94BXhfq_ybT4H2q-XgQU4n49bHCsSwaibLuM0aJTr-22L1UH2gLayCHqQgy34eGDA",
+            "status": "closed",
+            "ts": 1785207342128,
+            "type": "status"
         }
     ],
     "labels": [
@@ -42,8 +51,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "ForkMesh v0.7.0 Production Multiplayer Validation Issue",
-    "updatedAt": 1785207342052,
+    "updatedAt": 1785207342128,
     "votes": 0
 }
