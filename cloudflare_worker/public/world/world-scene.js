@@ -9917,6 +9917,7 @@ export function createWorldScene({
   onBuildIssueAssign = () => {},
   onBuildSendQa = () => {},
   onQaVerdict = () => {},
+  onQaAction = () => {},
   onRepositoryIssueOpen = () => {},
   onRendererStateChange = () => {},
   onOfficeChairSelect = () => {},
@@ -12499,11 +12500,19 @@ export function createWorldScene({
   world.add(worldQaBoard);
   registerMovableObject("world-qa-board", worldQaBoard);
 
+  let qaBoardSnapshot = { view: "cards", list: [] };
+
   function updateQaBoard(snapshot = {}) {
+    qaBoardSnapshot = {
+      ...snapshot,
+      view: String(snapshot?.view || "cards"),
+      list: Array.isArray(snapshot?.list) ? snapshot.list : [],
+    };
     const previous = qaBoardFace.material.map;
-    qaBoardFace.material.map = worldQaCardTexture(THREE, snapshot);
+    qaBoardFace.material.map = worldQaCardTexture(THREE, qaBoardSnapshot);
     qaBoardFace.material.needsUpdate = true;
     previous?.dispose?.();
+    qaSwipeCues.visible = qaBoardSnapshot.view === "cards";
   }
 
   let draggedQaCard = null;
@@ -20270,8 +20279,13 @@ export function createWorldScene({
         ({ object }) => object === qaBoardFace,
       );
       if (qaHit) {
-        draggedQaCard = { moved: false };
-        showQaSwipeCues(true);
+        const qaAction = qaBoardHitAction(qaHit.uv, qaBoardSnapshot);
+        if (qaAction?.action === "swipe") {
+          draggedQaCard = { moved: false };
+          showQaSwipeCues(true);
+        } else if (qaAction) {
+          onQaAction(qaAction);
+        }
       }
       const boardHit = pressHits.find(
         ({ object }) =>
