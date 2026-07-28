@@ -2209,6 +2209,13 @@ private:
     void loadRepoInfo();
     void loadBranchesAndTags();
     QStringList repoBranches() const;
+    // The two reads behind repoBranches()/repoDefaultBranch() with no GUI state
+    // of their own, so worker threads can run them too (adhoc #420).
+    static QStringList listRepoBranches(const QString &dir);
+    static QString chooseDefaultBranch(const QStringList &branches,
+                                       const QString &configured,
+                                       const QString &dir,
+                                       const QString &checkedOut);
     QString repoDefaultBranch(const QStringList &branches) const;
     // Cheap default-branch lookup for hot UI paths (e.g. selecting an agent
     // session) that must NOT pay for repoBranches()'s `--sort=-committerdate`,
@@ -2222,8 +2229,10 @@ private:
     // is snapshotted before the worker starts.
     struct BranchesPanelData {
         QString dir;
-        QString base;             // default branch
-        QString selected;         // branch the repo view is parked on
+        QString configuredDefault; // m_repoInfo.defaultBranch, for the base pick
+        QString checkedOut;        // m_repoBranch
+        QString base;              // default branch (picked by the worker)
+        QString selected;          // branch the repo view is parked on
         QString previouslyViewed; // branch whose diff was on screen
         bool writable = false;
         QStringList branches;       // local heads, default branch first

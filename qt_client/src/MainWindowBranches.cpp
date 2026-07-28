@@ -2243,9 +2243,24 @@ MainWindow::BranchesPanelData
 MainWindow::readBranchesPanelGit(BranchesPanelData data)
 {
     const QString &dir = data.dir;
-    const QString &base = data.base;
     if (dir.isEmpty())
         return data;
+
+    // The local heads and the base they're measured against. `git branch
+    // --sort=-committerdate` reads every branch tip and can take hundreds of ms
+    // on a repo with many agent branches, which is exactly the wait this whole
+    // panel used to impose on a click.
+    data.branches = listRepoBranches(dir);
+    data.base = chooseDefaultBranch(data.branches, data.configuredDefault, dir,
+                                    data.checkedOut);
+    const QString &base = data.base;
+    // Always pin the default branch ("main") to the top of the list, regardless
+    // of which feature branch was committed to most recently — the listing sorts
+    // by committer date, so without this main sinks below active branches
+    // (adhoc #185).
+    if (!base.isEmpty() && data.branches.removeOne(base))
+        data.branches.prepend(base);
+    data.selected = data.checkedOut.isEmpty() ? base : data.checkedOut;
 
     // Remote-tracking branches (refs/remotes/*): the branches other nodes / the
     // relay have published, which `git branch` (local heads only, via
@@ -2414,15 +2429,8 @@ void MainWindow::loadBranchesPanel()
     }
     BranchesPanelData data;
     data.dir = repoGitDir();
-    data.branches = repoBranches();
-    data.base = repoDefaultBranch(data.branches);
-    // Always pin the default branch ("main") to the top of the list, regardless
-    // of which feature branch was committed to most recently — repoBranches()
-    // sorts by committer date, so without this main sinks below active branches
-    // (adhoc #185).
-    if (!data.base.isEmpty() && data.branches.removeOne(data.base))
-        data.branches.prepend(data.base);
-    data.selected = m_repoBranch.isEmpty() ? data.base : m_repoBranch;
+    data.configuredDefault = m_repoInfo.defaultBranch.trimmed();
+    data.checkedOut = m_repoBranch;
     data.writable = repoHasWorkingTree();
     // Remember which branch's diff is on screen so we can re-render it at the end
     // (now reflecting any merge we just performed).
