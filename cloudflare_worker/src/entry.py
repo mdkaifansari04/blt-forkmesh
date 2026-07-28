@@ -8441,9 +8441,10 @@ WORLD_QA_CARDS = (
      "title and test instructions appear. Change its verdict with the large "
      "buttons, then use Back to Cards and confirm shared totals update."),
     ("elevator-front-camera", "Front-facing elevator camera and controls",
-     "Enter the elevator and confirm the locked first-person camera is mounted "
-     "at the upper front-left, faces out through the doors, and still shows "
-     "the larger high-contrast floor buttons. Confirm the old view returns."),
+     "Enter the elevator and confirm its upper-corner security-camera view "
+     "frames the large high-contrast buttons on the right wall while looking "
+     "out into the World, not back into the Office. Confirm the old view "
+     "returns after arrival or exit."),
     ("marketing-office-hours", "Office-only Marketing attendance",
      "Spend time in the World outside the building, then enter and leave the "
      "Office. Confirm Marketing Office Hours increases only for the interval "
