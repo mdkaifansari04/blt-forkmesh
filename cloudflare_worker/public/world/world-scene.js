@@ -2319,7 +2319,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:review-open-prs", task: "Review every open PR + disposition", estimate: "queued", done: false },
   { key: "task:repo-social-orbits", task: "Test follower + contributor avatar orbits", estimate: "testing", done: false },
   { key: "task:issue-agent-models", task: "Issue buttons for Claude/Codex model choice", estimate: "testing", done: false },
-  { key: "task:qt-agent-installers", task: "Qt mirror Claude + Codex installers", estimate: "testing", done: false },
+  { key: "task:qt-agent-installers", task: "Qt mirror Claude + Codex installers", estimate: "deployed", done: true },
   { key: "task:marketing-room-wall", task: "Marketing wall, desks, calendar + table", estimate: "testing", done: false },
   { key: "task:avatar-team-badges", task: "Team badges on each avatar's left arm", estimate: "deployed", done: true },
   { key: "task:marketing-proof", task: "Private Marketing proof-of-work links", estimate: "building", done: false },
@@ -2329,6 +2329,8 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:twitter-feed", task: "ForkMesh X posts on the Twitter board", estimate: "verifying feed", done: false },
   { key: "done:fresh-code-surge", task: "Restore verified Fresh Code beam + shockwave", estimate: "deployed", done: true },
   { key: "done:chest-fediverse", task: "Fix chest Fedi load + activity border", estimate: "deployed", done: true },
+  { key: "done:qt-host-probes", task: "Live host + Claude/Codex capability checks", estimate: "deployed", done: true },
+  { key: "done:alert-management-link", task: "Alert mail opens the real management switch", estimate: "deployed", done: true },
   { key: "done:follower-orbit-visible", task: "Visible Mastodon follower orbit", estimate: "deployed", done: true },
   { key: "done:bot-full-status", task: "Engineering bot status + controls", estimate: "deployed", done: true },
   { key: "done:agent-diagnostics", task: "Stalled agent diagnostics → Human TODO", estimate: "deployed", done: true },
@@ -2497,6 +2499,14 @@ function worldQaCardTexture(THREE, snapshot = {}) {
   const current = snapshot?.current && typeof snapshot.current === "object"
     ? snapshot.current
     : null;
+  const view = ["pass", "fail", "unsure"].includes(String(snapshot?.view || ""))
+    ? String(snapshot.view)
+    : "cards";
+  const list = (Array.isArray(snapshot?.list) ? snapshot.list : []).slice(0, 5);
+  const selectedKey = String(snapshot?.selectedKey || "");
+  const page = Math.max(0, Number(snapshot?.page) || 0);
+  const pages = Math.max(1, Number(snapshot?.pages) || 1);
+  const canRoute = snapshot?.canRoute === true;
   const stats = snapshot?.stats && typeof snapshot.stats === "object"
     ? snapshot.stats
     : {};
@@ -2534,11 +2544,13 @@ function worldQaCardTexture(THREE, snapshot = {}) {
     context.fillStyle = "#396b5b";
     context.font = '800 25px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
-      current
-        ? `CARD ${Math.min(total, currentIndex + 1)} OF ${total} · ONE AT A TIME`
-        : total
-          ? `ALL ${total} CARDS REVIEWED · TAP TO RECHECK`
-          : "SIGN IN TO SAVE YOUR RESULTS",
+      view === "cards"
+        ? current
+          ? `CARD ${Math.min(total, currentIndex + 1)} OF ${total} · ONE AT A TIME`
+          : total
+            ? `ALL ${total} CARDS REVIEWED · TAP TO RECHECK`
+            : "SIGN IN TO SAVE YOUR RESULTS"
+        : `${view.toUpperCase()} HISTORY · PAGE ${page + 1}/${pages}`,
       600,
       174,
     );
@@ -2548,70 +2560,169 @@ function worldQaCardTexture(THREE, snapshot = {}) {
     context.moveTo(120, 204);
     context.lineTo(1080, 204);
     context.stroke();
-    context.fillStyle = "#16211d";
-    context.textAlign = "left";
-    context.font = '900 48px "ForkMesh Mono", ui-monospace, monospace';
-    wrapCanvasText(
-      context,
-      String(current?.title || "Open the QA deck"),
-      120,
-      248,
-      960,
-      58,
-      3,
-    );
-    context.fillStyle = "#2f5a4d";
-    context.font = '900 25px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("HOW TO TEST", 120, 438);
-    context.fillStyle = "#1f2c27";
-    context.font = '600 30px "ForkMesh Mono", ui-monospace, monospace';
-    wrapCanvasText(
-      context,
-      String(
-        current?.howToTest ||
-          "Tap this board to review the recent work one card at a time.",
-      ),
-      120,
-      486,
-      960,
-      42,
-      6,
-    );
-    context.fillStyle = "#365c50";
-    context.font = '800 23px "ForkMesh Mono", ui-monospace, monospace';
-    context.textAlign = "center";
-    context.fillText(
-      current?.verdict
-        ? `YOUR RESULT · ${String(current.verdict).toUpperCase()}`
-        : `THIS CARD · ${Number(currentGlobal.pass) || 0} PASS · ${
-            Number(currentGlobal.fail) || 0
-          } FAIL · ${Number(currentGlobal.unsure) || 0} UNSURE`,
-      600,
-      810,
-    );
-    context.fillStyle = "#10251e";
-    roundedRect(context, 62, 868, 1076, 128, 24);
-    context.fill();
-    context.textAlign = "center";
-    context.fillStyle = "#9ef7c6";
-    context.font = '900 30px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
-      `GLOBAL · PASS ${Number(globalStats.pass) || 0}  ·  FAIL ${
-        Number(globalStats.fail) || 0
-      }  ·  UNSURE ${Number(globalStats.unsure) || 0}`,
-      600,
-      922,
-    );
+    if (view === "cards") {
+      context.fillStyle = "#16211d";
+      context.textAlign = "left";
+      context.font = '900 48px "ForkMesh Mono", ui-monospace, monospace';
+      wrapCanvasText(
+        context,
+        String(current?.title || "Open the QA deck"),
+        120,
+        248,
+        960,
+        58,
+        3,
+      );
+      context.fillStyle = "#2f5a4d";
+      context.font = '900 25px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("HOW TO TEST", 120, 438);
+      context.fillStyle = "#1f2c27";
+      context.font = '600 30px "ForkMesh Mono", ui-monospace, monospace';
+      wrapCanvasText(
+        context,
+        String(
+          current?.howToTest ||
+            "Tap this board to review the recent work one card at a time.",
+        ),
+        120,
+        486,
+        960,
+        42,
+        6,
+      );
+      context.fillStyle = "#365c50";
+      context.font = '800 23px "ForkMesh Mono", ui-monospace, monospace';
+      context.textAlign = "center";
+      context.fillText(
+        current?.verdict
+          ? `YOUR RESULT · ${String(current.verdict).toUpperCase()}`
+          : `THIS CARD · ${Number(currentGlobal.pass) || 0} PASS · ${
+              Number(currentGlobal.fail) || 0
+            } FAIL · ${Number(currentGlobal.unsure) || 0} UNSURE`,
+        600,
+        810,
+      );
+    } else {
+      context.textAlign = "left";
+      if (!list.length) {
+        context.fillStyle = "#365c50";
+        context.font = '800 32px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(`NO ${view.toUpperCase()} RESULTS YET`, 120, 300);
+        context.font = '600 25px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("Use CARDS to test recent work.", 120, 350);
+      }
+      list.forEach((card, index) => {
+        const y = 230 + index * 98;
+        const selected = String(card?.key || "") === selectedKey;
+        context.fillStyle = selected ? "#d7f5e5" : "#eadfc6";
+        roundedRect(context, 105, y, 990, 82, 12);
+        context.fill();
+        context.strokeStyle = selected ? "#168a4d" : "#b89b73";
+        context.lineWidth = selected ? 5 : 2;
+        context.stroke();
+        context.fillStyle = "#16211d";
+        context.font = '800 25px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(
+          String(card?.title || "QA task").slice(0, 62),
+          130,
+          y + 35,
+        );
+        context.fillStyle = "#47675b";
+        context.font = '700 19px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(
+          `${Number(card?.global?.pass) || 0} PASS · ${
+            Number(card?.global?.fail) || 0
+          } FAIL · ${Number(card?.global?.unsure) || 0} UNSURE`,
+          130,
+          y + 66,
+        );
+      });
+      context.textAlign = "center";
+      context.font = '800 22px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillStyle = "#365c50";
+      context.fillText("◀ PREV", 175, 758);
+      context.fillText("NEXT ▶", 1025, 758);
+      if (selectedKey && canRoute) {
+        for (const action of [
+          { label: "SEND TO TODO", x: 300, color: "#168a4d" },
+          { label: "SEND TO ISSUES", x: 620, color: "#315f91" },
+        ]) {
+          context.fillStyle = action.color;
+          roundedRect(context, action.x, 720, 280, 70, 12);
+          context.fill();
+          context.fillStyle = "#effff7";
+          context.fillText(action.label, action.x + 140, 764);
+        }
+      } else if (selectedKey) {
+        context.fillText("OWNER / MAINTAIN ACCESS REQUIRED TO ROUTE", 600, 810);
+      } else {
+        context.fillText("SELECT A TASK FOR ROUTING ACTIONS", 600, 810);
+      }
+    }
+
+    const tabData = [
+      { key: "cards", label: "CARDS", count: total, color: "#315b52" },
+      { key: "pass", label: "PASS", count: globalStats.pass, color: "#168a4d" },
+      { key: "fail", label: "FAIL", count: globalStats.fail, color: "#b63b3f" },
+      { key: "unsure", label: "UNSURE", count: globalStats.unsure, color: "#68736e" },
+    ];
+    tabData.forEach((tab, index) => {
+      const x = 70 + index * 266;
+      context.fillStyle = view === tab.key ? tab.color : "#10251e";
+      roundedRect(context, x, 872, 252, 100, 18);
+      context.fill();
+      context.strokeStyle = tab.color;
+      context.lineWidth = view === tab.key ? 6 : 3;
+      context.stroke();
+      context.fillStyle = "#effff7";
+      context.textAlign = "center";
+      context.font = '900 25px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `${tab.label} ${Number(tab.count) || 0}`,
+        x + 126,
+        932,
+      );
+    });
     context.fillStyle = "#c9e7da";
-    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.font = '700 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.textAlign = "center";
     context.fillText(
       `${Number(globalStats.testers) || 0} TESTERS · YOUR CARDS ${
         Number(stats.reviewed) || 0
-      }/${total} · GRAB + SWIPE`,
+      }/${total}${view === "cards" ? " · GRAB + SWIPE" : " · SHARED HISTORY"}`,
       600,
-      966,
+      1010,
     );
   });
+}
+
+function qaBoardHitAction(uv, snapshot = {}) {
+  if (!uv) return null;
+  const x = clamp(Number(uv.x) || 0, 0, 1) * 1200;
+  const y = (1 - clamp(Number(uv.y) || 0, 0, 1)) * 1050;
+  if (y >= 872 && y <= 972) {
+    const index = Math.floor((x - 70) / 266);
+    const views = ["cards", "pass", "fail", "unsure"];
+    if (index >= 0 && index < views.length) {
+      return { action: "tab", view: views[index] };
+    }
+  }
+  const view = String(snapshot?.view || "cards");
+  if (view === "cards") return { action: "swipe" };
+  if (y >= 230 && y <= 720) {
+    const index = Math.floor((y - 230) / 98);
+    const card = (Array.isArray(snapshot?.list) ? snapshot.list : [])[index];
+    if (card?.key) {
+      return { action: "select", key: String(card.key) };
+    }
+  }
+  if (y >= 720 && y <= 800) {
+    if (x >= 110 && x <= 240) return { action: "page", delta: -1 };
+    if (x >= 960 && x <= 1090) return { action: "page", delta: 1 };
+    if (x >= 300 && x <= 580) return { action: "route", target: "todo" };
+    if (x >= 620 && x <= 900) return { action: "route", target: "issues" };
+  }
+  return null;
 }
 
 function worldQaArrowTexture(THREE, direction, label, color) {
@@ -9806,6 +9917,7 @@ export function createWorldScene({
   onBuildIssueAssign = () => {},
   onBuildSendQa = () => {},
   onQaVerdict = () => {},
+  onQaAction = () => {},
   onRepositoryIssueOpen = () => {},
   onRendererStateChange = () => {},
   onOfficeChairSelect = () => {},
@@ -12238,6 +12350,17 @@ export function createWorldScene({
         .filter((item) => !item.done && !completedKeys.has(item.key))
         .map((item) => [item.key, { ...item }]),
     );
+    (Array.isArray(payload?.customTasks) ? payload.customTasks : [])
+      .forEach((task) => {
+        const key = String(task?.key || "");
+        if (!/^task:[a-z0-9-]{1,48}$/.test(key)) return;
+        byKey.set(key, {
+          key,
+          task: String(task?.title || "QA follow-up").slice(0, 92),
+          estimate: "QA follow-up",
+          done: false,
+        });
+      });
     assigned.forEach((issue) => {
       const key = String(issue?.key || "");
       if (!key) return;
@@ -12377,11 +12500,19 @@ export function createWorldScene({
   world.add(worldQaBoard);
   registerMovableObject("world-qa-board", worldQaBoard);
 
+  let qaBoardSnapshot = { view: "cards", list: [] };
+
   function updateQaBoard(snapshot = {}) {
+    qaBoardSnapshot = {
+      ...snapshot,
+      view: String(snapshot?.view || "cards"),
+      list: Array.isArray(snapshot?.list) ? snapshot.list : [],
+    };
     const previous = qaBoardFace.material.map;
-    qaBoardFace.material.map = worldQaCardTexture(THREE, snapshot);
+    qaBoardFace.material.map = worldQaCardTexture(THREE, qaBoardSnapshot);
     qaBoardFace.material.needsUpdate = true;
     previous?.dispose?.();
+    qaSwipeCues.visible = qaBoardSnapshot.view === "cards";
   }
 
   let draggedQaCard = null;
@@ -20148,8 +20279,13 @@ export function createWorldScene({
         ({ object }) => object === qaBoardFace,
       );
       if (qaHit) {
-        draggedQaCard = { moved: false };
-        showQaSwipeCues(true);
+        const qaAction = qaBoardHitAction(qaHit.uv, qaBoardSnapshot);
+        if (qaAction?.action === "swipe") {
+          draggedQaCard = { moved: false };
+          showQaSwipeCues(true);
+        } else if (qaAction) {
+          onQaAction(qaAction);
+        }
       }
       const boardHit = pressHits.find(
         ({ object }) =>

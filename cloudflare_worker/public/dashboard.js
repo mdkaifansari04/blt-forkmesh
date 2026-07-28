@@ -13016,7 +13016,7 @@
             <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="settings" class="h-3.5 w-3.5 text-primary"></i>Repository settings</span>
           </div>
           <form data-repo-settings-form class="grid gap-4 p-4">
-            <fieldset class="grid gap-2 rounded-md border border-border p-3 text-xs text-muted-foreground">
+            <fieldset id="operational-alerts" data-repo-operational-alerts tabindex="-1" class="grid gap-2 scroll-mt-20 rounded-md border border-border p-3 text-xs text-muted-foreground outline-none focus:ring-2 focus:ring-primary/50">
               <legend class="px-1 text-[11px] font-semibold uppercase tracking-wide">ActivityPub federation</legend>
               <label class="inline-flex items-start gap-2"><input data-repo-ap-federate type="checkbox" class="mt-0.5 h-3.5 w-3.5" checked />Federate this repository (fediverse actor and handle)</label>
               <label class="inline-flex items-start gap-2"><input data-repo-ap-broadcast type="checkbox" class="mt-0.5 h-3.5 w-3.5" checked />Include meaningful public updates in one automated digest at most every 24 hours</label>
@@ -13318,6 +13318,16 @@
     // markup underneath) is already on the right tab.
     const initialTab = repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code";
     setRepoTab(initialTab);
+    if (
+      initialTab === "settings" &&
+      window.location.hash === "#operational-alerts"
+    ) {
+      window.requestAnimationFrame(() => {
+        const alerts = document.querySelector("[data-repo-operational-alerts]");
+        alerts?.scrollIntoView({ block: "center" });
+        alerts?.focus({ preventScroll: true });
+      });
+    }
     window.lucide?.createIcons();
     // When the URL restored a feature tab (or a record detail), the tree/README
     // load is only a warm-up for a later click on Code — run it in background

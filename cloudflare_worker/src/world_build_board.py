@@ -237,6 +237,15 @@ async def handle(runtime, path, issues=None):
             str(row.get("item_key") or "") for row in completed_rows
         ],
         "assignedIssues": assigned_issues,
+        "customTasks": [
+            {
+                "key": str(row.get("item_key") or ""),
+                "title": str(row.get("title") or "QA follow-up")[:160],
+            }
+            for row in active_rows
+            if str(row.get("kind") or "") == "task"
+            and str(row.get("item_key") or "") not in BUILTIN_KEYS
+        ],
         "issues": [
             {**issue, "assigned": key in assigned}
             for key, issue in available_issues.items()

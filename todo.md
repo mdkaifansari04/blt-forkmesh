@@ -8,8 +8,12 @@ the implementation and its focused verification are complete.
 - [ ] Add physical Pass / Fail / Unsure tabs to the QA deck with verdict-filtered task pages.
 - [ ] Let authorized QA reviewers send a reviewed card back to “What we're building”.
 - [ ] Let authorized QA reviewers file a reviewed card into the `forkmesh/forkmesh` issues list.
-- [ ] Keep newly provisioned Hosts rows checking until each mirror is reachable, with clear provisioning/online/attention state.
-- [ ] Show separate Claude Code and Codex installed/missing status beside every saved host.
+- [x] Keep newly provisioned Hosts rows checking until each mirror is reachable, with clear provisioning/online/attention state.
+- [x] Show separate Claude Code and Codex installed/missing status beside every saved host.
+- [ ] Show a visible Terms-of-Service moderation flag on repositories that violate ForkMesh policy.
+- [ ] Move the elevator's locked first-person camera to the front wall at the same height, facing outward.
+- [ ] Increase the in-elevator button labels and contrast for clear floor selection.
+- [ ] Add tasteful scene-native flowers, trees, and bushes around the Office exterior.
 - [x] Add a direct “Manage this alert” link to component and scheduled-job alert emails, opening the affected expanded status row.
 - [x] Make QA arrows permanently visible and large (red Fail, green Pass, grey Unsure), publish global aggregate stats, and continuously intake newly completed tasks.
 - [x] Fix the production `/api/world/deploy-status` response error that made API and Worker status red, then verify live recovery.
@@ -33,7 +37,7 @@ the implementation and its focused verification are complete.
 - [x] Make mirror agent installers exclusively use the saved ForkMesh SSH key when present and clearly distinguish an unreachable host from rejected authentication.
 - [ ] Finish and test the repository Mastodon-follower and Git-contributor avatar orbits.
 - [ ] Finish and test Claude/Codex/model assignment controls on World issue cards.
-- [ ] Finish and test the Qt host buttons that install the official Claude Code and Codex CLIs.
+- [x] Finish and test the Qt host buttons that install the official Claude Code and Codex CLIs.
 - [ ] Finish and test the Marketing wall, member desks, attendance calendar, and sealed reclaimed-wood logo table.
 - [x] Add server-authoritative team badges to each user's left arm.
 - [ ] Let Marketing members submit private social proof-of-work links from their own desk and show those items only to Marketing.
