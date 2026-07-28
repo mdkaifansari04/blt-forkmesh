@@ -1963,6 +1963,10 @@ test("Office lobby marine aquarium is visible, ambient, and animated", async ({
       interactive,
     };
   });
+  await page.locator("canvas.world-canvas").screenshot({
+    path: "/tmp/forkmesh-office-cinematic-reef-lobby.png",
+    animations: "disabled",
+  });
   await page.waitForTimeout(220);
   const second = await page.locator("forkmesh-world").evaluate((shell) => {
     const aquarium = shell.world.scene.getObjectByName(
