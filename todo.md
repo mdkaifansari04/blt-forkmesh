@@ -197,13 +197,15 @@ the implementation and its focused verification are complete.
 - [x] Use 1 GB as the minimum Vultr mirror plan for all future provisioning.
 - [ ] Persist and show each managed host's provider, plan/type, display name, and estimated cost in the Qt Hosts list.
 - [ ] Restore each node's Clones and Websites metrics and verify that newly provisioned mirrors report both values.
+- [ ] Queue Claude organization-agent work only on mirrors that have reported the Claude Code binary installed; currently only mirror6 is eligible.
 - [x] Restore the World fresh-code effect.
 - [ ] Add an executive floor to the Office building.
 - [ ] Update the organization-access explanation so Claude/Codex session access is described as Engineering-team-only.
 - [ ] Verify and enforce that non-Engineering organization members cannot start, review, continue, or view Claude/Codex sessions.
 - [ ] Show each node cabinet's Actions runs, logs, and running/done/error state on its back with restrained status animations.
 - [ ] Add an admin-only error-log analytics view that groups equivalent errors and charts their occurrences over the previous 24 hours.
-- [ ] Identify and delete only the roughly 50 repositories imported in the recent bulk-import batch, after verifying the exact targets and recovery path.
+- [ ] Move the recent roughly 50-repository bulk-import set back onto its own World island before considering deletion.
+- [ ] Identify and delete only the roughly 50 repositories imported in that batch, after verifying the exact targets, isolated island, and recovery path.
 - [ ] Move Marketing desks to the front windows, face them outward, correct chair orientation, and use small desktop name plaques.
 - [ ] Crop and embed the supplied ForkMesh cube logo beneath the epoxy surface of the round Marketing table.
 - [ ] Fix the member chest Fediverse feed when it reports unavailable.

@@ -16,6 +16,9 @@ SCENE = (ROOT / "public/world/world-scene.js").read_text(encoding="utf-8")
 QT = (ROOT.parent / "qt_client/src/MainWindowAgents.cpp").read_text(
     encoding="utf-8"
 )
+QT_REPOS = (ROOT.parent / "qt_client/src/MainWindowRepos.cpp").read_text(
+    encoding="utf-8"
+)
 
 
 def test_org_agents_are_separate_member_scoped_encrypted_records():
@@ -39,10 +42,14 @@ def test_org_agents_are_separate_member_scoped_encrypted_records():
     )
 
 
-def test_only_an_integrity_approved_mirror_receives_bounded_jobs():
-    assert "_https_mirror_public_context" in ENTRY
-    assert "_https_mirror_candidates" in ENTRY
-    assert "node != source" in ENTRY
+def test_only_a_fresh_signed_provider_capable_mirror_receives_bounded_jobs():
+    assert "agent_provider_mirror_candidates" in ENTRY
+    assert "10 * 60 * 1000" in ENTRY
+    assert "context[\"nodeOwner\"]" in ENTRY
+    assert "provider, preferred_node" in ENTRY
+    assert '"agentProviders"' in QT_REPOS
+    assert 'QStringLiteral("claude-code")' in QT_REPOS
+    assert 'QStringLiteral("codex")' in QT_REPOS
     assert "no_eligible_headless_mirror" in ENTRY
     assert "ORG_AGENT_MAX_PROMPT = 8000" in ENTRY
     assert "ORG_AGENT_JOB_LEASE_MS = 2 * 60 * 1000" in ENTRY

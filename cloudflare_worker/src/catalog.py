@@ -295,4 +295,19 @@ def safe_catalog_record(data):
     commit_at = clean_string(data.get("commitAt", ""), 16)
     if commit_at:
         record["commitAt"] = commit_at
+    # Agent runtimes are optional, signed catalog-v2 capabilities. Keep the
+    # field absent for older clients and nodes with no supported binary so
+    # routing fails closed without invalidating legacy signatures.
+    agent_providers = []
+    raw_agent_providers = data.get("agentProviders")
+    if isinstance(raw_agent_providers, list):
+        for value in raw_agent_providers:
+            provider = clean_string(value, 40).strip().lower()
+            if (
+                provider in {"claude-code", "codex"}
+                and provider not in agent_providers
+            ):
+                agent_providers.append(provider)
+    if agent_providers:
+        record["agentProviders"] = agent_providers
     return record

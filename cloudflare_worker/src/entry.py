@@ -452,6 +452,7 @@ from mirrors import (  # noqa: E402
     accepted_mirror_requests,
     ack_mirror_requests,
     add_mirror_request,
+    agent_provider_mirror_candidates,
     browse_mirror_candidates,
     build_repo_mirrors_payload,
     clone_state_pins,
@@ -30829,24 +30830,44 @@ async def _org_agent_member_context(env, request, org, repo, data=None):
     }, None
 
 
-async def _org_agent_target_mirror(env, context, preferred_node=""):
-    mirror_context = await _https_mirror_public_context(
-        env, context["nodeOwner"], context["repo"])
-    if not mirror_context:
+async def _org_agent_target_mirror(
+    env, context, provider, preferred_node="",
+):
+    now = int(Date.now())
+    rows = await _decrypted_public_catalog(env, now)
+    records = [
+        row.get("data") or {}
+        for row in rows or []
+        if not row.get("is_private")
+    ]
+    target = next((
+        record for record in records
+        if (
+            str(record.get("owner") or "").strip().lower()
+            == context["nodeOwner"].lower()
+            and str(record.get("name") or "").strip().lower()
+            == context["repo"].lower()
+        )
+    ), None)
+    if not target:
         return ""
-    candidates = await _https_mirror_candidates(env, mirror_context, "")
-    source = context["nodeOwner"].lower()
+    eligible = agent_provider_mirror_candidates(
+        records,
+        target,
+        context["nodeOwner"],
+        provider,
+        now,
+        10 * 60 * 1000,
+    )
     preferred = clean_string(
         preferred_node, MAX_NODE_NAME).strip().lower()
-    eligible = []
-    for candidate in candidates or []:
-        node = clean_string(
-            candidate.get("node"), MAX_NODE_NAME).strip().lower()
-        if valid_node_name(node) and node != source:
-            eligible.append(node)
     if preferred:
-        return preferred if preferred in eligible else ""
-    if eligible:
+        return (
+            preferred
+            if valid_node_name(preferred) and preferred in eligible
+            else ""
+        )
+    if eligible and valid_node_name(eligible[0]):
         return eligible[0]
     # A source node is not described as a headless mirror. Fail closed rather
     # than silently running an org member's prompt on a different trust class.
@@ -31090,7 +31111,7 @@ async def org_agent_bots_handler(env, request, org, repo):
     if preferred_node and not valid_node_name(preferred_node):
         return json_response({"error": "invalid_target_node"}, status=400)
     target_node = await _org_agent_target_mirror(
-        env, context, preferred_node)
+        env, context, provider, preferred_node)
     if not target_node:
         return json_response(
             {"error": "no_eligible_headless_mirror"}, status=503,

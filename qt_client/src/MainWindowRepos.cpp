@@ -355,6 +355,19 @@ QJsonObject normalizedCatalogV2Record(const QJsonObject &data)
         cleanCatalogString(data, QStringLiteral("machineName"), 63);
     if (!machineName.isEmpty())
         record.insert(QStringLiteral("machineName"), machineName);
+    QJsonArray agentProviders;
+    const QJsonArray rawAgentProviders =
+        data.value(QStringLiteral("agentProviders")).toArray();
+    for (const QJsonValue &value : rawAgentProviders) {
+        const QString provider = value.toString().trimmed().toLower();
+        if ((provider == QLatin1String("claude-code") ||
+             provider == QLatin1String("codex")) &&
+            !agentProviders.contains(provider)) {
+            agentProviders.append(provider);
+        }
+    }
+    if (!agentProviders.isEmpty())
+        record.insert(QStringLiteral("agentProviders"), agentProviders);
     // Latest-commit subject/author/date: same optional-extension rule again, so
     // a node that can't read them (or an older client) publishes no key at all
     // rather than an empty one that would change the signed record.
@@ -4317,6 +4330,27 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                                      ? QStringLiteral("remote-clone")
                                      : QStringLiteral("local-node"))},
                          {"maintainer", m_profileIdentity.publicKey()}};
+    // Advertise only binaries this node can actually resolve. The complete
+    // normalized record is catalog-v2 signed below, making this a bounded
+    // capability lease for Worker-side agent routing rather than a relay hint.
+    const QStringList agentSearchPaths{
+        QDir::homePath() + QStringLiteral("/.local/bin"),
+        QDir::homePath() + QStringLiteral("/.claude/bin"),
+        QDir::homePath() + QStringLiteral("/.codex/bin"),
+    };
+    QJsonArray agentProviders;
+    if (!QStandardPaths::findExecutable(
+             QStringLiteral("claude"), agentSearchPaths).isEmpty() ||
+        !QStandardPaths::findExecutable(QStringLiteral("claude")).isEmpty()) {
+        agentProviders.append(QStringLiteral("claude-code"));
+    }
+    if (!QStandardPaths::findExecutable(
+             QStringLiteral("codex"), agentSearchPaths).isEmpty() ||
+        !QStandardPaths::findExecutable(QStringLiteral("codex")).isEmpty()) {
+        agentProviders.append(QStringLiteral("codex"));
+    }
+    if (!agentProviders.isEmpty())
+        metadata.insert(QStringLiteral("agentProviders"), agentProviders);
     // These values come from our self roster entry, which ServerNode populates
     // only for the per-metric telemetry toggles the operator enabled. Do not
     // insert disabled/unknown metrics: safe_catalog_record normalizes them to

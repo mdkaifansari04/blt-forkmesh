@@ -103,6 +103,19 @@ def test_public_catalog_preserves_signed_pull_count_for_world_consumers():
     assert safe_catalog_record(_base(visibility="public"))["pullCount"] == ""
 
 
+def test_agent_provider_capabilities_are_allowlisted_unique_and_optional():
+    legacy = safe_catalog_record(_base(visibility="public"))
+    assert "agentProviders" not in legacy
+
+    record = safe_catalog_record(_base(
+        visibility="public",
+        agentProviders=[
+            "claude-code", "CLAUDE-CODE", "codex", "unknown", 12,
+        ],
+    ))
+    assert record["agentProviders"] == ["claude-code", "codex"]
+
+
 def test_actions_capability_is_strict_and_legacy_records_remain_absent():
     legacy = safe_catalog_record(_base(visibility="public"))
     assert "actionsEnabled" not in legacy

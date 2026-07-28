@@ -85,6 +85,53 @@ def repo_mirror_same_group(target, record):
     return bool(tname) and tname == rname
 
 
+def agent_provider_mirror_candidates(
+    records, target, source_node, provider, now, fresh_ms,
+):
+    """Return fresh same-repo headless nodes that signed the required runtime.
+
+    Agent jobs are claimed over the polling API, so a direct HTTPS clone
+    endpoint is neither required nor sufficient. The catalog-v2 record is the
+    account-signed capability lease; the node still performs a local binary
+    and login check before it executes a claimed job.
+    """
+    provider = str(provider or "").strip().lower()
+    if provider not in {"claude-code", "codex"}:
+        return []
+    source = str(source_node or "").strip().lower()
+    try:
+        now_ms = int(now)
+        lease_ms = max(1, int(fresh_ms))
+    except (TypeError, ValueError):
+        return []
+    eligible = []
+    seen_nodes = set()
+    for rec in records or []:
+        rec = rec if isinstance(rec, dict) else {}
+        if rec.get("visibility") == "private":
+            continue
+        if not repo_mirror_same_group(target, rec):
+            continue
+        node = (
+            str(rec.get("machineName") or "").strip()
+            or str(rec.get("owner") or "").strip()
+        ).lower()
+        if not node or node == source or node in seen_nodes:
+            continue
+        providers = rec.get("agentProviders")
+        if not isinstance(providers, list) or provider not in {
+            str(value or "").strip().lower() for value in providers
+        }:
+            continue
+        last_sync = _mirror_ms(rec.get("lastSync"))
+        if not last_sync or now_ms - last_sync > lease_ms:
+            continue
+        seen_nodes.add(node)
+        eligible.append((last_sync, node))
+    eligible.sort(key=lambda item: (-item[0], item[1]))
+    return [node for _last_sync, node in eligible]
+
+
 def mirroring_owner_set(records):
     # Owners (node names) that host at least one repo ALSO hosted by a DIFFERENT
     # owner — i.e. a repo genuinely mirrored across nodes. Repos that only one
@@ -463,6 +510,18 @@ def build_repo_mirrors_payload(
             "artifactCount": _int_field(rec, "artifactCount"),
             "platform": str(rec.get("platform") or "").strip(),
             "version": str(rec.get("version") or "").strip(),
+            "agentProviders": [
+                provider
+                for provider in ("claude-code", "codex")
+                if provider in {
+                    str(value or "").strip().lower()
+                    for value in (
+                        rec.get("agentProviders")
+                        if isinstance(rec.get("agentProviders"), list)
+                        else []
+                    )
+                }
+            ],
             # Missing and malformed legacy records fail closed to disabled.
             # Only the bounded status pair signed into catalog-v2 is exposed.
             "actionsEnabled": actions_enabled,
