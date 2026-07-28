@@ -538,6 +538,10 @@ public:
     // Branch names (column 0) in row order, so a test can prove the default branch
     // is pinned to the top of the list regardless of commit recency (adhoc #185).
     QStringList testBranchRowOrder() const;
+    // Follow a branch link and read back the branch the table landed on right
+    // away — no event pumping — so a test can prove the click doesn't wait on the
+    // panel's off-thread git reads (adhoc #420).
+    QString testSwitchToBranchImmediateSelection(const QString &branch);
     // Click the "Issue / Agent" cell (column 4) for `branch` and return the agent
     // session the app navigated to (m_selectedAgentSessionId), so a test can prove
     // clicking the cell jumps to that branch's agent (adhoc #258).

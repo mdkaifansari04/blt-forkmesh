@@ -694,13 +694,18 @@ bool MainWindow::selectBranchRow(const QString &branch)
 // have been merged and deleted, or never synced into this checkout) would
 // otherwise land on the Branches panel with nothing selected. Tell the user why
 // rather than leaving them on a silently empty selection (adhoc #185).
+// Deferred a tick because the answer now arrives inside the panel's rebuild: a
+// modal dialog there would pump the event loop mid-build, letting a queued
+// reload rebuild the table underneath it.
 void MainWindow::reportBranchNotFound(const QString &branch)
 {
-    QMessageBox::information(
-        this, QStringLiteral("Branch not found"),
-        QStringLiteral("Branch '%1' was not found in this repository. "
-                       "It may have been merged and deleted.")
-            .arg(branch));
+    QTimer::singleShot(0, this, [this, branch] {
+        QMessageBox::information(
+            this, QStringLiteral("Branch not found"),
+            QStringLiteral("Branch '%1' was not found in this repository. "
+                           "It may have been merged and deleted.")
+                .arg(branch));
+    });
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
@@ -712,6 +717,15 @@ void MainWindow::testReloadBranchesPanel()
     QDeadlineTimer deadline(10000);
     while (m_branchesPanelLoading && !deadline.hasExpired())
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+}
+
+QString MainWindow::testSwitchToBranchImmediateSelection(const QString &branch)
+{
+    switchToBranch(branch);
+    if (!m_branchesTable)
+        return QString();
+    const QTableWidgetItem *it = m_branchesTable->item(m_branchesTable->currentRow(), 0);
+    return it ? it->text() : QString();
 }
 #endif
 
