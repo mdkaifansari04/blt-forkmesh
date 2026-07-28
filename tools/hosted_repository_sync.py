@@ -555,15 +555,25 @@ def register(config: refresh.RefreshConfig) -> dict[str, Any]:
     pending_path = config.gateway_config_path.parent / PENDING_FILE
     pending = _read_json(pending_path, missing={})
     removed = pending.get("repositories") if isinstance(pending, dict) else []
-    for item in removed if isinstance(removed, list) else []:
+    pending_items = list(removed) if isinstance(removed, list) else []
+    for index, item in enumerate(pending_items):
         owner = str(item.get("owner") or "")
         name = str(item.get("name") or "")
         if owner == config.node_owner and NAME_RE.fullmatch(name):
             _delete_catalog(config, owner, name)
-    try:
-        pending_path.unlink()
-    except FileNotFoundError:
-        pass
+        # Persist forward progress after every successful (or intentionally
+        # ignored invalid) item. A late Worker cleanup error may arrive after
+        # the catalog row was already removed; the next run gets an idempotent
+        # deleted:false response and advances instead of replaying the entire
+        # queue forever.
+        remaining = pending_items[index + 1 :]
+        if remaining:
+            _atomic_json(pending_path, {"repositories": remaining})
+        else:
+            try:
+                pending_path.unlink()
+            except FileNotFoundError:
+                pass
     return {"ok": True, "published": published, "repositoryCount": len(items)}
 
 
