@@ -1963,10 +1963,6 @@ test("Office lobby marine aquarium is visible, ambient, and animated", async ({
       interactive,
     };
   });
-  await page.locator("canvas.world-canvas").screenshot({
-    path: "/tmp/forkmesh-office-cinematic-reef-lobby.png",
-    animations: "disabled",
-  });
   await page.waitForTimeout(220);
   const second = await page.locator("forkmesh-world").evaluate((shell) => {
     const aquarium = shell.world.scene.getObjectByName(
@@ -2018,6 +2014,26 @@ test("Office lobby marine aquarium is visible, ambient, and animated", async ({
   });
   await page.locator("canvas.world-canvas").screenshot({
     path: "/tmp/forkmesh-office-cinematic-reef-close.png",
+    animations: "disabled",
+  });
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior",
+    );
+    const cameraPosition = interior.localToWorld(
+      shell.world.camera.position.clone().set(-42, 10.5, 19),
+    );
+    const target = interior.localToWorld(
+      shell.world.camera.position.clone().set(-78, 5.2, -7),
+    );
+    shell.world.camera.fov = 59;
+    shell.world.camera.updateProjectionMatrix();
+    shell.world.camera.position.copy(cameraPosition);
+    shell.world.camera.lookAt(target);
+    shell.world.renderer.render(shell.world.scene, shell.world.camera);
+  });
+  await page.locator("canvas.world-canvas").screenshot({
+    path: "/tmp/forkmesh-office-cinematic-reef-lobby.png",
     animations: "disabled",
   });
   expect(first.visible).toBe(true);
