@@ -961,6 +961,23 @@ function ensureChannel(channelKey) {
   return channel;
 }
 
+// A line is "mine" when this browser sent it (senderId) OR when the signed-in
+// account authored it from somewhere else — another tab, a phone, the desktop
+// client. selfId is per-browser, so without the account check your own message
+// echoed back from a second client lit an unread badge for something you just
+// typed. Used for unread bookkeeping only: rendering, edit and delete still
+// require the stronger senderId match, since chat frames carry no signature
+// binding a display name to an account.
+function isOwnChatMessage(record) {
+  if (!record) return false;
+  if (record.self || (record.senderId && record.senderId === selfId)) {
+    return true;
+  }
+  const account = String(userSession()?.nodeName || "").trim().toLowerCase();
+  if (!account) return false;
+  return String(record.sender || "").trim().toLowerCase() === account;
+}
+
 function bumpUnread(channel) {
   const meta = channelMeta.get(channel);
   if (!meta) return;
@@ -1715,6 +1732,25 @@ async function markChatActivitySeen() {
     localStorage.setItem(CHAT_ACTIVITY_SEEN_KEY, JSON.stringify({
       messageCount: Number(data.messageCount) || 0,
       userCount: Number(data.userCount) || 0,
+      at: Date.now(),
+    }));
+  } catch (_) {}
+}
+
+// You have obviously already read your own message, so it must never light the
+// header's chat badge. That badge is a delta between the retained #general
+// count and this browser's stored baseline, so every retained line we send
+// advances the baseline by one. Without this, talking in the World or the
+// dashboard left an unread pill on every other page of the site.
+function noteOwnChatActivity() {
+  try {
+    const raw = localStorage.getItem(CHAT_ACTIVITY_SEEN_KEY);
+    if (!raw) return; // no baseline yet: the header seeds one silently
+    const seenActivity = JSON.parse(raw);
+    if (!seenActivity || typeof seenActivity !== "object") return;
+    localStorage.setItem(CHAT_ACTIVITY_SEEN_KEY, JSON.stringify({
+      ...seenActivity,
+      messageCount: (Number(seenActivity.messageCount) || 0) + 1,
       at: Date.now(),
     }));
   } catch (_) {}
@@ -2621,7 +2657,7 @@ function insertMessage(record) {
     } else {
       renderActiveChannel();
     }
-  } else if (!record.self) {
+  } else if (!isOwnChatMessage(record)) {
     bumpUnread(channel);
   }
 }
@@ -2981,6 +3017,11 @@ function send(plain) {
   const envelope = { persist: false };
   if (DURABLE_TYPES.has(plain && plain.type)) envelope.persist = true;
   if (!roomTransport) return Promise.resolve(false);
+  // Only retained #general frames reach the counter behind the header badge,
+  // and oversized file frames are dropped before retention.
+  if (envelope.persist && scope === "public-world-general" && !plain.file) {
+    noteOwnChatActivity();
+  }
   return roomTransport.send(plain, { persist: envelope.persist });
 }
 

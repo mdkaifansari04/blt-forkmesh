@@ -295,8 +295,11 @@ def test_all_org_members_get_team_badges_but_only_admins_get_controls():
         SCENE.index("function orgTeamControlTexture")
     ]
     assert "forkmesh-avatar-left-arm-team-badges" in badges
-    assert "badge.rotation.y = Math.PI" in badges
-    assert "badge.position.set(0, 0.43 - index * 0.19, -0.166)" in badges
+    # Small patches on the arm's outward (-X) face, not slabs overhanging the
+    # sleeve on the front of the avatar.
+    assert "new THREE.PlaneGeometry(0.26, 0.09)" in badges
+    assert "badge.rotation.y = -Math.PI / 2" in badges
+    assert "badge.position.set(-0.148, 0.36 - index * 0.105, 0)" in badges
     assert "setLocalOrgTeam," in SCENE
 
 

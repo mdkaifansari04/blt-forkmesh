@@ -1503,6 +1503,51 @@ test("account signup and login complete inside the World without leaking into UR
   expect(new URL(page.url()).pathname).toBe("/world/");
 });
 
+test("collapsed CHAT bar counts unread remote lines but never your own", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-chat-unread", {
+    chatPassphrase: "playwright-public-world-general-passphrase",
+  });
+  await waitForWorld(page);
+
+  const badge = page.locator("[data-world-chat-terminal-unread]");
+  await expect(badge).toBeHidden();
+
+  // The embedded /dashboard/chat iframe mirrors every line to the World with
+  // postMessage; drive that same path directly.
+  const mirror = (line) =>
+    page.evaluate((message) => {
+      window.postMessage(
+        { type: "forkmesh:world-chat", ...message },
+        location.origin,
+      );
+    }, line);
+
+  // Replayed history only refreshes the newest-line label.
+  await mirror({ sender: "peer", text: "old news", history: true });
+  await expect(badge).toBeHidden();
+
+  await mirror({ sender: "peer", text: "hello there" });
+  await expect(badge).toHaveText("1");
+  await mirror({ sender: "peer", text: "anyone around?" });
+  await expect(badge).toHaveText("2");
+
+  // Your own lines — from this browser (self) or the same account elsewhere
+  // (own) — are already read.
+  await mirror({ sender: "me", text: "on my way", self: true });
+  await mirror({ sender: "me", text: "from my phone", own: true });
+  await expect(badge).toHaveText("2");
+
+  // Opening the bar clears it, and an open bar never accumulates.
+  await page.locator("[data-world-chat-terminal]").evaluate((element) => {
+    element.open = true;
+  });
+  await expect(badge).toBeHidden();
+  await mirror({ sender: "peer", text: "still talking" });
+  await expect(badge).toBeHidden();
+});
+
 test("mobile World chat keeps its composer above the terminal bars", async ({
   page,
 }) => {
