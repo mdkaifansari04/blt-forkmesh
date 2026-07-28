@@ -8161,7 +8161,8 @@ void MainWindow::probeSavedHost(const QString &name, const QString &ip,
     if (!identityFile.isEmpty())
         password.clear();
     const QString remoteCommand = QStringLiteral(
-        "sh -lc 'printf \"FORKMESH=%s CLAUDE=%s CODEX=%s\\\\n\" "
+        "sh -lc 'export PATH=\"$HOME/.local/bin:$HOME/.claude/bin:$PATH\"; "
+        "printf \"FORKMESH=%s CLAUDE=%s CODEX=%s\\\\n\" "
         "\"$(command -v forkmesh >/dev/null 2>&1 && echo 1 || echo 0)\" "
         "\"$(command -v claude >/dev/null 2>&1 && echo 1 || echo 0)\" "
         "\"$(command -v codex >/dev/null 2>&1 && echo 1 || echo 0)\"'");
@@ -11748,6 +11749,83 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
             message + QStringLiteral("\n"));
 }
 
+void MainWindow::waitForVultrMirrorPublication(
+    const QString &node, const QString &successMessage, int attempt)
+{
+    constexpr int kMaxPublicationPolls = 30; // five minutes at 10 seconds
+    if (!m_vultrProvisionActive)
+        return;
+    if (m_vultrStatus) {
+        m_vultrStatus->setText(QString::fromUtf8(
+            "ForkMesh is running on %1 \xE2\x80\x94 waiting for its signed "
+            "Mirror nodes / World catalog record (%2/%3)\xE2\x80\xA6")
+            .arg(node)
+            .arg(attempt + 1)
+            .arg(kMaxPublicationPolls));
+    }
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repo/forkmesh/forkmesh/mirrors"));
+    url.setQuery(QString());
+    QNetworkRequest request(url);
+    request.setRawHeader(QByteArrayLiteral("accept"),
+                         QByteArrayLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, node, successMessage, attempt] {
+        const QJsonObject payload =
+            QJsonDocument::fromJson(reply->readAll()).object();
+        const bool requestOk =
+            reply->error() == QNetworkReply::NoError &&
+            payload.value(QStringLiteral("ok")).toBool();
+        reply->deleteLater();
+
+        bool published = false;
+        if (requestOk) {
+            for (const QJsonValue &value :
+                 payload.value(QStringLiteral("mirrors")).toArray()) {
+                const QJsonObject mirror = value.toObject();
+                QString candidate =
+                    mirror.value(QStringLiteral("node")).toString().trimmed();
+                if (candidate.isEmpty())
+                    candidate =
+                        mirror.value(QStringLiteral("owner")).toString().trimmed();
+                if (candidate.compare(node, Qt::CaseInsensitive) == 0 &&
+                    mirror.value(QStringLiteral("integrity"))
+                            .toString()
+                            .compare(QStringLiteral("ok"),
+                                     Qt::CaseInsensitive) == 0 &&
+                    mirror.value(QStringLiteral("lastSync")).toVariant()
+                            .toLongLong() > 0) {
+                    published = true;
+                    break;
+                }
+            }
+        }
+        if (published) {
+            appendHostInstallLog(QString::fromUtf8(
+                "\n\xE2\x9C\x94 Verified %1 in the public Mirror nodes / World "
+                "catalog.\n").arg(node));
+            finishVultrProvision(true, successMessage);
+            return;
+        }
+        if (attempt + 1 >= kMaxPublicationPolls) {
+            finishVultrProvision(false, QString::fromUtf8(
+                "ForkMesh is installed on %1, but its signed repository "
+                "catalog did not appear within five minutes. The host remains "
+                "saved and will keep retrying; check its Logs and account link "
+                "before treating the mirror as ready.").arg(node));
+            return;
+        }
+        QTimer::singleShot(
+            10000, this,
+            [this, node, successMessage, attempt] {
+                waitForVultrMirrorPublication(
+                    node, successMessage, attempt + 1);
+            });
+    });
+}
+
 void MainWindow::vultrApiCall(const QString &apiKey, const QString &path,
                               const QByteArray &method, const QJsonObject &body,
                               std::function<void(QJsonObject, QString)> onDone)
@@ -12501,11 +12579,10 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                     ? ip
                     : QStringLiteral("%1, %2").arg(m_vultrDnsHostname, ip);
             const QString done = QString::fromUtf8(
-                "Vultr mirror \"%1\" (%2) is installed and linking to your "
-                "account \xE2\x80\x94 it will start mirroring and syncing "
-                "shortly.").arg(node, address);
+                "Vultr mirror \"%1\" (%2) is installed, linked, and published "
+                "to Mirror nodes and the World.").arg(node, address);
             if (!m_vultrInstallAgentClis) {
-                finishVultrProvision(true, done);
+                waitForVultrMirrorPublication(node, done);
                 return;
             }
             // The node is up and authenticated to the mesh; give it this
@@ -12522,11 +12599,11 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
             runAgentCliInstall(
                 node, ip, QStringLiteral("root"), QString(), identityFile,
                 copyLogins,
-                [this, done](bool agentOk, QString agentMessage) {
+                [this, node, done](bool agentOk, QString agentMessage) {
                     if (!m_vultrProvisionActive)
                         return;
-                    finishVultrProvision(
-                        true,
+                    waitForVultrMirrorPublication(
+                        node,
                         agentOk
                             ? QStringLiteral("%1 %2").arg(done, agentMessage)
                             : QString::fromUtf8(

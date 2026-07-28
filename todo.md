@@ -24,7 +24,7 @@ the implementation and its focused verification are complete.
 - [ ] Restore live recent blog posts in the Dashboard “Latest from the blog” card.
 - [ ] Add an audited `is_admin`-only World action to permanently delete a named node after typed confirmation.
 - [ ] Make clicking the ForkMesh logo on Dashboard perform a clean Dashboard reload.
-- [ ] Keep newly installed mirror4 visible through provisioning in Qt Hosts and the World node cabinets.
+- [x] Keep newly installed mirror6 visible through provisioning in Qt Hosts and the World node cabinets.
 - [ ] Move Operational alerts into the platform `is_admin` area and retarget alert-management deep links.
 - [x] Add a direct “Manage this alert” link to component and scheduled-job alert emails, opening the affected expanded status row.
 - [x] Make QA arrows permanently visible and large (red Fail, green Pass, grey Unsure), publish global aggregate stats, and continuously intake newly completed tasks.
@@ -188,9 +188,14 @@ the implementation and its focused verification are complete.
 ## Requested follow-up work
 
 - [x] Make mirror4 appear automatically in Qt, the World, and the repository mirror catalog after provisioning.
-- [ ] Make future Vultr mirrors complete first-run setup automatically, including dependencies, state directories, capacity checks, signed catalog publication, and a truthful readiness probe.
-- [ ] Verify mirror5 at 149.28.42.8 is linked and visible, and reconcile its claimed Claude/Codex installation with the host probe.
+- [x] Make future Vultr mirrors complete first-run setup automatically, including dependencies, state directories, capacity checks, signed catalog publication, and a truthful readiness probe.
+- [x] Retire the exact mirror4 and mirror5 Vultr instances and remove their saved Qt Host entries after confirming their identities.
+- [x] Verify mirror6 on its 1 GB Vultr plan is linked, signed into the repository catalog, and represented by the World mirror-cabinet data.
+- [x] Make Qt host probes find Claude Code and Codex in their standard per-user install directories.
+- [x] Require successful Vultr provisioning to wait for the mirror's signed public catalog record instead of stopping at SSH/systemd success.
+- [x] Use 1 GB as the minimum Vultr mirror plan for all future provisioning.
 - [ ] Persist and show each managed host's provider, plan/type, display name, and estimated cost in the Qt Hosts list.
+- [ ] Restore each node's Clones and Websites metrics and verify that newly provisioned mirrors report both values.
 - [x] Restore the World fresh-code effect.
 - [ ] Add an executive floor to the Office building.
 - [ ] Update the organization-access explanation so Claude/Codex session access is described as Engineering-team-only.

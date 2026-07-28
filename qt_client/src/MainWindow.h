@@ -1302,6 +1302,12 @@ private:
                            const QString &node, const QString &identityFile);
     void startVultrHostInstall(const QString &node, const QString &ip,
                                const QString &identityFile);
+    // Do not report a provisioned mirror as complete merely because SSH and
+    // systemd succeeded. Wait until its signed flagship catalog row is visible
+    // through the public relay—the same source used by Mirror nodes and World.
+    void waitForVultrMirrorPublication(const QString &node,
+                                       const QString &successMessage,
+                                       int attempt = 0);
     void finishVultrProvision(bool ok, const QString &message);
     // Print the per-attempt record collected for this provision run into the
     // install log, so a finished run shows what every attempt did (adhoc #342).
