@@ -8382,8 +8382,14 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-14"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-15"
 WORLD_QA_CARDS = (
+    ("open-pr-audit", "Open pull-request disposition audit",
+     "Open the PR board and compare every record marked Open with "
+     "docs/operations/open-pull-audit-2026-07-28.md. Confirm PR #52's change "
+     "is present on main and its chat disclosure survives a dashboard asset "
+     "rebuild. Confirm deleted-head PRs show their recorded stale, represented, "
+     "or recover-before-review disposition rather than implying mergeability."),
     ("mirror-service-counters", "Mirror clone and website counters",
      "Open the repository Mirror nodes table and the matching World cabinet. "
      "Confirm mirror6 shows numeric Clones and Websites values, including "
