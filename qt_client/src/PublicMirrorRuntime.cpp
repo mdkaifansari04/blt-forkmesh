@@ -308,6 +308,19 @@ bool cloneSource(const QString &source, const QStringList &gitPrefixArgs,
                   << QStringLiteral("-c")
                   << QStringLiteral("core.hooksPath=") + QProcess::nullDevice()
                   << QStringLiteral("-c") << QStringLiteral("http.followRedirects=false")
+                  // A new mirror commonly starts on a small VPS. Git otherwise
+                  // sizes index-pack threads and delta caches from host CPUs,
+                  // which can consume nearly all RAM during the flagship clone
+                  // and starve sshd before the node can publish. These bounded
+                  // client-side settings trade a little first-sync speed for a
+                  // responsive, deterministic provisioning path.
+                  << QStringLiteral("-c") << QStringLiteral("pack.threads=1")
+                  << QStringLiteral("-c")
+                  << QStringLiteral("core.deltaBaseCacheLimit=16m")
+                  << QStringLiteral("-c")
+                  << QStringLiteral("pack.deltaCacheSize=16m")
+                  << QStringLiteral("-c")
+                  << QStringLiteral("pack.windowMemory=16m")
                   << gitPrefixArgs;
     } else {
         arguments << QStringLiteral("-c") << QStringLiteral("protocol.allow=never")

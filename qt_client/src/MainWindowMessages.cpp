@@ -223,10 +223,24 @@ void MainWindow::onMessage(const ChatMessage &message)
         if (wasAtBottom)
             scrollToBottom();
     }
+    // `self` only recognizes this node's own id, so a message this user typed
+    // on the website, in the World, or on a second device came back looking
+    // like someone else's and lit the unread badge for something they had just
+    // written. chatDisplayName() is the very name this account stamps on its
+    // own outgoing frames, so match incoming senders against it too. Unread and
+    // notification bookkeeping only — nothing that grants an edit or a delete
+    // leans on this weaker, unsigned check.
+    const QString ownChatName = chatDisplayName().trimmed();
+    const bool ownMessage =
+        message.self ||
+        (!ownChatName.isEmpty() &&
+         message.senderName.trimmed().compare(ownChatName, Qt::CaseInsensitive)
+             == 0);
+
     // Mark unread (and light the chat button) for any incoming message the user
     // isn't actively reading — either a different conversation, or the chat view
     // isn't the focused, on-screen tab. Own messages never mark unread.
-    if (!message.self &&
+    if (!ownMessage &&
         !(conversation == m_currentConversation && isChatViewVisible())) {
         m_unread.insert(conversation);
         ++m_unreadCounts[conversation];
@@ -235,7 +249,7 @@ void MainWindow::onMessage(const ChatMessage &message)
     }
     updateChatButton();
 
-    if (!message.self) {
+    if (!ownMessage) {
         const QString where = isDirectConversation(conversation)
                                   ? "sent you a message"
                                   : "in " + conversation;

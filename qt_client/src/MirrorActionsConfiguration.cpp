@@ -151,6 +151,37 @@ QString transactionLockPath(const QSettings &settings)
     return transactionBasePath(settings) + QStringLiteral(".lock");
 }
 
+bool prepareTransactionDirectory(const QSettings &settings,
+                                 QString *errorCode)
+{
+    const QString directory =
+        QFileInfo(transactionBasePath(settings)).absolutePath();
+    if (directory.isEmpty() || !QFileInfo(directory).isAbsolute()) {
+        if (errorCode)
+            *errorCode = QStringLiteral("configuration_lock_unavailable");
+        return false;
+    }
+    const QFileInfo existing(directory);
+    if ((existing.exists() &&
+         (!existing.isDir() || existing.isSymLink())) ||
+        (!existing.exists() && !QDir().mkpath(directory))) {
+        if (errorCode)
+            *errorCode = QStringLiteral("configuration_lock_unavailable");
+        return false;
+    }
+#if defined(Q_OS_UNIX)
+    if (!QFile::setPermissions(
+            directory,
+            QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                QFileDevice::ExeOwner)) {
+        if (errorCode)
+            *errorCode = QStringLiteral("configuration_lock_unavailable");
+        return false;
+    }
+#endif
+    return true;
+}
+
 bool syncDirectory(const QString &path)
 {
 #if defined(Q_OS_UNIX)
@@ -1128,11 +1159,16 @@ bool recoverPendingConfiguration(
     const CatalogConfigurationPublisher &publisher,
     QString *errorCode)
 {
+    if (!prepareTransactionDirectory(settings, errorCode))
+        return false;
     QLockFile lock(transactionLockPath(settings));
     lock.setStaleLockTime(30 * 1000);
     if (!lock.tryLock(kConfigurationLockTimeoutMs)) {
         if (errorCode)
-            *errorCode = QStringLiteral("configuration_busy");
+            *errorCode =
+                lock.error() == QLockFile::LockFailedError
+                    ? QStringLiteral("configuration_busy")
+                    : QStringLiteral("configuration_lock_unavailable");
         return false;
     }
     return recoverPendingLocked(settings, publisher, errorCode);
@@ -1171,11 +1207,19 @@ QJsonObject applyConfiguration(const QJsonObject &request,
                       QStringLiteral("node_mismatch"));
     }
 
+    QString lockDirectoryError;
+    if (!prepareTransactionDirectory(settings, &lockDirectoryError)) {
+        return result(requestId, node, requestedEnabled, false, 0, false,
+                      lockDirectoryError);
+    }
     QLockFile lock(transactionLockPath(settings));
     lock.setStaleLockTime(30 * 1000);
     if (!lock.tryLock(kConfigurationLockTimeoutMs)) {
         return result(requestId, node, requestedEnabled, false, 0, false,
-                      QStringLiteral("configuration_busy"));
+                      lock.error() == QLockFile::LockFailedError
+                          ? QStringLiteral("configuration_busy")
+                          : QStringLiteral(
+                                "configuration_lock_unavailable"));
     }
     QString recoveryError;
     if (!recoverPendingLocked(settings, publisher, &recoveryError)) {

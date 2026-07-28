@@ -1819,9 +1819,8 @@ private:
     // disturbing whatever session is currently selected in the UI.
     void continueAgentSession(int sessionId);
     // Ask the given session's agent to merge base and resolve conflicts, then
-    // resume it — the action behind the "Fix conflicts with agent" button.
-    // Shared by that button (selected session) and the auto-fix setting below
-    // (any idle session, not necessarily the selected one).
+    // resume it. Used by the auto-fix setting below (any idle session whose
+    // branch conflicts with base).
     void fixAgentConflictsWithAgent(int sessionId);
     // If kAutoFixAgentConflictsSetting is on and `stat` says session's branch
     // conflicts with base, automatically triggers fixAgentConflictsWithAgent().
@@ -5608,7 +5607,6 @@ private:
     // Above the session list: stop every running agent and cancel the queue
     // (adhoc #433).
     QPushButton *m_agentStopAllButton = nullptr;
-    QPushButton *m_agentFixConflictsButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
     // Above the session list: wipe every merged session's worktree, branch and
