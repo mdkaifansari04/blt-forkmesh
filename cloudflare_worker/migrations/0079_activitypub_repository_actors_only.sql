@@ -14,12 +14,8 @@ FROM ap_actors
 WHERE kind = 'instance'
 ON CONFLICT(key_name) DO NOTHING;
 
-DELETE FROM ap_followers
-WHERE actor_bi IN (
-    SELECT actor_bi FROM ap_actors WHERE kind <> 'repo'
-);
-DELETE FROM ap_objects
-WHERE actor_bi IN (
-    SELECT actor_bi FROM ap_actors WHERE kind <> 'repo'
-);
-DELETE FROM ap_actors WHERE kind <> 'repo';
+-- Do not delete legacy actor, follower, or object rows here. A migration is
+-- permanent and cannot prove that every encrypted actor record has already
+-- been reclassified correctly. Public routing decides which actors are
+-- currently exposed; retained social-graph rows remain available if an actor
+-- is re-enabled or a classification bug is fixed.

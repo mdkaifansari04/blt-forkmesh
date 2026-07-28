@@ -1048,10 +1048,55 @@ QString MainWindow::pullPatchFingerprint(const QString &patch)
 
 void MainWindow::reloadPulls()
 {
-    if (!m_pullTable)
+    if (m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
         return;
+    ++m_pullLoadGen; // supersede an older push-driven worker result
     const PullStore store = pullStoreForCurrentRepo();
-    m_currentPulls = store.loadAll();
+    applyLoadedPulls(store, store.loadAll(), store.baseTip());
+}
+
+void MainWindow::reloadPullsInBackground()
+{
+    if (m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const quint64 gen = ++m_pullLoadGen;
+    if (m_pullBackgroundLoadInFlight) {
+        m_pullBackgroundReloadQueued = true;
+        return;
+    }
+    m_pullBackgroundLoadInFlight = true;
+    const PullStore store = pullStoreForCurrentRepo();
+    struct LoadedPulls {
+        PullStore store;
+        QList<PullRequest> pulls;
+        QString baseTip;
+    };
+    runOffThread<LoadedPulls>(
+        [store] {
+            const forkmesh::BackgroundScope activity(
+                QStringLiteral("pulls"), QStringLiteral("load pull metadata"),
+                forkmesh::ActionTelemetry::Execution::Worker);
+            return LoadedPulls{store, store.loadAll(), store.baseTip()};
+        },
+        [this, gen](LoadedPulls loaded) {
+            m_pullBackgroundLoadInFlight = false;
+            if (gen == m_pullLoadGen)
+                applyLoadedPulls(loaded.store, std::move(loaded.pulls),
+                                 loaded.baseTip);
+            if (m_pullBackgroundReloadQueued) {
+                m_pullBackgroundReloadQueued = false;
+                reloadPullsInBackground();
+            }
+        });
+}
+
+void MainWindow::applyLoadedPulls(const PullStore &store,
+                                  QList<PullRequest> pulls,
+                                  const QString &baseTip)
+{
+    m_currentPulls = std::move(pulls);
     // Pre-compute which open PRs no longer apply cleanly so refreshPullList() can
     // badge their rows. Done here (not per refresh) so typing in the search box
     // doesn't re-spawn the dry-run apply for every open PR. Only meaningful when
@@ -1071,7 +1116,7 @@ void MainWindow::reloadPulls()
         // are resolved asynchronously below rather than inline.
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
         const QString cacheKey = repo.owner + QLatin1Char('/') + repo.name +
-                                 QLatin1Char('@') + store.baseTip();
+                                 QLatin1Char('@') + baseTip;
         if (cacheKey != m_pullConflictCacheBaseTip) {
             m_pullConflictCacheBaseTip = cacheKey;
             m_pullConflictCache.clear();
@@ -1105,8 +1150,14 @@ void MainWindow::reloadPulls()
         }
     }
     updateRepoPullCount();
-    refreshPullList();
-    updatePullActionState();
+    if (m_pullTable) {
+        refreshPullList();
+        updatePullActionState();
+    }
+    // Pull status decorates Agents rows. Repaint from the already-loaded session
+    // cache when that tab is visible; do not reload sessions or run Git here.
+    if (m_repoDetailStack && m_repoDetailStack->currentIndex() == 3)
+        refreshAgentTable();
     // Fill in any uncached conflict badges off the critical path, one PR per
     // event-loop turn, so a cold cache never freezes the UI (the list above is
     // already on screen; the badges drop in as each dry-run finishes).
@@ -1259,7 +1310,8 @@ void MainWindow::refreshPullList()
     const int keep = m_currentPullNumber;
     TableRepaintGuard repaintGuard(m_pullTable);
     m_pullTable->setSortingEnabled(false);
-    m_pullTable->setRowCount(0);
+    QList<const PullRequest *> visiblePulls;
+    visiblePulls.reserve(m_currentPulls.size());
     for (const PullRequest &pr : std::as_const(m_currentPulls)) {
         if (!search.isEmpty()) {
             const QString hay = QStringLiteral("#%1 %2 %3 %4 %5")
@@ -1268,8 +1320,12 @@ void MainWindow::refreshPullList()
             if (!hay.contains(search, Qt::CaseInsensitive))
                 continue;
         }
-        const int row = m_pullTable->rowCount();
-        m_pullTable->insertRow(row);
+        visiblePulls.append(&pr);
+    }
+    // One model reset avoids a rowsInserted/layout cycle for every PR.
+    m_pullTable->setRowCount(visiblePulls.size());
+    for (int row = 0; row < visiblePulls.size(); ++row) {
+        const PullRequest &pr = *visiblePulls.at(row);
         auto *num = new QTableWidgetItem;
         num->setData(Qt::DisplayRole, pr.number);
         num->setData(Qt::UserRole, pr.number);
@@ -3660,7 +3716,9 @@ void MainWindow::updatePullActionState()
     QString head;
     QString base;
     QString patch;
-    QString reviewSummary;
+    int independentApprovals = 0;
+    bool independentChangesRequested = false;
+    bool independentReviewReady = false;
     for (const PullRequest &pr : m_currentPulls) {
         if (pr.number == m_currentPullNumber) {
             open   = pr.status == "open";
@@ -3669,15 +3727,17 @@ void MainWindow::updatePullActionState()
             head   = pr.head;
             base   = pr.base;
             patch  = pr.patch;
-            reviewSummary = pr.reviewSummary();
+            independentApprovals = pr.independentApprovalCount();
+            independentChangesRequested =
+                pr.hasIndependentChangesRequested();
+            independentReviewReady = pr.independentReviewGateSatisfied();
         }
     }
     const bool mergeable = writable && have && open;
     // An unresolved "request changes" review holds the merge: a human reviewer's
     // objection gates the button until it's approved (or the review cleared) —
     // just as a failed check would, but for review state (issue #359).
-    const bool reviewBlocks =
-        reviewSummary == QLatin1String("changes_requested");
+    const bool reviewBlocks = !independentReviewReady;
     bool behind = false;
     if (mergeable)
         store.isBranchBehindBase(m_currentPullNumber, &behind);
@@ -3711,16 +3771,25 @@ void MainWindow::updatePullActionState()
                 "<span style='color:#8b949e'>Checking for conflicts\xE2\x80\xA6"
                 "</span>"));
             m_pullMergeStatus->show();
-        } else if (reviewBlocks) {
+        } else if (independentChangesRequested) {
             m_pullMergeStatus->setText(QString::fromUtf8(
                 "<span style='color:#f85149'>\xE2\x9A\xA0 Changes requested "
                 "\xE2\x80\x94 a reviewer is blocking this merge. Resolve their "
                 "review (approve, or clear the request) to merge.</span>"));
             m_pullMergeStatus->show();
+        } else if (!independentReviewReady) {
+            m_pullMergeStatus->setText(QString::fromUtf8(
+                "<span style='color:#d29922'>Peer approval required "
+                "\xE2\x80\x94 at least one reviewer other than the pull-request "
+                "author must approve before merge.</span>"));
+            m_pullMergeStatus->show();
         } else if (mergeClean) {
             m_pullMergeStatus->setText(QString::fromUtf8(
                 "<span style='color:#3fb950'>\xE2\x9C\x93 No conflicts \xE2\x80\x94 "
-                "ready to merge.</span>"));
+                "%1 independent approval%2; ready to merge. More peer approvals "
+                "strengthen the review signal.</span>")
+                .arg(independentApprovals)
+                .arg(independentApprovals == 1 ? QString() : QStringLiteral("s")));
             m_pullMergeStatus->show();
         } else {
             const QString detail =
@@ -3769,8 +3838,9 @@ void MainWindow::updatePullActionState()
                 ? QStringLiteral("Checking whether this pull request still applies "
                                  "cleanly…")
                 : mergeable && reviewBlocks
-                      ? QStringLiteral("A reviewer has requested changes — resolve "
-                                       "their review before merging.")
+                      ? QStringLiteral("At least one independent peer approval is "
+                                       "required, with no unresolved request for "
+                                       "changes.")
                       : mergeable && !mergeClean
                             ? QStringLiteral("This pull request has conflicts — use "
                                              "\"Resolve conflicts\" to commit a fix to "
@@ -4299,12 +4369,17 @@ void MainWindow::mergeCurrentPull()
     }
     if (!found)
         return;
-    if (current.reviewSummary() == QLatin1String("changes_requested")) {
+    if (!current.independentReviewGateSatisfied()) {
         QMessageBox::warning(
             this, "Merge pull request",
-            QStringLiteral("Pull request #%1 has an unresolved \"request changes\" "
-                           "review. Resolve the review (approve it, or clear the "
-                           "request) before merging.")
+            current.hasIndependentChangesRequested()
+                ? QStringLiteral("Pull request #%1 has an unresolved peer "
+                                 "\"request changes\" review. Resolve it before "
+                                 "merging.")
+                      .arg(m_currentPullNumber)
+                : QStringLiteral("Pull request #%1 needs at least one approval "
+                                 "from a peer other than its author before "
+                                 "merging.")
                 .arg(m_currentPullNumber));
         return;
     }
@@ -7162,12 +7237,17 @@ void MainWindow::mergeAndDeleteCurrentPull()
     }
     if (!found)
         return;
-    if (current.reviewSummary() == QLatin1String("changes_requested")) {
+    if (!current.independentReviewGateSatisfied()) {
         QMessageBox::warning(
             this, "Merge pull request",
-            QStringLiteral("Pull request #%1 has an unresolved \"request changes\" "
-                           "review. Resolve the review (approve it, or clear the "
-                           "request) before merging.")
+            current.hasIndependentChangesRequested()
+                ? QStringLiteral("Pull request #%1 has an unresolved peer "
+                                 "\"request changes\" review. Resolve it before "
+                                 "merging.")
+                      .arg(m_currentPullNumber)
+                : QStringLiteral("Pull request #%1 needs at least one approval "
+                                 "from a peer other than its author before "
+                                 "merging.")
                 .arg(m_currentPullNumber));
         return;
     }

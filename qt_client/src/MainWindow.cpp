@@ -106,6 +106,13 @@ MainWindow::~MainWindow()
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
+#ifndef FORKMESH_WINDOW_TESTS
+    // Start the durable action journal before initialization launches network,
+    // git, agent, or worker activity. The writer owns all later disk I/O.
+    forkmesh::ActionTelemetry::initialize(
+        QDir::homePath() +
+        QStringLiteral("/.forkmesh/diagnostics/actions.jsonl"));
+#endif
     logStartup(QStringLiteral("MainWindow ctor begin"));
     // App-wide filter so right-click on ANY selected text (transcript, diff,
     // README, logs — not just the prompt boxes themselves) can offer "Send to
@@ -313,6 +320,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_stack->addWidget(buildChatPage());
     logStartup(QStringLiteral("chat/app page built"));
     setCentralWidget(m_stack);
+    // Build the two largest, most frequently visited repository surfaces before
+    // the window becomes interactive. QWidget construction cannot legally run
+    // on a worker thread; paying this one-time cost here keeps the first repo
+    // click and the first Code/Issues switch below a frame-scale budget instead
+    // of freezing an already-visible window for ~230ms each. Less common repo
+    // tabs remain lazy.
+    ensureRepoDetailSectionBuilt();
+    ensureRepoDetailTabBuilt(0); // Code (also owns Branches/Worktrees panels)
+    ensureRepoDetailTabBuilt(2); // Issues
+    logStartup(QStringLiteral("core repository surfaces warmed"));
     initializeWorldSpeechBridge();
     loadRepositories();
     refreshRepositoryList();
@@ -529,9 +546,9 @@ void MainWindow::runDeferredStartup()
         refreshRepositoryList();
         openRepoDetail(index);
         logStartup(QStringLiteral("last repository detail loaded"));
-        // Issues are loaded synchronously by openRepoDetail, so the looper has a
-        // populated backlog to resume against (adhoc #125).
-        maybeRestoreIssueLooper();
+        // Issue metadata is worker-loaded; applyLoadedIssues resumes the looper
+        // only after its backlog has arrived.
+        reloadIssuesInBackground();
     } else if (m_repoDetailIndex < 0) {
         // No saved repository to restore: land on the selected node's first repo
         // (if any) so a fresh session opens on real content, not an empty panel.

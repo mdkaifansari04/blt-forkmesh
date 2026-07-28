@@ -224,6 +224,7 @@ const WORLD_DIAGNOSTICS_THRESHOLDS = {
   longFrames: { caution: 1, high: 5 },
   longestFrameMs: { caution: 34, high: 100 },
   pointerGapMs: { caution: 50, high: 120 },
+  movementInputMs: { caution: 34, high: 80 },
   reconnects: { caution: 1, high: 5 },
   bufferedBytes: { caution: 16 * 1024, high: 256 * 1024 },
   frameRate: { caution: 30, high: 90 },
@@ -4687,11 +4688,13 @@ class ForkMeshWorld extends HTMLElement {
     this.toastLockUntil = 0;
     this.inactiveSyncTimer = 0;
     this.inputInactiveTimer = 0;
+    this.inputActivityPublishTimer = 0;
     this.lastInputInactiveScheduleAt = 0;
     this.firstVisitAt = firstVisitTimestamp();
     this.publicVisitCount = sessionVisitCount(true);
     this.chatBubblesEnabledAt = Date.now() + CHAT_BUBBLE_JOIN_GRACE_MS;
     this.activityArrivalRecorded = false;
+    this.activityArrivalTimer = 0;
     // Unread badge on the collapsed bottom CHAT bar. Counts live lines from
     // other people only — replayed history and this browser's own messages
     // never bump it — and resets whenever the panel is opened.
@@ -4836,7 +4839,7 @@ class ForkMeshWorld extends HTMLElement {
     if (["pointerdown", "keydown"].includes(String(event?.type || ""))) {
       this.reclaimPresenceHere();
     }
-    this.recordActivityArrival();
+    this.scheduleActivityArrival();
     if (this.focusMusicAutoplayPending) {
       this.focusMusicAutoplayPending = false;
       // A browser that rejected the initial unmuted request can accept this
@@ -4845,9 +4848,8 @@ class ForkMeshWorld extends HTMLElement {
     }
     if (!this.identity.inputActive) {
       this.identity.inputActive = true;
-      this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
-      this.sendPresence({ type: "presence" });
-      this.broadcastLocalPresence();
+      this.world?.setInputActive?.(this.settings.privacy.activity === true);
+      this.scheduleInputActivityPublish();
     }
     // Pointermove can fire hundreds of times per second while dragging. A
     // short throttle avoids creating/clearing a timer for every input sample
@@ -4859,9 +4861,8 @@ class ForkMeshWorld extends HTMLElement {
       this.inputInactiveTimer = window.setTimeout(() => {
         if (!this.identity || this.destroyed) return;
         this.identity.inputActive = false;
-        this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
-        this.sendPresence({ type: "presence" });
-        this.broadcastLocalPresence();
+        this.world?.setInputActive?.(false);
+        this.scheduleInputActivityPublish();
       }, 12000);
     }
   };
@@ -4894,6 +4895,34 @@ class ForkMeshWorld extends HTMLElement {
     }).catch(() => {
       this.activityArrivalRecorded = false;
     });
+  }
+
+  scheduleActivityArrival() {
+    if (
+      this.activityArrivalRecorded ||
+      this.activityArrivalTimer ||
+      this.destroyed
+    ) {
+      return;
+    }
+    // Visitor accounting is not part of input handling. Give the renderer a
+    // few frames before creating the request so first movement always wins.
+    this.activityArrivalTimer = window.setTimeout(() => {
+      this.activityArrivalTimer = 0;
+      this.recordActivityArrival();
+    }, 64);
+  }
+
+  scheduleInputActivityPublish() {
+    if (this.inputActivityPublishTimer || this.destroyed) return;
+    // Socket JSON and cross-tab publication are small but synchronous. Keep
+    // them behind the same short render-first boundary as visitor accounting.
+    this.inputActivityPublishTimer = window.setTimeout(() => {
+      this.inputActivityPublishTimer = 0;
+      if (this.destroyed || !this.identity) return;
+      this.sendPresence({ type: "presence" });
+      this.broadcastLocalPresence();
+    }, 64);
   }
 
   // The embedded /dashboard/chat iframe mirrors every live chat line to this
@@ -5500,6 +5529,7 @@ class ForkMeshWorld extends HTMLElement {
         },
         onReferralBoardSelect: () => void this.copyReferralLink(),
         onSiteReferrerOpen: (url) => this.openSiteReferrerLink(url),
+        onLobbyLinkKioskSelect: () => void this.openLobbyLinkKiosk(),
         onSystemCapacityTableSelect: (table) =>
           this.openSystemCapacityTables(table),
         onInfrastructureConsoleToggle: ({ enabled }) =>
@@ -16557,6 +16587,10 @@ class ForkMeshWorld extends HTMLElement {
         title: "Merge not authorized",
         body: "Mirror merges are currently restricted to an owner of the organization that publishes this repository.",
       },
+      "review-required": {
+        title: "Independent review required",
+        body: "At least one peer other than the pull-request author must approve, and no peer request for changes may remain unresolved. Review the pull request on the repository page.",
+      },
       unauthenticated: {
         title: "Session no longer valid",
         body: "Sign in again before requesting a merge. No bearer token is placed in the URL or page content.",
@@ -16580,7 +16614,7 @@ class ForkMeshWorld extends HTMLElement {
       return `<section class="world-pull-merge-panel" data-world-pull-merge-state="${escapeHTML(
         state,
       )}" aria-live="${state === "merged" ? "polite" : "assertive"}" aria-atomic="true" role="${
-        ["conflict", "stale", "forbidden", "unauthenticated", "failed"].includes(
+        ["conflict", "stale", "forbidden", "review-required", "unauthenticated", "failed"].includes(
           state,
         )
           ? "alert"
@@ -16903,6 +16937,9 @@ class ForkMeshWorld extends HTMLElement {
     }
     if (httpStatus === 403 || error === "forbidden") {
       return { state: "forbidden" };
+    }
+    if (error === "review_required") {
+      return { state: "review-required" };
     }
     if (error === "merge_conflict") return { state: "conflict" };
     if (
@@ -20676,6 +20713,14 @@ class ForkMeshWorld extends HTMLElement {
               0,
               Math.min(60_000, Number(scene.pointerWorstGapMs) || 0),
             ),
+            inputResponseMs: Math.max(
+              0,
+              Math.min(60_000, Number(scene.inputResponseMs) || 0),
+            ),
+            worstInputResponseMs: Math.max(
+              0,
+              Math.min(60_000, Number(scene.worstInputResponseMs) || 0),
+            ),
             dragging: scene.dragging === true,
             interactiveObjects: Math.max(
               0,
@@ -20809,7 +20854,7 @@ class ForkMeshWorld extends HTMLElement {
     setCompactHTML(
       "[data-world-diagnostics-input-compact]",
       renderer
-        ? `I ${renderer.dragging ? "drag" : "idle"} · ${formatCompactCount(renderer.pointerMoves)}p/${diagnosticMetric("pointerGapMs", renderer.pointerWorstGapMs, `${renderer.pointerWorstGapMs.toFixed(0)}g`)} · ${formatCompactCount(renderer.interactiveObjects)}i/${formatCompactCount(renderer.animations)}a @${renderer.pixelRatio.toFixed(1)}`
+        ? `I ${renderer.dragging ? "drag" : "idle"} · ${diagnosticMetric("movementInputMs", renderer.inputResponseMs, `${renderer.inputResponseMs.toFixed(0)}ms move`)}/${diagnosticMetric("movementInputMs", renderer.worstInputResponseMs, `${renderer.worstInputResponseMs.toFixed(0)}ms worst`)} · ${formatCompactCount(renderer.pointerMoves)}p/${diagnosticMetric("pointerGapMs", renderer.pointerWorstGapMs, `${renderer.pointerWorstGapMs.toFixed(0)}g`)} · ${formatCompactCount(renderer.interactiveObjects)}i/${formatCompactCount(renderer.animations)}a @${renderer.pixelRatio.toFixed(1)}`
         : `I ${unavailable("unavailable")}`,
     );
     setCompactHTML(
@@ -20894,7 +20939,7 @@ class ForkMeshWorld extends HTMLElement {
     const inputDetail = this.$("[data-world-diagnostics-input]");
     if (inputDetail) {
       inputDetail.innerHTML = renderer
-        ? `${renderer.dragging ? "Dragging" : "Idle"} · ${Math.round(renderer.pointerMoves).toLocaleString()} pointer moves/s · ${diagnosticMetric("pointerGapMs", renderer.pointerWorstGapMs, `${renderer.pointerWorstGapMs.toFixed(1)} ms worst input gap`)} · ${Math.round(renderer.interactiveObjects).toLocaleString()} interactives · ${Math.round(renderer.animations).toLocaleString()} animations · DPR ${renderer.pixelRatio.toFixed(2)}`
+        ? `${renderer.dragging ? "Dragging" : "Idle"} · ${diagnosticMetric("movementInputMs", renderer.inputResponseMs, `${renderer.inputResponseMs.toFixed(1)} ms movement response`)} · ${diagnosticMetric("movementInputMs", renderer.worstInputResponseMs, `${renderer.worstInputResponseMs.toFixed(1)} ms worst movement response`)} · ${Math.round(renderer.pointerMoves).toLocaleString()} pointer moves/s · ${diagnosticMetric("pointerGapMs", renderer.pointerWorstGapMs, `${renderer.pointerWorstGapMs.toFixed(1)} ms worst input gap`)} · ${Math.round(renderer.interactiveObjects).toLocaleString()} interactives · ${Math.round(renderer.animations).toLocaleString()} animations · DPR ${renderer.pixelRatio.toFixed(2)}`
         : unavailable("WebGL renderer unavailable");
     }
     const worldState = this.$("[data-world-diagnostics-world-state]");
@@ -20978,7 +21023,7 @@ class ForkMeshWorld extends HTMLElement {
     // teardown that callback must not overwrite the location captured just
     // before it with the Office doorway.
     if (this.destroyed) return;
-    this.recordActivityArrival();
+    this.scheduleActivityArrival();
     const space = WORLD_SPACE_IDS.has(String(movement?.space || ""))
       ? String(movement.space)
       : this.currentSpace;
@@ -22100,6 +22145,112 @@ class ForkMeshWorld extends HTMLElement {
     this.renderPeers();
   }
 
+  async openLobbyLinkKiosk() {
+    document.querySelector("[data-world-link-kiosk-dialog]")?.remove();
+    const dialog = document.createElement("dialog");
+    dialog.dataset.worldLinkKioskDialog = "true";
+    dialog.style.cssText =
+      "width:min(760px,calc(100vw - 28px));max-height:min(850px,calc(100vh - 28px));overflow:auto;border:1px solid #79efb5;border-radius:18px;background:linear-gradient(155deg,#061411,#0a2520);color:#e9fff6;padding:0;box-shadow:0 28px 110px #000d";
+    const renderLinks = (links = []) => {
+      const rows = Array.isArray(links) ? links.slice(0, 25) : [];
+      if (!rows.length) {
+        return '<p style="color:#8eb8aa">No links have been submitted yet.</p>';
+      }
+      return `<ol style="display:grid;gap:10px;margin:0;padding:0;list-style:none">${rows.map((link) => {
+        const low = Math.max(0, Number(link?.potentialTraffic?.low) || 0);
+        const high = Math.max(low, Number(link?.potentialTraffic?.high) || 0);
+        return `<li style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;padding:12px;border:1px solid #245044;border-radius:12px;background:#071915">
+          <span style="min-width:0"><a href="${escapeHTML(link?.url || "")}" target="_blank" rel="noopener noreferrer" style="display:block;color:#dffff1;font-weight:800;overflow-wrap:anywhere">${escapeHTML(link?.title || link?.host || "Public link")}</a><small style="color:#84b4a3">by ${escapeHTML(link?.submittedBy || "member")} · ${escapeHTML(link?.channel || "other")} · potential visits ${low.toLocaleString()}–${high.toLocaleString()}</small></span>
+          <strong style="align-self:center;color:#9ef7c6;font:900 24px ForkMesh Mono,monospace" aria-label="Estimated reach score ${Math.max(0, Math.min(100, Number(link?.score) || 0))} out of 100">${Math.max(0, Math.min(100, Number(link?.score) || 0))}</strong>
+        </li>`;
+      }).join("")}</ol>`;
+    };
+    const signedIn = validWorldSession();
+    dialog.innerHTML = `
+      <header style="display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:22px 24px;border-bottom:1px solid #245044">
+        <div><p style="margin:0 0 5px;color:#79efb5;font:800 12px ForkMesh Mono,monospace;letter-spacing:.12em">OFFICE LOBBY · LINK LAB</p><h2 style="margin:0;font-size:26px">Estimate a link’s potential reach</h2></div>
+        <button type="button" data-world-link-kiosk-close aria-label="Close Link Lab" style="border:0;background:transparent;color:#e9fff6;font-size:28px;cursor:pointer">×</button>
+      </header>
+      <div style="display:grid;gap:20px;padding:22px 24px">
+        <p style="margin:0;color:#a8cfc0;line-height:1.6">The 0–100 estimate combines your server-side ForkMesh follower count, aggregate visits already observed from the submitted hostname, and a verified-domain bonus. ForkMesh does not fetch the URL. This score never controls merges, access, rewards, or governance.</p>
+        ${signedIn ? `
+          <form data-world-link-kiosk-form style="display:grid;gap:12px;padding:16px;border:1px solid #245044;border-radius:14px;background:#071915">
+            <label style="display:grid;gap:5px"><span>Public HTTPS link</span><input name="url" type="url" required maxlength="1200" placeholder="https://example.com/campaign" style="min-height:42px;border:1px solid #35695a;border-radius:9px;background:#04100d;color:#e9fff6;padding:8px 10px"></label>
+            <label style="display:grid;gap:5px"><span>Title</span><input name="title" maxlength="120" placeholder="What people will find" style="min-height:42px;border:1px solid #35695a;border-radius:9px;background:#04100d;color:#e9fff6;padding:8px 10px"></label>
+            <label style="display:grid;gap:5px"><span>Channel</span><select name="channel" style="min-height:42px;border:1px solid #35695a;border-radius:9px;background:#04100d;color:#e9fff6;padding:8px 10px"><option value="article">Article</option><option value="community">Community</option><option value="social">Social post</option><option value="video">Video</option><option value="other">Other</option></select></label>
+            <label style="display:flex;align-items:flex-start;gap:9px;color:#a8cfc0;font-size:13px;line-height:1.45"><input name="consent" type="checkbox" required style="margin-top:3px">I consent to publishing this link, my ForkMesh account name, the estimate, and its potential-traffic range on this public kiosk.</label>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span data-world-link-kiosk-status role="status" style="color:#8eb8aa;font-size:13px"></span><button type="submit" style="min-height:40px;border:1px solid #9ef7c6;border-radius:9px;background:#9ef7c6;color:#062017;padding:8px 16px;font-weight:900;cursor:pointer">Analyze and submit</button></div>
+          </form>` :
+          '<p style="margin:0;padding:14px;border:1px solid #6c5928;border-radius:12px;background:#241d08;color:#f7d98a"><a href="/login" style="color:inherit;font-weight:900">Sign in</a> to submit a link. The public board remains readable.</p>'}
+        <section aria-labelledby="world-link-kiosk-board-title"><h3 id="world-link-kiosk-board-title" style="margin:0 0 10px">Recent public links</h3><div data-world-link-kiosk-links><p style="color:#8eb8aa">Loading links…</p></div></section>
+      </div>`;
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog.querySelector("[data-world-link-kiosk-close]")?.addEventListener(
+      "click",
+      () => dialog.close(),
+    );
+    const list = dialog.querySelector("[data-world-link-kiosk-links]");
+    dialog.showModal();
+    try {
+      const payload = await this.fetchJSON("/api/world/link-kiosk", {
+        auth: false,
+        timeout: 8000,
+        cache: "no-store",
+      });
+      if (list) list.innerHTML = renderLinks(payload?.links);
+    } catch (_) {
+      if (list) list.innerHTML = '<p style="color:#f4a6a6">The Link Lab is temporarily unavailable.</p>';
+    }
+    dialog.querySelector("[data-world-link-kiosk-form]")?.addEventListener(
+      "submit",
+      async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const status = form.querySelector("[data-world-link-kiosk-status]");
+        const submit = form.querySelector('button[type="submit"]');
+        const values = new FormData(form);
+        submit.disabled = true;
+        if (status) status.textContent = "Analyzing server-side signals…";
+        try {
+          const payload = await this.postJSON(
+            "/api/world/link-kiosk",
+            {
+              url: values.get("url"),
+              title: values.get("title"),
+              channel: values.get("channel"),
+              consent: values.get("consent") === "on",
+            },
+            { timeout: 10_000 },
+          );
+          if (list) list.innerHTML = renderLinks(payload?.links);
+          const result = payload?.submission || {};
+          const low = Math.max(0, Number(result?.potentialTraffic?.low) || 0);
+          const high = Math.max(low, Number(result?.potentialTraffic?.high) || 0);
+          if (status) {
+            status.textContent = `Reach ${Number(result.score) || 0}/100 · estimated ${low.toLocaleString()}–${high.toLocaleString()} visits`;
+          }
+          form.reset();
+          this.toast("Link analyzed and added to the lobby kiosk.");
+        } catch (error) {
+          const messages = {
+            consent_required: "Consent is required before publishing.",
+            invalid_public_url: "Use a public HTTPS URL without credentials or a custom port.",
+            link_already_submitted: "You already submitted this link.",
+            account_link_limit: "This account has reached the kiosk link limit.",
+          };
+          if (status) {
+            status.textContent =
+              messages[String(error?.message || "")] ||
+              "The link could not be submitted.";
+          }
+        } finally {
+          submit.disabled = false;
+        }
+      },
+    );
+  }
+
   // The viewer's shareable referral link — only real user accounts (never
   // node sessions) own one, matching the website's session acceptance rule.
   referralLink() {
@@ -22368,6 +22519,8 @@ class ForkMeshWorld extends HTMLElement {
     window.clearTimeout(this.toastTimer);
     window.clearTimeout(this.inactiveSyncTimer);
     window.clearTimeout(this.inputInactiveTimer);
+    window.clearTimeout(this.inputActivityPublishTimer);
+    window.clearTimeout(this.activityArrivalTimer);
     window.clearTimeout(this.repositoryStarSceneSyncTimer);
     window.clearTimeout(this.repositoryFollowerSceneSyncTimer);
     window.clearInterval(this.activityTimer);
@@ -22400,6 +22553,8 @@ class ForkMeshWorld extends HTMLElement {
     this.profilePresenceTimer = 0;
     this.movementSendTimer = 0;
     this.positionWriteTimer = 0;
+    this.inputActivityPublishTimer = 0;
+    this.activityArrivalTimer = 0;
     try {
       this.broadcast?.postMessage({ type: "leave", id: this.identity?.id });
       this.broadcast?.close();

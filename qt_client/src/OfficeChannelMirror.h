@@ -7,6 +7,7 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QObject>
+#include <QPointer>
 #include <QQueue>
 #include <QSet>
 #include <QString>
@@ -17,6 +18,7 @@
 
 class QNetworkAccessManager;
 class QTimer;
+class ServerNode;
 
 // Desktop view of the chats people hold in the World's virtual office.
 //
@@ -28,11 +30,9 @@ class QTimer;
 // account's Ed25519 key and holds no session, so those office conversations
 // were invisible in the app (adhoc #412).
 //
-// This mirror closes that gap over the relay's read-only channel endpoints: it
-// lists the channels the account may read, then polls each room's retained
-// (still-encrypted) backlog and decrypts it locally with the room key. Reading
-// only — sending into an office channel still needs the browser's room socket,
-// so these conversations are surfaced as read-only.
+// This bridge lists the channels the account may read, polls each room's
+// retained (still-encrypted) backlog, and opens an on-demand ticketed encrypted
+// WebSocket when the desktop sends. All HTTP/socket work remains asynchronous.
 namespace forkmesh::office {
 
 // Conversation key for an office room in the desktop sidebar. Prefixed so an
@@ -41,10 +41,11 @@ namespace forkmesh::office {
 QString conversationForChannel(const QString &channelName);
 bool isOfficeConversation(const QString &conversation);
 
-// Canonical strings the account's identity key signs for the read-only channel
-// endpoints. These must stay byte-identical to CHAT_CHANNEL_LIST_PROOF /
-// CHAT_CHANNEL_HISTORY_PROOF in the Worker (cloudflare_worker/src/entry.py).
+// Canonical strings the account's identity key signs for the channel endpoints.
+// These must stay byte-identical to the corresponding constants in the Worker.
 QByteArray channelListProof(const QString &account, const QString &ts);
+QByteArray channelAccessProof(const QString &account, const QString &channelId,
+                              const QString &ts);
 QByteArray channelHistoryProof(const QString &account, const QString &channelId,
                                const QString &ts);
 
@@ -67,7 +68,9 @@ public:
     void setSigner(std::function<QString(const QByteArray &)> signer);
     // `account` is the registered account name the relay knows the key by;
     // `selfId` is this client's chat id, used to mark our own messages.
-    void setIdentity(const QString &account, const QString &selfId);
+    void setIdentity(const QString &account, const QString &selfId,
+                     const QString &displayName = QString());
+    void setConnectionAuthorizer(std::function<bool(const QUrl &)> authorizer);
     // Any absolute https:// (or http:// for a local relay) URL on the relay;
     // only its scheme/authority is used.
     void setApiBase(const QUrl &apiBase);
@@ -78,10 +81,17 @@ public:
     bool isActive() const;
 
     QStringList conversations() const;
+    bool canSend(const QString &conversation) const;
+    // Queues a text send without blocking the GUI. Returns false only when the
+    // conversation/identity is not currently eligible for office chat.
+    bool sendMessage(const QString &conversation, const QString &text);
 
 signals:
     void conversationsChanged(const QStringList &conversations);
     void messageArrived(const ChatMessage &message);
+    void sendActivity(const QString &text);
+    void messageSendFailed(const QString &conversation, const QString &text,
+                           const QString &reason);
 
 private:
     struct Room {
@@ -96,11 +106,21 @@ private:
         RoomCrypto crypto;
         QSet<QString> seenIds;
         QQueue<QString> seenOrder;
+        QQueue<QString> pendingTexts;
+        QPointer<ServerNode> sender;
+        bool accessFetching = false;
+        bool senderConnected = false;
     };
 
     void poll();
     void fetchChannels();
     void fetchHistory(const QString &channelId);
+    void fetchRoomAccess(const QString &channelId);
+    void openSender(const QString &channelId, const QJsonObject &payload);
+    void flushPending(Room &room);
+    void failPending(Room &room, const QString &reason);
+    void rememberSeen(Room &room, const QString &messageId);
+    void discardSender(Room &room);
     void applyHistory(Room &room, const QJsonObject &payload);
     QUrl signedUrl(const QString &path, const QString &ts,
                    const QByteArray &canonical) const;
@@ -109,8 +129,10 @@ private:
     QNetworkAccessManager *m_network = nullptr;
     QTimer *m_timer = nullptr;
     std::function<QString(const QByteArray &)> m_signer;
+    std::function<bool(const QUrl &)> m_connectionAuthorizer;
     QString m_account;
     QString m_selfId;
+    QString m_displayName;
     QUrl m_apiBase;
     bool m_listing = false;
     QHash<QString, Room> m_rooms; // channel id -> room

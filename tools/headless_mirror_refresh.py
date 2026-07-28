@@ -2999,6 +2999,7 @@ MERGE_FAILURES = frozenset({
     "merge_conflict",
     "pull_not_found",
     "pull_not_open",
+    "review_required",
     "stale_base",
     "stale_head",
     "stale_pull_metadata",
@@ -3451,6 +3452,88 @@ def _merge_metadata_blob(
     if not match:
         return None
     return raw, match.group(1).decode("ascii")
+
+
+def _merge_front_matter_values(raw: bytes) -> dict[str, str] | None:
+    if not raw or len(raw) > MAX_PULL_METADATA_BYTES or b"\x00" in raw:
+        return None
+    try:
+        lines = raw.decode("utf-8").split("\n")
+        close = lines.index("---", 1)
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not lines or lines[0] != "---":
+        return None
+    values: dict[str, str] = {}
+    for line in lines[1:close]:
+        if ": " not in line:
+            return None
+        key, value = line.split(": ", 1)
+        if key in values or not re.fullmatch(
+                r"[A-Za-z][A-Za-z0-9]*", key):
+            return None
+        values[key] = value
+    return values
+
+
+def _merge_peer_review_gate(
+    config: RefreshConfig,
+    request: Mapping[str, Any],
+    raw_metadata: bytes,
+) -> bool:
+    """Require one distinct peer approval and no unresolved peer objection.
+
+    Review files on the owner-published pull metadata ref have already passed
+    PullStore/Worker signature validation. This executor still parses only a
+    bounded allowlisted projection and ignores any review authored by the PR
+    signer.
+    """
+    metadata = _merge_front_matter_values(raw_metadata)
+    pull_author = str((metadata or {}).get("author") or "")
+    if not pull_author:
+        return False
+    prefix = "pulls/%d/" % request["pullNumber"]
+    try:
+        _code, listing = _merge_git(
+            config,
+            ["ls-tree", "-r", "-z", "--name-only",
+             request["expectedPullsOid"], "--", prefix],
+            maximum_output=256 * 1024,
+        )
+    except RefreshError:
+        return False
+    paths = sorted(
+        path.decode("utf-8")
+        for path in listing.split(b"\x00")
+        if path and re.fullmatch(
+            rb"pulls/[1-9][0-9]*/[0-9]{4,}-review\.md", path)
+    )[:1000]
+    latest: dict[str, str] = {}
+    for path in paths:
+        try:
+            _code, raw = _merge_git(
+                config,
+                ["show", request["expectedPullsOid"] + ":" + path],
+                maximum_output=MAX_PULL_METADATA_BYTES,
+            )
+        except RefreshError:
+            return False
+        values = _merge_front_matter_values(raw)
+        if not values or values.get("type") != "review":
+            continue
+        reviewer = str(values.get("author") or "")
+        state = str(values.get("state") or "")
+        if not reviewer or reviewer == pull_author or not values.get("sig"):
+            continue
+        if state in ("approved", "changes_requested"):
+            latest[reviewer] = state
+        else:
+            latest.pop(reviewer, None)
+    return (
+        any(state == "approved" for state in latest.values())
+        and not any(
+            state == "changes_requested" for state in latest.values())
+    )
 
 
 def _merge_commit_tree(
@@ -4249,6 +4332,9 @@ def _merge_execute_locked(
         # Deliberately one error for closed, malformed, legacy-patch, and
         # creation-OID-mismatched records: none are safe to merge online.
         return _merge_store_failure(config, request, "unsupported_pull")
+    if not _merge_peer_review_gate(
+            config, request, raw_metadata):
+        return _merge_store_failure(config, request, "review_required")
     updated, _base, head_branch = parsed
     try:
         current_head = _merge_oid(
