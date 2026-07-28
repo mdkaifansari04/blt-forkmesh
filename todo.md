@@ -24,7 +24,7 @@ the implementation and its focused verification are complete.
 - [ ] Restore live recent blog posts in the Dashboard “Latest from the blog” card.
 - [ ] Add an audited `is_admin`-only World action to permanently delete a named node after typed confirmation.
 - [ ] Make clicking the ForkMesh logo on Dashboard perform a clean Dashboard reload.
-- [x] Keep newly installed mirror6 visible through provisioning in Qt Hosts and the World node cabinets.
+- [ ] Keep newly installed mirror6 persistently visible through provisioning in Qt Hosts and the World node cabinets.
 - [ ] Move Operational alerts into the platform `is_admin` area and retarget alert-management deep links.
 - [x] Add a direct “Manage this alert” link to component and scheduled-job alert emails, opening the affected expanded status row.
 - [x] Make QA arrows permanently visible and large (red Fail, green Pass, grey Unsure), publish global aggregate stats, and continuously intake newly completed tasks.
@@ -190,7 +190,7 @@ the implementation and its focused verification are complete.
 - [x] Make mirror4 appear automatically in Qt, the World, and the repository mirror catalog after provisioning.
 - [x] Make future Vultr mirrors complete first-run setup automatically, including dependencies, state directories, capacity checks, signed catalog publication, and a truthful readiness probe.
 - [x] Retire the exact mirror4 and mirror5 Vultr instances and remove their saved Qt Host entries after confirming their identities.
-- [x] Verify mirror6 on its 1 GB Vultr plan is linked, signed into the repository catalog, and represented by the World mirror-cabinet data.
+- [ ] Verify mirror6 on its 1 GB Vultr plan remains linked, signed into the repository catalog, and represented by the World mirror-cabinet data across repeated catalog refreshes.
 - [x] Make Qt host probes find Claude Code and Codex in their standard per-user install directories.
 - [x] Require successful Vultr provisioning to wait for the mirror's signed public catalog record instead of stopping at SSH/systemd success.
 - [x] Use 1 GB as the minimum Vultr mirror plan for all future provisioning.
