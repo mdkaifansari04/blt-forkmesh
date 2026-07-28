@@ -1302,6 +1302,12 @@ private:
                            const QString &node, const QString &identityFile);
     void startVultrHostInstall(const QString &node, const QString &ip,
                                const QString &identityFile);
+    // Do not report a provisioned mirror as complete merely because SSH and
+    // systemd succeeded. Wait until its signed flagship catalog row is visible
+    // through the public relay—the same source used by Mirror nodes and World.
+    void waitForVultrMirrorPublication(const QString &node,
+                                       const QString &successMessage,
+                                       int attempt = 0);
     void finishVultrProvision(bool ok, const QString &message);
     // Print the per-attempt record collected for this provision run into the
     // install log, so a finished run shows what every attempt did (adhoc #342).
@@ -1819,9 +1825,8 @@ private:
     // disturbing whatever session is currently selected in the UI.
     void continueAgentSession(int sessionId);
     // Ask the given session's agent to merge base and resolve conflicts, then
-    // resume it — the action behind the "Fix conflicts with agent" button.
-    // Shared by that button (selected session) and the auto-fix setting below
-    // (any idle session, not necessarily the selected one).
+    // resume it. Used by the auto-fix setting below (any idle session whose
+    // branch conflicts with base).
     void fixAgentConflictsWithAgent(int sessionId);
     // If kAutoFixAgentConflictsSetting is on and `stat` says session's branch
     // conflicts with base, automatically triggers fixAgentConflictsWithAgent().
@@ -5611,7 +5616,6 @@ private:
     // Above the session list: stop every running agent and cancel the queue
     // (adhoc #433).
     QPushButton *m_agentStopAllButton = nullptr;
-    QPushButton *m_agentFixConflictsButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
     // Above the session list: wipe every merged session's worktree, branch and

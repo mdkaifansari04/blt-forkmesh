@@ -171,6 +171,55 @@ h1 {
   background: var(--image-placeholder);
 }
 
+.hero-video {
+  width: 100%;
+  aspect-ratio: 16/9;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-color: var(--line);
+  border-radius: 14px;
+  display: block;
+  background: #000;
+}
+
+.hero-video:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 3px;
+}
+
+.video-transcript {
+  max-width: 790px;
+  margin: 28px auto 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--note);
+  color: var(--paragraph);
+}
+
+.video-transcript summary {
+  cursor: pointer;
+  padding: 18px 22px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.video-transcript-copy {
+  padding: 0 22px 20px;
+  color: var(--paragraph);
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.video-transcript-copy p {
+  margin: 12px 0;
+}
+
+.video-transcript-copy strong {
+  color: var(--cyan);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
 .body {
   max-width: 790px;
   margin: 44px auto 0;

@@ -1545,6 +1545,25 @@ forkmesh-world {
   display: none;
 }
 
+/* Unread count on the collapsed CHAT bar. Opening the panel zeroes it, so it
+   is only ever visible while the bar is closed. */
+.world-chat-terminal-unread {
+  flex: 0 0 auto;
+  min-width: 14px;
+  border-radius: 999px;
+  background: var(--world-mint);
+  padding: 0 4px;
+  color: #06130d;
+  font-size: 0.42rem;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+
+.world-chat-terminal-unread[hidden] {
+  display: none;
+}
+
 .world-chat-terminal[open] .world-diagnostics-toggle {
   margin-left: auto;
 }
@@ -6573,6 +6592,14 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
   .world-chat-terminal:not([open]) {
     width: 58px;
+  }
+
+  /* The collapsed bar shrinks to the word CHAT here; give the unread pill room
+     rather than letting it clip. */
+  .world-chat-terminal:not([open]):has(
+      .world-chat-terminal-unread:not([hidden])
+    ) {
+    width: 86px;
   }
 
   .world-chat-terminal:not([open]) > summary {

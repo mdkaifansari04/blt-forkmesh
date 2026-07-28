@@ -352,6 +352,9 @@ verify_public_assets() {
         "/favicon/site.webmanifest application/manifest+json"
         "/assets/video/network.jpg image/jpeg"
         "/assets/video/network.mp4 video/mp4"
+        "/assets/blog/features/forkmesh-forever.webp image/webp"
+        "/assets/video/forkmesh-forever.mp4 video/mp4"
+        "/assets/video/forkmesh-forever.en.vtt text/vtt"
         "/assets/music/cosmic-waves.ogg audio/ogg"
         "/dashboard/tailwind.css text/css"
     )

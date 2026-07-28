@@ -1037,23 +1037,6 @@ QWidget *MainWindow::buildAgentsTab()
         stopStreamSession(m_selectedAgentSessionId);
     });
 
-    // Small icon-only button (adhoc #139): lives in the footer's "Agents:"
-    // status strip (see buildNetworkLogDock in MainWindowChat.cpp).
-    m_agentFixConflictsButton = new QPushButton;
-    m_agentFixConflictsButton->setObjectName("agentStatusFixButton");
-    m_agentFixConflictsButton->setFlat(true);
-    m_agentFixConflictsButton->setFixedSize(22, 22);
-    m_agentFixConflictsButton->setIconSize(QSize(14, 14));
-    m_agentFixConflictsButton->setCursor(Qt::PointingHandCursor);
-    m_agentFixConflictsButton->setToolTip(
-        "Fix conflicts with agent \xE2\x80\x94 ask it to merge the base branch "
-        "into this branch and resolve conflicts");
-    setOcticon(m_agentFixConflictsButton, "git-merge", 14);
-    m_agentFixConflictsButton->hide();
-    connect(m_agentFixConflictsButton, &QPushButton::clicked, this, [this] {
-        fixAgentConflictsWithAgent(m_selectedAgentSessionId);
-    });
-
     m_agentDeleteButton = new QPushButton("Delete");
     m_agentDeleteButton->setObjectName("dangerButton");
     m_agentDeleteButton->setCursor(Qt::PointingHandCursor);
@@ -5044,8 +5027,6 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentNetPanel->clear();
         if (m_agentViewPrButton)
             m_agentViewPrButton->hide();
-        if (m_agentFixConflictsButton)
-            m_agentFixConflictsButton->hide();
         if (m_agentCreateIssueButton)
             m_agentCreateIssueButton->hide();
         if (m_agentModeSelector)
@@ -5118,15 +5099,6 @@ void MainWindow::showAgentSession(int sessionId)
         if (session->prNumber > 0)
             m_agentViewPrButton->setText(
                 QStringLiteral("View PR #%1").arg(session->prNumber));
-    }
-    // "Fix conflicts with agent": visible only when the cached diff stat says this
-    // branch conflicts with base (adhoc #28). The button is hidden until a stat is
-    // available; it becomes visible on the next refreshAgentTable() that computes it.
-    if (m_agentFixConflictsButton) {
-        auto statIt = m_agentDiffStats.constFind(sessionId);
-        const bool hasConflict =
-            statIt != m_agentDiffStats.constEnd() && statIt->conflicted;
-        m_agentFixConflictsButton->setVisible(hasConflict);
     }
     // "Create linked issue" only makes sense for an ad-hoc, owner-side session
     // that isn't already tracked by one. External (watch-only) sessions and
@@ -6010,9 +5982,8 @@ void MainWindow::continueAgentSession(int sessionId)
 }
 
 // Ask sessionId's agent to merge base and resolve conflicts, then resume it.
-// Used both by the "Fix conflicts with agent" button (selected session) and by
-// maybeAutoFixAgentConflict() (any idle session whose branch conflicts with
-// base, when the auto-fix setting is on).
+// Used by maybeAutoFixAgentConflict() (any idle session whose branch conflicts
+// with base, when the auto-fix setting is on).
 void MainWindow::fixAgentConflictsWithAgent(int sessionId)
 {
     AgentSession *s = findAgentSession(sessionId);

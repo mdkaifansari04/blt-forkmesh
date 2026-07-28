@@ -5,6 +5,7 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [ ] Human TODO: share the live “ForkMesh Forever” post on Reddit, Mastodon, and X, then paste each published permalink into the post’s social-proof fields.
 - [x] Add physical Pass / Fail / Unsure tabs to the QA deck with verdict-filtered task pages.
 - [x] Let authorized QA reviewers send a reviewed card back to “What we're building”.
 - [x] Let authorized QA reviewers file a reviewed card into the `forkmesh/forkmesh` issues list.
@@ -23,6 +24,9 @@ the implementation and its focused verification are complete.
 - [ ] Include organization-owned repositories in Dashboard Top repositories with clear owner labels.
 - [ ] Restore live recent blog posts in the Dashboard “Latest from the blog” card.
 - [ ] Add an audited `is_admin`-only World action to permanently delete a named node after typed confirmation.
+- [ ] Make clicking the ForkMesh logo on Dashboard perform a clean Dashboard reload.
+- [x] Keep newly installed mirror6 visible through provisioning in Qt Hosts and the World node cabinets.
+- [ ] Move Operational alerts into the platform `is_admin` area and retarget alert-management deep links.
 - [x] Add a direct “Manage this alert” link to component and scheduled-job alert emails, opening the affected expanded status row.
 - [x] Make QA arrows permanently visible and large (red Fail, green Pass, grey Unsure), publish global aggregate stats, and continuously intake newly completed tasks.
 - [x] Fix the production `/api/world/deploy-status` response error that made API and Worker status red, then verify live recovery.
@@ -184,6 +188,26 @@ the implementation and its focused verification are complete.
 
 ## Requested follow-up work
 
+- [x] Make mirror4 appear automatically in Qt, the World, and the repository mirror catalog after provisioning.
+- [x] Make future Vultr mirrors complete first-run setup automatically, including dependencies, state directories, capacity checks, signed catalog publication, and a truthful readiness probe.
+- [x] Retire the exact mirror4 and mirror5 Vultr instances and remove their saved Qt Host entries after confirming their identities.
+- [x] Verify mirror6 on its 1 GB Vultr plan is linked, signed into the repository catalog, and represented by the World mirror-cabinet data.
+- [x] Make Qt host probes find Claude Code and Codex in their standard per-user install directories.
+- [x] Require successful Vultr provisioning to wait for the mirror's signed public catalog record instead of stopping at SSH/systemd success.
+- [x] Use 1 GB as the minimum Vultr mirror plan for all future provisioning.
+- [ ] Persist and show each managed host's provider, plan/type, display name, and estimated cost in the Qt Hosts list.
+- [ ] Restore each node's Clones and Websites metrics and verify that newly provisioned mirrors report both values.
+- [x] Restore the World fresh-code effect.
+- [ ] Add an executive floor to the Office building.
+- [ ] Update the organization-access explanation so Claude/Codex session access is described as Engineering-team-only.
+- [ ] Verify and enforce that non-Engineering organization members cannot start, review, continue, or view Claude/Codex sessions.
+- [ ] Show each node cabinet's Actions runs, logs, and running/done/error state on its back with restrained status animations.
+- [ ] Add an admin-only error-log analytics view that groups equivalent errors and charts their occurrences over the previous 24 hours.
+- [ ] Identify and delete only the roughly 50 repositories imported in the recent bulk-import batch, after verifying the exact targets and recovery path.
+- [ ] Move Marketing desks to the front windows, face them outward, correct chair orientation, and use small desktop name plaques.
+- [ ] Crop and embed the supplied ForkMesh cube logo beneath the epoxy surface of the round Marketing table.
+- [ ] Fix the member chest Fediverse feed when it reports unavailable.
+- [ ] Make Add wallet open the signed-in user's profile wallet editor.
 - [x] Allow all users to enter the building.
 - [x] Keep the full Marketing tasks board blank unless someone is in the room.
 - [x] Stop the mobile world view from refreshing while the user moves.

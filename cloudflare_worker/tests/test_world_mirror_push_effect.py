@@ -192,7 +192,7 @@ def test_scene_plays_a_bounded_disposed_surge_from_verified_commit_changes():
     assert "verifiedPendingPush" in update
     assert "nextCommit.toLowerCase().startsWith(pendingPush.commit)" in update
     assert "function armMirrorPushEffect(nodeName, commitPrefix)" in SCENE
-    assert "expiresAt: Date.now() + 15_000" in SCENE
+    assert "expiresAt: Date.now() + 120_000" in SCENE
     surge = SCENE[SCENE.index("function spawnPushSurge"):]
     surge = surge[:surge.index("function playRewardEvent")]
     # A burst of simultaneous publishes stays within a fixed effect budget.

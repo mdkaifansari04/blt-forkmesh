@@ -3383,16 +3383,17 @@ function createAvatarTeamBadges(THREE, assignment) {
   group.name = "forkmesh-avatar-left-arm-team-badges";
   assignment.teams.slice(0, 4).forEach((team, index) => {
     const badge = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.48, 0.17),
+      new THREE.PlaneGeometry(0.26, 0.09),
       new THREE.MeshBasicMaterial({
         map: avatarTeamBadgeTexture(THREE, team, index),
         depthWrite: true,
       }),
     );
-    // Avatar fronts face local -Z. Mount every team mark on that same visible
-    // face of the anatomical left arm, stacked vertically like cloth patches.
-    badge.position.set(0, 0.43 - index * 0.19, -0.166);
-    badge.rotation.y = Math.PI;
+    // The anatomical left arm sits at group x -0.73, so its outward face is
+    // local -X. Mount the marks there — sized to the 0.32-deep sleeve so they
+    // never overhang it — stacked down the upper arm like cloth patches.
+    badge.position.set(-0.148, 0.36 - index * 0.105, 0);
+    badge.rotation.y = -Math.PI / 2;
     badge.renderOrder = 3;
     group.add(badge);
   });
@@ -17535,7 +17536,13 @@ export function createWorldScene({
     }
     pendingMirrorPushEffects.set(node, {
       commit,
-      expiresAt: Date.now() + 15_000,
+      // The push frame arrives immediately after the relay accepts the signed
+      // publication, but edge caches and a busy mirror can take longer than
+      // the old 15-second window to expose the matching catalog snapshot.
+      // Keep the doorbell armed through two normal catalog polls; the effect
+      // still cannot fire unless that signed record confirms this exact node
+      // and commit prefix.
+      expiresAt: Date.now() + 120_000,
     });
     return true;
   }

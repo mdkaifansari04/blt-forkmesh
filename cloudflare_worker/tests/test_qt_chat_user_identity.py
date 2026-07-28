@@ -248,3 +248,26 @@ def test_desktop_composer_bridges_forkbot_like_the_web_chat():
     # Never into a private room — the bot round-trip would leak the reply
     # path to the relay.
     assert "m_privateChannels.contains(channel)" in bot_chat
+
+
+def test_own_account_messages_never_mark_unread_or_notify():
+    # adhoc #426: ChatMessage.self is a node-id match, so a line this user
+    # typed on the website or in the World came back as somebody else's and lit
+    # the desktop's red unread badge (and raised a notification) for something
+    # they had just written. chatDisplayName() is the name this account stamps
+    # on its own outgoing frames, so incoming senders are matched against it.
+    messages = MESSAGES.read_text(encoding="utf-8")
+    body = _body(
+        messages,
+        "void MainWindow::onMessage(const ChatMessage &message)",
+        "void MainWindow::onReaction(",
+    )
+    assert "const QString ownChatName = chatDisplayName().trimmed();" in body
+    assert "const bool ownMessage =" in body
+    assert "message.self ||" in body
+    assert "Qt::CaseInsensitive" in body
+    # Both the unread tally and the notification path use the wider check.
+    assert "if (!ownMessage &&" in body
+    assert "if (!ownMessage) {" in body
+    assert "if (!message.self &&" not in body
+    assert "if (!message.self) {" not in body
