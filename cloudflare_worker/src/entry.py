@@ -8324,7 +8324,7 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-27-24h-1"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-2"
 WORLD_QA_CARDS = (
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
@@ -8355,10 +8355,10 @@ WORLD_QA_CARDS = (
      "Open the forkmesh/forkmesh repository circle. Confirm Mastodon follower "
      "avatars form the outer orbit and individual Git contributor avatars form "
      "the inner orbit at normal camera angles."),
-    ("bulk-import-island", "Bulk repository import island",
-     "Walk across the repository-island bridge. Confirm the 54 repositories "
-     "from the mirror2/mirror3 import burst appear once each on that island, "
-     "while forkmesh and unrelated repositories stay in the core district."),
+    ("bulk-import-retirement", "Bulk repository import retirement",
+     "Open the repository district and catalog. Confirm the 54 repositories "
+     "from the retired mirror2/mirror3 import burst are gone, the temporary "
+     "import island is empty, and forkmesh plus unrelated repositories remain."),
     ("repo-pr-board", "Pull-request status and mergeability",
      "Page and scroll through the PR board. Confirm each card shows its actual "
      "state, mergeability score and evidence, and that 25 records fit each page."),
