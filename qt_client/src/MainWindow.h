@@ -153,6 +153,7 @@ class QHBoxLayout;
 class PublicMirrorMaterialization;
 namespace forkmesh::control {
 struct MirrorActionsConfigurationRequest;
+struct AgentCliCredentials;
 }
 namespace forkmesh::ui { class DiffFileNavigator; } // file-list <-> diff-view sync
 
@@ -1170,6 +1171,20 @@ private:
     // one selected mirror over its existing TOFU-pinned SSH connection.
     // Authentication is intentionally separate and never copied by this action.
     void installAgentClisForHost(int row);
+    // Shared driver behind that button and the one-click Vultr flow's "also
+    // install the agent CLIs" option (adhoc #418). With copyCredentials the
+    // run additionally hands the mirror this device's provider logins on the
+    // SSH session's stdin, so it comes up able to run agent sessions; without
+    // it only the binaries are installed. onFinished(ok, message) reports the
+    // outcome; the caller owns whatever it puts on screen.
+    void runAgentCliInstall(const QString &node, const QString &ip,
+                            const QString &user, const QString &sshPassword,
+                            const QString &identityFile, bool copyCredentials,
+                            std::function<void(bool, QString)> onFinished);
+    // This device's copyable agent logins: the Claude Code and Codex CLI
+    // credential files, plus the Settings API key for a provider with no CLI
+    // login (a key alongside a login makes the CLI warn and switch billing).
+    static forkmesh::control::AgentCliCredentials localAgentCliCredentials();
     void runHostActionsConfiguration(
         forkmesh::control::MirrorActionsConfigurationRequest request,
         const QString &sshPassword);
@@ -3881,6 +3896,10 @@ private:
     // deliberately has no persistent member.
     QLineEdit *m_vultrApiKeyEdit = nullptr;
     QLineEdit *m_vultrNameEdit = nullptr;
+    // Opt-in (default on): after ForkMesh installs, also install the Claude
+    // Code and Codex CLIs on the new mirror and copy this device's provider
+    // logins to it, so the node can run agent sessions right away (adhoc #418).
+    QCheckBox *m_vultrAgentClisCheck = nullptr;
     QPushButton *m_vultrCreateButton = nullptr;
     QLabel *m_vultrStatus = nullptr;
     bool m_vultrProvisionActive = false;
@@ -3892,6 +3911,9 @@ private:
     // release binary directly over the SSH session instead, which needs no
     // mirror at all.
     bool m_vultrInstallUseLocalBinary = false;
+    // Snapshot of the "also install the agent CLIs" checkbox for this run, so
+    // toggling it mid-provision cannot change what the run does.
+    bool m_vultrInstallAgentClis = false;
     QString m_vultrDnsHostname;      // Cloudflare name provisioned this run
     // "Attempt N of M at HH:mm:ss — outcome" per install attempt this run, so
     // the window can show what every attempt did instead of only the last one.
