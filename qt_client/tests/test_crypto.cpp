@@ -15,6 +15,7 @@
 #include "../src/ForkMeshIdentity.h"
 #include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
+#include "../src/LocalBackupStore.h"
 #include "../src/MirrorCrypto.h"
 #include "../src/PrivateMirrorStore.h"
 #include "../src/NetworkBackoff.h"
@@ -6447,6 +6448,119 @@ int main(int argc, char *argv[])
         check(forkmesh::colorizeBackgroundMarker(QStringLiteral("no marker")) ==
                   QStringLiteral("no marker"),
               "a line without a marker is passed through untouched");
+    }
+
+    // --- Hourly local backups of the live database ----------------------
+    // The Settings -> Data backup panel restores whatever these helpers list,
+    // so the naming round-trip, the newest-first order, the retention cut and
+    // the tar argument order are the contract that makes recovery work.
+    {
+        QTemporaryDir backupRoot;
+        const QDateTime taken =
+            QDateTime::fromString(QStringLiteral("2026-07-28T09:15:00"),
+                                  Qt::ISODate);
+        const QString name = forkmesh::backupFileName(taken);
+        check(name == QStringLiteral("forkmesh-backup-20260728-091500.tar.gz"),
+              "a snapshot is named after the moment it was taken");
+        check(forkmesh::backupTimestampFromName(name) == taken,
+              "the timestamp round-trips out of the file name");
+        // Only our own archives may be listed: anything else in the folder is a
+        // file the user put there, and restoring or pruning it would be wrong.
+        check(!forkmesh::backupTimestampFromName(
+                   QStringLiteral("forkmesh-backup-20260728-091500-copy.tar.gz"))
+                   .isValid() &&
+                  !forkmesh::backupTimestampFromName(
+                       QStringLiteral("holiday-photos.tar.gz"))
+                       .isValid(),
+              "a look-alike or unrelated archive is not treated as a snapshot");
+
+        auto write = [&backupRoot](const QString &fileName, int bytes) {
+            QFile f(QDir(backupRoot.path()).filePath(fileName));
+            f.open(QIODevice::WriteOnly);
+            f.write(QByteArray(bytes, 'z'));
+            f.close();
+        };
+        write(QStringLiteral("forkmesh-backup-20260728-070000.tar.gz"), 16);
+        write(QStringLiteral("forkmesh-backup-20260728-090000.tar.gz"), 32);
+        write(QStringLiteral("forkmesh-backup-20260728-080000.tar.gz"), 64);
+        write(QStringLiteral("forkmesh-backup-20260728-100000.tar.gz.part"), 8);
+        write(QStringLiteral("notes.txt"), 4);
+
+        const QList<forkmesh::BackupSnapshot> listed =
+            forkmesh::listBackups(backupRoot.path());
+        check(listed.size() == 3 &&
+                  listed.at(0).fileName ==
+                      QStringLiteral("forkmesh-backup-20260728-090000.tar.gz") &&
+                  listed.at(2).fileName ==
+                      QStringLiteral("forkmesh-backup-20260728-070000.tar.gz"),
+              "snapshots list newest first, ignoring partial and foreign files");
+        check(listed.at(0).bytes == 32 &&
+                  QFileInfo::exists(listed.at(0).path),
+              "each listed snapshot carries its real size and absolute path");
+
+        const QList<forkmesh::BackupSnapshot> pruned =
+            forkmesh::backupsToPrune(listed, 2);
+        check(pruned.size() == 1 &&
+                  pruned.at(0).fileName ==
+                      QStringLiteral("forkmesh-backup-20260728-070000.tar.gz"),
+              "retention drops the oldest snapshot beyond the keep count");
+        check(forkmesh::backupsToPrune(listed, 3).isEmpty() &&
+                  forkmesh::backupsToPrune(listed, 0).size() == 2,
+              "nothing is pruned under the limit, and keep=0 still spares the "
+              "newest snapshot");
+
+        const QDateTime now =
+            QDateTime::fromString(QStringLiteral("2026-07-28T10:00:00"),
+                                  Qt::ISODate);
+        check(forkmesh::backupIsDue(QDateTime(), now),
+              "the very first backup is always due");
+        check(forkmesh::backupIsDue(now.addSecs(-3600), now) &&
+                  !forkmesh::backupIsDue(now.addSecs(-3599), now),
+              "the next snapshot is due exactly one hour after the last");
+        check(!forkmesh::backupIsDue(now.addSecs(3600), now),
+              "a snapshot stamped in the future (clock skew) doesn't fire a "
+              "burst of backups");
+
+        // The archive must hold the app data + settings file and must never
+        // recurse into the mirrors, the browse cache or the backup folder
+        // itself; tar only honours --exclude when it precedes the members.
+        QTemporaryDir dataRoot;
+        const QString appData = QDir(dataRoot.path()).filePath("ForkMesh");
+        QDir().mkpath(QDir(appData).filePath("backups"));
+        QDir().mkpath(QDir(appData).filePath("mirrors"));
+        const QString configFile = QDir(dataRoot.path()).filePath("forkmesh.conf");
+        write(QStringLiteral("unused"), 1);
+        QFile conf(configFile);
+        conf.open(QIODevice::WriteOnly);
+        conf.write("[General]\n");
+        conf.close();
+
+        const QStringList args = forkmesh::configArchiveTarArgs(
+            QStringLiteral("/tmp/out.tar.gz"), appData, configFile,
+            {QDir(appData).filePath("mirrors"),
+             QDir(appData).filePath("backups"),
+             QStringLiteral("/elsewhere/preview")});
+        check(args.value(0) == QStringLiteral("-czf") &&
+                  args.value(1) == QStringLiteral("/tmp/out.tar.gz"),
+              "the archive path is the first thing tar is told to write");
+        check(args.contains(QStringLiteral("--exclude=ForkMesh/backups")) &&
+                  args.contains(QStringLiteral("--exclude=ForkMesh/mirrors")),
+              "nested backups and mirrors are excluded, so a snapshot never "
+              "packs the previous snapshots");
+        check(!args.contains(QStringLiteral("--exclude=/elsewhere/preview")),
+              "a root outside the app-data tree needs no exclusion");
+        check(args.indexOf(QStringLiteral("--exclude=ForkMesh/backups")) <
+                  args.indexOf(QStringLiteral("-C")),
+              "every exclusion precedes the members, as tar requires");
+        check(args.contains(QStringLiteral("ForkMesh")) &&
+                  args.contains(QStringLiteral("forkmesh.conf")),
+              "the app-data dir and the settings file are both archived");
+        check(forkmesh::configArchiveTarArgs(
+                  QStringLiteral("/tmp/out.tar.gz"),
+                  QDir(dataRoot.path()).filePath("missing"),
+                  QDir(dataRoot.path()).filePath("missing.conf"), {})
+                  .isEmpty(),
+              "a fresh install with nothing on disk yet produces no tar run");
     }
 
     // QFontDatabase logs "OpenType support missing for \"<family>\", script N"
