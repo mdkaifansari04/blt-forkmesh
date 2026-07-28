@@ -6242,58 +6242,79 @@ forkmesh-world.world-office-active .world-quick-dock {
   text-transform: none;
 }
 
-.world-aquarium-feed-action {
+.world-aquarium-control-panel {
   position: absolute;
-  display: inline-flex;
-  min-height: 38px;
-  align-items: center;
-  justify-content: center;
-  transform: translate(-50%, -100%);
+  display: grid;
+  min-width: min(390px, calc(100vw - 28px));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  transform: translate(-100%, -100%);
   border: 1px solid rgb(113 239 255 / 0.74);
-  border-radius: 999px;
+  border-radius: 8px;
   background:
-    linear-gradient(180deg, rgb(10 42 48 / 0.94), rgb(5 20 25 / 0.96));
+    linear-gradient(180deg, rgb(9 35 40 / 0.96), rgb(4 17 21 / 0.98));
   box-shadow:
     0 12px 30px rgb(0 8 12 / 0.4),
     inset 0 1px rgb(214 253 255 / 0.16);
-  padding: 8px 15px;
+  padding: 7px;
   color: #e3fcff;
-  cursor: pointer;
-  font: 750 0.64rem/1 "ForkMesh Mono", ui-monospace, monospace;
+  font: 750 0.58rem/1 "ForkMesh Mono", ui-monospace, monospace;
   letter-spacing: 0.025em;
-  white-space: nowrap;
   pointer-events: auto;
   backdrop-filter: blur(10px);
-  transition:
-    border-color 160ms ease,
-    background-color 160ms ease,
-    box-shadow 160ms ease,
-    transform 160ms ease;
 }
 
-.world-aquarium-feed-action[hidden] {
+.world-aquarium-control-panel[hidden] {
   display: none;
 }
 
-.world-aquarium-feed-action:hover:not(:disabled) {
-  transform: translate(-50%, calc(-100% - 2px));
+.world-aquarium-control-title {
+  grid-column: 1 / -1;
+  border-bottom: 1px solid rgb(113 239 255 / 0.24);
+  padding: 1px 3px 5px;
+  color: #87eaf5;
+  font-size: 0.52rem;
+  letter-spacing: 0.12em;
+}
+
+.world-aquarium-control-button {
+  min-height: 32px;
+  border: 1px solid rgb(113 239 255 / 0.38);
+  border-radius: 4px;
+  background: rgb(8 30 34 / 0.94);
+  padding: 6px 7px;
+  color: #dffcff;
+  cursor: pointer;
+  font: inherit;
+  line-height: 1.2;
+  white-space: nowrap;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    color 140ms ease,
+    transform 140ms ease;
+}
+
+.world-aquarium-control-button:hover:not(:disabled) {
+  transform: translateY(-1px);
   border-color: #b8fbff;
-  box-shadow:
-    0 14px 34px rgb(0 8 12 / 0.46),
-    0 0 22px rgb(72 228 246 / 0.2),
-    inset 0 1px rgb(232 254 255 / 0.22);
+  background: rgb(15 51 55 / 0.98);
 }
 
-.world-aquarium-feed-action:focus-visible {
+.world-aquarium-control-button:focus-visible {
   outline: 2px solid var(--world-mint);
-  outline-offset: 3px;
+  outline-offset: 2px;
 }
 
-.world-aquarium-feed-action[data-feeding="true"] {
+.world-aquarium-control-button[data-enabled="true"],
+.world-aquarium-control-button[data-feeding="true"] {
   border-color: rgb(158 247 198 / 0.62);
-  background:
-    linear-gradient(180deg, rgb(19 52 44 / 0.94), rgb(7 26 23 / 0.96));
+  background: rgb(15 48 40 / 0.96);
   color: #cffff0;
+}
+
+.world-aquarium-control-button:disabled {
+  opacity: 0.78;
   cursor: default;
 }
 

@@ -5,6 +5,8 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [x] Consolidate aquarium feed, opaque/clear backdrop, and light controls into a clickable bottom-right tank panel.
+- [x] Represent every public user as a small deterministic fish, with active/recent fish in upper lanes and inactive fish near the bottom.
 - [x] Let platform admins drag any World object's visible base to move it, with handle-free right-drag / Shift-drag rotation.
 - [x] Keep mirror2 visible as a live green World cabinet when its recent signed endpoint health proves the machine is reachable, while preserving blocked clone/integrity detail.
 - [x] Make live mirror cabinets use green for physical node liveness instead of conflating it with per-repository clone eligibility.

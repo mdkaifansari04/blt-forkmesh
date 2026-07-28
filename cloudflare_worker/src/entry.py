@@ -8382,8 +8382,20 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-16"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-17"
 WORLD_QA_CARDS = (
+    ("world-aquarium-control-panel", "Aquarium control panel",
+     "Walk to the Office lobby aquarium and confirm one compact panel is "
+     "mounted at its bottom-right corner. Feed the fish, switch the backdrop "
+     "between opaque and clear, and switch the aquarium light off and on. "
+     "Confirm every button updates immediately, remains keyboard accessible, "
+     "and the two toggle preferences survive a reload."),
+    ("world-aquarium-user-school", "Users represented by aquarium fish",
+     "Compare the public account directory with the Office aquarium. Confirm "
+     "there is one small, unlabeled fish per public user, each user's color "
+     "and size remain stable after reload, active/recent users swim in upper "
+     "lanes, inactive users stay near the bottom, and the full school fits "
+     "inside the tank without oversized fish."),
     ("world-admin-direct-layout", "Admin direct World layout editing",
      "Sign in as a platform administrator. Drag the visible base of several "
      "Town Square objects and confirm each follows without a tiny edit handle. "

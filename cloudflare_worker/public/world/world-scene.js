@@ -10014,6 +10014,8 @@ function createOfficeMarineAquarium(THREE, animated) {
   let feedingStartedAt = -Infinity;
   let feedingActive = false;
   let reducedFeedingPoseApplied = false;
+  let backdropOpaque = true;
+  let aquariumLightEnabled = true;
   const AQUARIUM_FISH_SPECIES = Object.freeze([
     {
       id: "clownfish",
@@ -10894,6 +10896,15 @@ function createOfficeMarineAquarium(THREE, animated) {
   backdrop.name = "forkmesh-office-aquarium-backdrop";
   backdrop.position.set(-tankDepth / 2 + 0.08, tankHeight / 2, 0);
   group.add(backdrop);
+
+  function setBackdropOpaque(value) {
+    backdropOpaque = value !== false;
+    backdropMaterial.transparent = !backdropOpaque;
+    backdropMaterial.opacity = backdropOpaque ? 1 : 0.12;
+    backdropMaterial.depthWrite = backdropOpaque;
+    backdropMaterial.needsUpdate = true;
+    return backdropOpaque;
+  }
   const water = new THREE.Mesh(
     new THREE.BoxGeometry(
       tankDepth - 0.3,
@@ -11127,151 +11138,126 @@ function createOfficeMarineAquarium(THREE, animated) {
     seaGrasses.push({ grass, phase });
     coralGarden.add(grass);
   }
+  // Every public account owns one anonymous fish. The same name-seeded RNG
+  // and curated colourways used by the procedural shirts determine its body,
+  // accent, species, scale, speed, and route, so the school is stable on every
+  // device without ever painting a person's name onto an animal.
   const fishStates = [];
-  const fishInstances = [
-    {
-      speciesId: "clownfish",
-      scale: 1.08,
-      speed: 0.000026,
-      phase: 0.06,
-      bank: 0.62,
-      points: [
-        [0.55, 7.5, -8.8],
-        [0.1, 8.2, -4.2],
-        [-0.45, 7.4, 0.8],
-        [-0.2, 6.5, -1.8],
-        [0.48, 6.8, -6.2],
-      ],
-    },
-    {
-      speciesId: "blue-tang",
-      scale: 1.12,
-      speed: 0.000019,
-      phase: 0.38,
-      bank: 0.52,
-      points: [
-        [-0.52, 8.7, -2.8],
-        [0.35, 9.3, 5.8],
-        [0.62, 7.8, 10.2],
-        [-0.18, 6.7, 5.1],
-        [-0.66, 7.5, 0.8],
-      ],
-    },
-    {
-      speciesId: "yellow-tang",
-      scale: 1.03,
-      speed: 0.000023,
-      phase: 0.67,
-      bank: 0.58,
-      points: [
-        [0.48, 9.5, -10.1],
-        [-0.22, 10.1, -5.8],
-        [-0.58, 8.9, -0.6],
-        [0.24, 8.0, -3.8],
-        [0.7, 8.8, -8.2],
-      ],
-    },
-    {
-      speciesId: "royal-gramma",
-      scale: 0.96,
-      speed: 0.000031,
-      phase: 0.22,
-      bank: 0.68,
-      points: [
-        [-0.64, 4.2, -7.4],
-        [0.16, 5.2, -3.7],
-        [0.58, 4.6, 0.4],
-        [-0.12, 3.7, -1.6],
-        [-0.7, 3.5, -5.1],
-      ],
-    },
-    {
-      speciesId: "butterflyfish",
-      scale: 1,
-      speed: 0.000021,
-      phase: 0.82,
-      bank: 0.54,
-      points: [
-        [0.58, 5.8, 2.8],
-        [0.06, 6.7, 7.2],
-        [-0.58, 5.9, 11],
-        [-0.22, 4.8, 8.6],
-        [0.66, 4.9, 5.1],
-      ],
-    },
-    {
-      speciesId: "chromis",
-      scale: 0.92,
-      speed: 0.000035,
-      phase: 0.12,
-      bank: 0.72,
-      points: [[-0.2, 8, 0], [0.48, 8.6, 5], [0.24, 7.7, 9], [-0.48, 7.2, 4]],
-    },
-    {
-      speciesId: "chromis",
-      scale: 0.82,
-      speed: 0.000034,
-      phase: 0.18,
-      bank: 0.74,
-      points: [[0.18, 7.6, -0.5], [0.62, 8.2, 4.3], [0.02, 7.4, 8.3], [-0.62, 6.9, 3.5]],
-    },
-    {
-      speciesId: "chromis",
-      scale: 0.76,
-      speed: 0.000036,
-      phase: 0.24,
-      bank: 0.7,
-      points: [[-0.38, 8.5, 0.8], [0.28, 9, 5.6], [0.52, 8.1, 9.7], [-0.34, 7.6, 4.9]],
-    },
-  ];
-  for (let index = 0; index < fishInstances.length; index += 1) {
-    const instance = fishInstances[index];
-    const species = AQUARIUM_FISH_SPECIES.find(
-      (candidate) => candidate.id === instance.speciesId,
+  let fishPopulationKey = "";
+
+  function aquariumUserPalette(name) {
+    const rng = outfitRandom(
+      "outfit:" + String(name || "guest").trim().toLowerCase(),
     );
-    const speciesIndex = fishInstances
-      .slice(0, index)
-      .filter((candidate) => candidate.speciesId === instance.speciesId)
-      .length;
-    const { fish, tail, pectoralFins } = createReefFish(
-      THREE,
-      species,
-      speciesIndex,
+    // Keep these two draws in the shirt tailor's order: cut first, colourway
+    // second. That makes the fish palette agree with the user's default kit.
+    rng.int(OUTFIT_STYLE_IDS.length);
+    const [body, accent, trim] =
+      OUTFIT_COLORWAYS[rng.int(OUTFIT_COLORWAYS.length)];
+    return { rng, body, accent, trim };
+  }
+
+  function disposeAquariumFish() {
+    while (fishStates.length) {
+      const state = fishStates.pop();
+      group.remove(state.fish);
+      state.fish.traverse((child) => {
+        child.geometry?.dispose?.();
+        child.material?.map?.dispose?.();
+        child.material?.dispose?.();
+      });
+    }
+  }
+
+  function setUsers(users = []) {
+    const normalized = (Array.isArray(users) ? users : [])
+      .map((user) => ({
+        name: String(user?.name || "").trim().slice(0, 32),
+        active: user?.away === true,
+        activityBucket: String(user?.activityBucket || ""),
+      }))
+      .filter((user) => user.name);
+    const nextKey = JSON.stringify(normalized);
+    if (nextKey === fishPopulationKey) return;
+    fishPopulationKey = nextKey;
+    disposeAquariumFish();
+    const population = Math.max(1, normalized.length);
+    const schoolScale = clamp(
+      0.78 - Math.log2(population + 1) * 0.055,
+      0.32,
+      0.7,
     );
-    fish.scale.setScalar(instance.scale);
-    const curve = new THREE.CatmullRomCurve3(
-      instance.points.map((point) => new THREE.Vector3(...point)),
-      true,
-      "catmullrom",
-      0.42,
-    );
-    fishStates.push({
-      fish,
-      tail,
-      pectoralFins,
-      curve,
-      speed: instance.speed,
-      phase: instance.phase,
-      bank: instance.bank,
-      tailSpeed: 0.0038 + index * 0.00011,
-      point: new THREE.Vector3(),
-      tangent: new THREE.Vector3(),
-      feedingPoint: new THREE.Vector3(),
-      feedingAhead: new THREE.Vector3(),
-      feedingTangent: new THREE.Vector3(),
-      feedingRadius:
-        instance.speciesId === "chromis"
-          ? 4.2 + speciesIndex * 0.7
-          : 1.8 + index * 0.8,
-      feedingHeight:
-        instance.speciesId === "chromis"
-          ? -0.8 + speciesIndex * 0.4
-          : (index % 3 - 1) * 0.65,
-      feedingPhase: instance.phase * Math.PI * 2 + index * 0.74,
-      feedingSpeed: 0.00105 + (index % 4) * 0.00009,
-      feedingDelay: index * 260,
+    normalized.forEach((user, index) => {
+      const { rng, body, accent } = aquariumUserPalette(user.name);
+      const template =
+        AQUARIUM_FISH_SPECIES[rng.int(AQUARIUM_FISH_SPECIES.length)];
+      const species = {
+        ...template,
+        body,
+        accent,
+        sceneName: "forkmesh-office-aquarium-user-fish",
+      };
+      const { fish, tail, pectoralFins } = createReefFish(
+        THREE,
+        species,
+        index,
+      );
+      const individualScale = schoolScale * rng.range(0.84, 1.12);
+      fish.scale.setScalar(individualScale);
+      fish.userData.activityLane = "inactive";
+      // A live World presence or any non-stale server recency bucket swims
+      // above the reef. Stale/unknown accounts graze the quieter bottom lane.
+      const recent =
+        user.active ||
+        ["hour", "5h", "24h", "3d", "5d", "10d"].includes(
+          user.activityBucket,
+        );
+      fish.userData.activityLane = recent ? "active-recent" : "inactive";
+      const laneMin = recent ? 6.8 : 1.65;
+      const laneHeight = recent ? 3.25 : 2.75;
+      const spread = index / population;
+      const points = [];
+      for (let pointIndex = 0; pointIndex < 5; pointIndex += 1) {
+        const phase = (spread + pointIndex / 5) * Math.PI * 2;
+        points.push(
+          new THREE.Vector3(
+            (rng.next() - 0.5) * 1.15,
+            laneMin +
+              rng.next() * laneHeight +
+              Math.sin(phase * 1.7) * 0.24,
+            -11.4 + ((index * 4.73 + pointIndex * 5.35) % 22.8),
+          ),
+        );
+      }
+      const phase = (spread + rng.next() * 0.08) % 1;
+      fishStates.push({
+        fish,
+        tail,
+        pectoralFins,
+        curve: new THREE.CatmullRomCurve3(
+          points,
+          true,
+          "catmullrom",
+          0.42,
+        ),
+        speed: 0.000018 + rng.next() * 0.000018,
+        phase,
+        bank: 0.45 + rng.next() * 0.28,
+        tailSpeed: 0.0036 + rng.next() * 0.0014,
+        point: new THREE.Vector3(),
+        tangent: new THREE.Vector3(),
+        feedingPoint: new THREE.Vector3(),
+        feedingAhead: new THREE.Vector3(),
+        feedingTangent: new THREE.Vector3(),
+        feedingRadius: 1.4 + (index % 16) * 0.48,
+        feedingHeight: (index % 7 - 3) * 0.42,
+        feedingPhase: phase * Math.PI * 2 + index * 0.74,
+        feedingSpeed: 0.00105 + (index % 4) * 0.00009,
+        feedingDelay: (index % 20) * 180,
+      });
+      group.add(fish);
     });
-    group.add(fish);
+    updateAquariumFish(0, false);
   }
   const bubbles = new THREE.Group();
   bubbles.name = "forkmesh-office-aquarium-bubbles";
@@ -11430,6 +11416,21 @@ function createOfficeMarineAquarium(THREE, animated) {
   sandLight.name = "forkmesh-office-aquarium-sand-light";
   sandLight.position.set(0.2, 1.7, -2.8);
   group.add(sandLight);
+
+  function setLightEnabled(value, time = performance.now()) {
+    aquariumLightEnabled = value !== false;
+    updateAquariumAtmosphere(
+      Number.isFinite(Number(time)) ? Number(time) : performance.now(),
+    );
+    return aquariumLightEnabled;
+  }
+
+  function getControlState() {
+    return {
+      backdropOpaque,
+      lightEnabled: aquariumLightEnabled,
+    };
+  }
   function aquariumSmoothstep(value) {
     const amount = clamp(value, 0, 1);
     return amount * amount * (3 - 2 * amount);
@@ -11586,13 +11587,19 @@ function createOfficeMarineAquarium(THREE, animated) {
     causticTexture.offset.x = (time * 0.000006) % 1;
     causticTexture.offset.y = (time * -0.000004) % 1;
     const pulse = Math.sin(time * 0.0015);
-    sandCaustics.material.opacity = 0.17 + pulse * 0.025;
-    backdropCaustics.material.opacity = 0.095 + pulse * 0.018;
-    waterLight.intensity = 2.7 + pulse * 0.18;
-    spillLight.intensity = 0.9 + pulse * 0.07;
-    sandLight.intensity = 0.7 + pulse * 0.045;
-    topLight.material.emissiveIntensity = 1.18 + pulse * 0.08;
-    waterMaterial.emissiveIntensity = 0.23 + pulse * 0.025;
+    const lightAmount = aquariumLightEnabled ? 1 : 0;
+    sandCaustics.material.opacity =
+      lightAmount * (0.17 + pulse * 0.025);
+    backdropCaustics.material.opacity =
+      lightAmount * (0.095 + pulse * 0.018);
+    waterLight.intensity = lightAmount * (2.7 + pulse * 0.18);
+    spillLight.intensity = lightAmount * (0.9 + pulse * 0.07);
+    sandLight.intensity = lightAmount * (0.7 + pulse * 0.045);
+    topLight.visible = aquariumLightEnabled;
+    topLight.material.emissiveIntensity =
+      lightAmount * (1.18 + pulse * 0.08);
+    waterMaterial.emissiveIntensity =
+      lightAmount * (0.23 + pulse * 0.025);
   }
 
   function updateAquariumFood(time, animate = true) {
@@ -11706,7 +11713,16 @@ function createOfficeMarineAquarium(THREE, animated) {
     child.castShadow = child.material?.transparent !== true;
     child.receiveShadow = child.material?.transparent !== true;
   });
-  return { group, feed, updateFeeding, getFeedingState };
+  return {
+    group,
+    feed,
+    updateFeeding,
+    getFeedingState,
+    setUsers,
+    setBackdropOpaque,
+    setLightEnabled,
+    getControlState,
+  };
 }
 
 function createForkMeshOffice(THREE, position, interactive, animated) {
@@ -13806,21 +13822,111 @@ export function createWorldScene({
   addOfficeFloorSurface(officeInterior, officeLobbyFloorMaterial);
   const officeAquarium = createOfficeMarineAquarium(THREE, animated);
   officeInterior.add(officeAquarium.group);
-  const aquariumFeedAnchor = new THREE.Object3D();
-  aquariumFeedAnchor.name = "forkmesh-office-aquarium-feed-anchor";
-  aquariumFeedAnchor.position.set(2.15, 8.4, 0);
-  officeAquarium.group.add(aquariumFeedAnchor);
-  const aquariumFeedLocalPosition = new THREE.Vector3();
-  let aquariumFeedNearby = false;
+  const aquariumControlAnchor = new THREE.Object3D();
+  aquariumControlAnchor.name = "forkmesh-office-aquarium-control-anchor";
+  aquariumControlAnchor.position.set(2.15, 1.25, 11.1);
+  officeAquarium.group.add(aquariumControlAnchor);
+  const aquariumControlLocalPosition = new THREE.Vector3();
+  const aquariumControlCandidate = new THREE.Vector3();
+  const aquariumControlOpposite = new THREE.Vector3();
+  let aquariumControlsNearby = false;
+  const aquariumControlPanel = document.createElement("div");
+  aquariumControlPanel.className = "world-aquarium-control-panel";
+  aquariumControlPanel.dataset.worldAquariumControls = "";
+  aquariumControlPanel.setAttribute("role", "group");
+  aquariumControlPanel.setAttribute(
+    "aria-label",
+    "Aquarium controls",
+  );
+  aquariumControlPanel.hidden = true;
+  const aquariumControlTitle = document.createElement("span");
+  aquariumControlTitle.className = "world-aquarium-control-title";
+  aquariumControlTitle.textContent = "REEF CONTROL";
   const aquariumFeedAction = document.createElement("button");
   aquariumFeedAction.type = "button";
-  aquariumFeedAction.className = "world-aquarium-feed-action";
+  aquariumFeedAction.className = "world-aquarium-control-button";
   aquariumFeedAction.dataset.worldAquariumFeed = "";
   aquariumFeedAction.dataset.feeding = "false";
-  aquariumFeedAction.textContent = "Feed the Fishes";
-  aquariumFeedAction.setAttribute("aria-label", "Feed the Fishes");
-  aquariumFeedAction.hidden = true;
-  labelLayer.appendChild(aquariumFeedAction);
+  aquariumFeedAction.textContent = "FEED";
+  aquariumFeedAction.setAttribute("aria-label", "Feed the fishes");
+  const aquariumBackdropAction = document.createElement("button");
+  aquariumBackdropAction.type = "button";
+  aquariumBackdropAction.className = "world-aquarium-control-button";
+  aquariumBackdropAction.dataset.worldAquariumBackdrop = "";
+  const aquariumLightAction = document.createElement("button");
+  aquariumLightAction.type = "button";
+  aquariumLightAction.className = "world-aquarium-control-button";
+  aquariumLightAction.dataset.worldAquariumLight = "";
+  aquariumControlPanel.append(
+    aquariumControlTitle,
+    aquariumFeedAction,
+    aquariumBackdropAction,
+    aquariumLightAction,
+  );
+  labelLayer.appendChild(aquariumControlPanel);
+
+  function aquariumSavedToggle(key, fallback) {
+    try {
+      const saved = window.localStorage?.getItem(key);
+      if (saved === "on") return true;
+      if (saved === "off") return false;
+    } catch (_) {}
+    return fallback;
+  }
+
+  function saveAquariumToggle(key, enabled) {
+    try {
+      window.localStorage?.setItem(key, enabled ? "on" : "off");
+    } catch (_) {}
+  }
+
+  officeAquarium.setBackdropOpaque(
+    aquariumSavedToggle("forkmesh-world-aquarium-backdrop", true),
+  );
+  officeAquarium.setLightEnabled(
+    aquariumSavedToggle("forkmesh-world-aquarium-light", true),
+  );
+
+  function syncAquariumControlButtons(time = performance.now()) {
+    const feeding = officeAquarium.getFeedingState(time).active;
+    const controls = officeAquarium.getControlState();
+    aquariumFeedAction.disabled = feeding;
+    aquariumFeedAction.dataset.feeding = String(feeding);
+    aquariumFeedAction.textContent = feeding ? "FEEDING…" : "FEED";
+    aquariumFeedAction.setAttribute(
+      "aria-label",
+      feeding ? "Fishes are feeding" : "Feed the fishes",
+    );
+    aquariumBackdropAction.dataset.enabled = String(
+      controls.backdropOpaque,
+    );
+    aquariumBackdropAction.textContent = controls.backdropOpaque
+      ? "BACKDROP: OPAQUE"
+      : "BACKDROP: CLEAR";
+    aquariumBackdropAction.setAttribute(
+      "aria-pressed",
+      String(controls.backdropOpaque),
+    );
+    aquariumBackdropAction.setAttribute(
+      "aria-label",
+      `Aquarium background ${
+        controls.backdropOpaque ? "opaque" : "transparent"
+      }`,
+    );
+    aquariumLightAction.dataset.enabled = String(controls.lightEnabled);
+    aquariumLightAction.textContent = controls.lightEnabled
+      ? "LIGHT: ON"
+      : "LIGHT: OFF";
+    aquariumLightAction.setAttribute(
+      "aria-pressed",
+      String(controls.lightEnabled),
+    );
+    aquariumLightAction.setAttribute(
+      "aria-label",
+      `Aquarium light ${controls.lightEnabled ? "on" : "off"}`,
+    );
+  }
+  syncAquariumControlButtons();
 
   function feedOfficeAquarium(time = performance.now()) {
     const started = officeAquarium.feed(time);
@@ -13836,54 +13942,71 @@ export function createWorldScene({
   function handleAquariumFeed(event) {
     event.preventDefault();
     event.stopPropagation();
-    if (!aquariumFeedNearby) return;
+    if (!aquariumControlsNearby) return;
     if (feedOfficeAquarium()) {
-      aquariumFeedAction.disabled = true;
-      aquariumFeedAction.dataset.feeding = "true";
-      aquariumFeedAction.textContent = "Fishes are feeding";
-      aquariumFeedAction.setAttribute(
-        "aria-label",
-        "Fishes are feeding",
-      );
+      syncAquariumControlButtons();
     }
   }
+
+  function handleAquariumBackdrop(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!aquariumControlsNearby) return;
+    const current = officeAquarium.getControlState().backdropOpaque;
+    const enabled = officeAquarium.setBackdropOpaque(!current);
+    saveAquariumToggle("forkmesh-world-aquarium-backdrop", enabled);
+    syncAquariumControlButtons();
+  }
+
+  function handleAquariumLight(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!aquariumControlsNearby) return;
+    const current = officeAquarium.getControlState().lightEnabled;
+    const enabled = officeAquarium.setLightEnabled(!current);
+    saveAquariumToggle("forkmesh-world-aquarium-light", enabled);
+    syncAquariumControlButtons();
+  }
   aquariumFeedAction.addEventListener("click", handleAquariumFeed);
+  aquariumBackdropAction.addEventListener(
+    "click",
+    handleAquariumBackdrop,
+  );
+  aquariumLightAction.addEventListener("click", handleAquariumLight);
 
   function updateOfficeAquariumProximity(time, rect) {
-    officeAvatarLocalPosition(player, aquariumFeedLocalPosition);
-    aquariumFeedNearby =
+    officeAvatarLocalPosition(player, aquariumControlLocalPosition);
+    aquariumControlsNearby =
       officeSceneMode === "lobby" &&
       officeCurrentFloorId === "lobby" &&
       !officeElevatorRide &&
-      aquariumFeedLocalPosition.x >=
+      aquariumControlLocalPosition.x >=
         OFFICE_AQUARIUM_BOUNDS.maxX + OFFICE_AVATAR_RADIUS - 0.04 &&
-      aquariumFeedLocalPosition.x <=
+      aquariumControlLocalPosition.x <=
         OFFICE_AQUARIUM_BOUNDS.maxX + OFFICE_AVATAR_RADIUS + 4.8 &&
-      aquariumFeedLocalPosition.z >= OFFICE_AQUARIUM_BOUNDS.minZ + 0.4 &&
-      aquariumFeedLocalPosition.z <= OFFICE_AQUARIUM_BOUNDS.maxZ - 0.4;
-    if (!aquariumFeedNearby) {
-      aquariumFeedAction.hidden = true;
-      aquariumFeedAction.style.visibility = "hidden";
+      aquariumControlLocalPosition.z >= OFFICE_AQUARIUM_BOUNDS.minZ + 0.4 &&
+      aquariumControlLocalPosition.z <= OFFICE_AQUARIUM_BOUNDS.maxZ - 0.4;
+    if (!aquariumControlsNearby) {
+      aquariumControlPanel.hidden = true;
+      aquariumControlPanel.style.visibility = "hidden";
       return;
     }
-    const feeding = officeAquarium.getFeedingState(time).active;
-    const label = feeding ? "Fishes are feeding" : "Feed the Fishes";
-    aquariumFeedAction.hidden = false;
-    aquariumFeedAction.disabled = feeding;
-    aquariumFeedAction.dataset.feeding = String(feeding);
-    if (aquariumFeedAction.textContent !== label) {
-      aquariumFeedAction.textContent = label;
-      aquariumFeedAction.setAttribute("aria-label", label);
-    }
-    aquariumFeedAnchor.position.z = clamp(
-      aquariumFeedLocalPosition.z - officeAquarium.group.position.z,
-      -11.2,
-      11.2,
-    );
+    syncAquariumControlButtons(time);
+    aquariumControlPanel.hidden = false;
+    // Whichever end of the long tank is screen-right gets the panel. This
+    // keeps it mounted to the bottom-right corner even as the camera orbits.
+    aquariumControlAnchor.position.z = 11.1;
+    aquariumControlAnchor.getWorldPosition(aquariumControlCandidate);
+    aquariumControlCandidate.project(camera);
+    aquariumControlAnchor.position.z = -11.1;
+    aquariumControlAnchor.getWorldPosition(aquariumControlOpposite);
+    aquariumControlOpposite.project(camera);
+    aquariumControlAnchor.position.z =
+      aquariumControlCandidate.x >= aquariumControlOpposite.x ? 11.1 : -11.1;
     updateScreenLabel(
       THREE,
-      aquariumFeedAnchor,
-      aquariumFeedAction,
+      aquariumControlAnchor,
+      aquariumControlPanel,
       camera,
       rect.width,
       rect.height,
@@ -19487,6 +19610,10 @@ export function createWorldScene({
     guests = 0,
   ) {
     const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
+    // The aquarium is the same public account directory expressed as a
+    // school: present/recent users swim high, inactive users low. No account
+    // names or labels are rendered on the fish themselves.
+    officeAquarium.setUsers(members);
     // The flames carry the headline count of registered accounts, plus the
     // name of whoever joined last so the newest member is visible at a glance.
     setCampfireMemberCount(total, newestMemberName(members));
@@ -24824,6 +24951,11 @@ export function createWorldScene({
     window.removeEventListener("keyup", handleKeyUp);
     window.removeEventListener("blur", handleWindowBlur);
     aquariumFeedAction.removeEventListener("click", handleAquariumFeed);
+    aquariumBackdropAction.removeEventListener(
+      "click",
+      handleAquariumBackdrop,
+    );
+    aquariumLightAction.removeEventListener("click", handleAquariumLight);
     touchPointers.clear();
     keys.clear();
     touchKeys.clear();

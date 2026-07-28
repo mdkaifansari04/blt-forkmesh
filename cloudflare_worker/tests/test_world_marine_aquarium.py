@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCENE = (ROOT / "public" / "world" / "world-scene.js").read_text(
     encoding="utf-8"
 )
+CSS = (ROOT / "public" / "world" / "world.css").read_text(encoding="utf-8")
 
 
 def _aquarium_block():
@@ -133,14 +134,63 @@ def test_aquarium_feeding_is_timed_and_reuses_scene_animation():
     assert "function feed(time = performance.now())" in aquarium
     assert "function updateFeeding(time, animate = true)" in aquarium
     assert "feedingBlend" in aquarium
-    assert "return { group, feed, updateFeeding, getFeedingState }" in aquarium
+    assert "feed," in aquarium
+    assert "updateFeeding," in aquarium
+    assert "getFeedingState," in aquarium
     assert "setTimeout(" not in aquarium
     assert "setInterval(" not in aquarium
 
 
 def test_aquarium_feeding_action_is_proximity_scoped_and_accessible():
     assert 'aquariumFeedAction.type = "button"' in SCENE
-    assert 'aquariumFeedAction.textContent = "Feed the Fishes"' in SCENE
+    assert 'aquariumFeedAction.textContent = "FEED"' in SCENE
     assert 'aquariumFeedAction.dataset.worldAquariumFeed = ""' in SCENE
     assert "updateOfficeAquariumProximity" in SCENE
     assert 'removeEventListener("click", handleAquariumFeed)' in SCENE
+
+
+def test_aquarium_bottom_right_control_panel_combines_all_three_actions():
+    assert 'aquariumControlPanel.dataset.worldAquariumControls = ""' in SCENE
+    assert 'aquariumControlTitle.textContent = "REEF CONTROL"' in SCENE
+    assert 'aquariumBackdropAction.dataset.worldAquariumBackdrop = ""' in SCENE
+    assert 'aquariumLightAction.dataset.worldAquariumLight = ""' in SCENE
+    assert "handleAquariumBackdrop" in SCENE
+    assert "handleAquariumLight" in SCENE
+    assert "setBackdropOpaque(!current)" in SCENE
+    assert "setLightEnabled(!current)" in SCENE
+    # It chooses the projected screen-right end of the tank rather than
+    # following the player's position along the glass.
+    assert "aquariumControlCandidate.x >= aquariumControlOpposite.x" in SCENE
+    assert "aquariumControlLocalPosition.z -" not in SCENE
+    assert ".world-aquarium-control-panel" in CSS
+    assert "grid-template-columns: repeat(3" in CSS
+    assert ".world-aquarium-feed-action" not in CSS
+
+
+def test_aquarium_background_and_light_are_real_scene_toggles():
+    aquarium = _aquarium_block()
+    assert "function setBackdropOpaque(value)" in aquarium
+    assert "backdropMaterial.opacity = backdropOpaque ? 1 : 0.12" in aquarium
+    assert "function setLightEnabled(value" in aquarium
+    assert "waterLight.intensity = lightAmount *" in aquarium
+    assert "spillLight.intensity = lightAmount *" in aquarium
+    assert "sandLight.intensity = lightAmount *" in aquarium
+    assert "topLight.visible = aquariumLightEnabled" in aquarium
+
+
+def test_each_public_user_gets_one_small_name_seeded_fish_in_an_activity_lane():
+    aquarium = _aquarium_block()
+    assert "function aquariumUserPalette(name)" in aquarium
+    assert '"outfit:" + String(name || "guest")' in aquarium
+    assert "OUTFIT_COLORWAYS[rng.int(OUTFIT_COLORWAYS.length)]" in aquarium
+    assert "function setUsers(users = [])" in aquarium
+    assert "normalized.forEach((user, index) =>" in aquarium
+    assert "fishStates.push({" in aquarium
+    assert '"active-recent"' in aquarium
+    assert '"inactive"' in aquarium
+    assert "const laneMin = recent ? 6.8 : 1.65" in aquarium
+    assert "Math.log2(population + 1)" in aquarium
+    assert "officeAquarium.setUsers(members)" in SCENE
+    # Names seed appearance but are not drawn or attached as visible labels.
+    assert "makeLabelSprite" not in aquarium
+    assert "fillText(user.name" not in aquarium
