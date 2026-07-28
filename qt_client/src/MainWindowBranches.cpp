@@ -2507,7 +2507,13 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
     // the diff pane and churn m_branchDiffBranch mid-rebuild. We re-render the
     // viewed branch's diff explicitly at the end instead (adhoc #256).
     QSignalBlocker branchesTableBlock(m_branchesTable);
-    m_branchesTable->setRowCount(0);
+    // Allocate the model in one change. insertRow() emitted rowsInserted for
+    // every branch, and QTableView responded to each signal with a full editor/
+    // geometry pass even while painting was disabled (a recurring 1.3s stall in
+    // the watchdog log).
+    m_branchesTable->setRowCount(data.branches.size() +
+                                 data.remoteBranches.size());
+    int nextRow = 0;
     const QString &dir = data.dir;
     const QStringList &branches = data.branches;
     const QString &base = data.base;
@@ -2574,8 +2580,7 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
     // Probed on a worker thread once the table is built (adhoc #416).
     QList<QPair<QString, QString>> conflictProbes;
     for (const QString &branch : branches) {
-        const int row = m_branchesTable->rowCount();
-        m_branchesTable->insertRow(row);
+        const int row = nextRow++;
 
         auto *name = new QTableWidgetItem(branch);
         if (branch == selected)
@@ -2804,8 +2809,7 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
     // matches the local rows (adhoc #61). Clicking one still renders its diff vs
     // the default branch.
     for (const QString &branch : remoteBranches) {
-        const int row = m_branchesTable->rowCount();
-        m_branchesTable->insertRow(row);
+        const int row = nextRow++;
 
         auto *name = new QTableWidgetItem(branch);
         name->setIcon(themedOcticon("repo-forked", QColor("#8b949e"), 14));

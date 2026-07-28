@@ -78,6 +78,7 @@ const CAMERA_FAR_PLANE = 1200;
 const CAMERA_LOOK_SENSITIVITY = 0.0022;
 const RENDER_STALL_THRESHOLD_MS = 150;
 const RENDER_STALL_LOG_COOLDOWN_MS = 1000;
+const MOVEMENT_INPUT_DELAY_THRESHOLD_MS = 50;
 // Dragging upward lowers the orbit eye beneath the target, which is how this
 // camera looks into the sky. Allow the full arc in both directions.
 const CAMERA_PITCH_MIN = -Math.PI / 2 + 0.01;
@@ -86,6 +87,10 @@ const CAMERA_PITCH_MIN = -Math.PI / 2 + 0.01;
 const CAMERA_PITCH_MAX = Math.PI / 2 - 0.01;
 const WORLD_GROUND_Y = 0;
 const CAMERA_GROUND_CLEARANCE = 0.6;
+// Pull the third-person eye close before it crosses the Office façade. Keeping
+// the same chase distance on both sides of the doorway prevents the camera
+// lerp from briefly travelling through the building shell during checkout.
+const OFFICE_EXIT_CAMERA_ZOOM = 0.48;
 const FIRST_PERSON_EYE_HEIGHT = 2.2;
 const FIRST_PERSON_ZOOM_MIN = 0.25;
 const FIRST_PERSON_ZOOM_MAX = 5;
@@ -4327,16 +4332,107 @@ function avatarFaceTexture(THREE, emoji) {
   return { texture, color: color || AVATAR_EMOJI_SKIN_COLOR };
 }
 
+// A stable, code-native portrait for accounts that have not uploaded a photo.
+// The same public identity key always selects the same skin, eyes, brows,
+// mouth, freckles and glasses, so people remain recognizable across devices
+// without storing another image or sending image bytes over presence.
+function proceduralAvatarFaceTexture(THREE, identityKey) {
+  const seed = hashNumber(String(identityKey || "forkmesh-visitor"));
+  const skins = ["#f6d8b6", "#e9bb8c", "#c98555", "#8e5738", "#5d392a"];
+  const eyes = ["#30231c", "#31576d", "#3f633b", "#725138"];
+  const skin = skins[seed % skins.length];
+  const eye = eyes[(seed >>> 3) % eyes.length];
+  const eyeSpacing = 19 + ((seed >>> 7) % 7);
+  const eyeRadius = 4 + ((seed >>> 10) % 3);
+  const browLift = (seed >>> 13) % 7;
+  const smile = (seed >>> 16) % 3;
+  const glasses = ((seed >>> 19) & 3) === 0;
+  const freckles = ((seed >>> 22) & 3) === 0;
+  const texture = canvasTexture(THREE, 128, 128, (context) => {
+    context.fillStyle = skin;
+    context.fillRect(0, 0, 128, 128);
+    context.lineCap = "round";
+    context.lineJoin = "round";
+
+    context.strokeStyle = "#553a2d";
+    context.lineWidth = 5;
+    context.beginPath();
+    context.moveTo(64 - eyeSpacing - 8, 42 - browLift);
+    context.quadraticCurveTo(64 - eyeSpacing, 38 - browLift, 64 - eyeSpacing + 8, 42 - browLift);
+    context.moveTo(64 + eyeSpacing - 8, 42 - (6 - browLift));
+    context.quadraticCurveTo(64 + eyeSpacing, 38 - (6 - browLift), 64 + eyeSpacing + 8, 42 - (6 - browLift));
+    context.stroke();
+
+    context.fillStyle = "#ffffff";
+    [64 - eyeSpacing, 64 + eyeSpacing].forEach((x) => {
+      context.beginPath();
+      context.ellipse(x, 57, eyeRadius + 3, eyeRadius + 5, 0, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = eye;
+      context.beginPath();
+      context.arc(x, 58, eyeRadius, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = "#ffffff";
+      context.beginPath();
+      context.arc(x - 1, 56, 1.5, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = "#ffffff";
+    });
+
+    context.strokeStyle = "#9a6245";
+    context.lineWidth = 4;
+    context.beginPath();
+    context.moveTo(64, 61);
+    context.quadraticCurveTo(58 + (seed % 13), 72, 65, 76);
+    context.stroke();
+
+    context.strokeStyle = "#5c3028";
+    context.lineWidth = 5;
+    context.beginPath();
+    context.moveTo(43, 88);
+    context.quadraticCurveTo(64, 100 + smile * 4, 85, 88 - smile * 2);
+    context.stroke();
+
+    if (glasses) {
+      context.strokeStyle = "#253a39";
+      context.lineWidth = 4;
+      context.strokeRect(38 - eyeSpacing / 5, 47, 29, 23);
+      context.strokeRect(61 + eyeSpacing / 5, 47, 29, 23);
+      context.beginPath();
+      context.moveTo(67, 56);
+      context.lineTo(73, 56);
+      context.stroke();
+    }
+    if (freckles) {
+      context.fillStyle = "rgba(104,56,42,0.55)";
+      [-24, -17, -10, 10, 17, 24].forEach((offset, index) => {
+        context.beginPath();
+        context.arc(64 + offset, 75 + (index % 2) * 3, 1.5, 0, Math.PI * 2);
+        context.fill();
+      });
+    }
+  });
+  return { texture, color: skin };
+}
+
 function syncAvatarFace(THREE, avatar) {
   const face = avatar.userData.faceMesh;
   if (!face?.material) return;
-  // A Supporting member wearing their account avatar photo keeps it on
-  // through status-emoji changes; the emoji face returns when the photo is
-  // taken off.
+  // An account avatar photo keeps its place through status changes; the
+  // deterministic portrait returns when the photo is taken off.
   if (avatar.userData.faceImageUrl) return;
-  const worn = avatar.userData.statusEmoji || AVATAR_DEFAULT_FACE_EMOJI;
+  const statusEmoji = String(avatar.userData.statusEmoji || "");
+  const identityKey = String(
+    avatar.userData.faceIdentityKey ||
+      avatar.userData.id ||
+      avatar.userData.name ||
+      "forkmesh-visitor",
+  );
+  const worn = statusEmoji ? `emoji:${statusEmoji}` : `person:${identityKey}`;
   if (avatar.userData.faceEmojiShown === worn) return;
-  const drawn = avatarFaceTexture(THREE, worn);
+  const drawn = statusEmoji
+    ? avatarFaceTexture(THREE, statusEmoji)
+    : proceduralAvatarFaceTexture(THREE, identityKey);
   face.material.map?.dispose?.();
   face.material.map = drawn.texture;
   face.material.needsUpdate = true;
@@ -4351,8 +4447,8 @@ function syncAvatarFace(THREE, avatar) {
 }
 
 // Wearing (or taking off) a consented account avatar photo as the 3D face —
-// a Supporting member perk. Only an already-public /api/accounts image ever
-// reaches here; presence frames carry nothing but the opt-in boolean.
+// only an already-public /api/accounts image ever reaches here; presence
+// frames carry nothing but the opt-in boolean.
 function applyAvatarFaceImage(THREE, avatar, url) {
   const face = avatar?.userData?.faceMesh;
   if (!face?.material) return;
@@ -4381,6 +4477,35 @@ function applyAvatarFaceImage(THREE, avatar, url) {
     undefined,
     () => {},
   );
+}
+
+function verifiedEmailPinTexture(THREE) {
+  return canvasTexture(THREE, 96, 96, (context) => {
+    context.clearRect(0, 0, 96, 96);
+    context.fillStyle = "#174b3d";
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 7;
+    context.beginPath();
+    context.arc(48, 48, 39, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.strokeStyle = "#eafff5";
+    context.lineWidth = 10;
+    context.lineCap = "round";
+    context.beginPath();
+    context.moveTo(28, 49);
+    context.lineTo(42, 63);
+    context.lineTo(69, 33);
+    context.stroke();
+  });
+}
+
+function syncAvatarVerifiedPin(avatar, identity) {
+  if (avatar?.userData?.verifiedPin) {
+    avatar.userData.verifiedPin.visible =
+      identity?.emailVerified === true &&
+      String(identity?.accountStatus || "Guest") !== "Guest";
+  }
 }
 
 function syncAvatarStatus(THREE, avatar, identity) {
@@ -4634,6 +4759,20 @@ function createAvatar(THREE, identity, options = {}) {
   badge.userData.chestBadge = true;
   group.add(badge);
 
+  const verifiedPin = new THREE.Mesh(
+    new THREE.CircleGeometry(0.105, 24),
+    new THREE.MeshBasicMaterial({
+      map: verifiedEmailPinTexture(THREE),
+      transparent: true,
+      toneMapped: false,
+    }),
+  );
+  verifiedPin.name = "forkmesh-verified-email-pin";
+  verifiedPin.position.set(0.43, 2.72, -0.328);
+  verifiedPin.rotation.y = Math.PI;
+  verifiedPin.renderOrder = 5;
+  group.add(verifiedPin);
+
   group.scale.setScalar(scale);
   group.userData = {
     id: identity.id,
@@ -4675,11 +4814,14 @@ function createAvatar(THREE, identity, options = {}) {
     emojiStatusSprite: null,
     faceMesh,
     faceEmojiShown: "",
+    faceIdentityKey: identity.id || identity.name || "",
+    verifiedPin,
   };
   syncOperatorBelt(THREE, group, identity.nodes?.length || 0);
   syncAvatarStatus(THREE, group, identity);
   syncAvatarActivity(group, identity);
   syncAvatarWallet(THREE, group, identity);
+  syncAvatarVerifiedPin(group, identity);
   setShadows(group, true, true);
   return group;
 }
@@ -4930,6 +5072,12 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
   avatar.userData.badgeRemote = remote === true;
   renderAvatarBadge(THREE, avatar, remote);
   avatar.userData.name = identity.name;
+  const faceIdentityKey = identity.id || identity.name || "";
+  if (avatar.userData.faceIdentityKey !== faceIdentityKey) {
+    avatar.userData.faceIdentityKey = faceIdentityKey;
+    avatar.userData.faceEmojiShown = "";
+    syncAvatarFace(THREE, avatar);
+  }
   syncCountryShirt(THREE, avatar, identity);
   // Taking the perk off (or losing Supporting status) reverts to the emoji
   // face immediately; putting it on is driven by the app layer, which owns
@@ -4940,6 +5088,7 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
   syncAvatarActivity(avatar, identity);
   syncAvatarWallet(THREE, avatar, identity);
   syncAvatarStatus(THREE, avatar, identity);
+  syncAvatarVerifiedPin(avatar, identity);
 }
 
 // Starts (or restarts) the wave on one avatar. The pose itself is played by
@@ -12389,8 +12538,16 @@ function makePlayerLabel(player, labelLayer) {
   return element;
 }
 
-function updateScreenLabel(THREE, object, element, camera, width, height, yOffset = 0) {
-  const position = new THREE.Vector3();
+function updateScreenLabel(
+  THREE,
+  object,
+  element,
+  camera,
+  width,
+  height,
+  yOffset = 0,
+  position = new THREE.Vector3(),
+) {
   object.getWorldPosition(position);
   position.y += yOffset;
   position.project(camera);
@@ -12437,6 +12594,7 @@ export function createWorldScene({
   onMastodonOpenLink = () => {},
   onReferralBoardSelect = () => {},
   onSiteReferrerOpen = () => {},
+  onLobbyLinkKioskSelect = () => {},
   onSystemCapacityTableSelect = () => {},
   onInfrastructureConsoleToggle = () => {},
   onBuildBoardNearby = () => {},
@@ -13822,6 +13980,15 @@ export function createWorldScene({
   player.position.set(-8.1, 0.38, 30);
   player.rotation.y = Math.PI;
   world.add(player);
+  // The camera used to start at CAMERA_OFFSET relative to the world origin
+  // even though the avatar starts elsewhere. It then spent the first visible
+  // second easing across the map, which made the first movement input feel
+  // delayed. Start in the final chase pose before the first frame is painted.
+  camera.position.set(
+    player.position.x + CAMERA_OFFSET[0],
+    player.position.y + FIRST_PERSON_EYE_HEIGHT + CAMERA_OFFSET[1],
+    player.position.z + CAMERA_OFFSET[2],
+  );
   const playerLabel = makePlayerLabel(player, labelLayer);
 
   // ForkBot is a compact rolling droid, rather than another humanoid avatar.
@@ -14312,6 +14479,7 @@ export function createWorldScene({
       rect.width,
       rect.height,
       0,
+      screenLabelPosition,
     );
   }
   OFFICE_FLOORS.slice(1).forEach((floor) => {
@@ -14818,7 +14986,7 @@ export function createWorldScene({
   function updateOfficeSlidingDoors(_time, delta = 0.016) {
     const localPosition = officeAvatarLocalPosition(
       player,
-      new THREE.Vector3(),
+      officeDoorLocalPosition,
     );
     const onEntranceFloor =
       officeSceneMode === "town" ||
@@ -14869,7 +15037,7 @@ export function createWorldScene({
       return false;
     }
     const distance = officeReceptionDeskDistance(
-      officeAvatarLocalPosition(player, new THREE.Vector3()),
+      officeAvatarLocalPosition(player, officeReceptionLocalPosition),
     );
     if (distance > OFFICE_RECEPTION_RESET_RANGE) {
       officeReceptionWasNear = false;
@@ -15183,6 +15351,60 @@ export function createWorldScene({
   noahNameplate.position.set(0, 1.2, -33.94);
   officeReception.add(noahNameplate);
   officeInterior.add(officeReception);
+
+  // Public lobby Link Lab: a physical, accessible entry point for members to
+  // submit public campaign/community links and inspect the transparent reach
+  // estimate. The browser dialog owns input and disclosure; this mesh never
+  // stores form values in scene state or multiplayer presence.
+  const officeLinkKiosk = new THREE.Group();
+  officeLinkKiosk.name = "forkmesh-office-link-kiosk";
+  officeLinkKiosk.position.set(25, 0, -28);
+  const officeLinkKioskStand = new THREE.Mesh(
+    new THREE.BoxGeometry(8.6, 3.4, 2.8),
+    makeMaterial(THREE, "#17352f", {
+      metalness: 0.35,
+      roughness: 0.42,
+    }),
+  );
+  officeLinkKioskStand.position.y = 1.7;
+  officeLinkKiosk.add(officeLinkKioskStand);
+  const officeLinkKioskFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(10.8, 6.6),
+    new THREE.MeshBasicMaterial({
+      map: canvasTexture(THREE, 1080, 660, (context) => {
+        context.fillStyle = "#061714";
+        context.fillRect(0, 0, 1080, 660);
+        context.strokeStyle = "#9ef7c6";
+        context.lineWidth = 18;
+        context.strokeRect(12, 12, 1056, 636);
+        context.fillStyle = "#9ef7c6";
+        context.font = '900 66px "ForkMesh Mono", ui-monospace, monospace';
+        context.textAlign = "center";
+        context.fillText("LINK LAB", 540, 120);
+        context.fillStyle = "#eafff6";
+        context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("SUBMIT A PUBLIC LINK", 540, 238);
+        context.fillStyle = "#86cdb5";
+        context.font = '650 31px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("FOLLOWERS + OBSERVED TRAFFIC", 540, 330);
+        context.fillText("→ ESTIMATED REACH 0–100", 540, 382);
+        context.fillStyle = "#f7c96b";
+        context.font = '900 38px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("CLICK TO OPEN", 540, 515);
+        context.fillStyle = "#709d8e";
+        context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("NO REMOTE URL FETCH · EXPLAINABLE FACTORS", 540, 590);
+      }),
+      toneMapped: false,
+    }),
+  );
+  officeLinkKioskFace.name = "forkmesh-office-link-kiosk-screen";
+  officeLinkKioskFace.position.set(0, 6.3, 0.15);
+  officeLinkKioskFace.userData.officeFloorId = "lobby";
+  officeLinkKioskFace.userData.interactive = "office-link-kiosk";
+  officeLinkKiosk.add(officeLinkKioskFace);
+  interactive.push(officeLinkKioskFace);
+  officeInterior.add(officeLinkKiosk);
   for (const [x, z] of [
     [-52, 7],
     [0, -29],
@@ -15368,7 +15590,7 @@ export function createWorldScene({
       return;
     }
     const position = officeTaskBulletin.getWorldPosition(
-      new THREE.Vector3(),
+      buildBoardWorldPosition,
     );
     const distance = Math.hypot(
       player.position.x - position.x,
@@ -16334,6 +16556,19 @@ export function createWorldScene({
   const pointer = new THREE.Vector2();
   const pointerStart = new THREE.Vector2();
   const pointerLast = new THREE.Vector2();
+  // Hot-path scratch values. Reusing these avoids producing several short-
+  // lived vectors on every movement and label frame, which otherwise turns
+  // into intermittent garbage-collection pauses while walking.
+  const movementVector = new THREE.Vector3();
+  const movementForward = new THREE.Vector3();
+  const movementRight = new THREE.Vector3();
+  const movementPreviousPosition = new THREE.Vector3();
+  const movementDashDirection = new THREE.Vector3();
+  const screenLabelPosition = new THREE.Vector3();
+  const officeDoorLocalPosition = new THREE.Vector3();
+  const officeReceptionLocalPosition = new THREE.Vector3();
+  const buildBoardWorldPosition = new THREE.Vector3();
+  const viewportRect = { width: 1, height: 1 };
   let currentLocation = "Town Square";
   let currentRegion = "central";
   let currentSpace = "town-square";
@@ -16352,6 +16587,10 @@ export function createWorldScene({
   let diagnosticsPointerMoves = 0;
   let diagnosticsPointerLastAt = 0;
   let diagnosticsPointerWorstGapMs = 0;
+  let diagnosticsLastMovementInputMs = 0;
+  let diagnosticsWorstMovementInputMs = 0;
+  let movementInputStartedAt = 0;
+  let lastMovementInputDelayLogAt = 0;
   // Rolling 0..1 measure of how much the mouse is actually moving, decayed
   // between samples. It only drives the local avatar's antenna blink rate;
   // nothing about it is sent to other visitors.
@@ -16360,9 +16599,14 @@ export function createWorldScene({
   let pointerEnergyX = 0;
   let pointerEnergyY = 0;
   let lastMovementEmit = 0;
+  let movementEventTimer = 0;
+  let pendingMovementEvent = null;
+  let officeMovementEventTimer = 0;
+  let pendingOfficeMovementEvent = null;
   let lastPosition = player.position.clone();
   let wasWalking = false;
   let cameraFocus = null;
+  let cameraSnapPending = false;
   let officeZoneState = "distant";
   let focusedRepositoryKey = "";
   let cameraZoom = 1;
@@ -17846,12 +18090,11 @@ export function createWorldScene({
     officeLobbyPlayer.visible = false;
     player.visible = cameraMode !== "first-person";
     cameraFocus = null;
-    // The interior orbit can be very close, so restore the safe outdoor chase
-    // distance as the avatar clears the jamb. Preserve the doorway heading,
-    // though: forcing yaw to zero made "forward" point back into the building
-    // and visibly spun the visitor 180 degrees on checkout.
+    // beginOfficeExit already pulled the eye close before the façade crossing.
+    // Keep that same distance outside so the eased camera cannot travel through
+    // the building shell. Preserve the doorway heading as well.
     setCameraMode("third-person", "office-exit");
-    cameraZoom = 1;
+    cameraZoom = OFFICE_EXIT_CAMERA_ZOOM;
     cameraYaw = Math.atan2(
       Math.sin(player.rotation.y),
       Math.cos(player.rotation.y),
@@ -17882,6 +18125,13 @@ export function createWorldScene({
     }
     officeExitPending = false;
     officeSlidingDoorOpen = 1;
+    // Transition to one façade-safe third-person chase shot while still inside.
+    // The ordinary render loop eases into this distance, and leaveOfficeInterior
+    // keeps it unchanged after crossing for a continuous outside reveal.
+    setCameraMode("third-person", "office-exit-approach");
+    cameraFocus = null;
+    cameraZoom = Math.min(cameraZoom, OFFICE_EXIT_CAMERA_ZOOM);
+    pinchStartZoom = cameraZoom;
     // Do not rewrite the avatar heading here. The visitor may already be
     // walking through the doorway, and preserving that pose lets the same
     // forward input continue smoothly outside.
@@ -18090,6 +18340,9 @@ export function createWorldScene({
       right: "KeyD",
     }[control];
     if (!normalized) return;
+    if (pressed && !touchKeys.size && touchMovement.lengthSq() === 0) {
+      movementInputStartedAt = movementInputStartedAt || performance.now();
+    }
     if (pressed) touchKeys.add(normalized);
     else touchKeys.delete(normalized);
   }
@@ -18103,6 +18356,9 @@ export function createWorldScene({
     }
     const length = Math.hypot(nextX, nextY);
     const scale = length > 1 ? 1 / length : 1;
+    if (length > 0.01 && touchMovement.lengthSq() === 0) {
+      movementInputStartedAt = movementInputStartedAt || performance.now();
+    }
     touchMovement.set(nextX * scale, nextY * scale);
     if (touchMovement.lengthSq() < 0.0001) touchMovement.set(0, 0);
     return {
@@ -18113,7 +18369,7 @@ export function createWorldScene({
   }
 
   function movementInput() {
-    const movement = new THREE.Vector3();
+    const movement = movementVector.set(0, 0, 0);
     const forwardInput =
       Number(keys.has("KeyW") || keys.has("ArrowUp")) -
       Number(keys.has("KeyS") || keys.has("ArrowDown"));
@@ -18121,12 +18377,12 @@ export function createWorldScene({
       Number(keys.has("KeyD") || keys.has("ArrowRight")) -
       Number(keys.has("KeyA") || keys.has("ArrowLeft"));
     const touchStrength = Math.min(1, touchMovement.length());
-    const forward = new THREE.Vector3(
+    const forward = movementForward.set(
       -Math.sin(cameraYaw),
       0,
       -Math.cos(cameraYaw),
     );
-    const right = new THREE.Vector3(
+    const right = movementRight.set(
       Math.cos(cameraYaw),
       0,
       -Math.sin(cameraYaw),
@@ -18158,6 +18414,28 @@ export function createWorldScene({
     };
   }
 
+  function queueMovementEvent(movement, office = false) {
+    if (office) pendingOfficeMovementEvent = movement;
+    else pendingMovementEvent = movement;
+    const timer = office ? officeMovementEventTimer : movementEventTimer;
+    if (timer) return;
+    const scheduled = window.setTimeout(() => {
+      if (office) {
+        officeMovementEventTimer = 0;
+        const next = pendingOfficeMovementEvent;
+        pendingOfficeMovementEvent = null;
+        if (!disposed && next) onOfficeMovement(next);
+        return;
+      }
+      movementEventTimer = 0;
+      const next = pendingMovementEvent;
+      pendingMovementEvent = null;
+      if (!disposed && next) onMovement(next);
+    }, 0);
+    if (office) officeMovementEventTimer = scheduled;
+    else movementEventTimer = scheduled;
+  }
+
   function walkOfficeParticipant(delta, time) {
     const avatar = officeParticipants.get(officeLocalParticipantId);
     if (!avatar) return;
@@ -18169,7 +18447,7 @@ export function createWorldScene({
     const walking = movement.lengthSq() > 0;
     const movementSpeed = movementSpeedForInput(input, delta);
     if (walking) {
-      const previousPosition = avatar.position.clone();
+      const previousPosition = movementPreviousPosition.copy(avatar.position);
       avatar.position.addScaledVector(
         movement,
         movementSpeed * delta,
@@ -18195,13 +18473,15 @@ export function createWorldScene({
       : officeWasMoving;
     if (shouldEmit) {
       lastOfficeMovementEmit = performance.now();
-      onOfficeMovement({
+      // Presence serialization, socket backpressure checks, and persistence
+      // run in a timer after this animation frame has rendered.
+      queueMovementEvent({
         x: Number(avatar.position.x.toFixed(2)),
         y: 0.38,
         z: Number(avatar.position.z.toFixed(2)),
         yaw: Number(avatar.rotation.y.toFixed(3)),
         moving: walking,
-      });
+      }, true);
     }
     officeWasMoving = walking;
   }
@@ -18231,7 +18511,7 @@ export function createWorldScene({
     const movementSpeed = movementSpeedForInput(input, delta);
     if (walking) {
       cancelDash();
-      const previousPosition = avatar.position.clone();
+      const previousPosition = movementPreviousPosition.copy(avatar.position);
       avatar.position.addScaledVector(
         movement,
         movementSpeed * delta,
@@ -18244,8 +18524,8 @@ export function createWorldScene({
         return;
       }
     } else if (dashTarget) {
-      const previousPosition = avatar.position.clone();
-      const toTarget = new THREE.Vector3(
+      const previousPosition = movementPreviousPosition.copy(avatar.position);
+      const toTarget = movementDashDirection.set(
         dashTarget.x - avatar.position.x,
         0,
         dashTarget.z - avatar.position.z,
@@ -18476,7 +18756,7 @@ export function createWorldScene({
       );
       player.rotation.y = heading;
       lastPosition.copy(player.position);
-      onMovement({
+      queueMovementEvent({
         x: Number(player.position.x.toFixed(2)),
         y: Number(player.position.y.toFixed(2)),
         z: Number(player.position.z.toFixed(2)),
@@ -18518,7 +18798,8 @@ export function createWorldScene({
   }
 
   function walkPlayer(delta, time) {
-    const previousHorizontalPosition = player.position.clone();
+    const previousHorizontalPosition =
+      movementPreviousPosition.copy(player.position);
     const {
       keyboardActive,
       touchStrength,
@@ -18593,7 +18874,7 @@ export function createWorldScene({
     } else if (dashTarget) {
       // Double-click travel: run straight at the clicked ground point, then
       // land exactly on it instead of jittering around the destination.
-      const toTarget = new THREE.Vector3(
+      const toTarget = movementDashDirection.set(
         dashTarget.x - player.position.x,
         0,
         dashTarget.z - player.position.z,
@@ -18644,7 +18925,7 @@ export function createWorldScene({
     ) {
       lastMovementEmit = performance.now();
       lastPosition.copy(player.position);
-      onMovement({
+      queueMovementEvent({
         x: Number(player.position.x.toFixed(2)),
         y: Number(player.position.y.toFixed(2)),
         z: Number(player.position.z.toFixed(2)),
@@ -18656,7 +18937,7 @@ export function createWorldScene({
     }
     if (!walking && wasWalking) {
       lastPosition.copy(player.position);
-      onMovement({
+      queueMovementEvent({
         x: Number(player.position.x.toFixed(2)),
         y: Number(player.position.y.toFixed(2)),
         z: Number(player.position.z.toFixed(2)),
@@ -19258,7 +19539,9 @@ export function createWorldScene({
       desired.copy(officeInterior.localToWorld(localDesired));
     }
     if (reducedMotion) camera.position.copy(desired);
+    else if (cameraSnapPending) camera.position.copy(desired);
     else camera.position.lerp(desired, 1 - Math.pow(0.0008, delta));
+    cameraSnapPending = false;
     if (officeSceneMode === "town") {
       camera.position.y = Math.max(
         camera.position.y,
@@ -19325,6 +19608,9 @@ export function createWorldScene({
     lastPosition.copy(player.position);
     wasWalking = false;
     cameraFocus = null;
+    // Restored positions arrive after asynchronous bootstrap data. Do not
+    // expose a long map-wide camera lerp after the loading cover disappears.
+    cameraSnapPending = true;
     cancelDash();
     focusedRepositoryKey = "";
     if (space === "town-square") {
@@ -19387,10 +19673,65 @@ export function createWorldScene({
     if (!avatar?.userData?.badge) return;
     avatar.userData.fediverseProfile =
       profile && typeof profile === "object" ? profile : { state: "unavailable" };
+    const profileCountry = /^[A-Z]{2}$/.test(
+      String(profile?.countryCode || "").toUpperCase(),
+    )
+      ? String(profile.countryCode).toUpperCase()
+      : "";
+    if (
+      profile?.emailVerified === true ||
+      profileCountry ||
+      String(profile?.flag || "") ||
+      String(profile?.avatarUrl || "")
+    ) {
+      const enriched = {
+        ...(avatar.userData.badgeIdentity || {}),
+        emailVerified:
+          profile?.emailVerified === true ||
+          avatar.userData.badgeIdentity?.emailVerified === true,
+        countryCode:
+          profileCountry ||
+          avatar.userData.badgeIdentity?.countryCode ||
+          "",
+        flag:
+          String(profile?.flag || "") ||
+          (profileCountry ? flagEmoji(profileCountry) : "") ||
+          avatar.userData.badgeIdentity?.flag ||
+          "◌",
+      };
+      avatar.userData.badgeIdentity = enriched;
+      syncCountryShirt(THREE, avatar, enriched);
+      syncAvatarVerifiedPin(avatar, enriched);
+      if (
+        enriched.faceImage === true &&
+        String(profile?.avatarUrl || "")
+      ) {
+        applyAvatarFaceImage(THREE, avatar, profile.avatarUrl);
+      }
+    }
     renderAvatarBadge(THREE, avatar, avatar.userData.badgeRemote === true);
     if (avatar === player && officeLobbyPlayer?.userData?.badge) {
       officeLobbyPlayer.userData.fediverseProfile =
         avatar.userData.fediverseProfile;
+      officeLobbyPlayer.userData.badgeIdentity = {
+        ...(officeLobbyPlayer.userData.badgeIdentity || {}),
+        ...(avatar.userData.badgeIdentity || {}),
+      };
+      syncCountryShirt(
+        THREE,
+        officeLobbyPlayer,
+        officeLobbyPlayer.userData.badgeIdentity,
+      );
+      syncAvatarVerifiedPin(
+        officeLobbyPlayer,
+        officeLobbyPlayer.userData.badgeIdentity,
+      );
+      if (
+        officeLobbyPlayer.userData.badgeIdentity?.faceImage === true &&
+        String(profile?.avatarUrl || "")
+      ) {
+        applyAvatarFaceImage(THREE, officeLobbyPlayer, profile.avatarUrl);
+      }
       renderAvatarBadge(THREE, officeLobbyPlayer, false);
     }
   }
@@ -19651,6 +19992,8 @@ export function createWorldScene({
       ),
       joinedAt:
         Number(identity.joinedAt) > 0 ? identity.joinedAt : facts.joinedAt,
+      emailVerified:
+        identity.emailVerified === true || facts.emailVerified === true,
       totalActiveMs:
         identity.totalActiveMs == null
           ? facts.totalActiveMs
@@ -19673,6 +20016,7 @@ export function createWorldScene({
         os: remote.os || "Device",
         status: remote.activity || "exploring",
         accountStatus: remote.accountStatus || "Guest",
+        emailVerified: remote.emailVerified === true,
         localTime: remote.localTime || "",
         activityCategory:
           String(remote.activity || "") === CAMPFIRE_SEATED_ACTIVITY
@@ -19951,6 +20295,7 @@ export function createWorldScene({
         ),
         totalActiveMs:
           Number.isFinite(activeMs) && activeMs >= 0 ? activeMs : null,
+        emailVerified: member?.emailVerified === true,
       });
     });
     // A live presence frame can arrive before the public directory catches up.
@@ -21301,6 +21646,16 @@ export function createWorldScene({
     }
   }
 
+  function setInputActive(active) {
+    identity.inputActive = active === true;
+    // Input activity only changes the shoulder antenna and idle fade. Calling
+    // updateIdentity for this bit used to regenerate two canvas badge textures
+    // synchronously in the first keydown task, directly delaying movement.
+    syncAvatarActivity(player, identity);
+    syncAvatarActivity(officeLobbyPlayer, identity);
+    return identity.inputActive;
+  }
+
   function updateRepositoryCatalog(repositories = [], activeRepository = {}) {
     const district = landmarkObjects.get("repositories");
     const districtPortal = district?.userData?.portal;
@@ -22294,6 +22649,7 @@ export function createWorldScene({
 
   const REPOSITORY_ISSUE_CARDS_VISIBLE = 25;
   const REPOSITORY_PULL_CARDS_VISIBLE = 25;
+  const REPOSITORY_COMBINED_CARDS_VISIBLE = 25;
   const REPOSITORY_RECORDS_MAX = 250;
 
   function safeRecordNumber(value) {
@@ -22330,7 +22686,9 @@ export function createWorldScene({
     const perPage =
       kind === "issue"
         ? REPOSITORY_ISSUE_CARDS_VISIBLE
-        : REPOSITORY_PULL_CARDS_VISIBLE;
+        : kind === "pull"
+          ? REPOSITORY_PULL_CARDS_VISIBLE
+          : REPOSITORY_COMBINED_CARDS_VISIBLE;
     const pages = Math.max(1, Math.ceil(count / perPage));
     const requested = Number(
       world.userData.repositoryRecordPages?.[kind],
@@ -22355,9 +22713,20 @@ export function createWorldScene({
 
   function changeRepositoryRecordPage(kind, direction) {
     const data = world.userData.repositoryRecordDeskData;
-    if (!data || !["issue", "pull"].includes(kind)) return false;
+    if (!data || !["issue", "pull", "combined"].includes(kind)) return false;
     const items =
-      kind === "issue" ? data.records?.issues : data.records?.pulls;
+      kind === "issue"
+        ? data.records?.issues
+        : kind === "pull"
+          ? data.records?.pulls
+          : [
+              ...(Array.isArray(data.records?.issues)
+                ? data.records.issues
+                : []),
+              ...(Array.isArray(data.records?.pulls)
+                ? data.records.pulls
+                : []),
+            ];
     const count = Array.isArray(items) ? items.length : 0;
     const current = repositoryRecordPage(kind, count);
     const next = clamp(
@@ -22394,7 +22763,11 @@ export function createWorldScene({
     const mount = repositoryPortals.get(repositoryKey)?.group;
     if (world.userData.repositoryRecordPageKey !== repositoryKey) {
       world.userData.repositoryRecordPageKey = repositoryKey;
-      world.userData.repositoryRecordPages = { issue: 0, pull: 0 };
+      world.userData.repositoryRecordPages = {
+        issue: 0,
+        pull: 0,
+        combined: 0,
+      };
       repositoryIssueAgentPicker = null;
     }
     const issues = (Array.isArray(records?.issues) ? records.issues : [])
@@ -22483,10 +22856,8 @@ export function createWorldScene({
     const addRecordBoard = (allItems, kind, x, accent) => {
       if (!allItems.length) return null;
       const desk = new THREE.Group();
-      const isIssue = kind === "issue";
       const pageInfo = repositoryRecordPage(kind, allItems.length);
       const items = allItems.slice(pageInfo.start, pageInfo.end);
-      const statusSummary = repositoryRecordStatusSummary(kind, allItems);
       desk.name = `repository-${kind}-desk:${repositoryKey}`;
       desk.position.set(x, 0, 1.35);
       const columns = items.length > 13 ? 2 : 1;
@@ -22495,8 +22866,8 @@ export function createWorldScene({
       const boardHeight = 0.74 + rows * 0.62;
       const board = new THREE.Mesh(
         new THREE.BoxGeometry(boardWidth, boardHeight, 0.12),
-        makeMaterial(THREE, isIssue ? "#10231b" : "#171429", {
-          emissive: isIssue ? "#163c2a" : "#241d45",
+        makeMaterial(THREE, kind === "combined" ? "#111b22" : kind === "issue" ? "#10231b" : "#171429", {
+          emissive: kind === "combined" ? "#17333d" : kind === "issue" ? "#163c2a" : "#241d45",
           emissiveIntensity: 0.32,
           roughness: 0.6,
         }),
@@ -22515,6 +22886,9 @@ export function createWorldScene({
         desk.add(leg);
       });
       items.forEach((record, index) => {
+        const isIssue =
+          kind === "issue" ||
+          (kind === "combined" && record.recordKind === "issue");
         const column = Math.floor(index / rows);
         const row = index % rows;
         const cardX = columns === 2 ? (column - 0.5) * 3.5 : 0;
@@ -22633,14 +23007,24 @@ export function createWorldScene({
           }
         }
       });
+      const issueCount =
+        kind === "combined"
+          ? allItems.filter((item) => item.recordKind === "issue").length
+          : kind === "issue"
+            ? allItems.length
+            : issues.length;
+      const pullCount =
+        kind === "combined"
+          ? allItems.filter((item) => item.recordKind === "pull").length
+          : kind === "pull"
+            ? allItems.length
+            : pulls.length;
       const caption = repositoryRecordCaptionSprite(
         THREE,
-        `${allItems.length} ${
-          isIssue ? "ISSUES" : "PULL REQUESTS"
-        } · MOSTLY ${statusSummary.mostly.toUpperCase()}`,
+        `${issueCount} ISSUES  ·  ${pullCount} PULL REQUESTS`,
         `PAGE ${pageInfo.page + 1}/${pageInfo.pages} · ${
           pageInfo.start + 1
-        }–${pageInfo.end} · ${statusSummary.detail}`,
+        }–${pageInfo.end} · ONE LIVE WORK LIST`,
         accent,
       );
       caption.name = `repository-${kind}-desk-caption:${repositoryKey}`;
@@ -22695,18 +23079,37 @@ export function createWorldScene({
       return { desk, boardHeight, items };
     };
 
-    // Keep both record boards outside the follower orbit and file wedges.
-    // Their inner edges now start beyond five local units from the sunburst.
-    const issueBoard = addRecordBoard(issues, "issue", 9.4, "#f7c96b");
-    addRecordBoard(pulls, "pull", -9.4, "#d5b6ff");
+    // Issues and pull requests share one live, paginated work list. The kind
+    // remains on each record so its card, interactions, agent assignment, and
+    // PR status/mergability details stay intact.
+    const combinedRecords = [
+      ...issues.map((record) => ({ ...record, recordKind: "issue" })),
+      ...pulls.map((record) => ({ ...record, recordKind: "pull" })),
+    ].sort(
+      (left, right) =>
+        Math.max(right.updatedAt || 0, right.createdAt || 0) -
+          Math.max(left.updatedAt || 0, left.createdAt || 0) ||
+        right.number - left.number,
+    );
+    const issueBoard = addRecordBoard(
+      combinedRecords,
+      "combined",
+      8.6,
+      "#9ef7c6",
+    );
 
     if (
       issueBoard &&
       expandedIssue &&
-      issueBoard.items.some((issue) => issue.number === expandedIssue)
+      issueBoard.items.some(
+        (issue) =>
+          issue.recordKind === "issue" && issue.number === expandedIssue,
+      )
     ) {
       const issue = issueBoard.items.find(
-        (candidate) => candidate.number === expandedIssue,
+        (candidate) =>
+          candidate.recordKind === "issue" &&
+          candidate.number === expandedIssue,
       );
       const sheet = new THREE.Mesh(
         new THREE.PlaneGeometry(3.1, 4.08),
@@ -24092,6 +24495,10 @@ export function createWorldScene({
       if (href) onSiteReferrerOpen(href);
       return;
     }
+    if (hit?.object?.userData?.interactive === "office-link-kiosk") {
+      onLobbyLinkKioskSelect();
+      return;
+    }
     if (hit?.object?.userData?.interactive === "system-capacity-table") {
       onSystemCapacityTableSelect({
         name: String(hit.object.userData.tableName || ""),
@@ -24653,7 +25060,7 @@ export function createWorldScene({
       .find(
         ({ object }) =>
           objectIsEffectivelyVisible(object) &&
-          ["issue", "pull"].includes(
+          ["issue", "pull", "combined"].includes(
             String(object.userData?.repositoryRecordPageKind || ""),
           ),
       );
@@ -24693,6 +25100,19 @@ export function createWorldScene({
       event.target?.isContentEditable
     ) return;
     if (MOVEMENT_KEYS.has(event.code)) {
+      if (!keys.size && !event.repeat) {
+        const now = performance.now();
+        const eventAt = Number(event.timeStamp);
+        // Event timestamps normally share performance.now()'s time origin.
+        // Fall back for older WebViews that report an epoch timestamp.
+        const startedAt =
+          Number.isFinite(eventAt) &&
+          eventAt > 0 &&
+          Math.abs(now - eventAt) < 60_000
+            ? eventAt
+            : now;
+        movementInputStartedAt = movementInputStartedAt || startedAt;
+      }
       keys.add(event.code);
       event.preventDefault();
     }
@@ -24765,6 +25185,8 @@ export function createWorldScene({
     const rect = container.getBoundingClientRect();
     const width = Math.max(1, Math.floor(rect.width));
     const height = Math.max(1, Math.floor(rect.height));
+    viewportRect.width = width;
+    viewportRect.height = height;
     // Keep the drawing buffer deliberately modest. The previous 1.75 cap made
     // the GPU shade over three times as many pixels as a 1x canvas on dense
     // displays, which showed up as movement hitching.
@@ -24799,6 +25221,29 @@ export function createWorldScene({
     const rawFrameMs = Math.max(0, time - lastFrame);
     const delta = clamp(rawFrameMs / 1000, 0, 0.05);
     lastFrame = time;
+    if (movementInputStartedAt > 0) {
+      const inputToFrameMs = Math.max(0, time - movementInputStartedAt);
+      diagnosticsLastMovementInputMs = inputToFrameMs;
+      diagnosticsWorstMovementInputMs = Math.max(
+        diagnosticsWorstMovementInputMs,
+        inputToFrameMs,
+      );
+      if (
+        inputToFrameMs >= MOVEMENT_INPUT_DELAY_THRESHOLD_MS &&
+        time - lastMovementInputDelayLogAt >= RENDER_STALL_LOG_COOLDOWN_MS
+      ) {
+        lastMovementInputDelayLogAt = time;
+        console.warn("[ForkMesh World] Movement input delayed", {
+          observedAt: new Date().toISOString(),
+          inputToFrameMs: Math.round(inputToFrameMs),
+          space: currentSpace,
+          officeSceneMode,
+          pressedKeys: [...keys],
+          touchStrength: Number(touchMovement.length().toFixed(3)),
+        });
+      }
+      movementInputStartedAt = 0;
+    }
     diagnosticsLongestFrameMs = Math.max(diagnosticsLongestFrameMs, rawFrameMs);
     if (rawFrameMs > 34) diagnosticsLongFrames += 1;
     // Report genuine visible-tab stalls without flooding DevTools during a
@@ -25064,7 +25509,10 @@ export function createWorldScene({
       animateWeather(weather.rain, time, delta, "rain");
       animateWeather(weather.snow, time, delta, "snow");
     }
-    const rect = container.getBoundingClientRect();
+    // resize() owns the only layout read. Reading the canvas bounds here,
+    // after label style writes from the preceding frame, forced a synchronous
+    // layout on every animation tick and was especially visible on first input.
+    const rect = viewportRect;
     updateOfficeAquariumProximity(time, rect);
     // main removed the floating landmark labels (adhoc #243); only the player
     // and remote name plates remain, and they are a town-scene concern.
@@ -25081,6 +25529,7 @@ export function createWorldScene({
           rect.width,
           rect.height,
           player.userData.emojiStatusSprite ? 5.7 : 4.5,
+          screenLabelPosition,
         );
       }
       remotePlayers.forEach((avatar, id) => {
@@ -25092,6 +25541,7 @@ export function createWorldScene({
           rect.width,
           rect.height,
           avatar.userData.emojiStatusSprite ? 5.35 : 4.2,
+          screenLabelPosition,
         );
       });
       officeParticipantLabels.forEach((element) => {
@@ -25132,6 +25582,7 @@ export function createWorldScene({
           rect.width,
           rect.height,
           4.2,
+          screenLabelPosition,
         );
         if (bubble) {
           updateScreenLabel(
@@ -25142,6 +25593,7 @@ export function createWorldScene({
             rect.width,
             rect.height,
             5.1,
+            screenLabelPosition,
           );
           const bubbleHalfWidth = Math.min(136, Math.max(84, rect.width / 2 - 12));
           const bubbleLeft = Number.parseFloat(bubble.style.left) || rect.width / 2;
@@ -25199,10 +25651,12 @@ export function createWorldScene({
     const longFrames = diagnosticsLongFrames;
     const pointerMoves = diagnosticsPointerMoves;
     const pointerWorstGapMs = diagnosticsPointerWorstGapMs;
+    const worstMovementInputMs = diagnosticsWorstMovementInputMs;
     diagnosticsLongestFrameMs = 0;
     diagnosticsLongFrames = 0;
     diagnosticsPointerMoves = 0;
     diagnosticsPointerWorstGapMs = 0;
+    diagnosticsWorstMovementInputMs = 0;
     return {
       fps,
       frameTimeMs,
@@ -25212,6 +25666,8 @@ export function createWorldScene({
       longFrames,
       pointerMoves,
       pointerWorstGapMs,
+      inputResponseMs: diagnosticsLastMovementInputMs,
+      worstInputResponseMs: worstMovementInputMs,
       dragging: primaryPointerId !== null,
       interactiveObjects: interactive.length,
       animations: animated.length,
@@ -25228,6 +25684,12 @@ export function createWorldScene({
   function dispose() {
     disposed = true;
     renderer.setAnimationLoop(null);
+    window.clearTimeout(movementEventTimer);
+    window.clearTimeout(officeMovementEventTimer);
+    movementEventTimer = 0;
+    officeMovementEventTimer = 0;
+    pendingMovementEvent = null;
+    pendingOfficeMovementEvent = null;
     worldSky.dispose();
     reflectionTarget.dispose();
     resizeObserver?.disconnect();
@@ -25373,6 +25835,7 @@ export function createWorldScene({
     updateFediverseDirectory,
     updateMediaSpaces,
     updateIdentity,
+    setInputActive,
     updateRepositoryCatalog,
     updateRepositoryGraph,
     updateRepositoryActivity,

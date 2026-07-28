@@ -753,13 +753,14 @@ private:
     // longer a public constant baked into the client. Cached in m_roomPassphrase
     // and passed to ServerNode; empty falls back to the legacy app key.
     void fetchRoomPassphrase();
-    // Start (once the account identity is known) the read-only poll that brings
-    // the World virtual office's channel conversations into the chat sidebar.
+    // Start (once the account identity is known) the asynchronous bridge that
+    // brings World-office channels into chat and opens their send sockets.
     // The office's #general room needs nothing here: it is the same mainnode
     // room this client already joins, so it lands in #general.
     void startOfficeChannelMirror();
-    // True for a conversation this client can read but never publish into.
-    bool isReadOnlyConversation(const QString &conversation) const;
+    // True for a World-office conversation whose text sends use the office
+    // bridge rather than the primary mesh backend.
+    bool isOfficeConversation(const QString &conversation) const;
     void showAdminVerifyDialog();
     bool adminVerifyEmail(const QString &target);
     void verifyWallet();
@@ -1372,6 +1373,7 @@ private:
 
     // Repo detail view (files + issues tabs), opened by clicking a repository.
     void ensureRepoDetailSectionBuilt();
+    void ensureRepoDetailTabBuilt(int index);
     QWidget *buildRepoDetailSection();
     QWidget *buildRepoFilesPanel();
     QWidget *buildRepoOverviewPage();
@@ -1474,6 +1476,11 @@ private:
     QWidget *buildPullsTab();
     PullStore pullStoreForCurrentRepo() const;
     void reloadPulls();
+    // Push/sync refreshes use the worker-backed variant so deriving every PR's
+    // patch/commit series never serializes git on the event thread.
+    void reloadPullsInBackground();
+    void applyLoadedPulls(const PullStore &store, QList<PullRequest> pulls,
+                          const QString &baseTip);
     // Drains m_pendingPullConflictChecks one PR per event-loop turn so the (slow)
     // `git apply --check` dry-runs never block the GUI thread in a single sweep.
     void processPendingPullConflicts(quint64 gen);
@@ -1707,10 +1714,9 @@ private:
     // message re-refreshes it (adhoc #74).
     void applyAgentRowCells(int row, const AgentSession &session,
                             const QString &agentGitDir, const QString &agentBase);
-    // Files-changed + branch ahead/behind summary for a session's Diff cell
-    // (issue #170), computed against the given git dir / base branch and memoised
-    // in m_agentDiffStats. Both git args are hoisted by the caller so the per-row
-    // loop doesn't re-resolve them.
+    // Files-changed + branch ahead/behind summary for a session's Diff cell.
+    // This is deliberately a cache-only UI accessor: cold disk/git probes are
+    // gathered by refreshAgentTable() on its worker and delivered later.
     AgentDiffStat agentDiffStat(const AgentSession &session, const QString &gitDir,
                                 const QString &base);
     void updateAgentTokenCell(int sessionId);  // live Tokens-column update
@@ -2893,6 +2899,10 @@ private:
     IssueStore issueStoreForCurrentRepo() const; // build a store for that repo
     void refreshIssuesRepoCombo();
     void reloadIssues();        // load issues + label/milestone filters from the store
+    void reloadIssuesInBackground();
+    void applyLoadedIssues(const QString &signature, QList<Issue> issues,
+                           QList<IssueLabel> labels,
+                           QList<IssueMilestone> milestones);
     // Splice a just-created issue into m_currentIssues and redisplay it, without
     // the full loadAll() reloadIssues() would do — that re-reads every issue
     // file in the repo, which is what made the redirect to the new issue feel
@@ -5029,6 +5039,9 @@ private:
     // Generation counter: each reloadPulls() bumps it so any in-flight async
     // conflict pass aborts once the repo/list it was started for has changed.
     quint64 m_pullConflictGen = 0;
+    quint64 m_pullLoadGen = 0;
+    bool m_pullBackgroundLoadInFlight = false;
+    bool m_pullBackgroundReloadQueued = false;
     // (PR number, patch fingerprint) pairs whose dry-run apply is still pending,
     // drained one per event-loop turn by processPendingPullConflicts() so a cold
     // cache never blocks the GUI in a single sweep.
@@ -5390,11 +5403,8 @@ private:
     // it survives full table rebuilds) and the timer that animates the active ones.
     QHash<int, AgentScannerState> m_scannerStates;
     QTimer *m_scannerTimer = nullptr;
-    // Cached agents-list diff summaries keyed by sessionId (issue #170), so the
-    // search-as-you-type refresh reuses them instead of re-shelling git per row.
-    // No longer wiped wholesale on reloadAgents(): a plain tab switch (issue #289)
-    // re-validates each entry against m_agentDiffSig and only re-shells the rows
-    // whose state actually moved, so an idle Issues→Agents switch runs zero git.
+    // Cached agents-list diff summaries keyed by sessionId (issue #170). Cold
+    // values are computed on a worker; table painting only reads this map.
     QHash<int, AgentDiffStat> m_agentDiffStats;
     // Per-session fingerprint of the inputs the cached AgentDiffStat was computed
     // from (status/branch/merge/finish + the base tip). reloadAgents() flips
@@ -5402,6 +5412,9 @@ private:
     // entries whose fingerprint changed (issue #289).
     QHash<int, QString> m_agentDiffSig;
     bool m_agentDiffRefreshPending = false;
+    bool m_agentDiffStatsRefreshing = false;
+    bool m_agentDiffStatsRefreshQueued = false;
+    int m_agentDiffStatsGen = 0;
     // Sessions maybeAutoFixAgentConflict() has already auto-triggered a fix for.
     // Prevents an unresolved conflict from re-queuing the agent on every refresh;
     // cleared once the session's AgentDiffStat stops reporting conflicted.
@@ -5859,6 +5872,9 @@ private:
     // nothing changed (a rebuild mid-interaction drops the click/keystroke the user
     // aimed at a row or the search box). Empty = "unknown", never skip.
     QString m_issuesLoadedSig;
+    int m_issueLoadGen = 0;
+    bool m_issueBackgroundLoadInFlight = false;
+    bool m_issueBackgroundReloadQueued = false;
     QStringList m_pendingIssueAttachments; // images queued for the next comment
 
     // Projects tab widgets + state (issue #384).
@@ -5959,8 +5975,8 @@ private:
     QString m_profileSolanaValue;
 
     QStringList m_channels;
-    // Read-only mirrors of the World virtual office's channel rooms, merged
-    // into the sidebar beside the mesh rooms (adhoc #412).
+    // World virtual-office channel conversations, merged into the sidebar
+    // beside the mesh rooms and carried by OfficeChannelMirror (adhoc #412).
     QStringList m_officeConversations;
     // Invite-only rooms this node owns or was invited to. Badged in the sidebar
     // and persisted so they reappear after a reconnect (the backend clears its

@@ -306,10 +306,66 @@ namespace {
 // MainWindowInternal.h. Above this many chars of HTML a diff is laid out one
 // batch at a time instead of in a single blocking pass; the first batch covers
 // well over a screenful, so the visible window is complete on arrival.
-constexpr qsizetype kDiffFirstPaintChars = 150'000;
+constexpr qsizetype kDiffFirstPaintChars = 70'000;
 // Chars of HTML per streamed batch. Each batch is a separate GUI-thread layout,
 // so this trades how fast the rest lands against how long any one turn blocks.
-constexpr qsizetype kDiffStreamBatchChars = 250'000;
+constexpr qsizetype kDiffStreamBatchChars = 70'000;
+
+// QTextDocument is not virtualized: inserting another row can relayout the
+// entire table already above it. Multi-megabyte generated HTML therefore gets
+// progressively *slower* even when it arrives in event-loop-sized batches. Keep
+// each file body and the complete rich-text body bounded. Headers/anchors remain
+// for every file, and a clear placeholder points readers to the full patch.
+constexpr qsizetype kDiffFileRichTextChars = 60'000;
+constexpr qsizetype kDiffTotalRichTextChars = 420'000;
+
+QString responsiveDiffBlock(const QString &block, bool headerOnly)
+{
+    const QString tableMarker = QStringLiteral("<table class='difftable'");
+    const int table = block.indexOf(tableMarker);
+    if (table < 0 || (!headerOnly && block.size() <= kDiffFileRichTextChars))
+        return block;
+
+    const int tableOpenEnd = block.indexOf(QLatin1Char('>'), table);
+    if (tableOpenEnd < 0)
+        return block.left(kDiffFileRichTextChars);
+
+    // Keep the file header but discard a potentially large inline image preview
+    // before the diff table. The first </div> closes .fileheader; .fileblock is
+    // deliberately left open for the replacement table below.
+    const int headerEnd = block.indexOf(QStringLiteral("</div>"));
+    QString compact =
+        block.left(headerEnd >= 0 && headerEnd < table ? headerEnd + 6
+                                                       : tableOpenEnd + 1);
+    if (!compact.endsWith(QLatin1Char('>')))
+        compact += QLatin1Char('>');
+    if (headerEnd >= 0 && headerEnd < table)
+        compact += block.mid(table, tableOpenEnd - table + 1);
+
+    int keptRows = 0;
+    if (!headerOnly) {
+        int cursor = tableOpenEnd + 1;
+        while (compact.size() < kDiffFileRichTextChars) {
+            const int rowEnd = block.indexOf(QStringLiteral("</tr>"), cursor);
+            if (rowEnd < 0)
+                break;
+            const int after = rowEnd + 5;
+            if (compact.size() + after - cursor > kDiffFileRichTextChars)
+                break;
+            compact += block.mid(cursor, after - cursor);
+            cursor = after;
+            ++keptRows;
+        }
+    }
+    compact += QStringLiteral(
+        "<tr><td class='code hunk' colspan='8'><i>%1 to keep the interface "
+        "responsive. The complete patch remains available from Git or an "
+        "external editor.</i></td></tr></table></div>")
+                   .arg(headerOnly || keptRows == 0
+                            ? QStringLiteral("Large diff content omitted")
+                            : QStringLiteral("Remaining large diff content omitted"));
+    return compact;
+}
 
 // Split rendered diff HTML into its self-contained per-file blocks. Each file's
 // block begins with its `<a name="file-N"></a>` anchor (see diffFileHeaderHtml)
@@ -323,11 +379,16 @@ QStringList splitDiffFileBlocks(const QString &html)
     if (pos < 0)
         return {html}; // no per-file anchors (e.g. an empty/notice body)
     QStringList blocks;
+    qsizetype richTextChars = 0;
     if (pos > 0)
         blocks.append(html.left(pos)); // preamble before the first file (if any)
     while (pos >= 0) {
         const int next = html.indexOf(marker, pos + marker.size());
-        blocks.append(html.mid(pos, next < 0 ? -1 : next - pos));
+        QString block = html.mid(pos, next < 0 ? -1 : next - pos);
+        const bool overTotal = richTextChars >= kDiffTotalRichTextChars;
+        block = responsiveDiffBlock(block, overTotal);
+        richTextChars += block.size();
+        blocks.append(std::move(block));
         pos = next;
     }
     return blocks;
@@ -384,6 +445,13 @@ void appendDiffStreamBatch(QTextEdit *view, const QString &batch)
                                 .arg(view->objectName().isEmpty()
                                          ? QStringLiteral("unnamed view")
                                          : view->objectName()));
+    const forkmesh::BackgroundScope action(
+        QStringLiteral("diff"),
+        QStringLiteral("append %1 chars to %2")
+            .arg(batch.size())
+            .arg(view->objectName().isEmpty() ? QStringLiteral("unnamed view")
+                                               : view->objectName()),
+        forkmesh::ActionTelemetry::Execution::UiBlocking);
     // Append at the document's end via a private cursor so the user's current
     // scroll position is left untouched as the rest fills in below.
     QTextCursor cur(view->document());
@@ -428,15 +496,17 @@ void renderDiffStreamed(QTextEdit *view, const QString &html,
     const int gen = state.gen;
 
     QString first = html;
-    if (html.size() > kDiffFirstPaintChars) {
-        QStringList blocks = splitDiffFileBlocks(html);
-        if (blocks.size() > 1) {
-            first.clear();
-            while (!blocks.isEmpty() &&
-                   (first.isEmpty() || first.size() < kDiffFirstPaintChars))
-                first += blocks.takeFirst();
-            state.pending = blocks;
-        }
+    // Always split anchored diffs, even when there is only one file: a single
+    // generated lockfile/API snapshot was the worst multi-megabyte stall in the
+    // diagnostics log, and the old `blocks.size() > 1` condition bypassed all
+    // progressive/bounded handling for exactly that case.
+    QStringList blocks = splitDiffFileBlocks(html);
+    if (!(blocks.size() == 1 && blocks.first() == html)) {
+        first.clear();
+        while (!blocks.isEmpty() &&
+               (first.isEmpty() || first.size() < kDiffFirstPaintChars))
+            first += blocks.takeFirst();
+        state.pending = blocks;
     }
     const bool streaming = !state.pending.isEmpty();
     {
@@ -445,6 +515,14 @@ void renderDiffStreamed(QTextEdit *view, const QString &html,
                                     .arg(view->objectName().isEmpty()
                                              ? QStringLiteral("unnamed view")
                                              : view->objectName()));
+        const forkmesh::BackgroundScope action(
+            QStringLiteral("diff"),
+            QStringLiteral("layout %1 chars in %2")
+                .arg(first.size())
+                .arg(view->objectName().isEmpty()
+                         ? QStringLiteral("unnamed view")
+                         : view->objectName()),
+            forkmesh::ActionTelemetry::Execution::UiBlocking);
         view->document()->setDefaultStyleSheet(styleSheet);
         view->setHtml(first);
     }

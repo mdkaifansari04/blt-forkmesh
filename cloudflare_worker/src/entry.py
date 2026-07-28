@@ -558,6 +558,7 @@ import world_workshops  # noqa: E402
 # and its human-readable task/check-in data is encrypted at rest.
 import world_office_tasks  # noqa: E402
 import world_build_board  # noqa: E402
+import world_link_kiosk  # noqa: E402
 # Private administrator-created channel policy is kept in a pure module and
 # receives only this Worker's narrow session, crypto, D1, and audit adapter.
 import chat_channels_api  # noqa: E402
@@ -7710,6 +7711,12 @@ class _WorldCommunityRuntime:
     def method(self):
         return method_name(self.request) if self.request is not None else "GET"
 
+    def same_origin(self):
+        return bool(
+            self.request is not None
+            and _request_same_origin(self.request)
+        )
+
     def now(self):
         return int(Date.now())
 
@@ -8350,6 +8357,11 @@ async def world_build_board_handler(env, request, path):
         ):
             return await world_build_board.handle(runtime, path, [])
     return await world_build_board.handle(runtime, path, [])
+
+
+async def world_link_kiosk_handler(env, request, path):
+    return await world_link_kiosk.handle(
+        _WorldCommunityRuntime(env, request), path)
 
 
 async def world_deploy_status_handler(env, request):
@@ -13927,6 +13939,7 @@ async def _account_public_payload(
     }
     payload.update(social)
     payload.update(_account_profile_fields(rec))
+    payload.update(_account_world_client_fields(rec))
     if is_admin:
         admin_path = _admin_path(env)
         if admin_path:
@@ -13967,6 +13980,9 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         "status": rec.get("status", "active"),
         "avatarPng": rec.get("avatar_png", ""),
         "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
+        # Public boolean only; the email address itself never enters the
+        # directory or World. It drives the verified pin on the avatar front.
+        "emailVerified": bool(rec.get("email_verified")),
         "createdAt": rec.get("created_at", 0),
         "kind": "user",
         "nodes": _owned_nodes(rec),
@@ -23995,6 +24011,11 @@ async def accounts_handler(env, request):
             env, rec.get("name", name), viewer)
         payload = {**payload, "social": social, **social}
         payload = {**payload, **_account_profile_fields(rec)}
+        # The account explicitly controls these three coarse World fields.
+        # Including them in this no-store/public profile lookup lets a newly
+        # arrived avatar paint its flag immediately instead of waiting for the
+        # next directory-cache cycle.
+        payload = {**payload, **_account_world_client_fields(rec)}
         if cacheable_guest:
             resp = json_response(payload, cache_seconds=60)
             await edge_cache_put(lookup_cache_key, resp)
@@ -24301,32 +24322,13 @@ async def _ap_repo_is_official_actor(env, owner, repo):
 
 
 async def _ap_prune_actor_inventory(env):
-    # Old deployments minted an instance actor and accepted remote-clone
-    # mirrors as repository actors. Reconcile the small local actor inventory
-    # on schema startup so the admin table reflects only official repos.
-    rows = await d1_all(
-        env, "SELECT actor_bi, kind, data FROM ap_actors")
-    for row in rows or []:
-        actor_bi = str(row.get("actor_bi") or "")
-        kind = str(row.get("kind") or "")
-        rec = await decrypt_row(env, row.get("data"))
-        handle = str((rec or {}).get("handle") or "").lower()
-        parsed = ap.split_handle(handle)
-        keep = (
-            kind == AP_ACTOR_REPO
-            and bool(parsed)
-            and parsed[0] != "user"
-            and await _ap_repo_is_official_actor(
-                env, parsed[1], parsed[2])
-        )
-        if keep or not actor_bi:
-            continue
-        await d1_run(
-            env, "DELETE FROM ap_followers WHERE actor_bi=?", actor_bi)
-        await d1_run(
-            env, "DELETE FROM ap_objects WHERE actor_bi=?", actor_bi)
-        await d1_run(
-            env, "DELETE FROM ap_actors WHERE actor_bi=?", actor_bi)
+    # Actor visibility is enforced by the public resolution/federation gates,
+    # not by erasing the durable social graph during schema startup. Catalog
+    # records and org aliases can be temporarily unavailable or misclassified;
+    # deleting here previously turned that transient state into permanent loss
+    # of followers, actors, signing identities, and posts. Keep this hook for
+    # callers from older deployments, but make reconciliation non-destructive.
+    return
 
 
 async def _ap_repo_federates(env, owner, repo):
@@ -36516,6 +36518,7 @@ def _https_mirror_merge_result(value, request):
         error = str(value.get("error") or "")
         if error not in {
             "merge_conflict", "pull_not_found", "pull_not_open",
+            "review_required",
             "stale_base", "stale_head", "stale_pull_metadata",
             "unsupported_pull",
         }:
@@ -38239,6 +38242,11 @@ class Default(WorkerEntrypoint):
         if url.path in (
                 "/api/world/build-board", "/api/world/build-board/"):
             return await world_build_board_handler(
+                self.env, request, url.path)
+
+        if url.path in (
+                "/api/world/link-kiosk", "/api/world/link-kiosk/"):
+            return await world_link_kiosk_handler(
                 self.env, request, url.path)
 
         if url.path in (

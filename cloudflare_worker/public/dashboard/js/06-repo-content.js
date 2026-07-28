@@ -1303,12 +1303,42 @@
     return Array.from(byAuthor.values());
   }
 
-  function renderPullReviewers(events) {
+  function pullReviewPolicy(events, pullAuthor = "") {
+    const authorKey = String(pullAuthor || "").trim();
+    const latest = new Map();
+    for (const ev of Array.isArray(events) ? events : []) {
+      // Inbox reviews are not authoritative merge evidence until the owner
+      // node drains, validates, commits, and republishes them on the pinned
+      // pull-metadata ref.
+      if (ev?.type !== "review" || ev.pending === true) continue;
+      const key = String(ev.author || "").trim();
+      if (!key || key === authorKey) continue;
+      if (ev.state === "approved" || ev.state === "changes_requested") {
+        latest.set(key, ev.state);
+      } else {
+        latest.delete(key);
+      }
+    }
+    const approvals = Array.from(latest.values())
+      .filter((stateName) => stateName === "approved").length;
+    const blockers = Array.from(latest.values())
+      .filter((stateName) => stateName === "changes_requested").length;
+    return {
+      approvals,
+      blockers,
+      ready: approvals >= 1 && blockers === 0,
+    };
+  }
+
+  function renderPullReviewers(events, pullAuthor = "") {
     const reviewers = pullReviewSummary(events);
-    if (!reviewers.length) return "No reviews";
+    const policy = pullReviewPolicy(events, pullAuthor);
+    const gateTone = policy.ready ? "text-emerald-400" : "text-amber-400";
+    const gate = `<span class="mb-2 flex items-center justify-between gap-2"><strong class="${gateTone}">${policy.ready ? "Peer gate met" : "Peer approval required"}</strong><span>${policy.approvals} approved${policy.blockers ? ` · ${policy.blockers} blocking` : ""}</span></span>`;
+    if (!reviewers.length) return `${gate}<span>No reviews yet</span>`;
     // sidebarSection wraps this in a <p>, so rows must stay phrasing content
     // (span, not div) or the browser silently closes the paragraph early.
-    return reviewers.map((reviewer) => {
+    return gate + reviewers.map((reviewer) => {
       const tone = reviewer.state === "approved" ? "text-emerald-400" : reviewer.state === "changes_requested" ? "text-red-400" : "text-muted-foreground";
       const label = reviewer.state === "approved" ? "Approved" : reviewer.state === "changes_requested" ? "Requested changes" : "Commented";
       return `<span class="mt-1.5 flex items-center justify-between gap-2 first:mt-0"><span class="truncate font-medium text-foreground">${escapeHtml(reviewer.authorName)}</span><span class="shrink-0 text-[10px] font-semibold ${tone}">${escapeHtml(label)}</span></span>`;
@@ -1507,18 +1537,21 @@
     buttons.forEach((button) => { button.disabled = true; });
     setHint("Signing and sending…");
     try {
+      let result;
       if (isReview) {
-        await submitWebPullReview(repo, number, action, body);
+        result = await submitWebPullReview(repo, number, action, body);
       } else {
-        await submitWebPullComment(repo, number, body);
+        result = await submitWebPullComment(repo, number, body);
       }
+      const signedEvent = result?.event || {};
       const newEvent = {
         type: isReview ? "review" : "comment",
         state: isReview ? action : "",
         authorName: state.session?.nodeName || "you",
-        author: state.session?.nodeName || "",
+        author: signedEvent.author || "",
         ts: Math.floor(Date.now() / 1000),
         body,
+        pending: true,
       };
       const list = form.parentElement?.querySelector("[data-repo-pull-conversation]");
       if (list) {
@@ -1530,7 +1563,17 @@
         const conversation = [...(state.repoRecordDetail.parsed.pullConversation || []), newEvent];
         state.repoRecordDetail.parsed.pullConversation = conversation;
         const reviewers = document.querySelector("[data-repo-pull-reviewers]");
-        if (reviewers) reviewers.innerHTML = renderPullReviewers(conversation);
+        if (reviewers) {
+          reviewers.innerHTML = renderPullReviewers(
+            conversation,
+            state.repoRecordDetail.parsed.values?.author || "",
+          );
+        }
+        updateRepoPullMergePanel(
+          repo,
+          number,
+          state.repoRecordDetail.parsed,
+        );
       }
       if (bodyInput) bodyInput.value = "";
       buttons.forEach((button) => { button.disabled = false; });
@@ -1608,10 +1651,24 @@
       parsed.values || {},
       parsed.pullMetadataCommit || "",
     );
+    const reviewPolicy = pullReviewPolicy(
+      parsed.pullConversation || [],
+      parsed.values?.author || "",
+    );
     if (!context) {
       return `
         <div data-repo-pull-merge-panel class="rounded-lg border border-border bg-secondary/30 p-4 text-xs text-muted-foreground">
           Owner-only mirror merge is unavailable until the open pull request exposes matching immutable base, head, and pull-metadata commits.
+        </div>`;
+    }
+    if (!reviewPolicy.ready) {
+      const reason = reviewPolicy.blockers
+        ? `${reviewPolicy.blockers} independent reviewer${reviewPolicy.blockers === 1 ? " has" : "s have"} requested changes.`
+        : "At least one approval from a peer other than the pull-request author is required.";
+      return `
+        <div data-repo-pull-merge-panel class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4">
+          <span class="min-w-0 text-xs leading-5 text-muted-foreground"><strong class="text-amber-300">Independent review required.</strong> ${escapeHtml(reason)} Additional distinct approvals strengthen the review signal.</span>
+          <button type="button" disabled class="inline-flex h-9 shrink-0 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"><i data-lucide="shield-check" class="h-4 w-4"></i>Merge locked</button>
         </div>`;
     }
     const stateName = String(merge.state || "ready");
@@ -1720,6 +1777,7 @@
             stale_head: "The pull-request head changed; reload and review it again.",
             stale_pull_metadata: "The pull-request metadata changed; reload before merging.",
             merge_node_unavailable: "No eligible online mirror can merge this pull request right now.",
+            review_required: "At least one independent peer approval is required, with no unresolved request for changes.",
           };
           parsed.pullMerge = {
             state: "failed",
@@ -2042,7 +2100,7 @@
               </div>` : ""}
           </div>
           <aside data-repo-record-sidebar class="min-w-0 text-xs">
-            ${isPulls ? sidebarSection("Reviewers", `<span data-repo-pull-reviewers class="grid gap-0.5">${renderPullReviewers(pullConversation)}</span>`) : ""}
+            ${isPulls ? sidebarSection("Reviewers", `<span data-repo-pull-reviewers class="grid gap-0.5">${renderPullReviewers(pullConversation, values.author || "")}</span>`) : ""}
             ${sidebarSection("Assignees", "No one assigned")}
             ${sidebarSection("Labels", labelValue)}
             ${sidebarSection("Type", isPulls ? "Pull request" : isDiscussions ? "Discussion" : "Issue")}

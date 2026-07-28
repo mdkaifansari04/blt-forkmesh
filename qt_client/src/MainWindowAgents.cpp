@@ -31,6 +31,124 @@ QString MainWindow::agentProviderName(const QString &provider) const
 
 namespace {
 
+struct AgentDiffBatch {
+    QString base;
+    QString baseTip;
+    QHash<int, AgentDiffStat> stats;
+    QHash<int, QString> signatures;
+    QSet<int> liveIds;
+};
+
+QString backgroundDefaultBranch(const QString &gitDir, QString configured,
+                                QString checkedOut)
+{
+    configured = configured.trimmed();
+    if (!configured.isEmpty())
+        return configured;
+    QByteArray refsOut;
+    QStringList branches;
+    if (runGitCapture(gitDir,
+                      {QStringLiteral("for-each-ref"),
+                       QStringLiteral("--format=%(refname:short)"),
+                       QStringLiteral("refs/heads/")},
+                      &refsOut, nullptr)) {
+        for (const QString &line : QString::fromUtf8(refsOut).split('\n')) {
+            const QString branch = line.trimmed();
+            if (!branch.isEmpty())
+                branches.append(branch);
+        }
+    }
+    if (branches.contains(QStringLiteral("main")))
+        return QStringLiteral("main");
+    if (branches.contains(QStringLiteral("master")))
+        return QStringLiteral("master");
+    if (!checkedOut.isEmpty() && branches.contains(checkedOut))
+        return checkedOut;
+    return branches.isEmpty() ? QString() : branches.first();
+}
+
+AgentDiffStat readAgentDiffStat(const AgentStore &store,
+                                const AgentSession &session,
+                                const QString &gitDir, const QString &base,
+                                const QString &worktree)
+{
+    AgentDiffStat stat;
+    const QString patch = store.readPatch(session);
+    if (!patch.isEmpty()) {
+        int files = patch.startsWith(QLatin1String("diff --git ")) ? 1 : 0;
+        files += patch.count(QStringLiteral("\ndiff --git "));
+        stat.files = files;
+    }
+    if (!gitDir.isEmpty() && !base.isEmpty() && !session.branchName.isEmpty() &&
+        session.branchName != base &&
+        runGitCapture(gitDir,
+                      {QStringLiteral("rev-parse"), QStringLiteral("--verify"),
+                       QStringLiteral("--quiet"),
+                       QStringLiteral("refs/heads/%1").arg(session.branchName)},
+                      nullptr, nullptr)) {
+        QByteArray counts;
+        if (runGitCapture(gitDir,
+                          {QStringLiteral("rev-list"), QStringLiteral("--left-right"),
+                           QStringLiteral("--count"),
+                           base + QStringLiteral("...") + session.branchName},
+                          &counts, nullptr)) {
+            const QStringList parts =
+                QString::fromUtf8(counts).trimmed().split(
+                    QRegularExpression(QStringLiteral("\\s+")));
+            if (parts.size() >= 2) {
+                stat.behind = parts.at(0).toInt();
+                stat.ahead = parts.at(1).toInt();
+            }
+        }
+        if (stat.behind > 0 && !session.merged &&
+            !runGitCapture(gitDir,
+                           {QStringLiteral("merge-tree"),
+                            QStringLiteral("--write-tree"), session.branchName,
+                            base},
+                           nullptr, nullptr))
+            stat.conflicted = true;
+    }
+    if (!worktree.isEmpty() && QDir(worktree).exists()) {
+        stat.worktree = worktree;
+        QByteArray dirtyOut;
+        if (runGitCapture(worktree,
+                          {QStringLiteral("status"),
+                           QStringLiteral("--porcelain")},
+                          &dirtyOut, nullptr)) {
+            const QString lines = QString::fromUtf8(dirtyOut).trimmed();
+            stat.dirty =
+                lines.isEmpty() ? 0 : lines.count(QLatin1Char('\n')) + 1;
+        }
+    }
+    return stat;
+}
+
+QHash<QString, QString> backgroundWorktrees(const QString &gitDir)
+{
+    QHash<QString, QString> result;
+    QByteArray out;
+    if (gitDir.isEmpty() ||
+        !runGitCapture(gitDir,
+                       {QStringLiteral("worktree"), QStringLiteral("list"),
+                        QStringLiteral("--porcelain")},
+                       &out, nullptr))
+        return result;
+    QString path;
+    for (const QByteArray &raw : out.split('\n')) {
+        const QString line = QString::fromUtf8(raw).trimmed();
+        if (line.startsWith(QLatin1String("worktree "))) {
+            path = line.mid(9).trimmed();
+        } else if (line.startsWith(QLatin1String("branch refs/heads/")) &&
+                   !path.isEmpty() &&
+                   QDir(path).absolutePath() != QDir(gitDir).absolutePath()) {
+            result.insert(line.mid(18).trimmed(), path);
+        } else if (line.isEmpty()) {
+            path.clear();
+        }
+    }
+    return result;
+}
+
 QStringList localProviderCredentialValues()
 {
     QStringList values;
@@ -3973,12 +4091,9 @@ void MainWindow::refreshAgentTable()
 {
     if (!m_agentTable)
         return;
-    // UI-stall fix: each session whose Diff stat isn't memoised yet shells two git
-    // reads (agentDiffStat), so a cold refresh after reloadAgents() clears the cache
-    // can block the GUI thread for seconds. GitKeepAlive pumps the event loop across
-    // those waits so the window stays responsive; the guard stops a queued slot
-    // (e.g. a terminal-finished -> reloadAgents firing during the pump) from
-    // re-entering and corrupting the half-built table.
+    // Table refreshes are UI-only. Slow patch reads and all per-session Git probes
+    // run in one coalesced worker below, leaving the existing values visible until
+    // a fresh batch arrives.
     if (m_agentTableRefreshing)
         return;
     m_agentTableRefreshing = true;
@@ -3986,7 +4101,6 @@ void MainWindow::refreshAgentTable()
         bool &flag;
         ~RefreshGuard() { flag = false; }
     } refreshGuard{m_agentTableRefreshing};
-    GitKeepAlive keepAlive;
     QString owner, name;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         owner = m_repositories.at(m_repoDetailIndex).owner;
@@ -4003,10 +4117,20 @@ void MainWindow::refreshAgentTable()
         m_agentTable->verticalScrollBar()
             ? m_agentTable->verticalScrollBar()->value()
             : 0;
-    // Resolved once for every row's Diff cell (issue #170): the repo's git dir and
-    // base branch the per-session ahead/behind probe measures against.
+    // Resolve without starting a process. The worker validates/falls back to the
+    // actual refs; the configured/default cached value is enough to paint labels.
     const QString agentGitDir = repoGitDir();
-    const QString agentBase = repoDefaultBranch(repoBranches());
+    QString agentBase = m_repoInfo.defaultBranch.trimmed();
+    if (agentBase.isEmpty()) {
+        const QStringList cachedBranches =
+            m_branchesCacheDir == agentGitDir ? m_branchesCache : QStringList();
+        if (cachedBranches.contains(QStringLiteral("main")))
+            agentBase = QStringLiteral("main");
+        else if (cachedBranches.contains(QStringLiteral("master")))
+            agentBase = QStringLiteral("master");
+        else
+            agentBase = m_repoBranch;
+    }
     // Free-text filter (issue #82): substring-match the query against each
     // session's issue number/title, agent, status and PR number.
     const QString query =
@@ -4033,83 +4157,107 @@ void MainWindow::refreshAgentTable()
             .contains(query, Qt::CaseInsensitive);
     };
 
-    // issue #289: when this refresh follows a reloadAgents() (data may have moved),
-    // re-validate the Diff cache instead of having reloadAgents() wipe it wholesale.
-    // Only entries whose fingerprint changed — the session's own status/branch/merge/
-    // finish fields, or the base tip every ahead/behind count is measured against —
-    // are dropped, so agentDiffStat() below re-shells git for *those rows only*. An
-    // idle Issues→Agents switch leaves every fingerprint unchanged and runs zero git,
-    // which is the lag the user reported. A search-as-you-type refresh leaves the
-    // flag clear and reuses the cache untouched, exactly as before.
+    // Revalidate cold Diff/Status data asynchronously. The worker compares
+    // fingerprints before doing per-row probes, so an idle tab switch remains
+    // cheap while a moving branch still refreshes correctly.
     if (m_agentDiffRefreshPending) {
         m_agentDiffRefreshPending = false;
-        // Base tip: one cheap probe (not per-session) since a move here shifts every
-        // session's ahead/behind/conflict result.
-        QByteArray tipOut;
-        if (!agentGitDir.isEmpty() && !agentBase.isEmpty())
-            runGitCapture(agentGitDir,
-                          {"rev-parse", "--verify", "--quiet",
-                           QStringLiteral("refs/heads/%1").arg(agentBase)},
-                          &tipOut, nullptr);
-        const QString baseTip = QString::fromUtf8(tipOut).trimmed();
-        QSet<int> liveIds;
-        for (const AgentSession &session : sessions) {
-            if (session.owner != owner || session.name != name)
-                continue;
-            liveIds.insert(session.id);
-            // A running/queued session's branch head can advance between refreshes
-            // with none of the fields below changing, so always re-shell those — the
-            // handful that are active, never the whole list.
-            const bool active = session.status == AgentStatus::Running ||
-                                session.status == AgentStatus::Waiting ||
-                                session.status == AgentStatus::Queued;
-            const QString sig =
-                active ? QString()
-                       : QStringLiteral("%1|%2|%3|%4|%5|%6|%7")
-                             .arg(session.status, session.branchName,
-                                  session.baseBranch, baseTip)
-                             .arg(session.merged ? 1 : 0)
-                             .arg(session.finishedAtMs)
-                             .arg(session.prNumber);
-            if (active || m_agentDiffSig.value(session.id) != sig) {
-                m_agentDiffStats.remove(session.id);
-                if (active)
-                    m_agentDiffSig.remove(session.id);
-                else
-                    m_agentDiffSig.insert(session.id, sig);
-            }
-        }
-        // Forget entries for sessions no longer shown here (deleted, or we switched
-        // repos) so neither map grows without bound across a long session.
-        for (auto it = m_agentDiffStats.begin(); it != m_agentDiffStats.end();) {
-            if (liveIds.contains(it.key()))
-                ++it;
-            else
-                it = m_agentDiffStats.erase(it);
-        }
-        for (auto it = m_agentDiffSig.begin(); it != m_agentDiffSig.end();) {
-            if (liveIds.contains(it.key()))
-                ++it;
-            else
-                it = m_agentDiffSig.erase(it);
+        ++m_agentDiffStatsGen;
+        if (m_agentDiffStatsRefreshing) {
+            m_agentDiffStatsRefreshQueued = true;
+        } else if (m_agentStore) {
+            m_agentDiffStatsRefreshing = true;
+            const int generation = m_agentDiffStatsGen;
+            const int repoIndex = m_repoDetailIndex;
+            const QString configuredBase = m_repoInfo.defaultBranch;
+            const QString checkedOut = m_repoBranch;
+            const QHash<int, QString> oldSignatures = m_agentDiffSig;
+            const QSet<int> cachedIds =
+                QSet<int>(m_agentDiffStats.keyBegin(),
+                          m_agentDiffStats.keyEnd());
+            const AgentStore store = *m_agentStore;
+            runOffThread<AgentDiffBatch>(
+                [store, sessions, owner, name, agentGitDir, configuredBase,
+                 checkedOut, oldSignatures, cachedIds] {
+                    const forkmesh::BackgroundScope activity(
+                        QStringLiteral("agents"),
+                        QStringLiteral("refresh diff and worktree status"),
+                        forkmesh::ActionTelemetry::Execution::Worker);
+                    AgentDiffBatch batch;
+                    batch.base = backgroundDefaultBranch(
+                        agentGitDir, configuredBase, checkedOut);
+                    QByteArray tipOut;
+                    if (!agentGitDir.isEmpty() && !batch.base.isEmpty())
+                        runGitCapture(
+                            agentGitDir,
+                            {QStringLiteral("rev-parse"),
+                             QStringLiteral("--verify"),
+                             QStringLiteral("--quiet"),
+                             QStringLiteral("refs/heads/%1").arg(batch.base)},
+                            &tipOut, nullptr);
+                    batch.baseTip = QString::fromUtf8(tipOut).trimmed();
+                    const QHash<QString, QString> worktrees =
+                        backgroundWorktrees(agentGitDir);
+                    for (const AgentSession &session : sessions) {
+                        if (session.owner != owner || session.name != name)
+                            continue;
+                        batch.liveIds.insert(session.id);
+                        const bool active =
+                            session.status == AgentStatus::Running ||
+                            session.status == AgentStatus::Waiting ||
+                            session.status == AgentStatus::Queued;
+                        const QString signature =
+                            QStringLiteral("%1|%2|%3|%4|%5|%6|%7")
+                                .arg(session.status, session.branchName,
+                                     session.baseBranch, batch.baseTip)
+                                .arg(session.merged ? 1 : 0)
+                                .arg(session.finishedAtMs)
+                                .arg(session.prNumber);
+                        batch.signatures.insert(session.id, signature);
+                        if (active ||
+                            oldSignatures.value(session.id) != signature ||
+                            !cachedIds.contains(session.id)) {
+                            batch.stats.insert(
+                                session.id,
+                                readAgentDiffStat(store, session, agentGitDir,
+                                                  batch.base,
+                                                  worktrees.value(
+                                                      session.branchName)));
+                        }
+                    }
+                    return batch;
+                },
+                [this, generation, repoIndex](AgentDiffBatch batch) {
+                    m_agentDiffStatsRefreshing = false;
+                    if (generation == m_agentDiffStatsGen &&
+                        repoIndex == m_repoDetailIndex) {
+                        for (auto it = m_agentDiffStats.begin();
+                             it != m_agentDiffStats.end();) {
+                            if (batch.liveIds.contains(it.key()))
+                                ++it;
+                            else
+                                it = m_agentDiffStats.erase(it);
+                        }
+                        for (auto it = batch.stats.cbegin();
+                             it != batch.stats.cend(); ++it) {
+                            m_agentDiffStats.insert(it.key(), it.value());
+                            if (!it->worktree.isEmpty())
+                                m_sessionWorkdirCache.insert(it.key(),
+                                                             it->worktree);
+                        }
+                        m_agentDiffSig = std::move(batch.signatures);
+                    }
+                    if (m_agentDiffStatsRefreshQueued) {
+                        m_agentDiffStatsRefreshQueued = false;
+                        m_agentDiffRefreshPending = true;
+                    }
+                    refreshAgentTable();
+                });
         }
     }
 
-    // Anti-blink: warm each visible row's Diff stat *before* the table is cleared.
-    // agentDiffStat shells two git reads on a cold cache, and GitKeepAlive pumps the
-    // event loop across those waits. Doing that inside the rebuild left the list
-    // visibly blank/half-built across the pumps — the "blink". Pre-warming keeps the
-    // previous rows on screen while git runs, so the render loop below is cache-hot
-    // and never pumps, repainting in one atomic, flicker-free pass. After the
-    // re-validation above this is a no-op for unchanged rows.
-    for (const AgentSession &session : sessions)
-        if (passesFilter(session))
-            agentDiffStat(session, agentGitDir, agentBase);
-
-    // adhoc #210: auto-fix runs over every session in this repo, not just the
-    // ones the search box currently shows, so a query in the search field can't
-    // hide a conflict from the auto-fix setting. Cache-hot for rows the warm-up
-    // above already covered; only a search-filtered-out row costs an extra shell.
+    // Auto-fix only consumes completed background results; a cold row remains
+    // unknown until the worker delivers it.
     for (const AgentSession &session : sessions)
         if (session.owner == owner && session.name == name)
             maybeAutoFixAgentConflict(
@@ -4172,12 +4320,9 @@ void MainWindow::refreshAgentTable()
                 applyAgentRowCells(row, *sp, agentGitDir, agentBase);
         }
     } else {
-        m_agentTable->setRowCount(0);
-        for (const AgentSession *sp : std::as_const(visible)) {
-            const int row = m_agentTable->rowCount();
-            m_agentTable->insertRow(row);
-            applyAgentRowCells(row, *sp, agentGitDir, agentBase);
-        }
+        m_agentTable->setRowCount(visible.size());
+        for (int row = 0; row < visible.size(); ++row)
+            applyAgentRowCells(row, *visible.at(row), agentGitDir, agentBase);
     }
     m_agentTable->setSortingEnabled(true);
     block.unblock();
@@ -4443,73 +4588,12 @@ static bool agentBranchLandedInBase(const QString &dir, const QString &branch,
 AgentDiffStat MainWindow::agentDiffStat(const AgentSession &session,
                                         const QString &gitDir, const QString &base)
 {
+    Q_UNUSED(gitDir);
+    Q_UNUSED(base);
     auto cached = m_agentDiffStats.constFind(session.id);
     if (cached != m_agentDiffStats.constEnd())
         return cached.value();
-
-    AgentDiffStat stat;
-    // Count the file headers in the captured patch ("diff --git " at line start).
-    // Counting newline-anchored occurrences avoids materialising a line list for
-    // a large diff; an in-body "diff --git" line is always prefixed by +/-/space.
-    if (m_agentStore) {
-        const QString patch = m_agentStore->readPatch(session);
-        if (!patch.isEmpty()) {
-            int files = patch.startsWith(QLatin1String("diff --git ")) ? 1 : 0;
-            files += patch.count(QStringLiteral("\ndiff --git "));
-            stat.files = files;
-        }
-    }
-    // Ahead/behind of the session branch vs the base branch, when both exist and
-    // differ. Same probe the repo's branch list uses (left = base, right = branch
-    // → behind, ahead).
-    if (!gitDir.isEmpty() && !base.isEmpty() && !session.branchName.isEmpty() &&
-        session.branchName != base &&
-        runGitCapture(gitDir,
-                      {"rev-parse", "--verify", "--quiet",
-                       QStringLiteral("refs/heads/%1").arg(session.branchName)},
-                      nullptr, nullptr)) {
-        QByteArray counts;
-        if (runGitCapture(gitDir,
-                          {"rev-list", "--left-right", "--count",
-                           base + "..." + session.branchName},
-                          &counts, nullptr)) {
-            const QStringList p = QString::fromUtf8(counts).trimmed().split(
-                QRegularExpression(QStringLiteral("\\s+")));
-            if (p.size() >= 2) {
-                stat.behind = p.at(0).toInt();
-                stat.ahead = p.at(1).toInt();
-            }
-        }
-        // Conflict marker (adhoc #229): when the branch is behind base, an
-        // in-memory merge (merge-tree --write-tree, which never touches the tree
-        // or index) tells us whether re-merging base would conflict — a non-zero
-        // exit means it would. Skip already-merged sessions and branches that are
-        // up to date with base (no behind commits ⇒ a trivially clean merge).
-        if (stat.behind > 0 && !session.merged &&
-            !runGitCapture(gitDir,
-                           {"merge-tree", "--write-tree", session.branchName, base},
-                           nullptr, nullptr))
-            stat.conflicted = true;
-    }
-    // Worktree + uncommitted-work state behind the Status cell's branch chip
-    // (adhoc #403). cachedSessionWorktree() memoises the `git worktree list`
-    // probe, and `git status` only runs when a dedicated checkout is still on
-    // disk — a cleaned-up session (the common case for finished runs) costs no
-    // extra git at all.
-    if (!gitDir.isEmpty() && !session.branchName.isEmpty()) {
-        const QString wt = cachedSessionWorktree(session.id, gitDir, session.branchName);
-        if (!wt.isEmpty() && QDir(wt).exists()) {
-            stat.worktree = wt;
-            QByteArray dirtyOut;
-            if (runGitCapture(wt, {"status", "--porcelain"}, &dirtyOut, nullptr)) {
-                const QString lines = QString::fromUtf8(dirtyOut).trimmed();
-                stat.dirty =
-                    lines.isEmpty() ? 0 : lines.count(QLatin1Char('\n')) + 1;
-            }
-        }
-    }
-    m_agentDiffStats.insert(session.id, stat);
-    return stat;
+    return AgentDiffStat();
 }
 
 // Eagerly flag the agent session(s) tied to a just-merged PR or worktree branch
@@ -4576,11 +4660,19 @@ void MainWindow::refreshAgentMergeState()
         owner = m_repositories.at(m_repoDetailIndex).owner;
         name = m_repositories.at(m_repoDetailIndex).name;
     }
-    // The git dir and default branch are the same for every session of this repo,
-    // so resolve them once (repoBranches() memoises the branch list) instead of
-    // re-shelling `git branch` inside the per-session check.
+    // Do not resolve refs on the UI thread. Prefer configured/cached state and
+    // let the worker derive the branch if this repo has not populated either.
     const QString dir = repoGitDir();
-    const QString base = repoDefaultBranch(repoBranches());
+    const QString configuredBase = m_repoInfo.defaultBranch;
+    QString base = configuredBase.trimmed();
+    if (base.isEmpty() && m_branchesCacheDir == dir) {
+        if (m_branchesCache.contains(QStringLiteral("main")))
+            base = QStringLiteral("main");
+        else if (m_branchesCache.contains(QStringLiteral("master")))
+            base = QStringLiteral("master");
+    }
+    if (base.isEmpty())
+        base = m_repoBranch;
     struct Candidate {
         int id;
         QString branch;
@@ -4610,7 +4702,7 @@ void MainWindow::refreshAgentMergeState()
         }
         if (dir.isEmpty() || s.branchName.isEmpty())
             continue;
-        if (base.isEmpty() || s.branchName == base)
+        if (!base.isEmpty() && s.branchName == base)
             continue;
         // Without a recorded fork point we can't distinguish a merged branch
         // from an un-started one that shares the base's history, so don't guess.
@@ -4625,9 +4717,22 @@ void MainWindow::refreshAgentMergeState()
         return;
     m_agentMergeStateRefreshing = true;
     auto landed = std::make_shared<QList<int>>();
-    QThread *worker = QThread::create([dir, base, candidates, landed]() {
+    const QString checkedOut = m_repoBranch;
+    QThread *worker = QThread::create(
+        [dir, base, configuredBase, checkedOut, candidates, landed]() {
+        const forkmesh::BackgroundScope activity(
+            QStringLiteral("agents"),
+            QStringLiteral("detect branches landed in base"),
+            forkmesh::ActionTelemetry::Execution::Worker);
+        const QString resolvedBase =
+            base.isEmpty()
+                ? backgroundDefaultBranch(dir, configuredBase, checkedOut)
+                : base;
+        if (resolvedBase.isEmpty())
+            return;
         for (const Candidate &c : candidates)
-            if (agentBranchLandedInBase(dir, c.branch, c.baseRef, base))
+            if (c.branch != resolvedBase &&
+                agentBranchLandedInBase(dir, c.branch, c.baseRef, resolvedBase))
                 landed->append(c.id);
     });
     connect(worker, &QThread::finished, this, [this, worker, landed]() {

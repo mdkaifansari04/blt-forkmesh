@@ -279,10 +279,10 @@ QString diffStickyLabelHtml(const DiffFileEntry &f);
 // Progressive diff rendering (adhoc #421). QTextEdit::setHtml() parses, styles
 // and lays out the whole document synchronously on the GUI thread, so handing it
 // a multi-megabyte diff froze the window — which is why large diffs used to be
-// replaced by a "hidden for speed" notice. Instead of hiding them, these split
-// the rendered HTML into its per-file blocks and lay out only what the visible
-// window needs up front, streaming the rest in a batch at a time off the event
-// loop. Every diff renders in full, and the first screenful is on screen fast.
+// replaced by a "hidden for speed" notice. These split rendered HTML into
+// per-file blocks, bound pathological rich-text tables (the full patch remains
+// in the PR/Git data), and lay out only the first screenful up front. Remaining
+// bounded blocks stream one event-loop turn at a time.
 void renderDiffStreamed(QTextEdit *view, const QString &html,
                         const QString &styleSheet);
 // Force everything still queued for `view` into its document now. Call before an
@@ -7154,21 +7154,24 @@ inline QString gitBlockingCrumb(const QProcess &process)
 // branch lists, run-status handlers …), so every GUI-thread wait now pumps.
 inline bool waitForGit(QProcess &process, QString *err)
 {
+    const QCoreApplication *app = QCoreApplication::instance();
+    const bool onGuiThread = app && QThread::currentThread() == app->thread();
+
     // Announce the wait to the footer's background strip (adhoc #421). This is
     // the one chokepoint every git subprocess passes through, on the GUI thread
     // and off it, so a single ticket here is what makes "git" appear while a
     // slow fetch/clone/log runs. Fast reads never reach the strip's show delay,
     // so the hot path pays only an atomic increment.
-    const forkmesh::BackgroundScope gitActivity(QStringLiteral("git"),
-                                                gitBlockingCrumb(process));
+    const forkmesh::BackgroundScope gitActivity(
+        QStringLiteral("git"), gitBlockingCrumb(process),
+        onGuiThread ? forkmesh::ActionTelemetry::Execution::UiBlocking
+                    : forkmesh::ActionTelemetry::Execution::Worker);
 
     // Breadcrumb for the stall watchdog: if this synchronous wait freezes the GUI
     // thread, the stall report can name the git command instead of leaving only a
     // raw backtrace. Only the main thread is watched, so leave the breadcrumb alone
     // for off-thread reads rather than clobbering what the GUI thread set.
     std::optional<BlockingCallScope> crumb;
-    const QCoreApplication *app = QCoreApplication::instance();
-    const bool onGuiThread = app && QThread::currentThread() == app->thread();
     if (onGuiThread)
         crumb.emplace(gitBlockingCrumb(process));
 
@@ -7216,16 +7219,22 @@ inline void trackProcessActivity(QProcess *process, const QString &kind,
         return;
     const quint64 id = forkmesh::BackgroundActivity::begin(kind, detail);
     auto retired = std::make_shared<bool>(false);
-    auto retire = [id, retired] {
+    auto retire = [id, retired](const QString &outcome) {
         if (*retired)
             return;
         *retired = true;
-        forkmesh::BackgroundActivity::end(id);
+        forkmesh::BackgroundActivity::end(id, outcome);
     };
     QObject::connect(process, &QProcess::finished, process,
-                     [retire](int, QProcess::ExitStatus) { retire(); });
+                     [retire](int code, QProcess::ExitStatus status) {
+                         retire(status == QProcess::NormalExit && code == 0
+                                    ? QStringLiteral("succeeded")
+                                    : QStringLiteral("failed"));
+                     });
     QObject::connect(process, &QObject::destroyed, process,
-                     [retire](QObject *) { retire(); });
+                     [retire](QObject *) {
+                         retire(QStringLiteral("cancelled"));
+                     });
 }
 
 // RAII: marks the run of synchronous git reads in an interactive load (a node
