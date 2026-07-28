@@ -16,6 +16,9 @@ MIGRATION = ROOT / "migrations" / "0085_world_office_attendance.sql"
 LIVE_MIGRATION = (
     ROOT / "migrations" / "0090_world_office_live_attendance.sql"
 )
+SCOPE_MIGRATION = (
+    ROOT / "migrations" / "0100_world_office_attendance_scope.sql"
+)
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 
 
@@ -79,6 +82,7 @@ def _runtime():
     database.row_factory = sqlite3.Row
     database.executescript(MIGRATION.read_text(encoding="utf-8"))
     database.executescript(LIVE_MIGRATION.read_text(encoding="utf-8"))
+    database.executescript(SCOPE_MIGRATION.read_text(encoding="utf-8"))
     state = {
         "account_bi": "",
         "account": None,
@@ -158,8 +162,9 @@ def _sign_in(state, account_bi="a" * 64, name="alice"):
 def test_schema_and_idempotent_migration_store_only_bounded_visit_fields():
     migration = MIGRATION.read_text(encoding="utf-8")
     live_migration = LIVE_MIGRATION.read_text(encoding="utf-8")
+    scope_migration = SCOPE_MIGRATION.read_text(encoding="utf-8")
     schema = SCHEMA.read_text(encoding="utf-8")
-    for source in (migration + live_migration, schema):
+    for source in (migration + live_migration + scope_migration, schema):
         assert "CREATE TABLE IF NOT EXISTS world_office_attendance" in source
         assert "idx_world_office_attendance_open" in source
         assert "WHERE out_at IS NULL" in source
@@ -169,13 +174,14 @@ def test_schema_and_idempotent_migration_store_only_bounded_visit_fields():
     database.executescript(migration)
     database.executescript(migration)
     database.executescript(live_migration)
+    database.executescript(scope_migration)
     columns = {
         row[1] for row in database.execute(
             "PRAGMA table_info(world_office_attendance)")
     }
     assert columns == {
         "visit_id", "account_bi", "account_name", "in_at", "out_at",
-        "last_seen_at", "floor_id",
+        "last_seen_at", "floor_id", "visit_scope",
     }
     assert not columns.intersection({
         "ip", "ip_address", "user_agent", "ua", "session", "session_token",
