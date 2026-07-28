@@ -16,6 +16,8 @@ void filterPlatformNoise(QtMsgType type, const QMessageLogContext &context,
 {
     if (isPlatformSizeHintNoise(message))
         return;
+    if (isFontDatabaseNoise(message))
+        return;
     if (g_previousMessageHandler) {
         g_previousMessageHandler(type, context, message);
         return;
@@ -36,6 +38,15 @@ bool isPlatformSizeHintNoise(const QString &message)
     // implementation; the function name in it is stable across Qt versions and
     // is what we key on.
     return message.contains(QLatin1String("propagateSizeHints"));
+}
+
+bool isFontDatabaseNoise(const QString &message)
+{
+    // Text straight from QFontDatabase's loadSingleEngine(); the family name and
+    // script number vary, the prefix does not. Matching the prefix rather than
+    // the qt.text.font.db category keeps this testable with a plain qWarning()
+    // and still can't swallow an app message: nothing here logs that phrase.
+    return message.startsWith(QLatin1String("OpenType support missing for"));
 }
 
 void installPlatformLogFilter()

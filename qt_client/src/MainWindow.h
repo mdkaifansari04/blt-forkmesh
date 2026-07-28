@@ -153,6 +153,7 @@ class QHBoxLayout;
 class PublicMirrorMaterialization;
 namespace forkmesh::control {
 struct MirrorActionsConfigurationRequest;
+struct AgentCliCredentials;
 }
 namespace forkmesh::ui { class DiffFileNavigator; } // file-list <-> diff-view sync
 
@@ -518,7 +519,8 @@ public:
     // Rebuild the Branches panel, then read back the Worktree column (column 3)
     // for `branch`, so a test can prove the branches list surfaces the worktree a
     // branch is checked out in (issue #172).
-    void testReloadBranchesPanel() { loadBranchesPanel(); }
+    // Rebuilds off-thread now (adhoc #420), so this pumps until the rows land.
+    void testReloadBranchesPanel();
     QString testBranchWorktreePath(const QString &branch) const;
     // Inject an agent session so a test can prove the branches list surfaces the
     // issue/agent a branch is attached to (adhoc #191).
@@ -537,6 +539,10 @@ public:
     // Branch names (column 0) in row order, so a test can prove the default branch
     // is pinned to the top of the list regardless of commit recency (adhoc #185).
     QStringList testBranchRowOrder() const;
+    // Follow a branch link and read back the branch the table landed on right
+    // away — no event pumping — so a test can prove the click doesn't wait on the
+    // panel's off-thread git reads (adhoc #420).
+    QString testSwitchToBranchImmediateSelection(const QString &branch);
     // Click the "Issue / Agent" cell (column 4) for `branch` and return the agent
     // session the app navigated to (m_selectedAgentSessionId), so a test can prove
     // clicking the cell jumps to that branch's agent (adhoc #258).
@@ -1170,13 +1176,27 @@ private:
     // one selected mirror over its existing TOFU-pinned SSH connection.
     // Authentication is intentionally separate and never copied by this action.
     void installAgentClisForHost(int row);
-    // Open a live in-app terminal on one mirror so the provider sign-ins the
-    // installer deliberately skips (`claude` then /login, `codex login`) can be
-    // completed by hand. Opened automatically once an install finishes, and
-    // available on demand from the host row.
+    // Open a live in-app terminal on one mirror so the provider sign-ins an
+    // install without copied credentials skips (`claude` then /login,
+    // `codex login`) can be completed by hand. Opened automatically once such
+    // an install finishes, and available on demand from the host row.
     void openHostAgentLoginTerminalForSelection(int row);
     void openHostAgentLoginTerminal(const QString &node, const QString &ip,
                                     const QString &user);
+    // Shared driver behind that button and the one-click Vultr flow's "also
+    // install the agent CLIs" option (adhoc #418). With copyCredentials the
+    // run additionally hands the mirror this device's provider logins on the
+    // SSH session's stdin, so it comes up able to run agent sessions; without
+    // it only the binaries are installed. onFinished(ok, message) reports the
+    // outcome; the caller owns whatever it puts on screen.
+    void runAgentCliInstall(const QString &node, const QString &ip,
+                            const QString &user, const QString &sshPassword,
+                            const QString &identityFile, bool copyCredentials,
+                            std::function<void(bool, QString)> onFinished);
+    // This device's copyable agent logins: the Claude Code and Codex CLI
+    // credential files, plus the Settings API key for a provider with no CLI
+    // login (a key alongside a login makes the CLI warn and switch billing).
+    static forkmesh::control::AgentCliCredentials localAgentCliCredentials();
     void runHostActionsConfiguration(
         forkmesh::control::MirrorActionsConfigurationRequest request,
         const QString &sshPassword);
@@ -2219,6 +2239,13 @@ private:
     void loadRepoInfo();
     void loadBranchesAndTags();
     QStringList repoBranches() const;
+    // The two reads behind repoBranches()/repoDefaultBranch() with no GUI state
+    // of their own, so worker threads can run them too (adhoc #420).
+    static QStringList listRepoBranches(const QString &dir);
+    static QString chooseDefaultBranch(const QStringList &branches,
+                                       const QString &configured,
+                                       const QString &dir,
+                                       const QString &checkedOut);
     QString repoDefaultBranch(const QStringList &branches) const;
     // Cheap default-branch lookup for hot UI paths (e.g. selecting an agent
     // session) that must NOT pay for repoBranches()'s `--sort=-committerdate`,
@@ -2226,6 +2253,34 @@ private:
     // repos with many agent branches.
     QString repoDefaultBranchFast() const;
     QWidget *buildBranchesTab();
+    // Everything the branches table is built from. The git half is gathered on a
+    // worker thread (readBranchesPanelGit) so opening the panel — or landing on a
+    // branch from an agent/PR link — never waits on git (adhoc #420); the GUI half
+    // is snapshotted before the worker starts.
+    struct BranchesPanelData {
+        QString dir;
+        QString configuredDefault; // m_repoInfo.defaultBranch, for the base pick
+        QString checkedOut;        // m_repoBranch
+        QString base;              // default branch (picked by the worker)
+        QString selected;          // branch the repo view is parked on
+        QString previouslyViewed; // branch whose diff was on screen
+        bool writable = false;
+        QStringList branches;       // local heads, default branch first
+        QStringList remoteBranches; // refs/remotes/* (read-only rows)
+        QHash<QString, qint64> times;
+        QHash<QString, QString> shortShas;
+        QHash<QString, QString> subjects;
+        QHash<QString, QString> authors;
+        // branch/ref -> (ahead, behind) vs the default branch. A missing entry
+        // means the counts are unknown, so the row shows no ahead/behind status.
+        QHash<QString, QPair<int, int>> localAheadBehind;
+        QHash<QString, QPair<int, int>> remoteAheadBehind;
+        QHash<QString, QString> worktrees; // branch -> linked worktree path
+    };
+    // Runs on a worker thread: fills the git-derived half of `data`.
+    static BranchesPanelData readBranchesPanelGit(BranchesPanelData data);
+    // Builds the table rows from a gathered snapshot (GUI thread, no git).
+    void renderBranchesPanel(const BranchesPanelData &data);
     void loadBranchesPanel();
     QWidget *buildWorktreesTab();
     void loadWorktreesPanel();
@@ -2277,6 +2332,11 @@ private:
     // the selection on the worktree being acted on after loadWorktreesPanel()
     // rebuilds the table (which would otherwise clear it — issue #272).
     bool selectWorktreeRow(const QString &branch);
+    // Same for the branches table: select the row whose name matches (which fires
+    // currentCellChanged -> showBranchDiff). Returns false if no such row exists.
+    bool selectBranchRow(const QString &branch);
+    // Explain that a branch link pointed at a branch this repository doesn't have.
+    void reportBranchNotFound(const QString &branch);
     void showWorktreeDiff(const QString &branch, const QString &worktreePath);
     // Merge a worktree's branch into the default branch. On success the now-merged
     // worktree and its branch are removed (the work is preserved in the merge
@@ -2326,6 +2386,13 @@ private:
     // already gone — the desired end state either way.
     bool localBranchExists(const QString &repoPath, const QString &branch) const;
     void showBranchDiff(const QString &branch);
+    // Paint the branch detail bar from already-gathered counts, and let auto-pull
+    // decide once the bar reflects them (the counts arrive off-thread now).
+    void applyBranchDetailActions(const QString &branch, const QString &base,
+                                  int behind, int ahead, bool hasConflict);
+    void maybeAutoPullBranch(const QString &branch);
+    // Bumped per branch selection so a detail-bar read that lands late is dropped.
+    int m_branchDetailActionsGen = 0;
     // Render the branch diff for whichever scope is selected in m_branchScopeList
     // (whole branch vs base, the worktree's uncommitted changes, or one commit).
     void renderBranchScopeDiff();
@@ -3888,6 +3955,10 @@ private:
     // deliberately has no persistent member.
     QLineEdit *m_vultrApiKeyEdit = nullptr;
     QLineEdit *m_vultrNameEdit = nullptr;
+    // Opt-in (default on): after ForkMesh installs, also install the Claude
+    // Code and Codex CLIs on the new mirror and copy this device's provider
+    // logins to it, so the node can run agent sessions right away (adhoc #418).
+    QCheckBox *m_vultrAgentClisCheck = nullptr;
     QPushButton *m_vultrCreateButton = nullptr;
     QLabel *m_vultrStatus = nullptr;
     bool m_vultrProvisionActive = false;
@@ -3899,6 +3970,9 @@ private:
     // release binary directly over the SSH session instead, which needs no
     // mirror at all.
     bool m_vultrInstallUseLocalBinary = false;
+    // Snapshot of the "also install the agent CLIs" checkbox for this run, so
+    // toggling it mid-provision cannot change what the run does.
+    bool m_vultrInstallAgentClis = false;
     QString m_vultrDnsHostname;      // Cloudflare name provisioned this run
     // "Attempt N of M at HH:mm:ss — outcome" per install attempt this run, so
     // the window can show what every attempt did instead of only the last one.
@@ -5593,7 +5667,19 @@ private:
     void tickIssueListSpinners();
     bool m_nodeSwitching = false;      // a node switch's heavy load is running
     bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
-    bool m_branchesPanelLoading = false; // re-entrancy guard for loadBranchesPanel
+    // A branches-panel git snapshot is being read on a worker thread. Reloads
+    // arriving meanwhile set m_branchesPanelReloadQueued instead of starting a
+    // second read, so a busy agent fleet can't pile up workers (adhoc #420).
+    bool m_branchesPanelLoading = false;
+    bool m_branchesPanelReloadQueued = false;
+    // Bumped per load so a snapshot that lands after a newer one is dropped.
+    int m_branchesPanelGen = 0;
+    // Git dir the table's rows were built for, so switchToBranch only trusts the
+    // rows on screen when they belong to the repo it's selecting into.
+    QString m_branchesPanelDir;
+    // Branch switchToBranch asked for that wasn't on screen yet: selected (or
+    // reported as missing) once the pending rebuild lands.
+    QString m_branchesPanelPendingSelect;
     // Re-entrancy guard for loadMirrorNodesPanel: its synchronous git reads pump
     // the event loop, so a queued roster/mirror callback could start a second
     // pass that appends its own rows on top of the half-built table — every node

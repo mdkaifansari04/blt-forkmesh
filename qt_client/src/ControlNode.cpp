@@ -2010,6 +2010,176 @@ bool vultrInstallNeedsLocalBinary(const QString &installOutput)
     return false;
 }
 
+bool agentCliCredentialsAreEmpty(const AgentCliCredentials &credentials)
+{
+    return credentials.claudeCredentials.trimmed().isEmpty() &&
+           credentials.codexAuth.trimmed().isEmpty() &&
+           agentCliEnvFileContents(credentials.env).isEmpty();
+}
+
+namespace {
+
+// Environment variables are written into a sourced shell file, so only plain
+// upper-case names with a printable single-line value are ever accepted.
+bool agentCliEnvEntryIsUsable(const QString &name, const QString &value)
+{
+    static const QRegularExpression namePattern(
+        QStringLiteral("^[A-Z][A-Z0-9_]{0,63}$"));
+    if (!namePattern.match(name).hasMatch())
+        return false;
+    if (value.isEmpty() || value.size() > 4096)
+        return false;
+    for (const QChar ch : value) {
+        if (ch.unicode() < 0x20 || ch.unicode() == 0x7f)
+            return false;
+    }
+    return true;
+}
+
+} // namespace
+
+QString describeAgentCliCredentials(const AgentCliCredentials &credentials)
+{
+    QStringList parts;
+    if (!credentials.claudeCredentials.trimmed().isEmpty())
+        parts.append(QStringLiteral("Claude Code login"));
+    if (!credentials.codexAuth.trimmed().isEmpty())
+        parts.append(QStringLiteral("Codex login"));
+    QStringList names;
+    for (auto it = credentials.env.constBegin();
+         it != credentials.env.constEnd(); ++it) {
+        if (agentCliEnvEntryIsUsable(it.key(), it.value()))
+            names.append(it.key());
+    }
+    names.sort();
+    parts += names;
+    return parts.join(QStringLiteral(", "));
+}
+
+QByteArray agentCliEnvFileContents(const QMap<QString, QString> &env)
+{
+    QByteArray contents;
+    // QMap iterates in key order, so the file is byte-identical run to run.
+    for (auto it = env.constBegin(); it != env.constEnd(); ++it) {
+        if (!agentCliEnvEntryIsUsable(it.key(), it.value()))
+            continue;
+        // Single-quoted, so nothing in a value can be read as shell syntax.
+        contents += QStringLiteral("export %1=%2\n")
+                        .arg(it.key(), shellSingleQuote(it.value()))
+                        .toUtf8();
+    }
+    return contents;
+}
+
+QByteArray buildAgentCliBootstrapPayload(const AgentCliCredentials &credentials,
+                                         QString *error)
+{
+    const auto fail = [error](const QString &message) {
+        if (error)
+            *error = message;
+        return QByteArray();
+    };
+    constexpr int kMaxSectionBytes = 256 * 1024;
+    QByteArray payload;
+    const auto appendSection = [&payload](const char *name,
+                                          const QByteArray &data) {
+        payload += QByteArray(name) + ' ' + data.toBase64() + '\n';
+    };
+    const QByteArray claude = credentials.claudeCredentials.trimmed();
+    if (!claude.isEmpty()) {
+        if (claude.size() > kMaxSectionBytes ||
+            !QJsonDocument::fromJson(claude).isObject()) {
+            return fail(QStringLiteral(
+                "This device's Claude Code login file is not readable as a "
+                "credential document."));
+        }
+        appendSection("claude", claude);
+    }
+    const QByteArray codex = credentials.codexAuth.trimmed();
+    if (!codex.isEmpty()) {
+        if (codex.size() > kMaxSectionBytes ||
+            !QJsonDocument::fromJson(codex).isObject()) {
+            return fail(QStringLiteral(
+                "This device's Codex login file is not readable as a "
+                "credential document."));
+        }
+        appendSection("codex", codex);
+    }
+    const QByteArray env = agentCliEnvFileContents(credentials.env);
+    if (!env.isEmpty())
+        appendSection("env", env);
+    if (payload.isEmpty()) {
+        return fail(QStringLiteral(
+            "This device has no Claude Code or Codex login to copy."));
+    }
+    if (error)
+        error->clear();
+    return payload;
+}
+
+QString agentCliBootstrapRemoteCommand(bool withCredentials)
+{
+    // One fixed, secret-free command. The credential variant reads the stdin
+    // payload into a private temp file *first*, so stdin is at EOF before the
+    // piped installers run and no section can be mistaken for installer input.
+    QStringList script;
+    script << QStringLiteral("set -eu")
+           << QStringLiteral("umask 077")
+           << QStringLiteral("home=${HOME:-/root}");
+    if (withCredentials) {
+        script << QStringLiteral("tmp=$(mktemp)")
+               << QStringLiteral("cat > \"$tmp\"")
+               << QStringLiteral(
+                      "sec() { sed -n \"s/^$1 //p\" \"$tmp\" | base64 -d; }")
+               << QStringLiteral("has() { grep -q \"^$1 \" \"$tmp\"; }");
+    }
+    script << QStringLiteral("echo \"Installing Claude Code from claude.ai...\"")
+           << QStringLiteral("curl -fsSL https://claude.ai/install.sh | bash")
+           << QStringLiteral(
+                  "echo \"Installing Codex from chatgpt.com...\"")
+           << QStringLiteral(
+                  "curl -fsSL https://chatgpt.com/codex/install.sh | sh")
+           << QStringLiteral(
+                  "export PATH=\"$home/.local/bin:$home/.claude/bin:$PATH\"");
+    if (withCredentials) {
+        script << QStringLiteral("if has claude; then mkdir -p \"$home/.claude\"; "
+                                 "sec claude > \"$home/.claude/.credentials.json\"; "
+                                 "chmod 600 \"$home/.claude/.credentials.json\"; "
+                                 "echo \"Copied the controller Claude Code login.\"; fi")
+               << QStringLiteral("if has codex; then mkdir -p \"$home/.codex\"; "
+                                 "sec codex > \"$home/.codex/auth.json\"; "
+                                 "chmod 600 \"$home/.codex/auth.json\"; "
+                                 "echo \"Copied the controller Codex login.\"; fi")
+               // The API-key file is sourced from the shell startup files a
+               // ForkMesh SSH session (sh -lc) and an interactive login both
+               // read, so agent runs on this mirror inherit the keys.
+               << QStringLiteral("if has env; then mkdir -p \"$home/.forkmesh\"; "
+                                 "sec env > \"$home/.forkmesh/agent-env\"; "
+                                 "chmod 600 \"$home/.forkmesh/agent-env\"; "
+                                 "for rc in \"$home/.profile\" \"$home/.bashrc\"; do "
+                                 "touch \"$rc\"; "
+                                 "grep -q .forkmesh/agent-env \"$rc\" || "
+                                 "printf \"%s\\n\" \". \\\"$home/.forkmesh/agent-env\\\"\" "
+                                 ">> \"$rc\"; done; "
+                                 "echo \"Installed the agent API keys in "
+                                 "~/.forkmesh/agent-env.\"; fi")
+               << QStringLiteral("rm -f \"$tmp\"");
+    }
+    script << QStringLiteral("echo \"Claude Code:\"")
+           << QStringLiteral("command -v claude; claude --version")
+           << QStringLiteral("echo \"Codex:\"")
+           << QStringLiteral("command -v codex; codex --version")
+           << (withCredentials
+                   ? QStringLiteral(
+                         "echo \"Installation complete. This mirror is signed "
+                         "in with the controller agent access.\"")
+                   : QStringLiteral(
+                         "echo \"Installation complete. Provider login is "
+                         "still required on this mirror.\""));
+    return QStringLiteral("sh -lc '%1'")
+        .arg(script.join(QStringLiteral("; ")));
+}
+
 QString cloudflareZoneNameFromVariables(
     const QMap<QString, QString> &variables)
 {
