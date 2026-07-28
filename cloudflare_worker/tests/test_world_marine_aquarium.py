@@ -58,3 +58,63 @@ def test_marine_fish_have_species_detail_and_individual_wandering_paths():
     assert "state.wander" in aquarium
     assert "Math.sin(swim * 2.17 + state.wander)" in aquarium
     assert "Math.atan2(velocityX, velocityZ)" in aquarium
+
+
+def test_cinematic_reef_builds_recognizable_fish_species():
+    aquarium = _aquarium_block()
+    for species in (
+        "clownfish",
+        "blue-tang",
+        "yellow-tang",
+        "royal-gramma",
+        "butterflyfish",
+        "chromis",
+    ):
+        assert f'id: "{species}"' in aquarium
+        assert f"forkmesh-office-aquarium-fish-{species}" in aquarium
+    for detail in (
+        "createAquariumFishTexture",
+        "createReefFishBodyGeometry",
+        "forkmesh-office-aquarium-fish-gill",
+        "forkmesh-office-aquarium-fish-mouth",
+        "forkmesh-office-aquarium-fish-iris",
+        "forkmesh-office-aquarium-fish-highlight",
+    ):
+        assert detail in aquarium
+
+
+def test_cinematic_reef_contains_layered_habitat_families():
+    aquarium = _aquarium_block()
+    for helper in (
+        "createAquariumLiveRock",
+        "createBranchingCoral",
+        "createPlateCoral",
+        "createBrainCoral",
+        "createSeaFan",
+        "createSoftCoral",
+        "createAquariumAnemone",
+        "createSeaGrass",
+    ):
+        assert helper in aquarium
+    for name in (
+        "forkmesh-office-aquarium-live-rock",
+        "forkmesh-office-aquarium-staghorn",
+        "forkmesh-office-aquarium-plate-coral",
+        "forkmesh-office-aquarium-brain-coral",
+        "forkmesh-office-aquarium-sea-fan",
+        "forkmesh-office-aquarium-soft-coral",
+        "forkmesh-office-aquarium-seagrass",
+    ):
+        assert name in aquarium
+
+
+def test_cinematic_reef_uses_curved_motion_and_initialized_atmosphere():
+    aquarium = _aquarium_block()
+    assert "new THREE.CatmullRomCurve3" in aquarium
+    assert "curve.getPointAt" in aquarium
+    assert "curve.getTangentAt" in aquarium
+    assert "initializeAquariumState(0)" in aquarium
+    assert "createAquariumCausticTexture" in aquarium
+    assert "forkmesh-office-aquarium-particles" in aquarium
+    assert "forkmesh-office-aquarium-water-surface" in aquarium
+    assert "forkmesh-office-aquarium-caustics" in aquarium
