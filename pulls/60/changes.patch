@@ -1,0 +1,1332 @@
+diff --git a/cloudflare_worker/browser_tests/tests/chat-persistence.spec.js b/cloudflare_worker/browser_tests/tests/chat-persistence.spec.js
+index 82861b748..d1635d9c9 100644
+--- a/cloudflare_worker/browser_tests/tests/chat-persistence.spec.js
++++ b/cloudflare_worker/browser_tests/tests/chat-persistence.spec.js
+@@ -64,3 +64,117 @@ test("self-authored retained chat survives a page refresh", async ({ page }) =>
+     "My message must survive refresh",
+   );
+ });
++
++
++test("a public chat message accepts and sends a thread reply", async ({ page }) => {
++  const passphrase = "playwright-public-thread-passphrase";
++  const retainedFrames = [];
++
++  await page.route("**/api/**", (route) => {
++    const url = new URL(route.request().url());
++    let body = { error: "not_found" };
++    let status = 404;
++    if (url.pathname === "/api/chat/room-key") {
++      status = 200;
++      body = {
++        ok: true,
++        room: "world-general",
++        access: "public-world-general",
++        passphrase,
++      };
++    } else if (url.pathname === "/api/accounts/users") {
++      status = 200;
++      body = { ok: true, users: [] };
++    } else if (url.pathname === "/api/chat/activity") {
++      status = 200;
++      body = { ok: true, messageCount: 0, latestMessageTs: 0, userCount: 0 };
++    }
++    return route.fulfill({
++      status,
++      contentType: "application/json",
++      body: JSON.stringify(body),
++    });
++  });
++  await page.routeWebSocket(
++    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
++    (socket) => {
++      socket.onMessage((message) => {
++        const frame = String(message);
++        if (JSON.parse(frame).persist === true) retainedFrames.push(frame);
++      });
++    },
++  );
++
++  await page.goto("/chat.html");
++  await expect(page.locator("#chat-status")).toContainText("Connected");
++  const rootText = "Thread root from the browser";
++  const replyText = "Thread reply from the browser";
++  await page.locator("#chat-input").fill(rootText);
++  await page.locator("#chat-input").press("Enter");
++  const root = page.locator(".chat-msg", { hasText: rootText });
++  await expect(root).toBeVisible();
++  await root.hover();
++  await root.getByRole("button", { name: "Reply in thread" }).click();
++  await expect(page.locator("#chat-thread-input")).toBeFocused();
++  await page.locator("#chat-thread-input").fill(replyText);
++  await page.locator("#chat-thread-send").click();
++  await expect(page.locator("#chat-thread-replies")).toContainText(replyText);
++  await expect.poll(() => retainedFrames.length).toBe(2);
++  await page.locator("#chat-thread-close").click();
++  await expect(page.locator(".chat-thread-view")).toBeHidden();
++});
++
++
++test("a confirmed delete removes and broadcasts a public chat message", async ({
++  page,
++}) => {
++  const retainedFrames = [];
++  await page.route("**/api/**", (route) => {
++    const url = new URL(route.request().url());
++    let body = { error: "not_found" };
++    let status = 404;
++    if (url.pathname === "/api/chat/room-key") {
++      status = 200;
++      body = {
++        ok: true,
++        room: "world-general",
++        access: "public-world-general",
++        passphrase: "playwright-public-delete-passphrase",
++      };
++    } else if (url.pathname === "/api/accounts/users") {
++      status = 200;
++      body = { ok: true, users: [] };
++    } else if (url.pathname === "/api/chat/activity") {
++      status = 200;
++      body = { ok: true, messageCount: 0, latestMessageTs: 0, userCount: 0 };
++    }
++    return route.fulfill({
++      status,
++      contentType: "application/json",
++      body: JSON.stringify(body),
++    });
++  });
++  await page.routeWebSocket(
++    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
++    (socket) => {
++      socket.onMessage((message) => {
++        const frame = String(message);
++        if (JSON.parse(frame).persist === true) retainedFrames.push(frame);
++      });
++    },
++  );
++
++  await page.goto("/chat.html");
++  await expect(page.locator("#chat-status")).toContainText("Connected");
++  const message = "Delete this public message";
++  await page.locator("#chat-input").fill(message);
++  await page.locator("#chat-input").press("Enter");
++  const row = page.locator("#chat-log .chat-msg", { hasText: message });
++  await expect(row).toBeVisible();
++  await row.hover();
++  await row.getByRole("button", { name: "Delete message" }).click();
++  await expect(page.locator("#chat-delete-dialog")).toBeVisible();
++  await page.locator("#chat-delete-confirm").click();
++  await expect(page.locator("#chat-log")).not.toContainText(message);
++  await expect.poll(() => retainedFrames.length).toBe(2);
++});
+diff --git a/cloudflare_worker/browser_tests/tests/direct-messages.spec.js b/cloudflare_worker/browser_tests/tests/direct-messages.spec.js
+index 695230973..6472c6db2 100644
+--- a/cloudflare_worker/browser_tests/tests/direct-messages.spec.js
++++ b/cloudflare_worker/browser_tests/tests/direct-messages.spec.js
+@@ -54,6 +54,42 @@ async function accountPage(browser, account) {
+ }
+ 
+ 
++test("suggests registered people after typing an at-sign in the chat composer", async ({
++  browser,
++  request,
++}) => {
++  const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
++  const aliceName = `mentionalice${suffix}`.slice(0, 30);
++  const bobName = `mentionbob${suffix}`.slice(0, 30);
++  const sourceSubnet = 1 + Math.floor(Math.random() * 250);
++  const alice = await signup(request, aliceName, `198.18.${sourceSubnet}.11`);
++  await signup(request, bobName, `198.18.${sourceSubnet}.12`);
++
++  const aliceBrowser = await accountPage(browser, alice);
++  await aliceBrowser.page.goto("/chat.html");
++  const input = aliceBrowser.page.locator("#chat-input");
++  await input.fill(`@${bobName}`);
++  const suggestion = aliceBrowser.page.locator(".chat-mention-suggest-item", {
++    hasText: bobName,
++  });
++  await expect(suggestion).toBeVisible();
++  await input.press("Tab");
++  await expect(input).toHaveValue(`@${bobName} `);
++  await input.press("Shift+Enter");
++  await input.type("follow-up");
++  await expect(input).toHaveValue(`@${bobName} \nfollow-up`);
++
++  await expect(aliceBrowser.page.locator("#chat-status")).toContainText(
++    "Connected",
++  );
++  await input.fill("Enter sends this message");
++  await input.press("Enter");
++  await expect(input).toHaveValue("");
++
++  await aliceBrowser.context.close();
++});
++
++
+ test("real participants create, replay, and isolate an encrypted direct message", async ({
+   browser,
+   request,
+@@ -112,12 +148,34 @@ test("real participants create, replay, and isolate an encrypted direct message"
+   await aliceBrowser.page.locator("#chat-send").click();
+   await aliceBrowser.page.locator("#chat-input").fill("Second private message");
+   await aliceBrowser.page.locator("#chat-send").click();
++  const directRoot = aliceBrowser.page.locator("#chat-log .chat-msg", {
++    hasText: "First private message",
++  });
++  await directRoot.hover();
++  await directRoot.getByRole("button", { name: "Reply in thread" }).click();
++  await aliceBrowser.page.locator("#chat-thread-input").fill(
++    "Private thread reply",
++  );
++  await aliceBrowser.page.locator("#chat-thread-send").click();
++  await expect(aliceBrowser.page.locator("#chat-thread-replies")).toContainText(
++    "Private thread reply",
++  );
++  const directReply = aliceBrowser.page.locator(
++    "#chat-thread-replies .chat-thread-message",
++    { hasText: "Private thread reply" },
++  );
++  await directReply.hover();
++  await directReply.getByRole("button", { name: "Delete message" }).click();
++  await aliceBrowser.page.locator("#chat-delete-confirm").click();
++  await expect(aliceBrowser.page.locator("#chat-thread-replies")).not.toContainText(
++    "Private thread reply",
++  );
+   await aliceBrowser.page.locator("#chat-attachment-input").setInputFiles({
+     name: "private-note.txt",
+     mimeType: "text/plain",
+     buffer: Buffer.from("private attachment body"),
+   });
+-  await expect.poll(() => retainedFrames.length).toBe(3);
++  await expect.poll(() => retainedFrames.length).toBe(5);
+   expect(retainedFrames.join("\n")).not.toContain("First private message");
+   expect(retainedFrames.join("\n")).not.toContain("Second private message");
+   expect(retainedFrames.join("\n")).not.toContain("private attachment body");
+@@ -128,7 +186,7 @@ test("real participants create, replay, and isolate an encrypted direct message"
+       token: bob.sessionToken,
+     });
+     return bobConversations.body.conversations?.[0]?.unreadCount;
+-  }).toBe(3);
++  }).toBe(5);
+   const conversation = bobConversations.body.conversations[0];
+ 
+   const reopened = await api(request, "/api/chat/direct-messages", {
+@@ -152,7 +210,7 @@ test("real participants create, replay, and isolate an encrypted direct message"
+     bobBrowser.page.getByRole("button", {
+       name: `Direct message with ${aliceName}`,
+     }).locator(".chat-room-unread"),
+-  ).toHaveText("3");
++  ).toHaveText("5");
+   await bobBrowser.page.getByRole("button", {
+     name: `Direct message with ${aliceName}`,
+   }).click();
+@@ -165,6 +223,16 @@ test("real participants create, replay, and isolate an encrypted direct message"
+   await expect(bobBrowser.page.locator("#chat-log")).toContainText(
+     "private-note.txt",
+   );
++  const receivedDirectRoot = bobBrowser.page.locator("#chat-log .chat-msg", {
++    hasText: "First private message",
++  });
++  await receivedDirectRoot.hover();
++  await receivedDirectRoot.getByRole("button", {
++    name: "Reply in thread",
++  }).click();
++  await expect(bobBrowser.page.locator("#chat-thread-replies")).not.toContainText(
++    "Private thread reply",
++  );
+   await expect(
+     bobBrowser.page.locator("#chat-direct-list .chat-room-unread"),
+   ).toHaveCount(0);
+diff --git a/cloudflare_worker/migrations/0092_world_build_board_issue_title.sql b/cloudflare_worker/migrations/0092_world_build_board_issue_title.sql
+index 87b5f7b26..d31666e10 100644
+--- a/cloudflare_worker/migrations/0092_world_build_board_issue_title.sql
++++ b/cloudflare_worker/migrations/0092_world_build_board_issue_title.sql
+@@ -1,2 +1,4 @@
+-ALTER TABLE world_build_board_items
+-  ADD COLUMN title TEXT NOT NULL DEFAULT '' CHECK (length(title) <= 160);
++-- Migration 0091 already introduced the bounded public issue title.
++-- Keep this migration as a no-op so databases that reached this version after
++-- 0091 can record it without attempting to add the column a second time.
++SELECT 1;
+diff --git a/cloudflare_worker/public/chat.css b/cloudflare_worker/public/chat.css
+index 641a6d7a2..844092e93 100644
+--- a/cloudflare_worker/public/chat.css
++++ b/cloudflare_worker/public/chat.css
+@@ -1532,6 +1532,7 @@
+       }
+ 
+       .chat-person {
++        flex: 0 0 auto;
+         display: flex;
+         align-items: center;
+         gap: 9px;
+@@ -1542,6 +1543,21 @@
+         text-decoration: none;
+       }
+ 
++      .chat-loading::before {
++        content: "";
++        display: inline-block;
++        width: 0.8em;
++        height: 0.8em;
++        margin-right: 0.55em;
++        border: 2px solid currentColor;
++        border-right-color: transparent;
++        border-radius: 50%;
++        vertical-align: -0.08em;
++        animation: chat-loading-spin 0.75s linear infinite;
++      }
++
++      @keyframes chat-loading-spin { to { transform: rotate(360deg); } }
++
+       .chat-person:hover { background: var(--surface3); }
+       a.chat-person:hover .chat-person-name { text-decoration: underline; text-underline-offset: 2px; }
+ 
+diff --git a/cloudflare_worker/public/chat.html b/cloudflare_worker/public/chat.html
+index 336b83896..29b5bb3de 100644
+--- a/cloudflare_worker/public/chat.html
++++ b/cloudflare_worker/public/chat.html
+@@ -966,7 +966,7 @@
+       }
+ 
+       .chat-person {
+-        flex: 1;
++        flex: 0 0 auto;
+         min-width: 0;
+         display: flex;
+         align-items: center;
+@@ -977,6 +977,21 @@
+         text-decoration: none;
+       }
+ 
++      .chat-loading::before {
++        content: "";
++        display: inline-block;
++        width: 0.8em;
++        height: 0.8em;
++        margin-right: 0.55em;
++        border: 2px solid currentColor;
++        border-right-color: transparent;
++        border-radius: 50%;
++        vertical-align: -0.08em;
++        animation: chat-loading-spin 0.75s linear infinite;
++      }
++
++      @keyframes chat-loading-spin { to { transform: rotate(360deg); } }
++
+       .chat-person:hover { background: var(--surface2); }
+       a.chat-person:hover .chat-person-name { text-decoration: underline; text-underline-offset: 2px; }
+ 
+diff --git a/cloudflare_worker/public/chat.js b/cloudflare_worker/public/chat.js
+index e1283fee8..ff5133636 100644
+--- a/cloudflare_worker/public/chat.js
++++ b/cloudflare_worker/public/chat.js
+@@ -205,6 +205,7 @@ const directReadPending = new Set();
+ let directNextCursor = "";
+ let directSearchTimer = null;
+ let directSearchRequest = 0;
++let directMessagesRevision = 0;
+ let roomTransport = null;
+ let openCallbacks = [];
+ let cachedUserSession = null;
+@@ -226,6 +227,10 @@ let activeThreadRootId = "";
+ let threadReturnFocus = null;
+ // channel -> ts-ordered array of message records (newest last).
+ const channelMessages = new Map();
++// channel -> idle while unseen, loading while its socket is opening, ready once
++// the room has connected or supplied a frame. Cached messages remain usable
++// across room switches even while the next room is synchronizing.
++const channelSyncState = new Map();
+ // channel -> { unread } for the rooms list badges.
+ const channelMeta = new Map();
+ // messageId -> Map(emoji -> Map(reactorId -> reactorName)); same shape as the
+@@ -838,6 +843,16 @@ function mentionCandidates(partial) {
+       byName.set(key, person);
+     }
+   }
++  for (const person of registeredUsers.values()) {
++    const key = mentionName(person.name);
++    if (!key || key === self || byName.has(key)) continue;
++    byName.set(key, {
++      id: "account:" + key,
++      name: person.name,
++      kind: "user",
++      lastSeenMs: 0,
++    });
++  }
+   if (!byName.has(FORKBOT_SENDER_ID)) {
+     byName.set(FORKBOT_SENDER_ID, {
+       id: FORKBOT_SENDER_ID, name: "forkbot", kind: "bot", lastSeenMs: Date.now(),
+@@ -956,11 +971,19 @@ function ensureChannel(channelKey) {
+   if (!channelMeta.has(channel)) {
+     channelMeta.set(channel, { unread: 0 });
+     if (!channelMessages.has(channel)) channelMessages.set(channel, []);
++    if (!channelSyncState.has(channel)) channelSyncState.set(channel, "idle");
+     renderRooms();
+   }
+   return channel;
+ }
+ 
++function markChannelLoading(channel = activeChannel) {
++  if ((channelMessages.get(channel) || []).length) return;
++  if (channelSyncState.get(channel) !== "ready") {
++    channelSyncState.set(channel, "loading");
++  }
++}
++
+ // A line is "mine" when this browser sent it (senderId) OR when the signed-in
+ // account authored it from somewhere else — another tab, a phone, the desktop
+ // client. selfId is per-browser, so without the account check your own message
+@@ -1099,6 +1122,7 @@ function setActiveChannel(name, options = {}) {
+   closeThread({ restoreFocus: false });
+   const previousScope = roomScopeForChannel(activeChannel);
+   activeChannel = channel;
++  if (canJoinChannel(channel)) markChannelLoading(channel);
+   renderAttachmentDraft();
+   try {
+     const record = privateChannelForKey(channel);
+@@ -1146,6 +1170,7 @@ function releaseChannelMessages(channelKey) {
+     reactions.delete(record.id);
+   }
+   channelMessages.delete(channelKey);
++  channelSyncState.delete(channelKey);
+   channelMeta.delete(channelKey);
+ }
+ 
+@@ -1267,11 +1292,13 @@ async function refreshDirectMessages(options = {}) {
+     return;
+   }
+   try {
++    const requestRevision = directMessagesRevision;
+     const cursor = String(options.cursor || "");
+     const endpoint = cursor
+       ? DIRECT_MESSAGES_ENDPOINT + "?cursor=" + encodeURIComponent(cursor)
+       : DIRECT_MESSAGES_ENDPOINT;
+     const data = await privateChannelRequest(endpoint);
++    if (requestRevision !== directMessagesRevision) return;
+     reconcileDirectMessages(data.conversations || [], {
+       ...options,
+       append: Boolean(cursor) || options.preserve === true,
+@@ -1567,6 +1594,7 @@ async function startDirectMessage(username) {
+     });
+     const conversation = data.conversation;
+     if (!conversation?.id) throw new Error("Direct message unavailable.");
++    directMessagesRevision += 1;
+     reconcileDirectMessages(
+       [...directMessages.values(), conversation],
+       { selectSaved: false, connect: false },
+@@ -1716,6 +1744,9 @@ async function refreshUsersDirectory() {
+   directorySeeded = true;
+   renderDirectMessagePicker();
+   schedulePeopleRender();
++  if (input === document.activeElement && mentionTokenAtCaret()) {
++    updateMentionSuggest();
++  }
+ }
+ 
+ // Record the current activity counters as "seen" so the chat icon in the site
+@@ -2338,7 +2369,7 @@ function sendThreadReply() {
+   if (text) {
+     const plain = makePlain("thread-reply", {
+       rootId,
+-      channel: channelDisplayLabel(activeChannel),
++      channel: channelWireLabel(activeChannel),
+       text,
+       richText: { v: 1, source },
+     });
+@@ -2377,7 +2408,7 @@ function saveMessageEdit(record, source) {
+   const editedAt = Date.now();
+   const richText = { v: 1, source: richSource };
+   const plain = makePlain("edit", {
+-    conversation: channelDisplayLabel(record.channel),
++    conversation: channelWireLabel(record.channel),
+     target: record.id,
+     text,
+     richText,
+@@ -2456,7 +2487,7 @@ function confirmMessageDelete() {
+   const record = pendingDeleteRecord;
+   if (!record?.self || record.senderId !== selfId) return;
+   const plain = makePlain("delete", {
+-    conversation: channelDisplayLabel(record.channel),
++    conversation: channelWireLabel(record.channel),
+     target: record.id,
+   });
+   pendingDeleteRecord = null;
+@@ -2605,6 +2636,15 @@ function renderActiveChannel() {
+   if (!list.length) {
+     const empty = document.createElement("div");
+     empty.className = "chat-empty";
++    const syncState = channelSyncState.get(activeChannel);
++    if (canJoinChannel() && syncState === "loading") {
++      empty.classList.add("chat-loading");
++      empty.setAttribute("role", "status");
++      empty.setAttribute("aria-live", "polite");
++      empty.textContent = "Loading messages…";
++      logEl.append(empty);
++      return;
++    }
+     empty.textContent = canJoinChannel()
+       ? `No messages in ${channelDisplayLabel(activeChannel)} yet. Say hi!`
+       : (
+@@ -2635,6 +2675,7 @@ function renderActiveChannel() {
+ // rebuilds the visible channel so ordering and grouping stay correct.
+ function insertMessage(record) {
+   const channel = record.channel;
++  channelSyncState.set(channel, "ready");
+   const list = channelMessages.get(channel) || [];
+   channelMessages.set(channel, list);
+   let index = list.length;
+@@ -3113,6 +3154,9 @@ function handleTransportState(state, detail) {
+       return;
+     }
+     if (!officeAuthorizationExpired) showOfficeFailure("");
++    const connectedChannel = scope === "public-world-general" ? "#general" : scope;
++    channelSyncState.set(connectedChannel, "ready");
++    if (connectedChannel === activeChannel) renderActiveChannel();
+     const direct = directMessageForKey(scope);
+     setStatus(scope === "public-world-general"
+       ? "Connected · public World #general"
+@@ -3617,7 +3661,134 @@ if (isOfficeEmbed) {
+   window.addEventListener("message", receiveOfficeMessage);
+ }
+ 
++let chatControlsWired = false;
++function wireChatControls() {
++  if (chatControlsWired) return;
++  chatControlsWired = true;
++  sendBtn.addEventListener("click", sendCurrentMessage);
++  directCreateBtn?.addEventListener("click", openDirectMessageDialog);
++  directSearch?.addEventListener("input", scheduleDirectMessageSearch);
++  if (attachmentBtn && attachmentInput) {
++    attachmentBtn.addEventListener("click", () => attachmentInput.click());
++    attachmentInput.addEventListener("change", () => {
++      const files = Array.from(attachmentInput.files || []);
++      attachmentInput.value = "";
++      if (files.length) {
++        stageAttachments(files);
++        void sendAttachmentDraft();
++      }
++    });
++  }
++}
++
++let chatComposerWired = false;
++function wireChatComposer() {
++  if (chatComposerWired) return;
++  chatComposerWired = true;
++  input.addEventListener("paste", (event) => {
++    const file = clipboardImage(event);
++    if (!file) return;
++    event.preventDefault();
++    stageAttachments([file]);
++    void sendAttachmentDraft();
++  });
++  input.addEventListener("keydown", (event) => {
++    // While the @mention popup is open it owns the keyboard: Tab (or Enter)
++    // accepts the highlighted name, arrows move, Escape dismisses - only then
++    // does Enter fall through to send.
++    if (mentionSuggest) {
++      const acceptsMention = event.key === "Tab" || event.key === "Enter";
++      if (acceptsMention && !event.shiftKey) {
++        event.preventDefault();
++        acceptMentionSuggest();
++        return;
++      }
++      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
++        event.preventDefault();
++        moveMentionSuggest(event.key === "ArrowDown" ? 1 : -1);
++        return;
++      }
++      if (event.key === "Escape") {
++        event.preventDefault();
++        closeMentionSuggest();
++        return;
++      }
++    }
++    if (event.key === "Enter" && !event.shiftKey) {
++      event.preventDefault();
++      sendCurrentMessage();
++    }
++  });
++  // Track the "@partial" token under the caret as it changes - typing, caret
++  // moves (arrows/click), and focus loss (delayed so a suggestion mousedown
++  // still lands).
++  input.addEventListener("input", () => {
++    resizeComposer();
++    updateMentionSuggest();
++  });
++  input.addEventListener("click", updateMentionSuggest);
++  input.addEventListener("keyup", (event) => {
++    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
++      updateMentionSuggest();
++    }
++  });
++  input.addEventListener("blur", () => {
++    setTimeout(closeMentionSuggest, 120);
++  });
++}
++
++let threadControlsWired = false;
++function wireThreadControls() {
++  if (threadControlsWired) return;
++  threadControlsWired = true;
++  threadSendBtn?.addEventListener("click", sendThreadReply);
++  threadCloseBtn?.addEventListener("click", () => closeThread());
++  threadInput?.addEventListener("input", resizeThreadComposer);
++  threadInput?.addEventListener("keydown", (event) => {
++    if (event.key === "Escape" && !threadInput.value) {
++      event.preventDefault();
++      closeThread();
++    } else if (event.key === "Enter" && !event.shiftKey) {
++      event.preventDefault();
++      sendThreadReply();
++    }
++  });
++  if (threadAttachmentBtn && threadAttachmentInput) {
++    threadAttachmentBtn.addEventListener("click", () => threadAttachmentInput.click());
++    threadAttachmentInput.addEventListener("change", () => {
++      const files = Array.from(threadAttachmentInput.files || []);
++      threadAttachmentInput.value = "";
++      if (files.length && activeThreadRootId) {
++        stageAttachments(files, { rootId: activeThreadRootId });
++      }
++    });
++  }
++  threadInput?.addEventListener("paste", (event) => {
++    const file = clipboardImage(event);
++    if (!file || !activeThreadRootId) return;
++    event.preventDefault();
++    stageAttachments([file], { rootId: activeThreadRootId });
++  });
++}
++
++let messageActionControlsWired = false;
++function wireMessageActionControls() {
++  if (messageActionControlsWired) return;
++  messageActionControlsWired = true;
++  deleteConfirmBtn?.addEventListener("click", confirmMessageDelete);
++  deleteDialog?.addEventListener("close", () => {
++    const trigger = pendingDeleteTrigger;
++    pendingDeleteRecord = null;
++    pendingDeleteTrigger = null;
++    trigger?.focus();
++  });
++}
++
+ async function initChat() {
++  wireChatControls();
++  wireChatComposer();
++  wireThreadControls();
++  wireMessageActionControls();
+   await hydrateUserSession();
+   ensureChannel("#general");
+   await refreshPrivateChannels({ connect: false });
+@@ -3643,30 +3814,16 @@ async function initChat() {
+   // Public World #general connects for everyone. Private channels remain
+   // session-gated and each uses its own ticketed room and current key version.
+   if (canJoinChannel()) {
++    markChannelLoading();
+     unlockChatForUser();
+     connect();
+     renderActiveChannel();
+   } else {
+     lockChatForNonUser();
+   }
+-  sendBtn.addEventListener("click", sendCurrentMessage);
+   if (clearBtn) clearBtn.addEventListener("click", clearChat);
+-  directCreateBtn?.addEventListener("click", openDirectMessageDialog);
+   directMoreBtn?.addEventListener("click", loadMoreDirectMessages);
+   directDialogClose?.addEventListener("click", () => directDialog?.close());
+-  directSearch?.addEventListener("input", scheduleDirectMessageSearch);
+-  threadSendBtn?.addEventListener("click", sendThreadReply);
+-  threadCloseBtn?.addEventListener("click", () => closeThread());
+-  threadInput?.addEventListener("input", resizeThreadComposer);
+-  threadInput?.addEventListener("keydown", (event) => {
+-    if (event.key === "Escape" && !threadInput.value) {
+-      event.preventDefault();
+-      closeThread();
+-    } else if (event.key === "Enter" && !event.shiftKey) {
+-      event.preventDefault();
+-      sendThreadReply();
+-    }
+-  });
+   for (const button of formatButtons) {
+     button.addEventListener("mousedown", (event) => event.preventDefault());
+     button.addEventListener("click", () => {
+@@ -3703,13 +3860,6 @@ async function initChat() {
+   });
+   channelManageBtn?.addEventListener("click", () => openChannelDialog(true));
+   channelDialogClose?.addEventListener("click", () => channelDialog?.close());
+-  deleteConfirmBtn?.addEventListener("click", confirmMessageDelete);
+-  deleteDialog?.addEventListener("close", () => {
+-    const trigger = pendingDeleteTrigger;
+-    pendingDeleteRecord = null;
+-    pendingDeleteTrigger = null;
+-    trigger?.focus();
+-  });
+   channelInviteForm?.addEventListener("submit", (event) => {
+     event.preventDefault();
+     inviteChannelMember(channelUsernameInput?.value || "");
+@@ -3718,36 +3868,6 @@ async function initChat() {
+     showOfficeFailure("");
+     connect();
+   });
+-  if (attachmentBtn && attachmentInput) {
+-    attachmentBtn.addEventListener("click", () => attachmentInput.click());
+-    attachmentInput.addEventListener("change", () => {
+-      const files = Array.from(attachmentInput.files || []);
+-      attachmentInput.value = "";
+-      if (files.length) stageAttachments(files);
+-    });
+-  }
+-  if (threadAttachmentBtn && threadAttachmentInput) {
+-    threadAttachmentBtn.addEventListener("click", () => threadAttachmentInput.click());
+-    threadAttachmentInput.addEventListener("change", () => {
+-      const files = Array.from(threadAttachmentInput.files || []);
+-      threadAttachmentInput.value = "";
+-      if (files.length && activeThreadRootId) {
+-        stageAttachments(files, { rootId: activeThreadRootId });
+-      }
+-    });
+-  }
+-  input.addEventListener("paste", (event) => {
+-    const file = clipboardImage(event);
+-    if (!file) return;
+-    event.preventDefault();
+-    stageAttachments([file]);
+-  });
+-  threadInput?.addEventListener("paste", (event) => {
+-    const file = clipboardImage(event);
+-    if (!file || !activeThreadRootId) return;
+-    event.preventDefault();
+-    stageAttachments([file], { rootId: activeThreadRootId });
+-  });
+   installDropTarget(mainPane);
+   installDropTarget(threadView, () => activeThreadRootId);
+   document.addEventListener("keydown", (event) => {
+@@ -3757,49 +3877,6 @@ async function initChat() {
+     }
+     if (event.key === "Escape" && dragDepth) clearDropState();
+   });
+-  input.addEventListener("keydown", (event) => {
+-    // While the @mention popup is open it owns the keyboard: Tab (or Enter)
+-    // accepts the highlighted name, arrows move, Escape dismisses — only then
+-    // does Enter fall through to send.
+-    if (mentionSuggest) {
+-      const acceptsMention = event.key === "Tab" || event.key === "Enter";
+-      if (acceptsMention && !event.shiftKey) {
+-        event.preventDefault();
+-        acceptMentionSuggest();
+-        return;
+-      }
+-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+-        event.preventDefault();
+-        moveMentionSuggest(event.key === "ArrowDown" ? 1 : -1);
+-        return;
+-      }
+-      if (event.key === "Escape") {
+-        event.preventDefault();
+-        closeMentionSuggest();
+-        return;
+-      }
+-    }
+-    if (event.key === "Enter" && !event.shiftKey) {
+-      event.preventDefault();
+-      sendCurrentMessage();
+-    }
+-  });
+-  // Track the "@partial" token under the caret as it changes — typing, caret
+-  // moves (arrows/click), and focus loss (delayed so a suggestion mousedown
+-  // still lands).
+-  input.addEventListener("input", () => {
+-    resizeComposer();
+-    updateMentionSuggest();
+-  });
+-  input.addEventListener("click", updateMentionSuggest);
+-  input.addEventListener("keyup", (event) => {
+-    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+-      updateMentionSuggest();
+-    }
+-  });
+-  input.addEventListener("blur", () => {
+-    setTimeout(closeMentionSuggest, 120);
+-  });
+   resizeComposer();
+   scheduleDateDividerRefresh();
+   // Presence beat, matching the desktop's cadence: keeps our roster entry
+diff --git a/cloudflare_worker/public/dashboard-chat.js b/cloudflare_worker/public/dashboard-chat.js
+index 310595da1..9d70c00e3 100644
+--- a/cloudflare_worker/public/dashboard-chat.js
++++ b/cloudflare_worker/public/dashboard-chat.js
+@@ -2049,7 +2049,10 @@
+     fileInput.addEventListener("change", () => {
+       const files = Array.from(fileInput.files || []);
+       fileInput.value = "";
+-      if (files.length) stageDashboardAttachments(control, files);
++      if (files.length) {
++        stageDashboardAttachments(control, files);
++        void sendDashboardDraft(control);
++      }
+     });
+     control.button.disabled = !canJoinChat();
+     control.input.disabled = !canJoinChat();
+@@ -2113,6 +2116,7 @@
+       if (!file) return;
+       event.preventDefault();
+       stageDashboardAttachments(attachmentControl, [file]);
++      void sendDashboardDraft(attachmentControl);
+     });
+     inputEl.addEventListener("keydown", (event) => {
+       // While the mention list is open it owns Enter/Tab/arrows, so accepting a
+@@ -2139,7 +2143,7 @@
+           return;
+         }
+       }
+-      if (event.key === "Enter") {
++      if (event.key === "Enter" && !event.shiftKey) {
+         event.preventDefault();
+         sendFrom(inputEl, attachmentControl);
+       }
+diff --git a/cloudflare_worker/public/world/world.js b/cloudflare_worker/public/world/world.js
+index 048a86ca9..55133fa76 100644
+--- a/cloudflare_worker/public/world/world.js
++++ b/cloudflare_worker/public/world/world.js
+@@ -43,6 +43,7 @@ import { createWorldOfficeController } from "./world-office.js";
+ import { createWorldOfficeMeeting } from "./world-office-meeting.js";
+ import { createWorldOfficeTasksController } from "./world-office-tasks.js";
+ import { officeFloorsForTeam } from "./world-office-tower.js";
++import { createWorldSocketRecoveryTimers } from "./world-socket-recovery.js";
+ import {
+   CAMPFIRE_SEATED_ACTIVITY,
+   SWING_RIDING_ACTIVITY,
+@@ -146,6 +147,7 @@ const POSITION_FLOORS = Object.freeze({
+   west: 0.38,
+ });
+ const SOCKET_RETRY_MAX_MS = 20000;
++const SOCKET_CONNECT_TIMEOUT_MS = 12000;
+ const SOCKET_STABLE_MS = 5000;
+ const SOCKET_PEER_GRACE_MS = 8000;
+ // The relay retired this socket because the same account joined from another
+@@ -4440,6 +4442,8 @@ class ForkMeshWorld extends HTMLElement {
+     this.socketRetry = 1000;
+     this.socketTimer = 0;
+     this.socketStableTimer = 0;
++    this.socketRecovery = createWorldSocketRecoveryTimers();
++    this.socketRecoveryAttempts = 0;
+     this.socketConnectionAttempts = 0;
+     this.socketInboundFrames = 0;
+     this.socketOutboundFrames = 0;
+@@ -20204,7 +20208,7 @@ class ForkMeshWorld extends HTMLElement {
+       socketState = this.serverPeerId ? "online" : "handshaking";
+     } else if (readyState === 2) {
+       socketState = "closing";
+-    } else if (this.socketTimer) {
++    } else if (this.socketRecovery.hasReconnect) {
+       socketState = "reconnecting";
+     }
+     const socketOnline = readyState === 1 && Boolean(this.serverPeerId);
+@@ -20269,7 +20273,7 @@ class ForkMeshWorld extends HTMLElement {
+           0,
+           Math.min(
+             WORLD_DIAGNOSTICS_COUNTER_MAX,
+-            this.socketConnectionAttempts - 1,
++            this.socketRecoveryAttempts,
+           ),
+         ),
+         bufferedBytes: Math.max(
+@@ -20994,7 +20998,7 @@ class ForkMeshWorld extends HTMLElement {
+   // tab brings it back here.
+   handlePresenceTakeover() {
+     this.presenceTakenOver = true;
+-    window.clearTimeout(this.socketTimer);
++    this.socketRecovery.cancelReconnect();
+     this.socketTimer = 0;
+     this.socketRetry = 1000;
+     this.setPresenceState("offline", "Active on your other device");
+@@ -21013,13 +21017,17 @@ class ForkMeshWorld extends HTMLElement {
+ 
+   schedulePresenceReconnect() {
+     if (this.destroyed || document.hidden || this.presenceTakenOver) return;
+-    window.clearTimeout(this.socketTimer);
+     const jitter = 0.75 + Math.random() * 0.5;
+     const delay = Math.max(250, Math.round(this.socketRetry * jitter));
+-    this.socketTimer = window.setTimeout(() => {
++    const scheduled = this.socketRecovery.scheduleReconnect(delay, () => {
+       this.socketTimer = 0;
++      this.socketRecoveryAttempts = incrementDiagnosticCounter(
++        this.socketRecoveryAttempts,
++      );
+       this.connectPresence();
+-    }, delay);
++    });
++    if (!scheduled) return;
++    this.socketTimer = 1;
+     this.socketRetry = Math.min(
+       SOCKET_RETRY_MAX_MS,
+       Math.round(this.socketRetry * 1.8),
+@@ -21092,6 +21100,12 @@ class ForkMeshWorld extends HTMLElement {
+       return;
+     }
+     this.socket = socket;
++    this.socketRecovery.adopt(socket, SOCKET_CONNECT_TIMEOUT_MS, (stalled) => {
++      if (this.socket !== stalled) return;
++      try {
++        stalled.close(4000, "connection timeout");
++      } catch (_) {}
++    });
+     this.setPresenceState("connecting", "Joining world");
+     socket.addEventListener("open", () => {
+       if (this.destroyed || this.socket !== socket) {
+@@ -21100,12 +21114,14 @@ class ForkMeshWorld extends HTMLElement {
+         } catch (_) {}
+         return;
+       }
++      if (!this.socketRecovery.markOpen(socket)) return;
+       this.presenceConnecting = false;
+       this.setPresenceState("online", "World online");
+       window.clearTimeout(this.socketStableTimer);
+       this.socketStableTimer = window.setTimeout(() => {
+         if (this.socket === socket && socket.readyState === WebSocket.OPEN) {
+           this.socketRetry = 1000;
++          this.socketRecoveryAttempts = 0;
+         }
+       }, SOCKET_STABLE_MS);
+       window.clearTimeout(this.profilePresenceTimer);
+@@ -21133,6 +21149,7 @@ class ForkMeshWorld extends HTMLElement {
+     });
+     socket.addEventListener("close", (event) => {
+       if (this.socket !== socket) return;
++      this.socketRecovery.retire(socket);
+       this.presenceConnecting = false;
+       this.socket = null;
+       window.clearTimeout(this.socketStableTimer);
+@@ -21915,7 +21932,7 @@ class ForkMeshWorld extends HTMLElement {
+       "click",
+       this.refreshWorldForUpdate,
+     );
+-    window.clearTimeout(this.socketTimer);
++    this.socketRecovery.clearAll();
+     window.clearTimeout(this.socketStableTimer);
+     window.clearTimeout(this.peerGraceTimer);
+     window.clearTimeout(this.profilePresenceTimer);
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index 5b19c9b65..2f2bc3dbb 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -9400,6 +9400,17 @@ SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
+     """ALTER TABLE chat_direct_participants
+        ADD COLUMN initiated INTEGER NOT NULL DEFAULT 0
+        CHECK (initiated IN (0, 1))""",
++    # These columns must exist before SCHEMA_STATEMENTS creates their live and
++    # scoped attendance indexes on databases that predate migration 0090.
++    """ALTER TABLE world_office_attendance
++       ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0
++       CHECK (last_seen_at >= 0)""",
++    """ALTER TABLE world_office_attendance
++       ADD COLUMN floor_id TEXT NOT NULL DEFAULT ''
++       CHECK (length(floor_id) <= 32)""",
++    """ALTER TABLE world_office_attendance
++       ADD COLUMN visit_scope TEXT NOT NULL DEFAULT 'legacy'
++       CHECK (visit_scope IN ('legacy', 'office'))""",
+ ]
+ 
+ # Post-CREATE column additions for tables that predate them. Idempotent: a
+@@ -9425,21 +9436,6 @@ SCHEMA_ALTER_STATEMENTS = [
+     """CREATE INDEX IF NOT EXISTS idx_world_office_marketing_tasks_completion
+        ON world_office_marketing_tasks(
+            org_bi, completed_at, updated_at DESC)""",
+-    # A bounded heartbeat closes interrupted Office visits and carries only the
+-    # public floor label used by the lobby board.
+-    """ALTER TABLE world_office_attendance
+-       ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0
+-       CHECK (last_seen_at >= 0)""",
+-    """ALTER TABLE world_office_attendance
+-       ADD COLUMN floor_id TEXT NOT NULL DEFAULT ''
+-       CHECK (length(floor_id) <= 32)""",
+-    """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_live
+-       ON world_office_attendance(out_at, last_seen_at DESC)""",
+-    """ALTER TABLE world_office_attendance
+-       ADD COLUMN visit_scope TEXT NOT NULL DEFAULT 'legacy'
+-       CHECK (visit_scope IN ('legacy', 'office'))""",
+-    """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_scope
+-       ON world_office_attendance(visit_scope, account_bi, in_at)""",
+     # Assigned issue titles are already public repository metadata; retain a
+     # bounded copy so the build-board card survives the recent-issues window.
+     """ALTER TABLE world_build_board_items
+@@ -31984,6 +31980,10 @@ async def _privacy_safe_log_path(env, path):
+     if path == "/api/private-replicas" or path.startswith(
+             "/api/private-replicas/"):
+         return "/api/private-replicas/[opaque]"
++    if path.startswith("/api/chat/channels/"):
++        return "/api/chat/channels/[opaque]"
++    if path.startswith("/api/chat/direct-messages/"):
++        return "/api/chat/direct-messages/[opaque]"
+     match = REPO_API_PREFIX_RE.match(path)
+     if not match:
+         for pattern in (
+diff --git a/cloudflare_worker/tests/test_chat_attachments_frontend.py b/cloudflare_worker/tests/test_chat_attachments_frontend.py
+index 987a886b9..7b97aedf5 100644
+--- a/cloudflare_worker/tests/test_chat_attachments_frontend.py
++++ b/cloudflare_worker/tests/test_chat_attachments_frontend.py
+@@ -30,6 +30,20 @@ def test_full_chat_uses_desktop_compatible_encrypted_attachment_fields():
+     assert "event.preventDefault()" in CHAT
+ 
+ 
++def test_full_chat_sends_picker_and_pasted_attachment_drafts_immediately():
++    attachment_controls = CHAT[
++        CHAT.index("if (attachmentBtn && attachmentInput) {"):
++        CHAT.index("if (threadAttachmentBtn && threadAttachmentInput) {")
++    ]
++    paste = CHAT[
++        CHAT.index('input.addEventListener("paste"'):
++        CHAT.index('threadInput?.addEventListener("paste"')
++    ]
++    assert "stageAttachments(files);" in attachment_controls
++    assert "void sendAttachmentDraft();" in attachment_controls
++    assert "stageAttachments([file]);\n    void sendAttachmentDraft();" in paste
++
++
+ def test_full_chat_renders_safe_images_and_downloadable_documents():
+     assert 'className = "chat-attachment-image"' in CHAT
+     assert 'className = "chat-attachment-card"' in CHAT
+diff --git a/cloudflare_worker/tests/test_chat_direct_messages_frontend.py b/cloudflare_worker/tests/test_chat_direct_messages_frontend.py
+index ad5c63a56..ef4f91228 100644
+--- a/cloudflare_worker/tests/test_chat_direct_messages_frontend.py
++++ b/cloudflare_worker/tests/test_chat_direct_messages_frontend.py
+@@ -119,6 +119,63 @@ def test_direct_message_rendering_uses_distinct_labels_and_no_forkbot():
+     )
+ 
+ 
++def test_direct_message_controls_are_wired_before_async_chat_hydration():
++    init = _function_source("initChat")
++    assert "function wireChatControls()" in CHAT
++    assert init.index("wireChatControls();") < init.index("await hydrateUserSession();")
++    assert "function wireChatComposer()" in CHAT
++    assert init.index("wireChatComposer();") < init.index("await hydrateUserSession();")
++    controls = _function_source("wireChatControls")
++    assert "directCreateBtn?.addEventListener(\"click" in controls
++    assert "openDirectMessageDialog" in controls
++    assert "directSearch?.addEventListener(\"input" in controls
++    assert "scheduleDirectMessageSearch" in controls
++    assert 'sendBtn.addEventListener("click", sendCurrentMessage)' in controls
++    assert 'attachmentInput.addEventListener("change"' in controls
++    assert "void sendAttachmentDraft();" in controls
++    composer = _function_source("wireChatComposer")
++    assert 'input.addEventListener("input"' in composer
++    assert "updateMentionSuggest();" in composer
++    assert 'input.addEventListener("keydown"' in composer
++    assert 'event.key === "Enter" && !event.shiftKey' in composer
++    refresh = _function_source("refreshDirectMessages")
++    start = _function_source("startDirectMessage")
++    assert "let directMessagesRevision = 0" in CHAT
++    assert "const requestRevision = directMessagesRevision" in refresh
++    assert "requestRevision !== directMessagesRevision" in refresh
++    assert "directMessagesRevision += 1" in start
++    assert start.index("if (!conversation?.id)") < start.index(
++        "directMessagesRevision += 1"
++    ) < start.index("reconcileDirectMessages(")
++
++
++def test_thread_reply_controls_are_wired_before_async_chat_hydration():
++    init = _function_source("initChat")
++    assert "function wireThreadControls()" in CHAT
++    assert init.index("wireThreadControls();") < init.index(
++        "await hydrateUserSession();"
++    )
++    controls = _function_source("wireThreadControls")
++    assert 'threadSendBtn?.addEventListener("click", sendThreadReply)' in controls
++    assert 'threadInput?.addEventListener("keydown"' in controls
++    assert 'event.key === "Enter" && !event.shiftKey' in controls
++    assert "sendThreadReply();" in controls
++
++
++def test_delete_controls_are_wired_early_and_use_canonical_room_labels():
++    init = _function_source("initChat")
++    assert "function wireMessageActionControls()" in CHAT
++    assert init.index("wireMessageActionControls();") < init.index(
++        "await hydrateUserSession();"
++    )
++    controls = _function_source("wireMessageActionControls")
++    assert 'deleteConfirmBtn?.addEventListener("click", confirmMessageDelete)' in controls
++    confirm = _function_source("confirmMessageDelete")
++    edit = _function_source("saveMessageEdit")
++    assert "conversation: channelWireLabel(record.channel)" in confirm
++    assert "conversation: channelWireLabel(record.channel)" in edit
++
++
+ def test_protocol_documents_participant_only_direct_messages():
+     for marker in (
+         'id="personal-direct-messages"',
+diff --git a/cloudflare_worker/tests/test_chat_shared_modules_frontend.py b/cloudflare_worker/tests/test_chat_shared_modules_frontend.py
+index d5b1e6ccd..e1e4323a9 100644
+--- a/cloudflare_worker/tests/test_chat_shared_modules_frontend.py
++++ b/cloudflare_worker/tests/test_chat_shared_modules_frontend.py
+@@ -15,6 +15,7 @@ RICH_TEXT = PUBLIC / "chat-rich-text.js"
+ THREAD_MODEL = PUBLIC / "chat-thread-model.js"
+ CHAT = PUBLIC / "chat.js"
+ HTML = PUBLIC / "chat.html"
++FULL_CHAT = CHAT.read_text(encoding="utf-8")
+ 
+ 
+ def _run_module(script):
+@@ -333,3 +334,54 @@ def test_attachment_module_sanitizes_and_digests_bounded_entries():
+     assert result["normalized"]["size"] == 13
+     assert len(result["normalized"]["digest"]) == 43
+     assert result["oversized"] is None
++
++
++def test_full_chat_mentions_include_directory_users_and_refresh_open_popup():
++    candidates = FULL_CHAT[
++        FULL_CHAT.index("function mentionCandidates("):
++        FULL_CHAT.index("function renderMentionSuggest(")
++    ]
++    directory = FULL_CHAT[
++        FULL_CHAT.index("async function refreshUsersDirectory("):
++        FULL_CHAT.index("async function markChatActivitySeen(")
++    ]
++    assert "registeredUsers.values()" in candidates
++    assert "updateMentionSuggest();" in directory
++
++
++def test_direct_thread_replies_use_the_canonical_room_wire_label():
++    reply = FULL_CHAT[
++        FULL_CHAT.index("function sendThreadReply("):
++        FULL_CHAT.index("function cancelMessageEdit(")
++    ]
++    attachment = FULL_CHAT[
++        FULL_CHAT.index("async function sendAttachment("):
++        FULL_CHAT.index("async function sendAttachments(")
++    ]
++    assert "channel: channelWireLabel(activeChannel)" in reply
++    assert "channel: channelWireLabel(channelAtSend)" in attachment
++
++
++def test_channel_switching_preserves_cached_messages_and_labels_cache_misses():
++    render = FULL_CHAT[
++        FULL_CHAT.index("function renderActiveChannel()"):
++        FULL_CHAT.index("// Insert a message record", FULL_CHAT.index("function renderActiveChannel()"))
++    ]
++    transport = FULL_CHAT[
++        FULL_CHAT.index("function handleTransportState("):
++        FULL_CHAT.index("function newRoomTransport(")
++    ]
++    assert "const channelSyncState = new Map()" in FULL_CHAT
++    assert 'syncState === "loading"' in render
++    assert "Loading messages" in render
++    assert 'channelSyncState.set(connectedChannel, "ready")' in transport
++
++
++def test_people_cards_do_not_grow_to_fill_an_empty_sidebar():
++    css = (PUBLIC / "chat.css").read_text(encoding="utf-8")
++    html = HTML.read_text(encoding="utf-8")
++    for source in (html, css):
++        start = source.index(".chat-person {")
++        rule = source[start:source.index("}", start)]
++        assert "flex: 0 0 auto" in rule
++        assert "flex: 1" not in rule
+diff --git a/cloudflare_worker/tests/test_dashboard_chat_persist_frontend.py b/cloudflare_worker/tests/test_dashboard_chat_persist_frontend.py
+index 3d9190d58..8ea1f9abc 100644
+--- a/cloudflare_worker/tests/test_dashboard_chat_persist_frontend.py
++++ b/cloudflare_worker/tests/test_dashboard_chat_persist_frontend.py
+@@ -180,6 +180,24 @@ def test_dashboard_chat_composer_offers_mention_autocomplete():
+     )
+ 
+ 
++def test_dashboard_enter_sends_without_blocking_shift_enter_newlines():
++    wire = CHAT[CHAT.index("function wireInput("):CHAT.index("async function initChat(")]
++    assert 'event.key === "Enter" && !event.shiftKey' in wire
++
++
++def test_dashboard_picker_and_paste_attachments_send_without_an_extra_click():
++    picker = CHAT[
++        CHAT.index('fileInput.addEventListener("change"'):
++        CHAT.index("control.button.disabled", CHAT.index('fileInput.addEventListener("change"'))
++    ]
++    paste = CHAT[
++        CHAT.index('inputEl.addEventListener("paste"'):
++        CHAT.index('inputEl.addEventListener("keydown"')
++    ]
++    assert "void sendDashboardDraft(control);" in picker
++    assert "void sendDashboardDraft(attachmentControl);" in paste
++
++
+ def test_chat_mention_styles_are_available_on_all_chat_surfaces():
+     for source in (DASHBOARD_HTML, PUBLIC_CHAT_CSS, STYLES):
+         assert ".chat-mention {" in source
+diff --git a/cloudflare_worker/tests/test_local_migrations.py b/cloudflare_worker/tests/test_local_migrations.py
+index 3e997f746..1d3cdfc72 100644
+--- a/cloudflare_worker/tests/test_local_migrations.py
++++ b/cloudflare_worker/tests/test_local_migrations.py
+@@ -9,6 +9,28 @@ from pathlib import Path
+ ROOT = Path(__file__).resolve().parents[1]
+ 
+ 
++def test_world_build_board_title_migration_is_safe_after_table_creation():
++    create = (ROOT / "migrations" / "0091_world_build_board.sql").read_text(
++        encoding="utf-8"
++    )
++    upgrade = (
++        ROOT / "migrations" / "0092_world_build_board_issue_title.sql"
++    ).read_text(encoding="utf-8")
++    connection = sqlite3.connect(":memory:")
++    try:
++        connection.executescript(create)
++        connection.executescript(upgrade)
++        title_columns = [
++            row for row in connection.execute(
++                "PRAGMA table_info(world_build_board_items)"
++            ) if row[1] == "title"
++        ]
++    finally:
++        connection.close()
++
++    assert len(title_columns) == 1
++
++
+ def _literal_assignment(path, name):
+     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+     for node in tree.body:
+@@ -77,6 +99,8 @@ def test_lazy_schema_upgrade_adds_columns_before_dependent_indexes():
+     try:
+         connection.executescript(initial)
+         for statement in pre_alters:
++            if "ap_comments" not in statement and "ap_outbox" not in statement:
++                continue
+             connection.execute(statement)
+         for statement in schema_statements:
+             if "ap_comments" in statement or "ap_outbox" in statement:
+diff --git a/cloudflare_worker/tests/test_sentry_worker.py b/cloudflare_worker/tests/test_sentry_worker.py
+index e33acd66c..bed40bed8 100644
+--- a/cloudflare_worker/tests/test_sentry_worker.py
++++ b/cloudflare_worker/tests/test_sentry_worker.py
+@@ -374,6 +374,16 @@ def test_sentry_redacts_opaque_private_access_locator_and_query():
+     assert "credential" not in rendered
+ 
+ 
++def test_sentry_redacts_chat_room_identifiers_from_error_paths():
++    privacy_filter = ENTRY_TEXT.split(
++        "async def _privacy_safe_log_path", 1)[1].split(
++            "async def capture_worker_exception", 1)[0]
++    assert '"/api/chat/channels/[opaque]"' in privacy_filter
++    assert '"/api/chat/direct-messages/[opaque]"' in privacy_filter
++    assert 'path.startswith("/api/chat/channels/")' in privacy_filter
++    assert 'path.startswith("/api/chat/direct-messages/")' in privacy_filter
++
++
+ def test_simulate_sentry_error_route_is_worker_owned_and_raises():
+     run_worker_first = WRANGLER_DATA["assets"]["run_worker_first"]
+     assert "/simulate-sentry-error" in run_worker_first
+diff --git a/cloudflare_worker/tests/test_world_diagnostics.py b/cloudflare_worker/tests/test_world_diagnostics.py
+index a4c009367..376bbe6a2 100644
+--- a/cloudflare_worker/tests/test_world_diagnostics.py
++++ b/cloudflare_worker/tests/test_world_diagnostics.py
+@@ -182,3 +182,16 @@ def test_readings_are_graded_green_orange_red_from_local_thresholds_only():
+     assert "var(--world-mint)" in CSS
+     assert "var(--world-sun)" in CSS
+     assert "var(--world-danger)" in CSS
++
++
++def test_world_socket_recovery_reports_current_retries_not_lifetime_attempts():
++    assert 'from "./world-socket-recovery.js"' in APP
++    assert "createWorldSocketRecoveryTimers" in APP
++    assert "this.socketRecovery = createWorldSocketRecoveryTimers" in APP
++    diagnostics = _section(
++        APP,
++        "  collectDiagnostics(",
++        "\n  renderDiagnostics()",
++    )
++    assert "this.socketRecoveryAttempts" in diagnostics
++    assert "this.socketConnectionAttempts - 1" not in diagnostics
+diff --git a/cloudflare_worker/tests/test_world_frontend.py b/cloudflare_worker/tests/test_world_frontend.py
+index 8bcaa9143..879c3be8e 100644
+--- a/cloudflare_worker/tests/test_world_frontend.py
++++ b/cloudflare_worker/tests/test_world_frontend.py
+@@ -2641,3 +2641,14 @@ def test_arrival_grid_sign_is_a_front_plaque_with_visit_counters():
+     assert "updateArrivalStats" in APP
+     assert '"/api/world/visitors", "/api/world/visitors/"' in ENTRY
+     assert "record_world_visit" in ENTRY
++
++
++def test_world_presence_socket_has_a_bounded_open_deadline_and_retirement():
++    connect = APP[
++        APP.index("  async connectPresence() {"):
++        APP.index("  setPresenceState(", APP.index("  async connectPresence() {"))
++    ]
++    assert "this.socketRecovery.adopt(socket" in connect
++    assert "this.socketRecovery.markOpen(socket)" in connect
++    assert "this.socketRecovery.retire(socket)" in connect
++    assert "this.socketRecovery.scheduleReconnect(" in APP
+diff --git a/cloudflare_worker/tests/test_world_office_attendance.py b/cloudflare_worker/tests/test_world_office_attendance.py
+index 81428aa30..1bda7e9d3 100644
+--- a/cloudflare_worker/tests/test_world_office_attendance.py
++++ b/cloudflare_worker/tests/test_world_office_attendance.py
+@@ -22,6 +22,19 @@ SCOPE_MIGRATION = (
+ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+ 
+ 
++def _literal_assignment(path, name):
++    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
++    for node in tree.body:
++        if not isinstance(node, ast.Assign):
++            continue
++        if any(
++            isinstance(target, ast.Name) and target.id == name
++            for target in node.targets
++        ):
++            return ast.literal_eval(node.value)
++    raise AssertionError(f"missing {name}")
++
++
+ def _load_handler(extra_globals):
+     names = {
+         "_office_attendance_floor",
+@@ -206,6 +219,48 @@ def test_schema_and_idempotent_migration_store_only_bounded_visit_fields():
+         raise AssertionError("an account must have at most one open visit")
+ 
+ 
++def test_lazy_schema_upgrades_office_columns_before_dependent_indexes():
++    pre_alters = _literal_assignment(
++        ENTRY, "SCHEMA_PRE_CREATE_ALTER_STATEMENTS"
++    )
++    schema_statements = _literal_assignment(SCHEMA, "SCHEMA_STATEMENTS")
++    database = sqlite3.connect(":memory:")
++    try:
++        database.executescript(
++            """
++            CREATE TABLE world_office_attendance (
++                visit_id TEXT PRIMARY KEY,
++                account_bi TEXT NOT NULL,
++                account_name TEXT NOT NULL,
++                in_at INTEGER NOT NULL,
++                out_at INTEGER
++            );
++            """
++        )
++        for statement in pre_alters:
++            if "world_office_attendance" in statement:
++                database.execute(statement)
++        for statement in schema_statements:
++            if "world_office_attendance" in statement:
++                database.execute(statement)
++        columns = {
++            row[1]
++            for row in database.execute("PRAGMA table_info(world_office_attendance)")
++        }
++        indexes = {
++            row[1]
++            for row in database.execute("PRAGMA index_list(world_office_attendance)")
++        }
++    finally:
++        database.close()
++
++    assert {"last_seen_at", "floor_id", "visit_scope"}.issubset(columns)
++    assert {
++        "idx_world_office_attendance_live",
++        "idx_world_office_attendance_scope",
++    }.issubset(indexes)
++
++
+ def test_get_returns_only_the_newest_twenty_bounded_public_visits():
+     handler, database, _state = _runtime()
+     for index in range(25):
