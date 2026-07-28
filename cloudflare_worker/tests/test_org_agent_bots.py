@@ -32,6 +32,11 @@ def test_org_agents_are_separate_member_scoped_encrypted_records():
     assert "engineering_team_required" in ENTRY
     assert "team='engineering'" in ENTRY
     assert '"engineeringAccess": True' in ENTRY
+    assert '"privacyBoundary": "engineering-team-encrypted-at-rest"' in ENTRY
+    assert (
+        "visible and controllable only by current members"
+        in ENTRY
+    )
 
 
 def test_only_an_integrity_approved_mirror_receives_bounded_jobs():
@@ -90,6 +95,8 @@ def test_agent_chat_fails_closed_and_never_enters_the_shared_room():
     assert "avatar.visible = false" in SCENE
     assert "this.world?.setAgentBotAccess?.(false)" in WORLD
     assert 'this.orgAgentAccess?.state !== "allowed"' in WORLD
+    assert 'if (!agentBotAccessAllowed) return false;' in SCENE
+    assert "record.state === \"open\" && agentBotAccessAllowed" in SCENE
 
 
 def test_qt_reports_full_session_and_runtime_availability_to_world():

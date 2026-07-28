@@ -295,7 +295,7 @@ def test_chest_badge_shows_client_categories_exact_ages_and_status_note():
         "function badgeStatusLabel(identity)",
         '!placeholders.has(value.toLowerCase())',
         "firstSeenAgoLabel(identity.firstSeenMinutes)",
-        "`FIRST ${joined}`",
+        "return `JOINED ${count}${unit} AGO`",
     ):
         assert contract in SCENE
     # Public chest badges still show only coarse categories. The owner-only
@@ -350,20 +350,40 @@ def test_chest_badge_shows_the_same_full_record_for_every_avatar():
     assert "totalActiveMs: Number.isFinite(Number(identity.totalActiveMs))" in APP
 
 
-def test_chest_fediverse_tab_uses_public_profile_data_and_explicit_follow():
+def test_unified_chest_card_uses_public_profile_wallet_and_explicit_follow():
     for contract in (
-        "function fediverseBadgeTexture(THREE, identity, accent, profile = {})",
-        "function createAvatarChestTabs(THREE)",
-        'button.userData.chestTab = spec.tab',
+        "function badgeTexture(",
+        '"RECENT FEDIVERSE"',
+        "drawQrModules(context, walletAddress",
+        'identity.walletEditable ? "ADD WALLET" : "NO WALLET"',
+        "function badgeWalletSquareHit(uv)",
         "function badgeFollowPillHit(uv)",
-        "function setAvatarChestTab(avatar, tab)",
         "function setAvatarFediverseProfile(peerId, profile)",
         "onFediverseProfile = () => {},",
         "onFediverseFollow = () => {},",
+        "onAvatarWalletAction = () => {},",
         "setAvatarFediverseProfile,",
+        "queueMicrotask(() => onFediverseProfile(target))",
+        '"FEDIVERSE · UNAVAILABLE"',
+        "const activityBorder =",
+        "new THREE.PlaneGeometry(0.88, 0.88)",
     ):
         assert contract in SCENE
-    # The card is fetched on the click that opens the tab, never polled.
+    assert '"account-activity-light"' not in SCENE
+    # The unified card is loaded when an avatar is registered; there are no
+    # runtime mode buttons to hide identity fields from seated members.
+    register = SCENE[
+        SCENE.index("  function registerAvatarChestControls"):
+        SCENE.index("  function unregisterAvatarChestControls")
+    ]
+    assert "queueMicrotask(() => onFediverseProfile(target))" in register
+    assert "avatar.userData.badge" in register
+    avatar = SCENE[
+        SCENE.index("function createAvatar("):
+        SCENE.index("function updateAvatarBadge")
+    ]
+    assert "createAvatarChestTabs(" not in avatar
+    assert "chestTabs: null" in avatar
     assert "async loadWorldFediverseProfile(target = {}) {" in APP
     assert "async toggleWorldFediverseFollow(target = {}) {" in APP
     assert "`/api/accounts/${encodeURIComponent(account)}${query}`" in APP
@@ -2569,11 +2589,20 @@ def test_world_updates_apply_layout_live_and_ask_before_code_refresh():
         APP.index("  async checkForWorldUpdate()"):
         APP.index("\n  startDiagnostics()", APP.index("  async checkForWorldUpdate()"))
     ]
-    assert 'this.$("[data-world-update-notice]")' in update
+    assert 'this.renderDeployStatus("ready");' in update
     assert "location.reload()" not in update
     assert "WORLD_UPDATE_RELOAD_DELAY_MS" not in APP
     assert "data-world-update-refresh" in APP
     assert "refreshWorldForUpdate" in APP
+    deploy = APP[
+        APP.index("  renderDeployStatus(state)"):
+        APP.index("\n  async checkDeployStatus()", APP.index("  renderDeployStatus(state)"))
+    ]
+    assert 'this.$("[data-world-update-notice]")' in deploy
+    assert 'state === "deploying"' in deploy
+    assert 'state === "ready"' in deploy
+    assert "refresh.hidden = true;" in deploy
+    assert "refresh.hidden = false;" in deploy
     # Bounded: hidden tabs never poll and visibility bursts are throttled.
     assert (
         "if (this.destroyed || this.updateReloadPending || document.hidden) "

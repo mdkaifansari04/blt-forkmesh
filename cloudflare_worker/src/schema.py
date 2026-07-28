@@ -2207,6 +2207,18 @@ SCHEMA_STATEMENTS = [
         PRIMARY KEY (account_bi, item_key))""",
     "CREATE INDEX IF NOT EXISTS idx_world_qa_reviews_account_time "
     "ON world_qa_reviews(account_bi, reviewed_at DESC)",
+    """CREATE TABLE IF NOT EXISTS world_qa_items (
+        item_key TEXT PRIMARY KEY
+            CHECK (length(item_key) BETWEEN 1 AND 80),
+        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 160),
+        how_to_test TEXT NOT NULL
+            CHECK (length(how_to_test) BETWEEN 1 AND 720),
+        source_key TEXT NOT NULL DEFAULT ''
+            CHECK (length(source_key) <= 80),
+        added_at INTEGER NOT NULL CHECK (added_at >= 0),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)))""",
+    "CREATE INDEX IF NOT EXISTS idx_world_qa_items_active_time "
+    "ON world_qa_items(active, added_at DESC)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

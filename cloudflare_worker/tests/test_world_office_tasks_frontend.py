@@ -40,7 +40,7 @@ def test_marketing_board_has_accessible_create_assign_and_timer_controls():
         "data-world-office-task-form",
         "data-world-office-task-name",
         "data-world-office-task-assignee",
-        "Select an active ForkMesh user",
+        "Select a Marketing team member",
         "data-world-office-task-list",
         "data-world-office-task-checkin",
         'role="status"',
@@ -152,6 +152,34 @@ def test_manager_assignment_control_renders_only_returned_marketing_members():
     assert "marketingMembers" in tasks
     assert "<option value=" in tasks
     assert "<datalist" not in world
+
+
+def test_physical_wall_has_direct_bounded_marketing_task_controls():
+    tasks = source(TASKS)
+    scene = source(SCENE)
+    world = source(WORLD)
+    for contract in (
+        "async function physicalAction(payload = {})",
+        "canStartStop: task.assignee === actor",
+        "canComplete:",
+        "canDelete: canManage",
+        "members: canManage ? assignable : marketingMembers",
+        "physicalAction,",
+    ):
+        assert contract in tasks
+    for contract in (
+        "function marketingTaskWallAction(uv)",
+        '"+ ADD MARKETING TASK"',
+        '"START"',
+        '"DONE"',
+        '"DELETE"',
+        'action = task.status === "active" ? "stop" : "start"',
+        "onOfficeTaskWallAction(action)",
+    ):
+        assert contract in scene
+    assert "this.officeTasks?.physicalAction?.(action)" in world
+    assert "new THREE.BoxGeometry(18.5, 11.4, 0.18)" in scene
+    assert "new THREE.PlaneGeometry(18.12, 11.02)" in scene
 
 
 def test_assignment_control_has_explicit_contrast_and_tasks_can_finish_or_delete():

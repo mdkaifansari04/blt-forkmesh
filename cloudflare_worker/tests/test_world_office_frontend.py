@@ -479,7 +479,7 @@ def test_town_camera_cannot_orbit_through_the_ground():
 def test_marketing_task_board_is_blank_while_the_room_is_empty():
     scene = source(SCENE_PATH)
     blank = function_body(scene, "officeMarketingTasksBlankTexture")
-    assert "fillRect(0, 0, 1024, 768)" in blank
+    assert "fillRect(0, 0, 2048, 1024)" in blank
     occupancy = function_body(scene, "officeMarketingRoomOccupied")
     assert "officeParticipants.size > 0" in occupancy
     assert 'officeCurrentFloorId === "marketing"' in occupancy

@@ -75,6 +75,7 @@ def test_office_scene_has_a_bounded_interactive_marketing_task_board():
         "officeMarketingTaskBoardFrame.userData.interactive =",
         "officeMarketingTaskBoardFace.userData.interactive =",
         'onOfficeTaskBoardSelect = () => {}',
+        'onOfficeTaskWallAction = () => {}',
         "function updateOfficeMarketingTasks(payload = {})",
         "normalizeOfficeMarketingTasks(payload)",
         "face.material.map?.dispose?.()",
@@ -82,7 +83,7 @@ def test_office_scene_has_a_bounded_interactive_marketing_task_board():
         "updateOfficeMarketingTasks,",
     ):
         assert contract in scene
-    assert "const OFFICE_MARKETING_TASK_LIMIT = 6" in scene
+    assert "const OFFICE_MARKETING_TASK_LIMIT = 250" in scene
     assert "task.title,\n            42" in scene
     assert "task.assignee,\n            24" in scene
     assert "task.status,\n            16" in scene
