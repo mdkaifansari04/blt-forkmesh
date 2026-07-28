@@ -8161,7 +8161,10 @@ void MainWindow::probeSavedHost(const QString &name, const QString &ip,
     if (!identityFile.isEmpty())
         password.clear();
     const QString remoteCommand = QStringLiteral(
-        "sh -lc 'export PATH=\"$HOME/.local/bin:$HOME/.claude/bin:$PATH\"; "
+        "sh -lc 'probe_home=\"$HOME\"; "
+        "if test \"$(id -u)\" = 0 && id forkmesh-node >/dev/null 2>&1; then "
+        "probe_home=$(getent passwd forkmesh-node | cut -d: -f6); fi; "
+        "export PATH=\"$probe_home/.local/bin:$probe_home/.claude/bin:$PATH\"; "
         "printf \"FORKMESH=%s CLAUDE=%s CODEX=%s\\\\n\" "
         "\"$(command -v forkmesh >/dev/null 2>&1 && echo 1 || echo 0)\" "
         "\"$(command -v claude >/dev/null 2>&1 && echo 1 || echo 0)\" "

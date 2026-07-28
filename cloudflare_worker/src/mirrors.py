@@ -360,6 +360,18 @@ def build_repo_mirrors_payload(
         seen = _mirror_ms((presence or {}).get(key))
         hosted = _mirror_ms(rec.get("hostedSince")) or _mirror_ms((first_hosted or {}).get(key))
         last_sync = _mirror_ms(rec.get("lastSync"))
+        agent_providers = [
+            provider
+            for provider in ("claude-code", "codex")
+            if provider in {
+                str(value or "").strip().lower()
+                for value in (
+                    rec.get("agentProviders")
+                    if isinstance(rec.get("agentProviders"), list)
+                    else []
+                )
+            }
+        ]
         # Public byte serving no longer keeps the legacy host WebSocket open.
         # A source-of-truth desktop still signs and publishes its local-node
         # catalog while it is alive, so that fresh publication is its bounded
@@ -380,6 +392,17 @@ def build_repo_mirrors_payload(
             effective_seen and now - effective_seen <= effective_stale_ms)
         if reachable_nodes is not None:
             online = online and node_name.lower() in reachable_nodes
+        # A polling headless node may intentionally expose no direct HTTPS
+        # clone endpoint. Its fresh, signed agent capability publication still
+        # proves the machine is active, while cloneAvailable remains false.
+        # This lets World render the cabinet as live/yellow instead of treating
+        # an eligible worker as a dead machine.
+        agent_runtime_online = bool(
+            agent_providers
+            and last_sync
+            and now - last_sync <= 10 * 60 * 1000
+        )
+        node_online = online or agent_runtime_online
         try:
             size_bytes = max(0, int(rec.get("sizeBytes") or 0))
         except (TypeError, ValueError):
@@ -450,7 +473,7 @@ def build_repo_mirrors_payload(
             integrity = "healing"
         else:
             integrity = "rejected"
-        if not online:
+        if not node_online:
             activity = "offline"
         elif actions_state == "running":
             activity = "running-actions"
@@ -480,8 +503,12 @@ def build_repo_mirrors_payload(
             # the owning account); display-only, never an identity key.
             "machineName": str(rec.get("machineName") or "").strip(),
             "repo": str(rec.get("name") or "").strip(),
-            "status": "online" if serving else "offline",
-            "lastSeen": effective_seen if online else None,
+            "status": "online" if node_online else "offline",
+            "lastSeen": (
+                effective_seen
+                if online
+                else last_sync if agent_runtime_online else None
+            ),
             "hostedSince": hosted,
             "syncAgeMs": max(0, now - last_sync) if last_sync else None,
             "lastSync": last_sync,
@@ -510,18 +537,7 @@ def build_repo_mirrors_payload(
             "artifactCount": _int_field(rec, "artifactCount"),
             "platform": str(rec.get("platform") or "").strip(),
             "version": str(rec.get("version") or "").strip(),
-            "agentProviders": [
-                provider
-                for provider in ("claude-code", "codex")
-                if provider in {
-                    str(value or "").strip().lower()
-                    for value in (
-                        rec.get("agentProviders")
-                        if isinstance(rec.get("agentProviders"), list)
-                        else []
-                    )
-                }
-            ],
+            "agentProviders": agent_providers,
             # Missing and malformed legacy records fail closed to disabled.
             # Only the bounded status pair signed into catalog-v2 is exposed.
             "actionsEnabled": actions_enabled,
@@ -540,7 +556,9 @@ def build_repo_mirrors_payload(
             "diskTotalBytes": disk_total,
             "integrity": integrity,
             "activity": activity,
-            "activityUpdatedAt": effective_seen or last_sync,
+            "activityUpdatedAt": (
+                effective_seen if online else last_sync
+            ),
         })
 
     mirrors.sort(

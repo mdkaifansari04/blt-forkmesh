@@ -465,7 +465,11 @@ QString hostSshCommandLine(const HostSshCommand &command)
 QString buildHostAgentLoginRemoteCommand()
 {
     return QStringLiteral(
-        "sh -lc 'export PATH=\"$HOME/.local/bin:$HOME/.claude/bin:$PATH\"; "
+        "sh -lc 'if test \"$(id -u)\" = 0 && id forkmesh-node "
+        ">/dev/null 2>&1; then "
+        "echo \"Opening the forkmesh-node service account shell.\"; "
+        "exec su -s /bin/bash forkmesh-node; fi; "
+        "export PATH=\"$HOME/.local/bin:$HOME/.claude/bin:$PATH\"; "
         "echo \"Finish the provider sign-ins on this mirror:\"; "
         "echo \"  claude        then run /login inside it\"; "
         "echo \"  codex login\"; "
@@ -2149,29 +2153,52 @@ QString agentCliBootstrapRemoteCommand(bool withCredentials)
            << QStringLiteral(
                   "curl -fsSL https://chatgpt.com/codex/install.sh | sh")
            << QStringLiteral(
-                  "export PATH=\"$home/.local/bin:$home/.claude/bin:$PATH\"");
+                  "export PATH=\"$home/.local/bin:$home/.claude/bin:$PATH\"")
+           // Managed headless nodes run as forkmesh-node, not as the root SSH
+           // provisioner. Install immutable global copies for that service and
+           // direct copied login files into its private state home.
+           << QStringLiteral("agent_home=\"$home\"")
+           << QStringLiteral("agent_owner=\"\"")
+           << QStringLiteral(
+                  "if test \"$(id -u)\" = 0 && id forkmesh-node "
+                  ">/dev/null 2>&1; then "
+                  "agent_home=$(getent passwd forkmesh-node | cut -d: -f6); "
+                  "agent_owner=forkmesh-node; "
+                  "for program in claude codex; do "
+                  "source_path=$(command -v \"$program\"); "
+                  "install -m 0755 \"$(readlink -f \"$source_path\")\" "
+                  "\"/usr/local/bin/$program\"; done; "
+                  "echo \"Installed agent CLIs for the forkmesh-node service.\"; "
+                  "fi");
     if (withCredentials) {
-        script << QStringLiteral("if has claude; then mkdir -p \"$home/.claude\"; "
-                                 "sec claude > \"$home/.claude/.credentials.json\"; "
-                                 "chmod 600 \"$home/.claude/.credentials.json\"; "
+        script << QStringLiteral("if has claude; then mkdir -p \"$agent_home/.claude\"; "
+                                 "sec claude > \"$agent_home/.claude/.credentials.json\"; "
+                                 "chmod 600 \"$agent_home/.claude/.credentials.json\"; "
                                  "echo \"Copied the controller Claude Code login.\"; fi")
-               << QStringLiteral("if has codex; then mkdir -p \"$home/.codex\"; "
-                                 "sec codex > \"$home/.codex/auth.json\"; "
-                                 "chmod 600 \"$home/.codex/auth.json\"; "
+               << QStringLiteral("if has codex; then mkdir -p \"$agent_home/.codex\"; "
+                                 "sec codex > \"$agent_home/.codex/auth.json\"; "
+                                 "chmod 600 \"$agent_home/.codex/auth.json\"; "
                                  "echo \"Copied the controller Codex login.\"; fi")
                // The API-key file is sourced from the shell startup files a
                // ForkMesh SSH session (sh -lc) and an interactive login both
                // read, so agent runs on this mirror inherit the keys.
-               << QStringLiteral("if has env; then mkdir -p \"$home/.forkmesh\"; "
-                                 "sec env > \"$home/.forkmesh/agent-env\"; "
-                                 "chmod 600 \"$home/.forkmesh/agent-env\"; "
-                                 "for rc in \"$home/.profile\" \"$home/.bashrc\"; do "
+               << QStringLiteral("if has env; then mkdir -p \"$agent_home/.forkmesh\"; "
+                                 "sec env > \"$agent_home/.forkmesh/agent-env\"; "
+                                 "chmod 600 \"$agent_home/.forkmesh/agent-env\"; "
+                                 "for rc in \"$agent_home/.profile\" \"$agent_home/.bashrc\"; do "
                                  "touch \"$rc\"; "
                                  "grep -q .forkmesh/agent-env \"$rc\" || "
-                                 "printf \"%s\\n\" \". \\\"$home/.forkmesh/agent-env\\\"\" "
+                                 "printf \"%s\\n\" \". \\\"$agent_home/.forkmesh/agent-env\\\"\" "
                                  ">> \"$rc\"; done; "
                                  "echo \"Installed the agent API keys in "
                                  "~/.forkmesh/agent-env.\"; fi")
+               << QStringLiteral(
+                      "if test -n \"$agent_owner\"; then "
+                      "chown -R \"$agent_owner:$agent_owner\" "
+                      "\"$agent_home/.claude\" \"$agent_home/.codex\" "
+                      "\"$agent_home/.forkmesh\" "
+                      "\"$agent_home/.profile\" \"$agent_home/.bashrc\" "
+                      "2>/dev/null || true; fi")
                << QStringLiteral("rm -f \"$tmp\"");
     }
     script << QStringLiteral("echo \"Claude Code:\"")

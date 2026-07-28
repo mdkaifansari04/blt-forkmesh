@@ -57,9 +57,11 @@ def test_agent_logins_are_copied_only_on_stdin_and_only_when_asked():
         "QString agentCliBootstrapRemoteCommand(bool withCredentials)", 1
     )[1][:6000]
     assert 'cat > \\"$tmp\\"' in script
-    assert "$home/.claude/.credentials.json" in script
-    assert "$home/.codex/auth.json" in script
-    assert "$home/.forkmesh/agent-env" in script
+    assert "$agent_home/.claude/.credentials.json" in script
+    assert "$agent_home/.codex/auth.json" in script
+    assert "id forkmesh-node" in script
+    assert "/usr/local/bin/$program" in script
+    assert "$agent_home/.forkmesh/agent-env" in script
     assert "umask 077" in script
     assert "chmod 600" in script
 
@@ -96,7 +98,8 @@ def test_saved_hosts_are_reprobed_until_online_with_agent_capabilities():
         "m_hostProbeTimer->setInterval(30000)",
         "m_hostProbesInFlight.contains(key)",
         "FORKMESH=%s CLAUDE=%s CODEX=%s",
-        'export PATH=\\"$HOME/.local/bin:$HOME/.claude/bin:$PATH\\"',
+        'probe_home=\\"$HOME\\"',
+        'export PATH=\\"$probe_home/.local/bin:$probe_home/.claude/bin:$PATH\\"',
         "Provisioning \\xC2\\xB7 waiting for SSH",
         "Attention \\xC2\\xB7 SSH key rejected",
         "Online \\xC2\\xB7 ForkMesh missing",

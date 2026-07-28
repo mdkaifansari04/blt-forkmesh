@@ -96,6 +96,38 @@ def test_agent_jobs_use_fresh_signed_provider_capability_not_https_presence():
     ) == []
 
 
+def test_fresh_agent_only_headless_node_is_live_but_not_clone_ready():
+    now = 1_000_000
+    source = _row(
+        "source", "jett", "forkmesh", root="abc", synced=str(now - 5_000)
+    )
+    mirror = _row(
+        "mirror6",
+        "jett",
+        "forkmesh",
+        root="abc",
+        synced=str(now - 1_000),
+        source="remote-clone",
+    )
+    mirror["data"]["machineName"] = "mirror6"
+    mirror["data"]["agentProviders"] = ["claude-code", "codex"]
+    payload = build_repo_mirrors_payload(
+        "jett",
+        "forkmesh",
+        [source, mirror],
+        {},
+        {},
+        now,
+        30_000,
+        30_000,
+    )
+    item = next(entry for entry in payload["mirrors"] if entry["node"] == "mirror6")
+    assert item["status"] == "online"
+    assert item["lastSeen"] == now - 1_000
+    assert item["cloneAvailable"] is False
+    assert item["agentProviders"] == ["claude-code", "codex"]
+
+
 def _row(key, owner, name, *, root="", visibility="public", hosted="", synced="",
          size=0, commit="", branch="", issue_count=None, platform="", version="",
          node_id="", clones_served=None, website_served=None, artifact_count=None,

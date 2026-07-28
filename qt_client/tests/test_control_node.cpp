@@ -762,6 +762,7 @@ int main(int argc, char **argv)
     const QString loginRemote =
         forkmesh::control::buildHostAgentLoginRemoteCommand();
     check(loginRemote.contains(QStringLiteral("$HOME/.local/bin")) &&
+              loginRemote.contains(QStringLiteral("forkmesh-node")) &&
               loginRemote.contains(QStringLiteral("codex login")) &&
               loginRemote.contains(QStringLiteral("exec \"${SHELL:-/bin/sh}\"")),
           "the sign-in shell puts the CLI prefixes on PATH and execs a login shell");
@@ -1150,11 +1151,15 @@ int main(int argc, char **argv)
           "the install-only command reads no stdin and writes no login file");
     check(agentWithLogins.contains(QStringLiteral("cat > \"$tmp\"")) &&
               agentWithLogins.contains(
-                  QStringLiteral("$home/.claude/.credentials.json")) &&
+                  QStringLiteral("$agent_home/.claude/.credentials.json")) &&
               agentWithLogins.contains(
-                  QStringLiteral("$home/.codex/auth.json")) &&
+                  QStringLiteral("$agent_home/.codex/auth.json")) &&
               agentWithLogins.contains(
-                  QStringLiteral("$home/.forkmesh/agent-env")) &&
+                  QStringLiteral("$agent_home/.forkmesh/agent-env")) &&
+              agentWithLogins.contains(
+                  QStringLiteral("id forkmesh-node")) &&
+              agentWithLogins.contains(
+                  QStringLiteral("/usr/local/bin/$program")) &&
               agentWithLogins.contains(QStringLiteral("chmod 600")) &&
               agentWithLogins.contains(QStringLiteral("umask 077")),
           "the credential command writes each login file with private modes");
