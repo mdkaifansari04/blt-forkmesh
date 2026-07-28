@@ -10010,6 +10010,7 @@ function createOfficeMarineAquarium(THREE, animated) {
   const feedingCenter = new THREE.Vector3(0.68, 6.9, -1.8);
   let feedingStartedAt = -Infinity;
   let feedingActive = false;
+  let reducedFeedingPoseApplied = false;
   const AQUARIUM_FISH_SPECIES = Object.freeze([
     {
       id: "clownfish",
@@ -11444,9 +11445,10 @@ function createOfficeMarineAquarium(THREE, animated) {
   }
 
   function updateAquariumFish(time, animate = true) {
+    const motionTime = animate ? time : 0;
     for (let index = 0; index < fishStates.length; index += 1) {
       const state = fishStates[index];
-      const progress = (time * state.speed + state.phase) % 1;
+      const progress = (motionTime * state.speed + state.phase) % 1;
       state.curve.getPointAt(progress, state.point);
       state.curve.getTangentAt(progress, state.tangent).normalize();
       let feedingBlend = 0;
@@ -11486,7 +11488,7 @@ function createOfficeMarineAquarium(THREE, animated) {
       }
       if (animate) {
         fish.position.y +=
-          Math.sin(time * 0.0017 + state.phase * 11) *
+          Math.sin(motionTime * 0.0017 + state.phase * 11) *
           (0.08 + feedingBlend * 0.035);
       }
       fish.rotation.y = Math.atan2(state.tangent.x, state.tangent.z);
@@ -11496,7 +11498,7 @@ function createOfficeMarineAquarium(THREE, animated) {
         : 0;
       state.tail.rotation.y =
         Math.sin(
-          time * state.tailSpeed * (1 + feedingBlend * 0.62) +
+          motionTime * state.tailSpeed * (1 + feedingBlend * 0.62) +
             state.phase * 9,
         ) *
         (0.38 + feedingBlend * 0.08);
@@ -11509,7 +11511,7 @@ function createOfficeMarineAquarium(THREE, animated) {
         fin.rotation.z =
           fin.userData.restZ +
           Math.sin(
-            time * (0.004 + feedingBlend * 0.0014) +
+            motionTime * (0.004 + feedingBlend * 0.0014) +
               state.phase * 7 +
               finIndex * Math.PI,
           ) *
@@ -11635,11 +11637,16 @@ function createOfficeMarineAquarium(THREE, animated) {
     ) {
       feedingActive = false;
       feedingStartedAt = -Infinity;
+      reducedFeedingPoseApplied = false;
       food.visible = false;
       foodMaterial.opacity = 0.96;
+      if (!animate) updateAquariumFish(0, true);
     }
     updateAquariumFood(now, animate);
-    if (!animate) updateAquariumFish(now, false);
+    if (!animate && feedingActive && !reducedFeedingPoseApplied) {
+      updateAquariumFish(0, false);
+      reducedFeedingPoseApplied = true;
+    }
     return feedingActive;
   }
 
@@ -11649,6 +11656,7 @@ function createOfficeMarineAquarium(THREE, animated) {
     if (feedingActive) return false;
     feedingStartedAt = now;
     feedingActive = true;
+    reducedFeedingPoseApplied = false;
     updateAquariumFood(now, true);
     return true;
   }

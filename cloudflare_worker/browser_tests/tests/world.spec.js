@@ -2265,9 +2265,91 @@ test("Office cinematic reef remains composed with reduced motion", async ({
       bubblePosition: bubble.position.toArray(),
     };
   });
+  await page.waitForTimeout(220);
+  const settled = await page.locator("forkmesh-world").evaluate((shell) => {
+    const aquarium = shell.world.scene.getObjectByName(
+      "forkmesh-office-marine-aquarium",
+    );
+    return {
+      fishPosition: aquarium.getObjectByName(
+        "forkmesh-office-aquarium-fish-clownfish-0",
+      ).position.toArray(),
+      bubblePosition: aquarium.getObjectByName(
+        "forkmesh-office-aquarium-bubble-0",
+      ).position.toArray(),
+    };
+  });
+  const feeding = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.feedOfficeAquarium();
+    const aquarium = shell.world.scene.getObjectByName(
+      "forkmesh-office-marine-aquarium",
+    );
+    return {
+      state: shell.world.getOfficeAquariumState(),
+      fishPosition: aquarium.getObjectByName(
+        "forkmesh-office-aquarium-fish-clownfish-0",
+      ).position.toArray(),
+      tailRotation: aquarium.getObjectByName(
+        "forkmesh-office-aquarium-fish-tail-clownfish",
+      ).rotation.y,
+      pelletPosition: aquarium.getObjectByName(
+        "forkmesh-office-aquarium-food-pellet-0",
+      ).position.toArray(),
+    };
+  });
+  await page.waitForTimeout(220);
+  const feedingSettled = await page.locator("forkmesh-world").evaluate(
+    (shell) => {
+      const aquarium = shell.world.scene.getObjectByName(
+        "forkmesh-office-marine-aquarium",
+      );
+      return {
+        fishPosition: aquarium.getObjectByName(
+          "forkmesh-office-aquarium-fish-clownfish-0",
+        ).position.toArray(),
+        tailRotation: aquarium.getObjectByName(
+          "forkmesh-office-aquarium-fish-tail-clownfish",
+        ).rotation.y,
+        pelletPosition: aquarium.getObjectByName(
+          "forkmesh-office-aquarium-food-pellet-0",
+        ).position.toArray(),
+      };
+    },
+  );
+  const expired = await page.locator("forkmesh-world").evaluate(
+    (shell, endsAt) => {
+      const state = shell.world.getOfficeAquariumState(endsAt + 1);
+      const aquarium = shell.world.scene.getObjectByName(
+        "forkmesh-office-marine-aquarium",
+      );
+      return {
+        state,
+        foodVisible: aquarium.getObjectByName(
+          "forkmesh-office-aquarium-food",
+        ).visible,
+        fishPosition: aquarium.getObjectByName(
+          "forkmesh-office-aquarium-fish-clownfish-0",
+        ).position.toArray(),
+      };
+    },
+    feeding.state.endsAt,
+  );
   expect(state.visible).toBe(true);
   expect(state.fishPosition[1]).toBeGreaterThan(2);
   expect(state.bubblePosition[1]).toBeGreaterThan(0.8);
+  expect(settled).toEqual({
+    fishPosition: state.fishPosition,
+    bubblePosition: state.bubblePosition,
+  });
+  expect(feeding.state.active).toBe(true);
+  expect(feedingSettled).toEqual({
+    fishPosition: feeding.fishPosition,
+    tailRotation: feeding.tailRotation,
+    pelletPosition: feeding.pelletPosition,
+  });
+  expect(expired.state.active).toBe(false);
+  expect(expired.foodVisible).toBe(false);
+  expect(expired.fishPosition).toEqual(state.fishPosition);
 });
 
 test("a first-frame doorway crossing enters before proximity catches up", async ({
