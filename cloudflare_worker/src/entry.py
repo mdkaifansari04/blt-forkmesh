@@ -8606,12 +8606,6 @@ WORLD_QA_CARDS = (
      "upload a JPEG, WebP, or PNG and confirm it is center-cropped, reported as "
      "at most 128px/64 KiB, replaces the generated face, and appears in the "
      "top-right account button at the same size as neighboring controls."),
-    ("world-combined-repository-work-list", "Combined issue and pull-request list",
-     "Open forkmesh/forkmesh in the World. Confirm one board contains both "
-     "issues and pull requests, with both totals large at the top and 25 mixed "
-     "records per page. Scroll and use Prev/Next; confirm issue actions and PR "
-     "status/mergeability still work and no long title or metadata leaves its "
-     "card."),
     ("world-cabinet-side-layout", "Cabinet operational and agent side layout",
      "Walk around a live mirror cabinet. Confirm Actions runs face the "
      "operational walkway, server information is on the opposite face, Claude "
