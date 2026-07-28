@@ -1099,7 +1099,6 @@ private:
     void checkDirectMirrorGatewayHealth();
     void appendControlNodeOutput(const QString &text);
     void connectToDeployedRelay(const QString &hostname);
-    void openForkMeshWorld();
     void deploySavedHostsFromControl();
     // First-instance-owner community reward-pool signer. The Solana private key
     // is imported into an encrypted local vault and never leaves this desktop;
@@ -3660,9 +3659,8 @@ private:
     // Top breadcrumb bar (active server favicon + server > section).
     QLabel *m_breadcrumb = nullptr;
     // Top-bar relay switcher: a "favicon  domain ▾ count" dropdown button
-    // (search/switch/add relays), plus a separate open-in-browser icon.
+    // (search/switch/add relays).
     QPushButton *m_relayMenuButton = nullptr;
-    QPushButton *m_relayOpenButton = nullptr;
     // Spinning-radar + latency readout sitting on the window-chrome line just
     // left of the CPU/MEM/DISK sparklines: probes the active relay once a
     // minute and shows the round-trip time (e.g. "33ms") centered in the dish,
@@ -3829,7 +3827,6 @@ private:
     QPushButton *m_logNavButton = nullptr; // retired (adhoc #137): Log now opens via m_floatingLogButton
     QPushButton *m_floatingLogButton = nullptr; // "Log" button floating over the live-log strip
     QPushButton *m_controlNodeNavButton = nullptr; // local control-node operations
-    QPushButton *m_worldNavButton = nullptr; // opens the active relay's 3D world
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
     QPushButton *m_nodesNavButton = nullptr;  // "Nodes" top-nav button (adhoc #9)
     QPushButton *m_relaysNavButton = nullptr; // "Relays" top-nav button

@@ -134,6 +134,9 @@ def test_world_ui_only_renders_delete_action_for_admins():
     world = WORLD.read_text(encoding="utf-8")
     assert "this.identity?.isAdmin === true" in world
     assert "data-world-admin-delete-node" in world
+    assert "node?.machineName || node?.name" in world
     assert "DELETE ${nodeName}" in world
     assert 'this.postJSON("/api/world/admin/nodes/delete"' in world
+    assert "await this.loadWorldData({ forceMirrors: true });" in world
+    assert 'cache: force ? "no-store" : "default"' in world
     assert "/api/world/admin/nodes/delete" in ENTRY_TEXT

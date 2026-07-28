@@ -55,11 +55,16 @@ const REPOSITORY_CONNECTION_MIN_X = 78;
 const REPOSITORY_CONNECTION_MAX_X = 103;
 const REPOSITORY_CONNECTION_HALF_WIDTH = 26;
 const LEADERBOARD_ISLAND_CENTER_X = -130;
-const LEADERBOARD_ISLAND_RADIUS = 34;
-const LEADERBOARD_ISLAND_BOARD_RADIUS = 25;
+const LEADERBOARD_ISLAND_RADIUS = 54;
+const LEADERBOARD_ISLAND_BOARD_RADIUS = 43;
 const LEADERBOARD_CONNECTION_MIN_X = -103;
 const LEADERBOARD_CONNECTION_MAX_X = -78;
-const LEADERBOARD_CONNECTION_HALF_WIDTH = 18;
+const LEADERBOARD_CONNECTION_HALF_WIDTH = 24;
+const MEMBER_ISLAND_CENTER_Z = 130;
+const MEMBER_ISLAND_RADIUS = 42;
+const MEMBER_CONNECTION_MIN_Z = 78;
+const MEMBER_CONNECTION_MAX_Z = 103;
+const MEMBER_CONNECTION_HALF_WIDTH = 24;
 const OFFICE_CONNECTION_MIN_Z = -116;
 const OFFICE_CONNECTION_MAX_Z = -78;
 const OFFICE_CONNECTION_HALF_WIDTH = 36;
@@ -254,6 +259,19 @@ function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
     return true;
   }
   if (
+    Math.hypot(px, pz - MEMBER_ISLAND_CENTER_Z) <=
+    MEMBER_ISLAND_RADIUS - margin
+  ) {
+    return true;
+  }
+  if (
+    Math.abs(px) <= MEMBER_CONNECTION_HALF_WIDTH - margin &&
+    pz >= MEMBER_CONNECTION_MIN_Z + margin &&
+    pz <= MEMBER_CONNECTION_MAX_Z - margin
+  ) {
+    return true;
+  }
+  if (
     Math.abs(px) <= OFFICE_CONNECTION_HALF_WIDTH - margin &&
     pz >= OFFICE_CONNECTION_MIN_Z + margin &&
     pz <= OFFICE_CONNECTION_MAX_Z - margin
@@ -398,6 +416,13 @@ const ACCOUNT_STATUS_ICONS = Object.freeze({
   "Organization admin": "◆",
   "Verified bot": "⌘",
 });
+
+function accountStatusIcon(identity) {
+  const status = String(identity?.accountStatus || "Guest");
+  if (status === "Registered" && identity?.emailVerified !== true) return "×";
+  return ACCOUNT_STATUS_ICONS[status] || "○";
+}
+
 const WORLD_MODERATION_HANDLE_PATTERN = /^[a-f0-9]{64}$/;
 // Organization and account names share the node-name grammar the worker
 // enforces. The team plaque only ever carries names, never a session secret.
@@ -786,7 +811,7 @@ function badgeTexture(
       .slice(0, 18);
     context.fillText(
       [
-        `${ACCOUNT_STATUS_ICONS[account] || "○"} ${account}`,
+        `${accountStatusIcon(identity)} ${account}`,
         identity.localTime,
       ].filter(Boolean).join(" · "),
       52,
@@ -2816,6 +2841,10 @@ function officeReclaimedWoodTexture(THREE) {
 // completed task moves to a varied slot on the right with a hand-drawn X.
 // Keep the ordering stable so a repaint never makes notes jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
+  { key: "done:object-keyboard-layout", task: "Click-select objects + keyboard layout controls", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:member-click-panel", task: "Click a user for public member side panel", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:world-node-delete-fix", task: "Fix admin World mirror deletion target", estimate: "ready for deploy · in QA", done: true },
+  { key: "done:annotated-world-districts", task: "Four paved routes + west/east/south districts", estimate: "ready for deploy · in QA", done: true },
   { key: "done:flagship-expanded", task: "Keep flagship repo expanded without sync delay", estimate: "ready for deploy · in QA", done: true },
   { key: "done:avatar-identity", task: "Immediate flags + verified email pins", estimate: "ready for deploy · in QA", done: true },
   { key: "done:avatar-faces", task: "Unique faces + compact avatar upload", estimate: "ready for deploy · in QA", done: true },
@@ -6843,6 +6872,51 @@ function createLandscapePath(
   return path;
 }
 
+function addRoundedCausewayEnds(
+  THREE,
+  group,
+  {
+    name,
+    axis = "x",
+    length,
+    radius,
+    depth,
+    topColor,
+    earthColor,
+  },
+) {
+  const topMaterial = makeMaterial(THREE, topColor, { roughness: 0.96 });
+  const earthMaterial = makeMaterial(THREE, earthColor, { roughness: 1 });
+  for (const direction of [-1, 1]) {
+    const offset = (length / 2) * direction;
+    const earth = new THREE.Mesh(
+      new THREE.CylinderGeometry(radius, radius, depth, 48),
+      earthMaterial,
+    );
+    earth.name = `${name}-rounded-earth-${direction < 0 ? "town" : "island"}`;
+    earth.position.set(
+      axis === "x" ? offset : 0,
+      -depth / 2,
+      axis === "z" ? offset : 0,
+    );
+    group.add(earth);
+    const top = new THREE.Mesh(
+      new THREE.CircleGeometry(radius, 48),
+      topMaterial,
+    );
+    top.name = `${name}-rounded-pavement-${direction < 0 ? "town" : "island"}`;
+    top.rotation.x = -Math.PI / 2;
+    top.position.set(
+      axis === "x" ? offset : 0,
+      0.085,
+      axis === "z" ? offset : 0,
+    );
+    top.receiveShadow = true;
+    top.userData.ground = true;
+    group.add(top);
+  }
+}
+
 function createTownLandscape(THREE) {
   const group = new THREE.Group();
   group.name = "forkmesh-town-mixed-landscape";
@@ -6881,12 +6955,10 @@ function createTownLandscape(THREE) {
   group.add(plazaEdge);
 
   [
-    ["arrival", [0, 12], [0, 20], 5.6],
-    ["repositories", [8, 4], [38, 39], 4.8],
-    ["repository-causeway", [18, 0], [86, 0], 6.4],
-    ["office-promenade", [0, -16], [0, -86], 7.2],
-    ["west-garden", [-8, 4], [-47, 31], 4.2],
-    ["east-garden", [9, 8], [52, 26], 4.2],
+    ["east-repositories", [16, 0], [88, 0], 8.4],
+    ["north-office", [0, -16], [0, -88], 8.4],
+    ["west-billboards", [-16, 0], [-88, 0], 8.4],
+    ["south-members", [0, 16], [0, 88], 8.4],
   ].forEach(([id, start, end, width]) => {
     const edge = createLandscapePath(
       THREE,
@@ -13293,6 +13365,15 @@ export function createWorldScene({
   bridgeDeck.receiveShadow = true;
   bridgeDeck.userData.ground = true;
   repositoryBridge.add(bridgeDeck);
+  addRoundedCausewayEnds(THREE, repositoryBridge, {
+    name: "hosted-repository-causeway",
+    axis: "x",
+    length: repositoryConnectionLength,
+    radius: REPOSITORY_CONNECTION_HALF_WIDTH,
+    depth: 5.8,
+    topColor: "#766f5d",
+    earthColor: "#5b4433",
+  });
   const repositoryPromenade = new THREE.Mesh(
     new THREE.BoxGeometry(repositoryConnectionLength, 0.08, 7.2),
     makeMaterial(THREE, "#b29a76", { roughness: 0.98 }),
@@ -13361,6 +13442,15 @@ export function createWorldScene({
   leaderboardConnectionTop.receiveShadow = true;
   leaderboardConnectionTop.userData.ground = true;
   leaderboardConnection.add(leaderboardConnectionTop);
+  addRoundedCausewayEnds(THREE, leaderboardConnection, {
+    name: "forkmesh-leaderboard-causeway",
+    axis: "x",
+    length: leaderboardConnectionLength,
+    radius: LEADERBOARD_CONNECTION_HALF_WIDTH,
+    depth: 5.8,
+    topColor: "#4d7065",
+    earthColor: "#314f46",
+  });
   const leaderboardPromenade = new THREE.Mesh(
     new THREE.BoxGeometry(leaderboardConnectionLength, 0.08, 7.2),
     makeMaterial(THREE, "#b5cbbf", { roughness: 0.82 }),
@@ -13439,6 +13529,125 @@ export function createWorldScene({
   leaderboardIslandTitle.rotation.y = -Math.PI / 2;
   leaderboardDistrict.add(leaderboardIslandTitle);
   world.add(leaderboardDistrict);
+  const billboardIslandSlots = 9;
+  let billboardIslandSlot = 0;
+  function placeBillboardOnIsland(object, layoutId) {
+    if (!object) return;
+    object.parent?.remove(object);
+    leaderboardDistrict.add(object);
+    // This district supersedes the original town-square placements. Use a
+    // new persisted-layout key so an older admin-authored coordinate cannot
+    // pull a board back across town after the new scene has loaded.
+    movableWorldObjects.delete(layoutId);
+    const districtLayoutId = `west-billboards:${layoutId}`;
+    if (layoutId === "office-task-bulletin") {
+      // The build, repository-issue, and human-todo faces form one 40-unit
+      // physical wall. Center that wall across the north edge instead of
+      // forcing it into a slot intended for the compact single boards.
+      object.position.set(13.4, 0, 23);
+      object.rotation.y = Math.PI;
+      object.userData.layoutBaseRotation = object.rotation.y;
+      registerMovableObject(districtLayoutId, object);
+      return;
+    }
+    const index = billboardIslandSlot % billboardIslandSlots;
+    billboardIslandSlot += 1;
+    const angle =
+      Math.PI / 2 +
+      (index / billboardIslandSlots) * Math.PI * 2;
+    const radius = 29;
+    object.position.set(
+      Math.cos(angle) * radius,
+      0,
+      Math.sin(angle) * radius,
+    );
+    // Billboard faces use local +Z. Aim every board into the island's open
+    // center so visitors can walk the inner paved loop and read all of them.
+    object.rotation.y = -angle - Math.PI / 2;
+    object.userData.layoutBaseRotation = object.rotation.y;
+    registerMovableObject(districtLayoutId, object);
+  }
+  placeBillboardOnIsland(worldBulletin, "world-bulletin");
+  placeBillboardOnIsland(
+    worldGeneralChatBoard,
+    "world-general-chat-board",
+  );
+
+  // Registered members and their named campfire benches have a dedicated
+  // southern garden. It is the fourth cardinal district, leaving the live
+  // mirror cabinets and reward pool unobstructed in the central plaza.
+  const memberIsland = new THREE.Mesh(
+    new THREE.CircleGeometry(MEMBER_ISLAND_RADIUS, 96),
+    makeMaterial(THREE, "#56664e", { roughness: 0.98 }),
+  );
+  memberIsland.name = "forkmesh-member-island";
+  memberIsland.rotation.x = -Math.PI / 2;
+  memberIsland.position.set(0, 0.012, MEMBER_ISLAND_CENTER_Z);
+  memberIsland.receiveShadow = true;
+  memberIsland.userData.ground = true;
+  world.add(memberIsland);
+  const memberFoundation = createTerrainFoundation(
+    THREE,
+    "forkmesh-member-island-foundation",
+    MEMBER_ISLAND_RADIUS,
+    5.8,
+    "members",
+  );
+  memberFoundation.position.z = MEMBER_ISLAND_CENTER_Z;
+  world.add(memberFoundation);
+
+  const memberConnection = new THREE.Group();
+  memberConnection.name = "forkmesh-member-island-connection";
+  memberConnection.position.set(
+    0,
+    0,
+    (MEMBER_CONNECTION_MIN_Z + MEMBER_CONNECTION_MAX_Z) / 2,
+  );
+  const memberConnectionLength =
+    MEMBER_CONNECTION_MAX_Z - MEMBER_CONNECTION_MIN_Z;
+  const memberConnectionEarth = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      MEMBER_CONNECTION_HALF_WIDTH * 2,
+      5.8,
+      memberConnectionLength,
+    ),
+    makeMaterial(THREE, "#394b35", { roughness: 1 }),
+  );
+  memberConnectionEarth.name = "forkmesh-member-causeway-earth";
+  memberConnectionEarth.position.y = -2.9;
+  memberConnection.add(memberConnectionEarth);
+  const memberConnectionTop = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      MEMBER_CONNECTION_HALF_WIDTH * 2,
+      0.16,
+      memberConnectionLength,
+    ),
+    makeMaterial(THREE, "#66725a", { roughness: 0.96 }),
+  );
+  memberConnectionTop.name = "forkmesh-member-causeway-top";
+  memberConnectionTop.position.y = 0.08;
+  memberConnectionTop.receiveShadow = true;
+  memberConnectionTop.userData.ground = true;
+  memberConnection.add(memberConnectionTop);
+  addRoundedCausewayEnds(THREE, memberConnection, {
+    name: "forkmesh-member-causeway",
+    axis: "z",
+    length: memberConnectionLength,
+    radius: MEMBER_CONNECTION_HALF_WIDTH,
+    depth: 5.8,
+    topColor: "#66725a",
+    earthColor: "#394b35",
+  });
+  const memberPromenade = new THREE.Mesh(
+    new THREE.BoxGeometry(8.4, 0.08, memberConnectionLength),
+    makeMaterial(THREE, "#b29a76", { roughness: 0.98 }),
+  );
+  memberPromenade.name = "forkmesh-member-promenade";
+  memberPromenade.position.y = 0.19;
+  memberPromenade.receiveShadow = true;
+  memberPromenade.userData.ground = true;
+  memberConnection.add(memberPromenade);
+  world.add(memberConnection);
 
   // The Office is a real campus district, not another interior scene. Its
   // wooded earth joins town across a broad continuous neck, with a stone
@@ -13504,6 +13713,15 @@ export function createWorldScene({
   officeConnectionTop.receiveShadow = true;
   officeConnectionTop.userData.ground = true;
   officeLandConnection.add(officeConnectionTop);
+  addRoundedCausewayEnds(THREE, officeLandConnection, {
+    name: "forkmesh-office-causeway",
+    axis: "z",
+    length: officeConnectionLength,
+    radius: OFFICE_CONNECTION_HALF_WIDTH,
+    depth: 6.4,
+    topColor: "#69644f",
+    earthColor: "#594332",
+  });
   for (const x of [-OFFICE_CONNECTION_HALF_WIDTH, OFFICE_CONNECTION_HALF_WIDTH]) {
     const edge = new THREE.Mesh(
       new THREE.BoxGeometry(0.55, 0.5, officeConnectionLength),
@@ -13757,6 +13975,15 @@ export function createWorldScene({
     THREE, interactive, STATUS_BANNER_OPTIONS);
   world.add(statusBanner);
   registerMovableObject("status-banner", statusBanner);
+  [
+    [mastodonKiosk, "mastodon-kiosk"],
+    [twitterBanner, "twitter-banner"],
+    [redditBanner, "reddit-banner"],
+    [blogBanner, "blog-banner"],
+    [statusBanner, "status-banner"],
+  ].forEach(([board, layoutId]) =>
+    placeBillboardOnIsland(board, layoutId),
+  );
   const statusBannerRecord = {
     group: statusBanner,
     options: STATUS_BANNER_OPTIONS,
@@ -14236,7 +14463,8 @@ export function createWorldScene({
   setShadows(campfire);
   world.add(campfire);
   landmarkObjects.set("campfire", campfire);
-  registerMovableObject("campfire", campfire);
+  movableWorldObjects.delete("campfire");
+  registerMovableObject("south-members:campfire", campfire);
 
   // A wooden swing set west of the fountain: three swings hang from one beam,
   // so up to three visitors can ride at once. Clicking a seat starts the ride
@@ -15808,6 +16036,7 @@ export function createWorldScene({
   officeLobbyPlayer.rotation.y = Math.PI;
   officeLobbyPlayer.visible = false;
   officeInterior.add(officeLobbyPlayer);
+  registerAvatarChestControls(officeLobbyPlayer, identity.id);
 
   // Staffed reception: Noah is a scene-native avatar, so visitors meet one
   // person at the far-wall desk instead of a modal login wall.
@@ -16277,6 +16506,10 @@ export function createWorldScene({
   }
   world.add(officeTaskBulletin);
   registerMovableObject("office-task-bulletin", officeTaskBulletin);
+  placeBillboardOnIsland(
+    officeTaskBulletin,
+    "office-task-bulletin",
+  );
 
   const worldQaBoard = new THREE.Group();
   worldQaBoard.name = "forkmesh-world-qa-board";
@@ -16347,6 +16580,7 @@ export function createWorldScene({
   interactive.push(qaBoardFace);
   world.add(worldQaBoard);
   registerMovableObject("world-qa-board", worldQaBoard);
+  placeBillboardOnIsland(worldQaBoard, "world-qa-board");
 
   let qaBoardSnapshot = { view: "cards", list: [] };
 
@@ -18065,6 +18299,7 @@ export function createWorldScene({
           id,
           makePlayerLabel(avatar, labelLayer),
         );
+        registerAvatarChestControls(avatar, id);
       } else if (avatar.userData.name !== participantIdentity.name) {
         updateAvatarBadge(THREE, avatar, participantIdentity, true);
         officeParticipantLabels.get(id).textContent = participantIdentity.name;
@@ -18081,6 +18316,7 @@ export function createWorldScene({
     });
     officeParticipants.forEach((avatar, id) => {
       if (seenOfficeParticipants.has(id)) return;
+      unregisterAvatarChestControls(avatar);
       officeInterior.remove(avatar);
       avatar.traverse((child) => {
         child.geometry?.dispose?.();
@@ -20284,8 +20520,16 @@ export function createWorldScene({
               posts: (Array.isArray(profile.posts) ? profile.posts : [])
                 .slice(0, 5)
                 .map((post) => ({
-                  label: String(post?.label || post?.title || "").slice(0, 100),
-                  href: String(post?.href || post?.url || "").slice(0, 500),
+                  label: String(
+                    typeof post === "string"
+                      ? post
+                      : post?.label || post?.title || "",
+                  ).slice(0, 100),
+                  href: String(
+                    typeof post === "object"
+                      ? post?.href || post?.url || ""
+                      : "",
+                  ).slice(0, 500),
                 })),
             }
           : { state: String(profile.state || "loading").slice(0, 24) },
@@ -20295,10 +20539,13 @@ export function createWorldScene({
   /** Attach a loaded (or failed) fediverse card to one avatar's chest. */
   function setAvatarFediverseProfile(peerId, profile) {
     const id = String(peerId || "");
+    const officeParticipant = officeParticipants.get(id);
     const avatar =
       id === identity.id
         ? player
-        : remotePlayers.get(id) || loungeMembers.get(id);
+        : remotePlayers.get(id) ||
+          loungeMembers.get(id) ||
+          officeParticipant;
     if (!avatar?.userData?.badge) return;
     avatar.userData.fediverseProfile =
       profile && typeof profile === "object" ? profile : { state: "unavailable" };
@@ -20356,6 +20603,30 @@ export function createWorldScene({
         applyAvatarFaceImage(THREE, officeLobbyPlayer, profile.avatarUrl);
       }
       renderAvatarBadge(THREE, officeLobbyPlayer, false);
+    }
+    if (
+      officeParticipant?.userData?.badge &&
+      officeParticipant !== avatar
+    ) {
+      officeParticipant.userData.fediverseProfile =
+        avatar.userData.fediverseProfile;
+      officeParticipant.userData.badgeIdentity = {
+        ...(officeParticipant.userData.badgeIdentity || {}),
+        ...(avatar.userData.badgeIdentity || {}),
+      };
+      syncCountryShirt(
+        THREE,
+        officeParticipant,
+        officeParticipant.userData.badgeIdentity,
+      );
+      syncAvatarVerifiedPin(
+        officeParticipant,
+        officeParticipant.userData.badgeIdentity,
+      );
+      if (String(profile?.avatarUrl || "")) {
+        applyAvatarFaceImage(THREE, officeParticipant, profile.avatarUrl);
+      }
+      renderAvatarBadge(THREE, officeParticipant, true);
     }
   }
 
@@ -22417,14 +22688,11 @@ export function createWorldScene({
 
     const layer = new THREE.Group();
     layer.name = "repository-perimeter-portals";
-    const isImportedRepository = (record) =>
-      ["external-import", "hosted-import", "bulk-import"].includes(
-        record?.source,
-      );
-    const coreRecords = records.filter(
-      (record) => !isImportedRepository(record),
-    );
-    const hostedRecords = records.filter(isImportedRepository);
+    // The east district is the one repository home. Native and imported
+    // records share its fully expanded ring instead of leaving a second,
+    // partial repository orbit around the central node plaza.
+    const coreRecords = [];
+    const hostedRecords = records;
     [
       ["repository-perimeter-guide", REPOSITORY_EDGE_RADIUS, 0, coreRecords],
       [
@@ -22502,7 +22770,7 @@ export function createWorldScene({
     const portalMeshes = [];
     const orderedRecords = [...coreRecords, ...hostedRecords];
     orderedRecords.forEach((record, index) => {
-      const islandRecord = isImportedRepository(record);
+      const islandRecord = true;
       const cohort = islandRecord ? hostedRecords : coreRecords;
       const cohortIndex = cohort.findIndex(
         (candidate) => candidate.key === record.key,
@@ -22609,6 +22877,25 @@ export function createWorldScene({
         portalMeshes.push(mesh);
       }
       face.add(disk, outline);
+      // Keep every repository visually expanded, including stubs whose full
+      // size tree has not reached this mirror yet. The concentric profile is
+      // deliberately lightweight; a real sizeTree replaces its centre with
+      // the file wedges below without collapsing the surrounding rings.
+      const expandedProfile = new THREE.Group();
+      expandedProfile.name =
+        `repository-always-expanded-profile:${record.owner}/${record.name}`;
+      [1.18, 1.38, 1.58].forEach((radius, ringIndex) => {
+        const ring = new THREE.Mesh(
+          new THREE.TorusGeometry(radius, 0.035, 6, 36),
+          outlineMaterial,
+        );
+        ring.name =
+          `repository-expanded-ring-${ringIndex + 1}:${record.owner}/${record.name}`;
+        ring.position.z = -0.008 - ringIndex * 0.006;
+        ring.scale.setScalar(nodeRadius);
+        expandedProfile.add(ring);
+      });
+      face.add(expandedProfile);
       if (record.termsFlagged) {
         const policyFlag = new THREE.Group();
         policyFlag.name =
@@ -22719,7 +23006,10 @@ export function createWorldScene({
       label.name = `repository-portal-label:${record.owner}/${record.name}`;
       label.scale.set(2.8, 0.76, 1);
       label.position.set(0, -1.42, 0.12);
-      label.visible = isActive;
+      // The east island is a repository catalog rather than a selector that
+      // hides every inactive name. Density scaling keeps the full labels
+      // readable while every repository remains expanded.
+      label.visible = true;
       node.add(label);
 
       if (isActive && !record.isPrivate) {
@@ -24944,6 +25234,10 @@ export function createWorldScene({
           objectIsEffectivelyVisible(object) &&
           officeObjectMatchesCurrentFloor(object),
       );
+    const avatarSelection = hit?.object
+      ? avatarSelections.get(hit.object)
+      : null;
+    setActiveAvatarSelection(avatarSelection?.avatar || null);
     if (
       officeSceneMode !== "town" &&
       hit?.object?.userData?.interactive === "office-marketing-task-board"
@@ -25093,8 +25387,11 @@ export function createWorldScene({
       return;
     }
     const chestControl = hit?.object ? chestControls.get(hit.object) : null;
-    if (chestControl) {
-      handleChestControl(chestControl, hit);
+    if (chestControl && handleChestControl(chestControl, hit)) {
+      return;
+    }
+    if (avatarSelection) {
+      onAvatarSelect(avatarSelectionPayload(avatarSelection));
       return;
     }
     const moderationAction = hit?.object
@@ -25323,10 +25620,14 @@ export function createWorldScene({
     // Districts register under a "landmark-" prefix; the campfire keeps its
     // own id but owns a map spot all the same, so match either form.
     const layoutId = String(object.userData.layoutId || "");
+    const authoredId = layoutId
+      .replace(/^west-billboards:/, "")
+      .replace(/^south-members:/, "");
     const landmark = layoutId
       ? LANDMARKS.find(
           (entry) =>
-            layoutId === "landmark-" + entry.id || layoutId === entry.id,
+            authoredId === "landmark-" + entry.id ||
+            authoredId === entry.id,
         )
       : null;
     if (Array.isArray(landmark?.position)) {
@@ -25427,14 +25728,17 @@ export function createWorldScene({
 
   function layoutObjectSelection(object) {
     const id = String(object?.userData?.layoutId || "");
+    const authoredId = id
+      .replace(/^west-billboards:/, "")
+      .replace(/^south-members:/, "");
     let landmarkId = "";
     object?.traverse?.((child) => {
       if (landmarkId) return;
       const candidate = String(child.userData?.landmark || "");
       if (candidate && landmarkById(candidate)) landmarkId = candidate;
     });
-    if (!landmarkId && id.startsWith("landmark-")) {
-      const candidate = id.slice("landmark-".length);
+    if (!landmarkId && authoredId.startsWith("landmark-")) {
+      const candidate = authoredId.slice("landmark-".length);
       if (landmarkById(candidate)) landmarkId = candidate;
     }
     if (!landmarkId) {
@@ -25452,7 +25756,7 @@ export function createWorldScene({
           campfire: "neighborhood",
           "swing-set": "neighborhood",
           "office-task-bulletin": "organizations",
-        }[id] || "neighborhood";
+        }[authoredId] || "neighborhood";
     }
     return {
       id,
@@ -25542,7 +25846,10 @@ export function createWorldScene({
     scheduleLayoutCommit(target);
     if (
       ["fountain", "campfire", "swing-set"].includes(
-        String(target.userData.layoutId || "").replace(/^landmark-/, ""),
+        String(target.userData.layoutId || "")
+          .replace(/^west-billboards:/, "")
+          .replace(/^south-members:/, "")
+          .replace(/^landmark-/, ""),
       )
     ) {
       relayoutNetworkNodes();
@@ -25749,6 +26056,7 @@ export function createWorldScene({
     }
     if (event.code === "Escape") {
       setActiveLayoutObject(null);
+      setActiveAvatarSelection(null);
       if (cameraMode === "first-person") setCameraMode("third-person");
       else clearFocus();
     }
@@ -25831,6 +26139,7 @@ export function createWorldScene({
 
   function animate(time) {
     if (!running || disposed) return;
+    refreshAvatarSelectionHighlight();
     const rawFrameMs = Math.max(0, time - lastFrame);
     const delta = clamp(rawFrameMs / 1000, 0, 0.05);
     lastFrame = time;

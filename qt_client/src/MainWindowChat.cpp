@@ -2047,11 +2047,6 @@ void MainWindow::createWorldSpeechPairing()
                 .arg(capability.value(QStringLiteral("expiresAt")).toString(),
                      capability.value(QStringLiteral("origin")).toString()));
 
-    // Open only the public World URL. The port and capability are intentionally
-    // absent from the URL, query, fragment, argv, and process environment.
-    QUrl world(capability.value(QStringLiteral("origin")).toString());
-    world.setPath(QStringLiteral("/world/"));
-    QDesktopServices::openUrl(world);
 }
 
 void MainWindow::revokeWorldSpeechPairing()
@@ -3553,7 +3548,7 @@ QWidget *MainWindow::buildBreadcrumb()
     bar->setObjectName("breadcrumbBar");
 
     // --- Relay switcher: a "favicon  domain ▾ count" dropdown (search / switch
-    // / add) plus a separate open-in-browser icon. ----------------------------
+    // / add). -----------------------------------------------------------------
     m_relayMenuButton = new QPushButton;
     m_relayMenuButton->setObjectName("relayMenuButton");
     m_relayMenuButton->setCursor(Qt::PointingHandCursor);
@@ -3565,17 +3560,6 @@ QWidget *MainWindow::buildBreadcrumb()
     // Spinning radar + once-a-minute latency readout, sitting just left of the
     // relay name (issue #144). The probe itself is driven by m_relayLatencyTimer.
     m_relayRadar = new RelayRadarWidget;
-
-    m_relayOpenButton = new QPushButton;
-    m_relayOpenButton->setObjectName("relayOpenButton");
-    m_relayOpenButton->setCursor(Qt::PointingHandCursor);
-    m_relayOpenButton->setFixedSize(30, 30);
-    setOcticon(m_relayOpenButton, "link", 16);
-    // The relay root is the ForkMesh World, so this always-visible main-nav
-    // control is the desktop node's direct portal into the browser experience.
-    m_relayOpenButton->setToolTip("Open ForkMesh World in your browser");
-    connect(m_relayOpenButton, &QPushButton::clicked, this,
-            [this] { openServerWebsite(m_activeServer); });
 
     // Node switcher, to the right of the relay switcher: "node ▾ count".
     m_nodeMenuButton = new QPushButton;
@@ -3932,17 +3916,6 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_controlNodeNavButton, &QPushButton::clicked, this,
             [this] { showSection(kControlNodeSectionIndex); });
 
-    // The browser World is a destination rather than a local stacked section, so
-    // it stays out of the exclusive button group and opens the active relay.
-    m_worldNavButton = new QPushButton(QStringLiteral("World"));
-    m_worldNavButton->setObjectName("topNavButton");
-    m_worldNavButton->setCursor(Qt::PointingHandCursor);
-    m_worldNavButton->setToolTip(
-        QStringLiteral("Open ForkMesh World in your browser"));
-    setOcticon(m_worldNavButton, "home", 16);
-    connect(m_worldNavButton, &QPushButton::clicked, this,
-            &MainWindow::openForkMeshWorld);
-
     // Hosts (adhoc #263): provision a remote machine by SSHing in and running the
     // ForkMesh installer over ansible, section 7.
     m_hostsNavButton = new QPushButton(QStringLiteral("Hosts"));
@@ -4143,11 +4116,9 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *chromeRow = new QHBoxLayout(chrome);
     chromeRow->setContentsMargins(14, 0, 8, 0);
     chromeRow->setSpacing(8);
-    // The relay switcher (favicon + host dropdown) and its open-in-browser link
-    // now head the window-chrome line in place of the app-version label, which
-    // has moved down to the right-hand end of the row below (adhoc #407).
+    // The relay switcher now heads the window-chrome line in place of the app
+    // version label, which moved to the right-hand end of the row below.
     chromeRow->addWidget(m_relayMenuButton);
-    chromeRow->addWidget(m_relayOpenButton);
     chromeRow->addStretch();
 
     auto *searchCluster = new QWidget;
@@ -4289,7 +4260,6 @@ QWidget *MainWindow::buildBreadcrumb()
     // sits in the right-hand utility cluster next to the rebuild button. Log is
     // now a floating button on the live-log strip.
     navRow->addWidget(m_controlNodeNavButton);
-    navRow->addWidget(m_worldNavButton);
     navRow->addWidget(m_hostsNavButton);
     navRow->addWidget(m_nodesNavButton);
     navRow->addWidget(m_relaysNavButton);
@@ -4620,9 +4590,6 @@ void MainWindow::updateRelaySwitcher()
             ? QIcon(faviconFor(m_servers.at(m_activeServer)))
             : QIcon(letterFavicon(host.isEmpty() ? QStringLiteral("ForkMesh")
                                                  : host)));
-    if (m_relayOpenButton)
-        m_relayOpenButton->setEnabled(!host.isEmpty());
-
     if (host.isEmpty())
         host = QStringLiteral("ForkMesh");
     // "domain ▾ count": the caret signals it drops down; the count is the

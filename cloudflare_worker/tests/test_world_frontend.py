@@ -149,7 +149,7 @@ def test_forkmesh_office_is_a_navigable_world_landmark():
 def test_landmarks_use_stable_positions_inside_the_world_and_office_campus():
     positions = {
         "fountain": (0, 0),
-        "campfire": (8, 8),
+        "campfire": (0, 130),
         "repositories": (35, 38),
         "office": (0, -215),
     }
@@ -201,6 +201,13 @@ def test_scene_builds_playable_landmarks_and_badged_avatars():
     ):
         assert status_icon in APP
         assert status_icon in SCENE
+    for source in (APP, SCENE):
+        assert "function accountStatusIcon(identity)" in source
+        assert (
+            'status === "Registered" && identity?.emailVerified !== true'
+            in source
+        )
+        assert 'return "×";' in source
     assert "Everyone, including guests, can cross the bridge and enter the lobby" in DATA
     assert "function updateOrganizations" in SCENE
     assert "organization-profiles" in SCENE
@@ -1086,7 +1093,9 @@ def test_repository_world_uses_authorized_https_metadata_and_size_aware_nodes():
     assert "repositorySizeTrees" in APP
     assert "repository-mini-size-map:" in SCENE
     assert '"bulk-import"' in SCENE
-    assert "isImportedRepository(record)" in SCENE
+    assert "const coreRecords = [];" in SCENE
+    assert "const hostedRecords = records;" in SCENE
+    assert "const islandRecord = true;" in SCENE
     assert "legacyBulkGroups" in APP
     assert 'mirrorOwners: ["mirror2", "mirror3"]' in APP
     assert 'repositoryIsland.name = "hosted-repository-island"' in SCENE
@@ -2072,7 +2081,7 @@ def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
 
 def test_leaderboards_have_a_walkable_island_and_inward_facing_ring():
     assert "const LEADERBOARD_ISLAND_CENTER_X = -130;" in SCENE
-    assert "const LEADERBOARD_ISLAND_RADIUS = 34;" in SCENE
+    assert "const LEADERBOARD_ISLAND_RADIUS = 54;" in SCENE
     assert "const LEADERBOARD_CONNECTION_MIN_X = -103;" in SCENE
     assert 'leaderboardIsland.name = "forkmesh-leaderboard-island"' in SCENE
     assert (
@@ -2354,9 +2363,11 @@ def test_double_clicking_the_ground_dashes_the_avatar_to_that_point():
     assert "cancelDash();" in blur
 
 
-def test_qt_main_navigation_opens_the_world_root():
-    assert 'setToolTip("Open ForkMesh World in your browser")' in QT_CHAT
-    assert "[this] { openServerWebsite(m_activeServer); }" in QT_CHAT
+def test_qt_main_navigation_does_not_open_the_world_root():
+    assert 'setToolTip("Open ForkMesh World in your browser")' not in QT_CHAT
+    assert "[this] { openServerWebsite(m_activeServer); }" not in QT_CHAT
+    assert "m_worldNavButton" not in QT_CHAT
+    assert "m_relayOpenButton" not in QT_CHAT
     assert "Non-custodial payout address" in QT_CHAT
     assert "Never enter a private key or recovery" in QT_CHAT
 

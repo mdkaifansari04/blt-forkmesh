@@ -293,6 +293,13 @@ const ACCOUNT_STATUS_ICONS = Object.freeze({
   "Organization admin": "◆",
   "Verified bot": "⌘",
 });
+
+function accountStatusIcon(identity) {
+  const status = String(identity?.accountStatus || "Guest");
+  if (status === "Registered" && identity?.emailVerified !== true) return "×";
+  return ACCOUNT_STATUS_ICONS[status] || "○";
+}
+
 const OUTFIT_COLOR_VALUES = new Set(OUTFIT_COLOR_OPTIONS.map((option) => option.id));
 const OUTFIT_STYLE_VALUES = new Set(OUTFIT_STYLE_OPTIONS.map((option) => option.id));
 const PATREON_URL = "https://www.patreon.com/16434219/join";
@@ -3523,7 +3530,7 @@ function accountBadgeCopy(identity, settings) {
     (option) => option.id === settings.availability,
   )?.label;
   const pieces = [
-    `${ACCOUNT_STATUS_ICONS[identity.accountStatus] || "○"} ${
+    `${accountStatusIcon(identity)} ${
       identity.accountStatus || "Guest"
     }`,
   ];
@@ -3805,7 +3812,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span class="world-shirt-account" data-world-shirt-account title="${escapeHTML(
                 identity.accountStatus,
               )}">${escapeHTML(
-                ACCOUNT_STATUS_ICONS[identity.accountStatus] || "○",
+                accountStatusIcon(identity),
               )}</span>
             </button>
           </nav>
@@ -5719,6 +5726,7 @@ class ForkMeshWorld extends HTMLElement {
           void this.loadWorldFediverseProfile(target),
         onFediverseFollow: (target) =>
           void this.toggleWorldFediverseFollow(target),
+        onAvatarSelect: (member) => this.openWorldMemberDetail(member),
         onAvatarWalletAction: ({ self, address } = {}) => {
           const wallet = String(address || "").trim();
           if (wallet) {
@@ -6891,13 +6899,14 @@ class ForkMeshWorld extends HTMLElement {
     return this.fetchJSON("/api/repo/forkmesh/forkmesh/mirrors", {
       auth: false,
       timeout: 5000,
+      cache: force ? "no-store" : "default",
       maxAge: force ? 0 : MIRROR_STATUS_POLL_MS - 5000,
       backoff: true,
       staleIfError: true,
     });
   }
 
-  async loadWorldData() {
+  async loadWorldData({ forceMirrors = false } = {}) {
     const session = validWorldSession();
     const hasSession = this.sessionAuthenticated && Boolean(session);
     const [
@@ -6925,7 +6934,7 @@ class ForkMeshWorld extends HTMLElement {
     ] =
       await Promise.allSettled([
         this.fetchJSON("/api/network/overview", { auth: false }),
-        this.fetchMirrorCatalog(),
+        this.fetchMirrorCatalog({ force: forceMirrors }),
         this.fetchJSON("/api/world/instances", {
           auth: false,
           timeout: 5000,
@@ -9543,8 +9552,7 @@ class ForkMeshWorld extends HTMLElement {
       initial.hidden = Boolean(avatarPng);
     }
     if (account) {
-      account.textContent =
-        ACCOUNT_STATUS_ICONS[visible.accountStatus] || "○";
+      account.textContent = accountStatusIcon(visible);
       account.title = visible.accountStatus || "Guest";
     }
     if (badge) {
@@ -11089,10 +11097,10 @@ class ForkMeshWorld extends HTMLElement {
                 <h3>Permanently delete node</h3>
                 <p>This removes the node account, its published repositories, endpoint registration, sessions, and server-side state. It does not destroy the provider VM.</p>
                 <form data-world-admin-delete-node data-node-name="${escapeHTML(
-                  String(node?.name || node?.machineName || "").toLowerCase(),
+                  String(node?.machineName || node?.name || "").toLowerCase(),
                 )}">
                   <label>Type <code>DELETE ${escapeHTML(
-                    String(node?.name || node?.machineName || "").toLowerCase(),
+                    String(node?.machineName || node?.name || "").toLowerCase(),
                   )}</code> to confirm
                     <input name="confirmation" autocomplete="off" required />
                   </label>
@@ -11132,6 +11140,171 @@ class ForkMeshWorld extends HTMLElement {
     this.showDetailOverlay(detail, backdrop, { returnFocus });
     this.wireMirrorNodeAgentWorkspace(node);
     this.wireMirrorNodeAdminDelete(node);
+  }
+
+  openWorldMemberDetail(member = {}, { returnFocus = null } = {}) {
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop) return;
+    const name = String(member.name || "World visitor").slice(0, 32);
+    const directory = (Array.isArray(this.memberDirectory)
+      ? this.memberDirectory
+      : []
+    ).find(
+      (record) =>
+        String(record?.name || "").trim().toLowerCase() ===
+        name.trim().toLowerCase(),
+    );
+    const record = { ...(directory || {}), ...member };
+    const status = [record.statusEmoji, record.status]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join(" ");
+    const totalActiveMs = Math.max(0, Number(record.totalActiveMs) || 0);
+    const activeHours = Math.floor(totalActiveMs / 3_600_000);
+    const activeMinutes = Math.floor(
+      (totalActiveMs % 3_600_000) / 60_000,
+    );
+    const activeLabel = activeHours
+      ? `${activeHours}h ${String(activeMinutes).padStart(2, "0")}m`
+      : `${activeMinutes}m`;
+    const teams = (Array.isArray(record.teams) ? record.teams : [])
+      .map((team) => String(team || "").slice(0, 40))
+      .filter(Boolean);
+    const nodes = (Array.isArray(record.nodes) ? record.nodes : [])
+      .map((node) =>
+        String(
+          node && typeof node === "object"
+            ? node.name || node.node || ""
+            : node || "",
+        ).slice(0, 48),
+      )
+      .filter(Boolean);
+    const fediverse =
+      record.fediverse && typeof record.fediverse === "object"
+        ? record.fediverse
+        : {};
+    const fediverseReady = fediverse.state === "ready";
+    const posts = (Array.isArray(fediverse.posts) ? fediverse.posts : [])
+      .filter((post) => String(post?.label || "").trim())
+      .slice(0, 5);
+    detail.dataset.openLandmark = "world-member";
+    detail.style.setProperty("--detail-color", "#77d9ff");
+    detail.innerHTML = `
+      <header class="world-detail-header">
+        <div>
+          <p class="world-eyebrow">WORLD MEMBER / PUBLIC PROFILE</p>
+          <h2 id="world-detail-title">${escapeHTML(
+            [record.flag, name].filter(Boolean).join(" "),
+          )}</h2>
+        </div>
+        <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close ${escapeHTML(name)} profile">×</button>
+      </header>
+      <div class="world-detail-scroll">
+        <p class="world-detail-summary">${escapeHTML(
+          status || "Exploring the ForkMesh World",
+        )}</p>
+        <div class="world-status-row">
+          <span class="world-status-pill">${escapeHTML(
+            String(record.accountStatus || "Guest"),
+          )}</span>
+          ${
+            record.emailVerified === true
+              ? '<span class="world-status-pill">✓ VERIFIED EMAIL</span>'
+              : ""
+          }
+          ${
+            record.self === true
+              ? '<span class="world-status-pill">THIS IS YOU</span>'
+              : ""
+          }
+        </div>
+        <div class="world-truth-grid">
+          <section class="world-truth-block">
+            <h3>Member</h3>
+            <dl class="world-technical-list">
+              <div><dt>Name</dt><dd>${escapeHTML(name)}</dd></div>
+              <div><dt>Client</dt><dd>${escapeHTML(
+                [record.browser, record.os].filter(Boolean).join(" · ") ||
+                  "Not shared",
+              )}</dd></div>
+              <div><dt>First seen</dt><dd>${escapeHTML(
+                String(record.firstVisitAge || "Not shared"),
+              )}</dd></div>
+              <div><dt>Joined</dt><dd>${escapeHTML(
+                Number(record.joinedAt) > 0
+                  ? relativeTimeLabel(Number(record.joinedAt))
+                  : "Not reported",
+              )}</dd></div>
+              <div><dt>World time</dt><dd>${escapeHTML(activeLabel)}</dd></div>
+              <div><dt>Public visits</dt><dd>${Math.max(
+                0,
+                Number(record.visitCount) || 0,
+              ).toLocaleString()}</dd></div>
+            </dl>
+          </section>
+          <section class="world-truth-block">
+            <h3>Organization</h3>
+            ${
+              teams.length
+                ? `<ul class="world-detail-list">${teams
+                    .map((team) => `<li>${escapeHTML(team)}</li>`)
+                    .join("")}</ul>`
+                : '<p class="world-empty-state">No public team membership is shown.</p>'
+            }
+            ${
+              nodes.length
+                ? `<p><strong>Nodes:</strong> ${escapeHTML(nodes.join(", "))}</p>`
+                : ""
+            }
+          </section>
+        </div>
+        <section class="world-detail-section">
+          <h3>Fediverse</h3>
+          ${
+            fediverseReady
+              ? `<p><strong>${escapeHTML(
+                  String(fediverse.handle || "Public profile"),
+                )}</strong> · ${Math.max(
+                  0,
+                  Number(fediverse.followers) || 0,
+                ).toLocaleString()} followers · ${Math.max(
+                  0,
+                  Number(fediverse.following) || 0,
+                ).toLocaleString()} following</p>
+                ${
+                  fediverse.bio
+                    ? `<p>${escapeHTML(String(fediverse.bio))}</p>`
+                    : ""
+                }
+                ${
+                  posts.length
+                    ? `<ul class="world-detail-list">${posts
+                        .map(
+                          (post) =>
+                            `<li>${
+                              /^https:\/\//i.test(String(post.href || ""))
+                                ? `<a href="${escapeHTML(
+                                    post.href,
+                                  )}" target="_blank" rel="noopener noreferrer">${escapeHTML(
+                                    post.label || "Recent activity",
+                                  )}</a>`
+                                : escapeHTML(
+                                    post.label || "Recent activity",
+                                  )
+                            }</li>`,
+                        )
+                        .join("")}</ul>`
+                    : ""
+                }`
+              : `<p class="world-empty-state">Fediverse information is ${escapeHTML(
+                  String(fediverse.state || "loading"),
+                )}.</p>`
+          }
+        </section>
+        <p class="world-panel-footnote">This panel contains the same privacy-filtered member, presence, and public profile fields already visible in the World. Private account and connection data are never added here.</p>
+      </div>`;
+    this.showDetailOverlay(detail, backdrop, { returnFocus });
   }
 
   mirrorNodeActionsHTML(node) {
@@ -11216,7 +11389,7 @@ class ForkMeshWorld extends HTMLElement {
         });
         this.toast(`${nodeName} was permanently removed from ForkMesh.`);
         this.closeLandmark();
-        await this.loadWorldData();
+        await this.loadWorldData({ forceMirrors: true });
       } catch (error) {
         controls.forEach((control) => { control.disabled = false; });
         if (status) {

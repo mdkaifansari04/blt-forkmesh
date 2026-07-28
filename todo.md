@@ -5,7 +5,10 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
-- [ ] Replace World object dragging with click selection, a subtle selection highlight, automatic detail-panel opening, admin arrow-key nudging, and `R` rotation.
+- [x] Replace World object dragging with click selection, a subtle selection highlight, automatic detail-panel opening, admin arrow-key nudging, and `R` rotation.
+- [x] Make every visible user avatar clickable, subtly highlight the selected person, and open their privacy-filtered member information in the side panel.
+- [x] Fix the `is_admin` World cabinet delete action to target the physical mirror name (not its operator account), report failures, and force-refresh cabinets after deletion.
+- [x] Apply the annotated World plan: four broad paved cardinal paths with curved joins; nodes in the center; every repository on the east island and always expanded; billboards on the west island; and the member/campfire circle on its own south island.
 - [x] Keep the flagship repository wheel expanded immediately and remove mirror-metadata render delay.
 - [x] Restore country flags immediately, add verified-email front pins, and keep privacy choices intact.
 - [x] Give every user a stable unique generated face plus a compact account-avatar upload override.
@@ -14,7 +17,7 @@ the implementation and its focused verification are complete.
 - [x] Swap cabinet Actions/server-info faces and split Claude/Codex work onto opposite side panels.
 - [x] Consolidate aquarium feed, opaque/clear backdrop, and light controls into a clickable bottom-right tank panel.
 - [x] Represent every public user as a small deterministic fish, with active/recent fish in upper lanes and inactive fish near the bottom.
-- [x] Let platform admins drag any World object's visible base to move it, with handle-free right-drag / Shift-drag rotation.
+- [x] Superseded: initial handle-free drag layout control, now replaced by click selection plus keyboard nudge/rotation.
 - [x] Keep mirror2 visible as a live green World cabinet when its recent signed endpoint health proves the machine is reachable, while preserving blocked clone/integrity detail.
 - [x] Make live mirror cabinets use green for physical node liveness instead of conflating it with per-repository clone eligibility.
 - [x] Show the latest commit's relative age beside its hash in both live and catalog-backed Qt Mirror nodes rows.

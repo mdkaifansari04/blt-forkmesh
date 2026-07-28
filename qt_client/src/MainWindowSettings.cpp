@@ -709,7 +709,7 @@ QWidget *MainWindow::buildSettingsSection()
     m_worldSpeechPairCodeEdit->setToolTip(
         "One-use capability. It expires in two minutes and is never saved.");
     m_worldSpeechPairButton =
-        new QPushButton(QStringLiteral("Open World + create code"));
+        new QPushButton(QStringLiteral("Create pairing code"));
     m_worldSpeechPairButton->setObjectName("ghostButton");
     m_worldSpeechPairButton->setCursor(Qt::PointingHandCursor);
     connect(m_worldSpeechPairButton, &QPushButton::clicked, this,

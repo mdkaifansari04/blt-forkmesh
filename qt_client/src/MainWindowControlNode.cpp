@@ -1,6 +1,6 @@
 // Local control-node operations: mirror lifecycle/sync/health, repository
 // permissions, local identity and public wallet connection, Cloudflare relay
-// bootstrap, remote hosts, logs, and the browser World portal.
+// bootstrap, remote hosts, and logs.
 
 #include "ControlNode.h"
 #include "MainWindow.h"
@@ -8,7 +8,6 @@
 #include "PrivateMirrorStore.h"
 #include "PublicMirrorRuntime.h"
 
-#include <QDesktopServices>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHeaderView>
@@ -236,14 +235,6 @@ QWidget *MainWindow::buildControlNodeSection()
     title->setFont(titleFont);
     header->addWidget(title);
     header->addStretch();
-    auto *worldButton = new QPushButton(QStringLiteral("Open ForkMesh World"));
-    worldButton->setObjectName(QStringLiteral("controlOpenWorldButton"));
-    worldButton->setProperty("buttonSize", "primary");
-    worldButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(worldButton, QStringLiteral("home"), 14);
-    connect(worldButton, &QPushButton::clicked, this,
-            &MainWindow::openForkMeshWorld);
-    header->addWidget(worldButton);
     outer->addLayout(header);
     outer->addWidget(controlHint(
         QStringLiteral(
@@ -2414,53 +2405,6 @@ void MainWindow::connectToDeployedRelay(const QString &hostname)
         QStringLiteral("Added %1 to this desktop's relay list.\n").arg(host));
     refreshRelaysTable();
     switchToServer(index);
-}
-
-void MainWindow::openForkMeshWorld()
-{
-    const QString relay =
-        (m_activeServer >= 0 && m_activeServer < m_servers.size())
-            ? m_servers.at(m_activeServer).url
-            : QString(kDefaultServerUrl);
-    const QUrl relayWorld = forkmesh::control::worldUrlForRelay(relay);
-    const auto openWorld = [this](const QUrl &url, const QString &where) {
-        if (!url.isValid() || url.host().isEmpty() ||
-            !QDesktopServices::openUrl(url)) {
-            flashMessage(QStringLiteral("Could not open ForkMesh World."), true);
-            return;
-        }
-        logSystem(QStringLiteral("Control node: opened %1 in the browser.")
-                      .arg(where));
-    };
-
-    // Prefer a running local World dev server (tools/world_dev_server.py): it
-    // serves the checkout's frontend while its API + login stay proxied to the
-    // main server, so local World changes are tested against live accounts.
-    // The probe is async and only trusts the server's marker header, so a
-    // stranger listening on the port cannot claim the World button.
-    const QUrl devUrl = forkmesh::control::worldDevServerUrl(
-        QSettings().value(kWorldDevUrlSetting).toString());
-    if (!devUrl.isValid() || !m_networkAccess) {
-        openWorld(relayWorld, QStringLiteral("ForkMesh World"));
-        return;
-    }
-    QNetworkRequest probe(devUrl);
-    probe.setTransferTimeout(700);
-    QNetworkReply *reply = m_networkAccess->head(probe);
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, devUrl, relayWorld, openWorld] {
-                reply->deleteLater();
-                const bool isDevServer =
-                    reply->error() == QNetworkReply::NoError &&
-                    reply->hasRawHeader("X-ForkMesh-World-Dev");
-                if (isDevServer) {
-                    openWorld(devUrl,
-                              QStringLiteral("the local World dev copy (%1)")
-                                  .arg(devUrl.toString()));
-                } else {
-                    openWorld(relayWorld, QStringLiteral("ForkMesh World"));
-                }
-            });
 }
 
 void MainWindow::deploySavedHostsFromControl()

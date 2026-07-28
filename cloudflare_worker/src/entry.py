@@ -1954,6 +1954,10 @@ INSTALLER_CHECK_INTERVAL_MS = 10 * 60 * 1000
 # Worker/static activation can briefly interrupt the flagship's mirror-routed
 # tree and blob reads. Do not turn that expected handoff into an outage.
 STATUS_DEPLOY_GRACE_MS = 5 * 60 * 1000
+# A crashed deploy client must not suppress genuine incidents indefinitely.
+# deploy.sh refreshes started_at for every rollout, so anything older than this
+# is a stale semaphore and monitoring fails open.
+STATUS_DEPLOY_MAX_MS = 30 * 60 * 1000
 
 STATUS_MONITOR_GUIDANCE = {
     "website": (
@@ -2930,16 +2934,39 @@ def _status_minute(minute_ts, current_minute_ts, row):
     }
 
 
-async def _status_deploy_semaphore_active(env):
-    """True only while deploy.sh owns the live deployment semaphore."""
+async def _status_deploy_semaphore_active(env, now=None):
+    """Suppress alerts during a bounded deploy and its activation grace.
+
+    D1 is shared by the retiring and newly activated Workers, unlike a build
+    timestamp environment variable. That makes this lifecycle the authority
+    for every health monitor during the rollout handoff.
+    """
     try:
         row = await d1_first(
             env,
-            "SELECT state FROM world_deploy_status WHERE singleton=1",
+            "SELECT state,started_at,finished_at "
+            "FROM world_deploy_status WHERE singleton=1",
         )
     except Exception:
         return False
-    return str((row or {}).get("state") or "") == "deploying"
+    if not row:
+        return False
+    if now is None:
+        now = int(Date.now())
+    try:
+        now = int(now)
+        started_at = int(row.get("started_at") or 0)
+        finished_at = int(row.get("finished_at") or 0)
+    except (TypeError, ValueError):
+        return False
+    state = str(row.get("state") or "")
+    if state == "deploying":
+        age = now - started_at
+        return started_at > 0 and 0 <= age < STATUS_DEPLOY_MAX_MS
+    if state == "ready":
+        age = now - finished_at
+        return finished_at > 0 and 0 <= age < STATUS_DEPLOY_GRACE_MS
+    return False
 
 
 async def _record_status_deploy_sample(env, now):
@@ -3014,7 +3041,7 @@ async def record_status_sample(env):
     # system so one failing check can't blank the rest of the page.
     await ensure_schema(env)
     now = int(Date.now())
-    if await _status_deploy_semaphore_active(env):
+    if await _status_deploy_semaphore_active(env, now):
         await _record_status_deploy_sample(env, now)
         return
     day_ts = (now // 86400000) * 86400000
@@ -8521,8 +8548,35 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-19"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-21"
 WORLD_QA_CARDS = (
+    ("world-object-click-keyboard-layout", "Click-selected World object editing",
+     "Click a movable Town object and confirm a restrained mint outline appears "
+     "while its related information opens in the side panel. As an is_admin "
+     "user, use all four arrow keys and confirm they nudge the selected object "
+     "relative to the camera; press R and Shift+R to rotate both ways. Confirm "
+     "the placement persists in a second browser. Drag the camera and use the "
+     "mouse wheel to confirm neither gesture moves or rotates the object."),
+    ("world-member-click-detail", "Clickable World member information",
+     "Click the body or chest of your own avatar and two other visible users, "
+     "including one inside the Office. Confirm a subtle blue outline follows "
+     "the selected avatar and the side panel shows the privacy-filtered member, "
+     "status, verified-email state, public teams, activity, nodes, and "
+     "Fediverse information. Confirm private IP and full User-Agent never "
+     "appear in this general member panel."),
+    ("world-admin-node-delete-machine-name", "Admin World node deletion",
+     "As is_admin, open a mirror cabinet whose operator account differs from "
+     "its machine name. Confirm the danger zone asks for DELETE plus the mirror "
+     "machine name, rejects a mismatched confirmation, and deletes only after "
+     "the browser confirmation. Confirm the cabinet list force-refreshes and "
+     "the removed mirror disappears; verify a non-admin sees no delete form."),
+    ("world-annotated-cardinal-districts", "Cardinal World district layout",
+     "From an overhead view confirm exactly four broad paved routes leave the "
+     "central live-node plaza. Walk each route and confirm its rounded join is "
+     "seamless: east reaches every fully expanded repository, west reaches all "
+     "bulletins and boards, south reaches the member/campfire circle, and north "
+     "reaches the Office. Confirm no mirror cabinet moved out of the center and "
+     "that old saved board coordinates do not pull a board back into town."),
     ("world-flagship-always-expanded", "Flagship repository opens without mirror delay",
      "Open a fresh World tab with normal network throttling. Confirm the "
      "forkmesh/forkmesh repository wheel expands as soon as its tree arrives "
@@ -39897,6 +39951,14 @@ class ForkMeshCronWatchdog(DurableObject):
             # A heartbeat raced an already-dispatched alarm. Keep the newer
             # deadline instead of manufacturing an outage.
             await self.ctx.storage.setAlarm(deadline)
+            return
+        if await _status_deploy_semaphore_active(self.env, now):
+            # A Worker rollout can interrupt the cron runner long enough to
+            # trip this independent watchdog. Keep observing, but do not turn
+            # expected deployment handoff time into an incident. The shared
+            # semaphore also includes the bounded post-activation grace.
+            await self.ctx.storage.setAlarm(
+                now + CRON_WATCHDOG_GRACE_MS)
             return
 
         outage_started_at = int(
