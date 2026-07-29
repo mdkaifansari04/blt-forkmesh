@@ -29,13 +29,15 @@ def test_world_reads_commit_activity_at_the_selected_immutable_ref():
 
 def test_world_activity_chart_matches_the_web_52_week_language_and_rates():
     for marker in (
-        "function repositoryCommitActivityTexture(THREE, activity = {})",
-        '"COMMIT ACTIVITY"',
+        "function repositoryCommitActivityTexture(",
+        "COMMIT ACTIVITY · ${subtitle}",
         '"52 WEEKS AGO"',
         '"THIS WEEK"',
         '"THIS MONTH"',
         "commitsPerHour",
         "repository-commit-activity-chart",
+        "repository-commit-activity-pedestal",
+        "backing.rotation.x = -Math.PI / 4",
         "function updateRepositoryActivity(activity = {}, selection = {})",
         "updateRepositoryActivity,",
     ):

@@ -30,7 +30,7 @@ export const LANDMARKS = [
     eyebrow: "COMMUNITY SEATING / 04",
     icon: "🔥",
     color: "#ff9a5a",
-    position: [8, 0, 8],
+    position: [0, 0, 130],
     summary:
       "The members' fire, where every registered account owns a named bench. Choosing it walks you back to your own seat.",
     metaphor:

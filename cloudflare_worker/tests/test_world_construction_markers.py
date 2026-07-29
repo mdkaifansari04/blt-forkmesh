@@ -11,7 +11,7 @@ CSS = (PUBLIC / "world.css").read_text(encoding="utf-8")
 
 def test_unknown_remote_integrations_fail_closed_but_local_features_start_live():
     assert "const LOCAL_LIVE_LANDMARKS = new Set([" in APP
-    for landmark in ("information", "neighborhood", "broadcast"):
+    for landmark in ("campfire", "neighborhood", "broadcast"):
         assert f'  "{landmark}",' in APP
     for removed in ("support", "workshops"):
         assert f'  "{removed}",' not in APP

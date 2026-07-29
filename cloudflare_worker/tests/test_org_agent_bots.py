@@ -55,7 +55,9 @@ def test_only_a_fresh_signed_provider_capable_mirror_receives_bounded_jobs():
     assert '"agentProviders"' in QT_REPOS
     assert 'QStringLiteral("claude-code")' in QT_REPOS
     assert 'QStringLiteral("codex")' in QT_REPOS
-    assert "no_eligible_headless_mirror" in ENTRY
+    assert "no_eligible_agent_node" in ENTRY
+    assert '"runtimeMode") or "").strip().lower() == "desktop"' in ENTRY
+    assert "await _is_admin(env, context[\"actor\"])" in ENTRY
     assert "ORG_AGENT_MAX_PROMPT = 8000" in ENTRY
     assert "ORG_AGENT_JOB_LEASE_MS = 2 * 60 * 1000" in ENTRY
     assert "status='leased'" in ENTRY
@@ -133,9 +135,10 @@ def test_world_explains_stalled_agent_jobs_and_bot_clicks_open_full_status():
     assert '"diagnostic": diagnostic' in ENTRY
     assert "session?.diagnostic" in SCENE
     assert 'diagnostic.level || "").toLowerCase() === "attention"' in SCENE
-    assert "openAgentBotDetail(name)" in WORLD
+    assert "openAgentBotDetail(name, {" in WORLD
     assert "ENGINEERING AGENT / LIVE SESSION STATUS" in WORLD
-    assert "{ provider, allNodes: true }" in WORLD
+    assert "provider," in WORLD
+    assert "allNodes: true" in WORLD
     assert "data-world-agent-open-chat" in WORLD
 
 

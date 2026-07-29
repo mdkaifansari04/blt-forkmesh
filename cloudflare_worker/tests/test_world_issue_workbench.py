@@ -40,25 +40,30 @@ def test_repo_issue_cards_and_board_open_the_full_web_workbench():
         "          this.openRepositoryIssueWorkbench(issue)"
     ) in WORLD
     workbench = _function_body(WORLD, "openRepositoryIssueWorkbench")
-    assert "/issues/${number}" in workbench
-    assert "data-world-issue-workbench" in workbench
-    assert "<iframe" in workbench
-    assert "loading=\"eager\"" in workbench
-    assert "referrerpolicy=\"same-origin\"" in workbench
-    assert "Open tab ↗" in workbench
+    assert 'this.openRepositoryRecordWebWorkbench("issue", page)' in workbench
+    generic = _function_body(WORLD, "openRepositoryRecordWebWorkbench")
+    assert '"pulls" : "issues"' in generic
+    assert "data-world-repository-web-workbench" in generic
+    assert "<iframe" in generic
+    assert "loading=\"eager\"" in generic
+    assert "referrerpolicy=\"same-origin\"" in generic
+    assert "Open tab ↗" in generic
     assert ".world-issue-workbench iframe" in STYLE
     assert '--world-detail-base-width: 920px' in STYLE
 
 
-def test_issue_detail_frame_exception_is_narrow_and_same_origin_only():
-    marker = "/:owner/:repo/issues/:number\n"
-    start = HEADERS.index(marker)
-    rule = HEADERS[start:].split("\n\n", 1)[0]
-    assert "! Content-Security-Policy" in rule
-    assert "frame-ancestors 'self'" in rule
-    assert "frame-ancestors 'none'" not in rule
-    assert "! X-Frame-Options" in rule
-    assert "X-Frame-Options: SAMEORIGIN" in rule
+def test_record_detail_frame_exceptions_are_narrow_and_same_origin_only():
+    for marker in (
+        "/:owner/:repo/issues/:number\n",
+        "/:owner/:repo/pulls/:number\n",
+    ):
+        start = HEADERS.index(marker)
+        rule = HEADERS[start:].split("\n\n", 1)[0]
+        assert "! Content-Security-Policy" in rule
+        assert "frame-ancestors 'self'" in rule
+        assert "frame-ancestors 'none'" not in rule
+        assert "! X-Frame-Options" in rule
+        assert "X-Frame-Options: SAMEORIGIN" in rule
 
 
 def test_mirror_cabinet_sides_show_authenticated_agent_task_states():
@@ -89,16 +94,16 @@ def test_office_exit_preserves_heading_instead_of_reversing_the_visitor():
     assert "Math.sin(player.rotation.y)" in leave
     assert "Math.cos(player.rotation.y)" in leave
     assert "cameraYaw = 0" not in leave
-    assert "cameraZoom = 1" in leave
+    assert "cameraZoom = OFFICE_EXIT_CAMERA_ZOOM" in leave
     assert "setCameraMode(\"third-person\", \"office-exit\")" in leave
 
 
 def test_repository_circle_uses_avatar_orbit_and_external_record_boards():
     assert 'icon.scale.set(1.14, 1.14, 1)' in SCENE
     assert "const orbitRadius = 4.25" in SCENE
-    assert 'recordKind: "issue"' in SCENE
-    assert 'recordKind: "pull"' in SCENE
-    assert '"combined"' in SCENE
+    assert "const pullBoard = addRecordBoard(" in SCENE
+    assert 'pulls,\n      "pull",\n      -7.75,' in SCENE
+    assert 'issues,\n      "issue",\n      7.75,' in SCENE
     assert '"repository-create-button"' not in SCENE
     follower_texture = _function_body(SCENE, "repositoryFollowerIconTexture")
     assert "256, 256" in follower_texture
@@ -121,8 +126,10 @@ def test_repository_record_boards_show_verified_status_and_page_by_twenty_five()
         '"unavailable"',
     ):
         assert status in _function_body(SCENE, "repositoryPullReviewStatus")
-    assert "${issueCount} ISSUES  ·  ${pullCount} PULL REQUESTS" in SCENE
-    assert "ONE LIVE WORK LIST" in SCENE
+    assert "repositoryRecordCountTexture(" in SCENE
+    assert '"OPEN ISSUES"' in SCENE
+    assert '"OPEN PRS"' in SCENE
+    assert "repositoryRecordPageTexture(" in SCENE
     assert "function changeRepositoryRecordPage(kind, direction)" in SCENE
     assert (
         "`repository-${kind}-page-${direction < 0 ? \"prev\" : \"next\"}`"

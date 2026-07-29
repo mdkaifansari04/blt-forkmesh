@@ -16,6 +16,7 @@ FUNCTIONS = {
     "_chat_channel_passphrase",
     "_chat_channel_ticket",
     "_chat_channel_ticket_claims",
+    "_desktop_office_session_id",
     "_require_data_secret",
 }
 
@@ -66,6 +67,7 @@ def _helpers():
         "Uint8Array": _FakeU8,
         "_INSECURE_DATA_KEYS": frozenset({"", "forkmesh-dev-data-key"}),
         "_to_js": lambda value: value,
+        "hashlib": hashlib,
         "hmac": hmac,
         "js_crypto": _FakeCrypto(),
         "re": re,
@@ -125,6 +127,7 @@ def _socket_harness(channel_version=1, member=True, admin=False,
         "durable_object_request": lambda request, target_url=None: asyncio.sleep(
             0, result={"request": request, "target": target_url}),
         "ensure_schema": lambda _env: asyncio.sleep(0),
+        "hashlib": hashlib,
         "hmac": hmac,
         "js_crypto": _FakeCrypto(),
         "json_response": lambda data, status=200: {
@@ -185,6 +188,15 @@ def _function_source(name):
         and item.name == name
     )
     return ast.unparse(node)
+
+
+def test_desktop_office_session_id_is_valid_stable_and_account_scoped():
+    helpers, _clock = _helpers()
+    make_id = helpers["_desktop_office_session_id"]
+    first = make_id("a" * 64, "Jett")
+    assert re.fullmatch(r"[A-Za-z0-9_-]{24,64}", first)
+    assert first == make_id("a" * 64, "jett")
+    assert first != make_id("b" * 64, "jett")
 
 
 def _room_key_from_path(path):
@@ -481,10 +493,11 @@ def test_runtime_adapter_and_routes_use_private_channel_gates():
     ):
         assert route_name in ENTRY_TEXT
     assert "class _ChatChannelsRuntime(_WorldCommunityRuntime)" in ENTRY_TEXT
-    runtime_source = ENTRY_TEXT[
-        ENTRY_TEXT.index("class _ChatChannelsRuntime"):
-        ENTRY_TEXT.index("class _ChatChannelsRuntime") + 1800
-    ]
+    runtime_source = ast.unparse(next(
+        node for node in ast.parse(ENTRY_TEXT, filename=str(ENTRY)).body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "_ChatChannelsRuntime"
+    ))
     world_runtime_source = ENTRY_TEXT[
         ENTRY_TEXT.index("class _WorldCommunityRuntime"):
         ENTRY_TEXT.index("class _ChatChannelsRuntime")

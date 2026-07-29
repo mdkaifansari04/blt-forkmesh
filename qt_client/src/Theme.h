@@ -179,6 +179,17 @@ QPushButton#socialIconButton {
 QPushButton#socialIconButton:hover { border-color: #6e7681; }
 #footerGitIdentity { color: #8b949e; font-size: 12px; }
 
+/* --- Bottom status bar: one text line tall, so everything in it is compact. */
+#appStatusBar { background-color: #010409; border-top: 1px solid #30363d; }
+#appStatusBar QLabel {
+    background: transparent; color: #8b949e; font-size: 11px;
+}
+#appStatusBar QPushButton {
+    background: transparent; border: none; color: #c9d1d9;
+    font-size: 11px; padding: 0 4px;
+}
+#appStatusBar QPushButton:hover { color: #58a6ff; }
+
 /* --- Nav rail --- */
 #navRail { background-color: #010409; border-right: 1px solid #30363d; }
 #navRail QLabel { background: transparent; }
@@ -276,6 +287,23 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 /* Thin activity rail down the repo detail page's left edge (adhoc #357); its
    Code/Git items paint themselves (ActivityRailButton). */
 #repoActivityRail { background-color: #010409; border-right: 1px solid #30363d; }
+#appNavigationRail, #appNavigationRailContent {
+    background-color: #0d1117; border-right: 1px solid #30363d;
+}
+QTableWidget#issueTable[nodesDirectory="true"]::item:selected {
+    background-color: #21262d; color: #e6edf3;
+}
+QPushButton[railUtility="true"] {
+    background: transparent; border: 1px solid transparent; border-radius: 6px;
+    color: #8b949e; padding: 0;
+}
+QPushButton[railUtility="true"]:hover,
+QPushButton[railUtility="true"]:checked {
+    background-color: #161b22; color: #e6edf3; border-color: #30363d;
+}
+#railItemLabel {
+    background: transparent; color: #8b949e; font-size: 8px; font-weight: 600;
+}
 #commitsList {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
 }
@@ -320,7 +348,11 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
 #appVersionLabel {
     background: transparent; color: #e6edf3; font-size: 13px; font-weight: 700;
 }
+#chromeVersionLabel {
+    background: transparent; color: #8b949e; font-size: 9px; font-weight: 600;
+}
 #breadcrumb { background: transparent; font-size: 14px; font-weight: 600; }
+#issueDetailOverlay { background-color: #0d1117; }
 #connectionStatus { background: transparent; font-size: 13px; font-weight: 600; }
 /* Presence dot overlaid on the avatar: ring matches the bar so it reads as a cut-out. */
 #connectionDot { border: 2px solid #0d1117; }
@@ -344,6 +376,9 @@ QPushButton#topNavButton {
 QPushButton#topNavButton:hover { background-color: #161b22; color: #e6edf3; }
 QPushButton#topNavButton:checked {
     background-color: #21262d; color: #e6edf3; border-color: #30363d;
+}
+QPushButton#topNavButton[railUtility="true"]:checked {
+    border-left: 2px solid #2ea043;
 }
 QPushButton#topNavButton[alert="true"] { color: #d29922; border-color: #9e6a03; }
 QPushButton#topNavButton[alert="true"]:checked {
@@ -494,6 +529,12 @@ QPushButton#memberDeleteButton:hover {
     background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 6px;
 }
 #promptWrapper:focus-within { border-color: #39d353; }
+#footerLogPanel, #backgroundTaskQueue {
+    background-color: #0d1117;
+    border: 1px solid rgba(57,211,83,0.55);
+    border-radius: 6px;
+}
+#footerDivider { background-color: #30363d; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
 }
@@ -846,6 +887,12 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 8px;
 }
 #promptWrapper:focus-within { border-color: #39d353; }
+#footerLogPanel, #backgroundTaskQueue {
+    background-color: #0d1117;
+    border: 1px solid rgba(57,211,83,0.55);
+    border-radius: 8px;
+}
+#footerDivider { background-color: #30363d; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
     min-height: 38px; max-height: 38px;
@@ -1466,6 +1513,23 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #repoTabBar { border-bottom: 1px solid #d0d7de; }
 /* Thin activity rail down the repo detail page's left edge (adhoc #357). */
 #repoActivityRail { background-color: #f6f8fa; border-right: 1px solid #d0d7de; }
+#appNavigationRail, #appNavigationRailContent {
+    background-color: #ffffff; border-right: 1px solid #d0d7de;
+}
+QTableWidget#issueTable[nodesDirectory="true"]::item:selected {
+    background-color: #eaeef2; color: #1f2328;
+}
+QPushButton[railUtility="true"] {
+    background: transparent; border: 1px solid transparent; border-radius: 6px;
+    color: #656d76; padding: 0;
+}
+QPushButton[railUtility="true"]:hover,
+QPushButton[railUtility="true"]:checked {
+    background-color: #eaeef2; color: #1f2328; border-color: #d0d7de;
+}
+#railItemLabel {
+    background: transparent; color: #656d76; font-size: 8px; font-weight: 600;
+}
 #commitsList {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
 }
@@ -1509,6 +1573,10 @@ QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328
 #appVersionLabel {
     background: transparent; color: #1f2328; font-size: 13px; font-weight: 700;
 }
+#chromeVersionLabel {
+    background: transparent; color: #656d76; font-size: 9px; font-weight: 600;
+}
+#issueDetailOverlay { background-color: #ffffff; }
 #globalSearch {
     background-color: #ffffff; border: 1px solid #d0d7de;
     border-radius: 6px; padding: 4px 8px; color: #1f2328;
@@ -1561,6 +1629,9 @@ QPushButton#topNavButton {
 QPushButton#topNavButton:hover { background-color: #eaeef2; color: #1f2328; }
 QPushButton#topNavButton:checked {
     background-color: #eaeef2; color: #1f2328; border-color: #d0d7de;
+}
+QPushButton#topNavButton[railUtility="true"]:checked {
+    border-left: 2px solid #2ea043;
 }
 QPushButton#topNavButton[alert="true"] { color: #9a6700; border-color: #d4a72c; }
 QPushButton#topNavButton[alert="true"]:checked {
@@ -1701,6 +1772,12 @@ QPushButton#memberDeleteButton:hover {
     background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 6px;
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
+#footerLogPanel, #backgroundTaskQueue {
+    background-color: #ffffff;
+    border: 1px solid rgba(26,127,55,0.5);
+    border-radius: 6px;
+}
+#footerDivider { background-color: #d0d7de; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
 }
@@ -1890,6 +1967,18 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 }
 #logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
 #logDock QLabel { background: transparent; }
+
+/* --- Bottom status bar: one text line tall, so everything in it is compact. */
+#appStatusBar { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
+#appStatusBar QLabel {
+    background: transparent; color: #656d76; font-size: 11px;
+}
+#appStatusBar QPushButton {
+    background: transparent; border: none; color: #1f2328;
+    font-size: 11px; padding: 0 4px;
+}
+#appStatusBar QPushButton:hover { color: #0969da; }
+
 #composerBar { background-color: #ffffff; border-top: 1px solid #d0d7de; }
 #composerInputRow {
     background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
@@ -2034,6 +2123,12 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 8px;
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
+#footerLogPanel, #backgroundTaskQueue {
+    background-color: #ffffff;
+    border: 1px solid rgba(26,127,55,0.5);
+    border-radius: 8px;
+}
+#footerDivider { background-color: #d0d7de; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
     min-height: 38px; max-height: 38px;

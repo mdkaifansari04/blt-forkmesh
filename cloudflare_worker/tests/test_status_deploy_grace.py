@@ -62,3 +62,47 @@ def test_flagship_probe_and_mail_transition_both_apply_the_grace():
     assert "< STATUS_DEPLOY_GRACE_MS" in transition
     assert 'prior_notified != "down"' in transition
     assert 'notified = "up"' in transition
+
+
+def test_shared_deploy_semaphore_covers_rollout_and_post_ready_grace():
+    namespace = {}
+    module = ast.fix_missing_locations(ast.Module(
+        body=[
+            _node("STATUS_DEPLOY_GRACE_MS"),
+            _node("STATUS_DEPLOY_MAX_MS"),
+        ],
+        type_ignores=[],
+    ))
+    exec(compile(module, str(ENTRY_PATH), "exec"), namespace)
+    assert namespace["STATUS_DEPLOY_GRACE_MS"] == 5 * 60 * 1000
+    assert namespace["STATUS_DEPLOY_MAX_MS"] == 30 * 60 * 1000
+
+    semaphore = ENTRY[
+        ENTRY.index("async def _status_deploy_semaphore_active"):
+        ENTRY.index("\n\nasync def _record_status_deploy_sample")
+    ]
+    assert "SELECT state,started_at,finished_at" in semaphore
+    assert 'state == "deploying"' in semaphore
+    assert "< STATUS_DEPLOY_MAX_MS" in semaphore
+    assert 'state == "ready"' in semaphore
+    assert "< STATUS_DEPLOY_GRACE_MS" in semaphore
+
+    sample = ENTRY[
+        ENTRY.index("async def record_status_sample"):
+        ENTRY.index("\n\nasync def status_history")
+    ]
+    assert "_status_deploy_semaphore_active(env, now)" in sample
+
+
+def test_deploy_announces_before_migrations_and_retries_after_schema_setup():
+    production = DEPLOY[DEPLOY.index('case "${1:-deploy}" in'):]
+    first_signal = production.index(
+        'if signal_world_deploy deploying "$BUILD_REV"; then')
+    migration = production.index("./migrate.sh", first_signal)
+    retry_signal = production.index(
+        'if signal_world_deploy deploying "$BUILD_REV"; then',
+        first_signal + 1,
+    )
+    assert first_signal < migration < retry_signal
+    assert "Deploy alert semaphore: state=$state" in DEPLOY
+    assert "deploy alert semaphore is unavailable" in production

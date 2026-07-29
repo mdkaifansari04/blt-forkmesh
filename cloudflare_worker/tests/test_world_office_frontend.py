@@ -207,7 +207,7 @@ def test_entrance_uses_two_proximity_sliding_panels_without_a_hinged_door():
     assert "officeInteriorDoorPivot" not in scene
 
 
-def test_attendance_is_one_shared_last_twenty_row_ledger():
+def test_attendance_has_member_leaderboard_and_individual_punch_clock():
     office = source(OFFICE_PATH)
     scene = source(SCENE_PATH)
     for contract in (
@@ -215,6 +215,8 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
         "async function loadAttendance()",
         "function recordAttendance(",
         "visits.slice(0, 20)",
+        "leaderboard.slice(0, 20)",
+        "leaderboard,",
         "if (loadPublicAttendance) void loadAttendance()",
         "loadPublicAttendance: !activeSession",
         "loadPublicFallback = true",
@@ -224,20 +226,27 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
     ):
         assert contract in office
     for contract in (
-        "OFFICE · LAST 20 VISITS",
-        'context.fillText("USER"',
-        'context.fillText("IN"',
-        'context.fillText("OUT"',
+        "OFFICE LEADERBOARD",
+        'context.fillText("MEMBER"',
+        'context.fillText("LONGEST STAY"',
+        'context.fillText("STATUS"',
         'context.fillText("FLOOR"',
-        'context.fillText("TOTAL"',
-        "visit?.inAt",
-        "visit?.outAt",
-        "visit?.durationMs",
+        "officeAttendanceLeaderboardRows",
+        "longestDurationMs",
+        "activeDurationMs",
+        "One row per member",
         "officeAttendanceDurationLabel",
         "updateOfficeAttendanceClock",
         "Math.floor(elapsedMs / 30_000)",
+        "IN OFFICE",
+        'officeClockInBoard.name = "forkmesh-office-clock-in"',
+        "OFFICE CLOCK · LAST 20 PUNCHES",
+        "function officeClockInTexture(",
+        'context.fillText("IN"',
+        'context.fillText("OUT"',
         "IN BUILDING",
-        'String(visit?.floor || "Lobby")',
+        "One row per punch",
+        "officeClockInTexture(officeAttendance, elapsedMs)",
     ):
         assert contract in scene
     for contract in (
@@ -273,6 +282,57 @@ def test_attendance_duration_labels_are_compact_and_reject_bad_values():
     )
     assert json.loads(result.stdout) == [
         "—", "—", "0m", "0m", "1m", "1h 02m", "1d 01h",
+    ]
+
+
+def test_attendance_leaderboard_deduplicates_sorts_and_ticks_active_stays():
+    script = f"""
+      import {{ officeAttendanceLeaderboardRows }} from {
+          json.dumps(SCENE_PATH.as_uri())
+      };
+      process.stdout.write(JSON.stringify(officeAttendanceLeaderboardRows({{
+        leaderboard: [
+          {{
+            account: "Alice",
+            longestDurationMs: 240_000,
+            activeDurationMs: 60_000,
+            present: true,
+            floor: "Engineering",
+          }},
+          {{
+            account: "bob",
+            longestDurationMs: 300_000,
+            activeDurationMs: 0,
+            present: false,
+          }},
+          {{
+            account: "BOB",
+            longestDurationMs: 120_000,
+            activeDurationMs: 0,
+            present: false,
+          }},
+        ],
+      }}, 300_000)));
+    """
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert json.loads(result.stdout) == [
+        {
+            "account": "Alice",
+            "durationMs": 360_000,
+            "present": True,
+            "floor": "Engineering",
+        },
+        {
+            "account": "bob",
+            "durationMs": 300_000,
+            "present": False,
+            "floor": "",
+        },
     ]
 
 
@@ -491,25 +551,21 @@ def test_marketing_task_board_is_blank_while_the_room_is_empty():
     assert "officeMarketingTaskSnapshot = normalizeOfficeMarketingTasks(payload)" in update
 
 
-def test_office_is_a_remote_district_reached_by_a_broad_land_connection():
+def test_office_is_a_remote_district_on_continuous_land_with_a_paved_route():
     scene = source(SCENE_PATH)
     tower = source(TOWER_PATH)
     for contract in (
-        'officeIsland.name = "forkmesh-office-island"',
-        "new THREE.CircleGeometry(OFFICE_ISLAND_RADIUS, 128)",
-        'officeLandConnection.name = "forkmesh-office-land-connection"',
-        'officeConnectionEarth.name = "forkmesh-office-land-connection-earth"',
-        'officeConnectionTop.name = "forkmesh-office-land-connection-top"',
-        "OFFICE_CONNECTION_HALF_WIDTH * 2",
+        '"forkmesh-continuous-city-land"',
+        '"north-office"',
+        "[0, OFFICE_BRIDGE_START_Z]",
         'officeBridge.name = "forkmesh-office-bridge"',
+        'officeApproach.name = "forkmesh-office-island-approach"',
         "new THREE.BoxGeometry(OFFICE_BRIDGE_WIDTH, 0.3, officeBridgeLength)",
-        "createTerrainFoundation(",
-        '"forkmesh-office-terrain-foundation"',
-        "world.add(officeIsland)",
-        "world.add(officeLandConnection)",
         "world.add(officeBridge)",
     ):
         assert contract in scene
+    assert '"forkmesh-office-land-connection"' not in scene
+    assert '"forkmesh-office-land-promenade"' not in scene
     assert "const bridgeGlass = makeMaterial" not in scene
     for contract in (
         "OFFICE_ISLAND_CENTER = Object.freeze([0, 0, -215])",
@@ -587,10 +643,29 @@ def test_tower_is_eleven_stories_and_about_ten_times_the_old_width():
     ):
         assert f'id: "{floor_id}"' in tower
     assert "for (let level = 1; level < OFFICE_FLOOR_COUNT; level += 1)" in scene
-    assert "OFFICE_FLOORS.slice(1).forEach((floor) => {" in scene
+    assert "OFFICE_FLOORS.slice(1).forEach((floor, interiorIndex) => {" in scene
     assert "function addOfficeFunFloorProps()" in scene
     assert 'officeFloorGroups.get("executive")' in scene
     assert "forkmesh-office-executive-strategy-table" in scene
+
+
+def test_aerial_lod_never_removes_world_sections_and_sol_sign_is_attached():
+    scene = source(SCENE_PATH)
+    assert "const detailTargets = [" not in scene
+    assert "setFarDetailVisible(" not in scene
+    assert "farDetailVisibility" not in scene
+    assert "Repositories, organizations, fediverse displays, every" in scene
+    assert "officeInterior.visible = true" in scene
+    assert 'officeSceneMode === "town" || floorId === officeCurrentFloorId' in scene
+    assert "const showOfficeInterior" not in scene
+    assert "floorGroup.visible = true;" in scene
+    assert "group.add(treasurySign);" in scene
+    assert "treasurySign.position.set(0, 0, 0);" in scene
+    assert '["MEMBERS", 0, MEMBER_ISLAND_CENTER_Z, "#f7c96b"]' in scene
+    assert "MEMBER_CIRCLE_CENTER_Z" not in scene
+    assert "let aerialLandmarkMarkersUnavailable = false;" in scene
+    assert "if (!aerialLandmarkMarkersUnavailable)" in scene
+    assert "aerialLandmarkMarkersUnavailable = true;" in scene
 
 
 def test_tall_floor_exhibits_and_elevator_openings_stay_between_slabs():
@@ -612,6 +687,29 @@ def test_tall_floor_exhibits_and_elevator_openings_stay_between_slabs():
     # slicing through adjacent floors.
     assert "new THREE.TorusKnotGeometry(8, 1.35" not in scene
     assert "orbit.rotation.z" not in scene
+
+
+def test_office_uses_solid_floor_finishes_and_batched_ceiling_light_grids():
+    scene = source(SCENE_PATH)
+    finish_start = scene.index("function officeFloorFinishMaterial(")
+    finish_end = scene.index(
+        "const officeLobbyFloorMaterial",
+        finish_start,
+    )
+    finish = scene[finish_start:finish_end]
+    assert "const solidColors = [" in finish
+    assert "canvasTexture(" not in finish
+    assert "map:" not in finish
+    atmosphere_start = scene.index("function addOfficeFloorAtmosphere(")
+    atmosphere_end = scene.index(
+        'addOfficeFloorAtmosphere(officeInterior, "lobby", 0)',
+        atmosphere_start,
+    )
+    atmosphere = scene[atmosphere_start:atmosphere_end]
+    assert "new THREE.InstancedMesh(" in atmosphere
+    assert "fixtureColumns = [-60, -36, -12, 12, 36, 60]" in atmosphere
+    assert "fixtureRows = [-18, 0, 18]" in atmosphere
+    assert "ceiling-light-grid" in atmosphere
 
 
 def test_office_remains_in_the_world_instead_of_swapping_to_another_scene():
@@ -799,15 +897,14 @@ def test_office_walkers_share_world_movement_tuning_and_heading():
         )
     }
 
-    # One cadence owns keyboard acceleration, analog strength, and the user's
-    # per-device tuning in every part of the continuous World.
+    # One cadence owns immediate keyboard speed, analog strength, and the
+    # user's per-device tuning in every part of the continuous World.
     for contract in (
         "PLAYER_MAX_SPEED",
-        "PLAYER_ACCELERATION",
         "moveSpeedScale",
-        "moveAccelScale",
         "keyboardMovementSpeed",
         "inputStrength",
+        "? topSpeed",
     ):
         assert contract in speed
     assert "movementSpeedForInput(" in walkers["walkPlayer"]
@@ -822,6 +919,27 @@ def test_office_walkers_share_world_movement_tuning_and_heading():
             f"{name} bypasses the shared movement tuning"
         )
         assert heading.search(body), f"{name} uses a different avatar heading"
+
+
+def test_shift_sprints_through_the_shared_collision_aware_movement_path():
+    scene = source(SCENE_PATH)
+    speed = function_body(scene, "movementSpeedForInput")
+    movement = function_body(scene, "movementInput")
+    key_down = function_body(scene, "handleKeyDown")
+    key_up = function_body(scene, "handleKeyUp")
+
+    assert "const PLAYER_SPRINT_MULTIPLIER = 2.6;" in scene
+    assert 'const SPRINT_KEYS = new Set(["ShiftLeft", "ShiftRight"]);' in scene
+    assert "input.sprinting ? PLAYER_SPRINT_MULTIPLIER : 1" in speed
+    assert 'keys.has("ShiftLeft") || keys.has("ShiftRight")' in movement
+    assert "SPRINT_KEYS.has(event.code)" in key_down
+    assert "SPRINT_KEYS.has(event.code)" in key_up
+    for name in (
+        "walkPlayer",
+        "walkOfficeLobbyPlayer",
+        "walkOfficeParticipant",
+    ):
+        assert "movementSpeedForInput(" in function_body(scene, name)
 
 
 def test_meeting_handoff_projects_the_live_player_out_of_collidable_furniture():
@@ -875,9 +993,13 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
         "Walk up to Noah for World and repository tips",
         "officeGreetingBoard.position.set(0, 6.25, -OFFICE_FRONT_Z + 0.5)",
         'officeAttendanceBoard.name = "forkmesh-office-attendance"',
-        "OFFICE · LAST 20 VISITS",
-        "visits.slice(0, 20)",
-        "IN BUILDING",
+        'officeClockInBoard.name = "forkmesh-office-clock-in"',
+        "OFFICE LEADERBOARD",
+        "OFFICE CLOCK · LAST 20 PUNCHES",
+        "officeAttendanceLeaderboardRows",
+        "officeClockInTexture",
+        "One row per member",
+        "One row per punch",
         "function setOfficeAttendance(event = {})",
         'logoFountain.name = "forkmesh-office-logo-fountain"',
         'chromeCube.name = "forkmesh-reflective-fm-cube"',
@@ -1132,6 +1254,19 @@ def test_elevator_animates_between_floors_and_emits_departure_and_arrival_audio(
         assert contract in scene
 
 
+def test_every_non_lobby_floor_has_a_return_to_lobby_portal():
+    scene = source(SCENE_PATH)
+    for contract in (
+        "forkmesh-office-${floor.id}-lobby-portal",
+        '"office-lobby-return-portal"',
+        '"LOBBY PORTAL"',
+        '"CLICK TO RETURN"',
+        'warpToOfficeFloor("lobby")',
+        "OFFICE_FLOORS.slice(1).forEach",
+    ):
+        assert contract in scene
+
+
 def test_elevator_has_one_stable_car_glass_layer_and_idle_lobby_reflections():
     scene = source(SCENE_PATH)
     elevator = scene[
@@ -1171,7 +1306,7 @@ def test_elevator_has_one_stable_car_glass_layer_and_idle_lobby_reflections():
     assert "logoReflectionIntervalMs" not in reflection
 
 
-def test_rooftop_has_glass_safety_barriers_and_office_jumping_is_disabled():
+def test_rooftop_has_glass_safety_barriers_and_explicit_exit_jump():
     scene = source(SCENE_PATH)
     assert 'const rooftop = officeFloorGroups.get("rooftop")' in scene
     assert 'const roofGlass = makeMaterial(THREE, "#d8ffff"' in scene
@@ -1194,15 +1329,32 @@ def test_rooftop_has_glass_safety_barriers_and_office_jumping_is_disabled():
         scene.index('if (event.code === "Space")'):
         scene.index('if (event.code === "KeyR"')
     ]
+    assert "const roofJumpStarted = beginOfficeRoofJump();" in jump
     assert 'officeSceneMode === "town"' in jump
-    assert "!officeCampusSurfaceContains(player.position.x, player.position.z)" in jump
+    assert "if (!roofJumpStarted && canJump)" in jump
+    for contract in (
+        "function createRoofParachute()",
+        '"forkmesh-mini-roof-parachute"',
+        '"forkmesh-mini-roof-parachute-canopy"',
+        '"forkmesh-mini-roof-parachute-cords"',
+        "prepareRoofParachute();",
+        "function updateRoofParachute(time)",
+        "ROOF_PARACHUTE_DEPLOY_VELOCITY",
+        "ROOF_PARACHUTE_TERMINAL_VELOCITY",
+        "ROOF_PARACHUTE_GRAVITY",
+        "roofParachute.landedAt = time",
+        "ROOF_PARACHUTE_COLLAPSE_MS",
+    ):
+        assert contract in scene
 
 
 def test_walk_surfaces_and_every_floor_use_real_collision_constraints():
     scene = source(SCENE_PATH)
     for contract in (
         "function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS)",
-        "return officeCampusSurfaceContains(px, pz, margin)",
+        "const cityRadius = CONTINUOUS_CITY_RADIUS - margin;",
+        "Math.hypot(",
+        ") <= cityRadius",
         "function constrainTownOfficeWalls(previousPosition)",
         "function constrainOfficeInteriorWalls(avatar, previousPosition)",
         "officeInteriorPointIsWalkable(",

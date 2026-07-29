@@ -287,7 +287,7 @@ def test_world_fetches_the_flagship_mirror_snapshot_once_and_uses_cabinets():
     # Bootstrap and the bounded visible-page fallback share one cached,
     # single-flight/backoff helper. Push signals remain the instant path.
     assert APP.count('this.fetchJSON("/api/repo/forkmesh/forkmesh/mirrors"') == 1
-    assert "this.fetchMirrorCatalog()" in APP
+    assert "this.fetchMirrorCatalog({ force: forceMirrors })" in APP
     assert "this.fetchMirrorCatalog({ force })" in APP
     assert "const MIRROR_STATUS_POLL_MS = 5 * 60 * 1000" in APP
     assert "if (this.destroyed || document.hidden) return;" in APP

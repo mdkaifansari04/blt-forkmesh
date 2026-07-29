@@ -347,14 +347,15 @@ def test_world_has_a_separate_privacy_safe_http_referrer_board():
     assert '"/api/leaderboards"' in loader
     assert "snapshot?.sites?.board" in loader
     assert "updateSiteReferrerLeaderboard" in WORLD
-    assert 'sign.name = "world-site-referrer-leaderboard"' in SCENE
-    assert "placeLeaderboardIslandSign(siteReferrerLeaderboardSign, 2)" in SCENE
+    assert 'title: "HTTP REFERRERS"' in SCENE
+    assert "leaderboardGridState.siteRows" in SCENE
+    assert 'board?.id === "http-referrers"' in SCENE
     assert "HTTP REFERER LEADERBOARD" in SCENE
     assert "GROUPED BY HOSTNAME · LATEST SAFE FULL URL" in SCENE
     assert "FULL PAGE URL · SENSITIVE QUERY VALUES REDACTED" in SCENE
-    assert '"site-referrer-link"' in SCENE
+    assert '"leaderboard-grid"' in SCENE
     assert "safeSiteReferrerURL" in SCENE
-    assert "new THREE.PlaneGeometry(3.52, 3.3)" in SCENE
+    assert "new THREE.PlaneGeometry(22.4, 22.4)" in SCENE
     assert "updateSiteReferrerLeaderboard" in SCENE
     assert "const LEADERBOARD_ISLAND_CENTER_X = -130;" in SCENE
     assert 'leaderboardDistrict.name = "forkmesh-leaderboard-district"' in SCENE

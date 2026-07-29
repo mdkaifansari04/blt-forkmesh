@@ -212,7 +212,7 @@ def test_campfire_is_a_world_map_spot_on_the_fire_itself():
     assert 'shortLabel: "Campfire"' in DATA
     block = DATA[DATA.index('id: "campfire"'):]
     block = block[: block.index("\n  },")]
-    assert "position: [8, 0, 8]" in block
+    assert "position: [0, 0, 130]" in block
     assert 'action: "campfire"' in block
     assert "campfire.position.set(...landmarkById(\"campfire\").position);" in SCENE
     # The spot is a local seating feature, so it never wears a construction
@@ -262,7 +262,7 @@ def test_campfire_clearing_keeps_its_landmark_tree_ring_out():
     # Landmark tree clusters stand at radius 6.4-8.5, which is where the bench
     # ring already is, so the campfire opts out of them.
     trees = SCENE.split("for (let treeIndex = 0", 1)[0]
-    assert 'if (landmark.id === "campfire") return;' in trees
+    assert 'if (["campfire", "office"].includes(landmark.id)) return;' in trees
 
 
 def test_remote_bench_sitters_render_seated():
@@ -414,11 +414,13 @@ def test_seated_members_get_a_chat_bubble_over_their_bench():
         '            loungeMembers.get(String(peerId || ""))' in SCENE
     )
     assert "showMemberChatBubble," in SCENE
-    # Only after no live peer matched, so a member walking the world keeps
-    # the bubble over their own avatar.
+    # Untrusted remote public-chat senders do not get to select a World avatar
+    # by copying its display name. Own lines remain attached to this browser's
+    # signed identity and seated-member resolution stays available to trusted
+    # scene callers.
     chat = APP.split("handleWorldChatMessage = (event) => {", 1)[1].split(
         "\n  };", 1
     )[0]
-    assert chat.index("this.world?.showChatBubble?.(id, text);") < chat.index(
-        "this.world?.showMemberChatBubble?.(sender, text);"
-    )
+    assert "if (data.self === true)" in chat
+    assert "this.world?.showChatBubble?.(this.identity?.id, text, true);" in chat
+    assert "this.world?.showMemberChatBubble?.(sender, text);" not in chat

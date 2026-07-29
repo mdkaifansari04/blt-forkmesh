@@ -184,20 +184,24 @@ signal_world_deploy() {
     local state="$1"
     local revision="$2"
     local now_ms
+    local sql
     now_ms="$(date -u +%s)000"
     case "$state" in
         deploying)
-            pywrangler d1 execute "${FORKMESH_D1_NAME:-forkmesh}" --remote \
-                --command "INSERT INTO world_deploy_status(singleton,state,revision,started_at,finished_at) VALUES(1,'deploying','$revision',$now_ms,0) ON CONFLICT(singleton) DO UPDATE SET state='deploying',revision='$revision',started_at=$now_ms,finished_at=0"
+            sql="INSERT INTO world_deploy_status(singleton,state,revision,started_at,finished_at) VALUES(1,'deploying','$revision',$now_ms,0) ON CONFLICT(singleton) DO UPDATE SET state='deploying',revision='$revision',started_at=$now_ms,finished_at=0"
             ;;
         ready|failed)
-            pywrangler d1 execute "${FORKMESH_D1_NAME:-forkmesh}" --remote \
-                --command "INSERT INTO world_deploy_status(singleton,state,revision,started_at,finished_at) VALUES(1,'$state','$revision',$now_ms,$now_ms) ON CONFLICT(singleton) DO UPDATE SET state='$state',revision='$revision',finished_at=$now_ms"
+            sql="INSERT INTO world_deploy_status(singleton,state,revision,started_at,finished_at) VALUES(1,'$state','$revision',$now_ms,$now_ms) ON CONFLICT(singleton) DO UPDATE SET state='$state',revision='$revision',finished_at=$now_ms"
             ;;
         *)
             return 2
             ;;
     esac
+    if ! pywrangler d1 execute "${FORKMESH_D1_NAME:-forkmesh}" --remote \
+        --command "$sql"; then
+        return 1
+    fi
+    echo "Deploy alert semaphore: state=$state revision=$revision at=$now_ms"
 }
 
 DEPLOY_SIGNAL_ACTIVE=0
@@ -957,14 +961,23 @@ case "${1:-deploy}" in
         BUILD_REV="$(build_rev)"
         APP_VERSION="$(app_version)"
         DEPLOYED_AT_MS="$(date -u +%s)000"
-        # Apply the lifecycle table before announcing this deployment. The
-        # Wrangler build hook safely rechecks the migration immediately after.
-        ./migrate.sh
+        # Announce before migrations so their expected D1 churn cannot trigger
+        # an incident. A brand-new install may not have the lifecycle table yet;
+        # in that case the retry immediately after migration establishes it.
         if signal_world_deploy deploying "$BUILD_REV"; then
             DEPLOY_SIGNAL_ACTIVE=1
             trap mark_interrupted_world_deploy EXIT
         else
-            echo "note: could not publish the World deployment indicator; continuing." >&2
+            echo "note: deploy semaphore unavailable before migrations; retrying after schema setup." >&2
+        fi
+        ./migrate.sh
+        if [ "$DEPLOY_SIGNAL_ACTIVE" != "1" ]; then
+            if signal_world_deploy deploying "$BUILD_REV"; then
+                DEPLOY_SIGNAL_ACTIVE=1
+                trap mark_interrupted_world_deploy EXIT
+            else
+                echo "WARNING: deploy alert semaphore is unavailable; deployment alerts will not be suppressed." >&2
+            fi
         fi
         echo "Deploying ForkMesh website + relay to Cloudflare (build $BUILD_REV, version ${APP_VERSION:-unknown})..."
         # wrangler.toml defines [env.dev] alongside the top-level (production)
