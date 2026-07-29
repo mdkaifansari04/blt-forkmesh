@@ -1336,7 +1336,15 @@ QWidget *MainWindow::buildNetworkLogDock()
     logPanel->setObjectName(QStringLiteral("footerLogPanel"));
     auto *logPanelLayout = new QVBoxLayout(logPanel);
     logPanelLayout->setContentsMargins(1, 1, 1, 1);
-    logPanelLayout->addWidget(m_footerUpdateLog);
+    logPanelLayout->setSpacing(2);
+    // Errors and successes land at the very top of the mini-log, pushed against
+    // its first line rather than floating up in the window chrome: the toast and
+    // the log lines it summarises are read together. It is hidden by default and
+    // only borrows height from the log while a message is up — the footer's own
+    // height is fixed, so nothing else in the window moves (adhoc #14).
+    // buildBreadcrumb() runs before this dock is built, so the pill already exists.
+    logPanelLayout->addWidget(m_topMessageContainer, 0, Qt::AlignTop);
+    logPanelLayout->addWidget(m_footerUpdateLog, 1);
 
     auto *leftRegion = new QWidget;
     leftRegion->setObjectName(QStringLiteral("footerLeftRegion"));
@@ -4240,9 +4248,10 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_notificationButton, &QPushButton::clicked, this,
             &MainWindow::showNotifications);
 
-    // Compact, centered success/failure toast. It lives in the middle of the
-    // top bar (between the breadcrumb and the notifications bell) and is flanked
-    // by stretches so it stays centered regardless of breadcrumb width.
+    // Compact success/failure toast. Built here with the rest of the chrome, but
+    // it is docked into the footer's mini-log panel (see buildNetworkLogDock),
+    // pinned to the top of that panel: messages belong with the log they explain,
+    // not in the crowded window-chrome line (adhoc #14).
     m_topMessage = new QLabel;
     m_topMessage->setObjectName("topMessageText");
     m_topMessage->setTextFormat(Qt::RichText);
@@ -4258,6 +4267,16 @@ QWidget *MainWindow::buildBreadcrumb()
     // Selectable like before, plus clickable links (e.g. the "jump to agent" toast).
     m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                           Qt::LinksAccessibleByMouse);
+    // ...but never at the cost of the caret: setTextInteractionFlags() bumps a
+    // QLabel to ClickFocus, and the toast now sits right beside the agent prompt,
+    // so selecting an error would silently steal the keyboard from whatever the
+    // user was typing. Mouse selection and link clicks still work without focus.
+    m_topMessage->setFocusPolicy(Qt::NoFocus);
+    // A one-line QLabel reports its whole text width as its minimum, which would
+    // let a long error force the mini-log panel — and with it the window — wider.
+    // An explicit minimum overrides that hint, so the pill shrinks with the panel
+    // and clips (from the right, per the alignment above) instead.
+    m_topMessage->setMinimumWidth(1);
     connect(m_topMessage, &QLabel::linkActivated, this, [this](const QString &href) {
         if (href.startsWith(QLatin1String("fm:agent:"))) {
             // "agent is waiting for you" toast: jump straight to that session.
@@ -4279,6 +4298,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageCopy->setObjectName("ghostButton");
     m_topMessageCopy->setCursor(Qt::PointingHandCursor);
     m_topMessageCopy->setToolTip(QStringLiteral("Copy this message and dismiss it"));
+    m_topMessageCopy->setFocusPolicy(Qt::NoFocus); // a toast never grabs the keyboard
     setOcticon(m_topMessageCopy, "copy", 14);
     m_topMessageCopy->hide();
     connect(m_topMessageCopy, &QPushButton::clicked, this, [this] {
@@ -4291,6 +4311,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageClose->setObjectName("ghostButton");
     m_topMessageClose->setCursor(Qt::PointingHandCursor);
     m_topMessageClose->setToolTip(QStringLiteral("Dismiss"));
+    m_topMessageClose->setFocusPolicy(Qt::NoFocus);
     m_topMessageClose->hide();
     connect(m_topMessageClose, &QPushButton::clicked, this,
             [this] { dismissTopMessage(); }); // always fully close, even if another error is queued
@@ -4302,6 +4323,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageExpand->setObjectName("ghostButton");
     m_topMessageExpand->setCursor(Qt::PointingHandCursor);
     m_topMessageExpand->setToolTip(QStringLiteral("Show the full message"));
+    m_topMessageExpand->setFocusPolicy(Qt::NoFocus);
     setOcticon(m_topMessageExpand, "chevron-down", 14);
     m_topMessageExpand->hide();
     connect(m_topMessageExpand, &QPushButton::clicked, this, [this] {
@@ -4319,9 +4341,13 @@ QWidget *MainWindow::buildBreadcrumb()
     // crowded top bar ran short on room (adhoc #16).
     m_topMessageContainer = new QFrame;
     m_topMessageContainer->setObjectName("topMessage");
-    // Widened from the old 620px cap so a long error is readable without
-    // expanding it; still capped so it can never widen the window.
+    m_topMessageContainer->setFocusPolicy(Qt::NoFocus);
+    // The pill fills the mini-log panel it now lives in, so a long error gets
+    // every pixel the log has; the cap only stops it sprawling on a very wide
+    // window. It can never widen the window itself — see the label's minimum above.
     m_topMessageContainer->setMaximumWidth(900);
+    m_topMessageContainer->setSizePolicy(QSizePolicy::Preferred,
+                                         QSizePolicy::Fixed);
     auto *topMessageRow = new QHBoxLayout(m_topMessageContainer);
     topMessageRow->setContentsMargins(12, 2, 6, 2);
     topMessageRow->setSpacing(4);
@@ -4337,6 +4363,7 @@ QWidget *MainWindow::buildBreadcrumb()
     // never shifts the top bar or the layout below it. See renderTopMessage.
     m_topMessageOverlay = new QFrame(this);
     m_topMessageOverlay->setObjectName("topMessageOverlay");
+    m_topMessageOverlay->setFocusPolicy(Qt::NoFocus);
     auto *overlayLayout = new QVBoxLayout(m_topMessageOverlay);
     overlayLayout->setContentsMargins(12, 10, 12, 10);
     m_topMessageOverlayText = new QLabel;
@@ -4345,6 +4372,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageOverlayText->setWordWrap(true);
     m_topMessageOverlayText->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                                      Qt::LinksAccessibleByMouse);
+    m_topMessageOverlayText->setFocusPolicy(Qt::NoFocus);
     overlayLayout->addWidget(m_topMessageOverlayText);
     m_topMessageOverlay->hide();
 
@@ -4652,7 +4680,8 @@ QWidget *MainWindow::buildBreadcrumb()
     searchClusterRow->addWidget(createGlobalSearchBox());
     chromeRow->addWidget(searchCluster, 0, Qt::AlignCenter);
     chromeRow->addStretch();
-    chromeRow->addWidget(m_topMessageContainer);
+    // The toast used to sit here; it now docks at the top of the footer's
+    // mini-log panel (buildNetworkLogDock), beside the lines it explains.
     // Relay radar, moved up onto the window-chrome line just left of the
     // CPU/MEM/DISK sparklines so its latency readout reads the same way as
     // theirs (adhoc #87).

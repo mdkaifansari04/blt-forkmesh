@@ -3409,8 +3409,8 @@ private:
     bool m_logFilterEmptyNotice = false;
     void loadOlderNetworkLogSegment();
     void onNetworkLogScrolled(int value);
-    // Compact, centered success/failure banner shown in the top bar between the
-    // breadcrumb and the notifications bell. Auto-clears after a few seconds.
+    // Compact success/failure banner pinned to the top of the footer's mini-log
+    // panel, beside the log lines it explains. Auto-clears after a few seconds.
     // `clickHref` makes the whole toast a clickable link routed by the
     // m_topMessage linkActivated handler (e.g. "fm:agent:<id>" to jump to a
     // waiting agent). Empty = a plain, non-clickable toast.
@@ -3421,6 +3421,10 @@ private:
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the toast, elided or expanded in place
     void positionTopMessageOverlay(); // size + anchor the floating expanded-toast panel
+    // False while the footer (and with it the mini-log the toast is docked in) is
+    // hidden — the Git workspace does that. Messages then float in the overlay
+    // instead of vanishing.
+    bool topMessageDockVisible() const;
     MessageRow *addMessageRow(const ChatMessage &message);
     void renderConversationRows(); // rebuilds rows in place; caller handles scrolling
     void rebuildConversationView();
