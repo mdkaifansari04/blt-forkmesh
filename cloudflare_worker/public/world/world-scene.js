@@ -19237,7 +19237,6 @@ export function createWorldScene({
   let officeDoorwayEntryPending = false;
   let officeExitHandler = null;
   const weather = createWeather(THREE, scene);
-  const farDetailVisibility = new WeakMap();
   let aerialLandmarkMarkers = null;
   let aerialLandmarkMarkersUnavailable = false;
 
@@ -19279,20 +19278,6 @@ export function createWorldScene({
     return aerialLandmarkMarkers;
   }
 
-  function setFarDetailVisible(object, visible) {
-    if (!object) return;
-    if (!visible) {
-      if (!farDetailVisibility.has(object)) {
-        farDetailVisibility.set(object, object.visible);
-      }
-      object.visible = false;
-      return;
-    }
-    if (!farDetailVisibility.has(object)) return;
-    object.visible = farDetailVisibility.get(object);
-    farDetailVisibility.delete(object);
-  }
-
   function updateSceneLevelOfDetail(force = false) {
     const far =
       officeSceneMode === "town" &&
@@ -19318,9 +19303,6 @@ export function createWorldScene({
         officeSceneMode === "town" || floorId === officeCurrentFloorId;
     }
 
-    const repositoryDistrict = landmarkObjects.get("repositories");
-    const organizationDistrict = landmarkObjects.get("organizations");
-    const federationDistrict = landmarkObjects.get("fediverse");
     // A purely visual LOD helper must never be able to interrupt movement.
     // Fail it closed once if a future marker asset cannot be constructed; the
     // full scene remains usable and the animation loop does not retry a broken
@@ -19335,24 +19317,10 @@ export function createWorldScene({
         });
       }
     }
-    const detailTargets = [
-      repositoryDistrict,
-      organizationDistrict,
-      federationDistrict,
-      leaderboardDistrict,
-      startHereBoard,
-      memberPathSign,
-      arrivalBox,
-      systemCapacityPlatform,
-      campfire,
-      officeLandscaping,
-      world.userData.repositorySizeLayer,
-      world.userData.repositoryRecordDeskLayer,
-      world.userData.repositoryActivityLayer,
-    ];
-    detailTargets.forEach((object) =>
-      setFarDetailVisible(object, !far),
-    );
+    // Distance may reduce expensive lighting work, but it must never remove
+    // World content. Repositories, organizations, fediverse displays, every
+    // public board, landscaping, and live repository layers remain visible at
+    // every zoom level so the aerial view is a faithful view of the World.
   }
 
   function updateWorldEnvironment() {

@@ -648,13 +648,12 @@ def test_tower_is_eleven_stories_and_about_ten_times_the_old_width():
     assert "forkmesh-office-executive-strategy-table" in scene
 
 
-def test_aerial_lod_never_removes_the_office_landmark_and_sol_sign_is_attached():
+def test_aerial_lod_never_removes_world_sections_and_sol_sign_is_attached():
     scene = source(SCENE_PATH)
-    detail_targets = scene[
-        scene.index("    const detailTargets = ["):
-        scene.index("    ];", scene.index("    const detailTargets = ["))
-    ]
-    assert 'landmarkObjects.get("office")' not in detail_targets
+    assert "const detailTargets = [" not in scene
+    assert "setFarDetailVisible(" not in scene
+    assert "farDetailVisibility" not in scene
+    assert "Repositories, organizations, fediverse displays, every" in scene
     assert "officeInterior.visible = true" in scene
     assert 'officeSceneMode === "town" || floorId === officeCurrentFloorId' in scene
     assert "const showOfficeInterior" not in scene

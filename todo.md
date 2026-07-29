@@ -274,6 +274,10 @@ the implementation and its focused verification are complete.
 - [x] Restore the complete transparent Office cutaway at every camera distance:
   glass, floor slabs, walls, lighting, and furniture remain visible outdoors,
   while entered visitors render only their active floor.
+- [x] Keep every World section visible at every zoom level, including
+  repository rings and live layers, the complete public-board circle,
+  organizations, fediverse displays, landscaping, and plaza fixtures; aerial
+  optimization now reduces lighting cost without removing content.
 - [x] Restore the SOL treasury QR/sign to the front midpoint inside the node
   circle, including its Start a node download action.
 - [x] Deploy and verify the durable Office/SOL emergency production revision
