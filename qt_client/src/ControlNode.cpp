@@ -1252,6 +1252,28 @@ QString findCloudflareWorkerDirectory(const QString &sourceDir,
     return worker.canonicalFilePath();
 }
 
+QString findSiteDeployScript(const QString &sourceDir,
+                             const QString &applicationDir)
+{
+    QStringList candidates;
+    const QString overridePath =
+        qEnvironmentVariable("FORKMESH_SITE_DEPLOY").trimmed();
+    if (!overridePath.isEmpty())
+        candidates.append(overridePath);
+    const QString worker =
+        findCloudflareWorkerDirectory(sourceDir, applicationDir);
+    if (!worker.isEmpty()) {
+        candidates.append(
+            QDir(worker).absoluteFilePath(QStringLiteral("deploy.sh")));
+    }
+    for (const QString &candidate : candidates) {
+        const QString resolved = canonicalCandidate(candidate);
+        if (!resolved.isEmpty())
+            return resolved;
+    }
+    return {};
+}
+
 namespace {
 
 QString findPinnedTool(const QString &fileName, const QString &overrideName,

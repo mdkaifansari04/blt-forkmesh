@@ -434,6 +434,14 @@ int main(int argc, char **argv)
     check(forkmesh::control::findCloudflareWorkerDirectory(client, QString()) ==
               QFileInfo(worker).canonicalFilePath(),
           "repository-pinned Worker directory resolves with the bootstrapper");
+    check(forkmesh::control::findSiteDeployScript(client, QString()).isEmpty(),
+          "site deploy button fails closed without cloudflare_worker/deploy.sh");
+    writeFixture(worker + QStringLiteral("/deploy.sh"),
+                 "#!/usr/bin/env bash\n");
+    check(forkmesh::control::findSiteDeployScript(client, QString()) ==
+              QFileInfo(worker + QStringLiteral("/deploy.sh"))
+                  .canonicalFilePath(),
+          "site deploy script resolves beside the pinned Worker bundle");
     QFile tunnelScript(root.filePath(
         QStringLiteral("tools/cloudflare_tunnel_bootstrap.py")));
     QFile gatewayScript(root.filePath(
@@ -514,6 +522,12 @@ int main(int argc, char **argv)
               QString(), installedBin) ==
               QFileInfo(installedWorker).canonicalFilePath(),
           "installed Worker directory resolves with the bootstrapper");
+    writeFixture(installedWorker + QStringLiteral("/deploy.sh"),
+                 "#!/usr/bin/env bash\n");
+    check(forkmesh::control::findSiteDeployScript(QString(), installedBin) ==
+              QFileInfo(installedWorker + QStringLiteral("/deploy.sh"))
+                  .canonicalFilePath(),
+          "site deploy script resolves from installed resources");
     check(forkmesh::control::findCloudflareTunnelBootstrapScript(
               QString(), installedBin) ==
                   QFileInfo(

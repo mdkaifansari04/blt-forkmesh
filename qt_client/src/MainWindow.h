@@ -1150,6 +1150,12 @@ private:
     void registerDirectMirrorEndpoint();
     void checkDirectMirrorGatewayHealth();
     void appendControlNodeOutput(const QString &text);
+    // Ship this checkout's site + relay Worker with cloudflare_worker/deploy.sh
+    // and stream the script's output into the page while it runs.
+    QWidget *buildSiteDeployCard();
+    void runSiteDeploy();
+    void cancelSiteDeploy();
+    void appendSiteDeployOutput(const QString &text);
     void connectToDeployedRelay(const QString &hostname);
     void deploySavedHostsFromControl();
     // First-instance-owner community reward-pool signer. The Solana private key
@@ -3992,6 +3998,12 @@ private:
     QPushButton *m_cloudflareDeployButton = nullptr;
     QPushButton *m_cloudflareCancelButton = nullptr;
     QPlainTextEdit *m_controlNodeOutput = nullptr;
+    // cloudflare_worker/deploy.sh: one button, live merged output, cancel.
+    QPushButton *m_siteDeployButton = nullptr;
+    QPushButton *m_siteDeployCancelButton = nullptr;
+    QLabel *m_siteDeployStatus = nullptr;
+    QPlainTextEdit *m_siteDeployOutput = nullptr;
+    QProcess *m_siteDeployProcess = nullptr;
     QProcess *m_cloudflareBootstrapProcess = nullptr;
     QProcess *m_cloudflareTunnelBootstrapProcess = nullptr;
     QProcess *m_cloudflaredInstallProcess = nullptr;
