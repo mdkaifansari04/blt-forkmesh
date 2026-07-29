@@ -199,7 +199,7 @@ const WORLD_MEDIA_PLAYBACK_POLL_MS = 15 * 1000;
 const WORLD_SOCKET_PING_MS = 40 * 1000;
 // One broadcast wave per pose; the local arm still replays on every click.
 const WORLD_WAVE_COOLDOWN_MS = 2000;
-const WORLD_STATUS_POLL_MS = 5 * 60 * 1000;
+const WORLD_STATUS_POLL_MS = 60 * 1000;
 const WORLD_BUILD_BOARD_POLL_MS = 60 * 1000;
 const WORLD_AGENT_BOT_POLL_MS = 8 * 1000;
 // The member directory is refreshed by arrivals rather than by a timer, so
@@ -4928,6 +4928,8 @@ class ForkMeshWorld extends HTMLElement {
     // visitors back to the entrance and looked exactly like a page refresh.
     this.initialPresenceWelcomePending = true;
     this.statusBoardTimer = 0;
+    this.statusBoardFetchedAt = 0;
+    this.statusBoardLoading = false;
     this.rewardHoverRefreshedAt = 0;
     this.mirrorTimer = 0;
     this.repositoryImportTimer = 0;
@@ -10913,23 +10915,47 @@ class ForkMeshWorld extends HTMLElement {
   // does not (see refreshRewardStateOnHover).
   startStatusBoardPolling() {
     window.clearInterval(this.statusBoardTimer);
-    this.statusBoardTimer = window.setInterval(async () => {
+    void this.refreshSystemStatusBoard().catch(() => {});
+    this.statusBoardTimer = window.setInterval(() => {
       if (this.destroyed || document.hidden) return;
-      try {
-        await this.refreshSystemStatusBoard();
-      } catch (_) {}
-    }, WORLD_STATUS_POLL_MS);
+      const remaining = Math.max(
+        0,
+        this.statusBoardFetchedAt + WORLD_STATUS_POLL_MS - Date.now(),
+      );
+      this.world?.updateSocialBannerTimers?.({
+        status: {
+          remainingMs: this.statusBoardLoading
+            ? WORLD_STATUS_POLL_MS
+            : remaining,
+          totalMs: WORLD_STATUS_POLL_MS,
+          loading: this.statusBoardLoading,
+          sinceMs: this.statusBoardFetchedAt
+            ? Date.now() - this.statusBoardFetchedAt
+            : null,
+        },
+      });
+      if (!this.statusBoardLoading && remaining <= 0) {
+        void this.refreshSystemStatusBoard().catch(() => {});
+      }
+    }, 1000);
   }
 
   async refreshSystemStatusBoard() {
-    const payload = await this.fetchJSON("/api/status?view=world", {
-      auth: false,
-      timeout: 8000,
-      maxAge: WORLD_STATUS_POLL_MS,
-      backoff: true,
-      staleIfError: true,
-    });
-    this.world?.updateSystemStatusBoard?.(payload);
+    if (this.statusBoardLoading) return;
+    this.statusBoardLoading = true;
+    try {
+      const payload = await this.fetchJSON("/api/status?view=world", {
+        auth: false,
+        timeout: 8000,
+        maxAge: 0,
+        backoff: true,
+        staleIfError: true,
+      });
+      this.statusBoardFetchedAt = Date.now();
+      this.world?.updateSystemStatusBoard?.(payload);
+    } finally {
+      this.statusBoardLoading = false;
+    }
   }
 
   async refreshMirrorCatalogs({ force = false } = {}) {
@@ -20807,7 +20833,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     host.dataset.worldChatLoading = "true";
     const script = document.createElement("script");
-    script.src = "/dashboard-chat.js?v=6cb50c59f5cf";
+    script.src = "/dashboard-chat.js?v=16587147eef3";
     script.defer = true;
     script.addEventListener("load", mount, { once: true });
     script.addEventListener("error", () => {

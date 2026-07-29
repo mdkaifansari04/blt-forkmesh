@@ -10,6 +10,8 @@ and server-authoritative timer metadata. Nothing is stored in or published
 through the Office Durable Object.
 """
 
+import base64
+import binascii
 import re
 from urllib.parse import urlsplit
 
@@ -17,7 +19,7 @@ from urllib.parse import urlsplit
 PREFIX = "/api/world/office/marketing-tasks"
 UNIVERSAL_PREFIX = "/api/tasks"
 LEGACY_MARKETING_PREFIX = PREFIX
-BODY_MAX_BYTES = 12 * 1024
+BODY_MAX_BYTES = 1536 * 1024
 MAX_TASKS = 2000
 MAX_CHECKINS_PER_TASK = 50
 MAX_TITLE = 160
@@ -25,6 +27,12 @@ MAX_DETAILS = 4000
 MAX_COMPLETION_NOTE = 4000
 MAX_CHECKIN_NOTE = 500
 MAX_AGENT_FIELD = 64
+MAX_TASK_IMAGES = 4
+MAX_TASK_IMAGE_BYTES = 256 * 1024
+MAX_TASK_IMAGE_TOTAL_BYTES = 1024 * 1024
+TASK_IMAGE_MIMES = frozenset({
+    "image/gif", "image/jpeg", "image/png", "image/webp",
+})
 MIN_PRIORITY = 1
 MAX_PRIORITY = 999
 DEFAULT_PRIORITY = 500
@@ -95,22 +103,115 @@ def _text(value, maximum, fallback=""):
 
 
 def _attachments(value):
-    """Keep bounded file metadata with a task; bytes remain in encrypted chat."""
+    """Keep bounded attachment metadata on task list responses."""
     if not isinstance(value, list):
         return []
     result = []
-    for item in value[:4]:
+    for item in value[:MAX_TASK_IMAGES]:
         if not isinstance(item, dict):
             continue
+        attachment_id = str(item.get("id") or "").strip().lower()
         name = _text(item.get("name"), 180)
         mime = _text(item.get("mime"), 100, "application/octet-stream")
         try:
-            size = max(0, min(1024 * 1024, int(item.get("size") or 0)))
+            size = max(
+                0, min(MAX_TASK_IMAGE_BYTES, int(item.get("size") or 0)))
         except (TypeError, ValueError):
             size = 0
-        if name and size:
-            result.append({"name": name, "mime": mime, "size": size})
+        if name and mime and size:
+            task_id = str(item.get("taskId") or "").strip().lower()
+            attachment = {
+                "name": name,
+                "mime": mime,
+                "size": size,
+            }
+            if valid_id(attachment_id) and mime in TASK_IMAGE_MIMES:
+                attachment.update({
+                    "id": attachment_id,
+                    "url": (
+                    UNIVERSAL_PREFIX + "/" + task_id + "/attachments/"
+                    + attachment_id
+                    if valid_id(task_id) else ""
+                    ),
+                })
+            result.append(attachment)
     return result
+
+
+def _image_magic_matches(mime, raw):
+    if mime == "image/png":
+        return raw.startswith(b"\x89PNG\r\n\x1a\n")
+    if mime == "image/jpeg":
+        return raw.startswith(b"\xff\xd8\xff")
+    if mime == "image/gif":
+        return raw.startswith((b"GIF87a", b"GIF89a"))
+    if mime == "image/webp":
+        return (
+            len(raw) >= 12
+            and raw.startswith(b"RIFF")
+            and raw[8:12] == b"WEBP"
+        )
+    return False
+
+
+def _task_image_uploads(value):
+    """Decode a bounded set of raster images without accepting active SVG."""
+    if value in (None, []):
+        return [], ""
+    if not isinstance(value, list) or len(value) > MAX_TASK_IMAGES:
+        return [], "too_many_task_images"
+    uploads = []
+    total = 0
+    for item in value:
+        if not isinstance(item, dict):
+            return [], "invalid_task_image"
+        name = _text(item.get("name"), 180)
+        mime = _text(item.get("mime"), 100).lower()
+        encoded = str(item.get("file") or "")
+        if not encoded:
+            # Older clients sent display-only metadata. Preserve that contract;
+            # only records carrying validated bytes enter the image store.
+            try:
+                size = int(item.get("size") or 0)
+            except (TypeError, ValueError, OverflowError):
+                size = 0
+            if not name or not mime or size <= 0:
+                return [], "invalid_task_image"
+            uploads.append({
+                "name": name,
+                "mime": mime,
+                "size": min(size, MAX_TASK_IMAGE_TOTAL_BYTES),
+                "file": "",
+            })
+            continue
+        if not name or mime not in TASK_IMAGE_MIMES:
+            return [], "invalid_task_image"
+        if len(encoded) > ((MAX_TASK_IMAGE_BYTES + 2) // 3) * 4 + 4:
+            return [], "task_image_too_large"
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return [], "invalid_task_image"
+        if (
+            not raw
+            or len(raw) > MAX_TASK_IMAGE_BYTES
+            or not _image_magic_matches(mime, raw)
+        ):
+            return [], (
+                "task_image_too_large"
+                if len(raw) > MAX_TASK_IMAGE_BYTES
+                else "invalid_task_image"
+            )
+        total += len(raw)
+        if total > MAX_TASK_IMAGE_TOTAL_BYTES:
+            return [], "task_images_too_large"
+        uploads.append({
+            "name": name,
+            "mime": mime,
+            "size": len(raw),
+            "file": base64.b64encode(raw).decode("ascii"),
+        })
+    return uploads, ""
 
 
 def valid_id(value):
@@ -206,6 +307,12 @@ def _route(path):
     task_id = parts[0].lower()
     if len(parts) == 1:
         return ("task", task_id, "")
+    if (
+        len(parts) == 3
+        and parts[1] == "attachments"
+        and valid_id(parts[2])
+    ):
+        return ("attachment", task_id, parts[2].lower())
     if len(parts) == 2 and parts[1] in (
             "start", "stop", "checkin", "complete", "qa", "return"):
         return ("action", task_id, parts[1])
@@ -889,7 +996,9 @@ async def _create(
         return _response(
             runtime, {"error": "repository_required"}, status=400)
     how_to_test = _text(data.get("howToTest"), 720)
-    attachments = _attachments(data.get("attachments"))
+    image_uploads, image_error = _task_image_uploads(data.get("attachments"))
+    if image_error:
+        return _response(runtime, {"error": image_error}, status=400)
     requested_priority = _priority(data.get("priority"))
     if "priority" in data and not can_manage:
         return _response(runtime, {"error": "manager_required"}, status=403)
@@ -917,6 +1026,27 @@ async def _create(
     task_id = runtime.new_id()
     if not valid_id(task_id):
         return _response(runtime, {"error": "id_generation_failed"}, status=500)
+    attachments = []
+    for upload in image_uploads:
+        if upload["file"]:
+            attachment_id = runtime.new_id()
+            if not valid_id(attachment_id):
+                return _response(
+                    runtime, {"error": "id_generation_failed"}, status=500)
+            upload["id"] = attachment_id
+            attachments.append({
+                "id": attachment_id,
+                "taskId": task_id,
+                "name": upload["name"],
+                "mime": upload["mime"],
+                "size": upload["size"],
+            })
+        else:
+            attachments.append({
+                "name": upload["name"],
+                "mime": upload["mime"],
+                "size": upload["size"],
+            })
     sealed = await runtime.seal({
         "kind": task_kind,
         "title": title,
@@ -958,7 +1088,41 @@ async def _create(
             agent_session_id,
             requested_priority,
         )
+        for upload in image_uploads:
+            if not upload["file"]:
+                continue
+            await runtime.d1_run(
+                "INSERT INTO organization_task_attachments "
+                "(attachment_id,task_id,org_bi,data,created_by_bi,created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                upload["id"],
+                task_id,
+                org_bi,
+                await runtime.seal({
+                    "name": upload["name"],
+                    "mime": upload["mime"],
+                    "size": upload["size"],
+                    "file": upload["file"],
+                }),
+                account_bi,
+                now,
+            )
     except Exception as error:
+        try:
+            await runtime.d1_run(
+                "DELETE FROM organization_task_attachments "
+                "WHERE org_bi=? AND task_id=?",
+                org_bi,
+                task_id,
+            )
+            await runtime.d1_run(
+                "DELETE FROM organization_tasks "
+                "WHERE org_bi=? AND task_id=?",
+                org_bi,
+                task_id,
+            )
+        except Exception:
+            pass
         if "catalog_full" in str(error):
             return _response(
                 runtime, {"error": "task_capacity_reached"}, status=409)
@@ -1104,6 +1268,10 @@ async def _update(
         ),
         "title": title,
         "details": details,
+        "attachments": [
+            {**attachment, "taskId": task_id}
+            for attachment in _attachments(current.get("attachments"))
+        ],
         "completionNote": _text(
             current.get("completionNote"), MAX_COMPLETION_NOTE),
         "assignee": member["name"],
@@ -1476,6 +1644,12 @@ async def _delete(runtime, org_bi, actor, task_id, can_manage):
         return _response(runtime, {"error": "forbidden"}, status=403)
     prior = await _task(runtime, org_bi, task_id)
     await runtime.d1_run(
+        "DELETE FROM organization_task_attachments "
+        "WHERE org_bi=? AND task_id=?",
+        org_bi,
+        task_id,
+    )
+    await runtime.d1_run(
         "DELETE FROM organization_task_checkins "
         "WHERE org_bi=? AND task_id=?",
         org_bi,
@@ -1525,6 +1699,32 @@ async def _delete(runtime, org_bi, actor, task_id, can_manage):
     await _notify_activity(
         runtime, org_bi, actor, task_id, prior, runtime.now(), "deleted")
     return _response(runtime, {"ok": True, "deleted": True, "id": task_id})
+
+
+async def _attachment(runtime, org_bi, task_id, attachment_id):
+    row = await runtime.d1_first(
+        "SELECT data FROM organization_task_attachments "
+        "WHERE org_bi=? AND task_id=? AND attachment_id=?",
+        org_bi,
+        task_id,
+        attachment_id,
+    )
+    if not row:
+        return _response(runtime, {"error": "task_image_not_found"}, status=404)
+    record = await runtime.open(row.get("data"))
+    if not isinstance(record, dict):
+        return _response(
+            runtime, {"error": "task_image_unavailable"}, status=500)
+    uploads, error = _task_image_uploads([record])
+    if error or len(uploads) != 1:
+        return _response(
+            runtime, {"error": "task_image_unavailable"}, status=500)
+    upload = uploads[0]
+    return runtime.binary_response(
+        base64.b64decode(upload["file"]),
+        upload["mime"],
+        upload["name"],
+    )
 
 
 async def _stop_active(runtime, org_bi, account_bi, actor, now):
@@ -1675,6 +1875,8 @@ async def handle(runtime, path):
     allowed = (
         ("GET", "POST")
         if route[0] in ("collection", "proofs", "initiatives")
+        else ("GET",)
+        if route[0] == "attachment"
         else ("POST",)
         if route[0] == "stop-active"
         else ("GET", "PATCH", "DELETE")
@@ -1783,6 +1985,8 @@ async def handle(runtime, path):
         )
     ):
         return _response(runtime, {"error": "task_not_found"}, status=404)
+    if kind == "attachment":
+        return await _attachment(runtime, org_bi, task_id, action)
     if kind == "task":
         if method == "GET":
             if (

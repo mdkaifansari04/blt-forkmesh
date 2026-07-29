@@ -161,6 +161,8 @@ ORG_DISCORD_RE = re.compile(
     r"^/api/orgs/([^/]+)/discord(?:/(messages|oauth/start))?$")
 DISCORD_OAUTH_CALLBACK_RE = re.compile(
     r"^/api/integrations/discord/callback$")
+MAILTRAP_WEBHOOK_RE = re.compile(
+    r"^/api/integrations/mailtrap/webhook/?$")
 BOT_SESSION_RE = re.compile(r"^/api/bot/session$")
 # Organization-only, non-custodial succession. The optional action is parsed by
 # the isolated API module; the general ORG_RE cannot swallow this subresource.
