@@ -883,13 +883,17 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
     assert "if (this.mobileMovementActive) return;" in APP
     assert "this.mobileMovementActive = true;" in APP
     assert "this.mobileMovementActive = false;" in APP
-    assert "this.syncViewportHeight();" in APP
+    assert "this.coarsePointerViewport" in APP
+    assert "this.lastStableViewportWidth" in APP
+    assert "Math.abs(width - this.lastStableViewportWidth) < 2" in APP
+    assert "address-bar expansion and contraction" in APP
     assert "overscroll-behavior: none;" in CSS
     assert "position: fixed;" in CSS[
         CSS.index("body.world-active {"):
         CSS.index("}", CSS.index("body.world-active {"))
     ]
     assert 'this.addEventListener("touchmove", this.blockWorldPullToRefresh' in APP
+    assert "capture: true" in APP
     pull_guard = APP[
         APP.index("  blockWorldPullToRefresh ="):
         APP.index("\n  syncViewportHeight =", APP.index("  blockWorldPullToRefresh ="))

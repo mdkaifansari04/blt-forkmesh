@@ -193,6 +193,7 @@ export function createWorldOfficeTasksController({
   postJSON,
   getSession = () => null,
   toast = () => {},
+  onQaVerdict = async () => false,
   random = Math.random,
 }) {
   const panel = root.querySelector("[data-world-office-task-panel]");
@@ -384,6 +385,25 @@ export function createWorldOfficeTasksController({
     const own = task.assigneeKind === "user" && task.assignee === actor;
     const activeTask = task.status === "active";
     const doneTask = task.status === "done";
+    const qaReady = doneTask || task.qa.requestedAt > 0;
+    const qaVerdict =
+      task.qa.status === "passed"
+        ? "pass"
+        : task.qa.status === "failed"
+          ? "fail"
+          : task.qa.reviewer
+            ? "unsure"
+            : "";
+    const qaLabel =
+      qaVerdict === "pass"
+        ? "QA passed"
+        : qaVerdict === "fail"
+          ? "QA failed"
+          : qaVerdict === "unsure"
+            ? "QA unsure"
+            : qaReady
+              ? "Ready for QA"
+              : "";
     const checkinState = checkinLabel(task.lastCheckin?.state);
     return `
       <li class="world-office-task" data-status="${doneTask ? "done" : activeTask ? "active" : "idle"}">
@@ -403,7 +423,7 @@ export function createWorldOfficeTasksController({
               )}
               · ${escapeHTML(task.department)}
               ${task.team ? ` / ${escapeHTML(task.team)}` : ""}
-              ${task.destination === "qa" ? ` · QA: ${escapeHTML(task.qa.status)}` : ""}
+              ${qaLabel ? ` · ${escapeHTML(qaLabel)}` : ""}
               ${task.qa.reviewer ? ` by @${escapeHTML(task.qa.reviewer)}` : ""}
               ${doneTask ? " · done" : ""}
               ${checkinState ? ` · last check-in: ${escapeHTML(checkinState)}` : ""}
@@ -433,6 +453,24 @@ export function createWorldOfficeTasksController({
                   data-world-office-task-id="${task.id}"
                   ${busyTaskId === task.id ? "disabled" : ""}
                 >Done</button>`
+              : ""
+          }
+          ${
+            doneTask
+              ? `<span class="world-office-task-qa-actions" role="group" aria-label="QA verdict">
+                  ${["pass", "fail", "unsure"]
+                    .map(
+                      (verdict) => `<button
+                        type="button"
+                        class="world-office-task-qa-${verdict}"
+                        data-world-office-task-action="qa-${verdict}"
+                        data-world-office-task-id="${task.id}"
+                        aria-pressed="${qaVerdict === verdict}"
+                        ${busyTaskId === task.id ? "disabled" : ""}
+                      >${verdict[0].toUpperCase() + verdict.slice(1)}</button>`,
+                    )
+                    .join("")}
+                </span>`
               : ""
           }
           ${
@@ -859,7 +897,30 @@ export function createWorldOfficeTasksController({
     if (!actionButton) return;
     const action = actionButton.dataset.worldOfficeTaskAction;
     const id = safeTaskId(actionButton.dataset.worldOfficeTaskId);
-    if (!id || !["start", "stop", "complete", "delete"].includes(action)) {
+    if (
+      !id ||
+      ![
+        "start", "stop", "complete", "delete",
+        "qa-pass", "qa-fail", "qa-unsure",
+      ].includes(action)
+    ) {
+      return;
+    }
+    if (action.startsWith("qa-")) {
+      const verdict = action.slice(3);
+      const task = tasks.find((item) => item.id === id);
+      if (!task || task.status !== "done") return;
+      busyTaskId = id;
+      render();
+      let saved = false;
+      try {
+        saved = await onQaVerdict({ task, verdict });
+        if (saved) await refresh({ quiet: true });
+      } finally {
+        busyTaskId = "";
+        render();
+      }
+      if (saved) toast(`QA verdict saved: ${verdict}.`);
       return;
     }
     if (
@@ -883,7 +944,7 @@ export function createWorldOfficeTasksController({
           : action === "stop"
             ? "Task timer stopped."
             : action === "complete"
-              ? "Task marked done."
+              ? "Task marked done and ready for QA."
               : "Task deleted.",
       );
     }

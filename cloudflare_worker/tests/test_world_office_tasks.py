@@ -749,6 +749,10 @@ async def test_assignee_or_manager_can_complete_and_only_manager_can_delete():
     assert completed["data"]["task"]["status"] == "done"
     assert completed["data"]["task"]["elapsedMs"] == 7_500
     assert completed["data"]["task"]["completedAt"] == runtime.now_ms
+    assert completed["data"]["task"]["destination"] == "qa"
+    assert completed["data"]["task"]["qa"]["status"] == "unknown"
+    assert completed["data"]["task"]["qa"]["requestedAt"] == runtime.now_ms
+    assert completed["data"]["task"]["qa"]["howToTest"]
 
     restart = await tasks_api.handle(
         runtime.use("POST", "bob", {}),

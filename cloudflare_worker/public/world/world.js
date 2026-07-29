@@ -4814,6 +4814,10 @@ class ForkMeshWorld extends HTMLElement {
     this.rendererRecoveryTimer = 0;
     this.viewportSyncTimer = 0;
     this.lastStableViewportHeight = 0;
+    this.lastStableViewportWidth = 0;
+    this.coarsePointerViewport = Boolean(
+      window.matchMedia?.("(pointer: coarse)")?.matches,
+    );
     this.buildDiagnostics = { version: "", revision: "" };
     this.qaDeck = {
       authenticated: false,
@@ -4989,6 +4993,7 @@ class ForkMeshWorld extends HTMLElement {
     });
     this.addEventListener("touchmove", this.blockWorldPullToRefresh, {
       passive: false,
+      capture: true,
     });
     window.addEventListener("keydown", this.handlePublicInputActivity);
     window.addEventListener("message", this.handleWorldChatMessage);
@@ -5873,6 +5878,8 @@ class ForkMeshWorld extends HTMLElement {
           this.postJSON(path, body, options),
         getSession: readSession,
         toast: (message) => this.toast(message),
+        onQaVerdict: ({ task, verdict }) =>
+          this.recordTaskQaVerdict(task, verdict),
       });
       this.syncRecentIssueAssignments();
       this.officeController = createWorldOfficeController({
@@ -6608,6 +6615,51 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  async recordTaskQaVerdict(task, verdict) {
+    const taskId = String(task?.id || "").trim().toLowerCase();
+    if (
+      !/^[a-f0-9]{32}$/.test(taskId) ||
+      !["pass", "fail", "unsure"].includes(verdict)
+    ) {
+      return false;
+    }
+    if (!validWorldSession()) {
+      this.toast("Sign in to review completed organization tasks.");
+      return false;
+    }
+    const key = `task:${taskId}`;
+    try {
+      if (!Number(task?.qa?.requestedAt)) {
+        await this.postJSON(
+          `/api/tasks/${encodeURIComponent(taskId)}/qa`,
+          {
+            howToTest:
+              "Open the completed feature and follow its normal user flow. " +
+              "Confirm the requested behavior works, existing behavior did " +
+              "not regress, and no console or network error appears.",
+          },
+          { timeout: 8_000 },
+        );
+      }
+      await this.refreshQaDeck({ quiet: true });
+      const index = this.qaDeck.cards.findIndex((card) => card.key === key);
+      if (index < 0 || !this.qaDeck.authorized) {
+        this.toast(
+          "Join the Quality Assurance team to review completed tasks.",
+        );
+        return false;
+      }
+      this.qaCardIndex = index;
+      this.qaDeckSelectedKey = key;
+      return await this.recordQaVerdict(verdict);
+    } catch (error) {
+      this.toast(
+        String(error?.message || "The QA result could not be saved."),
+      );
+      return false;
+    }
+  }
+
   async refreshOrgAgentBots() {
     if (
       this.destroyed ||
@@ -6810,14 +6862,42 @@ class ForkMeshWorld extends HTMLElement {
     // Hold the last stable viewport until the gesture ends, then reconcile it
     // once without interrupting movement.
     if (this.mobileMovementActive) return;
+    const width = Math.max(
+      240,
+      Math.round(window.innerWidth || document.documentElement.clientWidth || 0),
+    );
+    // On touch devices, address-bar expansion and contraction changes only
+    // the visual viewport height. Resizing the WebGL buffer for that browser
+    // chrome animation clears the frame and looks like a full World refresh.
+    // Keep the mounted buffer stable until the viewport width changes (real
+    // rotation/window resize). Desktop resizes remain fully responsive.
+    if (
+      this.coarsePointerViewport &&
+      this.lastStableViewportWidth > 0 &&
+      Math.abs(width - this.lastStableViewportWidth) < 2
+    ) {
+      return;
+    }
     const commit = () => {
       this.viewportSyncTimer = 0;
       if (this.mobileMovementActive || this.destroyed) return;
+      const committedWidth = Math.max(
+        240,
+        Math.round(
+          window.innerWidth || document.documentElement.clientWidth || 0,
+        ),
+      );
       const height = Math.max(
         240,
         Math.round(window.visualViewport?.height || window.innerHeight || 0),
       );
-      if (Math.abs(height - this.lastStableViewportHeight) < 2) return;
+      if (
+        Math.abs(height - this.lastStableViewportHeight) < 2 &&
+        Math.abs(committedWidth - this.lastStableViewportWidth) < 2
+      ) {
+        return;
+      }
+      this.lastStableViewportWidth = committedWidth;
       this.lastStableViewportHeight = height;
       this.style.setProperty("--world-viewport-height", `${height}px`);
     };
@@ -23906,7 +23986,11 @@ class ForkMeshWorld extends HTMLElement {
     window.removeEventListener("storage", this.handleStorage);
     window.removeEventListener("pointerdown", this.handlePublicInputActivity);
     window.removeEventListener("pointermove", this.handlePublicInputActivity);
-    this.removeEventListener("touchmove", this.blockWorldPullToRefresh);
+    this.removeEventListener(
+      "touchmove",
+      this.blockWorldPullToRefresh,
+      true,
+    );
     window.removeEventListener("keydown", this.handlePublicInputActivity);
     window.removeEventListener("message", this.handleWorldChatMessage);
     window.removeEventListener("pagehide", this.handlePageHide);

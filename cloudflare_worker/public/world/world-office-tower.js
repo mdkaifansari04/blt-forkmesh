@@ -289,7 +289,23 @@ const FLOOR_OBSTACLES = Object.freeze({
     }),
   ]),
   engineering: Object.freeze([
-    Object.freeze({ type: "rect", minX: -44, maxX: 44, minZ: -5, maxZ: 5 }),
+    // Match the five separate workstation tops. The former single rectangle
+    // created one long invisible wall through all four visible passages.
+    Object.freeze({
+      type: "rect", minX: -41.5, maxX: -30.5, minZ: -2.2, maxZ: 2.2,
+    }),
+    Object.freeze({
+      type: "rect", minX: -23.5, maxX: -12.5, minZ: -2.2, maxZ: 2.2,
+    }),
+    Object.freeze({
+      type: "rect", minX: -5.5, maxX: 5.5, minZ: -2.2, maxZ: 2.2,
+    }),
+    Object.freeze({
+      type: "rect", minX: 12.5, maxX: 23.5, minZ: -2.2, maxZ: 2.2,
+    }),
+    Object.freeze({
+      type: "rect", minX: 30.5, maxX: 41.5, minZ: -2.2, maxZ: 2.2,
+    }),
   ]),
   "product-design": Object.freeze([
     Object.freeze({ type: "circle", x: -36, z: 0, radius: 4 }),

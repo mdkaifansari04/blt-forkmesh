@@ -7873,14 +7873,22 @@ test("portrait coarse-pointer thumbstick and visual viewport remain usable", asy
   );
   expect(afterInput).toEqual(before);
 
+  const stableHeight = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.lastStableViewportHeight,
+  );
   await page.setViewportSize({ width: 390, height: 520 });
+  await page.waitForTimeout(300);
+  expect(
+    await page.locator("forkmesh-world").evaluate(
+      (shell) => shell.lastStableViewportHeight,
+    ),
+  ).toBe(stableHeight);
+  await page.setViewportSize({ width: 520, height: 390 });
   await page.waitForFunction(
     () =>
       document.querySelector("forkmesh-world")?.style
-        .getPropertyValue("--world-viewport-height") === "520px",
+        .getPropertyValue("--world-viewport-height") === "390px",
   );
-  const bounds = await page.locator("[data-world-root]").boundingBox();
-  expect(bounds.height).toBeLessThanOrEqual(520);
   await page.locator("[data-world-settings-close]").click();
   await expect(page.locator("[data-world-settings]")).toHaveAttribute(
     "data-open",

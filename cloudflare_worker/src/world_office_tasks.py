@@ -1007,14 +1007,32 @@ async def _stop(
 
 async def _complete(
         runtime, org_bi, account_bi, actor, task_id, row, can_manage, now):
-    """Finish assigned work while retaining its time and encrypted history."""
+    """Finish assigned work and place it in the private QA review queue."""
     if (
         not can_manage
         and str(row.get("assignee_bi") or "") != account_bi
     ):
         return _response(runtime, {"error": "assignee_or_manager_only"}, status=403)
-    if int(row.get("completed_at") or 0) > 0:
+    if (
+        int(row.get("completed_at") or 0) > 0
+        and int(row.get("qa_requested_at") or 0) > 0
+    ):
         return await _task_response(runtime, row, now)
+    try:
+        current = await runtime.open(row.get("data"))
+    except Exception:
+        current = None
+    if not isinstance(current, dict):
+        return _response(runtime, {"error": "task_unavailable"}, status=500)
+    if not _text(current.get("howToTest"), 720):
+        current["howToTest"] = (
+            "Open the completed feature and follow its normal user flow. "
+            "Confirm the requested behavior works, existing behavior did not "
+            "regress, and no console or network error appears."
+        )
+    current["qaReviewer"] = ""
+    current["qaFailureReason"] = ""
+    current["qaFailureScreenshot"] = ""
     started_at = int(row.get("started_at") or 0)
     addition = (
         max(0, int(now) - started_at)
@@ -1028,10 +1046,14 @@ async def _complete(
     await runtime.d1_run(
         "UPDATE organization_tasks SET "
         "status='idle',active_assignee_bi='',elapsed_ms=?,started_at=0,"
-        "next_checkin_at=0,completed_at=?,updated_at=? "
-        "WHERE org_bi=? AND task_id=? AND completed_at=0",
+        "next_checkin_at=0,completed_at=?,destination='qa',"
+        "qa_status='unknown',qa_reviewer_bi='',qa_reviewed_at=0,"
+        "qa_requested_at=?,data=?,updated_at=? "
+        "WHERE org_bi=? AND task_id=?",
         elapsed,
         now,
+        now,
+        await runtime.seal(current),
         now,
         org_bi,
         task_id,
@@ -1044,7 +1066,7 @@ async def _complete(
         "office.marketing_task_completed",
         "office_task",
         task_id,
-        details={"state": "done"},
+        details={"state": "done", "qa": "ready"},
     )
     return await _task_response(runtime, changed, now)
 

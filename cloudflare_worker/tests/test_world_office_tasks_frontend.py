@@ -220,6 +220,24 @@ def test_assignment_control_has_explicit_contrast_and_tasks_can_finish_or_delete
     assert '.world-office-task[data-status="done"]' in css
 
 
+def test_completed_tasks_are_ready_for_qa_with_three_verdict_controls():
+    tasks = source(TASKS)
+    world = source(WORLD)
+    css = source(CSS)
+    for contract in (
+        '"Ready for QA"',
+        'data-world-office-task-action="qa-${verdict}"',
+        '["pass", "fail", "unsure"]',
+        "onQaVerdict({ task, verdict })",
+        "Task marked done and ready for QA.",
+    ):
+        assert contract in tasks
+    assert "this.recordTaskQaVerdict(task, verdict)" in world
+    assert "async recordTaskQaVerdict(task, verdict)" in world
+    assert "this.recordQaVerdict(verdict)" in world
+    assert ".world-office-task-qa-actions" in css
+
+
 def test_marketing_members_can_add_private_proof_from_their_own_desk():
     tasks = source(TASKS)
     scene = source(SCENE)

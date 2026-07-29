@@ -1254,6 +1254,19 @@ def test_elevator_animates_between_floors_and_emits_departure_and_arrival_audio(
         assert contract in scene
 
 
+def test_every_non_lobby_floor_has_a_return_to_lobby_portal():
+    scene = source(SCENE_PATH)
+    for contract in (
+        "forkmesh-office-${floor.id}-lobby-portal",
+        '"office-lobby-return-portal"',
+        '"LOBBY PORTAL"',
+        '"CLICK TO RETURN"',
+        'warpToOfficeFloor("lobby")',
+        "OFFICE_FLOORS.slice(1).forEach",
+    ):
+        assert contract in scene
+
+
 def test_elevator_has_one_stable_car_glass_layer_and_idle_lobby_reflections():
     scene = source(SCENE_PATH)
     elevator = scene[

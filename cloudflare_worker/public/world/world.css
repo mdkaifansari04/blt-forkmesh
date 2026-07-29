@@ -3464,6 +3464,40 @@ forkmesh-world.world-admin-error-arrival::after {
   gap: 8px;
 }
 
+.world-office-task-qa-actions {
+  display: inline-flex;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid var(--world-line);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 0.025);
+}
+
+.world-office-task-qa-actions button {
+  min-height: 28px;
+  padding: 0 7px;
+  border-color: transparent;
+  font-size: 0.64rem;
+}
+
+.world-office-task-qa-pass[aria-pressed="true"] {
+  border-color: rgb(46 160 67 / 0.7);
+  background: rgb(46 160 67 / 0.18);
+  color: #7ee787;
+}
+
+.world-office-task-qa-fail[aria-pressed="true"] {
+  border-color: rgb(248 81 73 / 0.7);
+  background: rgb(248 81 73 / 0.18);
+  color: #ff7b72;
+}
+
+.world-office-task-qa-unsure[aria-pressed="true"] {
+  border-color: rgb(210 153 34 / 0.7);
+  background: rgb(210 153 34 / 0.18);
+  color: #e3b341;
+}
+
 .world-office-task-controls time {
   min-width: 68px;
   color: var(--world-mint);
