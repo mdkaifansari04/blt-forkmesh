@@ -894,6 +894,20 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_quickAddYolo, &QCheckBox::toggled, this, [](bool on) {
         QSettings().setValue(kQuickAddYoloSetting, on);
     });
+    // "Task" toggle beside YOLO (adhoc #18): when checked, starting an agent from
+    // the prompt bar also opens an organization task for the run, stamped with the
+    // bot that launched it and the model/mode/strength it was given, and closed out
+    // with the bot that finished it. On by default — prompted work should be
+    // visible to the organization — and unticked for throwaway prompts.
+    m_quickAddTask = new QCheckBox("Task");
+    m_quickAddTask->setObjectName("quickAddAutoCheck");
+    m_quickAddTask->setToolTip(
+        "Open an organization task for this run, recording which bot started "
+        "and finished it and the model, mode, and strength it used.");
+    m_quickAddTask->setChecked(QSettings().value(kQuickAddTaskSetting, true).toBool());
+    connect(m_quickAddTask, &QCheckBox::toggled, this, [](bool on) {
+        QSettings().setValue(kQuickAddTaskSetting, on);
+    });
     m_quickAddCreatePr->setChecked(true);
     m_quickAddCreatePr->setEnabled(true);
     m_quickAddAgentProvider->setEnabled(true);
@@ -1068,6 +1082,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBar->addWidget(m_quickAddAttachStrip, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddVoiceAutoSubmit, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddYolo, 0, Qt::AlignBottom);
+    bottomBar->addWidget(m_quickAddTask, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
     // The "/" actions box sits immediately left of the agent box (adhoc #116),
     // matching where the Claude Code extension keeps its actions menu.
