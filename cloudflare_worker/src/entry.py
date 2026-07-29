@@ -7298,7 +7298,11 @@ async def _chat_direct_socket_handler(env, request, conversation_id):
         except Exception as error:
             last_error = error
     await log_durable_object_abort(env, request, url.path, last_error)
-    return json_response({"error": "unavailable"}, status=503)
+    return json_response(
+        {"error": "unavailable"},
+        status=503,
+        extra_headers=EXPECTED_DEGRADED_HEADERS,
+    )
 
 
 async def office_attendance_handler(env, request):
@@ -35950,6 +35954,15 @@ ADMIN_STYLE = """
  .ab-root .error-spark-bar{display:block;min-height:2px;background:var(--ab-link);
         border-radius:2px 2px 0 0}
  .ab-root .error-spark-bar[data-empty="true"]{background:var(--ab-border)}
+ .ab-root .error-source{display:inline-block;border:1px solid var(--ab-border-2);
+        border-radius:999px;padding:1px 7px;white-space:nowrap;
+        font:600 11px system-ui,sans-serif}
+ .ab-root .error-source.javascript{border-color:#8957e5;color:#a371f7}
+ .ab-root .error-source.worker{border-color:var(--ab-link);color:var(--ab-link)}
+ .ab-root .error-delete{background:transparent;color:var(--ab-danger);
+        border-color:var(--ab-danger);padding:3px 8px;font-size:11px}
+ .ab-root .error-delete:hover{background:var(--ab-danger);color:#fff}
+ .ab-root .error-group-delete{display:inline;margin:0}
  .ab-root .relative-time{color:var(--ab-muted);white-space:nowrap}
 """
 
@@ -36162,6 +36175,65 @@ def _admin_select_all_th():
 def _admin_row_checkbox(rowid):
     return ('<td><input type="checkbox" name="ids" value="%s"></td>'
             % _html_escape(rowid))
+
+
+def _admin_error_source(method, path):
+    """Stable display classification for the shared operational error log."""
+    is_javascript = (
+        str(method or "").strip().upper() == "JS"
+        or str(path or "").startswith("/client-error/")
+    )
+    return "JavaScript" if is_javascript else "Worker"
+
+
+def _admin_error_source_badge(method, path):
+    source = _admin_error_source(method, path)
+    return (
+        '<span class="error-source %s">%s</span>'
+        % (source.lower(), source)
+    )
+
+
+def _admin_error_row_delete_button(rowid, admin_query=""):
+    return (
+        '<button class="error-delete" type="submit" name="error_id" '
+        'value="%s" formaction="%s" '
+        'onclick="event.stopPropagation();return confirm('
+        "'Delete this error? This cannot be undone.')\">Delete</button>"
+        % (
+            _html_escape(rowid),
+            _admin_href(
+                admin_query, table="error_log", action="delete_error_row"),
+        )
+    )
+
+
+def _admin_error_group_delete_form(
+        status, method, path, message, csrf_field="", admin_query=""):
+    fields = "".join(
+        '<input type="hidden" name="%s" value="%s">'
+        % (_html_escape(name), _html_escape(value))
+        for name, value in (
+            ("group_status", status),
+            ("group_method", method),
+            ("group_path", path),
+            ("group_message", message),
+        )
+    )
+    return (
+        '<form class="error-group-delete" method="post" action="%s" '
+        'onsubmit="return confirm('
+        "'Delete every error in this group? This cannot be undone.')\">"
+        "%s%s<button class=\"error-delete\" type=\"submit\">"
+        "Delete group</button></form>"
+        % (
+            _admin_href(
+                admin_query, table="error_log",
+                action="delete_error_group"),
+            csrf_field,
+            fields,
+        )
+    )
 
 
 def _admin_record_row_attrs(admin_query, table, rowid):
@@ -36517,14 +36589,23 @@ async def _render_table_view(
             if age_hours < 24:
                 hourly[23 - int(age_hours)] += 1
             signature = (
-                clean_string(row.get("status"), 12),
-                clean_string(row.get("method"), 12).upper(),
-                clean_string(row.get("path"), 240),
-                clean_string(row.get("message"), 240),
+                str(row.get("status") or ""),
+                str(row.get("method") or "").upper(),
+                str(row.get("path") or ""),
+                str(row.get("message") or ""),
             )
-            group_hours = groups.setdefault(signature, [0] * 24)
+            group = groups.setdefault(
+                signature,
+                {
+                    "hours": [0] * 24,
+                    "firstSeen": ts,
+                    "lastSeen": ts,
+                },
+            )
+            group["firstSeen"] = min(group["firstSeen"] or ts, ts)
+            group["lastSeen"] = max(group["lastSeen"] or ts, ts)
             if age_hours < 24:
-                group_hours[23 - int(age_hours)] += 1
+                group["hours"][23 - int(age_hours)] += 1
         peak = max(hourly) if hourly else 0
         bars = []
         for index, count in enumerate(hourly):
@@ -36549,9 +36630,10 @@ async def _render_table_view(
                 )
             )
         group_rows = []
-        for (status, request_method, path, message), frequency in sorted(
+        for (status, request_method, path, message), group in sorted(
                 groups.items(),
-                key=lambda item: (-sum(item[1]), item[0]))[:25]:
+                key=lambda item: (-sum(item[1]["hours"]), item[0]))[:25]:
+            frequency = group["hours"]
             count = sum(frequency)
             group_peak = max(frequency) if frequency else 0
             spark_bars = []
@@ -36579,18 +36661,28 @@ async def _render_table_view(
                 '<tr><td>%d</td><td><div class="error-sparkline" '
                 'tabindex="0" role="img" '
                 'aria-label="24-hour frequency: %d occurrence%s">%s</div></td>'
-                "<td>%s</td><td>%s</td><td>%s</td>"
-                "<td title=\"%s\">%s</td></tr>"
+                "<td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
+                "<td title=\"%s\">%s</td>"
+                '<td data-ts="%s">%s</td><td data-ts="%s">%s</td>'
+                "<td>%s</td></tr>"
                 % (
                     count,
                     count,
                     "" if count == 1 else "s",
                     "".join(spark_bars),
+                    _admin_error_source_badge(request_method, path),
                     _html_escape(status or "error"),
                     _html_escape(request_method or "—"),
                     _html_escape(path or "—"),
                     _html_escape(message or "—"),
                     _html_escape((message or "—")[:160]),
+                    _html_escape(group["firstSeen"]),
+                    _html_escape(group["firstSeen"]),
+                    _html_escape(group["lastSeen"]),
+                    _html_escape(group["lastSeen"]),
+                    _admin_error_group_delete_form(
+                        status, request_method, path, message,
+                        csrf_field, admin_query),
                 )
             )
         analytics = (
@@ -36606,8 +36698,10 @@ async def _render_table_view(
                 "".join(bars),
                 (
                     "<table><thead><tr><th>Count</th><th>24-hour frequency</th>"
-                    "<th>Status</th>"
-                    "<th>Method</th><th>Path</th><th>Message</th></tr></thead>"
+                    "<th>Source</th><th>Status</th>"
+                    "<th>Method</th><th>Path</th><th>Message</th>"
+                    "<th>First seen</th><th>Last seen</th>"
+                    "<th>Delete</th></tr></thead>"
                     "<tbody>" + "".join(group_rows) + "</tbody></table>"
                     if group_rows
                     else '<div class="empty">No errors in the previous 24 hours.</div>'
@@ -36624,20 +36718,26 @@ async def _render_table_view(
                     admin_query, table, r.get("_rowid_", ""))
                 + _admin_row_checkbox(r.get("_rowid_", ""))
                 + '<td data-ts="%s">%s</td>'
+                "<td>%s</td>"
                 '<td class="%s">%s</td>'
-                "<td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+                "<td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
                 % (_html_escape(r.get("ts", "")), _html_escape(r.get("ts", "")),
+                   _admin_error_source_badge(
+                       r.get("method", ""), r.get("path", "")),
                    cls, _html_escape(status),
                    _html_escape(r.get("method", "")), _html_escape(r.get("path", "")),
-                   _html_escape(r.get("message", "")), _html_escape(r.get("ray", "")))
+                   _html_escape(r.get("message", "")), _html_escape(r.get("ray", "")),
+                   _admin_error_row_delete_button(
+                       r.get("_rowid_", ""), admin_query))
             )
         if not body:
             inner = '<div class="empty">No errors recorded yet.</div>'
         else:
             inner = (_admin_bulk_form_open(table, csrf_field, admin_query)
                      + "<table><thead><tr>" + _admin_select_all_th()
-                     + "<th>Time</th><th>Status</th><th>Method</th>"
-                     "<th>Path</th><th>Message</th><th>CF-Ray</th></tr></thead><tbody>"
+                     + "<th>Time</th><th>Source</th><th>Status</th><th>Method</th>"
+                     "<th>Path</th><th>Message</th><th>CF-Ray</th>"
+                     "<th>Delete</th></tr></thead><tbody>"
                      + "".join(body) + "</tbody></table></form>")
         return (
             '<div class="title">Error logs · %d row(s)</div>' % total
@@ -38194,13 +38294,15 @@ async def _https_mirror_private_proxy(env, request, private_record):
     if not router_public_key or not router_seed:
         return json_response(
             {"error": "mirror_unavailable"}, status=503,
-            cache_control="no-store")
+            cache_control="no-store",
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
     candidates = await _https_mirror_private_candidates(
         env, private_record, world_request_country(request))
     if not candidates:
         return json_response(
             {"error": "mirror_unavailable"}, status=503,
-            cache_control="no-store")
+            cache_control="no-store",
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
     from js import fetch as js_fetch
     for endpoint in candidates:
         target = https_routing.masked_private_replica_url(
@@ -38279,7 +38381,8 @@ async def _https_mirror_private_proxy(env, request, private_record):
         )
     return json_response(
         {"error": "mirror_unavailable"}, status=503,
-        cache_control="no-store")
+        cache_control="no-store",
+        extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
 async def _hosted_repository_import_route(env, owner, repo):
@@ -39491,7 +39594,8 @@ async def _https_mirror_proxy(
     if not router_public_key or not router_seed:
         return json_response(
             {"error": "mirror_unavailable"}, status=503,
-            cache_control="no-store")
+            cache_control="no-store",
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
     sticky = (
         await _https_mirror_clone_pin(env, context)
         if operation == "git-upload-pack" else "")
@@ -39500,7 +39604,8 @@ async def _https_mirror_proxy(
     if not candidates:
         return json_response(
             {"error": "mirror_unavailable"}, status=503,
-            cache_control="no-store")
+            cache_control="no-store",
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
     from js import fetch as js_fetch
     for endpoint in candidates:
         if not await _https_mirror_repository_proof(
@@ -39558,7 +39663,11 @@ async def _https_mirror_proxy(
         except Exception:
             status = 0
             upstream = None
-        if upstream is None or status in HTTPS_MIRROR_RETRY_STATUSES:
+        if (
+            upstream is None
+            or status in HTTPS_MIRROR_RETRY_STATUSES
+            or 500 <= status <= 599
+        ):
             # A fresh signed repository proof owns the endpoint's shared
             # integrity state. A request-local timeout, missing optional path,
             # or transient 5xx still fails over, but must not poison the
@@ -39612,7 +39721,8 @@ async def _https_mirror_proxy(
         )
     return json_response(
         {"error": "mirror_unavailable"}, status=503,
-        cache_control="no-store")
+        cache_control="no-store",
+        extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
 class Default(WorkerEntrypoint):
@@ -40159,6 +40269,82 @@ class Default(WorkerEntrypoint):
                             }
                 except Exception as error:
                     banner = "Repository Terms flag failed: " + repr(error)
+            elif action == "delete_error_row":
+                try:
+                    raw_id = form.get("error_id", [""])[0]
+                    rowid = int(raw_id) if str(raw_id).isdigit() else 0
+                    if rowid <= 0:
+                        banner = "Delete error failed: invalid row."
+                    else:
+                        existing = await d1_first(
+                            self.env,
+                            "SELECT 1 AS found FROM error_log WHERE rowid=?",
+                            rowid,
+                        )
+                        audit_details = {
+                            "rowCount": 1 if existing else 0,
+                            "rowDigestBefore": (
+                                await _admin_selected_rows_digest(
+                                    self.env, "error_log", [rowid])
+                            ),
+                        }
+                        await d1_run(
+                            self.env,
+                            "DELETE FROM error_log WHERE rowid=?",
+                            rowid,
+                        )
+                        banner = (
+                            "Deleted error row."
+                            if existing
+                            else "Delete error: row was already gone."
+                        )
+                except Exception as error:
+                    banner = "Delete error failed: " + repr(error)
+            elif action == "delete_error_group":
+                try:
+                    group_status = str(
+                        form.get("group_status", [""])[0])[:12]
+                    group_method = str(
+                        form.get("group_method", [""])[0])[:12]
+                    group_path = str(
+                        form.get("group_path", [""])[0])[:2000]
+                    group_message = str(
+                        form.get("group_message", [""])[0])[:1000]
+                    if not group_status or not group_method:
+                        banner = "Delete error group failed: invalid group."
+                    else:
+                        count_row = await d1_first(
+                            self.env,
+                            "SELECT COUNT(*) AS n FROM error_log "
+                            "WHERE CAST(status AS TEXT)=? AND UPPER(method)=? "
+                            "AND path=? AND message=?",
+                            group_status, group_method.upper(),
+                            group_path, group_message,
+                        )
+                        count = int((count_row or {}).get("n") or 0)
+                        audit_details = {
+                            "rowCount": count,
+                            # Content stays out of the audit trail. This
+                            # bounded digest still distinguishes group purges.
+                            "groupDigest": hashlib.sha256(
+                                (
+                                    group_status + "\n"
+                                    + group_method.upper() + "\n"
+                                    + group_path + "\n" + group_message
+                                ).encode("utf-8")
+                            ).hexdigest(),
+                        }
+                        await d1_run(
+                            self.env,
+                            "DELETE FROM error_log "
+                            "WHERE CAST(status AS TEXT)=? AND UPPER(method)=? "
+                            "AND path=? AND message=?",
+                            group_status, group_method.upper(),
+                            group_path, group_message,
+                        )
+                        banner = "Deleted %d error(s) in the group." % count
+                except Exception as error:
+                    banner = "Delete error group failed: " + repr(error)
             elif action == "delete_rows":
                 try:
                     tables = await _admin_list_tables(self.env)
@@ -40222,7 +40408,8 @@ class Default(WorkerEntrypoint):
                     "disburse", "set_password", "resend_verify",
                     "request_ownership", "delete_rows", "update_row",
                     "insert_row", "set_operational_alerts",
-                    "set_repo_terms_flag"):
+                    "set_repo_terms_flag", "delete_error_row",
+                    "delete_error_group"):
                 audit_actor = (
                     account_cookie_name
                     or params.get("admin", [""])[0])
@@ -40234,6 +40421,9 @@ class Default(WorkerEntrypoint):
                     if action == "set_operational_alerts"
                     else "repository"
                     if action == "set_repo_terms_flag"
+                    else "error_log"
+                    if action in (
+                        "delete_error_row", "delete_error_group")
                     else "database_table" if action in (
                         "delete_rows", "update_row", "insert_row")
                     else "legacy_custody")
@@ -40249,6 +40439,9 @@ class Default(WorkerEntrypoint):
                         + form.get("repo", [""])[0]
                     )
                     if action == "set_repo_terms_flag"
+                    else "error_log"
+                    if action in (
+                        "delete_error_row", "delete_error_group")
                     else params.get("table", [""])[0])
                 lowered_banner = str(banner or "").lower()
                 outcome = (

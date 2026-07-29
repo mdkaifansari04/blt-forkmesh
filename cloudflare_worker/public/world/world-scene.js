@@ -149,6 +149,12 @@ const OFFICE_INTERIOR_EXIT_Z =
 const OFFICE_ELEVATOR_HALF_WIDTH = 5;
 const OFFICE_ELEVATOR_HALF_DEPTH = 4;
 const OFFICE_ELEVATOR_CUT_MARGIN = 0.35;
+const OFFICE_FLOOR_WARP_DOOR_WIDTH = 5.3;
+const OFFICE_FLOOR_WARP_DOOR_HEIGHT = 5.8;
+const OFFICE_FLOOR_WARP_DOOR_SPACING = 5.95;
+const OFFICE_FLOOR_WARP_DOOR_START_X = -81.2;
+const OFFICE_FLOOR_WARP_DOOR_Z = -OFFICE_DEPTH / 2 + 0.34;
+const OFFICE_FLOOR_WARP_TRIGGER_Z = -OFFICE_DEPTH / 2 + 1.18;
 // The reef is a scene-owned lobby exhibit rather than part of the reusable
 // tower shell. Keep its physical footprint beside its scene integration so
 // every movement path observes the same cabinet and glass boundary.
@@ -3076,7 +3082,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:aquarium-fixed-controls", task: "Tank-fixed reef controls", detail: "Feed, tap, backdrop, and light controls stay anchored to the aquarium's lower-right control point instead of floating with the player.", estimate: "implemented · focused QA", done: true },
   { key: "task:recent-public-chat-card", task: "Recent public chat on chest", detail: "Each avatar chest includes one sanitized line from that account's latest public-channel message; private and direct messages never enter the card.", estimate: "implemented · focused QA", done: true },
   { key: "task:verification-pin-state", task: "Green verified pin / red unverified X", detail: "Every signed-in avatar shows a green check when email-verified and a red X in the same front pin when unverified; guests remain neutral.", estimate: "implemented · focused QA", done: true },
-  { key: "task:office-floor-warps", task: "Lobby floor warp hub", detail: "A compact set of ten labeled portal pads left of Noah's lobby desk jumps authorized visitors directly to each accessible floor.", estimate: "implemented · focused QA", done: true },
+  { key: "task:office-floor-warps", task: "Walk-through floor doorways", detail: "Ten straight, wall-mounted lobby doorways sit left of Noah's desk. Walking through an authorized doorway changes floors; inaccessible floors stay visibly closed and cannot be crossed.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-console-cleanup", task: "World console runtime cleanup", detail: "Asset preloads share the texture loader's CORS mode, external avatar failures use stable initial art, and unavailable Actions summaries return retryable application state instead of repeating HTTP 503s.", estimate: "implemented · focused QA", done: true },
   { key: "task:admin-record-detail", task: "Admin database record detail pages", detail: "Every visible database row opens a read-only page that lists the complete redacted record vertically, with a clear route back to its table.", estimate: "implemented · focused QA", done: true },
   { key: "task:member-verification-admin-link", task: "Member verification + admin detail", detail: "Member panels show a red X for every non-guest account without a verified email, and the privileged admin-detail action opens safely in a new tab.", estimate: "implemented · focused QA", done: true },
@@ -5343,16 +5349,6 @@ function createAvatar(THREE, identity, options = {}) {
   head.scale.y = 1.05;
   head.position.y = 3.36;
   group.add(head);
-
-  const hair = new THREE.Mesh(
-    new THREE.SphereGeometry(0.47, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.52),
-    dark,
-  );
-  hair.position.set(0, 3.46, 0.07);
-  // Tilted back so the cap clears the forehead and the wrapped emoji face
-  // has the whole front of the head to itself.
-  hair.rotation.x = 0.42;
-  group.add(hair);
 
   // The face wears the last world-status emoji the visitor set (default
   // smile). Avatar fronts face -Z; the emoji is mapped onto a thin curved
@@ -16307,7 +16303,26 @@ export function createWorldScene({
       },
     );
   }
+  function officeCeilingFinishMaterial(index = 0, lobby = false) {
+    const solidColors = ["#31433d", "#334247", "#454235", "#473842"];
+    return makeMaterial(
+      THREE,
+      lobby
+        ? "#354a43"
+        : solidColors[index % solidColors.length],
+      {
+        emissive: lobby ? "#16332a" : "#17231f",
+        emissiveIntensity: 0.035,
+        metalness: 0.02,
+        roughness: 0.94,
+        transparent: false,
+        opacity: 1,
+      },
+    );
+  }
   const officeLobbyFloorMaterial = officeFloorFinishMaterial(0, true);
+  const officeLobbyCeilingMaterial =
+    officeCeilingFinishMaterial(0, true);
   const officeFloorGroups = new Map([["lobby", officeInterior]]);
   const officeFloorAccent = makeMaterial(THREE, "#67efb1", {
     emissive: "#1a9a68",
@@ -16373,7 +16388,57 @@ export function createWorldScene({
       parent.add(slab);
     });
   }
+  function addOfficeCeilingSurface(parent, material) {
+    const minX = -OFFICE_WIDTH / 2;
+    const maxX = OFFICE_WIDTH / 2;
+    const minZ = -OFFICE_DEPTH / 2;
+    const maxZ = OFFICE_DEPTH / 2;
+    const segments = [
+      {
+        minX,
+        maxX,
+        minZ,
+        maxZ: elevatorCutMinZ,
+      },
+      {
+        minX,
+        maxX: elevatorCutMinX,
+        minZ: elevatorCutMinZ,
+        maxZ,
+      },
+      {
+        minX: elevatorCutMaxX,
+        maxX,
+        minZ: elevatorCutMinZ,
+        maxZ,
+      },
+    ];
+    segments.forEach((segment, index) => {
+      const ceiling = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          segment.maxX - segment.minX,
+          OFFICE_LOBBY_SURFACE_Y,
+          segment.maxZ - segment.minZ,
+        ),
+        material,
+      );
+      ceiling.name =
+        `forkmesh-office-ceiling-slab-` +
+        `${parent.userData.officeFloorId || "lobby"}-${index + 1}`;
+      ceiling.position.set(
+        (segment.minX + segment.maxX) / 2,
+        OFFICE_FLOOR_HEIGHT - OFFICE_LOBBY_SURFACE_Y / 2,
+        (segment.minZ + segment.maxZ) / 2,
+      );
+      ceiling.receiveShadow = true;
+      parent.add(ceiling);
+    });
+  }
   addOfficeFloorSurface(officeInterior, officeLobbyFloorMaterial);
+  addOfficeCeilingSurface(
+    officeInterior,
+    officeLobbyCeilingMaterial,
+  );
   function addOfficeFloorAtmosphere(
     floorGroup,
     floorId,
@@ -16709,10 +16774,17 @@ export function createWorldScene({
     floorGroup.name = `forkmesh-office-floor-${floor.id}`;
     floorGroup.position.y = officeFloorY(floor.id);
     floorGroup.userData.officeFloorId = floor.id;
+    const floorFinish = officeFloorFinishMaterial(interiorIndex + 1);
     addOfficeFloorSurface(
       floorGroup,
-      officeFloorFinishMaterial(interiorIndex + 1),
+      floorFinish,
     );
+    if (floor.id !== "rooftop") {
+      addOfficeCeilingSurface(
+        floorGroup,
+        officeCeilingFinishMaterial(interiorIndex + 1),
+      );
+    }
     const sign = makeOfficeWallPlacard(
       THREE,
       `${floor.level + 1} · ${floor.label.toUpperCase()}`,
@@ -17776,44 +17848,148 @@ export function createWorldScene({
   officeReception.add(noahNameplate);
   officeInterior.add(officeReception);
 
+  const officeFloorWarpDoors = [];
   const officeFloorWarpHub = new THREE.Group();
   officeFloorWarpHub.name = "forkmesh-office-floor-warp-hub";
-  officeFloorWarpHub.position.set(-25.5, 0.04, -32.8);
+  officeFloorWarpHub.position.set(0, 0, 0);
+  officeFloorWarpHub.userData.officeFloorId = "lobby";
   OFFICE_FLOORS.forEach((floor, index) => {
-    const column = index % 2;
-    const row = Math.floor(index / 2);
-    const pad = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.42, 1.42, 0.12, 40),
-      makeMaterial(THREE, column ? "#77d9ff" : "#9ef7c6", {
-        emissive: column ? "#24637c" : "#236847",
-        emissiveIntensity: 0.8,
-        metalness: 0.34,
-        roughness: 0.34,
-      }),
+    const accent = index % 2 ? "#77d9ff" : "#9ef7c6";
+    const doorway = new THREE.Group();
+    doorway.name = `forkmesh-office-floor-doorway-${floor.id}`;
+    doorway.position.set(
+      OFFICE_FLOOR_WARP_DOOR_START_X +
+        index * OFFICE_FLOOR_WARP_DOOR_SPACING,
+      0,
+      OFFICE_FLOOR_WARP_DOOR_Z,
     );
-    pad.name = `forkmesh-office-floor-warp-${floor.id}`;
-    pad.position.set(column * 3.35, 0.06, row * -3.2);
-    pad.userData.interactive = "office-floor-warp";
-    pad.userData.officeFloorId = floor.id;
-    pad.userData.officeFloorNumber = floor.level + 1;
-    interactive.push(pad);
-    officeFloorWarpHub.add(pad);
-    const label = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: wordTexture(
-          THREE,
-          `${floor.level + 1}`,
-          floor.label.toUpperCase(),
-          column ? "#77d9ff" : "#9ef7c6",
-        ),
+    doorway.userData.officeFloorId = "lobby";
+    doorway.userData.officeFloorTargetId = floor.id;
+
+    const frameMaterial = makeMaterial(THREE, "#132d28", {
+      emissive: "#236847",
+      emissiveIntensity: 0.42,
+      metalness: 0.4,
+      roughness: 0.36,
+    });
+    const frameThickness = 0.24;
+    const sideGeometry = new THREE.BoxGeometry(
+      frameThickness,
+      OFFICE_FLOOR_WARP_DOOR_HEIGHT,
+      0.4,
+    );
+    for (const side of [-1, 1]) {
+      const jamb = new THREE.Mesh(sideGeometry, frameMaterial);
+      jamb.position.set(
+        side * (OFFICE_FLOOR_WARP_DOOR_WIDTH / 2),
+        OFFICE_FLOOR_WARP_DOOR_HEIGHT / 2,
+        0,
+      );
+      doorway.add(jamb);
+    }
+    const lintel = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        OFFICE_FLOOR_WARP_DOOR_WIDTH + frameThickness,
+        frameThickness,
+        0.4,
+      ),
+      frameMaterial,
+    );
+    lintel.position.set(0, OFFICE_FLOOR_WARP_DOOR_HEIGHT, 0);
+    doorway.add(lintel);
+
+    const portal = new THREE.Mesh(
+      new THREE.PlaneGeometry(
+        OFFICE_FLOOR_WARP_DOOR_WIDTH - 0.38,
+        OFFICE_FLOOR_WARP_DOOR_HEIGHT - 0.36,
+      ),
+      new THREE.MeshBasicMaterial({
+        color: accent,
         transparent: true,
+        opacity: 0.22,
+        side: THREE.DoubleSide,
         depthWrite: false,
+        toneMapped: false,
       }),
     );
-    label.name = `forkmesh-office-floor-warp-label-${floor.id}`;
-    label.position.set(pad.position.x, 1.05, pad.position.z);
-    label.scale.set(2.6, 1.3, 1);
-    officeFloorWarpHub.add(label);
+    portal.name = `forkmesh-office-floor-warp-${floor.id}`;
+    portal.position.set(0, OFFICE_FLOOR_WARP_DOOR_HEIGHT / 2, 0.23);
+    portal.userData.interactive = "office-floor-warp";
+    portal.userData.officeFloorId = "lobby";
+    portal.userData.officeFloorTargetId = floor.id;
+    portal.userData.officeFloorNumber = floor.level + 1;
+    doorway.add(portal);
+    interactive.push(portal);
+
+    const closedDoor = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        OFFICE_FLOOR_WARP_DOOR_WIDTH - 0.38,
+        OFFICE_FLOOR_WARP_DOOR_HEIGHT - 0.36,
+        0.24,
+      ),
+      makeMaterial(THREE, "#2b2628", {
+        emissive: "#6e2737",
+        emissiveIntensity: 0.25,
+        metalness: 0.24,
+        roughness: 0.72,
+      }),
+    );
+    closedDoor.name = `forkmesh-office-floor-door-${floor.id}`;
+    closedDoor.position.set(0, OFFICE_FLOOR_WARP_DOOR_HEIGHT / 2, 0.12);
+    closedDoor.userData.interactive = "office-floor-warp";
+    closedDoor.userData.officeFloorId = "lobby";
+    closedDoor.userData.officeFloorTargetId = floor.id;
+    closedDoor.userData.officeFloorNumber = floor.level + 1;
+    doorway.add(closedDoor);
+    interactive.push(closedDoor);
+
+    const openLabel = makeOfficeWallPlacard(
+      THREE,
+      `${floor.level + 1} · ${floor.label.toUpperCase()}`,
+      floor.id === "lobby" ? "YOU ARE HERE" : "OPEN · WALK THROUGH",
+      accent,
+      OFFICE_FLOOR_WARP_DOOR_WIDTH - 0.46,
+      1.2,
+    );
+    openLabel.name = `forkmesh-office-floor-warp-label-${floor.id}`;
+    openLabel.position.set(0, OFFICE_FLOOR_WARP_DOOR_HEIGHT - 0.72, 0.38);
+    openLabel.userData.interactive = "office-floor-warp";
+    openLabel.userData.officeFloorId = "lobby";
+    openLabel.userData.officeFloorTargetId = floor.id;
+    doorway.add(openLabel);
+    interactive.push(openLabel);
+
+    const lockedLabel = makeOfficeWallPlacard(
+      THREE,
+      `${floor.level + 1} · ${floor.label.toUpperCase()}`,
+      "CLOSED · ACCESS REQUIRED",
+      "#ff7b83",
+      OFFICE_FLOOR_WARP_DOOR_WIDTH - 0.46,
+      1.2,
+    );
+    lockedLabel.name = `forkmesh-office-floor-warp-locked-${floor.id}`;
+    lockedLabel.position.copy(openLabel.position);
+    lockedLabel.userData.interactive = "office-floor-warp";
+    lockedLabel.userData.officeFloorId = "lobby";
+    lockedLabel.userData.officeFloorTargetId = floor.id;
+    doorway.add(lockedLabel);
+    interactive.push(lockedLabel);
+
+    officeFloorWarpDoors.push({
+      floorId: floor.id,
+      x: doorway.position.x,
+      frameMaterial,
+      portal,
+      closedDoor,
+      openLabel,
+      lockedLabel,
+      allowed: false,
+    });
+    portal.visible = false;
+    openLabel.visible = false;
+    closedDoor.visible = true;
+    lockedLabel.visible = true;
+    officeFloorWarpHub.add(doorway);
   });
   officeInterior.add(officeFloorWarpHub);
 
@@ -19633,6 +19809,25 @@ export function createWorldScene({
     officeFloorHandler = typeof handler === "function" ? handler : null;
   }
 
+  function refreshOfficeFloorWarpDoors() {
+    officeFloorWarpDoors.forEach((doorway) => {
+      const allowed = canAccessOfficeFloor(
+        officeFloorAccess,
+        doorway.floorId,
+      );
+      doorway.allowed = allowed;
+      doorway.portal.visible = allowed;
+      doorway.openLabel.visible = allowed;
+      doorway.closedDoor.visible = !allowed;
+      doorway.lockedLabel.visible = !allowed;
+      doorway.frameMaterial.color.set(allowed ? "#173d32" : "#31282b");
+      doorway.frameMaterial.emissive?.set?.(
+        allowed ? "#1f9c6a" : "#6e2737",
+      );
+      doorway.frameMaterial.emissiveIntensity = allowed ? 0.72 : 0.2;
+    });
+  }
+
   function setOfficeAccess(payload = {}) {
     officeFloorAccess = normalizeOfficeFloorAccess(payload);
     officeElevatorButtons.forEach((button) => {
@@ -19645,6 +19840,7 @@ export function createWorldScene({
       button.material.emissive?.set?.(allowed ? "#1f9c6a" : "#6e2737");
       button.material.emissiveIntensity = allowed ? 0.9 : 0.2;
     });
+    refreshOfficeFloorWarpDoors();
     return { ...officeFloorAccess };
   }
 
@@ -19862,6 +20058,42 @@ export function createWorldScene({
       warp: true,
     });
     return true;
+  }
+
+  function tryOfficeFloorWarpDoorway(avatar, previousPosition) {
+    if (
+      !avatar ||
+      !previousPosition ||
+      officeSceneMode !== "lobby" ||
+      officeCurrentFloorId !== "lobby" ||
+      officeElevatorRide
+    ) {
+      return false;
+    }
+    const current = officeAvatarLocalPosition(avatar);
+    const previous = previousPosition.clone();
+    avatar.parent?.localToWorld?.(previous);
+    officeInterior.worldToLocal(previous);
+    if (
+      current.z > OFFICE_FLOOR_WARP_TRIGGER_Z ||
+      previous.z <= OFFICE_FLOOR_WARP_TRIGGER_Z ||
+      current.z >= previous.z - 1e-5
+    ) {
+      return false;
+    }
+    const doorway = officeFloorWarpDoors.find(
+      (candidate) =>
+        Math.abs(current.x - candidate.x) <=
+        OFFICE_FLOOR_WARP_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS,
+    );
+    if (
+      !doorway ||
+      !doorway.allowed ||
+      doorway.floorId === officeCurrentFloorId
+    ) {
+      return false;
+    }
+    return warpToOfficeFloor(doorway.floorId);
   }
 
   function constrainTownOfficeWalls(previousPosition) {
@@ -21738,6 +21970,12 @@ export function createWorldScene({
       avatar.rotation.y = Math.atan2(-movement.x, -movement.z);
       if (
         !officeRoofJumping &&
+        tryOfficeFloorWarpDoorway(avatar, previousPosition)
+      ) {
+        return;
+      }
+      if (
+        !officeRoofJumping &&
         constrainOfficeInteriorWalls(avatar, previousPosition)
       ) {
         return;
@@ -21765,6 +22003,12 @@ export function createWorldScene({
         avatar.position.y = officeFloorY(officeCurrentFloorId) + 0.38;
       }
       walking = true;
+      if (
+        !officeRoofJumping &&
+        tryOfficeFloorWarpDoorway(avatar, previousPosition)
+      ) {
+        return;
+      }
       if (
         !officeRoofJumping &&
         constrainOfficeInteriorWalls(avatar, previousPosition)
@@ -28675,7 +28919,7 @@ export function createWorldScene({
       return;
     }
     if (hit?.object?.userData?.interactive === "office-floor-warp") {
-      warpToOfficeFloor(hit.object.userData.officeFloorId);
+      warpToOfficeFloor(hit.object.userData.officeFloorTargetId);
       return;
     }
     if (
