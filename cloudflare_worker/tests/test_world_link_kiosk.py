@@ -1,5 +1,6 @@
 """Reach scoring, URL safety, persistence, and lobby wiring for Link Lab."""
 
+import asyncio
 import importlib.util
 from pathlib import Path
 
@@ -44,6 +45,45 @@ def test_reach_estimate_is_bounded_monotonic_and_explainable():
         "observedAggregateVisits": 500,
         "channel": "social",
     }
+    assert KIOSK.reward_sol(0) == 0.00005
+    assert KIOSK.reward_sol(100) == 0.0005
+    assert KIOSK.reward_sol(75) > KIOSK.reward_sol(25)
+
+
+def test_public_links_include_current_wallet_reward_and_explicit_payment_state():
+    wallet = "4Nd1mJ9VLUyV9K1wMYHTRZDNzzWQYTf1L8YgJnU3hFJH"
+
+    class Runtime:
+        async def d1_all(self, _sql, _limit):
+            return [{
+                "link_id": "link-1",
+                "account_bi": "account-1",
+                "data": {
+                    "url": "https://example.com/story",
+                    "title": "Story",
+                    "account": "alice",
+                    "channel": "article",
+                    "paidAt": 123,
+                },
+                "account_data": {
+                    "status": "active",
+                    "solana": wallet,
+                },
+                "score": 80,
+                "potential_low": 4,
+                "potential_high": 12,
+                "created_at": 100,
+            }]
+
+        async def open(self, value):
+            return value
+
+    links = asyncio.run(KIOSK._public_links(Runtime()))
+    assert links[0]["submittedBy"] == "alice"
+    assert links[0]["walletAddress"] == wallet
+    assert links[0]["rewardSol"] == KIOSK.reward_sol(80)
+    assert links[0]["paymentStatus"] == "paid"
+    assert links[0]["paidAt"] == 123
 
 
 def test_kiosk_is_migrated_routed_audited_and_reachable_from_the_lobby():
@@ -64,9 +104,19 @@ def test_kiosk_is_migrated_routed_audited_and_reachable_from_the_lobby():
         ROOT / "src/world_link_kiosk.py"
     ).read_text(encoding="utf-8")
     assert 'userData.interactive = "office-link-kiosk"' in scene
+    assert 'officeLinkRewards.name = "forkmesh-office-link-rewards"' in scene
+    assert "linkSubmissionRewardTexture" in scene
+    assert "updateLobbyLinkBoard" in scene
+    assert "drawQrModules(context, wallet" in scene
     assert "onLobbyLinkKioskSelect" in scene
     assert "openLobbyLinkKiosk" in shell
-    assert "never controls merges, access, rewards, or governance" in shell
+    assert "optional direct appreciation estimate" in shell
+    assert "loadLobbyLinkBoard" in shell
+    assert "data-world-link-reward-qr" in shell
+    assert "Donate estimated SOL directly" in shell
+    assert "paymentStatus" in (
+        ROOT / "src/world_link_kiosk.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_team_onboarding_documents_roles_review_gate_and_link_lab():

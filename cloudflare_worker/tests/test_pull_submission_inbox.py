@@ -112,6 +112,7 @@ def _runtime(inserted, notifications, verified):
         "notify_pending_inbox": noop,
         "notify_mentions": notify_mentions,
         "notify_repo_host": noop,
+        "notify_repo_mirrors": noop,
         "_best_effort_inbox_side_effect": noop,
         "_ap_publish_repo_event": lambda *_args, **_kwargs: None,
         "repo_web_href": lambda owner, repo: f"/{owner}/{repo}",

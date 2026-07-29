@@ -383,6 +383,7 @@ export function createWorldSky({
     !THREE?.InstancedMesh ||
     !THREE?.MeshBasicMaterial ||
     !THREE?.SphereGeometry ||
+    !THREE?.RingGeometry ||
     !THREE?.OctahedronGeometry ||
     !THREE?.Object3D ||
     !THREE?.Color
@@ -447,10 +448,14 @@ export function createWorldSky({
     toneMapped: false,
     fog: false,
   });
+  // The sun and moon share the existing planet draw call. They move with
+  // local civil time, but do not add two more meshes to every frame.
+  const sunInstanceIndex = WORLD_SKY_PLANETS.length;
+  const moonInstanceIndex = sunInstanceIndex + 1;
   const planets = new THREE.InstancedMesh(
     planetGeometry,
     planetMaterial,
-    WORLD_SKY_PLANETS.length,
+    WORLD_SKY_PLANETS.length + 2,
   );
   planets.name = "forkmesh-world-planets";
   planets.frustumCulled = false;
@@ -477,6 +482,94 @@ export function createWorldSky({
   planets.instanceMatrix.needsUpdate = true;
   if (planets.instanceColor) planets.instanceColor.needsUpdate = true;
   group.add(planets);
+
+  // One instanced, additive draw gives both bodies a readable corona without
+  // introducing per-frame canvas work or one mesh per body. The warm outer
+  // ring makes the sun read as a sun; the cool ring keeps the moon bright
+  // against the night sky.
+  const celestialGlowGeometry = new THREE.RingGeometry(1.08, 1.62, 28);
+  const celestialGlowMaterial = new THREE.MeshBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.72,
+    depthTest: false,
+    depthWrite: false,
+    toneMapped: false,
+    fog: false,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+  });
+  const celestialGlows = new THREE.InstancedMesh(
+    celestialGlowGeometry,
+    celestialGlowMaterial,
+    2,
+  );
+  celestialGlows.name = "forkmesh-world-sun-moon-glows";
+  celestialGlows.frustumCulled = false;
+  celestialGlows.renderOrder = -19;
+  group.add(celestialGlows);
+
+  function setDaylightMinute(value, daylightStrength = null) {
+    const minute = (
+      (finiteNumber(value) ?? 12 * 60) % (24 * 60) +
+      24 * 60
+    ) % (24 * 60);
+    const solarAngle = (minute / (24 * 60)) * TAU - Math.PI / 2;
+    const solarRadius = safeRadius - 105;
+    const horizontalRadius = solarRadius * 0.76;
+    const verticalRadius = solarRadius * 0.62;
+    const depth = solarRadius * 0.38;
+    const setBody = (instanceIndex, angle, scale, bodyColor) => {
+      transform.position.set(
+        Math.cos(angle) * horizontalRadius,
+        Math.sin(angle) * verticalRadius,
+        -Math.cos(angle) * depth,
+      );
+      transform.scale.setScalar(scale);
+      transform.updateMatrix();
+      planets.setMatrixAt(instanceIndex, transform.matrix);
+      color.set(bodyColor);
+      planets.setColorAt(instanceIndex, color);
+      transform.lookAt(0, 0, 0);
+      transform.scale.setScalar(scale);
+      transform.updateMatrix();
+      celestialGlows.setMatrixAt(
+        instanceIndex === sunInstanceIndex ? 0 : 1,
+        transform.matrix,
+      );
+      celestialGlows.setColorAt(
+        instanceIndex === sunInstanceIndex ? 0 : 1,
+        color,
+      );
+    };
+    setBody(
+      sunInstanceIndex,
+      solarAngle,
+      compact ? 13 : 18,
+      "#ffd45f",
+    );
+    setBody(
+      moonInstanceIndex,
+      solarAngle + Math.PI,
+      compact ? 9 : 12,
+      "#dff5ff",
+    );
+    const visibleDaylight = clamp(
+      finiteNumber(daylightStrength) ??
+        Math.max(0, Math.sin(solarAngle)),
+      0,
+      1,
+    );
+    starMaterial.opacity = 0.08 + (1 - visibleDaylight) * 0.86;
+    planets.instanceMatrix.needsUpdate = true;
+    if (planets.instanceColor) planets.instanceColor.needsUpdate = true;
+    celestialGlows.instanceMatrix.needsUpdate = true;
+    if (celestialGlows.instanceColor) {
+      celestialGlows.instanceColor.needsUpdate = true;
+    }
+    return minute;
+  }
+  setDaylightMinute(12 * 60, 1);
 
   const satelliteGeometry = new THREE.OctahedronGeometry(
     compact ? 0.72 : 0.9,
@@ -592,7 +685,8 @@ export function createWorldSky({
       fetchedAt: acceptedAt,
       sourceEpoch,
       disposed,
-      drawCalls: 3,
+      sunAndMoon: 2,
+      drawCalls: 4,
     };
   }
 
@@ -604,9 +698,11 @@ export function createWorldSky({
     group.parent?.remove?.(group);
     starGeometry.dispose?.();
     planetGeometry.dispose?.();
+    celestialGlowGeometry.dispose?.();
     satelliteGeometry.dispose?.();
     disposeMaterial(starMaterial);
     disposeMaterial(planetMaterial);
+    disposeMaterial(celestialGlowMaterial);
     disposeMaterial(satelliteMaterial);
     group.clear?.();
   }
@@ -615,7 +711,9 @@ export function createWorldSky({
     group,
     stars,
     planets,
+    celestialGlows,
     satellites,
+    setDaylightMinute,
     update,
     tick,
     dispose,

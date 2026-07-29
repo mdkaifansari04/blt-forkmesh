@@ -863,6 +863,51 @@ def test_office_access_query_binds_exact_live_session_and_expiry():
     assert queries[-1][1] == (SESSION_ID, "a" * 64, 120_000)
 
 
+def test_office_access_revalidates_signed_desktop_accounts_without_browser_session():
+    queries = []
+    active = {"value": True}
+
+    async def d1_first(_env, sql, *args):
+        queries.append((sql, args))
+        if "FROM users WHERE user_bi=?" in sql and active["value"]:
+            return {
+                "data": {"status": "active", "kind": "user"},
+                "is_admin": 0,
+            }
+        return None
+
+    namespace = {
+        "DurableObject": object,
+        "Date": SimpleNamespace(now=lambda: 90_000),
+        "_ws_attr": lambda ws, name, default=None: getattr(
+            ws.attachment, name, default),
+        "_account_kind": lambda record: record.get("kind", ""),
+        "d1_first": d1_first,
+        "decrypt_row": lambda _env, value: asyncio.sleep(0, result=value),
+        "re": re,
+    }
+    _compile([_top_level_node("ForkMeshOfficeRoom")], namespace)
+    room = namespace["ForkMeshOfficeRoom"]()
+    room.env = object()
+    socket = SimpleNamespace(
+        attachment=SimpleNamespace(
+            account_bi="a" * 64,
+            session_id="desktop_" + "b" * 32,
+            scope="world-general",
+            version=1,
+        ),
+    )
+
+    assert asyncio.run(room._access_current(socket, 90_000)) is True
+    assert len(queries) == 1
+    assert "FROM users WHERE user_bi=?" in queries[0][0]
+    assert "account_sessions" not in queries[0][0]
+    assert queries[0][1] == ("a" * 64,)
+
+    active["value"] = False
+    assert asyncio.run(room._access_current(socket, 120_000)) is False
+
+
 def test_durable_object_internal_actions_are_only_websocket_and_revoke():
     assignment = _top_level_assignment("OFFICE_INTERNAL_RE")
     regex_source = ast.unparse(assignment)

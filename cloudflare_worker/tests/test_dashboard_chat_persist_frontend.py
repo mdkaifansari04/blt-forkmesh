@@ -395,3 +395,48 @@ def test_world_embedded_dashboard_chat_keeps_mobile_composer_usable():
     assert "env(safe-area-inset-right, 0px)" in CHAT_VIEW
     assert 'aria-label="Message #general"' in CHAT_VIEW
     assert 'enterkeyhint="send"' in CHAT_VIEW
+
+
+def test_world_chat_has_a_primer_multiline_repository_action_composer():
+    for marker in (
+        'id="fullChatChannel"',
+        'id="fullChatRepo"',
+        'id="fullChatAction"',
+        '<option value="chat">Send to chat</option>',
+        '<option value="issue">Create issue</option>',
+        '<option value="codex">Assign Codex</option>',
+        '<option value="claude-code">Assign Claude</option>',
+        'id="fullChatInput"',
+        'rows="2"',
+        "border-border",
+        "bg-card",
+        "focus:ring-1",
+    ):
+        assert marker in CHAT_VIEW
+    for contract in (
+        'fetch("/api/repositories"',
+        "selectedComposerRepository()",
+        "runFullComposerAction(inputEl)",
+        "ForkMeshDashboardActions?.submitWebIssue",
+        "const queued = await maybeAskOrgAgent(",
+        "`${mention} ${text}`",
+        'fullAction.value !== "chat"',
+        "inputEl.style.height",
+        'destination.searchParams.set("worldEmbed", "1")',
+    ):
+        assert contract in CHAT
+
+
+def test_world_embed_uses_one_dark_primer_header_and_pinned_grid_composer():
+    for marker in (
+        "color-scheme: dark",
+        "--background: #0d1117",
+        "[data-dashboard-chat-channel-header]",
+        "display: none;",
+        "[data-dashboard-chat-composer-toolbar]",
+        "grid-template-columns:",
+        "[data-dashboard-chat-action]",
+        "grid-column: 1 / -1",
+    ):
+        assert marker in CHAT_VIEW
+    assert "Public World <strong" not in CHAT_VIEW

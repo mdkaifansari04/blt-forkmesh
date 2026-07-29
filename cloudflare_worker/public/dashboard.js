@@ -1126,6 +1126,15 @@
     return data;
   }
 
+  // The compact World chat composer is a second presentation of the canonical
+  // dashboard actions. Expose the signed issue operation narrowly so the chat
+  // bundle can file into the same maintainer inbox without duplicating key,
+  // signature, authorization, or payload logic.
+  window.ForkMeshDashboardActions = Object.assign(
+    window.ForkMeshDashboardActions || {},
+    { submitWebIssue },
+  );
+
   // Mirrors IssueStore::contentForSigning's "comment" case (body NUL
   // attachments) and the desktop's inbox POST (verify_issue_event in the
   // worker). Unlike a new issue's "open" event, a comment is signed against the
@@ -1909,6 +1918,21 @@
   const ORG_ROLE_OPTIONS = ["owner", "admin", "member"];
   const ORG_TEAM_PERMISSIONS = ["read", "write", "maintain", "admin"];
   const ORG_WORLD_ACCESS_OPTIONS = ["public", "restricted", "private"];
+  // Keep these aliases aligned with world-office-tower.js and the Worker's
+  // OFFICE_FLOOR_TEAM_ALIASES. The server remains authoritative for elevator
+  // access; this organization-admin matrix explains every floor group a user
+  // can belong to and highlights access granted by their current teams.
+  const ORG_OFFICE_FLOOR_GROUPS = Object.freeze([
+    { id: "marketing", label: "Marketing", aliases: ["marketing", "marketing-team", "growth", "brand", "comms", "communications"] },
+    { id: "engineering", label: "Engineering", aliases: ["engineering", "engineers", "development", "developers", "platform", "frontend", "backend"] },
+    { id: "product-design", label: "Product & Design", aliases: ["product-design", "product", "design", "ux", "ui-ux"] },
+    { id: "security", label: "Security", aliases: ["security", "security-team", "trust-safety", "trust-and-safety"] },
+    { id: "infrastructure", label: "Infrastructure", aliases: ["infrastructure", "infra", "devops", "site-reliability", "sre"] },
+    { id: "community", label: "Community", aliases: ["community", "community-team", "developer-relations", "devrel"] },
+    { id: "partnerships", label: "Partnerships", aliases: ["partnerships", "partnership", "business-development", "bizdev"] },
+    { id: "operations", label: "Operations", aliases: ["operations", "ops", "people-operations", "finance-operations"] },
+    { id: "executive", label: "Executive", aliases: ["executive", "executives", "leadership", "organization-leadership", "org-leadership"] },
+  ]);
 
   // Worker org-endpoint error codes -> human text. Unknown codes fall through
   // to a generic message so the UI never shows a raw slug.
@@ -1935,6 +1959,11 @@
     enabled_required: "Choose whether organization digests are enabled.",
     invalid_logo_url: "Logo URLs must use HTTPS and cannot contain credentials or fragments.",
     invalid_world_access: "Choose a valid access level for every organization space.",
+    invalid_provider: "Choose Codex or Claude Code.",
+    invalid_bot_permissions: "Choose at least one valid bot permission.",
+    invalid_expiration: "Bot tokens may expire in 1–365 days.",
+    too_many_bot_tokens: "This organization has reached its active bot-token limit.",
+    invalid_token_id: "That bot token is invalid.",
   };
 
   function orgErrorText(code) {
@@ -1987,6 +2016,38 @@
         : "border-border bg-secondary text-muted-foreground";
     return '<span class="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ' +
       tone + '">' + escapeHtml(clean) + "</span>";
+  }
+
+  function orgMemberFloorGroups(member) {
+    const teams = new Set(
+      (Array.isArray(member?.teams) ? member.teams : [])
+        .map((team) => String(team || "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const groups = ORG_OFFICE_FLOOR_GROUPS.map((group) => {
+      const matchingTeams = group.aliases.filter((team) => teams.has(team));
+      const active = matchingTeams.length > 0;
+      const state = active ? "In group" : "Available";
+      const title = active
+        ? group.label + " floor through " + matchingTeams.join(", ")
+        : group.label + " floor group is available";
+      return '<span title="' + escapeHtml(title) + '" aria-label="' +
+        escapeHtml(group.label + ": " + state) + '" class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold ' +
+        (active
+          ? "border-[#238636]/50 bg-[#238636]/10 text-[#238636]"
+          : "border-border bg-background text-muted-foreground") + '">' +
+        '<span aria-hidden="true" class="h-1.5 w-1.5 rounded-full ' +
+        (active ? "bg-[#238636]" : "bg-muted-foreground/40") + '"></span>' +
+        escapeHtml(group.label) + "</span>";
+    }).join("");
+    const activeCount = ORG_OFFICE_FLOOR_GROUPS.filter(
+      (group) => group.aliases.some((team) => teams.has(team)),
+    ).length;
+    return '<div data-org-member-floor-groups class="mt-2 border-t border-border/70 pt-2">' +
+      '<div class="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">' +
+        '<span class="font-semibold text-foreground">Office floor groups</span>' +
+        '<span>' + activeCount + " of " + ORG_OFFICE_FLOOR_GROUPS.length + " active</span>" +
+      '</div><div class="flex flex-wrap gap-1.5">' + groups + "</div></div>";
   }
 
   function orgOptionTags(options, selected) {
@@ -2086,6 +2147,7 @@
     let teams = [];
     let repos = [];
     let fediverse = { controls: { enabled: true }, repos: [] };
+    let botTokens = { permissions: [], tokens: [], usagePreview: [] };
     try {
       const [profileData, membersData, teamsData, reposData] = await Promise.all([
         orgApiRequest("GET", "/api/orgs/" + encodeURIComponent(name)),
@@ -2098,8 +2160,12 @@
       teams = teamsData.teams || [];
       repos = reposData.repos || [];
       if (profile.viewerRole === "owner" || profile.viewerRole === "admin") {
-        fediverse = await orgApiRequest(
-          "GET", "/api/orgs/" + encodeURIComponent(name) + "/fediverse");
+        [fediverse, botTokens] = await Promise.all([
+          orgApiRequest(
+            "GET", "/api/orgs/" + encodeURIComponent(name) + "/fediverse"),
+          orgApiRequest(
+            "GET", "/api/orgs/" + encodeURIComponent(name) + "/bot-tokens"),
+        ]);
       }
     } catch (error) {
       root.innerHTML =
@@ -2110,10 +2176,13 @@
       root.querySelector("[data-org-back]")?.addEventListener("click", showOrgsList);
       return;
     }
-    renderOrgDetail(root, name, profile, members, teams, repos, fediverse);
+    renderOrgDetail(
+      root, name, profile, members, teams, repos, fediverse, botTokens);
   }
 
-  function renderOrgDetail(root, name, profile, members, teams, repos, fediverse) {
+  function renderOrgDetail(
+    root, name, profile, members, teams, repos, fediverse, botTokens,
+  ) {
     const canManage = profile.viewerRole === "owner" || profile.viewerRole === "admin";
     const isOwner = profile.viewerRole === "owner";
     const title = escapeHtml(profile.displayName || profile.org || name);
@@ -2159,9 +2228,13 @@
             'class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-red-500 hover:border-red-500/50">' +
             '<i data-lucide="user-minus" class="h-4 w-4"></i></button>'
         : orgRoleBadge(member.role);
-      return '<div class="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2">' +
-        '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName + "</span>" +
-        controls + "</div>";
+      return '<div class="rounded-md border border-border bg-card px-3 py-2">' +
+        '<div class="flex items-center gap-2">' +
+          '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName + "</span>" +
+          controls +
+        "</div>" +
+        (canManage ? orgMemberFloorGroups(member) : "") +
+      "</div>";
     }).join("") || '<p class="text-sm text-muted-foreground">No members.</p>';
 
     const teamRows = teams.map((team) => {
@@ -2243,6 +2316,80 @@
           '<div class="mt-3 grid gap-2">' + digestRows + "</div>" +
         "</section>"
       : "";
+    const botTokenControls = canManage
+      ? (() => {
+          const permissionRows = (botTokens?.permissions || []).map((permission) =>
+            '<label class="flex items-start gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground">' +
+              '<input type="checkbox" data-org-bot-scope value="' +
+                escapeHtml(permission.scope || "") + '" class="mt-0.5 h-4 w-4"' +
+                (permission.default === false ? "" : " checked") + " />" +
+              '<span><strong class="font-mono">' +
+                escapeHtml(permission.scope || "") + "</strong>" +
+                '<span class="mt-0.5 block leading-4 text-muted-foreground">' +
+                  escapeHtml(permission.description || "") +
+                "</span></span></label>"
+          ).join("");
+          const tokenRows = (botTokens?.tokens || []).map((token) => {
+            const revoked = Number(token.revokedAt || 0) > 0;
+            const linked = token.deviceName
+              ? "linked to " + escapeHtml(token.deviceName)
+              : "not linked yet";
+            return '<div class="rounded-md border border-border bg-card p-3">' +
+              '<div class="flex items-start gap-3">' +
+                '<div class="min-w-0 flex-1"><strong class="block truncate text-sm text-foreground">' +
+                  escapeHtml(token.label || token.provider || "Bot") +
+                "</strong>" +
+                '<span class="mt-1 block text-xs text-muted-foreground">' +
+                  escapeHtml(token.provider || "") + " · " + linked +
+                  (revoked ? " · revoked" : "") + "</span></div>" +
+                (!revoked
+                  ? '<button type="button" data-org-bot-revoke="' +
+                      escapeHtml(token.id || "") + '" class="' +
+                      ORG_BTN_SECONDARY + ' text-red-500">Revoke</button>'
+                  : "") +
+              "</div>" +
+              '<p class="mt-2 break-all font-mono text-[10px] text-muted-foreground">' +
+                escapeHtml((token.scopes || []).join(" · ")) + "</p></div>";
+          }).join("") || '<p class="text-sm text-muted-foreground">No bot tokens yet.</p>';
+          const usageRows = (botTokens?.usagePreview || []).slice(0, 5).map((usage) =>
+            '<li class="flex items-start justify-between gap-3 rounded-md border border-border bg-background px-3 py-2">' +
+              '<span class="min-w-0"><strong class="block truncate text-xs text-foreground">' +
+                escapeHtml(usage.label || usage.provider || "Bot token") +
+              '</strong><span class="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">' +
+                escapeHtml((usage.method || "GET") + " " + (usage.action || "/api/bot/session")) +
+              "</span></span>" +
+              '<time class="shrink-0 text-[10px] text-muted-foreground" title="' +
+                escapeHtml(formatDate(Number(usage.usedAt || 0))) + '">' +
+                escapeHtml(formatTimeAgo(Number(usage.usedAt || 0))) +
+              "</time></li>"
+          ).join("") || '<li class="text-xs text-muted-foreground">No token use recorded yet.</li>';
+          return '<section class="mt-6 rounded-md border border-border bg-card p-4" data-org-bot-tokens>' +
+            '<div class="flex items-center gap-2"><i data-lucide="bot" class="h-4 w-4 text-[#58a6ff]"></i>' +
+              '<h4 class="text-sm font-semibold text-foreground">Bot tokens</h4></div>' +
+            '<p class="mt-1 text-xs leading-5 text-muted-foreground">Create a revocable Codex or Claude credential for an attended local computer. The secret is shown once. Destructive node, membership, organization-administration, and merge permissions are intentionally unavailable.</p>' +
+            '<form data-org-bot-create class="mt-4 grid gap-3">' +
+              '<div class="grid gap-3 sm:grid-cols-3">' +
+                '<label class="grid gap-1 text-xs font-semibold text-foreground">Provider<select data-org-bot-provider class="' +
+                  ORG_INPUT_CLASS + '"><option value="codex">Codex</option><option value="claude-code">Claude Code</option></select></label>' +
+                '<label class="grid gap-1 text-xs font-semibold text-foreground">Label<input data-org-bot-label maxlength="80" value="Codex bot" class="' +
+                  ORG_INPUT_CLASS + '" /></label>' +
+                '<label class="grid gap-1 text-xs font-semibold text-foreground">Expires in days<input data-org-bot-expiry type="number" min="1" max="365" value="90" class="' +
+                  ORG_INPUT_CLASS + '" /></label>' +
+              "</div>" +
+              '<div><span class="text-xs font-semibold text-foreground">Permissions</span>' +
+                '<div class="mt-2 grid gap-2 md:grid-cols-2">' + permissionRows + "</div></div>" +
+              '<button type="submit" class="' + ORG_BTN_PRIMARY + ' w-fit">Create bot token</button>' +
+            "</form>" +
+            '<div data-org-bot-secret hidden class="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-3"></div>' +
+            '<div class="mt-4 grid gap-2">' + tokenRows + "</div>" +
+            '<div class="mt-5 border-t border-border pt-4" data-org-bot-usage-preview>' +
+              '<h5 class="text-xs font-semibold text-foreground">Recent token use</h5>' +
+              '<p class="mt-1 text-[11px] leading-4 text-muted-foreground">Latest five successful authentications. The full metadata-only log is available to platform administrators; secrets, bodies, network addresses, and user agents are never logged.</p>' +
+              '<ol class="mt-2 grid gap-2">' + usageRows + "</ol>" +
+            "</div>" +
+          "</section>";
+        })()
+      : "";
     const accessSummary =
       '<aside class="rounded-md border border-[#2f81f7]/30 bg-[#2f81f7]/5 p-4 lg:sticky lg:top-4 lg:self-start" data-org-access-summary>' +
         '<div class="flex items-center gap-2"><i data-lucide="shield-check" class="h-4 w-4 text-[#2f81f7]"></i>' +
@@ -2293,7 +2440,8 @@
       memberAndTeamSettings +
       '<section class="mt-6"><h4 class="text-sm font-semibold text-foreground">Linked repos</h4>' +
         '<div class="mt-2 grid gap-2">' + repoRows + "</div>" + repoAdd + "</section>" +
-      digestControls;
+      digestControls +
+      botTokenControls;
 
     window.lucide?.createIcons();
     wireOrgDetail(root, name, members);
@@ -2400,6 +2548,72 @@
           "POST", "/api/orgs/" + encodeURIComponent(name) + "/fediverse",
           { enabled: Boolean(event.target.checked) }));
       });
+
+    const botProvider = root.querySelector("[data-org-bot-provider]");
+    const botLabel = root.querySelector("[data-org-bot-label]");
+    botProvider?.addEventListener("change", () => {
+      if (!botLabel) return;
+      botLabel.value = botProvider.value === "claude-code"
+        ? "Claude bot"
+        : "Codex bot";
+    });
+    root.querySelector("[data-org-bot-create]")?.addEventListener(
+      "submit", async (event) => {
+        event.preventDefault();
+        const secretPanel = root.querySelector("[data-org-bot-secret]");
+        const scopes = [...root.querySelectorAll("[data-org-bot-scope]:checked")]
+          .map((input) => input.value);
+        try {
+          const created = await orgApiRequest(
+            "POST",
+            "/api/orgs/" + encodeURIComponent(name) + "/bot-tokens",
+            {
+              provider: botProvider?.value || "codex",
+              label: (botLabel?.value || "").trim(),
+              expiresDays: Number(
+                root.querySelector("[data-org-bot-expiry]")?.value || 90),
+              scopes,
+            },
+          );
+          if (!secretPanel) return;
+          secretPanel.hidden = false;
+          secretPanel.replaceChildren();
+          const heading = document.createElement("strong");
+          heading.className = "block text-sm text-foreground";
+          heading.textContent = "Copy this token now — it cannot be recovered";
+          const token = document.createElement("code");
+          token.className =
+            "mt-2 block select-all break-all rounded border border-border bg-background p-2 text-xs text-foreground";
+          token.textContent = created.token || "";
+          const instructions = document.createElement("p");
+          instructions.className = "mt-2 text-xs leading-5 text-muted-foreground";
+          instructions.textContent =
+            "On the attended local computer, store it in FORKMESH_BOT_TOKEN, then POST /api/bot/session with a deviceName to bind and verify the connection. Revoking this row stops the credential immediately.";
+          const copy = document.createElement("button");
+          copy.type = "button";
+          copy.className = ORG_BTN_SECONDARY + " mt-2";
+          copy.textContent = "Copy token";
+          copy.addEventListener("click", async () => {
+            await navigator.clipboard.writeText(created.token || "");
+            copy.textContent = "Copied";
+          });
+          secretPanel.append(heading, token, instructions, copy);
+          orgStatus(root, "Bot token created. Copy it before leaving this page.", true);
+        } catch (error) {
+          orgStatus(root, error.message, false);
+        }
+      },
+    );
+    root.querySelectorAll("[data-org-bot-revoke]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (!window.confirm("Revoke this bot token? Its local connection and API access will stop immediately.")) return;
+        guard(() => orgApiRequest(
+          "DELETE",
+          "/api/orgs/" + encodeURIComponent(name) + "/bot-tokens",
+          { tokenId: button.dataset.orgBotRevoke },
+        ));
+      });
+    });
   }
 
   function wireOrgMemberAutocomplete(root, members) {
@@ -2481,18 +2695,28 @@
     const rows = teamMembers.map((member) => {
       const memberName = escapeHtml(member.name || "");
       return '<div class="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2">' +
-        '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName + "</span>" +
+        '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName +
+          (member.external
+            ? ' <small class="ml-1 rounded-full border border-border px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">outside collaborator</small>'
+            : "") + "</span>" +
         '<button type="button" data-org-team-member-remove="' + memberName + '" title="Remove from team" ' +
           'class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-red-500 hover:border-red-500/50">' +
           '<i data-lucide="x" class="h-4 w-4"></i></button></div>';
     }).join("") || '<p class="text-sm text-muted-foreground">No members on this team yet.</p>';
-    const addForm = candidates.length
-      ? '<form data-org-team-member-add class="mt-3 flex flex-wrap items-center gap-2">' +
-          '<select data-team-member-name class="' + ORG_INPUT_CLASS + ' flex-1 min-w-[10rem]">' +
-            candidates.map((member) => '<option value="' + escapeHtml(member.name) + '">' + escapeHtml(member.name) + "</option>").join("") +
-          "</select>" +
-          '<button type="submit" class="' + ORG_BTN_SECONDARY + '">Add to team</button></form>'
-      : '<p class="mt-3 text-xs text-muted-foreground">Every org member is already on this team.</p>';
+    const addForm =
+      '<form data-org-team-member-add class="mt-3 grid gap-2 rounded-md border border-border bg-card p-3">' +
+        '<div class="flex flex-wrap items-center gap-2">' +
+          '<input data-team-member-name list="org-team-member-candidates" autocomplete="off" placeholder="ForkMesh account name" class="' + ORG_INPUT_CLASS + ' flex-1 min-w-[10rem]" />' +
+          '<datalist id="org-team-member-candidates">' +
+            candidates.map((member) => '<option value="' + escapeHtml(member.name) + '"></option>').join("") +
+          "</datalist>" +
+          '<button type="submit" class="' + ORG_BTN_SECONDARY + '">Add to team</button>' +
+        "</div>" +
+        '<label class="flex items-start gap-2 text-xs leading-5 text-muted-foreground">' +
+          '<input type="checkbox" data-team-member-external class="mt-1 h-4 w-4" />' +
+          '<span><strong class="text-foreground">Outside collaborator</strong> — team-limited access only. This does not make the account an organization member and does not grant Office entry or repository permissions.</span>' +
+        "</label>" +
+      "</form>";
     root.innerHTML =
       '<button type="button" data-org-team-back class="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">' +
         '<i data-lucide="arrow-left" class="h-4 w-4"></i> ' + escapeHtml(name) + "</button>" +
@@ -2513,9 +2737,10 @@
     root.querySelector("[data-org-team-back]")?.addEventListener("click", () => showOrgDetail(name));
     root.querySelector("[data-org-team-member-add]")?.addEventListener("submit", (event) => {
       event.preventDefault();
-      const member = root.querySelector("[data-team-member-name]")?.value || "";
+      const member = (root.querySelector("[data-team-member-name]")?.value || "").trim().toLowerCase();
+      const external = root.querySelector("[data-team-member-external]")?.checked === true;
       if (!member) return;
-      guard(() => orgApiRequest("POST", "/api/orgs/" + encodeURIComponent(name) + "/teams/" + encodeURIComponent(team) + "/members", { member }));
+      guard(() => orgApiRequest("POST", "/api/orgs/" + encodeURIComponent(name) + "/teams/" + encodeURIComponent(team) + "/members", { member, external }));
     });
     root.querySelectorAll("[data-org-team-member-remove]").forEach((button) => {
       button.addEventListener("click", () => {

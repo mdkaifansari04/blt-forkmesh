@@ -12,13 +12,19 @@
 
 #include <QAbstractTextDocumentLayout>
 #include <QCheckBox>
+#include <QFileDialog>
 #include <QLayout>
 #include <QFutureWatcher>
+#include <QGraphicsOpacityEffect>
+#include <QMenu>
+#include <QPlainTextEdit>
+#include <QPropertyAnimation>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QTextBlock>
 #include <QTimer>
 #include <QUrl>
+#include <QWidgetAction>
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
@@ -102,6 +108,94 @@ private:
     int m_hSpace;
     int m_vSpace;
 };
+
+// Compact source-control row: the filename stays prominent, its directory is a
+// muted suffix, and potentially destructive actions only appear while the row
+// is under the pointer. The row paints its own neutral hover because a
+// QTreeWidget item delegate is behind setItemWidget() children.
+class ScmFileRow : public QWidget
+{
+public:
+    explicit ScmFileRow(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setObjectName(QStringLiteral("scmFileRow"));
+        setAttribute(Qt::WA_Hover);
+        applyStyle();
+    }
+
+    void setActionsWidget(QWidget *actions)
+    {
+        m_actions = actions;
+        if (m_actions)
+            m_actions->hide();
+    }
+
+    void setSelected(bool selected)
+    {
+        if (m_selected == selected)
+            return;
+        m_selected = selected;
+        applyStyle();
+    }
+
+    std::function<void()> onClicked;
+
+protected:
+    void enterEvent(QEnterEvent *event) override
+    {
+        QWidget::enterEvent(event);
+        m_hovered = true;
+        applyStyle();
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        QWidget::leaveEvent(event);
+        // Moving from the row into one of its tool buttons can briefly produce
+        // a leave event. Recheck after Qt settles the mouse target.
+        QTimer::singleShot(0, this, [this] {
+            if (!underMouse()) {
+                m_hovered = false;
+                applyStyle();
+            }
+        });
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && onClicked)
+            onClicked();
+        QWidget::mousePressEvent(event);
+    }
+
+private:
+    void applyStyle()
+    {
+        const bool dark =
+            palette().color(QPalette::Base).lightness() < 128;
+        const QString background =
+            m_selected
+                ? (dark ? QStringLiteral("#15251a")
+                        : QStringLiteral("#eef8f0"))
+                : (m_hovered
+                       ? (dark ? QStringLiteral("#21262d")
+                               : QStringLiteral("#f1f3f5"))
+                       : QStringLiteral("transparent"));
+        const QString border =
+            (m_selected || m_hovered) ? QStringLiteral("#2da44e")
+                                      : QStringLiteral("transparent");
+        setStyleSheet(
+            QStringLiteral("QWidget#scmFileRow{background:%1;"
+                           "border:1px solid %2;border-radius:4px;}")
+                .arg(background, border));
+        if (m_actions)
+            m_actions->setVisible(m_hovered);
+    }
+
+    QWidget *m_actions = nullptr;
+    bool m_hovered = false;
+    bool m_selected = false;
+};
 } // namespace
 
 // ---- Source Control panel (working-tree changes) ---------------------------
@@ -129,13 +223,19 @@ QWidget *MainWindow::buildSourceControlPanel()
     root->setContentsMargins(16, 10, 16, 6);
     root->setSpacing(6);
 
-    // Single-line compose strip on top of the changes: the message field, inline
-    // AI generation (no popup), a live character count, and the stage/commit
-    // controls — all on one row.
-    m_scmMessage = new QLineEdit;
+    // A compact two-line compose field stays visible. Less-common generation
+    // settings live behind the adjacent ellipsis menu so they do not consume
+    // most of this narrow source-control pane.
+    m_scmMessage = new QPlainTextEdit;
     m_scmMessage->setObjectName("messageInput");
-    m_scmMessage->setClearButtonEnabled(true);
     m_scmMessage->setPlaceholderText("Message (Ctrl+Enter to commit)");
+    m_scmMessage->setTabChangesFocus(true);
+    m_scmMessage->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_scmMessage->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_scmMessage->setFixedHeight(
+        m_scmMessage->fontMetrics().lineSpacing() * 2 + 14);
+    m_scmMessage->setStyleSheet(
+        "QPlainTextEdit#messageInput{font-size:11px;padding:4px 6px;}");
     auto *commitShortcut =
         new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), m_scmMessage);
     commitShortcut->setContext(Qt::WidgetWithChildrenShortcut);
@@ -198,7 +298,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     setOcticon(m_scmCopyButton, "copy", 14);
     connect(m_scmCopyButton, &QPushButton::clicked, this, [this] {
         const QString text =
-            m_scmMessage ? m_scmMessage->text().trimmed() : QString();
+            m_scmMessage ? m_scmMessage->toPlainText().trimmed() : QString();
         if (text.isEmpty()) {
             if (m_scmGenStatus)
                 m_scmGenStatus->setText("Nothing to copy.");
@@ -217,12 +317,12 @@ QWidget *MainWindow::buildSourceControlPanel()
     auto updateCharCount = [this] {
         if (!m_scmGenStatus || !m_scmMessage)
             return;
-        const int n = m_scmMessage->text().size();
+        const int n = m_scmMessage->toPlainText().size();
         const bool tweet = m_scmGenKind && m_scmGenKind->currentIndex() == 1;
         m_scmGenStatus->setText(tweet ? QStringLiteral("%1/280").arg(n)
                                       : QStringLiteral("%1 chars").arg(n));
     };
-    connect(m_scmMessage, &QLineEdit::textChanged, this, updateCharCount);
+    connect(m_scmMessage, &QPlainTextEdit::textChanged, this, updateCharCount);
     connect(m_scmGenKind, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [updateCharCount](int) { updateCharCount(); });
     updateCharCount();
@@ -261,20 +361,51 @@ QWidget *MainWindow::buildSourceControlPanel()
         b->setCursor(Qt::PointingHandCursor);
     }
 
-    // The message field gets the full panel width on its own row (VS-Code
-    // style). The dense power-user toolbar sits beneath it and wraps its
-    // buttons onto extra rows when the panel is narrow, so every action stays
-    // visible instead of scrolling horizontally off the edge (issue #52).
-    root->addWidget(m_scmMessage);
+    auto *generationMenu = new QMenu(panel);
+    generationMenu->setObjectName(QStringLiteral("scmGenerationMenu"));
+    auto *generationAction = new QWidgetAction(generationMenu);
+    auto *generationPanel = new QWidget(generationMenu);
+    generationPanel->setMinimumWidth(260);
+    auto *generationLayout = new QVBoxLayout(generationPanel);
+    generationLayout->setContentsMargins(10, 10, 10, 10);
+    generationLayout->setSpacing(6);
+    auto addGenerationField = [&](const QString &label, QWidget *field) {
+        auto *caption = new QLabel(label, generationPanel);
+        caption->setObjectName(QStringLiteral("statusLine"));
+        generationLayout->addWidget(caption);
+        field->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        generationLayout->addWidget(field);
+    };
+    generationLayout->addWidget(m_scmGenerateButton);
+    addGenerationField(QStringLiteral("Draft with"), m_scmGenModel);
+    addGenerationField(QStringLiteral("Create"), m_scmGenKind);
+    addGenerationField(QStringLiteral("Include"), m_scmGenDuration);
+    auto *copyStatusRow = new QHBoxLayout;
+    copyStatusRow->setContentsMargins(0, 2, 0, 0);
+    copyStatusRow->addWidget(m_scmCopyButton);
+    copyStatusRow->addWidget(m_scmGenStatus, 1);
+    generationLayout->addLayout(copyStatusRow);
+    generationAction->setDefaultWidget(generationPanel);
+    generationMenu->addAction(generationAction);
+
+    auto *generationMenuButton = new QPushButton(panel);
+    generationMenuButton->setObjectName(QStringLiteral("ghostButton"));
+    generationMenuButton->setText(QString::fromUtf8("\xE2\x8B\xAF"));
+    generationMenuButton->setToolTip(
+        QStringLiteral("Message generation and copy options"));
+    generationMenuButton->setMenu(generationMenu);
+    generationMenuButton->setCursor(Qt::PointingHandCursor);
+    generationMenuButton->setFixedWidth(30);
+
+    auto *composeRow = new QHBoxLayout;
+    composeRow->setContentsMargins(0, 0, 0, 0);
+    composeRow->setSpacing(4);
+    composeRow->addWidget(m_scmMessage, 1);
+    composeRow->addWidget(generationMenuButton, 0, Qt::AlignTop);
+    root->addLayout(composeRow);
 
     m_scmControlsPanel = new QWidget;
     auto *controlsRow = new FlowLayout(m_scmControlsPanel, 0, 6, 6);
-    controlsRow->addWidget(m_scmGenerateButton);
-    controlsRow->addWidget(m_scmGenModel);
-    controlsRow->addWidget(m_scmGenKind);
-    controlsRow->addWidget(m_scmGenDuration);
-    controlsRow->addWidget(m_scmCopyButton);
-    controlsRow->addWidget(m_scmGenStatus);
     controlsRow->addWidget(m_scmStageAllButton);
     controlsRow->addWidget(m_scmUnstageAllButton);
     controlsRow->addWidget(m_scmDiscardAllButton);
@@ -353,19 +484,23 @@ QWidget *MainWindow::buildSourceControlPanel()
 
     m_scmTree = new QTreeWidget;
     m_scmTree->setObjectName("fileTree");
-    enableHoverRowHighlight(m_scmTree); // green outline selection (issue #252)
-    m_scmTree->setColumnCount(2);
+    m_scmTree->setColumnCount(1);
     m_scmTree->setHeaderHidden(true);
     m_scmTree->setMinimumWidth(240);
     m_scmTree->setRootIsDecorated(true);
-    m_scmTree->header()->setStretchLastSection(false);
     m_scmTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    m_scmTree->header()->setSectionResizeMode(1, QHeaderView::Fixed);
-    m_scmTree->setColumnWidth(1, 84);
     connect(m_scmTree, &QTreeWidget::currentItemChanged, this,
-            [this](QTreeWidgetItem *item, QTreeWidgetItem *) {
+            [this](QTreeWidgetItem *item, QTreeWidgetItem *previous) {
+                if (previous) {
+                    if (auto *row = dynamic_cast<ScmFileRow *>(
+                            m_scmTree->itemWidget(previous, 0)))
+                        row->setSelected(false);
+                }
                 if (!item)
                     return;
+                if (auto *row = dynamic_cast<ScmFileRow *>(
+                        m_scmTree->itemWidget(item, 0)))
+                    row->setSelected(true);
                 const QString path = item->data(0, Qt::UserRole).toString();
                 if (path.isEmpty())
                     return; // group header
@@ -623,26 +758,52 @@ void MainWindow::refreshSourceControl(bool force)
 
         for (const Row &r : rows) {
             auto *item = new QTreeWidgetItem(group);
-            item->setIcon(0, iconForFile(r.path.section('/', -1)));
-            item->setText(0, r.path);
+            item->setFirstColumnSpanned(true);
             item->setToolTip(0, r.path);
             item->setData(0, Qt::UserRole, r.path);
             item->setData(0, Qt::UserRole + 1, r.staged);
             item->setData(0, Qt::UserRole + 2, r.untracked);
 
-            auto *w = new QWidget;
+            auto *w = new ScmFileRow;
             auto *h = new QHBoxLayout(w);
-            h->setContentsMargins(0, 0, 6, 0);
-            h->setSpacing(0);
+            h->setContentsMargins(4, 1, 6, 1);
+            h->setSpacing(5);
+
+            auto *fileIcon = new QLabel(w);
+            fileIcon->setPixmap(
+                iconForFile(r.path.section('/', -1)).pixmap(14, 14));
+            fileIcon->setFixedSize(14, 14);
+            fileIcon->setAttribute(Qt::WA_TransparentForMouseEvents);
+            h->addWidget(fileIcon);
+
+            const QString fileName = r.path.section('/', -1);
+            QString directory = r.path.left(r.path.size() - fileName.size());
+            if (directory.endsWith('/'))
+                directory.chop(1);
+            auto *fileLabel = new QLabel(fileName, w);
+            fileLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+            h->addWidget(fileLabel);
+            if (!directory.isEmpty()) {
+                auto *directoryLabel = new QLabel(directory, w);
+                directoryLabel->setObjectName("statusLine");
+                directoryLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+                h->addWidget(directoryLabel);
+            }
+            h->addStretch();
+
             auto *statusLabel = new QLabel(QString(r.status), w);
             statusLabel->setToolTip(scmStatusTip(r.status));
             QFont sf = statusLabel->font();
             sf.setBold(true);
             statusLabel->setFont(sf);
             h->addWidget(statusLabel);
-            h->addStretch();
+
+            auto *actions = new QWidget(w);
+            auto *actionsLayout = new QHBoxLayout(actions);
+            actionsLayout->setContentsMargins(0, 0, 0, 0);
+            actionsLayout->setSpacing(0);
             auto makeBtn = [&](const QString &glyph, const QString &tip) {
-                auto *b = new QToolButton(w);
+                auto *b = new QToolButton(actions);
                 b->setText(glyph);
                 b->setToolTip(tip);
                 b->setAutoRaise(true);
@@ -655,7 +816,7 @@ void MainWindow::refreshSourceControl(bool force)
                 auto *u = makeBtn(QString::fromUtf8("\xE2\x88\x92"), "Unstage");
                 connect(u, &QToolButton::clicked, this,
                         [this, path] { scmUnstagePath(path); });
-                h->addWidget(u);
+                actionsLayout->addWidget(u);
             } else {
                 auto *d = makeBtn(QString::fromUtf8("\xE2\x86\xBA"), "Discard changes");
                 connect(d, &QToolButton::clicked, this,
@@ -663,12 +824,21 @@ void MainWindow::refreshSourceControl(bool force)
                 auto *s = makeBtn(QStringLiteral("+"), "Stage");
                 connect(s, &QToolButton::clicked, this,
                         [this, path] { scmStagePath(path); });
-                h->addWidget(d);
-                h->addWidget(s);
+                actionsLayout->addWidget(d);
+                actionsLayout->addWidget(s);
             }
-            // The per-row buttons sit in column 1 (the file label + status stay in
-            // column 0), so both the name and the actions are always visible.
-            m_scmTree->setItemWidget(item, 1, w);
+            auto *open = new QToolButton(actions);
+            open->setIcon(themedOcticon("file", QColor("#8b949e"), 14));
+            open->setToolTip("Open file");
+            open->setAutoRaise(true);
+            open->setCursor(Qt::PointingHandCursor);
+            connect(open, &QToolButton::clicked, this,
+                    [this, path] { openRepoFile(path); });
+            actionsLayout->addWidget(open);
+            h->addWidget(actions);
+            w->setActionsWidget(actions);
+            w->onClicked = [this, item] { m_scmTree->setCurrentItem(item); };
+            m_scmTree->setItemWidget(item, 0, w);
         }
         group->setExpanded(true);
     };
@@ -758,8 +928,12 @@ void MainWindow::setupScmDiffPane()
         QStringLiteral("#diffStickyHeader{background:%1;border-bottom:1px solid %2;}"
                        "#diffStickyHeader QLabel{background:transparent;color:%3;}"
                        "#diffStickyHeader QPushButton{background:transparent;"
-                       "border:none;color:%3;font-size:11px;padding:2px 4px;}"
-                       "#diffStickyHeader QPushButton:hover{color:#3fb950;}")
+                       "border:1px solid %2;border-radius:5px;color:%3;"
+                       "font-size:11px;padding:3px 7px;}"
+                       "#diffStickyHeader QPushButton:hover{color:#3fb950;"
+                       "border-color:#3fb950;}"
+                       "#diffStickyHeader QPushButton:checked{background:#238636;"
+                       "border-color:#2ea043;color:#ffffff;}")
             .arg(dark ? "#161b22" : "#f6f8fa", dark ? "#30363d" : "#d0d7de",
                  dark ? "#8b949e" : "#57606a"));
     auto *sl = new QHBoxLayout(m_scmStickyHeader);
@@ -777,6 +951,7 @@ void MainWindow::setupScmDiffPane()
     m_scmStickyPercent->setToolTip(m_scmStickyPacman->toolTip());
     sl->addWidget(m_scmStickyPercent, 0);
     m_scmStickyViewed = new QPushButton(m_scmStickyHeader);
+    m_scmStickyViewed->setCheckable(true);
     m_scmStickyViewed->setCursor(Qt::PointingHandCursor);
     m_scmStickyViewed->setToolTip(QStringLiteral("Mark this file as viewed"));
     connect(m_scmStickyViewed, &QPushButton::clicked, this, [this] {
@@ -786,6 +961,22 @@ void MainWindow::setupScmDiffPane()
         const QString path = m_scmSectionPaths.at(idx);
         const QString ctx = scmViewedContext();
         setDiffViewed(ctx, path, !loadDiffViewed(ctx).contains(path));
+        // Give the completed whole-button checkbox a quick, restrained fade-in
+        // so the state change is noticeable without shifting the header.
+        auto *effect = new QGraphicsOpacityEffect(m_scmStickyViewed);
+        effect->setOpacity(0.55);
+        m_scmStickyViewed->setGraphicsEffect(effect);
+        auto *animation =
+            new QPropertyAnimation(effect, "opacity", m_scmStickyViewed);
+        animation->setDuration(180);
+        animation->setStartValue(0.55);
+        animation->setEndValue(1.0);
+        connect(animation, &QPropertyAnimation::finished,
+                m_scmStickyViewed, [button = m_scmStickyViewed, effect] {
+                    button->setGraphicsEffect(nullptr);
+                    effect->deleteLater();
+                });
+        animation->start(QAbstractAnimation::DeleteWhenStopped);
         renderScmCombinedDiff();
         scrollScmDiffToFile(path, m_scmSectionKeys.at(idx).startsWith(
                                       QLatin1String("s|")));
@@ -1056,8 +1247,15 @@ void MainWindow::updateScmDiffScrollState()
         }
     }
     if (idx < 0) {
-        m_scmStickyHeader->hide();
-        return;
+        // Text layout can take one event-loop turn after a large diff is
+        // replaced. Never let that transient anchor gap hide the filename:
+        // retain the current section, or pin the first file until positions
+        // become available on the next scroll/layout tick.
+        idx = m_scmSectionKeys.indexOf(m_scmStickySection);
+        if (idx < 0)
+            idx = 0;
+        fileTop = 0;
+        fileBottom = qMax(1, docHeight);
     }
 
     // How much of the file has been read: the fraction of its extent that has
@@ -1077,6 +1275,7 @@ void MainWindow::updateScmDiffScrollState()
     }
     m_scmStickyViewed->setText(isViewed ? QString::fromUtf8("\xE2\x98\x91 Viewed")
                                         : QString::fromUtf8("\xE2\x98\x90 Viewed"));
+    m_scmStickyViewed->setChecked(isViewed);
     // A finished / already-viewed file reads as done (full green circle);
     // otherwise the chart tracks the scroll in blue and greens on arrival.
     const double shown = isViewed ? 1.0 : progress;
@@ -1322,7 +1521,8 @@ bool MainWindow::performScmCommit()
     const QString dir = repoGitDir();
     if (dir.isEmpty() || !repoHasWorkingTree())
         return false;
-    const QString msg = m_scmMessage ? m_scmMessage->text().trimmed() : QString();
+    const QString msg =
+        m_scmMessage ? m_scmMessage->toPlainText().trimmed() : QString();
     if (msg.isEmpty()) {
         QMessageBox::information(this, "Commit", "Enter a commit message first.");
         return false;
@@ -1377,7 +1577,7 @@ void MainWindow::scmStageAllCommitAndPush()
         return;
     // Check the message before staging, so a missing one doesn't leave everything
     // staged for nothing (performScmCommit re-checks once the commit runs).
-    if (!m_scmMessage || m_scmMessage->text().trimmed().isEmpty()) {
+    if (!m_scmMessage || m_scmMessage->toPlainText().trimmed().isEmpty()) {
         QMessageBox::information(this, "Commit", "Enter a commit message first.");
         return;
     }
@@ -1919,13 +2119,13 @@ void MainWindow::autoFillScmMessage()
     // models, and never over a message the user has started typing.
     if (m_scmGenerating || !m_scmMessage || !m_scmGenModel
         || m_scmGenModel->currentData().toInt() != -1
-        || !m_scmMessage->text().trimmed().isEmpty())
+        || !m_scmMessage->toPlainText().trimmed().isEmpty())
         return;
     const QString msg = scmHeuristicCommitMessage(0); // 0 = the deterministic best
     if (msg.isEmpty())
         return;
     m_scmHeuristicVariant = 0; // a fresh auto-fill restarts the "vary on click" cycle
-    m_scmMessage->setText(msg);
+    m_scmMessage->setPlainText(msg);
     if (m_scmGenStatus)
         m_scmGenStatus->setText(QString::fromUtf8(
             "%1 chars \xc2\xb7 on-device, auto \xc2\xb7 \xE2\x86\xBB click to vary")
@@ -1954,8 +2154,9 @@ void MainWindow::generateScmMessage()
             return;
         }
         if (m_scmMessage)
-            m_scmMessage->setText(msg);
-        const int n = m_scmMessage ? m_scmMessage->text().size() : msg.size();
+            m_scmMessage->setPlainText(msg);
+        const int n =
+            m_scmMessage ? m_scmMessage->toPlainText().size() : msg.size();
         if (m_scmGenStatus)
             m_scmGenStatus->setText(
                 QString::fromUtf8("%1 chars \xc2\xb7 on-device, no cost \xc2\xb7 \xE2\x86\xBB click to vary").arg(n));
@@ -2079,15 +2280,18 @@ void MainWindow::generateScmMessage()
                         m_scmGenStatus->setText("Empty response.");
                     return;
                 }
-                // The message field is single-line, so collapse any stray
-                // newlines before showing it (the clipboard keeps the original).
                 if (m_scmMessage) {
-                    QString oneLine = text;
-                    oneLine.replace(QLatin1Char('\n'), QLatin1Char(' '));
-                    m_scmMessage->setText(oneLine.simplified());
+                    if (isCommit) {
+                        QString oneLine = text;
+                        oneLine.replace(QLatin1Char('\n'), QLatin1Char(' '));
+                        m_scmMessage->setPlainText(oneLine.simplified());
+                    } else {
+                        m_scmMessage->setPlainText(text);
+                    }
                 }
                 // Char count first (what the user asked to see), then the cost.
-                const int n = m_scmMessage ? m_scmMessage->text().size()
+                const int n = m_scmMessage
+                                  ? m_scmMessage->toPlainText().size()
                                            : text.size();
                 QString line = isCommit ? QStringLiteral("%1 chars").arg(n)
                                         : QStringLiteral("%1/280").arg(n);
@@ -3009,9 +3213,11 @@ QWidget *MainWindow::buildSizeMapTab()
     auto *heading = new QLabel("Size map");
     heading->setObjectName("channelTitle");
     auto *subtitle = new QLabel(
-        "How the working tree's bytes spread across directories and files "
+        "How a folder's bytes spread across directories and files "
         "(.git excluded). Click a directory to zoom in, the centre to zoom "
-        "back out; slices with no further subdivision are individual files.");
+        "back out; slices with no further subdivision are individual files. "
+        "It starts on this repository's working copy — pick any other folder "
+        "on disk to size that instead.");
     subtitle->setObjectName("statusLine");
     subtitle->setWordWrap(true);
 
@@ -3037,6 +3243,40 @@ QWidget *MainWindow::buildSizeMapTab()
     headerRow->addWidget(refresh, 0, Qt::AlignTop);
     layout->addLayout(headerRow);
 
+    // Folder switcher: the map defaults to the repository's working copy but
+    // can size any directory on disk.
+    auto *choose = new QPushButton("Choose folder…");
+    choose->setObjectName("ghostButton");
+    choose->setProperty("buttonSize", "sm");
+    choose->setCursor(Qt::PointingHandCursor);
+    setOcticon(choose, "file-directory", 16);
+    choose->setToolTip("Scan any folder on this machine instead of the "
+                       "repository's working copy.");
+    connect(choose, &QPushButton::clicked, this,
+            [this] { chooseSizeMapFolder(); });
+
+    auto *resetRoot = new QPushButton("Back to repository");
+    resetRoot->setObjectName("ghostButton");
+    resetRoot->setProperty("buttonSize", "sm");
+    resetRoot->setCursor(Qt::PointingHandCursor);
+    resetRoot->setToolTip("Size this repository's working copy again.");
+    resetRoot->setVisible(false);
+    m_sizeMapResetRoot = resetRoot;
+    connect(resetRoot, &QPushButton::clicked, this,
+            [this] { setSizeMapRootOverride(QString()); });
+
+    m_sizeMapRootLabel = new QLabel;
+    m_sizeMapRootLabel->setObjectName("statusLine");
+    m_sizeMapRootLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    auto *folderRow = new QHBoxLayout;
+    folderRow->setContentsMargins(0, 0, 0, 0);
+    folderRow->setSpacing(8);
+    folderRow->addWidget(choose);
+    folderRow->addWidget(resetRoot);
+    folderRow->addWidget(m_sizeMapRootLabel, 1);
+    layout->addLayout(folderRow);
+
     auto *hideIgnored = new QCheckBox("Hide .gitignored files");
     hideIgnored->setCursor(Qt::PointingHandCursor);
     hideIgnored->setToolTip(
@@ -3058,26 +3298,70 @@ QWidget *MainWindow::buildSizeMapTab()
     return page;
 }
 
+QString MainWindow::sizeMapRoot() const
+{
+    if (!m_sizeMapRootOverride.isEmpty())
+        return m_sizeMapRootOverride;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return QString();
+    return writableRecordFor(m_repositories.at(m_repoDetailIndex)).localPath;
+}
+
+void MainWindow::chooseSizeMapFolder()
+{
+    // Start the browser where the map currently sits, so picking a sibling
+    // folder is one step away.
+    QString start = sizeMapRoot();
+    if (start.isEmpty() || !QDir(start).exists())
+        start = QDir::homePath();
+    const QString chosen = QFileDialog::getExistingDirectory(
+        this, "Choose a folder to size", start);
+    if (chosen.isEmpty())
+        return;
+    setSizeMapRootOverride(chosen);
+}
+
+void MainWindow::setSizeMapRootOverride(const QString &path)
+{
+    if (m_sizeMapRootOverride == path)
+        return;
+    m_sizeMapRootOverride = path;
+    refreshSizeMapTab(true);
+}
+
 void MainWindow::refreshSizeMapTab(bool force)
 {
     auto *chart = static_cast<RepoSunburstChart *>(m_sizeMapChart);
     if (!chart || !m_sizeMapStatus)
         return;
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+    const bool overridden = !m_sizeMapRootOverride.isEmpty();
+    if (!overridden &&
+        (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()))
         return;
-    const QString path =
-        writableRecordFor(m_repositories.at(m_repoDetailIndex)).localPath;
+    const QString path = sizeMapRoot();
+    if (m_sizeMapResetRoot)
+        m_sizeMapResetRoot->setVisible(overridden);
+    if (m_sizeMapRootLabel) {
+        m_sizeMapRootLabel->setText(
+            path.isEmpty()
+                ? QStringLiteral("No folder selected.")
+                : QStringLiteral("%1%2").arg(
+                      QDir::toNativeSeparators(path),
+                      overridden ? QString()
+                                 : QStringLiteral("  ·  working copy")));
+    }
     if (path.isEmpty() || !QDir(path).exists()) {
         chart->clear();
         m_sizeMapScannedPath.clear();
         m_sizeMapStatus->setText(
-            "No local working copy to scan for this repository.");
+            overridden ? "That folder no longer exists — choose another one."
+                       : "No local working copy to scan for this repository.");
         return;
     }
     if (!force && m_sizeMapScannedPath == path)
-        return; // the chart already shows this working copy
+        return; // the chart already shows this folder
     if (m_sizeMapScanning)
-        return;
+        return; // its finish handler notices the root changed and rescans
     // Resolve the .gitignore prune set on the GUI thread (git via QProcess is
     // awkward from a QtConcurrent worker), then hand it to the scan. Using
     // --directory keeps wholly-ignored trees to a single entry instead of every
@@ -3114,12 +3398,10 @@ void MainWindow::refreshSizeMapTab(bool force)
                 if (epoch != m_sizeMapScanEpoch)
                     return; // a newer scan superseded this one
                 SunburstNode root = watcher->result();
-                // The user may have opened another repo while the scan ran —
-                // a stale tree would mislabel the chart, so rescan instead.
-                if (m_repoDetailIndex >= 0 &&
-                    m_repoDetailIndex < m_repositories.size() &&
-                    writableRecordFor(m_repositories.at(m_repoDetailIndex))
-                            .localPath != path) {
+                // The user may have opened another repo (or picked another
+                // folder) while the scan ran — a stale tree would mislabel the
+                // chart, so rescan instead.
+                if (sizeMapRoot() != path) {
                     refreshSizeMapTab(false);
                     return;
                 }
