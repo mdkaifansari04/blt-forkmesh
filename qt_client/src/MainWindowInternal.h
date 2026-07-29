@@ -75,6 +75,7 @@
 #include <QGroupBox>
 #include <QGuiApplication>
 #include <QStandardPaths>
+#include <QStorageInfo>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -4627,6 +4628,155 @@ private:
     QList<int> m_trail; // child-index chain from the root to the focus
     int m_hover = -1;
     mutable QVector<Segment> m_segments; // rebuilt each paint (geometry-dependent)
+};
+
+// One mounted filesystem beside the big size map (adhoc #21): a small
+// used/free donut plus the mount point, already drawn so the whole set reads
+// as a column of tiny maps. Clicking one re-roots the full scan on that mount,
+// which is how "/" (or any other filesystem) gets expanded without the folder
+// picker. Header-only with a plain callback, like the other Internal.h mini
+// widgets — no Q_OBJECT, so no moc entry is needed.
+class StorageMiniMap final : public QWidget
+{
+public:
+    explicit StorageMiniMap(const QStorageInfo &volume, QWidget *parent = nullptr)
+        : QWidget(parent), m_mountPoint(volume.rootPath()),
+          m_device(QString::fromUtf8(volume.device())),
+          m_type(QString::fromUtf8(volume.fileSystemType())),
+          m_total(qMax<qint64>(0, volume.bytesTotal())),
+          m_used(qMax<qint64>(0, volume.bytesTotal() - volume.bytesAvailable()))
+    {
+        setCursor(Qt::PointingHandCursor);
+        setMouseTracking(true);
+        setMinimumHeight(56);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setToolTip(QStringLiteral("%1\n%2 · %3\n%4 used of %5")
+                       .arg(QDir::toNativeSeparators(m_mountPoint), m_device,
+                            m_type, QLocale().formattedDataSize(m_used),
+                            QLocale().formattedDataSize(m_total)));
+    }
+
+    QString mountPoint() const { return m_mountPoint; }
+
+    void setOnClicked(std::function<void()> callback)
+    {
+        m_onClicked = std::move(callback);
+    }
+
+    // Marks the filesystem the big map is currently showing.
+    void setSelected(bool selected)
+    {
+        if (m_selected == selected)
+            return;
+        m_selected = selected;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        const bool dark = currentThemeIsDark();
+        const QColor text(dark ? "#e6edf3" : "#1f2328");
+        const QColor muted(dark ? "#8b949e" : "#656d76");
+        const QColor track(dark ? "#30363d" : "#d0d7de");
+        const QColor used(dark ? "#3987e5" : "#2a78d6");
+        const QColor accent(dark ? "#58a6ff" : "#0969da");
+
+        if (m_selected || m_hover) {
+            painter.setPen(m_selected ? QPen(accent, 1) : Qt::NoPen);
+            painter.setBrush(QColor(dark ? "#161b22" : "#f6f8fa"));
+            painter.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5),
+                                    6, 6);
+        }
+
+        const qreal ring = 6.0;
+        const qreal diameter = qMin<qreal>(38.0, height() - 12);
+        const QRectF donut(8 + ring / 2, (height() - diameter) / 2.0 + ring / 2,
+                           diameter - ring, diameter - ring);
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(track, ring, Qt::SolidLine, Qt::FlatCap));
+        painter.drawEllipse(donut);
+        const qreal fraction =
+            m_total > 0 ? qBound<qreal>(0.0, double(m_used) / double(m_total), 1.0)
+                        : 0.0;
+        if (fraction > 0) {
+            painter.setPen(QPen(used, ring, Qt::SolidLine, Qt::FlatCap));
+            painter.drawArc(donut, 90 * 16, int(-fraction * 360 * 16));
+        }
+
+        QFont pct = font();
+        pct.setPointSizeF(qMax<qreal>(7.0, font().pointSizeF() - 2.5));
+        painter.setFont(pct);
+        painter.setPen(muted);
+        painter.drawText(donut.adjusted(-ring, -ring, ring, ring), Qt::AlignCenter,
+                         QStringLiteral("%1%").arg(qRound(fraction * 100)));
+
+        const int textLeft = int(8 + diameter + 10);
+        const QRect textArea(textLeft, 6, width() - textLeft - 8, height() - 12);
+        QFont title = font();
+        title.setBold(true);
+        painter.setFont(title);
+        painter.setPen(m_selected ? accent : text);
+        const QRect titleRect(textArea.left(), textArea.top(), textArea.width(),
+                              textArea.height() / 2);
+        painter.drawText(titleRect, Qt::AlignLeft | Qt::AlignVCenter,
+                         painter.fontMetrics().elidedText(
+                             QDir::toNativeSeparators(m_mountPoint),
+                             Qt::ElideMiddle, titleRect.width()));
+        painter.setFont(font());
+        painter.setPen(muted);
+        const QRect subRect(textArea.left(), textArea.center().y(),
+                            textArea.width(), textArea.height() / 2);
+        painter.drawText(subRect, Qt::AlignLeft | Qt::AlignVCenter,
+                         painter.fontMetrics().elidedText(
+                             QStringLiteral("%1 of %2 · %3")
+                                 .arg(QLocale().formattedDataSize(m_used),
+                                      QLocale().formattedDataSize(m_total), m_type),
+                             Qt::ElideRight, subRect.width()));
+    }
+
+    void enterEvent(QEnterEvent *event) override
+    {
+        m_hover = true;
+        update();
+        QWidget::enterEvent(event);
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        m_hover = false;
+        update();
+        QWidget::leaveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() != Qt::LeftButton || !rect().contains(event->pos()) ||
+            !m_onClicked) {
+            QWidget::mouseReleaseEvent(event);
+            return;
+        }
+        // The callback re-roots the map, which rebuilds this whole column and
+        // deleteLater()s this very card — and the rescan behind it pumps the
+        // event loop (runGitCapture), so `this` can already be gone when it
+        // returns. Copy the callback out, accept the event first, and touch
+        // nothing afterwards.
+        const std::function<void()> callback = m_onClicked;
+        event->accept();
+        callback();
+    }
+
+private:
+    QString m_mountPoint;
+    QString m_device;
+    QString m_type;
+    qint64 m_total = 0;
+    qint64 m_used = 0;
+    bool m_hover = false;
+    bool m_selected = false;
+    std::function<void()> m_onClicked;
 };
 
 inline QString formatDuration(qint64 ms)
