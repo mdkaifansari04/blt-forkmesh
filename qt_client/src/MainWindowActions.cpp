@@ -2393,11 +2393,21 @@ void MainWindow::refreshWorkflowNodeCombo()
             break;
         }
     }
-    if (m_actionNodeLabel)
-        m_actionNodeLabel->setText(
+    if (m_actionNodeLabel) {
+        // Elide the workflow name: a QLabel refuses to shrink below its text, so
+        // "Attach desktop build to release" would push the whole pane wider.
+        const QString caption =
+            selected ? QString::fromUtf8("Run \xE2\x80\x9C%1\xE2\x80\x9D on")
+                           .arg(QFontMetrics(m_actionNodeLabel->font())
+                                    .elidedText(selected->name, Qt::ElideRight,
+                                                140))
+                     : QStringLiteral("Run every workflow on");
+        m_actionNodeLabel->setText(caption);
+        m_actionNodeLabel->setToolTip(
             selected ? QString::fromUtf8("Run \xE2\x80\x9C%1\xE2\x80\x9D on")
                            .arg(selected->name)
-                     : QStringLiteral("Run every workflow on"));
+                     : QString());
+    }
 
     // The pin the dropdown should show: the selected workflow's, or the one all
     // workflows agree on (a mixed repo falls back to "any", and picking a node
