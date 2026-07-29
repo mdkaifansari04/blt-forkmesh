@@ -119,7 +119,7 @@ public:
     {
         setObjectName(QStringLiteral("scmFileRow"));
         setAttribute(Qt::WA_Hover);
-        applyHover(false);
+        applyStyle();
     }
 
     void setActionsWidget(QWidget *actions)
