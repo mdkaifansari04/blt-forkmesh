@@ -990,6 +990,54 @@ async def test_encrypted_copy_same_origin_reassignment_and_metadata_only_audit()
     assert member_update["status"] == 403
 
 
+@run_async_test
+async def test_delete_purges_the_promoted_legacy_row_so_it_cannot_return():
+    """A deleted task must not be restored by the legacy Marketing backfill.
+
+    schema.py replays "INSERT OR IGNORE INTO organization_tasks ... SELECT ...
+    FROM world_office_marketing_tasks" whenever the schema fingerprint changes,
+    so a surviving legacy row silently resurrects a deleted task.
+    """
+    runtime = FakeRuntime()
+    created = await create_task(runtime, "bob", "Promoted from Marketing")
+    task_id = created["data"]["task"]["id"]
+    promoted = runtime.db.execute(
+        "SELECT task_id,org_bi,status,assignee_bi,active_assignee_bi,data,"
+        "created_by_bi,created_at,updated_at FROM organization_tasks "
+        "WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    runtime.db.execute(
+        "INSERT INTO world_office_marketing_tasks ("
+        "task_id,org_bi,status,assignee_bi,active_assignee_bi,data,"
+        "created_by_bi,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        tuple(promoted),
+    )
+    runtime.db.execute(
+        "INSERT INTO world_office_marketing_checkins ("
+        "checkin_id,task_id,org_bi,account_bi,state,data,created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        ("c" * 32, task_id, "org-bi", "bi-bob", "going_well", "sealed", NOW),
+    )
+    runtime.db.commit()
+
+    deleted = await tasks_api.handle(
+        runtime.use("DELETE", "mary", {}),
+        f"{tasks_api.PREFIX}/{task_id}",
+    )
+    assert deleted["status"] == 200
+    assert deleted["data"]["deleted"] is True
+    for table in (
+            "organization_tasks",
+            "world_office_marketing_tasks",
+            "world_office_marketing_checkins",
+    ):
+        assert runtime.db.execute(
+            "SELECT COUNT(*) FROM " + table + " WHERE task_id=?",
+            (task_id,),
+        ).fetchone()[0] == 0
+
+
 def test_migration_has_conditional_active_constraint_and_bounded_tables():
     migration = (
         ROOT / "migrations" / "0075_world_office_marketing_tasks.sql"

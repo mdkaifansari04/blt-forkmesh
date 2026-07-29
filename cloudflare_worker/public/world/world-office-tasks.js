@@ -269,6 +269,10 @@ export function createWorldOfficeTasksController({
   let serverNowAtSync = Date.now();
   let lastRefreshAt = 0;
   let refreshPromise = null;
+  // Monotonic read counter. Only the newest read may write the task list, so a
+  // slower reconciliation started before a delete can never resurrect the row
+  // a faster forced read already dropped.
+  let refreshSequence = 0;
   let pollTimer = 0;
   let tickTimer = 0;
   let checkinTimer = 0;
@@ -783,9 +787,13 @@ export function createWorldOfficeTasksController({
     void refresh({ quiet: true }).finally(schedulePoll);
   }
 
-  async function refresh({ quiet = false } = {}) {
-    if (!monitoring || typeof fetchJSON !== "function") return false;
-    if (refreshPromise) return refreshPromise;
+  // `force` reconciles right after a confirmed mutation: it may not join a
+  // read that was already in flight before the change (that response predates
+  // the delete and would repaint the removed row), and it runs even while the
+  // low-frequency monitor is paused.
+  async function refresh({ quiet = false, force = false } = {}) {
+    if ((!monitoring && !force) || typeof fetchJSON !== "function") return false;
+    if (refreshPromise && !force) return refreshPromise;
     if (!getSession()?.sessionToken) {
       tasks = [];
       actor = "";
@@ -803,7 +811,8 @@ export function createWorldOfficeTasksController({
       if (!officeActive) stopMonitoring();
       return false;
     }
-    refreshPromise = (async () => {
+    const sequence = ++refreshSequence;
+    const request = (async () => {
       loading = !quiet;
       if (!quiet) {
         physicalState("loading", "Syncing organization tasks");
@@ -814,12 +823,15 @@ export function createWorldOfficeTasksController({
           fetchJSON(OFFICE_TASKS_PATH, {
             cache: "no-store",
             timeout: 8000,
+            dedupe: !force,
           }),
           fetchJSON(MARKETING_TASKS_PATH, {
             cache: "no-store",
             timeout: 8000,
+            dedupe: !force,
           }).catch(() => ({})),
         ]);
+        if (sequence !== refreshSequence) return false;
         actor = text(payload?.actor, 64).toLowerCase();
         canManage = payload?.canManage === true;
         authorized = payload?.authorized !== false;
@@ -864,6 +876,7 @@ export function createWorldOfficeTasksController({
         if (!keepMonitoring()) stopMonitoring();
         return true;
       } catch (_) {
+        if (sequence !== refreshSequence) return false;
         tasks = [];
         canManage = false;
         authorized = false;
@@ -882,20 +895,35 @@ export function createWorldOfficeTasksController({
         if (!officeActive) stopMonitoring();
         return false;
       } finally {
-        refreshPromise = null;
+        if (refreshPromise === request) refreshPromise = null;
       }
     })();
-    return refreshPromise;
+    refreshPromise = request;
+    return request;
+  }
+
+  // Drop a task the server has confirmed is gone. The reconciling read below
+  // is authoritative, but it can be slow, superseded, or skipped entirely
+  // while the monitor is paused — the row must leave every list the moment the
+  // delete is acknowledged.
+  function dropTask(taskId) {
+    const id = safeTaskId(taskId);
+    if (!id) return false;
+    const before = tasks.length;
+    tasks = tasks.filter((task) => task.id !== id);
+    return tasks.length !== before;
   }
 
   async function mutate(path, body, taskId = "", options = {}) {
     if (typeof postJSON !== "function") return false;
+    const { removeOnSuccess = false, ...requestOptions } = options;
     busyTaskId = safeTaskId(taskId);
     render();
     let errorMessage = "";
     try {
-      await postJSON(path, body, { timeout: 10_000, ...options });
-      await refresh({ quiet: true });
+      await postJSON(path, body, { timeout: 10_000, ...requestOptions });
+      if (removeOnSuccess) dropTask(taskId);
+      await refresh({ quiet: true, force: true });
       return true;
     } catch (error) {
       errorMessage =
@@ -904,7 +932,13 @@ export function createWorldOfficeTasksController({
     } finally {
       busyTaskId = "";
       render();
-      if (errorMessage) setStatus(errorMessage, "error");
+      if (errorMessage) {
+        // The Office panel's status line is not visible from the Local
+        // controls "Work" tab, where the organization list also lives, so a
+        // rejected change is announced instead of silently doing nothing.
+        setStatus(errorMessage, "error");
+        toast(errorMessage);
+      }
     }
   }
 
@@ -982,7 +1016,7 @@ export function createWorldOfficeTasksController({
       let saved = false;
       try {
         saved = await onQaVerdict({ task, verdict });
-        if (saved) await refresh({ quiet: true });
+        if (saved) await refresh({ quiet: true, force: true });
       } finally {
         busyTaskId = "";
         render();
@@ -1012,7 +1046,9 @@ export function createWorldOfficeTasksController({
         : `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}/${action}`,
       action === "complete" ? { completionNote } : {},
       id,
-      action === "delete" ? { method: "DELETE" } : {},
+      action === "delete"
+        ? { method: "DELETE", removeOnSuccess: true }
+        : {},
     );
     if (saved) {
       toast(
@@ -1126,7 +1162,9 @@ export function createWorldOfficeTasksController({
         : `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}/${action}`,
       action === "complete" ? { completionNote } : {},
       id,
-      action === "delete" ? { method: "DELETE" } : {},
+      action === "delete"
+        ? { method: "DELETE", removeOnSuccess: true }
+        : {},
     );
     if (saved) {
       toast(
@@ -1212,7 +1250,9 @@ export function createWorldOfficeTasksController({
     if (!tickTimer) {
       tickTimer = window.setInterval(updateElapsedLabels, OFFICE_TASKS_TICK_MS);
     }
-    const result = refresh({ quiet: tasks.length > 0 });
+    // Callers use this immediately after creating or changing a task, so it
+    // must read fresh state rather than join a poll that started earlier.
+    const result = refresh({ quiet: tasks.length > 0, force: true });
     schedulePoll();
     return result;
   }

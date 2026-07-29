@@ -1275,6 +1275,25 @@ async def _delete(runtime, org_bi, actor, task_id, can_manage):
         org_bi,
         task_id,
     )
+    # A task promoted out of the legacy Marketing tables keeps its original
+    # row there, and the lazy-schema bootstrap replays its
+    # "INSERT OR IGNORE INTO organization_tasks ... SELECT ... FROM
+    # world_office_marketing_tasks" backfill on every schema fingerprint
+    # change. Without this purge the deleted task silently reappears on the
+    # next deployment. The legacy tables are absent on databases created after
+    # the promotion, so a missing table is not an error here.
+    for legacy in (
+            "world_office_marketing_checkins",
+            "world_office_marketing_tasks",
+    ):
+        try:
+            await runtime.d1_run(
+                "DELETE FROM " + legacy + " WHERE org_bi=? AND task_id=?",
+                org_bi,
+                task_id,
+            )
+        except Exception:
+            pass
     remaining = await _task(runtime, org_bi, task_id)
     if remaining:
         return _response(runtime, {"error": "task_delete_conflict"}, status=409)
