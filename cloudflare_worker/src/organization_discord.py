@@ -1240,7 +1240,7 @@ async def _channel_available(runtime, context, config, channel_id):
     if error:
         return None, error
     available = {
-        item["id"] for item in channels
+        item["id"]: item for item in channels
     }
     if channel_id not in available:
         payload = {
@@ -1251,7 +1251,7 @@ async def _channel_available(runtime, context, config, channel_id):
         }
         return None, _response(
             runtime, await _attach_setup_task(runtime, context, payload), 409)
-    return channel_id, None
+    return available[channel_id], None
 
 
 async def _list_messages(runtime, context):
@@ -1262,10 +1262,11 @@ async def _list_messages(runtime, context):
     channel_id = requested or config["channelIds"][0]
     if channel_id not in config["channelIds"]:
         return _response(runtime, {"error": "channel_not_selected"}, 403)
-    channel_id, error = await _channel_available(
+    channel, error = await _channel_available(
         runtime, context, config, channel_id)
     if error:
         return error
+    channel_id = channel["id"]
     result = await runtime.discord_messages(channel_id, MAX_MESSAGES)
     if int(result.get("status") or 0) != 200:
         return await _discord_error(runtime, result, context)
@@ -1287,6 +1288,10 @@ async def _list_messages(runtime, context):
         "ok": True,
         "organization": context["org"],
         "channelId": channel_id,
+        "channel": {
+            "id": channel_id,
+            "name": _text(channel.get("name"), 100),
+        },
         "messages": messages[:MAX_MESSAGES],
     }
     if content_missing:
@@ -1320,10 +1325,11 @@ async def _send_message(runtime, context, data):
         return _response(runtime, {"error": "channel_not_selected"}, 403)
     if not content:
         return _response(runtime, {"error": "message_required"}, 400)
-    channel_id, error = await _channel_available(
+    channel, error = await _channel_available(
         runtime, context, config, channel_id)
     if error:
         return error
+    channel_id = channel["id"]
     result = await runtime.discord_send(channel_id, content)
     if int(result.get("status") or 0) not in {200, 201}:
         return await _discord_error(runtime, result, context)

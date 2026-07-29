@@ -769,6 +769,9 @@ async def test_members_read_selected_channels_while_admins_send_non_pinging_text
     assert viewed["data"]["messages"][0]["author"] == {
         "name": "discord-user", "bot": False,
     }
+    assert viewed["data"]["channel"] == {
+        "id": PUBLIC, "name": "general",
+    }
     assert "guilds" not in viewed["data"]
     denied = await discord_api.handle(
         runtime.use("POST", "bob", {
