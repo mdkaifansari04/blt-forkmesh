@@ -41,6 +41,11 @@ QJsonObject AgentSession::toJson() const
     obj["mode"] = mode;
     obj["createPr"] = createPr;
     obj["yolo"] = yolo;
+    obj["strength"] = strength;
+    obj["orgTask"] = orgTask;
+    obj["orgTaskId"] = orgTaskId;
+    obj["startedByBot"] = startedByBot;
+    obj["finishedByBot"] = finishedByBot;
     obj["prNumber"] = prNumber;
     obj["status"] = status;
     obj["branchName"] = branchName;
@@ -81,6 +86,11 @@ AgentSession AgentSession::fromJson(const QJsonObject &obj)
     session.mode = obj.value("mode").toString();
     session.createPr = obj.value("createPr").toBool();
     session.yolo = obj.value("yolo").toBool();
+    session.strength = obj.value("strength").toString();
+    session.orgTask = obj.value("orgTask").toBool();
+    session.orgTaskId = obj.value("orgTaskId").toString();
+    session.startedByBot = obj.value("startedByBot").toString();
+    session.finishedByBot = obj.value("finishedByBot").toString();
     session.prNumber = obj.value("prNumber").toInt();
     session.status = obj.value("status").toString(AgentStatus::Queued);
     session.branchName = obj.value("branchName").toString();

@@ -135,6 +135,12 @@ const ADMIN_ERROR_POLL_MS = 15_000;
 const WORLD_LAYOUT_ECHO_TTL_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
+// Everything a fresh page load pulls in — the relayed chat backlog, the first
+// notification/event read, a mirror doorbell that lands while the scene is
+// still booting — is old news to the visitor. The activity stream stays quiet
+// for the same join grace the chat bubbles use so it only narrates what
+// happens after the World is up.
+const ACTIVITY_JOIN_GRACE_MS = CHAT_BUBBLE_JOIN_GRACE_MS;
 // The cardinal campus now reaches the east/west repository and bulletin
 // islands plus the southern member garden. Keep restored/shared positions
 // inside the scene's 340-unit boundary instead of rejecting valid island
@@ -4919,6 +4925,7 @@ class ForkMeshWorld extends HTMLElement {
     this.firstVisitAt = firstVisitTimestamp();
     this.publicVisitCount = sessionVisitCount(true);
     this.chatBubblesEnabledAt = Date.now() + CHAT_BUBBLE_JOIN_GRACE_MS;
+    this.activityNoticesEnabledAt = Date.now() + ACTIVITY_JOIN_GRACE_MS;
     this.activityArrivalRecorded = false;
     this.activityArrivalTimer = 0;
     // Unread badge on the collapsed bottom CHAT bar. Counts live lines from
@@ -5169,10 +5176,12 @@ class ForkMeshWorld extends HTMLElement {
     const data = event.data;
     if (!data) return;
     if (data.type === "forkmesh:world-activity") {
-      this.activityNotice(data.text, {
-        kind: String(data.kind || "status"),
-        sender: "ForkMesh",
-      });
+      if (this.activityNoticesSettled()) {
+        this.activityNotice(data.text, {
+          kind: String(data.kind || "status"),
+          sender: "ForkMesh",
+        });
+      }
       return;
     }
     if (data.type !== "forkmesh:world-chat") return;
@@ -5258,10 +5267,15 @@ class ForkMeshWorld extends HTMLElement {
     // Replayed history updates only the collapsed CHAT bar — never a bubble,
     // so reconnects do not resurrect old messages above avatars.
     if (data.history === true) return;
-    this.activityNotice(
-      `${sender}: ${text || `Shared ${attachmentName}`}`,
-      { kind: "chat", sender },
-    );
+    // The relay also re-sends the tail of the room as ordinary live frames when
+    // the embedded chat connects, so the join grace — not just the history
+    // flag — is what keeps a fresh load from opening on a wall of old lines.
+    if (this.activityNoticesSettled()) {
+      this.activityNotice(
+        `${sender}: ${text || `Shared ${attachmentName}`}`,
+        { kind: "chat", sender },
+      );
+    }
     // Own lines never count as unread — `self` is this browser, `own` also
     // covers the signed-in account talking from another tab or device.
     if (data.self !== true && data.own !== true) this.bumpChatTerminalUnread();
@@ -14496,7 +14510,11 @@ class ForkMeshWorld extends HTMLElement {
         }`,
       );
     }
-    if (announcements.length) this.toast(announcements.join(" · "));
+    // The first reads seed the seen sets so nothing already waiting at load is
+    // announced; only what arrives on a later poll reaches the stream.
+    if (announcements.length && this.activityNoticesSettled()) {
+      this.toast(announcements.join(" · "));
+    }
   }
 
   recentIssueAssignments() {
@@ -22051,6 +22069,15 @@ class ForkMeshWorld extends HTMLElement {
     }, Math.max(10_000, Number(lockMs) || 0));
   }
 
+  // True once the page-load grace has passed. Callers that narrate incoming
+  // world traffic (chat lines, mirror doorbells, the notification/event read)
+  // check this so a fresh load never opens with a stack of replayed cards.
+  // Notices the visitor causes by acting are never gated — those are always
+  // about something that just happened.
+  activityNoticesSettled() {
+    return Date.now() >= this.activityNoticesEnabledAt;
+  }
+
   activityNotice(message, { kind = "status", sender = "" } = {}) {
     const stream = this.$("[data-world-activity-stream]");
     const copy = String(message || "")
@@ -23677,9 +23704,14 @@ class ForkMeshWorld extends HTMLElement {
           paths.indexOf(path) === index,
       )
       .slice(0, 8);
-    this.toast(
-      `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
-    );
+    // The scene effect and catalog refresh below still run during the join
+    // grace; only the narration is held back so the load does not open on a
+    // push that happened before the visitor arrived.
+    if (this.activityNoticesSettled()) {
+      this.toast(
+        `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
+      );
+    }
     // This only arms the scene. No frame directly creates an effect: the next
     // signed catalog payload must confirm the node and commit prefix first.
     this.world?.armMirrorPushEffect?.(
