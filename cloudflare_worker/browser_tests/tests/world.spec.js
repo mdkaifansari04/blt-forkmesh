@@ -3854,6 +3854,31 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
     },
     carHeight: 32,
   });
+  // The elevator changes the active floor while the camera can remain in the
+  // same near-LOD class. The story itself must make the destination visible;
+  // waiting for a later zoom update once caused a successful arrival to render
+  // an empty Office level.
+  const arrivedFloor = await page.locator("forkmesh-world").evaluate((shell) => {
+    const engineering = shell.world.scene.getObjectByName(
+      "forkmesh-office-floor-engineering",
+    );
+    const marketing = shell.world.scene.getObjectByName(
+      "forkmesh-office-floor-marketing",
+    );
+    const slab = engineering?.getObjectByName(
+      "forkmesh-office-floor-slab-engineering-1",
+    );
+    return {
+      engineeringVisible: engineering?.visible === true,
+      engineeringSlabVisible: slab?.visible === true,
+      priorFloorHidden: marketing?.visible === false,
+    };
+  });
+  expect(arrivedFloor).toEqual({
+    engineeringVisible: true,
+    engineeringSlabVisible: true,
+    priorFloorHidden: true,
+  });
 });
 
 test("Local controls carry Work and Security tabs instead of a session card", async ({

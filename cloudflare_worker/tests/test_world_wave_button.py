@@ -12,15 +12,16 @@ APP = (WORLD / "world.js").read_text(encoding="utf-8")
 STYLES = (WORLD / "world.css").read_text(encoding="utf-8")
 
 
-def test_a_small_wave_button_sits_in_the_hud_top_bar():
+def test_a_small_wave_button_sits_beside_the_bottom_chat_control():
     button = APP.split("data-world-wave")
     assert len(button) == 3, "wave button and its click handler are both needed"
     markup = button[0].rsplit("<button", 1)[1] + button[1].split("</button>", 1)[0]
-    assert "world-top-link" in markup, "the wave button matches the other HUD chips"
+    assert "world-chat-wave-button" in markup
     assert 'aria-label="Wave your avatar\'s arm"' in markup
-    # The button lives in the top-bar nav, next to the other world tools.
-    assert APP.index("data-world-wave") > APP.index('aria-label="World tools"')
-    assert APP.index("data-world-wave") < APP.index("data-world-sound-toggle")
+    assert APP.index("data-world-wave") > APP.index("data-world-diagnostics")
+    assert APP.index("data-world-wave") < APP.index("data-world-chat-terminal")
+    top_tools = APP.split('aria-label="World tools"', 1)[1].split("</nav>", 1)[0]
+    assert "data-world-wave" not in top_tools
 
 
 def test_the_phone_launcher_reveals_controls_without_overflowing_the_row():
@@ -80,11 +81,11 @@ def test_the_shoulder_stays_pinned_while_the_arm_swings():
 
 
 def test_the_button_hand_animation_respects_reduced_motion():
-    assert ".world-wave-button" in STYLES
+    assert ".world-chat-wave-button" in STYLES
     assert "@keyframes world-wave-hand" in STYLES
-    hover = STYLES.split(".world-wave-button", 1)[1].split(
-        "[data-world-sound-toggle]", 1
-    )[0]
-    assert "@media (prefers-reduced-motion: reduce)" in hover
+    assert ".world-chat-wave-button:hover .world-chat-wave-icon" in STYLES
+    reduced = STYLES.rsplit("@media (prefers-reduced-motion: reduce)", 1)[1]
+    assert ".world-chat-wave-button:hover .world-chat-wave-icon" in reduced
+    assert "animation: none;" in reduced
     # The scene-side pose drops its shake under the same preference.
     assert "const shake = reducedMotion" in SCENE
