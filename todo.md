@@ -5,9 +5,10 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
-- [ ] Restyle the compact and expanded World right HUD with GitHub Primer primitives, including selected, hover, focus, and icon-button states.
-- [ ] Open both Issue and PR tower records in their canonical embedded web workbenches; complete PR readiness, conflict, checks, reviews, files, update-from-main, and protected merge management there.
+- [ ] Complete the remaining web PR lifecycle: proactive readiness/conflict data, live checks, complete commit history, and an auditable signed update-from-main mirror operation. Conversation, peer review, changed files, and protected owner merge are already present.
 - [x] Add a one-line status bar at the bottom of the Qt window carrying the branch switcher, the repository git identity and the running app's on-disk location.
+- [x] Restyle the compact and expanded World right HUD with GitHub Primer primitives, including selected, hover, focus, and icon-button states.
+- [x] Open both Issue and PR tower records in their canonical, same-origin embedded web workbenches instead of the unrelated Repository portals panel.
 - [x] Audit the full 2026-07-28 request history against the implementation, tests, QA deck, and build-board source; keep every partial or externally unverifiable item open below.
 - [x] Scale repository PR and Issue towers to their complete bounded item counts and move them outside the ActivityPub follower orbit.
 - [x] Remove zoom-out relationship lines, rounded connector pads, colored grass ovals, disjoint terrain remnants, and obstructive agent-terminal blocks; retain one fast continuous walkable grass foundation.
@@ -242,6 +243,11 @@ the implementation and its focused verification are complete.
 - [x] Keep ActivityPub followers in the large outer repository portrait ring, Git contributors in the smaller inner ring, and provide the floating repository Follow control.
 - [x] Remove the Office Guide and oversized Marketing Studio banner objects from the Marketing room while retaining the room-scale task controls, desks, attendance calendar, and table.
 - [x] Reconcile the later exact-view request: sharing stays on the right rail, Saved Views stays collapsed, and the normal right-click interaction is restored.
+- [x] Route Issue and PR tower clicks into their record-specific canonical web workbenches, with narrowly scoped same-origin frame policy and no Repository portals preamble.
+- [ ] Complete the remaining web PR parity listed in Current focus; do not expose a fake update-from-main control until an online mirror advertises and signs that mutation.
+- [x] Finish the GitHub Primer restyle of the compact and expanded right-side World HUD.
+- [ ] Publish role-specific website onboarding paths for QA, developers, and marketing; the Markdown getting-started, Qt, contribution, and independent peer-review guidance exists, but the public docs page does not yet present the role journeys requested today.
+- [ ] Verify the live ActivityPub follower inventory against the production backup and restore any missing actors; migration and retention regression coverage are present, but this repository cannot prove that the external backup restore was run.
 
 The remaining implementation work stays in **Current focus**. The Cloudflare
 observability credentials and “ForkMesh Forever” social-proof publishing remain

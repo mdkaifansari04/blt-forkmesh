@@ -17,20 +17,22 @@ def test_repository_issues_and_pulls_have_separate_left_right_panels():
         SCENE.index("function setRepositoryIssuePageExpanded(")
     ]
     assert "const pullBoard = addRecordBoard(" in desk
-    assert 'pulls,\n      "pull",\n      -5.25,' in desk
-    assert 'issues,\n      "issue",\n      5.25,' in desk
+    assert 'pulls,\n      "pull",\n      -7.75,' in desk
+    assert 'issues,\n      "issue",\n      7.75,' in desk
     assert '"combined"' not in desk
     assert "repository-${kind}-open-count:" in desk
 
 
-def test_each_repository_panel_uses_one_content_height_25_record_column():
+def test_each_repository_panel_uses_one_total_count_height_record_column():
     desk = SCENE[
         SCENE.index("function updateRepositoryRecordDesk("):
         SCENE.index("function setRepositoryIssuePageExpanded(")
     ]
-    assert "const rows = items.length;" in desk
     assert "const rowPitch = 0.52;" in desk
     assert "const boardHeight = 0.74 + rows * rowPitch;" in desk
+    assert "const rows = Math.max(1, allItems.length);" in desk
+    assert "const towerSlot = pageInfo.start + index;" in desk
+    assert "repository-${kind}-tower-slots:" in desk
     assert "const cardX = 0;" in desk
     assert "new THREE.PlaneGeometry(3.78, 0.46)" in desk
     assert "items.length > 13 ? 2 : 1" not in desk
@@ -42,7 +44,7 @@ def test_repository_lists_read_chronologically_downward_with_counts_below():
         SCENE.index("function setRepositoryIssuePageExpanded(")
     ]
     assert ".slice(pageInfo.start, pageInfo.end)" in desk
-    assert ".reverse();" in desk
+    assert ".reverse();" not in desk
     assert "right.updatedAt || right.createdAt || right.number" in desk
     assert "right.createdAt || right.number" in desk
     assert "const boardBottomY = groundY + 2.62;" in desk

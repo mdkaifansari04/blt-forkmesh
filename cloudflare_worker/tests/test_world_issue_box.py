@@ -27,9 +27,11 @@ def test_scene_builds_a_bounded_desk_from_verified_records_only():
     assert "number >= 1 && number <= 10_000_000" in SCENE
     assert 'layer.name = "repository-record-desk"' in DESK
     assert "const pullBoard = addRecordBoard(" in DESK
-    assert 'pulls,\n      "pull",\n      -5.25,' in DESK
-    assert 'issues,\n      "issue",\n      5.25,' in DESK
-    assert "const rows = items.length;" in DESK
+    assert 'pulls,\n      "pull",\n      -7.75,' in DESK
+    assert 'issues,\n      "issue",\n      7.75,' in DESK
+    assert "const rows = Math.max(1, allItems.length);" in DESK
+    assert "const towerSlot = pageInfo.start + index;" in DESK
+    assert "new THREE.InstancedMesh(" in DESK
     assert "const cardX = 0;" in DESK
     assert '"combined"' not in DESK
     assert "items.length > 13 ? 2 : 1" not in DESK
@@ -100,32 +102,36 @@ def test_open_issue_cards_have_engineering_agent_and_model_controls():
 
 def test_shell_opens_issue_cards_in_the_live_world_workbench():
     assert "this.openRepositoryIssueWorkbench(meta.repositoryIssuePage)" in APP
-    workbench = APP[
+    issue_workbench = APP[
         APP.index("  openRepositoryIssueWorkbench("):
+        APP.index("  openRepositoryRecordWebWorkbench(")
+    ]
+    assert 'this.openRepositoryRecordWebWorkbench("issue", page)' in issue_workbench
+    workbench = APP[
+        APP.index("  openRepositoryRecordWebWorkbench("):
         APP.index("  selectRepositorySizeNode(")
     ]
-    assert "safePullNumber(page?.number)" in workbench
-    assert '/issues/${number}' in workbench
-    assert "data-world-issue-workbench" in workbench
+    assert "safePullNumber(page.number)" in workbench
+    assert '"pulls" : "issues"' in workbench
+    assert "data-world-repository-web-workbench" in workbench
     assert "<iframe" in workbench
 
 
-def test_shell_routes_pull_cards_into_the_exact_ref_diff_review():
-    assert "this.loadRepositoryPullReview(meta.repositoryPullPage.number)" in APP
-    assert "openRepositoryPullWorkbench()" in APP
+def test_shell_routes_pull_cards_into_the_canonical_web_workbench():
+    assert "this.openRepositoryPullWorkbench(meta.repositoryPullPage)" in APP
+    assert "this.openRepositoryPullWorkbench({" in APP
     pull_workbench = APP[
         APP.index("  openRepositoryPullWorkbench("):
         APP.index("  async fetchRepositoryPullReview(")
     ]
-    assert 'detail.dataset.openLandmark = "repository-pull"' in pull_workbench
-    assert "this.repositoryExplorerHTML(active)" in pull_workbench
-    assert "this.repositoryPanelHTML()" not in pull_workbench
-    assert "Repository portals" not in pull_workbench
-    issue_workbench = APP[
-        APP.index("  openRepositoryIssueWorkbench("):
+    assert 'this.openRepositoryRecordWebWorkbench("pull"' in pull_workbench
+    generic = APP[
+        APP.index("  openRepositoryRecordWebWorkbench("):
         APP.index("  selectRepositorySizeNode(")
     ]
-    assert 'detail.dataset.openLandmark = "repository-issue"' in issue_workbench
+    assert 'detail.dataset.openLandmark = `repository-${recordKind}`' in generic
+    assert '"pulls" : "issues"' in generic
+    assert "Repository portals" not in generic
     # The desk is fed the same commit-matched records as the explorer panel.
     assert "pulls: this.repositoryPullRecords(active)" in APP
     assert "expandedIssue: this.expandedRepositoryIssuePage" in APP

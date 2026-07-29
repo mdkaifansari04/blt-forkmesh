@@ -112,6 +112,7 @@ class ScmFileRow : public QWidget
 public:
     explicit ScmFileRow(QWidget *parent = nullptr) : QWidget(parent)
     {
+        setObjectName(QStringLiteral("scmFileRow"));
         setAttribute(Qt::WA_Hover);
         applyHover(false);
     }
@@ -157,10 +158,12 @@ private:
             palette().color(QPalette::Base).lightness() < 128;
         setStyleSheet(
             hovered
-                ? QStringLiteral("ScmFileRow{background:%1;border-radius:3px;}")
+                ? QStringLiteral(
+                      "QWidget#scmFileRow{background:%1;border-radius:3px;}")
                       .arg(dark ? QStringLiteral("#21262d")
                                 : QStringLiteral("#f1f3f5"))
-                : QStringLiteral("ScmFileRow{background:transparent;}"));
+                : QStringLiteral(
+                      "QWidget#scmFileRow{background:transparent;}"));
         if (m_actions)
             m_actions->setVisible(hovered);
     }

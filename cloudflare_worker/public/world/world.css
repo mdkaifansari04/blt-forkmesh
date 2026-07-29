@@ -49,6 +49,17 @@
   --world-sky: #79c0ff;
   --world-danger: #f85149;
   --world-violet: #a371f7;
+  --primer-canvas-default: #0d1117;
+  --primer-canvas-subtle: #161b22;
+  --primer-control-bg: #21262d;
+  --primer-control-hover: #30363d;
+  --primer-border-default: #30363d;
+  --primer-border-muted: #21262d;
+  --primer-fg-default: #e6edf3;
+  --primer-fg-muted: #8d96a0;
+  --primer-accent-fg: #4493f8;
+  --primer-accent-muted: rgb(56 139 253 / 0.4);
+  --primer-accent-subtle: rgb(56 139 253 / 0.15);
   --safe-top: max(14px, env(safe-area-inset-top));
   --safe-right: max(14px, env(safe-area-inset-right));
   --safe-bottom: max(14px, env(safe-area-inset-bottom));
@@ -807,6 +818,8 @@ forkmesh-world {
   scrollbar-width: thin;
   scrollbar-color: var(--world-line-strong) transparent;
   transition: width 180ms ease;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .world-right-rail[data-expanded="false"] {
@@ -816,18 +829,22 @@ forkmesh-world {
 }
 
 .world-map {
-  border: 1px solid var(--world-line);
-  background: var(--world-panel);
-  backdrop-filter: blur(22px);
+  overflow: hidden;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-canvas-default);
+  box-shadow: 0 8px 24px rgb(1 4 9 / 0.42);
   transition: width 180ms ease;
 }
 
 .world-saved-views {
   justify-self: end;
   width: 204px;
-  border: 1px solid var(--world-line);
-  background: var(--world-panel);
-  backdrop-filter: blur(18px);
+  overflow: hidden;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-canvas-default);
+  box-shadow: 0 8px 24px rgb(1 4 9 / 0.34);
 }
 
 .world-right-rail[data-expanded="false"] .world-saved-views,
@@ -880,19 +897,21 @@ forkmesh-world {
   min-height: 34px;
   align-items: center;
   gap: 7px;
-  border: 1px solid var(--world-line);
-  background: var(--world-panel);
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-control-bg);
   padding: 7px 10px;
-  color: var(--world-copy);
-  font: 700 0.62rem/1.2 "ForkMesh Mono", monospace;
+  color: var(--primer-fg-default);
+  font: 600 0.72rem/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   cursor: pointer;
-  backdrop-filter: blur(18px);
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.04) inset;
 }
 
 .world-share-view-button:hover,
 .world-share-view-button:focus-visible {
-  border-color: var(--world-mint);
-  color: var(--world-mint);
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
+  color: var(--primer-fg-default);
   outline: none;
 }
 
@@ -902,10 +921,10 @@ forkmesh-world {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  border-bottom: 1px solid var(--world-line);
+  border-bottom: 1px solid var(--primer-border-muted);
   padding: 4px 7px 4px 9px;
-  color: var(--world-muted);
-  font: 700 0.58rem/1 "ForkMesh Mono", monospace;
+  color: var(--primer-fg-muted);
+  font: 600 0.68rem/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -916,11 +935,12 @@ forkmesh-world {
   min-height: 23px;
   align-items: center;
   gap: 3px;
-  border: 1px solid var(--world-line);
-  background: rgb(158 247 198 / 0.08);
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-control-bg);
   padding: 3px 5px;
-  color: var(--world-mint);
-  font: 700 0.51rem/1 "ForkMesh Mono", monospace;
+  color: var(--primer-fg-default);
+  font: 600 0.61rem/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   text-transform: uppercase;
   cursor: pointer;
 }
@@ -964,8 +984,9 @@ forkmesh-world {
   display: grid;
   width: 100%;
   gap: 3px;
-  border: 1px solid var(--world-line);
-  background: rgb(5 15 12 / 0.76);
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-canvas-subtle);
   padding: 2px;
   color: var(--world-copy);
   cursor: pointer;
@@ -977,13 +998,18 @@ forkmesh-world {
   width: 100%;
   height: 42px;
   object-fit: cover;
-  background: linear-gradient(145deg, #214c3d, #081510);
+  border-radius: 4px;
+  background: linear-gradient(
+    145deg,
+    var(--primer-control-hover),
+    var(--primer-canvas-default)
+  );
 }
 
 .world-saved-view-placeholder {
   display: grid;
   place-items: center;
-  color: var(--world-mint);
+  color: var(--primer-accent-fg);
 }
 
 .world-saved-view-edit {
@@ -994,9 +1020,10 @@ forkmesh-world {
   width: 20px;
   height: 20px;
   place-items: center;
-  border: 1px solid rgb(185 255 219 / 0.35);
-  background: rgb(6 17 14 / 0.9);
-  color: var(--world-mint);
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-control-bg);
+  color: var(--primer-fg-default);
   cursor: pointer;
   font-size: 0.58rem;
 }
@@ -1005,7 +1032,8 @@ forkmesh-world {
 .world-saved-view button:focus-visible,
 .world-saved-views-heading > button:hover,
 .world-saved-views-heading > button:focus-visible {
-  border-color: var(--world-mint);
+  border-color: #8b949e;
+  background-color: var(--primer-control-hover);
   outline: none;
 }
 
@@ -1014,11 +1042,20 @@ forkmesh-world {
   place-items: center;
   width: 28px;
   height: 28px;
-  border: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
   background: transparent;
-  color: var(--world-muted);
+  color: var(--primer-fg-muted);
   cursor: pointer;
   font: 700 0.76rem/1 "ForkMesh Mono", monospace;
+}
+
+.world-map-toggle:hover,
+.world-map-toggle:focus-visible {
+  border-color: var(--primer-border-default);
+  background: var(--primer-control-bg);
+  color: var(--primer-fg-default);
+  outline: none;
 }
 
 .world-map:not(.is-expanded) {
@@ -1057,21 +1094,23 @@ forkmesh-world {
   justify-content: space-between;
   gap: 12px;
   min-height: 38px;
-  border-bottom: 1px solid var(--world-line);
+  border-bottom: 1px solid var(--primer-border-muted);
+  background: var(--primer-canvas-subtle);
   padding: 0 12px;
 }
 
 .world-panel-heading h2 {
   margin: 0;
-  font-family: "ForkMesh Mono", monospace;
-  font-size: 0.61rem;
-  font-weight: 400;
-  letter-spacing: 0.11em;
-  text-transform: uppercase;
+  color: var(--primer-fg-default);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: normal;
 }
 
 .world-panel-heading span {
-  color: var(--world-muted);
+  color: var(--primer-fg-muted);
   font-family: "ForkMesh Mono", monospace;
   font-size: 0.55rem;
 }
@@ -1248,30 +1287,36 @@ forkmesh-world {
   gap: 8px;
   width: 100%;
   min-height: 35px;
-  border: 0;
-  border-left: 2px solid transparent;
-  border-radius: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
   background: transparent;
-  color: var(--world-muted);
+  color: var(--primer-fg-muted);
   padding: 0 8px;
   cursor: pointer;
   text-align: left;
-  font-size: 0.72rem;
+  font-size: 0.76rem;
+  font-weight: 500;
 }
 
 .world-map-button:hover,
-.world-map-button:focus-visible,
-.world-map-button[aria-current="true"] {
-  border-left-color: var(--map-color, var(--world-mint));
-  background: rgb(255 255 255 / 0.045);
-  color: var(--world-copy);
+.world-map-button:focus-visible {
+  border-color: var(--primer-border-default);
+  background: var(--primer-control-bg);
+  color: var(--primer-fg-default);
   outline: none;
+}
+
+.world-map-button[aria-current="true"] {
+  border-color: var(--primer-accent-muted);
+  background: var(--primer-accent-subtle);
+  color: var(--primer-fg-default);
+  box-shadow: inset 2px 0 var(--primer-accent-fg);
 }
 
 .world-map-icon {
   display: grid;
   place-items: center;
-  color: var(--map-color, var(--world-mint));
+  color: var(--primer-accent-fg);
   font-family: "ForkMesh Mono", monospace;
   font-size: 0.66rem;
 }
@@ -7485,7 +7530,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
    every user-facing surface finishes with the same GitHub dark primitives. */
 .fm-world :is(
   dialog,
-  aside,
+  aside:not(.world-right-rail),
   [class*="world-panel"],
   [class*="world-drawer"],
   [class*="world-dialog"],
