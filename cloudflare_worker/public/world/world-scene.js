@@ -3104,7 +3104,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:world-orb-hud", task: "Compact debug + unified activity orbs", detail: "Replaced the bottom bars with logo-sized status circles. DEBUG summarizes every performance grade as green, yellow, or red dots and expands on hover or focus. CHAT shows the latest speaker and unread count, then opens a translucent channel composer with image attachment, separate chat/task actions, human-or-agent routing, team categorization, and a ten-second unified activity stream.", estimate: "deployed · ready for QA", done: true },
   { key: "task:avatar-hud-launcher", task: "Restore circular avatar HUD launcher", detail: "The account avatar is again a round launcher: hover or focus fans fixed-size tool boxes out without resizing the HUD, notification/error/task counts stay visible on its edge, touch uses a first tap to reveal controls, and player movement or an outside click closes the launcher.", estimate: "ready to deploy · focused QA", done: true },
   { key: "task:avatar-selection-runtime", task: "Reliable user HUD selection", detail: "Avatar clicks use a scoped frame timestamp, prefer the visible avatar hit over nearby geometry, and open the privacy-filtered member side panel without throwing.", estimate: "implemented · focused QA", done: true },
-  { key: "task:member-circle-fire", task: "Dirt Members Circle + growing fire", detail: "The complete member seating circle sits on detailed dirt; every member adds one visible log and slightly increases the bounded campfire scale.", estimate: "implemented · focused QA", done: true },
+  { key: "task:member-circle-fire", task: "Dirt Members Circle + growing fire", detail: "The complete member seating circle sits on detailed dirt; every member adds one visible log, the fire steps up a notch on every hundredth account, and the member total hangs large above the flames.", estimate: "implemented · focused QA", done: true },
   { key: "task:aquarium-fixed-controls", task: "Tank-fixed reef controls", detail: "Feed, tap, backdrop, and light controls stay anchored to the aquarium's lower-right control point instead of floating with the player.", estimate: "implemented · focused QA", done: true },
   { key: "task:recent-public-chat-card", task: "Recent public chat on chest", detail: "Each avatar chest includes one sanitized line from that account's latest public-channel message; private and direct messages never enter the card.", estimate: "implemented · focused QA", done: true },
   { key: "task:verification-pin-state", task: "Green verified pin / red unverified X", detail: "Every signed-in avatar shows a green check when email-verified and a red X in the same front pin when unverified; guests remain neutral.", estimate: "implemented · focused QA", done: true },
@@ -15658,7 +15658,12 @@ export function createWorldScene({
       opacity: 0.92,
     }),
   );
-  flame.position.y = 0.82;
+  // Both cones are centred on their own geometry, so scaling them up would
+  // sink the base into the ground. The animation re-pins each base to the logs
+  // every frame (see FLAME_BASE_Y); these are just the resting spots.
+  const FLAME_HEIGHT = 1.05;
+  const FLAME_BASE_Y = 0.3;
+  flame.position.y = FLAME_BASE_Y + FLAME_HEIGHT / 2;
   campfire.add(flame);
   const innerFlame = new THREE.Mesh(
     new THREE.ConeGeometry(0.24, 0.72, 8),
@@ -15669,7 +15674,9 @@ export function createWorldScene({
       opacity: 0.94,
     }),
   );
-  innerFlame.position.y = 0.72;
+  const INNER_FLAME_HEIGHT = 0.72;
+  const INNER_FLAME_BASE_Y = 0.36;
+  innerFlame.position.y = INNER_FLAME_BASE_Y + INNER_FLAME_HEIGHT / 2;
   campfire.add(innerFlame);
   let fireLevel = 1;
   const fireLight = new THREE.PointLight("#ffa14d", 3.2, 14, 1.8);
@@ -15685,9 +15692,12 @@ export function createWorldScene({
       depthWrite: false,
     }),
   );
-  const MEMBER_COUNT_HOVER_Y = 1.95;
+  // Hangs clear above the (now much taller) flames rather than inside them, at
+  // a size that stays readable from the bench ring — the number is the headline
+  // of the whole clearing, so it is the first thing you can make out.
+  const MEMBER_COUNT_HOVER_Y = 3.55;
   memberCountSprite.position.y = MEMBER_COUNT_HOVER_Y;
-  memberCountSprite.scale.set(2.8, 1.4, 1);
+  memberCountSprite.scale.set(5.2, 2.6, 1);
   memberCountSprite.visible = false;
   campfire.add(memberCountSprite);
   let memberCountShown = "";
@@ -15708,21 +15718,34 @@ export function createWorldScene({
     );
     memberCountSprite.material.needsUpdate = true;
     memberCountSprite.visible = true;
-    // Each member contributes one visible log and a small, bounded amount of
-    // warmth. The cap keeps a mature community's fire welcoming, not blocking.
+    // Each member contributes one visible log, and the blaze itself steps up a
+    // notch on every hundredth account: the fire is a milestone marker, so it
+    // holds its size through a century and then visibly grows when the next one
+    // lands. Bounded so a large community's fire stays welcoming, not blocking.
     rebuildCampfireMemberLogs(count);
-    fireLevel = clamp(1.08 + count * 0.012, 1.08, 1.85);
-    fireLight.distance = 14 + Math.min(count, 80) * 0.08;
+    const fireCenturies = Math.floor(count / 100);
+    fireLevel = clamp(1.6 + fireCenturies * 0.35, 1.6, 4.4);
+    fireLight.distance = 16 + Math.min(fireCenturies, 8) * 2.4;
   }
   animated.push((time) => {
     const flicker = 1 + Math.sin(time * 0.011) * 0.12 + Math.sin(time * 0.023) * 0.06;
     const size = fireLevel * flicker;
-    flame.scale.set(size, fireLevel * (1 + Math.sin(time * 0.017) * 0.16), size);
+    const height = fireLevel * (1 + Math.sin(time * 0.017) * 0.16);
+    flame.scale.set(size, height, size);
     innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
+    // Keep both cones standing on the logs as they grow, instead of letting a
+    // taller flame sink half of its extra height under the pit.
+    flame.position.y = FLAME_BASE_Y + (FLAME_HEIGHT * height) / 2;
+    innerFlame.position.y =
+      INNER_FLAME_BASE_Y + (INNER_FLAME_HEIGHT * size * 0.9) / 2;
     fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
-    // Drift with the flames so the number sits in the fire instead of on it.
+    fireLight.position.y = 1.1 + FLAME_HEIGHT * fireLevel * 0.5;
+    // Rides above the flames, rising with them so a bigger fire never reaches
+    // up into the number.
     memberCountSprite.position.y =
-      MEMBER_COUNT_HOVER_Y + Math.sin(time * 0.0017) * 0.07;
+      MEMBER_COUNT_HOVER_Y +
+      FLAME_HEIGHT * Math.max(0, fireLevel - 1.6) +
+      Math.sin(time * 0.0017) * 0.07;
   });
   // The real bench count depends on the member roster, which is still an
   // in-flight network request when the scene first renders. Rather than
