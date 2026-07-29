@@ -48,7 +48,11 @@ def test_world_embed_has_separate_chat_and_task_buttons_and_routing_step():
     assert "wireTaskSend()" in CHAT
     assert 'fullAction.value = "task"' in CHAT
     assert "Choose a team, then assign this task to a person or an agent." in CHAT
-    assert "wireInput(fullInput, fullSend, { forceChat: true })" in CHAT
+    assert "wireInput(fullInput, fullSend)" in CHAT
+    assert "forceChat" not in CHAT
+    assert 'fullSendLabel.textContent = presentation.label || "Send"' in CHAT
+    assert 'fullAction.value !== "chat"' in CHAT
+    assert "void runFullComposerAction(inputEl)" in CHAT
 
 
 def test_chat_and_status_updates_share_a_ten_second_activity_stream():

@@ -2483,7 +2483,9 @@
         placeholder: "Describe the implementation task for Claude…",
       },
     }[action] || {};
-    if (fullSendLabel) fullSendLabel.textContent = "Send to chat";
+    if (fullSendLabel) {
+      fullSendLabel.textContent = presentation.label || "Send";
+    }
     if (fullComposerHint) fullComposerHint.textContent = presentation.hint || "";
     fullInput.placeholder = presentation.placeholder || "Write a message…";
     if (taskRouting) taskRouting.hidden = action !== "task";
@@ -2840,16 +2842,12 @@
     void sendDashboardDraft(attachmentControl);
   }
 
-  function wireInput(inputEl, sendEl, { forceChat = false } = {}) {
+  function wireInput(inputEl, sendEl) {
     if (!inputEl || !sendEl) return;
     const attachmentControl = mountAttachmentControl(inputEl);
-    sendEl.addEventListener("click", () => {
-      if (forceChat && fullAction) {
-        fullAction.value = "chat";
-        syncFullComposerAction();
-      }
-      sendFrom(inputEl, attachmentControl);
-    });
+    sendEl.addEventListener("click", () =>
+      sendFrom(inputEl, attachmentControl),
+    );
     inputEl.addEventListener("paste", (event) => {
       const items = Array.from(event.clipboardData?.items || []);
       const item = items.find((candidate) =>
@@ -2981,7 +2979,7 @@
     syncFullComposerAction();
     void loadComposerRepositories();
     void loadTaskRouting();
-    wireInput(fullInput, fullSend, { forceChat: true });
+    wireInput(fullInput, fullSend);
     wireTaskSend();
     wireInput(sideInput, sideSend);
     // Connect right away so the room's message history (replayed by the relay
