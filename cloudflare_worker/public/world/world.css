@@ -650,14 +650,19 @@ forkmesh-world {
 
 .world-icon-button,
 .world-top-link {
+  display: inline-grid;
+  width: 40px;
+  min-width: 40px;
   min-height: 40px;
-  border: 1px solid var(--world-line);
-  border-radius: 0;
-  background: rgb(7 17 15 / 0.78);
-  color: var(--world-copy);
-  padding: 0 13px;
+  place-items: center;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-control-bg);
+  color: var(--primer-fg-default);
+  padding: 0;
   cursor: pointer;
-  backdrop-filter: blur(18px);
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.04) inset;
+  backdrop-filter: blur(12px);
 }
 
 .world-icon-button {
@@ -668,21 +673,30 @@ forkmesh-world {
 }
 
 .world-icon-button:hover,
+.world-top-link:hover {
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
+  color: var(--primer-fg-default);
+}
+
 .world-icon-button:focus-visible,
-.world-top-link:hover,
 .world-top-link:focus-visible {
-  border-color: var(--world-mint);
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
+  box-shadow: 0 0 0 3px var(--primer-accent-subtle);
   outline: none;
-  color: var(--world-mint);
 }
 
 .world-top-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
   text-decoration: none;
-  font-size: 0.78rem;
+  font-size: 0.88rem;
   font-weight: 600;
+}
+
+.world-top-link[aria-pressed="true"] {
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
+  color: var(--primer-fg-default);
 }
 
 /* The hand mirrors the gesture the avatar plays in the scene. */
@@ -729,7 +743,8 @@ forkmesh-world {
   position: relative;
 }
 
-.world-notification-button [data-world-notification-count] {
+.world-notification-button [data-world-notification-count],
+.world-admin-errors-button [data-world-admin-error-count] {
   position: absolute;
   top: -7px;
   right: -7px;
@@ -748,8 +763,60 @@ forkmesh-world {
   line-height: 1;
 }
 
-.world-notification-button [data-world-notification-count][hidden] {
+.world-notification-button [data-world-notification-count][hidden],
+.world-admin-errors-button [data-world-admin-error-count][hidden] {
   display: none;
+}
+
+.world-admin-errors-button {
+  position: relative;
+}
+
+.world-admin-errors-button[hidden] {
+  display: none;
+}
+
+.world-admin-errors-button.has-new-errors {
+  border-color: #f85149;
+  color: #ff7b72;
+}
+
+.world-admin-errors-button [data-world-admin-error-count] {
+  border-color: #2d1117;
+  background: #da3633;
+  color: #ffffff;
+}
+
+forkmesh-world.world-admin-error-arrival::after {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  border: 3px solid rgb(248 81 73 / 0.72);
+  box-shadow: inset 0 0 54px rgb(248 81 73 / 0.22);
+  content: "";
+  pointer-events: none;
+  animation: world-admin-error-arrival 1.5s ease-out both;
+}
+
+@keyframes world-admin-error-arrival {
+  0% {
+    opacity: 0;
+  }
+
+  18% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  forkmesh-world.world-admin-error-arrival::after {
+    animation: none;
+    opacity: 0;
+  }
 }
 
 .world-eyebrow {
@@ -861,12 +928,10 @@ forkmesh-world {
 .world-right-rail[data-expanded="false"]
   .world-share-view-button
   span:not([aria-hidden="true"]),
-.world-right-rail[data-expanded="false"] .world-saved-views-toggle,
 .world-right-rail[data-expanded="false"]
   .world-saved-views-heading
   > button:last-child
   span:last-child,
-.world-right-rail[data-expanded="false"] .world-saved-view-list,
 .world-right-rail[data-expanded="false"] .world-community-placement,
 .world-right-rail[data-expanded="false"] .world-fediverse-activity {
   display: none;
@@ -879,6 +944,10 @@ forkmesh-world {
   padding: 0;
 }
 
+.world-right-rail[data-expanded="false"] .world-saved-views-title {
+  display: none;
+}
+
 .world-right-rail[data-expanded="false"]
   .world-saved-views-heading
   > button:last-child {
@@ -889,6 +958,21 @@ forkmesh-world {
   grid-template-columns: 1fr;
   border: 0;
   padding: 0;
+}
+
+.world-right-rail[data-expanded="false"] .world-saved-view-list {
+  grid-template-columns: 1fr;
+  gap: 3px;
+  padding: 3px;
+}
+
+.world-right-rail[data-expanded="false"] .world-saved-view img,
+.world-right-rail[data-expanded="false"] .world-saved-view-placeholder {
+  height: 34px;
+}
+
+.world-right-rail[data-expanded="false"] .world-saved-view-edit {
+  display: none;
 }
 
 .world-share-view-button {
@@ -945,19 +1029,16 @@ forkmesh-world {
   cursor: pointer;
 }
 
-.world-saved-views-toggle {
+.world-saved-views-title {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 4px;
-  border: 0;
-  background: transparent;
   padding: 5px 0;
   color: inherit;
   font: inherit;
   letter-spacing: inherit;
   text-transform: inherit;
-  cursor: pointer;
 }
 
 .world-saved-view-list {
@@ -1307,16 +1388,16 @@ forkmesh-world {
 }
 
 .world-map-button[aria-current="true"] {
-  border-color: var(--primer-accent-muted);
-  background: var(--primer-accent-subtle);
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
   color: var(--primer-fg-default);
-  box-shadow: inset 2px 0 var(--primer-accent-fg);
+  box-shadow: inset 2px 0 var(--primer-fg-muted);
 }
 
 .world-map-icon {
   display: grid;
   place-items: center;
-  color: var(--primer-accent-fg);
+  color: var(--primer-fg-muted);
   font-family: "ForkMesh Mono", monospace;
   font-size: 0.66rem;
 }
@@ -1397,9 +1478,9 @@ forkmesh-world {
   width: 40px;
   height: 40px;
   overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 0.22);
-  border-radius: 0;
-  background: #143528;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-control-bg);
   padding: 3px;
   color: white;
   cursor: pointer;
@@ -1407,8 +1488,13 @@ forkmesh-world {
 
 .world-shirt-badge:hover,
 .world-shirt-badge:focus-visible {
-  border-color: var(--world-mint);
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
   outline: none;
+}
+
+.world-shirt-badge:focus-visible {
+  box-shadow: 0 0 0 3px var(--primer-accent-subtle);
 }
 
 .world-shirt-account {
@@ -1748,6 +1834,114 @@ forkmesh-world {
   transform: translate(-50%, 0);
   opacity: 1;
   visibility: visible;
+}
+
+.world-qa-failure-overlay {
+  position: absolute;
+  z-index: 82;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(1 4 9 / 0.72);
+  padding: 18px;
+  pointer-events: auto;
+  backdrop-filter: blur(4px);
+}
+
+.world-qa-failure-dialog {
+  display: grid;
+  width: min(520px, 100%);
+  max-height: calc(100dvh - 36px);
+  gap: 14px;
+  overflow-y: auto;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-canvas-default);
+  padding: 18px;
+  box-shadow: 0 16px 48px rgb(1 4 9 / 0.72);
+  color: var(--primer-fg-default);
+}
+
+.world-qa-failure-dialog header,
+.world-qa-failure-dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.world-qa-failure-dialog header > div,
+.world-qa-failure-dialog label {
+  display: grid;
+  gap: 6px;
+}
+
+.world-qa-failure-dialog header span,
+.world-qa-failure-dialog small {
+  color: var(--primer-fg-muted);
+  font-size: 0.72rem;
+}
+
+.world-qa-failure-dialog p {
+  margin: 0;
+  color: var(--primer-fg-muted);
+  font-size: 0.82rem;
+}
+
+.world-qa-failure-dialog textarea,
+.world-qa-failure-dialog input[type="file"] {
+  width: 100%;
+  border: 1px solid var(--primer-border-default);
+  background: var(--primer-canvas-subtle);
+  padding: 8px;
+  color: var(--primer-fg-default);
+}
+
+.world-qa-failure-dialog textarea:focus,
+.world-qa-failure-dialog input[type="file"]:focus-visible {
+  border-color: #8b949e;
+  box-shadow: 0 0 0 3px var(--primer-accent-subtle);
+  outline: none;
+}
+
+.world-qa-failure-dialog button {
+  min-height: 32px;
+  border: 1px solid var(--primer-border-default);
+  background: var(--primer-control-bg);
+  padding: 0 12px;
+  color: var(--primer-fg-default);
+  cursor: pointer;
+}
+
+.world-qa-failure-dialog button:hover,
+.world-qa-failure-dialog button:focus-visible {
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
+  outline: none;
+}
+
+.world-qa-failure-dialog button[type="submit"] {
+  border-color: #2ea043;
+  background: #238636;
+  color: #fff;
+}
+
+.world-qa-failure-preview {
+  display: grid;
+  gap: 7px;
+}
+
+.world-qa-failure-preview[hidden] {
+  display: none;
+}
+
+.world-qa-failure-preview img {
+  width: 100%;
+  max-height: 220px;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  object-fit: contain;
+  background: var(--primer-canvas-subtle);
 }
 
 .world-swing-panel {

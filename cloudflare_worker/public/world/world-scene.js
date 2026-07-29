@@ -84,6 +84,10 @@ const CAR_RIDING_ACTIVITY = "driving the beach road";
 // without teleporting the avatar out from under the camera.
 const PLAYER_DASH_SPEED = 48;
 const PLAYER_DASH_ARRIVE_DISTANCE = 0.3;
+const ROOF_PARACHUTE_DEPLOY_VELOCITY = -0.35;
+const ROOF_PARACHUTE_TERMINAL_VELOCITY = -4.2;
+const ROOF_PARACHUTE_GRAVITY = 4.8;
+const ROOF_PARACHUTE_COLLAPSE_MS = 900;
 const CAMERA_OFFSET = [17, 16, 21];
 const CAMERA_DISTANCE = Math.hypot(...CAMERA_OFFSET);
 // Let players pull all the way back to a map-scale view where the World is a
@@ -784,15 +788,28 @@ function badgeTexture(
       context.fillText(text, 34, 172 + index * step);
     });
 
-    const posts = Array.isArray(profile.posts) ? profile.posts.slice(0, 2) : [];
+    const posts = Array.isArray(profile.posts) ? profile.posts.slice(0, 1) : [];
     context.fillStyle = "#a9b8ff";
     context.font = '800 15px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("RECENT FEDIVERSE", 34, 312);
+    context.fillText("RECENT FEDIVERSE", 34, 300);
     context.font = '600 14px "ForkMesh Mono", ui-monospace, monospace';
     posts.forEach((post, index) => {
       context.fillStyle = index ? "#93a4c8" : "#dfe8ff";
-      context.fillText(String(post).slice(0, 48), 34, 337 + index * 23);
+      context.fillText(String(post).slice(0, 48), 34, 324 + index * 23);
     });
+    const recentPublicMessage = String(
+      identity.recentPublicMessage || "",
+    ).replace(/\s+/g, " ").trim().slice(0, 56);
+    context.fillStyle = "#77d9ff";
+    context.font = '800 15px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("RECENT PUBLIC CHAT", 34, 352);
+    context.fillStyle = recentPublicMessage ? "#d9f7ff" : "#708078";
+    context.font = '600 14px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      recentPublicMessage || "NO RECENT PUBLIC MESSAGE",
+      34,
+      376,
+    );
 
     // The world status the visitor set for themselves, on the chest rather
     // than only floating over the head.
@@ -800,7 +817,7 @@ function badgeTexture(
     if (status) {
       context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
       const width = Math.min(452, context.measureText(status).width + 44);
-      roundedRect(context, 28, 386, width, 38, 19);
+      roundedRect(context, 28, 398, width, 34, 17);
       context.fillStyle = "rgba(158,247,198,0.14)";
       context.fill();
       context.strokeStyle = "rgba(158,247,198,0.5)";
@@ -808,7 +825,7 @@ function badgeTexture(
       context.stroke();
       context.fillStyle = "#eafff2";
       context.textAlign = "left";
-      context.fillText(status, 48, 405);
+      context.fillText(status, 48, 415);
     }
 
     context.textAlign = "left";
@@ -823,12 +840,12 @@ function badgeTexture(
         identity.localTime,
       ].filter(Boolean).join(" · "),
       52,
-      453,
+      466,
     );
 
     const followLabel = fediverseFollowLabel(profile);
     if (followLabel) {
-      roundedRect(context, 300, 438, 184, 46, 22);
+      roundedRect(context, 300, 442, 184, 42, 21);
       context.fillStyle = "rgba(169,184,255,0.18)";
       context.fill();
       context.strokeStyle = "#a9b8ff";
@@ -837,7 +854,7 @@ function badgeTexture(
       context.textAlign = "center";
       context.fillStyle = "#eaefff";
       context.font = '700 16px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(followLabel, 392, 461);
+      context.fillText(followLabel, 392, 463);
     }
   });
 }
@@ -3049,9 +3066,18 @@ function officeReclaimedWoodTexture(THREE) {
 // the active implementation queue in a fixed, readable grid. Keep the ordering
 // stable so a repaint never makes cards jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
+  { key: "task:avatar-selection-runtime", task: "Reliable user HUD selection", detail: "Avatar clicks use a scoped frame timestamp, prefer the visible avatar hit over nearby geometry, and open the privacy-filtered member side panel without throwing.", estimate: "implemented · focused QA", done: true },
+  { key: "task:member-circle-fire", task: "Dirt Members Circle + growing fire", detail: "The complete member seating circle sits on detailed dirt; every member adds one visible log and slightly increases the bounded campfire scale.", estimate: "implemented · focused QA", done: true },
+  { key: "task:aquarium-fixed-controls", task: "Tank-fixed reef controls", detail: "Feed, tap, backdrop, and light controls stay anchored to the aquarium's lower-right control point instead of floating with the player.", estimate: "implemented · focused QA", done: true },
+  { key: "task:recent-public-chat-card", task: "Recent public chat on chest", detail: "Each avatar chest includes one sanitized line from that account's latest public-channel message; private and direct messages never enter the card.", estimate: "implemented · focused QA", done: true },
+  { key: "task:verification-pin-state", task: "Green verified pin / red unverified X", detail: "Every signed-in avatar shows a green check when email-verified and a red X in the same front pin when unverified; guests remain neutral.", estimate: "implemented · focused QA", done: true },
+  { key: "task:office-floor-warps", task: "Lobby floor warp hub", detail: "A compact set of ten labeled portal pads left of Noah's lobby desk jumps authorized visitors directly to each accessible floor.", estimate: "implemented · focused QA", done: true },
+  { key: "task:world-console-cleanup", task: "World console runtime cleanup", detail: "Asset preloads share the texture loader's CORS mode, external avatar failures use stable initial art, and unavailable Actions summaries return retryable application state instead of repeating HTTP 503s.", estimate: "implemented · focused QA", done: true },
+  { key: "task:admin-record-detail", task: "Admin database record detail pages", detail: "Every visible database row opens a read-only page that lists the complete redacted record vertically, with a clear route back to its table.", estimate: "implemented · focused QA", done: true },
+  { key: "task:member-verification-admin-link", task: "Member verification + admin detail", detail: "Member panels show a red X for every non-guest account without a verified email, and the privileged admin-detail action opens safely in a new tab.", estimate: "implemented · focused QA", done: true },
   { key: "task:engineering-debug-panel", task: "Engineering live debug control panel", detail: "A full in-room panel samples FPS, longest frame, draw calls, triangles, geometries, textures, GPU programs, animation callbacks, interactive targets, members, heap, and pixel ratio with green, orange, or red optimization states.", estimate: "implemented · focused QA", done: true },
-  { key: "task:leaderboard-grid", task: "Raised 5×5 overview + restored board circle", detail: "Every public leaderboard and statistic occupies its own vertical cell in one square overview; special users and live nodes are highlighted, the individual Active, Referral, HTTP Referrer, and per-stat boards ring the district, and geometry-derived clearance keeps every assembly above terrain.", estimate: "verified · ready for QA", done: true },
-  { key: "task:reward-node-download", task: "Front SOL sign + start-node action", detail: "Move the treasury QR to the front midpoint of the first node ring and add a small Start a node control that opens the desktop download page in a new window.", estimate: "implemented · focused QA", done: true },
+  { key: "task:leaderboard-grid", task: "One raised square 5×5 leaderboard", detail: "Every public leaderboard and statistic occupies its own cell in one square wall; the center marker and separate physical boards are gone, and every footing, post, frame, face, and label clears the terrain.", estimate: "verified · ready for QA", done: true },
+  { key: "task:reward-node-download", task: "Front SOL sign + start-node action", detail: "The treasury QR now sits at the front midpoint of the first node ring, with a small Start a node control that opens the desktop download page in a new window.", estimate: "verified · ready for QA", done: true },
   { key: "task:world-member-path", task: "One path to the Members Circle", detail: "The overlapping south path and member promenade are now one concrete-brick route terminating at a fire-marked Members Circle sign.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-office-path", task: "One path to the Office", detail: "The north town route, elevated bridge, and Office approach now meet edge-to-edge at one width; the stacked land promenade and doubled slabs are removed.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-circular-foundation", task: "Circular World foundation", detail: "The continuous visible grass and collision boundary now use one circular radius centered on the circular bike lane.", estimate: "implemented · focused QA", done: true },
@@ -3077,7 +3103,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:repo-board-view-pads", task: "Content-height repo boards + view pads", detail: "Each list now fits its page, reads newest at the bottom, carries a lower count footer, and has a height-aware first-person pad.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-continuous-city", task: "One continuous city landscape", detail: "The districts now share one walkable foundation, textured grass, and seamless concrete connections.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-start-here-map", task: "START HERE progress map", detail: "A persistent users-to-nodes checklist now checks bounded milestones as each destination is visited.", estimate: "ready for deploy · in QA", done: true },
-  { key: "task:world-roof-and-seating", task: "Roof jump and universal seating", detail: "Space exits the roof with checkout, while every marked chair and park bench accepts a sitter.", estimate: "ready for deploy · in QA", done: true },
+  { key: "task:world-roof-and-seating", task: "Parachute roof jump and universal seating", detail: "Space exits the roof with checkout; a mini parachute deploys on descent, caps fall speed, and collapses after landing, while every marked chair and park bench accepts a sitter.", estimate: "verified · ready for QA", done: true },
   { key: "task:world-beach-road", task: "Driveable road and beach", detail: "A connected road, usable car, local horizon, water, sand, and beach seating now extend the city.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-bike-perimeter", task: "Clear perimeter bike route", detail: "The continuous bike loop now runs outside activity areas and retains two usable bicycles.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-panel-layout", task: "Aligned boards and leaderboard", detail: "Public billboards now form one clean circle with the obsolete center marker removed.", estimate: "ready for deploy · in QA", done: true },
@@ -3325,6 +3351,7 @@ function worldQaCardTexture(THREE, snapshot = {}) {
   const page = Math.max(0, Number(snapshot?.page) || 0);
   const pages = Math.max(1, Number(snapshot?.pages) || 1);
   const canRoute = snapshot?.canRoute === true;
+  const authorized = snapshot?.authorized === true;
   const stats = snapshot?.stats && typeof snapshot.stats === "object"
     ? snapshot.stats
     : {};
@@ -3369,7 +3396,9 @@ function worldQaCardTexture(THREE, snapshot = {}) {
             : `CARD ${Math.min(total, currentIndex + 1)} OF ${total} · ONE AT A TIME`
           : total
             ? `ALL ${total} CARDS REVIEWED · TAP TO RECHECK`
-            : "SIGN IN TO SAVE YOUR RESULTS"
+            : authorized
+              ? "NO QA TASKS ARE WAITING"
+              : "QUALITY-ASSURANCE TEAM ACCESS REQUIRED"
         : `${view.toUpperCase()} HISTORY · PAGE ${page + 1}/${pages}`,
       600,
       174,
@@ -3415,13 +3444,28 @@ function worldQaCardTexture(THREE, snapshot = {}) {
       context.textAlign = "center";
       context.fillText(
         current?.verdict
-          ? `YOUR RESULT · ${String(current.verdict).toUpperCase()}`
+          ? current.verdict === "fail" && current?.failureReason
+            ? `FAIL REASON · ${String(current.failureReason).slice(0, 54)}${
+                current?.hasFailureScreenshot ? " · SCREENSHOT" : ""
+              }`
+            : `YOUR RESULT · ${String(current.verdict).toUpperCase()}`
           : `THIS CARD · ${Number(currentGlobal.pass) || 0} PASS · ${
               Number(currentGlobal.fail) || 0
             } FAIL · ${Number(currentGlobal.unsure) || 0} UNSURE`,
         600,
         view === "detail" ? 684 : 810,
       );
+      if (current?.organizationTask && current?.lastReviewer) {
+        context.fillStyle = "#365c50";
+        context.font = '700 19px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(
+          `LATEST TASK QA · ${String(
+            current.taskQaStatus || "unknown",
+          ).toUpperCase()} · @${String(current.lastReviewer).slice(0, 32)}`,
+          600,
+          view === "detail" ? 646 : 774,
+        );
+      }
       if (view === "detail") {
         [
           { action: "fail", label: "← FAIL", x: 100, color: "#b63b3f" },
@@ -4266,6 +4310,7 @@ function makeMaterial(THREE, color, options = {}) {
   if (options.depthWrite !== undefined) {
     parameters.depthWrite = options.depthWrite;
   }
+  if (options.map) parameters.map = options.map;
   return new THREE.MeshStandardMaterial(parameters);
 }
 
@@ -4394,6 +4439,56 @@ function campfireSeatPlateTexture(THREE, name, away) {
       glow,
     );
   });
+}
+
+function campfireDirtTexture(THREE) {
+  const texture = canvasTexture(THREE, 1024, 1024, (context, canvas) => {
+    const gradient = context.createRadialGradient(512, 470, 40, 512, 512, 720);
+    gradient.addColorStop(0, "#77502f");
+    gradient.addColorStop(0.58, "#684326");
+    gradient.addColorStop(1, "#4b301d");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    let seed = 0x46_4d_44_49;
+    const random = () => {
+      seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
+      return seed / 0x1_0000_0000;
+    };
+    for (let index = 0; index < 3600; index += 1) {
+      const x = random() * canvas.width;
+      const y = random() * canvas.height;
+      const radius = 0.7 + random() * 3.4;
+      context.fillStyle =
+        random() > 0.5
+          ? `rgba(218,164,101,${0.035 + random() * 0.12})`
+          : `rgba(37,22,13,${0.035 + random() * 0.11})`;
+      context.beginPath();
+      context.arc(x, y, radius, 0, Math.PI * 2);
+      context.fill();
+    }
+    context.strokeStyle = "rgba(40,24,13,0.18)";
+    context.lineWidth = 3;
+    for (let ring = 0; ring < 18; ring += 1) {
+      const x = 70 + random() * 884;
+      const y = 70 + random() * 884;
+      context.beginPath();
+      context.ellipse(
+        x,
+        y,
+        12 + random() * 42,
+        3 + random() * 10,
+        random() * Math.PI,
+        0,
+        Math.PI * 2,
+      );
+      context.stroke();
+    }
+  });
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(2.4, 2.4);
+  texture.anisotropy = 8;
+  return texture;
 }
 
 // Who joined last, by the public directory's joined timestamp. An account
@@ -5045,33 +5140,47 @@ function applyAvatarFaceImage(THREE, avatar, url) {
   );
 }
 
-function verifiedEmailPinTexture(THREE) {
+function emailVerificationPinTexture(THREE, verified) {
   return canvasTexture(THREE, 96, 96, (context) => {
     context.clearRect(0, 0, 96, 96);
-    context.fillStyle = "#174b3d";
-    context.strokeStyle = "#9ef7c6";
+    context.fillStyle = verified ? "#174b3d" : "#541d25";
+    context.strokeStyle = verified ? "#9ef7c6" : "#ff6b72";
     context.lineWidth = 7;
     context.beginPath();
     context.arc(48, 48, 39, 0, Math.PI * 2);
     context.fill();
     context.stroke();
-    context.strokeStyle = "#eafff5";
+    context.strokeStyle = verified ? "#eafff5" : "#fff0f1";
     context.lineWidth = 10;
     context.lineCap = "round";
     context.beginPath();
-    context.moveTo(28, 49);
-    context.lineTo(42, 63);
-    context.lineTo(69, 33);
+    if (verified) {
+      context.moveTo(28, 49);
+      context.lineTo(42, 63);
+      context.lineTo(69, 33);
+    } else {
+      context.moveTo(31, 31);
+      context.lineTo(65, 65);
+      context.moveTo(65, 31);
+      context.lineTo(31, 65);
+    }
     context.stroke();
   });
 }
 
-function syncAvatarVerifiedPin(avatar, identity) {
-  if (avatar?.userData?.verifiedPin) {
-    avatar.userData.verifiedPin.visible =
-      identity?.emailVerified === true &&
-      String(identity?.accountStatus || "Guest") !== "Guest";
-  }
+function syncAvatarVerifiedPin(THREE, avatar, identity) {
+  const pin = avatar?.userData?.verifiedPin;
+  if (!pin) return;
+  const registered =
+    String(identity?.accountStatus || "Guest") !== "Guest";
+  const verified = identity?.emailVerified === true;
+  pin.visible = registered;
+  if (!registered || pin.userData.verified === verified) return;
+  pin.userData.verified = verified;
+  const previous = pin.material.map;
+  pin.material.map = emailVerificationPinTexture(THREE, verified);
+  pin.material.needsUpdate = true;
+  previous?.dispose?.();
 }
 
 function syncAvatarStatus(THREE, avatar, identity) {
@@ -5099,25 +5208,46 @@ function syncAvatarStatus(THREE, avatar, identity) {
 }
 
 function makeConsentedProfileFace(THREE, follower) {
+  const handle = String(follower?.handle || "public").slice(0, 80);
+  const initials = handle
+    .replace(/^@/, "")
+    .split(/[^a-z0-9]+/i)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || "")
+    .join("")
+    .slice(0, 2) || "•";
   const face = new THREE.Mesh(
     new THREE.SphereGeometry(0.24, 18, 14),
-    makeMaterial(THREE, "#ff9eb7", {
-      emissive: "#7f3150",
-      emissiveIntensity: 0.35,
+    new THREE.MeshStandardMaterial({
+      color: "#ffffff",
+      map: canvasTexture(THREE, 128, 128, (context) => {
+        const hue = hashNumber(handle) % 360;
+        context.fillStyle = `hsl(${hue} 48% 34%)`;
+        context.fillRect(0, 0, 128, 128);
+        context.fillStyle = "#f4fff9";
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        context.font = '800 52px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(initials, 64, 67);
+      }),
+      emissive: "#183a32",
+      emissiveIntensity: 0.2,
       roughness: 0.7,
     }),
   );
   const rawAvatar = String(follower?.avatar || "").trim();
   try {
-    const avatar = new URL(rawAvatar);
+    const avatar = new URL(rawAvatar, window.location.href);
     if (
-      avatar.protocol === "https:" &&
+      (avatar.origin === window.location.origin ||
+        avatar.protocol === "data:") &&
       !avatar.username &&
       !avatar.password &&
-      rawAvatar.length <= 800
+      rawAvatar.length <= 120_000 &&
+      !/\/missing(?:\.[a-z0-9]+)?(?:$|[?#])/i.test(avatar.pathname)
     ) {
       const loader = new THREE.TextureLoader();
-      loader.setCrossOrigin("anonymous");
       loader.load(
         avatar.href,
         (texture) => {
@@ -5131,9 +5261,7 @@ function makeConsentedProfileFace(THREE, follower) {
       );
     }
   } catch (_) {}
-  face.userData.publicProfileHandle = String(
-    follower?.handle || "public",
-  ).slice(0, 80);
+  face.userData.publicProfileHandle = handle;
   return face;
 }
 
@@ -5328,7 +5456,7 @@ function createAvatar(THREE, identity, options = {}) {
   const verifiedPin = new THREE.Mesh(
     new THREE.CircleGeometry(0.105, 24),
     new THREE.MeshBasicMaterial({
-      map: verifiedEmailPinTexture(THREE),
+      map: emailVerificationPinTexture(THREE, identity.emailVerified === true),
       transparent: true,
       toneMapped: false,
     }),
@@ -5337,6 +5465,7 @@ function createAvatar(THREE, identity, options = {}) {
   verifiedPin.position.set(0.43, 2.72, -0.328);
   verifiedPin.rotation.y = Math.PI;
   verifiedPin.renderOrder = 5;
+  verifiedPin.userData.verified = identity.emailVerified === true;
   group.add(verifiedPin);
 
   group.scale.setScalar(scale);
@@ -5387,7 +5516,7 @@ function createAvatar(THREE, identity, options = {}) {
   syncAvatarStatus(THREE, group, identity);
   syncAvatarActivity(group, identity);
   syncAvatarWallet(THREE, group, identity);
-  syncAvatarVerifiedPin(group, identity);
+  syncAvatarVerifiedPin(THREE, group, identity);
   setShadows(group, true, true);
   return group;
 }
@@ -5654,7 +5783,7 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
   syncAvatarActivity(avatar, identity);
   syncAvatarWallet(THREE, avatar, identity);
   syncAvatarStatus(THREE, avatar, identity);
-  syncAvatarVerifiedPin(avatar, identity);
+  syncAvatarVerifiedPin(THREE, avatar, identity);
 }
 
 // Starts (or restarts) the wave on one avatar. The pose itself is played by
@@ -13882,6 +14011,7 @@ export function createWorldScene({
   onReferralBoardSelect = () => {},
   onSiteReferrerOpen = () => {},
   onLobbyLinkKioskSelect = () => {},
+  onLobbyFeedbackKioskSelect = () => {},
   onSystemCapacityTableSelect = () => {},
   onInfrastructureConsoleToggle = () => {},
   onBuildBoardNearby = () => {},
@@ -14031,6 +14161,7 @@ export function createWorldScene({
   const LAYOUT_COMMIT_DELAY_MS = 450;
   let layoutEditingEnabled = false;
   let activeLayoutObject = null;
+  let draggedLayoutObject = null;
   let layoutCommitTimer = 0;
   const layoutSelectionBounds = new THREE.Box3();
   const layoutSelectionHighlight = new THREE.Box3Helper(
@@ -15240,6 +15371,20 @@ export function createWorldScene({
   // The fire stands on its own map landmark, so the world-map spot and the
   // benches can never drift apart.
   campfire.position.set(...landmarkById("campfire").position);
+  const campfireGround = new THREE.Mesh(
+    new THREE.CircleGeometry(1, 96),
+    new THREE.MeshStandardMaterial({
+      color: "#ffffff",
+      map: campfireDirtTexture(THREE),
+      roughness: 1,
+      metalness: 0,
+    }),
+  );
+  campfireGround.name = "campfire-member-circle-dirt";
+  campfireGround.rotation.x = -Math.PI / 2;
+  campfireGround.position.y = 0.025;
+  campfireGround.receiveShadow = true;
+  campfire.add(campfireGround);
   const firePit = new THREE.Mesh(
     new THREE.CylinderGeometry(0.85, 1.0, 0.22, 12),
     makeMaterial(THREE, "#4a4038", { roughness: 0.9 }),
@@ -15273,19 +15418,45 @@ export function createWorldScene({
   }
   const logPile = new THREE.Group();
   logPile.name = "campfire-log-pile";
-  for (let index = 0; index < 5; index += 1) {
-    const log = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.13, 0.13, 1.25, 10),
-      makeMaterial(THREE, "#70472a", { roughness: 0.86 }),
-    );
-    log.rotation.z = Math.PI / 2;
-    log.rotation.y = index * 0.38;
-    log.position.set(-2.1 + (index % 2) * 0.22, 0.18 + Math.floor(index / 2) * 0.22, 1.55);
-    log.userData.campfireLog = true;
-    logPile.add(log);
-    interactive.push(log);
-  }
   campfire.add(logPile);
+  let memberLogCount = -1;
+  function rebuildCampfireMemberLogs(total) {
+    const count = Math.max(0, Math.min(512, Math.round(Number(total) || 0)));
+    if (memberLogCount === count) return;
+    memberLogCount = count;
+    logPile.traverse((child) => {
+      if (!child.isMesh) return;
+      const interactiveIndex = interactive.indexOf(child);
+      if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
+      child.geometry?.dispose?.();
+      child.material?.dispose?.();
+    });
+    logPile.clear();
+    const columns = Math.max(3, Math.ceil(Math.sqrt(Math.max(1, count))));
+    for (let index = 0; index < count; index += 1) {
+      const row = Math.floor(index / columns);
+      const column = index % columns;
+      const log = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.105, 0.115, 1.05, 10),
+        makeMaterial(
+          THREE,
+          index % 3 === 0 ? "#855638" : "#70472a",
+          { roughness: 0.9 },
+        ),
+      );
+      log.rotation.z = Math.PI / 2;
+      log.rotation.y = (index % 2 ? 1 : -1) * 0.12;
+      log.position.set(
+        -2.65 + column * 0.19,
+        0.14 + row * 0.17,
+        1.72 + (column % 2) * 0.12,
+      );
+      log.userData.campfireLog = true;
+      log.userData.memberLogIndex = index;
+      logPile.add(log);
+      interactive.push(log);
+    }
+  }
   const flame = new THREE.Mesh(
     new THREE.ConeGeometry(0.42, 1.05, 8),
     makeMaterial(THREE, "#ffb547", {
@@ -15345,6 +15516,11 @@ export function createWorldScene({
     );
     memberCountSprite.material.needsUpdate = true;
     memberCountSprite.visible = true;
+    // Each member contributes one visible log and a small, bounded amount of
+    // warmth. The cap keeps a mature community's fire welcoming, not blocking.
+    rebuildCampfireMemberLogs(count);
+    fireLevel = clamp(1.08 + count * 0.012, 1.08, 1.85);
+    fireLight.distance = 14 + Math.min(count, 80) * 0.08;
   }
   animated.push((time) => {
     const flicker = 1 + Math.sin(time * 0.011) * 0.12 + Math.sin(time * 0.023) * 0.06;
@@ -15439,6 +15615,7 @@ export function createWorldScene({
       CAMPFIRE_BENCH_RADIUS,
       (count * CAMPFIRE_SEAT_SPACING + CAMPFIRE_ENTRANCE_WIDTH) / (2 * Math.PI),
     );
+    campfireGround.scale.setScalar(radius + 1.45);
     // Benches spread over everything but the entrance arc, with half a bench
     // gap of padding on each side of it, so the walkway stays clear and the
     // always-open bench at the end of the ring sits right beside the opening.
@@ -15653,12 +15830,11 @@ export function createWorldScene({
   world.add(swingSet);
   registerMovableObject("swing-set", swingSet);
 
-  // The 5×5 overview preserves the whole leaderboard catalog. It complements
-  // rather than replaces the individual source boards restored to the public
-  // board circle below.
+  // One square 5×5 wall preserves the whole leaderboard catalog without
+  // duplicate physical boards. Lift the complete assembly above the terrain.
   const leaderboardSuperPanel = new THREE.Group();
   leaderboardSuperPanel.name = "forkmesh-leaderboard-super-panel";
-  leaderboardSuperPanel.position.set(0, 0, 0);
+  leaderboardSuperPanel.position.set(-42, 0.22, 0);
   leaderboardSuperPanel.rotation.y = Math.PI / 2;
   const leaderboardGridState = {
     members: [],
@@ -15710,36 +15886,6 @@ export function createWorldScene({
   interactive.push(leaderboardGridFace);
   leaderboardDistrict.add(leaderboardSuperPanel);
 
-  const activeLeaderboardSign = makeActiveLeaderboardSign(THREE);
-  const referralLeaderboardSign = makeReferralLeaderboardSign(THREE);
-  const siteReferrerLeaderboardSign =
-    makeSiteReferrerLeaderboardSign(THREE);
-  referralLeaderboardSign.userData.face.userData.interactive =
-    "referral-leaderboard";
-  siteReferrerLeaderboardSign.userData.face.userData.interactive =
-    "site-referrer-leaderboard";
-  interactive.push(
-    referralLeaderboardSign.userData.face,
-    siteReferrerLeaderboardSign.userData.face,
-  );
-  const leaderboardStatSigns = new Map(
-    WORLD_LEADERBOARD_BOARD_STUBS.map((board) => [
-      board.id,
-      makeLeaderboardStatSign(THREE, board),
-    ]),
-  );
-  [
-    [activeLeaderboardSign, "active-leaderboard"],
-    [referralLeaderboardSign, "referral-leaderboard"],
-    [siteReferrerLeaderboardSign, "site-referrer-leaderboard"],
-    ...Array.from(leaderboardStatSigns, ([id, sign]) => [
-      sign,
-      `leaderboard-${id}`,
-    ]),
-  ].forEach(([board, layoutId]) =>
-    placeBillboardOnIsland(board, layoutId),
-  );
-
   let leaderboardGridKey = "";
   function repaintLeaderboardGrid() {
     const key = JSON.stringify({
@@ -15767,12 +15913,6 @@ export function createWorldScene({
         const id = String(board.id || "");
         if (!id) return;
         leaderboardGridState.boards.set(id, board);
-        const sign = leaderboardStatSigns.get(id);
-        if (!sign?.userData?.face) return;
-        sign.userData.board = board;
-        sign.userData.face.material.map?.dispose?.();
-        sign.userData.face.material.map = leaderboardStatTexture(THREE, board);
-        sign.userData.face.material.needsUpdate = true;
       });
     repaintLeaderboardGrid();
   }
@@ -15780,28 +15920,12 @@ export function createWorldScene({
   function updateReferralLeaderboard(rows = [], viewerLink = "") {
     leaderboardGridState.referralRows = Array.isArray(rows) ? rows : [];
     leaderboardGridState.viewerLink = String(viewerLink || "");
-    referralLeaderboardSign.userData.face.material.map?.dispose?.();
-    referralLeaderboardSign.userData.face.material.map =
-      referralLeaderboardTexture(
-        THREE,
-        leaderboardGridState.referralRows,
-        leaderboardGridState.viewerLink,
-      );
-    referralLeaderboardSign.userData.face.material.needsUpdate = true;
     repaintLeaderboardGrid();
   }
   function updateSiteReferrerLeaderboard(rows = [], totals = {}) {
     leaderboardGridState.siteRows = rankedSiteReferrerRows(rows);
     leaderboardGridState.siteTotals =
       totals && typeof totals === "object" ? totals : {};
-    siteReferrerLeaderboardSign.userData.face.material.map?.dispose?.();
-    siteReferrerLeaderboardSign.userData.face.material.map =
-      siteReferrerLeaderboardTexture(
-        THREE,
-        leaderboardGridState.siteRows,
-        leaderboardGridState.siteTotals,
-      );
-    siteReferrerLeaderboardSign.userData.face.material.needsUpdate = true;
     repaintLeaderboardGrid();
   }
   const systemCapacityPlatform = createSystemCapacityPlatform(THREE);
@@ -16080,18 +16204,70 @@ export function createWorldScene({
   officeInterior.visible = true;
   world.add(officeInterior);
 
-  const officeLobbyFloorMaterial = makeMaterial(THREE, "#1c3029", {
-    emissive: "#091b15",
-    emissiveIntensity: 0.46,
-    roughness: 0.86,
-  });
+  const officeInteriorAccents = [
+    "#67efb1",
+    "#78d6ff",
+    "#f2c96d",
+    "#ff8fb8",
+    "#a89cff",
+    "#7ce3d2",
+    "#ff9b72",
+    "#9fdb79",
+    "#d8b47a",
+    "#a7dfff",
+  ];
+  function officeFloorFinishMaterial(index = 0, lobby = false) {
+    const accent =
+      officeInteriorAccents[index % officeInteriorAccents.length];
+    const texture = canvasTexture(THREE, 512, 512, (context) => {
+      context.fillStyle = lobby ? "#173129" : "#12251f";
+      context.fillRect(0, 0, 512, 512);
+      const gradient = context.createLinearGradient(0, 0, 512, 512);
+      gradient.addColorStop(0, "rgba(255,255,255,0.055)");
+      gradient.addColorStop(0.5, "rgba(255,255,255,0)");
+      gradient.addColorStop(1, "rgba(0,0,0,0.16)");
+      context.fillStyle = gradient;
+      context.fillRect(0, 0, 512, 512);
+      context.strokeStyle = `${accent}38`;
+      context.lineWidth = lobby ? 3 : 2;
+      const spacing = lobby ? 64 : 48;
+      for (let offset = 0; offset <= 512; offset += spacing) {
+        context.beginPath();
+        context.moveTo(offset, 0);
+        context.lineTo(offset, 512);
+        context.stroke();
+        context.beginPath();
+        context.moveTo(0, offset);
+        context.lineTo(512, offset);
+        context.stroke();
+      }
+      context.strokeStyle = `${accent}88`;
+      context.lineWidth = 5;
+      context.strokeRect(12, 12, 488, 488);
+      if (lobby) {
+        for (let index = 0; index < 180; index += 1) {
+          const x = (index * 83) % 506;
+          const y = (index * 157) % 506;
+          context.fillStyle =
+            index % 3 === 0 ? `${accent}85` : "rgba(232,255,246,0.18)";
+          context.fillRect(x, y, index % 4 === 0 ? 3 : 2, 2);
+        }
+      }
+    });
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(5, 3);
+    texture.needsUpdate = true;
+    return makeMaterial(THREE, "#ffffff", {
+      map: texture,
+      emissive: lobby ? "#091b15" : "#071710",
+      emissiveIntensity: lobby ? 0.36 : 0.28,
+      metalness: lobby ? 0.08 : 0.16,
+      roughness: lobby ? 0.72 : 0.76,
+    });
+  }
+  const officeLobbyFloorMaterial = officeFloorFinishMaterial(0, true);
   const officeFloorGroups = new Map([["lobby", officeInterior]]);
-  const officeFloorSlabMaterial = makeMaterial(THREE, "#132821", {
-    emissive: "#081912",
-    emissiveIntensity: 0.36,
-    metalness: 0.18,
-    roughness: 0.82,
-  });
   const officeFloorAccent = makeMaterial(THREE, "#67efb1", {
     emissive: "#1a9a68",
     emissiveIntensity: 0.82,
@@ -16157,6 +16333,88 @@ export function createWorldScene({
     });
   }
   addOfficeFloorSurface(officeInterior, officeLobbyFloorMaterial);
+  function addOfficeFloorAtmosphere(
+    floorGroup,
+    floorId,
+    floorIndex = 0,
+  ) {
+    if (!floorGroup || floorId === "rooftop") return;
+    const accent =
+      officeInteriorAccents[
+        floorIndex % officeInteriorAccents.length
+      ];
+    const upholstery = makeMaterial(THREE, accent, {
+      emissive: accent,
+      emissiveIntensity: 0.12,
+      roughness: 0.72,
+    });
+    const frame = makeMaterial(THREE, "#1d302c", {
+      metalness: 0.42,
+      roughness: 0.44,
+    });
+    for (const [lightIndex, x] of [-38, 38].entries()) {
+      const light = new THREE.PointLight(
+        lightIndex ? "#b9e9ff" : "#fff0cf",
+        1.25,
+        54,
+        1.8,
+      );
+      light.name = `forkmesh-office-${floorId}-ambient-light-${lightIndex + 1}`;
+      light.position.set(x, OFFICE_FLOOR_HEIGHT - 1.15, -2);
+      light.castShadow = false;
+      floorGroup.add(light);
+    }
+    for (const [chairIndex, x] of [-46, 46].entries()) {
+      const chairId = `${floorId}-lounge-${chairIndex + 1}`;
+      const chair = new THREE.Group();
+      chair.name = `forkmesh-office-${chairId}`;
+      const seatTopY = 1.35;
+      const seat = new THREE.Mesh(
+        new THREE.BoxGeometry(4.8, 0.34, 3.4),
+        upholstery,
+      );
+      seat.name = `${chair.name}-seat`;
+      seat.position.y = seatTopY - 0.17;
+      const back = new THREE.Mesh(
+        new THREE.BoxGeometry(4.8, 2.6, 0.38),
+        upholstery,
+      );
+      back.name = `${chair.name}-back`;
+      back.position.set(0, 2.25, -1.5);
+      const base = new THREE.Mesh(
+        new THREE.BoxGeometry(3.6, 0.9, 2.5),
+        frame,
+      );
+      base.name = `${chair.name}-base`;
+      base.position.y = 0.48;
+      chair.add(base, seat, back);
+      chair.position.set(x, 0, 17);
+      chair.rotation.y = x < 0 ? Math.PI / 5 : -Math.PI / 5;
+      chair.userData.officeChairId = chairId;
+      chair.userData.officeFloorId = floorId;
+      chair.userData.officeSeatTopY = seatTopY;
+      chair.traverse((child) => {
+        if (!child.isMesh) return;
+        child.userData.officeChairId = chairId;
+        child.userData.officeFloorId = floorId;
+        child.userData.interactive = "office-chair";
+        interactive.push(child);
+      });
+      officeChairs.set(chairId, chair);
+      floorGroup.add(chair);
+    }
+    const coffeeTable = new THREE.Mesh(
+      new THREE.CylinderGeometry(3.2, 3.2, 0.32, 24),
+      makeMaterial(THREE, "#5f4938", {
+        metalness: 0.08,
+        roughness: 0.58,
+      }),
+    );
+    coffeeTable.name = `forkmesh-office-${floorId}-lounge-table`;
+    coffeeTable.position.set(0, 1.1, 17);
+    floorGroup.add(coffeeTable);
+  }
+  addOfficeFloorAtmosphere(officeInterior, "lobby", 0);
   const officeAquarium = createOfficeMarineAquarium(THREE, animated);
   officeInterior.add(officeAquarium.group);
   const aquariumControlLocalPosition = new THREE.Vector3();
@@ -16376,12 +16634,15 @@ export function createWorldScene({
       rect.height,
     );
   }
-  OFFICE_FLOORS.slice(1).forEach((floor) => {
+  OFFICE_FLOORS.slice(1).forEach((floor, interiorIndex) => {
     const floorGroup = new THREE.Group();
     floorGroup.name = `forkmesh-office-floor-${floor.id}`;
     floorGroup.position.y = officeFloorY(floor.id);
     floorGroup.userData.officeFloorId = floor.id;
-    addOfficeFloorSurface(floorGroup, officeFloorSlabMaterial);
+    addOfficeFloorSurface(
+      floorGroup,
+      officeFloorFinishMaterial(interiorIndex + 1),
+    );
     if (floor.id !== "rooftop") {
       for (let x = -72; x <= 72; x += 24) {
         const light = new THREE.Mesh(
@@ -16409,6 +16670,14 @@ export function createWorldScene({
       -OFFICE_FRONT_Z + 0.48,
     );
     floorGroup.add(sign);
+    addOfficeFloorAtmosphere(
+      floorGroup,
+      floor.id,
+      interiorIndex + 1,
+    );
+    // The visitor starts outside. Upper-floor interiors stay out of the
+    // initial frame entirely and are enabled only for the active floor.
+    floorGroup.visible = false;
     officeInterior.add(floorGroup);
     officeFloorGroups.set(floor.id, floorGroup);
   });
@@ -17402,6 +17671,47 @@ export function createWorldScene({
   officeReception.add(noahNameplate);
   officeInterior.add(officeReception);
 
+  const officeFloorWarpHub = new THREE.Group();
+  officeFloorWarpHub.name = "forkmesh-office-floor-warp-hub";
+  officeFloorWarpHub.position.set(-25.5, 0.04, -32.8);
+  OFFICE_FLOORS.forEach((floor, index) => {
+    const column = index % 2;
+    const row = Math.floor(index / 2);
+    const pad = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.42, 1.42, 0.12, 40),
+      makeMaterial(THREE, column ? "#77d9ff" : "#9ef7c6", {
+        emissive: column ? "#24637c" : "#236847",
+        emissiveIntensity: 0.8,
+        metalness: 0.34,
+        roughness: 0.34,
+      }),
+    );
+    pad.name = `forkmesh-office-floor-warp-${floor.id}`;
+    pad.position.set(column * 3.35, 0.06, row * -3.2);
+    pad.userData.interactive = "office-floor-warp";
+    pad.userData.officeFloorId = floor.id;
+    pad.userData.officeFloorNumber = floor.level + 1;
+    interactive.push(pad);
+    officeFloorWarpHub.add(pad);
+    const label = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: wordTexture(
+          THREE,
+          `${floor.level + 1}`,
+          floor.label.toUpperCase(),
+          column ? "#77d9ff" : "#9ef7c6",
+        ),
+        transparent: true,
+        depthWrite: false,
+      }),
+    );
+    label.name = `forkmesh-office-floor-warp-label-${floor.id}`;
+    label.position.set(pad.position.x, 1.05, pad.position.z);
+    label.scale.set(2.6, 1.3, 1);
+    officeFloorWarpHub.add(label);
+  });
+  officeInterior.add(officeFloorWarpHub);
+
   // Public lobby Link Lab: a physical, accessible entry point for members to
   // submit public campaign/community links and inspect the transparent reach
   // estimate. The browser dialog owns input and disclosure; this mesh never
@@ -17455,6 +17765,55 @@ export function createWorldScene({
   officeLinkKiosk.add(officeLinkKioskFace);
   interactive.push(officeLinkKioskFace);
   officeInterior.add(officeLinkKiosk);
+
+  // A matching lobby terminal gives every email a concrete return action:
+  // visitors can leave product feedback without exposing it through presence.
+  const officeFeedbackKiosk = new THREE.Group();
+  officeFeedbackKiosk.name = "forkmesh-office-feedback-kiosk";
+  officeFeedbackKiosk.position.set(-25, 0, -28);
+  const officeFeedbackKioskStand = new THREE.Mesh(
+    new THREE.BoxGeometry(8.6, 3.4, 2.8),
+    makeMaterial(THREE, "#24292f", {
+      metalness: 0.35,
+      roughness: 0.42,
+    }),
+  );
+  officeFeedbackKioskStand.position.y = 1.7;
+  officeFeedbackKiosk.add(officeFeedbackKioskStand);
+  const officeFeedbackKioskFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(10.8, 6.6),
+    new THREE.MeshBasicMaterial({
+      map: canvasTexture(THREE, 1080, 660, (context) => {
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, 1080, 660);
+        context.strokeStyle = "#1f883d";
+        context.lineWidth = 18;
+        context.strokeRect(12, 12, 1056, 636);
+        context.fillStyle = "#24292f";
+        context.font = '900 64px "ForkMesh Mono", ui-monospace, monospace';
+        context.textAlign = "center";
+        context.fillText("FEEDBACK KIOSK", 540, 130);
+        context.fillStyle = "#57606a";
+        context.font = '750 38px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("HOW ARE WE DOING?", 540, 258);
+        context.fillText("TELL THE FOUNDERS", 540, 320);
+        context.fillStyle = "#1f883d";
+        context.font = '900 42px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("CLICK TO ADD FEEDBACK", 540, 500);
+        context.fillStyle = "#6e7781";
+        context.font = '650 24px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("PRIVATE TO FORKMESH OPERATORS", 540, 580);
+      }),
+      toneMapped: false,
+    }),
+  );
+  officeFeedbackKioskFace.name = "forkmesh-office-feedback-kiosk-screen";
+  officeFeedbackKioskFace.position.set(0, 6.3, 0.15);
+  officeFeedbackKioskFace.userData.officeFloorId = "lobby";
+  officeFeedbackKioskFace.userData.interactive = "office-feedback-kiosk";
+  officeFeedbackKiosk.add(officeFeedbackKioskFace);
+  interactive.push(officeFeedbackKioskFace);
+  officeInterior.add(officeFeedbackKiosk);
 
   // A separate live board beside the submission terminal makes the public
   // links, their submitters, transparent reach inputs, tiny SOL appreciation
@@ -18812,6 +19171,7 @@ export function createWorldScene({
   let jumpVelocity = 0;
   let jumpQueued = false;
   let officeRoofJumping = false;
+  let roofParachute = null;
   // Per-device movement tuning scales the shared speed. Digital movement is
   // deliberately immediate; there is no acceleration state to delay input.
   let moveSpeedScale = 1;
@@ -18842,6 +19202,8 @@ export function createWorldScene({
   let daylightMode = "auto";
   let localDaylightMinute = -1;
   let nextEnvironmentCheckAt = 0;
+  let nextSceneLodAt = 0;
+  let farSceneDetail = null;
   let nextAvatarHighlightAt = 0;
   let nextProximityUpdateAt = 0;
   let nextScreenLabelUpdateAt = 0;
@@ -18874,6 +19236,118 @@ export function createWorldScene({
   let officeDoorwayEntryPending = false;
   let officeExitHandler = null;
   const weather = createWeather(THREE, scene);
+  const farDetailVisibility = new WeakMap();
+  let aerialLandmarkMarkers = null;
+
+  function ensureAerialLandmarkMarkers() {
+    if (aerialLandmarkMarkers) return aerialLandmarkMarkers;
+    aerialLandmarkMarkers = new THREE.Group();
+    aerialLandmarkMarkers.name = "forkmesh-aerial-landmark-markers";
+    const markerMaterial = new THREE.MeshBasicMaterial({
+      color: "#58a6ff",
+      transparent: true,
+      opacity: 0.86,
+      toneMapped: false,
+      depthWrite: false,
+    });
+    [
+      ["TOWN", 0, 0, "#9ef7c6"],
+      ["REPOSITORIES", REPOSITORY_ISLAND_CENTER_X, 0, "#77d9ff"],
+      ["LEADERBOARDS", LEADERBOARD_ISLAND_CENTER_X, 0, "#d5b6ff"],
+      ["MEMBERS", 0, MEMBER_CIRCLE_CENTER_Z, "#f7c96b"],
+      ["OFFICE", OFFICE_ISLAND_CENTER[0], OFFICE_ISLAND_CENTER[2], "#9ef7c6"],
+      ["BEACH", BEACH_CENTER_X, BEACH_CENTER_Z, "#77d9ff"],
+    ].forEach(([label, x, z, color]) => {
+      const marker = new THREE.Group();
+      marker.position.set(x, 0.28, z);
+      const pin = new THREE.Mesh(
+        new THREE.CylinderGeometry(2.2, 2.2, 0.16, 16),
+        markerMaterial.clone(),
+      );
+      pin.material.color.set(color);
+      marker.add(pin);
+      const text = makeLabelSprite(THREE, label, "", color);
+      text.position.y = 2.1;
+      text.scale.set(2.2, 0.72, 1);
+      marker.add(text);
+      aerialLandmarkMarkers.add(marker);
+    });
+    aerialLandmarkMarkers.visible = false;
+    world.add(aerialLandmarkMarkers);
+    return aerialLandmarkMarkers;
+  }
+
+  function setFarDetailVisible(object, visible) {
+    if (!object) return;
+    if (!visible) {
+      if (!farDetailVisibility.has(object)) {
+        farDetailVisibility.set(object, object.visible);
+      }
+      object.visible = false;
+      return;
+    }
+    if (!farDetailVisibility.has(object)) return;
+    object.visible = farDetailVisibility.get(object);
+    farDetailVisibility.delete(object);
+  }
+
+  function updateSceneLevelOfDetail(force = false) {
+    const far =
+      officeSceneMode === "town" &&
+      cameraMode === "third-person" &&
+      cameraZoom >= (compactRenderer ? 1.12 : 1.32);
+    if (!force && farSceneDetail === far) {
+      // Dynamic repository and member layers may have been replaced since the
+      // prior sample, so the bounded target pass below must still run.
+    } else {
+      farSceneDetail = far;
+      renderer.shadowMap.enabled = !compactRenderer && !far;
+      renderer.shadowMap.needsUpdate = !compactRenderer && !far;
+    }
+
+    // The glass tower shell remains visible from every distance. Its complete
+    // furnished interior is useful only near the entrance or while visiting a
+    // floor; omitting it from the aerial view removes hundreds of submissions
+    // that collapse to sub-pixel fragments.
+    const officeDistance = Math.hypot(
+      player.position.x - officeInterior.position.x,
+      player.position.z - officeInterior.position.z,
+    );
+    const showOfficeInterior =
+      officeSceneMode !== "town" || (!far && officeDistance <= 150);
+    officeInterior.visible = showOfficeInterior;
+    for (const [floorId, floorGroup] of officeFloorGroups) {
+      if (floorId === "lobby") continue;
+      floorGroup.visible =
+        showOfficeInterior &&
+        officeSceneMode !== "town" &&
+        floorId === officeCurrentFloorId;
+    }
+
+    const repositoryDistrict = landmarkObjects.get("repositories");
+    const organizationDistrict = landmarkObjects.get("organizations");
+    const federationDistrict = landmarkObjects.get("fediverse");
+    ensureAerialLandmarkMarkers().visible = far;
+    const detailTargets = [
+      repositoryDistrict,
+      organizationDistrict,
+      federationDistrict,
+      landmarkObjects.get("office"),
+      leaderboardDistrict,
+      startHereBoard,
+      memberPathSign,
+      arrivalBox,
+      systemCapacityPlatform,
+      campfire,
+      officeLandscaping,
+      world.userData.repositorySizeLayer,
+      world.userData.repositoryRecordDeskLayer,
+      world.userData.repositoryActivityLayer,
+    ];
+    detailTargets.forEach((object) =>
+      setFarDetailVisible(object, !far),
+    );
+  }
 
   function updateWorldEnvironment() {
     const now = new Date();
@@ -19274,6 +19748,40 @@ export function createWorldScene({
     return true;
   }
 
+  function warpToOfficeFloor(floorId) {
+    const floor = officeFloorById(floorId);
+    if (
+      officeSceneMode !== "lobby" ||
+      officeElevatorRide ||
+      !floor ||
+      !canAccessOfficeFloor(officeFloorAccess, floor.id)
+    ) {
+      return false;
+    }
+    standUpFromOfficeChair();
+    cancelDash();
+    officeCurrentFloorId = floor.id;
+    currentSpace = `office-${floor.id}`;
+    currentFloorY = officeFloorY(floor.id) + 0.38;
+    const destination = new THREE.Vector3(
+      -22,
+      currentFloorY,
+      -25,
+    );
+    applyOfficeAvatarLocalPosition(player, destination);
+    player.rotation.y = Math.PI;
+    officeElevatorCar.position.y = officeFloorY(floor.id);
+    renderOfficeMarketingTasks();
+    cameraSnapPending = true;
+    lastPosition.copy(player.position);
+    onOfficeElevatorSound("arrive", {
+      floor: floor.id,
+      duration: 0,
+      warp: true,
+    });
+    return true;
+  }
+
   function constrainTownOfficeWalls(previousPosition) {
     if (officeSceneMode !== "town") return false;
     const office = landmarkObjects.get("office");
@@ -19655,6 +20163,7 @@ export function createWorldScene({
     currentFloorY = officeFloorY(destinationFloor.id) + 0.38;
     cameraFocus = null;
     officeInterior.visible = true;
+    updateSceneLevelOfDetail(true);
     officeSlidingDoorOpen = 1;
     if (enteringFromTown) {
       const localPosition = officeAvatarLocalPosition(
@@ -20336,6 +20845,7 @@ export function createWorldScene({
     enterOfficeLobby({ floorId: "marketing" });
     officeSceneMode = "meeting";
     officeCurrentFloorId = "marketing";
+    updateSceneLevelOfDetail(true);
     currentFloorY = officeFloorY("marketing") + 0.38;
     currentSpace = "office-marketing";
     officeLobbyPlayer.position.y = currentFloorY;
@@ -20397,6 +20907,7 @@ export function createWorldScene({
       localPosition.z >= OFFICE_INTERIOR_EXIT_Z;
     officeSceneMode = "town";
     officeCurrentFloorId = "lobby";
+    updateSceneLevelOfDetail(true);
     officeElevatorRide = null;
     releaseOfficeElevatorCamera(false);
     currentSpace = "town-square";
@@ -20477,6 +20988,7 @@ export function createWorldScene({
     setOfficeParticipants([]);
     officeBubbles.forEach((element) => element.remove());
     officeBubbles.clear();
+    prepareRoofParachute();
     lastPosition.copy(player.position);
     onMovement({
       x: Number(player.position.x.toFixed(2)),
@@ -20493,6 +21005,110 @@ export function createWorldScene({
     return true;
   }
 
+  function createRoofParachute() {
+    const group = new THREE.Group();
+    group.name = "forkmesh-mini-roof-parachute";
+    group.visible = false;
+    group.scale.setScalar(0.04);
+    const canopy = new THREE.Mesh(
+      new THREE.SphereGeometry(
+        1.55,
+        24,
+        12,
+        0,
+        Math.PI * 2,
+        0,
+        Math.PI / 2,
+      ),
+      new THREE.MeshStandardMaterial({
+        color: "#58a6ff",
+        emissive: "#123d68",
+        emissiveIntensity: 0.24,
+        roughness: 0.62,
+        metalness: 0,
+        side: THREE.DoubleSide,
+      }),
+    );
+    canopy.name = "forkmesh-mini-roof-parachute-canopy";
+    canopy.position.y = 5.7;
+    group.add(canopy);
+    const cords = new THREE.LineSegments(
+      new THREE.BufferGeometry().setAttribute(
+        "position",
+        new THREE.Float32BufferAttribute(
+          [
+            -1.35, 5.65, -0.45, -0.42, 2.55, 0,
+            1.35, 5.65, -0.45, 0.42, 2.55, 0,
+            -1.35, 5.65, 0.45, -0.42, 2.55, 0,
+            1.35, 5.65, 0.45, 0.42, 2.55, 0,
+          ],
+          3,
+        ),
+      ),
+      new THREE.LineBasicMaterial({
+        color: "#e6edf3",
+        transparent: true,
+        opacity: 0.82,
+      }),
+    );
+    cords.name = "forkmesh-mini-roof-parachute-cords";
+    group.add(cords);
+    return group;
+  }
+
+  function removeRoofParachute() {
+    if (!roofParachute) return;
+    player.remove(roofParachute.group);
+    disposeObject3D(roofParachute.group);
+    roofParachute = null;
+  }
+
+  function prepareRoofParachute() {
+    removeRoofParachute();
+    const group = createRoofParachute();
+    player.add(group);
+    roofParachute = {
+      group,
+      deployedAt: 0,
+      landedAt: 0,
+    };
+  }
+
+  function updateRoofParachute(time) {
+    const parachute = roofParachute;
+    if (!parachute) return false;
+    if (
+      !parachute.deployedAt &&
+      jumpVelocity <= ROOF_PARACHUTE_DEPLOY_VELOCITY &&
+      player.position.y > currentFloorY + 0.5
+    ) {
+      parachute.deployedAt = time;
+      parachute.group.visible = true;
+    }
+    if (!parachute.deployedAt) return false;
+    if (parachute.landedAt) {
+      const collapse = clamp(
+        (time - parachute.landedAt) / ROOF_PARACHUTE_COLLAPSE_MS,
+        0,
+        1,
+      );
+      parachute.group.scale.set(
+        1 - collapse * 0.72,
+        Math.max(0.03, 1 - collapse),
+        1 - collapse * 0.72,
+      );
+      parachute.group.position.y = -collapse * 2.6;
+      if (collapse >= 1) removeRoofParachute();
+      return false;
+    }
+    const opening = clamp((time - parachute.deployedAt) / 360, 0, 1);
+    const eased = 1 - (1 - opening) ** 3;
+    parachute.group.scale.setScalar(Math.max(0.04, eased));
+    parachute.group.rotation.z =
+      Math.sin(time * 0.0032) * 0.055 * eased;
+    return true;
+  }
+
   function beginOfficeRoofJump() {
     if (
       officeSceneMode !== "lobby" ||
@@ -20504,6 +21120,7 @@ export function createWorldScene({
     }
     standUpFromOfficeChair();
     cancelDash();
+    removeRoofParachute();
     officeRoofJumping = true;
     jumpVelocity = 10.8;
     jumpQueued = false;
@@ -21551,6 +22168,22 @@ export function createWorldScene({
     return true;
   }
 
+  // Clicking the flames is a camera interaction: bring the fire and the
+  // nearest arc of seated members into a close, steady composition without
+  // moving the visitor out of their current place.
+  function focusCampfireCircle() {
+    if (officeSceneMode !== "town") return false;
+    selectedLandmark = "campfire";
+    currentSpace = "town-square";
+    setCameraMode("third-person", "campfire-focus");
+    cameraFocus = campfire.position.clone();
+    cameraFocus.y = 1.35;
+    cameraPitch = clamp(0.34, CAMERA_PITCH_MIN, CAMERA_PITCH_MAX);
+    setCameraZoom(Math.min(cameraZoom, 0.68));
+    cameraSnapPending = true;
+    return true;
+  }
+
   function walkPlayer(delta, time) {
     const previousHorizontalPosition =
       movementPreviousPosition.copy(player.position);
@@ -21603,8 +22236,14 @@ export function createWorldScene({
     }
     const airborne =
       player.position.y > currentFloorY + 0.02 || jumpVelocity !== 0;
+    const parachuting = updateRoofParachute(time);
     if (airborne || !officeCampus) {
-      jumpVelocity -= 14 * delta;
+      jumpVelocity = parachuting
+        ? Math.max(
+            ROOF_PARACHUTE_TERMINAL_VELOCITY,
+            jumpVelocity - ROOF_PARACHUTE_GRAVITY * delta,
+          )
+        : jumpVelocity - 14 * delta;
       player.position.y += jumpVelocity * delta;
     } else {
       player.position.y = currentFloorY;
@@ -21612,7 +22251,11 @@ export function createWorldScene({
     if (player.position.y <= currentFloorY) {
       player.position.y = currentFloorY;
       jumpVelocity = 0;
+      if (roofParachute?.deployedAt && !roofParachute.landedAt) {
+        roofParachute.landedAt = time;
+      }
     }
+    updateRoofParachute(time);
     let walking = false;
     if (bikeRide) {
       cameraFocus = null;
@@ -22513,8 +23156,9 @@ export function createWorldScene({
 
   function setActiveAvatarSelection(avatar) {
     activeAvatarSelection = avatar || null;
-    if (time >= nextAvatarHighlightAt) {
-      nextAvatarHighlightAt = time + 80;
+    const now = performance.now();
+    if (now >= nextAvatarHighlightAt) {
+      nextAvatarHighlightAt = now + 80;
       refreshAvatarSelectionHighlight();
     }
   }
@@ -22628,7 +23272,7 @@ export function createWorldScene({
       };
       avatar.userData.badgeIdentity = enriched;
       syncCountryShirt(THREE, avatar, enriched);
-      syncAvatarVerifiedPin(avatar, enriched);
+      syncAvatarVerifiedPin(THREE, avatar, enriched);
       if (String(profile?.avatarUrl || "")) {
         applyAvatarFaceImage(THREE, avatar, profile.avatarUrl);
       }
@@ -22647,6 +23291,7 @@ export function createWorldScene({
         officeLobbyPlayer.userData.badgeIdentity,
       );
       syncAvatarVerifiedPin(
+        THREE,
         officeLobbyPlayer,
         officeLobbyPlayer.userData.badgeIdentity,
       );
@@ -22671,6 +23316,7 @@ export function createWorldScene({
         officeParticipant.userData.badgeIdentity,
       );
       syncAvatarVerifiedPin(
+        THREE,
         officeParticipant,
         officeParticipant.userData.badgeIdentity,
       );
@@ -22679,6 +23325,43 @@ export function createWorldScene({
       }
       renderAvatarBadge(THREE, officeParticipant, true);
     }
+  }
+
+  function setAvatarRecentPublicMessage(sender, text) {
+    const name = String(sender || "").trim().toLowerCase();
+    const message = String(text || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120);
+    if (!name || !message) return false;
+    const avatars = new Set([
+      player,
+      officeLobbyPlayer,
+      ...remotePlayers.values(),
+      ...loungeMembers.values(),
+      ...officeParticipants.values(),
+    ]);
+    let updated = false;
+    avatars.forEach((avatar) => {
+      const badgeIdentity = avatar?.userData?.badgeIdentity;
+      if (
+        !badgeIdentity ||
+        String(badgeIdentity.name || "").trim().toLowerCase() !== name
+      ) {
+        return;
+      }
+      avatar.userData.badgeIdentity = {
+        ...badgeIdentity,
+        recentPublicMessage: message,
+      };
+      renderAvatarBadge(
+        THREE,
+        avatar,
+        avatar.userData.badgeRemote === true,
+      );
+      updated = true;
+    });
+    return updated;
   }
 
   /** Dress one avatar's face with a consented account avatar photo. */
@@ -23262,10 +23945,6 @@ export function createWorldScene({
       avatar.userData.badgeKey = badgeKey;
     });
     leaderboardGridState.members = leaderboardMembers;
-    activeLeaderboardSign.userData.face.material.map?.dispose?.();
-    activeLeaderboardSign.userData.face.material.map =
-      activeLeaderboardTexture(THREE, leaderboardMembers);
-    activeLeaderboardSign.userData.face.material.needsUpdate = true;
     repaintLeaderboardGrid();
     // Registered members sit in a circle around the campfire facing the
     // flames. Every account in the directory owns one numbered bench for the
@@ -24731,6 +25410,17 @@ export function createWorldScene({
     if (!districtPortal) return;
     const records = (Array.isArray(repositories) ? repositories : [])
       .filter((record) => record && (record.owner || record.name))
+      // A retired development placeholder can still be advertised by an old
+      // node snapshot. It has never hosted content, so do not turn the
+      // non-live vm1/forkmesh stub into a permanent "mirror needed" portal.
+      .filter(
+        (record) =>
+          !(
+            String(record.owner || "").toLowerCase() === "vm1" &&
+            String(record.name || "").toLowerCase() === "forkmesh" &&
+            record.liveHost !== true
+          ),
+      )
       .slice(0, REPOSITORY_CATALOG_MAX)
       .map((record) => {
         const owner = String(record.owner || "external").slice(0, 40);
@@ -27172,6 +27862,10 @@ export function createWorldScene({
       return firstPersonZoom;
     }
     cameraZoom = clamp(next, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX);
+    // Swap complete districts for their constant-cost aerial markers in the
+    // same input event as the zoom. Waiting for the periodic LOD sample left a
+    // few visibly expensive frames at the exact moment the camera pulled out.
+    updateSceneLevelOfDetail(true);
     return cameraZoom;
   }
 
@@ -27232,8 +27926,31 @@ export function createWorldScene({
     if (primaryPointerId !== null) return;
     pointerCoordinates(event);
     raycaster.setFromCamera(pointer, camera);
+    // Shift + primary-drag is the direct layout gesture. It is deliberately
+    // admin-only through layoutEditingEnabled; normal clicks and drags retain
+    // their existing object/camera behavior for every other visitor.
+    if (layoutEditingEnabled && event.shiftKey) {
+      const object = layoutObjectAtPointer();
+      const point = groundPointAt(event.clientX, event.clientY);
+      if (object && point) {
+        const localPoint =
+          object.parent && object.parent !== world
+            ? object.parent.worldToLocal(point.clone())
+            : point;
+        draggedLayoutObject = {
+          object,
+          offsetX: object.position.x - localPoint.x,
+          offsetZ: object.position.z - localPoint.z,
+          startX: object.position.x,
+          startZ: object.position.z,
+          moved: false,
+        };
+        setActiveLayoutObject(object);
+        onLayoutObjectSelect(layoutObjectSelection(object));
+      }
+    }
     const pressHits = raycaster.intersectObjects(interactive, false);
-    const logHit = pressHits.find(
+    const logHit = !draggedLayoutObject && pressHits.find(
       ({ object }) => object.visible && object.userData?.campfireLog,
     );
     if (logHit) {
@@ -27242,7 +27959,7 @@ export function createWorldScene({
       draggedCampfireLog.material.emissive?.set?.("#d88a43");
       draggedCampfireLog.material.emissiveIntensity = 0.5;
     }
-    if (!draggedCampfireLog) {
+    if (!draggedLayoutObject && !draggedCampfireLog) {
       const qaHit = pressHits.find(
         ({ object }) => object === qaBoardFace,
       );
@@ -27352,6 +28069,36 @@ export function createWorldScene({
       }
     }
     if (event.pointerId !== primaryPointerId) return;
+    if (draggedLayoutObject) {
+      const point = groundPointAt(event.clientX, event.clientY);
+      if (point) {
+        const { object, offsetX, offsetZ } = draggedLayoutObject;
+        const localPoint =
+          object.parent && object.parent !== world
+            ? object.parent.worldToLocal(point.clone())
+            : point;
+        moveWorldObject(
+          object,
+          localPoint.x + offsetX,
+          localPoint.z + offsetZ,
+        );
+        draggedLayoutObject.moved = true;
+        refreshActiveLayoutHighlight(object);
+        if (
+          ["fountain", "campfire", "swing-set"].includes(
+            String(object.userData.layoutId || "")
+              .replace(/^west-billboards:/, "")
+              .replace(/^south-members:/, "")
+              .replace(/^landmark-/, ""),
+          )
+        ) {
+          relayoutNetworkNodes();
+        }
+      }
+      pointerGestureMoved = true;
+      event.preventDefault();
+      return;
+    }
     if (draggedCampfireLog) {
       const point = groundPointAt(event.clientX, event.clientY);
       if (point) {
@@ -27497,6 +28244,21 @@ export function createWorldScene({
     primaryPointerId = null;
     renderer.domElement.dataset.dragging =
       touchPointers.size ? "true" : "false";
+    if (draggedLayoutObject) {
+      const drag = draggedLayoutObject;
+      draggedLayoutObject = null;
+      if (cancelled) {
+        moveWorldObject(drag.object, drag.startX, drag.startZ);
+        refreshActiveLayoutHighlight(drag.object);
+      } else if (!drag.moved) {
+        // Shift-click remains a selection gesture and does not emit a write.
+      } else {
+        commitLayoutObject(drag.object);
+      }
+      lastGestureDragged = true;
+      pointerGestureMoved = false;
+      return;
+    }
     if (draggedCampfireLog) {
       const droppedLog = draggedCampfireLog;
       draggedCampfireLog = null;
@@ -27621,13 +28383,20 @@ export function createWorldScene({
     if (selectedLayoutObject) {
       onLayoutObjectSelect(layoutObjectSelection(selectedLayoutObject));
     }
-    const hit = raycaster
+    const hits = raycaster
       .intersectObjects(interactive, false)
-      .find(
+      .filter(
         ({ object }) =>
           objectIsEffectivelyVisible(object) &&
           officeObjectMatchesCurrentFloor(object),
       );
+    const firstHit = hits[0];
+    const avatarHit = hits.find(
+      ({ object, distance }) =>
+        avatarSelections.has(object) &&
+        (!firstHit || distance <= firstHit.distance + 0.75),
+    );
+    const hit = avatarHit || firstHit;
     const avatarSelection = hit?.object
       ? avatarSelections.get(hit.object)
       : null;
@@ -27745,23 +28514,20 @@ export function createWorldScene({
       }
       return;
     }
-    if (hit?.object?.userData?.interactive === "referral-leaderboard") {
-      onReferralBoardSelect();
-      return;
-    }
-    if (hit?.object?.userData?.interactive === "site-referrer-leaderboard") {
-      const href = safeSiteReferrerURL(
-        leaderboardGridState.siteRows?.[0],
-      );
-      if (href) onSiteReferrerOpen(href);
-      return;
-    }
     if (hit?.object?.userData?.interactive === "start-node-download") {
       onStartNodeDownload();
       return;
     }
     if (hit?.object?.userData?.interactive === "office-link-kiosk") {
       onLobbyLinkKioskSelect();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "office-floor-warp") {
+      warpToOfficeFloor(hit.object.userData.officeFloorId);
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "office-feedback-kiosk") {
+      onLobbyFeedbackKioskSelect();
       return;
     }
     if (hit?.object?.userData?.interactive === "system-capacity-table") {
@@ -27862,6 +28628,7 @@ export function createWorldScene({
         carried.visible = false;
         fireLevel = Math.min(2.4, fireLevel + 0.28);
       }
+      focusCampfireCircle();
       return;
     }
     if (hit?.object?.userData?.campfireBench) {
@@ -28552,6 +29319,15 @@ export function createWorldScene({
     jumpVelocity = 0;
     cancelDash();
     primaryPointerId = null;
+    if (draggedLayoutObject) {
+      moveWorldObject(
+        draggedLayoutObject.object,
+        draggedLayoutObject.startX,
+        draggedLayoutObject.startZ,
+      );
+      refreshActiveLayoutHighlight(draggedLayoutObject.object);
+      draggedLayoutObject = null;
+    }
     pointerGestureMoved = false;
     pinchActive = false;
     pinchStartDistance = 0;
@@ -28631,6 +29407,10 @@ export function createWorldScene({
             ? 0
             : localNow.getHours() * 60 + localNow.getMinutes();
       if (minuteOfDay !== localDaylightMinute) updateWorldEnvironment();
+    }
+    if (time >= nextSceneLodAt) {
+      nextSceneLodAt = time + 180;
+      updateSceneLevelOfDetail();
     }
     refreshAvatarSelectionHighlight();
     const rawFrameMs = Math.max(0, time - lastFrame);
@@ -29338,6 +30118,7 @@ export function createWorldScene({
     travelToRegion,
     visitNeighborhoodHome,
     returnToCampfireBench,
+    focusCampfireCircle,
     rideSwing,
     dismountSwing,
     setSwingSpeed,
@@ -29353,6 +30134,7 @@ export function createWorldScene({
     setRemotePlayers,
     setLocalOrgTeam,
     setAvatarFediverseProfile,
+    setAvatarRecentPublicMessage,
     setAvatarFaceImage,
     updateArrivalStats,
     updateMemberLounge,

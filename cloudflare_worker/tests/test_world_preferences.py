@@ -21,7 +21,7 @@ def test_preferences_stay_in_the_encrypted_account_record_and_are_bounded():
     assert 'rec["world_preferences"] = stored' in ENTRY
     assert "await _save_account(env, account_bi, rec)" in ENTRY
     assert '"storage": "account-encrypted"' in ENTRY
-    assert "WORLD_PREFERENCES_MAX_VIEWS = 4" in ENTRY
+    assert "WORLD_PREFERENCES_MAX_VIEWS = 5" in ENTRY
     assert "data:image/webp;base64" in ENTRY
     assert "abs(x) > 620" in ENTRY
     assert "settingsUpdatedAt" in ENTRY

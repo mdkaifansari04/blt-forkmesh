@@ -111,7 +111,7 @@ def test_leaderboards_have_one_square_raised_grid_without_circle_boards():
     ):
         assert contract in scene
     physical = scene.split(
-        "// One 5×5 billboard preserves", 1
+        "// One square 5×5 wall preserves", 1
     )[1].split("let leaderboardGridKey", 1)[0]
     assert "makeActiveLeaderboardSign" not in physical
     assert "makeReferralLeaderboardSign" not in physical

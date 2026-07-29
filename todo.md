@@ -5,8 +5,17 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [x] Make avatar clicks reliably open the user HUD; remove the out-of-scope animation timestamp crash and prefer a nearby visible avatar hit over surrounding geometry.
+- [x] Give the Members Circle detailed dirt, one visible pile log per member, and a gently growing bounded campfire.
+- [x] Keep the combined aquarium control panel fixed to the lower-right of the tank.
+- [x] Show one sanitized recent public-channel message on each user's chest card without exposing private/direct chat.
+- [x] Show a green verified-email pin or a red unverified-email X on every signed-in avatar, with guests neutral.
+- [x] Add one labeled warp pad per Office floor to the left of the lobby welcome desk, respecting floor access.
+- [x] Align image preloads with texture-loader credentials, avoid cross-origin avatar failures with deterministic fallbacks, and treat unavailable Actions summaries as retryable state rather than HTTP 503 noise.
+- [x] Make every visible admin database row open a read-only detail page with the complete redacted record listed vertically.
+- [x] Show a red email-unverified X for every non-guest member and open the privileged admin user detail action in a new tab.
 - [x] Add a live Engineering-room debug control panel with bounded renderer, memory, loop, and interaction counts plus green/orange/red optimization thresholds.
-- [x] Put every leaderboard and statistic into one square 5×5 overview wall while restoring the individual Active, Referral, HTTP Referrer, and per-stat boards around the circular board district; keep every assembly above terrain.
+- [x] Put every leaderboard and statistic into one square 5×5 wall, remove the duplicate physical boards and center circle, and keep the complete assembly above terrain.
 - [x] Remove the ForkMesh open repo issues billboard and its invisible interaction surface; close the gap by moving the Human TODO board beside the build board.
 - [x] Move the Solana treasury QR to the front midpoint of the first node ring and add a Start a node button that opens the desktop download page in a new window.
 - [x] Replace the doubled south route with one concrete-brick path terminating at the fire-marked Members Circle sign.
@@ -35,7 +44,7 @@ the implementation and its focused verification are complete.
 - [x] Show each live repository agent task on its tiny terminal and open that exact engineering-only transcript with prompt and re-prompt controls when clicked.
 - [x] Join the World districts into one continuous city landscape with seamless concrete paths.
 - [x] Add a visible START HERE progress map from the users area to the centered mirror nodes.
-- [x] Make Space jump off the roof, check the user out on exit, and allow every chair or bench to seat a visitor.
+- [x] Make Space jump off the roof, check the user out on exit, slow the descent with a mini parachute that collapses after landing, and allow every chair or bench to seat a visitor.
 - [x] Add a connected driveable road, car, beach environment, water, horizon, and beach seating.
 - [x] Move the perimeter bike route outside activity areas while retaining two usable bicycles.
 - [x] Circle-align the public billboards, retain one leaderboard panel, and remove the obsolete center marker.

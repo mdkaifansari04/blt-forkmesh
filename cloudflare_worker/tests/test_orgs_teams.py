@@ -118,6 +118,12 @@ def test_schema_defines_org_tables_and_migration_exists():
     assert "idx_org_repos_node" in SCHEMA_TEXT
     assert "idx_org_members_member" in SCHEMA_TEXT
     assert (ROOT / "migrations" / "0038_orgs_teams.sql").exists()
+    assert "CREATE TABLE IF NOT EXISTS org_team_collaborators" in SCHEMA_TEXT
+    universal = (
+        ROOT / "migrations" / "0105_organization_tasks.sql"
+    ).read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS org_team_collaborators" in universal
+    assert "CREATE TABLE IF NOT EXISTS organization_tasks" in universal
 
 
 # --- Permission ladder -------------------------------------------------------

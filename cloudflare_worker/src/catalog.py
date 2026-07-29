@@ -301,6 +301,9 @@ def safe_catalog_record(data):
     machine_name = clean_string(data.get("machineName", ""), 63)
     if machine_name:
         record["machineName"] = machine_name
+    runtime_mode = clean_string(data.get("runtimeMode", ""), 12).lower()
+    if runtime_mode in {"desktop", "headless"}:
+        record["runtimeMode"] = runtime_mode
     # Subject / author / date of the advertised head commit, so the Mirror nodes
     # view and the World cabinets can name a node's latest commit instead of
     # showing a bare hash. Same optional-extension rule: absent when the node

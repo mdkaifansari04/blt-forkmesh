@@ -268,6 +268,14 @@ def test_avatar_chest_activity_country_shirt_and_input_state_are_privacy_safe():
         'avatar.userData.accountStatus === "Guest"',
     ):
         assert contract in SCENE
+    assert ".world-saved-views {" in CSS
+    assert ".world-saved-view img," in CSS
+    saved_view_render = APP[
+        APP.index("  renderSavedViews() {"):
+        APP.index("\n  captureSavedViewThumbnail()", APP.index("  renderSavedViews() {"))
+    ]
+    assert 'aria-label="Return to ${escapeHTML(view.label)}"' in saved_view_render
+    assert "<span>${escapeHTML(view.label)}</span>" not in saved_view_render
     assert "inputActive:" in APP
     assert "visitCount:" in APP
     assert "firstVisitAge:" in APP
@@ -902,7 +910,7 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
 def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
     for contract in (
         'const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1."',
-        "const SAVED_VIEWS_MAX = 4;",
+        "const SAVED_VIEWS_MAX = 5;",
         "function normalizedSavedWorldView(record)",
         "data-world-save-view",
         "data-world-saved-view-list",
@@ -923,14 +931,39 @@ def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
         "restoreSavedViewState,",
     ):
         assert contract in SCENE
-    assert ".world-saved-views {" in CSS
-    assert ".world-saved-view img," in CSS
-    saved_view_render = APP[
-        APP.index("  renderSavedViews() {"):
-        APP.index("\n  captureSavedViewThumbnail()", APP.index("  renderSavedViews() {"))
-    ]
-    assert 'aria-label="Return to ${escapeHTML(view.label)}"' in saved_view_render
-    assert "<span>${escapeHTML(view.label)}</span>" not in saved_view_render
+
+
+def test_world_navigation_uses_five_visible_quick_views_and_no_repo_shortcut():
+    template = APP.split("function worldTemplate(", 1)[1].split(
+        "\nfunction ", 1
+    )[0]
+    assert '(landmark) => landmark.id !== "repositories"' in template
+    assert 'data-expanded="true"' in template
+    assert "Quick views" in template
+    assert '<div class="world-saved-view-list" data-world-saved-view-list>' in template
+    assert '.slice(0, SAVED_VIEWS_MAX)' in APP.split("renderSavedViews()", 1)[1]
+
+
+def test_clicking_the_physical_fire_frames_the_people_around_it():
+    hit = SCENE.split("if (hit?.object?.userData?.campfirePit)", 1)[1].split(
+        "\n    if (", 1
+    )[0]
+    assert "focusCampfireCircle();" in hit
+    focus = SCENE.split("function focusCampfireCircle()", 1)[1].split(
+        "\n  }\n", 1
+    )[0]
+    assert 'setCameraMode("third-person", "campfire-focus")' in focus
+    assert "cameraFocus = campfire.position.clone();" in focus
+    assert "setCameraZoom(Math.min(cameraZoom, 0.68));" in focus
+
+
+def test_retired_vm1_forkmesh_stub_is_not_rendered_as_a_portal():
+    catalog = SCENE.split("function updateRepositoryCatalog(", 1)[1].split(
+        "const activeKey", 1
+    )[0]
+    assert 'String(record.owner || "").toLowerCase() === "vm1"' in catalog
+    assert 'String(record.name || "").toLowerCase() === "forkmesh"' in catalog
+    assert "record.liveHost !== true" in catalog
 
 
 def test_toolbar_sound_button_is_the_master_switch_for_all_local_audio():
