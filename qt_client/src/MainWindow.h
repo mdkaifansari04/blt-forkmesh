@@ -91,8 +91,10 @@ class PullBadgeWidget;
 // Defined in MainWindowInternal.h, which lives in namespace forkmesh::ui.
 namespace forkmesh::ui {
 class ActivityRailButton;
+class AgentDotMatrix;
 }
 using forkmesh::ui::ActivityRailButton;
+using forkmesh::ui::AgentDotMatrix;
 class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
@@ -136,6 +138,7 @@ class QProgressBar;
 class QPropertyAnimation;
 class QPushButton;
 class QScrollArea;
+class QSpinBox;
 class QStackedWidget;
 class QSystemTrayIcon;
 class QTableWidget;
@@ -1078,6 +1081,20 @@ private:
     void setDataStatus(const QString &text, bool error = false);
     void stopLiveServicesForDataOp();
     void relaunchForkMesh();
+    // Settings -> Data tab: hourly local snapshots of the live database.
+    // startAutoBackups() arms the hourly timer (and catches up when the app was
+    // shut for longer than an hour), takeBackupNow() runs one `tar` in the
+    // background, and restoreConfigArchive() unpacks any snapshot over the live
+    // data through the same swap-and-relaunch path as a manual import.
+    void startAutoBackups();
+    void takeBackupNow(bool automatic);
+    void refreshBackupTable();
+    void pruneOldBackups();
+    void restoreConfigArchive(const QString &archivePath);
+    void setBackupStatus(const QString &text, bool error = false);
+    QString backupRoot() const;
+    bool autoBackupEnabled() const;
+    int backupKeepCount() const;
     QWidget *buildNotificationsSection();
     // Network repository catalog: all repos known by the active relay, with local
     // fork/mirror actions and the relay's mirror-node list per repo.
@@ -1966,6 +1983,10 @@ private:
     // Refreshes the count badge on the top-bar Agents nav button from
     // m_agentSessions.size().
     void updateAgentsNavBadge();
+    // Repaints the matrix of per-agent squares beside that button: one square
+    // per session, tinted like its status icon, with the live output meter of
+    // each running session driving its night-rider pulse.
+    void refreshAgentDotMatrix();
     void processAgentQueue();
     // Re-drain the queue after a slot frees, coalesced onto the event loop and
     // skipped unless something is queued AND there is room to start it.
@@ -3745,7 +3766,13 @@ private:
     QTimer *m_webSolanaTimer = nullptr;
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
     QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
-    QPushButton *m_agentsNavButton = nullptr; // top-bar shortcut to the Agents tab, between Repo and Chat
+    // "Agents (N)" and its live fleet matrix, both on the window-chrome line
+    // immediately left of the Back/Forward buttons.
+    QPushButton *m_agentsNavButton = nullptr;
+    AgentDotMatrix *m_agentDotMatrix = nullptr;
+    // Last status tally rendered into the matrix's tooltip, so the scanner tick
+    // can skip rebuilding an unchanged string ~20x a second.
+    QString m_agentDotTooltipKey;
     // Small connection status dot painted over the top-right avatar (green
     // online / amber connecting / grey offline), replacing the old text pill.
     QLabel *m_connectionDot = nullptr;
@@ -4168,6 +4195,14 @@ private:
     // Settings -> Data tab: storage breakdown table and backup/cleanup status.
     QTableWidget *m_dataDirTable = nullptr;
     QLabel *m_dataStatus = nullptr;
+    // Settings -> Data tab: the hourly backup panel.
+    QTableWidget *m_backupTable = nullptr;
+    QCheckBox *m_backupEnabledCheck = nullptr;
+    QSpinBox *m_backupKeepSpin = nullptr;
+    QLabel *m_backupStatus = nullptr;
+    QPushButton *m_backupNowButton = nullptr;
+    QTimer *m_backupTimer = nullptr;     // hourly tick
+    QProcess *m_backupProcess = nullptr; // the in-flight `tar` (one at a time)
     // Import-a-repo (GitHub/GitLab) controls.
     QLineEdit *m_importUrlEdit = nullptr;
     QPushButton *m_importButton = nullptr;

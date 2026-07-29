@@ -4227,6 +4227,60 @@ void MainWindow::updateAgentsNavBadge()
         m_agentsNavButton->setText(QStringLiteral("Agents"));
         m_agentsNavButton->setToolTip(QStringLiteral("Agents"));
     }
+    refreshAgentDotMatrix();
+}
+
+// The fleet matrix beside that button: one tiny square per session, tinted to
+// the same colour as its status icon in the agents list, with each running
+// session's live-output meter feeding the night-rider sweep so the row shows
+// real activity rather than a decorative animation. Cheap enough to call from
+// the scanner tick — the vector is small and the widget repaints itself.
+void MainWindow::refreshAgentDotMatrix()
+{
+    if (!m_agentDotMatrix)
+        return;
+    QVector<AgentDotMatrix::Dot> dots;
+    dots.reserve(m_agentSessions.size());
+    QHash<QString, int> tally; // status label -> count, for the tooltip
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        AgentDotMatrix::Dot dot;
+        dot.sessionId = session.id;
+        dot.color = agentStatusIconColor(session);
+        dot.running = !session.merged && session.status == AgentStatus::Running;
+        if (dot.running)
+            dot.intensity = m_scannerStates.value(session.id).intensity;
+        dots.append(dot);
+        tally[session.merged ? QStringLiteral("merged")
+                             : agentStatusText(session.status)]++;
+    }
+    m_agentDotMatrix->setDots(dots);
+    m_agentDotMatrix->setVisible(!dots.isEmpty());
+
+    if (dots.isEmpty()) {
+        m_agentDotTooltipKey.clear();
+        return;
+    }
+    // The scanner tick lands here ~20x a second to keep the intensities live, so
+    // only rebuild the tooltip when the fleet's composition actually changed —
+    // formatting and setting the same string 20x a second is pure waste.
+    QStringList parts;
+    for (auto it = tally.constBegin(); it != tally.constEnd(); ++it)
+        parts << QStringLiteral("%1 %2").arg(it.value()).arg(it.key());
+    std::sort(parts.begin(), parts.end());
+    const QString key = parts.join(QStringLiteral(", "));
+    if (key == m_agentDotTooltipKey)
+        return;
+    m_agentDotTooltipKey = key;
+    QString tip = QStringLiteral("%1 agent session%2 \xE2\x80\x94 %3")
+                      .arg(dots.size())
+                      .arg(dots.size() == 1 ? QString() : QStringLiteral("s"),
+                           key);
+    // The grid is bounded, so say so rather than silently dropping the tail.
+    const int shown = m_agentDotMatrix->shownCount();
+    if (shown < dots.size())
+        tip += QStringLiteral("\n(showing the first %1)").arg(shown);
+    tip += QStringLiteral("\nClick a square to open that session.");
+    m_agentDotMatrix->setToolTip(tip);
 }
 
 void MainWindow::refreshAgentTable()
@@ -6437,6 +6491,10 @@ void MainWindow::switchToAgentsTab(int sessionId)
 // the same data as the Agents table.
 void MainWindow::refreshAgentStatusRow()
 {
+    // The top-bar matrix shows the same per-session state, so keep it in step
+    // with every path that touches this strip — including bare status flips,
+    // which never reach updateAgentsNavBadge().
+    refreshAgentDotMatrix();
     if (!m_agentStatusIconsLayout || !m_agentStatusRow)
         return;
     QLayoutItem *item;
@@ -9106,6 +9164,9 @@ void MainWindow::onScannerTick()
             it->phase -= 1.0;
         anyActive = true;
     }
+    // Push the decayed meters into the top-bar matrix so its squares pulse off
+    // the same live-output signal as the Activity column's scanner lights.
+    refreshAgentDotMatrix();
     // Repaint the visible Activity cells (cheap for these per-repo tables). The
     // final, just-went-idle tick still repaints, so lights settle to rest.
     if (m_agentTable) {
