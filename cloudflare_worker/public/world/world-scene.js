@@ -3102,7 +3102,8 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:district-ground-paths", task: "Clean repository + leaderboard districts", detail: "Removed the ground-level VIEW placards, centered repository imports, added efficient textured district circles, and rebuilt every town connector from one solid concrete slab specification with flush endpoints.", estimate: "implemented · focused QA", done: true },
   { key: "task:lobby-task-bounties", task: "Lobby task bounty bidding desk", detail: "Organization members can propose scoped work in the lobby, name an exact SOL compensation request, and publish the encrypted record into the shared task catalog as a clearly labeled bid. The request is non-custodial and records no transfer or reserved funds.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-orb-hud", task: "Compact debug + unified activity orbs", detail: "Replaced the bottom bars with logo-sized status circles. DEBUG summarizes every performance grade as green, yellow, or red dots and expands on hover or focus. CHAT shows the latest speaker and unread count, then opens a translucent channel composer with image attachment, separate chat/task actions, human-or-agent routing, team categorization, and a ten-second unified activity stream.", estimate: "deployed · ready for QA", done: true },
-  { key: "task:avatar-hud-launcher", task: "Restore circular avatar HUD launcher", detail: "The account avatar is again a round launcher: hover or focus fans fixed-size tool boxes out without resizing the HUD, notification/error/task counts stay visible on its edge, touch uses a first tap to reveal controls, and player movement or an outside click closes the launcher.", estimate: "ready to deploy · focused QA", done: true },
+  { key: "task:avatar-hud-launcher", task: "Restore circular avatar HUD launcher", detail: "The account avatar is again a round launcher: hover or focus fans fixed-size tool boxes out without resizing the HUD, notification/error/task counts form a compact actionable row beside it and return to their matching icons when expanded, touch uses a first tap to reveal controls, and player movement or an outside click closes the launcher.", estimate: "ready to deploy · focused QA", done: true },
+  { key: "task:fixed-square-hud-shortcuts", task: "Fixed square World HUD shortcuts", detail: "The avatar is clipped into a true circle. Its right rail is one non-expanding column with only Office, Campfire, Share view, Remember, and square saved thumbnails; reward-pool navigation stays in the World. Dashboard uses a globe, Tasks uses a list, Capture uses a crop frame, and Wave now sits beside chat.", estimate: "ready to deploy · focused QA", done: true },
   { key: "task:avatar-selection-runtime", task: "Reliable user HUD selection", detail: "Avatar clicks use a scoped frame timestamp, prefer the visible avatar hit over nearby geometry, and open the privacy-filtered member side panel without throwing.", estimate: "implemented · focused QA", done: true },
   { key: "task:member-circle-fire", task: "Dirt Members Circle + growing fire", detail: "The complete member seating circle sits on detailed dirt; every member adds one visible log and slightly increases the bounded campfire scale.", estimate: "implemented · focused QA", done: true },
   { key: "task:aquarium-fixed-controls", task: "Tank-fixed reef controls", detail: "Feed, tap, backdrop, and light controls stay anchored to the aquarium's lower-right control point instead of floating with the player.", estimate: "implemented · focused QA", done: true },
@@ -19740,6 +19741,20 @@ export function createWorldScene({
     return aerialLandmarkMarkers;
   }
 
+  function syncOfficeFloorVisibility() {
+    // Story changes are independent of camera zoom. In particular, a lobby
+    // doorway warp and an elevator arrival can both happen while the camera
+    // remains on the same near/far LOD side. Keep this explicit so a skipped
+    // LOD sample can never leave the newly selected floor hidden behind the
+    // last floor's visibility state.
+    officeInterior.visible = true;
+    for (const [floorId, floorGroup] of officeFloorGroups) {
+      if (floorId === "lobby") continue;
+      floorGroup.visible =
+        officeSceneMode === "town" || floorId === officeCurrentFloorId;
+    }
+  }
+
   function updateSceneLevelOfDetail(force = false) {
     const far =
       officeSceneMode === "town" &&
@@ -19754,12 +19769,7 @@ export function createWorldScene({
     // floor slabs, lighting, and furniture visible from the outdoor World at
     // every camera distance. Once a visitor enters, isolate the active floor
     // to avoid drawing ten floors through the one they are using.
-    officeInterior.visible = true;
-    for (const [floorId, floorGroup] of officeFloorGroups) {
-      if (floorId === "lobby") continue;
-      floorGroup.visible =
-        officeSceneMode === "town" || floorId === officeCurrentFloorId;
-    }
+    syncOfficeFloorVisibility();
 
     // A purely visual LOD helper must never be able to interrupt movement.
     // Fail it closed once if a future marker asset cannot be constructed; the
@@ -20217,6 +20227,9 @@ export function createWorldScene({
     standUpFromOfficeChair();
     cancelDash();
     officeCurrentFloorId = floor.id;
+    // A direct doorway warp does not necessarily cross a camera LOD boundary.
+    // Render its selected floor before the next movement frame and camera snap.
+    syncOfficeFloorVisibility();
     currentSpace = `office-${floor.id}`;
     currentFloorY = officeFloorY(floor.id) + 0.38;
     const destination = new THREE.Vector3(
@@ -22207,6 +22220,9 @@ export function createWorldScene({
     currentFloorY = player.position.y;
     if (progress < 1) return true;
     officeCurrentFloorId = ride.floorId;
+    // Elevator completion also changes the active story without necessarily
+    // changing the camera LOD class.
+    syncOfficeFloorVisibility();
     currentFloorY = officeFloorY(ride.floorId) + 0.38;
     player.position.y = currentFloorY;
     officeElevatorCar.position.y = officeFloorY(ride.floorId);

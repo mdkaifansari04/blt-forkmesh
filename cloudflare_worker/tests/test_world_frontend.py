@@ -936,13 +936,15 @@ def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
         assert contract in SCENE
 
 
-def test_world_navigation_uses_five_visible_quick_views_and_no_repo_shortcut():
+def test_world_navigation_uses_fixed_spatial_shortcuts_and_five_saved_views():
     template = APP.split("function worldTemplate(", 1)[1].split(
         "\nfunction ", 1
     )[0]
-    assert '(landmark) => landmark.id !== "repositories"' in template
+    assert 'new Set(["office", "campfire"])' in template
     assert 'data-expanded="true"' in template
-    assert "Quick views" in template
+    assert "Remember" in template
+    assert "Quick views" not in template
+    assert "Reward pool" not in template
     assert '<div class="world-saved-view-list" data-world-saved-view-list>' in template
     assert '.slice(0, SAVED_VIEWS_MAX)' in APP.split("renderSavedViews()", 1)[1]
 
@@ -1425,13 +1427,13 @@ def test_world_task_button_and_inactive_avatar_visibility_contracts():
 def test_render_stalls_include_bounded_likely_component_attribution():
     assert (
         "Render stall detected; we think it was "
-        "${stallAttribution.component}" in SCENE
+        "${component}" in SCENE
     )
-    assert "likelyCause: stallAttribution" in SCENE
-    assert 'component: "camera controls"' in SCENE
-    assert 'component: "Three.js renderer workload"' in SCENE
-    assert 'component: "JavaScript memory management"' in SCENE
-    assert 'codeArea: "renderer.render(scene, camera)"' in SCENE
+    assert "likelyCause: { component, codeArea }," in SCENE
+    assert 'component = "camera controls";' in SCENE
+    assert 'component = "Three.js renderer workload";' in SCENE
+    assert 'component = `office ${officeSceneMode} scene`;' in SCENE
+    assert 'codeArea = "renderer.render(scene, camera)";' in SCENE
 
 
 def test_world_first_person_zoom_out_falls_back_to_third_person():
@@ -2443,13 +2445,19 @@ def test_world_lighting_supports_local_auto_day_night_and_brightness_controls():
         assert overlay in SCENE
 
 
-def test_world_right_rail_is_compact_by_default_and_expands_as_one_control():
+def test_world_right_rail_reveals_as_one_fixed_square_shortcut_column():
     assert "data-world-right-rail" in APP
     assert 'data-expanded="false"' in APP
     assert "setWorldRightRailExpanded(expanded)" in APP
     assert "rail.dataset.expanded = String(active)" in APP
+    assert "data-world-map-toggle" not in APP
+    assert 'map.classList.toggle("is-expanded"' not in APP
     assert ".world-right-rail[data-expanded=\"false\"]" in CSS
-    assert "width: 44px;" in CSS
+    fixed_rail = CSS.rsplit("/* Fixed launcher geometry.", 1)[1]
+    assert "width: 48px;" in fixed_rail
+    assert ".world-map-button," in fixed_rail
+    assert ".world-share-view-button," in fixed_rail
+    assert ".world-remember-view" in fixed_rail
     for token in (
         "--primer-canvas-default:",
         "--primer-canvas-subtle:",
@@ -2462,15 +2470,10 @@ def test_world_right_rail_is_compact_by_default_and_expands_as_one_control():
         "--primer-accent-subtle:",
     ):
         assert token in CSS
-    right_rail = CSS[
-        CSS.index(".world-right-rail {"):
-        CSS.index(".world-map-list {")
-    ]
-    assert "var(--primer-canvas-default)" in right_rail
-    assert "var(--primer-border-default)" in right_rail
-    assert "var(--primer-control-bg)" in right_rail
-    assert "var(--primer-control-hover)" in right_rail
-    assert "border-radius: 6px;" in right_rail
+    assert "var(--primer-border-default)" in fixed_rail
+    assert "var(--primer-control-bg)" in fixed_rail
+    assert "var(--primer-control-hover)" in fixed_rail
+    assert "border-radius: 6px;" in fixed_rail
     assert "aside:not(.world-right-rail)" in CSS
 
 
