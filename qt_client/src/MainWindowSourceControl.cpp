@@ -12,6 +12,7 @@
 
 #include <QAbstractTextDocumentLayout>
 #include <QCheckBox>
+#include <QFileDialog>
 #include <QLayout>
 #include <QFutureWatcher>
 #include <QGraphicsOpacityEffect>
@@ -3212,9 +3213,11 @@ QWidget *MainWindow::buildSizeMapTab()
     auto *heading = new QLabel("Size map");
     heading->setObjectName("channelTitle");
     auto *subtitle = new QLabel(
-        "How the working tree's bytes spread across directories and files "
+        "How a folder's bytes spread across directories and files "
         "(.git excluded). Click a directory to zoom in, the centre to zoom "
-        "back out; slices with no further subdivision are individual files.");
+        "back out; slices with no further subdivision are individual files. "
+        "It starts on this repository's working copy — pick any other folder "
+        "on disk to size that instead.");
     subtitle->setObjectName("statusLine");
     subtitle->setWordWrap(true);
 
@@ -3240,6 +3243,40 @@ QWidget *MainWindow::buildSizeMapTab()
     headerRow->addWidget(refresh, 0, Qt::AlignTop);
     layout->addLayout(headerRow);
 
+    // Folder switcher: the map defaults to the repository's working copy but
+    // can size any directory on disk.
+    auto *choose = new QPushButton("Choose folder…");
+    choose->setObjectName("ghostButton");
+    choose->setProperty("buttonSize", "sm");
+    choose->setCursor(Qt::PointingHandCursor);
+    setOcticon(choose, "file-directory", 16);
+    choose->setToolTip("Scan any folder on this machine instead of the "
+                       "repository's working copy.");
+    connect(choose, &QPushButton::clicked, this,
+            [this] { chooseSizeMapFolder(); });
+
+    auto *resetRoot = new QPushButton("Back to repository");
+    resetRoot->setObjectName("ghostButton");
+    resetRoot->setProperty("buttonSize", "sm");
+    resetRoot->setCursor(Qt::PointingHandCursor);
+    resetRoot->setToolTip("Size this repository's working copy again.");
+    resetRoot->setVisible(false);
+    m_sizeMapResetRoot = resetRoot;
+    connect(resetRoot, &QPushButton::clicked, this,
+            [this] { setSizeMapRootOverride(QString()); });
+
+    m_sizeMapRootLabel = new QLabel;
+    m_sizeMapRootLabel->setObjectName("statusLine");
+    m_sizeMapRootLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    auto *folderRow = new QHBoxLayout;
+    folderRow->setContentsMargins(0, 0, 0, 0);
+    folderRow->setSpacing(8);
+    folderRow->addWidget(choose);
+    folderRow->addWidget(resetRoot);
+    folderRow->addWidget(m_sizeMapRootLabel, 1);
+    layout->addLayout(folderRow);
+
     auto *hideIgnored = new QCheckBox("Hide .gitignored files");
     hideIgnored->setCursor(Qt::PointingHandCursor);
     hideIgnored->setToolTip(
@@ -3261,26 +3298,70 @@ QWidget *MainWindow::buildSizeMapTab()
     return page;
 }
 
+QString MainWindow::sizeMapRoot() const
+{
+    if (!m_sizeMapRootOverride.isEmpty())
+        return m_sizeMapRootOverride;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return QString();
+    return writableRecordFor(m_repositories.at(m_repoDetailIndex)).localPath;
+}
+
+void MainWindow::chooseSizeMapFolder()
+{
+    // Start the browser where the map currently sits, so picking a sibling
+    // folder is one step away.
+    QString start = sizeMapRoot();
+    if (start.isEmpty() || !QDir(start).exists())
+        start = QDir::homePath();
+    const QString chosen = QFileDialog::getExistingDirectory(
+        this, "Choose a folder to size", start);
+    if (chosen.isEmpty())
+        return;
+    setSizeMapRootOverride(chosen);
+}
+
+void MainWindow::setSizeMapRootOverride(const QString &path)
+{
+    if (m_sizeMapRootOverride == path)
+        return;
+    m_sizeMapRootOverride = path;
+    refreshSizeMapTab(true);
+}
+
 void MainWindow::refreshSizeMapTab(bool force)
 {
     auto *chart = static_cast<RepoSunburstChart *>(m_sizeMapChart);
     if (!chart || !m_sizeMapStatus)
         return;
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+    const bool overridden = !m_sizeMapRootOverride.isEmpty();
+    if (!overridden &&
+        (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()))
         return;
-    const QString path =
-        writableRecordFor(m_repositories.at(m_repoDetailIndex)).localPath;
+    const QString path = sizeMapRoot();
+    if (m_sizeMapResetRoot)
+        m_sizeMapResetRoot->setVisible(overridden);
+    if (m_sizeMapRootLabel) {
+        m_sizeMapRootLabel->setText(
+            path.isEmpty()
+                ? QStringLiteral("No folder selected.")
+                : QStringLiteral("%1%2").arg(
+                      QDir::toNativeSeparators(path),
+                      overridden ? QString()
+                                 : QStringLiteral("  ·  working copy")));
+    }
     if (path.isEmpty() || !QDir(path).exists()) {
         chart->clear();
         m_sizeMapScannedPath.clear();
         m_sizeMapStatus->setText(
-            "No local working copy to scan for this repository.");
+            overridden ? "That folder no longer exists — choose another one."
+                       : "No local working copy to scan for this repository.");
         return;
     }
     if (!force && m_sizeMapScannedPath == path)
-        return; // the chart already shows this working copy
+        return; // the chart already shows this folder
     if (m_sizeMapScanning)
-        return;
+        return; // its finish handler notices the root changed and rescans
     // Resolve the .gitignore prune set on the GUI thread (git via QProcess is
     // awkward from a QtConcurrent worker), then hand it to the scan. Using
     // --directory keeps wholly-ignored trees to a single entry instead of every
@@ -3317,12 +3398,10 @@ void MainWindow::refreshSizeMapTab(bool force)
                 if (epoch != m_sizeMapScanEpoch)
                     return; // a newer scan superseded this one
                 SunburstNode root = watcher->result();
-                // The user may have opened another repo while the scan ran —
-                // a stale tree would mislabel the chart, so rescan instead.
-                if (m_repoDetailIndex >= 0 &&
-                    m_repoDetailIndex < m_repositories.size() &&
-                    writableRecordFor(m_repositories.at(m_repoDetailIndex))
-                            .localPath != path) {
+                // The user may have opened another repo (or picked another
+                // folder) while the scan ran — a stale tree would mislabel the
+                // chart, so rescan instead.
+                if (sizeMapRoot() != path) {
                     refreshSizeMapTab(false);
                     return;
                 }
