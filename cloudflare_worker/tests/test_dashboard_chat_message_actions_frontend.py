@@ -28,9 +28,9 @@ def _region(start, end):
 
 def test_reactions_are_on_every_message_but_edits_stay_author_only():
     append = _region("function appendFullMessage(", "function messageActionButton(")
-    assert "row.append(buildMessageActions(record));" in append
+    assert "content?.append(buildMessageActions(record));" in append
     actions = _region("function buildMessageActions(", "// An \"(edited)\" marker")
-    assert 'messageActionButton("React"' in actions
+    assert 'messageActionButton("☺"' in actions
     assert "if (record.self && record.senderId === selfId)" in actions
     assert 'messageActionButton("Edit"' in actions
     assert 'messageActionButton("Delete"' in actions

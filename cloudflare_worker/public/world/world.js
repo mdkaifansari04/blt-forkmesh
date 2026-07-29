@@ -135,6 +135,12 @@ const ADMIN_ERROR_POLL_MS = 15_000;
 const WORLD_LAYOUT_ECHO_TTL_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
+// Everything a fresh page load pulls in — the relayed chat backlog, the first
+// notification/event read, a mirror doorbell that lands while the scene is
+// still booting — is old news to the visitor. The activity stream stays quiet
+// for the same join grace the chat bubbles use so it only narrates what
+// happens after the World is up.
+const ACTIVITY_JOIN_GRACE_MS = CHAT_BUBBLE_JOIN_GRACE_MS;
 // The cardinal campus now reaches the east/west repository and bulletin
 // islands plus the southern member garden. Keep restored/shared positions
 // inside the scene's 340-unit boundary instead of rejecting valid island
@@ -3569,11 +3575,10 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
     /^[A-Za-z0-9+/=]+$/.test(String(accountSession.avatarPng))
       ? String(accountSession.avatarPng)
       : "";
-  // Repository portals remain present and interactive in the scene. The
-  // compact map is for travel shortcuts, and Code already owns repository
-  // navigation, so do not duplicate a repository view in this rail.
-  const mapItems = LANDMARKS.filter(
-    (landmark) => landmark.id !== "repositories",
+  // The compact rail only needs the two spatial shortcuts people use while
+  // walking. Repository and reward-pool navigation remain in the scene.
+  const mapItems = LANDMARKS.filter((landmark) =>
+    new Set(["office", "campfire"]).has(landmark.id),
   ).map(
     (landmark) => `
       <li>
@@ -3583,17 +3588,10 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           data-world-landmark="${escapeHTML(landmark.id)}"
           style="--map-color:${escapeHTML(landmark.color)}"
           aria-current="${landmark.id === LANDMARKS[0]?.id ? "true" : "false"}"
+          title="Go to ${escapeHTML(landmark.shortLabel)}"
         >
           <span class="world-map-icon" aria-hidden="true">${escapeHTML(landmark.icon)}</span>
-          <span class="world-map-label-copy">
-            <span>${escapeHTML(landmark.shortLabel)}</span>
-            ${constructionMarkerHTML(
-              landmark.id,
-              landmarkCapabilities?.[landmark.id],
-              "world-construction-mark-map",
-            )}
-          </span>
-          <span class="world-map-distance" data-world-distance="${escapeHTML(landmark.id)}">—</span>
+          <span class="world-map-label-copy">${escapeHTML(landmark.shortLabel)}</span>
         </button>
       </li>`,
   ).join("");
@@ -3760,15 +3758,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span aria-hidden="true">⌖</span><span class="world-top-link-label" data-world-camera-label>First person</span>
             </button>
             <button
-              class="world-top-link world-wave-button"
-              type="button"
-              data-world-wave
-              title="Wave to everyone in the world"
-              aria-label="Wave your avatar's arm"
-            >
-              <span aria-hidden="true">👋</span><span class="world-top-link-label">Wave</span>
-            </button>
-            <button
               class="world-top-link"
               type="button"
               data-world-sound-toggle
@@ -3785,27 +3774,35 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               aria-label="Capture and annotate a screenshot"
               title="Capture and annotate a screenshot"
             >
-              <span aria-hidden="true">📷</span><span class="world-top-link-label">Capture</span>
+              <span class="world-hud-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M8 3H4a1 1 0 0 0-1 1v4M16 3h4a1 1 0 0 1 1 1v4M8 21H4a1 1 0 0 1-1-1v-4M16 21h4a1 1 0 0 0 1-1v-4M8 8h8v8H8z"></path>
+                </svg>
+              </span><span class="world-top-link-label">Capture</span>
             </button>
             <button
               class="world-top-link world-notification-button"
               type="button"
               data-world-notifications-open
+              data-world-tooltip="Notifications"
               title="Show global and personal notifications"
               aria-label="Open World notifications"
             >
               <span aria-hidden="true">🔔</span><span class="world-top-link-label">Alerts</span>
+              <span class="world-tool-count" data-world-notification-count hidden>0</span>
             </button>
             <button
               class="world-top-link world-admin-errors-button"
               type="button"
               data-world-admin-errors
+              data-world-tooltip="Errors"
               title="Open newly logged errors"
               aria-label="Open newly logged errors"
               hidden
             >
               <span aria-hidden="true">!</span>
               <span class="world-top-link-label">Errors</span>
+              <span class="world-tool-count" data-world-admin-error-count hidden>0</span>
             </button>
             <a
               class="world-top-link world-dashboard-link"
@@ -3815,18 +3812,29 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               aria-label="Open Dashboard in a new tab"
               title="Open Dashboard in a new tab"
             >
-              <span aria-hidden="true">▦</span>
+              <span class="world-hud-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <circle cx="12" cy="12" r="9"></circle>
+                  <path d="M3 12h18M12 3c2.4 2.5 3.6 5.5 3.6 9S14.4 18.5 12 21M12 3C9.6 5.5 8.4 8.5 8.4 12s1.2 6.5 3.6 9"></path>
+                </svg>
+              </span>
               <span class="world-top-link-label">Dashboard</span>
             </a>
             <button
               class="world-top-link world-tasks-button"
               type="button"
               data-world-tasks-open
+              data-world-tooltip="Tasks"
               aria-label="Open organization tasks"
               title="Open organization tasks"
             >
-              <span aria-hidden="true">✓</span>
+              <span class="world-hud-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M9 6h11M9 12h11M9 18h11M4 6l1.3 1.3L7.6 5M4 12l1.3 1.3L7.6 11M4 18l1.3 1.3L7.6 17"></path>
+                </svg>
+              </span>
               <span class="world-top-link-label">Tasks</span>
+              <span class="world-tool-count" data-world-task-count hidden>0</span>
             </button>
             <button
               class="world-shirt-badge"
@@ -3854,14 +3862,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 aria-hidden="true"
                 ${accountAvatarPng ? "hidden" : ""}
               ></span>
-              <span class="world-shirt-account" data-world-shirt-account title="${escapeHTML(
-                identity.accountStatus,
-              )}">${escapeHTML(
-                accountStatusIcon(identity),
-              )}</span>
-              <span class="world-shirt-count world-shirt-count--alerts" data-world-notification-count hidden>0</span>
-              <span class="world-shirt-count world-shirt-count--errors" data-world-admin-error-count hidden>0</span>
-              <span class="world-shirt-count world-shirt-count--tasks" data-world-task-count hidden>0</span>
             </button>
           </nav>
         </header>
@@ -3873,17 +3873,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           aria-label="World navigation and activity"
         >
           <section class="world-map" data-world-map>
-            <div class="world-panel-heading">
-              <h2>World map</h2>
-              <span data-world-location-code>TS-01</span>
-              <button
-                class="world-map-toggle"
-                type="button"
-                data-world-map-toggle
-                aria-expanded="false"
-                aria-label="Expand World controls"
-              >☰</button>
-            </div>
             <ul class="world-map-list">${mapItems}</ul>
           </section>
           <button
@@ -3893,18 +3882,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             title="Share a link to this exact location and camera view"
           >
             <span aria-hidden="true">🔗</span>
-            <span>Share exact view</span>
+            <span>Share view</span>
           </button>
           <section class="world-saved-views" data-world-saved-views data-expanded="true" aria-label="Five most recent saved World views">
-            <div class="world-saved-views-heading">
-              <span class="world-saved-views-title">Quick views</span>
-              <button
-                type="button"
-                data-world-save-view
-                aria-label="Save this location and perspective"
-                title="Save this view"
-              ><span aria-hidden="true">＋</span><span class="world-visually-hidden">Save current map view</span></button>
-            </div>
+            <button
+              class="world-remember-view"
+              type="button"
+              data-world-save-view
+              aria-label="Remember this location and perspective"
+              title="Remember this view"
+            ><span aria-hidden="true">＋</span><span>Remember</span></button>
             <div class="world-saved-view-list" data-world-saved-view-list></div>
           </section>
           <section
@@ -4004,17 +3991,75 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <span data-world-chat-terminal-last>Connecting to global #general…</span>
             <span class="world-diagnostics-toggle" aria-hidden="true">⌃</span>
           </summary>
-          <div class="world-chat-terminal-body">
-            <iframe
-              class="world-chat-terminal-frame"
-              data-world-chat-terminal-frame
-              title="ForkMesh World chat terminal"
-              referrerpolicy="same-origin"
-            ></iframe>
+          <div
+            class="world-chat-terminal-body world-native-chat"
+            data-world-native-chat
+            data-world-default-repository="forkmesh/forkmesh"
+          >
+            <div id="fullChatMessages" role="log" aria-live="polite" aria-label="Live World activity"></div>
+            <div data-dashboard-chat-scroll-rail aria-label="Chat scroll controls">
+              <button type="button" data-dashboard-chat-scroll="up" aria-label="Scroll chat up">↑</button>
+              <span data-dashboard-chat-scroll-track aria-hidden="true"><span data-dashboard-chat-scroll-thumb></span></span>
+              <button type="button" data-dashboard-chat-scroll="down" aria-label="Scroll to newest message">↓</button>
+            </div>
+            <nav data-dashboard-chat-context-rail aria-label="Selected chat context">
+              <button type="button" data-dashboard-chat-context-channel># general</button>
+              <button type="button" data-dashboard-chat-context-source>forkmesh/forkmesh</button>
+              <button type="button" data-dashboard-chat-context-action>Send to bot</button>
+            </nav>
+            <div data-dashboard-chat-emotes aria-label="Avatar reactions">
+              <button type="button" data-dashboard-chat-emote="wave" title="Wave">👋</button>
+              <button type="button" data-dashboard-chat-emote="jump" title="Jump up and down">↥</button>
+              <button type="button" data-dashboard-chat-emote="spin" title="Spin">↻</button>
+              <button type="button" data-dashboard-chat-emote="backflip" title="Backflip">⤾</button>
+              <button type="button" data-dashboard-chat-emote="dance" title="Dance">♫</button>
+              <button type="button" data-dashboard-chat-emote="float" title="Float">☁</button>
+              <button type="button" data-dashboard-chat-emote="wobble" title="Wobble">〰</button>
+              <button type="button" data-dashboard-chat-emote="sparkle" title="Sparkle">✦</button>
+            </div>
+            <div data-dashboard-chat-composer>
+              <div>
+                <div data-dashboard-chat-composer-toolbar>
+                  <label class="world-visually-hidden" for="fullChatChannel">Channel</label>
+                  <select id="fullChatChannel"><option value=""># general</option></select>
+                  <label class="world-visually-hidden" for="fullChatRepo">Repository</label>
+                  <select id="fullChatRepo">
+                    <option
+                      value="forkmesh/forkmesh"
+                      data-logical-kind="organization"
+                      data-route-owner="forkmesh"
+                      data-route-name="forkmesh"
+                      selected
+                    >forkmesh/forkmesh · Organization</option>
+                  </select>
+                  <label class="world-visually-hidden" for="fullChatAction">Action</label>
+                  <select id="fullChatAction">
+                    <option value="agent" selected>Send to bot</option>
+                    <option value="chat">Send to chat</option>
+                    <option value="task">Create team task</option>
+                    <option value="issue">Create repository issue</option>
+                  </select>
+                  <div data-dashboard-task-routing hidden>
+                    <select data-dashboard-task-department aria-label="Task department"><option value="general">General</option><option value="engineering">Engineering</option><option value="product-design">Product + design</option><option value="quality-assurance">Quality assurance</option></select>
+                    <select data-dashboard-task-team aria-label="Task team"><option value="">Choose a team</option></select>
+                    <select data-dashboard-task-destination aria-label="Task destination"><option value="department">Department board</option><option value="personal">Personal work</option><option value="repository">Repository</option><option value="qa">QA board</option></select>
+                    <select data-dashboard-task-assignee aria-label="Task assignee"><option value="agent" selected>Bot</option><option value="unassigned">Unassigned</option></select>
+                  </div>
+                </div>
+                <div data-dashboard-chat-compose-row>
+                  <textarea id="fullChatInput" rows="2" maxlength="16000" enterkeyhint="send" aria-label="Message #general" placeholder="Describe what you want the bot to do…"></textarea>
+                  <button id="fullChatSend" type="button"><span data-dashboard-chat-send-label>Send to bot</span></button>
+                  <button id="fullChatTaskSend" type="button" title="Create and route a task">Task</button>
+                </div>
+                <footer>
+                  <span data-dashboard-chat-composer-hint>Starts a secured Engineering task</span>
+                  <span data-dashboard-chat-composer-status role="status" aria-live="polite"></span>
+                </footer>
+              </div>
+            </div>
           </div>
         </details>
 
-        <div class="world-activity-stream" data-world-activity-stream role="log" aria-live="polite" aria-label="Recent World chat, notifications, and status changes"></div>
         <div class="world-swing-panel" data-world-swing-panel hidden>
           <span>
             <strong>Swing speed</strong>
@@ -4236,37 +4281,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             class="world-office-chat__frame"
             data-world-office-frame
             title="ForkMesh Office chat"
-            referrerpolicy="same-origin"
-          ></iframe>
-        </section>
-
-        <button
-          class="world-chat-backdrop"
-          type="button"
-          data-world-chat-close
-          aria-label="Close World chat"
-          tabindex="-1"
-        ></button>
-        <section
-          class="world-chat"
-          data-world-chat
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="world-chat-title"
-          aria-hidden="true"
-        >
-          <header class="world-chat-heading">
-            <div>
-              <p class="world-eyebrow">LIVE COLLABORATION</p>
-              <h2 id="world-chat-title">World chat</h2>
-              <span>Chat with ForkBot in Global #general. Messages sent here go to General — the same room as the website's /chat.</span>
-            </div>
-            <button type="button" data-world-chat-close aria-label="Close World chat">×</button>
-          </header>
-          <iframe
-            class="world-chat-frame"
-            data-world-chat-frame
-            title="ForkMesh World chat"
             referrerpolicy="same-origin"
           ></iframe>
         </section>
@@ -4760,6 +4774,8 @@ class ForkMeshWorld extends HTMLElement {
     this.walletBadges = new Map();
     this.memberDirectory = [];
     this.memberDirectoryFetchedAt = 0;
+    this.deletingUnverifiedAccounts = new Set();
+    this.chatTaskNotifications = [];
     // Lowercased names a completed directory snapshot did not list, so their
     // next presence frame does not force another fetch (noteDirectoryMembers).
     this.unlistedDirectoryNames = new Set();
@@ -4919,6 +4935,7 @@ class ForkMeshWorld extends HTMLElement {
     this.firstVisitAt = firstVisitTimestamp();
     this.publicVisitCount = sessionVisitCount(true);
     this.chatBubblesEnabledAt = Date.now() + CHAT_BUBBLE_JOIN_GRACE_MS;
+    this.activityNoticesEnabledAt = Date.now() + ACTIVITY_JOIN_GRACE_MS;
     this.activityArrivalRecorded = false;
     this.activityArrivalTimer = 0;
     // Unread badge on the collapsed bottom CHAT bar. Counts live lines from
@@ -5018,6 +5035,14 @@ class ForkMeshWorld extends HTMLElement {
     });
     window.addEventListener("keydown", this.handlePublicInputActivity);
     window.addEventListener("message", this.handleWorldChatMessage);
+    window.addEventListener(
+      "forkmesh:world-chat-native",
+      this.handleNativeWorldChatMessage,
+    );
+    window.addEventListener(
+      "forkmesh:world-emote-native",
+      this.handleNativeWorldEmote,
+    );
     window.addEventListener("pagehide", this.handlePageHide);
     window.addEventListener("pageshow", this.handlePageShow);
     this.bindUI();
@@ -5153,28 +5178,36 @@ class ForkMeshWorld extends HTMLElement {
     }, 64);
   }
 
-  // The embedded /dashboard/chat iframe mirrors every live chat line to this
-  // page (dashboard-chat.js, emitWorldChatBubble). The public chat transport
+  // The native chat controller mirrors every live chat line into the World.
+  // The public chat transport
   // does not cryptographically bind its sender id to a World peer id, so only
   // the browser's own line and ForkBot's fixed system identity may create
   // avatar bubbles. Remote lines remain visible in CHAT without being able to
   // impersonate a live avatar by copying its display name.
   handleWorldChatMessage = (event) => {
     if (this.destroyed || event.origin !== location.origin) return;
-    const chatSources = [
-      this.$("[data-world-chat-frame]")?.contentWindow,
-      this.$("[data-world-chat-terminal-frame]")?.contentWindow,
-    ].filter(Boolean);
+    const chatSources = this.$("[data-world-native-chat]") ? [window] : [];
     if (!chatSources.includes(event.source)) return;
     const data = event.data;
     if (!data) return;
-    if (data.type === "forkmesh:world-activity") {
-      this.activityNotice(data.text, {
-        kind: String(data.kind || "status"),
-        sender: "ForkMesh",
-      });
+    if (data.type === "forkmesh:chat-ready") {
+      for (const notification of this.chatTaskNotifications) {
+        event.source?.postMessage(
+          {
+            type: "forkmesh:chat-notification",
+            ...notification,
+          },
+          location.origin,
+        );
+      }
       return;
     }
+    if (data.type === "forkmesh:world-emote") {
+      this.sendWorldEmote(data.emote);
+      return;
+    }
+    // System activity is already appended by the native chat controller.
+    if (data.type === "forkmesh:world-activity") return;
     if (data.type !== "forkmesh:world-chat") return;
     const text = String(data.text || "")
       .replace(/\s+/g, " ")
@@ -5258,10 +5291,9 @@ class ForkMeshWorld extends HTMLElement {
     // Replayed history updates only the collapsed CHAT bar — never a bubble,
     // so reconnects do not resurrect old messages above avatars.
     if (data.history === true) return;
-    this.activityNotice(
-      `${sender}: ${text || `Shared ${attachmentName}`}`,
-      { kind: "chat", sender },
-    );
+    // The relay also re-sends the tail of the room as ordinary live frames when
+    // the embedded chat connects, so the join grace — not just the history
+    // flag — is what keeps a fresh load from opening on a wall of old lines.
     // Own lines never count as unread — `self` is this browser, `own` also
     // covers the signed-in account talking from another tab or device.
     if (data.self !== true && data.own !== true) this.bumpChatTerminalUnread();
@@ -5298,6 +5330,25 @@ class ForkMeshWorld extends HTMLElement {
       this.world?.showChatBubble?.(senderName, text);
       return;
     }
+  };
+
+  handleNativeWorldChatMessage = (event) => {
+    this.handleWorldChatMessage({
+      origin: location.origin,
+      source: window,
+      data: event.detail,
+    });
+  };
+
+  handleNativeWorldEmote = (event) => {
+    this.handleWorldChatMessage({
+      origin: location.origin,
+      source: window,
+      data: {
+        type: "forkmesh:world-emote",
+        emote: String(event.detail?.emote || ""),
+      },
+    });
   };
 
   // ForkBot walks over and welcomes a visitor the first time this browser
@@ -5768,6 +5819,9 @@ class ForkMeshWorld extends HTMLElement {
         onWorldGeneralChatSelect: () => {
           this.openWorldChat("/dashboard/chat");
         },
+        onWorldDiscordBoardSelect: () => {
+          window.dispatchEvent(new CustomEvent("forkmesh:open-discord"));
+        },
         onMastodonBoardSelect: () => this.openMastodonBoard(),
         onMastodonOpenLink: (url) => {
           if (url) window.open(url, "_blank", "noopener,noreferrer");
@@ -5856,6 +5910,8 @@ class ForkMeshWorld extends HTMLElement {
         onFediverseFollow: (target) =>
           void this.toggleWorldFediverseFollow(target),
         onAvatarSelect: (member) => this.openWorldMemberDetail(member),
+        onUnverifiedAvatarDelete: (member) =>
+          void this.deleteUnverifiedWorldMember(member),
         onAvatarWalletAction: ({ self, address } = {}) => {
           const wallet = String(address || "").trim();
           if (wallet) {
@@ -8469,38 +8525,27 @@ class ForkMeshWorld extends HTMLElement {
     const hoverCapable = window.matchMedia?.(
       "(hover: hover) and (pointer: fine)",
     )?.matches;
-    const wireHoverOrb = (details, onOpen = () => {}) => {
-      if (!details || !hoverCapable) return;
-      let closeTimer = 0;
-      details.addEventListener("pointerenter", () => {
-        window.clearTimeout(closeTimer);
-        details.open = true;
-        onOpen();
+    if (diagnostics && hoverCapable) {
+      diagnostics.addEventListener("pointerenter", () => {
+        diagnostics.open = true;
+        chatTerminal?.removeAttribute("open");
       });
-      details.addEventListener("pointerleave", () => {
-        window.clearTimeout(closeTimer);
-        closeTimer = window.setTimeout(() => {
-          if (!details.matches(":focus-within")) details.open = false;
-        }, 220);
-      });
-      details.addEventListener("focusin", () => {
-        window.clearTimeout(closeTimer);
-        details.open = true;
-        onOpen();
-      });
-      details.addEventListener("focusout", () => {
-        window.clearTimeout(closeTimer);
-        closeTimer = window.setTimeout(() => {
-          if (!details.matches(":focus-within,:hover")) details.open = false;
-        }, 220);
-      });
-    };
-    wireHoverOrb(diagnostics, () => {
+    }
+    diagnostics?.addEventListener("focusin", () => {
+      diagnostics.open = true;
       chatTerminal?.removeAttribute("open");
     });
-    wireHoverOrb(chatTerminal, () => {
+    if (chatTerminal && hoverCapable) {
+      chatTerminal.addEventListener("pointerenter", () => {
+        chatTerminal.open = true;
+        diagnostics?.removeAttribute("open");
+        this.loadNativeWorldChat();
+      });
+    }
+    chatTerminal?.addEventListener("focusin", () => {
+      chatTerminal.open = true;
       diagnostics?.removeAttribute("open");
-      this.loadChatTerminalFrame();
+      this.loadNativeWorldChat();
     });
     // The account portrait is the World HUD launcher.  It keeps the World
     // quiet while walking, then fans the fixed-size controls out on hover,
@@ -8522,19 +8567,66 @@ class ForkMeshWorld extends HTMLElement {
     chatTerminal?.addEventListener("toggle", () => {
       if (chatTerminal.open) {
         this.$("[data-world-diagnostics]")?.removeAttribute("open");
-        this.loadChatTerminalFrame();
+        this.loadNativeWorldChat();
         this.clearChatTerminalUnread();
       }
     });
     // Load the chat frame immediately so the collapsed CHAT bar always shows
     // the most recent global #general message, not a static placeholder.
-    this.loadChatTerminalFrame();
+    this.loadNativeWorldChat();
     this.addEventListener("click", (event) => {
       if (
         chatTerminal?.open &&
         !event.target.closest("[data-world-chat-terminal]")
       ) {
         chatTerminal.removeAttribute("open");
+      }
+      if (
+        diagnostics?.open &&
+        !event.target.closest("[data-world-diagnostics]")
+      ) {
+        diagnostics.removeAttribute("open");
+      }
+      const settingsPanel = this.$("[data-world-settings]");
+      if (
+        settingsPanel?.dataset.open === "true" &&
+        !event.target.closest("[data-world-settings]") &&
+        !event.target.closest(
+          "[data-world-settings-open], [data-world-tasks-open]",
+        )
+      ) {
+        this.toggleSettings(false);
+      }
+      const accountPanel = this.$("[data-world-account]");
+      if (
+        accountPanel?.dataset.open === "true" &&
+        !event.target.closest("[data-world-account]") &&
+        !event.target.closest("[data-world-account-open]")
+      ) {
+        this.toggleWorldAccount(false);
+      }
+      const worldChatPanel = this.$("[data-world-chat]");
+      if (
+        worldChatPanel?.dataset.open === "true" &&
+        !event.target.closest("[data-world-chat]") &&
+        !event.target.closest(
+          "[data-world-chat-open], a[href^='/dashboard/chat']",
+        )
+      ) {
+        this.closeWorldChat();
+      }
+      const detailPanel = this.$("[data-world-detail]");
+      if (
+        detailPanel?.dataset.open === "true" &&
+        !event.target.closest(
+          "[data-world-detail], [data-world-detail-resize]",
+        ) &&
+        !event.target.closest(
+          "[data-world-landmark], [data-world-mirror-node], " +
+          "[data-world-notifications-open], [data-world-admin-errors]",
+        )
+      ) {
+        this.closeLandmark();
       }
       const avatarLauncher = event.target.closest("[data-world-shirt-badge]");
       if (
@@ -8622,10 +8714,6 @@ class ForkMeshWorld extends HTMLElement {
         this.toggleWorldCameraMode();
         return;
       }
-      if (event.target.closest("[data-world-wave]")) {
-        this.waveToWorld();
-        return;
-      }
       if (event.target.closest("[data-world-swing-dismount]")) {
         this.world?.dismountSwing?.();
         return;
@@ -8642,12 +8730,6 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-admin-errors]")) {
         this.openAdminErrors();
-        return;
-      }
-      const mapToggle = event.target.closest("[data-world-map-toggle]");
-      if (mapToggle) {
-        const rail = this.$("[data-world-right-rail]");
-        this.setWorldRightRailExpanded(rail?.dataset.expanded !== "true");
         return;
       }
       const landmarkButton = event.target.closest("[data-world-landmark]");
@@ -9365,7 +9447,7 @@ class ForkMeshWorld extends HTMLElement {
     const section = this.$("[data-world-saved-views]");
     const list = this.$("[data-world-saved-view-list]");
     if (!section || !list) return;
-    // Quick views are intentionally always exposed. Retain this method for
+    // Saved shortcuts are intentionally always exposed. Retain this method for
     // older callers and synchronized preference snapshots without allowing a
     // stale collapsed preference to hide the five thumbnail shortcuts.
     section.dataset.expanded = "true";
@@ -9374,23 +9456,13 @@ class ForkMeshWorld extends HTMLElement {
 
   setWorldRightRailExpanded(expanded) {
     const rail = this.$("[data-world-right-rail]");
-    const map = this.$("[data-world-map]");
-    const toggle = this.$("[data-world-map-toggle]");
     const hud = this.$("[data-world-hud]");
     const avatarLauncher = this.$("[data-world-shirt-badge]");
-    if (!rail || !map) return false;
+    if (!rail) return false;
     const active = expanded === true;
     rail.dataset.expanded = String(active);
     if (hud) hud.dataset.hudExpanded = String(active);
     if (avatarLauncher) avatarLauncher.setAttribute("aria-expanded", String(active));
-    map.classList.toggle("is-expanded", active);
-    if (toggle) {
-      toggle.setAttribute("aria-expanded", String(active));
-      toggle.setAttribute(
-        "aria-label",
-        active ? "Collapse World controls" : "Expand World controls",
-      );
-    }
     return active;
   }
 
@@ -9621,8 +9693,7 @@ class ForkMeshWorld extends HTMLElement {
     const list = this.$("[data-world-saved-view-list]");
     if (!list) return;
     if (!this.savedViews.length) {
-      list.innerHTML =
-        '<span class="world-saved-view-empty">Tap ＋ to save this spot</span>';
+      list.replaceChildren();
       return;
     }
     list.innerHTML = this.savedViews
@@ -10067,7 +10138,6 @@ class ForkMeshWorld extends HTMLElement {
     const visible = publicIdentity(this.identity, this.settings);
     const avatar = this.$("[data-world-shirt-avatar]");
     const initial = this.$("[data-world-shirt-initial]");
-    const account = this.$("[data-world-shirt-account]");
     const badge = this.$("[data-world-shirt-badge]");
     const session = readSession();
     const avatarPng =
@@ -10086,10 +10156,6 @@ class ForkMeshWorld extends HTMLElement {
       // into the avatar circle.
       initial.textContent = "";
       initial.hidden = Boolean(avatarPng);
-    }
-    if (account) {
-      account.textContent = accountStatusIcon(visible);
-      account.title = visible.accountStatus || "Guest";
     }
     if (badge) {
       // The badge is the settings entry point; keep the name/status copy that
@@ -11839,6 +11905,60 @@ class ForkMeshWorld extends HTMLElement {
     this.showDetailOverlay(detail, backdrop, { returnFocus });
     this.wireMirrorNodeAgentWorkspace(node);
     this.wireMirrorNodeAdminDelete(node);
+  }
+
+  async deleteUnverifiedWorldMember(member = {}) {
+    const name = String(member?.name || "").trim().toLowerCase();
+    const ownName = String(this.identity?.name || "").trim().toLowerCase();
+    if (
+      this.identity?.isAdmin !== true ||
+      !validWorldSession() ||
+      !WORLD_ACCOUNT_NAME_RE.test(name) ||
+      name === ownName ||
+      member?.self === true ||
+      member?.emailVerified === true ||
+      String(member?.accountStatus || "").toLowerCase() === "guest" ||
+      this.deletingUnverifiedAccounts.has(name)
+    ) {
+      return false;
+    }
+    this.deletingUnverifiedAccounts.add(name);
+    try {
+      await this.postJSON(
+        `/api/accounts/admin-unverified/${encodeURIComponent(name)}`,
+        {},
+        { method: "DELETE", timeout: 20_000 },
+      );
+      this.memberDirectory = this.memberDirectory.filter(
+        (record) =>
+          String(record?.name || "").trim().toLowerCase() !== name,
+      );
+      this.remotePlayers.forEach((record, peerId) => {
+        if (String(record?.name || "").trim().toLowerCase() === name) {
+          this.remotePlayers.delete(peerId);
+        }
+      });
+      this.inactivePlayers = this.inactivePlayers.filter(
+        (record) =>
+          String(record?.name || "").trim().toLowerCase() !== name,
+      );
+      this.unlistedDirectoryNames.add(name);
+      this.memberDirectoryFetchedAt = 0;
+      this.responseCache.clear();
+      await this.world?.animateUnverifiedAvatarDeletion?.({ ...member, name });
+      this.syncMemberLounge();
+      this.toast(`${name} was deleted. Poof!`);
+      return true;
+    } catch (error) {
+      this.toast(
+        `Could not delete ${name}: ${String(
+          error?.message || "request failed",
+        ).replaceAll("_", " ")}`,
+      );
+      return false;
+    } finally {
+      this.deletingUnverifiedAccounts.delete(name);
+    }
   }
 
   openWorldMemberDetail(member = {}, { returnFocus = null } = {}) {
@@ -14496,7 +14616,11 @@ class ForkMeshWorld extends HTMLElement {
         }`,
       );
     }
-    if (announcements.length) this.toast(announcements.join(" · "));
+    // The first reads seed the seen sets so nothing already waiting at load is
+    // announced; only what arrives on a later poll reaches the stream.
+    if (announcements.length && this.activityNoticesSettled()) {
+      this.toast(announcements.join(" · "));
+    }
   }
 
   recentIssueAssignments() {
@@ -14766,17 +14890,36 @@ class ForkMeshWorld extends HTMLElement {
   // tiny frame. The cooldown is the length of the pose, so holding the button
   // down cannot turn one gesture into a stream of socket frames.
   waveToWorld() {
-    this.world?.playEmote?.(this.identity?.id || "", "wave", true);
+    this.sendWorldEmote("wave");
+  }
+
+  sendWorldEmote(rawEmote) {
+    const emote = String(rawEmote || "").trim().toLowerCase();
+    if (
+      ![
+        "wave",
+        "jump",
+        "spin",
+        "backflip",
+        "dance",
+        "float",
+        "wobble",
+        "sparkle",
+      ].includes(emote)
+    ) {
+      return;
+    }
+    this.world?.playEmote?.(this.identity?.id || "", emote, true);
     const now = Date.now();
     if (now - (this.lastWaveSentAt || 0) < WORLD_WAVE_COOLDOWN_MS) return;
     this.lastWaveSentAt = now;
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      this.toast("Realtime is offline; your wave stayed on this device.");
+      this.toast("Realtime is offline; your reaction stayed on this device.");
       return;
     }
     try {
       this.socket.send(
-        JSON.stringify({ type: "interaction", kind: "emote", emote: "wave" }),
+        JSON.stringify({ type: "interaction", kind: "emote", emote }),
       );
     } catch (_) {}
   }
@@ -20585,97 +20728,100 @@ class ForkMeshWorld extends HTMLElement {
     return this.loadWorldSessions(true);
   }
 
-  openWorldChat(href = "/dashboard/chat", returnFocus = null) {
-    let destination;
-    try {
-      destination = new URL(String(href || "/dashboard/chat"), location.origin);
-    } catch (_) {
-      return;
-    }
-    if (
-      destination.origin !== location.origin ||
-      !["/dashboard/chat", "/dashboard/chat/"].includes(destination.pathname)
-    ) {
-      return;
-    }
-    destination.searchParams.set("worldEmbed", "1");
-    const panel = this.$("[data-world-chat]");
-    const backdrop = this.$(".world-chat-backdrop");
-    const frame = this.$("[data-world-chat-frame]");
-    if (!panel || !backdrop || !frame) return;
-    const frameURL = `${destination.pathname}${destination.search}`;
-    if (frame.dataset.worldChatUrl !== frameURL) {
-      frame.dataset.worldChatUrl = frameURL;
-      frame.src = frameURL;
-    }
-    this.chatReturnFocus =
-      returnFocus instanceof HTMLElement ? returnFocus : null;
-    this.closeLandmark();
-    this.toggleSettings(false);
-    if (this.tourIndex >= 0) this.stopTour();
-    // The terminal summaries intentionally sit above most World overlays.
-    // Collapse their expanded bodies before opening the full chat so a mobile
-    // composer can never end up underneath an open CHAT or DEBUG drawer.
-    this.$("[data-world-chat-terminal]")?.removeAttribute("open");
-    this.$("[data-world-diagnostics]")?.removeAttribute("open");
-    // The full overlay shows the same #general room, so it reads the backlog
-    // the collapsed bar was counting.
-    this.clearChatTerminalUnread();
-    panel.dataset.open = "true";
-    panel.setAttribute("aria-hidden", "false");
-    backdrop.dataset.open = "true";
-    window.setTimeout(
-      () => panel.querySelector("[data-world-chat-close]")?.focus(),
-      80,
+  notifyChatArea(message, kind = "task") {
+    const text = String(message || "").replace(/\s+/g, " ").trim().slice(
+      0,
+      240,
     );
+    if (!text) return false;
+    const notification = {
+      id: `todo:${Date.now().toString(36)}:${Math.random()
+        .toString(36)
+        .slice(2, 8)}`,
+      text,
+      kind: String(kind || "task").slice(0, 24),
+    };
+    this.chatTaskNotifications.push(notification);
+    if (this.chatTaskNotifications.length > 50) {
+      this.chatTaskNotifications.splice(
+        0,
+        this.chatTaskNotifications.length - 50,
+      );
+    }
+    const payload = {
+      type: "forkmesh:chat-notification",
+      ...notification,
+    };
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: payload,
+        origin: location.origin,
+        source: window,
+      }),
+    );
+    return true;
   }
 
-  loadChatTerminalFrame() {
-    const frame = this.$("[data-world-chat-terminal-frame]");
-    if (!frame || frame.dataset.worldChatUrl) return;
-    const frameURL = "/dashboard/chat?worldEmbed=1";
-    frame.dataset.worldChatUrl = frameURL;
-    frame.src = frameURL;
+  openWorldChat(href = "/dashboard/chat", returnFocus = null) {
+    this.chatReturnFocus =
+      returnFocus instanceof HTMLElement ? returnFocus : null;
+    this.clearChatTerminalUnread();
+    this.openChatTerminal();
+  }
+
+  loadNativeWorldChat() {
+    const host = this.$("[data-world-native-chat]");
+    if (!host || host.dataset.worldChatLoading) return;
+    const mount = () => window.ForkMeshDashboardChat?.mount?.();
+    if (window.ForkMeshDashboardChat) {
+      mount();
+      return;
+    }
+    host.dataset.worldChatLoading = "true";
+    const script = document.createElement("script");
+    script.src = "/dashboard-chat.js";
+    script.defer = true;
+    script.addEventListener("load", mount, { once: true });
+    script.addEventListener("error", () => {
+      delete host.dataset.worldChatLoading;
+      this.setChatTerminalLastMessage("", "Chat could not be loaded.");
+    }, { once: true });
+    document.head.append(script);
   }
 
   // Open the collapsed bottom-right CHAT bar (not the full chat overlay) and
-  // hand the composer a starting message so a visitor talking to ForkBot can
-  // start typing immediately. Uses postMessage rather than a query param
-  // because the terminal iframe is loaded once and kept alive across clicks.
+  // hand the native composer a starting message so a visitor talking to the
+  // bot can start typing immediately.
   openChatTerminal(prefillText = "", attachment = null) {
     const details = this.$("[data-world-chat-terminal]");
-    const frame = this.$("[data-world-chat-terminal-frame]");
-    if (!details || !frame) return;
+    if (!details) return;
     this.closeLandmark();
     this.toggleSettings(false);
     if (this.tourIndex >= 0) this.stopTour();
     this.closeWorldChat();
-    const alreadyLoaded = Boolean(frame.dataset.worldChatUrl);
-    this.loadChatTerminalFrame();
+    this.loadNativeWorldChat();
     details.open = true;
-    const sendPrefill = () => {
-      frame.contentWindow?.postMessage(
-        {
-          type: "forkmesh:chat-prefill",
-          text: prefillText,
-          attachment:
-            attachment && typeof attachment === "object"
-              ? {
-                  dataUrl: String(attachment.dataUrl || ""),
-                  fileName: String(attachment.fileName || ""),
-                  fileMime: String(attachment.fileMime || ""),
-                  altText: String(attachment.altText || ""),
-                }
-              : null,
-        },
-        location.origin,
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          origin: location.origin,
+          source: window,
+          data: {
+            type: "forkmesh:chat-prefill",
+            text: prefillText,
+            attachment:
+              attachment && typeof attachment === "object"
+                ? {
+                    dataUrl: String(attachment.dataUrl || ""),
+                    fileName: String(attachment.fileName || ""),
+                    fileMime: String(attachment.fileMime || ""),
+                    altText: String(attachment.altText || ""),
+                  }
+                : null,
+          },
+        }),
       );
-    };
-    if (alreadyLoaded) {
-      window.setTimeout(sendPrefill, 80);
-    } else {
-      frame.addEventListener("load", sendPrefill, { once: true });
-    }
+    }, 80);
   }
 
   // Mirror the newest live chat line into the collapsed CHAT bar so the
@@ -22051,43 +22197,22 @@ class ForkMeshWorld extends HTMLElement {
     }, Math.max(10_000, Number(lockMs) || 0));
   }
 
+  // True once the page-load grace has passed. Callers that narrate incoming
+  // world traffic (chat lines, mirror doorbells, the notification/event read)
+  // check this so a fresh load never opens with a stack of replayed cards.
+  // Notices the visitor causes by acting are never gated — those are always
+  // about something that just happened.
+  activityNoticesSettled() {
+    return Date.now() >= this.activityNoticesEnabledAt;
+  }
+
   activityNotice(message, { kind = "status", sender = "" } = {}) {
-    const stream = this.$("[data-world-activity-stream]");
     const copy = String(message || "")
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 280);
-    if (!stream || !copy) return;
-    const article = document.createElement("article");
-    article.dataset.kind = ["chat", "error", "success"].includes(kind)
-      ? kind
-      : "status";
-    const icon = document.createElement("span");
-    icon.className = "world-activity-icon";
-    const cleanSender = String(sender || "ForkMesh").trim().slice(0, 64);
-    const member = this.memberDirectory.find(
-      (entry) =>
-        String(entry?.name || "").toLowerCase() === cleanSender.toLowerCase(),
-    );
-    const publicAvatar = safeHTTPURL(member?.avatar || "");
-    if (publicAvatar) {
-      const image = document.createElement("img");
-      image.alt = "";
-      image.src = publicAvatar;
-      image.onerror = () => {
-        image.remove();
-        icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
-      };
-      icon.append(image);
-    } else {
-      icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
-    }
-    const body = document.createElement("p");
-    body.textContent = copy;
-    article.append(icon, body);
-    stream.prepend(article);
-    while (stream.childElementCount > 6) stream.lastElementChild?.remove();
-    window.setTimeout(() => article.remove(), 10_100);
+    if (!copy || kind === "chat") return;
+    this.notifyChatArea(copy, kind);
   }
 
   startTour() {
@@ -22708,7 +22833,10 @@ class ForkMeshWorld extends HTMLElement {
     // teardown that callback must not overwrite the location captured just
     // before it with the Office doorway.
     if (this.destroyed) return;
-    if (movement?.moving === true) this.setWorldRightRailExpanded(false);
+    if (movement?.moving === true) {
+      this.setWorldRightRailExpanded(false);
+      this.$("[data-world-chat-terminal]")?.removeAttribute("open");
+    }
     this.scheduleActivityArrival();
     const space = WORLD_SPACE_IDS.has(String(movement?.space || ""))
       ? String(movement.space)
@@ -23633,7 +23761,18 @@ class ForkMeshWorld extends HTMLElement {
     } else if (
       message.type === "interaction" &&
       message.kind === "emote" &&
-      ["wave", "idea", "celebrate"].includes(message.emote) &&
+      [
+        "wave",
+        "idea",
+        "celebrate",
+        "jump",
+        "spin",
+        "backflip",
+        "dance",
+        "float",
+        "wobble",
+        "sparkle",
+      ].includes(message.emote) &&
       message.from
     ) {
       this.world?.playEmote?.(String(message.from), message.emote);
@@ -23677,9 +23816,14 @@ class ForkMeshWorld extends HTMLElement {
           paths.indexOf(path) === index,
       )
       .slice(0, 8);
-    this.toast(
-      `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
-    );
+    // The scene effect and catalog refresh below still run during the join
+    // grace; only the narration is held back so the load does not open on a
+    // push that happened before the visitor arrived.
+    if (this.activityNoticesSettled()) {
+      this.toast(
+        `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
+      );
+    }
     // This only arms the scene. No frame directly creates an effect: the next
     // signed catalog payload must confirm the node and commit prefix first.
     this.world?.armMirrorPushEffect?.(
@@ -24432,6 +24576,14 @@ class ForkMeshWorld extends HTMLElement {
     );
     window.removeEventListener("keydown", this.handlePublicInputActivity);
     window.removeEventListener("message", this.handleWorldChatMessage);
+    window.removeEventListener(
+      "forkmesh:world-chat-native",
+      this.handleNativeWorldChatMessage,
+    );
+    window.removeEventListener(
+      "forkmesh:world-emote-native",
+      this.handleNativeWorldEmote,
+    );
     window.removeEventListener("pagehide", this.handlePageHide);
     window.removeEventListener("pageshow", this.handlePageShow);
     this.$("[data-world-renderer-reload]")?.removeEventListener(

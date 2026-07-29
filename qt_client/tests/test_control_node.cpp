@@ -1088,6 +1088,78 @@ int main(int argc, char **argv)
               forkmesh::control::vultrApiKeyFromVariables({}).isEmpty(),
           "the stored VULTR_API_KEY device variable is resolved case-insensitively");
 
+    // --- Destroying a mirror's server on Vultr (adhoc #24) -----------------
+    const QString destroyId =
+        QStringLiteral("1f2e3d4c-5b6a-4798-8899-aabbccddeeff");
+    check(forkmesh::control::savedHostVultrInstanceId(
+              QJsonObject{{QStringLiteral("provider"), QStringLiteral("vultr")},
+                          {QStringLiteral("instanceId"), destroyId}}) ==
+                  destroyId &&
+              forkmesh::control::savedHostVultrInstanceId(
+                  QJsonObject{{QStringLiteral("provider"),
+                               QStringLiteral("Hetzner")},
+                              {QStringLiteral("instanceId"), destroyId}})
+                  .isEmpty() &&
+              forkmesh::control::savedHostVultrInstanceId(
+                  QJsonObject{{QStringLiteral("provider"),
+                               QStringLiteral("Vultr")}})
+                  .isEmpty(),
+          "only a Vultr-provisioned host with a recorded instance id is "
+          "destroyable by id");
+
+    const QJsonArray destroyInstances{
+        QJsonObject{{QStringLiteral("id"), destroyId},
+                    {QStringLiteral("main_ip"), QStringLiteral("203.0.113.7")},
+                    {QStringLiteral("label"), QStringLiteral("mirror5")}},
+        QJsonObject{{QStringLiteral("id"),
+                     QStringLiteral("00000000-1111-2222-3333-444444444444")},
+                    {QStringLiteral("main_ip"), QStringLiteral("0.0.0.0")},
+                    {QStringLiteral("label"), QStringLiteral("mirror6")}},
+    };
+    check(forkmesh::control::vultrInstanceIdForAddress(
+              destroyInstances, QStringLiteral("203.0.113.7")) == destroyId &&
+              forkmesh::control::vultrInstanceIdForAddress(
+                  destroyInstances, QStringLiteral("MIRROR5")) == destroyId &&
+              forkmesh::control::vultrInstanceIdForAddress(
+                  destroyInstances, QStringLiteral("0.0.0.0"))
+                  .isEmpty() &&
+              forkmesh::control::vultrInstanceIdForAddress(
+                  destroyInstances, QStringLiteral("198.51.100.9"))
+                  .isEmpty() &&
+              forkmesh::control::vultrInstanceIdForAddress(
+                  destroyInstances, QString())
+                  .isEmpty(),
+          "a host is matched to its Vultr instance by address or label, and "
+          "an unassigned address never matches");
+
+    const QJsonArray ambiguousInstances{
+        QJsonObject{{QStringLiteral("id"), destroyId},
+                    {QStringLiteral("main_ip"), QStringLiteral("203.0.113.7")}},
+        QJsonObject{{QStringLiteral("id"),
+                     QStringLiteral("00000000-1111-2222-3333-444444444444")},
+                    {QStringLiteral("label"), QStringLiteral("203.0.113.7")}},
+    };
+    check(forkmesh::control::vultrInstanceIdForAddress(
+              ambiguousInstances, QStringLiteral("203.0.113.7"))
+              .isEmpty(),
+          "two instances matching one address destroy neither");
+
+    check(forkmesh::control::validateVultrDestroyRequest(
+              QStringLiteral("STOREDVULTRKEY01234567890"), destroyId)
+                  .isEmpty() &&
+              !forkmesh::control::validateVultrDestroyRequest(
+                   QStringLiteral("short"), destroyId)
+                   .isEmpty() &&
+              !forkmesh::control::validateVultrDestroyRequest(
+                   QStringLiteral("STOREDVULTRKEY01234567890"),
+                   QStringLiteral("not-an-instance"))
+                   .isEmpty() &&
+              !forkmesh::control::validateVultrDestroyRequest(
+                   QStringLiteral("STOREDVULTRKEY01234567890"), QString())
+                   .isEmpty(),
+          "a destroy call is refused without a plausible API key and instance "
+          "id");
+
     // --- Installing a fresh mirror without a published release (adhoc #408) -
     check(forkmesh::control::localBinaryRunsOnVultrMirror(
               QStringLiteral("linux"), QStringLiteral("x86_64")) &&

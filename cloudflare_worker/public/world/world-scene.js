@@ -3102,7 +3102,8 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:district-ground-paths", task: "Clean repository + leaderboard districts", detail: "Removed the ground-level VIEW placards, centered repository imports, added efficient textured district circles, and rebuilt every town connector from one solid concrete slab specification with flush endpoints.", estimate: "implemented · focused QA", done: true },
   { key: "task:lobby-task-bounties", task: "Lobby task bounty bidding desk", detail: "Organization members can propose scoped work in the lobby, name an exact SOL compensation request, and publish the encrypted record into the shared task catalog as a clearly labeled bid. The request is non-custodial and records no transfer or reserved funds.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-orb-hud", task: "Compact debug + unified activity orbs", detail: "Replaced the bottom bars with logo-sized status circles. DEBUG summarizes every performance grade as green, yellow, or red dots and expands on hover or focus. CHAT shows the latest speaker and unread count, then opens a translucent channel composer with image attachment, separate chat/task actions, human-or-agent routing, team categorization, and a ten-second unified activity stream.", estimate: "deployed · ready for QA", done: true },
-  { key: "task:avatar-hud-launcher", task: "Restore circular avatar HUD launcher", detail: "The account avatar is again a round launcher: hover or focus fans fixed-size tool boxes out without resizing the HUD, notification/error/task counts stay visible on its edge, touch uses a first tap to reveal controls, and player movement or an outside click closes the launcher.", estimate: "ready to deploy · focused QA", done: true },
+  { key: "task:avatar-hud-launcher", task: "Restore circular avatar HUD launcher", detail: "The account avatar is again a round launcher: hover or focus fans fixed-size tool boxes out without resizing the HUD, notification/error/task counts form a compact actionable row beside it and return to their matching icons when expanded, touch uses a first tap to reveal controls, and player movement or an outside click closes the launcher.", estimate: "ready to deploy · focused QA", done: true },
+  { key: "task:fixed-square-hud-shortcuts", task: "Fixed square World HUD shortcuts", detail: "The avatar is clipped into a true circle. Its right rail is one non-expanding column with only Office, Campfire, Share view, Remember, and square saved thumbnails; reward-pool navigation stays in the World. Dashboard uses a globe, Tasks uses a list, Capture uses a crop frame, and Wave now sits beside chat.", estimate: "ready to deploy · focused QA", done: true },
   { key: "task:avatar-selection-runtime", task: "Reliable user HUD selection", detail: "Avatar clicks use a scoped frame timestamp, prefer the visible avatar hit over nearby geometry, and open the privacy-filtered member side panel without throwing.", estimate: "implemented · focused QA", done: true },
   { key: "task:member-circle-fire", task: "Dirt Members Circle + growing fire", detail: "The complete member seating circle sits on detailed dirt; every member adds one visible log and slightly increases the bounded campfire scale.", estimate: "implemented · focused QA", done: true },
   { key: "task:aquarium-fixed-controls", task: "Tank-fixed reef controls", detail: "Feed, tap, backdrop, and light controls stay anchored to the aquarium's lower-right control point instead of floating with the player.", estimate: "implemented · focused QA", done: true },
@@ -3121,6 +3122,14 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:world-frame-hot-loop", task: "Instant movement and lean frame loop", detail: "Keyboard input reaches selected speed on its first frame, camera/movement scratch values are reused, and non-motion DOM/proximity work is cadence bounded while WebGL stays full-rate.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-chat-composer", task: "Primer chat and work composer", detail: "DEBUG occupies the lower-left and dark Primer chat reaches the bottom-right. Channel security and connection state live in the header; its pinned multiline composer selects a channel and repository, then sends chat, signs an issue, or assigns an Engineering agent.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-primer-hud", task: "Primer-styled compact World HUD", detail: "The compact and expanded right-side navigation rail now uses GitHub Primer canvas, border, spacing, button, focus, hover, and selected-state primitives.", estimate: "implemented · focused QA", done: true },
+  { key: "task:discord-human-authorization", task: "P1 · HUMAN · Rotate and authorize Discord", detail: "Regenerate the credential exposed in chat; keep the replacement only in Worker secrets; configure the canonical OAuth callback; install the application with least privilege; authorize as the current organization owner; select intended public channels; verify public read and non-pinging send; never paste the replacement credential into a task, log, repository, dashboard field, or chat.", estimate: "global priority 1 · human action required", done: false },
+  { key: "task:discord-public-chat-connector", task: "P2 · TAKEN · Integrate, deploy, and QA Discord", detail: "Taken by codex-bot using GPT-5 Codex at standard speed. Current-owner OAuth, canonical callback binding, live public-channel checks, non-pinging sends, the production-wide Durable Object rate gate, owner controls, clickable Boards Circle panel, global task priorities, and fail-closed deploy configuration are implemented. Remaining: rotate and install the P1 human-owned credentials, deploy, then record end-to-end production evidence.", estimate: "global priority 2 · active · blocked on P1 secret rotation", done: false },
+  { key: "task:agent-queue-reliability", task: "Durable unlimited agent queue + exact reasons", detail: "Rebase and deploy the arbitrary task-cap removal, durable offline desktop queue for owners, and exact safe rejection reasons without weakening provider authorization or safety preflight.", estimate: "implemented · integration and deployment QA", done: false },
+  { key: "task:task-conversation-reopen", task: "Task replies, full compact context, and mark undone", detail: "Rebase and verify encrypted organization-private task replies, compact ownership/routing/QA context, completion notes, and Mark undone while retaining completion history.", estimate: "implemented · integration QA", done: false },
+  { key: "task:private-task-screenshots", task: "Private screenshot evidence on tasks and agents", detail: "Rebase and deploy encrypted organization task attachments while preserving the distinct issue, chat, and Codex or Claude screenshot routes and bounded payload handling.", estimate: "implemented · integration QA", done: false },
+  { key: "task:member-node-plaza", task: "Compact growing node plaza + bench spawn", detail: "Rebase and verify evenly spaced node cabinets on one concrete-brick plaza that grows with the roster, plus a fresh-visitor Members Circle bench spawn that never overrides saved or shared positions.", estimate: "implemented · World integration QA", done: false },
+  { key: "task:d1-free-tier-visibility", task: "D1 free-tier visibility in admin", detail: "Rebase and verify the documented D1 free-tier thresholds and clearly labeled local estimates; exact account consumption remains external unless Cloudflare analytics is configured.", estimate: "implemented · admin integration QA", done: false },
+  { key: "task:office-floor-visibility-guard", task: "Restore Office floors after every story change", detail: "The deployed visibility guard keeps the tower shell, floor and ceiling slabs, lights, furniture, boards, and repositories visible, then synchronizes the selected story immediately after doorway or elevator travel.", estimate: "deployed · ready for World QA", done: true },
   { key: "task:web-pull-workbench", task: "Full web Issue and PR workbench", detail: "Record clicks now open canonical same-origin web pages. Still open: proactive conflict/check readiness and a signed mirror capability for auditable update-from-main before protected merge.", estimate: "record routing done · lifecycle active", done: false },
   { key: "task:session-audit", task: "Audit today’s requested work", detail: "Reconciled the full request history against code, tests, QA, and the build board; restored missing social-frame, repository-orbit, signage, and exact-view tracking while keeping partial and external work open.", estimate: "audit complete · open work retained", done: true },
   { key: "task:repo-record-tower-scale", task: "Count-scaled PR and Issue towers", detail: "Each repository work tower now rises with its complete bounded record count, so a 61-item Issue tower is visibly taller than a 43-item PR tower; both stand beyond the ActivityPub follower orbit.", estimate: "verified · ready for QA", done: true },
@@ -4563,7 +4572,7 @@ function campfireMemberCountTexture(THREE, total, newest) {
     context.shadowColor = "rgba(255,122,47,0.95)";
     context.shadowBlur = 36;
     context.fillStyle = ember;
-    context.font = '700 132px "ForkMesh Favorit", system-ui, sans-serif';
+    context.font = '700 156px "ForkMesh Favorit", system-ui, sans-serif';
     context.fillText(digits, 256, latest ? 84 : 104);
     context.shadowBlur = 20;
     context.fillStyle = "#ffdcac";
@@ -5834,6 +5843,28 @@ function startAvatarWave(avatar, startedAt = performance.now()) {
   return true;
 }
 
+function startAvatarHudAction(avatar, action, startedAt = performance.now()) {
+  if (!avatar || !action) return false;
+  const previous = avatar.userData.hudAction;
+  if (previous) {
+    avatar.position.y = previous.baseY;
+    avatar.rotation.set(
+      previous.baseRotation.x,
+      previous.baseRotation.y,
+      previous.baseRotation.z,
+    );
+    avatar.scale.copy(previous.baseScale);
+  }
+  avatar.userData.hudAction = {
+    action,
+    startedAt,
+    baseY: avatar.position.y,
+    baseRotation: avatar.rotation.clone(),
+    baseScale: avatar.scale.clone(),
+  };
+  return true;
+}
+
 // Rotating the arm box around its own centre would pull the shoulder end out
 // of the torso, so the mesh is nudged along the arc that keeps the shoulder
 // pinned where it hangs at rest.
@@ -5850,6 +5881,42 @@ function poseWavingArm(arm, rest, angle) {
 
 function animateAvatarActivity(avatar, time, delta, reducedMotion) {
   if (!avatar?.userData) return;
+  const hudAction = avatar.userData.hudAction;
+  if (hudAction) {
+    const duration = reducedMotion ? 360 : 1800;
+    const progress = (time - hudAction.startedAt) / duration;
+    avatar.position.y = hudAction.baseY;
+    avatar.rotation.copy(hudAction.baseRotation);
+    avatar.scale.copy(hudAction.baseScale);
+    if (!(progress >= 0) || progress >= 1) {
+      delete avatar.userData.hudAction;
+    } else if (!reducedMotion) {
+      const cycle = Math.sin(progress * Math.PI);
+      if (hudAction.action === "jump") {
+        avatar.position.y += Math.abs(Math.sin(progress * Math.PI * 4)) * 0.9;
+      } else if (hudAction.action === "spin") {
+        avatar.rotation.y += progress * Math.PI * 4;
+      } else if (hudAction.action === "backflip") {
+        avatar.position.y += cycle * 0.8;
+        avatar.rotation.x -= progress * Math.PI * 2;
+      } else if (hudAction.action === "dance") {
+        avatar.rotation.z = Math.sin(progress * Math.PI * 8) * 0.22 * cycle;
+        avatar.rotation.y += Math.sin(progress * Math.PI * 4) * 0.45;
+      } else if (hudAction.action === "float") {
+        avatar.position.y += cycle * 1.8;
+        avatar.rotation.y += progress * Math.PI;
+      } else if (hudAction.action === "wobble") {
+        avatar.rotation.z = Math.sin(progress * Math.PI * 12) * 0.32 * cycle;
+        avatar.scale.copy(hudAction.baseScale).multiplyScalar(
+          1 + Math.sin(progress * Math.PI * 8) * 0.14 * cycle,
+        );
+      } else if (hudAction.action === "sparkle") {
+        avatar.position.y += Math.abs(Math.sin(progress * Math.PI * 6)) * 0.35;
+        avatar.rotation.y += progress * Math.PI * 6;
+        avatar.scale.copy(hudAction.baseScale).multiplyScalar(1 + cycle * 0.22);
+      }
+    }
+  }
   const waveStartedAt = avatar.userData.waveStartedAt || 0;
   const waveArm = waveStartedAt ? avatar.userData.rightArm : null;
   if (waveArm) {
@@ -10339,6 +10406,43 @@ function worldGeneralChatTexture(THREE, messages = []) {
   });
 }
 
+function worldDiscordBoardTexture(THREE) {
+  return canvasTexture(THREE, 1536, 1024, (context) => {
+    context.fillStyle = "#0d1117";
+    context.fillRect(0, 0, 1536, 1024);
+    context.strokeStyle = "#5865f2";
+    context.lineWidth = 14;
+    context.strokeRect(10, 10, 1516, 1004);
+    context.fillStyle = "#f0f6fc";
+    context.font = '900 70px "ForkMesh Mono", ui-monospace, monospace';
+    context.textAlign = "center";
+    context.fillText("DISCORD BRIDGE", 768, 150);
+    context.fillStyle = "#a5b4fc";
+    context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("PUBLIC ORGANIZATION CHANNELS", 768, 245);
+    context.strokeStyle = "rgba(88,101,242,0.52)";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(160, 300);
+    context.lineTo(1376, 300);
+    context.stroke();
+    context.textAlign = "left";
+    context.fillStyle = "#c9d1d9";
+    context.font = '700 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("▸ OWNER-VERIFIED SERVER", 220, 430);
+    context.fillText("▸ SELECTED PUBLIC CHANNELS ONLY", 220, 505);
+    context.fillText("▸ MANUAL REFRESH · NO BACKGROUND RELAY", 220, 580);
+    context.fillText("▸ MENTIONS DISABLED", 220, 655);
+    context.textAlign = "center";
+    context.fillStyle = "#7ee787";
+    context.font = '900 48px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("CLICK TO OPEN CONNECTOR", 768, 810);
+    context.fillStyle = "#8c959f";
+    context.font = '650 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("CREDENTIALS STAY IN THE WORKER SECRET STORE", 768, 900);
+  });
+}
+
 // Three posts at a time on a board twice as tall as the old one, so each card
 // holds the full text, a deep image strip, and the post's engagement counts.
 // The board is repainted from the same snapshot the mini-app renders.
@@ -14098,6 +14202,7 @@ export function createWorldScene({
   onOfficeRooftopLaptopSelect = () => {},
   onWorldBulletinSelect = () => {},
   onWorldGeneralChatSelect = () => {},
+  onWorldDiscordBoardSelect = () => {},
   onMastodonBoardSelect = () => {},
   onMastodonOpenLink = () => {},
   onReferralBoardSelect = () => {},
@@ -14127,6 +14232,7 @@ export function createWorldScene({
   onFediverseProfile = () => {},
   onFediverseFollow = () => {},
   onAvatarSelect = () => {},
+  onUnverifiedAvatarDelete = () => {},
   onAvatarWalletAction = () => {},
   onLayoutObjectMoved = () => {},
   onLayoutObjectSelect = () => {},
@@ -14436,6 +14542,49 @@ export function createWorldScene({
   interactive.push(worldGeneralChatFrame, worldGeneralChatFace);
   world.add(worldGeneralChatBoard);
   registerMovableObject("world-general-chat-board", worldGeneralChatBoard);
+
+  const worldDiscordBoard = new THREE.Group();
+  worldDiscordBoard.name = "forkmesh-world-discord-board";
+  const discordBoardBase = new THREE.Mesh(
+    new THREE.BoxGeometry(7.9, 0.26, 1.5),
+    makeMaterial(THREE, "#161b22", { roughness: 0.8 }),
+  );
+  discordBoardBase.position.y = 0.13;
+  worldDiscordBoard.add(discordBoardBase);
+  for (const x of [-3.35, 3.35]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.18, 6.5, 0.18),
+      makeMaterial(THREE, "#5865f2", {
+        metalness: 0.28,
+        roughness: 0.48,
+      }),
+    );
+    post.position.set(x, 3.25, 0);
+    worldDiscordBoard.add(post);
+  }
+  const worldDiscordFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(7.55, 5.1, 0.24),
+    makeMaterial(THREE, "#202252", {
+      metalness: 0.32,
+      roughness: 0.46,
+    }),
+  );
+  worldDiscordFrame.position.y = BULLETIN_FACE_CENTER_Y;
+  worldDiscordFrame.userData.interactive = "world-discord-board";
+  const worldDiscordFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(7.2, 4.8),
+    new THREE.MeshBasicMaterial({
+      map: worldDiscordBoardTexture(THREE),
+      toneMapped: false,
+    }),
+  );
+  worldDiscordFace.name = "forkmesh-world-discord-board-face";
+  worldDiscordFace.position.set(0, BULLETIN_FACE_CENTER_Y, 0.14);
+  worldDiscordFace.userData.interactive = "world-discord-board";
+  worldDiscordBoard.add(worldDiscordFrame, worldDiscordFace);
+  interactive.push(worldDiscordFrame, worldDiscordFace);
+  world.add(worldDiscordBoard);
+  registerMovableObject("world-discord-board", worldDiscordBoard);
 
   // One uninterrupted city park slab sits under every district, path, and
   // building. Satellite circles remain semantic layout regions only; they no
@@ -14993,6 +15142,7 @@ export function createWorldScene({
     worldGeneralChatBoard,
     "world-general-chat-board",
   );
+  placeBillboardOnIsland(worldDiscordBoard, "world-discord-board");
 
   // Registered members and their named campfire benches have a dedicated
   // southern garden. It is the fourth cardinal district, leaving the live
@@ -15650,7 +15800,7 @@ export function createWorldScene({
     }
   }
   const flame = new THREE.Mesh(
-    new THREE.ConeGeometry(0.42, 1.05, 8),
+    new THREE.ConeGeometry(0.56, 1.4, 8),
     makeMaterial(THREE, "#ffb547", {
       emissive: "#ff7a2f",
       emissiveIntensity: 1.6,
@@ -15658,10 +15808,10 @@ export function createWorldScene({
       opacity: 0.92,
     }),
   );
-  flame.position.y = 0.82;
+  flame.position.y = 0.98;
   campfire.add(flame);
   const innerFlame = new THREE.Mesh(
-    new THREE.ConeGeometry(0.24, 0.72, 8),
+    new THREE.ConeGeometry(0.31, 0.95, 8),
     makeMaterial(THREE, "#fff0a6", {
       emissive: "#ffb547",
       emissiveIntensity: 2.1,
@@ -15669,11 +15819,11 @@ export function createWorldScene({
       opacity: 0.94,
     }),
   );
-  innerFlame.position.y = 0.72;
+  innerFlame.position.y = 0.86;
   campfire.add(innerFlame);
   let fireLevel = 1;
   const fireLight = new THREE.PointLight("#ffa14d", 3.2, 14, 1.8);
-  fireLight.position.y = 1.1;
+  fireLight.position.y = 1.45;
   campfire.add(fireLight);
   // The membership total rides in the flames themselves rather than on yet
   // another sign: an ember-lit numeral hovering over the pit, so the fire
@@ -15685,9 +15835,9 @@ export function createWorldScene({
       depthWrite: false,
     }),
   );
-  const MEMBER_COUNT_HOVER_Y = 1.95;
+  const MEMBER_COUNT_HOVER_Y = 3.25;
   memberCountSprite.position.y = MEMBER_COUNT_HOVER_Y;
-  memberCountSprite.scale.set(2.8, 1.4, 1);
+  memberCountSprite.scale.set(4.2, 2.1, 1);
   memberCountSprite.visible = false;
   campfire.add(memberCountSprite);
   let memberCountShown = "";
@@ -15711,7 +15861,7 @@ export function createWorldScene({
     // Each member contributes one visible log and a small, bounded amount of
     // warmth. The cap keeps a mature community's fire welcoming, not blocking.
     rebuildCampfireMemberLogs(count);
-    fireLevel = clamp(1.08 + count * 0.012, 1.08, 1.85);
+    fireLevel = clamp(1.28 + count * 0.014, 1.28, 2.2);
     fireLight.distance = 14 + Math.min(count, 80) * 0.08;
   }
   animated.push((time) => {
@@ -15722,7 +15872,7 @@ export function createWorldScene({
     fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
     // Drift with the flames so the number sits in the fire instead of on it.
     memberCountSprite.position.y =
-      MEMBER_COUNT_HOVER_Y + Math.sin(time * 0.0017) * 0.07;
+      MEMBER_COUNT_HOVER_Y + Math.sin(time * 0.0017) * 0.12;
   });
   // The real bench count depends on the member roster, which is still an
   // in-flight network request when the scene first renders. Rather than
@@ -16354,6 +16504,9 @@ export function createWorldScene({
 
   const remotePlayers = new Map();
   const remoteLabels = new Map();
+  // A successful administrative deletion must win over the next stale
+  // presence/directory frame while the edge cache catches up.
+  const administrativelyRemovedAccounts = new Set();
   const moderationActions = new WeakMap();
   const adminGuestCopyActions = new WeakMap();
   const moderationControlKeys = new Map();
@@ -19740,6 +19893,20 @@ export function createWorldScene({
     return aerialLandmarkMarkers;
   }
 
+  function syncOfficeFloorVisibility() {
+    // Story changes are independent of camera zoom. In particular, a lobby
+    // doorway warp and an elevator arrival can both happen while the camera
+    // remains on the same near/far LOD side. Keep this explicit so a skipped
+    // LOD sample can never leave the newly selected floor hidden behind the
+    // last floor's visibility state.
+    officeInterior.visible = true;
+    for (const [floorId, floorGroup] of officeFloorGroups) {
+      if (floorId === "lobby") continue;
+      floorGroup.visible =
+        officeSceneMode === "town" || floorId === officeCurrentFloorId;
+    }
+  }
+
   function updateSceneLevelOfDetail(force = false) {
     const far =
       officeSceneMode === "town" &&
@@ -19754,12 +19921,7 @@ export function createWorldScene({
     // floor slabs, lighting, and furniture visible from the outdoor World at
     // every camera distance. Once a visitor enters, isolate the active floor
     // to avoid drawing ten floors through the one they are using.
-    officeInterior.visible = true;
-    for (const [floorId, floorGroup] of officeFloorGroups) {
-      if (floorId === "lobby") continue;
-      floorGroup.visible =
-        officeSceneMode === "town" || floorId === officeCurrentFloorId;
-    }
+    syncOfficeFloorVisibility();
 
     // A purely visual LOD helper must never be able to interrupt movement.
     // Fail it closed once if a future marker asset cannot be constructed; the
@@ -20217,6 +20379,9 @@ export function createWorldScene({
     standUpFromOfficeChair();
     cancelDash();
     officeCurrentFloorId = floor.id;
+    // A direct doorway warp does not necessarily cross a camera LOD boundary.
+    // Render its selected floor before the next movement frame and camera snap.
+    syncOfficeFloorVisibility();
     currentSpace = `office-${floor.id}`;
     currentFloorY = officeFloorY(floor.id) + 0.38;
     const destination = new THREE.Vector3(
@@ -20800,6 +20965,12 @@ export function createWorldScene({
   }
 
   function setOfficeParticipants(participants = []) {
+    participants = (Array.isArray(participants) ? participants : []).filter(
+      (participant) =>
+        !administrativelyRemovedAccounts.has(
+          String(participant?.name || "").trim().toLowerCase(),
+        ),
+    );
     const seenOfficeParticipants = new Set();
     participants.forEach((participant) => {
       const id = String(participant?.id || "");
@@ -22207,6 +22378,9 @@ export function createWorldScene({
     currentFloorY = player.position.y;
     if (progress < 1) return true;
     officeCurrentFloorId = ride.floorId;
+    // Elevator completion also changes the active story without necessarily
+    // changing the camera LOD class.
+    syncOfficeFloorVisibility();
     currentFloorY = officeFloorY(ride.floorId) + 0.38;
     player.position.y = currentFloorY;
     officeElevatorCar.position.y = officeFloorY(ride.floorId);
@@ -23900,6 +24074,106 @@ export function createWorldScene({
     };
   }
 
+  function removeDeletedAvatar(avatar, peerId = "") {
+    if (!avatar) return;
+    const id = String(peerId || "");
+    removeRemoteModerationControls(avatar, id);
+    removeRemoteOrgTeamControl(avatar, id);
+    unregisterAvatarChestControls(avatar);
+    if (remotePlayers.get(id) === avatar) {
+      remotePlayers.delete(id);
+      remoteLabels.get(id)?.remove();
+      remoteLabels.delete(id);
+    }
+    if (loungeMembers.get(id) === avatar) loungeMembers.delete(id);
+    if (officeParticipants.get(id) === avatar) {
+      officeParticipants.delete(id);
+      officeParticipantLabels.get(id)?.remove();
+      officeParticipantLabels.delete(id);
+      officeBubbles.get(id)?.remove();
+      officeBubbles.delete(id);
+    }
+    avatar.parent?.remove(avatar);
+    disposeObject3D(avatar);
+  }
+
+  async function animateUnverifiedAvatarDeletion(member = {}) {
+    const name = String(member?.name || "").trim().toLowerCase();
+    if (!name) return false;
+    administrativelyRemovedAccounts.add(name);
+    const matches = [];
+    const collect = (avatar, peerId) => {
+      const avatarName = String(
+        avatar?.userData?.badgeIdentity?.name || "",
+      ).trim().toLowerCase();
+      if (avatar && avatarName === name) matches.push({ avatar, peerId });
+    };
+    remotePlayers.forEach((avatar, peerId) => collect(avatar, peerId));
+    loungeMembers.forEach((avatar, peerId) => collect(avatar, peerId));
+    officeParticipants.forEach((avatar, peerId) => collect(avatar, peerId));
+    if (!matches.length) return false;
+
+    const duration = reducedMotion ? 120 : 900;
+    await Promise.all(
+      matches.map(({ avatar, peerId }) => new Promise((resolve) => {
+        const parent = avatar.parent;
+        const burst = new THREE.Group();
+        burst.name = "forkmesh-admin-delete-burst";
+        burst.position.copy(avatar.position);
+        const particles = [];
+        const colors = ["#ff4d6d", "#ffcf4a", "#77d9ff", "#b8f2a1"];
+        for (let index = 0; index < 18; index += 1) {
+          const particle = new THREE.Mesh(
+            new THREE.SphereGeometry(0.035 + (index % 3) * 0.012, 8, 6),
+            new THREE.MeshBasicMaterial({
+              color: colors[index % colors.length],
+              transparent: true,
+              depthWrite: false,
+            }),
+          );
+          const angle = (index / 18) * Math.PI * 2;
+          particle.userData.velocity = new THREE.Vector3(
+            Math.cos(angle) * (0.9 + (index % 4) * 0.18),
+            0.8 + (index % 5) * 0.22,
+            Math.sin(angle) * (0.9 + (index % 4) * 0.18),
+          );
+          particles.push(particle);
+          burst.add(particle);
+        }
+        parent?.add(burst);
+        unregisterAvatarChestControls(avatar);
+        const startedAt = performance.now();
+        const initialY = avatar.position.y;
+        const initialScale = avatar.scale.clone();
+        const frame = (now) => {
+          const progress = Math.min(1, (now - startedAt) / duration);
+          const eased = 1 - (1 - progress) ** 3;
+          avatar.rotation.y += reducedMotion ? 0 : 0.22;
+          avatar.position.y = initialY + eased * 1.35;
+          avatar.scale.copy(initialScale).multiplyScalar(
+            Math.max(0.02, 1 - eased),
+          );
+          particles.forEach((particle) => {
+            const velocity = particle.userData.velocity;
+            particle.position.copy(velocity).multiplyScalar(eased);
+            particle.position.y -= eased * eased * 0.45;
+            particle.material.opacity = 1 - progress;
+          });
+          if (progress < 1) {
+            requestAnimationFrame(frame);
+            return;
+          }
+          parent?.remove(burst);
+          disposeObject3D(burst);
+          removeDeletedAvatar(avatar, peerId);
+          resolve();
+        };
+        requestAnimationFrame(frame);
+      })),
+    );
+    return true;
+  }
+
   /** Attach a loaded (or failed) fediverse card to one avatar's chest. */
   function setAvatarFediverseProfile(peerId, profile) {
     const id = String(peerId || "");
@@ -24306,6 +24580,12 @@ export function createWorldScene({
   }
 
   function setRemotePlayers(players = []) {
+    players = (Array.isArray(players) ? players : []).filter(
+      (remote) =>
+        !administrativelyRemovedAccounts.has(
+          String(remote?.name || "").trim().toLowerCase(),
+        ),
+    );
     const seen = new Set();
     players.forEach((remote) => {
       if (!remote?.id || remote.id === identity.id) return;
@@ -24558,7 +24838,26 @@ export function createWorldScene({
     leaderboardMembers = members,
     guests = 0,
   ) {
-    const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
+    const incomingMembers = Array.isArray(members) ? members : [];
+    members = incomingMembers.filter(
+      (member) =>
+        !administrativelyRemovedAccounts.has(
+          String(member?.name || "").trim().toLowerCase(),
+        ),
+    );
+    leaderboardMembers = (
+      Array.isArray(leaderboardMembers) ? leaderboardMembers : []
+    ).filter(
+      (member) =>
+        !administrativelyRemovedAccounts.has(
+          String(member?.name || "").trim().toLowerCase(),
+        ),
+    );
+    const removedCount = incomingMembers.length - members.length;
+    const total = Math.max(
+      0,
+      Math.min(999999, (Number(totalCount) || 0) - removedCount),
+    );
     // The aquarium is the same public account directory expressed as a
     // school: present/recent users swim high, inactive users low. No account
     // names or labels are rendered on the fish themselves.
@@ -27829,7 +28128,24 @@ export function createWorldScene({
     // it plays the same way whether the gesture came from this browser or off
     // the relay.
     if (emote === "wave") startAvatarWave(avatar);
-    const glyphs = { wave: "WAVE", idea: "IDEA ✦", celebrate: "NICE ★" };
+    if (
+      ["jump", "spin", "backflip", "dance", "float", "wobble", "sparkle"]
+        .includes(emote)
+    ) {
+      startAvatarHudAction(avatar, emote);
+    }
+    const glyphs = {
+      wave: "WAVE",
+      idea: "IDEA ✦",
+      celebrate: "NICE ★",
+      jump: "BOING ↑",
+      spin: "WHEE ↻",
+      backflip: "FLIP!",
+      dance: "DANCE ♫",
+      float: "UP WE GO ☁",
+      wobble: "WOBBLE 〰",
+      sparkle: "SPARKLE ✦",
+    };
     const sprite = makeLabelSprite(
       THREE,
       glyphs[emote] || "HELLO",
@@ -28996,6 +29312,10 @@ export function createWorldScene({
       onWorldGeneralChatSelect();
       return;
     }
+    if (hit?.object?.userData?.interactive === "world-discord-board") {
+      onWorldDiscordBoardSelect();
+      return;
+    }
     const recordPage = hit?.object?.userData?.repositoryRecordPage;
     if (recordPage?.enabled === true) {
       changeRepositoryRecordPage(
@@ -29133,6 +29453,17 @@ export function createWorldScene({
       return;
     }
     if (avatarSelection) {
+      const selectedMember = avatarSelectionPayload(avatarSelection);
+      if (
+        hit.object === avatarSelection.avatar?.userData?.verifiedPin &&
+        identity.isAdmin === true &&
+        selectedMember.self !== true &&
+        selectedMember.emailVerified !== true &&
+        selectedMember.accountStatus.toLowerCase() !== "guest"
+      ) {
+        onUnverifiedAvatarDelete(selectedMember);
+        return;
+      }
       onAvatarSelect(avatarSelectionPayload(avatarSelection));
       return;
     }
@@ -30743,6 +31074,7 @@ export function createWorldScene({
       })),
     }),
     setRemotePlayers,
+    animateUnverifiedAvatarDeletion,
     setLocalOrgTeam,
     setAvatarFediverseProfile,
     setAvatarRecentPublicMessage,

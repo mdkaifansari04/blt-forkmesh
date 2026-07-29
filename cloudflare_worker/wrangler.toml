@@ -29,6 +29,8 @@ run_worker_first = [
   # static assets, APIs, and realtime chat/presence.
   "/",
   "/health",
+  "/mcp",
+  "/mcp/",
   "/simulate-sentry-error",
   "/admin-*",
   "/dashboard",
@@ -87,6 +89,12 @@ run_worker_first = [
 
 [vars]
 NODE_NAME = "forkmesh-mainnode"
+# Canonical public origins are non-secret deployment configuration. Keeping
+# these in the production manifest ensures every deploy supplies the exact
+# callback URI registered with Discord while bot/OAuth credentials remain in
+# Cloudflare's encrypted Worker secret store.
+PUBLIC_BASE_URL = "https://forkmesh.com"
+DISCORD_OAUTH_REDIRECT_URI = "https://forkmesh.com/api/integrations/discord/callback"
 NODE_SOLANA_ADDRESS = ""
 COMMUNITY_REWARD_NETWORK = "mainnet-beta"
 COMMUNITY_REWARD_RPC_URL = "https://api.mainnet-beta.solana.com"
@@ -121,7 +129,8 @@ FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 # its signups and reported nodes do nothing.
 # MAIN_RELAY_URL = ""
 # RELAY_LABEL = ""
-# PUBLIC_BASE_URL = ""
+# PUBLIC_BASE_URL is set above for the canonical production deployment. Forks
+# must replace it and DISCORD_OAUTH_REDIRECT_URI with their own HTTPS origin.
 # TREASURY_SOLANA_ADDRESS is the existing one-click deployment name for the
 # public reward destination. COMMUNITY_REWARD_POOL_ADDRESS is an optional
 # explicit modern override; REWARD_SIGNER_ACCOUNT identifies the local signer.
@@ -185,6 +194,10 @@ class_name = "ForkMeshCronWatchdog"
 name = "FORKMESH_CRON_RUNNER"
 class_name = "ForkMeshCronRunner"
 
+[[durable_objects.bindings]]
+name = "FORKMESH_DISCORD_GATE"
+class_name = "ForkMeshDiscordGate"
+
 # Persistent storage: repo catalog, accounts, and the issue/pull inboxes.
 # Create once with:  uvx --from workers-py pywrangler d1 create forkmesh
 # then paste the printed database_id below.
@@ -234,6 +247,10 @@ class_name = "ForkMeshCronWatchdog"
 [[env.dev.durable_objects.bindings]]
 name = "FORKMESH_CRON_RUNNER"
 class_name = "ForkMeshCronRunner"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_DISCORD_GATE"
+class_name = "ForkMeshDiscordGate"
 
 [[migrations]]
 tag = "v1"
@@ -311,6 +328,12 @@ tag = "v14"
 # seeds/reconciles it, so a wedged stateless Python scheduled wrapper cannot
 # stop the minute loop until another deployment happens.
 new_sqlite_classes = ["ForkMeshCronRunner"]
+
+[[migrations]]
+tag = "v15"
+# Every bot REST request crosses one fixed-name object. It persists only
+# bounded Discord rate-bucket expiry metadata and never message/channel data.
+new_sqlite_classes = ["ForkMeshDiscordGate"]
 
 
 [observability]
