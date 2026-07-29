@@ -5776,7 +5776,14 @@ private:
     // POST /api/tasks/<id>/complete once the run reaches a terminal status,
     // stamping the finishing bot. No-op without an org task, while the run is
     // still going, or once finishedByBot is already set.
-    void completeOrgTaskForSession(int sessionId);
+    //
+    // followUp names a later event that changed the story after the run itself
+    // ended — the branch landing, or the session being deleted (adhoc #30).
+    // Passing one re-posts the completion (the relay's /complete is idempotent
+    // and refreshes the note) and skips the terminal-status guard, so the task
+    // ends up complete with a summary even when the run never finished cleanly.
+    void completeOrgTaskForSession(int sessionId,
+                                   const QString &followUp = QString());
     // Apply an org-task field update to the live session and persist it. The
     // network callbacks run after event-loop turns that can rebuild
     // m_agentSessions, so they re-look-up by id rather than hold a pointer.
