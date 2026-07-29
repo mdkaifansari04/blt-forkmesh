@@ -3475,6 +3475,16 @@ forkmesh-world.world-admin-error-arrival::after {
   overflow-wrap: anywhere;
 }
 
+/* "How this ran" line under a bot-assigned task: which bot started and
+   finished it, and the model, mode, and strength it used. Set back from the
+   routing line above it so the run detail reads as a footnote, not a second
+   heading. */
+.world-office-task-copy small.world-office-task-agent-run {
+  color: var(--world-muted);
+  opacity: 0.82;
+  font-size: 0.6rem;
+}
+
 .world-office-task-state {
   width: 8px;
   height: 8px;

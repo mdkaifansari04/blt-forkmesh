@@ -8209,8 +8209,20 @@ class _OfficeMarketingTasksRuntime:
     def same_origin(self):
         # A successfully authenticated bearer credential is not ambient
         # browser authority and therefore is not vulnerable to cross-site
-        # request forgery. Browser sessions retain the strict origin check.
-        return bool(self.bot_context) or _request_same_origin(self.request)
+        # request forgery. That covers both an organization bot token and the
+        # account-session bearer the desktop sends when a prompt opens a task;
+        # the token still has to validate in session(). Browser sessions carry
+        # the session in a cookie, so they retain the strict origin check.
+        if self.bot_context:
+            return True
+        header = str(
+            self.request.headers.get("authorization") or ""
+        ).strip()
+        if header.lower().startswith("bearer "):
+            presented = header[7:].strip()
+            if presented and presented != "cookie":
+                return True
+        return _request_same_origin(self.request)
 
     def query(self, name):
         try:

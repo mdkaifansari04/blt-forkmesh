@@ -2923,6 +2923,12 @@ const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit")
 // here merges its own branch into the default branch the moment its run
 // finishes successfully, skipping the pull-request review step.
 const QString kQuickAddYoloSetting = QStringLiteral("agents/quickAddYolo");
+// Footer quick-add "Task" toggle (adhoc #18): true => every agent started from
+// here also opens an organization task recording which bot launched the run,
+// which bot finished it, and the model/mode/strength it used. On by default —
+// the point is that prompted work is visible to the organization, not just to
+// the desktop that typed it — and turned off per-run for throwaway prompts.
+const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.
