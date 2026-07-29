@@ -19741,6 +19741,20 @@ export function createWorldScene({
     return aerialLandmarkMarkers;
   }
 
+  function syncOfficeFloorVisibility() {
+    // Story changes are independent of camera zoom. In particular, a lobby
+    // doorway warp and an elevator arrival can both happen while the camera
+    // remains on the same near/far LOD side. Keep this explicit so a skipped
+    // LOD sample can never leave the newly selected floor hidden behind the
+    // last floor's visibility state.
+    officeInterior.visible = true;
+    for (const [floorId, floorGroup] of officeFloorGroups) {
+      if (floorId === "lobby") continue;
+      floorGroup.visible =
+        officeSceneMode === "town" || floorId === officeCurrentFloorId;
+    }
+  }
+
   function updateSceneLevelOfDetail(force = false) {
     const far =
       officeSceneMode === "town" &&
@@ -19755,12 +19769,7 @@ export function createWorldScene({
     // floor slabs, lighting, and furniture visible from the outdoor World at
     // every camera distance. Once a visitor enters, isolate the active floor
     // to avoid drawing ten floors through the one they are using.
-    officeInterior.visible = true;
-    for (const [floorId, floorGroup] of officeFloorGroups) {
-      if (floorId === "lobby") continue;
-      floorGroup.visible =
-        officeSceneMode === "town" || floorId === officeCurrentFloorId;
-    }
+    syncOfficeFloorVisibility();
 
     // A purely visual LOD helper must never be able to interrupt movement.
     // Fail it closed once if a future marker asset cannot be constructed; the
@@ -20218,6 +20227,9 @@ export function createWorldScene({
     standUpFromOfficeChair();
     cancelDash();
     officeCurrentFloorId = floor.id;
+    // A direct doorway warp does not necessarily cross a camera LOD boundary.
+    // Render its selected floor before the next movement frame and camera snap.
+    syncOfficeFloorVisibility();
     currentSpace = `office-${floor.id}`;
     currentFloorY = officeFloorY(floor.id) + 0.38;
     const destination = new THREE.Vector3(
@@ -22208,6 +22220,9 @@ export function createWorldScene({
     currentFloorY = player.position.y;
     if (progress < 1) return true;
     officeCurrentFloorId = ride.floorId;
+    // Elevator completion also changes the active story without necessarily
+    // changing the camera LOD class.
+    syncOfficeFloorVisibility();
     currentFloorY = officeFloorY(ride.floorId) + 0.38;
     player.position.y = currentFloorY;
     officeElevatorCar.position.y = officeFloorY(ride.floorId);

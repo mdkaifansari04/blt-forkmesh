@@ -1427,13 +1427,13 @@ def test_world_task_button_and_inactive_avatar_visibility_contracts():
 def test_render_stalls_include_bounded_likely_component_attribution():
     assert (
         "Render stall detected; we think it was "
-        "${stallAttribution.component}" in SCENE
+        "${component}" in SCENE
     )
-    assert "likelyCause: stallAttribution" in SCENE
-    assert 'component: "camera controls"' in SCENE
-    assert 'component: "Three.js renderer workload"' in SCENE
-    assert 'component: "JavaScript memory management"' in SCENE
-    assert 'codeArea: "renderer.render(scene, camera)"' in SCENE
+    assert "likelyCause: { component, codeArea }," in SCENE
+    assert 'component = "camera controls";' in SCENE
+    assert 'component = "Three.js renderer workload";' in SCENE
+    assert 'component = `office ${officeSceneMode} scene`;' in SCENE
+    assert 'codeArea = "renderer.render(scene, camera)";' in SCENE
 
 
 def test_world_first_person_zoom_out_falls_back_to_third_person():

@@ -668,6 +668,33 @@ def test_aerial_lod_never_removes_world_sections_and_sol_sign_is_attached():
     assert "aerialLandmarkMarkersUnavailable = true;" in scene
 
 
+def test_office_floor_visibility_syncs_immediately_on_every_story_change():
+    """A floor warp or elevator arrival cannot depend on a later LOD sample."""
+
+    scene = source(SCENE_PATH)
+    assert "function syncOfficeFloorVisibility()" in scene
+    visibility = scene[
+        scene.index("function syncOfficeFloorVisibility()"):
+        scene.index("function updateSceneLevelOfDetail(")
+    ]
+    assert "officeInterior.visible = true;" in visibility
+    assert 'officeSceneMode === "town" || floorId === officeCurrentFloorId' in visibility
+    warp = scene[
+        scene.index("function warpToOfficeFloor(floorId)"):
+        scene.index("function tryOfficeFloorWarpDoorway", scene.index("function warpToOfficeFloor(floorId)"))
+    ]
+    assert warp.index("officeCurrentFloorId = floor.id;") < warp.index(
+        "syncOfficeFloorVisibility();"
+    )
+    elevator = scene[
+        scene.index("function updateOfficeElevator(time)"):
+        scene.index("// Sitting is a local pose", scene.index("function updateOfficeElevator(time)"))
+    ]
+    assert elevator.index("officeCurrentFloorId = ride.floorId;") < elevator.index(
+        "syncOfficeFloorVisibility();"
+    )
+
+
 def test_tall_floor_exhibits_and_elevator_openings_stay_between_slabs():
     scene = source(SCENE_PATH)
     for contract in (
