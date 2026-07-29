@@ -1072,6 +1072,15 @@ private:
     // Settings -> Security tab: private vulnerability reporting form.
     QWidget *buildVulnReportTab();
     void submitVulnerabilityReport();
+    // Settings -> MCP tab: mint/revoke the connector token that lets an
+    // external MCP agent work this node's issues and PRs, and show the exact
+    // config to paste into that agent (adhoc #16).
+    QWidget *buildMcpConnectorTab();
+    void refreshMcpConnectorTab();
+    void generateMcpConnector();
+    void revokeMcpConnector();
+    void testMcpConnector();
+    QString mcpServerScriptPath() const;
     // Settings -> Quick Setup tab: provision a fresh instance in one pass —
     // identity, workflow credentials and world appearance applied together.
     QWidget *buildQuickSetupTab();
@@ -4718,6 +4727,17 @@ private:
     QComboBox *m_vulnComponentCombo = nullptr;
     QPushButton *m_vulnSubmitButton = nullptr;
     QLabel *m_vulnStatusLabel = nullptr;
+    // MCP connector page (Settings → MCP tab).
+    QLabel *m_mcpStatusLabel = nullptr;
+    QLineEdit *m_mcpTokenEdit = nullptr;
+    QPlainTextEdit *m_mcpConfigEdit = nullptr;
+    QPushButton *m_mcpGenerateButton = nullptr;
+    QPushButton *m_mcpRevokeButton = nullptr;
+    QPushButton *m_mcpTestButton = nullptr;
+    QLabel *m_mcpTestLabel = nullptr;
+    // The probe subprocess for "Test connection". Owned so a second click (or
+    // closing the app) never leaves a stray python3 behind.
+    QProcess *m_mcpTestProcess = nullptr;
     QTableWidget *m_commitsTable = nullptr;
     // What the commit table currently shows, so a repeat tab click (or the
     // redundant load when a repo first opens) can skip the full rebuild — 4 git

@@ -256,6 +256,10 @@ QString findCloudflareTunnelBootstrapScript(
 QString findMirrorGatewayScript(
     const QString &sourceDir = QString(),
     const QString &applicationDir = QString());
+// Resolve the MCP server that Settings -> MCP hands to external agents.
+QString findMcpServerScript(
+    const QString &sourceDir = QString(),
+    const QString &applicationDir = QString());
 // Resolve the non-shell installer for ForkMesh's exact SHA-256-pinned
 // cloudflared release. The helper installs into owner-controlled app data.
 QString findCloudflaredInstallerScript(

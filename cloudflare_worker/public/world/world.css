@@ -649,7 +649,11 @@ forkmesh-world {
   justify-self: end;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0;
+  transform-origin: top right;
+  transition:
+    gap 220ms ease,
+    filter 220ms ease;
 }
 
 .world-icon-button,
@@ -667,6 +671,14 @@ forkmesh-world {
   cursor: pointer;
   box-shadow: 0 1px 0 rgb(255 255 255 / 0.04) inset;
   backdrop-filter: blur(12px);
+  transition:
+    width 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    min-width 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 140ms ease,
+    transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 160ms ease,
+    background-color 160ms ease,
+    visibility 0s linear 220ms;
 }
 
 .world-icon-button {
@@ -695,6 +707,66 @@ forkmesh-world {
   text-decoration: none;
   font-size: 0.88rem;
   font-weight: 600;
+  width: 0;
+  min-width: 0;
+  min-height: 40px;
+  overflow: hidden;
+  border-width: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(18px) scale(0.84);
+  visibility: hidden;
+}
+
+.world-top-link-label {
+  display: block;
+  max-width: 0;
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  color: var(--primer-fg-muted);
+  font: 700 0.42rem/1 "ForkMesh Mono", ui-monospace, monospace;
+  letter-spacing: 0.015em;
+  text-align: center;
+  text-transform: uppercase;
+  transform: translateY(-3px);
+  transition:
+    max-width 180ms ease,
+    height 180ms ease,
+    opacity 140ms ease,
+    transform 180ms ease;
+  white-space: nowrap;
+}
+
+/* The avatar is the launcher.  Revealed controls retain their compact 40px
+   square footprint and simply slide out to its left. */
+.world-hud[data-hud-expanded="true"] .world-top-actions {
+  gap: 6px;
+  filter: drop-shadow(0 10px 18px rgb(1 4 9 / 0.34));
+}
+
+.world-hud[data-hud-expanded="true"] .world-top-link {
+  grid-template-rows: 17px 8px;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  align-content: center;
+  gap: 2px;
+  overflow: visible;
+  border-width: 1px;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0) scale(1);
+  transition-delay: 0s;
+  visibility: visible;
+}
+
+.world-hud[data-hud-expanded="true"] .world-top-link-label {
+  max-width: 38px;
+  height: 8px;
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .world-top-link[aria-pressed="true"] {
@@ -912,15 +984,35 @@ forkmesh-world.world-admin-error-arrival::after {
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--world-line-strong) transparent;
-  transition: width 180ms ease;
+  transform-origin: top right;
+  transition:
+    width 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    gap 220ms ease,
+    opacity 140ms ease,
+    transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    filter 220ms ease,
+    visibility 0s linear 220ms;
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .world-right-rail[data-expanded="false"] {
-  width: 44px;
-  gap: 4px;
+  width: 0;
+  gap: 0;
   overflow: visible;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(22px) scale(0.92);
+  visibility: hidden;
+}
+
+.world-right-rail[data-expanded="true"] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-2px);
+  filter: drop-shadow(0 12px 22px rgb(1 4 9 / 0.38));
+  transition-delay: 0s;
+  visibility: visible;
 }
 
 .world-map {
@@ -1505,13 +1597,17 @@ forkmesh-world.world-admin-error-arrival::after {
   place-items: center;
   width: 40px;
   height: 40px;
-  overflow: hidden;
   border: 1px solid var(--primer-border-default);
-  border-radius: 6px;
+  border-radius: 50%;
   background: var(--primer-control-bg);
   padding: 3px;
   color: white;
   cursor: pointer;
+  isolation: isolate;
+  transition:
+    transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 160ms ease,
+    box-shadow 220ms ease;
 }
 
 .world-shirt-badge:hover,
@@ -1525,12 +1621,28 @@ forkmesh-world.world-admin-error-arrival::after {
   box-shadow: 0 0 0 3px var(--primer-accent-subtle);
 }
 
+.world-hud[data-hud-expanded="true"] .world-shirt-badge {
+  transform: translateY(1px) scale(1.1);
+  border-color: var(--world-mint);
+  box-shadow:
+    0 0 0 3px rgb(158 247 198 / 0.14),
+    0 10px 24px rgb(1 4 9 / 0.45);
+}
+
 .world-shirt-account {
   position: absolute;
-  top: 2px;
-  right: 3px;
+  bottom: -3px;
+  left: -3px;
+  z-index: 3;
+  display: grid;
+  width: 15px;
+  height: 15px;
+  place-items: center;
+  border: 2px solid var(--primer-canvas-default);
+  border-radius: 50%;
+  background: #163928;
   font-family: "ForkMesh Mono", monospace;
-  font-size: 0.52rem;
+  font-size: 0.44rem;
   line-height: 1;
   color: #9ef7c6;
 }
@@ -1538,17 +1650,81 @@ forkmesh-world.world-admin-error-arrival::after {
 .world-shirt-avatar {
   width: 100%;
   height: 100%;
+  border-radius: 50%;
   object-fit: cover;
 }
 
 .world-shirt-initial {
+  position: relative;
   display: grid;
   width: 100%;
   height: 100%;
   place-items: center;
+  border-radius: 50%;
   background: linear-gradient(145deg, #1c4c3a, #0c2019);
   color: #eafff5;
   font: 800 1rem/1 "ForkMesh Mono", monospace;
+}
+
+.world-shirt-initial::before,
+.world-shirt-initial::after {
+  position: absolute;
+  left: 50%;
+  background: #b6f4d1;
+  content: "";
+  transform: translateX(-50%);
+}
+
+.world-shirt-initial::before {
+  top: 7px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.world-shirt-initial::after {
+  bottom: 6px;
+  width: 19px;
+  height: 11px;
+  border-radius: 12px 12px 7px 7px;
+}
+
+.world-shirt-count {
+  position: absolute;
+  z-index: 4;
+  display: grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 2px solid var(--primer-canvas-default);
+  border-radius: 999px;
+  padding: 0 4px;
+  color: white;
+  font: 800 0.49rem/1 "ForkMesh Mono", ui-monospace, monospace;
+  box-shadow: 0 2px 8px rgb(1 4 9 / 0.45);
+}
+
+.world-shirt-count[hidden] {
+  display: none;
+}
+
+.world-shirt-count--alerts {
+  top: -8px;
+  left: -8px;
+  background: #d29922;
+  color: #101913;
+}
+
+.world-shirt-count--errors {
+  top: -8px;
+  right: -8px;
+  background: #da3633;
+}
+
+.world-shirt-count--tasks {
+  right: -8px;
+  bottom: -8px;
+  background: var(--primer-accent-emphasis);
 }
 
 .world-diagnostics {
@@ -7194,21 +7370,37 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-top-link {
-    width: 38px;
-    min-width: 38px;
+    width: 0;
+    min-width: 0;
     min-height: 38px;
     padding: 0;
     justify-content: center;
   }
 
-  .world-top-link span:not([aria-hidden="true"]) {
-    display: none;
+  .world-hud[data-hud-expanded="true"] .world-top-actions {
+    max-width: calc(100vw - 62px);
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .world-hud[data-hud-expanded="true"] .world-top-link {
+    width: 38px;
+    min-width: 38px;
+    height: 38px;
+    min-height: 38px;
+    grid-template-rows: 16px 7px;
+  }
+
+  .world-hud[data-hud-expanded="true"] .world-top-link-label {
+    max-width: 36px;
+    height: 7px;
+    font-size: 0.38rem;
   }
 
   .world-top-actions {
-    /* The wave chip is one more icon in an already tight phone row; a 6px
-       gutter keeps the whole row, settings badge included, on screen. */
-    gap: 6px;
+    /* Compact mode exposes only the circular account launcher. */
+    gap: 0;
   }
 
   .world-shirt-badge {
@@ -7238,7 +7430,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-right-rail[data-expanded="false"] {
-    width: 44px;
+    width: 0;
   }
 
   .world-right-rail .world-map {

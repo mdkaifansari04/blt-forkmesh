@@ -18,6 +18,7 @@
 #include "../src/LocalBackupStore.h"
 #include "../src/MirrorCrypto.h"
 #include "../src/PrivateMirrorStore.h"
+#include "../src/McpConnector.h"
 #include "../src/NetworkBackoff.h"
 #include "../src/PlatformLogFilter.h"
 #include "../src/ProjectStore.h"
@@ -6641,6 +6642,114 @@ int main(int argc, char *argv[])
                   !forkmesh::isFontDatabaseNoise(
                       QStringLiteral("forkmesh-419-control-line")),
               "isFontDatabaseNoise matches only the font-database warning");
+    }
+
+    // MCP connector (adhoc #16): the token is a bearer credential that lets an
+    // external agent write signed entries as this node, so minting, masking,
+    // persistence permissions and revocation all have to hold.
+    {
+        using namespace forkmesh::mcp;
+        QTemporaryDir appData;
+        check(appData.isValid(), "MCP connector test dir created");
+
+        check(!loadConnector(appData.path()).isValid(),
+              "a node with no connector file grants no token");
+
+        const QString token = generateToken();
+        check(isWellFormedToken(token) && token.startsWith("fmcp_") &&
+                  token.size() >= 40,
+              "a generated token is well formed and long enough to be a secret");
+        check(generateToken() != generateToken(),
+              "each generated token is distinct");
+        check(!isWellFormedToken(QStringLiteral("fmcp_short")) &&
+                  !isWellFormedToken(QStringLiteral("hunter2")) &&
+                  !isWellFormedToken(QString()),
+              "malformed tokens are rejected");
+
+        Connector minted;
+        minted.token = token;
+        minted.node = QStringLiteral("nodepub");
+        minted.label = QStringLiteral("laptop");
+        minted.createdMs = 1700000000000LL;
+        QString error;
+        check(saveConnector(appData.path(), minted, &error), "connector saved");
+
+        const Connector loaded = loadConnector(appData.path());
+        check(loaded.token == token && loaded.node == QStringLiteral("nodepub")
+                  && loaded.label == QStringLiteral("laptop")
+                  && loaded.createdMs == 1700000000000LL,
+              "the saved connector round-trips");
+        // Qt reports the same POSIX bits as both the Owner and User flags, so
+        // assert on what actually matters: the owner can read/write it and
+        // nobody else can see it at all.
+        const QFile::Permissions perms =
+            QFile::permissions(connectorPath(appData.path()));
+        check(perms.testFlag(QFile::ReadOwner) &&
+                  perms.testFlag(QFile::WriteOwner) &&
+                  !(perms & (QFile::ReadGroup | QFile::WriteGroup |
+                             QFile::ReadOther | QFile::WriteOther)),
+              "connector.json is owner-only, like the identity key beside it");
+        check(connectorPath(appData.path())
+                  .endsWith(QStringLiteral("/mcp/connector.json")),
+              "the connector lands where forkmesh_mcp_server.py reads it");
+
+        Connector bogus;
+        bogus.token = QStringLiteral("not-a-token");
+        check(!saveConnector(appData.path(), bogus, &error) &&
+                  loadConnector(appData.path()).token == token,
+              "a malformed token is refused without clobbering the live one");
+
+        // A hand-edited/truncated file must read as "no connector" rather than
+        // as a connector whose token nothing can ever match.
+        QFile broken(connectorPath(appData.path()));
+        check(broken.open(QIODevice::WriteOnly | QIODevice::Truncate),
+              "connector file reopened");
+        broken.write("{\"token\":\"\"}");
+        broken.close();
+        check(!loadConnector(appData.path()).isValid(),
+              "a corrupt connector file reads as absent");
+
+        check(saveConnector(appData.path(), minted, &error) &&
+                  revokeConnector(appData.path(), &error) &&
+                  !loadConnector(appData.path()).isValid(),
+              "revoking removes the token");
+        check(revokeConnector(appData.path(), &error),
+              "revoking an already-revoked connector succeeds");
+
+        const QString config = configJson(QStringLiteral("/usr/bin/python3"),
+                                          QStringLiteral("/opt/fm/mcp.py"),
+                                          QStringLiteral("/home/u/mirrors"),
+                                          token);
+        const QJsonObject server =
+            QJsonDocument::fromJson(config.toUtf8()).object()
+                .value("mcpServers").toObject().value("forkmesh").toObject();
+        check(server.value("command").toString() ==
+                      QStringLiteral("/usr/bin/python3") &&
+                  server.value("args").toArray().at(0).toString() ==
+                      QStringLiteral("/opt/fm/mcp.py"),
+              "the generated config launches the resolved interpreter and script");
+        check(server.value("env").toObject().value("FORKMESH_MCP_TOKEN")
+                      .toString() == token &&
+                  server.value("env").toObject().value("FORKMESH_REPOS_DIR")
+                      .toString() == QStringLiteral("/home/u/mirrors"),
+              "the generated config carries the token and repo root");
+        check(!configJson(QString(), QStringLiteral("/opt/fm/mcp.py"),
+                          QString(), QString())
+                   .contains(QStringLiteral("env")),
+              "with no token and no repo root the config has no env block");
+
+        const QString cli = cliCommand(QStringLiteral("python3"),
+                                       QStringLiteral("/home/a b/mcp.py"),
+                                       QString(), token);
+        check(cli.startsWith(QStringLiteral("claude mcp add forkmesh")) &&
+                  cli.contains(QStringLiteral("'/home/a b/mcp.py'")) &&
+                  cli.contains(QStringLiteral("FORKMESH_MCP_TOKEN=") + token),
+              "the CLI one-liner quotes paths with spaces and passes the token");
+
+        check(maskToken(token).startsWith(QStringLiteral("fmcp_")) &&
+                  !maskToken(token).contains(token.mid(12, 8)) &&
+                  maskToken(QString()).isEmpty(),
+              "masking hides the middle of the token");
     }
 
     if (failures) {

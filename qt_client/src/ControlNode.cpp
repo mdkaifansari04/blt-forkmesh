@@ -1311,6 +1311,15 @@ QString findMirrorGatewayScript(
         sourceDir, applicationDir);
 }
 
+QString findMcpServerScript(
+    const QString &sourceDir, const QString &applicationDir)
+{
+    return findPinnedTool(
+        QStringLiteral("forkmesh_mcp_server.py"),
+        QStringLiteral("FORKMESH_MCP_SERVER"),
+        sourceDir, applicationDir);
+}
+
 QString findCloudflaredInstallerScript(
     const QString &sourceDir, const QString &applicationDir)
 {

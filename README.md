@@ -151,7 +151,9 @@ per-client reference, and changelog remain at
 
 ### MCP server
 
-`tools/forkmesh_mcp_server.py` exposes the mesh to any MCP-capable agent (Claude Code, Codex, …) as tools over the stdio transport: `list_repos`, `read_file`, `search_issues`, `create_issue`, `comment_on_issue`, `open_pr_from_branch`, and `get_pr_diff`. The write tools sign with the node identity key and produce the exact same native `issues/` and `pulls/` entries the desktop node writes — no privileged side door. The `.mcp.json` at the repo root registers it so Claude Code discovers it automatically. Run `python3 tools/test_forkmesh_mcp_server.py` to exercise it end-to-end.
+`tools/forkmesh_mcp_server.py` exposes the mesh to any MCP-capable agent (Claude Code, Codex, …) as tools over the stdio transport: `whoami`, `list_repos`, `read_file`, `search_issues`, `get_pr_diff` for reads, and `create_issue`, `comment_on_issue`, `create_milestone`, `update_milestone`, `create_project`, `update_project`, `open_pr_from_branch` for writes. The write tools sign with the node identity key and produce the exact same native `issues/` and `pulls/` entries the desktop node writes — no privileged side door. The `.mcp.json` at the repo root registers it so Claude Code discovers it automatically. Run `python3 tools/test_forkmesh_mcp_server.py` to exercise it end-to-end.
+
+**Connecting an agent.** Because the write tools act as your node, the desktop client gates them behind a connector token. Open **Settings → MCP**, press *Generate token*, and copy the configuration block it shows into the agent (`.mcp.json` for Claude Code, or use *Copy CLI command* for a `claude mcp add` one-liner); *Test connection* runs the same handshake the agent will and reports the tools it got back. The token is stored owner-only at `<app data>/mcp/connector.json` and travels to the agent as `FORKMESH_MCP_TOKEN`. Reads work without it — hand out the config with that line removed for browse-only access — and *Revoke* demotes every agent still holding the old token to read-only. A node that has never generated a token keeps the original behaviour: a locally launched server with no gate.
 
 ---
 

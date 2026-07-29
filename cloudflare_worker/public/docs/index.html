@@ -1672,6 +1672,17 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
               and signed inbox format for chat, catalog reads, issues, and pull
               request submissions.
             </p>
+            <p class="mt-2 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
+              Connecting an agent is a desktop setting: Settings &rarr; MCP
+              mints a connector token, shows the exact configuration block to
+              paste into the agent, and can probe the server to confirm it
+              answers. Because the write tools act as your node, they require
+              that token in <code>FORKMESH_MCP_TOKEN</code>; read tools
+              (<code>whoami</code>, <code>list_repos</code>,
+              <code>read_file</code>, <code>search_issues</code>,
+              <code>get_pr_diff</code>) work without one. Revoking the token
+              from that tab demotes every agent still holding it to read-only.
+            </p>
           </div>
         </section>
 
