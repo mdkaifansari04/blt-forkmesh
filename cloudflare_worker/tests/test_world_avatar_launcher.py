@@ -10,14 +10,29 @@ SCENE = (ROOT / "public/world/world-scene.js").read_text(encoding="utf-8")
 BUILD_BOARD = (ROOT / "src/world_build_board.py").read_text(encoding="utf-8")
 
 
-def test_avatar_is_the_compact_hud_launcher_with_visible_count_badges():
+def test_avatar_launcher_keeps_actionable_counts_on_their_related_tools():
     assert 'data-world-hud data-hud-expanded="false"' in WORLD
     assert 'data-world-top-actions aria-label="World tools"' in WORLD
     assert 'data-world-shirt-badge' in WORLD
     assert 'aria-expanded="false"' in WORLD
-    assert 'class="world-shirt-count world-shirt-count--alerts"' in WORLD
-    assert 'class="world-shirt-count world-shirt-count--errors"' in WORLD
-    assert 'class="world-shirt-count world-shirt-count--tasks"' in WORLD
+    assert (
+        'class="world-tool-count" data-world-notification-count'
+        in WORLD.split("data-world-notifications-open", 1)[1].split("</button>", 1)[0]
+    )
+    assert (
+        'class="world-tool-count" data-world-admin-error-count'
+        in WORLD.split("data-world-admin-errors", 1)[1].split("</button>", 1)[0]
+    )
+    assert (
+        'class="world-tool-count" data-world-task-count'
+        in WORLD.split("data-world-tasks-open", 1)[1].split("</button>", 1)[0]
+    )
+    avatar_markup = WORLD.split('class="world-shirt-badge"', 1)[1].split(
+        "</button>", 1
+    )[0]
+    assert "data-world-notification-count" not in avatar_markup
+    assert "data-world-admin-error-count" not in avatar_markup
+    assert "data-world-task-count" not in avatar_markup
     assert ".world-shirt-badge {" in CSS
     badge_css = CSS.split(".world-shirt-badge {", 1)[1].split(
         ".world-shirt-badge:hover", 1
@@ -28,7 +43,8 @@ def test_avatar_is_the_compact_hud_launcher_with_visible_count_badges():
     assert "border-radius: 50%;" in final_launcher_css
     assert "clip-path: circle(50%);" in final_launcher_css
     assert ".world-shirt-avatar" in CSS
-    assert ".world-shirt-count--alerts" in CSS
+    assert ".world-tool-count:not([hidden])" in CSS
+    assert 'content: attr(data-world-tooltip);' in CSS
 
 
 def test_hud_controls_slide_out_without_resizing_and_latch_until_movement():
