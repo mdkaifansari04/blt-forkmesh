@@ -184,3 +184,40 @@ def test_reward_pool_rim_title_is_measured_so_wraps_do_not_overlap():
     assert "const available = slot * 0.72;" in block
     assert "context.measureText(title).width > available" in block
     assert "context.fillText(title, centre, height / 2 + 4);" in block
+
+
+def test_reward_pool_shows_a_live_mirror_count_above_the_orb():
+    # The cabinets already ring this basin, so their live total hangs over the
+    # pool orb instead of on another sign.
+    assert "function rewardPoolMirrorCountTexture(THREE, total, online)" in SCENE
+    fountain_start = SCENE.index("function createFountain(")
+    fountain = SCENE[fountain_start: SCENE.index("\n}\n", fountain_start)]
+    assert 'mirrorCountSprite.name = "reward-pool-mirror-count";' in fountain
+    # Above the 1.15-radius orb sitting at y=5.15, clear of its geometry.
+    assert "mirrorCountSprite.position.y = 7.6;" in fountain
+    assert "group.add(mirrorCountSprite);" in fountain
+    # Hidden until the first signed catalog lands, so no placeholder zero.
+    assert "mirrorCountSprite.visible = false;" in fountain
+    texture_start = SCENE.index("function rewardPoolMirrorCountTexture(")
+    texture = SCENE[texture_start: SCENE.index("\n}\n", texture_start)]
+    assert 'context.fillText(count === 1 ? "MIRROR" : "MIRRORS", 256, 168);' in texture
+    # Offline cabinets stay in the ring, so the serving share is stated too.
+    assert '"ALL ONLINE"' in texture
+    assert "`${live.toLocaleString(\"en-US\")} ONLINE`" in texture
+
+
+def test_mirror_count_is_repainted_by_the_live_node_update():
+    start = SCENE.index("function updateNetworkNodes(")
+    update = SCENE[start: SCENE.index("\n  }\n", start)]
+    # Counted from the cabinets actually placed in the ring, not the raw
+    # payload, and only the nodes the signed record reports as answering.
+    assert "setRewardPoolMirrorCount(" in update
+    assert "usableNodes.length," in update
+    assert 'String(node?.status || "").toLowerCase() === "online",' in update
+    setter_start = SCENE.index("function setRewardPoolMirrorCount(")
+    setter = SCENE[setter_start: SCENE.index("\n  }\n", setter_start)]
+    # An empty catalog stays hidden rather than claiming zero mirrors.
+    assert "sprite.visible = count > 0;" in setter
+    # The catalog refresh is on a timer, so repaint only when a number moves.
+    assert "if (mirrorCountShown === key) return;" in setter
+    assert "sprite.material.map?.dispose?.();" in setter
