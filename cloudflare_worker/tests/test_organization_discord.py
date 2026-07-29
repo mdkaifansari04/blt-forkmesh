@@ -529,6 +529,28 @@ async def test_oauth_callback_accepts_browser_that_omits_transaction_cookie():
 
 
 @run_async_test
+async def test_oauth_callback_uses_secure_cookie_when_provider_state_is_malformed():
+    runtime = FakeRuntime()
+    runtime.oauth_configured = True
+    started = await discord_api.handle(
+        runtime.use("POST", "alice", {"guildId": GUILD}),
+        "forkmesh", "oauth/start")
+    state = parse_qs(
+        urlparse(started["data"]["authorizationUrl"]).query)["state"][0]
+    assert started["oauthTransaction"] == state
+    runtime.oauth_transaction = started["oauthTransaction"]
+    completed = await discord_api.handle_oauth_callback(
+        runtime.use("GET", query={
+            "state": "provider-returned-a-malformed-state",
+            "code": "oauth-authorization-code-123456",
+        }))
+    assert completed["data"]["outcome"] == "connected"
+    assert runtime.db.execute(
+        "SELECT COUNT(*) AS n FROM organization_discord_oauth_grants"
+    ).fetchone()["n"] == 1
+
+
+@run_async_test
 async def test_oauth_callback_tolerates_replaced_transaction_cookie():
     runtime = FakeRuntime()
     runtime.oauth_configured = True

@@ -538,9 +538,14 @@ async def _store_oauth_state(runtime, context, guild_id):
 
     state = _new_oauth_secret(runtime)
     verifier = _new_oauth_secret(runtime)
-    transaction = _new_oauth_secret(runtime)
-    if not state or not verifier or not transaction:
+    if not state or not verifier:
         return "", "", ""
+    # Keep the same one-time state in the secure HttpOnly callback cookie.
+    # Discord normally returns `state` in the query, but its advanced bot
+    # installation flow can return a malformed/empty state for some clients.
+    # The cookie provides a same-browser fallback without weakening the D1
+    # one-time claim, PKCE, session, owner, redirect, or guild checks.
+    transaction = state
     session_id = str(await runtime.session_id() or "")
     if not session_id:
         return "", "", ""
@@ -886,6 +891,8 @@ async def _consume_oauth_state(runtime):
     """Load and immediately consume a single short-lived encrypted state."""
 
     state = str(runtime.query("state") or "").lower()
+    if not _OAUTH_STATE_RE.fullmatch(state):
+        state = str(runtime.oauth_transaction_cookie() or "").lower()
     if not _OAUTH_STATE_RE.fullmatch(state):
         return None, "invalid_state_format"
     state_hash = _oauth_state_hash(state)
