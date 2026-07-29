@@ -298,45 +298,6 @@ QStringList ActionFile::setPinnedNode(const QStringList &pins,
     return out;
 }
 
-QString ActionFile::pinnedNode(const QStringList &pins, const QString &path)
-{
-    if (path.isEmpty())
-        return QString();
-    for (const QString &entry : pins) {
-        const int sep = entry.indexOf(QLatin1Char('\t'));
-        if (sep <= 0)
-            continue;
-        if (entry.left(sep) == path)
-            return entry.mid(sep + 1).trimmed().toLower();
-    }
-    return QString();
-}
-
-QStringList ActionFile::setPinnedNode(const QStringList &pins,
-                                      const QStringList &paths,
-                                      const QString &node)
-{
-    QMap<QString, QString> byPath; // sorted, so a rewrite is stable
-    for (const QString &entry : pins) {
-        const int sep = entry.indexOf(QLatin1Char('\t'));
-        if (sep > 0)
-            byPath.insert(entry.left(sep), entry.mid(sep + 1).trimmed().toLower());
-    }
-    const QString label = node.trimmed().toLower();
-    for (const QString &path : paths) {
-        if (path.isEmpty())
-            continue;
-        if (label.isEmpty())
-            byPath.remove(path);
-        else
-            byPath.insert(path, label);
-    }
-    QStringList out;
-    for (auto it = byPath.cbegin(); it != byPath.cend(); ++it)
-        out.append(it.key() + QLatin1Char('\t') + it.value());
-    return out;
-}
-
 QStringList ActionFile::nodeLabels(const QString &machineNode,
                                    const QString &mirrorNode,
                                    const QString &configured)

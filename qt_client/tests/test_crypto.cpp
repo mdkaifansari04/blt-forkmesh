@@ -477,9 +477,16 @@ int main(int argc, char *argv[])
         check(!ForkMeshIdentity::verifySignature(identity.publicKey(), sig,
                                                  canonical + "x"),
               "verifySignature rejects a tampered payload");
+        // Tamper with the FIRST base64 character, not the last: the trailing
+        // characters of a 64-byte signature carry bits that decode to nothing,
+        // so rewriting them sometimes yields the very same signature and the
+        // check flaked. Every bit of the first character is significant.
+        const QString tamperedSignature =
+            (sig.startsWith(QLatin1Char('A')) ? QStringLiteral("B")
+                                              : QStringLiteral("A")) +
+            sig.mid(1);
         check(!ForkMeshIdentity::verifySignature(identity.publicKey(),
-                                                 sig.left(sig.size() - 2) + "AA",
-                                                 canonical),
+                                                 tamperedSignature, canonical),
               "verifySignature rejects a tampered signature");
     }
 
@@ -5925,6 +5932,47 @@ int main(int argc, char *argv[])
                            "jobs:\n  j:\n    steps:\n      - run: echo hi\n"));
         check(any.runsOnNode({QStringLiteral("mirror2")}),
               "the reserved \"any\" label matches every node");
+
+        // The Actions tab's "Run on" dropdown pins a node without editing the
+        // YAML: the pin is stored on the repository record and stands in for the
+        // workflow's own runs-on labels.
+        QStringList pins;
+        check(ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/ci.yml"))
+                  .isEmpty(),
+              "no pin means the workflow file decides where it runs");
+        pins = ActionFile::setPinnedNode(pins, {QStringLiteral(".forkmesh/ci.yml")},
+                                         QStringLiteral("Mac1"));
+        check(ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/ci.yml")) ==
+                  QStringLiteral("mac1"),
+              "a pinned node is stored lower-cased and read back by path");
+        check(ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/deploy.yml"))
+                  .isEmpty(),
+              "a pin only applies to the workflow it names");
+        pins = ActionFile::setPinnedNode(
+            pins,
+            {QStringLiteral(".forkmesh/ci.yml"), QStringLiteral(".forkmesh/deploy.yml")},
+            QStringLiteral("mirror2"));
+        check(pins.size() == 2 &&
+                  ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/ci.yml")) ==
+                      QStringLiteral("mirror2"),
+              "pinning every workflow at once repins the ones already pinned");
+        pins = ActionFile::setPinnedNode(pins, {QStringLiteral(".forkmesh/ci.yml")},
+                                         QString());
+        check(pins.size() == 1 &&
+                  ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/ci.yml"))
+                      .isEmpty() &&
+                  ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/deploy.yml")) ==
+                      QStringLiteral("mirror2"),
+              "clearing one pin leaves the others alone");
+
+        // A pin decides on its own: the dedication check runs against the pinned
+        // label, so a workflow the file sends elsewhere still runs here.
+        ActionWorkflow pinned;
+        pinned.runsOn = QStringList{
+            ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/deploy.yml"))};
+        check(pinned.runsOnNode({QStringLiteral("mirror2")}) &&
+                  !pinned.runsOnNode({QStringLiteral("mac1")}),
+              "the pinned node is the only one that runs the workflow");
 
         // This node's own labels: node name, mirror-executor name, platform, and
         // whatever capability tags the operator typed in Settings.
