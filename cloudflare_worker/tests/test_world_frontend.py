@@ -2716,6 +2716,56 @@ def test_forkbot_mention_excites_the_droid_with_echo_screen_and_thinking_dots():
     assert APP.count("this.world?.exciteForkbot?.(") == 1
 
 
+def test_activity_stream_stays_quiet_through_the_page_load_grace():
+    # adhoc #25: a fresh load opened on a stack of activity cards — the chat
+    # backlog the relay re-sends on connect, the first notification/event read,
+    # and any mirror doorbell that landed while the scene was booting. Those
+    # are all old news to someone who just arrived, so the stream only narrates
+    # what happens after the World is up.
+    assert "const ACTIVITY_JOIN_GRACE_MS = CHAT_BUBBLE_JOIN_GRACE_MS;" in APP
+    assert (
+        "this.activityNoticesEnabledAt = Date.now() + ACTIVITY_JOIN_GRACE_MS;"
+        in APP
+    )
+    assert (
+        "  activityNoticesSettled() {\n"
+        "    return Date.now() >= this.activityNoticesEnabledAt;\n"
+        "  }"
+    ) in APP
+    # Incoming chat lines (including live re-sends of the room's tail, which
+    # carry no history flag) and relayed activity notices are both gated.
+    handler = APP[
+        APP.index("  handleWorldChatMessage = (event) => {"):
+        APP.index("\n  };", APP.index("  handleWorldChatMessage = (event) => {"))
+    ]
+    assert handler.count("if (this.activityNoticesSettled()) {") == 2
+    # The first notification/event reads still seed the seen sets, so nothing
+    # already waiting at load is announced on a later poll either.
+    announce = APP[
+        APP.index("  announceWorldNotifications() {"):
+        APP.index("\n  }", APP.index("  announceWorldNotifications() {"))
+    ]
+    assert (
+        "globalEvents.forEach((item) => this.seenWorldEvents.add(item.id));"
+        in announce
+    )
+    assert (
+        "if (announcements.length && this.activityNoticesSettled()) {" in announce
+    )
+    # A mirror doorbell during the grace still arms the scene effect and the
+    # catalog refresh; only its narration is held back.
+    push = APP[
+        APP.index("  handleMirrorPush(message) {"):
+        APP.index("\n  }", APP.index("  handleMirrorPush(message) {"))
+    ]
+    assert "if (this.activityNoticesSettled()) {" in push
+    assert "this.world?.armMirrorPushEffect?.(" in push
+    # Notices a visitor causes by acting are never gated.
+    toast_start = APP.index("  toast(message, { priority = 0, lockMs = 0 } = {}) {")
+    toast = APP[toast_start:APP.index("\n  }", toast_start)]
+    assert "activityNoticesSettled" not in toast
+
+
 def test_collapsed_chat_bar_shows_an_unread_count_excluding_own_lines():
     # adhoc #426: the docked CHAT bar showed only the newest line, so a visitor
     # walking around had no idea how much they had missed. It now carries an
