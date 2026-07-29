@@ -47,6 +47,10 @@ class FakeRuntime:
         self.db.executescript(
             (ROOT / "migrations" / "0108_organization_tasks_general_bot.sql")
             .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" /
+             "0112_organization_task_global_priority.sql")
+            .read_text(encoding="utf-8"))
         self.request_method = "GET"
         self.request_data = {}
         self.query_data = {}
@@ -328,6 +332,55 @@ async def test_universal_tasks_are_org_private_routable_and_marketing_compatible
     )
     assert outsider["status"] == 403
     assert outsider["data"]["error"] == "org_member_required"
+
+
+@run_async_test
+async def test_global_priorities_are_manager_owned_projected_and_sorted():
+    runtime = FakeRuntime()
+    low = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Lower priority",
+            "assignee": "bob",
+            "priority": 80,
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    high = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Highest priority",
+            "assignee": "bob",
+            "priority": 1,
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    denied = await tasks_api.handle(
+        runtime.use("POST", "bob", {
+            "title": "Member cannot self-promote",
+            "assignee": "bob",
+            "priority": 2,
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert denied["status"] == 403
+    assert denied["data"]["error"] == "manager_required"
+    listing = await tasks_api.handle(
+        runtime.use("GET", "carol"), tasks_api.UNIVERSAL_PREFIX)
+    assert [
+        (task["title"], task["priority"])
+        for task in listing["data"]["tasks"]
+    ] == [
+        ("Highest priority", 1),
+        ("Lower priority", 80),
+    ]
+    reprioritized = await tasks_api.handle(
+        runtime.use("PATCH", "alice", {"priority": 3}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{low['data']['task']['id']}",
+    )
+    assert reprioritized["status"] == 200
+    assert reprioritized["data"]["task"]["priority"] == 3
+    assert high["data"]["task"]["priority"] == 1
+    assert runtime.audits[-1]["action"] == (
+        "organization.task_priority_changed")
 
 
 @run_async_test
