@@ -486,6 +486,33 @@ async def _project_task(runtime, row, now, checkin=None):
     }
 
 
+async def _notify_activity(
+        runtime, org_bi, actor, task_id, row, now, action):
+    """Best-effort private HUD fan-out; mutations never depend on it."""
+    notifier = getattr(runtime, "notify_organization_task_activity", None)
+    if not callable(notifier) and action == "started":
+        notifier = getattr(runtime, "notify_engineering_task_started", None)
+        if callable(notifier):
+            try:
+                projected = await _project_task(runtime, row, now)
+                if projected:
+                    await notifier(org_bi, actor, task_id, projected)
+            except Exception:
+                pass
+        return
+    if not callable(notifier) or not row:
+        return
+    try:
+        projected = (
+            row if isinstance(row, dict) and "title" in row
+            else await _project_task(runtime, row, now)
+        )
+        if projected:
+            await notifier(org_bi, actor, task_id, projected, action)
+    except Exception:
+        pass
+
+
 async def _task(runtime, org_bi, task_id):
     return await runtime.d1_first(
         "SELECT * FROM organization_tasks "
@@ -875,11 +902,12 @@ async def _create(
         if marketing_only
         else str(data.get("destination") or "department").strip().lower()
     )
-    assignee_kind = (
+    requested_assignee_kind = (
         "user"
         if marketing_only
         else str(data.get("assigneeKind") or "user").strip().lower()
     )
+    assignee_kind = requested_assignee_kind
     task_kind = (
         "task"
         if marketing_only
@@ -976,8 +1004,11 @@ async def _create(
         return _response(runtime, {"error": "manager_required"}, status=403)
     # A desktop that launches a prompt opens the task in the same call, so the
     # run's provenance arrives with it rather than through a second round trip.
-    agent_run = _agent_run(data.get("agent")) if assignee_kind in (
-        "claude", "codex") else None
+    agent_run = (
+        _agent_run(data.get("agent"))
+        if requested_assignee_kind in AGENT_ASSIGNEE_KINDS
+        else None
+    )
     agent_session_id = _agent_ref((agent_run or {}).get("sessionId"))
     qa_requested_at = (
         now
@@ -1121,6 +1152,8 @@ async def _create(
         ),
     )
     row = await _task(runtime, org_bi, task_id)
+    await _notify_activity(
+        runtime, org_bi, actor, task_id, row, now, "created")
     return await _task_response(runtime, row, now, status=201)
 
 
@@ -1341,17 +1374,8 @@ async def _start(
         task_id,
         details={"state": "active"},
     )
-    # Starting the timer also yields an encrypted per-account HUD notice for
-    # Organization Engineering. It never enters the selected chat channel or
-    # multiplayer presence, and notification fan-out remains best effort.
-    notifier = getattr(runtime, "notify_engineering_task_started", None)
-    if callable(notifier):
-        try:
-            projected = await _project_task(runtime, changed, now)
-            if projected:
-                await notifier(org_bi, actor, task_id, projected)
-        except Exception:
-            pass
+    await _notify_activity(
+        runtime, org_bi, actor, task_id, changed, now, "started")
     return await _task_response(runtime, changed, now)
 
 
@@ -1390,8 +1414,10 @@ async def _stop(
         task_id,
         details={"state": "idle"},
     )
-    return await _task_response(
-        runtime, await _task(runtime, org_bi, task_id), now)
+    changed = await _task(runtime, org_bi, task_id)
+    await _notify_activity(
+        runtime, org_bi, actor, task_id, changed, now, "stopped")
+    return await _task_response(runtime, changed, now)
 
 
 async def _complete(
@@ -1401,7 +1427,7 @@ async def _complete(
     # A bot-assigned task has no member assignee_bi to match, so the desktop
     # that opened it — and only that desktop — reports its run as finished.
     launched_agent_run = (
-        str(row.get("assignee_kind") or "") in ("claude", "codex")
+        str(row.get("assignee_kind") or "") in AGENT_ASSIGNEE_KINDS
         and str(row.get("created_by_bi") or "") == account_bi
     )
     if (
@@ -1517,6 +1543,8 @@ async def _complete(
             "hasCompletionNote": bool(current["completionNote"]),
         },
     )
+    await _notify_activity(
+        runtime, org_bi, actor, task_id, changed, now, "completed")
     return await _task_response(runtime, changed, now)
 
 
@@ -1557,8 +1585,10 @@ async def _request_qa(
         actor, "organization.task_sent_to_qa", "organization_task", task_id,
         details={"qa": "requested"},
     )
-    return await _task_response(
-        runtime, await _task(runtime, org_bi, task_id), now)
+    changed = await _task(runtime, org_bi, task_id)
+    await _notify_activity(
+        runtime, org_bi, actor, task_id, changed, now, "qa requested")
+    return await _task_response(runtime, changed, now)
 
 
 async def _return_to_list(
@@ -1603,13 +1633,16 @@ async def _return_to_list(
         actor, "organization.task_returned", "organization_task", task_id,
         details={"returned": True, "hadSession": bool(session_id)},
     )
-    return await _task_response(
-        runtime, await _task(runtime, org_bi, task_id), now)
+    changed = await _task(runtime, org_bi, task_id)
+    await _notify_activity(
+        runtime, org_bi, actor, task_id, changed, now, "returned")
+    return await _task_response(runtime, changed, now)
 
 
 async def _delete(runtime, org_bi, actor, task_id, can_manage):
     if not can_manage:
         return _response(runtime, {"error": "forbidden"}, status=403)
+    prior = await _task(runtime, org_bi, task_id)
     await runtime.d1_run(
         "DELETE FROM organization_task_attachments "
         "WHERE org_bi=? AND task_id=?",
@@ -1663,6 +1696,8 @@ async def _delete(runtime, org_bi, actor, task_id, can_manage):
         task_id,
         details={"state": "deleted"},
     )
+    await _notify_activity(
+        runtime, org_bi, actor, task_id, prior, runtime.now(), "deleted")
     return _response(runtime, {"ok": True, "deleted": True, "id": task_id})
 
 

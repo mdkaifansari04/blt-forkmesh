@@ -80,6 +80,9 @@ def test_repository_status_board_reuses_the_social_sign_format_near_the_office()
     assert "systems.slice(0, 8)" not in scene
     assert "last 24 hours" in scene
     assert "last 60 one-minute checks" in scene
+    assert 'unknown: "#8c959f"' in scene
+    assert '"24h data"' in scene
+    assert '["unknown", "NO DATA"]' in scene
     banner = scene[
         scene.index("function systemStatusBannerTexture("):
         scene.index("\nfunction createSocialBanner", scene.index(

@@ -297,6 +297,16 @@ function mountForkMeshDashboardChat() {
   let historyReplayTimer = 0;
   let historyReplayEnvelopes = [];
   let inboundFrameQueue = Promise.resolve();
+  const DISCORD_REFRESH_MS = 60_000;
+  const DISCORD_REFRESH_JITTER_MS = 15_000;
+  const DISCORD_MAX_ORGANIZATIONS = 3;
+  const DISCORD_MAX_CHANNELS = 5;
+  const DISCORD_MAX_INITIAL_MESSAGES = 40;
+  let discordRefreshTimer = 0;
+  let discordRefreshRunning = false;
+  let discordInitialMessagesLoaded = false;
+  let discordSources = null;
+  let discordBackoffUntil = 0;
   // messageId -> Map(emoji -> Map(reactorId -> reactorName)); identical to
   // the full web/Qt protocol shape so reactions converge across every client.
   const reactions = new Map();
@@ -605,6 +615,160 @@ function mountForkMeshDashboardChat() {
     const session = readSession();
     return isUserLikeSession(session) ? session : null;
   }
+
+  function discordRequestHeaders() {
+    const headers = new Headers({ accept: "application/json" });
+    const token = String(userSession()?.sessionToken || "").trim();
+    if (token && token !== "cookie") {
+      headers.set("authorization", `Bearer ${token}`);
+    }
+    return headers;
+  }
+
+  async function discordJson(path) {
+    const response = await fetch(path, {
+      headers: discordRequestHeaders(),
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const error = new Error(`Discord source unavailable (${response.status})`);
+      const retrySeconds = Math.max(
+        0,
+        Number(response.headers.get("retry-after")) || 0,
+      );
+      error.retryAfterMs = Math.min(3_600_000, retrySeconds * 1000);
+      if (error.retryAfterMs) {
+        discordBackoffUntil = Math.max(
+          discordBackoffUntil,
+          Date.now() + error.retryAfterMs,
+        );
+      }
+      throw error;
+    }
+    return response.json();
+  }
+
+  async function discoverDiscordSources() {
+    if (Array.isArray(discordSources)) return discordSources;
+    const catalog = await discordJson("/api/orgs");
+    const organizations = (Array.isArray(catalog?.orgs) ? catalog.orgs : [])
+      .slice(0, DISCORD_MAX_ORGANIZATIONS);
+    const statuses = await Promise.allSettled(organizations.map(async (record) => {
+      const organization = String(record?.name || "").trim();
+      if (!organization) return [];
+      const status = await discordJson(
+        `/api/orgs/${encodeURIComponent(organization)}/discord`,
+      );
+      if (!status?.configured || status?.state !== "configured") return [];
+      const channelIds = Array.isArray(status?.connector?.channelIds)
+        ? status.connector.channelIds
+        : [];
+      const channelNames = new Map(
+        (Array.isArray(status?.channels) ? status.channels : []).map((channel) => [
+          String(channel?.id || ""),
+          String(channel?.name || ""),
+        ]),
+      );
+      return channelIds.slice(0, DISCORD_MAX_CHANNELS).map((channelId) => ({
+        organization,
+        channelId: String(channelId || ""),
+        channelName: channelNames.get(String(channelId || "")) || "",
+      })).filter((source) => source.channelId);
+    }));
+    discordSources = statuses.flatMap((result) =>
+      result.status === "fulfilled" ? result.value : []);
+    return discordSources;
+  }
+
+  async function refreshDiscordMessages() {
+    if (
+      discordRefreshRunning ||
+      document.visibilityState === "hidden" ||
+      Date.now() < discordBackoffUntil ||
+      !userSession()
+    ) return;
+    discordRefreshRunning = true;
+    try {
+      const sources = await discoverDiscordSources();
+      const results = await Promise.allSettled(sources.map(async (source) => {
+        const path =
+          `/api/orgs/${encodeURIComponent(source.organization)}` +
+          `/discord/messages?channelId=${encodeURIComponent(source.channelId)}`;
+        const payload = await discordJson(path);
+        const channelName = String(
+          payload?.channel?.name || source.channelName || source.channelId,
+        ).trim();
+        return (Array.isArray(payload?.messages) ? payload.messages : []).map(
+          (message) => ({
+            ...message,
+            organization: source.organization,
+            channelName,
+          }),
+        );
+      }));
+      const messages = results
+        .flatMap((result) => result.status === "fulfilled" ? result.value : [])
+        .filter((message) => message?.id && String(message?.content || "").trim())
+        .sort((left, right) =>
+          Date.parse(left?.createdAt || "") - Date.parse(right?.createdAt || ""));
+      const visibleMessages = discordInitialMessagesLoaded
+        ? messages
+        : messages.slice(-DISCORD_MAX_INITIAL_MESSAGES);
+      let appended = 0;
+      for (const message of visibleMessages) {
+        if (appendDiscordMessage(message)) appended += 1;
+      }
+      discordInitialMessagesLoaded = true;
+      if (appended) {
+        console.info("[ForkMesh chat] Discord messages refreshed", {
+          sources: sources.length,
+          appended,
+        });
+      }
+    } catch (error) {
+      // Discord is optional. Keep the encrypted room usable and retry later.
+      console.info("[ForkMesh chat] Discord refresh deferred", {
+        reason: String(error?.message || "unavailable").slice(0, 160),
+      });
+      discordSources = null;
+    } finally {
+      discordRefreshRunning = false;
+    }
+  }
+
+  function stopDiscordMessageRefresh() {
+    if (!discordRefreshTimer) return;
+    clearTimeout(discordRefreshTimer);
+    discordRefreshTimer = 0;
+  }
+
+  function scheduleDiscordMessageRefresh() {
+    stopDiscordMessageRefresh();
+    if (document.visibilityState === "hidden" || !userSession()) return;
+    const backoff = Math.max(0, discordBackoffUntil - Date.now());
+    const jitter = Math.floor(Math.random() * DISCORD_REFRESH_JITTER_MS);
+    discordRefreshTimer = window.setTimeout(async () => {
+      discordRefreshTimer = 0;
+      await refreshDiscordMessages();
+      scheduleDiscordMessageRefresh();
+    }, Math.max(DISCORD_REFRESH_MS + jitter, backoff));
+  }
+
+  function startDiscordMessageRefresh() {
+    stopDiscordMessageRefresh();
+    if (document.visibilityState === "hidden" || !userSession()) return;
+    void refreshDiscordMessages();
+    scheduleDiscordMessageRefresh();
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      stopDiscordMessageRefresh();
+      return;
+    }
+    startDiscordMessageRefresh();
+  });
 
   function canJoinChat() {
     return PUBLIC_WORLD_GENERAL || Boolean(userSession());
@@ -1325,7 +1489,20 @@ function mountForkMeshDashboardChat() {
         <p class="text-sm text-muted-foreground leading-relaxed break-words"></p>
       </div>`;
     const avatarEl = row.querySelector(".chat-message-avatar");
-    hydrateChatAvatar(avatarEl, record.who);
+    if (record.external) {
+      avatarEl.textContent = "D";
+      avatarEl.setAttribute("aria-label", "Discord");
+    } else {
+      hydrateChatAvatar(avatarEl, record.who);
+    }
+    if (record.sourceLabel) {
+      const source = document.createElement("span");
+      source.className =
+        "chat-message-source rounded-full border border-border px-1.5 py-0.5 " +
+        "text-[9px] font-semibold text-muted-foreground";
+      source.textContent = record.sourceLabel;
+      row.querySelector(".items-baseline")?.append(source);
+    }
     const textEl = row.querySelector("p");
     if (textEl) {
       if (record.text) appendMentionText(textEl, record.text);
@@ -1344,7 +1521,7 @@ function mountForkMeshDashboardChat() {
     record.reactionsEl = reactionsEl;
     if (record.history) insertHistoryRow(record);
     else fullLog.append(row);
-    if (record.id) {
+    if (record.id && !record.external) {
       content?.append(buildMessageActions(record));
       renderReactions(record.id);
       if (record.editedAt) markEdited(record, record.editedAt);
@@ -1422,6 +1599,7 @@ function mountForkMeshDashboardChat() {
     tsMs,
     attachment = null,
     deferHistory = false,
+    metadata = null,
   ) {
     if (!fullLog) return;
     const self = kind === "self";
@@ -1435,6 +1613,8 @@ function mountForkMeshDashboardChat() {
       text: text || "",
       self,
       history: Boolean(deferHistory),
+      external: Boolean(metadata?.external),
+      sourceLabel: String(metadata?.sourceLabel || ""),
     };
     if (id) rows.set(id, record);
     if (deferHistory && id) {
@@ -1756,7 +1936,13 @@ function mountForkMeshDashboardChat() {
           </div>
           <p class="text-xs text-muted-foreground leading-relaxed break-words"></p>
         </div>`;
-      hydrateChatAvatar(row.querySelector(".chat-message-avatar"), message.who);
+      const avatar = row.querySelector(".chat-message-avatar");
+      if (message.external) {
+        avatar.textContent = "D";
+        avatar.setAttribute("aria-label", "Discord");
+      } else {
+        hydrateChatAvatar(row.querySelector(".chat-message-avatar"), message.who);
+      }
       const textEl = row.querySelector("p");
       if (textEl) {
         if (message.text) appendMentionText(textEl, message.text);
@@ -1782,6 +1968,7 @@ function mountForkMeshDashboardChat() {
     tsMs,
     attachment = null,
     deferRender = false,
+    metadata = null,
   ) {
     // Insert in timestamp order (append is the common case) so the newest
     // message is always the bottom row even when retained history replays
@@ -1794,6 +1981,8 @@ function mountForkMeshDashboardChat() {
       senderId,
       tsMs: Number(tsMs) || Date.now(),
       attachment,
+      external: Boolean(metadata?.external),
+      sourceLabel: String(metadata?.sourceLabel || ""),
     };
     let index = sideEntries.length;
     while (index > 0 && Number(sideEntries[index - 1].tsMs) > entry.tsMs) index -= 1;
@@ -1833,6 +2022,35 @@ function mountForkMeshDashboardChat() {
       deferHistory,
     );
     rememberContext(who, text);
+  }
+
+  function appendDiscordMessage(message) {
+    const organization = String(message?.organization || "").trim();
+    const channelId = String(message?.channelId || "").trim();
+    const channelName = String(message?.channelName || message?.channelId || "")
+      .trim();
+    const providerId = String(message?.id || "").trim();
+    if (!organization || !channelId || !channelName || !providerId) return false;
+    const id = `discord:${organization}:${channelId}:${providerId}`;
+    if (rows.has(id)) return false;
+    const who = String(message?.author?.name || "Discord user").trim();
+    const text = String(message?.content || "").trim();
+    if (!text) return false;
+    const parsedTime = Date.parse(String(message?.createdAt || ""));
+    const tsMs = Number.isFinite(parsedTime) ? parsedTime : Date.now();
+    const metadata = {
+      external: true,
+      sourceLabel: `Discord · ${organization} · #${channelName}`,
+    };
+    appendFullMessage(
+      "peer", who, text, id, `discord:${providerId}`, tsMs, null, false, metadata,
+    );
+    appendSideMessage(
+      "peer", who, text, id, `discord:${providerId}`, tsMs, null, false, metadata,
+    );
+    // Provider text is display-only. It never enters ForkBot's prompt context
+    // unless a person explicitly quotes it into a ForkMesh message.
+    return true;
   }
 
   function appendSystem(text, emit = true) {
@@ -3600,6 +3818,7 @@ function mountForkMeshDashboardChat() {
       setStatus("Not connected");
       connect();
     }
+    startDiscordMessageRefresh();
   }
 
   initChat();

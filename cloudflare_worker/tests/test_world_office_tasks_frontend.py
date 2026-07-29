@@ -49,6 +49,26 @@ def test_marketing_board_has_accessible_create_assign_and_timer_controls():
         assert contract in world
 
 
+def test_work_tab_has_a_compact_universal_task_creator_with_agent_routing():
+    world = source(WORLD)
+    tasks = source(TASKS)
+    css = source(CSS)
+    for contract in (
+        "data-world-work-task-form",
+        "data-world-work-task-title",
+        "data-world-work-task-assignee",
+        "data-world-work-task-department",
+        "data-world-work-task-repository",
+        "data-world-work-task-priority",
+    ):
+        assert contract in world
+    assert "Codex / Claude agent on linked desktop" in tasks
+    assert 'assignment === "agent" ? "agent"' in tasks
+    assert 'mutate(OFFICE_TASKS_PATH, body)' in tasks
+    assert "repository before assigning agent work" in tasks
+    assert ".world-work-quick-entry" in css
+
+
 def test_tasks_use_https_polling_and_server_clock_without_world_socket_data():
     tasks = source(TASKS)
     assert '"/api/world/office/marketing-tasks"' in tasks

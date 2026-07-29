@@ -297,6 +297,30 @@ async def test_start_uses_optional_private_engineering_notifier():
 
 
 @run_async_test
+async def test_create_and_lifecycle_emit_private_task_activity():
+    runtime = FakeRuntime()
+    notices = []
+
+    async def notify(org_bi, actor, task_id, task, action):
+        notices.append((actor, task_id, task["title"], action))
+
+    runtime.notify_organization_task_activity = notify
+    created = await create_task(runtime)
+    task = created["data"]["task"]
+    await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/start",
+    )
+    await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/stop",
+    )
+    assert [notice[3] for notice in notices] == [
+        "created", "started", "stopped",
+    ]
+
+
+@run_async_test
 async def test_universal_tasks_are_org_private_routable_and_marketing_compatible():
     runtime = FakeRuntime()
     generic = await tasks_api.handle(
@@ -1267,7 +1291,7 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
     )
     assert opened["status"] == 201
     task = opened["data"]["task"]
-    assert task["assigneeKind"] == "claude"
+    assert task["assigneeKind"] == "agent"
     assert task["agentSessionId"] == "418"
     assert task["agent"] == {
         "provider": "claude-code",

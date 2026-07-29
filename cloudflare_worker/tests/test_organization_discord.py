@@ -464,7 +464,7 @@ async def test_oauth_grant_is_required_before_any_bot_guild_discovery():
 
 
 @run_async_test
-async def test_oauth_callback_is_one_time_cookie_bound_and_requires_guild_permission():
+async def test_oauth_callback_is_one_time_and_requires_guild_permission():
     runtime = FakeRuntime()
     runtime.oauth_configured = True
     runtime.oauth_guilds = [{"id": GUILD, "owner": False, "permissions": "0"}]
@@ -495,9 +495,74 @@ async def test_oauth_callback_is_one_time_cookie_bound_and_requires_guild_permis
         runtime.use("GET", query={
             "state": state, "code": "oauth-authorization-code-123456",
         }))
-    assert replay["data"]["outcome"] == "invalid"
+    assert replay["data"]["outcome"] == "invalid_state_missing"
     assert runtime.bot_channel_calls == 0
     assert runtime.bot_role_calls == 0
+
+
+@run_async_test
+async def test_oauth_callback_accepts_browser_that_omits_transaction_cookie():
+    runtime = FakeRuntime()
+    runtime.oauth_configured = True
+    started = await discord_api.handle(
+        runtime.use("POST", "alice", {"guildId": GUILD}),
+        "forkmesh", "oauth/start")
+    state = parse_qs(
+        urlparse(started["data"]["authorizationUrl"]).query)["state"][0]
+    # The one-time OAuth state, PKCE verifier, live ForkMesh session, owner
+    # role, exact redirect and requested guild remain bound in encrypted D1.
+    # A browser privacy policy may independently omit the strengthening cookie.
+    runtime.oauth_transaction = ""
+    completed = await discord_api.handle_oauth_callback(
+        runtime.use("GET", query={
+            "state": state, "code": "oauth-authorization-code-123456",
+        }))
+    assert completed["data"]["outcome"] == "connected"
+    assert runtime.db.execute(
+        "SELECT COUNT(*) AS n FROM organization_discord_oauth_grants"
+    ).fetchone()["n"] == 1
+
+
+@run_async_test
+async def test_oauth_callback_uses_secure_cookie_when_provider_state_is_malformed():
+    runtime = FakeRuntime()
+    runtime.oauth_configured = True
+    started = await discord_api.handle(
+        runtime.use("POST", "alice", {"guildId": GUILD}),
+        "forkmesh", "oauth/start")
+    state = parse_qs(
+        urlparse(started["data"]["authorizationUrl"]).query)["state"][0]
+    assert started["oauthTransaction"] == state
+    runtime.oauth_transaction = started["oauthTransaction"]
+    completed = await discord_api.handle_oauth_callback(
+        runtime.use("GET", query={
+            "state": "provider-returned-a-malformed-state",
+            "code": "oauth-authorization-code-123456",
+        }))
+    assert completed["data"]["outcome"] == "connected"
+    assert runtime.db.execute(
+        "SELECT COUNT(*) AS n FROM organization_discord_oauth_grants"
+    ).fetchone()["n"] == 1
+
+
+@run_async_test
+async def test_oauth_callback_tolerates_replaced_transaction_cookie():
+    runtime = FakeRuntime()
+    runtime.oauth_configured = True
+    started = await discord_api.handle(
+        runtime.use("POST", "alice", {"guildId": GUILD}),
+        "forkmesh", "oauth/start")
+    state = parse_qs(
+        urlparse(started["data"]["authorizationUrl"]).query)["state"][0]
+    runtime.oauth_transaction = "f" * 64
+    completed = await discord_api.handle_oauth_callback(
+        runtime.use("GET", query={
+            "state": state, "code": "oauth-authorization-code-123456",
+        }))
+    assert completed["data"]["outcome"] == "connected"
+    assert runtime.db.execute(
+        "SELECT COUNT(*) AS n FROM organization_discord_oauth_grants"
+    ).fetchone()["n"] == 1
 
 
 @run_async_test
@@ -531,7 +596,7 @@ async def test_discord_rate_error_sets_a_standard_retry_after_header():
         "status": 429,
         "retryAfterMs": 1_501,
     })
-    assert response["status"] == 503
+    assert response["status"] == 429
     assert response["data"]["retryAfterMs"] == 1_501
     assert response["headers"]["retry-after"] == "2"
 
@@ -704,6 +769,9 @@ async def test_members_read_selected_channels_while_admins_send_non_pinging_text
     assert viewed["data"]["messages"][0]["author"] == {
         "name": "discord-user", "bot": False,
     }
+    assert viewed["data"]["channel"] == {
+        "id": PUBLIC, "name": "general",
+    }
     assert "guilds" not in viewed["data"]
     denied = await discord_api.handle(
         runtime.use("POST", "bob", {
@@ -779,6 +847,12 @@ def test_route_schema_and_worker_adapter_keep_the_secret_server_side():
     assert "_DISCORD_OAUTH_GUILDS_PATH" in entry_source
     assert "DISCORD_OAUTH_CALLBACK_RE" in urls_source
     assert "organization_discord_oauth_callback_handler" in entry_source
+    discord_runtime = entry_source[
+        entry_source.index("class _OrganizationDiscordRuntime"):
+        entry_source.index("async def organization_discord_handler")]
+    assert "parse_qs(" in discord_runtime
+    assert "urlparse(str(self.request.url)).query" in discord_runtime
+    assert "URL(self.request.url).searchParams" not in discord_runtime
     assert "oauth/start" in urls_source
     assert "SameSite=Lax" in entry_source
     assert "code_challenge_method" in entry_source
@@ -798,6 +872,10 @@ def test_route_schema_and_worker_adapter_keep_the_secret_server_side():
     assert "DELETE FROM organization_discord_oauth_grants WHERE org_bi=?" in entry_source
     assert "DELETE FROM organization_discord_oauth_states WHERE org_bi=?" in entry_source
     assert "DISCORD_BOT_TOKEN=" not in entry_source
+    assert "DELETE FROM organization_discord_oauth_states " in (
+        SRC / "organization_discord.py").read_text(encoding="utf-8")
+    assert "RETURNING data,expires_at" not in (
+        SRC / "organization_discord.py").read_text(encoding="utf-8")
 
 
 def test_discord_oauth_redirect_is_bound_to_the_canonical_public_origin():

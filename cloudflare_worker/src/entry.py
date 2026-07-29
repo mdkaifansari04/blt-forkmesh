@@ -276,6 +276,7 @@ NOTIFICATION_KINDS = frozenset({
     "org_succession",
     "repository_hosted",
     "organization_task_started",
+    "organization_task_activity",
 })
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
@@ -4895,7 +4896,8 @@ async def install_source(env):
     if not candidates:
         return json_response({"ok": False, "error": "no_online_install_source"},
                              status=503,
-                             cache_control="no-store, max-age=0, must-revalidate")
+                             cache_control="no-store, max-age=0, must-revalidate",
+                             extra_headers=EXPECTED_DEGRADED_HEADERS)
 
     start = now - ONLINE_HISTORY_RETAIN_MS
     uptime_rows = await d1_all(
@@ -8579,9 +8581,9 @@ class _OfficeMarketingTasksRuntime:
         )
         return bool(row)
 
-    async def notify_engineering_task_started(
-            self, org_bi, actor, task_id, task):
-        """Send one private HUD notification to each Engineering member."""
+    async def notify_organization_task_activity(
+            self, org_bi, actor, task_id, task, action):
+        """Send bounded private task activity to Engineering members."""
         rows = await d1_all(
             self.env,
             "SELECT DISTINCT tm.name AS name "
@@ -8599,6 +8601,18 @@ class _OfficeMarketingTasksRuntime:
         title = clean_string(
             (task or {}).get("title") or "Organization task", 160
         ).strip()
+        safe_action = clean_string(
+            action or "updated", 32
+        ).strip().lower().replace("_", " ")
+        action_copy = {
+            "created": "created",
+            "started": "started",
+            "stopped": "stopped",
+            "completed": "completed",
+            "returned": "returned",
+            "qa requested": "sent to QA",
+            "deleted": "deleted",
+        }.get(safe_action, safe_action or "updated")
         for row in rows or []:
             recipient = clean_string(
                 row.get("name") or "", MAX_NODE_NAME
@@ -8608,14 +8622,19 @@ class _OfficeMarketingTasksRuntime:
             await enqueue_notification(
                 self.env,
                 recipient,
-                "organization_task_started",
-                "Engineering task taken",
-                body="@%s started %s" % (safe_actor, title),
+                "organization_task_activity",
+                "Organization task activity",
+                body="@%s %s %s" % (safe_actor, action_copy, title),
                 actor="",
                 source=str(task_id or ""),
-                dedupe="organization-task-started:" + str(task_id or ""),
+                dedupe="organization-task:%s:%s:%s" % (
+                    safe_action.replace(" ", "-"),
+                    str(task_id or ""),
+                    str((task or {}).get("updatedAt") or ""),
+                ),
                 meta={
                     "taskId": str(task_id or ""),
+                    "action": safe_action,
                     "department": clean_string(
                         (task or {}).get("department") or "", 64
                     ).strip().lower(),
@@ -8624,6 +8643,12 @@ class _OfficeMarketingTasksRuntime:
                     ).strip().lower(),
                 },
             )
+
+    async def notify_engineering_task_started(
+            self, org_bi, actor, task_id, task):
+        """Compatibility wrapper for older task module deployments."""
+        return await self.notify_organization_task_activity(
+            org_bi, actor, task_id, task, "started")
 
     async def marketing_members(self, org_bi):
         """Return active users on an authoritative Marketing floor team."""
@@ -9087,7 +9112,7 @@ async def _remote_mcp_task_request(
         headers["content-type"] = "application/json"
         init["body"] = json.dumps(body, separators=(",", ":"))
     internal = JsRequest.new(
-        _public_base_url(env).rstrip("/") + path, to_js(init))
+        _public_base_url(env, request).rstrip("/") + path, to_js(init))
     response = await world_office_tasks.handle(
         _OfficeMarketingTasksRuntime(env, internal, context),
         urlparse(path).path,
@@ -21970,7 +21995,12 @@ class _OrganizationDiscordRuntime:
 
     def query(self, name):
         try:
-            return URL(self.request.url).searchParams.get(str(name)) or ""
+            values = parse_qs(
+                urlparse(str(self.request.url)).query,
+                keep_blank_values=True,
+            )
+            first = values.get(str(name), [""])[0]
+            return str(first or "")
         except Exception:
             return ""
 
@@ -22082,6 +22112,10 @@ class _OrganizationDiscordRuntime:
             "client_id": config["clientId"],
             "redirect_uri": config["redirectUri"],
             "response_type": "code",
+            # Keep the user authorization-code grant separate from Discord's
+            # callback-less bot-install shortcut. Combining `bot` here causes
+            # some Discord clients to return an install result without the
+            # code/state required to verify the organization owner.
             "scope": "identify guilds",
             "state": state,
             "code_challenge": challenge,
@@ -22106,7 +22140,15 @@ class _OrganizationDiscordRuntime:
 
     def oauth_callback_response(self, outcome):
         outcome = str(outcome or "invalid")
-        if outcome not in {"connected", "denied", "failed", "invalid", "setup"}:
+        if outcome not in {
+            "connected", "denied", "failed", "invalid", "setup",
+            "invalid_state_format", "invalid_state_missing",
+            "invalid_state_expired", "invalid_state_claim",
+            "invalid_record", "invalid_record_storage",
+            "invalid_record_decrypt", "invalid_record_state",
+            "invalid_record_verifier", "invalid_record_guild",
+            "invalid_context", "invalid_code",
+        }:
             outcome = "invalid"
         # Strip OAuth code/state/error from the browser address before any
         # World UI loads. The one-time callback cookie is cleared regardless of
@@ -24320,7 +24362,7 @@ async def _email_verify_token(env, name, email):
     return bytes(Uint8Array.new(sig).to_py()).hex()[:32]
 
 
-def _public_base_url(env, request):
+def _public_base_url(env, request=None):
     base = (getattr(env, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
     if base:
         return base
@@ -43611,6 +43653,16 @@ class Default(WorkerEntrypoint):
                 # guessed private/missing repository therefore cannot reveal
                 # whether a room or retained history exists.
                 return _private_replica_not_found()
+            if url.path.endswith("/clients"):
+                # The per-room observer was retired in favor of the bounded
+                # network stats snapshot. Older desktop builds still poll this
+                # path; answer before touching a Durable Object so those
+                # clients cannot repeatedly wake or exhaust a room isolate.
+                return json_response(
+                    {"error": "observers_removed"},
+                    status=410,
+                    cache_control="no-store",
+                )
             room_id = self.env.FORKMESH_MAINNODE_ROOM.idFromName(room["key"])
             # The platform can abort a room DO mid-request — the free-tier
             # duration cap kills long-lived requests, and any co-located DO
