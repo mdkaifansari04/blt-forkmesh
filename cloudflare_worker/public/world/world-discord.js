@@ -29,6 +29,11 @@ const OAUTH_OUTCOMES = {
   invalid_state_expired: "Discord authorization expired before it returned (stage: state expiry).",
   invalid_state_claim: "ForkMesh could not exclusively claim the authorization state (stage: state claim).",
   invalid_record: "ForkMesh could not validate the encrypted authorization record (stage: record validation).",
+  invalid_record_storage: "ForkMesh received an incomplete stored authorization record (stage: record storage).",
+  invalid_record_decrypt: "ForkMesh could not decrypt the authorization record (stage: record decryption).",
+  invalid_record_state: "The callback state did not match its encrypted authorization record (stage: record state binding).",
+  invalid_record_verifier: "The authorization record contained an invalid PKCE verifier (stage: record PKCE validation).",
+  invalid_record_guild: "The authorization record contained an invalid Server ID (stage: record guild validation).",
   invalid_context: "Your ForkMesh login or organization-owner binding changed during authorization (stage: session context).",
   setup: "Discord OAuth configuration changed during authorization. Please connect again.",
 };

@@ -909,7 +909,7 @@ async def _consume_oauth_state(runtime):
     encrypted = str(row.get("data") or "")
     claim = "consumed:" + _new_oauth_secret(runtime)
     if not encrypted or claim == "consumed:":
-        return None, "invalid_record"
+        return None, "invalid_record_storage"
     # D1's Worker API documents write-operation result sets as empty, so
     # DELETE ... RETURNING cannot be consumed through PreparedStatement.first.
     # Claim with a compare-and-swap, then read the marker back: only one
@@ -932,9 +932,9 @@ async def _consume_oauth_state(runtime):
     except Exception:
         record = None
     if not isinstance(record, dict):
-        return None, "invalid_record"
+        return None, "invalid_record_decrypt"
     if not hmac.compare_digest(str(record.get("state") or ""), state):
-        return None, "invalid_record"
+        return None, "invalid_record_state"
     # Do not gate the callback on the optional browser transaction cookie.
     # Privacy controls can omit it, and a second connection attempt can replace
     # it while Discord is still returning the first valid authorization. The
@@ -943,7 +943,7 @@ async def _consume_oauth_state(runtime):
     # Discord permission proof are all independently mandatory below.
     verifier = str(record.get("verifier") or "")
     if not _OAUTH_STATE_RE.fullmatch(verifier):
-        return None, "invalid_record"
+        return None, "invalid_record_verifier"
     return record, ""
 
 
@@ -1020,13 +1020,13 @@ async def handle_oauth_callback(runtime):
     code = _oauth_code(runtime.query("code"))
     if not code or not record:
         return runtime.oauth_callback_response(
-            invalid_outcome or "invalid_record")
+            invalid_outcome or "invalid_record_storage")
     context = await _oauth_callback_context(runtime, record)
     if not context:
         return runtime.oauth_callback_response("invalid_context")
     requested_guild_id = _snowflake(record.get("guildId"))
     if not requested_guild_id:
-        return runtime.oauth_callback_response("invalid_record")
+        return runtime.oauth_callback_response("invalid_record_guild")
     exchanged = await runtime.discord_oauth_exchange(code, record["verifier"])
     access_token = str((exchanged or {}).get("accessToken") or "")
     if int((exchanged or {}).get("status") or 0) != 200 or not access_token:

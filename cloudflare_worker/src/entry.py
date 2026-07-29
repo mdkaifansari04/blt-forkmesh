@@ -21952,7 +21952,10 @@ class _OrganizationDiscordRuntime:
             "connected", "denied", "failed", "invalid", "setup",
             "invalid_state_format", "invalid_state_missing",
             "invalid_state_expired", "invalid_state_claim",
-            "invalid_record", "invalid_context",
+            "invalid_record", "invalid_record_storage",
+            "invalid_record_decrypt", "invalid_record_state",
+            "invalid_record_verifier", "invalid_record_guild",
+            "invalid_context",
         }:
             outcome = "invalid"
         # Strip OAuth code/state/error from the browser address before any
