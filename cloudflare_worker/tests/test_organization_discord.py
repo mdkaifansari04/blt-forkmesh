@@ -43,17 +43,31 @@ class FakeRuntime:
         self.db = sqlite3.connect(":memory:")
         self.db.row_factory = sqlite3.Row
         self.db.executescript(
+            (ROOT / "migrations" / "0038_orgs_teams.sql")
+            .read_text(encoding="utf-8"))
+        self.db.executescript(
             (ROOT / "migrations" / "0075_world_office_marketing_tasks.sql")
             .read_text(encoding="utf-8"))
         self.db.executescript(
             (ROOT / "migrations" / "0105_organization_tasks.sql")
             .read_text(encoding="utf-8"))
         self.db.executescript(
-            (ROOT / "migrations" / "0108_remove_organization_task_catalog_cap.sql")
-            .read_text(encoding="utf-8"))
-        self.db.executescript(
             (ROOT / "migrations" / "0111_organization_discord_connector.sql")
             .read_text(encoding="utf-8"))
+        self.db.execute(
+            "INSERT INTO orgs(org_bi,name,data,created_at) VALUES (?,?,?,?)",
+            ("org-bi", "forkmesh", "sealed:org", 1),
+        )
+        self.db.executemany(
+            "INSERT INTO org_members"
+            "(org_bi,member_bi,role,name,created_at) VALUES (?,?,?,?,?)",
+            [
+                ("org-bi", "account-alice", "owner", "alice", 1),
+                ("org-bi", "account-ada", "admin", "ada", 1),
+                ("org-bi", "account-bob", "member", "bob", 1),
+            ],
+        )
+        self.db.commit()
         self.request_method = "GET"
         self.request_data = {}
         self.query_data = {}
@@ -102,6 +116,11 @@ class FakeRuntime:
                 "name": "staff-chat",
                 "type": 0,
                 "parent_id": PRIVATE_CATEGORY,
+                # Discord stores the synchronized category overwrite on the
+                # child too; category permissions are copied, not inherited.
+                "permission_overwrites": [
+                    {"id": GUILD, "type": 0, "deny": "1024"},
+                ],
             },
             {"id": VOICE, "name": "voice", "type": 2},
             {"id": "200000000000000007", "name": "nsfw", "type": 0,
@@ -581,6 +600,99 @@ async def test_private_category_children_voice_and_unknown_fields_are_rejected()
     assert unavailable["data"]["state"] == "guild_authorization_required"
 
 
+def test_desynchronized_children_and_missing_parents_fail_closed():
+    """Category permission copies must not be mistaken for live inheritance."""
+
+    category_id = "200000000000000020"
+    child_id = "200000000000000021"
+    missing_parent_child_id = "200000000000000022"
+    channels = [
+        {
+            "id": category_id,
+            "name": "public-category",
+            "type": 4,
+            "permission_overwrites": [{
+                "id": GUILD,
+                "type": 0,
+                "allow": str(discord_api.VIEW_CHANNEL_PERMISSION),
+            }],
+        },
+        {
+            "id": child_id,
+            "name": "desynchronized-private-child",
+            "type": 0,
+            "parent_id": category_id,
+        },
+        {
+            "id": missing_parent_child_id,
+            "name": "partial-payload-child",
+            "type": 0,
+            "parent_id": "200000000000000099",
+        },
+    ]
+    roles = [{
+        "id": GUILD,
+        "permissions": str(discord_api.READ_MESSAGE_HISTORY_PERMISSION),
+    }]
+    assert discord_api._public_channels(channels, roles, GUILD) == []
+
+
+@run_async_test
+async def test_former_owner_grant_is_revoked_before_any_discord_call():
+    runtime = FakeRuntime()
+    assert (await configure(runtime))["status"] == 200
+    before_channels = runtime.bot_channel_calls
+    before_roles = runtime.bot_role_calls
+    runtime.db.execute(
+        "UPDATE org_members SET role='admin' "
+        "WHERE org_bi=? AND member_bi=?",
+        ("org-bi", "account-alice"),
+    )
+    runtime.db.commit()
+
+    response = await discord_api.handle(
+        runtime.use("GET", "bob", query={"channelId": PUBLIC}),
+        "forkmesh", "messages")
+
+    assert response["status"] == 409
+    assert response["data"]["state"] == "guild_authorization_required"
+    assert runtime.bot_channel_calls == before_channels
+    assert runtime.bot_role_calls == before_roles
+    assert runtime.db.execute(
+        "SELECT COUNT(*) FROM organization_discord_oauth_grants"
+    ).fetchone()[0] == 0
+    assert runtime.db.execute(
+        "SELECT COUNT(*) FROM organization_discord_connectors"
+    ).fetchone()[0] == 0
+
+
+@run_async_test
+async def test_read_and_send_recheck_public_permissions_without_stale_cache():
+    runtime = FakeRuntime()
+    assert (await configure(runtime))["status"] == 200
+    assert runtime.public_channel_cache[GUILD]
+    runtime.channels[0]["permission_overwrites"] = [{
+        "id": GUILD,
+        "type": 0,
+        "deny": str(discord_api.VIEW_CHANNEL_PERMISSION),
+    }]
+
+    viewed = await discord_api.handle(
+        runtime.use("GET", "bob", query={"channelId": PUBLIC}),
+        "forkmesh", "messages")
+    sent = await discord_api.handle(
+        runtime.use("POST", "ada", {
+            "channelId": PUBLIC,
+            "content": "must not escape after permission revocation",
+        }), "forkmesh", "messages")
+
+    assert viewed["status"] == 409
+    assert viewed["data"]["error"] == "selected_channel_unavailable"
+    assert sent["status"] == 409
+    assert sent["data"]["error"] == "selected_channel_unavailable"
+    assert runtime.sent == []
+
+
 @run_async_test
 async def test_members_read_selected_channels_while_admins_send_non_pinging_text_only():
     runtime = FakeRuntime()
@@ -686,6 +798,132 @@ def test_route_schema_and_worker_adapter_keep_the_secret_server_side():
     assert "DELETE FROM organization_discord_oauth_grants WHERE org_bi=?" in entry_source
     assert "DELETE FROM organization_discord_oauth_states WHERE org_bi=?" in entry_source
     assert "DISCORD_BOT_TOKEN=" not in entry_source
+
+
+def test_discord_oauth_redirect_is_bound_to_the_canonical_public_origin():
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    function_node = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_discord_oauth_config")
+    namespace = {
+        "urlparse": urlparse,
+        "_discord_snowflake": lambda value: str(value),
+        "DISCORD_OAUTH_CALLBACK_PATH": (
+            "/api/integrations/discord/callback"),
+    }
+    exec(compile(ast.fix_missing_locations(ast.Module(
+        body=[function_node], type_ignores=[])), str(ENTRY), "exec"), namespace)
+    config = namespace["_discord_oauth_config"]
+    base = {
+        "DISCORD_CLIENT_ID": GUILD,
+        "DISCORD_CLIENT_SECRET": "server-only-secret",
+        "PUBLIC_BASE_URL": "https://forkmesh.test",
+    }
+    accepted = config(SimpleNamespace(
+        **base,
+        DISCORD_OAUTH_REDIRECT_URI=(
+            "https://forkmesh.test/api/integrations/discord/callback"),
+    ))
+    assert accepted["redirectUri"].startswith("https://forkmesh.test/")
+    assert config(SimpleNamespace(
+        **base,
+        DISCORD_OAUTH_REDIRECT_URI=(
+            "https://attacker.test/api/integrations/discord/callback"),
+    )) is None
+    assert config(SimpleNamespace(
+        **base,
+        DISCORD_OAUTH_REDIRECT_URI=(
+            "https://forkmesh.test:444/api/integrations/discord/callback"),
+    )) is None
+
+
+@run_async_test
+async def test_durable_rate_gate_reserves_and_persists_metadata_only():
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    class_node = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "ForkMeshDiscordGate")
+    calls = []
+
+    class Storage:
+        def __init__(self):
+            self.values = {}
+
+        async def get(self, key):
+            return self.values.get(key)
+
+        async def put(self, key, value):
+            self.values[key] = value
+
+    class Request:
+        method = "POST"
+        url = "https://forkmesh.internal/discord-gate/request"
+
+        async def text(self):
+            return json.dumps({
+                "method": "POST",
+                "path": f"/channels/{PUBLIC}/messages",
+                "body": {"content": "private-message-marker"},
+            })
+
+    async def provider(_env, method, path, body):
+        calls.append((method, path, body))
+        return {
+            "status": 429,
+            "data": None,
+            "retryAfterMs": 2_000,
+            "rateBucket": "messages",
+            "rateGlobal": False,
+        }
+
+    clock = SimpleNamespace(now=lambda: 10_000)
+    namespace = {
+        "DurableObject": object,
+        "Date": clock,
+        "DISCORD_API_TIMEOUT_SECONDS": 8,
+        "json": json,
+        "urlparse": urlparse,
+        "_discord_api_path_allowed": lambda method, path: (
+            method == "POST" and path == f"/channels/{PUBLIC}/messages"),
+        "_discord_rate_major": lambda _path: "channels:" + PUBLIC,
+        "_discord_rate_route": lambda _path: "/channels/:id/messages",
+        "_discord_provider_request": provider,
+        "durable_object_traffic_note": lambda *_args, **_kwargs: None,
+        "durable_object_traffic_flush": (
+            lambda *_args, **_kwargs: asyncio.sleep(0)),
+        "json_response": lambda data, status=200, **_kwargs: {
+            "status": status, "data": data,
+        },
+    }
+    exec(compile(ast.fix_missing_locations(ast.Module(
+        body=[class_node], type_ignores=[])), str(ENTRY), "exec"), namespace)
+    gate = namespace["ForkMeshDiscordGate"]()
+    storage = Storage()
+    gate.ctx = SimpleNamespace(storage=storage)
+    gate.env = SimpleNamespace(DISCORD_BOT_TOKEN="must-never-persist")
+
+    first = await gate.fetch(Request())
+    assert first["data"]["status"] == 429
+    assert len(calls) == 1
+    persisted = storage.values["rate_state"]
+    assert "private-message-marker" not in persisted
+    assert "must-never-persist" not in persisted
+    assert "messages|channels:" in persisted
+
+    second = await gate.fetch(Request())
+    assert second["data"]["status"] == 429
+    assert second["data"]["retryAfterMs"] == 2_000
+    assert len(calls) == 1
+
+
+def test_production_and_dev_bind_the_single_discord_rate_gate():
+    wrangler = (ROOT / "wrangler.toml").read_text(encoding="utf-8")
+    assert wrangler.count('name = "FORKMESH_DISCORD_GATE"') == 2
+    assert wrangler.count('class_name = "ForkMeshDiscordGate"') == 2
+    assert 'tag = "v15"' in wrangler
+    assert 'new_sqlite_classes = ["ForkMeshDiscordGate"]' in wrangler
 
 
 def test_secret_setup_task_requires_a_freshly_rotated_bot_token():

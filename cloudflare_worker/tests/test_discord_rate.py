@@ -50,3 +50,21 @@ def test_429_without_provider_bucket_uses_a_safe_path_fallback():
     delay = coordinator.observe(path, 429, {}, {}, 4_000)
     assert delay == 1_000
     assert coordinator.reserve(path, 4_500) == 500
+
+
+def test_absolute_reset_and_global_scope_are_honored():
+    coordinator = DiscordRateCoordinator()
+    path = "/guilds/100000000000000001/channels"
+    delay = coordinator.observe(path, 200, {
+        "x-ratelimit-bucket": "catalog-a",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "12.5",
+    }, [], 10_000)
+    assert delay == 2_500
+    assert coordinator.reserve(path, 11_000) == 1_500
+    global_delay = coordinator.observe(path, 429, {
+        "x-ratelimit-scope": "global",
+        "retry-after": "1",
+    }, {}, 20_000)
+    assert global_delay == 1_000
+    assert coordinator.reserve("/guilds/100000000000000002/roles", 20_100) == 900

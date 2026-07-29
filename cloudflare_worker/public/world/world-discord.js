@@ -368,10 +368,10 @@ async function loadMessages() {
   }
 }
 
-async function openPanel() {
-  state.open = !state.open;
+async function showPanel() {
+  state.open = true;
   render();
-  if (!state.open || state.organizations.length || state.reading || !sessionToken()) return;
+  if (state.organizations.length || state.reading || !sessionToken()) return;
   state.reading = true;
   render();
   try {
@@ -388,6 +388,15 @@ async function openPanel() {
   if (state.organization) refreshConnector();
 }
 
+async function openPanel() {
+  if (state.open) {
+    state.open = false;
+    render();
+    return;
+  }
+  await showPanel();
+}
+
 function boot() {
   const trigger = button("Discord", openPanel, "world-discord-trigger");
   trigger.dataset.worldDiscordOpen = "true";
@@ -396,6 +405,7 @@ function boot() {
   root.dataset.worldDiscordRoot = "true";
   root.hidden = true;
   document.body.append(trigger, root);
+  window.addEventListener("forkmesh:open-discord", showPanel);
 }
 
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot, { once: true });

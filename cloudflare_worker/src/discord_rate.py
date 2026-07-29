@@ -1,10 +1,9 @@
-"""Small best-effort, in-isolate Discord rate/cache coordinator.
+"""Small Discord response-header parser and projection cache.
 
-The connector uses this for every bot request.  It intentionally holds only
-short-lived provider metadata and minimized public channel/@everyone-role
-projections in the current Worker isolate. It is not a durable global limiter
-across Cloudflare colos; no token, message body, OAuth credential, or database
-state is retained here.
+Bot calls are globally serialized by ``ForkMeshDiscordGate``. This helper
+interprets provider headers inside that object and keeps only short-lived rate
+metadata plus a minimized public-channel preview in the stateless adapter.
+No token, message body, OAuth credential, or raw provider response is retained.
 """
 
 from __future__ import annotations
@@ -78,12 +77,21 @@ class DiscordRateCoordinator:
                 self.path_buckets = dict(list(self.path_buckets.items())[-MAX_BUCKETS:])
         header_retry = _milliseconds(headers.get("retry-after"))
         reset_after = _milliseconds(headers.get("x-ratelimit-reset-after"))
+        reset_at = max(
+            0,
+            min(
+                MAX_COOLDOWN_MS,
+                int(_number(headers.get("x-ratelimit-reset")) * 1000) - now,
+            ),
+        )
+        reset_after = max(reset_after, reset_at)
         body_retry = (
             _milliseconds(payload.get("retry_after"))
             if isinstance(payload, dict) else 0)
         retry = max(header_retry, body_retry)
         is_global = (
             str(headers.get("x-ratelimit-global") or "").lower() == "true"
+            or str(headers.get("x-ratelimit-scope") or "").lower() == "global"
             or (bool(payload.get("global")) if isinstance(payload, dict) else False)
         )
         try:
@@ -109,6 +117,7 @@ class DiscordRateCoordinator:
             if len(self.bucket_until) > MAX_BUCKETS:
                 self.bucket_until = dict(
                     list(self.bucket_until.items())[-MAX_BUCKETS:])
+            return reset_after
         return 0
 
     def catalog_get(self, key, now):

@@ -21475,16 +21475,38 @@ def _discord_oauth_config(env):
         getattr(env, "DISCORD_CLIENT_SECRET", "") or "").strip()
     redirect_uri = str(
         getattr(env, "DISCORD_OAUTH_REDIRECT_URI", "") or "").strip()
+    public_base_url = str(
+        getattr(env, "PUBLIC_BASE_URL", "") or "https://forkmesh.com").strip()
     try:
         parsed = urlparse(redirect_uri)
+        public_origin = urlparse(public_base_url)
+        redirect_origin = (
+            parsed.scheme, parsed.hostname, parsed.port
+        ) if parsed else None
+        canonical_origin = (
+            public_origin.scheme, public_origin.hostname, public_origin.port
+        ) if public_origin else None
     except Exception:
         parsed = None
+        public_origin = None
+        redirect_origin = None
+        canonical_origin = None
     if not (
         client_id
         and client_secret
         and parsed
+        and public_origin
         and parsed.scheme == "https"
         and parsed.hostname
+        and public_origin.scheme == "https"
+        and public_origin.hostname
+        and redirect_origin == canonical_origin
+        and public_origin.path.rstrip("/") in {"", "/"}
+        and not public_origin.params
+        and not public_origin.query
+        and not public_origin.fragment
+        and not public_origin.username
+        and not public_origin.password
         and parsed.path == DISCORD_OAUTH_CALLBACK_PATH
         and not parsed.params
         and not parsed.query
@@ -21537,8 +21559,17 @@ def _discord_api_path_allowed(method, path):
     )
 
 
-async def _discord_api_request(env, method, path, body=None):
-    """Perform one fixed-shape Discord API request with a secret header.
+def _discord_rate_major(path):
+    match = re.match(r"^/(guilds|channels)/([0-9]{17,20})/", str(path or ""))
+    return (match.group(1) + ":" + match.group(2)) if match else "global"
+
+
+def _discord_rate_route(path):
+    return re.sub(r"[0-9]{17,20}", ":id", str(path or "")).split("?", 1)[0]
+
+
+async def _discord_provider_request(env, method, path, body=None):
+    """Perform one fixed-shape Discord provider request inside the rate DO.
 
     No caller-provided origin/path/header reaches this helper.  Error bodies
     and exceptions are deliberately reduced to status + retry metadata before
@@ -21598,7 +21629,8 @@ async def _discord_api_request(env, method, path, body=None):
         rate_headers = {}
         for name in (
                 "x-ratelimit-bucket", "x-ratelimit-reset-after",
-                "x-ratelimit-remaining", "x-ratelimit-global",
+                "x-ratelimit-reset", "x-ratelimit-remaining",
+                "x-ratelimit-global", "x-ratelimit-scope",
                 "retry-after"):
             try:
                 rate_headers[name] = str(response.headers.get(name) or "")
@@ -21622,8 +21654,57 @@ async def _discord_api_request(env, method, path, body=None):
             "data": data,
             "retryAfterMs": max(
                 max(0, min(retry_after, 3_600_000)), coordinated_retry),
+            # Internal-only metadata consumed by ForkMeshDiscordGate. The
+            # outer adapter strips these fields before returning to policy.
+            "rateBucket": rate_headers.get("x-ratelimit-bucket", "")[:100],
+            "rateGlobal": bool(
+                rate_headers.get("x-ratelimit-global")
+                or rate_headers.get("x-ratelimit-scope") == "global"
+                or (isinstance(data, dict) and data.get("global"))),
         }
     except Exception:
+        return {"status": 0, "data": None, "retryAfterMs": 0}
+
+
+async def _discord_api_request(env, method, path, body=None):
+    """Route every production bot call through one global Durable Object."""
+
+    method = str(method or "").upper()
+    path = str(path or "")
+    if (
+        not _discord_api_path_allowed(method, path)
+        or (body is not None and (method != "POST" or not isinstance(body, dict)))
+    ):
+        return {"status": 400, "data": None, "retryAfterMs": 0}
+    try:
+        gate_id = env.FORKMESH_DISCORD_GATE.idFromName("bot-rate-v1")
+        gate = env.FORKMESH_DISCORD_GATE.get(gate_id)
+        request = JsRequest.new(
+            "https://forkmesh.internal/discord-gate/request",
+            to_js({
+                "method": "POST",
+                "headers": {"content-type": "application/json"},
+                "body": json.dumps({
+                    "method": method,
+                    "path": path,
+                    "body": body,
+                }, separators=(",", ":")),
+            }),
+        )
+        response = await gate.fetch(request)
+        raw = str(await response.text())
+        result = json.loads(raw) if raw else {}
+        if not isinstance(result, dict):
+            raise ValueError("invalid Discord gate response")
+        return {
+            "status": max(0, min(599, int(result.get("status") or 0))),
+            "data": result.get("data"),
+            "retryAfterMs": max(
+                0, min(3_600_000, int(result.get("retryAfterMs") or 0))),
+        }
+    except Exception:
+        # Production and dev both bind the gate. Missing/broken bindings fail
+        # closed; the stateless Worker must never bypass the global limiter.
         return {"status": 0, "data": None, "retryAfterMs": 0}
 
 
@@ -21887,11 +21968,6 @@ class _OrganizationDiscordRuntime:
         guild_id = _discord_snowflake(guild_id)
         if not guild_id:
             return {"status": 400, "data": None, "retryAfterMs": 0}
-        cache_key = "everyone-role:" + guild_id
-        cached = _discord_rate_coordinator.catalog_get(
-            cache_key, int(Date.now()))
-        if cached is not None:
-            return {"status": 200, "data": cached, "retryAfterMs": 0}
         result = await _discord_api_request(
             self.env, "GET", "/guilds/" + guild_id + "/roles")
         if int(result.get("status") or 0) != 200:
@@ -21908,8 +21984,6 @@ class _OrganizationDiscordRuntime:
                 "permissions": str(role.get("permissions") or "0")[:40],
             })
             break
-        _discord_rate_coordinator.catalog_put(
-            cache_key, projected, int(Date.now()))
         return {
             "status": 200,
             "data": projected,
@@ -43723,6 +43797,148 @@ async def chat_history_prune_expired(env):
     await ensure_schema(env)
     cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
     await d1_run(env, "DELETE FROM chat_history WHERE ts<?", cutoff)
+
+
+class ForkMeshDiscordGate(DurableObject):
+    """One production-wide Discord bot rate gate.
+
+    The singleton persists only bounded expiry/bucket metadata. Bot
+    credentials, message bodies, channel catalogs, and provider responses are
+    never written to Durable Object storage.
+    """
+
+    traffic_binding = "FORKMESH_DISCORD_GATE"
+    _MAX_KEYS = 256
+    _RESERVATION_MS = (DISCORD_API_TIMEOUT_SECONDS * 1000) + 1_000
+
+    async def _state(self, now):
+        value = await self.ctx.storage.get("rate_state")
+        try:
+            state = json.loads(str(value or "{}"))
+        except Exception:
+            state = {}
+        state = state if isinstance(state, dict) else {}
+        state = {
+            "globalUntil": max(0, int(state.get("globalUntil") or 0)),
+            "routes": dict(state.get("routes") or {}),
+            "buckets": dict(state.get("buckets") or {}),
+            "routeBuckets": dict(state.get("routeBuckets") or {}),
+        }
+        for group in ("routes", "buckets"):
+            state[group] = {
+                str(key)[:220]: max(0, int(until or 0))
+                for key, until in list(state[group].items())[:self._MAX_KEYS]
+                if int(until or 0) > now
+            }
+        state["routeBuckets"] = {
+            str(key)[:220]: str(bucket)[:100]
+            for key, bucket in list(
+                state["routeBuckets"].items())[:self._MAX_KEYS]
+            if str(bucket or "")
+        }
+        return state
+
+    @staticmethod
+    def _wait_ms(state, route_key, major, now):
+        waits = [
+            int(state.get("globalUntil") or 0) - now,
+            int(state["routes"].get(route_key) or 0) - now,
+        ]
+        bucket = str(state["routeBuckets"].get(route_key) or "")
+        if bucket:
+            waits.append(
+                int(state["buckets"].get(bucket + "|" + major) or 0) - now)
+        return max(0, min(3_600_000, max(waits)))
+
+    async def fetch(self, request):
+        if (
+            str(getattr(request, "method", "GET")).upper() != "POST"
+            or urlparse(request.url).path != "/discord-gate/request"
+        ):
+            return json_response({"error": "not_found"}, status=404)
+        try:
+            raw = str(await request.text())
+            if len(raw.encode("utf-8")) > 8 * 1024:
+                raise ValueError("request too large")
+            payload = json.loads(raw)
+        except Exception:
+            return json_response({
+                "status": 400, "data": None, "retryAfterMs": 0,
+            }, cache_control="no-store")
+        if not isinstance(payload, dict) or set(payload) - {
+                "method", "path", "body"}:
+            return json_response({
+                "status": 400, "data": None, "retryAfterMs": 0,
+            }, cache_control="no-store")
+        method = str(payload.get("method") or "").upper()
+        path = str(payload.get("path") or "")
+        body = payload.get("body")
+        if (
+            not _discord_api_path_allowed(method, path)
+            or (body is not None
+                and (method != "POST" or not isinstance(body, dict)))
+        ):
+            return json_response({
+                "status": 400, "data": None, "retryAfterMs": 0,
+            }, cache_control="no-store")
+
+        now = int(Date.now())
+        major = _discord_rate_major(path)
+        route_key = _discord_rate_route(path) + "|" + major
+        state = await self._state(now)
+        wait_ms = self._wait_ms(state, route_key, major, now)
+        if wait_ms:
+            return json_response({
+                "status": 429, "data": None, "retryAfterMs": wait_ms,
+            }, cache_control="no-store")
+
+        # Reserve before the outbound await. This closes the first-request
+        # race even when concurrent invocations arrive before Discord has
+        # advertised a bucket id.
+        state["routes"][route_key] = now + self._RESERVATION_MS
+        await self.ctx.storage.put(
+            "rate_state", json.dumps(state, separators=(",", ":")))
+        result = await _discord_provider_request(
+            self.env, method, path, body)
+        observed_at = int(Date.now())
+        # Another route may have completed during our provider await. Reload
+        # before merging this observation so disjoint bucket metadata cannot
+        # overwrite one another.
+        state = await self._state(observed_at)
+        state["routes"].pop(route_key, None)
+        retry_ms = max(
+            0, min(3_600_000, int(result.get("retryAfterMs") or 0)))
+        bucket = str(result.get("rateBucket") or "")[:100]
+        if bucket:
+            state["routeBuckets"][route_key] = bucket
+        if retry_ms:
+            until = observed_at + retry_ms
+            if result.get("rateGlobal"):
+                state["globalUntil"] = max(state["globalUntil"], until)
+            elif bucket:
+                bucket_key = bucket + "|" + major
+                state["buckets"][bucket_key] = max(
+                    int(state["buckets"].get(bucket_key) or 0), until)
+            else:
+                state["routes"][route_key] = max(
+                    int(state["routes"].get(route_key) or 0), until)
+        await self.ctx.storage.put(
+            "rate_state", json.dumps(state, separators=(",", ":")))
+        public_result = {
+            "status": max(0, min(599, int(result.get("status") or 0))),
+            "data": result.get("data"),
+            "retryAfterMs": retry_ms,
+        }
+        # Aggregate byte/message counters only; the capacity row never sees
+        # the request body or provider response.
+        durable_object_traffic_note(
+            self,
+            bytes_in=len(raw.encode("utf-8")),
+            bytes_out=len(json.dumps(public_result).encode("utf-8")),
+            messages=1,
+        )
+        await durable_object_traffic_flush(self)
+        return json_response(public_result, cache_control="no-store")
 
 
 class ForkMeshCronWatchdog(DurableObject):

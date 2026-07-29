@@ -187,6 +187,10 @@ class_name = "ForkMeshCronWatchdog"
 name = "FORKMESH_CRON_RUNNER"
 class_name = "ForkMeshCronRunner"
 
+[[durable_objects.bindings]]
+name = "FORKMESH_DISCORD_GATE"
+class_name = "ForkMeshDiscordGate"
+
 # Persistent storage: repo catalog, accounts, and the issue/pull inboxes.
 # Create once with:  uvx --from workers-py pywrangler d1 create forkmesh
 # then paste the printed database_id below.
@@ -236,6 +240,10 @@ class_name = "ForkMeshCronWatchdog"
 [[env.dev.durable_objects.bindings]]
 name = "FORKMESH_CRON_RUNNER"
 class_name = "ForkMeshCronRunner"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_DISCORD_GATE"
+class_name = "ForkMeshDiscordGate"
 
 [[migrations]]
 tag = "v1"
@@ -313,6 +321,12 @@ tag = "v14"
 # seeds/reconciles it, so a wedged stateless Python scheduled wrapper cannot
 # stop the minute loop until another deployment happens.
 new_sqlite_classes = ["ForkMeshCronRunner"]
+
+[[migrations]]
+tag = "v15"
+# Every bot REST request crosses one fixed-name object. It persists only
+# bounded Discord rate-bucket expiry metadata and never message/channel data.
+new_sqlite_classes = ["ForkMeshDiscordGate"]
 
 
 [observability]

@@ -456,7 +456,25 @@ async def _load_grant(runtime, org_bi, now=0):
         record = await runtime.open(row.get("data"))
     except Exception:
         record = None
-    return _stored_grant(record, now), row
+    grant = _stored_grant(record, now)
+    verifier = str(row.get("verified_by_bi") or "")
+    membership = await runtime.d1_first(
+        "SELECT role FROM org_members WHERE org_bi=? AND member_bi=?",
+        org_bi, verifier,
+    )
+    if grant and membership and membership.get("role") == "owner":
+        return grant, row
+    # Consent belongs to the current organization owner, not merely to the
+    # account that happened to be owner when OAuth completed. Revoke all
+    # connector state immediately after a handoff, demotion, or membership
+    # removal so a former owner cannot leave a live Discord bridge behind.
+    await runtime.d1_run(
+        "DELETE FROM organization_discord_connectors WHERE org_bi=?", org_bi)
+    await runtime.d1_run(
+        "DELETE FROM organization_discord_oauth_grants WHERE org_bi=?", org_bi)
+    await runtime.d1_run(
+        "DELETE FROM organization_discord_oauth_states WHERE org_bi=?", org_bi)
+    return None, row
 
 
 def _oauth_state_hash(value):
@@ -603,11 +621,11 @@ def _is_public_channel(item, parent, guild_id, everyone_permissions):
     """Determine whether Discord's @everyone role can view a channel.
 
     A deny-only check is not enough: a guild can start with View Channel
-    disabled and explicitly allow a public category, or it can start enabled
-    and revoke it at either the category or channel level.  We therefore apply
-    the @everyone base role followed by category then channel overwrites.  We
-    intentionally ignore member-specific grants because a channel is public to
-    ForkMesh only when the whole @everyone role can view it.
+    disabled and explicitly allow one channel, or it can start enabled and
+    revoke it there. Discord copies category overwrites into a synchronized
+    child; it does not dynamically inherit them. Applying the parent again
+    would therefore expose a de-synchronized private child. We apply only the
+    child's explicit @everyone overwrite and ignore member-specific grants.
     """
 
     if (
@@ -617,9 +635,6 @@ def _is_public_channel(item, parent, guild_id, everyone_permissions):
     ):
         return False
     permissions = everyone_permissions
-    if parent:
-        permissions = _apply_everyone_overwrite(
-            permissions, parent.get("permission_overwrites"), guild_id)
     permissions = _apply_everyone_overwrite(
         permissions, item.get("permission_overwrites"), guild_id)
     if permissions & ADMINISTRATOR_PERMISSION:
@@ -656,6 +671,10 @@ def _public_channels(payload, roles, guild_id):
             continue
         parent_id = _snowflake(item.get("parent_id"))
         parent = by_id.get(parent_id) if parent_id else None
+        # A partial provider payload must never turn an attached channel into
+        # an apparently parentless public channel.
+        if parent_id and parent is None:
+            continue
         if not _is_public_channel(
                 item, parent, guild_id, everyone_permissions):
             continue
@@ -707,12 +726,13 @@ async def _guild_missing(runtime, context):
         runtime, await _attach_setup_task(runtime, context, payload), 409)
 
 
-async def _public_guild_channels(runtime, context, guild_id):
+async def _public_guild_channels(runtime, context, guild_id, use_cache=True):
     """Fetch a bounded, fail-closed public-channel projection for one grant."""
 
-    cached = runtime.discord_public_channels_cache(guild_id)
-    if isinstance(cached, list):
-        return cached, None
+    if use_cache:
+        cached = runtime.discord_public_channels_cache(guild_id)
+        if isinstance(cached, list):
+            return cached, None
     channel_result = await runtime.discord_channels(guild_id)
     channel_status = int(channel_result.get("status") or 0)
     if channel_status == 404:
@@ -1063,7 +1083,7 @@ async def _put_config(runtime, context, data):
         return _response(
             runtime, await _attach_setup_task(runtime, context, payload), 409)
     channels, channel_error = await _public_guild_channels(
-        runtime, context, config["guildId"])
+        runtime, context, config["guildId"], use_cache=False)
     if channel_error:
         return channel_error
     public_ids = {
@@ -1183,7 +1203,7 @@ def _message_projection(payload, channel_id):
 
 async def _channel_available(runtime, context, config, channel_id):
     channels, error = await _public_guild_channels(
-        runtime, context, config["guildId"])
+        runtime, context, config["guildId"], use_cache=False)
     if error:
         return None, error
     available = {
