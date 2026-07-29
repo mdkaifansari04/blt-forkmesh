@@ -2315,53 +2315,6 @@ void MainWindow::updateWorkflowListItem(QListWidgetItem *item,
                  : wf.path + QStringLiteral("  — ") + wf.error);
 }
 
-void MainWindow::updateWorkflowListItem(QListWidgetItem *item,
-                                        const ActionWorkflow &wf,
-                                        const RepositoryRecord &repo)
-{
-    if (!item)
-        return;
-    QStringList triggers;
-    if (wf.triggersOnPush())
-        triggers << QStringLiteral("on: push");
-    if (wf.triggersOnRelease())
-        triggers << QStringLiteral("on: release");
-    if (wf.allowsManualRun())
-        triggers << QStringLiteral("manual");
-    // Dedicated workflows say where they run, and grey out here when that node
-    // isn't this one — this node will never queue them. The "Run on" dropdown
-    // pins a node the same way the file's `runs-on:` does.
-    const QStringList runsOn = workflowRunsOnLabels(repo, wf);
-    item->setText(wf.name);
-    item->setForeground(palette().color(QPalette::Active, QPalette::Text));
-    if (!runsOn.isEmpty()) {
-        const QString where = runsOn.join(QStringLiteral(", "));
-        triggers << QStringLiteral("runs-on: ") + where;
-        if (!workflowRunsOnThisNode(repo, wf)) {
-            item->setText(wf.name + QString::fromUtf8("  \xC2\xB7  ") + where);
-            item->setForeground(
-                palette().color(QPalette::Disabled, QPalette::Text));
-        }
-    }
-    // Valid workflows get a checkbox so the owner can switch each one off
-    // individually; unchecking skips it on push and hides its manual-run bar.
-    if (wf.valid) {
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(repo.disabledWorkflows.contains(wf.path)
-                                ? Qt::Unchecked
-                                : Qt::Checked);
-    }
-    item->setToolTip(
-        wf.valid ? wf.path +
-                       (triggers.isEmpty()
-                            ? QString()
-                            : QStringLiteral("  (") +
-                                  triggers.join(QStringLiteral(", ")) +
-                                  QStringLiteral(")")) +
-                       QStringLiteral("\nUntick to disable this workflow.")
-                 : wf.path + QStringLiteral("  — ") + wf.error);
-}
-
 void MainWindow::refreshRepoActions()
 {
     if (!m_actionWorkflowList)
