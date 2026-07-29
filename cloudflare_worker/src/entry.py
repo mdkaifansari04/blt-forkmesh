@@ -36488,9 +36488,18 @@ async def _render_table_view(
                 str(row.get("path") or ""),
                 str(row.get("message") or ""),
             )
-            group_hours = groups.setdefault(signature, [0] * 24)
+            group = groups.setdefault(
+                signature,
+                {
+                    "hours": [0] * 24,
+                    "firstSeen": ts,
+                    "lastSeen": ts,
+                },
+            )
+            group["firstSeen"] = min(group["firstSeen"] or ts, ts)
+            group["lastSeen"] = max(group["lastSeen"] or ts, ts)
             if age_hours < 24:
-                group_hours[23 - int(age_hours)] += 1
+                group["hours"][23 - int(age_hours)] += 1
         peak = max(hourly) if hourly else 0
         bars = []
         for index, count in enumerate(hourly):
@@ -36515,9 +36524,10 @@ async def _render_table_view(
                 )
             )
         group_rows = []
-        for (status, request_method, path, message), frequency in sorted(
+        for (status, request_method, path, message), group in sorted(
                 groups.items(),
-                key=lambda item: (-sum(item[1]), item[0]))[:25]:
+                key=lambda item: (-sum(item[1]["hours"]), item[0]))[:25]:
+            frequency = group["hours"]
             count = sum(frequency)
             group_peak = max(frequency) if frequency else 0
             spark_bars = []
@@ -36546,7 +36556,9 @@ async def _render_table_view(
                 'tabindex="0" role="img" '
                 'aria-label="24-hour frequency: %d occurrence%s">%s</div></td>'
                 "<td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
-                "<td title=\"%s\">%s</td><td>%s</td></tr>"
+                "<td title=\"%s\">%s</td>"
+                '<td data-ts="%s">%s</td><td data-ts="%s">%s</td>'
+                "<td>%s</td></tr>"
                 % (
                     count,
                     count,
@@ -36558,6 +36570,10 @@ async def _render_table_view(
                     _html_escape(path or "—"),
                     _html_escape(message or "—"),
                     _html_escape((message or "—")[:160]),
+                    _html_escape(group["firstSeen"]),
+                    _html_escape(group["firstSeen"]),
+                    _html_escape(group["lastSeen"]),
+                    _html_escape(group["lastSeen"]),
                     _admin_error_group_delete_form(
                         status, request_method, path, message,
                         csrf_field, admin_query),
@@ -36578,6 +36594,7 @@ async def _render_table_view(
                     "<table><thead><tr><th>Count</th><th>24-hour frequency</th>"
                     "<th>Source</th><th>Status</th>"
                     "<th>Method</th><th>Path</th><th>Message</th>"
+                    "<th>First seen</th><th>Last seen</th>"
                     "<th>Delete</th></tr></thead>"
                     "<tbody>" + "".join(group_rows) + "</tbody></table>"
                     if group_rows
