@@ -336,7 +336,9 @@ QPushButton#serverAddButton:hover { background-color: #2ea043; color: #ffffff; }
 QPushButton#serverAddButton:pressed { background-color: #238636; }
 QPushButton#serverFooterButton {
     background: transparent; border: none; color: #8b949e; font-size: 18px;
-    border-radius: 8px;
+    /* Circular: the account avatar it carries is a circle, so the hover
+       highlight has to be one too. */
+    border-radius: 20px;
 }
 QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3; }
 
@@ -1561,7 +1563,8 @@ QPushButton#serverAddButton:hover { background-color: #1f883d; color: #ffffff; }
 QPushButton#serverAddButton:pressed { background-color: #1a7f37; }
 QPushButton#serverFooterButton {
     background: transparent; border: none; color: #656d76; font-size: 18px;
-    border-radius: 8px;
+    /* Circular: matches the round account avatar it carries. */
+    border-radius: 20px;
 }
 QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328; }
 

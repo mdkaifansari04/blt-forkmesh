@@ -3338,6 +3338,9 @@ private:
     // so the web dashboard shows the same picture. No-op without an authenticated
     // session token or a local avatar to upload.
     void pushAccountAvatar();
+    // The reverse direction: adopt the picture the account carries on the web
+    // (seen in the public user directory) so the desktop avatar matches it.
+    void adoptWebAccountAvatar(const QByteArray &png);
     void updateAvatarButton();
     void updateUserAvatarButton();
     void refreshIssueComposerAvatar();
