@@ -249,6 +249,13 @@ QString findCloudflareWorkerDirectory(
     const QString &sourceDir = QString(),
     const QString &applicationDir = QString());
 
+// Resolve the repository-pinned cloudflare_worker/deploy.sh that ships the site
+// and relay Worker to Cloudflare. It lives beside the Worker bundle above, so it
+// resolves from a source checkout or an installed resource tree alike.
+QString findSiteDeployScript(
+    const QString &sourceDir = QString(),
+    const QString &applicationDir = QString());
+
 // Resolve the direct-HTTPS components separately from the Worker bootstrap.
 QString findCloudflareTunnelBootstrapScript(
     const QString &sourceDir = QString(),
