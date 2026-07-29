@@ -8770,8 +8770,19 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-24"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-25"
 WORLD_QA_CARDS = (
+    ("world-compact-debug-chat-orbs",
+     "Compact debug and unified activity orbs",
+     "Open the World on desktop and mobile. Confirm DEBUG and CHAT are "
+     "logo-sized circles while closed. DEBUG must show nine green, yellow, "
+     "or red metric dots and reveal its complete panel on hover or keyboard "
+     "focus. CHAT must show the latest speaker avatar plus unread count and "
+     "open a translucent composer with channel selection, image attachment, "
+     "separate chat and task buttons, and a second task-routing step for "
+     "human or agent plus team. Send chat and task updates, then confirm every "
+     "chat or status notice flows above the composer and fades after ten "
+     "seconds without removing the underlying chat history."),
     ("world-repository-agent-live-terminals",
      "Interactive repository agent terminals",
      "As an Engineering team member, open a repository with a running Claude "

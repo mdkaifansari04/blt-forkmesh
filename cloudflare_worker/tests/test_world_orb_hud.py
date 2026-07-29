@@ -61,7 +61,7 @@ def test_chat_and_status_updates_share_a_ten_second_activity_stream():
     assert "world-activity-out 420ms ease 9.55s forwards" in CSS
 
 
-def test_new_hud_work_is_visible_as_the_first_open_build_board_item():
+def test_new_hud_work_is_visible_as_a_completed_build_board_item():
     marker = '{ key: "task:world-orb-hud"'
     board = SCENE[
         SCENE.index("const WORLD_TASK_BULLETIN_ITEMS"):
@@ -69,5 +69,14 @@ def test_new_hud_work_is_visible_as_the_first_open_build_board_item():
     ]
     assert marker in board
     assert board.index(marker) < board.index("task:avatar-selection-runtime")
-    assert "in progress · implementation + QA" in board
+    assert "deployed · ready for QA" in board
+    assert 'estimate: "deployed · ready for QA", done: true' in board
     assert '"task:world-orb-hud"' in BUILD_BOARD
+
+
+def test_new_hud_has_an_explicit_shared_qa_card():
+    entry = (ROOT / "src/entry.py").read_text(encoding="utf-8")
+    assert '"2026-07-28-24h-25"' in entry
+    assert '"world-compact-debug-chat-orbs"' in entry
+    assert "logo-sized circles while closed" in entry
+    assert "fades after ten " in entry
