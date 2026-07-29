@@ -2211,9 +2211,6 @@ private:
     void openRepoDetailDeferred(int repoIndex);
     // Blank the repo-detail panel when the selected node has no repositories.
     void clearRepoDetail();
-    // Show/hide the repo header action buttons (Notify/Fork/Mirror/Source/Open)
-    // for the given m_repoDetailStack index; hidden on the Agents tab.
-    void updateRepoActionButtonsVisibility(int stackIndex);
     void openRepositoryWebsite(); // open the current repo's page in the browser
     void forkCurrentRepo();       // clone the open repo into your own node
     void downloadCurrentRepoZip();
@@ -3634,6 +3631,7 @@ private:
     QString catalogPublishKey(const RepositoryRecord &repo) const;
     void updateRepoActionMenus();
     void deleteCurrentMirror();
+    void deleteRepositoryAt(int index, bool reopenRepoDetail);
     void updateRepoDetailStatus();
     void startRepoHosts();
     void stopRepoHosts();
