@@ -1280,13 +1280,42 @@ async def notify_repo_mirrors(env, owner, repo, topic):
     if not context:
         return
     source_owner = str(owner or "").strip().lower()
-    for node in sorted({
+    mirror_nodes = {
         str(value or "").strip().lower()
         for value in context.get("nodes", set())
-    }):
-        if not valid_node_name(node) or node == source_owner:
+        if valid_node_name(str(value or "").strip().lower())
+    }
+    # A headless mirror opens its event socket under the node account, while a
+    # desktop node linked to a person opens the same socket under that owner's
+    # account. The HTTPS catalog is keyed by machine name, so notifying only
+    # `mirror2` silently missed a live socket authenticated as (for example)
+    # `jett`. Fan the payload-free hint to both identities. The node ownership
+    # relation is server-written and the query is bounded by the already
+    # bounded integrity-approved mirror set.
+    targets = set(mirror_nodes)
+    if mirror_nodes:
+        try:
+            placeholders = ",".join("?" for _node in mirror_nodes)
+            rows = await d1_all(
+                env,
+                "SELECT lower(n.name) AS node_name,lower(u.username) AS owner "
+                "FROM nodes n LEFT JOIN users u ON u.user_bi=n.user_bi "
+                "WHERE lower(n.name) IN (" + placeholders + ")",
+                *sorted(mirror_nodes),
+            )
+            for row in rows or []:
+                node = str(row.get("node_name") or "").strip().lower()
+                linked_owner = str(row.get("owner") or "").strip().lower()
+                if node in mirror_nodes and valid_node_name(linked_owner):
+                    targets.add(linked_owner)
+        except Exception:
+            # The machine-name notification remains the fallback for headless
+            # nodes and for a transient ownership lookup failure.
+            pass
+    for target in sorted(targets):
+        if not valid_node_name(target) or target == source_owner:
             continue
-        await notify_repo_host(env, node, repo, topic)
+        await notify_repo_host(env, target, repo, topic)
 
 
 async def node_events_handler(env, request):
