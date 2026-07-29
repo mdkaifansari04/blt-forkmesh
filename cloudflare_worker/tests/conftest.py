@@ -21,7 +21,6 @@ KNOWN_MAIN_FAILURES = {
     "test_catalog_signed_endpoint_liveness.py::test_fresh_signed_endpoint_marks_host_and_mirror_group_cloneable",
     "test_catalog_signed_endpoint_liveness.py::test_stale_signed_endpoint_does_not_mark_catalog_online",
     "test_catalog_signed_endpoint_liveness.py::test_unverified_or_legacy_integrity_endpoint_does_not_mark_online",
-    "test_dashboard_chat_persist_frontend.py::test_world_chat_has_a_primer_multiline_repository_action_composer",
     "test_dashboard_landing_migration.py::test_root_keeps_regular_site_and_embeds_world_for_every_visitor",
     "test_dashboard_landing_migration.py::test_dashboard_hydrator_uses_existing_worker_apis",
     "test_dashboard_landing_migration.py::test_dashboard_loads_profile_once_without_periodic_polling",
