@@ -279,8 +279,17 @@ the implementation and its focused verification are complete.
   repository rings and live layers, the complete public-board circle,
   organizations, fediverse displays, landscaping, and plaza fixtures; aerial
   optimization now reduces lighting cost without removing content.
-- [x] Restore the SOL treasury QR/sign to the front midpoint inside the node
-  circle, including its Start a node download action.
+- [x] Center the SOL sign and deterministically reflow live node cabinets into
+  complete, evenly spaced rings after every join, refresh, or deletion.
+- [x] Remove the round Town path plaza and overlapping edge/path slabs; join
+  the four routes with one concrete-brick junction and terminate district
+  paths exactly where their matching promenade begins.
+- [x] Return Office floors and ceilings to solid finishes and use batched grids
+  of small ceiling fixtures with restrained local lighting.
+- [x] Add a Primer-style top-toolbar Dashboard control beside the avatar that
+  opens the operations console in a safe new tab.
+- [x] Restore the SOL treasury QR/sign at the exact center of the node rings,
+  including its Start a node download action.
 - [x] Deploy and verify the durable Office/SOL emergency production revision
   `2d3602646909`.
 - [ ] Verify the new aerial landmark LOD in production and confirm that zooming

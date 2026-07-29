@@ -699,6 +699,30 @@ forkmesh-world {
   color: var(--primer-fg-default);
 }
 
+.world-tasks-button {
+  position: relative;
+}
+
+.world-tasks-button [data-world-task-count] {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  display: grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 2px solid var(--primer-canvas-default);
+  border-radius: 999px;
+  background: var(--primer-accent-emphasis);
+  padding: 0 4px;
+  color: #fff;
+  font: 700 10px/1 "ForkMesh Mono", ui-monospace, monospace;
+}
+
+.world-tasks-button [data-world-task-count][hidden] {
+  display: none;
+}
+
 /* The hand mirrors the gesture the avatar plays in the scene. */
 .world-wave-button span[aria-hidden="true"] {
   display: inline-block;
@@ -7029,12 +7053,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-top-link span:not([aria-hidden="true"]) {
-    display: none;
-  }
-
-  .world-top-actions > .world-top-link[href="/dashboard"] {
-    /* Keep alerts, in-world chat, sound consent, and settings reachable in one
-       row. The full operations console remains available outside the World. */
     display: none;
   }
 

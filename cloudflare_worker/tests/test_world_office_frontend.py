@@ -556,7 +556,8 @@ def test_office_is_a_remote_district_on_continuous_land_with_a_paved_route():
     tower = source(TOWER_PATH)
     for contract in (
         '"forkmesh-continuous-city-land"',
-        '"north-office", [0, -16], [0, OFFICE_BRIDGE_START_Z], OFFICE_BRIDGE_WIDTH',
+        '"north-office"',
+        "[0, OFFICE_BRIDGE_START_Z]",
         'officeBridge.name = "forkmesh-office-bridge"',
         'officeApproach.name = "forkmesh-office-island-approach"',
         "new THREE.BoxGeometry(OFFICE_BRIDGE_WIDTH, 0.3, officeBridgeLength)",
@@ -659,7 +660,7 @@ def test_aerial_lod_never_removes_world_sections_and_sol_sign_is_attached():
     assert "const showOfficeInterior" not in scene
     assert "floorGroup.visible = true;" in scene
     assert "group.add(treasurySign);" in scene
-    assert "treasurySign.position.set(0, 0, 10.8);" in scene
+    assert "treasurySign.position.set(0, 0, 0);" in scene
     assert '["MEMBERS", 0, MEMBER_ISLAND_CENTER_Z, "#f7c96b"]' in scene
     assert "MEMBER_CIRCLE_CENTER_Z" not in scene
     assert "let aerialLandmarkMarkersUnavailable = false;" in scene
@@ -686,6 +687,29 @@ def test_tall_floor_exhibits_and_elevator_openings_stay_between_slabs():
     # slicing through adjacent floors.
     assert "new THREE.TorusKnotGeometry(8, 1.35" not in scene
     assert "orbit.rotation.z" not in scene
+
+
+def test_office_uses_solid_floor_finishes_and_batched_ceiling_light_grids():
+    scene = source(SCENE_PATH)
+    finish_start = scene.index("function officeFloorFinishMaterial(")
+    finish_end = scene.index(
+        "const officeLobbyFloorMaterial",
+        finish_start,
+    )
+    finish = scene[finish_start:finish_end]
+    assert "const solidColors = [" in finish
+    assert "canvasTexture(" not in finish
+    assert "map:" not in finish
+    atmosphere_start = scene.index("function addOfficeFloorAtmosphere(")
+    atmosphere_end = scene.index(
+        'addOfficeFloorAtmosphere(officeInterior, "lobby", 0)',
+        atmosphere_start,
+    )
+    atmosphere = scene[atmosphere_start:atmosphere_end]
+    assert "new THREE.InstancedMesh(" in atmosphere
+    assert "fixtureColumns = [-60, -36, -12, 12, 36, 60]" in atmosphere
+    assert "fixtureRows = [-18, 0, 18]" in atmosphere
+    assert "ceiling-light-grid" in atmosphere
 
 
 def test_office_remains_in_the_world_instead_of_swapping_to_another_scene():

@@ -8185,9 +8185,12 @@ class _WorldCommunityRuntime:
 class _OfficeMarketingTasksRuntime:
     """Least-privilege adapter for the configured organization's task board."""
 
-    def __init__(self, env, request):
+    def __init__(self, env, request, bot_context=None):
         self.env = env
         self.request = request
+        self.bot_context = (
+            bot_context if isinstance(bot_context, dict) else None
+        )
 
     def method(self):
         return method_name(self.request)
@@ -8199,7 +8202,10 @@ class _OfficeMarketingTasksRuntime:
         return _ap_uuid()
 
     def same_origin(self):
-        return _request_same_origin(self.request)
+        # A successfully authenticated bearer credential is not ambient
+        # browser authority and therefore is not vulnerable to cross-site
+        # request forgery. Browser sessions retain the strict origin check.
+        return bool(self.bot_context) or _request_same_origin(self.request)
 
     def query(self, name):
         try:
@@ -8241,6 +8247,14 @@ class _OfficeMarketingTasksRuntime:
         return (data, "") if isinstance(data, dict) else (None, "invalid_json")
 
     async def session(self, data=None):
+        if self.bot_context:
+            provider = clean_string(
+                self.bot_context.get("provider"), 40
+            ).strip().lower()
+            return self.bot_context["orgBi"], {
+                "name": (provider or "organization") + "-bot",
+                "status": "active",
+            }
         return await _account_session_record(
             self.env,
             self.request,
@@ -8248,6 +8262,10 @@ class _OfficeMarketingTasksRuntime:
         )
 
     async def organization(self):
+        if self.bot_context:
+            return await _org_row(
+                self.env, str(self.bot_context.get("org") or "")
+            )
         configured = str(
             getattr(self.env, "OFFICE_MARKETING_ORG", "") or "forkmesh"
         ).strip().lower()
@@ -8256,6 +8274,15 @@ class _OfficeMarketingTasksRuntime:
         return await _org_row(self.env, configured)
 
     async def membership(self, org_bi, account):
+        if self.bot_context:
+            if str(org_bi or "") != str(self.bot_context.get("orgBi") or ""):
+                return "", ""
+            scopes = set(self.bot_context.get("scopes") or [])
+            if "organization.tasks.write" in scopes:
+                return "admin", "maintain"
+            if "organization.tasks.read" in scopes:
+                return "member", "read"
+            return "", ""
         role = await _org_role(self.env, org_bi, account)
         if not role:
             return "", ""
@@ -8647,8 +8674,35 @@ async def world_workshops_handler(env, request, path):
 
 
 async def organization_tasks_handler(env, request, path):
+    bot_context = None
+    authorization = str(
+        request.headers.get("authorization") or ""
+    ).strip()
+    if authorization.lower().startswith("bearer fmbot_"):
+        await ensure_schema(env)
+        bot_context = await _org_bot_token_context(env, request, touch=True)
+        if not bot_context:
+            return json_response(
+                {"error": "invalid_bot_token"},
+                status=401,
+                cache_control="no-store",
+            )
+        required_scope = (
+            "organization.tasks.read"
+            if method_name(request) == "GET"
+            else "organization.tasks.write"
+        )
+        if required_scope not in set(bot_context.get("scopes") or []):
+            return json_response(
+                {
+                    "error": "permission_denied",
+                    "requiredScope": required_scope,
+                },
+                status=403,
+                cache_control="no-store",
+            )
     return await world_office_tasks.handle(
-        _OfficeMarketingTasksRuntime(env, request), path)
+        _OfficeMarketingTasksRuntime(env, request, bot_context), path)
 
 
 world_office_marketing_tasks_handler = organization_tasks_handler
@@ -22132,6 +22186,9 @@ async def cleanup_sensitive_audit_records(env):
     await d1_run(
         env, "DELETE FROM sensitive_audit_log WHERE ts<?",
         now - SECURITY_AUDIT_RETAIN_MS)
+    await d1_run(
+        env, "DELETE FROM org_bot_token_usage WHERE used_at<?",
+        now - SECURITY_AUDIT_RETAIN_MS)
 
 
 # --- Achievement badges (adhoc #370) -----------------------------------------
@@ -32497,6 +32554,25 @@ async def _org_bot_token_context(env, request, touch=False):
         "createdAt": int(row.get("created_at") or 0),
         "expiresAt": int(row.get("expires_at") or 0),
     }
+    try:
+        action = str(urlparse(request.url).path or "")[:120]
+    except Exception:
+        action = "/api/bot/session"
+    if not re.fullmatch(r"/[A-Za-z0-9_./-]{0,119}", action):
+        action = "/api/bot/session"
+    method = method_name(request)
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+        method = "GET"
+    # Append one metadata-only use record after successful credential
+    # validation. Never store the secret, query, body, address, or user agent.
+    await d1_run(
+        env,
+        "INSERT INTO org_bot_token_usage "
+        "(token_id,org_bi,provider,action,method,used_at) "
+        "VALUES (?,?,?,?,?,?)",
+        context["tokenId"], context["orgBi"], context["provider"],
+        action, method, now,
+    )
     if touch and now - int(row.get("last_used_at") or 0) >= 60_000:
         await d1_run(
             env,
@@ -32558,6 +32634,31 @@ async def org_bot_tokens_handler(env, request, org):
                 "expiresAt": int(row.get("expires_at") or 0),
                 "revokedAt": int(row.get("revoked_at") or 0),
             })
+        usage_rows = await d1_all(
+            env,
+            "SELECT token_id,provider,action,method,used_at "
+            "FROM org_bot_token_usage WHERE org_bi=? "
+            "ORDER BY used_at DESC,id DESC LIMIT 5",
+            org_bi,
+        )
+        token_labels = {
+            token["id"]: token["label"] or token["provider"]
+            for token in tokens
+        }
+        usage_preview = [
+            {
+                "tokenId": str(row.get("token_id") or ""),
+                "label": clean_string(
+                    token_labels.get(str(row.get("token_id") or ""), ""),
+                    80,
+                ),
+                "provider": str(row.get("provider") or ""),
+                "action": clean_string(row.get("action"), 120),
+                "method": str(row.get("method") or ""),
+                "usedAt": int(row.get("used_at") or 0),
+            }
+            for row in usage_rows or []
+        ]
         return json_response({
             "ok": True,
             "organization": org_name,
@@ -32566,6 +32667,7 @@ async def org_bot_tokens_handler(env, request, org):
                 for scope, description in ORG_BOT_TOKEN_SCOPES.items()
             ],
             "tokens": tokens,
+            "usagePreview": usage_preview,
             "plaintextRecovery": False,
         }, cache_control="no-store")
 

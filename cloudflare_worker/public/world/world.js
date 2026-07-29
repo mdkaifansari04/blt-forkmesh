@@ -3804,6 +3804,28 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span class="world-visually-hidden">New errors</span>
               <span data-world-admin-error-count hidden>0</span>
             </button>
+            <a
+              class="world-top-link world-dashboard-link"
+              href="/dashboard"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Open Dashboard in a new tab"
+              title="Open Dashboard in a new tab"
+            >
+              <span aria-hidden="true">▦</span>
+              <span class="world-visually-hidden">Dashboard</span>
+            </a>
+            <button
+              class="world-top-link world-tasks-button"
+              type="button"
+              data-world-tasks-open
+              aria-label="Open organization tasks"
+              title="Open organization tasks"
+            >
+              <span aria-hidden="true">✓</span>
+              <span class="world-visually-hidden">Tasks</span>
+              <span data-world-task-count hidden>0</span>
+            </button>
             <button
               class="world-shirt-badge"
               type="button"
@@ -4357,7 +4379,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               </small>
             </fieldset>
             <fieldset class="world-setting-group">
-              <legend>Organization tasks · private to the organization</legend>
+              <legend data-world-organization-task-heading>Organization tasks · private to the organization</legend>
               <ol class="world-office-task-list" data-world-organization-task-list aria-label="Universal organization task list">
                 <li class="world-office-task-empty">Sign in to load organization tasks.</li>
               </ol>
@@ -8486,6 +8508,11 @@ class ForkMeshWorld extends HTMLElement {
         this.toggleSettings(true);
         return;
       }
+      if (event.target.closest("[data-world-tasks-open]")) {
+        this.toggleSettings(true);
+        this.selectSettingsTab("work");
+        return;
+      }
       if (event.target.closest("[data-world-settings-close]")) {
         this.toggleSettings(false);
         return;
@@ -10254,7 +10281,12 @@ class ForkMeshWorld extends HTMLElement {
     const configured = String(validWorldSession()?.adminUrl || "").trim();
     const destination = new URL(configured || "/admin", location.origin);
     destination.searchParams.set("table", "error_log");
-    window.location.assign(destination.href);
+    const opened = window.open(
+      destination.href,
+      "_blank",
+      "noopener,noreferrer",
+    );
+    if (opened) opened.opener = null;
   }
 
   // Read the locked placement document. Every read goes through here so a

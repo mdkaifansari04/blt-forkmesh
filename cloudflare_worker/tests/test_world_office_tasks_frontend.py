@@ -134,6 +134,32 @@ def test_task_access_is_session_gated_and_wall_payload_is_explicitly_authorized(
     assert "physicalState(\"locked\"" in tasks
 
 
+def test_top_nav_task_count_and_owner_catalog_include_departments():
+    tasks = source(TASKS)
+    world = source(WORLD)
+    assert "data-world-tasks-open" in world
+    assert "data-world-task-count" in world
+    assert "data-world-organization-task-heading" in world
+    assert "taskCount.textContent = String(tasks.length)" in tasks
+    assert "taskCount.hidden = !authorized || tasks.length < 1" in tasks
+    assert "All organization tasks" in tasks
+    assert "grouped by department" in tasks
+    assert "· ${escapeHTML(task.department)}" in tasks
+
+
+def test_new_agent_tasks_show_one_bounded_world_bot_bubble():
+    tasks = source(TASKS)
+    scene = source(SCENE)
+    assert "const announcedAgentTaskIds = new Set()" in tasks
+    assert "function announceAgentTasks()" in tasks
+    assert '["codex", "claude"].includes(task.assigneeKind)' in tasks
+    assert "world.showAgentTaskBubble?.(task.assigneeKind, task.title)" in tasks
+    assert "function showAgentTaskBubble(botId, title)" in scene
+    assert "if (!agentBotAccessAllowed) return false" in scene
+    assert "New organization task: ${taskTitle}" in scene
+    assert "showAgentTaskBubble," in scene
+
+
 def test_only_assignees_receive_start_stop_and_checkin_controls():
     tasks = source(TASKS)
     assert "task.assignee === actor" in tasks
@@ -199,10 +225,10 @@ def test_marketing_members_can_add_private_proof_from_their_own_desk():
     scene = source(SCENE)
     for contract in (
         "function normalizedProof(proof)",
-        "proofs = Array.isArray(payload?.proofs)",
+        "proofs = Array.isArray(marketingPayload?.proofs)",
         'if (action === "proof")',
         "!marketingMembers.includes(actor) || member !== actor",
-        '`${OFFICE_TASKS_PATH}/proofs`',
+        '`${MARKETING_TASKS_PATH}/proofs`',
         '"Paste the public HTTPS social post link:"',
     ):
         assert contract in tasks
@@ -220,7 +246,7 @@ def test_private_marketing_initiatives_are_rendered_on_a_clickable_world_panel()
     scene = source(SCENE)
     for contract in (
         "function normalizedInitiative(initiative)",
-        "initiatives = Array.isArray(payload?.initiatives)",
+        "initiatives = Array.isArray(marketingPayload?.initiatives)",
         'if (action === "initiative")',
         "initiatives.some((item) => item.href === href)",
         'window.open(href, "_blank", "noopener,noreferrer")',
@@ -241,7 +267,9 @@ def test_task_text_is_bounded_and_html_escaped_before_rendering():
     assert "function escapeHTML" in tasks
     assert ".slice(0, limit)" in tasks
     assert "${escapeHTML(task.title)}" in tasks
-    assert "${escapeHTML(task.assignee)}" in tasks
+    assert "task.assigneeKind === \"user\"" in tasks
+    assert "`@${task.assignee}`" in tasks
+    assert "escapeHTML(" in tasks
     assert "safeTaskId" in tasks
 
 

@@ -213,6 +213,10 @@ export function createWorldOfficeTasksController({
   const organizationList = root.querySelector(
     "[data-world-organization-task-list]",
   );
+  const organizationHeading = root.querySelector(
+    "[data-world-organization-task-heading]",
+  );
+  const taskCount = root.querySelector("[data-world-task-count]");
   const workStatus = root.querySelector("[data-world-work-status]");
   const workTotal = root.querySelector("[data-world-work-total]");
   const workActive = root.querySelector("[data-world-work-active]");
@@ -237,6 +241,8 @@ export function createWorldOfficeTasksController({
   let attendanceDays = [];
   let proofs = [];
   let initiatives = [];
+  const announcedAgentTaskIds = new Set();
+  let agentTasksInitialized = false;
   let syncedAt = performance.now();
   let serverNowAtSync = Date.now();
   let lastRefreshAt = 0;
@@ -346,6 +352,25 @@ export function createWorldOfficeTasksController({
       initiatives,
     });
     selfWorkState(state, message);
+  }
+
+  function announceAgentTasks() {
+    const activeAgentTasks = tasks.filter(
+      (task) =>
+        ["codex", "claude"].includes(task.assigneeKind) &&
+        task.status !== "done",
+    );
+    const unseen = activeAgentTasks.filter(
+      (task) => !announcedAgentTaskIds.has(task.id),
+    );
+    activeAgentTasks.forEach((task) => announcedAgentTaskIds.add(task.id));
+    const announcements = agentTasksInitialized
+      ? unseen.slice().reverse()
+      : unseen.slice(0, 1);
+    agentTasksInitialized = true;
+    announcements.forEach((task) => {
+      world.showAgentTaskBubble?.(task.assigneeKind, task.title);
+    });
   }
 
   function checkinLabel(value) {
@@ -508,6 +533,15 @@ export function createWorldOfficeTasksController({
 
   function renderWorkPane() {
     const own = updateWorkStats();
+    if (taskCount) {
+      taskCount.textContent = String(tasks.length);
+      taskCount.hidden = !authorized || tasks.length < 1;
+    }
+    if (organizationHeading) {
+      organizationHeading.textContent = canManage
+        ? `All organization tasks · ${tasks.length} · grouped by department`
+        : `Organization tasks · ${tasks.length} · private to the organization`;
+    }
     if (workList) {
       workList.innerHTML = loading
         ? `<li class="world-office-task-empty">Loading your assigned work\u2026</li>`
@@ -714,6 +748,7 @@ export function createWorldOfficeTasksController({
         tasks = Array.isArray(payload?.tasks)
           ? payload.tasks.map(normalizedTask).filter(Boolean).slice(0, 100)
           : [];
+        announceAgentTasks();
         syncedAt = performance.now();
         serverNowAtSync = timestampMs(payload?.serverNow) || Date.now();
         lastRefreshAt = Date.now();
