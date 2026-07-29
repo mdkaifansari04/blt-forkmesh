@@ -570,6 +570,116 @@ QString buildHostDiskUsageCommand(const QString &path, QString *error)
     return QStringLiteral("sh -lc ") + shellSingleQuote(script);
 }
 
+QString buildHostMountUsageCommand()
+{
+    const auto sentinelText = [](const char *message) {
+        return QString::fromLatin1(
+            QByteArray(message).toBase64(QByteArray::Base64Encoding));
+    };
+    const QString noBase64 = sentinelText(
+        "This host has no base64 command, so ForkMesh cannot list its mount "
+        "points safely.");
+    const QString noDf = sentinelText(
+        "This host has no df command, so ForkMesh cannot read mount usage.");
+    // `df -P` guarantees one filesystem per logical record. The final field
+    // may contain spaces, so reconstruct it after shifting the five fixed
+    // fields. Only numeric capacity values and a base64 path cross the
+    // sentinel boundary.
+    const QString script =
+        QStringLiteral(
+            "set -u\n"
+            "LC_ALL=C\n"
+            "export LC_ALL\n"
+            "if ! command -v base64 >/dev/null 2>&1; then\n"
+            "  printf 'FORKMESH-MOUNT1-ERROR %1\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if ! command -v df >/dev/null 2>&1; then\n"
+            "  printf 'FORKMESH-MOUNT1-ERROR %2\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "df -P -k -l 2>/dev/null | sed 1d | "
+            "while IFS= read -r line; do\n"
+            "  set -- $line\n"
+            "  [ \"$#\" -ge 6 ] || continue\n"
+            "  total=$2; used=$3; avail=$4\n"
+            "  shift 5\n"
+            "  mp=$*\n"
+            "  case \"$total:$used:$avail\" in\n"
+            "    *[!0-9:]*) continue ;;\n"
+            "  esac\n"
+            "  case \"$mp\" in\n"
+            "    /*) ;;\n"
+            "    *) continue ;;\n"
+            "  esac\n"
+            "  printf 'FORKMESH-MOUNT1 %s %s %s %s\\n' "
+            "\"$total\" \"$used\" \"$avail\" "
+            "\"$(printf '%s' \"$mp\" | base64 | tr -d '\\n')\"\n"
+            "done\n"
+            "printf 'FORKMESH-MOUNT1-END\\n'\n")
+            .arg(noBase64, noDf);
+    return QStringLiteral("sh -lc ") + shellSingleQuote(script);
+}
+
+HostMountUsageList parseHostMountUsage(const QByteArray &output)
+{
+    HostMountUsageList result;
+    QSet<QString> seenPaths;
+    const QStringList lines =
+        QString::fromUtf8(output)
+            .split(QRegularExpression(QStringLiteral("[\\r\\n]")),
+                   Qt::SkipEmptyParts);
+    for (const QString &raw : lines) {
+        const QString line = raw.trimmed();
+        if (line == QStringLiteral("FORKMESH-MOUNT1-END")) {
+            result.complete = true;
+            continue;
+        }
+        if (line.startsWith(QStringLiteral("FORKMESH-MOUNT1-ERROR "))) {
+            const QByteArray decoded = QByteArray::fromBase64(
+                line.mid(22).trimmed().toLatin1());
+            result.error =
+                decoded.isEmpty()
+                    ? QStringLiteral("The host refused the mount-usage read.")
+                    : QString::fromUtf8(decoded);
+            result.complete = true;
+            continue;
+        }
+        if (!line.startsWith(QStringLiteral("FORKMESH-MOUNT1 ")))
+            continue;
+        const QStringList fields =
+            line.mid(16).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (fields.size() != 4)
+            continue;
+        bool totalOk = false;
+        bool usedOk = false;
+        bool availableOk = false;
+        const qint64 totalKib = fields.at(0).toLongLong(&totalOk);
+        const qint64 usedKib = fields.at(1).toLongLong(&usedOk);
+        const qint64 availableKib = fields.at(2).toLongLong(&availableOk);
+        const QString path = normalizeRemoteDiskPath(QString::fromUtf8(
+            QByteArray::fromBase64(fields.at(3).toLatin1())));
+        if (!totalOk || !usedOk || !availableOk || totalKib <= 0 ||
+            usedKib < 0 || availableKib < 0 || path.isEmpty() ||
+            seenPaths.contains(path)) {
+            continue;
+        }
+        seenPaths.insert(path);
+        result.mounts.append(
+            HostMountUsage{path, totalKib * 1024, usedKib * 1024,
+                           availableKib * 1024});
+    }
+    std::sort(result.mounts.begin(), result.mounts.end(),
+              [](const HostMountUsage &a, const HostMountUsage &b) {
+                  if (a.path == QStringLiteral("/"))
+                      return b.path != QStringLiteral("/");
+                  if (b.path == QStringLiteral("/"))
+                      return false;
+                  return a.path.localeAwareCompare(b.path) < 0;
+              });
+    return result;
+}
+
 HostDiskUsage parseHostDiskUsage(const QByteArray &output, const QString &path)
 {
     HostDiskUsage usage;
