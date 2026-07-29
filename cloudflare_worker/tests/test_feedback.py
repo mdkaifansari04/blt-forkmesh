@@ -88,6 +88,25 @@ def test_unknown_source_or_vote_is_rejected():
     assert _fields([]) is None
 
 
+def test_world_lobby_feedback_has_a_fixed_private_path():
+    assert _fields({
+        "source": "world",
+        "vote": "feedback",
+        "path": "/someone/private?token=secret",
+        "message": "The first-run controls need clearer labels.",
+    }) == (
+        "world",
+        "feedback",
+        "/world/#lobby-feedback",
+        "The first-run controls need clearer labels.",
+    )
+    assert _fields({
+        "source": "world",
+        "vote": "feedback",
+        "message": "",
+    }) is None
+
+
 def test_path_defaults_to_root_when_missing_or_external():
     assert _fields({"source": "docs", "vote": "like"}) == (
         "docs",

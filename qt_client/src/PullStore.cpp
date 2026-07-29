@@ -809,6 +809,16 @@ QString PullStore::metaWorkTree() const
 {
     if (m_workTree.isEmpty())
         return QString();
+    // Mirror intake already opens a short-lived worktree directly on the
+    // dedicated metadata branch. Reuse it instead of creating a second,
+    // persistent linked worktree whose path is keyed to a temporary directory.
+    QByteArray currentBranch;
+    if (runGit(m_workTree, {"symbolic-ref", "--short", "-q", "HEAD"},
+               &currentBranch) &&
+        QString::fromUtf8(currentBranch).trimmed() ==
+            QLatin1String("forkmesh/pulls")) {
+        return m_workTree;
+    }
     // One linked worktree per repo, keyed by a hash of its path, under app
     // data so it persists across restarts (unlike the /tmp agent-session
     // worktrees elsewhere in this file, this one holds the live PR metadata,

@@ -104,3 +104,41 @@ def test_org_detail_explains_member_role_and_team_access_on_the_right():
         "data-org-access-summary",
     ):
         assert copy in DASHBOARD_JS
+
+
+def test_org_admin_lists_every_office_floor_group_for_each_user():
+    for contract in (
+        "const ORG_OFFICE_FLOOR_GROUPS",
+        "function orgMemberFloorGroups(member, canManage)",
+        "data-org-member-floor-groups",
+        "Office floor groups",
+        "activeCount",
+        "orgMemberFloorGroups(member, canManage)",
+        '"Marketing"',
+        '"Engineering"',
+        '"Product & Design"',
+        '"Security"',
+        '"Infrastructure"',
+        '"Community"',
+        '"Partnerships"',
+        '"Operations"',
+        '"Executive"',
+        '"frontend"',
+        '"sre"',
+        '"devrel"',
+    ):
+        assert contract in DASHBOARD_JS
+
+
+def test_org_admin_floor_group_chips_toggle_team_membership():
+    for contract in (
+        "data-org-member-floor-group",
+        'aria-pressed="',
+        "const matchingTeams = group.aliases.filter",
+        'if (!knownTeams.has(team))',
+        '{ team, permission: "read" }',
+        '"/members",',
+        '"DELETE"',
+        "{ member }",
+    ):
+        assert contract in DASHBOARD_JS

@@ -15,6 +15,7 @@
 #include "../src/ForkMeshIdentity.h"
 #include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
+#include "../src/LocalBackupStore.h"
 #include "../src/MirrorCrypto.h"
 #include "../src/PrivateMirrorStore.h"
 #include "../src/NetworkBackoff.h"
@@ -1627,9 +1628,23 @@ int main(int argc, char *argv[])
                 buildRepoContributionSnapshot(input);
             check(snapshot.complete && snapshot.error.isEmpty(),
                   "repository contribution snapshot builds successfully");
+            check(!snapshot.changedFiles.isEmpty() &&
+                      snapshot.changedFiles.size() <= 8 &&
+                      std::all_of(
+                          snapshot.changedFiles.cbegin(),
+                          snapshot.changedFiles.cend(),
+                          [](const QString &path) {
+                              return !path.isEmpty() &&
+                                     !path.startsWith(QLatin1Char('/')) &&
+                                     !path.startsWith(QLatin1String("../"));
+                          }),
+                  "snapshot reports bounded safe paths changed by its head "
+                  "commit from the existing worker scan");
             check(repeated.complete &&
-                      repeated.compactPayload == snapshot.compactPayload,
-                  "repository contribution compact bytes are deterministic");
+                      repeated.compactPayload == snapshot.compactPayload &&
+                      repeated.changedFiles == snapshot.changedFiles,
+                  "repository contribution bytes and changed paths are "
+                  "deterministic");
 
             QStringList payloadKeys = snapshot.payload.keys();
             payloadKeys.sort();
@@ -6366,12 +6381,20 @@ int main(int argc, char *argv[])
         QStringList seen;
         forkmesh::BackgroundActivity::setListener(
             [&seen](quint64 id, const QString &kind, const QString &detail,
+                    forkmesh::ActionTelemetry::Execution execution,
                     bool started) {
-                seen.append(QStringLiteral("%1:%2:%3:%4")
+                const QString lane =
+                    execution == forkmesh::ActionTelemetry::Execution::Async
+                        ? QStringLiteral("async")
+                        : execution ==
+                                  forkmesh::ActionTelemetry::Execution::Worker
+                              ? QStringLiteral("worker")
+                              : QStringLiteral("ui");
+                seen.append(QStringLiteral("%1:%2:%3:%4:%5")
                                 .arg(started ? QStringLiteral("+")
                                              : QStringLiteral("-"))
                                 .arg(id)
-                                .arg(kind, detail));
+                                .arg(kind, detail, lane));
             });
         const quint64 first =
             forkmesh::BackgroundActivity::begin(QStringLiteral("git"),
@@ -6383,10 +6406,11 @@ int main(int argc, char *argv[])
         forkmesh::BackgroundActivity::end(first);
         forkmesh::BackgroundActivity::end(second);
         forkmesh::BackgroundActivity::end(0); // no-op guard for untracked work
-        check(seen == QStringList({QStringLiteral("+:%1:git:git log").arg(first),
-                                   QStringLiteral("+:%1:net:").arg(second),
-                                   QStringLiteral("-:%1::").arg(first),
-                                   QStringLiteral("-:%1::").arg(second)}),
+        check(seen == QStringList({
+                  QStringLiteral("+:%1:git:git log:async").arg(first),
+                  QStringLiteral("+:%1:net::async").arg(second),
+                  QStringLiteral("-:%1:::async").arg(first),
+                  QStringLiteral("-:%1:::async").arg(second)}),
               "every begin/end pair reaches the listener exactly once, in order");
 
         {
@@ -6406,29 +6430,28 @@ int main(int argc, char *argv[])
     }
 
     {
-        // Log outcome lines (adhoc #419): the ✓ / ✕ marker is what tells the user
-        // which work actually made it into the background strip, so the threshold
-        // it is derived from has to match the strip's own show delay.
+        // Log outcome lines (adhoc #419/#421): the ✓ / ✕ marker reflects the
+        // declared execution lane, never how long the operation happened to run.
         const QString ok = forkmesh::backgroundOkGlyph();
         const QString no = forkmesh::backgroundNotGlyph();
         check(forkmesh::backgroundOutcomeLine(QStringLiteral("git"), 1, 1400,
-                                              QStringLiteral("git log")) ==
+                                              QStringLiteral("git log"), true) ==
                   QStringLiteral("Background %1 git backgrounded (1.4s) - git log")
                       .arg(ok),
-              "slow work logs a checkmark, its duration and the caller's note");
+              "async work logs a checkmark, its duration and the caller's note");
         check(forkmesh::backgroundOutcomeLine(QStringLiteral("git"), 24, 61,
-                                              QString()) ==
-                  QStringLiteral("Background %1 git %2%3 not backgrounded "
+                                              QString(), true) ==
+                  QStringLiteral("Background %1 git %2%3 backgrounded "
                                  "(longest 61ms)")
-                      .arg(no)
+                      .arg(ok)
                       .arg(QChar(0x00D7))
                       .arg(24),
-              "a burst of too-fast tickets logs one red-x summary for the kind");
+              "a fast async burst remains correctly marked as backgrounded");
         check(forkmesh::backgroundOutcomeLine(
-                  QString(), 1, forkmesh::kBackgroundShowAfterMs, QString())
-                  .startsWith(QStringLiteral("Background %1 work").arg(ok)),
-              "work exactly at the show delay counts as backgrounded, and an "
-              "unnamed kind still reads as something");
+                  QString(), 1, 1, QString(), false)
+                  .startsWith(QStringLiteral("Background %1 work").arg(no)),
+              "declared GUI-thread work logs a red x even when it is fast, and "
+              "an unnamed kind still reads as something");
         check(forkmesh::backgroundElapsedText(-5) == QStringLiteral("0ms") &&
                   forkmesh::backgroundElapsedText(999) ==
                       QStringLiteral("999ms") &&
@@ -6447,6 +6470,119 @@ int main(int argc, char *argv[])
         check(forkmesh::colorizeBackgroundMarker(QStringLiteral("no marker")) ==
                   QStringLiteral("no marker"),
               "a line without a marker is passed through untouched");
+    }
+
+    // --- Hourly local backups of the live database ----------------------
+    // The Settings -> Data backup panel restores whatever these helpers list,
+    // so the naming round-trip, the newest-first order, the retention cut and
+    // the tar argument order are the contract that makes recovery work.
+    {
+        QTemporaryDir backupRoot;
+        const QDateTime taken =
+            QDateTime::fromString(QStringLiteral("2026-07-28T09:15:00"),
+                                  Qt::ISODate);
+        const QString name = forkmesh::backupFileName(taken);
+        check(name == QStringLiteral("forkmesh-backup-20260728-091500.tar.gz"),
+              "a snapshot is named after the moment it was taken");
+        check(forkmesh::backupTimestampFromName(name) == taken,
+              "the timestamp round-trips out of the file name");
+        // Only our own archives may be listed: anything else in the folder is a
+        // file the user put there, and restoring or pruning it would be wrong.
+        check(!forkmesh::backupTimestampFromName(
+                   QStringLiteral("forkmesh-backup-20260728-091500-copy.tar.gz"))
+                   .isValid() &&
+                  !forkmesh::backupTimestampFromName(
+                       QStringLiteral("holiday-photos.tar.gz"))
+                       .isValid(),
+              "a look-alike or unrelated archive is not treated as a snapshot");
+
+        auto write = [&backupRoot](const QString &fileName, int bytes) {
+            QFile f(QDir(backupRoot.path()).filePath(fileName));
+            f.open(QIODevice::WriteOnly);
+            f.write(QByteArray(bytes, 'z'));
+            f.close();
+        };
+        write(QStringLiteral("forkmesh-backup-20260728-070000.tar.gz"), 16);
+        write(QStringLiteral("forkmesh-backup-20260728-090000.tar.gz"), 32);
+        write(QStringLiteral("forkmesh-backup-20260728-080000.tar.gz"), 64);
+        write(QStringLiteral("forkmesh-backup-20260728-100000.tar.gz.part"), 8);
+        write(QStringLiteral("notes.txt"), 4);
+
+        const QList<forkmesh::BackupSnapshot> listed =
+            forkmesh::listBackups(backupRoot.path());
+        check(listed.size() == 3 &&
+                  listed.at(0).fileName ==
+                      QStringLiteral("forkmesh-backup-20260728-090000.tar.gz") &&
+                  listed.at(2).fileName ==
+                      QStringLiteral("forkmesh-backup-20260728-070000.tar.gz"),
+              "snapshots list newest first, ignoring partial and foreign files");
+        check(listed.at(0).bytes == 32 &&
+                  QFileInfo::exists(listed.at(0).path),
+              "each listed snapshot carries its real size and absolute path");
+
+        const QList<forkmesh::BackupSnapshot> pruned =
+            forkmesh::backupsToPrune(listed, 2);
+        check(pruned.size() == 1 &&
+                  pruned.at(0).fileName ==
+                      QStringLiteral("forkmesh-backup-20260728-070000.tar.gz"),
+              "retention drops the oldest snapshot beyond the keep count");
+        check(forkmesh::backupsToPrune(listed, 3).isEmpty() &&
+                  forkmesh::backupsToPrune(listed, 0).size() == 2,
+              "nothing is pruned under the limit, and keep=0 still spares the "
+              "newest snapshot");
+
+        const QDateTime now =
+            QDateTime::fromString(QStringLiteral("2026-07-28T10:00:00"),
+                                  Qt::ISODate);
+        check(forkmesh::backupIsDue(QDateTime(), now),
+              "the very first backup is always due");
+        check(forkmesh::backupIsDue(now.addSecs(-3600), now) &&
+                  !forkmesh::backupIsDue(now.addSecs(-3599), now),
+              "the next snapshot is due exactly one hour after the last");
+        check(!forkmesh::backupIsDue(now.addSecs(3600), now),
+              "a snapshot stamped in the future (clock skew) doesn't fire a "
+              "burst of backups");
+
+        // The archive must hold the app data + settings file and must never
+        // recurse into the mirrors, the browse cache or the backup folder
+        // itself; tar only honours --exclude when it precedes the members.
+        QTemporaryDir dataRoot;
+        const QString appData = QDir(dataRoot.path()).filePath("ForkMesh");
+        QDir().mkpath(QDir(appData).filePath("backups"));
+        QDir().mkpath(QDir(appData).filePath("mirrors"));
+        const QString configFile = QDir(dataRoot.path()).filePath("forkmesh.conf");
+        write(QStringLiteral("unused"), 1);
+        QFile conf(configFile);
+        conf.open(QIODevice::WriteOnly);
+        conf.write("[General]\n");
+        conf.close();
+
+        const QStringList args = forkmesh::configArchiveTarArgs(
+            QStringLiteral("/tmp/out.tar.gz"), appData, configFile,
+            {QDir(appData).filePath("mirrors"),
+             QDir(appData).filePath("backups"),
+             QStringLiteral("/elsewhere/preview")});
+        check(args.value(0) == QStringLiteral("-czf") &&
+                  args.value(1) == QStringLiteral("/tmp/out.tar.gz"),
+              "the archive path is the first thing tar is told to write");
+        check(args.contains(QStringLiteral("--exclude=ForkMesh/backups")) &&
+                  args.contains(QStringLiteral("--exclude=ForkMesh/mirrors")),
+              "nested backups and mirrors are excluded, so a snapshot never "
+              "packs the previous snapshots");
+        check(!args.contains(QStringLiteral("--exclude=/elsewhere/preview")),
+              "a root outside the app-data tree needs no exclusion");
+        check(args.indexOf(QStringLiteral("--exclude=ForkMesh/backups")) <
+                  args.indexOf(QStringLiteral("-C")),
+              "every exclusion precedes the members, as tar requires");
+        check(args.contains(QStringLiteral("ForkMesh")) &&
+                  args.contains(QStringLiteral("forkmesh.conf")),
+              "the app-data dir and the settings file are both archived");
+        check(forkmesh::configArchiveTarArgs(
+                  QStringLiteral("/tmp/out.tar.gz"),
+                  QDir(dataRoot.path()).filePath("missing"),
+                  QDir(dataRoot.path()).filePath("missing.conf"), {})
+                  .isEmpty(),
+              "a fresh install with nothing on disk yet produces no tar run");
     }
 
     // QFontDatabase logs "OpenType support missing for \"<family>\", script N"

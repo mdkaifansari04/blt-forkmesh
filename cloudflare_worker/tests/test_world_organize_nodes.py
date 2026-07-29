@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Contracts for automatic World node placement and the pool rim title.
 
-Every live mirror-node cabinet is placed around the reward pool as part of the
-existing catalog update, with stable slots that do not jitter when health data
-reorders the payload. The reward pool's own title is painted around the rim, so
-the repeat count and type size must leave a gap between wraps.
+Every live mirror-node cabinet is evenly placed around the centred SOL board
+as part of the existing catalog update. Membership changes deliberately reflow
+the live ring so deleted nodes cannot leave permanent gaps.
 """
 
 import json
@@ -71,22 +70,23 @@ def test_manual_node_layout_mode_and_scene_controls_are_removed():
 def test_live_nodes_are_automatically_ringed_and_face_the_reward_pool():
     assert 'const fountain = landmarkObjects.get("fountain")' in SCENE
     assert "const circleSlots = rewardCircleSlots(" in SCENE
-    assert "nodeSlotAssignments" in SCENE
-    assert "const slot = circleSlots[nodeSlotAssignments.get(id)]" in SCENE
+    assert "usableNodes.length" in SCENE
+    assert "const slot = circleSlots[nodeIndex]" in SCENE
     assert "cabinet.position.set(slot.x, 0.38, slot.z)" in SCENE
     assert "routingX - slot.x" in SCENE
     assert "routingZ - slot.z" in SCENE
     assert "serverSlots" not in SCENE
 
 
-def test_node_slots_are_stable_and_not_overridden_by_saved_layout():
+def test_node_order_is_stable_but_membership_changes_reflow_the_ring():
     block = _function_source("updateNetworkNodes")
     assert ".sort((left, right) => {" in block
     assert "left.name.toLowerCase()" in block
     assert "right.name.toLowerCase()" in block
     assert ".filter(" in block
     assert ".slice(0, 64)" in block
-    assert "nodeSlotAssignments" in block
+    assert "nodeSlotAssignments" not in block
+    assert "usableNodes.forEach(({ node, name: nodeName }, nodeIndex)" in block
     assert "networkNodeSnapshot" in block
     assert 'worldLayoutId("node-"' not in block
     assert "registerMovableObject(" not in block
@@ -105,8 +105,9 @@ def test_reward_circle_slots_clear_the_pool_and_never_collide():
             radius = math.hypot(slot["x"], slot["z"])
             # Outside the 5.25 pool rim and the 6.4–8.5 tree circle.
             assert radius >= 10.7
-            # Outside the campfire's complete bench-and-walkway clearing.
-            assert math.hypot(slot["x"] - 8, slot["z"] - 8) >= 8.2
+            # The member fire now occupies its own south island, safely clear
+            # of every central service-yard slot.
+            assert math.hypot(slot["x"], slot["z"] - 130) >= 8.2
         for index, left in enumerate(slots):
             for right in slots[index + 1:]:
                 assert math.dist(
@@ -118,35 +119,27 @@ def test_reward_circle_slots_are_deterministic():
     assert _reward_circle_slots(64) == _reward_circle_slots(64)
 
 
-def test_reward_circle_slot_prefix_does_not_shift_when_membership_changes():
-    all_slots = _reward_circle_slots(64)
-    for count in (1, 2, 3, 8, 17, 32):
-        assert _reward_circle_slots(count) == all_slots[:count]
+def test_each_populated_node_ring_has_equal_angular_spacing():
+    for count in (2, 3, 8, 17):
+        slots = _reward_circle_slots(count)
+        angles = sorted(
+            math.atan2(slot["z"], slot["x"]) % (math.pi * 2)
+            for slot in slots
+        )
+        gaps = [
+            (angles[(index + 1) % count] - angles[index]) % (math.pi * 2)
+            for index in range(count)
+        ]
+        expected = math.pi * 2 / count
+        assert all(abs(gap - expected) < 1e-9 for gap in gaps)
+        assert abs(sum(slot["x"] for slot in slots) / count) < 1e-9
+        assert abs(sum(slot["z"] for slot in slots) / count) < 1e-9
 
 
-def test_reward_circle_slots_honor_live_scene_keepouts():
-    slots = _reward_circle_slots(
-        32,
-        options={
-            "campfirePosition": [30, 0, 0],
-            "campfireClearance": 11,
-            "circleKeepouts": [{"x": -14, "z": 0, "radius": 7}],
-            "rectangleKeepouts": [
-                {
-                    "minX": -5,
-                    "maxX": 5,
-                    "minZ": 8,
-                    "maxZ": 22,
-                    "padding": 2,
-                }
-            ],
-        },
-    )
-    assert len(slots) == 32
-    for slot in slots:
-        assert math.hypot(slot["x"] - 30, slot["z"]) >= 11
-        assert math.hypot(slot["x"] + 14, slot["z"]) >= 7
-        assert not (-7 <= slot["x"] <= 7 and 6 <= slot["z"] <= 24)
+def test_node_deletion_immediately_reflows_surviving_cabinets():
+    block = _function_source("deleteNetworkNode")
+    assert "nodeInfrastructure.delete(matchId)" in block
+    assert "if (matches.length) relayoutNetworkNodes();" in block
 
 
 def test_live_node_layout_reanchors_after_pool_or_obstacle_changes():
@@ -165,7 +158,6 @@ def test_reward_circle_slots_follow_a_relocated_pool():
         6,
         centre_x=12.0,
         centre_z=-7.0,
-        options={"campfirePosition": [1000, 0, 1000]},
     )
     assert len(slots) == 6
     for slot in slots:
@@ -184,3 +176,40 @@ def test_reward_pool_rim_title_is_measured_so_wraps_do_not_overlap():
     assert "const available = slot * 0.72;" in block
     assert "context.measureText(title).width > available" in block
     assert "context.fillText(title, centre, height / 2 + 4);" in block
+
+
+def test_reward_pool_shows_a_live_mirror_count_above_the_orb():
+    # The cabinets already ring this basin, so their live total hangs over the
+    # pool orb instead of on another sign.
+    assert "function rewardPoolMirrorCountTexture(THREE, total, online)" in SCENE
+    fountain_start = SCENE.index("function createFountain(")
+    fountain = SCENE[fountain_start: SCENE.index("\n}\n", fountain_start)]
+    assert 'mirrorCountSprite.name = "reward-pool-mirror-count";' in fountain
+    # Above the 1.15-radius orb sitting at y=5.15, clear of its geometry.
+    assert "mirrorCountSprite.position.y = 7.6;" in fountain
+    assert "group.add(mirrorCountSprite);" in fountain
+    # Hidden until the first signed catalog lands, so no placeholder zero.
+    assert "mirrorCountSprite.visible = false;" in fountain
+    texture_start = SCENE.index("function rewardPoolMirrorCountTexture(")
+    texture = SCENE[texture_start: SCENE.index("\n}\n", texture_start)]
+    assert 'context.fillText(count === 1 ? "MIRROR" : "MIRRORS", 256, 168);' in texture
+    # Offline cabinets stay in the ring, so the serving share is stated too.
+    assert '"ALL ONLINE"' in texture
+    assert "`${live.toLocaleString(\"en-US\")} ONLINE`" in texture
+
+
+def test_mirror_count_is_repainted_by_the_live_node_update():
+    start = SCENE.index("function updateNetworkNodes(")
+    update = SCENE[start: SCENE.index("\n  }\n", start)]
+    # Counted from the cabinets actually placed in the ring, not the raw
+    # payload, and only the nodes the signed record reports as answering.
+    assert "setRewardPoolMirrorCount(" in update
+    assert "usableNodes.length," in update
+    assert 'String(node?.status || "").toLowerCase() === "online",' in update
+    setter_start = SCENE.index("function setRewardPoolMirrorCount(")
+    setter = SCENE[setter_start: SCENE.index("\n  }\n", setter_start)]
+    # An empty catalog stays hidden rather than claiming zero mirrors.
+    assert "sprite.visible = count > 0;" in setter
+    # The catalog refresh is on a timer, so repaint only when a number moves.
+    assert "if (mirrorCountShown === key) return;" in setter
+    assert "sprite.material.map?.dispose?.();" in setter

@@ -111,7 +111,7 @@ const DETAIL_WIDTH_MIN = 320;
 const DETAIL_WIDTH_STEP = 48;
 const REFRESH_POSITION_KEY = "forkmesh.world.refresh-position.v1";
 const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1.";
-const SAVED_VIEWS_MAX = 4;
+const SAVED_VIEWS_MAX = 5;
 const RENDERER_RECOVERY_DELAY_MS = 1500;
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 // The Mastodon kiosk refetches the public profile on this cadence; the MM:SS
@@ -130,10 +130,16 @@ const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
 // Placements this browser locked in, kept only long enough to outlive a stale
 // read of the shared layout document. See rememberWorldLayout.
 const WORLD_LAYOUT_ECHO_KEY = "forkmesh.world.layout.echo.v1";
+const ADMIN_ERROR_SEEN_KEY = "forkmesh.world.adminErrorsSeen.v1";
+const ADMIN_ERROR_POLL_MS = 15_000;
 const WORLD_LAYOUT_ECHO_TTL_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
-const POSITION_RADIUS = 72;
+// The cardinal campus now reaches the east/west repository and bulletin
+// islands plus the southern member garden. Keep restored/shared positions
+// inside the scene's 340-unit boundary instead of rejecting valid island
+// coordinates with the old town-square-only limit.
+const POSITION_RADIUS = 620;
 const POSITION_FLOOR_TOLERANCE = 0.5;
 // Mirrors the server's WORLD_ARRIVAL_CLEARANCE: a restored spot this close to
 // another visitor is treated as occupied and the fresh server slot wins.
@@ -197,6 +203,7 @@ const DEFAULT_FOCUS_MUSIC_VOLUME = 35;
 const WORLD_LIGHT_LEVEL_MIN = 40;
 const WORLD_LIGHT_LEVEL_MAX = 140;
 const WORLD_LIGHT_LEVEL_DEFAULT = 100;
+const WORLD_DAYLIGHT_MODES = new Set(["auto", "day", "night"]);
 // Movement tuning, stored per device as a percentage of the shared defaults.
 const WORLD_MOVE_SPEED_MIN = 50;
 const WORLD_MOVE_SPEED_MAX = 300;
@@ -206,11 +213,6 @@ const WORLD_MOVE_SPEED_DEFAULT = 100;
 const WORLD_SWING_SPEED_MIN = 10;
 const WORLD_SWING_SPEED_MAX = 100;
 const WORLD_SWING_SPEED_DEFAULT = 55;
-const WORLD_MOVE_ACCEL_MIN = 25;
-// The top slider position is the "instant" sentinel — it maps to infinite
-// acceleration so the player reaches top speed the moment a key is pressed.
-const WORLD_MOVE_ACCEL_MAX = 1000;
-const WORLD_MOVE_ACCEL_DEFAULT = 100;
 const WORLD_DIAGNOSTICS_INTERVAL_MS = 1000;
 const WORLD_DIAGNOSTICS_COUNTER_MAX = 1_000_000_000;
 // Debug readings are graded green / orange / red so a glance separates a
@@ -293,6 +295,13 @@ const ACCOUNT_STATUS_ICONS = Object.freeze({
   "Organization admin": "◆",
   "Verified bot": "⌘",
 });
+
+function accountStatusIcon(identity) {
+  const status = String(identity?.accountStatus || "Guest");
+  if (status === "Registered" && identity?.emailVerified !== true) return "×";
+  return ACCOUNT_STATUS_ICONS[status] || "○";
+}
+
 const OUTFIT_COLOR_VALUES = new Set(OUTFIT_COLOR_OPTIONS.map((option) => option.id));
 const OUTFIT_STYLE_VALUES = new Set(OUTFIT_STYLE_OPTIONS.map((option) => option.id));
 const PATREON_URL = "https://www.patreon.com/16434219/join";
@@ -643,8 +652,8 @@ function normalizedSavedWorldView(record) {
     ![x, y, z, heading, camera.yaw, camera.pitch, camera.zoom].every(
       Number.isFinite,
     ) ||
-    Math.abs(x) > 100 ||
-    Math.abs(z) > 100 ||
+    Math.abs(x) > POSITION_RADIUS ||
+    Math.abs(z) > POSITION_RADIUS ||
     Math.abs(heading) > Math.PI ||
     Math.abs(camera.yaw) > Math.PI * 2 ||
     Math.abs(camera.pitch) > Math.PI / 2 ||
@@ -1008,9 +1017,9 @@ function hashSuffix(value) {
 function defaultSettings() {
   return {
     theme: "world",
+    daylightMode: "auto",
     lightLevel: WORLD_LIGHT_LEVEL_DEFAULT,
     moveSpeed: WORLD_MOVE_SPEED_DEFAULT,
-    moveAccel: WORLD_MOVE_ACCEL_DEFAULT,
     focusMusicTrackId: DEFAULT_FOCUS_MUSIC_TRACK_ID,
     focusMusicVolume: DEFAULT_FOCUS_MUSIC_VOLUME,
     focusMusicMuted: false,
@@ -1029,7 +1038,7 @@ function defaultSettings() {
       os: true,
       activity: true,
       inactivity: false,
-      localTime: false,
+      localTime: true,
       nodes: true,
     },
     labels: true,
@@ -1044,6 +1053,9 @@ function mergeSettings(stored) {
   const theme = THEME_OPTIONS.some((option) => option.id === requestedTheme)
     ? requestedTheme
     : defaults.theme;
+  const requestedDaylightMode = String(
+    stored?.daylightMode || defaults.daylightMode,
+  );
   const publicStatus = normalizeWorldStatus(
     stored?.statusEmoji,
     stored?.statusNote,
@@ -1055,6 +1067,9 @@ function mergeSettings(stored) {
     ...defaults,
     ...(stored || {}),
     theme,
+    daylightMode: WORLD_DAYLIGHT_MODES.has(requestedDaylightMode)
+      ? requestedDaylightMode
+      : defaults.daylightMode,
     lightLevel: Math.min(
       WORLD_LIGHT_LEVEL_MAX,
       Math.max(
@@ -1071,15 +1086,6 @@ function mergeSettings(stored) {
         Number.isFinite(Number(stored?.moveSpeed))
           ? Number(stored.moveSpeed)
           : WORLD_MOVE_SPEED_DEFAULT,
-      ),
-    ),
-    moveAccel: Math.min(
-      WORLD_MOVE_ACCEL_MAX,
-      Math.max(
-        WORLD_MOVE_ACCEL_MIN,
-        Number.isFinite(Number(stored?.moveAccel))
-          ? Number(stored.moveAccel)
-          : WORLD_MOVE_ACCEL_DEFAULT,
       ),
     ),
     focusMusicTrackId: FOCUS_MUSIC_TRACKS.some(
@@ -3523,7 +3529,7 @@ function accountBadgeCopy(identity, settings) {
     (option) => option.id === settings.availability,
   )?.label;
   const pieces = [
-    `${ACCOUNT_STATUS_ICONS[identity.accountStatus] || "○"} ${
+    `${accountStatusIcon(identity)} ${
       identity.accountStatus || "Guest"
     }`,
   ];
@@ -3558,7 +3564,12 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
     /^[A-Za-z0-9+/=]+$/.test(String(accountSession.avatarPng))
       ? String(accountSession.avatarPng)
       : "";
-  const mapItems = LANDMARKS.map(
+  // Repository portals remain present and interactive in the scene. The
+  // compact map is for travel shortcuts, and Code already owns repository
+  // navigation, so do not duplicate a repository view in this rail.
+  const mapItems = LANDMARKS.filter(
+    (landmark) => landmark.id !== "repositories",
+  ).map(
     (landmark) => `
       <li>
         <button
@@ -3730,7 +3741,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               rel="noreferrer"
               title="Support ForkMesh on Patreon to unlock outfit colors"
             >
-              <span aria-hidden="true">♥</span><span>Upgrade</span>
+              <span aria-hidden="true">♥</span><span class="world-visually-hidden">Upgrade</span>
             </a>`
             }
             <button
@@ -3738,9 +3749,10 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               type="button"
               data-world-camera-toggle
               aria-pressed="false"
+              aria-label="Enter first-person view"
               title="Enter first-person view"
             >
-              <span aria-hidden="true">⌖</span><span data-world-camera-label>First person</span>
+              <span aria-hidden="true">⌖</span><span class="world-visually-hidden" data-world-camera-label>First person</span>
             </button>
             <button
               class="world-top-link world-wave-button"
@@ -3749,24 +3761,26 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               title="Wave to everyone in the world"
               aria-label="Wave your avatar's arm"
             >
-              <span aria-hidden="true">👋</span><span>Wave</span>
+              <span aria-hidden="true">👋</span><span class="world-visually-hidden">Wave</span>
             </button>
             <button
               class="world-top-link"
               type="button"
               data-world-sound-toggle
               aria-pressed="false"
+              aria-label="Enable World sounds"
               title="Enable World sounds"
             >
-              <span aria-hidden="true">♪</span><span data-world-sound-label>Sound</span>
+              <span aria-hidden="true">♪</span><span class="world-visually-hidden" data-world-sound-label>Sound</span>
             </button>
             <button
               class="world-top-link"
               type="button"
               data-world-screenshot
+              aria-label="Capture and annotate a screenshot"
               title="Capture and annotate a screenshot"
             >
-              <span aria-hidden="true">📷</span><span>Capture</span>
+              <span aria-hidden="true">📷</span><span class="world-visually-hidden">Capture</span>
             </button>
             <button
               class="world-top-link world-notification-button"
@@ -3775,8 +3789,42 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               title="Show global and personal notifications"
               aria-label="Open World notifications"
             >
-              <span aria-hidden="true">🔔</span><span>Notifications</span>
+              <span aria-hidden="true">🔔</span><span class="world-visually-hidden">Notifications</span>
               <span data-world-notification-count hidden>0</span>
+            </button>
+            <button
+              class="world-top-link world-admin-errors-button"
+              type="button"
+              data-world-admin-errors
+              title="Open newly logged errors"
+              aria-label="Open newly logged errors"
+              hidden
+            >
+              <span aria-hidden="true">!</span>
+              <span class="world-visually-hidden">New errors</span>
+              <span data-world-admin-error-count hidden>0</span>
+            </button>
+            <a
+              class="world-top-link world-dashboard-link"
+              href="/dashboard"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Open Dashboard in a new tab"
+              title="Open Dashboard in a new tab"
+            >
+              <span aria-hidden="true">▦</span>
+              <span class="world-visually-hidden">Dashboard</span>
+            </a>
+            <button
+              class="world-top-link world-tasks-button"
+              type="button"
+              data-world-tasks-open
+              aria-label="Open organization tasks"
+              title="Open organization tasks"
+            >
+              <span aria-hidden="true">✓</span>
+              <span class="world-visually-hidden">Tasks</span>
+              <span data-world-task-count hidden>0</span>
             </button>
             <button
               class="world-shirt-badge"
@@ -3805,13 +3853,18 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span class="world-shirt-account" data-world-shirt-account title="${escapeHTML(
                 identity.accountStatus,
               )}">${escapeHTML(
-                ACCOUNT_STATUS_ICONS[identity.accountStatus] || "○",
+                accountStatusIcon(identity),
               )}</span>
             </button>
           </nav>
         </header>
 
-        <aside class="world-right-rail" aria-label="World navigation and activity">
+        <aside
+          class="world-right-rail"
+          data-world-right-rail
+          data-expanded="false"
+          aria-label="World navigation and activity"
+        >
           <section class="world-map" data-world-map>
             <div class="world-panel-heading">
               <h2>World map</h2>
@@ -3821,7 +3874,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 type="button"
                 data-world-map-toggle
                 aria-expanded="false"
-                aria-label="Expand world map"
+                aria-label="Expand World controls"
               >☰</button>
             </div>
             <ul class="world-map-list">${mapItems}</ul>
@@ -3835,25 +3888,17 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <span aria-hidden="true">🔗</span>
             <span>Share exact view</span>
           </button>
-          <section class="world-saved-views" data-world-saved-views data-expanded="false" aria-label="Saved World views">
+          <section class="world-saved-views" data-world-saved-views data-expanded="true" aria-label="Five most recent saved World views">
             <div class="world-saved-views-heading">
-              <button
-                class="world-saved-views-toggle"
-                type="button"
-                data-world-saved-views-toggle
-                aria-expanded="false"
-              >
-                <span aria-hidden="true">▸</span>
-                <span>Saved views</span>
-              </button>
+              <span class="world-saved-views-title">Quick views</span>
               <button
                 type="button"
                 data-world-save-view
                 aria-label="Save this location and perspective"
                 title="Save this view"
-              ><span aria-hidden="true">⌖＋</span><span>Map</span></button>
+              ><span aria-hidden="true">＋</span><span class="world-visually-hidden">Save current map view</span></button>
             </div>
-            <div class="world-saved-view-list" data-world-saved-view-list hidden></div>
+            <div class="world-saved-view-list" data-world-saved-view-list></div>
           </section>
           <section
             class="world-community-placement"
@@ -3887,9 +3932,19 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </div>
 
         <details class="world-diagnostics" data-world-diagnostics ${settings.debugPanel ? "" : "hidden"}>
-          <summary aria-label="Open local World performance and connection details">
-            <span class="world-diagnostics-light" data-world-diagnostics-light data-state="connecting" aria-hidden="true"></span>
-            <strong>DEBUG</strong>
+          <summary aria-label="Open local World performance and connection details" title="World performance">
+            <span class="world-diagnostics-orb" data-world-diagnostics-dots aria-hidden="true">
+              <span data-diagnostic-dot="fps" data-level="caution"></span>
+              <span data-diagnostic-dot="frame" data-level="caution"></span>
+              <span data-diagnostic-dot="draw" data-level="caution"></span>
+              <span data-diagnostic-dot="input" data-level="caution"></span>
+              <span data-diagnostic-dot="network" data-level="caution"></span>
+              <span data-diagnostic-dot="traffic" data-level="good"></span>
+              <span data-diagnostic-dot="queue" data-level="good"></span>
+              <span data-diagnostic-dot="build" data-level="caution"></span>
+              <span data-diagnostic-dot="world" data-level="good"></span>
+            </span>
+            <strong>WORLD DEBUG</strong>
             <span class="world-diagnostics-compact" data-world-diagnostics-summary>
               <span data-world-diagnostics-renderer-compact title="Renderer">R starting</span>
               <span data-world-diagnostics-frame-compact title="Frame health">F sampling</span>
@@ -3924,9 +3979,15 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </details>
 
         <details class="world-diagnostics world-chat-terminal${settings.debugPanel ? "" : " world-chat-terminal--debug-hidden"}" data-world-chat-terminal>
-          <summary aria-label="Open World chat in a terminal panel">
-            <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
-            <strong>CHAT</strong>
+          <summary aria-label="Open World chat and activity">
+            <span class="world-chat-terminal-avatar" data-world-chat-terminal-avatar aria-hidden="true">
+              <img data-world-chat-terminal-avatar-image alt="" hidden>
+              <span data-world-chat-terminal-avatar-initial>#</span>
+            </span>
+            <strong>CHAT + ACTIVITY</strong>
+            <span class="world-chat-terminal-channel" aria-label="Current channel"># general</span>
+            <span class="world-chat-terminal-lock" aria-label="Public channel is relay protected">▣</span>
+            <span class="world-chat-terminal-connection">Connected</span>
             <span
               class="world-chat-terminal-unread"
               data-world-chat-terminal-unread
@@ -3946,7 +4007,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
         </details>
 
-        <div class="world-toast" data-world-toast role="status"></div>
+        <div class="world-activity-stream" data-world-activity-stream role="log" aria-live="polite" aria-label="Recent World chat, notifications, and status changes"></div>
         <div class="world-swing-panel" data-world-swing-panel hidden>
           <span>
             <strong>Swing speed</strong>
@@ -4330,6 +4391,17 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 built-in screenshots hide it.
               </small>
             </fieldset>
+            <fieldset class="world-setting-group">
+              <legend data-world-organization-task-heading>Organization tasks · private to the organization</legend>
+              <ol class="world-office-task-list" data-world-organization-task-list aria-label="Universal organization task list">
+                <li class="world-office-task-empty">Sign in to load organization tasks.</li>
+              </ol>
+              <small>
+                Department, team, repository, QA, Claude, and Codex routes all
+                use this one encrypted task catalog. QA results include the
+                latest pass, fail, or unknown verdict and its reviewer.
+              </small>
+            </fieldset>
           </div>
 
           <div class="world-settings-pane" data-world-settings-pane="security" hidden>
@@ -4355,6 +4427,31 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <fieldset class="world-setting-group">
             <legend>Personal environment · synced to your account</legend>
             <div class="world-theme-grid">${themes}</div>
+            <div class="world-daylight-control">
+              <strong>Time of day</strong>
+              <div
+                class="world-daylight-options"
+                role="group"
+                aria-label="Time of day"
+              >
+                <button
+                  type="button"
+                  data-world-daylight-mode="auto"
+                  aria-pressed="${settings.daylightMode === "auto"}"
+                ><span aria-hidden="true">◐</span> Auto</button>
+                <button
+                  type="button"
+                  data-world-daylight-mode="day"
+                  aria-pressed="${settings.daylightMode === "day"}"
+                ><span aria-hidden="true">☀</span> Day</button>
+                <button
+                  type="button"
+                  data-world-daylight-mode="night"
+                  aria-pressed="${settings.daylightMode === "night"}"
+                ><span aria-hidden="true">☾</span> Night</button>
+              </div>
+              <small>Auto follows your local time. Day and Night hold the sky until you switch back.</small>
+            </div>
             <label class="world-light-control">
               <span>
                 <strong>Light level</strong>
@@ -4401,25 +4498,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               />
               <small>Scales how fast your avatar walks and runs. 100% is the default pace.</small>
             </label>
-            <label class="world-light-control">
-              <span>
-                <strong>Acceleration</strong>
-                <output data-world-move-accel-output>${escapeHTML(
-                  settings.moveAccel >= WORLD_MOVE_ACCEL_MAX
-                    ? "∞"
-                    : `${settings.moveAccel}%`,
-                )}</output>
-              </span>
-              <input
-                type="range"
-                min="${WORLD_MOVE_ACCEL_MIN}"
-                max="${WORLD_MOVE_ACCEL_MAX}"
-                step="25"
-                value="${escapeHTML(settings.moveAccel)}"
-                data-world-move-accel
-              />
-              <small>How quickly you reach top speed from rest. Slide all the way up for instant (∞) acceleration.</small>
-            </label>
+            <p class="world-setting-note">Keyboard movement responds at the selected speed on its first frame; touch remains proportional for precise positioning.</p>
           </fieldset>
 
           <fieldset class="world-setting-group">
@@ -4714,6 +4793,7 @@ class ForkMeshWorld extends HTMLElement {
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
+    this.openFeedbackKioskOnLoad = worldQuery.get("feedback") === "1";
     this.requestedSpaceExplicit = WORLD_SPACE_IDS.has(requestedSpace);
     this.currentSpace = WORLD_SPACE_IDS.has(requestedSpace)
       ? requestedSpace
@@ -4745,6 +4825,12 @@ class ForkMeshWorld extends HTMLElement {
     this.diagnosticsOutboundSample = 0;
     this.lastDiagnosticsSnapshot = null;
     this.rendererRecoveryTimer = 0;
+    this.viewportSyncTimer = 0;
+    this.lastStableViewportHeight = 0;
+    this.lastStableViewportWidth = 0;
+    this.coarsePointerViewport = Boolean(
+      window.matchMedia?.("(pointer: coarse)")?.matches,
+    );
     this.buildDiagnostics = { version: "", revision: "" };
     this.qaDeck = {
       authenticated: false,
@@ -4796,6 +4882,10 @@ class ForkMeshWorld extends HTMLElement {
     this.mirrorPushRefreshTimer = 0;
     this.eventsTimer = 0;
     this.notificationsTimer = 0;
+    this.adminErrorTimer = 0;
+    this.adminErrorLatestId = 0;
+    this.adminErrorCount = 0;
+    this.adminErrorEffectTimer = 0;
     // GETs from bootstrap, visibility recovery, timers, and socket doorbells
     // share one request. Successful snapshots can be reused briefly and
     // repeated failures cool down exponentially instead of becoming a storm.
@@ -4916,6 +5006,7 @@ class ForkMeshWorld extends HTMLElement {
     });
     this.addEventListener("touchmove", this.blockWorldPullToRefresh, {
       passive: false,
+      capture: true,
     });
     window.addEventListener("keydown", this.handlePublicInputActivity);
     window.addEventListener("message", this.handleWorldChatMessage);
@@ -4944,6 +5035,7 @@ class ForkMeshWorld extends HTMLElement {
     this.startUpdateWatch();
     this.startDeployStatusWatch();
     this.startWorldLayoutWatch();
+    this.startAdminErrorPolling();
   }
 
   disconnectedCallback() {
@@ -5067,7 +5159,15 @@ class ForkMeshWorld extends HTMLElement {
     ].filter(Boolean);
     if (!chatSources.includes(event.source)) return;
     const data = event.data;
-    if (!data || data.type !== "forkmesh:world-chat") return;
+    if (!data) return;
+    if (data.type === "forkmesh:world-activity") {
+      this.activityNotice(data.text, {
+        kind: String(data.kind || "status"),
+        sender: "ForkMesh",
+      });
+      return;
+    }
+    if (data.type !== "forkmesh:world-chat") return;
     const text = String(data.text || "")
       .replace(/\s+/g, " ")
       .trim()
@@ -5136,6 +5236,10 @@ class ForkMeshWorld extends HTMLElement {
     this.recentWorldChatMessages.sort((left, right) => left.ts - right.ts);
     this.recentWorldChatMessages = this.recentWorldChatMessages.slice(-40);
     this.world?.updateWorldGeneralChat?.(this.recentWorldChatMessages);
+    this.world?.setAvatarRecentPublicMessage?.(
+      sender,
+      text || `Shared ${attachmentName}`,
+    );
     if (ts >= this.chatTerminalNewestAt) {
       this.chatTerminalNewestAt = ts;
       this.setChatTerminalLastMessage(
@@ -5146,6 +5250,10 @@ class ForkMeshWorld extends HTMLElement {
     // Replayed history updates only the collapsed CHAT bar — never a bubble,
     // so reconnects do not resurrect old messages above avatars.
     if (data.history === true) return;
+    this.activityNotice(
+      `${sender}: ${text || `Shared ${attachmentName}`}`,
+      { kind: "chat", sender },
+    );
     // Own lines never count as unread — `self` is this browser, `own` also
     // covers the signed-in account talking from another tab or device.
     if (data.self !== true && data.own !== true) this.bumpChatTerminalUnread();
@@ -5549,6 +5657,7 @@ class ForkMeshWorld extends HTMLElement {
         container: this.$("[data-world-canvas-wrap]"),
         labelLayer: this.$("[data-world-label-layer]"),
         identity: publicIdentity(this.identity, this.settings),
+        initialSpawn: this.restoredPosition,
         initialWorldLayout: mergedInitialLayout,
         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
         onLandmarkSelect: (id, meta = {}) => {
@@ -5600,7 +5709,7 @@ class ForkMeshWorld extends HTMLElement {
             return;
           }
           if (id === "repositories" && meta.repositoryPullPage) {
-            this.loadRepositoryPullReview(meta.repositoryPullPage.number);
+            this.openRepositoryPullWorkbench(meta.repositoryPullPage);
             return;
           }
           if (id === "repositories" && meta.graphNode) {
@@ -5658,6 +5767,10 @@ class ForkMeshWorld extends HTMLElement {
         onReferralBoardSelect: () => void this.copyReferralLink(),
         onSiteReferrerOpen: (url) => this.openSiteReferrerLink(url),
         onLobbyLinkKioskSelect: () => void this.openLobbyLinkKiosk(),
+        onLobbyFeedbackKioskSelect: () =>
+          void this.openLobbyFeedbackKiosk(),
+        onLobbyTaskBidKioskSelect: () =>
+          void this.openLobbyTaskBidKiosk(),
         onSystemCapacityTableSelect: (table) =>
           this.openSystemCapacityTables(table),
         onInfrastructureConsoleToggle: ({ enabled }) =>
@@ -5680,7 +5793,7 @@ class ForkMeshWorld extends HTMLElement {
         onForkbotChat: () => {
           this.openChatTerminal("@forkbot ");
         },
-        onAgentBotChat: (botId) => {
+        onAgentBotChat: (botId, session = null) => {
           if (this.orgAgentAccess?.state !== "allowed") {
             this.toast(
               "Claude and Codex chat is available only to the Engineering team.",
@@ -5690,15 +5803,27 @@ class ForkMeshWorld extends HTMLElement {
           const name = String(botId || "").toLowerCase() === "codex"
             ? "codex"
             : "claude";
-          this.openAgentBotDetail(name);
+          this.openAgentBotDetail(name, {
+            sessionId: String(session?.id || ""),
+          });
         },
         onPlayForkmeshSong: () => {
           void this.playForkmeshSong();
         },
         onCreateRepository: (options) =>
           this.openRepositoryCreateForm(options),
+        onStartNodeDownload: () => {
+          window.open("/desktop", "_blank", "noopener,noreferrer");
+          this.toast("Opening the ForkMesh node download page.");
+        },
         onSwingRide: (state) => this.handleSwingRide(state),
         onCameraMode: (state) => this.handleWorldCameraMode(state),
+        onStartHereSelect: ({ completed = 0, total = 0 } = {}) => {
+          this.toast(
+            `${completed}/${total} World stops complete · WASD or arrows move · Shift runs · Space jumps · click seats and vehicles to use them.`,
+            { priority: 1, lockMs: 3200 },
+          );
+        },
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
         },
@@ -5719,6 +5844,7 @@ class ForkMeshWorld extends HTMLElement {
           void this.loadWorldFediverseProfile(target),
         onFediverseFollow: (target) =>
           void this.toggleWorldFediverseFollow(target),
+        onAvatarSelect: (member) => this.openWorldMemberDetail(member),
         onAvatarWalletAction: ({ self, address } = {}) => {
           const wallet = String(address || "").trim();
           if (wallet) {
@@ -5779,6 +5905,8 @@ class ForkMeshWorld extends HTMLElement {
           this.postJSON(path, body, options),
         getSession: readSession,
         toast: (message) => this.toast(message),
+        onQaVerdict: ({ task, verdict }) =>
+          this.recordTaskQaVerdict(task, verdict),
       });
       this.syncRecentIssueAssignments();
       this.officeController = createWorldOfficeController({
@@ -5792,6 +5920,7 @@ class ForkMeshWorld extends HTMLElement {
         () => this.officeController?.authorizeMeeting?.() || false,
       );
       this.world.setTheme(this.settings.theme);
+      this.world.setDaylightMode?.(this.settings.daylightMode);
       this.world.setLightLevel(this.settings.lightLevel);
       this.world.setMovementTuning?.(this.movementTuning());
       void layoutPromise.then((layout) => {
@@ -5906,6 +6035,10 @@ class ForkMeshWorld extends HTMLElement {
       if (this.requestedLandmark) {
         this.openLandmark(this.requestedLandmark);
       }
+      if (this.openFeedbackKioskOnLoad) {
+        this.officeController?.focusOffice();
+        void this.openLobbyFeedbackKiosk();
+      }
     } catch (error) {
       console.warn("ForkMesh World could not start WebGL", error);
       this.renderWebGLFallback();
@@ -5917,6 +6050,9 @@ class ForkMeshWorld extends HTMLElement {
       this.announceWorldNotifications();
       if (this.requestedLandmark) {
         this.openLandmark(this.requestedLandmark);
+      }
+      if (this.openFeedbackKioskOnLoad) {
+        void this.openLobbyFeedbackKiosk();
       }
     }
   }
@@ -6074,7 +6210,33 @@ class ForkMeshWorld extends HTMLElement {
             }
           : { pass: 0, fail: 0, unsure: 0, total: 0 };
         return key && title && howToTest
-          ? { key, title, howToTest, verdict, global }
+          ? {
+              key,
+              title,
+              howToTest,
+              verdict,
+              global,
+              organizationTask: card?.organizationTask === true,
+              department: sanitizePresenceText(
+                card?.department, "", 64),
+              team: sanitizePresenceText(card?.team, "", 64),
+              taskQaStatus: ["passed", "failed"].includes(
+                String(card?.taskQaStatus || ""))
+                ? String(card.taskQaStatus)
+                : "unknown",
+              lastReviewer: sanitizePresenceText(
+                card?.lastReviewer, "", 64),
+              lastReviewedAt: Math.max(
+                0, Number(card?.lastReviewedAt) || 0),
+              failureReason: sanitizePresenceText(
+                card?.failureReason || reviews?.[key]?.failureReason,
+                "",
+                1000,
+              ),
+              hasFailureScreenshot:
+                card?.hasFailureScreenshot === true ||
+                reviews?.[key]?.hasFailureScreenshot === true,
+            }
           : null;
       })
       .filter(Boolean)
@@ -6085,6 +6247,9 @@ class ForkMeshWorld extends HTMLElement {
     });
     this.qaDeck = {
       authenticated: payload?.authenticated === true,
+      authorized: payload?.authorized === true,
+      requiredTeam: sanitizePresenceText(
+        payload?.requiredTeam, "quality-assurance", 64),
       revision: sanitizePresenceText(payload?.revision, "", 80),
       cards,
       reviews,
@@ -6155,6 +6320,8 @@ class ForkMeshWorld extends HTMLElement {
     }
     this.world?.updateQaBoard?.({
       authenticated: this.qaDeck.authenticated,
+      authorized: this.qaDeck.authorized,
+      requiredTeam: this.qaDeck.requiredTeam,
       current:
         (view === "detail"
           ? this.qaDeck.cards.find(
@@ -6279,6 +6446,157 @@ class ForkMeshWorld extends HTMLElement {
     return this.qaLoad;
   }
 
+  async compactQaFailureScreenshot(file) {
+    if (
+      !file ||
+      !/^image\/(?:png|jpeg|webp)$/i.test(String(file.type || "")) ||
+      Number(file.size) > 8 * 1024 * 1024
+    ) {
+      throw new Error("Choose a PNG, JPEG, or WebP image under 8 MB.");
+    }
+    if (typeof createImageBitmap !== "function") {
+      throw new Error("Screenshot attachments are unavailable in this browser.");
+    }
+    const bitmap = await createImageBitmap(file);
+    try {
+      const encode = (maxWidth, maxHeight, quality) => {
+        const scale = Math.min(
+          1,
+          maxWidth / Math.max(1, bitmap.width),
+          maxHeight / Math.max(1, bitmap.height),
+        );
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        canvas.getContext("2d")?.drawImage(
+          bitmap,
+          0,
+          0,
+          canvas.width,
+          canvas.height,
+        );
+        return canvas.toDataURL("image/webp", quality);
+      };
+      for (const [width, height, quality] of [
+        [1280, 900, 0.7],
+        [1024, 720, 0.58],
+        [800, 600, 0.5],
+      ]) {
+        const encoded = encode(width, height, quality);
+        if (encoded.length <= 480_000) return encoded;
+      }
+      throw new Error("That screenshot could not be compacted below 480 KB.");
+    } finally {
+      bitmap.close?.();
+    }
+  }
+
+  collectQaFailureEvidence(card) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "world-qa-failure-overlay";
+      overlay.setAttribute("role", "dialog");
+      overlay.setAttribute("aria-modal", "true");
+      overlay.setAttribute("aria-labelledby", "world-qa-failure-title");
+      overlay.innerHTML = `
+        <form class="world-qa-failure-dialog">
+          <header>
+            <div>
+              <span>Private organization QA</span>
+              <strong id="world-qa-failure-title">Why did this task fail?</strong>
+            </div>
+            <button type="button" data-qa-failure-cancel aria-label="Cancel failure report">×</button>
+          </header>
+          <p>${escapeHTML(card?.title || "QA task")}</p>
+          <label>
+            Reason
+            <textarea name="reason" maxlength="1000" rows="4" required
+              placeholder="Describe what failed, what you expected, and how to reproduce it."></textarea>
+          </label>
+          <label class="world-qa-failure-file">
+            Screenshot <small>optional · PNG, JPEG, or WebP</small>
+            <input type="file" name="screenshot" accept="image/png,image/jpeg,image/webp" />
+          </label>
+          <div class="world-qa-failure-preview" hidden>
+            <img alt="Failure screenshot preview" />
+            <button type="button" data-qa-failure-clear>Remove screenshot</button>
+          </div>
+          <small data-qa-failure-status>Choose a file or paste a screenshot anywhere in this panel.</small>
+          <footer>
+            <button type="button" data-qa-failure-cancel>Cancel</button>
+            <button type="submit">Save failed result</button>
+          </footer>
+        </form>`;
+      const form = overlay.querySelector("form");
+      const input = form.elements.screenshot;
+      const preview = overlay.querySelector(".world-qa-failure-preview");
+      const previewImage = preview.querySelector("img");
+      const status = overlay.querySelector("[data-qa-failure-status]");
+      let screenshot = "";
+      let closed = false;
+      const finish = (value) => {
+        if (closed) return;
+        closed = true;
+        overlay.remove();
+        resolve(value);
+      };
+      const setScreenshot = async (file) => {
+        if (!file) return;
+        status.textContent = "Preparing screenshot…";
+        try {
+          screenshot = await this.compactQaFailureScreenshot(file);
+          previewImage.src = screenshot;
+          preview.hidden = false;
+          status.textContent =
+            "Screenshot ready. It will be encrypted with this QA review.";
+        } catch (error) {
+          screenshot = "";
+          preview.hidden = true;
+          input.value = "";
+          status.textContent = String(
+            error?.message || "The screenshot could not be attached.",
+          );
+        }
+      };
+      input.addEventListener("change", () => {
+        void setScreenshot(input.files?.[0]);
+      });
+      overlay.addEventListener("paste", (event) => {
+        const file = [...(event.clipboardData?.files || [])].find((entry) =>
+          String(entry.type || "").startsWith("image/"),
+        );
+        if (file) {
+          event.preventDefault();
+          void setScreenshot(file);
+        }
+      });
+      overlay.querySelector("[data-qa-failure-clear]").addEventListener(
+        "click",
+        () => {
+          screenshot = "";
+          input.value = "";
+          preview.hidden = true;
+          status.textContent =
+            "Choose a file or paste a screenshot anywhere in this panel.";
+        },
+      );
+      overlay.querySelectorAll("[data-qa-failure-cancel]").forEach((button) => {
+        button.addEventListener("click", () => finish(null));
+      });
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const failureReason = String(form.elements.reason.value || "").trim();
+        if (!failureReason) {
+          form.elements.reason.reportValidity();
+          return;
+        }
+        finish({ failureReason, screenshot });
+      });
+      this.$("[data-world-root]")?.append(overlay);
+      form.elements.reason.focus();
+    });
+  }
+
   async recordQaVerdict(verdict) {
     if (
       this.qaSaving ||
@@ -6292,11 +6610,21 @@ class ForkMeshWorld extends HTMLElement {
       this.toast("Sign in to save QA results to your account.");
       return false;
     }
+    const evidence =
+      verdict === "fail" && card.organizationTask
+        ? await this.collectQaFailureEvidence(card)
+        : { failureReason: "", screenshot: "" };
+    if (!evidence) return false;
     this.qaSaving = true;
     try {
       const payload = await this.postJSON(
         WORLD_QA_ENDPOINT,
-        { key: card.key, verdict },
+        {
+          key: card.key,
+          verdict,
+          failureReason: evidence.failureReason,
+          screenshot: evidence.screenshot,
+        },
         { timeout: 8000 },
       );
       this.applyQaDeck(payload, { afterKey: card.key });
@@ -6311,6 +6639,51 @@ class ForkMeshWorld extends HTMLElement {
       return false;
     } finally {
       this.qaSaving = false;
+    }
+  }
+
+  async recordTaskQaVerdict(task, verdict) {
+    const taskId = String(task?.id || "").trim().toLowerCase();
+    if (
+      !/^[a-f0-9]{32}$/.test(taskId) ||
+      !["pass", "fail", "unsure"].includes(verdict)
+    ) {
+      return false;
+    }
+    if (!validWorldSession()) {
+      this.toast("Sign in to review completed organization tasks.");
+      return false;
+    }
+    const key = `task:${taskId}`;
+    try {
+      if (!Number(task?.qa?.requestedAt)) {
+        await this.postJSON(
+          `/api/tasks/${encodeURIComponent(taskId)}/qa`,
+          {
+            howToTest:
+              "Open the completed feature and follow its normal user flow. " +
+              "Confirm the requested behavior works, existing behavior did " +
+              "not regress, and no console or network error appears.",
+          },
+          { timeout: 8_000 },
+        );
+      }
+      await this.refreshQaDeck({ quiet: true });
+      const index = this.qaDeck.cards.findIndex((card) => card.key === key);
+      if (index < 0 || !this.qaDeck.authorized) {
+        this.toast(
+          "Join the Quality Assurance team to review completed tasks.",
+        );
+        return false;
+      }
+      this.qaCardIndex = index;
+      this.qaDeckSelectedKey = key;
+      return await this.recordQaVerdict(verdict);
+    } catch (error) {
+      this.toast(
+        String(error?.message || "The QA result could not be saved."),
+      );
+      return false;
     }
   }
 
@@ -6509,18 +6882,62 @@ class ForkMeshWorld extends HTMLElement {
     }
   };
 
-  syncViewportHeight = () => {
+  syncViewportHeight = (event = null) => {
     // Mobile browser chrome can resize visualViewport continuously while a
     // thumbstick drag is in progress. Resizing the WebGL canvas on every one
     // of those samples looks like the whole World is refreshing mid-walk.
     // Hold the last stable viewport until the gesture ends, then reconcile it
     // once without interrupting movement.
     if (this.mobileMovementActive) return;
-    const height = Math.max(
+    const width = Math.max(
       240,
-      Math.round(window.visualViewport?.height || window.innerHeight || 0),
+      Math.round(window.innerWidth || document.documentElement.clientWidth || 0),
     );
-    this.style.setProperty("--world-viewport-height", `${height}px`);
+    // On touch devices, address-bar expansion and contraction changes only
+    // the visual viewport height. Resizing the WebGL buffer for that browser
+    // chrome animation clears the frame and looks like a full World refresh.
+    // Keep the mounted buffer stable until the viewport width changes (real
+    // rotation/window resize). Desktop resizes remain fully responsive.
+    if (
+      this.coarsePointerViewport &&
+      this.lastStableViewportWidth > 0 &&
+      Math.abs(width - this.lastStableViewportWidth) < 2
+    ) {
+      return;
+    }
+    const commit = () => {
+      this.viewportSyncTimer = 0;
+      if (this.mobileMovementActive || this.destroyed) return;
+      const committedWidth = Math.max(
+        240,
+        Math.round(
+          window.innerWidth || document.documentElement.clientWidth || 0,
+        ),
+      );
+      const height = Math.max(
+        240,
+        Math.round(window.visualViewport?.height || window.innerHeight || 0),
+      );
+      if (
+        Math.abs(height - this.lastStableViewportHeight) < 2 &&
+        Math.abs(committedWidth - this.lastStableViewportWidth) < 2
+      ) {
+        return;
+      }
+      this.lastStableViewportWidth = committedWidth;
+      this.lastStableViewportHeight = height;
+      this.style.setProperty("--world-viewport-height", `${height}px`);
+    };
+    window.clearTimeout(this.viewportSyncTimer);
+    // Initial mount and explicit calls commit immediately. Mobile browser
+    // chrome emits a burst of resize events while a finger pans the canvas;
+    // wait for that burst to settle so the WebGL drawing buffer is not
+    // repeatedly cleared underneath an authenticated moving avatar.
+    if (!event?.type) {
+      commit();
+      return;
+    }
+    this.viewportSyncTimer = window.setTimeout(commit, 220);
   };
 
   handlePageHide = (event) => {
@@ -6891,13 +7308,14 @@ class ForkMeshWorld extends HTMLElement {
     return this.fetchJSON("/api/repo/forkmesh/forkmesh/mirrors", {
       auth: false,
       timeout: 5000,
+      cache: force ? "no-store" : "default",
       maxAge: force ? 0 : MIRROR_STATUS_POLL_MS - 5000,
       backoff: true,
       staleIfError: true,
     });
   }
 
-  async loadWorldData() {
+  async loadWorldData({ forceMirrors = false } = {}) {
     const session = validWorldSession();
     const hasSession = this.sessionAuthenticated && Boolean(session);
     const [
@@ -6925,7 +7343,7 @@ class ForkMeshWorld extends HTMLElement {
     ] =
       await Promise.allSettled([
         this.fetchJSON("/api/network/overview", { auth: false }),
-        this.fetchMirrorCatalog(),
+        this.fetchMirrorCatalog({ force: forceMirrors }),
         this.fetchJSON("/api/world/instances", {
           auth: false,
           timeout: 5000,
@@ -8036,6 +8454,43 @@ class ForkMeshWorld extends HTMLElement {
 
   bindUI() {
     const chatTerminal = this.$("[data-world-chat-terminal]");
+    const diagnostics = this.$("[data-world-diagnostics]");
+    const hoverCapable = window.matchMedia?.(
+      "(hover: hover) and (pointer: fine)",
+    )?.matches;
+    const wireHoverOrb = (details, onOpen = () => {}) => {
+      if (!details || !hoverCapable) return;
+      let closeTimer = 0;
+      details.addEventListener("pointerenter", () => {
+        window.clearTimeout(closeTimer);
+        details.open = true;
+        onOpen();
+      });
+      details.addEventListener("pointerleave", () => {
+        window.clearTimeout(closeTimer);
+        closeTimer = window.setTimeout(() => {
+          if (!details.matches(":focus-within")) details.open = false;
+        }, 220);
+      });
+      details.addEventListener("focusin", () => {
+        window.clearTimeout(closeTimer);
+        details.open = true;
+        onOpen();
+      });
+      details.addEventListener("focusout", () => {
+        window.clearTimeout(closeTimer);
+        closeTimer = window.setTimeout(() => {
+          if (!details.matches(":focus-within,:hover")) details.open = false;
+        }, 220);
+      });
+    };
+    wireHoverOrb(diagnostics, () => {
+      chatTerminal?.removeAttribute("open");
+    });
+    wireHoverOrb(chatTerminal, () => {
+      diagnostics?.removeAttribute("open");
+      this.loadChatTerminalFrame();
+    });
     chatTerminal?.addEventListener("toggle", () => {
       if (chatTerminal.open) {
         this.$("[data-world-diagnostics]")?.removeAttribute("open");
@@ -8047,14 +8502,21 @@ class ForkMeshWorld extends HTMLElement {
     // the most recent global #general message, not a static placeholder.
     this.loadChatTerminalFrame();
     this.addEventListener("click", (event) => {
+      if (
+        chatTerminal?.open &&
+        !event.target.closest("[data-world-chat-terminal]")
+      ) {
+        chatTerminal.removeAttribute("open");
+      }
+      const rightRail = this.$("[data-world-right-rail]");
+      if (
+        rightRail?.dataset.expanded === "true" &&
+        !event.target.closest("[data-world-right-rail]")
+      ) {
+        this.setWorldRightRailExpanded(false);
+      }
       if (event.target.closest("[data-world-save-view]")) {
         this.saveCurrentWorldView();
-        this.setSavedViewsExpanded(true);
-        return;
-      }
-      if (event.target.closest("[data-world-saved-views-toggle]")) {
-        const section = this.$("[data-world-saved-views]");
-        this.setSavedViewsExpanded(section?.dataset.expanded !== "true");
         return;
       }
       const savedViewEdit = event.target.closest("[data-world-saved-view-edit]");
@@ -8135,15 +8597,14 @@ class ForkMeshWorld extends HTMLElement {
         void this.refreshPersonalNotifications(true);
         return;
       }
+      if (event.target.closest("[data-world-admin-errors]")) {
+        this.openAdminErrors();
+        return;
+      }
       const mapToggle = event.target.closest("[data-world-map-toggle]");
       if (mapToggle) {
-        const map = this.$("[data-world-map]");
-        const expanded = map?.classList.toggle("is-expanded") || false;
-        mapToggle.setAttribute("aria-expanded", String(expanded));
-        mapToggle.setAttribute(
-          "aria-label",
-          expanded ? "Collapse world map" : "Expand world map",
-        );
+        const rail = this.$("[data-world-right-rail]");
+        this.setWorldRightRailExpanded(rail?.dataset.expanded !== "true");
         return;
       }
       const landmarkButton = event.target.closest("[data-world-landmark]");
@@ -8189,6 +8650,11 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-settings-open]")) {
         this.toggleSettings(true);
+        return;
+      }
+      if (event.target.closest("[data-world-tasks-open]")) {
+        this.toggleSettings(true);
+        this.selectSettingsTab("work");
         return;
       }
       if (event.target.closest("[data-world-settings-close]")) {
@@ -8266,6 +8732,13 @@ class ForkMeshWorld extends HTMLElement {
         this.setTheme(themeButton.dataset.worldTheme);
         return;
       }
+      const daylightButton = event.target.closest(
+        "[data-world-daylight-mode]",
+      );
+      if (daylightButton) {
+        this.setDaylightMode(daylightButton.dataset.worldDaylightMode);
+        return;
+      }
       const capacitySort = event.target.closest("[data-world-capacity-sort]");
       if (capacitySort) {
         this.sortSystemCapacityTables(
@@ -8318,7 +8791,11 @@ class ForkMeshWorld extends HTMLElement {
       }
       const pullOpen = event.target.closest("[data-world-pull-open]");
       if (pullOpen) {
-        this.loadRepositoryPullReview(pullOpen.dataset.worldPullNumber);
+        this.openRepositoryPullWorkbench({
+          owner: this.activeRepository?.owner,
+          name: this.activeRepository?.repo,
+          number: pullOpen.dataset.worldPullNumber,
+        });
         return;
       }
       const pullBack = event.target.closest("[data-world-pull-back]");
@@ -8672,11 +9149,6 @@ class ForkMeshWorld extends HTMLElement {
         this.setMoveSpeed(moveSpeed.value);
         return;
       }
-      const moveAccel = event.target.closest("[data-world-move-accel]");
-      if (moveAccel) {
-        this.setMoveAccel(moveAccel.value);
-        return;
-      }
       const swingSpeed = event.target.closest("[data-world-swing-speed]");
       if (swingSpeed) {
         this.setSwingSpeed(swingSpeed.value);
@@ -8849,14 +9321,28 @@ class ForkMeshWorld extends HTMLElement {
   setSavedViewsExpanded(expanded) {
     const section = this.$("[data-world-saved-views]");
     const list = this.$("[data-world-saved-view-list]");
-    const toggle = this.$("[data-world-saved-views-toggle]");
-    if (!section || !list || !toggle) return;
+    if (!section || !list) return;
+    // Quick views are intentionally always exposed. Retain this method for
+    // older callers and synchronized preference snapshots without allowing a
+    // stale collapsed preference to hide the five thumbnail shortcuts.
+    section.dataset.expanded = "true";
+    list.hidden = false;
+  }
+
+  setWorldRightRailExpanded(expanded) {
+    const rail = this.$("[data-world-right-rail]");
+    const map = this.$("[data-world-map]");
+    const toggle = this.$("[data-world-map-toggle]");
+    if (!rail || !map || !toggle) return false;
     const active = expanded === true;
-    section.dataset.expanded = String(active);
-    list.hidden = !active;
+    rail.dataset.expanded = String(active);
+    map.classList.toggle("is-expanded", active);
     toggle.setAttribute("aria-expanded", String(active));
-    const icon = toggle.querySelector("span");
-    if (icon) icon.textContent = active ? "▾" : "▸";
+    toggle.setAttribute(
+      "aria-label",
+      active ? "Collapse World controls" : "Expand World controls",
+    );
+    return active;
   }
 
   savedViewsStorageKey() {
@@ -8936,6 +9422,7 @@ class ForkMeshWorld extends HTMLElement {
       this.persistSavedViews(false);
       this.renderSavedViews();
       this.world?.setTheme?.(this.settings.theme);
+      this.world?.setDaylightMode?.(this.settings.daylightMode);
       this.world?.setLightLevel?.(this.settings.lightLevel);
       this.world?.setMovementTuning?.(this.movementTuning());
       this.world?.updateIdentity?.(publicIdentity(this.identity, this.settings));
@@ -8957,13 +9444,6 @@ class ForkMeshWorld extends HTMLElement {
         "[data-world-move-speed-output]",
         `${this.settings.moveSpeed}%`,
       );
-      setValue("[data-world-move-accel]", this.settings.moveAccel);
-      setOutput(
-        "[data-world-move-accel-output]",
-        this.settings.moveAccel >= WORLD_MOVE_ACCEL_MAX
-          ? "∞"
-          : `${this.settings.moveAccel}%`,
-      );
       setValue("[data-world-availability]", this.settings.availability);
       setValue("[data-world-public-door]", this.settings.publicDoor);
       setValue("[data-world-status-emoji]", this.settings.statusEmoji);
@@ -8975,6 +9455,15 @@ class ForkMeshWorld extends HTMLElement {
         control.checked = selected;
         control.setAttribute("aria-checked", String(selected));
         control.setAttribute("aria-pressed", String(selected));
+      });
+      this.$$("[data-world-daylight-mode]").forEach((control) => {
+        control.setAttribute(
+          "aria-pressed",
+          String(
+            control.dataset.worldDaylightMode ===
+              this.settings.daylightMode,
+          ),
+        );
       });
       this.$$("[data-world-outfit]").forEach((control) => {
         control.setAttribute(
@@ -9088,6 +9577,9 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     list.innerHTML = this.savedViews
+      .slice()
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, SAVED_VIEWS_MAX)
       .map(
         (view) => `
           <article class="world-saved-view">
@@ -9095,13 +9587,13 @@ class ForkMeshWorld extends HTMLElement {
               type="button"
               data-world-saved-view="${escapeHTML(view.id)}"
               title="Return to ${escapeHTML(view.label)}"
+              aria-label="Return to ${escapeHTML(view.label)}"
             >
               ${
                 view.thumbnail
                   ? `<img src="${escapeHTML(view.thumbnail)}" alt="" width="72" height="42" />`
                   : '<span class="world-saved-view-placeholder" aria-hidden="true">⌖</span>'
               }
-              <span>${escapeHTML(view.label)}</span>
             </button>
             <button
               type="button"
@@ -9543,8 +10035,7 @@ class ForkMeshWorld extends HTMLElement {
       initial.hidden = Boolean(avatarPng);
     }
     if (account) {
-      account.textContent =
-        ACCOUNT_STATUS_ICONS[visible.accountStatus] || "○";
+      account.textContent = accountStatusIcon(visible);
       account.title = visible.accountStatus || "Guest";
     }
     if (badge) {
@@ -9805,9 +10296,141 @@ class ForkMeshWorld extends HTMLElement {
     // Selection is handle-free and preserves the camera's drag/wheel gestures.
     this.layoutEditorAnnounced = true;
     this.toast(
-      "Layout editing on: click an object to select it, use arrow keys to " +
-        "move it, and R or Shift+R to rotate it.",
+      "Layout editing on: hold Shift and drag an object to move it, or click " +
+        "then use arrow keys. R and Shift+R rotate it.",
     );
+  }
+
+  adminErrorStorageKey() {
+    const account = String(
+      validWorldSession()?.nodeName || this.identity?.name || "",
+    ).trim().toLowerCase();
+    return `${ADMIN_ERROR_SEEN_KEY}:${account || "admin"}`;
+  }
+
+  storedAdminErrorSeenId() {
+    try {
+      const value = Number(
+        window.localStorage.getItem(this.adminErrorStorageKey()),
+      );
+      return Number.isSafeInteger(value) && value >= 0 ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  storeAdminErrorSeenId(value) {
+    try {
+      window.localStorage.setItem(
+        this.adminErrorStorageKey(),
+        String(Math.max(0, Number(value) || 0)),
+      );
+    } catch (_) {}
+  }
+
+  renderAdminErrors(count = 0, animate = false) {
+    const button = this.$("[data-world-admin-errors]");
+    const badge = this.$("[data-world-admin-error-count]");
+    if (!button || !badge) return;
+    const isAdmin = this.identity?.isAdmin === true;
+    const total = isAdmin ? Math.max(0, Number(count) || 0) : 0;
+    button.hidden = !isAdmin;
+    badge.hidden = total <= 0;
+    badge.textContent = total > 99 ? "99+" : String(total);
+    button.classList.toggle("has-new-errors", total > 0);
+    button.setAttribute(
+      "aria-label",
+      total > 0
+        ? `${total} newly logged error${total === 1 ? "" : "s"}`
+        : "No newly logged errors",
+    );
+    if (!animate || total <= 0) return;
+    this.classList.remove("world-admin-error-arrival");
+    // Restart the short HUD flash even when two poll responses arrive close
+    // together; no detail or route is exposed in the public World.
+    void this.offsetWidth;
+    this.classList.add("world-admin-error-arrival");
+    window.clearTimeout(this.adminErrorEffectTimer);
+    this.adminErrorEffectTimer = window.setTimeout(() => {
+      this.classList.remove("world-admin-error-arrival");
+      this.adminErrorEffectTimer = 0;
+    }, 1500);
+  }
+
+  async refreshAdminErrors() {
+    if (
+      this.destroyed ||
+      this.identity?.isAdmin !== true ||
+      !validWorldSession()
+    ) {
+      this.renderAdminErrors(0);
+      return;
+    }
+    const seen = this.storedAdminErrorSeenId();
+    try {
+      const payload = await this.fetchJSON(
+        `/api/world/admin/errors?after=${Math.max(0, seen || 0)}`,
+        { cache: "no-store", timeout: 5000 },
+      );
+      if (this.destroyed || this.identity?.isAdmin !== true) return;
+      this.adminErrorLatestId = Math.max(
+        0,
+        Number(payload?.latestId) || 0,
+      );
+      // The first successful read establishes the baseline. A historic error
+      // backlog must never be presented as a fresh incident.
+      if (seen === null) {
+        this.storeAdminErrorSeenId(this.adminErrorLatestId);
+        this.adminErrorCount = 0;
+        this.renderAdminErrors(0);
+        return;
+      }
+      const nextCount = Math.max(0, Number(payload?.newCount) || 0);
+      const arrived = nextCount > this.adminErrorCount;
+      this.adminErrorCount = nextCount;
+      this.renderAdminErrors(nextCount, arrived);
+    } catch (_) {
+      // This is an operational convenience only. A failed badge poll must not
+      // interfere with movement, rendering, or the existing admin surface.
+    }
+  }
+
+  startAdminErrorPolling() {
+    window.clearInterval(this.adminErrorTimer);
+    this.adminErrorTimer = 0;
+    if (this.identity?.isAdmin !== true) {
+      this.renderAdminErrors(0);
+      return;
+    }
+    void this.refreshAdminErrors();
+    this.adminErrorTimer = window.setInterval(() => {
+      if (!this.destroyed && !document.hidden) {
+        void this.refreshAdminErrors();
+      }
+    }, ADMIN_ERROR_POLL_MS);
+  }
+
+  stopAdminErrorPolling() {
+    window.clearInterval(this.adminErrorTimer);
+    this.adminErrorTimer = 0;
+    this.adminErrorCount = 0;
+    this.renderAdminErrors(0);
+  }
+
+  openAdminErrors() {
+    if (this.identity?.isAdmin !== true) return;
+    this.storeAdminErrorSeenId(this.adminErrorLatestId);
+    this.adminErrorCount = 0;
+    this.renderAdminErrors(0);
+    const configured = String(validWorldSession()?.adminUrl || "").trim();
+    const destination = new URL(configured || "/admin", location.origin);
+    destination.searchParams.set("table", "error_log");
+    const opened = window.open(
+      destination.href,
+      "_blank",
+      "noopener,noreferrer",
+    );
+    if (opened) opened.opener = null;
   }
 
   // Read the locked placement document. Every read goes through here so a
@@ -10617,6 +11240,7 @@ class ForkMeshWorld extends HTMLElement {
       ? String(options.provider)
       : "";
     const allNodes = options?.allNodes === true;
+    const focusSessionId = String(options?.focusSessionId || "");
     const sessions = this.orgAgentSessions
       .filter(
         (session) =>
@@ -10625,6 +11249,13 @@ class ForkMeshWorld extends HTMLElement {
               nodeName) &&
           (!providerFilter || session?.provider === providerFilter),
       )
+      .sort((left, right) => {
+        if (focusSessionId) {
+          if (String(left?.id || "") === focusSessionId) return -1;
+          if (String(right?.id || "") === focusSessionId) return 1;
+        }
+        return Number(right?.updatedAt || 0) - Number(left?.updatedAt || 0);
+      })
       .slice(0, 50);
     const date = (value) => {
       const timestamp = Number(value);
@@ -10666,7 +11297,11 @@ class ForkMeshWorld extends HTMLElement {
         availability.loginState === "missing";
       return `
         <details class="world-agent-session" ${
-          sessions[0]?.id === session?.id ? "open" : ""
+          (focusSessionId
+            ? focusSessionId === String(session?.id || "")
+            : sessions[0]?.id === session?.id)
+            ? "open"
+            : ""
         }>
           <summary>
             <strong>${escapeHTML(
@@ -11088,9 +11723,14 @@ class ForkMeshWorld extends HTMLElement {
             ? `<div class="world-danger-zone">
                 <h3>Permanently delete node</h3>
                 <p>This removes the node account, its published repositories, endpoint registration, sessions, and server-side state. It does not destroy the provider VM.</p>
-                <form data-world-admin-delete-node data-node-name="${escapeHTML(
-                  String(node?.name || node?.machineName || "").toLowerCase(),
-                )}">
+                <form data-world-admin-delete-node
+                  data-node-name="${escapeHTML(
+                    String(node?.name || node?.machineName || "").toLowerCase(),
+                  )}"
+                  data-node-machine-name="${escapeHTML(
+                    String(node?.machineName || "").toLowerCase(),
+                  )}"
+                  data-node-id="${escapeHTML(String(node?.nodeId || ""))}">
                   <label>Type <code>DELETE ${escapeHTML(
                     String(node?.name || node?.machineName || "").toLowerCase(),
                   )}</code> to confirm
@@ -11132,6 +11772,429 @@ class ForkMeshWorld extends HTMLElement {
     this.showDetailOverlay(detail, backdrop, { returnFocus });
     this.wireMirrorNodeAgentWorkspace(node);
     this.wireMirrorNodeAdminDelete(node);
+  }
+
+  openWorldMemberDetail(member = {}, { returnFocus = null } = {}) {
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop) return;
+    const name = String(member.name || "World visitor").slice(0, 32);
+    const directory = (Array.isArray(this.memberDirectory)
+      ? this.memberDirectory
+      : []
+    ).find(
+      (record) =>
+        String(record?.name || "").trim().toLowerCase() ===
+        name.trim().toLowerCase(),
+    );
+    const record = { ...(directory || {}), ...member };
+    const status = [record.statusEmoji, record.status]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join(" ");
+    const totalActiveMs = Math.max(0, Number(record.totalActiveMs) || 0);
+    const activeHours = Math.floor(totalActiveMs / 3_600_000);
+    const activeMinutes = Math.floor(
+      (totalActiveMs % 3_600_000) / 60_000,
+    );
+    const activeLabel = activeHours
+      ? `${activeHours}h ${String(activeMinutes).padStart(2, "0")}m`
+      : `${activeMinutes}m`;
+    const teams = (Array.isArray(record.teams) ? record.teams : [])
+      .map((team) => String(team || "").slice(0, 40))
+      .filter(Boolean);
+    const nodes = (Array.isArray(record.nodes) ? record.nodes : [])
+      .map((node) =>
+        String(
+          node && typeof node === "object"
+            ? node.name || node.node || ""
+            : node || "",
+        ).slice(0, 48),
+      )
+      .filter(Boolean);
+    const fediverse =
+      record.fediverse && typeof record.fediverse === "object"
+        ? record.fediverse
+        : {};
+    const fediverseReady = fediverse.state === "ready";
+    const posts = (Array.isArray(fediverse.posts) ? fediverse.posts : [])
+      .filter((post) => String(post?.label || "").trim())
+      .slice(0, 5);
+    let adminUserUrl = "";
+    if (this.identity?.isAdmin === true) {
+      const adminBaseUrl = String(
+        validWorldSession()?.adminUrl || "",
+      ).trim();
+      if (adminBaseUrl) {
+        try {
+          const target = new URL(adminBaseUrl, location.origin);
+          target.searchParams.set("table", "users");
+          target.searchParams.set("user", name);
+          adminUserUrl = `${target.pathname}${target.search}${target.hash}`;
+        } catch (_) {
+          adminUserUrl = "";
+        }
+      }
+    }
+    detail.dataset.openLandmark = "world-member";
+    detail.style.setProperty("--detail-color", "#77d9ff");
+    detail.innerHTML = `
+      <header class="world-detail-header">
+        <div>
+          <p class="world-eyebrow">WORLD MEMBER / PUBLIC PROFILE</p>
+          <h2 id="world-detail-title">${escapeHTML(
+            [record.flag, name].filter(Boolean).join(" "),
+          )}</h2>
+        </div>
+        <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close ${escapeHTML(name)} profile">×</button>
+      </header>
+      <div class="world-detail-scroll">
+        <p class="world-detail-summary">${escapeHTML(
+          status || "Exploring the ForkMesh World",
+        )}</p>
+        <div class="world-status-row">
+          <span class="world-status-pill">${escapeHTML(
+            String(record.accountStatus || "Guest"),
+          )}</span>
+          ${
+            record.emailVerified === true
+              ? '<span class="world-status-pill">✓ VERIFIED EMAIL</span>'
+              : String(record.accountStatus || "Guest").toLowerCase() !==
+                  "guest"
+                ? '<span class="world-status-pill world-status-pill-danger">✕ EMAIL NOT VERIFIED</span>'
+                : ""
+          }
+          ${
+            record.self === true
+              ? '<span class="world-status-pill">THIS IS YOU</span>'
+              : ""
+          }
+        </div>
+        <div class="world-truth-grid">
+          <section class="world-truth-block">
+            <h3>Member</h3>
+            <dl class="world-technical-list">
+              <div><dt>Name</dt><dd>${escapeHTML(name)}</dd></div>
+              <div><dt>Client</dt><dd>${escapeHTML(
+                [record.browser, record.os].filter(Boolean).join(" · ") ||
+                  "Not shared",
+              )}</dd></div>
+              <div><dt>First seen</dt><dd>${escapeHTML(
+                String(record.firstVisitAge || "Not shared"),
+              )}</dd></div>
+              <div><dt>Joined</dt><dd>${escapeHTML(
+                Number(record.joinedAt) > 0
+                  ? relativeTimeLabel(Number(record.joinedAt))
+                  : "Not reported",
+              )}</dd></div>
+              <div><dt>World time</dt><dd>${escapeHTML(activeLabel)}</dd></div>
+              <div><dt>Public visits</dt><dd>${Math.max(
+                0,
+                Number(record.visitCount) || 0,
+              ).toLocaleString()}</dd></div>
+            </dl>
+          </section>
+          <section class="world-truth-block">
+            <h3>Organization</h3>
+            ${
+              teams.length
+                ? `<ul class="world-detail-list">${teams
+                    .map((team) => `<li>${escapeHTML(team)}</li>`)
+                    .join("")}</ul>`
+                : '<p class="world-empty-state">No public team membership is shown.</p>'
+            }
+            ${
+              nodes.length
+                ? `<p><strong>Nodes:</strong> ${escapeHTML(nodes.join(", "))}</p>`
+                : ""
+            }
+          </section>
+        </div>
+        <section class="world-detail-section">
+          <h3>Fediverse</h3>
+          ${
+            fediverseReady
+              ? `<p><strong>${escapeHTML(
+                  String(fediverse.handle || "Public profile"),
+                )}</strong> · ${Math.max(
+                  0,
+                  Number(fediverse.followers) || 0,
+                ).toLocaleString()} followers · ${Math.max(
+                  0,
+                  Number(fediverse.following) || 0,
+                ).toLocaleString()} following</p>
+                ${
+                  fediverse.bio
+                    ? `<p>${escapeHTML(String(fediverse.bio))}</p>`
+                    : ""
+                }
+                ${
+                  posts.length
+                    ? `<ul class="world-detail-list">${posts
+                        .map(
+                          (post) =>
+                            `<li>${
+                              /^https:\/\//i.test(String(post.href || ""))
+                                ? `<a href="${escapeHTML(
+                                    post.href,
+                                  )}" target="_blank" rel="noopener noreferrer">${escapeHTML(
+                                    post.label || "Recent activity",
+                                  )}</a>`
+                                : escapeHTML(
+                                    post.label || "Recent activity",
+                                  )
+                            }</li>`,
+                        )
+                        .join("")}</ul>`
+                    : ""
+                }`
+              : `<p class="world-empty-state">Fediverse information is ${escapeHTML(
+                  String(fediverse.state || "loading"),
+                )}.</p>`
+          }
+          ${
+            record.self === true
+              ? `<div class="world-profile-social" data-world-profile-social>
+                  <section class="world-profile-followers" aria-labelledby="world-profile-followers-title">
+                    <div class="world-profile-social-heading">
+                      <h4 id="world-profile-followers-title">Your followers</h4>
+                      <span data-world-profile-follower-count>${Math.max(
+                        0,
+                        Number(fediverse.followers) || 0,
+                      ).toLocaleString()}</span>
+                    </div>
+                    <div class="world-profile-follower-strip" data-world-profile-followers aria-live="polite">
+                      <span class="world-empty-state">Loading follower avatars…</span>
+                    </div>
+                  </section>
+                  <form class="world-profile-publisher" data-world-profile-publisher>
+                    <label for="world-profile-update">Publish an ActivityPub update</label>
+                    <textarea id="world-profile-update" name="update" maxlength="500" rows="3" placeholder="What’s happening in the World?"></textarea>
+                    <div class="world-profile-selfie-actions">
+                      <button type="button" class="world-secondary-action" data-world-profile-selfie aria-label="Take a selfie of the current World view">📷 Take selfie</button>
+                      <span data-world-profile-camera-status aria-live="polite"></span>
+                    </div>
+                    <div class="world-profile-selfie-preview" data-world-profile-selfie-preview hidden>
+                      <img data-world-profile-selfie-image alt="">
+                      <label for="world-profile-alt-text">Image description</label>
+                      <input id="world-profile-alt-text" name="altText" data-world-profile-alt-text maxlength="420" placeholder="Describe the image for people who cannot see it">
+                      <button type="button" class="world-link-action" data-world-profile-selfie-remove>Remove selfie</button>
+                    </div>
+                    <div class="world-detail-actions">
+                      <button type="submit" class="world-primary-action">Publish update</button>
+                      <span data-world-profile-publish-status aria-live="polite"></span>
+                    </div>
+                  </form>
+                </div>`
+              : ""
+          }
+        </section>
+        ${
+          adminUserUrl
+            ? `<div class="world-detail-actions">
+                <a class="world-primary-action" href="${escapeHTML(
+                  adminUserUrl,
+                )}" target="_blank" rel="noopener noreferrer">Open admin user detail</a>
+              </div>`
+            : ""
+        }
+        <p class="world-panel-footnote">This panel contains the same privacy-filtered member, presence, and public profile fields already visible in the World. Private account and connection data are never added here.</p>
+      </div>`;
+    this.showDetailOverlay(detail, backdrop, { returnFocus });
+    if (record.self === true) {
+      this.wireWorldProfileSocial(detail, backdrop);
+    }
+  }
+
+  wireWorldProfileSocial(detail, backdrop) {
+    const root = detail?.querySelector("[data-world-profile-social]");
+    const followers = root?.querySelector("[data-world-profile-followers]");
+    const followerCount = root?.querySelector(
+      "[data-world-profile-follower-count]",
+    );
+    const form = root?.querySelector("[data-world-profile-publisher]");
+    const cameraButton = root?.querySelector("[data-world-profile-selfie]");
+    const cameraStatus = root?.querySelector(
+      "[data-world-profile-camera-status]",
+    );
+    const preview = root?.querySelector(
+      "[data-world-profile-selfie-preview]",
+    );
+    const previewImage = root?.querySelector(
+      "[data-world-profile-selfie-image]",
+    );
+    const removeButton = root?.querySelector(
+      "[data-world-profile-selfie-remove]",
+    );
+    const altInput = form?.elements?.altText;
+    const textInput = form?.elements?.update;
+    const publishStatus = root?.querySelector(
+      "[data-world-profile-publish-status]",
+    );
+    const publishButton = form?.querySelector('button[type="submit"]');
+    if (!root || !form || !followers) return;
+
+    let selfieData = "";
+    const renderFollowers = (items = [], total = 0) => {
+      if (!followers.isConnected) return;
+      if (followerCount) {
+        followerCount.textContent = Math.max(
+          0,
+          Number(total) || 0,
+        ).toLocaleString();
+      }
+      const records = Array.isArray(items) ? items.slice(0, 24) : [];
+      followers.innerHTML = records.length
+        ? records
+            .map((follower) => {
+              const followerName = String(follower?.name || "").slice(0, 32);
+              const avatarPng = /^[A-Za-z0-9+/=]+$/.test(
+                String(follower?.avatarPng || ""),
+              )
+                ? String(follower.avatarPng)
+                : "";
+              const remoteAvatar = safePublicHTTPSURL(
+                follower?.avatarUrl || "",
+              );
+              const profileUrl =
+                safePublicHTTPSURL(follower?.profileUrl || "") ||
+                (String(follower?.profileUrl || "").startsWith("/@")
+                  ? String(follower.profileUrl)
+                  : `/@${encodeURIComponent(followerName)}`);
+              const displayHandle = String(
+                follower?.handle || `@${followerName}`,
+              ).slice(0, 120);
+              return `<a class="world-profile-follower" href="${escapeHTML(
+                profileUrl,
+              )}" title="${escapeHTML(displayHandle)}" aria-label="Open ${escapeHTML(
+                displayHandle,
+              )}’s profile"${
+                /^https:\/\//i.test(profileUrl)
+                  ? ' target="_blank" rel="noopener noreferrer"'
+                  : ""
+              }>${
+                avatarPng
+                  ? `<img src="data:image/png;base64,${avatarPng}" alt="">`
+                  : remoteAvatar
+                    ? `<img src="${escapeHTML(remoteAvatar)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">`
+                  : `<span aria-hidden="true">${escapeHTML(
+                      followerName.slice(0, 1).toUpperCase() || "?",
+                    )}</span>`
+              }</a>`;
+            })
+            .join("")
+        : '<span class="world-empty-state">No public followers yet.</span>';
+    };
+    this.postJSON(
+      "/api/world/profile-social",
+      { action: "load" },
+      { timeout: 8000 },
+    )
+      .then((payload) =>
+        renderFollowers(payload?.followers, payload?.followerCount),
+      )
+      .catch(() => {
+        if (followers.isConnected) {
+          followers.innerHTML =
+            '<span class="world-empty-state">Follower avatars are temporarily unavailable.</span>';
+        }
+      });
+
+    const clearSelfie = () => {
+      selfieData = "";
+      if (previewImage) {
+        previewImage.removeAttribute("src");
+        previewImage.alt = "";
+      }
+      if (altInput) altInput.value = "";
+      if (preview) preview.hidden = true;
+      if (cameraStatus) cameraStatus.textContent = "";
+    };
+    removeButton?.addEventListener("click", clearSelfie);
+    cameraButton?.addEventListener("click", async () => {
+      if (cameraButton.disabled) return;
+      cameraButton.disabled = true;
+      if (cameraStatus) cameraStatus.textContent = "Capturing…";
+      try {
+        const shot = await this.captureWorldSelfie(detail, backdrop);
+        if (!shot) throw new Error("capture_failed");
+        selfieData = await this.compactWorldSelfie(shot);
+        if (!selfieData) throw new Error("image_too_large");
+        const place = String(
+          this.currentActivityCategory || "exploring ForkMesh World",
+        )
+          .replace(/[-_]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        const description = `A selfie from ForkMesh World while ${place}.`;
+        if (previewImage) {
+          previewImage.src = selfieData;
+          previewImage.alt = description;
+        }
+        if (altInput) altInput.value = description;
+        if (preview) preview.hidden = false;
+        if (cameraStatus) cameraStatus.textContent = "Selfie ready";
+      } catch (_) {
+        clearSelfie();
+        if (cameraStatus) {
+          cameraStatus.textContent =
+            "Could not capture this view. Please try again.";
+        }
+      } finally {
+        cameraButton.disabled = false;
+      }
+    });
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const text = String(textInput?.value || "").trim();
+      if (!text && !selfieData) {
+        if (publishStatus) {
+          publishStatus.textContent = "Write an update or take a selfie first.";
+        }
+        textInput?.focus();
+        return;
+      }
+      if (selfieData && !String(altInput?.value || "").trim()) {
+        if (publishStatus) {
+          publishStatus.textContent = "Add an image description first.";
+        }
+        altInput?.focus();
+        return;
+      }
+      if (publishButton) publishButton.disabled = true;
+      if (publishStatus) publishStatus.textContent = "Publishing…";
+      try {
+        await this.postJSON(
+          "/api/world/profile-social",
+          {
+            action: "publish",
+            text,
+            imageData: selfieData,
+            altText: String(altInput?.value || "").trim(),
+          },
+          { timeout: 15_000 },
+        );
+        if (textInput) textInput.value = "";
+        clearSelfie();
+        if (publishStatus) {
+          publishStatus.textContent = "Published to ActivityPub.";
+        }
+        this.toast("ActivityPub update published.");
+      } catch (error) {
+        const code = String(error?.message || "");
+        if (publishStatus) {
+          publishStatus.textContent =
+            code === "publish_rate_limited"
+              ? "Please wait a moment before publishing again."
+              : code === "invalid_or_large_image"
+                ? "The selfie is too large. Take it again to recompress it."
+                : "The update could not be published. Please try again.";
+        }
+      } finally {
+        if (publishButton) publishButton.disabled = false;
+      }
+    });
   }
 
   mirrorNodeActionsHTML(node) {
@@ -11210,13 +12273,26 @@ class ForkMeshWorld extends HTMLElement {
       controls.forEach((control) => { control.disabled = true; });
       if (status) status.textContent = "Deleting node and scoped state…";
       try {
-        await this.postJSON("/api/world/admin/nodes/delete", {
+        const result = await this.postJSON("/api/world/admin/nodes/delete", {
           nodeName,
+          machineName: String(form.dataset.nodeMachineName || ""),
+          nodeId: String(form.dataset.nodeId || ""),
           confirmation,
         });
         this.toast(`${nodeName} was permanently removed from ForkMesh.`);
+        const effectStarted = this.world?.deleteNetworkNode?.({
+          name: nodeName,
+          machineName: String(form.dataset.nodeMachineName || ""),
+          nodeId: String(form.dataset.nodeId || ""),
+          identifiers: Array.isArray(result?.identifiers)
+            ? result.identifiers
+            : [],
+        });
         this.closeLandmark();
-        await this.loadWorldData();
+        if (effectStarted) {
+          await new Promise((resolve) => window.setTimeout(resolve, 760));
+        }
+        await this.loadWorldData({ forceMirrors: true });
       } catch (error) {
         controls.forEach((control) => { control.disabled = false; });
         if (status) {
@@ -11228,7 +12304,10 @@ class ForkMeshWorld extends HTMLElement {
     });
   }
 
-  openAgentBotDetail(botId, { returnFocus = null } = {}) {
+  openAgentBotDetail(
+    botId,
+    { returnFocus = null, sessionId = "" } = {},
+  ) {
     if (this.orgAgentAccess?.state !== "allowed") {
       this.toast(
         "Claude and Codex status is available only to the Engineering team.",
@@ -11261,7 +12340,11 @@ class ForkMeshWorld extends HTMLElement {
         <p class="world-detail-summary">What ${label} is working on across eligible mirrors, with the complete authorized runtime and transcript data reported by Qt.</p>
         ${this.mirrorNodeAgentSessionsHTML(
           {},
-          { provider, allNodes: true },
+          {
+            provider,
+            allNodes: true,
+            focusSessionId: String(sessionId || ""),
+          },
         )}
       </div>`;
     this.showDetailOverlay(detail, backdrop, { returnFocus });
@@ -15717,50 +16800,67 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   openRepositoryIssueWorkbench(page) {
+    return this.openRepositoryRecordWebWorkbench("issue", page);
+  }
+
+  openRepositoryRecordWebWorkbench(kind, page) {
     const owner = sanitizePresenceText(page?.owner, "", 40);
     const name = sanitizePresenceText(page?.name || page?.repo, "", 60);
-    const number = safePullNumber(page?.number);
-    if (!owner || !name || !number) {
-      this.toast("That repository issue could not be opened.");
+    const number = page?.number ? safePullNumber(page.number) : 0;
+    const recordKind = kind === "pull" ? "pull" : "issue";
+    if (!owner || !name || (page?.number && !number)) {
+      this.toast(`That repository ${recordKind} could not be opened.`);
       return false;
     }
     const path = `/${encodeURIComponent(owner)}/${encodeURIComponent(
       name,
-    )}/issues/${number}`;
+    )}/${recordKind === "pull" ? "pulls" : "issues"}${
+      number ? `/${number}` : ""
+    }`;
     const detail = this.$("[data-world-detail]");
     const backdrop = this.$("[data-world-detail-backdrop]");
     if (!detail || !backdrop) return false;
     const repository = `${owner}/${name}`;
-    detail.dataset.openLandmark = "repositories";
+    const title = number
+      ? `${repository} #${number}`
+      : `${repository} ${recordKind === "pull" ? "pull requests" : "issues"}`;
+    detail.dataset.openLandmark = `repository-${recordKind}`;
+    detail.dataset.issueWorkbench = String(recordKind === "issue");
+    detail.dataset.repositoryWebWorkbench = recordKind;
     detail.dataset.repositoryReview = "false";
-    detail.style.setProperty("--detail-color", "var(--world-mint)");
+    detail.style.setProperty(
+      "--detail-color",
+      recordKind === "pull" ? "var(--world-blue)" : "var(--world-mint)",
+    );
     detail.innerHTML = `
       <header class="world-detail-header world-issue-workbench-header">
         <div>
-          <p class="world-eyebrow">LIVE REPOSITORY ISSUE</p>
-          <h2 id="world-detail-title">${escapeHTML(
-            repository,
-          )} #${number}</h2>
+          <p class="world-eyebrow">LIVE REPOSITORY ${recordKind === "pull" ? "PULL REQUEST" : "ISSUE"}</p>
+          <h2 id="world-detail-title">${escapeHTML(title)}</h2>
         </div>
         <div class="world-issue-workbench-actions">
           <a
             href="${escapeHTML(path)}"
             target="_blank"
             rel="noopener noreferrer"
-            aria-label="Open ${escapeHTML(repository)} issue ${number} in a new tab"
+            aria-label="Open ${escapeHTML(title)} in a new tab"
           >Open tab ↗</a>
           <button
             class="world-detail-close"
             type="button"
             data-world-detail-close
-            aria-label="Close ${escapeHTML(repository)} issue ${number}"
+            aria-label="Close ${escapeHTML(title)}"
           >×</button>
         </div>
       </header>
-      <div class="world-detail-scroll world-issue-workbench" data-world-issue-workbench>
+      <div
+        class="world-detail-scroll world-issue-workbench"
+        data-world-issue-workbench
+        data-world-repository-web-workbench="${recordKind}"
+      >
         <iframe
           src="${escapeHTML(path)}"
-          title="${escapeHTML(repository)} issue ${number}"
+          title="${escapeHTML(title)}"
           loading="eager"
           referrerpolicy="same-origin"
         ></iframe>
@@ -15773,7 +16873,9 @@ class ForkMeshWorld extends HTMLElement {
       focusDelay: 80,
     });
     this.toast(
-      `Opened issue #${number} in the World sidebar with its live details and controls.`,
+      `Opened ${recordKind === "pull" ? "pull request" : "issue"}${
+        number ? ` #${number}` : ""
+      } in the World sidebar with its live details and controls.`,
     );
     return true;
   }
@@ -16967,7 +18069,8 @@ class ForkMeshWorld extends HTMLElement {
     const detail = this.$("[data-world-detail]");
     if (!detail) return;
     detail.dataset.repositoryReview = String(
-      detail.dataset.openLandmark === "repositories" &&
+      (detail.dataset.openLandmark === "repositories" ||
+        detail.dataset.openLandmark === "repository-pull") &&
         this.repositoryView === "review",
     );
   }
@@ -17271,16 +18374,24 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   openRepositoryPullList() {
-    if (!this.activeRepository) return;
+    if (!this.activeRepository) return false;
     this.repositoryView = "list";
     this.clearPullReviewScrollTracking();
-    if (
-      this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
-    ) {
-      this.openLandmark("repositories");
-      return;
-    }
-    this.renderRepositoryExplorer();
+    return this.openRepositoryPullWorkbench();
+  }
+
+  openRepositoryPullWorkbench(page = null) {
+    const active = this.activeRepository;
+    const owner = page?.owner || active?.owner;
+    const name = page?.name || page?.repo || active?.repo;
+    const number =
+      safePullNumber(page?.number) ||
+      safePullNumber(this.pullReview?.number);
+    return this.openRepositoryRecordWebWorkbench("pull", {
+      owner,
+      name,
+      ...(number ? { number } : {}),
+    });
   }
 
   async fetchRepositoryPullReview(active, record, metadataCommit) {
@@ -17390,9 +18501,10 @@ class ForkMeshWorld extends HTMLElement {
           "That pull request is not present in the exact pinned metadata index. No alternate ref was queried.",
       };
       if (
-        this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+        this.$("[data-world-detail]")?.dataset.openLandmark !==
+        "repository-pull"
       ) {
-        this.openLandmark("repositories");
+        this.openRepositoryPullWorkbench();
       } else {
         this.renderRepositoryExplorer();
       }
@@ -17404,9 +18516,10 @@ class ForkMeshWorld extends HTMLElement {
       metadataCommit,
     };
     if (
-      this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+      this.$("[data-world-detail]")?.dataset.openLandmark !==
+      "repository-pull"
     ) {
-      this.openLandmark("repositories");
+      this.openRepositoryPullWorkbench();
     } else {
       this.renderRepositoryExplorer();
     }
@@ -19488,8 +20601,47 @@ class ForkMeshWorld extends HTMLElement {
   // bottom strip shows the latest message without opening the panel.
   setChatTerminalLastMessage(sender, text) {
     const label = this.$("[data-world-chat-terminal-last]");
-    if (!label) return;
-    label.textContent = sender ? `${sender}: ${text}` : text;
+    if (label) label.textContent = sender ? `${sender}: ${text}` : text;
+    const summary = this.$("[data-world-chat-terminal] > summary");
+    const cleanSender = String(sender || "Chat").trim().slice(0, 64);
+    const initial = this.$("[data-world-chat-terminal-avatar-initial]");
+    const image = this.$("[data-world-chat-terminal-avatar-image]");
+    if (initial) {
+      initial.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "#";
+    }
+    if (image) {
+      const session = validWorldSession();
+      const own =
+        cleanSender.toLowerCase() ===
+        String(session?.nodeName || "").toLowerCase();
+      const ownPng =
+        own && /^[A-Za-z0-9+/=]+$/.test(String(session?.avatarPng || ""))
+          ? String(session.avatarPng)
+          : "";
+      const member = this.memberDirectory.find(
+        (entry) =>
+          String(entry?.name || "").toLowerCase() === cleanSender.toLowerCase(),
+      );
+      const publicAvatar = safeHTTPURL(member?.avatar || "");
+      const source = ownPng
+        ? `data:image/png;base64,${ownPng}`
+        : publicAvatar;
+      image.onload = () => {
+        image.hidden = false;
+        if (initial) initial.hidden = true;
+      };
+      image.onerror = () => {
+        image.hidden = true;
+        image.removeAttribute("src");
+        if (initial) initial.hidden = false;
+      };
+      if (source) image.src = source;
+      else image.onerror();
+    }
+    summary?.setAttribute(
+      "title",
+      `${cleanSender}: ${String(text || "").slice(0, 160)}`,
+    );
   }
 
   // Unread pill on the collapsed CHAT bar: on mobile the bar shrinks to the
@@ -19550,6 +20702,25 @@ class ForkMeshWorld extends HTMLElement {
     });
     const label = THEME_OPTIONS.find((option) => option.id === theme)?.label || theme;
     this.toast(`${label} is saved to your account and never changes anyone else's World.`);
+  }
+
+  setDaylightMode(value) {
+    const mode = WORLD_DAYLIGHT_MODES.has(String(value))
+      ? String(value)
+      : "auto";
+    this.settings.daylightMode = mode;
+    this.saveSettings();
+    this.world?.setDaylightMode?.(mode);
+    this.$$("[data-world-daylight-mode]").forEach((button) => {
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.worldDaylightMode === mode),
+      );
+    });
+    const label =
+      mode === "day" ? "Daytime" : mode === "night" ? "Nighttime" : "Local time";
+    this.toast(`${label} lighting is saved to your account.`);
+    return mode;
   }
 
   setOutfitColor(outfit) {
@@ -19783,12 +20954,6 @@ class ForkMeshWorld extends HTMLElement {
   movementTuning() {
     return {
       speed: this.settings.moveSpeed / 100,
-      // The max slider position means "instant" — hand the scene Infinity so it
-      // snaps to top speed with no ramp.
-      acceleration:
-        this.settings.moveAccel >= WORLD_MOVE_ACCEL_MAX
-          ? Infinity
-          : this.settings.moveAccel / 100,
     };
   }
 
@@ -19808,27 +20973,6 @@ class ForkMeshWorld extends HTMLElement {
     const output = this.$("[data-world-move-speed-output]");
     if (input && Number(input.value) !== next) input.value = String(next);
     if (output) output.textContent = `${next}%`;
-    return next;
-  }
-
-  setMoveAccel(value) {
-    const numeric = Number(value);
-    const next = Math.min(
-      WORLD_MOVE_ACCEL_MAX,
-      Math.max(
-        WORLD_MOVE_ACCEL_MIN,
-        Number.isFinite(numeric) ? numeric : WORLD_MOVE_ACCEL_DEFAULT,
-      ),
-    );
-    this.settings.moveAccel = next;
-    this.saveSettings();
-    this.world?.setMovementTuning?.(this.movementTuning());
-    const input = this.$("[data-world-move-accel]");
-    const output = this.$("[data-world-move-accel-output]");
-    if (input && Number(input.value) !== next) input.value = String(next);
-    if (output) {
-      output.textContent = next >= WORLD_MOVE_ACCEL_MAX ? "∞" : `${next}%`;
-    }
     return next;
   }
 
@@ -20031,6 +21175,80 @@ class ForkMeshWorld extends HTMLElement {
       this.closeScreenshotUI();
     });
     this.appendChild(overlay);
+  }
+
+  async captureWorldSelfie(detail, backdrop) {
+    const canvas = this.world?.renderer?.domElement;
+    if (!canvas) return null;
+    const detailVisibility = detail?.style?.visibility || "";
+    const backdropVisibility = backdrop?.style?.visibility || "";
+    try {
+      // Keep the public World HUD in the image, but omit the private profile
+      // drawer and its backdrop. Two paint frames ensure the cloned HUD sees
+      // the temporary visibility before rasterization begins.
+      if (detail) detail.style.visibility = "hidden";
+      if (backdrop) backdrop.style.visibility = "hidden";
+      await new Promise((resolve) =>
+        window.requestAnimationFrame(() =>
+          window.requestAnimationFrame(resolve),
+        ),
+      );
+      const bounds = canvas.getBoundingClientRect();
+      return await this.captureWorldRegion({
+        left: bounds.left,
+        top: bounds.top,
+        width: bounds.width,
+        height: bounds.height,
+      });
+    } finally {
+      if (detail) detail.style.visibility = detailVisibility;
+      if (backdrop) backdrop.style.visibility = backdropVisibility;
+    }
+  }
+
+  async compactWorldSelfie(source) {
+    if (!source?.width || !source?.height) return "";
+    const blobDataURL = (blob) =>
+      new Promise((resolve) => {
+        if (!blob) {
+          resolve("");
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => resolve("");
+        reader.readAsDataURL(blob);
+      });
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return "";
+    // ActivityPub's bounded inline-media path accepts 64 KiB. Encode
+    // asynchronously and progressively reduce the frame so even mobile
+    // captures remain below that limit without stalling the render loop.
+    for (const maxSide of [960, 800, 640, 520, 420]) {
+      const scale = Math.min(1, maxSide / Math.max(source.width, source.height));
+      canvas.width = Math.max(1, Math.round(source.width * scale));
+      canvas.height = Math.max(1, Math.round(source.height * scale));
+      context.fillStyle = "#06100f";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(source, 0, 0, canvas.width, canvas.height);
+      for (const quality of [0.72, 0.58, 0.44]) {
+        const blob = await new Promise((resolve) =>
+          canvas.toBlob(resolve, "image/webp", quality),
+        );
+        if (blob && blob.size > 0 && blob.size < 63 * 1024) {
+          return await blobDataURL(blob);
+        }
+      }
+      await new Promise((resolve) => {
+        if (typeof window.requestIdleCallback === "function") {
+          window.requestIdleCallback(() => resolve(), { timeout: 50 });
+        } else {
+          window.setTimeout(resolve, 0);
+        }
+      });
+    }
+    return "";
   }
 
   async captureWorldRegion(rect) {
@@ -20678,21 +21896,63 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   toast(message, { priority = 0, lockMs = 0 } = {}) {
-    const element = this.$("[data-world-toast]");
-    if (!element) return;
     const now = performance.now();
     const safePriority = Number.isFinite(priority) ? priority : 0;
     if (now < this.toastLockUntil && safePriority < this.toastPriority) return;
     window.clearTimeout(this.toastTimer);
     this.toastPriority = safePriority;
     this.toastLockUntil = now + Math.max(0, Number(lockMs) || 0);
-    element.textContent = message;
-    element.dataset.open = "true";
+    const copy = String(message || "").trim();
+    const kind =
+      /\b(?:failed|error|unavailable|could not|denied)\b/i.test(copy)
+        ? "error"
+        : /\b(?:saved|ready|complete|success|online)\b/i.test(copy)
+          ? "success"
+          : "status";
+    this.activityNotice(copy, { kind, sender: "ForkMesh" });
     this.toastTimer = window.setTimeout(() => {
-      element.dataset.open = "false";
       this.toastPriority = 0;
       this.toastLockUntil = 0;
-    }, 4200);
+    }, Math.max(10_000, Number(lockMs) || 0));
+  }
+
+  activityNotice(message, { kind = "status", sender = "" } = {}) {
+    const stream = this.$("[data-world-activity-stream]");
+    const copy = String(message || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 280);
+    if (!stream || !copy) return;
+    const article = document.createElement("article");
+    article.dataset.kind = ["chat", "error", "success"].includes(kind)
+      ? kind
+      : "status";
+    const icon = document.createElement("span");
+    icon.className = "world-activity-icon";
+    const cleanSender = String(sender || "ForkMesh").trim().slice(0, 64);
+    const member = this.memberDirectory.find(
+      (entry) =>
+        String(entry?.name || "").toLowerCase() === cleanSender.toLowerCase(),
+    );
+    const publicAvatar = safeHTTPURL(member?.avatar || "");
+    if (publicAvatar) {
+      const image = document.createElement("img");
+      image.alt = "";
+      image.src = publicAvatar;
+      image.onerror = () => {
+        image.remove();
+        icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
+      };
+      icon.append(image);
+    } else {
+      icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
+    }
+    const body = document.createElement("p");
+    body.textContent = copy;
+    article.append(icon, body);
+    stream.prepend(article);
+    while (stream.childElementCount > 6) stream.lastElementChild?.remove();
+    window.setTimeout(() => article.remove(), 10_100);
   }
 
   startTour() {
@@ -21165,6 +22425,55 @@ class ForkMeshWorld extends HTMLElement {
             ? "connecting"
             : "offline";
     }
+    const worstLevel = (...levels) =>
+      levels.includes("high")
+        ? "high"
+        : levels.includes("caution")
+          ? "caution"
+          : "good";
+    const dotLevels = {
+      fps: renderer ? diagnosticLevel("fps", renderer.fps) : "high",
+      frame: renderer
+        ? worstLevel(
+            diagnosticLevel("longFrames", renderer.longFrames),
+            diagnosticLevel("longestFrameMs", renderer.longestFrameMs),
+          )
+        : "high",
+      draw: renderer
+        ? worstLevel(
+            diagnosticLevel("calls", renderer.calls),
+            diagnosticLevel("triangles", renderer.triangles),
+          )
+        : "high",
+      input: renderer
+        ? worstLevel(
+            diagnosticLevel("movementInputMs", renderer.inputResponseMs),
+            diagnosticLevel("pointerGapMs", renderer.pointerWorstGapMs),
+          )
+        : "high",
+      network: diagnosticStateLevel(connection.state),
+      traffic: worstLevel(
+        diagnosticLevel("frameRate", traffic.inboundRate),
+        diagnosticLevel("frameRate", traffic.outboundRate),
+      ),
+      queue: worstLevel(
+        diagnosticLevel(
+          "coalesced",
+          queues.movementCoalesced + queues.profileCoalesced,
+        ),
+        diagnosticLevel("backpressure", queues.backpressureEvents),
+      ),
+      build: build.version && build.revision ? "good" : "caution",
+      world: renderer?.paused ? "caution" : renderer ? "good" : "high",
+    };
+    for (const [metric, level] of Object.entries(dotLevels)) {
+      const dot = this.$(`[data-diagnostic-dot="${metric}"]`);
+      if (!dot) continue;
+      dot.dataset.level = level;
+      dot.title = `${metric}: ${
+        level === "high" ? "needs attention" : level === "caution" ? "watch" : "healthy"
+      }`;
+    }
     const rendererDetail = this.$("[data-world-diagnostics-renderer]");
     if (rendererDetail) {
       rendererDetail.innerHTML = renderer
@@ -21494,6 +22803,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldTicket = String(ticket.ticket || "");
     this.worldTicketExpires = Number(ticket.expiresAt || 0);
     void this.loadWorldPreferences();
+    this.startAdminErrorPolling();
     return true;
   }
 
@@ -21505,6 +22815,7 @@ class ForkMeshWorld extends HTMLElement {
       this.identity.joinedAt = 0;
       this.identity.nodes = [];
     }
+    this.stopAdminErrorPolling();
     this.worldTicket = "";
     this.worldTicketExpires = 0;
     this.resetWorldActivity();
@@ -22216,12 +23527,32 @@ class ForkMeshWorld extends HTMLElement {
       repo.toLowerCase() === FLAGSHIP_REPOSITORY.repo
         ? FLAGSHIP_REPOSITORY.owner
         : sanitizePresenceText(message?.repositoryOwner, "", 40);
+    const changedFiles = (Array.isArray(message?.changedFiles)
+      ? message.changedFiles
+      : []
+    )
+      .map((path) => sanitizePresenceText(path, "", 160))
+      .filter(
+        (path, index, paths) =>
+          path &&
+          !path.startsWith("/") &&
+          path !== ".." &&
+          !path.startsWith("../") &&
+          paths.indexOf(path) === index,
+      )
+      .slice(0, 8);
     this.toast(
       `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
     );
     // This only arms the scene. No frame directly creates an effect: the next
     // signed catalog payload must confirm the node and commit prefix first.
-    this.world?.armMirrorPushEffect?.(node, commit);
+    this.world?.armMirrorPushEffect?.(
+      node,
+      commit,
+      publicOwner,
+      repo,
+      changedFiles,
+    );
     // One coalesced refresh replaces waiting out the steady mirror poll, so
     // the yard updates near-instantly without adding steady-state traffic.
     window.clearTimeout(this.mirrorPushRefreshTimer);
@@ -22400,6 +23731,183 @@ class ForkMeshWorld extends HTMLElement {
     } catch (_) {
       return [];
     }
+  }
+
+  async openLobbyFeedbackKiosk() {
+    document.querySelector("[data-world-feedback-kiosk-dialog]")?.remove();
+    const dialog = document.createElement("dialog");
+    dialog.dataset.worldFeedbackKioskDialog = "true";
+    dialog.style.cssText =
+      "width:min(620px,calc(100vw - 28px));border:1px solid #d0d7de;border-radius:12px;background:#fff;color:#24292f;padding:0;box-shadow:0 24px 80px #1f232833";
+    dialog.innerHTML = `
+      <header style="display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:20px 22px;border-bottom:1px solid #d0d7de;background:#f6f8fa">
+        <div><p style="margin:0 0 5px;color:#1a7f37;font:800 12px ForkMesh Mono,monospace;letter-spacing:.08em">OFFICE LOBBY · FEEDBACK KIOSK</p><h2 style="margin:0;font-size:24px">How are we doing?</h2></div>
+        <button type="button" data-world-feedback-kiosk-close aria-label="Close feedback kiosk" style="border:0;background:transparent;color:#57606a;font-size:28px;cursor:pointer">×</button>
+      </header>
+      <form data-world-feedback-kiosk-form style="display:grid;gap:14px;padding:22px">
+        <p style="margin:0;color:#57606a;line-height:1.55">Tell us what worked, what was confusing, or the one thing you want us to improve next. This feedback is stored for ForkMesh operators and is not published in the World.</p>
+        <label style="display:grid;gap:7px;font-weight:700"><span>Your feedback</span><textarea name="message" required minlength="2" maxlength="2000" rows="7" autofocus placeholder="What should we know?" style="resize:vertical;border:1px solid #8c959f;border-radius:6px;background:#fff;color:#24292f;padding:10px 12px;font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"></textarea></label>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span data-world-feedback-kiosk-status role="status" style="color:#57606a;font-size:13px"></span><button type="submit" style="min-height:40px;border:1px solid #1a7f37;border-radius:6px;background:#1f883d;color:#fff;padding:8px 16px;font-weight:800;cursor:pointer">Send feedback</button></div>
+      </form>`;
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog
+      .querySelector("[data-world-feedback-kiosk-close]")
+      ?.addEventListener("click", () => dialog.close());
+    dialog
+      .querySelector("[data-world-feedback-kiosk-form]")
+      ?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const message = String(new FormData(form).get("message") || "").trim();
+        const status = form.querySelector(
+          "[data-world-feedback-kiosk-status]",
+        );
+        const submit = form.querySelector('button[type="submit"]');
+        if (message.length < 2) return;
+        submit.disabled = true;
+        if (status) status.textContent = "Sending…";
+        try {
+          const response = await fetch("/api/feedback", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              source: "world",
+              vote: "feedback",
+              path: "/world/#lobby-feedback",
+              message,
+            }),
+          });
+          if (!response.ok) throw new Error("feedback was not accepted");
+          form.reset();
+          if (status) status.textContent = "Thank you — feedback sent.";
+          submit.textContent = "Sent";
+          window.setTimeout(() => dialog.open && dialog.close(), 900);
+        } catch (_) {
+          submit.disabled = false;
+          if (status) {
+            status.textContent =
+              "Feedback could not be sent. Please try again.";
+          }
+        }
+      });
+    dialog.showModal();
+    if (this.openFeedbackKioskOnLoad) {
+      this.openFeedbackKioskOnLoad = false;
+      const url = new URL(location.href);
+      url.searchParams.delete("feedback");
+      history.replaceState(history.state, "", url);
+    }
+  }
+
+  async openLobbyTaskBidKiosk() {
+    if (!validWorldSession()?.sessionToken) {
+      this.toast("Sign in with an organization account to submit a task bid.");
+      this.toggleSettings(true);
+      return;
+    }
+    document.querySelector("[data-world-task-bid-dialog]")?.remove();
+    const dialog = document.createElement("dialog");
+    dialog.dataset.worldTaskBidDialog = "true";
+    dialog.style.cssText =
+      "width:min(680px,calc(100vw - 28px));max-height:min(820px,calc(100vh - 28px));overflow:auto;border:1px solid #e3b341;border-radius:6px;background:#0d1117;color:#f0f6fc;padding:0;box-shadow:0 24px 80px #010409cc";
+    const departments = [
+      ["general", "General"],
+      ["engineering", "Engineering"],
+      ["product-design", "Product + design"],
+      ["marketing", "Marketing"],
+      ["security", "Security"],
+      ["infrastructure", "Infrastructure"],
+      ["community", "Community"],
+      ["partnerships", "Partnerships"],
+      ["operations", "Operations"],
+      ["executive", "Executive"],
+      ["quality-assurance", "Quality assurance"],
+    ];
+    dialog.innerHTML = `
+      <header style="display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:20px 22px;border-bottom:1px solid #30363d;background:#161b22">
+        <div><p style="margin:0 0 5px;color:#e3b341;font:800 12px ForkMesh Mono,monospace;letter-spacing:.08em">OFFICE LOBBY · TASK BOUNTY DESK</p><h2 style="margin:0;font-size:24px">Bid to complete a task</h2></div>
+        <button type="button" data-world-task-bid-close aria-label="Close task bounty desk" style="border:1px solid #30363d;background:#21262d;color:#f0f6fc;font-size:22px;line-height:1;cursor:pointer;width:36px;height:36px">×</button>
+      </header>
+      <form data-world-task-bid-form style="display:grid;gap:14px;padding:22px">
+        <p style="margin:0;color:#8c959f;line-height:1.55">Describe useful organization work and the SOL amount you would want for completing it. Your account is attached as the bidder, and the request appears in the shared task list.</p>
+        <label style="display:grid;gap:7px;font-weight:700"><span>Task</span><input name="title" required minlength="3" maxlength="160" autofocus placeholder="What would you complete?" style="min-height:40px;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:8px 12px;font:14px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"></label>
+        <label style="display:grid;gap:7px;font-weight:700"><span>Details</span><textarea name="details" maxlength="4000" rows="5" placeholder="Scope, deliverables, and anything reviewers should know…" style="resize:vertical;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:10px 12px;font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"></textarea></label>
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px">
+          <label style="display:grid;gap:7px;font-weight:700"><span>Requested bounty (SOL)</span><input name="amountSol" required inputmode="decimal" autocomplete="off" pattern="(?:0|[1-9][0-9]{0,6})(?:\\.[0-9]{1,9})?" placeholder="0.10" style="min-height:40px;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:8px 12px;font:14px/1.4 ForkMesh Mono,monospace"></label>
+          <label style="display:grid;gap:7px;font-weight:700"><span>Department</span><select name="department" style="min-height:40px;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:8px 12px;font:14px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif">${departments
+            .map(
+              ([value, label]) =>
+                `<option value="${value}">${label}</option>`,
+            )
+            .join("")}</select></label>
+        </div>
+        <p style="margin:0;border:1px solid #30363d;background:#161b22;color:#8c959f;padding:10px 12px;font-size:12px;line-height:1.5">This is a compensation request only. ForkMesh does not reserve, custody, or transfer SOL when you submit a bid.</p>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span data-world-task-bid-status role="status" aria-live="polite" style="color:#8c959f;font-size:13px"></span><button type="submit" style="min-height:40px;border:1px solid #2ea043;background:#238636;color:#fff;padding:8px 16px;font-weight:800;cursor:pointer">Submit bid</button></div>
+      </form>`;
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog
+      .querySelector("[data-world-task-bid-close]")
+      ?.addEventListener("click", () => dialog.close());
+    dialog
+      .querySelector("[data-world-task-bid-form]")
+      ?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const values = new FormData(form);
+        const title = String(values.get("title") || "").trim();
+        const details = String(values.get("details") || "").trim();
+        const amountSol = String(values.get("amountSol") || "").trim();
+        const department = String(values.get("department") || "general");
+        const status = form.querySelector("[data-world-task-bid-status]");
+        const submit = form.querySelector('button[type="submit"]');
+        if (
+          title.length < 3 ||
+          !/^(?:0|[1-9][0-9]{0,6})(?:\.[0-9]{1,9})?$/.test(amountSol)
+        ) {
+          if (status) status.textContent = "Enter a task and a valid SOL amount.";
+          return;
+        }
+        submit.disabled = true;
+        if (status) status.textContent = "Submitting encrypted task bid…";
+        try {
+          await this.postJSON(
+            "/api/tasks",
+            {
+              kind: "bid",
+              title,
+              details,
+              bountyAmountSol: amountSol,
+              department,
+              destination: "department",
+              assigneeKind: "user",
+            },
+            { timeout: 10_000 },
+          );
+          await this.officeTasks?.refreshNow?.();
+          if (status) {
+            status.textContent =
+              "Bid added to the organization task list.";
+          }
+          submit.textContent = "Bid submitted";
+          this.toast("Task bid added with its SOL bounty request.");
+          window.setTimeout(() => dialog.open && dialog.close(), 1200);
+        } catch (error) {
+          submit.disabled = false;
+          const reason = String(error?.message || "");
+          if (status) {
+            status.textContent =
+              reason === "org_member_required"
+                ? "Organization membership is required."
+                : reason === "invalid_bounty_request"
+                  ? "Enter a positive SOL amount with at most 9 decimals."
+                  : "The bid could not be submitted. Please try again.";
+          }
+        }
+      });
+    dialog.showModal();
   }
 
   async openLobbyLinkKiosk() {
@@ -22781,7 +24289,11 @@ class ForkMeshWorld extends HTMLElement {
     window.removeEventListener("storage", this.handleStorage);
     window.removeEventListener("pointerdown", this.handlePublicInputActivity);
     window.removeEventListener("pointermove", this.handlePublicInputActivity);
-    this.removeEventListener("touchmove", this.blockWorldPullToRefresh);
+    this.removeEventListener(
+      "touchmove",
+      this.blockWorldPullToRefresh,
+      true,
+    );
     window.removeEventListener("keydown", this.handlePublicInputActivity);
     window.removeEventListener("message", this.handleWorldChatMessage);
     window.removeEventListener("pagehide", this.handlePageHide);
@@ -22818,6 +24330,8 @@ class ForkMeshWorld extends HTMLElement {
     window.clearTimeout(this.mirrorPushRefreshTimer);
     window.clearInterval(this.eventsTimer);
     window.clearInterval(this.notificationsTimer);
+    window.clearInterval(this.adminErrorTimer);
+    window.clearTimeout(this.adminErrorEffectTimer);
     window.clearInterval(this.mediaTimer);
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);
@@ -22829,7 +24343,9 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.socialFeedsTimer);
     window.clearInterval(this.sessionWatchTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
+    window.clearTimeout(this.viewportSyncTimer);
     this.rendererRecoveryTimer = 0;
+    this.viewportSyncTimer = 0;
     this.inflightRequests.clear();
     this.responseCache.clear();
     this.requestFailures.clear();
