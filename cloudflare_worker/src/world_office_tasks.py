@@ -91,6 +91,25 @@ def _text(value, maximum, fallback=""):
     return (clean or fallback)[:maximum]
 
 
+def _attachments(value):
+    """Keep bounded file metadata with a task; bytes remain in encrypted chat."""
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value[:4]:
+        if not isinstance(item, dict):
+            continue
+        name = _text(item.get("name"), 180)
+        mime = _text(item.get("mime"), 100, "application/octet-stream")
+        try:
+            size = max(0, min(1024 * 1024, int(item.get("size") or 0)))
+        except (TypeError, ValueError):
+            size = 0
+        if name and size:
+            result.append({"name": name, "mime": mime, "size": size})
+    return result
+
+
 def valid_id(value):
     return bool(_ID_RE.fullmatch(str(value or "").strip().lower()))
 
@@ -310,6 +329,7 @@ async def _project_task(runtime, row, now, checkin=None):
         "kind": task_kind,
         "title": _text(data.get("title"), MAX_TITLE, "Organization task"),
         "details": _text(data.get("details"), MAX_DETAILS),
+        "attachments": _attachments(data.get("attachments")),
         "completionNote": _text(
             data.get("completionNote"), MAX_COMPLETION_NOTE),
         "createdBy": _text(data.get("createdBy"), 64).lower(),
@@ -829,6 +849,7 @@ async def _create(
         return _response(
             runtime, {"error": "repository_required"}, status=400)
     how_to_test = _text(data.get("howToTest"), 720)
+    attachments = _attachments(data.get("attachments"))
     # A desktop that launches a prompt opens the task in the same call, so the
     # run's provenance arrives with it rather than through a second round trip.
     agent_run = _agent_run(data.get("agent")) if assignee_kind in (
@@ -854,6 +875,7 @@ async def _create(
         "kind": task_kind,
         "title": title,
         "details": details,
+        "attachments": attachments,
         "completionNote": "",
         "assignee": assignee,
         "createdBy": actor,

@@ -436,6 +436,10 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
             "assigneeKind": "codex",
             "sendToQa": True,
             "howToTest": "Open the World and verify the result.",
+            "attachments": [
+                {"name": "hud-notes.md", "mime": "text/markdown", "size": 842},
+                {"name": "world.png", "mime": "image/png", "size": 4096},
+            ],
         }),
         tasks_api.UNIVERSAL_PREFIX,
     )
@@ -446,6 +450,10 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
     assert task["assigneeKind"] == "agent"
     assert task["qa"]["requestedAt"] == runtime.now_ms
     assert task["repository"] == "forkmesh/forkmesh"
+    assert task["attachments"] == [
+        {"name": "hud-notes.md", "mime": "text/markdown", "size": 842},
+        {"name": "world.png", "mime": "image/png", "size": 4096},
+    ]
     stored = runtime.db.execute(
         "SELECT data FROM organization_tasks WHERE task_id=?",
         (task["id"],),

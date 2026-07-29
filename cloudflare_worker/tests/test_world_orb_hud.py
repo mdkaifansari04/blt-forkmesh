@@ -95,7 +95,7 @@ def test_world_embed_has_separate_chat_and_task_buttons_and_routing_step():
     assert "forceChat" not in CHAT
     assert 'fullSendLabel.textContent = presentation.label || "Send"' in CHAT
     assert 'fullAction.value !== "chat"' in CHAT
-    assert "void runFullComposerAction(inputEl)" in CHAT
+    assert "void runFullComposerAction(inputEl, attachmentControl)" in CHAT
 
 
 def test_chat_and_status_updates_share_a_ten_second_activity_stream():

@@ -1005,14 +1005,15 @@ def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
     # replace the terminal, so both entrances are asserted here.
     assert "openWorldChat(" in APP
     assert "closeWorldChat()" in APP
-    assert "destination.origin !== location.origin" in APP
-    assert '["/dashboard/chat", "/dashboard/chat/"]' in APP
-    assert 'destination.searchParams.set("worldEmbed", "1")' in APP
     assert "data-world-chat-terminal" in APP
-    assert "data-world-chat-terminal-frame" in APP
+    assert "data-world-native-chat" in APP
+    assert "data-world-chat-terminal-frame" not in APP
+    assert 'data-world-default-repository="forkmesh/forkmesh"' in APP
+    assert 'id="fullChatAction"' in APP
+    assert '<option value="agent" selected>Send to bot</option>' in APP
     assert "world-chat-terminal-channel" in APP
     assert "world-chat-terminal-connection" in APP
-    assert '"/dashboard/chat?worldEmbed=1"' in APP
+    assert 'script.src = "/dashboard-chat.js"' in APP
     assert "world-chat-terminal" in CSS
     assert "DEBUG owns the lower-left; chat owns the lower-right" in CSS
     diagnostics = CSS[
@@ -1059,16 +1060,10 @@ def test_mobile_world_chat_composer_stays_above_safe_area_and_terminal_bars():
     )
     open_chat = APP[
         APP.index("  openWorldChat("):
-        APP.index("\n  loadChatTerminalFrame()", APP.index("  openWorldChat("))
+        APP.index("\n  loadNativeWorldChat()", APP.index("  openWorldChat("))
     ]
-    assert (
-        'this.$("[data-world-chat-terminal]")?.removeAttribute("open")'
-        in open_chat
-    )
-    assert (
-        'this.$("[data-world-diagnostics]")?.removeAttribute("open")'
-        in open_chat
-    )
+    assert "this.openChatTerminal();" in open_chat
+    assert ".world-native-chat" in CSS
     assert "var(--forkmesh-chat-viewport-height, 100dvh)" in DASHBOARD_CHAT_VIEW
     assert "const layoutHeight = window.innerHeight" in DASHBOARD_CHAT_VIEW
     assert "window.frameElement?.getBoundingClientRect?.().height" in (
@@ -2815,9 +2810,9 @@ def test_clicking_forkbot_opens_the_terminal_bar_with_a_mention_prefilled():
     assert "this.closeWorldChat();" in terminal
     assert "details.open = true;" in terminal
     assert '"forkmesh:chat-prefill"' in terminal
-    assert "frame.contentWindow?.postMessage(" in terminal
-    # The embedded /dashboard/chat page (used by both the terminal bar and the
-    # full overlay) listens for that message and fills + focuses its composer.
+    assert 'new MessageEvent("message"' in terminal
+    # The native controller listens for that message and fills + focuses its
+    # composer without a nested document.
     assert 'data.type !== "forkmesh:chat-prefill"' in DASHBOARD_CHAT
     assert "input.focus();" in DASHBOARD_CHAT
 

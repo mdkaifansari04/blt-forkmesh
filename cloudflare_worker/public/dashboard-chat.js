@@ -2,7 +2,7 @@
 // Keeps the current dashboard UI, but uses the same encrypted room protocol as
 // the production chat from forkmesh-today/cloudflare_worker/public/chat.js.
 
-(() => {
+function mountForkMeshDashboardChat() {
   const ROOM_NAME = "general";
   const PUBLIC_WORLD_GENERAL_ROOM = "world-general";
   let roomPassphrase = null;
@@ -134,7 +134,9 @@
     "[data-dashboard-chat-scroll-rail]",
   );
 
-  if (!fullLog && !sideLog) return;
+  if (!fullLog && !sideLog) return false;
+  if (fullLog?.dataset.forkmeshChatMounted === "true") return true;
+  if (fullLog) fullLog.dataset.forkmeshChatMounted = "true";
 
   let pendingWorldComposerPrefill = null;
   const seenParentNotifications = new Set();
@@ -221,6 +223,12 @@
     window.parent.postMessage(
       { type: "forkmesh:chat-ready" },
       location.origin,
+    );
+  } else if (document.querySelector("[data-world-native-chat]")) {
+    window.dispatchEvent(
+      new CustomEvent("forkmesh:world-chat-native", {
+        detail: { type: "forkmesh:chat-ready" },
+      }),
     );
   }
 
@@ -1705,7 +1713,8 @@
   // marked so the parent updates only its collapsed CHAT bar with the most
   // recent line — reconnects never resurrect old bubbles.
   const WORLD_EMBED_BUBBLES =
-    requestedParams.get("worldEmbed") === "1" && window.parent !== window;
+    requestedParams.get("worldEmbed") === "1" ||
+    Boolean(document.querySelector("[data-world-native-chat]"));
   const worldAttachmentPreviewCache = new WeakMap();
 
   function emitWorldActivity(text, kind = "status") {
@@ -1812,10 +1821,18 @@
         };
     const post = (attachmentPreview = "") => {
       try {
-        window.parent.postMessage(
-          { ...payload, attachmentPreview },
-          location.origin,
-        );
+        if (window.parent !== window) {
+          window.parent.postMessage(
+            { ...payload, attachmentPreview },
+            location.origin,
+          );
+        } else {
+          window.dispatchEvent(
+            new CustomEvent("forkmesh:world-chat-native", {
+              detail: { ...payload, attachmentPreview },
+            }),
+          );
+        }
       } catch (_) {}
     };
     post();
@@ -2507,7 +2524,9 @@
       fileInput.value = "";
       if (files.length) {
         stageDashboardAttachments(control, files);
-        void sendDashboardDraft(control);
+        if (inputEl !== fullInput || String(fullAction?.value || "chat") === "chat") {
+          void sendDashboardDraft(control);
+        }
       }
     });
     control.button.disabled = !canJoinChat();
@@ -2780,8 +2799,13 @@
         })
         .filter(Boolean)
         .sort((left, right) => left.label.localeCompare(right.label));
+      const requestedDefault = String(
+        document.querySelector("[data-world-native-chat]")
+          ?.dataset.worldDefaultRepository || "forkmesh/forkmesh",
+      );
       const previous =
-        sessionStorage.getItem("forkmesh.worldChat.repository") || "";
+        sessionStorage.getItem("forkmesh.worldChat.repository") ||
+        requestedDefault;
       for (const repository of repositories.slice(0, 250)) {
         const option = document.createElement("option");
         option.value = repository.value;
@@ -2800,7 +2824,7 @@
     }
   }
 
-  async function runFullComposerAction(inputEl) {
+  async function runFullComposerAction(inputEl, attachmentControl = null) {
     const action = String(fullAction?.value || "chat");
     const text = String(inputEl?.value || "").trim();
     if (!text) {
@@ -2847,6 +2871,13 @@
         const destination = botTask
           ? "agent"
           : String(taskDestination?.value || "department");
+        const taskAttachments = (attachmentControl?.draft || []).map(
+          ({ file }) => ({
+            name: safeAttachmentName(file?.name),
+            mime: safeAttachmentMime(file?.type),
+            size: Math.max(0, Number(file?.size) || 0),
+          }),
+        );
         const created = await taskApiRequest("POST", "/api/tasks", {
           title,
           details,
@@ -2862,6 +2893,7 @@
           repository: repository
             ? `${repository.logicalOwner}/${repository.logicalName}`
             : "",
+          attachments: taskAttachments,
           ...(destination === "qa"
             ? {
                 howToTest:
@@ -2903,6 +2935,9 @@
                   : `${task.department || "general"}`
           }.`,
         );
+        if (taskAttachments.length) {
+          await sendDashboardDraft(attachmentControl);
+        }
         setComposerStatus("Organization task created.", "good");
       } else if (action === "issue") {
         const lines = text.split(/\r?\n/);
@@ -2918,6 +2953,28 @@
         appendSystem(`Issue “${title}” was signed and sent to ${repository.owner}/${repository.name}.`);
         setComposerStatus("Issue sent to the maintainer inbox.", "good");
       } else {
+        const lines = text.split(/\r?\n/);
+        const title = String(lines.shift() || "").trim().slice(0, 160);
+        const details = lines.join("\n").trim().slice(0, 4000);
+        const taskAttachments = (attachmentControl?.draft || []).map(
+          ({ file }) => ({
+            name: safeAttachmentName(file?.name),
+            mime: safeAttachmentMime(file?.type),
+            size: Math.max(0, Number(file?.size) || 0),
+          }),
+        );
+        const created = await taskApiRequest("POST", "/api/tasks", {
+          title,
+          details,
+          department: "engineering",
+          team: "",
+          destination: "agent",
+          assigneeKind: "agent",
+          assignee: "",
+          repository: `${repository.logicalOwner}/${repository.logicalName}`,
+          attachments: taskAttachments,
+        });
+        const task = created?.task || {};
         const mention = "@bot";
         appendMessage(
           "self",
@@ -2929,12 +2986,26 @@
         );
         const queued = await queueOrgAgent(
           "agent",
-          text,
+          `[task:${task.id}] ${text}`,
           ORG_BOT_SENDER_ID,
           repository,
         );
-        if (!queued) throw new Error("Agent request was not accepted.");
-        setComposerStatus("Agent request submitted.", "good");
+        if (!queued) {
+          throw new Error(
+            "The task is in the task list, but no bot node accepted it yet.",
+          );
+        }
+        const sessionId = String(queued?.session?.id || "");
+        if (sessionId) {
+          await taskApiRequest("PATCH", `/api/tasks/${task.id}`, {
+            agentSessionId: sessionId,
+          });
+        }
+        if (attachmentControl?.draft.length) {
+          await sendDashboardDraft(attachmentControl);
+        }
+        appendSystem(`Private task “${title}” was added to the bot queue.`);
+        setComposerStatus("Bot task created.", "good");
       }
       inputEl.value = "";
       inputEl.style.height = "";
@@ -2955,7 +3026,7 @@
       fullAction &&
       fullAction.value !== "chat"
     ) {
-      void runFullComposerAction(inputEl);
+      void runFullComposerAction(inputEl, attachmentControl);
       return;
     }
     if (!canJoinChat()) {
@@ -3015,7 +3086,12 @@
       if (!file) return;
       event.preventDefault();
       stageDashboardAttachments(attachmentControl, [file]);
-      void sendDashboardDraft(attachmentControl);
+      if (
+        inputEl !== fullInput ||
+        String(fullAction?.value || "chat") === "chat"
+      ) {
+        void sendDashboardDraft(attachmentControl);
+      }
     });
     inputEl.addEventListener("keydown", (event) => {
       // While the mention list is open it owns Enter/Tab/arrows, so accepting a
@@ -3166,14 +3242,19 @@
       .querySelectorAll("[data-dashboard-chat-emote]")
       .forEach((button) => {
         button.addEventListener("click", () => {
-          if (window.parent === window) return;
-          window.parent.postMessage(
-            {
-              type: "forkmesh:world-emote",
-              emote: String(button.dataset.dashboardChatEmote || ""),
-            },
-            location.origin,
-          );
+          const emote = String(button.dataset.dashboardChatEmote || "");
+          if (window.parent !== window) {
+            window.parent.postMessage(
+              { type: "forkmesh:world-emote", emote },
+              location.origin,
+            );
+          } else {
+            window.dispatchEvent(
+              new CustomEvent("forkmesh:world-emote-native", {
+                detail: { emote },
+              }),
+            );
+          }
         });
       });
     void loadComposerRepositories();
@@ -3190,4 +3271,10 @@
   }
 
   initChat();
-})();
+  return true;
+}
+
+window.ForkMeshDashboardChat = Object.freeze({
+  mount: mountForkMeshDashboardChat,
+});
+mountForkMeshDashboardChat();
