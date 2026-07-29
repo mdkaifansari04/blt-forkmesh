@@ -64,6 +64,14 @@ def test_client_collector_is_bounded_redacted_and_stored_in_error_log():
     assert 'if url.path in ("/api/client-errors", "/api/client-errors/"):' in ENTRY
 
 
+def test_client_errors_are_identified_as_javascript_in_admin():
+    assert "def _admin_error_source(method, path):" in ENTRY
+    assert 'str(method or "").strip().upper() == "JS"' in ENTRY
+    assert 'str(path or "").startswith("/client-error/")' in ENTRY
+    assert 'return "JavaScript" if is_javascript else "Worker"' in ENTRY
+    assert 'class="error-source %s"' in ENTRY
+
+
 def test_client_error_fields_remove_identity_urls_and_credentials():
     fields = _client_error_fields()({
         "kind": "error",

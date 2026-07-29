@@ -2386,6 +2386,24 @@ SCHEMA_STATEMENTS = [
         revoked_at INTEGER NOT NULL DEFAULT 0 CHECK (revoked_at >= 0))""",
     "CREATE INDEX IF NOT EXISTS idx_org_bot_tokens_org "
     "ON org_bot_tokens(org_bi, revoked_at, created_at DESC)",
+    # Metadata-only use history: no token secret, body, query string, network
+    # address, or user agent is retained. The generic platform admin browser
+    # can inspect the full append-only table while org admins receive only a
+    # bounded preview through the purpose-built token endpoint.
+    """CREATE TABLE IF NOT EXISTS org_bot_token_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_id TEXT NOT NULL,
+        org_bi TEXT NOT NULL,
+        provider TEXT NOT NULL
+            CHECK (provider IN ('codex','claude-code')),
+        action TEXT NOT NULL CHECK (length(action) BETWEEN 1 AND 120),
+        method TEXT NOT NULL
+            CHECK (method IN ('GET','POST','PUT','PATCH','DELETE')),
+        used_at INTEGER NOT NULL CHECK (used_at >= 0))""",
+    "CREATE INDEX IF NOT EXISTS idx_org_bot_token_usage_org_time "
+    "ON org_bot_token_usage(org_bi, used_at DESC, id DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_org_bot_token_usage_token_time "
+    "ON org_bot_token_usage(token_id, used_at DESC, id DESC)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

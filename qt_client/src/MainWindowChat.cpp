@@ -456,8 +456,11 @@ QWidget *MainWindow::buildChatPage()
     m_appNavigationRailLayout = new QVBoxLayout(rail);
     m_appNavigationRailLayout->setContentsMargins(0, 4, 0, 4);
     m_appNavigationRailLayout->setSpacing(1);
+    // Agents is deliberately absent here: it lives on the window-chrome line
+    // beside its live fleet matrix (see buildBreadcrumb). Listing it would
+    // re-parent the button into the rail and silently undo that placement.
     for (QPushButton *button :
-         {m_reposNavButton, m_agentsNavButton, m_chatButton,
+         {m_reposNavButton, m_chatButton,
           m_controlNodeNavButton, m_logNavButton, m_hostsNavButton, m_nodesNavButton,
           m_relaysNavButton, m_networkNavButton}) {
         if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
@@ -4384,10 +4387,12 @@ QWidget *MainWindow::buildBreadcrumb()
 
     // Agents: a shortcut into the current repo's Agents tab (adhoc #194), not a
     // section of its own — it just jumps via openAgentsOverview() the same way
-    // the footer "Agents:" label does. Sits between Repo and Chat in the nav
-    // row. Checkable to show when the Agents tab is active (adhoc #201).
-    m_agentsNavButton = new ActivityRailButton(QStringLiteral("terminal"),
-                                               QStringLiteral("Agents"));
+    // the footer "Agents:" label does. Checkable to show when the Agents tab is
+    // active (adhoc #201). Unlike its neighbours it is NOT an ActivityRailButton
+    // and does not live in the app navigation rail: it heads the window-chrome
+    // line's search cluster, immediately left of Back/Forward, so the live agent
+    // matrix can ride beside it along the horizontal top bar.
+    m_agentsNavButton = new QPushButton(QStringLiteral("Agents"));
     m_agentsNavButton->setObjectName("topNavButton");
     m_agentsNavButton->setCheckable(true);
     m_agentsNavButton->setCursor(Qt::PointingHandCursor);
@@ -4395,6 +4400,17 @@ QWidget *MainWindow::buildBreadcrumb()
     setOcticon(m_agentsNavButton, "terminal", 16);
     connect(m_agentsNavButton, &QPushButton::clicked, this,
             &MainWindow::openAgentsOverview);
+
+    // One tiny square per agent session, right of the button: the whole fleet's
+    // status as a matrix, with running sessions sweeping in time with their live
+    // output. Populated (and kept current) by refreshAgentDotMatrix().
+    m_agentDotMatrix = new AgentDotMatrix;
+    m_agentDotMatrix->onDotClicked = [this](int sessionId) {
+        if (sessionId > 0)
+            switchToAgentsTab(sessionId);
+        else
+            openAgentsOverview();
+    };
 
     // Chat: its own top-level section (m_sectionStack index 2).
     m_chatButton = new ActivityRailButton(QStringLiteral("comment"),
@@ -4627,6 +4643,11 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *searchClusterRow = new QHBoxLayout(searchCluster);
     searchClusterRow->setContentsMargins(0, 0, 0, 0);
     searchClusterRow->setSpacing(8);
+    // Agents + its live status matrix lead the cluster, so the fleet is visible
+    // from every section without leaving room for the search box to shift.
+    searchClusterRow->addWidget(m_agentsNavButton);
+    searchClusterRow->addWidget(m_agentDotMatrix);
+    searchClusterRow->addSpacing(4);
     searchClusterRow->addWidget(createNavHistoryButtons());
     searchClusterRow->addWidget(createGlobalSearchBox());
     chromeRow->addWidget(searchCluster, 0, Qt::AlignCenter);
@@ -12030,17 +12051,23 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setObjectName(QStringLiteral("hostDiskUsageDialog"));
     dialog->setWindowTitle(QStringLiteral("Size map: %1").arg(node));
-    dialog->setMinimumSize(820, 560);
+    dialog->setMinimumSize(1060, 620);
     auto *layout = new QVBoxLayout(dialog);
 
     auto *hint = new QLabel(QString::fromUtf8(
         "ForkMesh measures one directory level at a time with <b>du</b> over "
         "the same authenticated SSH channel the installer uses \xE2\x80\x94 "
-        "nothing is written on the host. Double-click a folder to drill into "
-        "the space it uses."));
+        "nothing is written on the host. Enter any absolute folder, "
+        "double-click a folder to drill in, or use a mount map on the right."));
     hint->setObjectName("mutedLabel");
     hint->setWordWrap(true);
     layout->addWidget(hint);
+
+    auto *body = new QHBoxLayout;
+    body->setSpacing(14);
+    auto *mainPane = new QWidget(dialog);
+    auto *mainLayout = new QVBoxLayout(mainPane);
+    mainLayout->setContentsMargins(0, 0, 0, 0);
 
     auto *nav = new QHBoxLayout;
     auto *upButton = new QPushButton(QStringLiteral("Up"));
@@ -12056,6 +12083,8 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
     auto *openButton = new QPushButton(QStringLiteral("Open"));
     openButton->setObjectName(QStringLiteral("hostDiskOpenButton"));
     openButton->setCursor(Qt::PointingHandCursor);
+    openButton->setToolTip(
+        QStringLiteral("Open the absolute folder entered to the left."));
     setOcticon(openButton, "file-directory", 12);
     nav->addWidget(openButton);
     auto *refreshButton = new QPushButton(QStringLiteral("Refresh"));
@@ -12063,14 +12092,14 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
     refreshButton->setCursor(Qt::PointingHandCursor);
     setOcticon(refreshButton, "sync", 12);
     nav->addWidget(refreshButton);
-    layout->addLayout(nav);
+    mainLayout->addLayout(nav);
 
     auto *totalLabel = new QLabel;
     totalLabel->setObjectName(QStringLiteral("hostDiskTotalLabel"));
     QFont totalFont = totalLabel->font();
     totalFont.setBold(true);
     totalLabel->setFont(totalFont);
-    layout->addWidget(totalLabel);
+    mainLayout->addWidget(totalLabel);
 
     auto *table = new QTableWidget(0, 4);
     table->setObjectName("issueTable");
@@ -12089,13 +12118,43 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
         2, QHeaderView::ResizeToContents);
     table->horizontalHeader()->setSectionResizeMode(
         3, QHeaderView::ResizeToContents);
-    layout->addWidget(table, 1);
+    mainLayout->addWidget(table, 1);
 
     auto *status = new QLabel(QString::fromUtf8(
         "Measuring the host root \xE2\x80\xA6"));
     status->setObjectName("mutedLabel");
     status->setWordWrap(true);
-    layout->addWidget(status);
+    mainLayout->addWidget(status);
+    body->addWidget(mainPane, 1);
+
+    auto *mountPane = new QWidget(dialog);
+    mountPane->setObjectName(QStringLiteral("hostDiskMountPane"));
+    mountPane->setMinimumWidth(235);
+    mountPane->setMaximumWidth(285);
+    auto *mountPaneLayout = new QVBoxLayout(mountPane);
+    mountPaneLayout->setContentsMargins(10, 10, 10, 10);
+    auto *mountHeading = new QLabel(QStringLiteral("Mount points"));
+    QFont mountHeadingFont = mountHeading->font();
+    mountHeadingFont.setBold(true);
+    mountHeading->setFont(mountHeadingFont);
+    mountPaneLayout->addWidget(mountHeading);
+    auto *mountStatus = new QLabel(QStringLiteral("Loading mount maps..."));
+    mountStatus->setObjectName(QStringLiteral("mutedLabel"));
+    mountStatus->setWordWrap(true);
+    mountPaneLayout->addWidget(mountStatus);
+    auto *mountScroll = new QScrollArea(mountPane);
+    mountScroll->setObjectName(QStringLiteral("hostDiskMountScroll"));
+    mountScroll->setWidgetResizable(true);
+    mountScroll->setFrameShape(QFrame::NoFrame);
+    auto *mountCards = new QWidget(mountScroll);
+    auto *mountCardsLayout = new QVBoxLayout(mountCards);
+    mountCardsLayout->setContentsMargins(0, 0, 0, 0);
+    mountCardsLayout->setSpacing(8);
+    mountCardsLayout->addStretch();
+    mountScroll->setWidget(mountCards);
+    mountPaneLayout->addWidget(mountScroll, 1);
+    body->addWidget(mountPane);
+    layout->addLayout(body, 1);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
     if (auto *closeBtn = buttons->button(QDialogButtonBox::Close))
@@ -12106,7 +12165,8 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
     auto currentPath = std::make_shared<QString>(QStringLiteral("/"));
     auto loadPath = std::make_shared<std::function<void(const QString &)>>();
     *loadPath = [this, dialog, table, pathEdit, status, totalLabel, upButton,
-                 openButton, refreshButton, currentPath, ip, user, pass,
+                 openButton, refreshButton, currentPath, mountCardsLayout,
+                 mountStatus, loadPath, ip, user, pass,
                  node](const QString &requested) {
         if (m_hostDiskProcess &&
             m_hostDiskProcess->state() != QProcess::NotRunning) {
@@ -12117,13 +12177,16 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
         const QString path =
             forkmesh::control::normalizeRemoteDiskPath(requested);
         QString commandError;
-        const QString remoteCommand =
+        const QString diskCommand =
             forkmesh::control::buildHostDiskUsageCommand(path, &commandError);
-        if (remoteCommand.isEmpty()) {
+        if (diskCommand.isEmpty()) {
             status->setText(commandError);
             pathEdit->setText(*currentPath);
             return;
         }
+        const QString remoteCommand =
+            forkmesh::control::buildHostMountUsageCommand() +
+            QLatin1Char('\n') + diskCommand;
         QString sshError;
         const forkmesh::control::HostSshCommand ssh =
             forkmesh::control::buildHostSshCommand(
@@ -12157,11 +12220,95 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
                 [proc, output] { output->append(proc->readAllStandardOutput()); });
         connect(proc, &QProcess::finished, dialog,
                 [this, proc, output, table, status, totalLabel, navWidgets,
-                 path, ip, user](int code, QProcess::ExitStatus exitStatus) {
+                 path, ip, user, mountCardsLayout, mountStatus, loadPath](
+                    int code, QProcess::ExitStatus exitStatus) {
                     if (m_hostDiskProcess == proc)
                         m_hostDiskProcess = nullptr;
                     for (QWidget *w : navWidgets)
                         w->setEnabled(true);
+                    while (QLayoutItem *item = mountCardsLayout->takeAt(0)) {
+                        if (QWidget *widget = item->widget())
+                            widget->deleteLater();
+                        delete item;
+                    }
+                    const forkmesh::control::HostMountUsageList mounts =
+                        forkmesh::control::parseHostMountUsage(*output);
+                    if (!mounts.error.isEmpty()) {
+                        mountStatus->setText(mounts.error);
+                    } else if (!mounts.complete || mounts.mounts.isEmpty()) {
+                        mountStatus->setText(QStringLiteral(
+                            "Mount details were not reported by this host."));
+                    } else {
+                        mountStatus->setText(QString::fromUtf8(
+                            "%1 filesystem%2 \xE2\x80\x94 click a mini map to "
+                            "open any mount.")
+                                                 .arg(mounts.mounts.size())
+                                                 .arg(mounts.mounts.size() == 1
+                                                          ? QString()
+                                                          : QStringLiteral("s")));
+                        QString activeMountPath;
+                        for (const forkmesh::control::HostMountUsage &mount :
+                             mounts.mounts) {
+                            const bool containsPath =
+                                path == mount.path ||
+                                (mount.path == QStringLiteral("/")
+                                     ? path.startsWith(QLatin1Char('/'))
+                                     : path.startsWith(mount.path +
+                                                       QLatin1Char('/')));
+                            if (containsPath &&
+                                mount.path.size() > activeMountPath.size()) {
+                                activeMountPath = mount.path;
+                            }
+                        }
+                        for (const forkmesh::control::HostMountUsage &mount :
+                             mounts.mounts) {
+                            const double usedShare =
+                                mount.totalBytes > 0
+                                    ? qBound(
+                                          0.0,
+                                          static_cast<double>(mount.usedBytes) /
+                                              static_cast<double>(
+                                                  mount.totalBytes),
+                                          1.0)
+                                    : 0.0;
+                            const int filled =
+                                qBound(0,
+                                       static_cast<int>(
+                                           std::lround(usedShare * 12.0)),
+                                       12);
+                            const QString miniMap =
+                                QString(filled, QChar(0x2588)) +
+                                QString(12 - filled, QChar(0x2591));
+                            auto *mountButton = new QPushButton(
+                                QStringLiteral("%1\n%2  %3%\n%4 of %5")
+                                    .arg(mount.path, miniMap)
+                                    .arg(usedShare * 100.0, 0, 'f', 0)
+                                    .arg(forkmesh::control::formatDiskSize(
+                                             mount.usedBytes),
+                                         forkmesh::control::formatDiskSize(
+                                             mount.totalBytes)));
+                            mountButton->setObjectName(
+                                QStringLiteral("hostDiskMountButton"));
+                            mountButton->setProperty("mountPath", mount.path);
+                            mountButton->setCursor(Qt::PointingHandCursor);
+                            mountButton->setCheckable(true);
+                            mountButton->setChecked(
+                                mount.path == activeMountPath);
+                            mountButton->setToolTip(
+                                QString::fromUtf8(
+                                    "Open %1 \xE2\x80\x94 %2 available")
+                                    .arg(mount.path,
+                                         forkmesh::control::formatDiskSize(
+                                             mount.availableBytes)));
+                            connect(mountButton, &QPushButton::clicked,
+                                    mountButton,
+                                    [loadPath, mount] {
+                                        (*loadPath)(mount.path);
+                                    });
+                            mountCardsLayout->addWidget(mountButton);
+                        }
+                    }
+                    mountCardsLayout->addStretch();
                     const forkmesh::control::HostDiskUsage usage =
                         forkmesh::control::parseHostDiskUsage(*output, path);
                     proc->deleteLater();

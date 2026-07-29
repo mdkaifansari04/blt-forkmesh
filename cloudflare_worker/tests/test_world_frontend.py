@@ -263,9 +263,8 @@ def test_avatar_chest_activity_country_shirt_and_input_state_are_privacy_safe():
         'antenna.name = "mouse-activity-antenna"',
         "function syncAvatarActivity",
         "function animateAvatarActivity",
-        'avatar.userData.accountStatus === "Guest"',
-        "inactiveFor >= 12000",
-        'avatar.userData.accountStatus === "Guest"',
+        "Guests and members remain fully",
+        "opaque until they actually leave the World",
     ):
         assert contract in SCENE
     assert ".world-saved-views {" in CSS
@@ -884,13 +883,17 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
     assert "if (this.mobileMovementActive) return;" in APP
     assert "this.mobileMovementActive = true;" in APP
     assert "this.mobileMovementActive = false;" in APP
-    assert "this.syncViewportHeight();" in APP
+    assert "this.coarsePointerViewport" in APP
+    assert "this.lastStableViewportWidth" in APP
+    assert "Math.abs(width - this.lastStableViewportWidth) < 2" in APP
+    assert "address-bar expansion and contraction" in APP
     assert "overscroll-behavior: none;" in CSS
     assert "position: fixed;" in CSS[
         CSS.index("body.world-active {"):
         CSS.index("}", CSS.index("body.world-active {"))
     ]
     assert 'this.addEventListener("touchmove", this.blockWorldPullToRefresh' in APP
+    assert "capture: true" in APP
     pull_guard = APP[
         APP.index("  blockWorldPullToRefresh ="):
         APP.index("\n  syncViewportHeight =", APP.index("  blockWorldPullToRefresh ="))
@@ -1355,7 +1358,6 @@ def test_world_first_person_camera_has_accessible_toggle_and_scene_api():
         '"First person"',
     ):
         assert contract in sync
-
     scene_mode_start = SCENE.index(
         '  function setCameraMode(mode, reason = "request") {',
     )
@@ -1386,6 +1388,50 @@ def test_world_first_person_camera_has_accessible_toggle_and_scene_api():
     assert "this.syncWorldCameraModeButton();" in reveal
     assert "setCameraMode," in SCENE
     assert "getCameraState:" in SCENE
+
+
+def test_top_toolbar_opens_dashboard_in_a_safe_new_tab():
+    assert 'class="world-top-link world-dashboard-link"' in APP
+    assert 'href="/dashboard"' in APP
+    assert 'target="_blank"' in APP
+    assert 'rel="noopener noreferrer"' in APP
+    assert 'aria-label="Open Dashboard in a new tab"' in APP
+    assert (
+        '.world-top-actions > .world-top-link[href="/dashboard"]'
+        not in CSS
+    )
+
+
+def test_admin_error_button_opens_the_error_table_in_a_safe_new_tab():
+    start = APP.index("  openAdminErrors() {")
+    method = APP[start:APP.index("\n  // Read the locked placement", start)]
+    assert 'destination.searchParams.set("table", "error_log")' in method
+    assert "window.open(" in method
+    assert '"_blank"' in method
+    assert '"noopener,noreferrer"' in method
+    assert "opened.opener = null" in method
+    assert "window.location.assign" not in method
+
+
+def test_world_task_button_and_inactive_avatar_visibility_contracts():
+    assert "data-world-tasks-open" in APP
+    assert "data-world-task-count" in APP
+    assert 'this.selectSettingsTab("work")' in APP
+    assert "avatarOpacity" not in SCENE
+    assert "inactiveSince" not in SCENE
+    assert "never the visibility of the person" in SCENE
+
+
+def test_render_stalls_include_bounded_likely_component_attribution():
+    assert (
+        "Render stall detected; we think it was "
+        "${stallAttribution.component}" in SCENE
+    )
+    assert "likelyCause: stallAttribution" in SCENE
+    assert 'component: "camera controls"' in SCENE
+    assert 'component: "Three.js renderer workload"' in SCENE
+    assert 'component: "JavaScript memory management"' in SCENE
+    assert 'codeArea: "renderer.render(scene, camera)"' in SCENE
 
 
 def test_world_first_person_zoom_out_falls_back_to_third_person():

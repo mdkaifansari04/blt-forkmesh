@@ -134,6 +134,47 @@ def test_task_access_is_session_gated_and_wall_payload_is_explicitly_authorized(
     assert "physicalState(\"locked\"" in tasks
 
 
+def test_top_nav_task_count_and_owner_catalog_include_departments():
+    tasks = source(TASKS)
+    world = source(WORLD)
+    assert "data-world-tasks-open" in world
+    assert "data-world-task-count" in world
+    assert "data-world-organization-task-heading" in world
+    assert "taskCount.textContent = String(tasks.length)" in tasks
+    assert "taskCount.hidden = !authorized || tasks.length < 1" in tasks
+    assert "All organization tasks" in tasks
+    assert "grouped by department" in tasks
+    assert "· ${escapeHTML(task.department)}" in tasks
+
+
+def test_work_tab_expands_and_active_tasks_have_readable_spinner_status():
+    tasks = source(TASKS)
+    world = source(WORLD)
+    css = source(CSS)
+    assert "panel.dataset.activeTab = selected" in world
+    assert '.world-settings[data-active-tab="work"]' in css
+    assert "920px" in css
+    assert "world-office-task-progress-label" in tasks
+    assert "In progress" in tasks
+    assert "@keyframes world-office-task-spin" in css
+    assert "animation: world-office-task-spin 720ms linear infinite" in css
+    assert "white-space: normal" in css
+    assert "-webkit-line-clamp: 2" not in css
+
+
+def test_new_agent_tasks_show_one_bounded_world_bot_bubble():
+    tasks = source(TASKS)
+    scene = source(SCENE)
+    assert "const announcedAgentTaskIds = new Set()" in tasks
+    assert "function announceAgentTasks()" in tasks
+    assert '["codex", "claude"].includes(task.assigneeKind)' in tasks
+    assert "world.showAgentTaskBubble?.(task.assigneeKind, task.title)" in tasks
+    assert "function showAgentTaskBubble(botId, title)" in scene
+    assert "if (!agentBotAccessAllowed) return false" in scene
+    assert "New organization task: ${taskTitle}" in scene
+    assert "showAgentTaskBubble," in scene
+
+
 def test_only_assignees_receive_start_stop_and_checkin_controls():
     tasks = source(TASKS)
     assert "task.assignee === actor" in tasks
@@ -194,15 +235,33 @@ def test_assignment_control_has_explicit_contrast_and_tasks_can_finish_or_delete
     assert '.world-office-task[data-status="done"]' in css
 
 
+def test_completed_tasks_are_ready_for_qa_with_three_verdict_controls():
+    tasks = source(TASKS)
+    world = source(WORLD)
+    css = source(CSS)
+    for contract in (
+        '"Ready for QA"',
+        'data-world-office-task-action="qa-${verdict}"',
+        '["pass", "fail", "unsure"]',
+        "onQaVerdict({ task, verdict })",
+        "Task marked done and ready for QA.",
+    ):
+        assert contract in tasks
+    assert "this.recordTaskQaVerdict(task, verdict)" in world
+    assert "async recordTaskQaVerdict(task, verdict)" in world
+    assert "this.recordQaVerdict(verdict)" in world
+    assert ".world-office-task-qa-actions" in css
+
+
 def test_marketing_members_can_add_private_proof_from_their_own_desk():
     tasks = source(TASKS)
     scene = source(SCENE)
     for contract in (
         "function normalizedProof(proof)",
-        "proofs = Array.isArray(payload?.proofs)",
+        "proofs = Array.isArray(marketingPayload?.proofs)",
         'if (action === "proof")',
         "!marketingMembers.includes(actor) || member !== actor",
-        '`${OFFICE_TASKS_PATH}/proofs`',
+        '`${MARKETING_TASKS_PATH}/proofs`',
         '"Paste the public HTTPS social post link:"',
     ):
         assert contract in tasks
@@ -220,7 +279,7 @@ def test_private_marketing_initiatives_are_rendered_on_a_clickable_world_panel()
     scene = source(SCENE)
     for contract in (
         "function normalizedInitiative(initiative)",
-        "initiatives = Array.isArray(payload?.initiatives)",
+        "initiatives = Array.isArray(marketingPayload?.initiatives)",
         'if (action === "initiative")',
         "initiatives.some((item) => item.href === href)",
         'window.open(href, "_blank", "noopener,noreferrer")',
@@ -241,8 +300,66 @@ def test_task_text_is_bounded_and_html_escaped_before_rendering():
     assert "function escapeHTML" in tasks
     assert ".slice(0, limit)" in tasks
     assert "${escapeHTML(task.title)}" in tasks
-    assert "${escapeHTML(task.assignee)}" in tasks
+    assert "task.assigneeKind === \"user\"" in tasks
+    assert "`@${task.assignee}`" in tasks
+    assert "escapeHTML(" in tasks
     assert "safeTaskId" in tasks
+
+
+def test_task_rows_capture_and_retain_a_completion_work_note():
+    tasks = source(TASKS)
+    css = source(CSS)
+    for contract in (
+        "completionNote: text(task.completionNote, 4000)",
+        "What I did to complete this task",
+        "data-world-office-task-completion-note",
+        'action === "complete" ? { completionNote } : {}',
+        "task.completionNote || \"\"",
+    ):
+        assert contract in tasks
+    for selector in (
+        ".world-office-task-completion",
+        ".world-office-task-completion-editor",
+        ".world-office-task-completion-editor textarea",
+    ):
+        assert selector in css
+
+
+def test_lobby_task_bounty_desk_creates_visible_non_custodial_bids():
+    world = source(WORLD)
+    scene = source(SCENE)
+    tasks = source(TASKS)
+    css = source(CSS)
+    for contract in (
+        "async openLobbyTaskBidKiosk()",
+        'data-world-task-bid-form',
+        'kind: "bid"',
+        "bountyAmountSol: amountSol",
+        '"/api/tasks"',
+        "This is a compensation request only.",
+        "does not reserve, custody, or transfer SOL",
+        "this.officeTasks?.refreshNow?.()",
+    ):
+        assert contract in world
+    for contract in (
+        '"forkmesh-office-task-bid-kiosk"',
+        '"TASK BOUNTY DESK"',
+        '"office-task-bid-kiosk"',
+        "onLobbyTaskBidKioskSelect()",
+        '"REQUEST ONLY · NO FUNDS HELD"',
+        '{ key: "task:lobby-task-bounties"',
+    ):
+        assert contract in scene
+    for contract in (
+        'const kind = task.kind === "bid" ? "bid" : "task"',
+        'data-kind="${bid ? "bid" : "task"}"',
+        "SOL bounty requested · bidder @",
+        "world-office-task-bid-badge",
+        "function refreshNow()",
+    ):
+        assert contract in tasks
+    assert '.world-office-task[data-kind="bid"]' in css
+    assert ".world-office-task-bid-badge" in css
 
 
 def test_task_panel_is_overlayed_responsive_and_reduced_motion_safe():

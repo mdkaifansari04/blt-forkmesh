@@ -255,6 +255,29 @@ async def create_task(runtime, assignee="bob", title="Write launch post",
 
 
 @run_async_test
+async def test_start_uses_optional_private_engineering_notifier():
+    runtime = FakeRuntime()
+    notices = []
+
+    async def notify(org_bi, actor, task_id, task):
+        notices.append((org_bi, actor, task_id, task))
+
+    runtime.notify_engineering_task_started = notify
+    created = await create_task(runtime)
+    task = created["data"]["task"]
+    started = await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/start",
+    )
+    assert started["status"] == 200
+    assert len(notices) == 1
+    assert notices[0][1] == "bob"
+    assert notices[0][2] == task["id"]
+    assert notices[0][3]["title"] == "Write launch post"
+    assert notices[0][3]["status"] == "active"
+
+
+@run_async_test
 async def test_universal_tasks_are_org_private_routable_and_marketing_compatible():
     runtime = FakeRuntime()
     generic = await tasks_api.handle(
@@ -302,6 +325,75 @@ async def test_universal_tasks_are_org_private_routable_and_marketing_compatible
     )
     assert outsider["status"] == 403
     assert outsider["data"]["error"] == "org_member_required"
+
+
+@run_async_test
+async def test_member_can_submit_exact_non_custodial_sol_bounty_bid():
+    runtime = FakeRuntime()
+    response = await tasks_api.handle(
+        runtime.use("POST", "bob", {
+            "kind": "bid",
+            "title": "Improve the lobby onboarding",
+            "details": "Add a concise first-visit checklist.",
+            "bountyAmountSol": "0.125000000",
+            "department": "community",
+            "destination": "department",
+            # A bid cannot impersonate this supplied assignee.
+            "assigneeKind": "user",
+            "assignee": "carol",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert response["status"] == 201
+    task = response["data"]["task"]
+    assert task["kind"] == "bid"
+    assert task["createdBy"] == "bob"
+    assert task["assignee"] == "bob"
+    assert task["assigneeKind"] == "user"
+    assert task["bountyRequest"] == {
+        "currency": "SOL",
+        "amountSol": "0.125",
+        "lamports": 125_000_000,
+        "status": "requested",
+    }
+    stored = runtime.db.execute(
+        "SELECT data FROM organization_tasks WHERE task_id=?",
+        (task["id"],),
+    ).fetchone()
+    assert "Improve the lobby onboarding" not in stored["data"]
+    assert runtime.audits[-1]["action"] == "organization.task_created"
+    assert runtime.audits[-1]["details"]["kind"] == "bid"
+    assert runtime.audits[-1]["details"]["bountyAmountSol"] == "0.125"
+
+
+@run_async_test
+async def test_bounty_bid_rejects_invalid_or_imprecise_sol_amounts():
+    for amount in (
+        "",
+        "0",
+        "-1",
+        "1e-3",
+        "0.0000000001",
+        "1000000.000000001",
+        "not-sol",
+    ):
+        runtime = FakeRuntime()
+        response = await tasks_api.handle(
+            runtime.use("POST", "bob", {
+                "kind": "bid",
+                "title": "Invalid bounty",
+                "bountyAmountSol": amount,
+                "department": "general",
+                "destination": "department",
+            }),
+            tasks_api.UNIVERSAL_PREFIX,
+        )
+        assert response["status"] == 400, amount
+        assert response["data"]["error"] == "invalid_bounty_request"
+        count = runtime.db.execute(
+            "SELECT COUNT(*) FROM organization_tasks"
+        ).fetchone()[0]
+        assert count == 0
 
 
 @run_async_test
@@ -742,13 +834,47 @@ async def test_assignee_or_manager_can_complete_and_only_manager_can_delete():
     )
     assert outsider_done["status"] == 403
     completed = await tasks_api.handle(
-        runtime.use("POST", "bob", {}),
+        runtime.use("POST", "bob", {
+            "completionNote": (
+                "Implemented the requested flow and ran the focused tests."
+            ),
+        }),
         f"{tasks_api.PREFIX}/{task_id}/complete",
     )
     assert completed["status"] == 200
     assert completed["data"]["task"]["status"] == "done"
     assert completed["data"]["task"]["elapsedMs"] == 7_500
     assert completed["data"]["task"]["completedAt"] == runtime.now_ms
+    assert completed["data"]["task"]["destination"] == "qa"
+    assert completed["data"]["task"]["qa"]["status"] == "unknown"
+    assert completed["data"]["task"]["qa"]["requestedAt"] == runtime.now_ms
+    assert completed["data"]["task"]["qa"]["howToTest"]
+    assert completed["data"]["task"]["completionNote"] == (
+        "Implemented the requested flow and ran the focused tests."
+    )
+    sealed = runtime.db.execute(
+        "SELECT data FROM organization_tasks WHERE task_id=?",
+        (task_id,),
+    ).fetchone()[0]
+    assert "Implemented the requested flow" not in sealed
+    assert runtime.audits[-1]["details"]["hasCompletionNote"] is True
+
+    revised = await tasks_api.handle(
+        runtime.use("POST", "bob", {
+            "completionNote": (
+                "Implemented, reviewed the diff, and passed focused QA."
+            ),
+        }),
+        f"{tasks_api.PREFIX}/{task_id}/complete",
+    )
+    assert revised["status"] == 200
+    assert revised["data"]["task"]["completedAt"] == runtime.now_ms
+    assert revised["data"]["task"]["completionNote"] == (
+        "Implemented, reviewed the diff, and passed focused QA."
+    )
+    assert runtime.audits[-1]["action"] == (
+        "organization.task_completion_note_updated"
+    )
 
     restart = await tasks_api.handle(
         runtime.use("POST", "bob", {}),

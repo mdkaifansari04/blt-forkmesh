@@ -42,7 +42,8 @@ class _Request:
 def _handler_runtime():
     tree = ast.parse(ENTRY, filename=str(ENTRY_PATH))
     wanted_assignments = {
-        "WORLD_QA_DECK_REVISION", "WORLD_QA_CARDS", "WORLD_QA_CARD_KEYS",
+        "WORLD_QA_DECK_REVISION", "WORLD_QA_MAX_CARDS",
+        "WORLD_QA_CARDS", "WORLD_QA_CARD_KEYS",
     }
     selected = []
     for node in tree.body:
@@ -268,6 +269,21 @@ def test_world_has_one_direct_physical_card_with_swipes_and_stats():
     assert "renderQaBoardPanel" not in WORLD
     assert "data-world-qa-verdict" not in WORLD
     assert ".world-qa-playing-card" not in CSS
+
+
+def test_qa_catalog_is_not_truncated_to_the_first_64_cards():
+    handler = ENTRY[
+        ENTRY.index("async def world_qa_handler"):
+        ENTRY.index("\n\nWORLD_PREFERENCES_MAX_BYTES")
+    ]
+    assert "WORLD_QA_MAX_CARDS = 4096" in ENTRY
+    assert "deck_cards = deck_cards[:64]" not in handler
+    assert "deck_cards = deck_cards[:128]" not in handler
+    assert "LIMIT 64" not in handler
+    assert handler.count("WORLD_QA_MAX_CARDS") >= 6
+    # The 3D desk remains constant-cost even when the catalog grows.
+    assert "const pageSize = 5;" in WORLD
+    assert "Math.ceil(filtered.length / pageSize)" in WORLD
 
 
 def test_private_task_failures_require_a_reason_and_accept_one_screenshot():

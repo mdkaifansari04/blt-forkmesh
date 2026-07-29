@@ -639,6 +639,10 @@ forkmesh-world {
   .world-connection-ring[data-state="connecting"] {
     animation: none;
   }
+
+  .world-office-task[data-status="active"] .world-office-task-state {
+    animation: none;
+  }
 }
 
 .world-top-actions {
@@ -697,6 +701,30 @@ forkmesh-world {
   border-color: #8b949e;
   background: var(--primer-control-hover);
   color: var(--primer-fg-default);
+}
+
+.world-tasks-button {
+  position: relative;
+}
+
+.world-tasks-button [data-world-task-count] {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  display: grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 2px solid var(--primer-canvas-default);
+  border-radius: 999px;
+  background: var(--primer-accent-emphasis);
+  padding: 0 4px;
+  color: #fff;
+  font: 700 10px/1 "ForkMesh Mono", ui-monospace, monospace;
+}
+
+.world-tasks-button [data-world-task-count][hidden] {
+  display: none;
 }
 
 /* The hand mirrors the gesture the avatar plays in the scene. */
@@ -3366,7 +3394,7 @@ forkmesh-world.world-admin-error-arrival::after {
 .world-office-task {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: start;
   gap: 14px;
   min-width: 0;
   border: 1px solid var(--world-line);
@@ -3389,6 +3417,34 @@ forkmesh-world.world-admin-error-arrival::after {
   text-decoration-thickness: 1px;
 }
 
+.world-office-task[data-kind="bid"] {
+  border-color: rgb(210 153 34 / 0.48);
+  background: rgb(210 153 34 / 0.06);
+}
+
+.world-office-task-bid-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  margin-right: 7px;
+  border: 1px solid rgb(210 153 34 / 0.7);
+  border-radius: 999px;
+  background: rgb(210 153 34 / 0.13);
+  color: #e3b341;
+  padding: 0 7px;
+  font: 700 0.58rem/1 "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-office-task-details {
+  margin: 0;
+  color: var(--world-copy);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .world-office-task-copy {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -3404,15 +3460,19 @@ forkmesh-world.world-admin-error-arrival::after {
 }
 
 .world-office-task-copy strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--world-copy);
+  font-size: 0.9rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .world-office-task-copy small {
   color: var(--world-muted);
   font-family: "ForkMesh Mono", monospace;
-  font-size: 0.6rem;
+  font-size: 0.64rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .world-office-task-state {
@@ -3425,8 +3485,11 @@ forkmesh-world.world-admin-error-arrival::after {
 
 .world-office-task[data-status="active"] .world-office-task-state {
   border-color: var(--world-mint);
-  background: var(--world-mint);
+  border-width: 2px;
+  border-top-color: transparent;
+  background: transparent;
   box-shadow: 0 0 12px rgb(158 247 198 / 0.72);
+  animation: world-office-task-spin 720ms linear infinite;
 }
 
 .world-office-task[data-status="done"] .world-office-task-state {
@@ -3436,8 +3499,106 @@ forkmesh-world.world-admin-error-arrival::after {
 
 .world-office-task-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+}
+
+.world-office-task-progress-label {
+  width: fit-content;
+  border: 1px solid rgb(158 247 198 / 0.32);
+  border-radius: 999px;
+  background: rgb(158 247 198 / 0.08);
+  color: var(--world-mint);
+  padding: 3px 7px;
+  font: 700 0.58rem/1 "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-office-task-completion,
+.world-office-task-completion-editor {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  border-left: 2px solid rgb(119 217 255 / 0.52);
+  background: rgb(119 217 255 / 0.055);
+  padding: 9px 10px;
+}
+
+.world-office-task-completion > span,
+.world-office-task-completion-editor > span {
+  color: #77d9ff;
+  font: 700 0.58rem/1.3 "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-office-task-completion p {
+  margin: 0;
+  color: var(--world-copy);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.world-office-task-completion-editor textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid var(--world-line-strong);
+  border-radius: 6px;
+  background: #07120f;
+  color: var(--world-copy);
+  padding: 8px 9px;
+  font: 0.74rem/1.45 "ForkMesh Favorit", sans-serif;
+}
+
+.world-office-task-completion-editor textarea:focus-visible {
+  border-color: #77d9ff;
+  box-shadow: 0 0 0 3px rgb(119 217 255 / 0.14);
+  outline: none;
+}
+
+@keyframes world-office-task-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.world-office-task-qa-actions {
+  display: inline-flex;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid var(--world-line);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 0.025);
+}
+
+.world-office-task-qa-actions button {
+  min-height: 28px;
+  padding: 0 7px;
+  border-color: transparent;
+  font-size: 0.64rem;
+}
+
+.world-office-task-qa-pass[aria-pressed="true"] {
+  border-color: rgb(46 160 67 / 0.7);
+  background: rgb(46 160 67 / 0.18);
+  color: #7ee787;
+}
+
+.world-office-task-qa-fail[aria-pressed="true"] {
+  border-color: rgb(248 81 73 / 0.7);
+  background: rgb(248 81 73 / 0.18);
+  color: #ff7b72;
+}
+
+.world-office-task-qa-unsure[aria-pressed="true"] {
+  border-color: rgb(210 153 34 / 0.7);
+  background: rgb(210 153 34 / 0.18);
+  color: #e3b341;
 }
 
 .world-office-task-controls time {
@@ -5921,6 +6082,13 @@ forkmesh-world.world-office-active .world-quick-dock {
   visibility: visible;
 }
 
+.world-settings[data-active-tab="work"] {
+  width: min(
+    920px,
+    calc(100vw - var(--safe-left) - var(--safe-right) - 28px)
+  );
+}
+
 .world-settings-heading {
   display: flex;
   align-items: start;
@@ -7032,12 +7200,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     display: none;
   }
 
-  .world-top-actions > .world-top-link[href="/dashboard"] {
-    /* Keep alerts, in-world chat, sound consent, and settings reachable in one
-       row. The full operations console remains available outside the World. */
-    display: none;
-  }
-
   .world-top-actions {
     /* The wave chip is one more icon in an already tight phone row; a 6px
        gutter keeps the whole row, settings badge included, on screen. */
@@ -7591,6 +7753,29 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   outline: none;
 }
 
+.world-shot-alt {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr);
+  align-items: center;
+  gap: 10px;
+  color: var(--world-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.world-shot-alt input {
+  min-height: 38px;
+  border: 1px solid var(--world-line);
+  background: #0d1117;
+  color: var(--world-copy);
+  padding: 7px 10px;
+}
+
+.world-shot-alt input:focus-visible {
+  border-color: var(--world-mint);
+  outline: 2px solid rgb(158 247 198 / 0.18);
+}
+
 .world-shot-footer {
   display: flex;
   flex-wrap: wrap;
@@ -7652,6 +7837,11 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-shot-primary:focus-visible {
   background: var(--world-mint-deep);
   outline: none;
+}
+
+.world-shot-primary:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 .world-agent-prompt-form {
   display: grid;
@@ -7787,4 +7977,326 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .fm-world :is(button, input, select, textarea):focus-visible {
   outline: 2px solid var(--world-mint);
   outline-offset: 2px;
+}
+
+/* Compact orb HUD. Both controls stay logo-sized until hovered, keyboard
+   focused, or explicitly opened. The expanded surfaces remain ordinary
+   details elements so touch and assistive-technology users can pin them. */
+.world-diagnostics,
+.world-diagnostics:not(.world-chat-terminal) {
+  position: absolute;
+  right: auto;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  left: max(12px, env(safe-area-inset-left));
+  width: 56px;
+  max-width: calc(100vw - 24px);
+  border: 1px solid rgb(139 148 158 / 0.55);
+  border-radius: 50%;
+  background: rgb(13 17 23 / 0.72);
+  box-shadow: 0 8px 30px rgb(1 4 9 / 0.5);
+  overflow: visible;
+  transition:
+    width 170ms ease,
+    border-radius 170ms ease,
+    background-color 170ms ease;
+  backdrop-filter: blur(16px) saturate(1.15);
+}
+
+.world-diagnostics > summary,
+.world-diagnostics:not(.world-chat-terminal) > summary {
+  box-sizing: border-box;
+  width: 56px;
+  height: 56px;
+  min-height: 56px;
+  justify-content: center;
+  padding: 8px;
+  border-radius: 50%;
+  overflow: visible;
+}
+
+.world-diagnostics > summary > :not(.world-diagnostics-orb),
+.world-diagnostics:not(.world-chat-terminal)
+  > summary
+  > :not(.world-diagnostics-orb) {
+  display: none;
+}
+
+.world-diagnostics:is([open], :hover, :focus-within),
+.world-diagnostics:not(.world-chat-terminal):is([open], :hover, :focus-within) {
+  width: min(720px, calc(100vw - 24px));
+  border-radius: 12px;
+  background: rgb(13 17 23 / 0.88);
+}
+
+.world-diagnostics:is([open], :hover, :focus-within) > summary,
+.world-diagnostics:not(.world-chat-terminal):is([open], :hover, :focus-within)
+  > summary {
+  width: 100%;
+  height: auto;
+  min-height: 44px;
+  justify-content: flex-start;
+  padding: 7px 10px;
+  border-radius: 12px 12px 0 0;
+}
+
+.world-diagnostics:is([open], :hover, :focus-within)
+  > summary
+  > :not(.world-diagnostics-orb),
+.world-diagnostics:not(.world-chat-terminal):is([open], :hover, :focus-within)
+  > summary
+  > :not(.world-diagnostics-orb) {
+  display: flex;
+}
+
+.world-diagnostics:is(:hover, :focus-within) > .world-diagnostics-details {
+  display: block;
+}
+
+.world-diagnostics-orb {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(3, 1fr);
+  place-items: center;
+  border: 1px solid rgb(139 148 158 / 0.42);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 35% 28%, rgb(88 166 255 / 0.2), transparent 48%),
+    #0d1117;
+}
+
+.world-diagnostics-orb > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #3fb950;
+  box-shadow: 0 0 5px currentColor;
+}
+
+.world-diagnostics-orb > span[data-level="caution"] {
+  color: #d29922;
+  background: #d29922;
+}
+
+.world-diagnostics-orb > span[data-level="high"] {
+  color: #f85149;
+  background: #f85149;
+}
+
+.world-diagnostics-orb > span[data-level="good"] {
+  color: #3fb950;
+  background: #3fb950;
+}
+
+.world-chat-terminal,
+.world-chat-terminal.world-chat-terminal--debug-hidden {
+  right: max(12px, env(safe-area-inset-right));
+  bottom: max(12px, env(safe-area-inset-bottom));
+  left: auto;
+  width: 56px;
+  border: 1px solid rgb(139 148 158 / 0.55);
+}
+
+.world-chat-terminal > summary {
+  justify-content: center;
+}
+
+.world-diagnostics.world-chat-terminal
+  > summary
+  > .world-chat-terminal-avatar {
+  display: grid;
+}
+
+.world-diagnostics.world-chat-terminal
+  > summary
+  > .world-chat-terminal-unread:not([hidden]) {
+  display: block;
+}
+
+.world-chat-terminal > summary > :not(.world-chat-terminal-avatar):not(.world-chat-terminal-unread) {
+  display: none;
+}
+
+.world-chat-terminal:is([open], :hover, :focus-within) {
+  width: min(460px, calc(100vw - 24px));
+}
+
+.world-chat-terminal:is([open], :hover, :focus-within) > summary {
+  justify-content: flex-start;
+}
+
+.world-chat-terminal:is([open], :hover, :focus-within)
+  > summary
+  > :not(.world-chat-terminal-avatar):not(.world-chat-terminal-unread) {
+  display: flex;
+}
+
+.world-chat-terminal:is(:hover, :focus-within) > .world-chat-terminal-body {
+  display: block;
+}
+
+.world-chat-terminal-avatar {
+  position: relative;
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  place-items: center;
+  overflow: hidden;
+  border: 2px solid #58a6ff;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #1f6feb, #163b67);
+  color: #fff;
+  font: 800 0.8rem/1 "ForkMesh Mono", monospace;
+  box-shadow: 0 0 0 2px rgb(13 17 23 / 0.8);
+}
+
+.world-chat-terminal-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.world-chat-terminal-avatar img[hidden] {
+  display: none;
+}
+
+.world-chat-terminal-unread {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  z-index: 2;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 2px solid #0d1117;
+  background: #f85149;
+  color: #fff;
+  line-height: 14px;
+}
+
+.world-chat-terminal:is([open], :hover, :focus-within)
+  .world-chat-terminal-unread {
+  position: static;
+  border-width: 0;
+}
+
+.world-chat-terminal-body {
+  height: min(70vh, 620px);
+  overflow: hidden;
+  border-radius: 0 0 12px 12px;
+  background: rgb(13 17 23 / 0.6);
+}
+
+.world-chat-terminal-frame {
+  background: transparent;
+}
+
+.world-activity-stream {
+  position: absolute;
+  z-index: 44;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(max(12px, env(safe-area-inset-bottom)) + 66px);
+  display: flex;
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(52vh, 440px);
+  flex-direction: column-reverse;
+  gap: 8px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.world-activity-stream article {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  border: 1px solid rgb(139 148 158 / 0.45);
+  border-radius: 10px;
+  background: rgb(13 17 23 / 0.72);
+  padding: 8px 10px;
+  color: #f0f6fc;
+  box-shadow: 0 8px 24px rgb(1 4 9 / 0.28);
+  font: 0.7rem/1.4 "ForkMesh Mono", monospace;
+  opacity: 0;
+  transform: translateY(8px);
+  animation:
+    world-activity-in 180ms ease forwards,
+    world-activity-out 420ms ease 9.55s forwards;
+  backdrop-filter: blur(14px);
+}
+
+.world-activity-stream article[data-kind="chat"] {
+  border-color: rgb(88 166 255 / 0.55);
+}
+
+.world-activity-stream article[data-kind="error"] {
+  border-color: rgb(248 81 73 / 0.7);
+}
+
+.world-activity-stream article[data-kind="success"] {
+  border-color: rgb(63 185 80 / 0.65);
+}
+
+.world-activity-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: #21262d;
+  color: #fff;
+  font-weight: 800;
+}
+
+.world-activity-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.world-activity-stream p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+@keyframes world-activity-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes world-activity-out {
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+@media (max-width: 680px) {
+  .world-diagnostics,
+  .world-diagnostics:not(.world-chat-terminal),
+  .world-chat-terminal,
+  .world-chat-terminal.world-chat-terminal--debug-hidden {
+    bottom: calc(max(10px, env(safe-area-inset-bottom)) + 58px);
+  }
+
+  .world-chat-terminal-body {
+    height: min(68dvh, 560px);
+  }
+
+  .world-activity-stream {
+    bottom: calc(max(10px, env(safe-area-inset-bottom)) + 124px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-diagnostics,
+  .world-activity-stream article {
+    transition: none;
+    animation-duration: 1ms;
+  }
 }
