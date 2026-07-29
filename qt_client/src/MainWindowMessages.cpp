@@ -842,9 +842,14 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
 
         const QString avatarPng = obj.value(QStringLiteral("avatarPng")).toString();
         if (!avatarPng.isEmpty()) {
+            const QByteArray png = QByteArray::fromBase64(avatarPng.toLatin1());
             QPixmap avatar;
-            if (avatar.loadFromData(QByteArray::fromBase64(avatarPng.toLatin1())))
+            if (avatar.loadFromData(png))
                 m_avatars.insert(member.id, avatar);
+            // Our own row is the account's picture as the website shows it —
+            // adopt it so the rail avatar matches the web (adhoc #19).
+            if (member.self)
+                adoptWebAccountAvatar(png);
         }
         next.insert(key, member);
     }

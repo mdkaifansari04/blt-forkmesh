@@ -2497,6 +2497,22 @@ void MainWindow::pushAccountAvatar()
         nullptr);
 }
 
+void MainWindow::adoptWebAccountAvatar(const QByteArray &png)
+{
+    // Take the picture the account is showing on the website. The public user
+    // directory refreshChatUserDirectory() polls already carries every
+    // account's avatarPng, so following a change made on the web costs no extra
+    // request. Guarded on being signed in: a local profile that merely shares
+    // the name must never have its picture replaced from the directory.
+    if (!m_accountAuthenticated || png.isEmpty() || png == m_userAvatar)
+        return;
+    m_userAvatar = png;
+    QSettings().setValue(kAvatarSetting, png);
+    updateAvatarButton();
+    updateUserAvatarButton();
+    updateChatIdentity();
+}
+
 void MainWindow::updateAvatarButton()
 {
     // The top-bar node avatar button is gone (only the user avatar remains);
@@ -2509,7 +2525,8 @@ void MainWindow::updateUserAvatarButton()
 {
     if (!m_userAvatarNavButton)
         return;
-    const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 34);
+    // Circular, like the website renders an account's picture (adhoc #19).
+    const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 34, 0.5);
     if (!pm.isNull())
         m_userAvatarNavButton->setIcon(QIcon(pm));
     m_userAvatarNavButton->setIconSize(QSize(34, 34));

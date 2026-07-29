@@ -10498,6 +10498,10 @@ SCHEMA_ALTER_STATEMENTS = [
     # Edge-observed sign-in address of each account session, shown only to the
     # owner of that account in the World security tab and account settings.
     "ALTER TABLE account_sessions ADD COLUMN client_ip TEXT NOT NULL DEFAULT ''",
+    # Account whose own session was making the request that failed (migration
+    # 0108). Empty for anonymous traffic; the admin error view names it per row
+    # and per group so a recurring failure can be traced to the affected user.
+    "ALTER TABLE error_log ADD COLUMN actor TEXT NOT NULL DEFAULT ''",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
@@ -34144,16 +34148,38 @@ def _fire_and_forget(coro, label="background"):
     return task
 
 
-async def _write_error_log(env, status, method, path, message, ray=""):
+async def _error_log_actor(env, request):
+    """Account name the failing request itself proved, or "" when anonymous.
+
+    Never trusts a caller-supplied `node`/`owner` string: only a valid account
+    session names a user here. A request without a session token costs nothing
+    (_account_session_lookup rejects the token shape before any D1 read), so an
+    anonymous error storm does not gain a per-error lookup. Best-effort —
+    error logging must never become a new error.
+    """
+    if request is None:
+        return ""
+    try:
+        _, rec = await _account_session_record(env, request)
+        return clean_string(
+            (rec or {}).get("name", ""), MAX_NODE_NAME).strip().lower()
+    except Exception:
+        return ""
+
+
+async def _write_error_log(env, status, method, path, message, ray="",
+                           actor=""):
     try:
         message = _privacy_safe_error_text(path, message)
         await ensure_schema(env)
         await d1_run(
             env,
-            """INSERT INTO error_log (ts, status, method, path, message, ray)
-               VALUES (?,?,?,?,?,?)""",
+            """INSERT INTO error_log
+                 (ts, status, method, path, message, ray, actor)
+               VALUES (?,?,?,?,?,?,?)""",
             int(Date.now()), int(status), str(method or ""), str(path or ""),
             str(message or "")[:1000], str(ray or ""),
+            clean_string(actor or "", MAX_NODE_NAME).strip().lower(),
         )
         # Keep only the most-recent MAX_ERROR_LOG rows so the table is bounded.
         await d1_run(
@@ -34291,6 +34317,10 @@ async def client_error_handler(env, request):
                 status=202,
                 cache_control="no-store",
             )
+        try:
+            actor = await _error_log_actor(env, request)
+        except BaseException:
+            actor = ""
         await _write_error_log(
             env,
             520,
@@ -34298,6 +34328,7 @@ async def client_error_handler(env, request):
             "/client-error/" + surface,
             detail,
             source_key,
+            actor,
         )
     except Exception:
         # Error reporting must never become a new user-visible error.
@@ -34493,8 +34524,14 @@ async def capture_worker_exception(env, request, url, error):
         )
     except BaseException:
         pass
+    # Naming the affected account is a nice-to-have; it must never be able to
+    # cost the log row itself, so it resolves in its own guard.
     try:
-        await _write_error_log(env, 500, method, path, message, ray)
+        actor = await _error_log_actor(env, request)
+    except BaseException:
+        actor = ""
+    try:
+        await _write_error_log(env, 500, method, path, message, ray, actor)
     except BaseException:
         pass
 
@@ -34629,7 +34666,11 @@ async def log_error(env, status, method, path, message, ray="", request=None,
         path = await privacy_filter(env, path)
     await capture_sentry_error(
         env, status, method, path, message, ray, request=request, error=error)
-    await _write_error_log(env, status, method, path, message, ray)
+    try:
+        actor = await _error_log_actor(env, request)
+    except BaseException:
+        actor = ""
+    await _write_error_log(env, status, method, path, message, ray, actor)
 
 
 async def log_durable_object_abort(env, request, path, error):
@@ -34652,10 +34693,15 @@ async def log_durable_object_abort(env, request, path, error):
         await privacy_filter(env, path)
         if callable(privacy_filter) else path
     )
+    try:
+        actor = await _error_log_actor(env, request)
+    except BaseException:
+        actor = ""
     await _write_error_log(
         env, 503, method_name(request), safe_path,
         "durable object aborted: " + _safe_error_text(error)[:400],
-        request.headers.get("cf-ray") or "")
+        request.headers.get("cf-ray") or "",
+        actor)
 
 
 async def log_cron_error(env, path, message, error=None, failures=None):
@@ -36067,6 +36113,18 @@ ADMIN_STYLE = """
         border-color:var(--ab-danger);padding:3px 8px;font-size:11px}
  .ab-root .error-delete:hover{background:var(--ab-danger);color:#fff}
  .ab-root .error-group-delete{display:inline;margin:0}
+ .ab-root .error-bot{background:transparent;color:var(--ab-link);
+        border-color:var(--ab-link);padding:3px 8px;font-size:11px;white-space:nowrap}
+ .ab-root .error-bot:hover{background:var(--ab-link);color:#fff}
+ .ab-root .error-bot-task{display:inline;margin:0}
+ .ab-root .error-message{display:inline-block;max-width:520px;overflow:hidden;
+        text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
+ .ab-root .error-copy{background:transparent;color:var(--ab-muted);
+        border-color:var(--ab-border-2);padding:1px 6px;font-size:11px;
+        margin-left:6px;vertical-align:middle}
+ .ab-root .error-copy:hover{color:var(--ab-fg);border-color:var(--ab-fg)}
+ .ab-root .error-users{color:var(--ab-fg);white-space:nowrap}
+ .ab-root .error-anonymous{color:var(--ab-muted)}
  .ab-root .relative-time{color:var(--ab-muted);white-space:nowrap}
 """
 
@@ -36256,9 +36314,15 @@ def _admin_json_cell(decoded):
 # --- Admin bulk select + delete helpers (operate on rowid) -------------------
 
 def _admin_bulk_form_open(table, csrf_field="", admin_query=""):
+    # Per-row buttons ride this form with their own formaction (forms cannot
+    # nest) and run their own confirmation, so the bulk prompt must not also
+    # fire for them — it asked "delete the selected rows?" for a row action
+    # that deletes nothing.
     return (
         '<form method="post" action="%s" '
-        'onsubmit="return confirm(\'Delete the selected '
+        'onsubmit="return (event.submitter&&'
+        "event.submitter.hasAttribute('formaction'))||"
+        'confirm(\'Delete the selected '
         'row(s)? This cannot be undone.\')">'
         '%s'
         '<div class="tools">'
@@ -36298,6 +36362,90 @@ def _admin_error_source_badge(method, path):
     )
 
 
+def _admin_error_related_users(actors, anonymous=0):
+    """Summarize which accounts an error (or error group) actually hit.
+
+    `actors` maps account name -> occurrence count. Anonymous occurrences are
+    counted separately rather than dropped: "3 signed-in users plus anonymous
+    traffic" and "only anonymous traffic" are very different bugs.
+    """
+    ranked = sorted(
+        (actors or {}).items(), key=lambda item: (-item[1], item[0]))
+    parts = ["%s (%d)" % (name, hits) for name, hits in ranked]
+    if int(anonymous or 0):
+        parts.append("anonymous (%d)" % int(anonymous))
+    if not parts:
+        return "—"
+    return ", ".join(parts)
+
+
+def _admin_error_users_cell(actors, anonymous=0):
+    summary = _admin_error_related_users(actors, anonymous)
+    shown = summary if len(summary) <= 60 else summary[:60] + "…"
+    return (
+        '<td class="error-users" title="%s">%s</td>'
+        % (_html_escape(summary), _html_escape(shown))
+    )
+
+
+def _admin_error_row_user_cell(actor):
+    name = str(actor or "").strip().lower()
+    return (
+        '<td class="error-users">%s</td>'
+        % (_html_escape(name) if name
+           else '<span class="error-anonymous">anonymous</span>')
+    )
+
+
+def _admin_error_copy_button(text):
+    """Copy the full (untruncated) error text the cell only previews."""
+    return (
+        '<button type="button" class="error-copy" data-copy="%s" '
+        'title="Copy this message" '
+        'onclick="event.stopPropagation()">Copy</button>'
+        % _html_escape(text or "")
+    )
+
+
+def _admin_error_bot_task_fields(status, method, path, message, users=""):
+    return "".join(
+        '<input type="hidden" name="%s" value="%s">'
+        % (_html_escape(name), _html_escape(value))
+        for name, value in (
+            ("group_status", status),
+            ("group_method", method),
+            ("group_path", path),
+            ("group_message", message),
+            ("group_users", users),
+        )
+    )
+
+
+def _admin_error_bot_task_form(
+        status, method, path, message, users="",
+        csrf_field="", admin_query=""):
+    """Hand one error (or one equivalent-error group) to ForkBot as a task.
+
+    Files a relay-authored issue on the flagship repository through the same
+    audited ForkBot inbox path chat and the QA deck use, so the queued work is
+    ordinary tracked work a desktop node drains — not a new side channel.
+    """
+    return (
+        '<form class="error-bot-task" method="post" action="%s" '
+        'onsubmit="return confirm('
+        "'File a ForkBot task for this error on forkmesh/forkmesh?')\">"
+        "%s%s<button class=\"error-bot\" type=\"submit\">"
+        "Create bot task</button></form>"
+        % (
+            _admin_href(
+                admin_query, table="error_log", action="create_bot_task"),
+            csrf_field,
+            _admin_error_bot_task_fields(
+                status, method, path, message, users),
+        )
+    )
+
+
 def _admin_error_row_delete_button(rowid, admin_query=""):
     return (
         '<button class="error-delete" type="submit" name="error_id" '
@@ -36308,6 +36456,24 @@ def _admin_error_row_delete_button(rowid, admin_query=""):
             _html_escape(rowid),
             _admin_href(
                 admin_query, table="error_log", action="delete_error_row"),
+        )
+    )
+
+
+def _admin_error_row_bot_task_button(rowid, admin_query=""):
+    # The raw table's rows already live inside the bulk-delete form, so this
+    # rides that form with its own formaction (forms cannot nest). Only the
+    # row id travels; the server re-reads the stored error itself.
+    return (
+        '<button class="error-bot" type="submit" name="error_id" '
+        'value="%s" formaction="%s" '
+        'onclick="event.stopPropagation();return confirm('
+        "'File a ForkBot task for this error on forkmesh/forkmesh?')\">"
+        "Create bot task</button>"
+        % (
+            _html_escape(rowid),
+            _admin_href(
+                admin_query, table="error_log", action="create_bot_task"),
         )
     )
 
@@ -36679,7 +36845,7 @@ async def _render_table_view(
         now = int(Date.now())
         recent_24h = await d1_all(
             env,
-            "SELECT ts,status,method,path,message FROM error_log "
+            "SELECT ts,status,method,path,message,actor FROM error_log "
             "WHERE ts>=? ORDER BY ts DESC LIMIT 5000",
             now - 24 * 60 * 60 * 1000,
         )
@@ -36704,10 +36870,21 @@ async def _render_table_view(
                     "hours": [0] * 24,
                     "firstSeen": ts,
                     "lastSeen": ts,
+                    # Accounts whose own sessions hit this exact failure, and
+                    # how many occurrences carried no session at all. Grouping
+                    # stays keyed on the failure itself so one user's traffic
+                    # never splits a group; the affected users ride along.
+                    "actors": {},
+                    "anonymous": 0,
                 },
             )
             group["firstSeen"] = min(group["firstSeen"] or ts, ts)
             group["lastSeen"] = max(group["lastSeen"] or ts, ts)
+            actor = str(row.get("actor") or "").strip().lower()
+            if actor:
+                group["actors"][actor] = group["actors"].get(actor, 0) + 1
+            else:
+                group["anonymous"] += 1
             if age_hours < 24:
                 group["hours"][23 - int(age_hours)] += 1
         peak = max(hourly) if hourly else 0
@@ -36761,14 +36938,17 @@ async def _render_table_view(
                         bucket_count,
                     )
                 )
+            related_users = _admin_error_related_users(
+                group["actors"], group["anonymous"])
             group_rows.append(
                 '<tr><td>%d</td><td><div class="error-sparkline" '
                 'tabindex="0" role="img" '
                 'aria-label="24-hour frequency: %d occurrence%s">%s</div></td>'
                 "<td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
-                "<td title=\"%s\">%s</td>"
+                "<td title=\"%s\"><span class=\"error-message\">%s</span>%s</td>"
+                "%s"
                 '<td data-ts="%s">%s</td><td data-ts="%s">%s</td>'
-                "<td>%s</td></tr>"
+                "<td>%s</td><td>%s</td></tr>"
                 % (
                     count,
                     count,
@@ -36780,10 +36960,16 @@ async def _render_table_view(
                     _html_escape(path or "—"),
                     _html_escape(message or "—"),
                     _html_escape((message or "—")[:160]),
+                    _admin_error_copy_button(message or ""),
+                    _admin_error_users_cell(
+                        group["actors"], group["anonymous"]),
                     _html_escape(group["firstSeen"]),
                     _html_escape(group["firstSeen"]),
                     _html_escape(group["lastSeen"]),
                     _html_escape(group["lastSeen"]),
+                    _admin_error_bot_task_form(
+                        status, request_method, path, message, related_users,
+                        csrf_field, admin_query),
                     _admin_error_group_delete_form(
                         status, request_method, path, message,
                         csrf_field, admin_query),
@@ -36804,8 +36990,9 @@ async def _render_table_view(
                     "<table><thead><tr><th>Count</th><th>24-hour frequency</th>"
                     "<th>Source</th><th>Status</th>"
                     "<th>Method</th><th>Path</th><th>Message</th>"
+                    "<th>Related users</th>"
                     "<th>First seen</th><th>Last seen</th>"
-                    "<th>Delete</th></tr></thead>"
+                    "<th>Bot task</th><th>Delete</th></tr></thead>"
                     "<tbody>" + "".join(group_rows) + "</tbody></table>"
                     if group_rows
                     else '<div class="empty">No errors in the previous 24 hours.</div>'
@@ -36824,13 +37011,20 @@ async def _render_table_view(
                 + '<td data-ts="%s">%s</td>'
                 "<td>%s</td>"
                 '<td class="%s">%s</td>'
-                "<td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+                "<td>%s</td><td>%s</td>"
+                "<td><span class=\"error-message\">%s</span>%s</td>"
+                "%s<td>%s</td><td>%s</td><td>%s</td></tr>"
                 % (_html_escape(r.get("ts", "")), _html_escape(r.get("ts", "")),
                    _admin_error_source_badge(
                        r.get("method", ""), r.get("path", "")),
                    cls, _html_escape(status),
                    _html_escape(r.get("method", "")), _html_escape(r.get("path", "")),
-                   _html_escape(r.get("message", "")), _html_escape(r.get("ray", "")),
+                   _html_escape(r.get("message", "")),
+                   _admin_error_copy_button(r.get("message", "")),
+                   _admin_error_row_user_cell(r.get("actor", "")),
+                   _html_escape(r.get("ray", "")),
+                   _admin_error_row_bot_task_button(
+                       r.get("_rowid_", ""), admin_query),
                    _admin_error_row_delete_button(
                        r.get("_rowid_", ""), admin_query))
             )
@@ -36840,8 +37034,9 @@ async def _render_table_view(
             inner = (_admin_bulk_form_open(table, csrf_field, admin_query)
                      + "<table><thead><tr>" + _admin_select_all_th()
                      + "<th>Time</th><th>Source</th><th>Status</th><th>Method</th>"
-                     "<th>Path</th><th>Message</th><th>CF-Ray</th>"
-                     "<th>Delete</th></tr></thead><tbody>"
+                     "<th>Path</th><th>Message</th><th>Related user</th>"
+                     "<th>CF-Ray</th>"
+                     "<th>Bot task</th><th>Delete</th></tr></thead><tbody>"
                      + "".join(body) + "</tbody></table></form>")
         return (
             '<div class="title">Error logs · %d row(s)</div>' % total
@@ -37142,6 +37337,26 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         "rel.textContent=future?'in '+value+' '+unit+(value===1?'':'s'):"
         "value+' '+unit+(value===1?'':'s')+' ago';}}"
         "updateAdminRelativeTimes();setInterval(updateAdminRelativeTimes,30000);"
+        # Copy-to-clipboard for error messages. Delegated so the analytics and
+        # raw tables share one handler, and written to survive the non-secure
+        # contexts / older browsers where navigator.clipboard is absent.
+        "document.addEventListener('click',function(ev){"
+        "const btn=ev.target.closest&&ev.target.closest('[data-copy]');"
+        "if(!btn)return;ev.preventDefault();ev.stopPropagation();"
+        "const text=btn.getAttribute('data-copy')||'';"
+        "const label=btn.dataset.copyLabel||btn.textContent;"
+        "btn.dataset.copyLabel=label;"
+        "function done(ok){btn.textContent=ok?'Copied':'Copy failed';"
+        "setTimeout(function(){btn.textContent=label;},1200);}"
+        "function fallback(){try{const ta=document.createElement('textarea');"
+        "ta.value=text;ta.setAttribute('readonly','');"
+        "ta.style.position='fixed';ta.style.opacity='0';"
+        "document.body.appendChild(ta);ta.select();"
+        "const ok=document.execCommand('copy');ta.remove();done(ok);}"
+        "catch(e){done(false);}}"
+        "if(navigator.clipboard&&navigator.clipboard.writeText){"
+        "navigator.clipboard.writeText(text).then(function(){done(true);},"
+        "fallback);}else{fallback();}});"
         "if(location.hash==='#operational-alerts'){"
         "var a=document.getElementById('operational-alerts');"
         "if(a){a.scrollIntoView({block:'center'});a.focus({preventScroll:true});}"
@@ -37219,6 +37434,120 @@ async def _admin_console_request_ownership(env, target, owner):
         return "'%s' is already owned by '%s'." % (target, owner)
     return ("Ownership transfer requested: '%s' now needs to approve/deny from "
             "its own client before '%s' takes ownership." % (target, owner))
+
+
+async def _admin_error_create_bot_task(env, form, requester):
+    """File a ForkBot task for one error row, or one equivalent-error group.
+
+    Goes through the same audited ForkBot inbox path chat and the QA deck use:
+    a relay-authored issue on the flagship repository, plus the wantsAgent
+    request that makes the owner's node start a coding agent on it. The relay
+    still runs nothing itself. Returns (banner, audit_details).
+    """
+    owner, repo = FLAGSHIP_MONITOR_ID.split("/", 1)
+    raw_id = form.get("error_id", [""])[0]
+    rowid = int(raw_id) if str(raw_id).isdigit() else 0
+    if rowid > 0:
+        row = await d1_first(
+            env,
+            "SELECT status,method,path,message,actor FROM error_log "
+            "WHERE rowid=?",
+            rowid,
+        )
+        if not row:
+            return "Create bot task failed: that error row is gone.", {}
+        status = str(row.get("status") or "")
+        method = str(row.get("method") or "").upper()
+        path = str(row.get("path") or "")
+        message = str(row.get("message") or "")
+        users = str(row.get("actor") or "").strip().lower() or "anonymous"
+        occurrences = 1
+    else:
+        status = str(form.get("group_status", [""])[0])[:12]
+        method = str(form.get("group_method", [""])[0])[:12].upper()
+        path = str(form.get("group_path", [""])[0])[:2000]
+        message = str(form.get("group_message", [""])[0])[:1000]
+        users = clean_string(form.get("group_users", [""])[0], 300) or "—"
+        if not status or not method:
+            return "Create bot task failed: invalid error group.", {}
+        count_row = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM error_log "
+            "WHERE CAST(status AS TEXT)=? AND UPPER(method)=? "
+            "AND path=? AND message=?",
+            status, method, path, message,
+        )
+        occurrences = int((count_row or {}).get("n") or 0)
+    summary = " ".join(str(message or "").split())
+    title = "Investigate %s %s %s" % (
+        status or "error", method or "—", path or "—")
+    if summary:
+        title = title + " — " + summary
+    # source != "forkbot" skips _forkbot_attributed_body's chat footer, so the
+    # attribution the merged issue needs is written here.
+    filed_by = clean_string(requester or "", MAX_NODE_NAME).strip().lower()
+    body = (
+        "Filed from the platform administration error log%s.\n\n"
+        "- Status: %s\n"
+        "- Method: %s\n"
+        "- Path: %s\n"
+        "- Related user(s): %s\n"
+        "- Logged occurrences: %d\n\n"
+        "Message:\n\n%s\n"
+    ) % (
+        (" by @" + filed_by) if filed_by else "",
+        status or "—", method or "—", path or "—", users,
+        occurrences, str(message or "—"),
+    )
+    # Content stays out of the audit trail; this bounded digest still tells
+    # two tasks filed for different errors apart.
+    details = {
+        "occurrences": occurrences,
+        "errorDigest": hashlib.sha256(
+            (status + "\n" + method + "\n" + path + "\n" + message)
+            .encode("utf-8")
+        ).hexdigest(),
+    }
+    queued, result = await _forkbot_enqueue_issue(
+        env, owner, repo, title[:240], body, requester,
+        source="admin-error-log", labels=["bug", "error-log"],
+    )
+    if not queued:
+        return (
+            "Create bot task failed: " + str(result or "issue_failed") + ".",
+            details,
+        )
+    number = int(
+        (result or {}).get("number")
+        or (result or {}).get("issueNumber")
+        or 0
+    )
+    details["issueNumber"] = number
+    if number <= 0:
+        # The desktop will assign the number when it drains the inbox, so
+        # there is nothing to attach an agent request to yet.
+        return (
+            "Bot task filed on %s/%s; %s's node numbers it on the next sync."
+            % (owner, repo, owner),
+            details,
+        )
+    # The admin page's own auth already proved _is_admin, which is exactly the
+    # privilege gate _forkbot_action_start_agent applies to wantsAgent.
+    agent_ok, agent_result = await _forkbot_enqueue_agent_request(
+        env, owner, repo, number, requester)
+    details["agentRequested"] = bool(agent_ok)
+    if not agent_ok:
+        return (
+            "Bot task filed as %s/%s issue #%d, but the coding-agent request "
+            "was not queued: %s." % (owner, repo, number, agent_result),
+            details,
+        )
+    return (
+        "Bot task filed as %s/%s issue #%d and a coding agent was queued for "
+        "it; the owner's node starts it on the next inbox sync."
+        % (owner, repo, number),
+        details,
+    )
 
 
 async def _admin_disburse(env):
@@ -40373,6 +40702,13 @@ class Default(WorkerEntrypoint):
                             }
                 except Exception as error:
                     banner = "Repository Terms flag failed: " + repr(error)
+            elif action == "create_bot_task":
+                try:
+                    banner, audit_details = (
+                        await _admin_error_create_bot_task(
+                            self.env, form, account_cookie_name))
+                except Exception as error:
+                    banner = "Create bot task failed: " + repr(error)
             elif action == "delete_error_row":
                 try:
                     raw_id = form.get("error_id", [""])[0]
@@ -40513,7 +40849,7 @@ class Default(WorkerEntrypoint):
                     "request_ownership", "delete_rows", "update_row",
                     "insert_row", "set_operational_alerts",
                     "set_repo_terms_flag", "delete_error_row",
-                    "delete_error_group"):
+                    "delete_error_group", "create_bot_task"):
                 audit_actor = (
                     account_cookie_name
                     or params.get("admin", [""])[0])
@@ -40527,7 +40863,8 @@ class Default(WorkerEntrypoint):
                     if action == "set_repo_terms_flag"
                     else "error_log"
                     if action in (
-                        "delete_error_row", "delete_error_group")
+                        "delete_error_row", "delete_error_group",
+                        "create_bot_task")
                     else "database_table" if action in (
                         "delete_rows", "update_row", "insert_row")
                     else "legacy_custody")
@@ -40545,7 +40882,8 @@ class Default(WorkerEntrypoint):
                     if action == "set_repo_terms_flag"
                     else "error_log"
                     if action in (
-                        "delete_error_row", "delete_error_group")
+                        "delete_error_row", "delete_error_group",
+                        "create_bot_task")
                     else params.get("table", [""])[0])
                 lowered_banner = str(banner or "").lower()
                 outcome = (
