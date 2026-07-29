@@ -1551,8 +1551,9 @@ public:
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         setFixedHeight(kRows * kPitch);
+        setFixedWidth(0); // nothing to show until the first setDots()
         setCursor(Qt::PointingHandCursor);
-        setMinimumWidth(0);
+        hide();
         m_sweep = new QTimer(this);
         m_sweep->setInterval(60);
         connect(m_sweep, &QTimer::timeout, this, [this] {
@@ -1570,7 +1571,7 @@ public:
     {
         m_dots = dots.mid(0, kRows * kMaxColumns);
         const int columns = (m_dots.size() + kRows - 1) / kRows;
-        setFixedWidth(qMax(1, columns) * kPitch);
+        setFixedWidth(columns * kPitch);
         bool anyRunning = false;
         for (const Dot &d : std::as_const(m_dots))
             anyRunning = anyRunning || d.running;
@@ -1595,6 +1596,11 @@ protected:
         if (e->button() == Qt::LeftButton && onDotClicked) {
             const int index = dotAt(e->position().toPoint());
             onDotClicked(index >= 0 ? m_dots.at(index).sessionId : 0);
+            // Accept it: the window-chrome bar under this widget turns an
+            // unhandled press into a system window-move, so letting the click
+            // fall through would drag the window every time a square is opened.
+            e->accept();
+            return;
         }
         QWidget::mousePressEvent(e);
     }

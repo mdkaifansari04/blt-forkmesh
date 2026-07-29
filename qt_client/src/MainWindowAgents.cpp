@@ -4114,16 +4114,25 @@ void MainWindow::refreshAgentDotMatrix()
     m_agentDotMatrix->setDots(dots);
     m_agentDotMatrix->setVisible(!dots.isEmpty());
 
-    if (dots.isEmpty())
+    if (dots.isEmpty()) {
+        m_agentDotTooltipKey.clear();
         return;
+    }
+    // The scanner tick lands here ~20x a second to keep the intensities live, so
+    // only rebuild the tooltip when the fleet's composition actually changed —
+    // formatting and setting the same string 20x a second is pure waste.
     QStringList parts;
     for (auto it = tally.constBegin(); it != tally.constEnd(); ++it)
         parts << QStringLiteral("%1 %2").arg(it.value()).arg(it.key());
     std::sort(parts.begin(), parts.end());
+    const QString key = parts.join(QStringLiteral(", "));
+    if (key == m_agentDotTooltipKey)
+        return;
+    m_agentDotTooltipKey = key;
     QString tip = QStringLiteral("%1 agent session%2 \xE2\x80\x94 %3")
                       .arg(dots.size())
                       .arg(dots.size() == 1 ? QString() : QStringLiteral("s"),
-                           parts.join(QStringLiteral(", ")));
+                           key);
     // The grid is bounded, so say so rather than silently dropping the tail.
     const int shown = m_agentDotMatrix->shownCount();
     if (shown < dots.size())

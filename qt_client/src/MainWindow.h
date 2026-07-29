@@ -3738,6 +3738,9 @@ private:
     // immediately left of the Back/Forward buttons.
     QPushButton *m_agentsNavButton = nullptr;
     AgentDotMatrix *m_agentDotMatrix = nullptr;
+    // Last status tally rendered into the matrix's tooltip, so the scanner tick
+    // can skip rebuilding an unchanged string ~20x a second.
+    QString m_agentDotTooltipKey;
     // Small connection status dot painted over the top-right avatar (green
     // online / amber connecting / grey offline), replacing the old text pill.
     QLabel *m_connectionDot = nullptr;
