@@ -43732,6 +43732,20 @@ async def chat_history_recent(env, room_key):
     return [str(r["body"]) for r in rows]
 
 
+def chat_history_replay_body(body):
+    """Mark a stored cipher as backlog without changing its encrypted payload."""
+    source = str(body)
+    try:
+        envelope = json.loads(source)
+    except (TypeError, ValueError):
+        return source
+    if not isinstance(envelope, dict) or envelope.get("kind") != "cipher":
+        return source
+    replay = dict(envelope)
+    replay["historyReplay"] = True
+    return json.dumps(replay, separators=(",", ":"))
+
+
 async def chat_history_since(env, room_key, since_ts=0):
     # The same retained (encrypted) frames chat_history_recent replays to a
     # joining socket, but stamped with their store time and filtered to what
@@ -45415,15 +45429,29 @@ class ForkMeshRoom(DurableObject):
             try:
                 await chat_history_prune(self.env, room_key)
                 for body in await chat_history_recent(self.env, room_key):
+                    replay_body = chat_history_replay_body(body)
                     try:
-                        server.send(body)
+                        server.send(replay_body)
                     except Exception:
                         pass
                     else:
                         durable_object_traffic_note(
-                            self, bytes_out=len(str(body).encode("utf-8")))
+                            self,
+                            bytes_out=len(replay_body.encode("utf-8")),
+                        )
             except Exception:
                 pass
+            try:
+                history_end = json.dumps({
+                    "kind": "forkmesh-history-end",
+                    "v": 1,
+                }, separators=(",", ":"))
+                server.send(history_end)
+            except Exception:
+                pass
+            else:
+                durable_object_traffic_note(
+                    self, bytes_out=len(history_end.encode("utf-8")))
             await durable_object_traffic_flush(self)
 
         return JsResponse.new(None, to_js({"status": 101, "webSocket": client}))
@@ -45493,6 +45521,23 @@ class ForkMeshRoom(DurableObject):
         if not await self._private_room_current(ws):
             self._close_all_chat_sockets(1008, "room access revoked")
             return
+        # Replay markers are server-owned transport metadata. Chat clients send
+        # only encrypted envelopes; dropping plaintext controls and stripping a
+        # forged replay bit prevents a peer from flushing another reader's
+        # backlog or disguising a live message as retained history.
+        try:
+            envelope = json.loads(message)
+        except Exception:
+            return
+        if (
+            not isinstance(envelope, dict)
+            or envelope.get("kind") != "cipher"
+        ):
+            return
+        if "historyReplay" in envelope:
+            envelope = dict(envelope)
+            envelope.pop("historyReplay", None)
+            message = json.dumps(envelope, separators=(",", ":"))
         frame_bytes = len(message.encode("utf-8"))
         durable_object_traffic_note(self, bytes_in=frame_bytes, messages=1)
         sender_id = _ws_attr(ws, "id")

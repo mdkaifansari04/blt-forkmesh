@@ -1013,7 +1013,8 @@ def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
     assert '<option value="agent" selected>Send to bot</option>' in APP
     assert "world-chat-terminal-channel" in APP
     assert "world-chat-terminal-connection" in APP
-    assert 'script.src = "/dashboard-chat.js"' in APP
+    chat_version = hashlib.sha256(DASHBOARD_CHAT.encode()).hexdigest()[:12]
+    assert f'script.src = "/dashboard-chat.js?v={chat_version}"' in APP
     assert "world-chat-terminal" in CSS
     assert "DEBUG owns the lower-left; chat owns the lower-right" in CSS
     diagnostics = CSS[

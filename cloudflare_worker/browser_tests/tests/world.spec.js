@@ -1,5 +1,6 @@
 const { test, expect } = require("@playwright/test");
 const path = require("node:path");
+const { createCipheriv, createHash, pbkdf2Sync } = require("node:crypto");
 
 const THREE_MODULE_URL =
   "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js";
@@ -34,6 +35,31 @@ const PRIVATE_SETTINGS = {
 };
 
 const FIXED_NOW = 1_785_000_000_000;
+
+function worldChatKey(passphrase) {
+  const salt = createHash("sha256")
+    .update("ForkMesh room:world-general", "utf8")
+    .digest()
+    .subarray(0, 16);
+  return pbkdf2Sync(passphrase, salt, 210000, 32, "sha256");
+}
+
+function encryptWorldChatEnvelope(message, key, nonceByte) {
+  const nonce = Buffer.alloc(12, nonceByte);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce);
+  const body = Buffer.concat([
+    cipher.update(JSON.stringify(message), "utf8"),
+    cipher.final(),
+  ]);
+  return {
+    kind: "cipher",
+    v: 1,
+    nonce: nonce.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+    body: body.toString("base64"),
+    historyReplay: true,
+  };
+}
 
 async function prepareWorldPage(
   page,
@@ -1557,67 +1583,222 @@ test("mobile World chat keeps its composer above the terminal bars", async ({
   });
   await waitForWorld(page);
 
-  // Reproduce the worst case: both bottom drawers were expanded before the
-  // visitor opened the full chat panel.
+  // Reproduce the worst case: DEBUG was expanded before the visitor opened the
+  // native full-height chat.
   await page.locator("[data-world-diagnostics]").evaluate((element) => {
     element.open = true;
   });
-  await page.locator("[data-world-chat-terminal]").evaluate((element) => {
+  const terminal = page.locator("[data-world-chat-terminal]");
+  await terminal.evaluate((element) => {
     element.open = true;
   });
-  await page.locator("[data-world-chat-open]").click();
-  await expect(page.locator("[data-world-chat]")).toBeVisible();
-  await expect(page.locator("[data-world-diagnostics]")).not.toHaveAttribute(
-    "open",
-    "",
-  );
-  await expect(
-    page.locator("[data-world-chat-terminal]"),
-  ).not.toHaveAttribute("open", "");
-
-  const chatFrame = page.frameLocator("[data-world-chat-frame]");
-  const input = chatFrame.locator("#fullChatInput");
+  const input = page.locator("#fullChatInput");
   await expect(input).toBeVisible();
   await input.focus();
 
-  // Approximate the visual viewport after a mobile keyboard opens. Both the
-  // World shell and same-origin chat iframe listen for this resize.
-  await page.setViewportSize({ width: 390, height: 430 });
+  // Approximate the visual viewport after a mobile keyboard opens.
+  await page.setViewportSize({ width: 390, height: 320 });
   await page.waitForTimeout(100);
 
-  const panelBox = await page.locator("[data-world-chat]").boundingBox();
-  const debugBarBox = await page
-    .locator("[data-world-diagnostics] > summary")
-    .boundingBox();
-  const inputBox = await input.boundingBox();
-  const frameMetrics = await input.evaluate((element) => {
+  const metrics = await input.evaluate((element) => {
     const composer = element.closest("[data-dashboard-chat-composer]");
-    const frame = window.frameElement;
+    const terminal = element.closest("[data-world-chat-terminal]");
+    const send = terminal?.querySelector("#fullChatSend");
     const inputRect = element.getBoundingClientRect();
     const composerRect = composer?.getBoundingClientRect();
-    const frameRect = frame?.getBoundingClientRect();
+    const terminalRect = terminal?.getBoundingClientRect();
+    const sendRect = send?.getBoundingClientRect();
     return {
       innerHeight: window.innerHeight,
-      visualHeight: window.visualViewport?.height || 0,
-      configuredHeight: getComputedStyle(
-        document.documentElement,
-      ).getPropertyValue("--forkmesh-chat-viewport-height"),
-      documentHeight: document.documentElement.getBoundingClientRect().height,
-      frameHeight: frameRect?.height || 0,
       inputBottom: inputRect.bottom,
+      sendBottom: sendRect?.bottom || 0,
       composerBottom: composerRect?.bottom || 0,
+      terminalBottom: terminalRect?.bottom || 0,
       fits:
-        Boolean(frameRect && composerRect) &&
-        composerRect.bottom <= frameRect.height + 1,
+        Boolean(terminalRect && composerRect && sendRect) &&
+        composerRect.bottom <= terminalRect.bottom + 1 &&
+        inputRect.bottom <= terminalRect.bottom + 1 &&
+        sendRect.bottom <= terminalRect.bottom + 1,
     };
   });
-  expect(panelBox).not.toBeNull();
-  expect(debugBarBox).not.toBeNull();
-  expect(inputBox).not.toBeNull();
-  expect(panelBox.y + panelBox.height).toBeLessThanOrEqual(debugBarBox.y - 4);
-  expect(frameMetrics).toMatchObject({ fits: true });
-  expect(inputBox.y + inputBox.height).toBeLessThanOrEqual(
-    panelBox.y + panelBox.height,
+  expect(metrics).toMatchObject({ innerHeight: 320, fits: true });
+  expect(metrics.terminalBottom).toBeLessThanOrEqual(metrics.innerHeight + 1);
+});
+
+test("World chat keeps five replayed messages lazy and its prompt in view", async ({
+  page,
+}) => {
+  test.slow();
+  await page.setViewportSize({ width: 640, height: 900 });
+  const passphrase = "playwright-world-history-window-passphrase";
+  const key = worldChatKey(passphrase);
+  const oversizedImage = Buffer.from(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="4096" height="2048">' +
+      '<rect width="4096" height="2048" fill="#58a6ff"/></svg>',
+    "utf8",
+  ).toString("base64");
+  await page.routeWebSocket(
+    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
+    (socket) => {
+      // Same-millisecond D1 rows are hash-tied, so mutations may be replayed
+      // before their targets. Exercise that ordering explicitly.
+      socket.send(JSON.stringify(encryptWorldChatEnvelope({
+        type: "edit",
+        id: "edit-history-12",
+        target: "history-12",
+        senderId: "guest-12",
+        sender: "Guest 12",
+        accountKind: "guest",
+        text: "Edited retained message 12.",
+        editedAt: FIXED_NOW - 500,
+        ts: FIXED_NOW - 500,
+      }, key, 40)));
+      socket.send(JSON.stringify(encryptWorldChatEnvelope({
+        type: "delete",
+        id: "delete-history-13",
+        target: "history-13",
+        senderId: "guest-13",
+        sender: "Guest 13",
+        accountKind: "guest",
+        ts: FIXED_NOW - 250,
+      }, key, 41)));
+      for (let index = 1; index <= 13; index += 1) {
+        socket.send(JSON.stringify(encryptWorldChatEnvelope({
+          type: "chat",
+          id: `history-${index}`,
+          senderId: `guest-${index}`,
+          sender: `Guest ${index}`,
+          accountKind: "guest",
+          channel: "#general",
+          text: `Retained message ${index}. ${"Lazy history stays smooth. ".repeat(12)}`,
+          ts: FIXED_NOW - (13 - index) * 1_000,
+          ...(index === 12
+            ? {
+                fileName: "oversized-history-image.svg",
+                fileMime: "image/svg+xml",
+                file: oversizedImage,
+              }
+            : {}),
+        }, key, index)));
+      }
+      socket.send(JSON.stringify({
+        kind: "forkmesh-history-end",
+        v: 1,
+      }));
+    },
+  );
+  await prepareWorldPage(page, "world-chat-history-window", {
+    chatPassphrase: passphrase,
+  });
+  await waitForWorld(page);
+
+  const terminal = page.locator("[data-world-chat-terminal]");
+  await terminal.evaluate((element) => {
+    element.open = true;
+  });
+  const messages = page.locator("#fullChatMessages .chat-message-row");
+  await expect(messages).toHaveCount(5);
+  await expect(page.locator(".chat-history-indicator")).toContainText(
+    "7 earlier messages",
+  );
+  await expect(page.locator("#fullChatInput")).toBeInViewport();
+
+  const geometry = await terminal.evaluate((element) => {
+    const body = element.querySelector("[data-world-native-chat]");
+    const composer = element.querySelector("[data-dashboard-chat-composer]");
+    const input = element.querySelector("#fullChatInput");
+    const terminalRect = element.getBoundingClientRect();
+    const bodyRect = body.getBoundingClientRect();
+    const composerRect = composer.getBoundingClientRect();
+    const inputRect = input.getBoundingClientRect();
+    return {
+      viewportHeight: window.innerHeight,
+      terminalTop: terminalRect.top,
+      terminalHeight: terminalRect.height,
+      terminalBottom: terminalRect.bottom,
+      bodyBottom: bodyRect.bottom,
+      composerBottom: composerRect.bottom,
+      inputBottom: inputRect.bottom,
+      terminalScrollHeight: element.scrollHeight,
+      terminalClientHeight: element.clientHeight,
+    };
+  });
+  expect(geometry.terminalBottom).toBeLessThanOrEqual(
+    geometry.viewportHeight + 1,
+  );
+  expect(geometry.terminalTop).toBeGreaterThanOrEqual(
+    geometry.viewportHeight * 0.35,
+  );
+  expect(geometry.terminalHeight).toBeLessThanOrEqual(
+    geometry.viewportHeight * 0.6,
+  );
+  expect(geometry.bodyBottom).toBeLessThanOrEqual(
+    geometry.terminalBottom + 1,
+  );
+  expect(geometry.composerBottom).toBeLessThanOrEqual(
+    geometry.terminalBottom + 1,
+  );
+  expect(geometry.inputBottom).toBeLessThanOrEqual(
+    geometry.terminalBottom + 1,
+  );
+  expect(geometry.terminalScrollHeight).toBeLessThanOrEqual(
+    geometry.terminalClientHeight + 1,
+  );
+  const attachment = page.locator(
+    "#fullChatMessages .chat-message-row",
+    { hasText: "Edited retained message 12." },
+  );
+  const attachmentImage = attachment.locator(".chat-attachment-image");
+  await expect(attachmentImage).toBeVisible();
+  await attachmentImage.evaluate((image) => {
+    if (image.complete) return;
+    return new Promise((resolve) => {
+      image.addEventListener("load", resolve, { once: true });
+      image.addEventListener("error", resolve, { once: true });
+    });
+  });
+  const attachmentBounds = await attachment.evaluate((row) => {
+    const bubble = row.querySelector(".chat-message-bubble");
+    const wrapper = row.querySelector(".chat-attachment-wrapper");
+    const image = row.querySelector(".chat-attachment-image");
+    const bubbleRect = bubble.getBoundingClientRect();
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const imageRect = image.getBoundingClientRect();
+    return {
+      bubbleLeft: bubbleRect.left,
+      bubbleRight: bubbleRect.right,
+      wrapperLeft: wrapperRect.left,
+      wrapperRight: wrapperRect.right,
+      imageLeft: imageRect.left,
+      imageRight: imageRect.right,
+      bubbleClientWidth: bubble.clientWidth,
+      bubbleScrollWidth: bubble.scrollWidth,
+    };
+  });
+  expect(attachmentBounds.wrapperLeft).toBeGreaterThanOrEqual(
+    attachmentBounds.bubbleLeft - 1,
+  );
+  expect(attachmentBounds.wrapperRight).toBeLessThanOrEqual(
+    attachmentBounds.bubbleRight + 1,
+  );
+  expect(attachmentBounds.imageLeft).toBeGreaterThanOrEqual(
+    attachmentBounds.bubbleLeft - 1,
+  );
+  expect(attachmentBounds.imageRight).toBeLessThanOrEqual(
+    attachmentBounds.bubbleRight + 1,
+  );
+  expect(attachmentBounds.bubbleScrollWidth).toBeLessThanOrEqual(
+    attachmentBounds.bubbleClientWidth + 1,
+  );
+
+  await page.locator("#fullChatMessages").evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
+  });
+  await expect(messages).toHaveCount(10);
+  await expect(page.locator(".chat-history-indicator")).toContainText(
+    "2 earlier messages",
   );
 });
 
