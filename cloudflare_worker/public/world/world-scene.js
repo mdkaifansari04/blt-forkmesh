@@ -19239,6 +19239,7 @@ export function createWorldScene({
   const weather = createWeather(THREE, scene);
   const farDetailVisibility = new WeakMap();
   let aerialLandmarkMarkers = null;
+  let aerialLandmarkMarkersUnavailable = false;
 
   function ensureAerialLandmarkMarkers() {
     if (aerialLandmarkMarkers) return aerialLandmarkMarkers;
@@ -19255,7 +19256,7 @@ export function createWorldScene({
       ["TOWN", 0, 0, "#9ef7c6"],
       ["REPOSITORIES", REPOSITORY_ISLAND_CENTER_X, 0, "#77d9ff"],
       ["LEADERBOARDS", LEADERBOARD_ISLAND_CENTER_X, 0, "#d5b6ff"],
-      ["MEMBERS", 0, MEMBER_CIRCLE_CENTER_Z, "#f7c96b"],
+      ["MEMBERS", 0, MEMBER_ISLAND_CENTER_Z, "#f7c96b"],
       ["OFFICE", OFFICE_ISLAND_CENTER[0], OFFICE_ISLAND_CENTER[2], "#9ef7c6"],
       ["BEACH", BEACH_CENTER_X, BEACH_CENTER_Z, "#77d9ff"],
     ].forEach(([label, x, z, color]) => {
@@ -19328,7 +19329,20 @@ export function createWorldScene({
     const repositoryDistrict = landmarkObjects.get("repositories");
     const organizationDistrict = landmarkObjects.get("organizations");
     const federationDistrict = landmarkObjects.get("fediverse");
-    ensureAerialLandmarkMarkers().visible = far;
+    // A purely visual LOD helper must never be able to interrupt movement.
+    // Fail it closed once if a future marker asset cannot be constructed; the
+    // full scene remains usable and the animation loop does not retry a broken
+    // allocation on every frame.
+    if (!aerialLandmarkMarkersUnavailable) {
+      try {
+        ensureAerialLandmarkMarkers().visible = far;
+      } catch (error) {
+        aerialLandmarkMarkersUnavailable = true;
+        console.warn("[ForkMesh World] Aerial markers unavailable", {
+          message: String(error?.message || error || "unknown"),
+        });
+      }
+    }
     const detailTargets = [
       repositoryDistrict,
       organizationDistrict,

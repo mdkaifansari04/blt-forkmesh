@@ -658,6 +658,11 @@ def test_aerial_lod_never_removes_the_office_landmark_and_sol_sign_is_attached()
     assert "officeInterior.visible = showOfficeInterior" in scene
     assert "group.add(treasurySign);" in scene
     assert "treasurySign.position.set(0, 0, 10.8);" in scene
+    assert '["MEMBERS", 0, MEMBER_ISLAND_CENTER_Z, "#f7c96b"]' in scene
+    assert "MEMBER_CIRCLE_CENTER_Z" not in scene
+    assert "let aerialLandmarkMarkersUnavailable = false;" in scene
+    assert "if (!aerialLandmarkMarkersUnavailable)" in scene
+    assert "aerialLandmarkMarkersUnavailable = true;" in scene
 
 
 def test_tall_floor_exhibits_and_elevator_openings_stay_between_slabs():

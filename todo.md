@@ -268,6 +268,9 @@ the implementation and its focused verification are complete.
 
 ## 2026-07-28 current emergency and follow-up
 
+- [x] Fix the deployed aerial-marker `MEMBER_CIRCLE_CENTER_Z` exception that
+  aborted the animation loop before movement, and make optional LOD marker
+  initialization fail closed without interrupting input.
 - [x] Restore the complete Office exterior at every camera distance; aerial
   performance mode may cull furnished interiors, but never the Office landmark.
 - [x] Restore the SOL treasury QR/sign to the front midpoint inside the node
