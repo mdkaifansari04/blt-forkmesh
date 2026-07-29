@@ -52,13 +52,23 @@ def test_user_selection_has_a_scoped_clock_and_prefers_avatar_hit():
     assert "const hit = avatarHit || firstHit" in SCENE
 
 
-def test_lobby_has_one_access_checked_warp_for_every_floor():
+def test_lobby_has_wall_doorways_with_access_and_walk_through_checks():
     assert '"forkmesh-office-floor-warp-hub"' in SCENE
     assert "OFFICE_FLOORS.forEach((floor, index) =>" in SCENE
-    assert 'pad.userData.interactive = "office-floor-warp"' in SCENE
+    assert "`forkmesh-office-floor-doorway-${floor.id}`" in SCENE
+    assert "OFFICE_FLOOR_WARP_DOOR_START_X +" in SCENE
+    assert 'portal.userData.interactive = "office-floor-warp"' in SCENE
+    assert 'closedDoor.userData.interactive = "office-floor-warp"' in SCENE
+    assert '"CLOSED · ACCESS REQUIRED"' in SCENE
+    assert "function refreshOfficeFloorWarpDoors()" in SCENE
+    assert "doorway.closedDoor.visible = !allowed" in SCENE
     assert "function warpToOfficeFloor(floorId)" in SCENE
     assert "canAccessOfficeFloor(officeFloorAccess, floor.id)" in SCENE
+    assert "function tryOfficeFloorWarpDoorway(avatar, previousPosition)" in SCENE
+    assert "current.z > OFFICE_FLOOR_WARP_TRIGGER_Z" in SCENE
+    assert "tryOfficeFloorWarpDoorway(avatar, previousPosition)" in SCENE
     assert 'interactive === "office-floor-warp"' in SCENE
+    assert "hit.object.userData.officeFloorTargetId" in SCENE
 
 
 def test_world_asset_loading_and_unavailable_actions_are_console_quiet():
