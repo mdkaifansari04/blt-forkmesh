@@ -283,6 +283,14 @@ function mountForkMeshDashboardChat() {
   let orgAgentAccessLoaded = false;
   const seen = new Set();
   const rows = new Map();
+  const HISTORY_INITIAL_MESSAGES = 5;
+  const HISTORY_BATCH_MESSAGES = 5;
+  const historyRowIds = [];
+  let historyVisibleCount = HISTORY_INITIAL_MESSAGES;
+  let historyIndicator = null;
+  let revealingHistory = false;
+  let lastFullLogScrollTop = 0;
+  let historyTouchStartY = null;
   // messageId -> Map(emoji -> Map(reactorId -> reactorName)); identical to
   // the full web/Qt protocol shape so reactions converge across every client.
   const reactions = new Map();
@@ -1253,7 +1261,74 @@ function mountForkMeshDashboardChat() {
     return wrapper;
   }
 
-  function appendFullMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
+  function ensureHistoryIndicator() {
+    if (!fullLog) return null;
+    if (historyIndicator?.isConnected) return historyIndicator;
+    historyIndicator = document.createElement("button");
+    historyIndicator.type = "button";
+    historyIndicator.className = "chat-history-indicator";
+    historyIndicator.setAttribute("aria-live", "polite");
+    historyIndicator.addEventListener("click", () => revealOlderHistory());
+    fullLog.prepend(historyIndicator);
+    return historyIndicator;
+  }
+
+  function currentHistoryRows() {
+    return historyRowIds
+      .map((id) => rows.get(id))
+      .filter((record) => record?.el?.isConnected);
+  }
+
+  function renderHistoryWindow({ preserveScroll = false } = {}) {
+    if (!fullLog) return;
+    const records = currentHistoryRows();
+    if (!records.length) return;
+    const previousHeight = fullLog.scrollHeight;
+    const visibleCount = Math.min(historyVisibleCount, records.length);
+    const hiddenCount = Math.max(0, records.length - visibleCount);
+    records.forEach((record, index) => {
+      record.el.hidden = index < hiddenCount;
+    });
+    const indicator = ensureHistoryIndicator();
+    indicator.dataset.complete = hiddenCount ? "false" : "true";
+    indicator.disabled = hiddenCount <= 0;
+    indicator.textContent = hiddenCount
+      ? `↑ ${hiddenCount} earlier message${hiddenCount === 1 ? "" : "s"} · scroll up to load ${Math.min(HISTORY_BATCH_MESSAGES, hiddenCount)}`
+      : "Beginning of conversation";
+    if (preserveScroll) {
+      fullLog.scrollTop += Math.max(0, fullLog.scrollHeight - previousHeight);
+    } else {
+      fullLog.scrollTop = fullLog.scrollHeight;
+    }
+    lastFullLogScrollTop = fullLog.scrollTop;
+    syncChatScrollThumb();
+  }
+
+  function revealOlderHistory() {
+    if (revealingHistory || !fullLog) return;
+    const records = currentHistoryRows();
+    if (historyVisibleCount >= records.length) return;
+    revealingHistory = true;
+    historyVisibleCount = Math.min(
+      records.length,
+      historyVisibleCount + HISTORY_BATCH_MESSAGES,
+    );
+    renderHistoryWindow({ preserveScroll: true });
+    requestAnimationFrame(() => {
+      revealingHistory = false;
+    });
+  }
+
+  function appendFullMessage(
+    kind,
+    who,
+    text,
+    id,
+    senderId,
+    tsMs,
+    attachment = null,
+    deferHistory = false,
+  ) {
     if (!fullLog) return;
     clearEmptyState();
     const self = kind === "self";
@@ -1282,8 +1357,12 @@ function mountForkMeshDashboardChat() {
     const reactionsEl = document.createElement("div");
     reactionsEl.className = "chat-reactions";
     content?.append(reactionsEl);
+    if (deferHistory) {
+      row.hidden = true;
+      row.dataset.chatHistory = "";
+    }
     fullLog.append(row);
-    fullLog.scrollTop = fullLog.scrollHeight;
+    if (!deferHistory) fullLog.scrollTop = fullLog.scrollHeight;
     if (!id) return;
     const record = {
       id,
@@ -1297,6 +1376,7 @@ function mountForkMeshDashboardChat() {
       self,
     };
     rows.set(id, record);
+    if (deferHistory) historyRowIds.push(id);
     content?.append(buildMessageActions(record));
     renderReactions(id);
   }
@@ -1648,9 +1728,27 @@ function mountForkMeshDashboardChat() {
     renderSideMessages();
   }
 
-  function appendMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
+  function appendMessage(
+    kind,
+    who,
+    text,
+    id,
+    senderId,
+    tsMs,
+    attachment = null,
+    deferHistory = false,
+  ) {
     if (orgAgentIdentity(who, senderId) && !orgAgentEngineeringAccess) return;
-    appendFullMessage(kind, who, text, id, senderId, tsMs, attachment);
+    appendFullMessage(
+      kind,
+      who,
+      text,
+      id,
+      senderId,
+      tsMs,
+      attachment,
+      deferHistory,
+    );
     appendSideMessage(kind, who, text, id, senderId, tsMs, attachment);
     rememberContext(who, text);
   }
@@ -1681,6 +1779,8 @@ function mountForkMeshDashboardChat() {
       releaseAttachment(sideEntries[idx].attachment);
     }
     if (idx >= 0) sideEntries.splice(idx, 1);
+    const historyIndex = historyRowIds.indexOf(id);
+    if (historyIndex >= 0) historyRowIds.splice(historyIndex, 1);
     reactions.delete(id);
     renderSideMessages();
   }
@@ -1895,8 +1995,16 @@ function mountForkMeshDashboardChat() {
     if (entry.senderId !== selfId) {
       rememberMentionPerson(who, live ? Date.now() : Number(entry.ts) || 0);
     }
-    appendMessage(kind, who, text, entry.id, entry.senderId,
-                  Number(entry.ts) || Date.now(), attachment);
+    appendMessage(
+      kind,
+      who,
+      text,
+      entry.id,
+      entry.senderId,
+      Number(entry.ts) || Date.now(),
+      attachment,
+      !live,
+    );
     if (live) {
       newestHistoryTs = Math.max(newestHistoryTs, Number(entry.ts) || 0);
       emitWorldChatBubble(who, entry.senderId, text, false, {
@@ -1989,6 +2097,7 @@ function mountForkMeshDashboardChat() {
           renderChatEntry(entry, "peer");
         }
       }
+      renderHistoryWindow();
     } else if (type === "reaction") {
       if (once(plain.id)) applyReaction(plain);
     } else if (type === "edit") {
@@ -3231,9 +3340,42 @@ function mountForkMeshDashboardChat() {
           });
         });
       });
-    fullLog?.addEventListener("scroll", syncChatScrollThumb, {
+    fullLog?.addEventListener("scroll", () => {
+      syncChatScrollThumb();
+      const currentTop = fullLog.scrollTop;
+      if (
+        currentTop <= 32 &&
+        currentTop < lastFullLogScrollTop - 1
+      ) {
+        revealOlderHistory();
+      }
+      lastFullLogScrollTop = currentTop;
+    }, {
       passive: true,
     });
+    fullLog?.addEventListener("wheel", (event) => {
+      if (event.deltaY < 0 && fullLog.scrollTop <= 32) revealOlderHistory();
+    }, { passive: true });
+    fullLog?.addEventListener("touchstart", (event) => {
+      historyTouchStartY =
+        fullLog.scrollTop <= 32
+          ? Number(event.touches?.[0]?.clientY)
+          : null;
+    }, { passive: true });
+    fullLog?.addEventListener("touchmove", (event) => {
+      const currentY = Number(event.touches?.[0]?.clientY);
+      if (
+        Number.isFinite(historyTouchStartY) &&
+        Number.isFinite(currentY) &&
+        currentY - historyTouchStartY >= 28
+      ) {
+        historyTouchStartY = currentY;
+        revealOlderHistory();
+      }
+    }, { passive: true });
+    fullLog?.addEventListener("touchend", () => {
+      historyTouchStartY = null;
+    }, { passive: true });
     if (fullLog && "ResizeObserver" in window) {
       new ResizeObserver(syncChatScrollThumb).observe(fullLog);
     }

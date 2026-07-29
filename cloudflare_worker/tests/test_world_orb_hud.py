@@ -127,6 +127,19 @@ def test_native_chat_starts_closed_and_floats_without_open_launcher_shell():
     assert "content?.append(buildMessageActions(record));" in CHAT
 
 
+def test_open_native_chat_fills_safe_height_and_keeps_composer_at_bottom():
+    assert "top: max(12px, env(safe-area-inset-top));" in CSS
+    assert "bottom: max(12px, env(safe-area-inset-bottom));" in CSS
+    assert 'grid-template-areas:\n    "transcript"' in CSS
+    assert "grid-template-rows: minmax(0, 1fr) auto auto auto;" in CSS
+    assert CSS.count("grid-area: transcript;") == 2
+    assert "bottom: 260px;" not in CSS
+    assert "display: grid !important;" in CSS
+    assert "world-chat-composer-rise 360ms" in CSS
+    assert ".world-chat-terminal:not([open])" in CSS
+    assert "@media (prefers-reduced-motion: reduce)" in CSS
+
+
 def test_new_hud_work_is_visible_as_a_completed_build_board_item():
     marker = '{ key: "task:world-orb-hud"'
     board = SCENE[
