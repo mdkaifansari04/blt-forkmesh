@@ -77,6 +77,8 @@ def test_movement_hot_path_reuses_vectors_and_reports_input_delay():
     assert "movementForward.set(" in movement
     assert "movementRight.set(" in movement
     assert "new THREE.Vector3()" not in movement
+    assert "return movementInputState" in movement
+    assert "? topSpeed" in SCENE
     assert town_walk.count("queueMovementEvent({") == 2
     assert "onMovement({" not in town_walk
     assert "window.setTimeout(" in _section(
@@ -88,3 +90,14 @@ def test_movement_hot_path_reuses_vectors_and_reports_input_delay():
     assert "inputResponseMs" in diagnostics
     assert "worstInputResponseMs" in diagnostics
     assert "movementInputMs: { caution: 34, high: 80 }" in APP
+
+
+def test_camera_and_non_motion_frame_work_are_allocation_bounded():
+    camera = _section(SCENE, "  function updateCamera(", "\n  function setSpawn")
+    animate = _section(SCENE, "  function animate(", "\n  function setPaused(")
+    assert "new THREE.Vector3()" not in camera
+    assert "cameraEye.set(" in camera
+    assert "cameraTarget" in camera
+    assert "time >= nextProximityUpdateAt" in animate
+    assert "time >= nextScreenLabelUpdateAt" in animate
+    assert "diagnosticsDrawingBuffer" in animate

@@ -387,12 +387,11 @@ QWidget *MainWindow::buildSourceControlPanel()
     generationAction->setDefaultWidget(generationPanel);
     generationMenu->addAction(generationAction);
 
-    auto *generationMenuButton = new QToolButton(panel);
+    auto *generationMenuButton = new QPushButton(panel);
     generationMenuButton->setObjectName(QStringLiteral("ghostButton"));
     generationMenuButton->setText(QString::fromUtf8("\xE2\x8B\xAF"));
     generationMenuButton->setToolTip(
         QStringLiteral("Message generation and copy options"));
-    generationMenuButton->setPopupMode(QToolButton::InstantPopup);
     generationMenuButton->setMenu(generationMenu);
     generationMenuButton->setCursor(Qt::PointingHandCursor);
     generationMenuButton->setFixedWidth(30);

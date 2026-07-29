@@ -321,6 +321,9 @@ QJsonObject normalizedCatalogV2Record(const QJsonObject &data)
          cleanCatalogString(data, QStringLiteral("artifactCount"), 12)},
         {QStringLiteral("platform"),
          cleanCatalogString(data, QStringLiteral("platform"), 16)},
+        {QStringLiteral("runtimeMode"),
+         cleanCatalogString(data, QStringLiteral("runtimeMode"), 12)
+             .toLower()},
         {QStringLiteral("version"),
          cleanCatalogString(data, QStringLiteral("version"), 32)},
         {QStringLiteral("nodeId"),
@@ -4347,6 +4350,13 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                          {"worktreeCount", QString::number(worktreeCount)},
                          {"artifactCount", QString::number(artifactCount)},
                          {"platform", selfPlatform},
+                         // This signed capability separates an attended local
+                         // Qt app from an unattended mirror. The Worker uses it
+                         // when a platform administrator explicitly routes a
+                         // web-created agent job to their own running desktop.
+                         {"runtimeMode",
+                          m_headless ? QStringLiteral("headless")
+                                     : QStringLiteral("desktop")},
                          {"version", selfVersion},
                          {"nodeId", selfNodeId},
                          {"clonesServed", QString::number(clonesServed)},

@@ -110,7 +110,10 @@ def test_repo_exhibit_has_angled_named_pedestal_and_live_agent_terminals():
     assert "`${owner}/${name}`" in SCENE
     assert "repository-agent-control-dock:" in SCENE
     assert "function createRepositoryAgentTerminal(" in SCENE
-    assert "screenShell.rotation.x = -Math.PI / 4;" not in SCENE
+    assert "repository-agent-robot-body:" in SCENE
+    assert "repository-agent-robot-wheel:" in SCENE
+    assert "repository-agent-robot-arm:" in SCENE
+    assert "screen.rotation.x = -Math.PI / 2;" in SCENE
     assert "side: THREE.DoubleSide" in SCENE
     assert "repositoryAgentTasksByRepository" in SCENE
     assert "task.status === \"running\"" in SCENE
@@ -122,6 +125,48 @@ def test_repo_exhibit_has_angled_named_pedestal_and_live_agent_terminals():
     assert "focusSessionId: String(sessionId || \"\")" in APP
     assert "focusSessionId === String(session?.id || \"\")" in APP
     assert "world-agent-prompt-form" in APP
+
+
+def test_agent_and_fediverse_counts_share_the_repository_placard():
+    texture = SCENE[
+        SCENE.index("function repositoryCommitActivityTexture("):
+        SCENE.index("const REPOSITORY_RECORD_STATE_COLORS")
+    ]
+    assert 'label: "AGENT CONTROL"' in texture
+    assert "runningAgents.toLocaleString" in texture
+    assert 'label: "FEDIVERSE"' in texture
+    assert '"FOLLOWERS"' in texture
+    activity = SCENE[
+        SCENE.index("function updateRepositoryActivity("):
+        SCENE.index("function updateRepositorySizeMap(")
+    ]
+    assert "repositoryAgentTasksByRepository.get(repositoryKey)" in activity
+    assert "portalRecord?.record?.fediverseFollowerCount" in activity
+    assert "{ runningAgents, fediverseFollowers }" in activity
+    # Counts no longer float as separate labels beside the robot dock or ring.
+    assert "repository-agent-control-label:" not in SCENE
+    assert "repository-fediverse-follower-caption:" not in SCENE
+
+
+def test_agent_robots_offer_a_terminal_first_person_button():
+    terminal = SCENE[
+        SCENE.index("function createRepositoryAgentTerminal("):
+        SCENE.index("function repositoryIssueAgentProviderTexture(")
+    ]
+    assert "repository-agent-terminal-first-person:" in terminal
+    assert 'context.fillText("1P"' in terminal
+    assert "repositoryAgentViewingPad" in terminal
+    assert "standingPoint: viewingPoint" in terminal
+    assert "interactive.push(terminal.userData.viewButton)" in SCENE
+    focus = SCENE[
+        SCENE.index("function focusRepositoryAgentTerminal("):
+        SCENE.index("function lockOfficeElevatorCamera(")
+    ]
+    assert 'setCameraMode("first-person", "repository-agent-terminal")' in focus
+    assert "firstPersonZoom = 1.35" in focus
+    assert "standingTarget.getWorldPosition" in focus
+    assert "target.getWorldPosition" in focus
+    assert "focusRepositoryAgentTerminal(hit.object)" in SCENE
 
 
 def test_cabinet_faces_are_swapped_and_agent_sides_are_provider_specific():

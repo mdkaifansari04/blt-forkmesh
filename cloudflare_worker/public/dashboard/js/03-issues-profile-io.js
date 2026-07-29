@@ -308,6 +308,15 @@
     return data;
   }
 
+  // The compact World chat composer is a second presentation of the canonical
+  // dashboard actions. Expose the signed issue operation narrowly so the chat
+  // bundle can file into the same maintainer inbox without duplicating key,
+  // signature, authorization, or payload logic.
+  window.ForkMeshDashboardActions = Object.assign(
+    window.ForkMeshDashboardActions || {},
+    { submitWebIssue },
+  );
+
   // Mirrors IssueStore::contentForSigning's "comment" case (body NUL
   // attachments) and the desktop's inbox POST (verify_issue_event in the
   // worker). Unlike a new issue's "open" event, a comment is signed against the

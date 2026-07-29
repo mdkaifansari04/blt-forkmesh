@@ -3341,6 +3341,8 @@ void MainWindow::showHighMemoryProcessPanel()
     auto *dialog = new QDialog(this);
     m_highMemoryDialog = dialog;
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowModality(Qt::NonModal);
+    dialog->setModal(false);
     dialog->setWindowTitle(QStringLiteral("High memory usage"));
     dialog->resize(820, 560);
     auto *layout = new QVBoxLayout(dialog);
@@ -3353,7 +3355,8 @@ void MainWindow::showHighMemoryProcessPanel()
     heading->setWordWrap(true);
     layout->addWidget(heading);
 
-    m_highMemoryProcessStatus = new QLabel(QStringLiteral("Loading processes…"));
+    m_highMemoryProcessStatus =
+        new QLabel(QStringLiteral("Scanning for the largest memory users…"));
     m_highMemoryProcessStatus->setObjectName(QStringLiteral("statusLine"));
     layout->addWidget(m_highMemoryProcessStatus);
 
@@ -3367,11 +3370,18 @@ void MainWindow::showHighMemoryProcessPanel()
         QAbstractItemView::SelectRows);
     m_highMemoryProcessTable->setEditTriggers(
         QAbstractItemView::NoEditTriggers);
+    m_highMemoryProcessTable->setSortingEnabled(false);
+    m_highMemoryProcessTable->setAlternatingRowColors(true);
     m_highMemoryProcessTable->horizontalHeader()->setSectionResizeMode(
         0, QHeaderView::Stretch);
     for (int column = 1; column < 6; ++column)
         m_highMemoryProcessTable->horizontalHeader()->setSectionResizeMode(
-            column, QHeaderView::ResizeToContents);
+            column, QHeaderView::Fixed);
+    m_highMemoryProcessTable->setColumnWidth(1, 72);
+    m_highMemoryProcessTable->setColumnWidth(2, 110);
+    m_highMemoryProcessTable->setColumnWidth(3, 105);
+    m_highMemoryProcessTable->setColumnWidth(4, 72);
+    m_highMemoryProcessTable->setColumnWidth(5, 76);
     layout->addWidget(m_highMemoryProcessTable, 1);
 
     auto *refresh = new QPushButton(QStringLiteral("Refresh"));
@@ -3392,8 +3402,17 @@ void MainWindow::showHighMemoryProcessPanel()
         m_highMemoryProcessStatus = nullptr;
         m_highMemoryProcessQuery = nullptr;
     });
+    auto *autoRefresh = new QTimer(dialog);
+    autoRefresh->setInterval(5000);
+    connect(autoRefresh, &QTimer::timeout, this,
+            &MainWindow::refreshHighMemoryProcessTable);
+    autoRefresh->start();
     dialog->show();
-    refreshHighMemoryProcessTable();
+    dialog->raise();
+    // Let the new window paint before starting even the lightweight process
+    // query. QProcess remains asynchronous, so a pressured host never blocks
+    // the GUI while the culprit list is collected.
+    QTimer::singleShot(0, this, &MainWindow::refreshHighMemoryProcessTable);
 }
 
 void MainWindow::refreshHighMemoryProcessTable()
@@ -3401,7 +3420,10 @@ void MainWindow::refreshHighMemoryProcessTable()
     if (!m_highMemoryDialog || !m_highMemoryProcessTable ||
         m_highMemoryProcessQuery)
         return;
-    m_highMemoryProcessStatus->setText(QStringLiteral("Loading processes…"));
+    m_highMemoryProcessStatus->setText(
+        m_highMemoryProcessTable->rowCount() == 0
+            ? QStringLiteral("Scanning for the largest memory users…")
+            : QStringLiteral("Refreshing memory culprits in the background…"));
     auto *query = new QProcess(m_highMemoryDialog);
     m_highMemoryProcessQuery = query;
     connect(query, &QProcess::finished, this,
@@ -3413,20 +3435,31 @@ void MainWindow::refreshHighMemoryProcessTable()
                 if (!m_highMemoryDialog || !m_highMemoryProcessTable)
                     return;
                 if (status != QProcess::NormalExit || exitCode != 0) {
+                    const QString detail =
+                        QString::fromLocal8Bit(error).trimmed();
                     m_highMemoryProcessStatus->setText(
                         QStringLiteral("Could not list processes: %1")
-                            .arg(QString::fromLocal8Bit(error).trimmed()));
+                            .arg(detail.isEmpty()
+                                     ? QStringLiteral("the background query timed out")
+                                     : detail));
                     return;
                 }
 
-                m_highMemoryProcessTable->setSortingEnabled(false);
-                m_highMemoryProcessTable->setRowCount(0);
+                struct ProcessRow {
+                    qint64 pid = 0;
+                    QString owner;
+                    qint64 rssKb = 0;
+                    double percent = 0.0;
+                    QString name;
+                };
+                QVector<ProcessRow> rows;
+                rows.reserve(30);
                 const QList<QByteArray> lines = output.split('\n');
-                int shown = 0;
+                int validProcesses = 0;
                 for (const QByteArray &raw : lines) {
                     const QList<QByteArray> fields =
                         raw.simplified().split(' ');
-                    if (fields.size() < 5 || shown >= 500)
+                    if (fields.size() < 5)
                         continue;
                     bool pidOk = false;
                     bool rssOk = false;
@@ -3440,9 +3473,22 @@ void MainWindow::refreshHighMemoryProcessTable()
                             QByteArrayList(fields.mid(4)).join(' '));
                     if (!pidOk || !rssOk || pid <= 0 || name.isEmpty())
                         continue;
+                    ++validProcesses;
+                    // `ps` is already RSS-sorted. Only materialize the top
+                    // culprits: hundreds of cell widgets and repeated
+                    // ResizeToContents passes were what made the old alert
+                    // appear frozen under memory pressure.
+                    if (rows.size() < 30)
+                        rows.append({pid, owner, rssKb, percent.toDouble(), name});
+                }
 
-                    const int row = m_highMemoryProcessTable->rowCount();
-                    m_highMemoryProcessTable->insertRow(row);
+                m_highMemoryProcessTable->setUpdatesEnabled(false);
+                m_highMemoryProcessTable->clearContents();
+                m_highMemoryProcessTable->setRowCount(rows.size());
+                qint64 shownRssKb = 0;
+                for (int row = 0; row < rows.size(); ++row) {
+                    const ProcessRow &process = rows.at(row);
+                    shownRssKb += process.rssKb;
                     auto put = [this, row](int column, const QString &text,
                                            const QVariant &sortValue = {}) {
                         auto *item = new QTableWidgetItem(text);
@@ -3450,34 +3496,49 @@ void MainWindow::refreshHighMemoryProcessTable()
                             item->setData(Qt::UserRole, sortValue);
                         m_highMemoryProcessTable->setItem(row, column, item);
                     };
-                    put(0, name);
-                    put(1, QString::number(pid), pid);
-                    put(2, owner);
-                    put(3, SystemStats::formatBytes(rssKb * 1024), rssKb);
-                    put(4, percent + QLatin1Char('%'), percent.toDouble());
+                    put(0, process.name);
+                    put(1, QString::number(process.pid), process.pid);
+                    put(2, process.owner);
+                    put(3, SystemStats::formatBytes(process.rssKb * 1024),
+                        process.rssKb);
+                    put(4, QStringLiteral("%1%").arg(process.percent, 0, 'f', 1),
+                        process.percent);
+                    if (row < 5) {
+                        for (int column = 0; column < 5; ++column) {
+                            QTableWidgetItem *item =
+                                m_highMemoryProcessTable->item(row, column);
+                            QFont font = item->font();
+                            font.setBold(true);
+                            item->setFont(font);
+                            item->setForeground(QColor(QStringLiteral("#cf222e")));
+                        }
+                    }
 
                     auto *kill = new QPushButton(QStringLiteral("Kill"));
                     kill->setProperty("buttonSize", "sm");
                     const bool protectedProcess =
-                        pid == 1 ||
-                        pid == QCoreApplication::applicationPid();
+                        process.pid == 1 ||
+                        process.pid == QCoreApplication::applicationPid();
                     kill->setEnabled(!protectedProcess);
                     kill->setToolTip(
                         protectedProcess
                             ? QStringLiteral("This process is protected")
                             : QStringLiteral("Request that %1 terminate")
-                                  .arg(name));
+                                  .arg(process.name));
                     connect(kill, &QPushButton::clicked, this,
-                            [this, pid, name] {
+                            [this, pid = process.pid, name = process.name] {
                                 killHighMemoryProcess(pid, name);
                             });
                     m_highMemoryProcessTable->setCellWidget(row, 5, kill);
-                    ++shown;
                 }
-                m_highMemoryProcessTable->setSortingEnabled(true);
+                m_highMemoryProcessTable->setUpdatesEnabled(true);
+                m_highMemoryProcessTable->viewport()->update();
                 m_highMemoryProcessStatus->setText(
-                    QStringLiteral("%1 processes shown · refreshed %2")
-                        .arg(shown)
+                    QStringLiteral(
+                        "Top %1 of %2 processes · %3 resident · refreshed %4")
+                        .arg(rows.size())
+                        .arg(validProcesses)
+                        .arg(SystemStats::formatBytes(shownRssKb * 1024))
                         .arg(QTime::currentTime().toString(
                             QStringLiteral("h:mm:ss AP"))));
             });
@@ -3498,6 +3559,12 @@ void MainWindow::refreshHighMemoryProcessTable()
                  {QStringLiteral("-eo"),
                   QStringLiteral("pid=,user=,rss=,%mem=,comm="),
                   QStringLiteral("--sort=-rss")});
+    // A broken or heavily starved `ps` must not leave the panel looking busy
+    // forever. Killing this helper is safe and does not affect listed processes.
+    QTimer::singleShot(3000, query, [query] {
+        if (query->state() != QProcess::NotRunning)
+            query->kill();
+    });
 }
 
 void MainWindow::killHighMemoryProcess(qint64 pid, const QString &name)

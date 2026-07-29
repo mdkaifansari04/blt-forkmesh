@@ -3,7 +3,9 @@
 #include "MarkupCanvas.h"
 
 #include <QButtonGroup>
+#include <QClipboard>
 #include <QColor>
+#include <QComboBox>
 #include <QFrame>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -15,6 +17,8 @@
 #include <QScreen>
 #include <QScrollArea>
 #include <QSize>
+#include <QShortcut>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -94,7 +98,9 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
     auto *btnRect    = new QToolButton(this);
     auto *btnEllipse = new QToolButton(this);
     auto *btnText    = new QToolButton(this);
-    for (auto *b : {btnPencil, btnLine, btnArrow, btnRect, btnEllipse, btnText}) {
+    auto *btnMove    = new QToolButton(this);
+    for (auto *b :
+         {btnPencil, btnLine, btnArrow, btnRect, btnEllipse, btnText, btnMove}) {
         b->setCheckable(true);
         b->setObjectName("topNavButton");
     }
@@ -104,6 +110,8 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
     btnRect->setText(QStringLiteral("Rectangle"));
     btnEllipse->setText(QStringLiteral("Ellipse"));
     btnText->setText(QStringLiteral("Text"));
+    btnMove->setText(QStringLiteral("Move"));
+    btnMove->setToolTip(QStringLiteral("Move text labels after placing them"));
     btnPencil->setChecked(true);
 
     auto *toolGroup = new QButtonGroup(this);
@@ -113,6 +121,7 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
     toolGroup->addButton(btnRect);
     toolGroup->addButton(btnEllipse);
     toolGroup->addButton(btnText);
+    toolGroup->addButton(btnMove);
 
     connect(btnPencil,  &QToolButton::clicked, this,
             [this] { m_canvas->setTool(MarkupTool::Pencil); });
@@ -126,6 +135,8 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
             [this] { m_canvas->setTool(MarkupTool::Ellipse); });
     connect(btnText,    &QToolButton::clicked, this,
             [this] { m_canvas->setTool(MarkupTool::Text); });
+    connect(btnMove,    &QToolButton::clicked, this,
+            [this] { m_canvas->setTool(MarkupTool::Move); });
 
     toolbarLayout->addWidget(btnPencil);
     toolbarLayout->addWidget(btnLine);
@@ -133,6 +144,20 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
     toolbarLayout->addWidget(btnRect);
     toolbarLayout->addWidget(btnEllipse);
     toolbarLayout->addWidget(btnText);
+    toolbarLayout->addWidget(btnMove);
+
+    auto *textSize = new QComboBox(this);
+    textSize->setToolTip(QStringLiteral("Text size for new labels"));
+    textSize->addItem(QStringLiteral("Text: S"), 14);
+    textSize->addItem(QStringLiteral("Text: M"), 18);
+    textSize->addItem(QStringLiteral("Text: L"), 24);
+    textSize->addItem(QStringLiteral("Text: XL"), 32);
+    textSize->setCurrentIndex(1);
+    connect(textSize, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, textSize](int) {
+                m_canvas->setTextPointSize(textSize->currentData().toInt());
+            });
+    toolbarLayout->addWidget(textSize);
 
     auto *sep = new QFrame(this);
     sep->setFrameShape(QFrame::VLine);
@@ -170,6 +195,10 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
     btnUndo->setObjectName("ghostButton");
     connect(btnUndo, &QToolButton::clicked, this, [this] { m_canvas->undo(); });
     toolbarLayout->addWidget(btnUndo);
+    auto *undoShortcut = new QShortcut(QKeySequence::Undo, this);
+    undoShortcut->setContext(Qt::WindowShortcut);
+    connect(undoShortcut, &QShortcut::activated,
+            this, [this] { m_canvas->undo(); });
 
     // ---- Footer ----
     auto *footer = new QWidget(this);
@@ -188,6 +217,18 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
             &ScreenshotMarkupWindow::onAccept);
 
     footerLayout->addStretch();
+    auto *btnCopy = new QPushButton(QStringLiteral("Copy screenshot"), this);
+    btnCopy->setObjectName("ghostButton");
+    btnCopy->setToolTip(
+        QStringLiteral("Copy the screenshot with its current annotations"));
+    connect(btnCopy, &QPushButton::clicked, this, [this, btnCopy] {
+        QGuiApplication::clipboard()->setImage(m_canvas->flattenedImage());
+        btnCopy->setText(QStringLiteral("Copied"));
+        QTimer::singleShot(1200, btnCopy, [btnCopy] {
+            btnCopy->setText(QStringLiteral("Copy screenshot"));
+        });
+    });
+    footerLayout->addWidget(btnCopy);
     footerLayout->addWidget(btnDiscard);
     footerLayout->addWidget(btnAdd);
 

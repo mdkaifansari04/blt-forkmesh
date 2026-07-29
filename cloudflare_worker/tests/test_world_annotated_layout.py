@@ -11,9 +11,9 @@ ENTRY = (ROOT / "src" / "entry.py").read_text()
 def test_town_has_four_solid_cardinal_paved_routes():
     for route in (
         '"east-repositories", [16, 0], [88, 0], 8.4',
-        '"north-office", [0, -16], [0, -88], 8.4',
+        '"north-office", [0, -16], [0, OFFICE_BRIDGE_START_Z], OFFICE_BRIDGE_WIDTH',
         '"west-billboards", [-16, 0], [-88, 0], 8.4',
-        '"south-members", [0, 16], [0, 88], 8.4',
+        '"south-members", [0, 16], [0, MEMBER_PATH_END_Z], 8.4',
     ):
         assert route in SCENE
     assert "function addRoundedCausewayEnds(" not in SCENE
@@ -56,12 +56,15 @@ def test_billboards_use_one_aligned_perimeter_and_ignore_legacy_coordinates():
         )
 
 
-def test_members_share_continuous_land_with_a_south_promenade_and_campfire():
+def test_members_share_continuous_land_with_one_south_path_and_campfire_sign():
     assert "const MEMBER_ISLAND_CENTER_Z = 130;" in SCENE
+    assert "const MEMBER_PATH_END_Z = MEMBER_ISLAND_CENTER_Z - 21;" in SCENE
     assert '"forkmesh-continuous-city-land"' in SCENE
     assert '"forkmesh-member-island"' not in SCENE
-    assert '"forkmesh-member-island-connection"' in SCENE
-    assert '"forkmesh-member-promenade"' in SCENE
+    assert '"forkmesh-member-island-connection"' not in SCENE
+    assert '"forkmesh-member-promenade"' not in SCENE
+    assert '"forkmesh-members-circle-path-sign"' in SCENE
+    assert '"🔥  MEMBERS CIRCLE"' in SCENE
     assert "function worldWalkSurfaceContains(x, z" in SCENE
     assert "position: [0, 0, 130]" in DATA
     assert 'registerMovableObject("south-members:campfire", campfire);' in SCENE

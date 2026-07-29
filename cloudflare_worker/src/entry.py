@@ -131,7 +131,19 @@ LOCAL_DEMO_EMAIL = "demo@forkmesh.local"
 LOCAL_DEMO_NAME = "demo-node"
 LOCAL_DEMO_PASSWORD = "forkmesh-demo"
 MAX_CATALOG_REPOS = 200
-MAX_ERROR_LOG = 500
+MAX_ERROR_LOG = 5000
+# Uncaught browser exceptions share the operational error_log after aggressive
+# server-side redaction. The public collector is rate-limited from its own
+# bounded rows so one broken or hostile browser cannot displace server errors.
+CLIENT_ERROR_MAX_BODY = 8 * 1024
+CLIENT_ERROR_RATE_WINDOW_MS = 60 * 1000
+CLIENT_ERROR_RATE_PER_CLIENT = 8
+CLIENT_ERROR_RATE_GLOBAL = 120
+CLIENT_ERROR_SURFACES = frozenset({
+    "home", "world", "dashboard", "documentation", "blog", "network",
+    "chat", "account", "repository", "public-page",
+})
+CLIENT_ERROR_KINDS = frozenset({"error", "unhandledrejection"})
 # Anonymous installer diagnostics: one row per reported install step. Bounded the
 # same way as the error log so the unauthenticated POST endpoint can't grow D1.
 MAX_INSTALL_DIAG = 5000
@@ -139,14 +151,14 @@ INSTALL_DIAG_RETAIN_MS = 30 * 24 * 60 * 60 * 1000  # surface a 30-day window
 # Private vulnerability reports: bounded so the open endpoint can't grow D1.
 MAX_SECURITY_REPORTS = 1000
 SECURITY_AUDIT_RETAIN_MS = 365 * 24 * 60 * 60 * 1000
-# Anonymous website feedback from static pages. Bounded like telemetry and
-# install diagnostics so the unauthenticated endpoint cannot grow D1 forever.
+# Anonymous website and World-kiosk feedback. Bounded like telemetry and install
+# diagnostics so the unauthenticated endpoint cannot grow D1 forever.
 MAX_FEEDBACK = 5000
 FEEDBACK_MAX_BODY = 16 * 1024
 FEEDBACK_MAX_MESSAGE = 2000
 FEEDBACK_MAX_PATH = 300
-FEEDBACK_SOURCES = frozenset({"docs"})
-FEEDBACK_VOTES = frozenset({"like", "dislike"})
+FEEDBACK_SOURCES = frozenset({"docs", "world"})
+FEEDBACK_VOTES = frozenset({"like", "dislike", "feedback"})
 MAX_WAITLIST_FIELD = 300
 _WAITLIST_EMAIL_RE = re.compile(
     r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
@@ -372,6 +384,8 @@ from urls import (  # noqa: E402
     ORG_TEAMS_RE,
     ORG_TEAM_MEMBERS_RE,
     ORG_REPOS_RE,
+    ORG_BOT_TOKENS_RE,
+    BOT_SESSION_RE,
     ORG_SUCCESSION_RE,
     ORG_FEDIVERSE_RE,
     BADGES_RE,
@@ -7082,6 +7096,74 @@ async def _office_attendance_recent(env, observed_at=None):
     return visits
 
 
+async def _office_attendance_leaderboard(env, observed_at=None):
+    """Return one bounded row per member, ranked by their longest Office stay."""
+    try:
+        observed_at = int(
+            Date.now() if observed_at is None else observed_at)
+    except (TypeError, ValueError):
+        observed_at = 0
+    rows = await d1_all(
+        env,
+        "WITH office_visits AS ("
+        "SELECT account_bi, account_name, in_at, out_at, floor_id, visit_id, "
+        "MAX(0, COALESCE(out_at, ?) - in_at) AS duration_ms, "
+        "ROW_NUMBER() OVER ("
+        "PARTITION BY account_bi "
+        "ORDER BY in_at DESC, visit_id DESC"
+        ") AS newest_rank "
+        "FROM world_office_attendance "
+        "WHERE visit_scope='office'"
+        "), member_totals AS ("
+        "SELECT account_bi, MAX(duration_ms) AS longest_duration_ms, "
+        "MAX(CASE WHEN out_at IS NULL THEN duration_ms ELSE 0 END) "
+        "AS active_duration_ms, "
+        "MAX(CASE WHEN out_at IS NULL THEN 1 ELSE 0 END) AS is_present "
+        "FROM office_visits GROUP BY account_bi"
+        ") "
+        "SELECT office_visits.account_name, "
+        "member_totals.longest_duration_ms, "
+        "member_totals.active_duration_ms, member_totals.is_present, "
+        "CASE WHEN member_totals.is_present=1 "
+        "THEN office_visits.floor_id ELSE '' END AS floor_id "
+        "FROM member_totals "
+        "JOIN office_visits "
+        "ON office_visits.account_bi=member_totals.account_bi "
+        "AND office_visits.newest_rank=1 "
+        "ORDER BY member_totals.longest_duration_ms DESC, "
+        "office_visits.account_name COLLATE NOCASE ASC "
+        "LIMIT 20",
+        observed_at,
+    )
+    leaderboard = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        account = world_protocol.clean_display_name(
+            row.get("account_name"), "Contributor")
+        try:
+            longest_duration_ms = max(
+                0, int(row.get("longest_duration_ms") or 0))
+            active_duration_ms = max(
+                0, int(row.get("active_duration_ms") or 0))
+        except (TypeError, ValueError):
+            continue
+        present = bool(row.get("is_present"))
+        leaderboard.append({
+            "account": account,
+            "longestDurationMs": longest_duration_ms,
+            "activeDurationMs": active_duration_ms if present else 0,
+            "present": present,
+            "floor": (
+                OFFICE_ATTENDANCE_FLOOR_LABELS.get(
+                    str(row.get("floor_id") or "").strip().lower(), "")
+                if present
+                else ""
+            ),
+        })
+    return leaderboard
+
+
 def _chat_direct_ticket(env, conversation_id, key_version, account_bi):
     expires = int(Date.now()) + CHAT_DIRECT_TICKET_TTL_MS
     canonical = ".".join((
@@ -7235,11 +7317,14 @@ async def office_attendance_handler(env, request):
     if method == "GET":
         await ensure_schema(env)
         observed_at = int(Date.now())
+        visits = await _office_attendance_recent(env, observed_at)
         return json_response(
             {
                 "ok": True,
                 "asOfAt": observed_at,
-                "visits": await _office_attendance_recent(env, observed_at),
+                "visits": visits,
+                "leaderboard": await _office_attendance_leaderboard(
+                    env, observed_at),
             },
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"x-content-type-options": "nosniff"},
@@ -7345,11 +7430,13 @@ async def office_attendance_handler(env, request):
             now,
             str(account_bi),
         )
+    visits = await _office_attendance_recent(env, now)
     return json_response(
         {
             "ok": True,
             "asOfAt": now,
-            "visits": await _office_attendance_recent(env, now),
+            "visits": visits,
+            "leaderboard": await _office_attendance_leaderboard(env, now),
         },
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
@@ -8114,6 +8201,12 @@ class _OfficeMarketingTasksRuntime:
     def same_origin(self):
         return _request_same_origin(self.request)
 
+    def query(self, name):
+        try:
+            return URL(self.request.url).searchParams.get(str(name)) or ""
+        except Exception:
+            return ""
+
     def response(self, data, status=200, cache_control=None,
                  extra_headers=None):
         return json_response(
@@ -8211,6 +8304,59 @@ class _OfficeMarketingTasksRuntime:
             ):
                 members.append(name)
         return members
+
+    async def organization_members(self, org_bi):
+        rows = await d1_all(
+            self.env,
+            "SELECT name FROM org_members WHERE org_bi=? "
+            "ORDER BY name COLLATE NOCASE LIMIT 1000",
+            str(org_bi or ""),
+        )
+        members = []
+        for row in rows or []:
+            member = await self.active_user(row.get("name"))
+            if member and member["name"] not in {
+                    item["name"] for item in members}:
+                members.append(member)
+        return members
+
+    async def organization_member(self, org_bi, name):
+        requested = clean_string(
+            name or "", MAX_NODE_NAME).strip().lower()
+        if not requested:
+            return None
+        for member in await self.organization_members(org_bi):
+            if member["name"] == requested:
+                return member
+        return None
+
+    async def organization_teams(self, org_bi):
+        rows = await d1_all(
+            self.env,
+            "SELECT team FROM org_teams WHERE org_bi=? "
+            "ORDER BY team COLLATE NOCASE LIMIT 200",
+            str(org_bi or ""),
+        )
+        return [
+            clean_string(row.get("team"), MAX_NODE_NAME).strip().lower()
+            for row in rows or []
+            if valid_node_name(clean_string(
+                row.get("team"), MAX_NODE_NAME).strip().lower())
+        ]
+
+    async def team_member(self, org_bi, team, name):
+        member = await self.organization_member(org_bi, name)
+        if not member:
+            return False
+        row = await d1_first(
+            self.env,
+            "SELECT 1 AS one FROM org_team_members "
+            "WHERE org_bi=? AND team=? AND member_bi=?",
+            str(org_bi or ""),
+            clean_string(team, MAX_NODE_NAME).strip().lower(),
+            member["bi"],
+        )
+        return bool(row)
 
     async def marketing_members(self, org_bi):
         """Return active users on an authoritative Marketing floor team."""
@@ -8500,9 +8646,12 @@ async def world_workshops_handler(env, request, path):
         _WorldCommunityRuntime(env, request), path)
 
 
-async def world_office_marketing_tasks_handler(env, request, path):
+async def organization_tasks_handler(env, request, path):
     return await world_office_tasks.handle(
         _OfficeMarketingTasksRuntime(env, request), path)
+
+
+world_office_marketing_tasks_handler = organization_tasks_handler
 
 
 async def world_build_board_handler(env, request, path):
@@ -8948,6 +9097,30 @@ WORLD_QA_CARDS = (
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
 
 
+async def _organization_qa_access(env, org_bi, account_bi, actor):
+    """QA access without broadening organization or Office permissions."""
+    role = await _org_role(env, org_bi, actor)
+    if role in ("owner", "admin"):
+        return True, role, False
+    internal = await d1_first(
+        env,
+        "SELECT 1 AS one FROM org_team_members "
+        "WHERE org_bi=? AND member_bi=? "
+        "AND team IN ('quality-assurance','qa') LIMIT 1",
+        org_bi, str(account_bi or ""),
+    )
+    if internal:
+        return True, role, False
+    external = await d1_first(
+        env,
+        "SELECT 1 AS one FROM org_team_collaborators "
+        "WHERE org_bi=? AND account_bi=? "
+        "AND team IN ('quality-assurance','qa') LIMIT 1",
+        org_bi, str(account_bi or ""),
+    )
+    return bool(external), role, bool(external)
+
+
 async def world_qa_handler(env, request):
     await ensure_schema(env)
     method = method_name(request)
@@ -8963,7 +9136,10 @@ async def world_qa_handler(env, request):
             return json_response({"ok": False, "error": "origin_not_allowed"},
                                  status=403)
         try:
-            data = await bounded_json_request(request, 2048)
+            # A failed private task may include one compact screenshot. The
+            # image is validated and encrypted below; keep the whole request
+            # bounded well below the general upload ceiling.
+            data = await bounded_json_request(request, 640 * 1024)
         except RequestBodyTooLarge:
             return json_response({"ok": False, "error": "payload_too_large"},
                                  status=413)
@@ -9030,29 +9206,27 @@ async def world_qa_handler(env, request):
         return json_response({
             "ok": True,
             "authenticated": False,
+            "authorized": False,
+            "requiredTeam": "quality-assurance",
             "revision": WORLD_QA_DECK_REVISION,
-            "cards": [
-                {
-                    "key": key,
-                    "title": title,
-                    "howToTest": how_to_test,
-                    "global": global_reviews.get(
-                        key,
-                        {"pass": 0, "fail": 0, "unsure": 0, "total": 0},
-                    ),
-                }
-                for key, title, how_to_test in deck_cards
-            ],
+            "cards": [],
             "reviews": {},
             "stats": {"pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
-                      "total": len(deck_cards)},
-            "globalReviews": global_reviews,
-            "globalStats": global_stats,
+                      "total": 0},
+            "globalReviews": {},
+            "globalStats": {
+                "pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
+                "testers": 0, "total": 0,
+            },
             "canRoute": False,
         }, cache_control="no-store")
     actor = clean_string(
         (record or {}).get("name"), MAX_NODE_NAME).strip().lower()
     can_route = False
+    can_private_qa = False
+    external_qa = False
+    private_tasks = {}
+    qa_org_bi = ""
     if actor:
         org_bi, org_row = await _org_row(env, "forkmesh")
         if org_row:
@@ -9062,6 +9236,73 @@ async def world_qa_handler(env, request):
                 role in ("owner", "admin")
                 or permission in ("maintain", "admin")
             )
+            can_private_qa, _role, external_qa = (
+                await _organization_qa_access(
+                    env, org_bi, account_bi, actor)
+            )
+            qa_org_bi = org_bi
+    if not can_private_qa:
+        return json_response({
+            "ok": True,
+            "authenticated": True,
+            "authorized": False,
+            "requiredTeam": "quality-assurance",
+            "revision": WORLD_QA_DECK_REVISION,
+            "cards": [],
+            "reviews": {},
+            "stats": {
+                "pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
+                "total": 0,
+            },
+            "globalReviews": {},
+            "globalStats": {
+                "pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
+                "testers": 0, "total": 0,
+            },
+            "canRoute": False,
+            "canViewPrivateTasks": False,
+        }, cache_control="no-store")
+    if can_private_qa and qa_org_bi:
+        task_rows = await d1_all(
+            env,
+            "SELECT task_id,department,team,qa_status,qa_reviewed_at,data "
+            "FROM organization_tasks "
+            "WHERE org_bi=? AND qa_requested_at>0 "
+            "ORDER BY qa_requested_at DESC,task_id DESC LIMIT 64",
+            qa_org_bi,
+        )
+        for task_row in task_rows or []:
+            task_id = str(task_row.get("task_id") or "").lower()
+            if not re.fullmatch(r"[a-f0-9]{32}", task_id):
+                continue
+            try:
+                task_data = await decrypt_row(env, task_row.get("data"))
+            except Exception:
+                task_data = None
+            if not isinstance(task_data, dict):
+                continue
+            key = "task:" + task_id
+            title = clean_string(task_data.get("title"), 160).strip()
+            how_to_test = clean_string(
+                task_data.get("howToTest"), 720).strip()
+            if not title:
+                continue
+            if not how_to_test:
+                how_to_test = (
+                    "Follow the normal user flow and confirm the requested "
+                    "behavior without regressions."
+                )
+            private_tasks[key] = {
+                "row": task_row,
+                "data": task_data,
+                "title": title,
+                "howToTest": how_to_test,
+            }
+            if key not in deck_keys:
+                deck_cards.append((key, title, how_to_test))
+                deck_keys.add(key)
+    deck_cards = deck_cards[:128]
+    deck_keys = {item[0] for item in deck_cards}
     if method == "POST":
         item_key = clean_string(data.get("key"), 80)
         if item_key not in deck_keys:
@@ -9147,14 +9388,100 @@ async def world_qa_handler(env, request):
             if verdict not in ("pass", "fail", "unsure"):
                 return json_response(
                     {"ok": False, "error": "invalid_verdict"}, status=400)
-            await d1_run(
-                env,
-                "INSERT INTO world_qa_reviews("
-                "account_bi,item_key,verdict,reviewed_at) VALUES(?,?,?,?) "
-                "ON CONFLICT(account_bi,item_key) DO UPDATE SET "
-                "verdict=excluded.verdict,reviewed_at=excluded.reviewed_at",
-                account_bi, item_key, verdict, int(Date.now()),
-            )
+            if item_key in private_tasks:
+                if not can_private_qa or not qa_org_bi:
+                    return json_response(
+                        {"ok": False, "error": "qa_team_required"},
+                        status=403,
+                    )
+                task_id = item_key[5:]
+                task_record = private_tasks[item_key]
+                task_verdict = {
+                    "pass": "passed",
+                    "fail": "failed",
+                    "unsure": "unknown",
+                }[verdict]
+                failure_reason = clean_string(
+                    data.get("failureReason"), 1000).strip()
+                failure_screenshot = str(
+                    data.get("screenshot") or "").strip()
+                if verdict == "fail" and not failure_reason:
+                    return json_response(
+                        {"ok": False, "error": "failure_reason_required"},
+                        status=400,
+                    )
+                if failure_screenshot and (
+                    verdict != "fail"
+                    or len(failure_screenshot) > 480_000
+                    or not re.fullmatch(
+                        r"data:image/(?:png|jpeg|webp);base64,"
+                        r"[A-Za-z0-9+/=]+",
+                        failure_screenshot,
+                    )
+                ):
+                    return json_response(
+                        {"ok": False, "error": "invalid_qa_screenshot"},
+                        status=400,
+                    )
+                if verdict != "fail":
+                    failure_reason = ""
+                    failure_screenshot = ""
+                reviewed_at = int(Date.now())
+                review_data = {
+                    "reviewer": actor,
+                    "failureReason": failure_reason,
+                    "failureScreenshot": failure_screenshot,
+                }
+                await d1_run(
+                    env,
+                    "INSERT INTO organization_task_qa_reviews "
+                    "(task_id,org_bi,reviewer_bi,verdict,data,reviewed_at) "
+                    "VALUES (?,?,?,?,?,?) "
+                    "ON CONFLICT(task_id,reviewer_bi) DO UPDATE SET "
+                    "verdict=excluded.verdict,data=excluded.data,"
+                    "reviewed_at=excluded.reviewed_at",
+                    task_id, qa_org_bi, account_bi, task_verdict,
+                    await encrypt_row(env, review_data),
+                    reviewed_at,
+                )
+                task_data = dict(task_record["data"])
+                task_data["qaReviewer"] = actor
+                task_data["qaFailureReason"] = failure_reason
+                task_data["qaFailureScreenshot"] = failure_screenshot
+                await d1_run(
+                    env,
+                    "UPDATE organization_tasks SET qa_status=?,"
+                    "qa_reviewer_bi=?,qa_reviewed_at=?,data=?,updated_at=? "
+                    "WHERE org_bi=? AND task_id=? AND qa_requested_at>0",
+                    task_verdict, account_bi, reviewed_at,
+                    await encrypt_row(env, task_data), reviewed_at,
+                    qa_org_bi, task_id,
+                )
+                task_record["row"] = {
+                    **task_record["row"],
+                    "qa_status": task_verdict,
+                    "qa_reviewed_at": reviewed_at,
+                }
+                task_record["data"] = task_data
+                await _audit_sensitive_action(
+                    env, actor, "organization.task_qa_reviewed",
+                    "organization_task", task_id, "success",
+                    {
+                        "verdict": task_verdict,
+                        "external": external_qa,
+                        "hasFailureReason": bool(failure_reason),
+                        "hasScreenshot": bool(failure_screenshot),
+                    },
+                )
+            else:
+                await d1_run(
+                    env,
+                    "INSERT INTO world_qa_reviews("
+                    "account_bi,item_key,verdict,reviewed_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(account_bi,item_key) DO UPDATE SET "
+                    "verdict=excluded.verdict,reviewed_at=excluded.reviewed_at",
+                    account_bi, item_key, verdict, int(Date.now()),
+                )
         global_reviews, global_stats = await global_qa_snapshot()
     rows = await d1_all(
         env,
@@ -9171,6 +9498,39 @@ async def world_qa_handler(env, request):
                 "verdict": verdict,
                 "reviewedAt": max(0, int(row.get("reviewed_at") or 0)),
             }
+    if private_tasks:
+        private_rows = await d1_all(
+            env,
+            "SELECT task_id,verdict,data,reviewed_at "
+            "FROM organization_task_qa_reviews "
+            "WHERE org_bi=? AND reviewer_bi=? "
+            "ORDER BY reviewed_at DESC LIMIT 128",
+            qa_org_bi, account_bi,
+        )
+        for row in private_rows or []:
+            key = "task:" + str(row.get("task_id") or "")
+            task_verdict = str(row.get("verdict") or "")
+            if key in private_tasks and task_verdict in (
+                    "passed", "failed", "unknown"):
+                try:
+                    review_data = await decrypt_row(env, row.get("data"))
+                except Exception:
+                    review_data = {}
+                if not isinstance(review_data, dict):
+                    review_data = {}
+                reviews[key] = {
+                    "verdict": {
+                        "passed": "pass",
+                        "failed": "fail",
+                        "unknown": "unsure",
+                    }[task_verdict],
+                    "reviewedAt": max(
+                        0, int(row.get("reviewed_at") or 0)),
+                    "failureReason": clean_string(
+                        review_data.get("failureReason"), 1000).strip(),
+                    "hasFailureScreenshot": bool(
+                        review_data.get("failureScreenshot")),
+                }
     stats = {
         "pass": sum(1 for item in reviews.values()
                     if item["verdict"] == "pass"),
@@ -9184,6 +9544,8 @@ async def world_qa_handler(env, request):
     return json_response({
         "ok": True,
         "authenticated": True,
+        "authorized": True,
+        "requiredTeam": "quality-assurance",
         "revision": WORLD_QA_DECK_REVISION,
         "cards": [
             {
@@ -9193,6 +9555,32 @@ async def world_qa_handler(env, request):
                 "global": global_reviews.get(
                     key, {"pass": 0, "fail": 0, "unsure": 0, "total": 0}),
                 **reviews.get(key, {}),
+                **({
+                    "organizationTask": True,
+                    "department": str(
+                        private_tasks[key]["row"].get("department") or ""),
+                    "team": str(
+                        private_tasks[key]["row"].get("team") or ""),
+                    "taskQaStatus": str(
+                        private_tasks[key]["row"].get("qa_status")
+                        or "unknown"),
+                    "lastReviewer": clean_string(
+                        private_tasks[key]["data"].get("qaReviewer"),
+                        MAX_NODE_NAME,
+                    ).strip().lower(),
+                    "lastReviewedAt": max(
+                        0,
+                        int(private_tasks[key]["row"].get(
+                            "qa_reviewed_at") or 0),
+                    ),
+                    "failureReason": clean_string(
+                        private_tasks[key]["data"].get("qaFailureReason"),
+                        1000,
+                    ).strip(),
+                    "hasFailureScreenshot": bool(
+                        private_tasks[key]["data"].get(
+                            "qaFailureScreenshot")),
+                } if key in private_tasks else {}),
             }
             for key, title, how_to_test in deck_cards
         ],
@@ -9201,13 +9589,15 @@ async def world_qa_handler(env, request):
         "globalReviews": global_reviews,
         "globalStats": global_stats,
         "canRoute": can_route,
+        "canViewPrivateTasks": can_private_qa,
+        "externalQaCollaborator": external_qa,
         **({"routeResult": route_result}
            if method == "POST" and "route_result" in locals() else {}),
     }, cache_control="no-store")
 
 
 WORLD_PREFERENCES_MAX_BYTES = 320 * 1024
-WORLD_PREFERENCES_MAX_VIEWS = 4
+WORLD_PREFERENCES_MAX_VIEWS = 5
 WORLD_PREFERENCES_PRIVACY_KEYS = (
     "name", "country", "browser", "os", "activity", "inactivity",
     "localTime", "nodes",
@@ -11562,6 +11952,107 @@ async def signup_rate_check(env, ip_bi):
     return None
 
 
+async def _catalog_logical_owners(env, repository_rows):
+    """Return public user/organization owners for physical catalog routes.
+
+    Repository bytes are published by nodes, but authoring controls should be
+    presented in terms of the user or organization that owns the work.  Both
+    relationships are already public (node ownership and organization repo
+    aliases); resolving them in bounded batches avoids an account request for
+    every option in the World composer.
+    """
+
+    rows = [
+        (record, str(owner_bi or ""))
+        for record, owner_bi in repository_rows
+        if isinstance(record, dict) and str(owner_bi or "")
+    ]
+    owner_bis = list(dict.fromkeys(owner_bi for _record, owner_bi in rows))
+    user_by_owner_bi = {}
+    for offset in range(0, len(owner_bis), 80):
+        chunk = owner_bis[offset:offset + 80]
+        placeholders = ",".join("?" for _value in chunk)
+        direct = await d1_all(
+            env,
+            "SELECT user_bi,username FROM users WHERE user_bi IN ("
+            + placeholders + ")",
+            *chunk,
+        )
+        linked = await d1_all(
+            env,
+            "SELECT n.node_bi,u.username FROM nodes n "
+            "JOIN users u ON u.user_bi=n.user_bi WHERE n.node_bi IN ("
+            + placeholders + ")",
+            *chunk,
+        )
+        for value in direct or []:
+            owner = clean_string(
+                value.get("username"), MAX_NODE_NAME).strip().lower()
+            if valid_node_name(owner):
+                user_by_owner_bi[str(value.get("user_bi") or "")] = owner
+        for value in linked or []:
+            owner = clean_string(
+                value.get("username"), MAX_NODE_NAME).strip().lower()
+            if valid_node_name(owner):
+                user_by_owner_bi[str(value.get("node_bi") or "")] = owner
+
+    organization_by_route = {}
+    routes = list(dict.fromkeys(
+        (
+            clean_string(record.get("owner"), MAX_NODE_NAME).strip().lower(),
+            clean_string(record.get("name"), MAX_REPO_SEGMENT).strip(),
+        )
+        for record, _owner_bi in rows
+    ))
+    for offset in range(0, len(routes), 40):
+        chunk = routes[offset:offset + 40]
+        where = " OR ".join(
+            "(r.node_owner=? AND r.repo=?)" for _route in chunk)
+        arguments = [
+            item for route in chunk for item in route
+        ]
+        aliases = await d1_all(
+            env,
+            "SELECT r.node_owner,r.repo,o.name FROM org_repos r "
+            "JOIN orgs o ON o.org_bi=r.org_bi WHERE " + where
+            + " ORDER BY o.name",
+            *arguments,
+        )
+        for value in aliases or []:
+            route = (
+                clean_string(
+                    value.get("node_owner"), MAX_NODE_NAME).strip().lower(),
+                clean_string(value.get("repo"), MAX_REPO_SEGMENT).strip(),
+            )
+            organization = clean_string(
+                value.get("name"), MAX_NODE_NAME).strip().lower()
+            if valid_node_name(organization):
+                organization_by_route.setdefault(route, []).append(
+                    organization)
+
+    for record, owner_bi in rows:
+        route = (
+            clean_string(record.get("owner"), MAX_NODE_NAME).strip().lower(),
+            clean_string(record.get("name"), MAX_REPO_SEGMENT).strip(),
+        )
+        logical = []
+        user_owner = user_by_owner_bi.get(owner_bi, "")
+        if user_owner:
+            logical.append({"kind": "user", "owner": user_owner})
+        for organization in organization_by_route.get(route, []):
+            if not any(
+                    value["kind"] == "organization"
+                    and value["owner"] == organization
+                    for value in logical):
+                logical.append({
+                    "kind": "organization",
+                    "owner": organization,
+                })
+        record["ownerKind"] = logical[0]["kind"] if logical else "node"
+        record["logicalOwner"] = logical[0]["owner"] if logical else ""
+        record["logicalOwners"] = logical[:20]
+
+
 async def catalog_handler(env, request):
     await ensure_schema(env)
     method = method_name(request)
@@ -11655,6 +12146,7 @@ async def catalog_handler(env, request):
             if str(row.get("repo_bi") or "")
         }
         repos = []
+        repository_owner_rows = []
         ssh_gateway = _ssh_gateway_settings(env)
         for r in rows:
             rec = await decrypt_row(env, r["data"])
@@ -11730,6 +12222,8 @@ async def catalog_handler(env, request):
                         rec["privateAccessPath"] = (
                             "/api/private-replicas/" + access_id)
                 repos.append(rec)
+                repository_owner_rows.append((rec, owner_bi))
+        await _catalog_logical_owners(env, repository_owner_rows)
         # Second pass: mark each repo cloneable when its own host is offline but a
         # peer mirroring the same logical repo is online — the relay serves that
         # mirror in place through the repo's own URL (adhoc #61), so the website
@@ -20654,6 +21148,9 @@ async def org_handler(env, request, org):
             await d1_run(env, "DELETE FROM org_repos WHERE org_bi=?", org_bi)
             await d1_run(
                 env, "DELETE FROM org_team_members WHERE org_bi=?", org_bi)
+            await d1_run(
+                env, "DELETE FROM org_team_collaborators WHERE org_bi=?",
+                org_bi)
             await d1_run(env, "DELETE FROM org_teams WHERE org_bi=?", org_bi)
             await d1_run(env, "DELETE FROM org_members WHERE org_bi=?", org_bi)
             await d1_run(
@@ -20894,11 +21391,12 @@ async def org_teams_handler(env, request, org):
             return json_response({"error": "forbidden"}, status=403)
         rows = await d1_all(
             env,
-            "SELECT t.team AS team, t.permission AS permission, "
-            "COUNT(m.member_bi) AS members FROM org_teams t "
-            "LEFT JOIN org_team_members m "
-            "ON m.org_bi = t.org_bi AND m.team = t.team "
-            "WHERE t.org_bi=? GROUP BY t.team, t.permission ORDER BY t.team",
+            "SELECT t.team AS team,t.permission AS permission,"
+            "(SELECT COUNT(*) FROM org_team_members m "
+            " WHERE m.org_bi=t.org_bi AND m.team=t.team)+"
+            "(SELECT COUNT(*) FROM org_team_collaborators c "
+            " WHERE c.org_bi=t.org_bi AND c.team=t.team) AS members "
+            "FROM org_teams t WHERE t.org_bi=? ORDER BY t.team",
             org_bi)
         return json_response({"ok": True, "visibility": access["floors"],
                               "teams": [
@@ -20931,6 +21429,11 @@ async def org_teams_handler(env, request, org):
         try:
             await d1_run(
                 env, "DELETE FROM org_team_members WHERE org_bi=? AND team=?",
+                org_bi, team)
+            await d1_run(
+                env,
+                "DELETE FROM org_team_collaborators "
+                "WHERE org_bi=? AND team=?",
                 org_bi, team)
             await d1_run(
                 env, "DELETE FROM org_teams WHERE org_bi=? AND team=?",
@@ -21003,14 +21506,18 @@ async def org_team_members_handler(env, request, org, team):
             return json_response({"error": "forbidden"}, status=403)
         rows = await d1_all(
             env,
-            "SELECT name, created_at FROM org_team_members "
-            "WHERE org_bi=? AND team=? ORDER BY created_at ASC",
-            org_bi, team)
+            "SELECT name,created_at,0 AS external FROM org_team_members "
+            "WHERE org_bi=? AND team=? UNION ALL "
+            "SELECT name,created_at,1 AS external "
+            "FROM org_team_collaborators WHERE org_bi=? AND team=? "
+            "ORDER BY created_at ASC",
+            org_bi, team, org_bi, team)
         return json_response({
             "ok": True, "team": team,
             "permission": str(team_row.get("permission") or ""),
             "members": [{"name": str(r.get("name") or ""),
-                         "since": int(r.get("created_at") or 0)}
+                         "since": int(r.get("created_at") or 0),
+                         "external": int(r.get("external") or 0) == 1}
                         for r in rows or []]})
     if method not in ("POST", "DELETE"):
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -21042,6 +21549,11 @@ async def org_team_members_handler(env, request, org, team):
                 "DELETE FROM org_team_members "
                 "WHERE org_bi=? AND team=? AND member_bi=?",
                 org_bi, team, member_bi)
+            await d1_run(
+                env,
+                "DELETE FROM org_team_collaborators "
+                "WHERE org_bi=? AND team=? AND account_bi=?",
+                org_bi, team, member_bi)
         except Exception:
             await _audit_sensitive_action(
                 env, account, audit_action, "organization_team_member",
@@ -21053,14 +21565,42 @@ async def org_team_members_handler(env, request, org, team):
             org_name + "/" + team + "/" + member, "success")
         return json_response({"ok": True, "team": team, "member": member,
                               "removed": True})
-    if not await _org_role(env, org_bi, member):
-        return json_response({"error": "not_a_member"}, status=400)
+    member_role = await _org_role(env, org_bi, member)
+    external = data.get("external") is True and not member_role
+    if not member_role and not external:
+        return json_response({
+            "error": "not_a_member",
+            "hint": "Set external=true to add a limited team collaborator.",
+        }, status=400)
+    if external:
+        _, member_record = await _account_row(env, member)
+        if (
+            not member_record
+            or member_record.get("status") != "active"
+            or _account_kind(member_record) != "user"
+        ):
+            return json_response(
+                {"error": "active_user_required"}, status=400)
     try:
-        await d1_run(
-            env,
-            "INSERT OR IGNORE INTO org_team_members "
-            "(org_bi, team, member_bi, name, created_at) VALUES (?,?,?,?,?)",
-            org_bi, team, member_bi, member, int(Date.now()))
+        if external:
+            await d1_run(
+                env,
+                "INSERT OR IGNORE INTO org_team_collaborators "
+                "(org_bi,team,account_bi,name,added_by_bi,created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                org_bi, team, member_bi, member,
+                await blind_index(env, account), int(Date.now()))
+        else:
+            await d1_run(
+                env,
+                "INSERT OR IGNORE INTO org_team_members "
+                "(org_bi, team, member_bi, name, created_at) VALUES (?,?,?,?,?)",
+                org_bi, team, member_bi, member, int(Date.now()))
+            await d1_run(
+                env,
+                "DELETE FROM org_team_collaborators "
+                "WHERE org_bi=? AND team=? AND account_bi=?",
+                org_bi, team, member_bi)
     except Exception:
         await _audit_sensitive_action(
             env, account, audit_action, "organization_team_member",
@@ -21071,7 +21611,7 @@ async def org_team_members_handler(env, request, org, team):
         env, account, audit_action, "organization_team_member",
         org_name + "/" + team + "/" + member, "success")
     return json_response({"ok": True, "team": team, "member": member,
-                          "added": True})
+                          "external": external, "added": True})
 
 
 async def org_repos_handler(env, request, org):
@@ -21771,6 +22311,7 @@ async def _admin_verify_email(env, request):
 # When it's unset the sender is a no-op, so a fork without an email provider
 # still works — callers fall back to the admin verification queue.
 MAILTRAP_SEND_URL = "https://send.api.mailtrap.io/api/send"
+FORKMESH_SITE_URL = "https://forkmesh.com/"
 
 
 async def _send_email(env, to_email, subject, text, html=None,
@@ -21783,6 +22324,25 @@ async def _send_email(env, to_email, subject, text, html=None,
     sender_name = (from_name or getattr(env, "MAILTRAP_SENDER_NAME", "")
                    or "ForkMesh").strip()
     url = (getattr(env, "MAILTRAP_API_URL", "") or MAILTRAP_SEND_URL).strip()
+    text = str(text or "").rstrip()
+    if "Open ForkMesh: " + FORKMESH_SITE_URL not in text:
+        text += "\n\nOpen ForkMesh: " + FORKMESH_SITE_URL
+    if not html:
+        html = _forkmesh_email_card_html(
+            _html_escape(subject or "ForkMesh"),
+            "A message from ForkMesh.",
+            "<div class=\"fm-text\" style=\"white-space:pre-wrap;color:#24292f;"
+            "font-size:14px\">" + _html_escape(text) + "</div>",
+        )
+    elif "data-forkmesh-site-action" not in html:
+        action_html = _forkmesh_email_action_html(
+            "Open ForkMesh", FORKMESH_SITE_URL)
+        closing = "</div></div></body></html>"
+        html = (
+            html.replace(closing, action_html + closing, 1)
+            if closing in html else html + action_html
+        )
+    html = _light_email_fragment(html)
     payload = {
         "from": {"email": sender, "name": sender_name},
         "to": [{"email": to_email}],
@@ -22191,9 +22751,11 @@ FEEDBACK_EMAIL_FROM_NAME = "ForkMesh Founders"
 
 
 def _feedback_email_content(name):
+    feedback_url = (
+        "https://forkmesh.com/world/?landmark=office&feedback=1")
     subject = "How's ForkMesh treating you, %s?" % name
     text = (
-        "Hey %s,\n\n"
+        "Hey " + name + ",\n\n"
         "You joined ForkMesh yesterday — thank you for giving it a shot. "
         "We're a small team building this in the open, and honest answers "
         "from real users steer what we build next.\n\n"
@@ -22203,9 +22765,10 @@ def _feedback_email_content(name):
         "3. If we could build or fix ONE thing for you next, what would it be?\n\n"
         "Anything else on your mind — rough edges, wild ideas, dealbreakers — "
         "we want that too.\n\n"
-        "Just hit reply; this address goes straight to the founders and we "
-        "read and answer every message.\n\n"
-        "— the ForkMesh founders\n" % name)
+        "Use the Office lobby feedback kiosk:\n" + feedback_url + "\n\n"
+        "Or just hit reply; this address goes straight to the founders and "
+        "we read and answer every message.\n\n"
+        "— the ForkMesh founders\n")
     intro = (
         "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#d4d4d8;font-size:14px\">"
         "Hey <strong class=\"fm-strong\" style=\"color:#f5f5f5\">@" + _html_escape(name) +
@@ -22228,14 +22791,19 @@ def _feedback_email_content(name):
         "Anything else on your mind — rough edges, wild ideas, dealbreakers — "
         "we want that too.</p>"
         "<p class=\"fm-text\" style=\"margin:12px 0 0;color:#d4d4d8;font-size:14px\">"
-        "<strong class=\"fm-strong\" style=\"color:#f5f5f5\">Just hit reply</strong> — "
-        "this address goes straight to the founders and we read and answer "
-        "every message.</p>")
+        "Add feedback in the Office lobby kiosk, or "
+        "<strong class=\"fm-strong\" style=\"color:#f5f5f5\">just hit reply</strong> — "
+        "this address goes straight to the founders.</p>"
+        "<p style=\"margin:18px 0 0\"><a href=\"" + feedback_url + "\" "
+        "style=\"display:inline-block;border:1px solid #1a7f37;"
+        "border-radius:6px;background:#1f883d;color:#ffffff;padding:10px 15px;"
+        "text-decoration:none;font-size:14px;font-weight:800\">"
+        "Add feedback in the lobby</a></p>")
     footer_html = (
         "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">"
         "— the ForkMesh founders</p>")
-    html = _forkmesh_email_card_html("How are we doing?", intro, body_html,
-                                     footer_html)
+    html = _forkmesh_email_card_html(
+        "How are we doing?", intro, body_html, footer_html)
     return subject, text, html
 
 
@@ -28373,22 +28941,53 @@ async def send_general_chat_digests(env):
         await _save_account(env, name_bi, rec)
 
 
-def _forkmesh_email_card_html(heading, intro_html, body_html, footer_html=""):
-    # Inline light colors are the reliable fallback for older mail clients;
-    # clients that honor the native setting apply the dark override below.
+def _light_email_fragment(fragment):
+    """Normalize legacy dark inline fragments into one high-contrast theme."""
+    rendered = str(fragment or "")
+    for old, new in (
+        ("#090909", "#f6f8fa"),
+        ("#0f0f11", "#f6f8fa"),
+        ("#141416", "#ffffff"),
+        ("#313134", "#d0d7de"),
+        ("#f5f5f5", "#24292f"),
+        ("#d4d4d8", "#24292f"),
+        ("#a3a3a3", "#57606a"),
+        ("#8a8a93", "#57606a"),
+        ("#4ade80", "#1f883d"),
+        ("#052e16", "#ffffff"),
+    ):
+        rendered = rendered.replace(old, new)
+    return rendered
+
+
+def _forkmesh_email_action_html(label, url):
+    return (
+        "<p data-forkmesh-site-action style=\"margin:22px 0 0\">"
+        "<a href=\"" + _html_escape(url or FORKMESH_SITE_URL) + "\" "
+        "style=\"display:inline-block;border:1px solid #1a7f37;"
+        "border-radius:6px;background:#1f883d;color:#ffffff;"
+        "padding:10px 15px;text-decoration:none;font-size:14px;"
+        "font-weight:800\">" + _html_escape(label or "Open ForkMesh") +
+        "</a></p>"
+    )
+
+
+def _forkmesh_email_card_html(
+        heading, intro_html, body_html, footer_html="",
+        action_label="Open ForkMesh",
+        action_url="https://forkmesh.com/"):
+    # One explicit light palette avoids the unreadable hybrid produced when an
+    # email client honors only some dark-mode declarations or inline colors.
+    intro_html = _light_email_fragment(intro_html)
+    body_html = _light_email_fragment(body_html)
+    footer_html = _light_email_fragment(footer_html)
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        "<meta name=\"color-scheme\" content=\"light dark\">"
-        "<meta name=\"supported-color-schemes\" content=\"light dark\">"
-        "<style>:root{color-scheme:light dark;supported-color-schemes:light dark}"
-        "@media (prefers-color-scheme:dark){body,.fm-bg{background:#090909!important;"
-        "color:#f5f5f5!important}.fm-card{background:#141416!important;"
-        "border-color:#313134!important}.fm-h1,.fm-strong,.fm-item-title{"
-        "color:#f5f5f5!important}.fm-text,.fm-item-body{color:#d4d4d8!important}"
-        ".fm-brand,.fm-muted{color:#a3a3a3!important}.fm-item{background:#0f0f11"
-        "!important;border-color:#313134!important}.fm-link{color:#4ade80!important}}"
-        "</style>"
+        "<meta name=\"color-scheme\" content=\"light\">"
+        "<meta name=\"supported-color-schemes\" content=\"light\">"
+        "<style>:root{color-scheme:light;supported-color-schemes:light}"
+        "a{color:#0969da}</style>"
         "</head>"
         "<body style=\"margin:0;padding:0;background:#f4f4f5\">"
         "<div class=\"fm-bg\" style=\"margin:0;padding:28px 16px;background:#f4f4f5;"
@@ -28403,6 +29002,7 @@ def _forkmesh_email_card_html(heading, intro_html, body_html, footer_html=""):
         "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#3f3f46;font-size:15px\">" +
         intro_html + "</p>" + body_html +
         (footer_html if footer_html else "") +
+        _forkmesh_email_action_html(action_label, action_url) +
         "</div></div></body></html>")
 
 
@@ -31805,6 +32405,298 @@ async def agents_ack_handler(env, request, owner, repo):
     return json_response({"ok": True, "acknowledged": len(sealed_ids)})
 
 
+# --- Organization bot credentials ------------------------------------------
+
+ORG_BOT_TOKEN_PROVIDERS = ("codex", "claude-code")
+ORG_BOT_TOKEN_SCOPES = {
+    "world.presence": "Appear as an identified bot in the World",
+    "world.chat.write": "Publish bot updates to permitted World chat",
+    "world.interact": "Move and use non-administrative World interactions",
+    "organization.tasks.read": "Read organization tasks assigned to the bot",
+    "organization.tasks.write": "Create and update organization tasks",
+    "repository.contents.read": "Read linked repository content",
+    "repository.issues.write": "Create and update linked repository issues",
+    "repository.pulls.review": "Inspect and review pull requests",
+    "agents.sessions.run": "Claim and run scoped Codex or Claude sessions",
+    "local.connect": "Link this credential to an attended local computer",
+}
+ORG_BOT_DEFAULT_SCOPES = tuple(ORG_BOT_TOKEN_SCOPES.keys())
+ORG_BOT_TOKEN_RE = re.compile(
+    r"^fmbot_([0-9a-f]{32})_([A-Za-z0-9_-]{43})$")
+ORG_BOT_TOKEN_MAX_ACTIVE = 32
+
+
+def _new_org_bot_token():
+    token_id = _ap_uuid().replace("-", "")
+    raw = bytes(js_crypto.getRandomValues(Uint8Array.new(32)).to_py())
+    secret = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    return token_id, "fmbot_%s_%s" % (token_id, secret)
+
+
+def _org_bot_scopes(value, default=False):
+    supplied = (
+        list(ORG_BOT_DEFAULT_SCOPES)
+        if default and value is None
+        else value
+    )
+    if not isinstance(supplied, list):
+        return None
+    scopes = []
+    for item in supplied:
+        scope = clean_string(item, 64).strip().lower()
+        if scope not in ORG_BOT_TOKEN_SCOPES:
+            return None
+        if scope not in scopes:
+            scopes.append(scope)
+    return scopes
+
+
+async def _org_bot_token_context(env, request, touch=False):
+    header = str(request.headers.get("authorization") or "").strip()
+    if not header.lower().startswith("bearer "):
+        return None
+    token = header[7:].strip()
+    match = ORG_BOT_TOKEN_RE.fullmatch(token)
+    if not match:
+        return None
+    row = await d1_first(
+        env,
+        "SELECT t.token_id,t.org_bi,t.provider,t.data,t.created_at,"
+        "t.last_used_at,t.expires_at,t.revoked_at,o.name AS org_name "
+        "FROM org_bot_tokens t JOIN orgs o ON o.org_bi=t.org_bi "
+        "WHERE t.secret_bi=?",
+        await blind_index(env, "org-bot-token:" + token),
+    )
+    now = int(Date.now())
+    if (
+        not row
+        or str(row.get("token_id") or "") != match.group(1)
+        or int(row.get("revoked_at") or 0) > 0
+        or (
+            int(row.get("expires_at") or 0) > 0
+            and int(row.get("expires_at") or 0) <= now
+        )
+    ):
+        return None
+    record = await decrypt_row(env, row.get("data"))
+    if not isinstance(record, dict):
+        return None
+    scopes = _org_bot_scopes(record.get("scopes"))
+    if scopes is None:
+        return None
+    context = {
+        "tokenId": str(row.get("token_id") or ""),
+        "orgBi": str(row.get("org_bi") or ""),
+        "org": str(row.get("org_name") or ""),
+        "provider": str(row.get("provider") or ""),
+        "label": clean_string(record.get("label"), 80),
+        "deviceName": clean_string(record.get("deviceName"), 80),
+        "linkedAt": int(record.get("linkedAt") or 0),
+        "scopes": scopes,
+        "record": record,
+        "createdAt": int(row.get("created_at") or 0),
+        "expiresAt": int(row.get("expires_at") or 0),
+    }
+    if touch and now - int(row.get("last_used_at") or 0) >= 60_000:
+        await d1_run(
+            env,
+            "UPDATE org_bot_tokens SET last_used_at=? "
+            "WHERE token_id=? AND revoked_at=0",
+            now, context["tokenId"],
+        )
+    return context
+
+
+async def org_bot_tokens_handler(env, request, org):
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST", "DELETE"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    data = {}
+    if method != "GET":
+        if not _request_same_origin(request):
+            return json_response({"error": "origin_not_allowed"}, status=403)
+        try:
+            data = await bounded_json_request(request)
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+    org_bi, org_row = await _org_row(env, org)
+    if not org_row:
+        return json_response({"error": "not_found"}, status=404)
+    account_bi, account = await _account_session_record(env, request, data)
+    actor = clean_string(
+        (account or {}).get("name"), MAX_NODE_NAME).strip().lower()
+    if not account_bi or not actor:
+        return json_response({"error": "invalid_session"}, status=401)
+    if await _org_role(env, org_bi, actor) not in ("owner", "admin"):
+        return json_response({"error": "forbidden"}, status=403)
+    org_name = str(org_row.get("name") or org)
+
+    if method == "GET":
+        rows = await d1_all(
+            env,
+            "SELECT token_id,provider,data,created_at,last_used_at,expires_at,"
+            "revoked_at FROM org_bot_tokens WHERE org_bi=? "
+            "ORDER BY created_at DESC LIMIT 64",
+            org_bi,
+        )
+        tokens = []
+        for row in rows or []:
+            record = await decrypt_row(env, row.get("data"))
+            if not isinstance(record, dict):
+                continue
+            tokens.append({
+                "id": str(row.get("token_id") or ""),
+                "provider": str(row.get("provider") or ""),
+                "label": clean_string(record.get("label"), 80),
+                "deviceName": clean_string(record.get("deviceName"), 80),
+                "linkedAt": int(record.get("linkedAt") or 0),
+                "scopes": _org_bot_scopes(record.get("scopes")) or [],
+                "createdBy": clean_string(record.get("createdBy"), MAX_NODE_NAME),
+                "createdAt": int(row.get("created_at") or 0),
+                "lastUsedAt": int(row.get("last_used_at") or 0),
+                "expiresAt": int(row.get("expires_at") or 0),
+                "revokedAt": int(row.get("revoked_at") or 0),
+            })
+        return json_response({
+            "ok": True,
+            "organization": org_name,
+            "permissions": [
+                {"scope": scope, "description": description, "default": True}
+                for scope, description in ORG_BOT_TOKEN_SCOPES.items()
+            ],
+            "tokens": tokens,
+            "plaintextRecovery": False,
+        }, cache_control="no-store")
+
+    if method == "DELETE":
+        token_id = clean_string(data.get("tokenId"), 32).lower()
+        if not re.fullmatch(r"[0-9a-f]{32}", token_id):
+            return json_response({"error": "invalid_token_id"}, status=400)
+        result = await d1_run(
+            env,
+            "UPDATE org_bot_tokens SET revoked_at=? "
+            "WHERE token_id=? AND org_bi=? AND revoked_at=0",
+            int(Date.now()), token_id, org_bi,
+        )
+        await _audit_sensitive_action(
+            env, actor, "organization.bot_token_revoke",
+            "organization_bot_token", org_name + "/" + token_id,
+            "success", {"changed": int(result.get("changes") or 0) > 0})
+        return json_response({
+            "ok": True,
+            "tokenId": token_id,
+            "revoked": int(result.get("changes") or 0) > 0,
+        }, cache_control="no-store")
+
+    provider = clean_string(data.get("provider"), 24).lower()
+    if provider not in ORG_BOT_TOKEN_PROVIDERS:
+        return json_response({"error": "invalid_provider"}, status=400)
+    label = clean_string(data.get("label"), 80).strip()
+    if not label:
+        label = "Codex bot" if provider == "codex" else "Claude bot"
+    scopes = _org_bot_scopes(data.get("scopes"), default=True)
+    if scopes is None or not scopes:
+        return json_response({"error": "invalid_bot_permissions"}, status=400)
+    count = await d1_first(
+        env,
+        "SELECT COUNT(*) AS n FROM org_bot_tokens "
+        "WHERE org_bi=? AND revoked_at=0 AND (expires_at=0 OR expires_at>?)",
+        org_bi, int(Date.now()),
+    )
+    if int((count or {}).get("n") or 0) >= ORG_BOT_TOKEN_MAX_ACTIVE:
+        return json_response({"error": "too_many_bot_tokens"}, status=429)
+    try:
+        expires_days = int(data.get("expiresDays") or 90)
+    except (TypeError, ValueError):
+        expires_days = 90
+    if expires_days < 1 or expires_days > 365:
+        return json_response({"error": "invalid_expiration"}, status=400)
+    now = int(Date.now())
+    expires_at = now + expires_days * 24 * 60 * 60 * 1000
+    token_id, token = _new_org_bot_token()
+    record = {
+        "label": label,
+        "scopes": scopes,
+        "createdBy": actor,
+        "deviceName": "",
+        "linkedAt": 0,
+    }
+    await d1_run(
+        env,
+        "INSERT INTO org_bot_tokens "
+        "(token_id,org_bi,secret_bi,provider,data,created_by_bi,created_at,"
+        "last_used_at,expires_at,revoked_at) VALUES (?,?,?,?,?,?,?,0,?,0)",
+        token_id, org_bi,
+        await blind_index(env, "org-bot-token:" + token),
+        provider, await encrypt_row(env, record), str(account_bi), now,
+        expires_at,
+    )
+    await _audit_sensitive_action(
+        env, actor, "organization.bot_token_create",
+        "organization_bot_token", org_name + "/" + token_id, "success",
+        {"provider": provider, "scopes": scopes, "expiresAt": expires_at})
+    return json_response({
+        "ok": True,
+        "token": token,
+        "tokenId": token_id,
+        "provider": provider,
+        "label": label,
+        "scopes": scopes,
+        "expiresAt": expires_at,
+        "shownOnce": True,
+    }, status=201, cache_control="no-store")
+
+
+async def bot_session_handler(env, request):
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    context = await _org_bot_token_context(env, request, touch=True)
+    if not context:
+        return json_response({"error": "invalid_bot_token"}, status=401)
+    if method == "POST":
+        try:
+            data = await bounded_json_request(request)
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        if "local.connect" not in context["scopes"]:
+            return json_response({"error": "permission_denied"}, status=403)
+        device_name = clean_string(data.get("deviceName"), 80).strip()
+        if not device_name:
+            return json_response({"error": "device_name_required"}, status=400)
+        now = int(Date.now())
+        context["record"]["deviceName"] = device_name
+        context["record"]["linkedAt"] = now
+        await d1_run(
+            env,
+            "UPDATE org_bot_tokens SET data=?,last_used_at=? "
+            "WHERE token_id=? AND revoked_at=0",
+            await encrypt_row(env, context["record"]), now,
+            context["tokenId"],
+        )
+        context["deviceName"] = device_name
+        context["linkedAt"] = now
+        await _audit_sensitive_action(
+            env, context["provider"],
+            "organization.bot_token_link_local",
+            "organization_bot_token",
+            context["org"] + "/" + context["tokenId"], "success",
+            {"deviceName": device_name})
+    return json_response({
+        "ok": True,
+        "tokenId": context["tokenId"],
+        "organization": context["org"],
+        "provider": context["provider"],
+        "label": context["label"],
+        "deviceName": context["deviceName"],
+        "linkedAt": context["linkedAt"],
+        "scopes": context["scopes"],
+        "expiresAt": context["expiresAt"],
+    }, cache_control="no-store")
+
+
 # --- Organization-scoped Claude/Codex bots ---------------------------------
 #
 # This is intentionally NOT an authorization shortcut into repo_agents. Those
@@ -31908,6 +32800,35 @@ async def _org_agent_target_mirror(
     ), None)
     if not target:
         return ""
+    # An attended desktop is a separate trust class from a headless mirror.
+    # Only a platform administrator may route a web-created task to it, and
+    # only when the source account/node is theirs, the desktop signed the exact
+    # provider capability, and its short publication lease is still fresh.
+    # The Qt client still applies the mandatory tool-free Haiku preflight after
+    # leasing the job, so this does not turn administrator status into code
+    # execution authority by itself.
+    source_node = context["nodeOwner"].lower()
+    source_providers = {
+        str(value or "").strip().lower()
+        for value in (
+            target.get("agentProviders")
+            if isinstance(target.get("agentProviders"), list)
+            else []
+        )
+    }
+    try:
+        source_seen_at = int(
+            target.get("updatedAt") or target.get("lastSync") or 0)
+    except (TypeError, ValueError):
+        source_seen_at = 0
+    desktop_eligible = bool(
+        str(target.get("runtimeMode") or "").strip().lower() == "desktop"
+        and provider in source_providers
+        and source_seen_at >= now - 10 * 60 * 1000
+        and await _is_admin(env, context["actor"])
+        and await _account_owns_node(
+            env, context["actor"], source_node)
+    )
     eligible = agent_provider_mirror_candidates(
         records,
         target,
@@ -31919,11 +32840,15 @@ async def _org_agent_target_mirror(
     preferred = clean_string(
         preferred_node, MAX_NODE_NAME).strip().lower()
     if preferred:
+        if desktop_eligible and preferred == source_node:
+            return source_node
         return (
             preferred
             if valid_node_name(preferred) and preferred in eligible
             else ""
         )
+    if desktop_eligible:
+        return source_node
     if eligible and valid_node_name(eligible[0]):
         return eligible[0]
     # A source node is not described as a headless mirror. Fail closed rather
@@ -32171,7 +33096,7 @@ async def org_agent_bots_handler(env, request, org, repo):
         env, context, provider, preferred_node)
     if not target_node:
         return json_response(
-            {"error": "no_eligible_headless_mirror"}, status=503,
+            {"error": "no_eligible_agent_node"}, status=503,
             extra_headers=EXPECTED_DEGRADED_HEADERS)
     now = int(Date.now())
     session_id = _ap_uuid()
@@ -32512,9 +33437,42 @@ async def repo_org_agent_job_result_handler(
         "running" if keep_running else "done", now, int(job_id), lease_id,
     )
     task_key = clean_string(session.get("taskKey"), 96)
+    private_task_match = re.fullmatch(r"task:([a-f0-9]{32})", task_key)
+    if private_task_match and run_status == "completed":
+        private_task_id = private_task_match.group(1)
+        private_task_row = await d1_first(
+            env,
+            "SELECT data FROM organization_tasks "
+            "WHERE org_bi=? AND task_id=? "
+            "AND assignee_kind IN ('claude','codex')",
+            row["org_bi"], private_task_id,
+        )
+        private_task_data = (
+            await decrypt_row(env, private_task_row.get("data"))
+            if private_task_row else None
+        )
+        if isinstance(private_task_data, dict):
+            if not clean_string(
+                    private_task_data.get("howToTest"), 720).strip():
+                private_task_data["howToTest"] = (
+                    "Open the completed feature and follow its normal user "
+                    "flow. Confirm the requested behavior works, existing "
+                    "behavior did not regress, and no console or network "
+                    "error appears."
+                )
+            await d1_run(
+                env,
+                "UPDATE organization_tasks SET status='idle',completed_at=?,"
+                "destination='qa',qa_status='unknown',qa_reviewer_bi='',"
+                "qa_reviewed_at=0,qa_requested_at=?,data=?,updated_at=? "
+                "WHERE org_bi=? AND task_id=?",
+                now, now, await encrypt_row(env, private_task_data), now,
+                row["org_bi"], private_task_id,
+            )
     if (
         str(row.get("provider") or "") == "codex"
         and run_status == "completed"
+        and private_task_match is None
         and re.fullmatch(
             r"(?:task:[a-z0-9-]{1,48}|"
             r"issue:[a-z0-9-]{1,40}/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})",
@@ -32991,6 +33949,195 @@ async def _write_error_log(env, status, method, path, message, ray=""):
         pass
 
 
+def _sanitize_client_error_text(value, maximum):
+    """Keep debugging shape while stripping URLs, routes, ids and secrets."""
+    text = "".join(
+        character if character >= " " and character != "\x7f" else " "
+        for character in str(value or "")
+    )
+    text = re.sub(
+        r"\b(?:authorization|bearer|password|passwd|secret|token|"
+        r"api[_-]?key)\b\s*[:=]?\s*[^\s,;]+",
+        "[redacted-secret]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+        "[redacted-email]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\b[A-Za-z0-9_-]{32,}\b", "[redacted-id]", text)
+    text = re.sub(r"\bhttps?://[^\s)]+", "[redacted-url]", text)
+    text = re.sub(
+        r"/(?:[A-Za-z0-9._~%-]+/)+[A-Za-z0-9._~%-]+"
+        r"(?:[?#][^\s]*)?",
+        "/[redacted-path]",
+        text,
+    )
+    return " ".join(text.split()).strip()[:maximum]
+
+
+def _client_error_fields(payload):
+    if not isinstance(payload, dict):
+        return None
+    surface = str(payload.get("surface") or "").strip().lower()
+    kind = str(payload.get("kind") or "").strip().lower()
+    if surface not in CLIENT_ERROR_SURFACES or kind not in CLIENT_ERROR_KINDS:
+        return None
+    message = _sanitize_client_error_text(payload.get("message"), 500)
+    if not message:
+        message = "Unspecified browser exception"
+    stack = _sanitize_client_error_text(payload.get("stack"), 700)
+    source_value = re.split(
+        r"[?#]", str(payload.get("source") or ""), maxsplit=1)[0]
+    source = re.sub(
+        r"[^A-Za-z0-9._-]+", "",
+        source_value.rsplit("/", 1)[-1],
+    )[:80]
+    try:
+        line = max(0, min(10_000_000, int(payload.get("line") or 0)))
+        column = max(0, min(10_000_000, int(payload.get("column") or 0)))
+    except (TypeError, ValueError):
+        line = column = 0
+    detail = "client %s [%s] %s" % (kind, surface, message)
+    if source:
+        detail += " (%s:%d:%d)" % (source, line, column)
+    if stack:
+        detail += " | " + stack
+    return surface, detail[:1000]
+
+
+async def client_error_handler(env, request):
+    """Store redacted uncaught browser errors without trusting client paths."""
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            extra_headers={"allow": "POST"},
+        )
+    if not _request_same_origin(request):
+        return json_response({"error": "origin_not_allowed"}, status=403)
+    try:
+        payload = await bounded_json_request(request, CLIENT_ERROR_MAX_BODY)
+    except RequestBodyTooLarge:
+        return json_response({"error": "payload_too_large"}, status=413)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    fields = _client_error_fields(payload)
+    if not fields:
+        return json_response({"error": "invalid_client_error"}, status=400)
+    surface, detail = fields
+    now = int(Date.now())
+    client_address = _transient_client_address(request)
+    try:
+        client_hash = await blind_index(
+            env, "client-error:" + (client_address or "unknown"))
+    except Exception:
+        client_hash = "unknown"
+    source_key = "client:" + str(client_hash)[:32]
+    try:
+        await ensure_schema(env)
+        per_client = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM error_log "
+            "WHERE ts>=? AND method='JS' AND ray=?",
+            now - CLIENT_ERROR_RATE_WINDOW_MS,
+            source_key,
+        )
+        global_rate = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM error_log "
+            "WHERE ts>=? AND method='JS'",
+            now - CLIENT_ERROR_RATE_WINDOW_MS,
+        )
+        duplicate = await d1_first(
+            env,
+            "SELECT 1 AS one FROM error_log "
+            "WHERE ts>=? AND method='JS' AND path=? AND message=? AND ray=? "
+            "LIMIT 1",
+            now - CLIENT_ERROR_RATE_WINDOW_MS,
+            "/client-error/" + surface,
+            detail,
+            source_key,
+        )
+        if (
+            duplicate
+            or int((per_client or {}).get("n") or 0)
+            >= CLIENT_ERROR_RATE_PER_CLIENT
+            or int((global_rate or {}).get("n") or 0)
+            >= CLIENT_ERROR_RATE_GLOBAL
+        ):
+            return json_response(
+                {"ok": True, "stored": False},
+                status=202,
+                cache_control="no-store",
+            )
+        await _write_error_log(
+            env,
+            520,
+            "JS",
+            "/client-error/" + surface,
+            detail,
+            source_key,
+        )
+    except Exception:
+        # Error reporting must never become a new user-visible error.
+        return json_response(
+            {"ok": True, "stored": False},
+            status=202,
+            cache_control="no-store",
+        )
+    return json_response(
+        {"ok": True, "stored": True},
+        status=202,
+        cache_control="no-store",
+    )
+
+
+async def world_admin_errors_handler(env, request):
+    """Return only the aggregate new-error cursor used by the admin HUD."""
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            cache_control="no-store",
+            extra_headers={"allow": "GET"},
+        )
+    _, rec = await _account_session_record(env, request)
+    actor = clean_string(
+        (rec or {}).get("name", ""), MAX_NODE_NAME).strip().lower()
+    if not actor:
+        return json_response(
+            {"error": "invalid_session"}, status=401,
+            cache_control="no-store")
+    if not await _has_role(env, actor, "platform_administrator"):
+        return json_response(
+            {"error": "forbidden"}, status=403,
+            cache_control="no-store")
+    try:
+        raw_after = parse_qs(urlparse(request.url).query).get(
+            "after", ["0"])[0]
+        after = max(0, int(raw_after or 0))
+    except (TypeError, ValueError):
+        after = 0
+    await ensure_schema(env)
+    latest = await d1_first(
+        env, "SELECT id,ts FROM error_log ORDER BY id DESC LIMIT 1")
+    count = await d1_first(
+        env, "SELECT COUNT(*) AS n FROM error_log WHERE id>?", after)
+    return json_response(
+        {
+            "ok": True,
+            "latestId": max(0, int((latest or {}).get("id") or 0)),
+            "latestAt": max(0, int((latest or {}).get("ts") or 0)),
+            "newCount": min(9999, max(0, int((count or {}).get("n") or 0))),
+        },
+        cache_control="no-store",
+    )
+
+
 def _privacy_redacted_log_path(path):
     path = str(path or "")
     return (
@@ -33388,12 +34535,23 @@ def _sanitize_feedback_text(value, max_length, allow_newlines=False):
 
 
 def _feedback_fields(payload):
-    """Normalize a docs feedback payload into stored columns, or None."""
+    """Normalize a bounded website feedback payload into stored columns."""
     if not isinstance(payload, dict):
         return None
     source = _sanitize_feedback_text(payload.get("source"), 32).lower()
     vote = _sanitize_feedback_text(payload.get("vote"), 16).lower()
     if source not in FEEDBACK_SOURCES or vote not in FEEDBACK_VOTES:
+        return None
+    if source == "world":
+        if vote != "feedback":
+            return None
+        message = _sanitize_feedback_text(
+            payload.get("message"), FEEDBACK_MAX_MESSAGE,
+            allow_newlines=True)
+        if not message:
+            return None
+        return source, vote, "/world/#lobby-feedback", message
+    if vote not in ("like", "dislike"):
         return None
     # Feedback is a docs-only feature. Never accept an arbitrary URL, query,
     # private repository path, or search value into this plaintext metrics
@@ -33480,10 +34638,9 @@ async def install_diag_handler(env, request):
 
 
 async def feedback_handler(env, request):
-    # Anonymous website feedback from static pages. This is intentionally
-    # unauthenticated: the goal is click-level docs usefulness tracking, not user
-    # identity. The body is capped before JSON parsing and the table is pruned
-    # after inserts so this open endpoint cannot grow D1 without limit.
+    # Anonymous docs and lobby-kiosk feedback. This is intentionally
+    # unauthenticated; the body is capped before JSON parsing and the table is
+    # pruned after inserts so this open endpoint cannot grow D1 without limit.
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
@@ -34636,6 +35793,8 @@ ADMIN_STYLE = """
  .ab-root .jsoncell{color:var(--ab-muted)}
  .ab-root .s5{color:var(--ab-danger);font-weight:600}
  .ab-root tbody tr:hover{background:var(--ab-card)}
+ .ab-root tr.record-row{cursor:pointer}
+ .ab-root tr.record-row:focus{outline:2px solid var(--ab-link);outline-offset:-2px;background:var(--ab-card)}
  .ab-root .empty{padding:32px 24px;color:var(--ab-muted)}
  .ab-root .title{padding:12px 24px 4px;font-weight:600}
  .ab-root .navcount{color:var(--ab-muted);font-size:11px;font-weight:400}
@@ -34647,6 +35806,14 @@ ADMIN_STYLE = """
  .ab-root .rowfield input,.ab-root .rowfield textarea{width:100%;background:var(--ab-bg);color:var(--ab-fg);
         border:1px solid var(--ab-border-2);border-radius:6px;padding:8px;
         font:13px ui-monospace,monospace}
+ .ab-root .record-detail{margin:12px 24px;max-width:980px;border:1px solid var(--ab-border-2);
+        border-radius:8px;background:var(--ab-card);overflow:hidden}
+ .ab-root .record-detail dl{margin:0}
+ .ab-root .record-detail dl>div{display:block;padding:12px 16px;border-bottom:1px solid var(--ab-border)}
+ .ab-root .record-detail dl>div:last-child{border-bottom:0}
+ .ab-root .record-detail dt{color:var(--ab-muted);font:600 12px system-ui,sans-serif;margin-bottom:5px}
+ .ab-root .record-detail dd{margin:0;color:var(--ab-fg);white-space:pre-wrap;overflow-wrap:anywhere;
+        font:13px/1.55 ui-monospace,monospace}
  .ab-root .tools .navlink{padding:8px 4px}
  .ab-root .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
  .ab-root .account-kind button{padding:3px 8px;font-size:12px}
@@ -34668,6 +35835,13 @@ ADMIN_STYLE = """
  .ab-root .error-bar:focus{outline:2px solid var(--ab-fg);outline-offset:2px}
  .ab-root .error-hours{display:flex;justify-content:space-between;color:var(--ab-muted);font-size:11px;margin-top:6px}
  .ab-root .error-groups{margin-top:16px}
+ .ab-root .error-sparkline{width:180px;height:34px;display:grid;grid-template-columns:repeat(24,1fr);
+        gap:2px;align-items:end;border-bottom:1px solid var(--ab-border);padding:2px 0}
+ .ab-root .error-sparkline:focus{outline:2px solid var(--ab-link);outline-offset:2px}
+ .ab-root .error-spark-bar{display:block;min-height:2px;background:var(--ab-link);
+        border-radius:2px 2px 0 0}
+ .ab-root .error-spark-bar[data-empty="true"]{background:var(--ab-border)}
+ .ab-root .relative-time{color:var(--ab-muted);white-space:nowrap}
 """
 
 # Cloudflare D1 internal bookkeeping stays out of the browser. The following
@@ -34881,6 +36055,18 @@ def _admin_row_checkbox(rowid):
             % _html_escape(rowid))
 
 
+def _admin_record_row_attrs(admin_query, table, rowid):
+    href = _admin_href(
+        admin_query, table=table, action="detail", rowid=rowid)
+    return (
+        ' class="record-row" tabindex="0" role="link" data-href="%s" '
+        'onclick="if(!event.target.closest(\'input,button,a,label\'))'
+        'location.href=this.dataset.href" '
+        'onkeydown="if(event.key===\'Enter\')location.href=this.dataset.href"'
+        % _html_escape(href)
+    )
+
+
 async def _admin_table_columns(env, table):
     # Real column names for the table (table name is validated by the caller).
     rows = await d1_all(env, "PRAGMA table_info(" + table + ")")
@@ -34896,6 +36082,59 @@ async def _render_row_form(env, table, rowid, csrf_field="", admin_query=""):
     return (
         '<div class="empty">Generic row editing is disabled. Use the '
         "purpose-built, audited administration action for this resource.</div>"
+    )
+
+
+async def _render_record_detail(env, table, rowid, admin_query=""):
+    if table in ADMIN_HIDDEN_TABLES:
+        return '<div class="empty">This table is restricted.</div>'
+    try:
+        rowid = int(rowid)
+    except (TypeError, ValueError):
+        return '<div class="empty">Record not found.</div>'
+    if rowid <= 0:
+        return '<div class="empty">Record not found.</div>'
+    row = await d1_first(
+        env,
+        "SELECT rowid AS _rowid_, * FROM " + table + " WHERE rowid=? LIMIT 1",
+        rowid,
+    )
+    if not row:
+        return '<div class="empty">Record not found.</div>'
+    fields = [("_rowid_", rowid)]
+    for key, value in row.items():
+        if key == "_rowid_":
+            continue
+        if key == "data" and isinstance(value, str) and value:
+            decoded = await decrypt_row(env, value)
+            value = (
+                _admin_redact_wallet_keys(decoded)
+                if isinstance(decoded, (dict, list))
+                else decoded
+            )
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value, indent=2, sort_keys=True, default=str)
+        elif value is None:
+            value = "NULL"
+        fields.append((key, value))
+    rows = "".join(
+        "<div><dt>%s</dt><dd>%s</dd></div>"
+        % (_html_escape(key), _html_escape(value))
+        for key, value in fields
+    )
+    return (
+        '<div class="title">Record detail · %s · row %d</div>'
+        '<div class="tools"><a class="navlink" href="%s">← Back to %s</a>'
+        '<span class="meta">Read-only vertical view. Sensitive tables remain '
+        'restricted and encrypted data is redacted before display.</span></div>'
+        '<section class="record-detail"><dl>%s</dl></section>'
+        % (
+            _html_escape(table),
+            rowid,
+            _admin_href(admin_query, table=table),
+            _html_escape(table),
+            rows,
+        )
     )
 
 
@@ -35121,7 +36360,9 @@ async def _render_table_view(
             ok = int(r.get("ok", 0) or 0)
             cls = "" if ok else "s5"
             body.append(
-                "<tr>"
+                "<tr%s>"
+                % _admin_record_row_attrs(
+                    admin_query, table, r.get("_rowid_", ""))
                 + _admin_row_checkbox(r.get("_rowid_", ""))
                 + '<td data-ts="%s">%s</td>'
                 '<td>%s</td><td class="%s">%s</td><td>%s</td><td>%s</td>'
@@ -35172,7 +36413,9 @@ async def _render_table_view(
                 clean_string(row.get("path"), 240),
                 clean_string(row.get("message"), 240),
             )
-            groups[signature] = groups.get(signature, 0) + 1
+            group_hours = groups.setdefault(signature, [0] * 24)
+            if age_hours < 24:
+                group_hours[23 - int(age_hours)] += 1
         peak = max(hourly) if hourly else 0
         bars = []
         for index, count in enumerate(hourly):
@@ -35197,13 +36440,43 @@ async def _render_table_view(
                 )
             )
         group_rows = []
-        for (status, request_method, path, message), count in sorted(
-                groups.items(), key=lambda item: (-item[1], item[0]))[:25]:
+        for (status, request_method, path, message), frequency in sorted(
+                groups.items(),
+                key=lambda item: (-sum(item[1]), item[0]))[:25]:
+            count = sum(frequency)
+            group_peak = max(frequency) if frequency else 0
+            spark_bars = []
+            for index, bucket_count in enumerate(frequency):
+                height = (
+                    max(2, round(28 * bucket_count / group_peak))
+                    if group_peak else 2
+                )
+                hours_ago = 23 - index
+                label = (
+                    "current hour" if hours_ago == 0
+                    else "%d hours ago" % hours_ago
+                )
+                spark_bars.append(
+                    '<span class="error-spark-bar" data-empty="%s" '
+                    'style="height:%dpx" title="%s · %d"></span>'
+                    % (
+                        "true" if bucket_count == 0 else "false",
+                        height,
+                        _html_escape(label),
+                        bucket_count,
+                    )
+                )
             group_rows.append(
-                "<tr><td>%d</td><td>%s</td><td>%s</td><td>%s</td>"
+                '<tr><td>%d</td><td><div class="error-sparkline" '
+                'tabindex="0" role="img" '
+                'aria-label="24-hour frequency: %d occurrence%s">%s</div></td>'
+                "<td>%s</td><td>%s</td><td>%s</td>"
                 "<td title=\"%s\">%s</td></tr>"
                 % (
                     count,
+                    count,
+                    "" if count == 1 else "s",
+                    "".join(spark_bars),
                     _html_escape(status or "error"),
                     _html_escape(request_method or "—"),
                     _html_escape(path or "—"),
@@ -35223,7 +36496,8 @@ async def _render_table_view(
                 "" if len(recent_24h or []) == 1 else "s",
                 "".join(bars),
                 (
-                    "<table><thead><tr><th>Count</th><th>Status</th>"
+                    "<table><thead><tr><th>Count</th><th>24-hour frequency</th>"
+                    "<th>Status</th>"
                     "<th>Method</th><th>Path</th><th>Message</th></tr></thead>"
                     "<tbody>" + "".join(group_rows) + "</tbody></table>"
                     if group_rows
@@ -35236,7 +36510,9 @@ async def _render_table_view(
             status = r.get("status", "")
             cls = "s5" if str(status).startswith("5") else ""
             body.append(
-                "<tr>"
+                "<tr%s>"
+                % _admin_record_row_attrs(
+                    admin_query, table, r.get("_rowid_", ""))
                 + _admin_row_checkbox(r.get("_rowid_", ""))
                 + '<td data-ts="%s">%s</td>'
                 '<td class="%s">%s</td>'
@@ -35342,7 +36618,14 @@ async def _render_table_view(
         for col in json_cols:
             cells.append(_admin_compact_cell(
                 None if decoded_data is None else decoded_data.get(col)))
-        body.append("<tr>" + "".join(cells) + "</tr>")
+        body.append(
+            "<tr%s>%s</tr>"
+            % (
+                _admin_record_row_attrs(
+                    admin_query, table, rid),
+                "".join(cells),
+            )
+        )
 
     head = (_admin_select_all_th() if purge_allowed else "") + "".join(
         "<th>%s</th>" % _html_escape(c) for c in columns) + "".join(
@@ -35530,9 +36813,22 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         + _render_admin_nav(tables, active_table, counts, admin_query, sort_records)
         + "<main>" + table_html + "</main>"
         + "</div></div>"
-        "<script>for (const el of document.querySelectorAll('[data-ts]')){"
-        "const ms=Number(el.getAttribute('data-ts'));"
-        "if(ms)el.textContent=new Date(ms).toLocaleString();}"
+        "<script>const adminTimes=[];"
+        "for(const el of document.querySelectorAll('[data-ts]')){"
+        "let ms=Number(el.getAttribute('data-ts'));if(ms&&ms<1e11)ms*=1000;"
+        "if(!ms)continue;el.textContent=new Date(ms).toLocaleString();"
+        "const rel=document.createElement('span');rel.className='relative-time';"
+        "el.append(' · ',rel);adminTimes.push([rel,ms]);}"
+        "function updateAdminRelativeTimes(){const now=Date.now();"
+        "for(const pair of adminTimes){const rel=pair[0],ms=pair[1];"
+        "const future=ms>now,seconds=Math.max(0,Math.floor(Math.abs(now-ms)/1000));"
+        "let value,unit;if(seconds<60){value=seconds;unit='second';}"
+        "else if(seconds<3600){value=Math.floor(seconds/60);unit='minute';}"
+        "else if(seconds<86400){value=Math.floor(seconds/3600);unit='hour';}"
+        "else{value=Math.floor(seconds/86400);unit='day';}"
+        "rel.textContent=future?'in '+value+' '+unit+(value===1?'':'s'):"
+        "value+' '+unit+(value===1?'':'s')+' ago';}}"
+        "updateAdminRelativeTimes();setInterval(updateAdminRelativeTimes,30000);"
         "if(location.hash==='#operational-alerts'){"
         "var a=document.getElementById('operational-alerts');"
         "if(a){a.scrollIntoView({block:'center'});a.focus({preventScroll:true});}"
@@ -37681,9 +38977,18 @@ async def repository_actions_status_handler(env, request, owner, repo):
             return json_response(
                 result,
                 cache_control="private, no-store, max-age=0, must-revalidate")
+    # An attested executor being temporarily offline is application state, not
+    # a broken HTTP route. Return a bounded empty snapshot so authorized World
+    # clients can keep the cabinet UI quiet and retry on their normal cadence
+    # without generating a repeating 503 in every visitor's console.
     return json_response(
-        {"error": "actions_status_unavailable"}, status=503,
-        cache_control="no-store")
+        {
+            "ok": False,
+            "state": "unavailable",
+            "runs": [],
+            "retryable": True,
+        },
+        cache_control="private, no-store, max-age=0, must-revalidate")
 
 
 async def _organization_owner_can_merge_repo(
@@ -38857,8 +40162,16 @@ class Default(WorkerEntrypoint):
         else:
             active = tables[0] if tables else ""
 
-        # Edit/create forms are full-page GET views for the active table.
-        if action == "edit" and active:
+        # Every visible record has a read-only, vertically listed detail page.
+        # Legacy edit/new bookmarks remain fail-closed below.
+        if action == "detail" and active:
+            table_html = await _render_record_detail(
+                self.env,
+                active,
+                params.get("rowid", [""])[0],
+                admin_query,
+            )
+        elif action == "edit" and active:
             rowid = params.get("rowid", [""])[0]
             table_html = await _render_row_form(
                 self.env, active, rowid, csrf_field, admin_query)
@@ -39039,6 +40352,11 @@ class Default(WorkerEntrypoint):
             return await world_layout_handler(self.env, request)
 
         if url.path in (
+                "/api/world/admin/errors",
+                "/api/world/admin/errors/"):
+            return await world_admin_errors_handler(self.env, request)
+
+        if url.path in (
                 "/api/world/organizations",
                 "/api/world/organizations/"):
             return await world_organizations_handler(self.env, request)
@@ -39092,6 +40410,14 @@ class Default(WorkerEntrypoint):
                 "/api/world/admin/nodes/delete",
                 "/api/world/admin/nodes/delete/"):
             return await world_admin_delete_node_handler(self.env, request)
+
+        if (
+            url.path == "/api/tasks"
+            or url.path == "/api/tasks/"
+            or url.path.startswith("/api/tasks/")
+        ):
+            return await organization_tasks_handler(
+                self.env, request, url.path)
 
         if (
             url.path == "/api/world/office/marketing-tasks"
@@ -39326,6 +40652,9 @@ class Default(WorkerEntrypoint):
         # Anonymous docs/page feedback: like/dislike clicks with optional text.
         if url.path in ("/api/feedback", "/api/feedback/"):
             return await feedback_handler(self.env, request)
+
+        if url.path in ("/api/client-errors", "/api/client-errors/"):
+            return await client_error_handler(self.env, request)
 
         # Private vulnerability reports — stored encrypted, emailed to security@.
         if url.path in ("/api/security/report", "/api/security/report/"):

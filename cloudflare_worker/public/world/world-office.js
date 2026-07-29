@@ -203,9 +203,13 @@ export function createWorldOfficeController({
     const visits = Array.isArray(payload?.visits)
       ? payload.visits.slice(0, 20)
       : [];
+    const leaderboard = Array.isArray(payload?.leaderboard)
+      ? payload.leaderboard.slice(0, 20)
+      : [];
     const asOfAt = Number(payload?.asOfAt);
     world.setOfficeAttendance?.({
       visits,
+      leaderboard,
       ...(Number.isFinite(asOfAt) && asOfAt > 0 ? { asOfAt } : {}),
     });
     return visits;
