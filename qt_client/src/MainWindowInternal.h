@@ -5808,6 +5808,104 @@ private:
     int m_angle = 0;
 };
 
+// A one-shot "done" mark: a ring draws itself in, a check strokes through it, and
+// the ring then pulses a couple of times before the animation stops for good.
+// Left in the Branches table where a branch used to be once "Merge & delete all"
+// removed it, so the row reads as "merged, gone" instead of the list sliding the
+// next branch under the cursor (adhoc #15). Self-animating like the spinners
+// above: the timer only runs while the mark is visible and never restarts once
+// the pulses are done, so a finished mark costs nothing.
+class DoneCheckMark : public QWidget
+{
+public:
+    explicit DoneCheckMark(QWidget *parent = nullptr, int size = 18,
+                           const QColor &color = QColor("#3fb950"))
+        : QWidget(parent), m_size(size), m_color(color)
+    {
+        setFixedSize(size, size);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_timer = new QTimer(this);
+        m_timer->setInterval(kTickMs);
+        connect(m_timer, &QTimer::timeout, this, [this] {
+            m_elapsedMs += kTickMs;
+            if (m_elapsedMs >= kDrawMs + kPulseMs * kPulses)
+                m_timer->stop();
+            update();
+        });
+    }
+
+protected:
+    void showEvent(QShowEvent *e) override
+    {
+        if (m_elapsedMs < kDrawMs + kPulseMs * kPulses)
+            m_timer->start();
+        QWidget::showEvent(e);
+    }
+    void hideEvent(QHideEvent *e) override
+    {
+        m_timer->stop();
+        QWidget::hideEvent(e);
+    }
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        // 0 -> 1 over the draw-in, then pinned at 1 for the pulses.
+        const double t = qBound(0.0, double(m_elapsedMs) / kDrawMs, 1.0);
+        // 0 -> 1 -> 0 once per pulse period, and 0 while the mark is still drawing.
+        double pulse = 0.0;
+        if (m_elapsedMs > kDrawMs) {
+            const double phase =
+                double((m_elapsedMs - kDrawMs) % kPulseMs) / double(kPulseMs);
+            pulse = std::sin(phase * M_PI);
+        }
+
+        const double penWidth = 1.6;
+        const double inset = penWidth / 2.0 + 1.0;
+        const QRectF box(inset, inset, m_size - 2 * inset, m_size - 2 * inset);
+        QColor ringColor = m_color;
+        ringColor.setAlpha(int(110 + 145 * pulse));
+        QPen ring(ringColor);
+        ring.setWidthF(penWidth);
+        p.setPen(ring);
+        p.setBrush(Qt::NoBrush);
+        // Qt arc angles are 1/16° counter-clockwise from 3 o'clock; start at the
+        // top and sweep clockwise so the ring closes as the check is drawn.
+        p.drawArc(box, 90 * 16, -int(t * 360) * 16);
+
+        // The check itself: two segments stroked in as one continuous line, so at
+        // t=0.5 the pen sits at the mark's elbow.
+        const QPointF a(m_size * 0.28, m_size * 0.52);
+        const QPointF b(m_size * 0.43, m_size * 0.68);
+        const QPointF c(m_size * 0.73, m_size * 0.34);
+        const double len1 = QLineF(a, b).length();
+        const double len2 = QLineF(b, c).length();
+        const double drawn = t * (len1 + len2);
+        QPen stroke(m_color);
+        stroke.setWidthF(2.0);
+        stroke.setCapStyle(Qt::RoundCap);
+        stroke.setJoinStyle(Qt::RoundJoin);
+        p.setPen(stroke);
+        if (drawn <= len1) {
+            p.drawLine(QLineF(a, a + (b - a) * (len1 > 0 ? drawn / len1 : 1.0)));
+        } else {
+            p.drawLine(QLineF(a, b));
+            const double rest = qMin(drawn - len1, len2);
+            p.drawLine(QLineF(b, b + (c - b) * (len2 > 0 ? rest / len2 : 1.0)));
+        }
+    }
+
+private:
+    static constexpr int kTickMs = 30;
+    static constexpr int kDrawMs = 420;  // ring + check stroke in
+    static constexpr int kPulseMs = 900; // one breath of the ring
+    static constexpr int kPulses = 2;
+    QTimer *m_timer = nullptr;
+    int m_size;
+    QColor m_color;
+    int m_elapsedMs = 0;
+};
+
 // A thin rotating "processing ring" meant to encircle a small widget it's overlaid
 // on. Used to ring the mic button while a just-recorded clip is still being
 // transcribed after the button was released (adhoc #18), so the wait reads as
