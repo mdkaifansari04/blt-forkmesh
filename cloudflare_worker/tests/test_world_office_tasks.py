@@ -44,6 +44,9 @@ class FakeRuntime:
         self.db.executescript(
             (ROOT / "migrations" / "0105_organization_tasks.sql")
             .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" / "0108_organization_tasks_general_bot.sql")
+            .read_text(encoding="utf-8"))
         self.request_method = "GET"
         self.request_data = {}
         self.query_data = {}
@@ -415,7 +418,7 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
         runtime.use("POST", "mary", {
             "title": "Run an agent",
             "department": "engineering",
-            "assigneeKind": "codex",
+            "assigneeKind": "agent",
         }),
         tasks_api.UNIVERSAL_PREFIX,
     )
@@ -429,6 +432,7 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
             "department": "engineering",
             "destination": "repository",
             "repository": "forkmesh/forkmesh",
+            # A legacy per-vendor kind still routes to the one general bot.
             "assigneeKind": "codex",
             "sendToQa": True,
             "howToTest": "Open the World and verify the result.",
@@ -438,7 +442,8 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
     assert agent["status"] == 201
     task = agent["data"]["task"]
     assert task["destination"] == "agent"
-    assert task["assignee"] == "codex"
+    assert task["assignee"] == "agent"
+    assert task["assigneeKind"] == "agent"
     assert task["qa"]["requestedAt"] == runtime.now_ms
     assert task["repository"] == "forkmesh/forkmesh"
     stored = runtime.db.execute(
@@ -447,6 +452,69 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
     ).fetchone()[0]
     assert "Run the private verification" not in stored
     assert "Agent task details" not in stored
+
+
+@run_async_test
+async def test_queued_bot_tasks_return_to_the_task_list():
+    runtime = FakeRuntime()
+    created = await tasks_api.handle(
+        runtime.use("POST", "mary", {
+            "title": "Queue the general bot",
+            "department": "engineering",
+            "destination": "repository",
+            "repository": "forkmesh/forkmesh",
+            "assigneeKind": "agent",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert created["status"] == 201
+    task_id = created["data"]["task"]["id"]
+    linked = await tasks_api.handle(
+        runtime.use("PATCH", "mary", {
+            "agentSessionId": "0123456789abcdef0123456789abcdef",
+        }),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}",
+    )
+    assert linked["status"] == 200
+    assert linked["data"]["task"]["agentSessionId"]
+
+    # A reader who did not create the task cannot pull it off the node queue.
+    forbidden = await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}/return",
+    )
+    assert forbidden["status"] == 403
+
+    cancelled = []
+
+    async def cancel(org_bi, session_id):
+        cancelled.append(session_id)
+        return True
+
+    runtime.cancel_agent_session = cancel
+    returned = await tasks_api.handle(
+        runtime.use("POST", "mary", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}/return",
+    )
+    assert returned["status"] == 200
+    task = returned["data"]["task"]
+    assert task["assigneeKind"] == "unassigned"
+    assert task["destination"] == "department"
+    assert task["assignee"] == ""
+    assert task["agentSessionId"] == ""
+    assert cancelled == ["0123456789abcdef0123456789abcdef"]
+    assert any(
+        entry["action"] == "organization.task_returned"
+        for entry in runtime.audits
+    )
+
+    # A task that is already back on the list is no longer queued anywhere.
+    again = await tasks_api.handle(
+        runtime.use("POST", "mary", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}/return",
+    )
+    assert again["status"] == 409
+    assert again["data"]["error"] == "task_not_queued"
 
 
 @run_async_test

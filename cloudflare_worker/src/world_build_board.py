@@ -12,6 +12,7 @@ BUILTIN_KEYS = frozenset({
     "task:qa-full-catalog",
     "task:task-completion-note",
     "task:world-orb-hud",
+    "task:avatar-hud-launcher",
     "task:avatar-selection-runtime",
     "task:member-circle-fire",
     "task:aquarium-fixed-controls",

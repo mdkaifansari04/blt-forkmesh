@@ -8451,7 +8451,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     // shows a 2px line along its left edge.
     m_railCodeButton = new ActivityRailButton(QStringLiteral("code"),
                                               QStringLiteral("Code"));
-    m_railCodeButton->setFixedSize(58, 40);
+    m_railCodeButton->setFixedSize(kRailItemWidth, 40);
     m_railCodeButton->setToolTip(QStringLiteral("Browse the repository files"));
     connect(m_railCodeButton, &QPushButton::clicked, this, [this] {
         showSection(0);
@@ -8462,7 +8462,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     });
     m_railGitButton = new ActivityRailButton(QStringLiteral("git-branch"),
                                              QStringLiteral("Git"));
-    m_railGitButton->setFixedSize(58, 40);
+    m_railGitButton->setFixedSize(kRailItemWidth, 40);
     m_railGitButton->setToolTip(
         QStringLiteral("Source control \xE2\x80\x94 view the current changes"));
     connect(m_railGitButton, &QPushButton::clicked, this, [this] {
