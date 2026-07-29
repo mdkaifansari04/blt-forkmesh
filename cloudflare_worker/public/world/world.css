@@ -6335,6 +6335,82 @@ forkmesh-world.world-office-active .world-quick-dock {
   margin-bottom: 10px;
 }
 
+.world-work-quick-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(160px, 1fr) minmax(130px, 0.8fr);
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid var(--world-line);
+  border-radius: 6px;
+  background: #0d1117;
+}
+
+.world-work-quick-entry[hidden] {
+  display: none;
+}
+
+.world-work-quick-entry label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--world-muted);
+  font: 700 0.56rem/1.25 "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-work-quick-entry input,
+.world-work-quick-entry select,
+.world-work-quick-entry button {
+  min-width: 0;
+  min-height: 34px;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  background: #0d1117;
+  color: #f0f6fc;
+  padding: 7px 10px;
+  font: 600 0.72rem/1.2 system-ui, sans-serif;
+}
+
+.world-work-quick-entry input:focus,
+.world-work-quick-entry select:focus {
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 3px rgb(88 166 255 / 0.2);
+  outline: none;
+}
+
+.world-work-quick-entry button {
+  align-self: end;
+  border-color: rgb(46 160 67 / 0.75);
+  background: #238636;
+  cursor: pointer;
+}
+
+.world-work-quick-title,
+.world-work-quick-repository {
+  grid-column: span 2;
+}
+
+.world-work-quick-entry p {
+  grid-column: 1 / -1;
+  min-height: 1em;
+  margin: 0;
+  color: var(--world-muted);
+  font-size: 0.7rem;
+}
+
+@media (max-width: 720px) {
+  .world-work-quick-entry {
+    grid-template-columns: 1fr;
+  }
+
+  .world-work-quick-title,
+  .world-work-quick-repository {
+    grid-column: auto;
+  }
+}
+
 .world-work-stats div {
   display: grid;
   gap: 2px;

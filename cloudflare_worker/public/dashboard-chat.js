@@ -297,7 +297,8 @@ function mountForkMeshDashboardChat() {
   let historyReplayTimer = 0;
   let historyReplayEnvelopes = [];
   let inboundFrameQueue = Promise.resolve();
-  const DISCORD_REFRESH_MS = 30_000;
+  const DISCORD_REFRESH_MS = 60_000;
+  const DISCORD_REFRESH_JITTER_MS = 15_000;
   const DISCORD_MAX_ORGANIZATIONS = 3;
   const DISCORD_MAX_CHANNELS = 5;
   const DISCORD_MAX_INITIAL_MESSAGES = 40;
@@ -305,6 +306,7 @@ function mountForkMeshDashboardChat() {
   let discordRefreshRunning = false;
   let discordInitialMessagesLoaded = false;
   let discordSources = null;
+  let discordBackoffUntil = 0;
   // messageId -> Map(emoji -> Map(reactorId -> reactorName)); identical to
   // the full web/Qt protocol shape so reactions converge across every client.
   const reactions = new Map();
@@ -629,7 +631,21 @@ function mountForkMeshDashboardChat() {
       credentials: "same-origin",
       cache: "no-store",
     });
-    if (!response.ok) throw new Error(`Discord source unavailable (${response.status})`);
+    if (!response.ok) {
+      const error = new Error(`Discord source unavailable (${response.status})`);
+      const retrySeconds = Math.max(
+        0,
+        Number(response.headers.get("retry-after")) || 0,
+      );
+      error.retryAfterMs = Math.min(3_600_000, retrySeconds * 1000);
+      if (error.retryAfterMs) {
+        discordBackoffUntil = Math.max(
+          discordBackoffUntil,
+          Date.now() + error.retryAfterMs,
+        );
+      }
+      throw error;
+    }
     return response.json();
   }
 
@@ -669,6 +685,7 @@ function mountForkMeshDashboardChat() {
     if (
       discordRefreshRunning ||
       document.visibilityState === "hidden" ||
+      Date.now() < discordBackoffUntil ||
       !userSession()
     ) return;
     discordRefreshRunning = true;
@@ -722,18 +739,27 @@ function mountForkMeshDashboardChat() {
 
   function stopDiscordMessageRefresh() {
     if (!discordRefreshTimer) return;
-    clearInterval(discordRefreshTimer);
+    clearTimeout(discordRefreshTimer);
     discordRefreshTimer = 0;
+  }
+
+  function scheduleDiscordMessageRefresh() {
+    stopDiscordMessageRefresh();
+    if (document.visibilityState === "hidden" || !userSession()) return;
+    const backoff = Math.max(0, discordBackoffUntil - Date.now());
+    const jitter = Math.floor(Math.random() * DISCORD_REFRESH_JITTER_MS);
+    discordRefreshTimer = window.setTimeout(async () => {
+      discordRefreshTimer = 0;
+      await refreshDiscordMessages();
+      scheduleDiscordMessageRefresh();
+    }, Math.max(DISCORD_REFRESH_MS + jitter, backoff));
   }
 
   function startDiscordMessageRefresh() {
     stopDiscordMessageRefresh();
     if (document.visibilityState === "hidden" || !userSession()) return;
     void refreshDiscordMessages();
-    discordRefreshTimer = window.setInterval(
-      () => void refreshDiscordMessages(),
-      DISCORD_REFRESH_MS,
-    );
+    scheduleDiscordMessageRefresh();
   }
 
   document.addEventListener("visibilitychange", () => {

@@ -11450,8 +11450,8 @@ const SYSTEM_STATUS_COLORS = Object.freeze({
   operational: "#198a43",
   degraded: "#a66f00",
   down: "#d92d3a",
-  unknown: "#d92d3a",
-  future: "#f5f5f7",
+  unknown: "#8c959f",
+  future: "#dedfe4",
 });
 
 function systemStatusColor(status) {
@@ -11540,7 +11540,7 @@ function systemStatusBannerTexture(THREE, payload = null) {
       context.fillText("24h", 1100, top + Math.max(29, 61 * scale));
       context.fillText("30d", 1282, top + Math.max(29, 61 * scale));
       context.fillText(
-        "coverage", 1452, top + Math.max(29, 61 * scale));
+        "24h data", 1452, top + Math.max(29, 61 * scale));
       context.textAlign = "left";
 
       const days = Array.isArray(system.days) ? system.days.slice(-30) : [];
@@ -11625,13 +11625,21 @@ function systemStatusBannerTexture(THREE, payload = null) {
       });
     });
 
-    context.fillStyle = "#686b74";
     context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
-      "● OPERATIONAL   ● DEGRADED   ● DOWN   ● NO DATA",
-      72,
-      1992,
-    );
+    let legendX = 72;
+    [
+      ["operational", "OPERATIONAL"],
+      ["degraded", "DEGRADED"],
+      ["down", "DOWN"],
+      ["unknown", "NO DATA"],
+    ].forEach(([state, label]) => {
+      context.fillStyle = systemStatusColor(state);
+      context.fillText("●", legendX, 1992);
+      legendX += context.measureText("● ").width;
+      context.fillStyle = "#686b74";
+      context.fillText(label, legendX, 1992);
+      legendX += context.measureText(`${label}   `).width;
+    });
     context.strokeStyle = STATUS_BANNER_OPTIONS.accent;
     context.lineWidth = 16;
     context.strokeRect(12, 12, 1512, 2024);
@@ -19677,6 +19685,7 @@ export function createWorldScene({
   const touchKeys = new Set();
   const touchMovement = new THREE.Vector2();
   const touchPointers = new Map();
+  let pendingTouchResize = false;
   const raycaster = new THREE.Raycaster();
   const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   const pointer = new THREE.Vector2();
@@ -29073,6 +29082,10 @@ export function createWorldScene({
         pinchStartDistance = 0;
       }
       remainingTouch = touchPointers.entries().next().value || null;
+      if (!touchPointers.size && pendingTouchResize) {
+        pendingTouchResize = false;
+        resize();
+      }
     }
     try {
       renderer.domElement.releasePointerCapture(event.pointerId);
@@ -30257,6 +30270,15 @@ export function createWorldScene({
   let resizeFrame = 0;
   const resize = () => {
     if (resizeFrame || disposed) return;
+    // Mobile browser chrome and visualViewport can resize the canvas wrapper
+    // while a finger pans, tilts, or pinches. Reallocating the WebGL drawing
+    // buffer mid-gesture clears it and looks exactly like a full page refresh.
+    // Keep the current frame and apply one settled resize after the final
+    // touch pointer is released.
+    if (touchPointers.size > 0) {
+      pendingTouchResize = true;
+      return;
+    }
     resizeFrame = window.requestAnimationFrame(() => {
       resizeFrame = 0;
       if (disposed) return;

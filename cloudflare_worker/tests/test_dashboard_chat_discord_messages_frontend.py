@@ -49,7 +49,10 @@ def test_discord_refresh_is_foreground_only_and_rate_bounded():
         "async function fetchMentionProfile(",
     )
     assert "document.visibilityState" in refresh
-    assert "DISCORD_REFRESH_MS" in refresh
+    assert "DISCORD_REFRESH_MS" in CHAT
+    assert "DISCORD_REFRESH_JITTER_MS" in CHAT
+    assert "discordBackoffUntil" in CHAT
+    assert "scheduleDiscordMessageRefresh()" in refresh
     assert 'document.addEventListener("visibilitychange"' in refresh
     assert "stopDiscordMessageRefresh()" in refresh
 

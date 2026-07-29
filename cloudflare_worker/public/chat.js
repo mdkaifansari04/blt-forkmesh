@@ -109,6 +109,7 @@ const mainPane = document.querySelector(".chat-main-pane");
 const nameInput = document.querySelector("#chat-name");
 const input = document.querySelector("#chat-input");
 const sendBtn = document.querySelector("#chat-send");
+const clearBtn = document.querySelector("#chat-clear");
 const formatButtons = [...document.querySelectorAll("[data-format]")];
 const attachmentInput = document.querySelector("#chat-attachment-input");
 const attachmentBtn = document.querySelector("#chat-attachment-button");

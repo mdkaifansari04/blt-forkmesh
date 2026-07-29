@@ -702,7 +702,7 @@ async def _discord_error(runtime, result, context=None):
                 "error": "discord_rate_limited",
                 "retryAfterMs": retry_ms,
             },
-            503,
+            429,
             extra_headers={
                 "retry-after": str(max(1, (retry_ms + 999) // 1000)),
             },

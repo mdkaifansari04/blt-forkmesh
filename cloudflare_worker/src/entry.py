@@ -276,6 +276,7 @@ NOTIFICATION_KINDS = frozenset({
     "org_succession",
     "repository_hosted",
     "organization_task_started",
+    "organization_task_activity",
 })
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
@@ -8428,9 +8429,9 @@ class _OfficeMarketingTasksRuntime:
         )
         return bool(row)
 
-    async def notify_engineering_task_started(
-            self, org_bi, actor, task_id, task):
-        """Send one private HUD notification to each Engineering member."""
+    async def notify_organization_task_activity(
+            self, org_bi, actor, task_id, task, action):
+        """Send bounded private task activity to Engineering members."""
         rows = await d1_all(
             self.env,
             "SELECT DISTINCT tm.name AS name "
@@ -8448,6 +8449,18 @@ class _OfficeMarketingTasksRuntime:
         title = clean_string(
             (task or {}).get("title") or "Organization task", 160
         ).strip()
+        safe_action = clean_string(
+            action or "updated", 32
+        ).strip().lower().replace("_", " ")
+        action_copy = {
+            "created": "created",
+            "started": "started",
+            "stopped": "stopped",
+            "completed": "completed",
+            "returned": "returned",
+            "qa requested": "sent to QA",
+            "deleted": "deleted",
+        }.get(safe_action, safe_action or "updated")
         for row in rows or []:
             recipient = clean_string(
                 row.get("name") or "", MAX_NODE_NAME
@@ -8457,14 +8470,19 @@ class _OfficeMarketingTasksRuntime:
             await enqueue_notification(
                 self.env,
                 recipient,
-                "organization_task_started",
-                "Engineering task taken",
-                body="@%s started %s" % (safe_actor, title),
+                "organization_task_activity",
+                "Organization task activity",
+                body="@%s %s %s" % (safe_actor, action_copy, title),
                 actor="",
                 source=str(task_id or ""),
-                dedupe="organization-task-started:" + str(task_id or ""),
+                dedupe="organization-task:%s:%s:%s" % (
+                    safe_action.replace(" ", "-"),
+                    str(task_id or ""),
+                    str((task or {}).get("updatedAt") or ""),
+                ),
                 meta={
                     "taskId": str(task_id or ""),
+                    "action": safe_action,
                     "department": clean_string(
                         (task or {}).get("department") or "", 64
                     ).strip().lower(),
@@ -8473,6 +8491,12 @@ class _OfficeMarketingTasksRuntime:
                     ).strip().lower(),
                 },
             )
+
+    async def notify_engineering_task_started(
+            self, org_bi, actor, task_id, task):
+        """Compatibility wrapper for older task module deployments."""
+        return await self.notify_organization_task_activity(
+            org_bi, actor, task_id, task, "started")
 
     async def marketing_members(self, org_bi):
         """Return active users on an authoritative Marketing floor team."""

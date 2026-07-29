@@ -596,7 +596,7 @@ async def test_discord_rate_error_sets_a_standard_retry_after_header():
         "status": 429,
         "retryAfterMs": 1_501,
     })
-    assert response["status"] == 503
+    assert response["status"] == 429
     assert response["data"]["retryAfterMs"] == 1_501
     assert response["headers"]["retry-after"] == "2"
 

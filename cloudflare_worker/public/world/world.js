@@ -4390,6 +4390,34 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
 
           <div class="world-settings-pane" data-world-settings-pane="work" hidden>
+            <form class="world-work-quick-entry" data-world-work-task-form>
+              <label class="world-work-quick-title">
+                <span>Create organization task</span>
+                <input type="text" maxlength="160" required placeholder="What needs to be done?" data-world-work-task-title />
+              </label>
+              <label>
+                <span>Assign</span>
+                <select data-world-work-task-assignee aria-label="Task assignee"></select>
+              </label>
+              <label>
+                <span>Department</span>
+                <select data-world-work-task-department aria-label="Task department"></select>
+              </label>
+              <label class="world-work-quick-repository">
+                <span>Repository <small>required for agent work</small></span>
+                <input type="text" maxlength="201" placeholder="owner/repository" data-world-work-task-repository />
+              </label>
+              <label data-world-work-task-priority-wrap hidden>
+                <span>Priority</span>
+                <select data-world-work-task-priority aria-label="Global task priority">
+                  <option value="100">P100 · urgent</option>
+                  <option value="500" selected>P500 · normal</option>
+                  <option value="900">P900 · later</option>
+                </select>
+              </label>
+              <button type="submit" data-world-work-task-submit>Create task</button>
+              <p data-world-work-task-form-status role="status" aria-live="polite"></p>
+            </form>
             <fieldset class="world-setting-group">
               <legend>Assigned work · only visible to you</legend>
               <div class="world-work-stats" data-world-work-stats>
@@ -20779,7 +20807,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     host.dataset.worldChatLoading = "true";
     const script = document.createElement("script");
-    script.src = "/dashboard-chat.js?v=02d7b4643be4";
+    script.src = "/dashboard-chat.js?v=6cb50c59f5cf";
     script.defer = true;
     script.addEventListener("load", mount, { once: true });
     script.addEventListener("error", () => {

@@ -901,6 +901,9 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
     assert "event.preventDefault();" in pull_guard
     assert "[data-world-thumbstick]" in pull_guard
     assert "[data-world-canvas-wrap]" in pull_guard
+    assert "if (touchPointers.size > 0)" in SCENE
+    assert "pendingTouchResize = true;" in SCENE
+    assert "if (!touchPointers.size && pendingTouchResize)" in SCENE
     mobile = CSS[CSS.index("@media (max-width: 720px)"):]
     assert ".world-right-rail {" in mobile
     assert "display: grid;" in mobile
