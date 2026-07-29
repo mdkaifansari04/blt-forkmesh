@@ -9599,6 +9599,7 @@
   async function loadRepoPendingCounts(repo) {
     try {
       const response = await fetch(`${repoApiBase(repo)}/pending`, {
+        cache: "no-store",
         headers: { accept: "application/json" },
       });
       const data = await response.json().catch(() => ({}));
@@ -9615,6 +9616,25 @@
       state.pendingIssueCounts[pendingIssuesRepoKey(repo)] =
         Number(pending.issues) || 0;
       applyRemotePendingIssueCount(repo);
+      const key = pendingIssuesRepoKey(repo);
+      state.pendingInboxRefreshes = state.pendingInboxRefreshes || {};
+      const total = ["issues", "pulls", "discussions", "commits"]
+        .reduce((sum, tab) => sum + Math.max(0, Number(pending[tab]) || 0), 0);
+      const prior = state.pendingInboxRefreshes[key];
+      if (total <= 0) {
+        if (prior?.timer) clearTimeout(prior.timer);
+        delete state.pendingInboxRefreshes[key];
+      } else if (!prior?.timer) {
+        const attempt = Math.min(5, Math.max(0, Number(prior?.attempt) || 0));
+        const refresh = {
+          attempt: attempt + 1,
+          timer: setTimeout(() => {
+            refresh.timer = 0;
+            void loadRepoPendingCounts(repo);
+          }, Math.min(30_000, 1500 * (2 ** attempt))),
+        };
+        state.pendingInboxRefreshes[key] = refresh;
+      }
     } catch (_) {
       /* offline relay — badges stay hidden */
     }

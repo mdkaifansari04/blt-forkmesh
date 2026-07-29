@@ -32966,7 +32966,7 @@ async def repo_pending_counts_handler(env, request, owner, repo):
             "discussions": counts.get("discussions", 0),
             "commits": counts.get("commits", 0),
         },
-    }, cache_seconds=30)
+    }, cache_control="no-store, max-age=0, must-revalidate")
 
 
 async def sync_handler(env, request):
