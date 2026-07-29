@@ -7487,6 +7487,43 @@ function rewardPoolRimTexture(THREE) {
   });
 }
 
+// The mirror tally that hangs over the reward pool's orb. The cabinets are
+// already arranged in rings around this basin, so the headline number belongs
+// above them rather than on yet another sign: how many mirror nodes the signed
+// catalog currently lists, and how many of those are answering right now.
+function rewardPoolMirrorCountTexture(THREE, total, online) {
+  const count = Math.max(0, Math.min(9999, Math.round(Number(total) || 0)));
+  const live = Math.max(0, Math.min(count, Math.round(Number(online) || 0)));
+  return canvasTexture(THREE, 512, 256, (context) => {
+    context.clearRect(0, 0, 512, 256);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    const glow = context.createLinearGradient(0, 26, 0, 150);
+    glow.addColorStop(0, "#fff4d2");
+    glow.addColorStop(0.55, "#f7c96b");
+    glow.addColorStop(1, "#ffae3f");
+    context.shadowColor = "rgba(255, 174, 63, 0.9)";
+    context.shadowBlur = 34;
+    context.fillStyle = glow;
+    context.font = '700 128px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText(count.toLocaleString("en-US"), 256, 88);
+    context.shadowBlur = 18;
+    context.fillStyle = "#9ef7c6";
+    context.font = '400 40px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(count === 1 ? "MIRROR" : "MIRRORS", 256, 168);
+    // Offline cabinets stay in the ring, so the tally says plainly how many of
+    // them are actually serving instead of implying every one is live.
+    context.shadowBlur = 12;
+    context.fillStyle = live === count ? "#9ef7c6" : "#ffd479";
+    context.font = '400 30px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      live === count ? "ALL ONLINE" : `${live.toLocaleString("en-US")} ONLINE`,
+      256,
+      216,
+    );
+  });
+}
+
 // Paints a QR matrix (from /qr.js) into `size` square pixels at (x, y).
 function drawQrModules(context, text, x, y, size) {
   const encoder = globalThis.ForkMeshQR;
@@ -7763,6 +7800,23 @@ function createFountain(THREE, position, interactive, animated) {
   sun.position.y = 5.15;
   sun.userData.baseY = sun.position.y;
   group.add(sun);
+
+  // Hidden until the first signed catalog lands, so the pool never flashes a
+  // placeholder "0 MIRRORS" before the node payload arrives.
+  const mirrorCountSprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      transparent: true,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  mirrorCountSprite.name = "reward-pool-mirror-count";
+  mirrorCountSprite.position.y = 7.6;
+  mirrorCountSprite.scale.set(5, 2.5, 1);
+  mirrorCountSprite.renderOrder = 12;
+  mirrorCountSprite.visible = false;
+  group.add(mirrorCountSprite);
+  group.userData.mirrorCountSprite = mirrorCountSprite;
 
   for (const radius of [1.75, 2.65, 3.55]) {
     const ring = new THREE.Mesh(
@@ -19374,6 +19428,7 @@ export function createWorldScene({
   const nodeInfrastructure = new Map();
   const deletedNodeIdentifiers = new Set();
   let networkNodeSnapshot = [];
+  let mirrorCountShown = "";
   const mirrorAgentTasksByNode = new Map();
   const repositoryAgentTasksByRepository = new Map();
   let mirrorAgentTasksKey = "";
@@ -25001,6 +25056,15 @@ export function createWorldScene({
       removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
+    // The cabinets standing in the ring are exactly what the tally counts.
+    setRewardPoolMirrorCount(
+      usableNodes.length,
+      usableNodes.filter(
+        ({ node }) =>
+          node?.online === true ||
+          String(node?.status || "").toLowerCase() === "online",
+      ).length,
+    );
   }
 
   function armMirrorPushEffect(
@@ -27910,6 +27974,24 @@ export function createWorldScene({
     const sign = landmarkObjects.get("fountain")?.userData?.treasurySign;
     if (!sign) return;
     applyRewardTreasury(THREE, sign, state);
+  }
+
+  // Repaints the tally hovering over the pool orb. The catalog refresh runs on
+  // a timer and mirror health reorders the payload without changing these two
+  // numbers, so a memo keeps the canvas from being rebuilt every pass.
+  function setRewardPoolMirrorCount(total, online) {
+    const sprite = landmarkObjects.get("fountain")?.userData?.mirrorCountSprite;
+    if (!sprite) return;
+    const count = Math.max(0, Math.min(9999, Math.round(Number(total) || 0)));
+    const live = Math.max(0, Math.min(count, Math.round(Number(online) || 0)));
+    // No cabinets means no catalog yet: stay hidden rather than claim zero.
+    sprite.visible = count > 0;
+    const key = `${count}|${live}`;
+    if (mirrorCountShown === key) return;
+    mirrorCountShown = key;
+    sprite.material.map?.dispose?.();
+    sprite.material.map = rewardPoolMirrorCountTexture(THREE, count, live);
+    sprite.material.needsUpdate = true;
   }
 
   // Freshly pushed code announces itself: a tall light column rises from the
