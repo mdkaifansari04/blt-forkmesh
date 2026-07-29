@@ -5792,6 +5792,36 @@ int main(int argc, char *argv[])
               "turns, duration and cost reload intact after restart");
     }
 
+    // The quick-add "YOLO" toggle is stamped onto the session at launch (adhoc
+    // #12), so the auto-merge decision survives a restart and never depends on
+    // where the checkbox happens to sit when the run finishes.
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "yolo store temp dir is valid");
+        AgentStore store(tmp.path());
+        AgentSession session;
+        session.owner = "octo";
+        session.name = "demo";
+        session = store.createSession(session);
+        check(!session.yolo, "a session defaults to no auto-merge");
+        session.yolo = true;
+        session.branchName = "agent/adhoc-1-yolo";
+        check(store.saveSession(session), "saving a YOLO session succeeds");
+
+        AgentStore reopened(tmp.path());
+        const QList<AgentSession> sessions = reopened.loadAllSessions();
+        check(sessions.size() == 1 && sessions.first().yolo &&
+                  !sessions.first().merged,
+              "the YOLO flag reloads intact after a restart, still unmerged");
+
+        // Sessions written before the flag existed must read back as opt-out —
+        // an absent "yolo" key can never turn into an unattended merge.
+        QJsonObject legacy = session.toJson();
+        legacy.remove("yolo");
+        check(!AgentSession::fromJson(legacy).yolo,
+              "a session JSON without the yolo key never auto-merges");
+    }
+
     {
         // Workflow variable substitution must expand the explicit
         // ${{ vars.NAME }} context form and any declared ${NAME} variables, but

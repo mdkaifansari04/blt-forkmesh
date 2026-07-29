@@ -816,6 +816,21 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_quickAddVoiceAutoSubmit, &QCheckBox::toggled, this, [](bool on) {
         QSettings().setValue(kVoiceAutoSubmitSetting, on);
     });
+    // YOLO toggle beside it (adhoc #12): when checked, an agent started from the
+    // prompt bar merges its own branch into the default branch as soon as its run
+    // finishes successfully — no PR review, no manual "Merge into main" click.
+    // Persisted across launches like the Auto toggle, and off by default: it
+    // rewrites the default branch without asking.
+    m_quickAddYolo = new QCheckBox("YOLO");
+    m_quickAddYolo->setObjectName("quickAddAutoCheck");
+    m_quickAddYolo->setToolTip(
+        "Auto-merge: when an agent finishes its task, merge its branch straight "
+        "into the default branch (no review), then delete its worktree and "
+        "branch.");
+    m_quickAddYolo->setChecked(QSettings().value(kQuickAddYoloSetting, false).toBool());
+    connect(m_quickAddYolo, &QCheckBox::toggled, this, [](bool on) {
+        QSettings().setValue(kQuickAddYoloSetting, on);
+    });
     m_quickAddCreatePr->setChecked(true);
     m_quickAddCreatePr->setEnabled(true);
     m_quickAddAgentProvider->setEnabled(true);
@@ -989,6 +1004,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBar->addWidget(m_voiceLevelMeter, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddAttachStrip, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddVoiceAutoSubmit, 0, Qt::AlignBottom);
+    bottomBar->addWidget(m_quickAddYolo, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
     // The "/" actions box sits immediately left of the agent box (adhoc #116),
     // matching where the Claude Code extension keeps its actions menu.
