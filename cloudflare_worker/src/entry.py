@@ -1898,6 +1898,7 @@ STATUS_SYSTEMS = [
     ("api", "API"),
     ("errors", "Worker errors"),
     ("database", "Database"),
+    ("email", "Email delivery"),
     ("flagship_repository", "forkmesh/forkmesh repository page"),
     ("installer", "Installer delivery"),
     ("git_hosting", "Git hosting network"),
@@ -1929,6 +1930,12 @@ STATUS_SYSTEM_CHECKS = {
         "Runs a real SELECT round trip against the D1 database once a "
         "minute. Passes when the query returns a row; fails on any query "
         "error."),
+    "email": (
+        "Checks that the Mailtrap sending API and signed delivery webhook are "
+        "configured, then inspects the most recent account email lifecycle. "
+        "Passes when no send has failed and the latest accepted email receives "
+        "a delivery lifecycle event within 30 minutes. Recipient addresses, "
+        "subjects, and message bodies are never stored in this health signal."),
     "flagship_repository": (
         "Loads https://forkmesh.com/forkmesh/forkmesh once a minute, then "
         "loads the root repository tree and README.md blob through the same "
@@ -1998,6 +2005,12 @@ STATUS_MONITOR_GUIDANCE = {
         "Cloudflare D1 health, bindings, migrations, and query errors",
         "Confirm the production D1 binding and quota, then repair the failed "
         "migration or query before retrying the health check."),
+    "email": (
+        "Mailtrap API responses, webhook signatures, and recent delivery "
+        "lifecycle records",
+        "Restore the Mailtrap API token and webhook secret, confirm the "
+        "delivery webhook reaches ForkMesh, then send a test email and verify "
+        "that its delivery event is recorded."),
     "flagship_repository": (
         "the forkmesh/forkmesh mirror endpoints, repository integrity pins, "
         "and root-tree/README responses",
@@ -3057,6 +3070,51 @@ async def _record_status_deploy_sample(env, now):
     )
 
 
+EMAIL_STATUS_LOOKBACK_MS = 24 * 60 * 60 * 1000
+EMAIL_DELIVERY_GRACE_MS = 30 * 60 * 1000
+EMAIL_DELIVERY_FAILURE_STATES = {
+    "failed", "soft bounce", "bounce", "suspension", "reject",
+}
+EMAIL_DELIVERY_CONFIRMED_STATES = {
+    "delivery", "open", "click", "unsubscribe", "spam",
+}
+
+
+async def _email_delivery_status(env, now):
+    """Return the bounded Mailtrap sending + delivery health signal."""
+    token = str(getattr(env, "MAILTRAP_API_TOKEN", "") or "").strip()
+    webhook_secret = str(
+        getattr(env, "MAILTRAP_WEBHOOK_SECRET", "") or "").strip()
+    if not token or token == "CHANGE-ME":
+        return False, "Mailtrap sending API is not configured"
+    if not webhook_secret or webhook_secret == "CHANGE-ME":
+        return False, "Mailtrap delivery webhook is not configured"
+    row = await d1_first(
+        env,
+        "SELECT accepted,status,sent_at,status_at "
+        "FROM mailtrap_email_sends WHERE sent_at>=? "
+        "ORDER BY sent_at DESC LIMIT 1",
+        int(now) - EMAIL_STATUS_LOOKBACK_MS,
+    )
+    if not row:
+        return True, ""
+    accepted = int(row.get("accepted") or 0) == 1
+    status = clean_string(row.get("status") or "", 40).strip().lower()
+    sent_at = max(0, int(row.get("sent_at") or 0))
+    if not accepted:
+        return False, "Mailtrap sending API rejected the most recent email"
+    if status in EMAIL_DELIVERY_FAILURE_STATES:
+        return False, (
+            "Mailtrap reported the most recent email as " + status)
+    if status in EMAIL_DELIVERY_CONFIRMED_STATES:
+        return True, ""
+    if sent_at and int(now) - sent_at >= EMAIL_DELIVERY_GRACE_MS:
+        return False, (
+            "The most recent accepted email has no delivery event after "
+            "30 minutes")
+    return True, ""
+
+
 async def record_status_sample(env):
     # Called once a minute by the scheduled (cron) handler. Best-effort per
     # system so one failing check can't blank the rest of the page.
@@ -3077,6 +3135,16 @@ async def record_status_sample(env):
     except Exception as exc:
         ok["database"] = False
         reason["database"] = "Database query failed: " + str(exc)[:160]
+
+    try:
+        email_ok, email_reason = await _email_delivery_status(env, now)
+        ok["email"] = email_ok
+        if not email_ok:
+            reason["email"] = email_reason
+    except Exception as exc:
+        ok["email"] = False
+        reason["email"] = (
+            "Email delivery health query failed: " + str(exc)[:160])
 
     try:
         repository_ok, repository_reason = await _flagship_repository_probe(env)
@@ -3206,23 +3274,31 @@ async def record_status_sample(env):
         ok["website"] = ok["api"] = ok["errors"] = True
         ok["realtime"] = ok["durable_objects"] = True
 
-    # Each registered mirror that has supplied a valid ForkMesh repository
-    # proof gets its own /status row. This registry contains cryptographically
-    # bound node identities; unlike account_presence or host_presence it cannot
-    # turn a user/chat name or an ad-hoc repository request into a fake node.
-    # Keep recently disconnected mirrors in the sample set for the 30-day
-    # history window so an outage becomes red instead of making the row vanish.
+    # Every registered mirror* node gets its own /status row, including nodes
+    # that have never managed to publish a valid endpoint proof. The roster is
+    # the union of account-bound node registrations and signed direct-HTTPS
+    # endpoint registrations; chat/user presence can never invent a row.
+    # Missing, stale, unhealthy, and unverified endpoints stay visible as red.
     status_systems = list(STATUS_SYSTEMS)
     try:
         mirror_rows = await d1_all(
             env,
-            """SELECT node_name,checked_at,healthy,integrity,
-                      forkmesh_active,forkmesh_verified_at
-                 FROM mirror_https_endpoints
-                WHERE abuse_blocked=0 AND forkmesh_verified_at>0
-                  AND (forkmesh_active=1 OR forkmesh_verified_at>=?)
-                ORDER BY lower(node_name) LIMIT ?""",
-            now - STATUS_HISTORY_RETAIN_MS,
+            """WITH mirror_names AS (
+                   SELECT lower(name) AS node_name
+                     FROM nodes
+                    WHERE name IS NOT NULL AND lower(name) LIKE 'mirror%'
+                   UNION
+                   SELECT lower(node_name) AS node_name
+                     FROM mirror_https_endpoints
+                    WHERE lower(node_name) LIKE 'mirror%'
+               )
+               SELECT names.node_name,endpoint.checked_at,endpoint.healthy,
+                      endpoint.integrity,endpoint.abuse_blocked,
+                      endpoint.forkmesh_active,endpoint.forkmesh_verified_at
+                 FROM mirror_names names
+                 LEFT JOIN mirror_https_endpoints endpoint
+                   ON lower(endpoint.node_name)=names.node_name
+                ORDER BY names.node_name LIMIT ?""",
             STATUS_MIRROR_MAX,
         )
         seen_mirrors = set()
@@ -3230,6 +3306,7 @@ async def record_status_sample(env):
             mirror_name = str(row.get("node_name") or "").strip().lower()
             if (
                 mirror_name in seen_mirrors
+                or not mirror_name.startswith("mirror")
                 or not re.fullmatch(
                     r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name)
             ):
@@ -3246,8 +3323,10 @@ async def record_status_sample(env):
             is_healthy = int(row.get("healthy") or 0) == 1
             integrity_ok = str(row.get("integrity") or "") == "ok"
             is_active = int(row.get("forkmesh_active") or 0) == 1
+            is_allowed = int(row.get("abuse_blocked") or 0) == 0
             mirror_ok = (
-                is_fresh and is_healthy and integrity_ok and is_active)
+                is_fresh and is_healthy and integrity_ok and is_active
+                and is_allowed)
             ok[system_id] = mirror_ok
             if not mirror_ok:
                 if not is_fresh:
@@ -3261,6 +3340,9 @@ async def record_status_sample(env):
                     reason[system_id] = (
                         mirror_name + " reported repository integrity " +
                         (str(row.get("integrity") or "unknown")))
+                elif not is_allowed:
+                    reason[system_id] = (
+                        mirror_name + " is blocked from serving traffic")
                 else:
                     reason[system_id] = (
                         mirror_name + " is reachable but is not serving an "
@@ -3384,10 +3466,33 @@ async def status_history(env, view="full"):
         by_system_minute.setdefault(system_id, {})[int(row["minute_ts"])] = row
         last_sample_ts = max(last_sample_ts, int(row["minute_ts"]))
 
-    # Dynamic mirror systems are written by record_status_sample only after a
-    # node supplies a valid signed repository proof. Build the public roster
-    # from those recorded IDs, never from user/account presence.
+    # Start with recorded mirror history, then union current registered
+    # mirror* names so a newly registered but broken node appears immediately
+    # as down instead of disappearing until its first successful proof.
     recorded_system_ids = set(by_system_hour) | set(by_system_minute)
+    try:
+        registered_mirrors = await d1_all(
+            env,
+            """SELECT lower(name) AS node_name
+                 FROM nodes
+                WHERE name IS NOT NULL AND lower(name) LIKE 'mirror%'
+               UNION
+               SELECT lower(node_name) AS node_name
+                 FROM mirror_https_endpoints
+                WHERE lower(node_name) LIKE 'mirror%'
+               ORDER BY node_name LIMIT ?""",
+            STATUS_MIRROR_MAX,
+        )
+        for row in registered_mirrors or []:
+            mirror_name = str(row.get("node_name") or "").strip().lower()
+            if (
+                mirror_name.startswith("mirror")
+                and re.fullmatch(
+                    r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name)
+            ):
+                recorded_system_ids.add(STATUS_MIRROR_PREFIX + mirror_name)
+    except Exception:
+        pass
     mirror_systems = []
     for system_id in recorded_system_ids:
         if not system_id.startswith(STATUS_MIRROR_PREFIX):

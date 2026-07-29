@@ -15828,18 +15828,18 @@ export function createWorldScene({
     }
   }
   const flame = new THREE.Mesh(
-    new THREE.ConeGeometry(0.56, 1.4, 8),
+    new THREE.ConeGeometry(0.82, 2.25, 10),
     makeMaterial(THREE, "#ffb547", {
       emissive: "#ff7a2f",
       emissiveIntensity: 1.6,
       transparent: true,
-      opacity: 0.92,
+      opacity: 0.88,
     }),
   );
-  flame.position.y = 0.98;
+  flame.position.y = 1.35;
   campfire.add(flame);
   const innerFlame = new THREE.Mesh(
-    new THREE.ConeGeometry(0.31, 0.95, 8),
+    new THREE.ConeGeometry(0.48, 1.45, 9),
     makeMaterial(THREE, "#fff0a6", {
       emissive: "#ffb547",
       emissiveIntensity: 2.1,
@@ -15847,11 +15847,73 @@ export function createWorldScene({
       opacity: 0.94,
     }),
   );
-  innerFlame.position.y = 0.86;
+  innerFlame.position.y = 1.05;
   campfire.add(innerFlame);
+  // Two independently flickering tongues break up the old single-cone
+  // silhouette. They are fixed low-poly meshes, so the richer fire adds no
+  // per-frame geometry work and only two small draw calls.
+  const flameTongues = [-1, 1].map((side) => {
+    const tongue = new THREE.Mesh(
+      new THREE.ConeGeometry(0.28, 1.75, 8),
+      makeMaterial(THREE, side < 0 ? "#ff7a2f" : "#ffd166", {
+        emissive: side < 0 ? "#ff5b24" : "#ff9f32",
+        emissiveIntensity: 2,
+        transparent: true,
+        opacity: 0.82,
+      }),
+    );
+    tongue.position.set(side * 0.47, 1.08, side * 0.12);
+    tongue.rotation.z = side * 0.19;
+    campfire.add(tongue);
+    return tongue;
+  });
+  const fireAura = new THREE.Mesh(
+    new THREE.SphereGeometry(1.05, 12, 8),
+    new THREE.MeshBasicMaterial({
+      color: "#ff7a2f",
+      transparent: true,
+      opacity: 0.13,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }),
+  );
+  fireAura.position.y = 1.3;
+  fireAura.scale.set(1.25, 1.75, 1.25);
+  campfire.add(fireAura);
+  // A single points object supplies drifting sparks around the full fire.
+  // Its deterministic positions avoid both runtime randomness and particle
+  // allocation inside the animation loop.
+  const emberPositions = [];
+  for (let index = 0; index < 24; index += 1) {
+    const angle = index * 2.3999632297;
+    const radius = 0.22 + (index % 6) * 0.11;
+    emberPositions.push(
+      Math.cos(angle) * radius,
+      0.5 + (index % 8) * 0.31,
+      Math.sin(angle) * radius,
+    );
+  }
+  const emberGeometry = new THREE.BufferGeometry();
+  emberGeometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(emberPositions, 3),
+  );
+  const fireEmbers = new THREE.Points(
+    emberGeometry,
+    new THREE.PointsMaterial({
+      color: "#ffd27a",
+      size: 0.09,
+      transparent: true,
+      opacity: 0.88,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }),
+  );
+  fireEmbers.position.y = 0.38;
+  campfire.add(fireEmbers);
   let fireLevel = 1;
-  const fireLight = new THREE.PointLight("#ffa14d", 3.2, 14, 1.8);
-  fireLight.position.y = 1.45;
+  const fireLight = new THREE.PointLight("#ff9b45", 4.4, 20, 1.7);
+  fireLight.position.y = 2.1;
   campfire.add(fireLight);
   // The membership total rides in the flames themselves rather than on yet
   // another sign: an ember-lit numeral hovering over the pit, so the fire
@@ -15863,9 +15925,9 @@ export function createWorldScene({
       depthWrite: false,
     }),
   );
-  const MEMBER_COUNT_HOVER_Y = 3.25;
+  const MEMBER_COUNT_HOVER_Y = 5.15;
   memberCountSprite.position.y = MEMBER_COUNT_HOVER_Y;
-  memberCountSprite.scale.set(4.2, 2.1, 1);
+  memberCountSprite.scale.set(6, 3, 1);
   memberCountSprite.visible = false;
   campfire.add(memberCountSprite);
   let memberCountShown = "";
@@ -15889,15 +15951,30 @@ export function createWorldScene({
     // Each member contributes one visible log and a small, bounded amount of
     // warmth. The cap keeps a mature community's fire welcoming, not blocking.
     rebuildCampfireMemberLogs(count);
-    fireLevel = clamp(1.28 + count * 0.014, 1.28, 2.2);
-    fireLight.distance = 14 + Math.min(count, 80) * 0.08;
+    fireLevel = clamp(1.6 + count * 0.012, 1.6, 2.65);
+    fireLight.distance = 20 + Math.min(count, 80) * 0.09;
   }
   animated.push((time) => {
     const flicker = 1 + Math.sin(time * 0.011) * 0.12 + Math.sin(time * 0.023) * 0.06;
     const size = fireLevel * flicker;
     flame.scale.set(size, fireLevel * (1 + Math.sin(time * 0.017) * 0.16), size);
     innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
-    fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
+    flameTongues[0].scale.setScalar(
+      fireLevel * (0.82 + Math.sin(time * 0.019) * 0.12),
+    );
+    flameTongues[1].scale.setScalar(
+      fireLevel * (0.9 + Math.sin(time * 0.015 + 1.7) * 0.14),
+    );
+    fireAura.scale.set(
+      size * 1.12,
+      fireLevel * (1.65 + Math.sin(time * 0.009) * 0.12),
+      size * 1.12,
+    );
+    fireAura.material.opacity = 0.11 + Math.sin(time * 0.013) * 0.025;
+    fireEmbers.rotation.y = time * 0.00032;
+    fireEmbers.position.y = 0.38 + Math.sin(time * 0.0021) * 0.16;
+    fireEmbers.material.opacity = 0.74 + Math.sin(time * 0.017) * 0.14;
+    fireLight.intensity = 4.4 * fireLevel + Math.sin(time * 0.013) * 0.9;
     // Drift with the flames so the number sits in the fire instead of on it.
     memberCountSprite.position.y =
       MEMBER_COUNT_HOVER_Y + Math.sin(time * 0.0017) * 0.12;

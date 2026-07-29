@@ -17,7 +17,18 @@ def test_member_circle_uses_dirt_and_tracks_firewood_per_member():
     assert "function rebuildCampfireMemberLogs(total)" in SCENE
     assert "rebuildCampfireMemberLogs(count)" in SCENE
     assert "log.userData.memberLogIndex = index" in SCENE
-    assert "fireLevel = clamp(1.28 + count * 0.014, 1.28, 2.2)" in SCENE
+    assert "fireLevel = clamp(1.6 + count * 0.012, 1.6, 2.65)" in SCENE
+
+
+def test_member_circle_fire_is_larger_layered_and_bounded():
+    assert "new THREE.ConeGeometry(0.82, 2.25, 10)" in SCENE
+    assert "const flameTongues = [-1, 1].map" in SCENE
+    assert "const fireAura = new THREE.Mesh(" in SCENE
+    assert "const fireEmbers = new THREE.Points(" in SCENE
+    assert "for (let index = 0; index < 24; index += 1)" in SCENE
+    assert "new THREE.Float32BufferAttribute(emberPositions, 3)" in SCENE
+    assert "const MEMBER_COUNT_HOVER_Y = 5.15" in SCENE
+    assert "memberCountSprite.scale.set(6, 3, 1)" in SCENE
 
 
 def test_email_pin_switches_between_verified_check_and_unverified_x():
