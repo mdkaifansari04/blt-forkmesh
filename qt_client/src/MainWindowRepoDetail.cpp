@@ -9115,7 +9115,7 @@ void MainWindow::spinRefreshButton(QPushButton *button)
     connect(timer, &QTimer::timeout, button, [button, angle, size] {
         *angle = (*angle + 30) % 360;
         button->setIcon(
-            QIcon(refreshPixmap(QColor(Theme::kTextTertiary), *angle, size)));
+            QIcon(refreshPixmap(QColor(Theme::kRunning), *angle, size)));
     });
     timer->start(60);
     // These refreshes are synchronous (or fire-and-forget), so a brief spin is
@@ -9152,8 +9152,8 @@ void MainWindow::startButtonSpin(QPushButton *button)
         // already in progress between the refresh-arrows and hourglass looks
         // (see setRestartSpinHourglass) without restarting the timer.
         const QPixmap frame = button->property("fmSpinHourglass").toBool()
-                                   ? hourglassPixmap(QColor(Theme::kTextTertiary), *angle, size)
-                                   : refreshPixmap(QColor(Theme::kTextTertiary), *angle, size);
+                                   ? hourglassPixmap(QColor(Theme::kRunning), *angle, size)
+                                   : refreshPixmap(QColor(Theme::kRunning), *angle, size);
         button->setIcon(QIcon(frame));
     });
     timer->start(60);
@@ -9207,7 +9207,7 @@ void MainWindow::startRefreshSpin()
         connect(m_refreshSpinTimer, &QTimer::timeout, this, [this] {
             m_refreshAngle = (m_refreshAngle + 30) % 360;
             m_refreshButton->setIcon(
-                QIcon(refreshPixmap(QColor(Theme::kTextTertiary), m_refreshAngle, 22)));
+                QIcon(refreshPixmap(QColor(Theme::kRunning), m_refreshAngle, 22)));
         });
     }
     m_refreshSpinTimer->start(60);
@@ -9243,7 +9243,7 @@ void MainWindow::startNodeSwitchSpin()
         connect(m_nodeSwitchSpinTimer, &QTimer::timeout, this, [this] {
             m_nodeSwitchAngle = (m_nodeSwitchAngle + 30) % 360;
             m_nodeMenuButton->setIcon(
-                QIcon(refreshPixmap(QColor(Theme::kTextTertiary),
+                QIcon(refreshPixmap(QColor(Theme::kRunning),
                                     m_nodeSwitchAngle, 16)));
         });
     }
@@ -9298,12 +9298,12 @@ void MainWindow::startRepoSwitchSpin()
         connect(m_repoSwitchSpinTimer, &QTimer::timeout, this, [this] {
             m_repoSwitchAngle = (m_repoSwitchAngle + 30) % 360;
             m_repoMenuButton->setIcon(
-                QIcon(refreshPixmap(QColor(Theme::kTextTertiary),
+                QIcon(refreshPixmap(QColor(Theme::kRunning),
                                     m_repoSwitchAngle, 16)));
         });
     }
     m_repoMenuButton->setIcon(
-        QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
+        QIcon(refreshPixmap(QColor(Theme::kRunning), 0, 16)));
     m_repoSwitchSpinTimer->start(60);
 }
 

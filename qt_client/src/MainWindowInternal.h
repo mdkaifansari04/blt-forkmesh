@@ -2924,6 +2924,19 @@ const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit")
 // here merges its own branch into the default branch the moment its run
 // finishes successfully, skipping the pull-request review step.
 const QString kQuickAddYoloSetting = QStringLiteral("agents/quickAddYolo");
+// Footer quick-add "Task" toggle (adhoc #18): true => every agent started from
+// here also opens an organization task recording which bot launched the run,
+// which bot finished it, and the model/mode/strength it used. On by default —
+// the point is that prompted work is visible to the organization, not just to
+// the desktop that typed it — and turned off per-run for throwaway prompts.
+const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
+// Canonical prefixes this desktop signs with its account key to open and close
+// an organization task when it has no account session token to present (the
+// authenticateSilently path holds keys, not sessions). Must stay byte-identical
+// to ORG_TASK_OPEN_PROOF / ORG_TASK_COMPLETE_PROOF in the worker's entry.py.
+const QString kOrgTaskOpenProof = QStringLiteral("forkmesh-org-task-open-v1");
+const QString kOrgTaskCompleteProof =
+    QStringLiteral("forkmesh-org-task-complete-v1");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.
@@ -5953,7 +5966,7 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         p.drawPixmap(0, 0,
-                     refreshPixmap(QColor(Theme::kTextTertiary), m_angle, m_size));
+                     refreshPixmap(QColor(Theme::kRunning), m_angle, m_size));
     }
 
 private:
@@ -6072,7 +6085,7 @@ class RingSpinner : public QWidget
 {
 public:
     explicit RingSpinner(QWidget *parent = nullptr,
-                         const QColor &color = QColor("#58a6ff"))
+                         const QColor &color = QColor(Theme::kRunning))
         : QWidget(parent), m_color(color)
     {
         setAttribute(Qt::WA_TranslucentBackground);
@@ -6774,7 +6787,7 @@ protected:
             p.setPen(Qt::NoPen);
             p.setBrush(QColor(dark ? "#0d1117" : "#ffffff"));
             p.drawEllipse(QRect(at, QSize(s, s)).adjusted(-1, -1, 1, 1));
-            p.drawPixmap(at, refreshPixmap(QColor("#58a6ff"), m_spinAngle, s));
+            p.drawPixmap(at, refreshPixmap(QColor(Theme::kRunning), m_spinAngle, s));
         } else if (m_badge > 0) {
             const QString text = m_badge > 99 ? QStringLiteral("99+")
                                               : QString::number(m_badge);

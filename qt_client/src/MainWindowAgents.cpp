@@ -356,10 +356,11 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
 {
     cell->setText(s.merged ? QStringLiteral("merged") : agentStatusText(s.status));
     cell->setForeground(s.merged ? QColor("#a371f7") : agentStatusColor(s.status));
-    // Status glyph next to the text (issue #108): a green spinner while running, a
-    // purple merge mark once it lands, a green check on success, a red stop sign
-    // when halted, an orange hand while it waits on the user, and a red X circle
-    // on failure (issue #322). The running glyph is seeded at frame 0 here;
+    // Status glyph next to the text (issue #108): an orange spinner while running
+    // (adhoc #23), a purple merge mark once it lands, a green check on success, a
+    // red stop sign when halted, an orange hand while it waits on the user, and a
+    // red X circle on failure (issue #322). The running glyph is seeded at frame 0
+    // here;
     // animateRunningAgentIcons() spins it. A queued session gets the amber clock
     // (adhoc #433) — with the concurrency cap in place it can sit there for a
     // while, so the list has to say why nothing is happening. Other states carry
@@ -367,7 +368,7 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     if (s.merged)
         cell->setIcon(themedOcticon("git-merge", QColor("#a371f7"), 14));
     else if (s.status == AgentStatus::Running)
-        cell->setIcon(themedOcticon("sync", QColor("#3fb950"), 14));
+        cell->setIcon(themedOcticon("sync", QColor(Theme::kRunning), 14));
     else if (s.status == AgentStatus::Success)
         cell->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
     else if (s.status == AgentStatus::Stopped)
@@ -1447,8 +1448,10 @@ QWidget *MainWindow::buildAgentsTab()
                 finished = true;
             }
         }
-        if (finished)
-            maybeAutoMergeForSession(sid); // adhoc #12
+        if (finished) {
+            maybeAutoMergeForSession(sid);   // adhoc #12
+            completeOrgTaskForSession(sid);  // adhoc #18
+        }
     });
     // Extension-style transcript for Claude Code (issue #191 follow-up): renders
     // the CLI's stream-json events as native cards.
@@ -1980,6 +1983,15 @@ void MainWindow::applyComposerSelectionToAgentSession(int sessionId)
                 session->mode = chosenMode;
                 changed = true;
             }
+        }
+        // The reasoning strength rides into the CLI from the same live setting
+        // the resume reads (kClaudeEffortSetting), so keep the session's copy in
+        // step — the organization task reports what the run actually used, not
+        // what it was first launched with (adhoc #18).
+        if (const QString chosenStrength = composerAgentStrength();
+            session->strength != chosenStrength) {
+            session->strength = chosenStrength;
+            changed = true;
         }
         if (changed && m_agentStore)
             m_agentStore->saveSession(*session);
@@ -5742,6 +5754,12 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     session.provider = provider;
     session.createPr = createPr;
     session.yolo = m_quickAddYolo && m_quickAddYolo->isChecked(); // adhoc #12
+    // Snapshot the Task toggle and the run's model/mode/strength now (adhoc
+    // #18): the organization task describes what this run was actually given,
+    // not whatever the composer happens to be set to when it finishes.
+    session.orgTask = !m_quickAddTask || m_quickAddTask->isChecked();
+    session.startedByBot = agentBotLabel(provider);
+    session.strength = composerAgentStrength();
     session.model = model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
@@ -5798,6 +5816,10 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
             issueStore.setAssignees(issue.number, assignees);
         }
     }
+
+    // Past every bail-out above, so a run that never got off the ground doesn't
+    // leave an organization task nothing will ever close out (adhoc #18).
+    openOrgTaskForSession(session);
 
     const int sessionId = session.id;
     m_agentQueue.append(sessionId);
@@ -6105,6 +6127,11 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     // when the run ends: a session auto-merges because that is what was asked for
     // when it was launched, not because the box happens to be ticked hours later.
     session.yolo = m_quickAddYolo && m_quickAddYolo->isChecked();
+    // Same snapshot rule for the Task toggle (adhoc #18): a prompt opens an
+    // organization task because that is what was asked for when it was typed.
+    session.orgTask = !m_quickAddTask || m_quickAddTask->isChecked();
+    session.startedByBot = agentBotLabel(provider);
+    session.strength = composerAgentStrength();
     session.model = model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
@@ -6139,6 +6166,7 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         session,
         QStringLiteral("==> Started from a prompt (%1).\n")
             .arg(agentProviderName(provider)));
+    openOrgTaskForSession(session); // adhoc #18: mirror the run as an org task
 
     // This path launches directly instead of going through processAgentQueue, so
     // it has to honour the run limit itself (adhoc #433) — the quick-add bar is
@@ -6495,7 +6523,7 @@ void MainWindow::switchToAgentsTab(int sessionId)
 // Rebuild the footer "Agents:" status strip (adhoc #111) from m_agentSessions:
 // one small status glyph per known session (adhoc #114 swapped the plain
 // colored dots for the same icon set the Agents table's Status column uses —
-// a green spinner while running, purple merge mark once landed, orange hand
+// an orange spinner while running, purple merge mark once landed, orange hand
 // while waiting, etc — via agentStatusOcticon), click-through to that
 // session's Agents tab. Called after every reloadAgents() so the strip tracks
 // the same data as the Agents table.
@@ -6573,7 +6601,7 @@ void MainWindow::refreshAgentStatusRow()
     }
 }
 
-// Spin the green "sync" glyph on every running icon in the footer "Agents:"
+// Spin the orange "sync" glyph on every running icon in the footer "Agents:"
 // strip (adhoc #114), mirroring animateRunningAgentIcons()'s treatment of the
 // Agents table. Driven by m_agentStatusSpinTimer, which only ticks while at
 // least one session in the strip is running (see refreshAgentStatusRow).
@@ -6583,7 +6611,7 @@ void MainWindow::animateAgentStatusIcons()
         return;
     m_agentStatusSpinFrame = (m_agentStatusSpinFrame + 1) % 10;
     const QIcon icon(rotatedTintedOcticonPixmap(
-        "sync", QColor("#3fb950"), 14, m_agentStatusSpinFrame * 36.0));
+        "sync", QColor(Theme::kRunning), 14, m_agentStatusSpinFrame * 36.0));
     for (int i = 0; i < m_agentStatusIconsLayout->count(); ++i) {
         QWidget *w = m_agentStatusIconsLayout->itemAt(i)->widget();
         if (w && w->property("agentStatusSpin").toBool())
@@ -7596,6 +7624,9 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         // worktree to bring up to date with base first — and after the PR, so the
         // pull request exists as a record of what was merged.
         maybeAutoMergeForSession(sid);
+        // Close out the organization task the prompt opened (adhoc #18), after
+        // the merge so the completion note can say the branch landed.
+        completeOrgTaskForSession(sid);
         // The PR captured the diff as a patch, so the worktree is no longer
         // needed; drop it to free the branch for checkout (issue #74).
         cleanupStreamWorktree(sid);
@@ -8993,7 +9024,7 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
     m_agentStatusPill->setText(pill);
 }
 
-// Spin the green "sync" glyph on every running row's Status cell so the agents
+// Spin the orange "sync" glyph on every running row's Status cell so the agents
 // list shows a live spinner (issue #108). Driven by m_agentsSpinTimer, which only
 // ticks while a session is running, so finished rows keep their static icon.
 void MainWindow::animateRunningAgentIcons()
@@ -9001,7 +9032,7 @@ void MainWindow::animateRunningAgentIcons()
     if (!m_agentTable)
         return;
     const QIcon icon(rotatedTintedOcticonPixmap(
-        "sync", QColor("#3fb950"), 14, m_agentsSpinFrame * 36.0));
+        "sync", QColor(Theme::kRunning), 14, m_agentsSpinFrame * 36.0));
     QSignalBlocker block(m_agentTable);
     for (int r = 0; r < m_agentTable->rowCount(); ++r) {
         QTableWidgetItem *idItem = m_agentTable->item(r, 0);
@@ -9868,6 +9899,242 @@ void MainWindow::landAgentPullForSession(AgentSession session, const QString &pa
 // mergeWorktreeIntoMain (dirty checkout, wrong branch, conflicts, and the
 // is-ancestor proof before anything is deleted), so a merge that can't land
 // cleanly leaves the branch and worktree exactly where they are.
+// ---- Organization tasks for prompted runs (adhoc #18) ---------------------
+// Typing a prompt starts an agent on this desktop; with the composer's "Task"
+// toggle on it also opens a task in the organization, so the run shows up for
+// everyone rather than only in this app's Agents tab. The task records the run's
+// provenance: the bot that launched it, the bot that reported it finished, and
+// the model, permission mode, and reasoning strength it was given.
+
+// "<provider>@<machine>": which bot on which machine. The provider alone would
+// collapse every desktop in the fleet into one "claude-code", and the machine
+// name alone would lose which CLI actually ran (username vs machine node name:
+// this is deliberately the machine, never the account).
+QString MainWindow::agentBotLabel(const QString &provider) const
+{
+    QString bot = provider.trimmed().toLower();
+    if (bot.isEmpty())
+        bot = QStringLiteral("agent");
+    const QString machine = machineNodeName().trimmed().toLower();
+    if (machine.isEmpty())
+        return bot;
+    return bot + QLatin1Char('@') + machine;
+}
+
+QString MainWindow::composerAgentStrength() const
+{
+    return QSettings()
+        .value(kClaudeEffortSetting, QStringLiteral("high"))
+        .toString()
+        .trimmed()
+        .toLower();
+}
+
+// Authenticate one organization-task write. A desktop that signed in with a
+// password holds an account session token; the ordinary launch path is
+// authenticateSilently(), which proves this install owns the account's key and
+// produces no token at all — so without the signed fallback the Task toggle
+// would silently do nothing for most users. `resource` is the task id for a
+// proof that names one (empty for the collection). Returns false when this node
+// can neither present a session nor sign for the account.
+bool MainWindow::authenticateOrgTaskRequest(QUrl &url, QNetworkRequest &request,
+                                            const QString &proofPrefix,
+                                            const QString &resource) const
+{
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    if (!m_accountSessionToken.trimmed().isEmpty()) {
+        request.setUrl(url);
+        request.setRawHeader("Authorization",
+                             QByteArrayLiteral("Bearer ") +
+                                 m_accountSessionToken.toUtf8());
+        return true;
+    }
+    const QString node = accountOwner().trimmed().toLower();
+    if (node.isEmpty() || !hasOwnerSigningCapability(node))
+        return false;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    // Must match _org_task_signed_session's canonical string byte for byte.
+    QString canonical = proofPrefix + QLatin1Char('\n') + node + QLatin1Char('\n');
+    if (!resource.isEmpty())
+        canonical += resource + QLatin1Char('\n');
+    canonical += ts;
+    const QString sig = m_profileIdentity.signData(canonical.toUtf8());
+    if (sig.isEmpty())
+        return false;
+    QUrlQuery query(url);
+    query.addQueryItem(QStringLiteral("node"), node);
+    query.addQueryItem(QStringLiteral("ts"), ts);
+    query.addQueryItem(QStringLiteral("sig"), sig);
+    url.setQuery(query);
+    request.setUrl(url);
+    return true;
+}
+
+void MainWindow::recordOrgTaskFields(int sessionId, const QString &taskId,
+                                     const QString &finishedByBot)
+{
+    // Re-look-up rather than capturing the session: a network reply lands after
+    // event-loop turns that can have rebuilt m_agentSessions (git-pump UAF
+    // family, adhoc #106/#119/#124/#149).
+    AgentSession *s = findAgentSession(sessionId);
+    if (!s || !m_agentStore)
+        return;
+    if (!taskId.isEmpty())
+        s->orgTaskId = taskId;
+    if (!finishedByBot.isEmpty())
+        s->finishedByBot = finishedByBot;
+    m_agentStore->saveSession(*s);
+}
+
+void MainWindow::openOrgTaskForSession(const AgentSession &session)
+{
+    if (!session.orgTask || session.id <= 0 || !session.orgTaskId.isEmpty())
+        return;
+    if (!m_networkAccess)
+        return;
+
+    // Bot-assigned tasks live under the agent destination, which requires the
+    // repository the run works in.
+    const QString repository = session.owner + QLatin1Char('/') + session.name;
+    // The board only knows two bot families; the exact provider ("claude-api",
+    // "openai", …) rides along in the agent record below.
+    const QString assigneeKind = agentIsClaudeProvider(session.provider)
+                                     ? QStringLiteral("claude")
+                                     : QStringLiteral("codex");
+    QString details = session.prompt.trimmed();
+    if (details.isEmpty() && session.issueNumber > 0)
+        details = QStringLiteral("ForkMesh issue #%1: %2")
+                      .arg(session.issueNumber)
+                      .arg(session.issueTitle);
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/tasks"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    QNetworkRequest request;
+    // No account session and no signing key: the run is simply local-only,
+    // which is not an error worth interrupting the prompt for.
+    if (!authenticateOrgTaskRequest(url, request, kOrgTaskOpenProof, QString()))
+        return;
+    const QJsonObject body{
+        {QStringLiteral("title"), session.issueTitle},
+        {QStringLiteral("details"), details},
+        {QStringLiteral("department"), QStringLiteral("engineering")},
+        {QStringLiteral("destination"), QStringLiteral("agent")},
+        {QStringLiteral("repository"), repository},
+        {QStringLiteral("assigneeKind"), assigneeKind},
+        {QStringLiteral("agent"),
+         QJsonObject{
+             {QStringLiteral("provider"), session.provider},
+             {QStringLiteral("startedBy"), session.startedByBot},
+             {QStringLiteral("model"), session.model},
+             {QStringLiteral("mode"), session.mode},
+             {QStringLiteral("strength"), session.strength},
+             {QStringLiteral("sessionId"), QString::number(session.id)},
+         }},
+    };
+    const int sessionId = session.id;
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, sessionId] {
+        const QByteArray payload = reply->readAll();
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        reply->deleteLater();
+        if (status < 200 || status >= 300) {
+            // Not an org member, signed out, relay down: the agent is already
+            // running and nothing about it depends on the task existing.
+            logSystem(QStringLiteral(
+                          "Organization task not opened for agent session #%1 "
+                          "(relay replied %2).")
+                          .arg(sessionId)
+                          .arg(status));
+            return;
+        }
+        const QString taskId = QJsonDocument::fromJson(payload)
+                                   .object()
+                                   .value(QStringLiteral("task"))
+                                   .toObject()
+                                   .value(QStringLiteral("id"))
+                                   .toString();
+        if (taskId.isEmpty())
+            return;
+        recordOrgTaskFields(sessionId, taskId, QString());
+    });
+}
+
+void MainWindow::completeOrgTaskForSession(int sessionId)
+{
+    const AgentSession *s = findAgentSession(sessionId);
+    if (!s || s->orgTaskId.isEmpty() || !s->finishedByBot.isEmpty() ||
+        isExternalSession(sessionId))
+        return;
+    // Only a run that has actually stopped closes its task out; Queued/Running/
+    // Waiting sessions are still the organization's open work.
+    if (s->status != AgentStatus::Success && s->status != AgentStatus::Failed &&
+        s->status != AgentStatus::Stopped)
+        return;
+    if (!m_networkAccess)
+        return;
+
+    const AgentSession session = *s; // by value: the post below pumps the loop
+    const QString finishedBy = agentBotLabel(session.provider);
+    QString note = QStringLiteral("%1 finished this run with status %2.")
+                       .arg(finishedBy)
+                       .arg(session.status);
+    if (!session.lastError.trimmed().isEmpty())
+        note += QStringLiteral(" Last error: %1").arg(session.lastError.trimmed());
+    if (session.prNumber > 0)
+        note += QStringLiteral(" Opened pull request #%1.").arg(session.prNumber);
+    if (session.merged)
+        note += QStringLiteral(" Merged into the default branch.");
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/tasks/") + session.orgTaskId +
+                QStringLiteral("/complete"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    QNetworkRequest request;
+    // The completion proof names the exact task it closes.
+    if (!authenticateOrgTaskRequest(url, request, kOrgTaskCompleteProof,
+                                    session.orgTaskId))
+        return;
+    const QJsonObject body{
+        {QStringLiteral("completionNote"), note},
+        {QStringLiteral("agent"),
+         QJsonObject{
+             {QStringLiteral("provider"), session.provider},
+             {QStringLiteral("finishedBy"), finishedBy},
+             // The model/mode/strength a resumed session ended up running with
+             // can differ from the ones it was launched with (adhoc #372).
+             {QStringLiteral("model"), session.model},
+             {QStringLiteral("mode"), session.mode},
+             {QStringLiteral("strength"), session.strength},
+         }},
+    };
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, sessionId, finishedBy] {
+                const int status =
+                    reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                        .toInt();
+                reply->deleteLater();
+                if (status < 200 || status >= 300) {
+                    // Leave finishedByBot empty so the next terminal transition
+                    // (or the next app run) retries the completion.
+                    logSystem(QStringLiteral(
+                                  "Organization task for agent session #%1 not "
+                                  "closed out (relay replied %2).")
+                                  .arg(sessionId)
+                                  .arg(status));
+                    return;
+                }
+                recordOrgTaskFields(sessionId, QString(), finishedBy);
+            });
+}
+
 void MainWindow::maybeAutoMergeForSession(int sessionId)
 {
     const AgentSession *s = findAgentSession(sessionId);
@@ -10085,6 +10352,7 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
     }
     reloadAgents(); // rebuilds m_agentSessions; `session` is dangling after this
     maybeAutoMergeForSession(sessionId); // adhoc #12: YOLO lands it without review
+    completeOrgTaskForSession(sessionId); // adhoc #18: close out the org task
     if (sessionId == m_selectedAgentSessionId)
         showAgentSession(sessionId);
     refreshIssueList();
