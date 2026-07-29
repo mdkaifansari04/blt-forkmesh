@@ -139,6 +139,7 @@
 #include <QSize>
 #include <QSysInfo>
 #include <QSplitter>
+#include <QSpinBox>
 #include <QStackedWidget>
 #include <QStringList>
 #include <QStringListModel>
@@ -307,6 +308,7 @@ QColor agentStatusColor(const QString &status);
 bool agentSessionActive(const AgentSession *s);
 QString solanaDisplayCurrency();
 QIcon agentStatusOcticon(const AgentSession &s, int px = 13);
+QColor agentStatusIconColor(const AgentSession &s);
 QString linkifyIssueRefs(const QString &escaped);
 QString linkifyReferenceLine(const QString &line);
 class DiffFileNavigator : public QObject
@@ -1541,6 +1543,153 @@ private:
     QVector<Blip> m_blips;      // mirror nodes echoed as blips inside the dish
 };
 
+// A matrix of tiny squares on the window-chrome line, one per agent session,
+// sitting immediately right of the "Agents (N)" button. Each square is painted
+// in the same colour as that session's status icon in the agents list, so the
+// whole fleet reads at a glance: green running/done, red failed, amber queued,
+// purple merged, grey cleared.
+//
+// Running sessions get the night-rider treatment the agents list uses on its
+// Activity column: a Larson highlight travels along the matrix and each running
+// square pulses at a speed and brightness driven by that session's live output
+// meter, so a busy agent visibly races while a quiet one just breathes. The
+// animation timer only runs while something is actually running.
+class AgentDotMatrix : public QWidget
+{
+public:
+    struct Dot {
+        int sessionId = 0;
+        QColor color;
+        bool running = false;
+        double intensity = 0.0; // 0..1 live-output meter for running sessions
+    };
+
+    explicit AgentDotMatrix(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedHeight(kRows * kPitch);
+        setFixedWidth(0); // nothing to show until the first setDots()
+        setCursor(Qt::PointingHandCursor);
+        hide();
+        m_sweep = new QTimer(this);
+        m_sweep->setInterval(60);
+        connect(m_sweep, &QTimer::timeout, this, [this] {
+            m_phase += 0.045;
+            if (m_phase >= 1.0)
+                m_phase -= 1.0;
+            update();
+        });
+    }
+
+    // Replace the fleet. Anything past the visible grid is dropped from the
+    // paint (the caller folds the remainder into the tooltip), so the matrix
+    // can never grow the chrome line without bound.
+    void setDots(const QVector<Dot> &dots)
+    {
+        m_dots = dots.mid(0, kRows * kMaxColumns);
+        const int columns = (m_dots.size() + kRows - 1) / kRows;
+        setFixedWidth(columns * kPitch);
+        bool anyRunning = false;
+        for (const Dot &d : std::as_const(m_dots))
+            anyRunning = anyRunning || d.running;
+        if (anyRunning && !m_sweep->isActive())
+            m_sweep->start();
+        else if (!anyRunning && m_sweep->isActive())
+            m_sweep->stop();
+        update();
+    }
+
+    // How many of the dots handed to setDots() actually fit in the grid, so the
+    // caller can say "showing the first N" instead of silently truncating.
+    int shownCount() const { return m_dots.size(); }
+
+    // Clicking a square opens that session; clicking the empty space around
+    // them falls back to session id 0 (the agents overview).
+    std::function<void(int)> onDotClicked;
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton && onDotClicked) {
+            const int index = dotAt(e->position().toPoint());
+            onDotClicked(index >= 0 ? m_dots.at(index).sessionId : 0);
+            // Accept it: the window-chrome bar under this widget turns an
+            // unhandled press into a system window-move, so letting the click
+            // fall through would drag the window every time a square is opened.
+            e->accept();
+            return;
+        }
+        QWidget::mousePressEvent(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        for (int i = 0; i < m_dots.size(); ++i) {
+            const Dot &dot = m_dots.at(i);
+            QColor color = dot.color;
+            double scale = 1.0;
+            if (dot.running) {
+                // The highlight travels along the matrix (each square is offset
+                // a little further through the cycle), and the session's own
+                // output meter both speeds up its cycle and deepens the pulse —
+                // that's the "live activity" part: idle running agents breathe
+                // slowly and dimly, streaming ones strobe.
+                const double speed = 0.6 + 1.9 * qBound(0.0, dot.intensity, 1.0);
+                double t = m_phase * speed + i * kSweepStep;
+                t -= std::floor(t);
+                const double tri = 1.0 - std::abs(2.0 * t - 1.0);
+                const double depth = 0.45 + 0.35 * qBound(0.0, dot.intensity, 1.0);
+                const double glow = (1.0 - depth) + depth * tri;
+                color.setAlphaF(qBound(0.18, glow, 1.0));
+                scale = 0.82 + 0.18 * tri; // the crest swells a touch
+            } else {
+                color.setAlpha(205);
+            }
+            const QPointF center = cellCenter(i);
+            const double side = kSide * scale;
+            p.setBrush(color);
+            p.drawRoundedRect(
+                QRectF(center.x() - side / 2.0, center.y() - side / 2.0, side,
+                       side),
+                1.2, 1.2);
+        }
+    }
+
+private:
+    // Column-major fill, so the fleet grows to the right in tidy columns of
+    // kRows rather than reflowing every square when one agent is added.
+    QPointF cellCenter(int index) const
+    {
+        const int column = index / kRows;
+        const int row = index % kRows;
+        return QPointF(column * kPitch + kPitch / 2.0,
+                       row * kPitch + kPitch / 2.0);
+    }
+
+    int dotAt(const QPoint &pos) const
+    {
+        const int column = pos.x() / kPitch;
+        const int row = pos.y() / kPitch;
+        if (column < 0 || row < 0 || row >= kRows)
+            return -1;
+        const int index = column * kRows + row;
+        return index < m_dots.size() ? index : -1;
+    }
+
+    static constexpr int kRows = 3;        // squares stacked per column
+    static constexpr int kPitch = 7;       // cell size, including its gap
+    static constexpr double kSide = 4.5;   // painted square
+    static constexpr int kMaxColumns = 22; // ~66 agents before the tooltip takes over
+    static constexpr double kSweepStep = 0.06; // per-square offset of the sweep
+
+    QVector<Dot> m_dots;
+    double m_phase = 0.0;      // 0..1 Larson sweep parameter
+    QTimer *m_sweep = nullptr; // only ticks while something is running
+};
+
 // A plain track-and-knob on/off switch, used for controls where the state is a
 // real power switch (e.g. "is this node online") rather than a momentary
 // action, so it reads unambiguously as on/off instead of just another button.
@@ -2501,6 +2650,13 @@ const QString kAutoSyncOnMergeSetting = QStringLiteral("repos/autoSyncOnMerge");
 // desktop; seeded on for headless installs in main.cpp (an operator-run VM has
 // no one around to click "update").
 const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
+// Hourly local snapshots of the live database (Settings -> Data -> Automatic
+// backups). On by default: the snapshot is small (identity, account and every
+// local store, minus the re-downloadable mirrors) and it is the only thing
+// standing between a corrupted store and a lost account key.
+const QString kAutoBackupEnabledSetting = QStringLiteral("backup/hourlyEnabled");
+// How many hourly snapshots are kept before the oldest is pruned.
+const QString kAutoBackupKeepSetting = QStringLiteral("backup/keepCount");
 // When a new UI stall is detected, hand its backtrace to a coding agent so the
 // freeze gets fixed automatically. On by default (adhoc #205).
 const QString kAutoAgentOnStallSetting =
@@ -2713,12 +2869,6 @@ const QString kAutoSwitchToAgentSetting = QStringLiteral("agents/autoSwitchToAge
 // no agent metadata leaves this machine unless the user opts in.
 const QString kPublishAgentsToWebSetting =
     QStringLiteral("agents/publishToWeb");
-// When an idle agent session's branch would conflict with base (the same
-// condition that shows the "Fix conflicts with agent" button), automatically
-// ask the agent to merge base and resolve the conflicts instead of waiting for
-// a manual click. Default on; can be disabled in Settings.
-const QString kAutoFixAgentConflictsSetting =
-    QStringLiteral("agents/autoFixConflicts");
 // When a repo's tests or build fail (the same kind of failure this very task
 // was dispatched to fix), automatically send the failure back to whichever
 // agent session last worked on that branch instead of waiting for a manual

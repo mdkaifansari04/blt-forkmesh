@@ -139,31 +139,58 @@ def test_faces_wear_status_emoji_over_a_unique_generated_default():
     assert "faceMesh.rotation.y = Math.PI;" in SCENE
 
 
-def test_emoji_wraps_the_head_with_no_gap_of_bare_sphere():
+def test_emoji_fills_the_face_with_no_gap_of_bare_head():
     # adhoc #316: the decal used to stop short of the glyph, leaving corners
     # and a rim of head-coloured sphere showing as a seam around the face.
-    # The canvas is now flooded underneath the glyph with its own rim colour,
-    # and the shell it is mapped onto wraps wider than the glyph itself.
+    # The canvas is flooded underneath the glyph with its own rim colour, so
+    # the disc carries that colour all the way out to its rim.
     assert 'context.globalCompositeOperation = "destination-over";' in SCENE
     assert "context.fillRect(0, 0, 128, 128);" in SCENE
     assert 'context.globalCompositeOperation = "source-over";' in SCENE
 
-    def span(name):
-        found = re.search(
-            rf"const AVATAR_FACE_{name} = Math\.PI \* ([\d.]+);", SCENE
-        )
-        assert found, f"AVATAR_FACE_{name} missing"
+
+def test_the_face_is_a_flat_disc_on_a_flat_cut_head():
+    # The face used to be a curved shell wrapped round the head, which warped
+    # an uploaded avatar photo. The head's front is now sliced off flat and the
+    # face is a plain circle lying on that cut.
+    assert "function flattenSphereFront" in SCENE
+    assert "if (position.getZ(i) < -depth) position.setZ(i, -depth);" in SCENE
+    assert "geometry.computeVertexNormals();" in SCENE
+    assert (
+        "flattenSphereFront(\n"
+        "      new THREE.SphereGeometry(AVATAR_HEAD_RADIUS, 32, 24),\n"
+        "      AVATAR_FACE_DEPTH,\n"
+        "    )" in SCENE
+    )
+    assert "new THREE.CircleGeometry(AVATAR_FACE_RADIUS, 48)" in SCENE
+    # No wrapped shell left behind.
+    assert "AVATAR_FACE_PHI_START" not in SCENE
+    assert "AVATAR_FACE_THETA_START" not in SCENE
+
+    def number(name):
+        found = re.search(rf"const {name} = ([\d.]+);", SCENE)
+        assert found, f"{name} missing"
         return float(found.group(1))
 
-    phi = span("PHI_LENGTH")
-    theta = span("THETA_LENGTH")
-    # Wider than the pre-#316 patch (0.84 phi by 0.68 theta) so the padding
-    # reaches past the face, and still centred on the avatar's front.
-    assert phi > 0.84 and theta > 0.68
-    assert abs(span("PHI_START") * 2 + phi - 1) < 1e-9
-    assert abs(span("THETA_START") * 2 + theta - 1) < 1e-9
-    for name in ("PHI_START", "PHI_LENGTH", "THETA_START", "THETA_LENGTH"):
-        assert f"AVATAR_FACE_{name},\n" in SCENE, f"{name} unused by the face"
+    radius = number("AVATAR_HEAD_RADIUS")
+    depth = number("AVATAR_FACE_DEPTH")
+    # The cut has to leave a face worth looking at without shaving the head in
+    # half, and the disc radius is exactly where the plane meets the sphere.
+    assert 0.4 * radius < depth < 0.8 * radius
+    assert (
+        "Math.sqrt(\n"
+        "  AVATAR_HEAD_RADIUS * AVATAR_HEAD_RADIUS - AVATAR_FACE_DEPTH * AVATAR_FACE_DEPTH,\n"
+        ")" in SCENE
+    )
+    # Turned to look out of the cut, and held just off it so the coplanar disc
+    # and cap cannot z-fight.
+    assert (
+        "faceMesh.position.z = -(AVATAR_FACE_DEPTH + AVATAR_FACE_LIFT);" in SCENE
+    )
+    assert 0 < number("AVATAR_FACE_LIFT") < 0.02
+    # An unscaled head keeps the cut a true circle, so the photo stays square.
+    assert "head.scale.y" not in SCENE
+    assert "faceMesh.scale.y" not in SCENE
 
 
 def test_head_colour_is_sampled_from_the_edge_of_the_emoji():

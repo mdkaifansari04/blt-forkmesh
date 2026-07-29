@@ -272,6 +272,7 @@ NOTIFICATION_KINDS = frozenset({
     "pending_reward",
     "org_succession",
     "repository_hosted",
+    "organization_task_started",
 })
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
@@ -7298,7 +7299,11 @@ async def _chat_direct_socket_handler(env, request, conversation_id):
         except Exception as error:
             last_error = error
     await log_durable_object_abort(env, request, url.path, last_error)
-    return json_response({"error": "unavailable"}, status=503)
+    return json_response(
+        {"error": "unavailable"},
+        status=503,
+        extra_headers=EXPECTED_DEGRADED_HEADERS,
+    )
 
 
 async def office_attendance_handler(env, request):
@@ -8185,9 +8190,12 @@ class _WorldCommunityRuntime:
 class _OfficeMarketingTasksRuntime:
     """Least-privilege adapter for the configured organization's task board."""
 
-    def __init__(self, env, request):
+    def __init__(self, env, request, bot_context=None):
         self.env = env
         self.request = request
+        self.bot_context = (
+            bot_context if isinstance(bot_context, dict) else None
+        )
 
     def method(self):
         return method_name(self.request)
@@ -8199,7 +8207,10 @@ class _OfficeMarketingTasksRuntime:
         return _ap_uuid()
 
     def same_origin(self):
-        return _request_same_origin(self.request)
+        # A successfully authenticated bearer credential is not ambient
+        # browser authority and therefore is not vulnerable to cross-site
+        # request forgery. Browser sessions retain the strict origin check.
+        return bool(self.bot_context) or _request_same_origin(self.request)
 
     def query(self, name):
         try:
@@ -8241,6 +8252,14 @@ class _OfficeMarketingTasksRuntime:
         return (data, "") if isinstance(data, dict) else (None, "invalid_json")
 
     async def session(self, data=None):
+        if self.bot_context:
+            provider = clean_string(
+                self.bot_context.get("provider"), 40
+            ).strip().lower()
+            return self.bot_context["orgBi"], {
+                "name": (provider or "organization") + "-bot",
+                "status": "active",
+            }
         return await _account_session_record(
             self.env,
             self.request,
@@ -8248,6 +8267,10 @@ class _OfficeMarketingTasksRuntime:
         )
 
     async def organization(self):
+        if self.bot_context:
+            return await _org_row(
+                self.env, str(self.bot_context.get("org") or "")
+            )
         configured = str(
             getattr(self.env, "OFFICE_MARKETING_ORG", "") or "forkmesh"
         ).strip().lower()
@@ -8256,6 +8279,15 @@ class _OfficeMarketingTasksRuntime:
         return await _org_row(self.env, configured)
 
     async def membership(self, org_bi, account):
+        if self.bot_context:
+            if str(org_bi or "") != str(self.bot_context.get("orgBi") or ""):
+                return "", ""
+            scopes = set(self.bot_context.get("scopes") or [])
+            if "organization.tasks.write" in scopes:
+                return "admin", "maintain"
+            if "organization.tasks.read" in scopes:
+                return "member", "read"
+            return "", ""
         role = await _org_role(self.env, org_bi, account)
         if not role:
             return "", ""
@@ -8357,6 +8389,52 @@ class _OfficeMarketingTasksRuntime:
             member["bi"],
         )
         return bool(row)
+
+    async def notify_engineering_task_started(
+            self, org_bi, actor, task_id, task):
+        """Send one private HUD notification to each Engineering member."""
+        rows = await d1_all(
+            self.env,
+            "SELECT DISTINCT tm.name AS name "
+            "FROM org_team_members tm "
+            "INNER JOIN org_members om "
+            "ON om.org_bi=tm.org_bi AND om.member_bi=tm.member_bi "
+            "WHERE tm.org_bi=? AND tm.team='engineering' "
+            "AND om.role IN ('owner','admin','member') "
+            "ORDER BY tm.name COLLATE NOCASE LIMIT 1000",
+            str(org_bi or ""),
+        )
+        safe_actor = clean_string(
+            actor or "a team member", MAX_NODE_NAME
+        ).strip().lower()
+        title = clean_string(
+            (task or {}).get("title") or "Organization task", 160
+        ).strip()
+        for row in rows or []:
+            recipient = clean_string(
+                row.get("name") or "", MAX_NODE_NAME
+            ).strip().lower()
+            if not valid_node_name(recipient):
+                continue
+            await enqueue_notification(
+                self.env,
+                recipient,
+                "organization_task_started",
+                "Engineering task taken",
+                body="@%s started %s" % (safe_actor, title),
+                actor="",
+                source=str(task_id or ""),
+                dedupe="organization-task-started:" + str(task_id or ""),
+                meta={
+                    "taskId": str(task_id or ""),
+                    "department": clean_string(
+                        (task or {}).get("department") or "", 64
+                    ).strip().lower(),
+                    "team": clean_string(
+                        (task or {}).get("team") or "", 64
+                    ).strip().lower(),
+                },
+            )
 
     async def marketing_members(self, org_bi):
         """Return active users on an authoritative Marketing floor team."""
@@ -8647,8 +8725,35 @@ async def world_workshops_handler(env, request, path):
 
 
 async def organization_tasks_handler(env, request, path):
+    bot_context = None
+    authorization = str(
+        request.headers.get("authorization") or ""
+    ).strip()
+    if authorization.lower().startswith("bearer fmbot_"):
+        await ensure_schema(env)
+        bot_context = await _org_bot_token_context(env, request, touch=True)
+        if not bot_context:
+            return json_response(
+                {"error": "invalid_bot_token"},
+                status=401,
+                cache_control="no-store",
+            )
+        required_scope = (
+            "organization.tasks.read"
+            if method_name(request) == "GET"
+            else "organization.tasks.write"
+        )
+        if required_scope not in set(bot_context.get("scopes") or []):
+            return json_response(
+                {
+                    "error": "permission_denied",
+                    "requiredScope": required_scope,
+                },
+                status=403,
+                cache_control="no-store",
+            )
     return await world_office_tasks.handle(
-        _OfficeMarketingTasksRuntime(env, request), path)
+        _OfficeMarketingTasksRuntime(env, request, bot_context), path)
 
 
 world_office_marketing_tasks_handler = organization_tasks_handler
@@ -8716,8 +8821,25 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-24"
+WORLD_QA_DECK_REVISION = "2026-07-29-full-catalog-28"
+# The physical desk paints only five cards per page, but its catalog must
+# include every bounded source: built-ins, dynamically routed QA items, and
+# the organization's encrypted QA-ready tasks. Organization tasks are capped
+# at 2,000 and the routed board is independently bounded, so 4,096 is a hard
+# response ceiling rather than an arbitrary visible-card truncation.
+WORLD_QA_MAX_CARDS = 4096
 WORLD_QA_CARDS = (
+    ("world-compact-debug-chat-orbs",
+     "Compact debug and unified activity orbs",
+     "Open the World on desktop and mobile. Confirm DEBUG and CHAT are "
+     "logo-sized circles while closed. DEBUG must show nine green, yellow, "
+     "or red metric dots and reveal its complete panel on hover or keyboard "
+     "focus. CHAT must show the latest speaker avatar plus unread count and "
+     "open a translucent composer with channel selection, image attachment, "
+     "separate chat and task buttons, and a second task-routing step for "
+     "human or agent plus team. Send chat and task updates, then confirm every "
+     "chat or status notice flows above the composer and fades after ten "
+     "seconds without removing the underlying chat history."),
     ("world-repository-agent-live-terminals",
      "Interactive repository agent terminals",
      "As an Engineering team member, open a repository with a running Claude "
@@ -9149,7 +9271,8 @@ async def world_qa_handler(env, request):
     dynamic_rows = await d1_all(
         env,
         "SELECT item_key,title,how_to_test,added_at FROM world_qa_items "
-        "WHERE active=1 ORDER BY added_at DESC,item_key LIMIT 64",
+        "WHERE active=1 ORDER BY added_at DESC,item_key LIMIT ?",
+        WORLD_QA_MAX_CARDS,
     )
     deck_cards = list(WORLD_QA_CARDS)
     deck_keys = set(WORLD_QA_CARD_KEYS)
@@ -9161,7 +9284,7 @@ async def world_qa_handler(env, request):
             continue
         deck_cards.append((key, title, how_to_test))
         deck_keys.add(key)
-    deck_cards = deck_cards[:64]
+    deck_cards = deck_cards[:WORLD_QA_MAX_CARDS]
     deck_keys = {item[0] for item in deck_cards}
 
     async def global_qa_snapshot():
@@ -9268,8 +9391,8 @@ async def world_qa_handler(env, request):
             "SELECT task_id,department,team,qa_status,qa_reviewed_at,data "
             "FROM organization_tasks "
             "WHERE org_bi=? AND qa_requested_at>0 "
-            "ORDER BY qa_requested_at DESC,task_id DESC LIMIT 64",
-            qa_org_bi,
+            "ORDER BY qa_requested_at DESC,task_id DESC LIMIT ?",
+            qa_org_bi, WORLD_QA_MAX_CARDS,
         )
         for task_row in task_rows or []:
             task_id = str(task_row.get("task_id") or "").lower()
@@ -9301,7 +9424,7 @@ async def world_qa_handler(env, request):
             if key not in deck_keys:
                 deck_cards.append((key, title, how_to_test))
                 deck_keys.add(key)
-    deck_cards = deck_cards[:128]
+    deck_cards = deck_cards[:WORLD_QA_MAX_CARDS]
     deck_keys = {item[0] for item in deck_cards}
     if method == "POST":
         item_key = clean_string(data.get("key"), 80)
@@ -9486,8 +9609,8 @@ async def world_qa_handler(env, request):
     rows = await d1_all(
         env,
         "SELECT item_key,verdict,reviewed_at FROM world_qa_reviews "
-        "WHERE account_bi=? ORDER BY reviewed_at DESC LIMIT 128",
-        account_bi,
+        "WHERE account_bi=? ORDER BY reviewed_at DESC LIMIT ?",
+        account_bi, WORLD_QA_MAX_CARDS,
     )
     reviews = {}
     for row in rows:
@@ -9504,8 +9627,8 @@ async def world_qa_handler(env, request):
             "SELECT task_id,verdict,data,reviewed_at "
             "FROM organization_task_qa_reviews "
             "WHERE org_bi=? AND reviewer_bi=? "
-            "ORDER BY reviewed_at DESC LIMIT 128",
-            qa_org_bi, account_bi,
+            "ORDER BY reviewed_at DESC LIMIT ?",
+            qa_org_bi, account_bi, WORLD_QA_MAX_CARDS,
         )
         for row in private_rows or []:
             key = "task:" + str(row.get("task_id") or "")
@@ -22132,6 +22255,9 @@ async def cleanup_sensitive_audit_records(env):
     await d1_run(
         env, "DELETE FROM sensitive_audit_log WHERE ts<?",
         now - SECURITY_AUDIT_RETAIN_MS)
+    await d1_run(
+        env, "DELETE FROM org_bot_token_usage WHERE used_at<?",
+        now - SECURITY_AUDIT_RETAIN_MS)
 
 
 # --- Achievement badges (adhoc #370) -----------------------------------------
@@ -32497,6 +32623,25 @@ async def _org_bot_token_context(env, request, touch=False):
         "createdAt": int(row.get("created_at") or 0),
         "expiresAt": int(row.get("expires_at") or 0),
     }
+    try:
+        action = str(urlparse(request.url).path or "")[:120]
+    except Exception:
+        action = "/api/bot/session"
+    if not re.fullmatch(r"/[A-Za-z0-9_./-]{0,119}", action):
+        action = "/api/bot/session"
+    method = method_name(request)
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+        method = "GET"
+    # Append one metadata-only use record after successful credential
+    # validation. Never store the secret, query, body, address, or user agent.
+    await d1_run(
+        env,
+        "INSERT INTO org_bot_token_usage "
+        "(token_id,org_bi,provider,action,method,used_at) "
+        "VALUES (?,?,?,?,?,?)",
+        context["tokenId"], context["orgBi"], context["provider"],
+        action, method, now,
+    )
     if touch and now - int(row.get("last_used_at") or 0) >= 60_000:
         await d1_run(
             env,
@@ -32558,6 +32703,31 @@ async def org_bot_tokens_handler(env, request, org):
                 "expiresAt": int(row.get("expires_at") or 0),
                 "revokedAt": int(row.get("revoked_at") or 0),
             })
+        usage_rows = await d1_all(
+            env,
+            "SELECT token_id,provider,action,method,used_at "
+            "FROM org_bot_token_usage WHERE org_bi=? "
+            "ORDER BY used_at DESC,id DESC LIMIT 5",
+            org_bi,
+        )
+        token_labels = {
+            token["id"]: token["label"] or token["provider"]
+            for token in tokens
+        }
+        usage_preview = [
+            {
+                "tokenId": str(row.get("token_id") or ""),
+                "label": clean_string(
+                    token_labels.get(str(row.get("token_id") or ""), ""),
+                    80,
+                ),
+                "provider": str(row.get("provider") or ""),
+                "action": clean_string(row.get("action"), 120),
+                "method": str(row.get("method") or ""),
+                "usedAt": int(row.get("used_at") or 0),
+            }
+            for row in usage_rows or []
+        ]
         return json_response({
             "ok": True,
             "organization": org_name,
@@ -32566,6 +32736,7 @@ async def org_bot_tokens_handler(env, request, org):
                 for scope, description in ORG_BOT_TOKEN_SCOPES.items()
             ],
             "tokens": tokens,
+            "usagePreview": usage_preview,
             "plaintextRecovery": False,
         }, cache_control="no-store")
 
@@ -32573,7 +32744,14 @@ async def org_bot_tokens_handler(env, request, org):
         token_id = clean_string(data.get("tokenId"), 32).lower()
         if not re.fullmatch(r"[0-9a-f]{32}", token_id):
             return json_response({"error": "invalid_token_id"}, status=400)
-        result = await d1_run(
+        existing = await d1_first(
+            env,
+            "SELECT 1 AS one FROM org_bot_tokens "
+            "WHERE token_id=? AND org_bi=? AND revoked_at=0",
+            token_id, org_bi,
+        )
+        changed = bool(existing)
+        await d1_run(
             env,
             "UPDATE org_bot_tokens SET revoked_at=? "
             "WHERE token_id=? AND org_bi=? AND revoked_at=0",
@@ -32582,11 +32760,11 @@ async def org_bot_tokens_handler(env, request, org):
         await _audit_sensitive_action(
             env, actor, "organization.bot_token_revoke",
             "organization_bot_token", org_name + "/" + token_id,
-            "success", {"changed": int(result.get("changes") or 0) > 0})
+            "success", {"changed": changed})
         return json_response({
             "ok": True,
             "tokenId": token_id,
-            "revoked": int(result.get("changes") or 0) > 0,
+            "revoked": changed,
         }, cache_control="no-store")
 
     provider = clean_string(data.get("provider"), 24).lower()
@@ -35841,6 +36019,15 @@ ADMIN_STYLE = """
  .ab-root .error-spark-bar{display:block;min-height:2px;background:var(--ab-link);
         border-radius:2px 2px 0 0}
  .ab-root .error-spark-bar[data-empty="true"]{background:var(--ab-border)}
+ .ab-root .error-source{display:inline-block;border:1px solid var(--ab-border-2);
+        border-radius:999px;padding:1px 7px;white-space:nowrap;
+        font:600 11px system-ui,sans-serif}
+ .ab-root .error-source.javascript{border-color:#8957e5;color:#a371f7}
+ .ab-root .error-source.worker{border-color:var(--ab-link);color:var(--ab-link)}
+ .ab-root .error-delete{background:transparent;color:var(--ab-danger);
+        border-color:var(--ab-danger);padding:3px 8px;font-size:11px}
+ .ab-root .error-delete:hover{background:var(--ab-danger);color:#fff}
+ .ab-root .error-group-delete{display:inline;margin:0}
  .ab-root .relative-time{color:var(--ab-muted);white-space:nowrap}
 """
 
@@ -36053,6 +36240,65 @@ def _admin_select_all_th():
 def _admin_row_checkbox(rowid):
     return ('<td><input type="checkbox" name="ids" value="%s"></td>'
             % _html_escape(rowid))
+
+
+def _admin_error_source(method, path):
+    """Stable display classification for the shared operational error log."""
+    is_javascript = (
+        str(method or "").strip().upper() == "JS"
+        or str(path or "").startswith("/client-error/")
+    )
+    return "JavaScript" if is_javascript else "Worker"
+
+
+def _admin_error_source_badge(method, path):
+    source = _admin_error_source(method, path)
+    return (
+        '<span class="error-source %s">%s</span>'
+        % (source.lower(), source)
+    )
+
+
+def _admin_error_row_delete_button(rowid, admin_query=""):
+    return (
+        '<button class="error-delete" type="submit" name="error_id" '
+        'value="%s" formaction="%s" '
+        'onclick="event.stopPropagation();return confirm('
+        "'Delete this error? This cannot be undone.')\">Delete</button>"
+        % (
+            _html_escape(rowid),
+            _admin_href(
+                admin_query, table="error_log", action="delete_error_row"),
+        )
+    )
+
+
+def _admin_error_group_delete_form(
+        status, method, path, message, csrf_field="", admin_query=""):
+    fields = "".join(
+        '<input type="hidden" name="%s" value="%s">'
+        % (_html_escape(name), _html_escape(value))
+        for name, value in (
+            ("group_status", status),
+            ("group_method", method),
+            ("group_path", path),
+            ("group_message", message),
+        )
+    )
+    return (
+        '<form class="error-group-delete" method="post" action="%s" '
+        'onsubmit="return confirm('
+        "'Delete every error in this group? This cannot be undone.')\">"
+        "%s%s<button class=\"error-delete\" type=\"submit\">"
+        "Delete group</button></form>"
+        % (
+            _admin_href(
+                admin_query, table="error_log",
+                action="delete_error_group"),
+            csrf_field,
+            fields,
+        )
+    )
 
 
 def _admin_record_row_attrs(admin_query, table, rowid):
@@ -36408,14 +36654,23 @@ async def _render_table_view(
             if age_hours < 24:
                 hourly[23 - int(age_hours)] += 1
             signature = (
-                clean_string(row.get("status"), 12),
-                clean_string(row.get("method"), 12).upper(),
-                clean_string(row.get("path"), 240),
-                clean_string(row.get("message"), 240),
+                str(row.get("status") or ""),
+                str(row.get("method") or "").upper(),
+                str(row.get("path") or ""),
+                str(row.get("message") or ""),
             )
-            group_hours = groups.setdefault(signature, [0] * 24)
+            group = groups.setdefault(
+                signature,
+                {
+                    "hours": [0] * 24,
+                    "firstSeen": ts,
+                    "lastSeen": ts,
+                },
+            )
+            group["firstSeen"] = min(group["firstSeen"] or ts, ts)
+            group["lastSeen"] = max(group["lastSeen"] or ts, ts)
             if age_hours < 24:
-                group_hours[23 - int(age_hours)] += 1
+                group["hours"][23 - int(age_hours)] += 1
         peak = max(hourly) if hourly else 0
         bars = []
         for index, count in enumerate(hourly):
@@ -36440,9 +36695,10 @@ async def _render_table_view(
                 )
             )
         group_rows = []
-        for (status, request_method, path, message), frequency in sorted(
+        for (status, request_method, path, message), group in sorted(
                 groups.items(),
-                key=lambda item: (-sum(item[1]), item[0]))[:25]:
+                key=lambda item: (-sum(item[1]["hours"]), item[0]))[:25]:
+            frequency = group["hours"]
             count = sum(frequency)
             group_peak = max(frequency) if frequency else 0
             spark_bars = []
@@ -36470,18 +36726,28 @@ async def _render_table_view(
                 '<tr><td>%d</td><td><div class="error-sparkline" '
                 'tabindex="0" role="img" '
                 'aria-label="24-hour frequency: %d occurrence%s">%s</div></td>'
-                "<td>%s</td><td>%s</td><td>%s</td>"
-                "<td title=\"%s\">%s</td></tr>"
+                "<td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
+                "<td title=\"%s\">%s</td>"
+                '<td data-ts="%s">%s</td><td data-ts="%s">%s</td>'
+                "<td>%s</td></tr>"
                 % (
                     count,
                     count,
                     "" if count == 1 else "s",
                     "".join(spark_bars),
+                    _admin_error_source_badge(request_method, path),
                     _html_escape(status or "error"),
                     _html_escape(request_method or "—"),
                     _html_escape(path or "—"),
                     _html_escape(message or "—"),
                     _html_escape((message or "—")[:160]),
+                    _html_escape(group["firstSeen"]),
+                    _html_escape(group["firstSeen"]),
+                    _html_escape(group["lastSeen"]),
+                    _html_escape(group["lastSeen"]),
+                    _admin_error_group_delete_form(
+                        status, request_method, path, message,
+                        csrf_field, admin_query),
                 )
             )
         analytics = (
@@ -36497,8 +36763,10 @@ async def _render_table_view(
                 "".join(bars),
                 (
                     "<table><thead><tr><th>Count</th><th>24-hour frequency</th>"
-                    "<th>Status</th>"
-                    "<th>Method</th><th>Path</th><th>Message</th></tr></thead>"
+                    "<th>Source</th><th>Status</th>"
+                    "<th>Method</th><th>Path</th><th>Message</th>"
+                    "<th>First seen</th><th>Last seen</th>"
+                    "<th>Delete</th></tr></thead>"
                     "<tbody>" + "".join(group_rows) + "</tbody></table>"
                     if group_rows
                     else '<div class="empty">No errors in the previous 24 hours.</div>'
@@ -36515,20 +36783,26 @@ async def _render_table_view(
                     admin_query, table, r.get("_rowid_", ""))
                 + _admin_row_checkbox(r.get("_rowid_", ""))
                 + '<td data-ts="%s">%s</td>'
+                "<td>%s</td>"
                 '<td class="%s">%s</td>'
-                "<td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+                "<td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
                 % (_html_escape(r.get("ts", "")), _html_escape(r.get("ts", "")),
+                   _admin_error_source_badge(
+                       r.get("method", ""), r.get("path", "")),
                    cls, _html_escape(status),
                    _html_escape(r.get("method", "")), _html_escape(r.get("path", "")),
-                   _html_escape(r.get("message", "")), _html_escape(r.get("ray", "")))
+                   _html_escape(r.get("message", "")), _html_escape(r.get("ray", "")),
+                   _admin_error_row_delete_button(
+                       r.get("_rowid_", ""), admin_query))
             )
         if not body:
             inner = '<div class="empty">No errors recorded yet.</div>'
         else:
             inner = (_admin_bulk_form_open(table, csrf_field, admin_query)
                      + "<table><thead><tr>" + _admin_select_all_th()
-                     + "<th>Time</th><th>Status</th><th>Method</th>"
-                     "<th>Path</th><th>Message</th><th>CF-Ray</th></tr></thead><tbody>"
+                     + "<th>Time</th><th>Source</th><th>Status</th><th>Method</th>"
+                     "<th>Path</th><th>Message</th><th>CF-Ray</th>"
+                     "<th>Delete</th></tr></thead><tbody>"
                      + "".join(body) + "</tbody></table></form>")
         return (
             '<div class="title">Error logs · %d row(s)</div>' % total
@@ -38085,13 +38359,15 @@ async def _https_mirror_private_proxy(env, request, private_record):
     if not router_public_key or not router_seed:
         return json_response(
             {"error": "mirror_unavailable"}, status=503,
-            cache_control="no-store")
+            cache_control="no-store",
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
     candidates = await _https_mirror_private_candidates(
         env, private_record, world_request_country(request))
     if not candidates:
         return json_response(
             {"error": "mirror_unavailable"}, status=503,
-            cache_control="no-store")
+            cache_control="no-store",
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
     from js import fetch as js_fetch
     for endpoint in candidates:
         target = https_routing.masked_private_replica_url(
@@ -38170,7 +38446,8 @@ async def _https_mirror_private_proxy(env, request, private_record):
         )
     return json_response(
         {"error": "mirror_unavailable"}, status=503,
-        cache_control="no-store")
+        cache_control="no-store",
+        extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
 async def _hosted_repository_import_route(env, owner, repo):
@@ -39382,7 +39659,8 @@ async def _https_mirror_proxy(
     if not router_public_key or not router_seed:
         return json_response(
             {"error": "mirror_unavailable"}, status=503,
-            cache_control="no-store")
+            cache_control="no-store",
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
     sticky = (
         await _https_mirror_clone_pin(env, context)
         if operation == "git-upload-pack" else "")
@@ -39391,7 +39669,8 @@ async def _https_mirror_proxy(
     if not candidates:
         return json_response(
             {"error": "mirror_unavailable"}, status=503,
-            cache_control="no-store")
+            cache_control="no-store",
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
     from js import fetch as js_fetch
     for endpoint in candidates:
         if not await _https_mirror_repository_proof(
@@ -39449,7 +39728,11 @@ async def _https_mirror_proxy(
         except Exception:
             status = 0
             upstream = None
-        if upstream is None or status in HTTPS_MIRROR_RETRY_STATUSES:
+        if (
+            upstream is None
+            or status in HTTPS_MIRROR_RETRY_STATUSES
+            or 500 <= status <= 599
+        ):
             # A fresh signed repository proof owns the endpoint's shared
             # integrity state. A request-local timeout, missing optional path,
             # or transient 5xx still fails over, but must not poison the
@@ -39503,7 +39786,8 @@ async def _https_mirror_proxy(
         )
     return json_response(
         {"error": "mirror_unavailable"}, status=503,
-        cache_control="no-store")
+        cache_control="no-store",
+        extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
 class Default(WorkerEntrypoint):
@@ -40050,6 +40334,82 @@ class Default(WorkerEntrypoint):
                             }
                 except Exception as error:
                     banner = "Repository Terms flag failed: " + repr(error)
+            elif action == "delete_error_row":
+                try:
+                    raw_id = form.get("error_id", [""])[0]
+                    rowid = int(raw_id) if str(raw_id).isdigit() else 0
+                    if rowid <= 0:
+                        banner = "Delete error failed: invalid row."
+                    else:
+                        existing = await d1_first(
+                            self.env,
+                            "SELECT 1 AS found FROM error_log WHERE rowid=?",
+                            rowid,
+                        )
+                        audit_details = {
+                            "rowCount": 1 if existing else 0,
+                            "rowDigestBefore": (
+                                await _admin_selected_rows_digest(
+                                    self.env, "error_log", [rowid])
+                            ),
+                        }
+                        await d1_run(
+                            self.env,
+                            "DELETE FROM error_log WHERE rowid=?",
+                            rowid,
+                        )
+                        banner = (
+                            "Deleted error row."
+                            if existing
+                            else "Delete error: row was already gone."
+                        )
+                except Exception as error:
+                    banner = "Delete error failed: " + repr(error)
+            elif action == "delete_error_group":
+                try:
+                    group_status = str(
+                        form.get("group_status", [""])[0])[:12]
+                    group_method = str(
+                        form.get("group_method", [""])[0])[:12]
+                    group_path = str(
+                        form.get("group_path", [""])[0])[:2000]
+                    group_message = str(
+                        form.get("group_message", [""])[0])[:1000]
+                    if not group_status or not group_method:
+                        banner = "Delete error group failed: invalid group."
+                    else:
+                        count_row = await d1_first(
+                            self.env,
+                            "SELECT COUNT(*) AS n FROM error_log "
+                            "WHERE CAST(status AS TEXT)=? AND UPPER(method)=? "
+                            "AND path=? AND message=?",
+                            group_status, group_method.upper(),
+                            group_path, group_message,
+                        )
+                        count = int((count_row or {}).get("n") or 0)
+                        audit_details = {
+                            "rowCount": count,
+                            # Content stays out of the audit trail. This
+                            # bounded digest still distinguishes group purges.
+                            "groupDigest": hashlib.sha256(
+                                (
+                                    group_status + "\n"
+                                    + group_method.upper() + "\n"
+                                    + group_path + "\n" + group_message
+                                ).encode("utf-8")
+                            ).hexdigest(),
+                        }
+                        await d1_run(
+                            self.env,
+                            "DELETE FROM error_log "
+                            "WHERE CAST(status AS TEXT)=? AND UPPER(method)=? "
+                            "AND path=? AND message=?",
+                            group_status, group_method.upper(),
+                            group_path, group_message,
+                        )
+                        banner = "Deleted %d error(s) in the group." % count
+                except Exception as error:
+                    banner = "Delete error group failed: " + repr(error)
             elif action == "delete_rows":
                 try:
                     tables = await _admin_list_tables(self.env)
@@ -40113,7 +40473,8 @@ class Default(WorkerEntrypoint):
                     "disburse", "set_password", "resend_verify",
                     "request_ownership", "delete_rows", "update_row",
                     "insert_row", "set_operational_alerts",
-                    "set_repo_terms_flag"):
+                    "set_repo_terms_flag", "delete_error_row",
+                    "delete_error_group"):
                 audit_actor = (
                     account_cookie_name
                     or params.get("admin", [""])[0])
@@ -40125,6 +40486,9 @@ class Default(WorkerEntrypoint):
                     if action == "set_operational_alerts"
                     else "repository"
                     if action == "set_repo_terms_flag"
+                    else "error_log"
+                    if action in (
+                        "delete_error_row", "delete_error_group")
                     else "database_table" if action in (
                         "delete_rows", "update_row", "insert_row")
                     else "legacy_custody")
@@ -40140,6 +40504,9 @@ class Default(WorkerEntrypoint):
                         + form.get("repo", [""])[0]
                     )
                     if action == "set_repo_terms_flag"
+                    else "error_log"
+                    if action in (
+                        "delete_error_row", "delete_error_group")
                     else params.get("table", [""])[0])
                 lowered_banner = str(banner or "").lower()
                 outcome = (
@@ -40798,8 +41165,17 @@ class Default(WorkerEntrypoint):
             return await accounts_handler(self.env, request)
 
         # --- Organizations + teams (issue #388) --------------------------
+        if BOT_SESSION_RE.match(url.path):
+            return await bot_session_handler(self.env, request)
         if ORGS_RE.match(url.path):
             return await orgs_handler(self.env, request)
+        org_bot_tokens_match = ORG_BOT_TOKENS_RE.match(url.path)
+        if org_bot_tokens_match:
+            org = safe_segment(org_bot_tokens_match.group(1))
+            if not org:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_bot_tokens_handler(
+                self.env, request, org)
         org_members_match = ORG_MEMBERS_RE.match(url.path)
         if org_members_match:
             org = safe_segment(org_members_match.group(1))

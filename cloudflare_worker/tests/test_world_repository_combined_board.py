@@ -53,29 +53,14 @@ def test_repository_lists_read_chronologically_downward_with_counts_below():
     assert "groundY + boardHeight + 1.72" not in desk
 
 
-def test_each_repository_panel_has_a_first_person_reading_pad():
+def test_repository_panels_do_not_add_ground_view_placards():
     desk = SCENE[
         SCENE.index("function updateRepositoryRecordDesk("):
         SCENE.index("function setRepositoryIssuePageExpanded(")
     ]
-    assert "repository-${kind}-viewing-pad:" in desk
-    assert '"FIRST PERSON"' in desk
-    assert "Math.max(4.4, visualHeight * 1.28)" in desk
-    assert "repository-${kind}-viewing-target:" in desk
-    assert "(countBottomY + boardTopY) / 2" in desk
-    assert "repositoryViewingPad = viewingPadData" in desk
-    assert "interactive.push(object)" in desk
-    focus = SCENE[
-        SCENE.index("function focusRepositoryViewingPad("):
-        SCENE.index("function lockOfficeElevatorCamera(")
-    ]
-    assert 'setCameraMode("first-person"' in focus
-    assert "pad.getWorldPosition" in focus
-    assert "target.getWorldPosition" in focus
-    assert "cameraYaw = Math.atan2(-delta.x, -delta.z)" in focus
-    assert "firstPersonPitch = clamp(" in focus
-    assert "queueMovementEvent({" in focus
-    assert "focusRepositoryViewingPad(hit.object)" in SCENE
+    assert "repository-${kind}-viewing-pad:" not in desk
+    assert '"FIRST PERSON"' not in desk
+    assert "repositoryViewingPad" not in SCENE
 
 
 def test_repository_cards_clip_text_to_their_physical_bounds():
