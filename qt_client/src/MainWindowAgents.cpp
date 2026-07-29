@@ -332,6 +332,11 @@ constexpr int kAgentBranchRole = Qt::UserRole + 33;
 constexpr int kAgentBranchFilesRole = Qt::UserRole + 34;
 constexpr int kAgentBranchDirtyRole = Qt::UserRole + 35;
 constexpr int kAgentBranchWorktreeRole = Qt::UserRole + 36;
+// Diff cell roles behind the orange conflict button (adhoc #446): whether the
+// row's branch still conflicts with base, and the session the click has to
+// steer — AgentConflictButtonDelegate paints and routes straight off these.
+constexpr int kAgentConflictRole = Qt::UserRole + 37;
+constexpr int kAgentConflictSessionRole = Qt::UserRole + 38;
 
 // The base branch an agent session landed in, defaulting to "main" when the
 // session never recorded one (issue #291).
@@ -475,7 +480,7 @@ void applyAgentSpeedCell(QTableWidgetItem *cell, const AgentSession &s, qint64 t
 // Reads "-" until a finished run has a patch and/or a still-existing branch to
 // measure. Sorts on the file count via kTableSortRole.
 void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
-                        const QString &base)
+                        const QString &base, int sessionId = 0)
 {
     QStringList parts;
     if (stat.files >= 0)
@@ -487,25 +492,28 @@ void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
         parts << QString::fromUtf8("\xE2\x86\x91%1 \xE2\x86\x93%2")
                      .arg(stat.ahead)
                      .arg(stat.behind);
-    // Conflict marker (adhoc #229): lead the cell with a warning-sign badge when
-    // the branch can no longer merge cleanly into base, so it stands out in the
-    // list. The whole Diff cell is tinted red below to reinforce it.
-    if (stat.conflicted)
-        parts.prepend(QString::fromUtf8("\xE2\x9A\xA0 conflict"));
     cell->setData(Qt::DisplayRole,
                   parts.isEmpty()
                       ? QStringLiteral("-")
                       : parts.join(QString::fromUtf8("  \xC2\xB7 ")));
     cell->setData(kTableSortRole, stat.files);
-    // Reset the brush explicitly in the clean case: refreshAgentTable() now reuses
-    // row items in place (adhoc #74), so a cell that was red for a conflict must
-    // clear back to the default colour once the conflict is gone rather than
-    // keeping the stale red tint.
-    cell->setForeground(stat.conflicted ? QBrush(QColor(QStringLiteral("#f85149")))
+    // Conflict marker (adhoc #229, reworked adhoc #446): the badge is now an
+    // orange button AgentConflictButtonDelegate paints at the cell's right edge —
+    // clicking it asks the session's agent to merge base and resolve, which used
+    // to happen automatically. The roles are what the delegate paints from; they
+    // are always written (false/0 when clean) because refreshAgentTable() reuses
+    // row items in place (adhoc #74), so a stale conflict flag must be cleared
+    // rather than left behind.
+    cell->setData(kAgentConflictRole, stat.conflicted);
+    cell->setData(kAgentConflictSessionRole, sessionId);
+    // Same reason the brush is reset explicitly in the clean case: a cell that was
+    // tinted for a conflict must fall back to the default colour once it's gone.
+    cell->setForeground(stat.conflicted ? QBrush(QColor(QStringLiteral("#e3742f")))
                                         : QBrush());
     QStringList tip;
     if (stat.conflicted)
-        tip << QStringLiteral("Conflicts with %1 — merge base in and resolve")
+        tip << QStringLiteral("Conflicts with %1 — click the orange conflict "
+                              "button to have this agent merge base in and resolve")
                    .arg(base.isEmpty() ? QStringLiteral("base") : base);
     if (stat.files >= 0)
         tip << QStringLiteral("%1 file%2 changed")
@@ -529,6 +537,8 @@ static constexpr qint64 kScannerIdleMs = 1500;
 static constexpr int kAgentActivityColumn = 8;
 // "Status" column, which also carries the per-row branch button (adhoc #377).
 static constexpr int kAgentStatusColumn = 4;
+// "Diff" column, which also carries the per-row conflict button (adhoc #446).
+static constexpr int kAgentDiffColumn = 7;
 
 // Draws a small branch button at the right edge of every Status cell whose
 // session has a branch, and opens that branch when it's clicked (adhoc #377):
@@ -693,6 +703,126 @@ private:
     }
 
     std::function<void(const QString &)> m_onClick;
+};
+
+// Draws an orange "conflict" button at the right edge of every Diff cell whose
+// branch no longer merges cleanly into base, and steers that session into
+// resolving it when the button is clicked (adhoc #446). Conflicts used to be
+// fixed automatically the moment they were spotted; now the list just flags them
+// in orange and the fix runs only when the user asks for it.
+class AgentConflictButtonDelegate : public SelectionBorderRowDelegate
+{
+public:
+    AgentConflictButtonDelegate(QAbstractItemView *view,
+                                std::function<void(int)> onClick)
+        : SelectionBorderRowDelegate(view), m_onClick(std::move(onClick))
+    {
+    }
+
+    // Reserve the button's slot in the column's width so ResizeToContents never
+    // sizes the column so tight that it lands on top of the diff figures.
+    QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
+    {
+        QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
+        if (idx.data(kAgentConflictRole).toBool())
+            s.rwidth() += chipWidth(opt) + 2 * kButtonMargin;
+        return s;
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        SelectionBorderRowDelegate::paint(painter, option, index);
+        if (!index.data(kAgentConflictRole).toBool())
+            return;
+        const QRect r = buttonRect(option, index);
+        if (r.width() <= 0)
+            return;
+        // Orange throughout — the same amber the Waiting status uses for "needs
+        // you" — filling in on hover so it reads as the button it is.
+        const bool hot = option.state & QStyle::State_MouseOver;
+        const bool dark = currentThemeIsDark();
+        const QColor accent(dark ? "#e3742f" : "#bc4c00");
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        QColor fill = accent;
+        fill.setAlpha(hot ? (dark ? 70 : 40) : (dark ? 34 : 20));
+        painter->setBrush(fill);
+        painter->setPen(QPen(accent, 1));
+        painter->drawRoundedRect(QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5);
+        // Glyph at its native size rather than letting QIcon::paint upscale the
+        // 12px pixmap to fill the chip.
+        QRect glyph(r.left() + kChipPadding, r.center().y() - kGlyphSize / 2,
+                    kGlyphSize, kGlyphSize);
+        themedOcticon("alert", accent, kGlyphSize).paint(painter, glyph);
+        const int textLeft = glyph.right() + 1 + kChipGap;
+        painter->setPen(accent);
+        painter->setFont(chipFont(option));
+        painter->drawText(QRect(textLeft, r.top(),
+                                r.right() - kChipPadding - textLeft + 1, r.height()),
+                          Qt::AlignVCenter | Qt::AlignLeft, kChipText);
+        painter->restore();
+    }
+
+    // Clicks land here before the view starts an edit, so a press+release inside
+    // the button runs the fix and is swallowed (the row still selects on the
+    // press, which is what clicking a row does anyway).
+    bool editorEvent(QEvent *event, QAbstractItemModel *model,
+                     const QStyleOptionViewItem &option,
+                     const QModelIndex &index) override
+    {
+        if (event->type() == QEvent::MouseButtonRelease && m_onClick) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            const int sessionId = index.data(kAgentConflictSessionRole).toInt();
+            if (index.data(kAgentConflictRole).toBool() && sessionId > 0 &&
+                me->button() == Qt::LeftButton &&
+                buttonRect(option, index).contains(me->pos())) {
+                m_onClick(sessionId);
+                return true;
+            }
+        }
+        return SelectionBorderRowDelegate::editorEvent(event, model, option, index);
+    }
+
+private:
+    static constexpr int kButtonSize = 18;   // chip height
+    static constexpr int kButtonMargin = 4;  // gap to the cell's right edge
+    static constexpr int kGlyphSize = 12;
+    static constexpr int kChipPadding = 4;   // chip edge -> glyph / label
+    static constexpr int kChipGap = 3;       // glyph -> label
+    static constexpr const char *kChipText = "conflict";
+
+    // Small and slightly heavy, matching the branch chip's badge type so the two
+    // buttons in a row read as the same kind of control.
+    static QFont chipFont(const QStyleOptionViewItem &opt)
+    {
+        QFont f = opt.font;
+        if (f.pixelSize() > 0)
+            f.setPixelSize(qMax(9, f.pixelSize() - 3));
+        else
+            f.setPointSizeF(qMax(7.0, f.pointSizeF() - 2.0));
+        f.setWeight(QFont::DemiBold);
+        return f;
+    }
+
+    static int chipWidth(const QStyleOptionViewItem &opt)
+    {
+        return 2 * kChipPadding + kGlyphSize + kChipGap +
+               QFontMetrics(chipFont(opt))
+                   .horizontalAdvance(QLatin1String(kChipText));
+    }
+
+    static QRect buttonRect(const QStyleOptionViewItem &opt, const QModelIndex &)
+    {
+        const QRect cell = opt.rect;
+        const int h = qMin(kButtonSize, cell.height() - 2);
+        const int w =
+            qMin(chipWidth(opt), qMax(0, cell.width() - 2 * kButtonMargin));
+        return QRect(cell.right() - kButtonMargin - w + 1,
+                     cell.center().y() - h / 2 + 1, w, h);
+    }
+
+    std::function<void(int)> m_onClick;
 };
 
 // Paints a session's Larson-scanner light from MainWindow's per-session state,
@@ -1000,6 +1130,13 @@ QWidget *MainWindow::buildAgentsTab()
         kAgentStatusColumn,
         new AgentBranchButtonDelegate(
             m_agentTable, [this](const QString &branch) { switchToBranch(branch); }));
+    // Conflict button on every Diff cell whose branch no longer merges cleanly
+    // (adhoc #446): one click steers that agent into merging base and resolving,
+    // which is no longer done automatically.
+    m_agentTable->setItemDelegateForColumn(
+        kAgentDiffColumn,
+        new AgentConflictButtonDelegate(
+            m_agentTable, [this](int sessionId) { fixAgentConflictsWithAgent(sessionId); }));
     // ~22fps timer that advances + repaints the active scanner lights. It is
     // started on demand by noteAgentActivity and self-stops once all lights idle.
     m_scannerTimer = new QTimer(this);
@@ -4015,8 +4152,10 @@ void MainWindow::initAgents()
             m_agentStore->appendLog(
                 session, QStringLiteral("\n==> Resuming after ForkMesh restart."));
             m_agentQueue.append(session.id);
+            m_startupQuietAgentSessions.insert(session.id);
         } else if (session.status == AgentStatus::Queued) {
             m_agentQueue.append(session.id);
+            m_startupQuietAgentSessions.insert(session.id);
         }
     }
     m_agentSessions = m_agentStore->loadAllSessions();
@@ -4074,6 +4213,9 @@ void MainWindow::updateAgentsNavBadge()
     if (!m_agentsNavButton)
         return;
     const int total = m_agentSessions.size();
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_agentsNavButton))
+        railButton->setBadgeCount(total);
     if (total > 0) {
         m_agentsNavButton->setText(
             QStringLiteral("Agents (%1)").arg(formatCount(total)));
@@ -4256,13 +4398,6 @@ void MainWindow::refreshAgentTable()
         }
     }
 
-    // Auto-fix only consumes completed background results; a cold row remains
-    // unknown until the worker delivers it.
-    for (const AgentSession &session : sessions)
-        if (session.owner == owner && session.name == name)
-            maybeAutoFixAgentConflict(
-                session, agentDiffStat(session, agentGitDir, agentBase));
-
     // The rows this repo + search filter will show, in session order (the table's
     // own sort reorders them afterwards). Also count how many merged sessions the
     // "Delete all merged" batch could act on — across the whole repo, before the
@@ -4428,7 +4563,7 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
                                   QStringLiteral("yyyy-MM-dd HH:mm:ss"))
                             : QString());
     // Diff column (issue #170): files changed + branch ahead/behind, memoised.
-    applyAgentDiffCell(sortable(7), diffStat, agentBase);
+    applyAgentDiffCell(sortable(kAgentDiffColumn), diffStat, agentBase, session.id);
     // Night-rider light: a custom-painted scanner that sweeps while this session
     // streams raw output. AgentScannerDelegate looks the animation state up by the
     // sessionId stashed here in Qt::UserRole.
@@ -6087,12 +6222,18 @@ void MainWindow::continueAgentSession(int sessionId)
 }
 
 // Ask sessionId's agent to merge base and resolve conflicts, then resume it.
-// Used by maybeAutoFixAgentConflict() (any idle session whose branch conflicts
-// with base, when the auto-fix setting is on).
+// Driven by the agents list's orange conflict button (adhoc #446) and the PR
+// page's "Fix conflicts with agent"; never automatically — a conflict is
+// flagged in the list and fixed only when the user clicks it.
 void MainWindow::fixAgentConflictsWithAgent(int sessionId)
 {
     AgentSession *s = findAgentSession(sessionId);
     if (!s)
+        return;
+    // The button stays visible on an already-active session (the conflict is
+    // still real), but steering one that's mid-run would stack a second prompt
+    // on top of the work in flight — the conflict is re-checked when it lands.
+    if (s->status == AgentStatus::Running || s->status == AgentStatus::Queued)
         return;
     const QString base = agentMergeBase(*s);
     const QString prompt =
@@ -6108,32 +6249,6 @@ void MainWindow::fixAgentConflictsWithAgent(int sessionId)
             QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
                         {QStringLiteral("text"), prompt}});
     continueAgentSession(sid);
-}
-
-// adhoc #210: with kAutoFixAgentConflictsSetting on (the default), an idle
-// session whose branch would conflict with base gets the same treatment as a
-// manual click on "Fix conflicts with agent" — no need to notice and click it
-// by hand. m_agentAutoFixAttempted stops a conflict that survives a retry (or
-// a session sitting Failed/Stopped) from re-queuing the agent on every
-// refreshAgentTable(); it's cleared below once the conflict is actually gone,
-// so a later, genuinely new conflict on the same session can auto-fix again.
-void MainWindow::maybeAutoFixAgentConflict(const AgentSession &session,
-                                           const AgentDiffStat &stat)
-{
-    if (!stat.conflicted) {
-        m_agentAutoFixAttempted.remove(session.id);
-        return;
-    }
-    if (session.status == AgentStatus::Running ||
-        session.status == AgentStatus::Queued ||
-        session.status == AgentStatus::Waiting)
-        return; // already active; conflict will be re-checked once it finishes
-    if (m_agentAutoFixAttempted.contains(session.id))
-        return;
-    if (!QSettings().value(kAutoFixAgentConflictsSetting, true).toBool())
-        return;
-    m_agentAutoFixAttempted.insert(session.id);
-    fixAgentConflictsWithAgent(session.id);
 }
 
 void MainWindow::deleteSelectedAgentSession()
@@ -7501,7 +7616,9 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // pressed Enter in the composer on the Agents tab): switchToAgentsTab fires
     // extra reloadAgents() calls that can reset the table selection to row 0 and
     // navigate away from the session the user was working with.
-    if (!m_agentQuietResume) {
+    const bool startupQuiet =
+        m_startupQuietAgentSessions.remove(sid) || m_agentQuietResume;
+    if (!startupQuiet) {
         m_terminalSessionId = sid;
         if (m_selectedAgentSessionId != sid)
             switchToAgentsTab(sid);

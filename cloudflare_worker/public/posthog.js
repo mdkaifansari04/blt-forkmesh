@@ -11,7 +11,13 @@
   const PROJECT_KEY = "phc_AJQ22WskEYjbe5Qb8VTDczA5KkEQ33aXqShiPo9GdENj";
   const API_HOST = "https://b.forkmesh.com";
   const UI_HOST = "https://us.posthog.com";
+  const CLIENT_ERROR_ENDPOINT = "/api/client-errors";
+  const CLIENT_ERROR_WINDOW_MS = 60_000;
+  const CLIENT_ERROR_MAX_PER_WINDOW = 8;
   let started = false;
+  let clientErrorWindowStartedAt = 0;
+  let clientErrorWindowCount = 0;
+  const recentClientErrors = new Map();
 
   function privacySignalEnabled() {
     const dnt = String(
@@ -64,6 +70,107 @@
     if (parts.length >= 2) return "repository";
     return "public-page";
   }
+
+  function redactClientError(value, maximum = 500) {
+    return String(value || "")
+      .replace(
+        /\b(?:authorization|bearer|password|passwd|secret|token|api[_-]?key)\b\s*[:=]?\s*[^\s,;]+/gi,
+        "[redacted-secret]",
+      )
+      .replace(
+        /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,
+        "[redacted-email]",
+      )
+      .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "[redacted-id]")
+      .replace(/\bhttps?:\/\/[^\s)]+/gi, "[redacted-url]")
+      .replace(
+        /\/(?:[A-Za-z0-9._~%-]+\/)+[A-Za-z0-9._~%-]+(?:[?#][^\s]*)?/g,
+        "/[redacted-path]",
+      )
+      .replace(/[\u0000-\u001f\u007f]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, maximum);
+  }
+
+  function clientErrorSource(value) {
+    const withoutQuery = String(value || "").split(/[?#]/, 1)[0];
+    const source = withoutQuery.split("/").filter(Boolean).pop() || "";
+    return source.replace(/[^A-Za-z0-9._-]+/g, "").slice(0, 80);
+  }
+
+  function reportClientError(kind, error, fallbackMessage = "", source = "", line = 0, column = 0) {
+    const now = Date.now();
+    if (
+      !clientErrorWindowStartedAt ||
+      now - clientErrorWindowStartedAt >= CLIENT_ERROR_WINDOW_MS
+    ) {
+      clientErrorWindowStartedAt = now;
+      clientErrorWindowCount = 0;
+    }
+    if (clientErrorWindowCount >= CLIENT_ERROR_MAX_PER_WINDOW) return;
+    const message = redactClientError(
+      error?.message || fallbackMessage || "Unspecified browser exception",
+      500,
+    );
+    const stack = redactClientError(
+      String(error?.stack || "")
+        .split("\n")
+        .slice(0, 8)
+        .join("\n"),
+      700,
+    );
+    const surface = coarseSurface(location.pathname);
+    const signature = `${kind}|${surface}|${message}|${stack.slice(0, 180)}`;
+    const previous = recentClientErrors.get(signature) || 0;
+    if (now - previous < CLIENT_ERROR_WINDOW_MS) return;
+    recentClientErrors.set(signature, now);
+    for (const [key, seenAt] of recentClientErrors) {
+      if (now - seenAt >= CLIENT_ERROR_WINDOW_MS) recentClientErrors.delete(key);
+    }
+    clientErrorWindowCount += 1;
+    fetch(CLIENT_ERROR_ENDPOINT, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind,
+        surface,
+        message,
+        stack,
+        source: clientErrorSource(source),
+        line: Math.max(0, Number(line) || 0),
+        column: Math.max(0, Number(column) || 0),
+      }),
+      keepalive: true,
+    }).catch(() => {});
+  }
+
+  window.addEventListener(
+    "error",
+    (event) => {
+      // Resource-load errors do not expose a useful exception and can reveal
+      // asset paths. The operational collector is for uncaught JavaScript.
+      if (event.target && event.target !== window) return;
+      reportClientError(
+        "error",
+        event.error,
+        event.message,
+        event.filename,
+        event.lineno,
+        event.colno,
+      );
+    },
+    true,
+  );
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason;
+    reportClientError(
+      "unhandledrejection",
+      reason instanceof Error ? reason : null,
+      typeof reason === "string" ? reason : "Unhandled promise rejection",
+    );
+  });
 
   function installPostHogBootstrap() {
     // Standard queueing bootstrap, intentionally invoked only after consent.

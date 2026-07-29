@@ -31,8 +31,13 @@ class BackgroundActivity
 {
 public:
     // started == false means the ticket is being retired; kind/detail are empty.
+    // Execution is retained on both edges so the UI can distinguish genuinely
+    // asynchronous work from a GUI-thread blocking scope without guessing from
+    // how quickly it happened to finish.
     using Listener = std::function<void(quint64 id, const QString &kind,
-                                        const QString &detail, bool started)>;
+                                        const QString &detail,
+                                        ActionTelemetry::Execution execution,
+                                        bool started)>;
 
     static quint64 begin(
         const QString &kind, const QString &detail = QString(),
@@ -45,7 +50,7 @@ public:
             state().tickets.insert(id, Ticket{kind, detail, execution, now});
         }
         ActionTelemetry::started(id, kind, detail, execution, now);
-        notify(id, kind, detail, true);
+        notify(id, kind, detail, execution, true);
         return id;
     }
 
@@ -72,7 +77,7 @@ public:
                                       outcome);
         }
         if (found)
-            notify(id, QString(), QString(), false);
+            notify(id, QString(), QString(), ticket.execution, false);
     }
 
     // Only the window installs a listener; passing a default-constructed
@@ -106,18 +111,17 @@ private:
     }
 
     static void notify(quint64 id, const QString &kind, const QString &detail,
-                       bool started)
+                       ActionTelemetry::Execution execution, bool started)
     {
         QMutexLocker lock(&state().mutex);
         if (state().listener)
-            state().listener(id, kind, detail, started);
+            state().listener(id, kind, detail, execution, started);
     }
 };
 
-// Work that retires inside this window never gets a row in the strip, so the
-// same threshold is what the log's outcome marker means: ✓ "this ran in the
-// background" vs ✕ "this finished inline, nothing was ever backgrounded"
-// (adhoc #419).
+// Work that retires inside this window never gets a row in the strip. This
+// delay is presentation-only; execution metadata, not elapsed time, determines
+// whether the work was actually backgrounded.
 constexpr qint64 kBackgroundShowAfterMs = 200;
 
 inline QString backgroundOkGlyph() { return QString::fromUtf8("\xE2\x9C\x93"); }
@@ -136,9 +140,9 @@ inline QString backgroundElapsedText(qint64 ms)
 // of same-kind tickets that all came and went too fast to be backgrounded, in
 // which case `elapsedMs` is the longest of them.
 inline QString backgroundOutcomeLine(const QString &word, int runs,
-                                     qint64 elapsedMs, const QString &detail)
+                                     qint64 elapsedMs, const QString &detail,
+                                     bool backgrounded)
 {
-    const bool backgrounded = elapsedMs >= kBackgroundShowAfterMs;
     QString line = QStringLiteral("Background %1 %2")
                        .arg(backgrounded ? backgroundOkGlyph()
                                          : backgroundNotGlyph(),

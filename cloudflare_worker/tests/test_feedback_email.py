@@ -169,6 +169,8 @@ def test_content_is_reply_geared_and_from_founders():
     for fragment in ("hit reply", "founders", "1.", "2.", "3."):
         assert fragment in text
     assert "@jett" in html
+    assert "feedback=1" in text
+    assert "Add feedback in the lobby" in html
     assert ns["FEEDBACK_EMAIL_FROM"] == "founders@forkmesh.com"
     assert ns["FEEDBACK_EMAIL_DELAY_MS"] == DAY
 

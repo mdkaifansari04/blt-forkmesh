@@ -858,6 +858,29 @@ RepoContributionSnapshot buildRepoContributionSnapshot(
             QStringLiteral("Repository branch does not match the requested snapshot."));
     }
 
+    QStringList changedFiles;
+    const GitResult changed = runGit(
+        source,
+        {QStringLiteral("diff-tree"), QStringLiteral("--root"),
+         QStringLiteral("--no-commit-id"), QStringLiteral("--name-only"),
+         QStringLiteral("-r"), QStringLiteral("-z"), resolvedHead});
+    if (changed.ok) {
+        for (const QByteArray &rawPath : changed.output.split('\0')) {
+            QString path =
+                QDir::fromNativeSeparators(QString::fromUtf8(rawPath)).trimmed();
+            if (path.isEmpty() || path.startsWith(QLatin1Char('/')) ||
+                path == QLatin1String("..") ||
+                path.startsWith(QLatin1String("../")) ||
+                !safeSnapshotString(path, 160) ||
+                changedFiles.contains(path)) {
+                continue;
+            }
+            changedFiles.append(path);
+            if (changedFiles.size() >= 8)
+                break;
+        }
+    }
+
     QString commitCoverage = QStringLiteral("complete");
     QString collaborationCoverage = QStringLiteral("complete");
     QString languageCoverage = QStringLiteral("complete");
@@ -1200,6 +1223,7 @@ RepoContributionSnapshot buildRepoContributionSnapshot(
     RepoContributionSnapshot result;
     result.payload = payload;
     result.compactPayload = compact;
+    result.changedFiles = changedFiles;
     result.complete = true;
     return result;
 }

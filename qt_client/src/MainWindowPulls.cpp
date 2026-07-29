@@ -7604,12 +7604,18 @@ void MainWindow::syncPullsInbox()
 void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
 {
     const RepositoryRecord writable = writableRecordFor(repo);
+    bool ownerIntake = false;
     {
         PullStore probe(writable.localPath, writable.mirrorPath, &m_profileIdentity,
                         m_userName);
-        if (!probe.canWrite())
-            return;
+        ownerIntake = probe.canWrite();
     }
+    const bool mirrorIntake =
+        !ownerIntake && !repo.previewOnly && !repo.isPrivate &&
+        repo.publishToNetwork && !repo.mirrorPath.trimmed().isEmpty() &&
+        QDir(repo.mirrorPath).exists();
+    if (!ownerIntake && !mirrorIntake)
+        return;
     // The relay remains the authority: a desktop-capable account may sign the
     // public owner in this RepositoryRecord, and the Worker accepts it only for
     // a directly owned repo or a public linked repo whose organization role is
@@ -7621,26 +7627,45 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
     QUrl url = pullsApiUrl(repo);
     // Auto-polls back off exponentially while the relay is failing (offline /
     // HTTP 429); a manual "Sync inbox" (interactive) always tries immediately.
-    const QString backoffKey = url.toString();
+    const QString signer =
+        mirrorIntake ? accountOwner().trimmed().toLower()
+                     : repoSegment(repo.owner, QStringLiteral("owner"));
+    if (signer.isEmpty() || !hasOwnerSigningCapability(signer))
+        return;
+    const QString intakeKey =
+        QStringLiteral("pulls:") + repo.owner.trimmed().toLower() +
+        QLatin1Char('/') + repo.name.trimmed().toLower();
+    const QString backoffKey =
+        url.toString() +
+        (mirrorIntake ? QStringLiteral("|mirror:") + signer : QString());
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     if (!interactive && !m_pollBackoff.ready(backoffKey, nowMs))
         return;
+    if (mirrorIntake) {
+        if (m_mirrorIssueIntakeInFlight.contains(intakeKey))
+            return;
+        m_mirrorIssueIntakeInFlight.insert(intakeKey);
+    }
 
-    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
     const QString ts = QString::number(nowMs);
     const QByteArray canonical =
-        ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
+        ("forkmesh-issues-pull-v1\n" + signer + "\n" + ts).toUtf8();
     const QString sig = m_profileIdentity.signData(canonical);
     QUrlQuery query;
-    query.addQueryItem("owner", owner);
+    query.addQueryItem("owner", signer);
     query.addQueryItem("ts", ts);
     query.addQueryItem("sig", sig);
+    if (mirrorIntake)
+        query.addQueryItem(QStringLiteral("mirror"), QStringLiteral("1"));
     url.setQuery(query);
 
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, repo, interactive, backoffKey] {
+            [this, reply, repo, interactive, backoffKey, intakeKey,
+             mirrorIntake, signer] {
         reply->deleteLater();
+        if (mirrorIntake)
+            m_mirrorIssueIntakeInFlight.remove(intakeKey);
         if (reply->error() != QNetworkReply::NoError) {
             m_pollBackoff.noteFailure(backoffKey,
                                       QDateTime::currentMSecsSinceEpoch());
@@ -7651,12 +7676,72 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
             return;
         }
         m_pollBackoff.noteSuccess(backoffKey);
-        applyPullsInboxPayload(repo,
-                               QJsonDocument::fromJson(reply->readAll())
-                                   .object()
-                                   .value("pending")
-                                   .toArray(),
-                               interactive);
+        const QJsonArray pending =
+            QJsonDocument::fromJson(reply->readAll())
+                .object()
+                .value("pending")
+                .toArray();
+        if (!mirrorIntake) {
+            applyPullsInboxPayload(repo, pending, interactive);
+            return;
+        }
+        if (pending.isEmpty())
+            return;
+
+        QTemporaryDir worktree(
+            QDir::tempPath() + QStringLiteral(
+                "/forkmesh-mirror-pulls-XXXXXX"));
+        QByteArray pullTip;
+        const bool pullBranchExists = runGitCapture(
+            repo.mirrorPath,
+            {QStringLiteral("rev-parse"), QStringLiteral("--verify"),
+             QStringLiteral("refs/heads/forkmesh/pulls^{commit}")},
+            &pullTip, nullptr);
+        QStringList addArgs{
+            QStringLiteral("worktree"), QStringLiteral("add"),
+            QStringLiteral("--force")};
+        if (!pullBranchExists) {
+            const QString base = mirrorHeadBranch(repo.mirrorPath);
+            if (base.isEmpty())
+                return;
+            addArgs << QStringLiteral("-b") << QStringLiteral("forkmesh/pulls")
+                    << worktree.path() << base;
+        } else {
+            addArgs << worktree.path() << QStringLiteral("forkmesh/pulls");
+        }
+        QString gitError;
+        if (!worktree.isValid() ||
+            !runGitCapture(repo.mirrorPath, addArgs, nullptr, &gitError)) {
+            m_pollBackoff.noteFailure(
+                backoffKey, QDateTime::currentMSecsSinceEpoch());
+            logSystem(
+                QStringLiteral("Mirror pull intake could not open %1/%2: %3")
+                    .arg(repo.owner, repo.name,
+                         gitError.trimmed().right(240)));
+            return;
+        }
+        runGitCapture(worktree.path(),
+                      {QStringLiteral("config"), QStringLiteral("user.name"),
+                       signer.left(80)},
+                      nullptr, nullptr);
+        runGitCapture(
+            worktree.path(),
+            {QStringLiteral("config"), QStringLiteral("user.email"),
+             signer.left(63) +
+                 QStringLiteral("@users.noreply.forkmesh.com")},
+            nullptr, nullptr);
+        RepositoryRecord materialized = repo;
+        materialized.localPath = worktree.path();
+        applyPullsInboxPayload(
+            materialized, pending, interactive, /*mirrorIntake=*/true);
+        runGitCapture(
+            repo.mirrorPath,
+            {QStringLiteral("worktree"), QStringLiteral("remove"),
+             QStringLiteral("--force"), worktree.path()},
+            nullptr, nullptr);
+        runGitCapture(repo.mirrorPath,
+                      {QStringLiteral("worktree"), QStringLiteral("prune")},
+                      nullptr, nullptr);
     });
 }
 
@@ -7665,7 +7750,8 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
 // drain reply or the repo's slice of the consolidated GET /api/sync response.
 void MainWindow::applyPullsInboxPayload(const RepositoryRecord &repo,
                                         const QJsonArray &pending,
-                                        bool interactive)
+                                        bool interactive,
+                                        bool mirrorIntake)
 {
     if (!hasOwnerSigningCapability())
         return;
@@ -7681,10 +7767,16 @@ void MainWindow::applyPullsInboxPayload(const RepositoryRecord &repo,
     if (!store.canWrite())
         return;
     int merged = 0;
+    QStringList drainedIds;
     QString lastAuthor;
     QString lastTitle;
     for (const QJsonValue &value : pending) {
         const QJsonObject obj = value.toObject();
+        const QString inboxId =
+            obj.value("id").isDouble()
+                ? QString::number(
+                      static_cast<qint64>(obj.value("id").toDouble()))
+                : QString();
         // A submission is either a whole new PR ("pull") or a conversation
         // event on an existing PR ("event" + "number").
         if (obj.contains("event")) {
@@ -7692,6 +7784,8 @@ void MainWindow::applyPullsInboxPayload(const RepositoryRecord &repo,
             const PullEvent ev =
                 PullEvent::fromJson(obj.value("event").toObject());
             if (store.applyRemoteEvent(number, ev)) {
+                if (!inboxId.isEmpty())
+                    drainedIds << inboxId;
                 ++merged;
                 lastAuthor = ev.authorName.isEmpty() ? ev.author.left(8)
                                                      : ev.authorName;
@@ -7702,16 +7796,28 @@ void MainWindow::applyPullsInboxPayload(const RepositoryRecord &repo,
         const PullRequest pr =
             PullRequest::fromJson(obj.value("pull").toObject());
         if (store.applyRemotePull(pr)) {
+            if (!inboxId.isEmpty())
+                drainedIds << inboxId;
             ++merged;
             lastAuthor = pr.authorName.isEmpty() ? pr.author.left(8)
                                                  : pr.authorName;
             lastTitle = pr.title;
         }
     }
-    QUrl ackUrl = pullsApiUrl(repo);
-    ackUrl.setQuery(
-        signedInboxQuery(repoSegment(repo.owner, QStringLiteral("owner"))));
-    m_networkAccess->deleteResource(QNetworkRequest(ackUrl)); // ack/clear
+    if (!drainedIds.isEmpty()) {
+        QUrl ackUrl = pullsApiUrl(repo);
+        const QString ackSigner =
+            mirrorIntake ? accountOwner().trimmed().toLower()
+                         : repoSegment(repo.owner, QStringLiteral("owner"));
+        QUrlQuery query = signedInboxQuery(ackSigner);
+        if (mirrorIntake)
+            query.addQueryItem(
+                QStringLiteral("mirror"), QStringLiteral("1"));
+        query.addQueryItem(QStringLiteral("ids"),
+                           drainedIds.join(QStringLiteral(",")));
+        ackUrl.setQuery(query);
+        m_networkAccess->deleteResource(QNetworkRequest(ackUrl));
+    }
     const bool onThisRepo =
         m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size() &&
         m_repositories.at(m_repoDetailIndex).owner == repo.owner &&
@@ -7720,10 +7826,13 @@ void MainWindow::applyPullsInboxPayload(const RepositoryRecord &repo,
         reloadPulls();
     // Incoming PRs just landed in the working copy: push them to the mirror
     // and notify peers now so every node's count converges promptly.
-    if (merged > 0) {
+    if (!mirrorIntake && merged > 0) {
         propagateRepoUpdate(repoIndexFor(repo.owner, repo.name));
         // An inbound PR or review may @mention the owner running this node.
         scanRepoMentionsFor(writable);
+    } else if (mirrorIntake && merged > 0) {
+        m_mirrorAdvertSig.clear();
+        refreshMirrorAdverts();
     }
     if (interactive) {
         QMessageBox::information(

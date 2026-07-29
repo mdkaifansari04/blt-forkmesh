@@ -74,6 +74,7 @@ def _mirror_push_runtime():
     import re as re_module
     runtime = _load(
         "ForkMeshWorld", "_world_mirror_push_signature",
+        "_world_mirror_push_changed_files",
         extra_globals={
             "DurableObject": type("DurableObject", (), {}),
             "_account_session_secret": lambda env: b"unit-secret",
@@ -92,14 +93,16 @@ def _mirror_push_runtime():
     return instance, runtime["_world_mirror_push_signature"], frames
 
 
-def test_signed_head_advance_is_relayed_with_a_short_commit_only():
+def test_signed_head_advance_relays_short_commit_and_bounded_changed_files():
     instance, sign, frames = _mirror_push_runtime()
     commit = "a1" * 20
+    changed_files = ["src/world.js", "docs/guide.md"]
     response = _run(instance._mirror_push(_Request(
-        {"node": "mirror2", "repo": "forkmesh", "commit": commit},
+        {"node": "mirror2", "repo": "forkmesh", "commit": commit,
+         "changedFiles": changed_files},
         headers={
             "x-forkmesh-world-control": sign(
-                None, "mirror2", "forkmesh", commit),
+                None, "mirror2", "forkmesh", commit, changed_files),
         })))
     assert response["status"] == 200
     assert frames == [{
@@ -107,6 +110,7 @@ def test_signed_head_advance_is_relayed_with_a_short_commit_only():
         "node": "mirror2",
         "repo": "forkmesh",
         "commit": commit[:12],
+        "changedFiles": changed_files,
     }]
 
 
@@ -143,6 +147,8 @@ def test_signature_binds_node_repo_and_commit():
     assert base != sign(None, "mirror3", "forkmesh", "c" * 40)
     assert base != sign(None, "mirror2", "other", "c" * 40)
     assert base != sign(None, "mirror2", "forkmesh", "d" * 40)
+    assert base != sign(
+        None, "mirror2", "forkmesh", "c" * 40, ["src/world.js"])
 
 
 def test_catalog_publish_announces_only_a_changed_public_head_after_purge():
@@ -156,6 +162,7 @@ def test_catalog_publish_announces_only_a_changed_public_head_after_purge():
     guard = block[:call]
     assert 'record["visibility"] == "public"' in guard
     assert "new_commit != prior_commit" in guard
+    assert 'record.get("changedFiles", [])' in block[call:call + 300]
     assert 're.fullmatch(r"[0-9a-f]{40,64}", new_commit)' in guard
     # Best-effort: a World relay failure never fails the publication.
     assert "except Exception:" in block[call:call + 400]
@@ -175,7 +182,8 @@ def test_client_treats_the_frame_as_a_doorbell_and_coalesces_one_refresh():
     assert "refreshMirrorCatalogs({ force: true })" in handler
     assert "clearTimeout(this.mirrorPushRefreshTimer)" in handler
     assert "spawnPushSurge" not in APP
-    assert "armMirrorPushEffect?.(node, commit)" in handler
+    assert "armMirrorPushEffect?.(" in handler
+    assert "changedFiles" in handler
     assert "!/^[0-9a-f]{12}$/.test(commit)" in handler
     assert "window.clearTimeout(this.mirrorPushRefreshTimer);" in APP
 
@@ -191,7 +199,7 @@ def test_scene_plays_a_bounded_disposed_surge_from_verified_commit_changes():
     assert "spawnPushSurge(cabinet.position)" in update
     assert "verifiedPendingPush" in update
     assert "nextCommit.toLowerCase().startsWith(pendingPush.commit)" in update
-    assert "function armMirrorPushEffect(nodeName, commitPrefix)" in SCENE
+    assert "function armMirrorPushEffect(" in SCENE
     assert "expiresAt: Date.now() + 120_000" in SCENE
     surge = SCENE[SCENE.index("function spawnPushSurge"):]
     surge = surge[:surge.index("function playRewardEvent")]
@@ -203,3 +211,30 @@ def test_scene_plays_a_bounded_disposed_surge_from_verified_commit_changes():
     assert "pushSurges.splice(index, 1)" in animate
     assert "child.geometry?.dispose?.()" in animate
     assert "child.material?.dispose?.()" in animate
+
+
+def test_verified_changed_files_collide_with_the_repository_ring():
+    assert "function spawnRepositoryCodeLanding(pending = {})" in SCENE
+    landing = SCENE[SCENE.index("function spawnRepositoryCodeLanding"):]
+    landing = landing[:landing.index("function spawnServeFlights")]
+    assert "repositoryCodeLandings.length >= 4" in landing
+    assert "repository-changed-file:" in landing
+    assert "repository-ring-collision:" in landing
+    assert "repository-file-sizzle:" in landing
+    assert "repository-night-lightning:" in landing
+    assert "repository-file-shadow:" in landing
+    assert "localDaylightMinute < 6 * 60" in landing
+    assert "sizzleDuration: 10_000" in landing
+    assert "portal.group.getWorldPosition(target)" in landing
+
+    update = SCENE[SCENE.index("function updateNetworkNodes"):]
+    update = update[:update.index("function focusNetworkNode")]
+    assert "spawnRepositoryCodeLanding(pendingPush)" in update
+    assert "verifiedPendingPush" in update
+
+    animate = SCENE[SCENE.index("repositoryCodeLandings.length - 1"):]
+    animate = animate[:animate.index("for (let index = pushSurges.length - 1")]
+    assert "lerpVectors(" in animate
+    assert "sparkleAttribute.needsUpdate = true" in animate
+    assert "landedFor >= effect.sizzleDuration" in animate
+    assert "repositoryCodeLandings.splice(index, 1)" in animate

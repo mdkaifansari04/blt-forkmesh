@@ -216,6 +216,26 @@ QStringList OfficeChannelMirror::conversations() const
     return m_conversations;
 }
 
+QStringList OfficeChannelMirror::membersForConversation(
+    const QString &conversation) const
+{
+    for (auto it = m_rooms.constBegin(); it != m_rooms.constEnd(); ++it) {
+        if (it->conversation == conversation)
+            return it->members;
+    }
+    return {};
+}
+
+bool OfficeChannelMirror::isPrivateConversation(
+    const QString &conversation) const
+{
+    for (auto it = m_rooms.constBegin(); it != m_rooms.constEnd(); ++it) {
+        if (it->conversation == conversation)
+            return it->privateRoom;
+    }
+    return false;
+}
+
 bool OfficeChannelMirror::canSend(const QString &conversation) const
 {
     if (!ready() || !forkmesh::office::isOfficeConversation(conversation))
@@ -313,8 +333,31 @@ void OfficeChannelMirror::fetchChannels()
             room.name = channel.value(QStringLiteral("name")).toString()
                             .left(kMaxDisplayNameChars);
             room.conversation = conversation;
+            const bool privateRoom =
+                channel.value(QStringLiteral("visibility")).toString() ==
+                QStringLiteral("private");
+            QStringList members;
+            if (privateRoom) {
+                QSet<QString> seenMembers;
+                for (const QJsonValue &memberValue :
+                     channel.value(QStringLiteral("members")).toArray()) {
+                    const QString member =
+                        memberValue.toString().trimmed().toLower()
+                            .left(kMaxDisplayNameChars);
+                    if (!member.isEmpty() && !seenMembers.contains(member)) {
+                        seenMembers.insert(member);
+                        members.append(member);
+                    }
+                }
+            }
+            const bool membersChanged =
+                room.privateRoom != privateRoom || room.members != members;
+            room.privateRoom = privateRoom;
+            room.members = members;
             conversations.append(conversation);
             live.insert(id);
+            if (membersChanged)
+                emit roomMembersChanged(conversation, members);
         }
         // Rooms the account can no longer read (removed from a private channel)
         // stop being polled; their already-shown messages stay in the view.

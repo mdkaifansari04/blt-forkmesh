@@ -39,19 +39,20 @@ def test_bulletin_separates_every_remaining_task_from_completed_work():
     assert "Fix live Office attendance" not in board
     assert "Fix Assign to taskboard colors" not in board
     assert "filter((item) => !item.done)" in SCENE
-    assert "DRAG TO PRIORITIZE · 1 IS HIGHEST" in SCENE
-    assert "`#${index + 1}`" in SCENE
-    assert "IN PROGRESS" in SCENE
+    assert "OPEN WORK · DRAG TO PRIORITIZE · #1 IS HIGHEST" in SCENE
+    assert "`#${index + 1} · OPEN TODO`" in SCENE
+    assert "OPEN TODO" in SCENE
     assert "item.estimate" in SCENE
+    assert "item.detail" in SCENE
 
 
-def test_pending_notes_are_marker_drawn_and_repo_issues_have_adjacent_board():
-    assert "worldTaskBulletinSeed(`${side}:${item.task}`)" in SCENE
-    assert '"Marker Felt", "Segoe Print", "Comic Sans MS"' in SCENE
-    assert 'drawNote(item, index, "pending")' in SCENE
-    assert "context.rotate(angle)" in SCENE
-    assert '"forkmesh-repo-issues-board-face"' in SCENE
-    assert "worldRepoIssuesTexture" in SCENE
-    assert "DRAG AN ISSUE ONTO THE BUILD BOARD TO ASSIGN IT" in SCENE
+def test_pending_cards_are_detailed_straight_without_the_removed_repo_issues_board():
+    assert "const x = 58 + column * 574;" in SCENE
+    assert "const y = 200 + row * 218;" in SCENE
+    assert "context.rotate(angle)" not in SCENE
+    assert "item.detail" in SCENE
+    assert "drawNote(item, index);" in SCENE
+    assert '"forkmesh-repo-issues-board-face"' not in SCENE
+    assert "worldRepoIssuesTexture" not in SCENE
+    assert "FORKMESH · OPEN REPO ISSUES" not in SCENE
     assert '"build-task-board"' in SCENE
-    assert '"repo-issues-board"' in SCENE

@@ -6689,6 +6689,14 @@ test("pull requests open and become viewed entirely inside the repository World"
   await expect(
     page.getByRole("heading", { name: "Pull request #44" }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Repository portals" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText(
+      "Authorized repositories form distinct perimeter portals with size-weighted file rings.",
+    ),
+  ).toHaveCount(0);
   await expect(page.locator(".world-pull-file-tree button")).toHaveCount(2);
   await expect(page.locator("[data-world-pull-diff-file]")).toHaveCount(2);
   await expect(page.locator("[data-world-pull-diff]")).toContainText(
@@ -7865,14 +7873,22 @@ test("portrait coarse-pointer thumbstick and visual viewport remain usable", asy
   );
   expect(afterInput).toEqual(before);
 
+  const stableHeight = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.lastStableViewportHeight,
+  );
   await page.setViewportSize({ width: 390, height: 520 });
+  await page.waitForTimeout(300);
+  expect(
+    await page.locator("forkmesh-world").evaluate(
+      (shell) => shell.lastStableViewportHeight,
+    ),
+  ).toBe(stableHeight);
+  await page.setViewportSize({ width: 520, height: 390 });
   await page.waitForFunction(
     () =>
       document.querySelector("forkmesh-world")?.style
-        .getPropertyValue("--world-viewport-height") === "520px",
+        .getPropertyValue("--world-viewport-height") === "390px",
   );
-  const bounds = await page.locator("[data-world-root]").boundingBox();
-  expect(bounds.height).toBeLessThanOrEqual(520);
   await page.locator("[data-world-settings-close]").click();
   await expect(page.locator("[data-world-settings]")).toHaveAttribute(
     "data-open",

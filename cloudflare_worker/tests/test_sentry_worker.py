@@ -400,15 +400,18 @@ def test_forkmesh_actions_run_full_worker_pytest_suite():
     assert "python3 -m venv .forkmesh-pytest-venv" in CI_WORKFLOW_TEXT
     assert ".forkmesh-pytest-venv/bin/python -m pip install pytest" in CI_WORKFLOW_TEXT
     assert ".forkmesh-pytest-venv/bin/python -m pytest -q cloudflare_worker/tests" in CI_WORKFLOW_TEXT
-    assert "python3 -m venv .forkmesh-pytest-venv" in DEPLOY_WORKFLOW_TEXT
-    assert ".forkmesh-pytest-venv/bin/python -m pip install pytest" in DEPLOY_WORKFLOW_TEXT
-    assert ".forkmesh-pytest-venv/bin/python -m pytest -q cloudflare_worker/tests" in DEPLOY_WORKFLOW_TEXT
+    assert "needs: [.forkmesh/ci.yml]" in DEPLOY_WORKFLOW_TEXT
+    assert "already ran for this commit" in DEPLOY_WORKFLOW_TEXT
     assert "pip install --user" not in CI_WORKFLOW_TEXT
     assert "pip install --user" not in DEPLOY_WORKFLOW_TEXT
     assert "python3 cloudflare_worker/tests/test_crypto.py" not in CI_WORKFLOW_TEXT
     assert "python3 cloudflare_worker/tests/test_crypto.py" not in DEPLOY_WORKFLOW_TEXT
     assert "cmake -S qt_client -B qt_client/build-ci" in CI_WORKFLOW_TEXT
-    assert "cmake --build qt_client/build-ci -j --target forkmesh-tests" in CI_WORKFLOW_TEXT
+    assert (
+        'cmake --build qt_client/build-ci -j '
+        '"${FORKMESH_ACTIONS_CPUS:-2}" --target forkmesh-tests'
+        in CI_WORKFLOW_TEXT
+    )
     assert "./qt_client/build-ci/forkmesh-tests" in CI_WORKFLOW_TEXT
 
 
@@ -573,6 +576,15 @@ def test_expected_degraded_responses_skip_the_generic_5xx_logger():
     fund_block = ENTRY_TEXT.split(
         "async def _account_central_fund", 1)[1][:1600]
     assert fund_block.count("EXPECTED_DEGRADED_HEADERS") == 2
+
+
+def test_mirror_gateway_retries_all_5xx_and_marks_unavailability_expected():
+    proxy = ENTRY_TEXT.split(
+        "async def _https_mirror_proxy(", 1)[1].split(
+            "\n\nclass Default(", 1)[0]
+    assert "or 500 <= status <= 599" in proxy
+    assert proxy.count("extra_headers=EXPECTED_DEGRADED_HEADERS") >= 3
+    assert 'status=503' in proxy
 
 
 def test_redacted_repo_routes_keep_identity_free_route_family_tags():
