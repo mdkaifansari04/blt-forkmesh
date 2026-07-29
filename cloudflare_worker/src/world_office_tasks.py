@@ -24,6 +24,7 @@ MAX_TITLE = 160
 MAX_DETAILS = 4000
 MAX_COMPLETION_NOTE = 4000
 MAX_CHECKIN_NOTE = 500
+MAX_AGENT_FIELD = 64
 MAX_ELAPSED_MS = 10 * 365 * 24 * 60 * 60 * 1000
 MAX_BOUNTY_LAMPORTS = 1_000_000 * 1_000_000_000
 MAX_PROOFS = 5000
@@ -38,7 +39,13 @@ CHECKIN_STATES = frozenset({"going_well", "blocked", "needs_help"})
 DESTINATIONS = frozenset({
     "department", "personal", "repository", "qa", "agent",
 })
-ASSIGNEE_KINDS = frozenset({"user", "unassigned", "claude", "codex"})
+# One general bot replaces the old per-vendor Claude/Codex choice. The legacy
+# kinds still decode from stored rows and are projected as "agent" so an
+# existing task keeps working after the picker was removed.
+AGENT_ASSIGNEE_KINDS = frozenset({"agent", "bot", "claude", "codex"})
+ASSIGNEE_KINDS = (
+    frozenset({"user", "unassigned"}) | AGENT_ASSIGNEE_KINDS
+)
 QA_STATES = frozenset({"unknown", "passed", "failed"})
 DEPARTMENTS = (
     "general", "marketing", "engineering", "product-design", "security",
@@ -53,6 +60,7 @@ PERMISSION_RANK = {
 }
 
 _ID_RE = re.compile(r"^[a-f0-9]{32}$")
+_AGENT_REF_RE = re.compile(r"^[A-Za-z0-9._@#/-]{1,64}$")
 _REPO_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 _SCOPE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 _SOL_AMOUNT_RE = re.compile(r"^(0|[1-9][0-9]{0,6})(?:\.([0-9]{1,9}))?$")
@@ -85,6 +93,40 @@ def _text(value, maximum, fallback=""):
 
 def valid_id(value):
     return bool(_ID_RE.fullmatch(str(value or "").strip().lower()))
+
+
+def _agent_ref(value):
+    """Bound an opaque desktop-side agent reference (bot label, session id).
+
+    Anything that is not already a compact token is dropped rather than
+    squeezed into one: a mangled bot label is worse than no bot label.
+    """
+
+    clean = _text(value, MAX_AGENT_FIELD)
+    return clean if _AGENT_REF_RE.fullmatch(clean) else ""
+
+
+def _agent_run(value):
+    """Bound the run provenance a desktop records against an agent task.
+
+    A prompt launched from the desktop opens the task, so the task itself has
+    to explain the run without reaching back into a transcript nobody else can
+    read: which bot opened it, which bot reported it finished, and the model,
+    permission mode, and reasoning strength the run used. Every field is
+    encrypted with the rest of the task copy; ``None`` means "no agent run".
+    """
+
+    record = value if isinstance(value, dict) else {}
+    run = {
+        "provider": _text(record.get("provider"), 40).lower(),
+        "startedBy": _agent_ref(record.get("startedBy")).lower(),
+        "finishedBy": _agent_ref(record.get("finishedBy")).lower(),
+        "model": _text(record.get("model"), MAX_AGENT_FIELD),
+        "mode": _text(record.get("mode"), 40),
+        "strength": _text(record.get("strength"), 32).lower(),
+        "sessionId": _agent_ref(record.get("sessionId")),
+    }
+    return run if any(run.values()) else None
 
 
 def _sol_amount(value):
@@ -135,7 +177,7 @@ def _route(path):
     if len(parts) == 1:
         return ("task", task_id, "")
     if len(parts) == 2 and parts[1] in (
-            "start", "stop", "checkin", "complete", "qa"):
+            "start", "stop", "checkin", "complete", "qa", "return"):
         return ("action", task_id, parts[1])
     return None
 
@@ -239,7 +281,9 @@ async def _project_task(runtime, row, now, checkin=None):
     if started_at:
         elapsed_ms += max(0, int(now) - started_at)
     assignee_kind = str(row.get("assignee_kind") or "user")
-    if assignee_kind not in ASSIGNEE_KINDS:
+    if assignee_kind in AGENT_ASSIGNEE_KINDS:
+        assignee_kind = "agent"
+    elif assignee_kind not in ASSIGNEE_KINDS:
         assignee_kind = "user"
     qa_status = str(row.get("qa_status") or "unknown")
     if qa_status not in QA_STATES:
@@ -270,13 +314,18 @@ async def _project_task(runtime, row, now, checkin=None):
             data.get("completionNote"), MAX_COMPLETION_NOTE),
         "createdBy": _text(data.get("createdBy"), 64).lower(),
         "bountyRequest": bounty_request,
-        "assignee": _text(data.get("assignee"), 64).lower(),
+        "assignee": (
+            "agent"
+            if assignee_kind == "agent"
+            else _text(data.get("assignee"), 64).lower()
+        ),
         "assigneeKind": assignee_kind,
         "department": _text(row.get("department"), 64, "general").lower(),
         "team": _text(row.get("team"), 64).lower(),
         "destination": str(row.get("destination") or "department"),
         "repository": _text(data.get("repository"), 201),
         "agentSessionId": str(row.get("agent_session_id") or ""),
+        "agent": _agent_run(data.get("agent")),
         "qa": {
             "status": qa_status,
             "reviewer": _text(data.get("qaReviewer"), 64).lower(),
@@ -758,8 +807,10 @@ async def _create(
                 runtime, {"error": "assignee_not_team_member"}, status=400)
         assignee = member["name"]
         assignee_bi = member["bi"]
-    elif assignee_kind in ("claude", "codex"):
-        assignee = assignee_kind
+    elif assignee_kind in AGENT_ASSIGNEE_KINDS:
+        # The board carries one general bot; the node picks the runtime.
+        assignee_kind = "agent"
+        assignee = "agent"
         destination = "agent"
     else:
         assignee = ""
@@ -778,6 +829,11 @@ async def _create(
         return _response(
             runtime, {"error": "repository_required"}, status=400)
     how_to_test = _text(data.get("howToTest"), 720)
+    # A desktop that launches a prompt opens the task in the same call, so the
+    # run's provenance arrives with it rather than through a second round trip.
+    agent_run = _agent_run(data.get("agent")) if assignee_kind in (
+        "claude", "codex") else None
+    agent_session_id = _agent_ref((agent_run or {}).get("sessionId"))
     qa_requested_at = (
         now
         if destination == "qa" or data.get("sendToQa") is True
@@ -805,14 +861,16 @@ async def _create(
         "repository": repository,
         "howToTest": how_to_test,
         "qaReviewer": "",
+        "agent": agent_run,
     })
     try:
         await runtime.d1_run(
             "INSERT INTO organization_tasks "
             "(task_id,org_bi,department,team,destination,assignee_kind,"
             "status,assignee_bi,data,created_by_bi,created_at,updated_at,"
-            "elapsed_ms,started_at,next_checkin_at,qa_requested_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "elapsed_ms,started_at,next_checkin_at,qa_requested_at,"
+            "agent_session_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             task_id,
             org_bi,
             department,
@@ -829,6 +887,7 @@ async def _create(
             0,
             0,
             qa_requested_at,
+            agent_session_id,
         )
     except Exception as error:
         if "catalog_full" in str(error):
@@ -854,6 +913,7 @@ async def _create(
                 "bountyAmountSol": (
                     bounty_request["amountSol"] if bounty_request else ""
                 ),
+                "agentRun": bool(agent_run),
             }
         ),
     )
@@ -876,7 +936,7 @@ async def _update(
     if set(data).issubset({"agentSessionId", "sessionToken"}):
         session_id = str(data.get("agentSessionId") or "").strip().lower()
         if (
-            str(row.get("assignee_kind") or "") not in ("claude", "codex")
+            str(row.get("assignee_kind") or "") not in AGENT_ASSIGNEE_KINDS
             or not re.fullmatch(r"[a-f0-9-]{16,64}", session_id)
             or (
                 not can_manage
@@ -964,6 +1024,8 @@ async def _update(
         "repository": _text(current.get("repository"), 201),
         "howToTest": _text(current.get("howToTest"), 720),
         "qaReviewer": _text(current.get("qaReviewer"), 64).lower(),
+        # Editing the copy never rewrites who ran the task or how.
+        "agent": _agent_run(current.get("agent")),
     })
     await runtime.d1_run(
         "UPDATE organization_tasks "
@@ -1108,8 +1170,15 @@ async def _complete(
         runtime, org_bi, account_bi, actor, task_id, row, data,
         can_manage, now):
     """Finish assigned work and place it in the private QA review queue."""
+    # A bot-assigned task has no member assignee_bi to match, so the desktop
+    # that opened it — and only that desktop — reports its run as finished.
+    launched_agent_run = (
+        str(row.get("assignee_kind") or "") in ("claude", "codex")
+        and str(row.get("created_by_bi") or "") == account_bi
+    )
     if (
         not can_manage
+        and not launched_agent_run
         and str(row.get("assignee_bi") or "") != account_bi
     ):
         return _response(runtime, {"error": "assignee_or_manager_only"}, status=403)
@@ -1171,6 +1240,16 @@ async def _complete(
     current["qaReviewer"] = ""
     current["qaFailureReason"] = ""
     current["qaFailureScreenshot"] = ""
+    # The finishing bot (and any model/mode/strength it ended up running with)
+    # layers onto whatever the launching bot recorded when it opened the task.
+    if isinstance(data.get("agent"), dict):
+        merged = dict(current.get("agent") or {})
+        merged.update({
+            field: value
+            for field, value in data["agent"].items()
+            if value
+        })
+        current["agent"] = _agent_run(merged)
     started_at = int(row.get("started_at") or 0)
     addition = (
         max(0, int(now) - started_at)
@@ -1249,6 +1328,52 @@ async def _request_qa(
     await runtime.audit(
         actor, "organization.task_sent_to_qa", "organization_task", task_id,
         details={"qa": "requested"},
+    )
+    return await _task_response(
+        runtime, await _task(runtime, org_bi, task_id), now)
+
+
+async def _return_to_list(
+        runtime, org_bi, account_bi, actor, task_id, row, can_manage, now):
+    """Pull a bot task back off the node queue and onto the task list."""
+
+    if (
+        not can_manage
+        and str(row.get("created_by_bi") or "") != account_bi
+    ):
+        return _response(
+            runtime, {"error": "task_owner_or_manager_only"}, status=403)
+    if (
+        str(row.get("assignee_kind") or "") not in AGENT_ASSIGNEE_KINDS
+        and str(row.get("destination") or "") != "agent"
+    ):
+        return _response(runtime, {"error": "task_not_queued"}, status=409)
+    if int(row.get("completed_at") or 0) > 0:
+        return _response(runtime, {"error": "task_already_done"}, status=409)
+    try:
+        current = await runtime.open(row.get("data"))
+    except Exception:
+        current = None
+    if not isinstance(current, dict):
+        return _response(runtime, {"error": "task_unavailable"}, status=500)
+    session_id = str(row.get("agent_session_id") or "")
+    # Best effort: a node that already leased the job simply finds it retired.
+    cancel = getattr(runtime, "cancel_agent_session", None)
+    if session_id and callable(cancel):
+        try:
+            await cancel(org_bi, session_id)
+        except Exception:
+            pass
+    current["assignee"] = ""
+    await runtime.d1_run(
+        "UPDATE organization_tasks SET assignee_kind='unassigned',"
+        "assignee_bi='',destination='department',agent_session_id='',"
+        "data=?,updated_at=? WHERE org_bi=? AND task_id=?",
+        await runtime.seal(current), now, org_bi, task_id,
+    )
+    await runtime.audit(
+        actor, "organization.task_returned", "organization_task", task_id,
+        details={"returned": True, "hadSession": bool(session_id)},
     )
     return await _task_response(
         runtime, await _task(runtime, org_bi, task_id), now)
@@ -1590,6 +1715,9 @@ async def handle(runtime, path):
         return await _complete(
             runtime, org_bi, account_bi, actor, task_id, row, data,
             can_manage, now)
+    if action == "return":
+        return await _return_to_list(
+            runtime, org_bi, account_bi, actor, task_id, row, can_manage, now)
     if action == "qa":
         return await _request_qa(
             runtime, org_bi, account_bi, actor, task_id, row, data,

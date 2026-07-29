@@ -8206,11 +8206,37 @@ class _OfficeMarketingTasksRuntime:
     def new_id(self):
         return _ap_uuid()
 
+    def _signed_query(self):
+        """The node/ts/sig triple a desktop puts on a key-signed task write.
+
+        Presence only — session() is what verifies it. Returning a triple here
+        also means session() will refuse to fall back to cookie auth for this
+        request, which is what makes relaxing the origin check below safe.
+        """
+        params = parse_qs(urlparse(self.request.url).query)
+        node = clean_string(
+            params.get("node", [""])[0], MAX_NODE_NAME).lower()
+        ts = clean_string(params.get("ts", [""])[0], 20)
+        sig = clean_string(params.get("sig", [""])[0], 200)
+        return (node, ts, sig) if node and ts and sig else None
+
     def same_origin(self):
-        # A successfully authenticated bearer credential is not ambient
+        # A credential the caller had to present explicitly is not ambient
         # browser authority and therefore is not vulnerable to cross-site
-        # request forgery. Browser sessions retain the strict origin check.
-        return bool(self.bot_context) or _request_same_origin(self.request)
+        # request forgery: an organization bot token, the account-session
+        # bearer, or a key-signed desktop write. Each still has to validate in
+        # session(). Browser sessions carry the session in a cookie, so they
+        # retain the strict origin check.
+        if self.bot_context or self._signed_query():
+            return True
+        header = str(
+            self.request.headers.get("authorization") or ""
+        ).strip()
+        if header.lower().startswith("bearer "):
+            presented = header[7:].strip()
+            if presented and presented != "cookie":
+                return True
+        return _request_same_origin(self.request)
 
     def query(self, name):
         try:
@@ -8260,6 +8286,13 @@ class _OfficeMarketingTasksRuntime:
                 "name": (provider or "organization") + "-bot",
                 "status": "active",
             }
+        # A desktop that authenticated silently holds its account's Ed25519 key
+        # and no session token at all, so a prompt could never open its task
+        # without this. Once a triple is on the URL it is the only credential
+        # considered: never fall through to the cookie, or a cross-site POST
+        # could borrow one by appending a junk signature.
+        if self._signed_query():
+            return await _org_task_signed_session(self.env, self.request)
         return await _account_session_record(
             self.env,
             self.request,
@@ -8578,6 +8611,28 @@ class _OfficeMarketingTasksRuntime:
 
     async def d1_run(self, sql, *args):
         return await d1_run(self.env, sql, *args)
+
+    async def cancel_agent_session(self, org_bi, session_id):
+        """Retire the node-queued bot run behind a returned task."""
+
+        session_id = clean_string(session_id, 64).strip().lower()
+        if not re.fullmatch(r"[a-f0-9-]{16,64}", session_id):
+            return False
+        now = int(Date.now())
+        await d1_run(
+            self.env,
+            "UPDATE org_agent_jobs SET status='cancelled',updated_at=? "
+            "WHERE session_id=? AND org_bi=? AND status IN ('queued','leased')",
+            now, session_id, str(org_bi or ""),
+        )
+        await d1_run(
+            self.env,
+            "UPDATE org_agent_sessions SET status='cancelled',updated_at=?,"
+            "completed_at=? WHERE session_id=? AND org_bi=? "
+            "AND status IN ('security_pending','queued','running')",
+            now, now, session_id, str(org_bi or ""),
+        )
+        return True
 
 
 class _ChatChannelsRuntime(_WorldCommunityRuntime):
@@ -10826,6 +10881,65 @@ async def _chat_channel_signed_session(env, request):
     elif CHAT_CHANNELS_RE.match(url.path):
         canonical = (
             CHAT_CHANNEL_LIST_PROOF + "\n" + node + "\n" + str(ts)
+        ).encode()
+    else:
+        return "", None
+    pubkey = await _owner_pubkey(env, node)
+    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+        return "", None
+    account_bi, record = await _account_row(env, node)
+    if (
+        not account_bi
+        or not record
+        or record.get("status") != "active"
+        or _account_kind(record) != "user"
+    ):
+        return "", None
+    return account_bi, record
+
+
+# Canonical prefixes a desktop signs with its account's Ed25519 key to open and
+# close an organization task for a prompt it just launched. A desktop that
+# authenticated silently holds keys and no session token, so without these the
+# Agents composer's Task toggle could never reach the board (adhoc #18).
+ORG_TASK_OPEN_PROOF = "forkmesh-org-task-open-v1"
+ORG_TASK_COMPLETE_PROOF = "forkmesh-org-task-complete-v1"
+ORG_TASK_COMPLETE_RE = re.compile(
+    r"^/api/tasks/([a-f0-9]{32})/complete/?$")
+ORG_TASK_COLLECTION_RE = re.compile(r"^/api/tasks/?$")
+
+
+async def _org_task_signed_session(env, request):
+    """Resolve the account behind a key-signed organization-task write.
+
+    Deliberately narrow: only opening a task and reporting one finished, the
+    two writes a desktop performs for its own agent run. Editing, deleting,
+    starting/stopping another member's timer, and QA verdicts all still require
+    a real session. Membership and every other authorization check inside the
+    task API applies to a signed caller exactly as to a session-token one.
+
+    The completion proof names the exact task it closes. The open proof can
+    only be replayed inside the five-minute skew window, and only to open one
+    more task as an account that was already entitled to open tasks.
+    """
+    if method_name(request) != "POST":
+        return "", None
+    url = urlparse(request.url)
+    params = parse_qs(url.query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return "", None
+    complete = ORG_TASK_COMPLETE_RE.match(url.path)
+    if complete:
+        canonical = (
+            ORG_TASK_COMPLETE_PROOF + "\n" + node + "\n"
+            + complete.group(1) + "\n" + str(ts)
+        ).encode()
+    elif ORG_TASK_COLLECTION_RE.match(url.path):
+        canonical = (
+            ORG_TASK_OPEN_PROOF + "\n" + node + "\n" + str(ts)
         ).encode()
     else:
         return "", None
@@ -32887,6 +33001,9 @@ async def bot_session_handler(env, request):
 # of the organization's Engineering team, and execute only after the selected
 # mirror runs a tool-free Claude Haiku safety preflight.
 ORG_AGENT_PROVIDERS = ("claude-code", "codex")
+# The task board dispatches one general bot. "agent" asks the Worker to pick
+# whichever supported runtime has an eligible mirror online right now.
+ORG_AGENT_GENERAL_PROVIDERS = ("agent", "bot", "auto")
 ORG_AGENT_MODEL_ALIASES = {
     "claude-code": {
         "haiku": "claude-haiku-4-5",
@@ -33262,6 +33379,9 @@ async def org_agent_bots_handler(env, request, org, repo):
 
     provider = clean_string(data.get("provider"), 40).strip().lower()
     prompt = clean_string(data.get("prompt"), ORG_AGENT_MAX_PROMPT).strip()
+    general_bot = provider in ORG_AGENT_GENERAL_PROVIDERS
+    if general_bot:
+        provider = ORG_AGENT_PROVIDERS[0]
     if provider not in ORG_AGENT_PROVIDERS:
         return json_response({"error": "invalid_provider"}, status=400)
     model_alias = clean_string(data.get("model"), 30).strip().lower()
@@ -33276,6 +33396,17 @@ async def org_agent_bots_handler(env, request, org, repo):
         return json_response({"error": "invalid_target_node"}, status=400)
     target_node = await _org_agent_target_mirror(
         env, context, provider, preferred_node)
+    if not target_node and general_bot:
+        # A general bot is runtime-agnostic: take the first supported runtime
+        # with a fresh, capable mirror instead of failing on one vendor.
+        for candidate in ORG_AGENT_PROVIDERS[1:]:
+            target_node = await _org_agent_target_mirror(
+                env, context, candidate, preferred_node)
+            if target_node:
+                provider = candidate
+                model = ORG_AGENT_MODEL_ALIASES.get(
+                    candidate, {}).get(model_alias) or ""
+                break
     if not target_node:
         return json_response(
             {"error": "no_eligible_agent_node"}, status=503,
@@ -33626,7 +33757,7 @@ async def repo_org_agent_job_result_handler(
             env,
             "SELECT data FROM organization_tasks "
             "WHERE org_bi=? AND task_id=? "
-            "AND assignee_kind IN ('claude','codex')",
+            "AND assignee_kind IN ('agent','bot','claude','codex')",
             row["org_bi"], private_task_id,
         )
         private_task_data = (
