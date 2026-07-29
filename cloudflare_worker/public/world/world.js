@@ -3972,7 +3972,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
         </details>
 
-        <details class="world-diagnostics world-chat-terminal${settings.debugPanel ? "" : " world-chat-terminal--debug-hidden"}" data-world-chat-terminal open>
+        <details class="world-diagnostics world-chat-terminal${settings.debugPanel ? "" : " world-chat-terminal--debug-hidden"}" data-world-chat-terminal>
           <summary aria-label="Open World chat and activity">
             <span class="world-chat-terminal-avatar" data-world-chat-terminal-avatar aria-hidden="true">
               <img data-world-chat-terminal-avatar-image alt="" hidden>
@@ -3996,6 +3996,12 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             data-world-native-chat
             data-world-default-repository="forkmesh/forkmesh"
           >
+            <div id="fullChatMessages" role="log" aria-live="polite" aria-label="Live World activity"></div>
+            <div data-dashboard-chat-scroll-rail aria-label="Chat scroll controls">
+              <button type="button" data-dashboard-chat-scroll="up" aria-label="Scroll chat up">↑</button>
+              <span data-dashboard-chat-scroll-track aria-hidden="true"><span data-dashboard-chat-scroll-thumb></span></span>
+              <button type="button" data-dashboard-chat-scroll="down" aria-label="Scroll to newest message">↓</button>
+            </div>
             <nav data-dashboard-chat-context-rail aria-label="Selected chat context">
               <button type="button" data-dashboard-chat-context-channel># general</button>
               <button type="button" data-dashboard-chat-context-source>forkmesh/forkmesh</button>
@@ -4010,12 +4016,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <button type="button" data-dashboard-chat-emote="float" title="Float">☁</button>
               <button type="button" data-dashboard-chat-emote="wobble" title="Wobble">〰</button>
               <button type="button" data-dashboard-chat-emote="sparkle" title="Sparkle">✦</button>
-            </div>
-            <div id="fullChatMessages" role="log" aria-live="polite" aria-label="Live World activity"></div>
-            <div data-dashboard-chat-scroll-rail aria-label="Chat scroll controls">
-              <button type="button" data-dashboard-chat-scroll="up" aria-label="Scroll chat up">↑</button>
-              <span data-dashboard-chat-scroll-track aria-hidden="true"><span data-dashboard-chat-scroll-thumb></span></span>
-              <button type="button" data-dashboard-chat-scroll="down" aria-label="Scroll to newest message">↓</button>
             </div>
             <div data-dashboard-chat-composer>
               <div>
@@ -4060,7 +4060,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
         </details>
 
-        <div class="world-activity-stream" data-world-activity-stream role="log" aria-live="polite" aria-label="Recent World chat, notifications, and status changes"></div>
         <div class="world-swing-panel" data-world-swing-panel hidden>
           <span>
             <strong>Swing speed</strong>
@@ -5207,15 +5206,8 @@ class ForkMeshWorld extends HTMLElement {
       this.sendWorldEmote(data.emote);
       return;
     }
-    if (data.type === "forkmesh:world-activity") {
-      if (this.activityNoticesSettled()) {
-        this.activityNotice(data.text, {
-          kind: String(data.kind || "status"),
-          sender: "ForkMesh",
-        });
-      }
-      return;
-    }
+    // System activity is already appended by the native chat controller.
+    if (data.type === "forkmesh:world-activity") return;
     if (data.type !== "forkmesh:world-chat") return;
     const text = String(data.text || "")
       .replace(/\s+/g, " ")
@@ -5302,12 +5294,6 @@ class ForkMeshWorld extends HTMLElement {
     // The relay also re-sends the tail of the room as ordinary live frames when
     // the embedded chat connects, so the join grace — not just the history
     // flag — is what keeps a fresh load from opening on a wall of old lines.
-    if (this.activityNoticesSettled()) {
-      this.activityNotice(
-        `${sender}: ${text || `Shared ${attachmentName}`}`,
-        { kind: "chat", sender },
-      );
-    }
     // Own lines never count as unread — `self` is this browser, `own` also
     // covers the signed-in account talking from another tab or device.
     if (data.self !== true && data.own !== true) this.bumpChatTerminalUnread();
@@ -5982,10 +5968,7 @@ class ForkMeshWorld extends HTMLElement {
         postJSON: (path, body, options) =>
           this.postJSON(path, body, options),
         getSession: readSession,
-        toast: (message) => {
-          this.toast(message);
-          this.notifyChatArea(message, "task");
-        },
+        toast: (message) => this.toast(message),
         onQaVerdict: ({ task, verdict }) =>
           this.recordTaskQaVerdict(task, verdict),
       });
@@ -6712,10 +6695,6 @@ class ForkMeshWorld extends HTMLElement {
       this.toast(
         `${card.title}: ${verdict}. Your result and the shared QA totals were updated.`,
       );
-      this.notifyChatArea(
-        `${card.title}: QA marked ${verdict}.`,
-        "qa",
-      );
       return true;
     } catch (error) {
       this.toast(
@@ -6862,9 +6841,6 @@ class ForkMeshWorld extends HTMLElement {
       );
       this.world?.updateBuildBoard?.(payload);
       this.toast("Build priorities saved. Priority 1 is highest.");
-      this.notifyChatArea(
-        "Todo priorities were reordered. Priority 1 is highest.",
-      );
       return true;
     } catch (error) {
       await this.refreshBuildBoard({ quiet: true });
@@ -6896,9 +6872,6 @@ class ForkMeshWorld extends HTMLElement {
       );
       this.world?.updateBuildBoard?.(payload);
       this.toast("Issue assigned to What we're building.");
-      this.notifyChatArea(
-        `${sanitizePresenceText(title, "Repository issue", 160)} was added to What we're building.`,
-      );
       return true;
     } catch (error) {
       await this.refreshBuildBoard({ quiet: true });
@@ -6932,10 +6905,6 @@ class ForkMeshWorld extends HTMLElement {
       this.world?.updateBuildBoard?.(payload);
       await this.refreshQaDeck({ quiet: true });
       this.toast(`${taskTitle} moved to Done and was added to shared QA.`);
-      this.notifyChatArea(
-        `${taskTitle} moved to Done and was added to shared QA.`,
-        "qa",
-      );
       return true;
     } catch (error) {
       await this.refreshBuildBoard({ quiet: true });
@@ -22235,42 +22204,12 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   activityNotice(message, { kind = "status", sender = "" } = {}) {
-    const stream = this.$("[data-world-activity-stream]");
     const copy = String(message || "")
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 280);
-    if (!stream || !copy) return;
-    const article = document.createElement("article");
-    article.dataset.kind = ["chat", "error", "success"].includes(kind)
-      ? kind
-      : "status";
-    const icon = document.createElement("span");
-    icon.className = "world-activity-icon";
-    const cleanSender = String(sender || "ForkMesh").trim().slice(0, 64);
-    const member = this.memberDirectory.find(
-      (entry) =>
-        String(entry?.name || "").toLowerCase() === cleanSender.toLowerCase(),
-    );
-    const publicAvatar = safeHTTPURL(member?.avatar || "");
-    if (publicAvatar) {
-      const image = document.createElement("img");
-      image.alt = "";
-      image.src = publicAvatar;
-      image.onerror = () => {
-        image.remove();
-        icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
-      };
-      icon.append(image);
-    } else {
-      icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
-    }
-    const body = document.createElement("p");
-    body.textContent = copy;
-    article.append(icon, body);
-    stream.prepend(article);
-    while (stream.childElementCount > 6) stream.lastElementChild?.remove();
-    window.setTimeout(() => article.remove(), 10_100);
+    if (!copy || kind === "chat") return;
+    this.notifyChatArea(copy, kind);
   }
 
   startTour() {

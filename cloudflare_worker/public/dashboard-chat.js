@@ -1297,7 +1297,7 @@ function mountForkMeshDashboardChat() {
       self,
     };
     rows.set(id, record);
-    row.append(buildMessageActions(record));
+    content?.append(buildMessageActions(record));
     renderReactions(id);
   }
 
@@ -1328,7 +1328,7 @@ function mountForkMeshDashboardChat() {
     // pre-built dashboard/tailwind.css, so the reveal is hand-written CSS).
     actions.className = "chat-message-actions ml-auto flex shrink-0 items-center gap-1";
     actions.append(
-      messageActionButton("React", (event) =>
+      messageActionButton("☺", (event) =>
         showReactionPicker(record, event.currentTarget), {
         ariaLabel: "Add reaction",
       }),

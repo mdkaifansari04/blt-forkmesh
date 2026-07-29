@@ -2714,7 +2714,7 @@ def test_forkbot_mention_excites_the_droid_with_echo_screen_and_thinking_dots():
     assert APP.count("this.world?.exciteForkbot?.(") == 1
 
 
-def test_activity_stream_stays_quiet_through_the_page_load_grace():
+def test_unified_chat_stream_does_not_duplicate_replayed_activity():
     # adhoc #25: a fresh load opened on a stack of activity cards — the chat
     # backlog the relay re-sends on connect, the first notification/event read,
     # and any mirror doorbell that landed while the scene was booting. Those
@@ -2730,13 +2730,16 @@ def test_activity_stream_stays_quiet_through_the_page_load_grace():
         "    return Date.now() >= this.activityNoticesEnabledAt;\n"
         "  }"
     ) in APP
-    # Incoming chat lines (including live re-sends of the room's tail, which
-    # carry no history flag) and relayed activity notices are both gated.
+    # Native chat already owns both message and system rows. The World accepts
+    # those signals for avatar/unread state without drawing a second overlay.
     handler = APP[
         APP.index("  handleWorldChatMessage = (event) => {"):
         APP.index("\n  };", APP.index("  handleWorldChatMessage = (event) => {"))
     ]
-    assert handler.count("if (this.activityNoticesSettled()) {") == 2
+    assert (
+        'if (data.type === "forkmesh:world-activity") return;' in handler
+    )
+    assert "this.activityNotice(" not in handler
     # The first notification/event reads still seed the seen sets, so nothing
     # already waiting at load is announced on a later poll either.
     announce = APP[

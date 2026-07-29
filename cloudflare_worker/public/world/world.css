@@ -8246,7 +8246,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   bottom: max(12px, env(safe-area-inset-bottom));
   left: auto;
   width: 56px;
-  border: 0;
+  border: 0 !important;
+  outline: 0;
   border-radius: 28px;
   background: transparent !important;
   box-shadow: none;
@@ -8299,18 +8300,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 .world-chat-terminal[open] > summary {
-  position: absolute;
-  z-index: 8;
-  top: 10px;
-  left: 10px;
-  width: 44px;
-  min-height: 44px;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  padding: 3px;
-  box-shadow: none;
-  backdrop-filter: none;
+  display: none;
 }
 
 .world-chat-terminal:is(:hover, :focus-within) > .world-chat-terminal-body {
@@ -8410,8 +8400,11 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 /* Native World chat: each surface floats independently over the scene. */
 .world-chat-terminal[open] {
   width: min(600px, calc(100vw - 24px));
+  border: 0 !important;
+  outline: 0 !important;
   background: transparent !important;
   box-shadow: none !important;
+  backdrop-filter: none !important;
 }
 
 .world-chat-terminal[open] .world-chat-terminal-body {
@@ -8423,7 +8416,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   display: grid;
   height: min(76vh, 700px);
   min-height: 430px;
-  grid-template-rows: auto auto minmax(150px, 1fr) auto;
+  grid-template-rows: minmax(150px, 1fr) auto auto auto;
   gap: 8px;
   overflow: visible;
   border: 0 !important;
@@ -8436,7 +8429,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   display: flex;
   min-width: 0;
   gap: 6px;
-  padding-left: 62px;
+  padding-inline: 8px 52px;
 }
 
 .world-native-chat [data-dashboard-chat-context-rail] {
@@ -8462,10 +8455,10 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 .world-native-chat [data-dashboard-chat-emotes] button {
-  width: 34px;
-  min-height: 34px;
+  width: 42px;
+  min-height: 42px;
   padding: 0;
-  font-size: 0.85rem;
+  font-size: 1.1rem;
 }
 
 .world-native-chat #fullChatMessages {
@@ -8485,7 +8478,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-native-chat .chat-message-row {
   display: grid;
   width: 100%;
-  grid-template-columns: 32px minmax(0, 1fr) auto;
+  grid-template-columns: 32px minmax(0, 1fr);
   align-items: start;
   gap: 8px;
   margin: 0 !important;
@@ -8546,18 +8539,45 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   gap: 4px;
 }
 
+.world-native-chat .chat-message-actions {
+  justify-content: flex-end;
+  margin-top: 7px;
+}
+
 .world-native-chat .chat-message-actions button {
   min-height: 25px;
   padding: 3px 7px;
   font-size: 0.6rem;
 }
 
+.world-native-chat .chat-message-actions button:first-child {
+  width: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-color: rgb(139 148 158 / 0.4);
+  background: transparent;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.world-native-chat .chat-system-bubble {
+  align-self: stretch;
+  margin: 0 0 0 40px;
+  border: 1px solid rgb(139 148 158 / 0.38);
+  border-radius: 14px;
+  background: rgb(22 27 34 / 0.5);
+  padding: 9px 12px;
+  color: #c9d1d9;
+  font: 500 0.72rem/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  backdrop-filter: blur(16px) saturate(1.2);
+}
+
 .world-native-chat [data-dashboard-chat-scroll-rail] {
   position: absolute;
   z-index: 5;
-  top: 105px;
+  top: 8px;
   right: 8px;
-  bottom: 174px;
+  bottom: 260px;
   display: grid;
   width: 38px;
   grid-template-rows: auto 1fr auto;
@@ -8705,7 +8725,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
   .world-native-chat [data-dashboard-chat-context-rail],
   .world-native-chat [data-dashboard-chat-emotes] {
-    padding-left: 56px;
+    padding-inline: 4px 46px;
     overflow-x: auto;
     flex-wrap: nowrap;
   }

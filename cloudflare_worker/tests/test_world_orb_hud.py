@@ -75,9 +75,10 @@ def test_todo_actions_are_bridged_into_the_chat_transcript():
     assert 'type: "forkmesh:chat-notification"' in WORLD
     assert 'data.type === "forkmesh:chat-ready"' in WORLD
     assert "this.chatTaskNotifications" in WORLD
-    assert 'this.notifyChatArea(message, "task")' in WORLD
-    assert '"Todo priorities were reordered.' in WORLD
-    assert "was added to What we're building." in WORLD
+    assert "this.notifyChatArea(copy, kind)" in WORLD
+    assert 'toast: (message) => this.toast(message)' in WORLD
+    assert '"Build priorities saved.' in WORLD
+    assert '"Issue assigned to What we' in WORLD
     assert "moved to Done and was added to shared QA." in WORLD
 
 
@@ -98,14 +99,32 @@ def test_world_embed_has_separate_chat_and_task_buttons_and_routing_step():
     assert "void runFullComposerAction(inputEl, attachmentControl)" in CHAT
 
 
-def test_chat_and_status_updates_share_a_ten_second_activity_stream():
-    assert "data-world-activity-stream" in WORLD
+def test_chat_and_status_updates_share_the_native_transcript():
+    assert "data-world-activity-stream" not in WORLD
     assert 'data.type === "forkmesh:world-activity"' in WORLD
-    assert "this.activityNotice(" in WORLD
-    assert "window.setTimeout(() => article.remove(), 10_100)" in WORLD
+    assert "this.notifyChatArea(copy, kind)" in WORLD
+    assert 'type: "forkmesh:chat-notification"' in WORLD
     assert "emitWorldActivity(text, \"status\")" in CHAT
-    assert ".world-activity-stream article" in CSS
-    assert "world-activity-out 420ms ease 9.55s forwards" in CSS
+    assert "appendSystem(text, false)" in CHAT
+
+
+def test_native_chat_starts_closed_and_floats_without_open_launcher_shell():
+    terminal = WORLD[
+        WORLD.index('<details class="world-diagnostics world-chat-terminal'):
+        WORLD.index("</details>", WORLD.index("data-world-chat-terminal"))
+    ]
+    assert "data-world-chat-terminal open" not in terminal
+    assert terminal.index('id="fullChatMessages"') < terminal.index(
+        "data-dashboard-chat-context-rail",
+    )
+    assert terminal.index("data-dashboard-chat-context-rail") < terminal.index(
+        "data-dashboard-chat-composer",
+    )
+    assert ".world-chat-terminal[open] > summary" in CSS
+    assert "display: none;" in CSS
+    assert "border: 0 !important;" in CSS
+    assert 'messageActionButton("☺"' in CHAT
+    assert "content?.append(buildMessageActions(record));" in CHAT
 
 
 def test_new_hud_work_is_visible_as_a_completed_build_board_item():
