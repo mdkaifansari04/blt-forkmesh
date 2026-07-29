@@ -44,8 +44,7 @@ const OUTFIT_COLOR_HEX = Object.fromEntries(
 const OUTFIT_STYLE_IDS = OUTFIT_STYLE_OPTIONS.map((option) => option.id);
 
 const WORLD_RADIUS = 620;
-const CONTINUOUS_CITY_RADIUS_X = 260;
-const CONTINUOUS_CITY_RADIUS_Z = 365;
+const CONTINUOUS_CITY_RADIUS = 365;
 const CONTINUOUS_CITY_CENTER_Z = -45;
 const BEACH_CENTER_X = 520;
 const BEACH_CENTER_Z = -80;
@@ -64,15 +63,11 @@ const LEADERBOARD_ISLAND_CENTER_X = -130;
 const LEADERBOARD_CONNECTION_MIN_X = -103;
 const LEADERBOARD_CONNECTION_MAX_X = -78;
 const MEMBER_ISLAND_CENTER_Z = 130;
-const MEMBER_CONNECTION_MIN_Z = 78;
-const MEMBER_CONNECTION_MAX_Z = 103;
-const OFFICE_CONNECTION_MIN_Z = -116;
-const OFFICE_CONNECTION_MAX_Z = -78;
+const MEMBER_PATH_END_Z = MEMBER_ISLAND_CENTER_Z - 21;
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
 const PLAYER_SPEED = 6.4;
 const PLAYER_MAX_SPEED = 13;
-const PLAYER_ACCELERATION = 5.4;
 // Holding either Shift key is an explicit sprint: fast enough to cross the
 // World quickly, while still using the ordinary collision and presence path.
 const PLAYER_SPRINT_MULTIPLIER = 2.6;
@@ -242,14 +237,13 @@ function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
   const pz = Number(z);
   const margin = Math.max(0, Number(radius) || 0);
   if (!Number.isFinite(px) || !Number.isFinite(pz)) return false;
-  const cityRadiusX = CONTINUOUS_CITY_RADIUS_X - margin;
-  const cityRadiusZ = CONTINUOUS_CITY_RADIUS_Z - margin;
+  const cityRadius = CONTINUOUS_CITY_RADIUS - margin;
   if (
-    cityRadiusX > 0 &&
-    cityRadiusZ > 0 &&
-    ((px - WORLD_BIKE_LANE_CENTER_X) / cityRadiusX) ** 2 +
-      ((pz - CONTINUOUS_CITY_CENTER_Z) / cityRadiusZ) ** 2 <=
-      1
+    cityRadius > 0 &&
+    Math.hypot(
+      px - WORLD_BIKE_LANE_CENTER_X,
+      pz - CONTINUOUS_CITY_CENTER_Z,
+    ) <= cityRadius
   ) {
     return true;
   }
@@ -265,6 +259,34 @@ function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
     BEACH_RADIUS - margin
   );
 }
+
+export function circularRideCameraYaw(
+  currentYaw,
+  previousHeading,
+  nextHeading,
+) {
+  const yaw = Number(currentYaw);
+  const previous = Number(previousHeading);
+  const next = Number(nextHeading);
+  if (
+    !Number.isFinite(yaw) ||
+    !Number.isFinite(previous) ||
+    !Number.isFinite(next)
+  ) {
+    return Number.isFinite(yaw)
+      ? Math.atan2(Math.sin(yaw), Math.cos(yaw))
+      : 0;
+  }
+  const headingDelta = Math.atan2(
+    Math.sin(next - previous),
+    Math.cos(next - previous),
+  );
+  return Math.atan2(
+    Math.sin(yaw + headingDelta),
+    Math.cos(yaw + headingDelta),
+  );
+}
+
 const MOVEMENT_KEYS = new Set([
   "KeyW",
   "KeyA",
@@ -2168,6 +2190,207 @@ function leaderboardStatValue(board = {}, row = {}) {
   return String(row.value ?? "—").slice(0, 18).toUpperCase();
 }
 
+function leaderboardRowIsSpecial(board = {}, row = {}, index = -1) {
+  const role = String(row?.role || row?.permission || "").toLowerCase();
+  const status = String(
+    row?.status || row?.health || row?.state || "",
+  ).toLowerCase();
+  const boardId = String(board?.id || "").toLowerCase();
+  return (
+    row?.special === true ||
+    row?.featured === true ||
+    row?.verified === true ||
+    row?.isAdmin === true ||
+    row?.is_admin === true ||
+    ["owner", "admin", "maintainer"].includes(role) ||
+    ((boardId.includes("node") || boardId === "uptime") &&
+      ["online", "live", "healthy", "serving"].includes(status)) ||
+    index === 0
+  );
+}
+
+function leaderboardGridBoardDescriptors(state = {}) {
+  const boardById =
+    state.boards instanceof Map ? state.boards : new Map();
+  const active = rankedActiveLeaderboardMembers(state.members).slice(0, 5);
+  const referrals = rankedReferralRows(state.referralRows).slice(0, 5);
+  const referrers = rankedSiteReferrerRows(state.siteRows).slice(0, 5);
+  const descriptors = [
+    {
+      id: "active-members",
+      title: "ACTIVE MEMBERS",
+      subtitle: "TOTAL ACTIVE TIME",
+      accent: "#77d9ff",
+      entries: active.map((member) => ({
+        name: String(member.name || "member"),
+        value: activeDurationLabel(member.totalActiveMs ?? member.activeMs),
+        source: member,
+      })),
+    },
+    {
+      id: "referrals",
+      title: "REFERRALS",
+      subtitle: "SIGNUPS · CLICKS",
+      accent: "#9ef7c6",
+      entries: referrals.map((row) => ({
+        name: String(row.name || "member"),
+        value: `${Number(row.signups) || 0} JOIN · ${Number(row.clicks) || 0} CLICK`,
+        source: row,
+      })),
+    },
+    {
+      id: "http-referrers",
+      title: "HTTP REFERRERS",
+      subtitle: "OBSERVED VISITS",
+      accent: "#77d9ff",
+      entries: referrers.map((row) => ({
+        name: String(row.host || "site"),
+        value: `${Number(row.visits) || 0} VISITS`,
+        source: row,
+      })),
+    },
+  ];
+  const seen = new Set(descriptors.map((board) => board.id));
+  [
+    ...WORLD_LEADERBOARD_BOARD_STUBS,
+    ...boardById.values(),
+  ].forEach((fallback) => {
+    const id = String(fallback?.id || "").trim();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    const board = boardById.get(id) || fallback;
+    descriptors.push({
+      id,
+      title: String(board.title || id).toUpperCase(),
+      subtitle: String(board.subtitle || "LIVE PUBLIC RANKINGS").toUpperCase(),
+      accent:
+        id.includes("funds") || id === "largest" ? "#f7c96b" : "#9ef7c6",
+      entries: (Array.isArray(board.rows) ? board.rows : [])
+        .slice(0, 5)
+        .map((row) => ({
+          name: String(row?.name || row?.host || "participant"),
+          value: leaderboardStatValue(board, row),
+          source: row,
+        })),
+      source: board,
+    });
+  });
+  return descriptors.slice(0, 25);
+}
+
+function leaderboardGridTexture(THREE, state = {}) {
+  const boards = leaderboardGridBoardDescriptors(state);
+  return canvasTexture(THREE, 2048, 2048, (context) => {
+    const width = 2048;
+    const height = 2048;
+    context.clearRect(0, 0, width, height);
+    roundedRect(context, 7, 7, width - 14, height - 14, 28);
+    context.fillStyle = "rgba(6,17,14,0.98)";
+    context.fill();
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 10;
+    context.stroke();
+    context.textBaseline = "middle";
+    context.fillStyle = "#f1fff6";
+    context.font = '800 62px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText("FORKMESH LEADERBOARDS", 48, 62);
+    context.fillStyle = "#77d9ff";
+    context.font = '600 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "5 × 5 LIVE GRID · EACH CATEGORY LISTS MEMBERS OR NODES VERTICALLY",
+      50,
+      116,
+    );
+    context.fillStyle = "#f7c96b";
+    context.textAlign = "right";
+    context.fillText("★ SPECIAL USER / LIVE NODE", width - 48, 116);
+    context.textAlign = "left";
+    const gridLeft = 38;
+    const gridTop = 154;
+    const gridWidth = width - gridLeft * 2;
+    const gridHeight = height - gridTop - 38;
+    const cellWidth = gridWidth / 5;
+    const cellHeight = gridHeight / 5;
+    for (let index = 0; index < 25; index += 1) {
+      const column = index % 5;
+      const row = Math.floor(index / 5);
+      const x = gridLeft + column * cellWidth;
+      const y = gridTop + row * cellHeight;
+      const board = boards[index];
+      context.fillStyle =
+        (column + row) % 2 === 0
+          ? "rgba(21,58,48,0.45)"
+          : "rgba(10,31,26,0.72)";
+      context.fillRect(x + 4, y + 4, cellWidth - 8, cellHeight - 8);
+      context.strokeStyle = board?.accent || "rgba(99,125,113,0.45)";
+      context.lineWidth = board ? 4 : 2;
+      context.strokeRect(x + 4, y + 4, cellWidth - 8, cellHeight - 8);
+      if (!board) {
+        context.fillStyle = "#60756b";
+        context.font = '650 20px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("OPEN CATEGORY", x + 22, y + 38);
+        continue;
+      }
+      context.fillStyle = board.accent;
+      context.fillRect(x + 4, y + 4, 8, cellHeight - 8);
+      context.fillStyle = "#f1fff6";
+      context.font = '800 24px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        String(board.title).slice(0, 25),
+        x + 24,
+        y + 34,
+        cellWidth - 44,
+      );
+      context.fillStyle = board.accent;
+      context.font = '600 14px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        String(board.subtitle).slice(0, 34),
+        x + 24,
+        y + 66,
+        cellWidth - 44,
+      );
+      const entries = board.entries.length
+        ? board.entries
+        : [{ name: "waiting for public data", value: "—", source: {} }];
+      entries.slice(0, 5).forEach((entry, entryIndex) => {
+        const entryY = y + 106 + entryIndex * 47;
+        const special = leaderboardRowIsSpecial(
+          board.source || board,
+          entry.source,
+          entryIndex,
+        );
+        if (special) {
+          context.fillStyle = "rgba(247,201,107,0.13)";
+          context.fillRect(
+            x + 18,
+            entryY - 20,
+            cellWidth - 38,
+            40,
+          );
+        }
+        context.fillStyle = special ? "#f7c96b" : "#d9ffea";
+        context.font = '750 17px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(
+          `${special ? "★" : entryIndex + 1 + "."} ${String(entry.name).slice(0, 16)}`,
+          x + 24,
+          entryY,
+          cellWidth * 0.55,
+        );
+        context.fillStyle = special ? "#ffe29b" : "#86a99c";
+        context.font = '600 14px "ForkMesh Mono", ui-monospace, monospace';
+        context.textAlign = "right";
+        context.fillText(
+          String(entry.value || "—").toUpperCase().slice(0, 18),
+          x + cellWidth - 20,
+          entryY,
+          cellWidth * 0.4,
+        );
+        context.textAlign = "left";
+      });
+    }
+  });
+}
+
 function leaderboardStatTexture(THREE, board = {}) {
   const rows = Array.isArray(board.rows) ? board.rows.slice(0, 5) : [];
   return canvasTexture(THREE, 768, 512, (context) => {
@@ -2826,6 +3049,14 @@ function officeReclaimedWoodTexture(THREE) {
 // the active implementation queue in a fixed, readable grid. Keep the ordering
 // stable so a repaint never makes cards jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
+  { key: "task:engineering-debug-panel", task: "Engineering live debug control panel", detail: "A full in-room panel samples FPS, longest frame, draw calls, triangles, geometries, textures, GPU programs, animation callbacks, interactive targets, members, heap, and pixel ratio with green, orange, or red optimization states.", estimate: "implemented · focused QA", done: true },
+  { key: "task:leaderboard-grid", task: "Raised 5×5 overview + restored board circle", detail: "Every public leaderboard and statistic occupies its own vertical cell in one square overview; special users and live nodes are highlighted, the individual Active, Referral, HTTP Referrer, and per-stat boards ring the district, and geometry-derived clearance keeps every assembly above terrain.", estimate: "verified · ready for QA", done: true },
+  { key: "task:reward-node-download", task: "Front SOL sign + start-node action", detail: "Move the treasury QR to the front midpoint of the first node ring and add a small Start a node control that opens the desktop download page in a new window.", estimate: "implemented · focused QA", done: true },
+  { key: "task:world-member-path", task: "One path to the Members Circle", detail: "The overlapping south path and member promenade are now one concrete-brick route terminating at a fire-marked Members Circle sign.", estimate: "implemented · focused QA", done: true },
+  { key: "task:world-office-path", task: "One path to the Office", detail: "The north town route, elevated bridge, and Office approach now meet edge-to-edge at one width; the stacked land promenade and doubled slabs are removed.", estimate: "implemented · focused QA", done: true },
+  { key: "task:world-circular-foundation", task: "Circular World foundation", detail: "The continuous visible grass and collision boundary now use one circular radius centered on the circular bike lane.", estimate: "implemented · focused QA", done: true },
+  { key: "task:world-frame-hot-loop", task: "Instant movement and lean frame loop", detail: "Keyboard input reaches selected speed on its first frame, camera/movement scratch values are reused, and non-motion DOM/proximity work is cadence bounded while WebGL stays full-rate.", estimate: "implemented · focused QA", done: true },
+  { key: "task:world-chat-composer", task: "Primer chat and work composer", detail: "DEBUG occupies the lower-left and dark Primer chat reaches the bottom-right. Channel security and connection state live in the header; its pinned multiline composer selects a channel and repository, then sends chat, signs an issue, or assigns an Engineering agent.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-primer-hud", task: "Primer-styled compact World HUD", detail: "The compact and expanded right-side navigation rail now uses GitHub Primer canvas, border, spacing, button, focus, hover, and selected-state primitives.", estimate: "implemented · focused QA", done: true },
   { key: "task:web-pull-workbench", task: "Full web Issue and PR workbench", detail: "Record clicks now open canonical same-origin web pages. Still open: proactive conflict/check readiness and a signed mirror capability for auditable update-from-main before protected merge.", estimate: "record routing done · lifecycle active", done: false },
   { key: "task:session-audit", task: "Audit today’s requested work", detail: "Reconciled the full request history against code, tests, QA, and the build board; restored missing social-frame, repository-orbit, signage, and exact-view tracking while keeping partial and external work open.", estimate: "audit complete · open work retained", done: true },
@@ -3351,64 +3582,6 @@ function worldQaArrowTexture(THREE, direction, label, color) {
     context.fillText(direction, 150, 128);
     context.font = '900 40px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(label, 340, 128);
-  });
-}
-
-function worldRepoIssuesTexture(THREE, issues = []) {
-  const visible = (Array.isArray(issues) ? issues : []).slice(0, 12);
-  return canvasTexture(THREE, 1800, 1120, (context) => {
-    context.fillStyle = "#315b52";
-    context.fillRect(0, 0, 1800, 1120);
-    context.fillStyle = "#effff7";
-    context.fillRect(34, 24, 1732, 100);
-    context.fillStyle = "#13241e";
-    context.textAlign = "center";
-    context.font =
-      '700 60px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
-    context.fillText("FORKMESH · OPEN REPO ISSUES", 900, 90);
-    context.font =
-      '700 35px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
-    context.fillText("DRAG AN ISSUE ONTO THE BUILD BOARD TO ASSIGN IT", 900, 158);
-    if (!visible.length) {
-      context.fillStyle = "#c9e8dc";
-      context.font = '600 45px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("NO OPEN ISSUES AVAILABLE", 900, 330);
-      return;
-    }
-    visible.forEach((issue, index) => {
-      const column = index % 3;
-      const row = Math.floor(index / 3);
-      const x = 58 + column * 574;
-      const y = 200 + row * 218;
-      context.save();
-      context.translate(x + 265, y + 94);
-      context.fillStyle = issue.assigned ? "#b8c7c0" : "#fff39a";
-      context.shadowColor = "rgba(13,31,25,0.38)";
-      context.shadowBlur = 12;
-      context.fillRect(-265, -94, 530, 188);
-      context.shadowColor = "transparent";
-      context.fillStyle = "#29221d";
-      context.textAlign = "left";
-      context.font =
-        '800 32px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
-      context.fillText(
-        `#${Number(issue.number) || "?"}${issue.assigned ? " · ASSIGNED" : ""}`,
-        -245,
-        -70,
-      );
-      context.font =
-        '700 34px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
-      wrapCanvasText(
-        context,
-        String(issue.title || "Untitled issue"),
-        -245,
-        -28,
-        490,
-        36,
-        3,
-      );
-      context.restore();
-    });
   });
 }
 
@@ -6765,6 +6938,116 @@ function createInfrastructureConsoleDisplay(THREE, interactive) {
   return display;
 }
 
+function engineeringDebugTexture(THREE, snapshot = {}) {
+  const metrics = Array.isArray(snapshot.metrics) ? snapshot.metrics : [];
+  const colorFor = (status) =>
+    status === "critical"
+      ? "#ff7189"
+      : status === "warning"
+        ? "#f7c96b"
+        : "#4bbf73";
+  return canvasTexture(THREE, 1600, 1000, (context) => {
+    context.fillStyle = "#06110e";
+    context.fillRect(0, 0, 1600, 1000);
+    context.strokeStyle = colorFor(snapshot.overall);
+    context.lineWidth = 16;
+    context.strokeRect(10, 10, 1580, 980);
+    context.fillStyle = "#effff6";
+    context.font = '800 60px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("ENGINEERING · LIVE DEBUG CONTROL", 52, 78);
+    context.fillStyle = "#80bda0";
+    context.font = '650 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "LOCAL RENDERER + LOOP TELEMETRY · GREEN HEALTHY · ORANGE OPTIMIZE · RED ACT",
+      54,
+      126,
+    );
+    context.strokeStyle = "#21443a";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(54, 154);
+    context.lineTo(1546, 154);
+    context.stroke();
+    metrics.slice(0, 12).forEach((metric, index) => {
+      const column = index % 2;
+      const row = Math.floor(index / 2);
+      const x = 54 + column * 758;
+      const y = 198 + row * 120;
+      const statusColor = colorFor(metric.status);
+      context.fillStyle =
+        index % 4 < 2
+          ? "rgba(19,49,41,0.72)"
+          : "rgba(10,31,26,0.72)";
+      context.fillRect(x, y - 25, 720, 96);
+      context.fillStyle = statusColor;
+      context.beginPath();
+      context.arc(x + 24, y + 20, 12, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = "#a9c7bb";
+      context.font = '700 23px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(String(metric.label || "METRIC"), x + 52, y);
+      context.fillStyle = statusColor;
+      context.font = '850 31px "ForkMesh Mono", ui-monospace, monospace';
+      context.textAlign = "right";
+      context.fillText(String(metric.value ?? "—"), x + 690, y + 3, 240);
+      context.textAlign = "left";
+      context.fillStyle = "#6f9185";
+      context.font = '550 18px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        String(metric.note || "bounded local sample").slice(0, 54),
+        x + 52,
+        y + 39,
+        625,
+      );
+    });
+    context.strokeStyle = "#21443a";
+    context.beginPath();
+    context.moveTo(54, 900);
+    context.lineTo(1546, 900);
+    context.stroke();
+    context.fillStyle = "#80bda0";
+    context.font = '650 21px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      `SAMPLED ${String(snapshot.sampledAt || "NOW")} · LOCAL ONLY · NO PROFILING DATA UPLOADED`,
+      54,
+      944,
+    );
+  });
+}
+
+function createEngineeringDebugPanel(THREE) {
+  const panel = new THREE.Group();
+  panel.name = "forkmesh-engineering-live-debug-panel";
+  panel.userData.officeFloorId = "engineering";
+  const frame = new THREE.Mesh(
+    new THREE.BoxGeometry(25.4, 12.8, 0.45),
+    makeMaterial(THREE, "#16372f", {
+      emissive: "#174c3c",
+      emissiveIntensity: 0.42,
+      metalness: 0.58,
+      roughness: 0.34,
+    }),
+  );
+  frame.position.y = 7.25;
+  panel.add(frame);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(24.7, 12.1),
+    new THREE.MeshBasicMaterial({
+      map: engineeringDebugTexture(THREE, {
+        overall: "warning",
+        metrics: [],
+        sampledAt: "STARTING",
+      }),
+      toneMapped: false,
+    }),
+  );
+  face.name = "forkmesh-engineering-live-debug-face";
+  face.position.set(0, 7.25, 0.24);
+  panel.add(face);
+  panel.userData.face = face;
+  return panel;
+}
+
 function formatCapacityBytes(bytes) {
   const value = Number(bytes);
   if (!Number.isFinite(value) || value <= 0) return "0 B";
@@ -6918,7 +7201,7 @@ function concreteBrickMaterial(THREE) {
 
 const START_HERE_STEPS = Object.freeze([
   Object.freeze({ id: "start", label: "Find yourself on this map" }),
-  Object.freeze({ id: "people", label: "Meet people at the users circle" }),
+  Object.freeze({ id: "people", label: "Meet people at the Members Circle" }),
   Object.freeze({ id: "nodes", label: "Inspect the centered mirror nodes" }),
   Object.freeze({ id: "repositories", label: "Open a repository portal" }),
   Object.freeze({ id: "office", label: "Walk into the Office" }),
@@ -7035,9 +7318,9 @@ function createTownLandscape(THREE) {
 
   [
     ["east-repositories", [16, 0], [88, 0], 8.4],
-    ["north-office", [0, -16], [0, -88], 8.4],
+    ["north-office", [0, -16], [0, OFFICE_BRIDGE_START_Z], OFFICE_BRIDGE_WIDTH],
     ["west-billboards", [-16, 0], [-88, 0], 8.4],
-    ["south-members", [0, 16], [0, 88], 8.4],
+    ["south-members", [0, 16], [0, MEMBER_PATH_END_Z], 8.4],
   ].forEach(([id, start, end, width]) => {
     const edge = createLandscapePath(
       THREE,
@@ -7306,6 +7589,35 @@ function createRewardTreasurySign(THREE) {
     faces.push(face);
   }
   sign.userData.treasuryFaces = faces;
+  const nodeButton = new THREE.Mesh(
+    new THREE.BoxGeometry(1.5, 0.92, 0.18),
+    makeMaterial(THREE, "#1f6f46", {
+      metalness: 0.16,
+      roughness: 0.46,
+    }),
+  );
+  nodeButton.name = "reward-treasury-start-node-button";
+  nodeButton.position.set(1.68, 2.18, 0);
+  nodeButton.userData.interactive = "start-node-download";
+  sign.add(nodeButton);
+  for (const facing of [1, -1]) {
+    const face = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.36, 0.78),
+      new THREE.MeshBasicMaterial({
+        map: wordTexture(
+          THREE,
+          "START A NODE",
+          "DOWNLOAD APP  ↗",
+          "#9ef7c6",
+        ),
+        toneMapped: false,
+      }),
+    );
+    face.position.set(0, 0, facing * 0.095);
+    face.rotation.y = facing > 0 ? 0 : Math.PI;
+    face.userData.interactive = "start-node-download";
+    nodeButton.add(face);
+  }
   sign.userData.treasurySignature = "";
   return sign;
 }
@@ -7411,9 +7723,9 @@ function createFountain(THREE, position, interactive, animated) {
   group.add(light);
 
   const treasurySign = createRewardTreasurySign(THREE);
-  // The users circle sits due south (+Z). Keep the SOL board on the same
-  // central perimeter as the first node ring and face it toward those users.
-  placeSectionPlaque(group, treasurySign, position, 9.2);
+  // The Members Circle sits due south (+Z). Put the SOL board at the front
+  // midpoint of the first 10.8-unit node ring and face it toward those users.
+  treasurySign.position.set(0, 0, 10.8);
   treasurySign.rotation.y = 0;
   group.userData.treasurySign = treasurySign;
 
@@ -7661,24 +7973,58 @@ function repositoryAgentTerminalTexture(THREE, task = {}) {
 
 function createRepositoryAgentTerminal(THREE, task = {}) {
   const group = new THREE.Group();
-  group.name = `repository-agent-terminal:${String(task.id || "session")}`;
+  group.name = `repository-agent-robot-terminal:${String(task.id || "session")}`;
   const provider =
     String(task.provider || "").toUpperCase() === "CODEX"
       ? "codex"
       : "claude";
   const accent = provider === "codex" ? "#8fffe0" : "#ef9f74";
+  const bodyMaterial = makeMaterial(THREE, "#10251f", {
+    emissive: provider === "codex" ? "#123c32" : "#3c271f",
+    emissiveIntensity: 0.34,
+    metalness: 0.34,
+    roughness: 0.48,
+  });
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(1.34, 0.42, 0.9),
+    bodyMaterial,
+  );
+  body.name = `repository-agent-robot-body:${String(task.id || "")}`;
+  body.position.set(0, 0.3, 0);
+  group.add(body);
+  for (const side of [-1, 1]) {
+    const wheel = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.23, 0.23, 0.14, 12),
+      makeMaterial(THREE, "#17201e", {
+        metalness: 0.46,
+        roughness: 0.64,
+      }),
+    );
+    wheel.name = `repository-agent-robot-wheel:${side}`;
+    wheel.rotation.z = Math.PI / 2;
+    wheel.position.set(side * 0.72, 0.24, 0.08);
+    group.add(wheel);
+    const arm = new THREE.Mesh(
+      new THREE.BoxGeometry(0.16, 0.16, 0.58),
+      bodyMaterial,
+    );
+    arm.name = `repository-agent-robot-arm:${side}`;
+    arm.position.set(side * 0.76, 0.42, -0.02);
+    group.add(arm);
+  }
   const screenShell = new THREE.Mesh(
-    new THREE.BoxGeometry(1.62, 1.18, 0.08),
+    new THREE.BoxGeometry(1.48, 0.1, 1.08),
     makeMaterial(THREE, "#0b1714", {
       emissive: "#102820",
       emissiveIntensity: 0.3,
       metalness: 0.24,
     }),
   );
-  screenShell.position.set(0, 0.72, 0);
+  screenShell.name = `repository-agent-robot-screen-shell:${String(task.id || "")}`;
+  screenShell.position.set(0, 0.61, 0);
   group.add(screenShell);
   const screen = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.48, 1.04),
+    new THREE.PlaneGeometry(1.34, 0.94),
     new THREE.MeshBasicMaterial({
       map: repositoryAgentTerminalTexture(THREE, task),
       side: THREE.DoubleSide,
@@ -7686,7 +8032,10 @@ function createRepositoryAgentTerminal(THREE, task = {}) {
     }),
   );
   screen.name = `repository-agent-terminal-screen:${String(task.id || "")}`;
-  screen.position.set(0, 0.72, 0.045);
+  // The terminal is the robot's upward-facing face. Visitors can read it from
+  // above instead of looking through a row of upright slabs.
+  screen.rotation.x = -Math.PI / 2;
+  screen.position.set(0, 0.665, 0);
   screen.userData.landmark = "repositories";
   screen.userData.agentBotChat = provider;
   screen.userData.repositoryAgentSession = {
@@ -7698,16 +8047,58 @@ function createRepositoryAgentTerminal(THREE, task = {}) {
   };
   group.add(screen);
   const status = new THREE.Mesh(
-    new THREE.BoxGeometry(1.62, 0.045, 0.1),
+    new THREE.BoxGeometry(1.48, 0.025, 0.07),
     makeMaterial(THREE, accent, {
       emissive: accent,
       emissiveIntensity: 0.9,
       roughness: 0.44,
     }),
   );
-  status.position.set(0, 1.31, 0);
+  status.position.set(0, 0.68, -0.52);
   group.add(status);
+  const viewButton = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.3, 0.18),
+    new THREE.MeshBasicMaterial({
+      map: canvasTexture(THREE, 256, 144, (context) => {
+        context.clearRect(0, 0, 256, 144);
+        roundedRect(context, 5, 5, 246, 134, 24);
+        context.fillStyle = "#071b17";
+        context.fill();
+        context.lineWidth = 9;
+        context.strokeStyle = accent;
+        context.stroke();
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        context.fillStyle = accent;
+        context.font = '900 54px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("1P", 128, 76);
+      }),
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  viewButton.name =
+    `repository-agent-terminal-first-person:${String(task.id || "")}`;
+  viewButton.rotation.x = -Math.PI / 2;
+  viewButton.position.set(0.48, 0.69, 0.37);
+  viewButton.renderOrder = 48;
+  const viewingPoint = new THREE.Object3D();
+  viewingPoint.name =
+    `repository-agent-terminal-viewing-point:${String(task.id || "")}`;
+  viewingPoint.position.set(0, 0, 1.58);
+  group.add(viewingPoint);
+  viewButton.userData.landmark = "repositories";
+  viewButton.userData.repositoryAgentViewingPad = {
+    target: screen,
+    standingPoint: viewingPoint,
+    sessionId: String(task.id || ""),
+    title: String(task.title || "Agent session"),
+  };
+  group.add(viewButton);
   group.userData.screen = screen;
+  group.userData.viewButton = viewButton;
   return group;
 }
 
@@ -7808,6 +8199,7 @@ function repositoryCommitActivityTexture(
   THREE,
   activity = {},
   repositoryName = "",
+  placardStats = {},
 ) {
   const weeks = Array.isArray(activity?.weeks)
     ? activity.weeks.slice(-52).map((value) => {
@@ -7823,6 +8215,14 @@ function repositoryCommitActivityTexture(
   const status = String(activity?.status || "unavailable");
   const max = Math.max(1, ...weeks);
   const total = weeks.reduce((sum, count) => sum + count, 0);
+  const runningAgents = Math.max(
+    0,
+    Number(placardStats?.runningAgents) || 0,
+  );
+  const followerCount = Number(placardStats?.fediverseFollowers);
+  const followers = Number.isFinite(followerCount)
+    ? Math.max(0, Math.floor(followerCount))
+    : null;
   const rateLabel = (metric) => {
     const rate = Number(metric?.commitsPerHour);
     if (!Number.isFinite(rate) || rate < 0) return "—";
@@ -7851,7 +8251,7 @@ function repositoryCommitActivityTexture(
       String(repositoryName || "repository").slice(0, 42),
       54,
       54,
-      1424,
+      820,
     );
     context.fillStyle = "#9ef7c6";
     context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
@@ -7863,7 +8263,43 @@ function repositoryCommitActivityTexture(
           : status === "empty"
             ? "NO COMMIT ACTIVITY IN THIS WINDOW"
             : `52 WEEKS · ${total.toLocaleString("en-US")} COMMITS`;
-    context.fillText(`COMMIT ACTIVITY · ${subtitle}`, 56, 104, 1424);
+    context.fillText(`COMMIT ACTIVITY · ${subtitle}`, 56, 104, 820);
+
+    [
+      {
+        x: 930,
+        width: 260,
+        label: "AGENT CONTROL",
+        value: `${runningAgents.toLocaleString("en-US")} RUNNING`,
+        color: "#8fffe0",
+      },
+      {
+        x: 1204,
+        width: 276,
+        label: "FEDIVERSE",
+        value:
+          followers === null
+            ? "— FOLLOWERS"
+            : `${followers.toLocaleString("en-US")} ${
+                followers === 1 ? "FOLLOWER" : "FOLLOWERS"
+              }`,
+        color: "#d5b6ff",
+      },
+    ].forEach((badge) => {
+      roundedRect(context, badge.x, 25, badge.width, 94, 16);
+      context.fillStyle = "rgba(119, 217, 255, 0.08)";
+      context.fill();
+      context.lineWidth = 4;
+      context.strokeStyle = badge.color;
+      context.stroke();
+      context.textAlign = "left";
+      context.fillStyle = "#91a39a";
+      context.font = '700 18px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(badge.label, badge.x + 18, 52);
+      context.fillStyle = badge.color;
+      context.font = '900 25px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(badge.value, badge.x + 18, 88, badge.width - 36);
+    });
 
     const chartLeft = 58;
     const chartTop = 144;
@@ -10988,12 +11424,14 @@ function createOfficeMarineAquarium(THREE, animated) {
   const AQUARIUM_FEEDING_DURATION_MS = 60_000;
   const AQUARIUM_FEEDING_APPROACH_MS = 4_200;
   const AQUARIUM_FEEDING_RETURN_MS = 6_500;
+  const AQUARIUM_GLASS_TAP_REACTION_MS = 2_600;
   const feedingCenter = new THREE.Vector3(0.68, 6.9, -1.8);
   let feedingStartedAt = -Infinity;
   let feedingActive = false;
   let reducedFeedingPoseApplied = false;
   let backdropOpaque = true;
   let aquariumLightEnabled = true;
+  let glassTappedAt = -Infinity;
   const AQUARIUM_FISH_SPECIES = Object.freeze([
     {
       id: "clownfish",
@@ -11386,6 +11824,7 @@ function createOfficeMarineAquarium(THREE, animated) {
     );
     mouth.name = `forkmesh-office-aquarium-fish-mouth-${species.id}`;
     mouth.position.set(0, -species.height * 0.08, species.length * 0.505);
+    mouth.userData.restZ = mouth.position.z;
     fish.add(mouth);
     const lateralHighlight = new THREE.Mesh(
       new THREE.SphereGeometry(0.5, 18, 10),
@@ -11405,7 +11844,7 @@ function createOfficeMarineAquarium(THREE, animated) {
     );
     lateralHighlight.position.x = species.thickness * 0.52;
     fish.add(lateralHighlight);
-    return { fish, tail, pectoralFins };
+    return { fish, tail, pectoralFins, mouth };
   }
 
   function aquariumCylinderBetween(
@@ -12123,6 +12562,14 @@ function createOfficeMarineAquarium(THREE, animated) {
   const fishStates = [];
   let fishPopulationKey = "";
   let visitorReaction = 0;
+  let visitorReactionTarget = 0;
+  let visitorApproachStart = 0;
+  let visitorApproachCount = 0;
+  let visitorFocusIndex = -1;
+  let visitorEncounterActive = false;
+  let visitorTargetY = 3;
+  let visitorTargetZ = 0;
+  let lastAquariumFishTime = 0;
 
   function aquariumUserPalette(name) {
     const rng = outfitRandom(
@@ -12176,7 +12623,7 @@ function createOfficeMarineAquarium(THREE, animated) {
         accent,
         sceneName: "forkmesh-office-aquarium-user-fish",
       };
-      const { fish, tail, pectoralFins } = createReefFish(
+      const { fish, tail, pectoralFins, mouth } = createReefFish(
         THREE,
         species,
         index,
@@ -12213,6 +12660,7 @@ function createOfficeMarineAquarium(THREE, animated) {
         fish,
         tail,
         pectoralFins,
+        mouth,
         curve: new THREE.CatmullRomCurve3(
           points,
           true,
@@ -12220,6 +12668,7 @@ function createOfficeMarineAquarium(THREE, animated) {
           0.42,
         ),
         speed: 0.000018 + rng.next() * 0.000018,
+        direction: rng.next() > 0.5 ? 1 : -1,
         phase,
         bank: 0.45 + rng.next() * 0.28,
         tailSpeed: 0.0036 + rng.next() * 0.0014,
@@ -12233,9 +12682,12 @@ function createOfficeMarineAquarium(THREE, animated) {
         feedingPhase: phase * Math.PI * 2 + index * 0.74,
         feedingSpeed: 0.00105 + (index % 4) * 0.00009,
         feedingDelay: (index % 20) * 180,
+        visitorPoint: new THREE.Vector3(),
+        visitorTangent: new THREE.Vector3(),
       });
       group.add(fish);
     });
+    if (visitorReactionTarget > 0) selectVisitorFish();
     updateAquariumFish(0, false);
   }
   const bubbles = new THREE.Group();
@@ -12427,15 +12879,86 @@ function createOfficeMarineAquarium(THREE, animated) {
     return target;
   }
 
+  function aquariumUnitProgress(value) {
+    return ((Number(value) || 0) % 1 + 1) % 1;
+  }
+
+  function selectVisitorFish() {
+    const count = fishStates.length;
+    if (!count) {
+      visitorApproachStart = 0;
+      visitorApproachCount = 0;
+      visitorFocusIndex = -1;
+      return;
+    }
+    visitorApproachStart = Math.floor(Math.random() * count);
+    visitorApproachCount =
+      1 + Math.floor(Math.random() * Math.min(4, count));
+    visitorFocusIndex =
+      (visitorApproachStart +
+        Math.floor(Math.random() * visitorApproachCount)) %
+      count;
+  }
+
+  function aquariumFishApproachesVisitor(index) {
+    if (!fishStates.length || visitorApproachCount <= 0) return false;
+    const offset =
+      (index - visitorApproachStart + fishStates.length) %
+      fishStates.length;
+    return offset < visitorApproachCount;
+  }
+
+  function tapGlass(time = performance.now()) {
+    const now = Number.isFinite(Number(time))
+      ? Number(time)
+      : performance.now();
+    glassTappedAt = now;
+    for (const state of fishStates) {
+      const progress = aquariumUnitProgress(
+        now * state.speed * state.direction + state.phase,
+      );
+      state.direction *= -1;
+      state.phase = aquariumUnitProgress(
+        progress - now * state.speed * state.direction,
+      );
+    }
+    selectVisitorFish();
+    return fishStates.length;
+  }
+
   function updateAquariumFish(time, animate = true) {
     const motionTime = animate ? time : 0;
+    if (animate) {
+      const elapsed = clamp(
+        motionTime - lastAquariumFishTime,
+        0,
+        100,
+      );
+      const easing = 1 - Math.exp(-elapsed / 720);
+      visitorReaction +=
+        (visitorReactionTarget - visitorReaction) * easing;
+      lastAquariumFishTime = motionTime;
+    }
+    const tapElapsed = Math.max(0, motionTime - glassTappedAt);
+    const tapBlend =
+      animate && tapElapsed < AQUARIUM_GLASS_TAP_REACTION_MS
+        ? aquariumSmoothstep(
+            1 - tapElapsed / AQUARIUM_GLASS_TAP_REACTION_MS,
+          )
+        : 0;
     for (let index = 0; index < fishStates.length; index += 1) {
       const state = fishStates[index];
-      const reaction = animate ? visitorReaction : 0;
-      const progress =
-        (motionTime * state.speed * (1 + reaction * 0.68) + state.phase) % 1;
+      const approachesVisitor =
+        animate && aquariumFishApproachesVisitor(index);
+      const approachBlend = approachesVisitor ? visitorReaction : 0;
+      const reaction = Math.max(approachBlend, tapBlend * 0.22);
+      const progress = aquariumUnitProgress(
+        motionTime * state.speed * state.direction + state.phase,
+      );
       state.curve.getPointAt(progress, state.point);
-      state.curve.getTangentAt(progress, state.tangent).normalize();
+      state.curve.getTangentAt(progress, state.tangent)
+        .multiplyScalar(state.direction)
+        .normalize();
       let feedingBlend = 0;
       if (feedingActive) {
         const elapsed = Math.max(0, time - feedingStartedAt);
@@ -12468,15 +12991,39 @@ function createOfficeMarineAquarium(THREE, animated) {
       }
       const fish = state.fish;
       fish.position.copy(state.point);
-      // A visitor at the front glass makes the school dart gently deeper into
-      // the tank. This reuses the existing fish loop and allocates nothing per
-      // frame, keeping the interaction cheap even for a large school.
-      if (reaction > 0) {
-        fish.position.x -= reaction * (0.18 + (index % 5) * 0.035);
-        fish.position.y +=
-          Math.sin(motionTime * 0.004 + state.phase * 13) *
-          reaction *
-          0.09;
+      // Only a small, randomly selected group acknowledges a nearby visitor.
+      // Their eased target stays just behind the glass and is spread around
+      // eye level, avoiding the abrupt whole-school shove used previously.
+      if (approachBlend > 0.001) {
+        const focus = index === visitorFocusIndex;
+        const encounterOffset =
+          (index - visitorApproachStart + fishStates.length) %
+          fishStates.length;
+        state.visitorPoint.set(
+          focus ? tankDepth / 2 - 0.16 : tankDepth / 2 - 0.48,
+          clamp(
+            visitorTargetY +
+              (encounterOffset - (visitorApproachCount - 1) / 2) * 0.36,
+            1.4,
+            tankHeight - 1.2,
+          ),
+          clamp(
+            visitorTargetZ +
+              (encounterOffset - (visitorApproachCount - 1) / 2) * 0.62,
+            -tankLength / 2 + 0.8,
+            tankLength / 2 - 0.8,
+          ),
+        );
+        state.visitorTangent
+          .subVectors(state.visitorPoint, state.point)
+          .normalize();
+        state.tangent
+          .lerp(state.visitorTangent, approachBlend * 0.78)
+          .normalize();
+        fish.position.lerp(
+          state.visitorPoint,
+          approachBlend * (focus ? 0.86 : 0.62),
+        );
       }
       if (feedingBlend > 0) {
         fish.position.lerp(state.feedingPoint, feedingBlend);
@@ -12486,8 +13033,15 @@ function createOfficeMarineAquarium(THREE, animated) {
           Math.sin(motionTime * 0.0017 + state.phase * 11) *
           (0.08 + feedingBlend * 0.035);
       }
-      fish.rotation.y = Math.atan2(state.tangent.x, state.tangent.z);
-      fish.rotation.z = -state.tangent.y * state.bank;
+      const targetYaw = Math.atan2(state.tangent.x, state.tangent.z);
+      const yawDelta = Math.atan2(
+        Math.sin(targetYaw - fish.rotation.y),
+        Math.cos(targetYaw - fish.rotation.y),
+      );
+      fish.rotation.y += yawDelta * (animate ? 0.085 : 1);
+      fish.rotation.z +=
+        (-state.tangent.y * state.bank - fish.rotation.z) *
+        (animate ? 0.09 : 1);
       fish.rotation.x = animate
         ? Math.sin(time * 0.0011 + state.phase * 8) * 0.035
         : 0;
@@ -12512,6 +13066,16 @@ function createOfficeMarineAquarium(THREE, animated) {
           ) *
             (0.12 + feedingBlend * 0.035);
       }
+      const mouthPuff =
+        index === visitorFocusIndex
+          ? approachBlend *
+            (0.38 +
+              (Math.sin(motionTime * 0.0062 + state.phase * 17) + 1) *
+                0.16)
+          : 0;
+      state.mouth.scale.setScalar(1 + mouthPuff);
+      state.mouth.position.z =
+        state.mouth.userData.restZ + mouthPuff * 0.035;
     }
   }
   function updateAquariumReef(time) {
@@ -12689,6 +13253,15 @@ function createOfficeMarineAquarium(THREE, animated) {
     };
   }
 
+  const controlAnchor = new THREE.Object3D();
+  controlAnchor.name = "forkmesh-office-aquarium-control-anchor";
+  controlAnchor.position.set(
+    tankDepth / 2 + 0.16,
+    0.72,
+    -tankLength / 2 + 0.48,
+  );
+  group.add(controlAnchor);
+
   function initializeAquariumState(time) {
     updateAquariumFish(time);
     updateAquariumReef(time);
@@ -12706,15 +13279,34 @@ function createOfficeMarineAquarium(THREE, animated) {
   });
   return {
     group,
+    controlAnchor,
     feed,
+    tapGlass,
     updateFeeding,
     getFeedingState,
     setUsers,
     setBackdropOpaque,
     setLightEnabled,
     getControlState,
-    setVisitorProximity(value) {
-      visitorReaction = clamp(Number(value) || 0, 0, 1);
+    setVisitorProximity(value, target = {}) {
+      const next = clamp(Number(value) || 0, 0, 1);
+      visitorTargetY = clamp(
+        Number(target?.y) || visitorTargetY,
+        1.4,
+        tankHeight - 1.2,
+      );
+      visitorTargetZ = clamp(
+        Number(target?.z) || visitorTargetZ,
+        -tankLength / 2 + 0.8,
+        tankLength / 2 - 0.8,
+      );
+      if (next > 0.08 && !visitorEncounterActive) {
+        visitorEncounterActive = true;
+        selectVisitorFish();
+      } else if (next <= 0.02) {
+        visitorEncounterActive = false;
+      }
+      visitorReactionTarget = next;
     },
   };
 }
@@ -13192,6 +13784,82 @@ export function officeAttendanceDurationLabel(value) {
   return `${days}d ${String(totalHours % 24).padStart(2, "0")}h`;
 }
 
+export function officeAttendanceLeaderboardRows(
+  snapshot = {},
+  openElapsedMs = 0,
+) {
+  const liveElapsedMs = Math.max(0, Number(openElapsedMs) || 0);
+  const supplied = Array.isArray(snapshot?.leaderboard)
+    ? snapshot.leaderboard
+    : [];
+  const rows = new Map();
+  const keep = (candidate = {}) => {
+    const account = String(candidate?.account || "Contributor")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 32) || "Contributor";
+    const key = account.toLocaleLowerCase();
+    const durationMs = Math.max(0, Number(candidate?.durationMs) || 0);
+    const previous = rows.get(key);
+    const present = previous?.present || candidate?.present === true;
+    const candidateFloor = String(candidate?.floor || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 32);
+    rows.set(key, {
+      account: previous?.account || account,
+      durationMs: Math.max(previous?.durationMs || 0, durationMs),
+      present,
+      floor:
+        candidate?.present === true && candidateFloor
+          ? candidateFloor
+          : String(previous?.floor || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 32),
+    });
+  };
+  if (supplied.length) {
+    supplied.forEach((member) => {
+      const present = member?.present === true;
+      const longestDurationMs = Math.max(
+        0,
+        Number(member?.longestDurationMs) || 0,
+      );
+      const activeDurationMs =
+        Math.max(0, Number(member?.activeDurationMs) || 0) +
+        (present ? liveElapsedMs : 0);
+      keep({
+        account: member?.account,
+        durationMs: Math.max(longestDurationMs, activeDurationMs),
+        present,
+        floor: member?.floor,
+      });
+    });
+  } else {
+    (Array.isArray(snapshot?.visits) ? snapshot.visits : []).forEach(
+      (visit) => {
+        const present = Boolean(visit?.inAt && !visit?.outAt);
+        keep({
+          account: visit?.account,
+          durationMs:
+            Math.max(0, Number(visit?.durationMs) || 0) +
+            (present ? liveElapsedMs : 0),
+          present,
+          floor: visit?.floor,
+        });
+      },
+    );
+  }
+  return [...rows.values()]
+    .sort(
+      (left, right) =>
+        right.durationMs - left.durationMs ||
+        left.account.localeCompare(right.account),
+    )
+    .slice(0, 20);
+}
+
 export function createWorldScene({
   THREE,
   container,
@@ -13243,6 +13911,7 @@ export function createWorldScene({
   onAgentBotChat = () => {},
   onPlayForkmeshSong = () => {},
   onCreateRepository = () => {},
+  onStartNodeDownload = () => {},
   onSwingRide = () => {},
   onCameraMode = () => {},
   onStartHereSelect = () => {},
@@ -13523,9 +14192,9 @@ export function createWorldScene({
   );
   continuousCityFoundation.name = "forkmesh-continuous-city-foundation";
   continuousCityFoundation.scale.set(
-    CONTINUOUS_CITY_RADIUS_X,
+    CONTINUOUS_CITY_RADIUS,
     1,
-    CONTINUOUS_CITY_RADIUS_Z,
+    CONTINUOUS_CITY_RADIUS,
   );
   continuousCityFoundation.position.set(
     0,
@@ -13541,8 +14210,8 @@ export function createWorldScene({
   continuousCityLand.name = "forkmesh-continuous-city-land";
   continuousCityLand.rotation.x = -Math.PI / 2;
   continuousCityLand.scale.set(
-    CONTINUOUS_CITY_RADIUS_X,
-    CONTINUOUS_CITY_RADIUS_Z,
+    CONTINUOUS_CITY_RADIUS,
+    CONTINUOUS_CITY_RADIUS,
     1,
   );
   continuousCityLand.position.set(0, 0.006, CONTINUOUS_CITY_CENTER_Z);
@@ -13930,16 +14599,6 @@ export function createWorldScene({
   const leaderboardDistrict = new THREE.Group();
   leaderboardDistrict.name = "forkmesh-leaderboard-district";
   leaderboardDistrict.position.set(LEADERBOARD_ISLAND_CENTER_X, 0, 0);
-  const leaderboardRing = new THREE.Mesh(
-    new THREE.RingGeometry(8.5, 10.2, 64),
-    makeMaterial(THREE, "#a9c5b8", { roughness: 0.9 }),
-  );
-  leaderboardRing.name = "forkmesh-leaderboard-ring-walk";
-  leaderboardRing.rotation.x = -Math.PI / 2;
-  leaderboardRing.position.y = 0.1;
-  leaderboardRing.receiveShadow = true;
-  leaderboardRing.userData.ground = true;
-  leaderboardDistrict.add(leaderboardRing);
   const leaderboardBeacon = new THREE.Mesh(
     new THREE.CylinderGeometry(3.1, 4.2, 0.7, 24),
     makeMaterial(THREE, "#173c35", {
@@ -13971,6 +14630,7 @@ export function createWorldScene({
   leaderboardIslandTitle.visible = false;
   world.add(leaderboardDistrict);
   const billboardIslandObjects = [];
+  const billboardIslandBounds = new THREE.Box3();
   const relayoutBillboardCircle = () => {
     const count = billboardIslandObjects.length;
     billboardIslandObjects.forEach(({ object }, index) => {
@@ -13979,10 +14639,18 @@ export function createWorldScene({
       const radius = 43;
       object.position.set(
         Math.cos(angle) * radius,
-        0.16,
+        0,
         Math.sin(angle) * radius,
       );
       object.rotation.y = Math.atan2(-object.position.x, -object.position.z);
+      object.updateMatrixWorld(true);
+      billboardIslandBounds.setFromObject(object);
+      // Board authors use different local origins (some at their center,
+      // others at their footings). Normalize from actual geometry so no
+      // frame, post, label, or base can be buried by the shared terrain.
+      if (Number.isFinite(billboardIslandBounds.min.y)) {
+        object.position.y += 0.12 - billboardIslandBounds.min.y;
+      }
       object.userData.layoutBaseRotation = object.rotation.y;
     });
   };
@@ -14006,27 +14674,55 @@ export function createWorldScene({
   // Registered members and their named campfire benches have a dedicated
   // southern garden. It is the fourth cardinal district, leaving the live
   // mirror cabinets and reward pool unobstructed in the central plaza.
-  const memberConnection = new THREE.Group();
-  memberConnection.name = "forkmesh-member-island-connection";
-  memberConnection.position.set(
-    0,
-    0,
-    (MEMBER_CONNECTION_MIN_Z + MEMBER_CONNECTION_MAX_Z) / 2,
+  // The south route used to be two overlapping slabs: the town path stopped
+  // at z=88 while a second promenade began at z=78. Besides the visible color
+  // seam, their different heights caused the large doubled rectangle seen
+  // from above. createTownLandscape now owns one continuous path all the way
+  // to the north edge of the Members Circle.
+  const memberPathSign = new THREE.Group();
+  memberPathSign.name = "forkmesh-members-circle-path-sign";
+  memberPathSign.position.set(6.6, 0, MEMBER_PATH_END_Z - 1.2);
+  memberPathSign.rotation.y = Math.PI;
+  const memberPathSignBacking = new THREE.Mesh(
+    new THREE.BoxGeometry(5.8, 2.55, 0.24),
+    makeMaterial(THREE, "#161b22", {
+      metalness: 0.18,
+      roughness: 0.58,
+    }),
   );
-  const memberConnectionLength =
-    MEMBER_CONNECTION_MAX_Z - MEMBER_CONNECTION_MIN_Z;
-  const memberPromenade = new THREE.Mesh(
-    new THREE.BoxGeometry(8.4, 0.08, memberConnectionLength),
-    concreteBrickMaterial(THREE),
+  memberPathSignBacking.position.y = 2.35;
+  memberPathSign.add(memberPathSignBacking);
+  const memberPathSignFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(5.5, 2.25),
+    new THREE.MeshBasicMaterial({
+      map: wordTexture(
+        THREE,
+        "🔥  MEMBERS CIRCLE",
+        "members · followers · activity",
+        "#58a6ff",
+      ),
+      transparent: true,
+      toneMapped: false,
+    }),
   );
-  memberPromenade.name = "forkmesh-member-promenade";
-  memberPromenade.position.y = 0.19;
-  memberPromenade.receiveShadow = true;
-  memberPromenade.userData.ground = true;
-  memberConnection.add(memberPromenade);
-  world.add(memberConnection);
+  memberPathSignFace.name = "forkmesh-members-circle-path-sign-face";
+  memberPathSignFace.position.set(0, 2.35, 0.13);
+  memberPathSign.add(memberPathSignFace);
+  for (const x of [-2.25, 2.25]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.2, 2.35, 0.2),
+      makeMaterial(THREE, "#30363d", {
+        metalness: 0.35,
+        roughness: 0.5,
+      }),
+    );
+    post.position.set(x, 1.17, 0);
+    memberPathSign.add(post);
+  }
+  setShadows(memberPathSign);
+  world.add(memberPathSign);
 
-  // The first object encountered when walking from the users circle toward
+  // The first object encountered when walking from the Members Circle toward
   // the centered nodes is a persistent orientation board. Only bounded step
   // identifiers are stored; no movement coordinates or visit history leave
   // the device.
@@ -14106,30 +14802,13 @@ export function createWorldScene({
   // The Office is a real campus district, not another interior scene. Its
   // wooded earth joins town across a broad continuous neck, with a stone
   // promenade down the middle for visual wayfinding.
-  const officeLandConnection = new THREE.Group();
-  officeLandConnection.name = "forkmesh-office-land-connection";
-  officeLandConnection.position.set(
-    0,
-    0,
-    (OFFICE_CONNECTION_MIN_Z + OFFICE_CONNECTION_MAX_Z) / 2,
-  );
-  const officeConnectionLength =
-    OFFICE_CONNECTION_MAX_Z - OFFICE_CONNECTION_MIN_Z;
-  const officePromenade = new THREE.Mesh(
-    new THREE.BoxGeometry(8.4, 0.08, officeConnectionLength),
-    concreteBrickMaterial(THREE),
-  );
-  officePromenade.name = "forkmesh-office-land-promenade";
-  officePromenade.position.y = 0.19;
-  officePromenade.receiveShadow = true;
-  officePromenade.userData.ground = true;
-  officeLandConnection.add(officePromenade);
-  world.add(officeLandConnection);
-
+  // The town route now ends exactly where the elevated bridge begins. The
+  // previous office-land promenade overlapped both by several metres and
+  // produced the stacked slabs visible from above.
   const officeBridge = new THREE.Group();
   officeBridge.name = "forkmesh-office-bridge";
   const officeBridgeLength =
-    Math.abs(OFFICE_BRIDGE_END_Z - OFFICE_BRIDGE_START_Z) + 3;
+    Math.abs(OFFICE_BRIDGE_END_Z - OFFICE_BRIDGE_START_Z);
   officeBridge.position.set(
     0,
     0,
@@ -14158,7 +14837,7 @@ export function createWorldScene({
   );
   const approachDeck = new THREE.Mesh(
     new THREE.BoxGeometry(
-      OFFICE_BRIDGE_WIDTH + 2,
+      OFFICE_BRIDGE_WIDTH,
       0.18,
       officeApproachLength,
     ),
@@ -14974,135 +15653,156 @@ export function createWorldScene({
   world.add(swingSet);
   registerMovableObject("swing-set", swingSet);
 
-  // One physical leaderboard panel owns every live leaderboard tile. A single
-  // frame and post pair replaces fourteen freestanding signs, keeping the
-  // perimeter aligned and dramatically reducing zoomed-out scene clutter.
-  const leaderboardIslandSigns = [];
+  // The 5×5 overview preserves the whole leaderboard catalog. It complements
+  // rather than replaces the individual source boards restored to the public
+  // board circle below.
   const leaderboardSuperPanel = new THREE.Group();
   leaderboardSuperPanel.name = "forkmesh-leaderboard-super-panel";
-  leaderboardSuperPanel.position.set(-42, 0, 0);
+  leaderboardSuperPanel.position.set(0, 0, 0);
   leaderboardSuperPanel.rotation.y = Math.PI / 2;
+  const leaderboardGridState = {
+    members: [],
+    referralRows: [],
+    viewerLink: "",
+    siteRows: [],
+    siteTotals: {},
+    boards: new Map(
+      WORLD_LEADERBOARD_BOARD_STUBS.map((board) => [board.id, board]),
+    ),
+  };
   const leaderboardSuperBacking = new THREE.Mesh(
-    new THREE.BoxGeometry(58, 4.2, 0.35),
+    new THREE.BoxGeometry(23, 23, 0.45),
     makeMaterial(THREE, "#102b27", {
       metalness: 0.24,
       roughness: 0.52,
     }),
   );
-  leaderboardSuperBacking.position.set(0, 4.25, 0);
+  leaderboardSuperBacking.position.set(0, 12, 0);
   leaderboardSuperPanel.add(leaderboardSuperBacking);
-  for (const x of [-27.5, 27.5]) {
+  for (const x of [-10.3, 10.3]) {
+    const footing = new THREE.Mesh(
+      new THREE.BoxGeometry(1.4, 0.5, 1.45),
+      makeMaterial(THREE, "#173136", { roughness: 0.78 }),
+    );
+    footing.position.set(x, 0.25, 0);
+    leaderboardSuperPanel.add(footing);
     const post = new THREE.Mesh(
-      new THREE.BoxGeometry(0.3, 4.3, 0.3),
+      new THREE.BoxGeometry(0.42, 23, 0.42),
       makeMaterial(THREE, "#29645e", {
         metalness: 0.28,
         roughness: 0.48,
       }),
     );
-    post.position.set(x, 2.15, 0);
+    post.position.set(x, 11.5, 0);
     leaderboardSuperPanel.add(post);
   }
-  leaderboardDistrict.add(leaderboardSuperPanel);
-  const placeLeaderboardIslandSign = (sign, index, total = 14) => {
-    const face = sign?.userData?.face;
-    if (!face) return sign;
-    face.parent?.remove(face);
-    face.position.set(
-      (index - (total - 1) / 2) * 4.02,
-      4.25,
-      0.19,
-    );
-    face.scale.set(1.04, 1.04, 1.04);
-    face.userData.leaderboardPanelTile = true;
-    leaderboardSuperPanel.add(face);
-    leaderboardIslandSigns.push(sign);
-    return sign;
-  };
-
-  const activeLeaderboardSign = placeLeaderboardIslandSign(
-    makeActiveLeaderboardSign(THREE),
-    0,
+  const leaderboardGridFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(22.4, 22.4),
+    new THREE.MeshBasicMaterial({
+      map: leaderboardGridTexture(THREE, leaderboardGridState),
+      transparent: true,
+    }),
   );
+  leaderboardGridFace.position.set(0, 12, 0.24);
+  leaderboardGridFace.userData.interactive = "leaderboard-grid";
+  leaderboardGridFace.userData.leaderboardPanelTile = true;
+  leaderboardSuperPanel.add(leaderboardGridFace);
+  interactive.push(leaderboardGridFace);
+  leaderboardDistrict.add(leaderboardSuperPanel);
+
+  const activeLeaderboardSign = makeActiveLeaderboardSign(THREE);
   const referralLeaderboardSign = makeReferralLeaderboardSign(THREE);
-  placeLeaderboardIslandSign(referralLeaderboardSign, 1);
-  // Tapping the board copies the viewer's referral link (world.js supplies
-  // the handler); the whole face is the hit target.
+  const siteReferrerLeaderboardSign =
+    makeSiteReferrerLeaderboardSign(THREE);
   referralLeaderboardSign.userData.face.userData.interactive =
     "referral-leaderboard";
-  interactive.push(referralLeaderboardSign.userData.face);
-  const siteReferrerLeaderboardSign = makeSiteReferrerLeaderboardSign(THREE);
-  placeLeaderboardIslandSign(siteReferrerLeaderboardSign, 2);
   siteReferrerLeaderboardSign.userData.face.userData.interactive =
-    "site-referrer-link";
-  interactive.push(siteReferrerLeaderboardSign.userData.face);
-  const genericLeaderboardSigns = new Map();
-  WORLD_LEADERBOARD_BOARD_STUBS.forEach((board, index) => {
-    const sign = makeLeaderboardStatSign(THREE, board);
-    genericLeaderboardSigns.set(board.id, sign);
-    placeLeaderboardIslandSign(sign, index + 3);
-  });
+    "site-referrer-leaderboard";
+  interactive.push(
+    referralLeaderboardSign.userData.face,
+    siteReferrerLeaderboardSign.userData.face,
+  );
+  const leaderboardStatSigns = new Map(
+    WORLD_LEADERBOARD_BOARD_STUBS.map((board) => [
+      board.id,
+      makeLeaderboardStatSign(THREE, board),
+    ]),
+  );
+  [
+    [activeLeaderboardSign, "active-leaderboard"],
+    [referralLeaderboardSign, "referral-leaderboard"],
+    [siteReferrerLeaderboardSign, "site-referrer-leaderboard"],
+    ...Array.from(leaderboardStatSigns, ([id, sign]) => [
+      sign,
+      `leaderboard-${id}`,
+    ]),
+  ].forEach(([board, layoutId]) =>
+    placeBillboardOnIsland(board, layoutId),
+  );
+
+  let leaderboardGridKey = "";
+  function repaintLeaderboardGrid() {
+    const key = JSON.stringify({
+      members: rankedActiveLeaderboardMembers(leaderboardGridState.members),
+      referrals: rankedReferralRows(leaderboardGridState.referralRows),
+      viewerLink: leaderboardGridState.viewerLink,
+      sites: rankedSiteReferrerRows(leaderboardGridState.siteRows),
+      totals: leaderboardGridState.siteTotals,
+      boards: Array.from(leaderboardGridState.boards.entries()),
+    });
+    if (leaderboardGridKey === key) return;
+    leaderboardGridFace.material.map?.dispose?.();
+    leaderboardGridFace.material.map = leaderboardGridTexture(
+      THREE,
+      leaderboardGridState,
+    );
+    leaderboardGridFace.material.needsUpdate = true;
+    leaderboardGridKey = key;
+  }
 
   function updateLeaderboards(boards = []) {
-    const byId = new Map(
-      (Array.isArray(boards) ? boards : [])
-        .filter((board) => board && typeof board === "object")
-        .map((board) => [String(board.id || ""), board]),
-    );
-    genericLeaderboardSigns.forEach((sign, id) => {
-      const board = byId.get(id);
-      const face = sign.userData.face;
-      if (!board || !face) return;
-      const key = JSON.stringify([
-        String(board.title || ""),
-        String(board.subtitle || ""),
-        String(board.valueKind || ""),
-        Array.isArray(board.rows) ? board.rows : [],
-      ]);
-      if (sign.userData.key === key) return;
-      face.material.map?.dispose?.();
-      face.material.map = leaderboardStatTexture(THREE, board);
-      face.material.needsUpdate = true;
-      sign.userData.key = key;
-      sign.userData.board = board;
-    });
+    (Array.isArray(boards) ? boards : [])
+      .filter((board) => board && typeof board === "object")
+      .forEach((board) => {
+        const id = String(board.id || "");
+        if (!id) return;
+        leaderboardGridState.boards.set(id, board);
+        const sign = leaderboardStatSigns.get(id);
+        if (!sign?.userData?.face) return;
+        sign.userData.board = board;
+        sign.userData.face.material.map?.dispose?.();
+        sign.userData.face.material.map = leaderboardStatTexture(THREE, board);
+        sign.userData.face.material.needsUpdate = true;
+      });
+    repaintLeaderboardGrid();
   }
 
-  // Repaints the referral sign only when the ranked rows or the viewer's own
-  // share link actually changed, mirroring the active-leaderboard swap.
   function updateReferralLeaderboard(rows = [], viewerLink = "") {
-    const face = referralLeaderboardSign.userData.face;
-    const key = JSON.stringify([
-      String(viewerLink || ""),
-      rankedReferralRows(rows).map((row) => [
-        String(row?.name || ""),
-        Number(row?.clicks) || 0,
-        Number(row?.signups) || 0,
-      ]),
-    ]);
-    if (!face || referralLeaderboardSign.userData.key === key) return;
-    face.material.map?.dispose?.();
-    face.material.map = referralLeaderboardTexture(THREE, rows, viewerLink);
-    face.material.needsUpdate = true;
-    referralLeaderboardSign.userData.key = key;
+    leaderboardGridState.referralRows = Array.isArray(rows) ? rows : [];
+    leaderboardGridState.viewerLink = String(viewerLink || "");
+    referralLeaderboardSign.userData.face.material.map?.dispose?.();
+    referralLeaderboardSign.userData.face.material.map =
+      referralLeaderboardTexture(
+        THREE,
+        leaderboardGridState.referralRows,
+        leaderboardGridState.viewerLink,
+      );
+    referralLeaderboardSign.userData.face.material.needsUpdate = true;
+    repaintLeaderboardGrid();
   }
   function updateSiteReferrerLeaderboard(rows = [], totals = {}) {
-    const face = siteReferrerLeaderboardSign.userData.face;
-    const ranked = rankedSiteReferrerRows(rows);
-    const key = JSON.stringify([
-      ranked.map((row) => [
-        String(row?.host || ""),
-        safeSiteReferrerURL(row),
-        Number(row?.visits) || 0,
-      ]),
-      Math.max(0, Number(totals?.sites) || 0),
-      Math.max(0, Number(totals?.visits) || 0),
-    ]);
-    if (!face || siteReferrerLeaderboardSign.userData.key === key) return;
-    face.material.map?.dispose?.();
-    face.material.map = siteReferrerLeaderboardTexture(THREE, rows, totals);
-    face.material.needsUpdate = true;
-    siteReferrerLeaderboardSign.userData.key = key;
-    siteReferrerLeaderboardSign.userData.rows = ranked;
+    leaderboardGridState.siteRows = rankedSiteReferrerRows(rows);
+    leaderboardGridState.siteTotals =
+      totals && typeof totals === "object" ? totals : {};
+    siteReferrerLeaderboardSign.userData.face.material.map?.dispose?.();
+    siteReferrerLeaderboardSign.userData.face.material.map =
+      siteReferrerLeaderboardTexture(
+        THREE,
+        leaderboardGridState.siteRows,
+        leaderboardGridState.siteTotals,
+      );
+    siteReferrerLeaderboardSign.userData.face.material.needsUpdate = true;
+    repaintLeaderboardGrid();
   }
   const systemCapacityPlatform = createSystemCapacityPlatform(THREE);
 
@@ -15480,6 +16180,15 @@ export function createWorldScene({
   aquariumFeedAction.dataset.feeding = "false";
   aquariumFeedAction.textContent = "FEED";
   aquariumFeedAction.setAttribute("aria-label", "Feed the fishes");
+  const aquariumTapAction = document.createElement("button");
+  aquariumTapAction.type = "button";
+  aquariumTapAction.className = "world-aquarium-control-button";
+  aquariumTapAction.dataset.worldAquariumTap = "";
+  aquariumTapAction.textContent = "TAP GLASS";
+  aquariumTapAction.setAttribute(
+    "aria-label",
+    "Tap the aquarium glass so the fish change direction",
+  );
   const aquariumBackdropAction = document.createElement("button");
   aquariumBackdropAction.type = "button";
   aquariumBackdropAction.className = "world-aquarium-control-button";
@@ -15491,6 +16200,7 @@ export function createWorldScene({
   aquariumControlPanel.append(
     aquariumControlTitle,
     aquariumFeedAction,
+    aquariumTapAction,
     aquariumBackdropAction,
     aquariumLightAction,
   );
@@ -15578,6 +16288,20 @@ export function createWorldScene({
     }
   }
 
+  function handleAquariumTap(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    officeAquarium.tapGlass();
+    aquariumTapAction.animate?.(
+      [
+        { transform: "scale(1)" },
+        { transform: "scale(0.94)" },
+        { transform: "scale(1)" },
+      ],
+      { duration: 180, easing: "ease-out" },
+    );
+  }
+
   function handleAquariumBackdrop(event) {
     event.preventDefault();
     event.stopPropagation();
@@ -15596,6 +16320,7 @@ export function createWorldScene({
     syncAquariumControlButtons();
   }
   aquariumFeedAction.addEventListener("click", handleAquariumFeed);
+  aquariumTapAction.addEventListener("click", handleAquariumTap);
   aquariumBackdropAction.addEventListener(
     "click",
     handleAquariumBackdrop,
@@ -15626,6 +16351,12 @@ export function createWorldScene({
       aquariumControlsNearby
         ? clamp(1 - aquariumDistance / 9, 0, 1)
         : 0,
+      {
+        y: aquariumControlLocalPosition.y + FIRST_PERSON_EYE_HEIGHT,
+        z:
+          aquariumControlLocalPosition.z -
+          officeAquarium.group.position.z,
+      },
     );
     if (!aquariumControlsNearby) {
       aquariumControlPanel.hidden = true;
@@ -15634,12 +16365,16 @@ export function createWorldScene({
     }
     syncAquariumControlButtons(time);
     aquariumControlPanel.hidden = false;
-    aquariumControlPanel.style.visibility = "visible";
-    // The reef is an interactive exhibit, not a transient proximity tooltip.
-    // Pin its compact controls inside the viewport throughout the lobby so a
-    // visitor can feed the fish or change the lighting from any camera angle.
-    aquariumControlPanel.style.left = "50%";
-    aquariumControlPanel.style.top = `${Math.max(78, rect.height - 18)}px`;
+    // Anchor the always-available lobby controls to the lower-right corner of
+    // the tank instead of floating at the bottom of the viewport.
+    updateScreenLabel(
+      THREE,
+      officeAquarium.controlAnchor,
+      aquariumControlPanel,
+      camera,
+      rect.width,
+      rect.height,
+    );
   }
   OFFICE_FLOORS.slice(1).forEach((floor) => {
     const floorGroup = new THREE.Group();
@@ -15689,6 +16424,149 @@ export function createWorldScene({
     ...INFRASTRUCTURE_CONSOLE_POSITION,
   );
   infrastructureFloor.add(infrastructureConsoleDisplay);
+  const engineeringDebugPanel = createEngineeringDebugPanel(THREE);
+  engineeringDebugPanel.position.set(
+    31,
+    0,
+    -OFFICE_FRONT_Z + 0.48,
+  );
+  officeFloorGroups.get("engineering").add(engineeringDebugPanel);
+  let engineeringDebugSampleAt = performance.now();
+  let engineeringDebugFrames = 0;
+  let engineeringDebugLongestFrameMs = 0;
+  animated.push((time, delta) => {
+    engineeringDebugFrames += 1;
+    engineeringDebugLongestFrameMs = Math.max(
+      engineeringDebugLongestFrameMs,
+      Math.max(0, Number(delta) || 0) * 1000,
+    );
+    const elapsed = Math.max(1, time - engineeringDebugSampleAt);
+    if (elapsed < 1000) return;
+    const fps = Math.max(
+      0,
+      Math.min(999, (engineeringDebugFrames * 1000) / elapsed),
+    );
+    const memory = performance.memory;
+    const heapRatio =
+      memory && Number(memory.jsHeapSizeLimit) > 0
+        ? Number(memory.usedJSHeapSize) / Number(memory.jsHeapSizeLimit)
+        : null;
+    const statusHigh = (value, warning, critical) =>
+      value >= critical ? "critical" : value >= warning ? "warning" : "ok";
+    const statusLow = (value, warning, critical) =>
+      value <= critical ? "critical" : value <= warning ? "warning" : "ok";
+    const metrics = [
+      {
+        label: "FRAMES / SECOND",
+        value: fps.toFixed(1),
+        status: statusLow(fps, 50, 30),
+        note: "target 60 · sustained under 30 needs attention",
+      },
+      {
+        label: "LONGEST FRAME",
+        value: `${engineeringDebugLongestFrameMs.toFixed(1)} MS`,
+        status: statusHigh(engineeringDebugLongestFrameMs, 24, 40),
+        note: "orange over 24ms · red over 40ms",
+      },
+      {
+        label: "DRAW CALLS",
+        value: (Number(renderer.info?.render?.calls) || 0).toLocaleString(),
+        status: statusHigh(Number(renderer.info?.render?.calls) || 0, 900, 1500),
+        note: "renderer submissions in the latest frame",
+      },
+      {
+        label: "TRIANGLES",
+        value: (Number(renderer.info?.render?.triangles) || 0).toLocaleString(),
+        status: statusHigh(
+          Number(renderer.info?.render?.triangles) || 0,
+          1_200_000,
+          2_500_000,
+        ),
+        note: "visible geometry in the latest frame",
+      },
+      {
+        label: "GEOMETRIES",
+        value: (Number(renderer.info?.memory?.geometries) || 0).toLocaleString(),
+        status: statusHigh(
+          Number(renderer.info?.memory?.geometries) || 0,
+          1800,
+          3200,
+        ),
+        note: "resident WebGL geometry resources",
+      },
+      {
+        label: "TEXTURES",
+        value: (Number(renderer.info?.memory?.textures) || 0).toLocaleString(),
+        status: statusHigh(
+          Number(renderer.info?.memory?.textures) || 0,
+          650,
+          1100,
+        ),
+        note: "resident WebGL texture resources",
+      },
+      {
+        label: "GPU PROGRAMS",
+        value: (renderer.info?.programs?.length || 0).toLocaleString(),
+        status: statusHigh(renderer.info?.programs?.length || 0, 140, 240),
+        note: "compiled material programs",
+      },
+      {
+        label: "ANIMATION CALLBACKS",
+        value: animated.length.toLocaleString(),
+        status: statusHigh(animated.length, 240, 420),
+        note: "bounded loops executed by the World frame",
+      },
+      {
+        label: "INTERACTIVE TARGETS",
+        value: interactive.length.toLocaleString(),
+        status: statusHigh(interactive.length, 1800, 3200),
+        note: "raycast targets · optimize dense exhibits",
+      },
+      {
+        label: "REMOTE MEMBERS",
+        value: remotePlayers.size.toLocaleString(),
+        status: "ok",
+        note: "live avatars represented in this client",
+      },
+      {
+        label: "JS HEAP",
+        value:
+          heapRatio === null
+            ? "NOT EXPOSED"
+            : `${Math.round(heapRatio * 100)}%`,
+        status:
+          heapRatio === null ? "ok" : statusHigh(heapRatio, 0.65, 0.82),
+        note: "browser-local heap against available limit",
+      },
+      {
+        label: "PIXEL RATIO",
+        value: renderer.getPixelRatio().toFixed(2),
+        status: statusHigh(renderer.getPixelRatio(), 2.25, 3),
+        note: "higher values increase fragment work",
+      },
+    ];
+    const overall = metrics.some((metric) => metric.status === "critical")
+      ? "critical"
+      : metrics.some((metric) => metric.status === "warning")
+        ? "warning"
+        : "ok";
+    const face = engineeringDebugPanel.userData.face;
+    const previous = face.material.map;
+    face.material.map = engineeringDebugTexture(THREE, {
+      overall,
+      metrics,
+      sampledAt: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }),
+    });
+    face.material.needsUpdate = true;
+    previous?.dispose?.();
+    engineeringDebugSampleAt = time;
+    engineeringDebugFrames = 0;
+    engineeringDebugLongestFrameMs = 0;
+  });
 
   function setInfrastructureConsoleLogs({ enabled = false, entries = [] } = {}) {
     const active = enabled === true;
@@ -16731,35 +17609,9 @@ export function createWorldScene({
     post.position.set(x, -0.05, -0.08);
     officeTaskBulletin.add(post);
   }
-  const repoIssuesBoardFrame = officeTaskBulletinFrame.clone();
-  repoIssuesBoardFrame.name = "forkmesh-repo-issues-board-frame";
-  repoIssuesBoardFrame.position.x = 13.4;
-  officeTaskBulletin.add(repoIssuesBoardFrame);
-  const repoIssuesBoardFace = new THREE.Mesh(
-    new THREE.PlaneGeometry(12.1, 5.5),
-    new THREE.MeshBasicMaterial({
-      map: worldRepoIssuesTexture(THREE, []),
-      toneMapped: false,
-    }),
-  );
-  repoIssuesBoardFace.name = "forkmesh-repo-issues-board-face";
-  repoIssuesBoardFace.position.set(13.4, 0, 0.18);
-  repoIssuesBoardFace.userData.interactive = "repo-issues-board";
-  officeTaskBulletin.add(repoIssuesBoardFace);
-  const repoIssuesBoardBase = officeTaskBulletinBase.clone();
-  repoIssuesBoardBase.position.x = 13.4;
-  officeTaskBulletin.add(repoIssuesBoardBase);
-  for (const x of [8, 18.8]) {
-    const post = new THREE.Mesh(
-      new THREE.BoxGeometry(0.22, 6.2, 0.22),
-      makeMaterial(THREE, "#315b52", { roughness: 0.76 }),
-    );
-    post.position.set(x, -0.05, -0.08);
-    officeTaskBulletin.add(post);
-  }
   const humanTodoBoardFrame = officeTaskBulletinFrame.clone();
   humanTodoBoardFrame.name = "forkmesh-human-todo-board-frame";
-  humanTodoBoardFrame.position.x = 26.8;
+  humanTodoBoardFrame.position.x = 13.4;
   officeTaskBulletin.add(humanTodoBoardFrame);
   const humanTodoBoardFace = new THREE.Mesh(
     new THREE.PlaneGeometry(12.1, 5.5),
@@ -16769,12 +17621,12 @@ export function createWorldScene({
     }),
   );
   humanTodoBoardFace.name = "forkmesh-human-todo-board-face";
-  humanTodoBoardFace.position.set(26.8, 0, 0.18);
+  humanTodoBoardFace.position.set(13.4, 0, 0.18);
   officeTaskBulletin.add(humanTodoBoardFace);
   const humanTodoBoardBase = officeTaskBulletinBase.clone();
-  humanTodoBoardBase.position.x = 26.8;
+  humanTodoBoardBase.position.x = 13.4;
   officeTaskBulletin.add(humanTodoBoardBase);
-  for (const x of [21.4, 32.2]) {
+  for (const x of [8, 18.8]) {
     const post = new THREE.Mesh(
       new THREE.BoxGeometry(0.22, 6.2, 0.22),
       makeMaterial(THREE, "#4b3c68", { roughness: 0.76 }),
@@ -16782,7 +17634,7 @@ export function createWorldScene({
     post.position.set(x, -0.05, -0.08);
     officeTaskBulletin.add(post);
   }
-  interactive.push(officeTaskBulletinFace, repoIssuesBoardFace);
+  interactive.push(officeTaskBulletinFace);
   let humanTodoSessions = [];
   let humanTodoSystemItems = [];
   let buildBoardState = {
@@ -16835,13 +17687,6 @@ export function createWorldScene({
     );
     officeTaskDoneFace.material.needsUpdate = true;
     previousDone?.dispose?.();
-    const previousIssues = repoIssuesBoardFace.material.map;
-    repoIssuesBoardFace.material.map = worldRepoIssuesTexture(
-      THREE,
-      buildBoardState.issues,
-    );
-    repoIssuesBoardFace.material.needsUpdate = true;
-    previousIssues?.dispose?.();
   }
 
   function updateBuildBoard(payload = {}) {
@@ -17061,8 +17906,9 @@ export function createWorldScene({
     qaBoardFace.rotation.z = 0;
   }
 
-  // Shared, bounded time clock on the left lobby wall. Authenticated punches
-  // are server-timestamped; the public board exposes only the latest 20 visits.
+  // Shared, bounded attendance leaderboard on the left lobby wall.
+  // Authenticated punches are server-timestamped and ranked by each member's
+  // longest completed or currently active Office stay.
   const officeAttendanceBoard = new THREE.Mesh(
     new THREE.PlaneGeometry(27, 13.2),
     new THREE.MeshBasicMaterial({ toneMapped: false }),
@@ -17073,6 +17919,91 @@ export function createWorldScene({
   officeInterior.add(officeAttendanceBoard);
 
   function officeAttendanceTexture(snapshot = {}, openElapsedMs = 0) {
+    const members = officeAttendanceLeaderboardRows(snapshot, openElapsedMs);
+    return canvasTexture(THREE, 1600, 800, (context) => {
+      context.fillStyle = "#071714";
+      context.fillRect(0, 0, 1600, 800);
+      context.strokeStyle = "#79efb5";
+      context.lineWidth = 14;
+      context.strokeRect(8, 8, 1584, 784);
+      context.fillStyle = "#9ef7c6";
+      context.font = '900 48px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("OFFICE LEADERBOARD", 42, 62);
+      context.fillStyle = "#79a996";
+      context.font = '800 27px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("#", 42, 112);
+      context.fillText("MEMBER", 116, 112);
+      context.fillText("LONGEST STAY", 850, 112);
+      context.fillText("STATUS", 1135, 112);
+      context.fillText("FLOOR", 1370, 112);
+      context.strokeStyle = "rgba(121,239,181,0.28)";
+      context.lineWidth = 2;
+      context.beginPath();
+      context.moveTo(38, 130);
+      context.lineTo(1560, 130);
+      context.stroke();
+      context.font = '700 27px "ForkMesh Mono", ui-monospace, monospace';
+      members.forEach((member, index) => {
+        const y = 164 + index * 28;
+        if (index % 2 === 0) {
+          context.fillStyle = "rgba(158,247,198,0.045)";
+          context.fillRect(30, y - 20, 1530, 30);
+        }
+        context.fillStyle = index < 3 ? "#f7c96b" : "#79a996";
+        context.fillText(String(index + 1).padStart(2, "0"), 42, y);
+        context.fillStyle = "#e9fff6";
+        context.fillText(
+          String(member?.account || "Contributor").slice(0, 28),
+          116,
+          y,
+        );
+        context.fillStyle = index < 3 ? "#f7c96b" : "#a9d7c4";
+        context.fillText(
+          officeAttendanceDurationLabel(member?.durationMs),
+          850,
+          y,
+        );
+        context.fillStyle = member?.present ? "#9ef7c6" : "#6f9d8b";
+        context.fillText(
+          member?.present ? "IN OFFICE" : "AWAY",
+          1135,
+          y,
+        );
+        context.fillStyle = member?.present ? "#9ef7c6" : "#6f9d8b";
+        context.fillText(
+          member?.present
+            ? String(member?.floor || "Lobby").slice(0, 13)
+            : "—",
+          1370,
+          y,
+        );
+      });
+      context.fillStyle = "#83bba7";
+      context.font = '650 25px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        members.length
+          ? "One row per member · longest authenticated Office stay"
+          : "No ranked members yet · signed-in members clock in automatically",
+        42,
+        760,
+      );
+    });
+  }
+  officeAttendanceBoard.material.map = officeAttendanceTexture();
+
+  // Preserve the individual punch ledger alongside the member leaderboard.
+  // It lives on the opposite lobby wall at the same scale, so the two views
+  // remain independently readable instead of competing for one canvas.
+  const officeClockInBoard = new THREE.Mesh(
+    new THREE.PlaneGeometry(27, 13.2),
+    new THREE.MeshBasicMaterial({ toneMapped: false }),
+  );
+  officeClockInBoard.name = "forkmesh-office-clock-in";
+  officeClockInBoard.position.set(84.5, 7.1, 18);
+  officeClockInBoard.rotation.y = -Math.PI / 2;
+  officeInterior.add(officeClockInBoard);
+
+  function officeClockInTexture(snapshot = {}, openElapsedMs = 0) {
     const visits = Array.isArray(snapshot?.visits)
       ? snapshot.visits.slice(0, 20)
       : [];
@@ -17091,20 +18022,20 @@ export function createWorldScene({
       };
       context.fillStyle = "#071714";
       context.fillRect(0, 0, 1600, 800);
-      context.strokeStyle = "#79efb5";
+      context.strokeStyle = "#77d9ff";
       context.lineWidth = 14;
       context.strokeRect(8, 8, 1584, 784);
-      context.fillStyle = "#9ef7c6";
+      context.fillStyle = "#9eefff";
       context.font = '900 48px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("OFFICE · LAST 20 VISITS", 42, 62);
-      context.fillStyle = "#79a996";
+      context.fillText("OFFICE CLOCK · LAST 20 PUNCHES", 42, 62);
+      context.fillStyle = "#79a9b5";
       context.font = '800 27px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText("USER", 42, 112);
-      context.fillText("IN", 500, 112);
+      context.fillText("IN", 420, 112);
       context.fillText("OUT", 790, 112);
       context.fillText("FLOOR", 1195, 112);
       context.fillText("TOTAL", 1435, 112);
-      context.strokeStyle = "rgba(121,239,181,0.28)";
+      context.strokeStyle = "rgba(119,217,255,0.28)";
       context.lineWidth = 2;
       context.beginPath();
       context.moveTo(38, 130);
@@ -17114,26 +18045,28 @@ export function createWorldScene({
       visits.forEach((visit, index) => {
         const y = 164 + index * 28;
         if (index % 2 === 0) {
-          context.fillStyle = "rgba(158,247,198,0.045)";
+          context.fillStyle = "rgba(119,217,255,0.045)";
           context.fillRect(30, y - 20, 1530, 30);
         }
-        context.fillStyle = "#e9fff6";
+        context.fillStyle = "#e9fbff";
         context.fillText(
           String(visit?.account || "Contributor").slice(0, 22),
           42,
           y,
         );
-        context.fillStyle = "#a9d7c4";
+        context.fillStyle = "#a9d2dc";
         context.fillText(format(visit?.inAt), 420, y);
-        context.fillStyle = visit?.outAt ? "#a9d7c4" : "#f7c96b";
+        context.fillStyle = visit?.outAt ? "#a9d2dc" : "#f7c96b";
         context.fillText(
           visit?.outAt ? format(visit.outAt) : "IN BUILDING",
           790,
           y,
         );
-        context.fillStyle = visit?.outAt ? "#6f9d8b" : "#9ef7c6";
+        context.fillStyle = visit?.outAt ? "#6f929b" : "#9eefff";
         context.fillText(
-          visit?.outAt ? "—" : String(visit?.floor || "Lobby").slice(0, 18),
+          visit?.outAt
+            ? "—"
+            : String(visit?.floor || "Lobby").slice(0, 18),
           1195,
           y,
         );
@@ -17142,25 +18075,25 @@ export function createWorldScene({
             ? null
             : Number(visit.durationMs) +
               (visit?.inAt && !visit?.outAt ? liveElapsedMs : 0);
-        context.fillStyle = visit?.outAt ? "#a9d7c4" : "#f7c96b";
+        context.fillStyle = visit?.outAt ? "#a9d2dc" : "#f7c96b";
         context.fillText(
           officeAttendanceDurationLabel(durationMs),
           1435,
           y,
         );
       });
-      context.fillStyle = "#83bba7";
+      context.fillStyle = "#83aeb8";
       context.font = '650 25px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
         visits.length
-          ? "One row per visit · authenticated punches only"
-          : "No recorded visits yet · signed-in members clock in automatically",
+          ? "One row per punch · authenticated Office check-ins"
+          : "No punches yet · signed-in members clock in automatically",
         42,
         760,
       );
     });
   }
-  officeAttendanceBoard.material.map = officeAttendanceTexture();
+  officeClockInBoard.material.map = officeClockInTexture();
 
   // A true reflective capture, throttled while the visitor is inside. The
   // sculpture follows the supplied chrome FM cube: branch graph on top, F/M
@@ -17794,6 +18727,38 @@ export function createWorldScene({
   const movementDashDirection = new THREE.Vector3();
   const bikeSeatPosition = new THREE.Vector3();
   const screenLabelPosition = new THREE.Vector3();
+  const seatedMovementVector = new THREE.Vector3();
+  const movementInputState = {
+    keyboardActive: false,
+    bikeDirection: 0,
+    ridingBike: false,
+    ridingCar: false,
+    sprinting: false,
+    touchStrength: 0,
+    inputStrength: 0,
+    movement: movementVector,
+  };
+  const seatedMovementInput = {
+    keyboardActive: false,
+    bikeDirection: 0,
+    ridingBike: false,
+    ridingCar: false,
+    sprinting: false,
+    touchStrength: 0,
+    inputStrength: 0,
+    movement: seatedMovementVector,
+  };
+  const cameraEye = new THREE.Vector3();
+  const cameraTarget = new THREE.Vector3();
+  const cameraDirection = new THREE.Vector3();
+  const cameraLookTarget = new THREE.Vector3();
+  const cameraOffsetDirection = new THREE.Vector3();
+  const cameraDesired = new THREE.Vector3();
+  const cameraLocalTarget = new THREE.Vector3();
+  const cameraLocalDesired = new THREE.Vector3();
+  const cameraLocalPosition = new THREE.Vector3();
+  const cameraLimitLocalTarget = new THREE.Vector3();
+  const diagnosticsDrawingBuffer = new THREE.Vector2();
   const officeDoorLocalPosition = new THREE.Vector3();
   const officeReceptionLocalPosition = new THREE.Vector3();
   const buildBoardWorldPosition = new THREE.Vector3();
@@ -17847,11 +18812,9 @@ export function createWorldScene({
   let jumpVelocity = 0;
   let jumpQueued = false;
   let officeRoofJumping = false;
-  // Per-device movement tuning (scales the shared defaults above). Acceleration
-  // may be Infinity, meaning the player snaps to top speed the instant a key is
-  // pressed. Both are adjustable from the World's local controls.
+  // Per-device movement tuning scales the shared speed. Digital movement is
+  // deliberately immediate; there is no acceleration state to delay input.
   let moveSpeedScale = 1;
-  let moveAccelScale = 1;
   let keyboardMovementSpeed = PLAYER_SPEED;
   let dashTarget = null;
   // Set while the player is sitting on a campfire bench: the seat pose is held
@@ -17879,6 +18842,9 @@ export function createWorldScene({
   let daylightMode = "auto";
   let localDaylightMinute = -1;
   let nextEnvironmentCheckAt = 0;
+  let nextAvatarHighlightAt = 0;
+  let nextProximityUpdateAt = 0;
+  let nextScreenLabelUpdateAt = 0;
   let officeSceneMode = "town";
   let officeCurrentFloorId = "lobby";
   let officeChairSeat = null;
@@ -17889,7 +18855,7 @@ export function createWorldScene({
   let officeElevatorCameraReleased = false;
   let officeElevatorPriorCameraMode = null;
   let officeElevatorPriorCameraFov = null;
-  let officeAttendance = { visits: [] };
+  let officeAttendance = { visits: [], leaderboard: [] };
   let officeAttendanceObservedAt = performance.now();
   let officeAttendanceRenderedBucket = 0;
   let officeReceptionWasNear = false;
@@ -18009,20 +18975,17 @@ export function createWorldScene({
       (input.ridingBike ? BIKE_RIDE_SPEED_MULTIPLIER : 1) *
       (input.ridingCar ? CAR_RIDE_SPEED_MULTIPLIER : 1);
     const topSpeed = PLAYER_MAX_SPEED * moveSpeedScale * sprintScale;
-    const startingSpeed = baseMoveSpeed() * sprintScale;
-    const acceleration =
-      PLAYER_ACCELERATION * moveAccelScale * Math.max(0, delta);
     const inputStrength = Math.max(0, Number(input.inputStrength) || 0);
+    // Digital input has no acceleration ramp: the first rendered movement
+    // frame reaches the selected speed. Analog touch keeps its proportional
+    // strength, which preserves fine positioning without making WASD feel
+    // sticky after a stop.
     keyboardMovementSpeed =
       input.keyboardActive
-        ? Math.min(
-            topSpeed,
-            Math.max(keyboardMovementSpeed, startingSpeed) +
-              acceleration * sprintScale,
-          )
+        ? topSpeed
         : Number(input.touchStrength) > 0
           ? topSpeed * inputStrength
-          : startingSpeed;
+          : baseMoveSpeed() * sprintScale;
     return keyboardMovementSpeed;
   }
 
@@ -18088,21 +19051,13 @@ export function createWorldScene({
       const numeric = Number(tuning.speed);
       moveSpeedScale = Number.isFinite(numeric) && numeric > 0 ? numeric : 1;
     }
-    if (tuning.acceleration !== undefined) {
-      const numeric = Number(tuning.acceleration);
-      // A non-finite (Infinity) or huge value means "instant" — snap to top
-      // speed the moment a movement key goes down.
-      moveAccelScale = Number.isFinite(numeric)
-        ? Math.max(0, numeric)
-        : Infinity;
-    }
     // Keep the live speed within the new ceiling so a lowered cap takes effect
     // immediately rather than only after the player stops and restarts.
     keyboardMovementSpeed = Math.min(
       keyboardMovementSpeed,
       PLAYER_MAX_SPEED * moveSpeedScale,
     );
-    return { speed: moveSpeedScale, acceleration: moveAccelScale };
+    return { speed: moveSpeedScale };
   }
 
   function cancelDash() {
@@ -18208,24 +19163,56 @@ export function createWorldScene({
           };
         })
       : [];
-    officeAttendance = { visits, asOfAt };
+    const leaderboard = Array.isArray(event?.leaderboard)
+      ? event.leaderboard.slice(0, 20).map((member) => ({
+          account: String(member?.account || "Contributor")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 32),
+          longestDurationMs: Math.max(
+            0,
+            Number(member?.longestDurationMs) || 0,
+          ),
+          activeDurationMs: Math.max(
+            0,
+            Number(member?.activeDurationMs) || 0,
+          ),
+          present: member?.present === true,
+          floor: String(member?.floor || "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 32),
+        }))
+      : [];
+    officeAttendance = { visits, leaderboard, asOfAt };
     officeAttendanceObservedAt = receivedAt;
     officeAttendanceRenderedBucket = 0;
-    const previous = officeAttendanceBoard.material.map;
+    const previousLeaderboard = officeAttendanceBoard.material.map;
+    const previousClock = officeClockInBoard.material.map;
     officeAttendanceBoard.material.map =
       officeAttendanceTexture(officeAttendance);
     officeAttendanceBoard.material.needsUpdate = true;
-    previous?.dispose?.();
+    officeClockInBoard.material.map =
+      officeClockInTexture(officeAttendance);
+    officeClockInBoard.material.needsUpdate = true;
+    previousLeaderboard?.dispose?.();
+    previousClock?.dispose?.();
     return {
       visits: officeAttendance.visits.map((visit) => ({ ...visit })),
+      leaderboard: officeAttendance.leaderboard.map(
+        (member) => ({ ...member }),
+      ),
     };
   }
 
   function updateOfficeAttendanceClock(time) {
     if (
       officeSceneMode !== "lobby" ||
-      !officeAttendance.visits.some(
-        (visit) => visit.inAt > 0 && !visit.outAt,
+      !(
+        officeAttendance.leaderboard.some((member) => member.present) ||
+        officeAttendance.visits.some(
+          (visit) => visit.inAt > 0 && !visit.outAt,
+        )
       )
     ) {
       return;
@@ -18234,11 +19221,16 @@ export function createWorldScene({
     const bucket = Math.floor(elapsedMs / 30_000);
     if (bucket === officeAttendanceRenderedBucket) return;
     officeAttendanceRenderedBucket = bucket;
-    const previous = officeAttendanceBoard.material.map;
+    const previousLeaderboard = officeAttendanceBoard.material.map;
+    const previousClock = officeClockInBoard.material.map;
     officeAttendanceBoard.material.map =
       officeAttendanceTexture(officeAttendance, elapsedMs);
     officeAttendanceBoard.material.needsUpdate = true;
-    previous?.dispose?.();
+    officeClockInBoard.material.map =
+      officeClockInTexture(officeAttendance, elapsedMs);
+    officeClockInBoard.material.needsUpdate = true;
+    previousLeaderboard?.dispose?.();
+    previousClock?.dispose?.();
   }
 
   function travelToOfficeFloor(floorId) {
@@ -19552,6 +20544,16 @@ export function createWorldScene({
     cameraMode = nextMode;
     if (cameraMode === "first-person") {
       cameraFocus = null;
+      if (bikeRide) {
+        // Enter the rider's eyes facing the handlebars. Subsequent lane
+        // curvature is applied as a wrapped heading delta, so an intentional
+        // glance remains relative to the bicycle instead of drifting in world
+        // space as the circular road turns underneath it.
+        cameraYaw = Math.atan2(
+          Math.sin(player.rotation.y),
+          Math.cos(player.rotation.y),
+        );
+      }
       player.visible = false;
       if (officeSceneMode === "meeting") {
         const localParticipant =
@@ -19616,6 +20618,57 @@ export function createWorldScene({
       space: currentSpace,
       moving: false,
       activity: `reviewing repository ${data.kind === "issue" ? "issues" : "pull requests"}`,
+    });
+    return true;
+  }
+
+  function focusRepositoryAgentTerminal(button = null) {
+    if (officeSceneMode !== "town" || !button?.isObject3D) return false;
+    const data = button.userData?.repositoryAgentViewingPad;
+    const target = data?.target;
+    const standingTarget = data?.standingPoint;
+    if (!target?.isObject3D || !standingTarget?.isObject3D) return false;
+    dismountSwing({ relocate: false });
+    dismountBike({ relocate: false });
+    dismountCar({ relocate: false });
+    standUpFromBench();
+    cancelDash();
+    const standingPoint = standingTarget.getWorldPosition(
+      new THREE.Vector3(),
+    );
+    const targetPoint = target.getWorldPosition(new THREE.Vector3());
+    player.position.set(standingPoint.x, currentFloorY, standingPoint.z);
+    lastPosition.copy(player.position);
+    const eye = player.position
+      .clone()
+      .add(new THREE.Vector3(0, FIRST_PERSON_EYE_HEIGHT, 0));
+    const delta = targetPoint.sub(eye);
+    const horizontal = Math.max(0.001, Math.hypot(delta.x, delta.z));
+    cameraYaw = Math.atan2(-delta.x, -delta.z);
+    firstPersonPitch = clamp(
+      -Math.atan2(delta.y, horizontal),
+      FIRST_PERSON_PITCH_MIN,
+      FIRST_PERSON_PITCH_MAX,
+    );
+    player.rotation.y = cameraYaw;
+    cameraFocus = null;
+    selectedLandmark = "repositories";
+    setCameraMode("first-person", "repository-agent-terminal");
+    // A mild optical zoom makes the upward-facing terminal fill the view while
+    // retaining enough robot body around it to preserve spatial context.
+    firstPersonZoom = 1.35;
+    camera.fov = clamp(44 / firstPersonZoom, 10, 110);
+    camera.updateProjectionMatrix();
+    queueMovementEvent({
+      x: Number(player.position.x.toFixed(2)),
+      y: Number(player.position.y.toFixed(2)),
+      z: Number(player.position.z.toFixed(2)),
+      heading: Number(player.rotation.y.toFixed(3)),
+      space: currentSpace,
+      moving: false,
+      activity: `reading agent terminal ${String(
+        data.sessionId || "",
+      ).slice(0, 40)}`,
     });
     return true;
   }
@@ -19862,16 +20915,15 @@ export function createWorldScene({
     const legacyTouchActive = touchKeys.size > 0;
     const inputStrength =
       keyboardActive || legacyTouchActive ? 1 : touchStrength;
-    return {
-      keyboardActive,
-      bikeDirection,
-      ridingBike: Boolean(bikeRide),
-      ridingCar: Boolean(carRide),
-      sprinting,
-      touchStrength,
-      inputStrength,
-      movement: movement.lengthSq() ? movement.normalize() : movement,
-    };
+    movementInputState.keyboardActive = keyboardActive;
+    movementInputState.bikeDirection = bikeDirection;
+    movementInputState.ridingBike = Boolean(bikeRide);
+    movementInputState.ridingCar = Boolean(carRide);
+    movementInputState.sprinting = sprinting;
+    movementInputState.touchStrength = touchStrength;
+    movementInputState.inputStrength = inputStrength;
+    if (movement.lengthSq()) movement.normalize();
+    return movementInputState;
   }
 
   function queueMovementEvent(movement, office = false) {
@@ -19900,9 +20952,10 @@ export function createWorldScene({
     const avatar = officeParticipants.get(officeLocalParticipantId);
     if (!avatar) return;
     const presence = avatar.userData.officePresence || {};
-    const input = presence.pose === "seated"
-      ? { movement: new THREE.Vector3(), inputStrength: 0 }
-      : movementInput();
+    const input =
+      presence.pose === "seated"
+        ? seatedMovementInput
+        : movementInput();
     const movement = input.movement;
     const walking = movement.lengthSq() > 0;
     const movementSpeed = movementSpeedForInput(input, delta);
@@ -20318,6 +21371,12 @@ export function createWorldScene({
     player.position.x = state.bike.position.x;
     player.position.z = state.bike.position.z;
     player.rotation.y = state.bike.rotation.y;
+    if (cameraMode === "first-person") {
+      cameraYaw = Math.atan2(
+        Math.sin(player.rotation.y),
+        Math.cos(player.rotation.y),
+      );
+    }
     applyBikeRidePose(false, 0);
     lastPosition.copy(player.position);
     queueMovementEvent({
@@ -20574,12 +21633,20 @@ export function createWorldScene({
           delta,
         );
         state.travelDirection = rideDirection;
+        const previousBikeHeading = state.bike.rotation.y;
         placeBikeOnLane(
           state,
           state.angle +
             (rideDirection * keyboardMovementSpeed * delta) /
               WORLD_BIKE_LANE_RADIUS,
         );
+        if (cameraMode === "first-person") {
+          cameraYaw = circularRideCameraYaw(
+            cameraYaw,
+            previousBikeHeading,
+            state.bike.rotation.y,
+          );
+        }
         player.position.x = state.bike.position.x;
         player.position.z = state.bike.position.z;
         player.rotation.y = state.bike.rotation.y;
@@ -21015,6 +22082,10 @@ export function createWorldScene({
     if (deskData) {
       updateRepositoryRecordDesk(deskData.selection, deskData.records);
     }
+    const activityData = world.userData.repositoryActivityData;
+    if (activityData) {
+      updateRepositoryActivity(activityData.activity, activityData.selection);
+    }
     return agentBotAccessAllowed;
   }
 
@@ -21078,7 +22149,9 @@ export function createWorldScene({
     ) {
       return requested;
     }
-    const localTarget = officeInterior.worldToLocal(target.clone());
+    const localTarget = officeInterior.worldToLocal(
+      cameraLimitLocalTarget.copy(target),
+    );
     const ridingElevator =
       Boolean(officeElevatorRide) ||
       officeElevatorCabinContains(
@@ -21210,42 +22283,41 @@ export function createWorldScene({
       // the moving glass car. It looks diagonally across the right-wall
       // controls and out through the exterior-facing opening, never back into
       // the Office interior.
-      const eye = officeElevatorCar.localToWorld(
-        new THREE.Vector3(-3.72, 6.46, 2.7),
-      );
-      const outsideTarget = officeElevatorCar.localToWorld(
-        new THREE.Vector3(3.4, 3.15, -5.4),
-      );
-      camera.position.copy(eye);
-      camera.lookAt(outsideTarget);
+      cameraEye.set(-3.72, 6.46, 2.7);
+      officeElevatorCar.localToWorld(cameraEye);
+      cameraLookTarget.set(3.4, 3.15, -5.4);
+      officeElevatorCar.localToWorld(cameraLookTarget);
+      camera.position.copy(cameraEye);
+      camera.lookAt(cameraLookTarget);
       return;
     }
     if (cameraMode === "first-person") {
       const firstPersonAvatar = officeAvatar || player;
-      const eye = firstPersonAvatar
-        .getWorldPosition(new THREE.Vector3())
-        .add(new THREE.Vector3(0, FIRST_PERSON_EYE_HEIGHT, 0));
+      firstPersonAvatar.getWorldPosition(cameraEye);
+      cameraEye.y += FIRST_PERSON_EYE_HEIGHT;
       const horizontal = Math.cos(firstPersonPitch);
-      const direction = new THREE.Vector3(
+      cameraDirection.set(
         -Math.sin(cameraYaw) * horizontal,
         -Math.sin(firstPersonPitch),
         -Math.cos(cameraYaw) * horizontal,
       );
       // A following eye camera must not ease behind the moving avatar. Copying
       // the position directly avoids visible lag and motion sickness.
-      camera.position.copy(eye);
-      camera.lookAt(eye.clone().add(direction));
+      camera.position.copy(cameraEye);
+      cameraLookTarget.copy(cameraEye).add(cameraDirection);
+      camera.lookAt(cameraLookTarget);
       return;
     }
-    const target = officeAvatar
-      ? officeAvatar
-          .getWorldPosition(new THREE.Vector3())
-          .add(new THREE.Vector3(0, FIRST_PERSON_EYE_HEIGHT, 0))
-      : cameraFocus
-        ? cameraFocus.clone()
-        : player.position
-            .clone()
-            .add(new THREE.Vector3(0, FIRST_PERSON_EYE_HEIGHT, 0));
+    const target = cameraTarget;
+    if (officeAvatar) {
+      officeAvatar.getWorldPosition(target);
+      target.y += FIRST_PERSON_EYE_HEIGHT;
+    } else if (cameraFocus) {
+      target.copy(cameraFocus);
+    } else {
+      target.copy(player.position);
+      target.y += FIRST_PERSON_EYE_HEIGHT;
+    }
     const officeFocused = Boolean(cameraFocus && selectedLandmark === "office");
     const officeInteriorFocused = officeSceneMode !== "town";
     // The Office keeps the same orbit feel as the rest of the World. A local
@@ -21259,7 +22331,7 @@ export function createWorldScene({
           ? 0.78
           : 1;
     const requestedDistance = CAMERA_DISTANCE * cameraZoom * focusScale;
-    const offsetDirection = new THREE.Vector3(
+    const offsetDirection = cameraOffsetDirection.set(
       Math.sin(cameraYaw) * Math.cos(cameraPitch),
       Math.sin(cameraPitch),
       Math.cos(cameraYaw) * Math.cos(cameraPitch),
@@ -21273,10 +22345,12 @@ export function createWorldScene({
         requestedDistance,
       ),
     );
-    const desired = target
-      .clone()
+    const desired = cameraDesired
+      .copy(target)
       .addScaledVector(offsetDirection, distance);
-    const localTarget = officeInterior.worldToLocal(target.clone());
+    const localTarget = officeInterior.worldToLocal(
+      cameraLocalTarget.copy(target),
+    );
     const rooftopPatioCamera =
       officeSceneMode === "lobby" &&
       officeCurrentFloorId === "rooftop" &&
@@ -21290,7 +22364,9 @@ export function createWorldScene({
       // Looking upward puts an orbit camera below its eye target. Preserve the
       // requested outward X/Z zoom, but keep that eye just above the roof slab
       // instead of letting a steep pitch pass through the story below.
-      const localDesired = officeInterior.worldToLocal(desired.clone());
+      const localDesired = officeInterior.worldToLocal(
+        cameraLocalDesired.copy(desired),
+      );
       localDesired.y = Math.max(
         localDesired.y,
         officeFloorY("rooftop") + 0.55,
@@ -21311,7 +22387,7 @@ export function createWorldScene({
       // Clamp the actual eased camera as well as its destination. Otherwise a
       // prior below-slab frame could lerp through the roof on its way back up.
       const localCamera = officeInterior.worldToLocal(
-        camera.position.clone(),
+        cameraLocalPosition.copy(camera.position),
       );
       localCamera.y = Math.max(
         localCamera.y,
@@ -21323,7 +22399,9 @@ export function createWorldScene({
       // The cabin moves faster than a softly lerped orbit camera. Clamp the
       // eased result back inside its live glass envelope so the eye never
       // trails through a floor slab while the car is between stories.
-      const localCamera = officeInterior.worldToLocal(camera.position.clone());
+      const localCamera = officeInterior.worldToLocal(
+        cameraLocalPosition.copy(camera.position),
+      );
       localCamera.x = clamp(
         localCamera.x,
         OFFICE_ELEVATOR_CENTER_X - 4.42,
@@ -21435,7 +22513,10 @@ export function createWorldScene({
 
   function setActiveAvatarSelection(avatar) {
     activeAvatarSelection = avatar || null;
-    refreshAvatarSelectionHighlight();
+    if (time >= nextAvatarHighlightAt) {
+      nextAvatarHighlightAt = time + 80;
+      refreshAvatarSelectionHighlight();
+    }
   }
 
   function refreshAvatarSelectionHighlight() {
@@ -22180,24 +23261,12 @@ export function createWorldScene({
       syncOperatorBelt(THREE, avatar, enriched.nodes?.length || 0);
       avatar.userData.badgeKey = badgeKey;
     });
-    const leaderboardFace = activeLeaderboardSign.userData.face;
-    const leaderboardKey = JSON.stringify(
-      rankedActiveLeaderboardMembers(leaderboardMembers)
-        .map((member) => [
-          String(member?.name || ""),
-          member?.totalActiveMs ?? member?.activeMs ?? null,
-          member?.activeNow === true,
-        ]),
-    );
-    if (leaderboardFace && activeLeaderboardSign.userData.key !== leaderboardKey) {
-      leaderboardFace.material.map?.dispose?.();
-      leaderboardFace.material.map = activeLeaderboardTexture(
-        THREE,
-        leaderboardMembers,
-      );
-      leaderboardFace.material.needsUpdate = true;
-      activeLeaderboardSign.userData.key = leaderboardKey;
-    }
+    leaderboardGridState.members = leaderboardMembers;
+    activeLeaderboardSign.userData.face.material.map?.dispose?.();
+    activeLeaderboardSign.userData.face.material.map =
+      activeLeaderboardTexture(THREE, leaderboardMembers);
+    activeLeaderboardSign.userData.face.material.needsUpdate = true;
+    repaintLeaderboardGrid();
     // Registered members sit in a circle around the campfire facing the
     // flames. Every account in the directory owns one numbered bench for the
     // whole session — a member out walking the world leaves theirs visibly
@@ -22909,6 +23978,10 @@ export function createWorldScene({
     const deskData = world.userData.repositoryRecordDeskData;
     if (deskData) {
       updateRepositoryRecordDesk(deskData.selection, deskData.records);
+    }
+    const activityData = world.userData.repositoryActivityData;
+    if (activityData) {
+      updateRepositoryActivity(activityData.activity, activityData.selection);
     }
     return true;
   }
@@ -24173,12 +25246,6 @@ export function createWorldScene({
                 String(follower.handle || follower.profileUrl || "").trim(),
             )
           : [];
-        const reportedFollowers = Number.isSafeInteger(
-          record.fediverseFollowerCount,
-        )
-          ? record.fediverseFollowerCount
-          : followers.length;
-        const followerStatus = String(record.fediverseFollowerStatus || "idle");
         const gallery = new THREE.Group();
         gallery.name = `repository-fediverse-follower-icons:${record.owner}/${record.name}`;
         // Keep the social portraits on the wheel's local face plane. A deep
@@ -24207,31 +25274,6 @@ export function createWorldScene({
           );
           gallery.add(icon);
         });
-        const caption = repositorySizeLabelSprite(
-          THREE,
-          followerStatus === "loading" && !reportedFollowers
-            ? "FEDIVERSE FOLLOWERS"
-            : `${reportedFollowers.toLocaleString("en-US")} FEDIVERSE ${
-                reportedFollowers === 1 ? "FOLLOWER" : "FOLLOWERS"
-              }`,
-          followerStatus === "unavailable"
-            ? "FOLLOWER LIST UNAVAILABLE"
-            : followerStatus === "loading"
-              ? "READING ap_followers…"
-              : reportedFollowers > visibleFollowers.length
-                ? `AROUND FILE CIRCLE · SHOWING ${visibleFollowers.length}`
-                : reportedFollowers
-                  ? "AROUND THE FILE CIRCLE"
-                  : "NOBODY FOLLOWS THIS REPOSITORY YET",
-          "#d5b6ff",
-        );
-        caption.name = `repository-fediverse-follower-caption:${record.owner}/${record.name}`;
-        caption.scale.set(2.8, 0.74, 1);
-        caption.position.set(0, -3.45, 0);
-        caption.material.depthTest = false;
-        caption.material.depthWrite = false;
-        caption.renderOrder = 39;
-        gallery.add(caption);
         // The size-map view hides the original portal face. Keep the social
         // ring on the persistent portal mount so real followers remain visible
         // around the live file sunburst.
@@ -24287,6 +25329,16 @@ export function createWorldScene({
     });
     world.userData.repositoryCatalogLayer = layer;
     world.userData.repositoryPortalMeshes = portalMeshes;
+    const activityData = world.userData.repositoryActivityData;
+    const activitySelection = activityData?.selection || {};
+    const activityKey = `${String(
+      activitySelection.owner || "",
+    ).toLocaleLowerCase()}/${String(
+      activitySelection.repo || activitySelection.name || "",
+    ).toLocaleLowerCase()}`;
+    if (activityData && activityKey === activeKey) {
+      updateRepositoryActivity(activityData.activity, activitySelection);
+    }
   }
 
   function setRepositoryImportState(state = {}) {
@@ -24314,6 +25366,7 @@ export function createWorldScene({
   }
 
   function updateRepositoryActivity(activity = {}, selection = {}) {
+    world.userData.repositoryActivityData = { activity, selection };
     const previousLayer = world.userData.repositoryActivityLayer;
     const previousMount =
       world.userData.repositoryActivityMount || previousLayer?.parent;
@@ -24325,8 +25378,22 @@ export function createWorldScene({
     const name = String(selection?.repo || selection?.name || "").slice(0, 60);
     const repositoryKey =
       `${owner.toLocaleLowerCase()}/${name.toLocaleLowerCase()}`;
-    const mount = repositoryPortals.get(repositoryKey)?.group;
+    const portalRecord = repositoryPortals.get(repositoryKey);
+    const mount = portalRecord?.group;
     if (!mount) return;
+    const runningAgents = agentBotAccessAllowed
+      ? (repositoryAgentTasksByRepository.get(repositoryKey) || []).length
+      : 0;
+    const rawFollowerCount = portalRecord?.record?.fediverseFollowerCount;
+    const visibleFollowerCount = Array.isArray(
+      portalRecord?.record?.fediverseFollowers,
+    )
+      ? portalRecord.record.fediverseFollowers.length
+      : 0;
+    const fediverseFollowers =
+      Number.isSafeInteger(rawFollowerCount) && rawFollowerCount >= 0
+        ? rawFollowerCount
+        : visibleFollowerCount;
 
     const layer = new THREE.Group();
     layer.name = "repository-commit-activity";
@@ -24356,6 +25423,7 @@ export function createWorldScene({
           THREE,
           activity,
           `${owner}/${name}`,
+          { runningAgents, fediverseFollowers },
         ),
         side: THREE.DoubleSide,
         toneMapped: false,
@@ -25205,16 +26273,6 @@ export function createWorldScene({
         );
         dockBase.position.set(0, groundY + 0.08, 5.02);
         terminalDock.add(dockBase);
-        const dockLabel = repositoryRecordCaptionSprite(
-          THREE,
-          `AGENT CONTROL · ${runningTasks.length} RUNNING`,
-          "LIVE REPOSITORY SNAPSHOTS · CLICK A SCREEN",
-          "#8fffe0",
-        );
-        dockLabel.name = `repository-agent-control-label:${repositoryKey}`;
-        dockLabel.scale.set(3.9, 0.68, 1);
-        dockLabel.position.set(0, groundY + 2.16, 5.04);
-        terminalDock.add(dockLabel);
         runningTasks.forEach((task, index) => {
           const terminal = createRepositoryAgentTerminal(THREE, task);
           terminal.position.set(
@@ -25225,6 +26283,7 @@ export function createWorldScene({
           terminal.scale.setScalar(0.78);
           terminalDock.add(terminal);
           interactive.push(terminal.userData.screen);
+          interactive.push(terminal.userData.viewButton);
         });
         layer.add(terminalDock);
       }
@@ -26197,23 +27256,16 @@ export function createWorldScene({
         }
       }
       const boardHit = pressHits.find(
-        ({ object }) =>
-          object === officeTaskBulletinFace ||
-          object === repoIssuesBoardFace,
+        ({ object }) => object === officeTaskBulletinFace,
       );
       if (boardHit) {
-        const source =
-          boardHit.object === officeTaskBulletinFace ? "task" : "issue";
-        const list =
-          source === "task"
-            ? buildBoardState.items
-            : buildBoardState.issues;
+        const source = "task";
+        const list = buildBoardState.items;
         const index = buildBoardGridIndex(boardHit.uv, list.length);
         if (
           index >= 0 &&
           list[index]?.key &&
-          (source === "issue" ||
-            (buildBoardState.canManage && source === "task"))
+          buildBoardState.canManage
         ) {
           draggedBuildCard = {
             source,
@@ -26225,7 +27277,7 @@ export function createWorldScene({
               buildBoardSendQaHit(boardHit.uv, index),
             canDrag:
               buildBoardState.canManage &&
-              !(source === "issue" && list[index].assigned),
+              true,
             moved: false,
           };
         }
@@ -26335,10 +27387,7 @@ export function createWorldScene({
       pointerCoordinates(event);
       raycaster.setFromCamera(pointer, camera);
       const boardHit = raycaster
-        .intersectObjects(
-          [officeTaskBulletinFace, repoIssuesBoardFace],
-          false,
-        )
+        .intersectObjects([officeTaskBulletinFace], false)
         .find(({ object }) => object === officeTaskBulletinFace);
       if (draggedBuildCard.source === "task" && boardHit) {
         const nextIndex = buildBoardGridIndex(
@@ -26673,17 +27722,42 @@ export function createWorldScene({
       if (href) onMastodonOpenLink(href);
       return;
     }
+    if (hit?.object?.userData?.interactive === "leaderboard-grid") {
+      const canvasX = (Number(hit.uv?.x) || 0) * 2048;
+      const canvasY = (1 - (Number(hit.uv?.y) || 0)) * 2048;
+      const gridTop = 154;
+      const gridHeight = 2048 - gridTop - 38;
+      const column = Math.floor((canvasX - 38) / ((2048 - 76) / 5));
+      const row = Math.floor((canvasY - gridTop) / (gridHeight / 5));
+      const board =
+        column >= 0 && column < 5 && row >= 0 && row < 5
+          ? leaderboardGridBoardDescriptors(leaderboardGridState)[
+              row * 5 + column
+            ]
+          : null;
+      if (board?.id === "referrals") {
+        onReferralBoardSelect();
+      } else if (board?.id === "http-referrers") {
+        const href = safeSiteReferrerURL(
+          leaderboardGridState.siteRows?.[0],
+        );
+        if (href) onSiteReferrerOpen(href);
+      }
+      return;
+    }
     if (hit?.object?.userData?.interactive === "referral-leaderboard") {
       onReferralBoardSelect();
       return;
     }
-    if (hit?.object?.userData?.interactive === "site-referrer-link") {
-      const canvasY = (1 - (Number(hit.uv?.y) || 0)) * 720;
-      const index = Math.floor((canvasY - 118) / 96);
-      const row = siteReferrerLeaderboardSign.userData.rows?.[index];
-      const href =
-        index >= 0 && index < 5 ? safeSiteReferrerURL(row) : "";
+    if (hit?.object?.userData?.interactive === "site-referrer-leaderboard") {
+      const href = safeSiteReferrerURL(
+        leaderboardGridState.siteRows?.[0],
+      );
       if (href) onSiteReferrerOpen(href);
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "start-node-download") {
+      onStartNodeDownload();
       return;
     }
     if (hit?.object?.userData?.interactive === "office-link-kiosk") {
@@ -26812,6 +27886,10 @@ export function createWorldScene({
     }
     if (hit?.object?.userData?.forkbotChat) {
       onForkbotChat();
+      return;
+    }
+    if (hit?.object?.userData?.repositoryAgentViewingPad) {
+      focusRepositoryAgentTerminal(hit.object);
       return;
     }
     if (hit?.object?.userData?.agentBotChat) {
@@ -27592,7 +28670,9 @@ export function createWorldScene({
       time - lastRenderStallLogAt >= RENDER_STALL_LOG_COOLDOWN_MS
     ) {
       lastRenderStallLogAt = time;
-      const drawingBuffer = renderer.getDrawingBufferSize(new THREE.Vector2());
+      const drawingBuffer = renderer.getDrawingBufferSize(
+        diagnosticsDrawingBuffer,
+      );
       const memory = performance.memory;
       console.warn("[ForkMesh World] Render stall detected", {
         observedAt: new Date().toISOString(),
@@ -27656,7 +28736,6 @@ export function createWorldScene({
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
     }
-    updateBuildBoardProximity();
     updateOfficeReceptionGuide(time);
     updateOfficeAttendanceClock(time);
     officeAquarium.updateFeeding(time, !reducedMotion);
@@ -27936,12 +29015,17 @@ export function createWorldScene({
     }
     updateCamera(delta);
     worldSky.tick(Date.now(), camera.position);
-    // Landmark/portal proximity is a town-scene concern only (PR #47). PR #47
-    // also called updateWorldSun() here; main removed wall-clock sun entirely
-    // in favour of fixed full daylight, so that call is not restored.
-    if (officeSceneMode === "town") {
-      nearestLandmark();
-      updateRepositoryPortalLabels();
+    // Spatial scans and DOM-adjacent controls do not need monitor refresh
+    // cadence. Bounding them to 12.5Hz removes repeated portal walks and
+    // layout writes while movement and WebGL rendering remain full-rate.
+    if (time >= nextProximityUpdateAt) {
+      nextProximityUpdateAt = time + 80;
+      updateBuildBoardProximity();
+      if (officeSceneMode === "town") {
+        nearestLandmark();
+        updateRepositoryPortalLabels();
+      }
+      updateOfficeAquariumProximity(time, viewportRect);
     }
     updateOfficeSlidingDoors(time, delta);
     updateOfficeLogoReflection(time);
@@ -27954,99 +29038,109 @@ export function createWorldScene({
     // after label style writes from the preceding frame, forced a synchronous
     // layout on every animation tick and was especially visible on first input.
     const rect = viewportRect;
-    updateOfficeAquariumProximity(time, rect);
     // main removed the floating landmark labels (adhoc #243); only the player
     // and remote name plates remain, and they are a town-scene concern.
-    if (officeSceneMode === "town") {
-      if (cameraMode === "first-person") {
-        playerLabel.style.opacity = "0";
-        playerLabel.style.visibility = "hidden";
-      } else {
-        updateScreenLabel(
-          THREE,
-          player,
-          playerLabel,
-          camera,
-          rect.width,
-          rect.height,
-          player.userData.emojiStatusSprite ? 5.7 : 4.5,
-          screenLabelPosition,
-        );
-      }
-      remotePlayers.forEach((avatar, id) => {
-        updateScreenLabel(
-          THREE,
-          avatar,
-          remoteLabels.get(id),
-          camera,
-          rect.width,
-          rect.height,
-          avatar.userData.emojiStatusSprite ? 5.35 : 4.2,
-          screenLabelPosition,
-        );
-      });
-      officeParticipantLabels.forEach((element) => {
-        element.style.visibility = "hidden";
-      });
-      officeBubbles.forEach((element) => {
-        element.style.visibility = "hidden";
-      });
-    } else {
-      playerLabel.style.visibility = "hidden";
-      remoteLabels.forEach((element) => {
-        element.style.visibility = "hidden";
-      });
-      officeParticipants.forEach((avatar, id) => {
-        const participantFloorId =
-          String(avatar.userData?.officeFloorId || "marketing");
-        const sameVisibleFloor =
-          !officeElevatorRide &&
-          participantFloorId === officeCurrentFloorId;
-        const label = officeParticipantLabels.get(id);
-        const bubble = officeBubbles.get(id);
-        if (!sameVisibleFloor) {
-          if (label) {
-            label.style.opacity = "0";
-            label.style.visibility = "hidden";
-          }
-          if (bubble) {
-            bubble.style.opacity = "0";
-            bubble.style.visibility = "hidden";
-          }
-          return;
-        }
-        updateScreenLabel(
-          THREE,
-          avatar,
-          label,
-          camera,
-          rect.width,
-          rect.height,
-          4.2,
-          screenLabelPosition,
-        );
-        if (bubble) {
+    if (time >= nextScreenLabelUpdateAt) {
+      nextScreenLabelUpdateAt = time + 34;
+      if (officeSceneMode === "town") {
+        if (cameraMode === "first-person") {
+          playerLabel.style.opacity = "0";
+          playerLabel.style.visibility = "hidden";
+        } else {
           updateScreenLabel(
             THREE,
-            avatar,
-            bubble,
+            player,
+            playerLabel,
             camera,
             rect.width,
             rect.height,
-            5.1,
+            player.userData.emojiStatusSprite ? 5.7 : 4.5,
             screenLabelPosition,
           );
-          const bubbleHalfWidth = Math.min(136, Math.max(84, rect.width / 2 - 12));
-          const bubbleLeft = Number.parseFloat(bubble.style.left) || rect.width / 2;
-          const bubbleTop = Number.parseFloat(bubble.style.top) || 72;
-          bubble.style.left = `${clamp(
-            bubbleLeft,
-            bubbleHalfWidth,
-            rect.width - bubbleHalfWidth,
-          )}px`;
-          bubble.style.top = `${clamp(bubbleTop, 68, rect.height - 18)}px`;
         }
-      });
+        remotePlayers.forEach((avatar, id) => {
+          updateScreenLabel(
+            THREE,
+            avatar,
+            remoteLabels.get(id),
+            camera,
+            rect.width,
+            rect.height,
+            avatar.userData.emojiStatusSprite ? 5.35 : 4.2,
+            screenLabelPosition,
+          );
+        });
+        officeParticipantLabels.forEach((element) => {
+          element.style.visibility = "hidden";
+        });
+        officeBubbles.forEach((element) => {
+          element.style.visibility = "hidden";
+        });
+      } else {
+        playerLabel.style.visibility = "hidden";
+        remoteLabels.forEach((element) => {
+          element.style.visibility = "hidden";
+        });
+        officeParticipants.forEach((avatar, id) => {
+          const participantFloorId =
+            String(avatar.userData?.officeFloorId || "marketing");
+          const sameVisibleFloor =
+            !officeElevatorRide &&
+            participantFloorId === officeCurrentFloorId;
+          const label = officeParticipantLabels.get(id);
+          const bubble = officeBubbles.get(id);
+          if (!sameVisibleFloor) {
+            if (label) {
+              label.style.opacity = "0";
+              label.style.visibility = "hidden";
+            }
+            if (bubble) {
+              bubble.style.opacity = "0";
+              bubble.style.visibility = "hidden";
+            }
+            return;
+          }
+          updateScreenLabel(
+            THREE,
+            avatar,
+            label,
+            camera,
+            rect.width,
+            rect.height,
+            4.2,
+            screenLabelPosition,
+          );
+          if (bubble) {
+            updateScreenLabel(
+              THREE,
+              avatar,
+              bubble,
+              camera,
+              rect.width,
+              rect.height,
+              5.1,
+              screenLabelPosition,
+            );
+            const bubbleHalfWidth = Math.min(
+              136,
+              Math.max(84, rect.width / 2 - 12),
+            );
+            const bubbleLeft =
+              Number.parseFloat(bubble.style.left) || rect.width / 2;
+            const bubbleTop = Number.parseFloat(bubble.style.top) || 72;
+            bubble.style.left = `${clamp(
+              bubbleLeft,
+              bubbleHalfWidth,
+              rect.width - bubbleHalfWidth,
+            )}px`;
+            bubble.style.top = `${clamp(
+              bubbleTop,
+              68,
+              rect.height - 18,
+            )}px`;
+          }
+        });
+      }
     }
     renderer.render(scene, camera);
     diagnosticsFrameCount = Math.min(
@@ -28155,6 +29249,7 @@ export function createWorldScene({
     window.removeEventListener("keyup", handleKeyUp);
     window.removeEventListener("blur", handleWindowBlur);
     aquariumFeedAction.removeEventListener("click", handleAquariumFeed);
+    aquariumTapAction.removeEventListener("click", handleAquariumTap);
     aquariumBackdropAction.removeEventListener(
       "click",
       handleAquariumBackdrop,
@@ -28330,7 +29425,7 @@ export function createWorldScene({
       baseSpeed: baseMoveSpeed(),
       maxSpeed: PLAYER_MAX_SPEED * moveSpeedScale,
       speedScale: moveSpeedScale,
-      accelerationScale: moveAccelScale,
+      immediateDigitalInput: true,
       keyboardActive: [...keys].some((code) => MOVEMENT_KEYS.has(code)),
       touchActive: touchMovement.lengthSq() > 0,
       touchStrength: touchMovement.length(),

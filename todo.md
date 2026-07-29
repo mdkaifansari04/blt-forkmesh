@@ -5,6 +5,15 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [x] Add a live Engineering-room debug control panel with bounded renderer, memory, loop, and interaction counts plus green/orange/red optimization thresholds.
+- [x] Put every leaderboard and statistic into one square 5×5 overview wall while restoring the individual Active, Referral, HTTP Referrer, and per-stat boards around the circular board district; keep every assembly above terrain.
+- [x] Remove the ForkMesh open repo issues billboard and its invisible interaction surface; close the gap by moving the Human TODO board beside the build board.
+- [x] Move the Solana treasury QR to the front midpoint of the first node ring and add a Start a node button that opens the desktop download page in a new window.
+- [x] Replace the doubled south route with one concrete-brick path terminating at the fire-marked Members Circle sign.
+- [x] Replace the doubled north Office route with one width-matched concrete-brick path, bridge, and approach that meet edge-to-edge.
+- [x] Make the World foundation and its collision boundary circular around the circular bike lane.
+- [x] Make keyboard movement instant, reuse camera/movement frame scratch state, and cadence-bound non-motion proximity/DOM work while preserving full-rate WebGL rendering.
+- [x] Move World DEBUG to the lower-left and extend the right chat dock to the bottom; add a pinned dark GitHub Primer multiline composer with channel/repository selectors and working chat, signed-issue, and Engineering-agent actions, move channel security/connection into its header, remove the duplicate public notice, and collapse HUD docks when clicking outside.
 - [x] Restyle the compact and expanded World right HUD with GitHub Primer primitives, including selected, hover, focus, and icon-button states.
 - [x] Open both Issue and PR tower records in their canonical, same-origin embedded web workbenches instead of the unrelated Repository portals panel.
 - [ ] Complete the remaining web PR lifecycle: proactive readiness/conflict data, live checks, complete commit history, and an auditable signed update-from-main mirror operation. Conversation, peer review, changed files, and protected owner merge are already present.

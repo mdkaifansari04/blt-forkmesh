@@ -40,7 +40,7 @@ def test_signed_in_world_syncs_views_and_movement_with_offline_fallback():
     assert "void this.loadWorldPreferences()" in WORLD
     assert "queueWorldPreferencesSync()" in WORLD
     assert "this.settings.moveSpeed" in WORLD
-    assert "this.settings.moveAccel" in WORLD
+    assert "this.settings.moveAccel" not in WORLD
     assert "this.settings.daylightMode" in WORLD
     assert "this.savedViews.slice(0, SAVED_VIEWS_MAX)" in WORLD
     assert "Local storage remains the offline source" in WORLD

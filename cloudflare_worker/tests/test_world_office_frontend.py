@@ -207,7 +207,7 @@ def test_entrance_uses_two_proximity_sliding_panels_without_a_hinged_door():
     assert "officeInteriorDoorPivot" not in scene
 
 
-def test_attendance_is_one_shared_last_twenty_row_ledger():
+def test_attendance_has_member_leaderboard_and_individual_punch_clock():
     office = source(OFFICE_PATH)
     scene = source(SCENE_PATH)
     for contract in (
@@ -215,6 +215,8 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
         "async function loadAttendance()",
         "function recordAttendance(",
         "visits.slice(0, 20)",
+        "leaderboard.slice(0, 20)",
+        "leaderboard,",
         "if (loadPublicAttendance) void loadAttendance()",
         "loadPublicAttendance: !activeSession",
         "loadPublicFallback = true",
@@ -224,20 +226,27 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
     ):
         assert contract in office
     for contract in (
-        "OFFICE · LAST 20 VISITS",
-        'context.fillText("USER"',
-        'context.fillText("IN"',
-        'context.fillText("OUT"',
+        "OFFICE LEADERBOARD",
+        'context.fillText("MEMBER"',
+        'context.fillText("LONGEST STAY"',
+        'context.fillText("STATUS"',
         'context.fillText("FLOOR"',
-        'context.fillText("TOTAL"',
-        "visit?.inAt",
-        "visit?.outAt",
-        "visit?.durationMs",
+        "officeAttendanceLeaderboardRows",
+        "longestDurationMs",
+        "activeDurationMs",
+        "One row per member",
         "officeAttendanceDurationLabel",
         "updateOfficeAttendanceClock",
         "Math.floor(elapsedMs / 30_000)",
+        "IN OFFICE",
+        'officeClockInBoard.name = "forkmesh-office-clock-in"',
+        "OFFICE CLOCK · LAST 20 PUNCHES",
+        "function officeClockInTexture(",
+        'context.fillText("IN"',
+        'context.fillText("OUT"',
         "IN BUILDING",
-        'String(visit?.floor || "Lobby")',
+        "One row per punch",
+        "officeClockInTexture(officeAttendance, elapsedMs)",
     ):
         assert contract in scene
     for contract in (
@@ -273,6 +282,57 @@ def test_attendance_duration_labels_are_compact_and_reject_bad_values():
     )
     assert json.loads(result.stdout) == [
         "—", "—", "0m", "0m", "1m", "1h 02m", "1d 01h",
+    ]
+
+
+def test_attendance_leaderboard_deduplicates_sorts_and_ticks_active_stays():
+    script = f"""
+      import {{ officeAttendanceLeaderboardRows }} from {
+          json.dumps(SCENE_PATH.as_uri())
+      };
+      process.stdout.write(JSON.stringify(officeAttendanceLeaderboardRows({{
+        leaderboard: [
+          {{
+            account: "Alice",
+            longestDurationMs: 240_000,
+            activeDurationMs: 60_000,
+            present: true,
+            floor: "Engineering",
+          }},
+          {{
+            account: "bob",
+            longestDurationMs: 300_000,
+            activeDurationMs: 0,
+            present: false,
+          }},
+          {{
+            account: "BOB",
+            longestDurationMs: 120_000,
+            activeDurationMs: 0,
+            present: false,
+          }},
+        ],
+      }}, 300_000)));
+    """
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert json.loads(result.stdout) == [
+        {
+            "account": "Alice",
+            "durationMs": 360_000,
+            "present": True,
+            "floor": "Engineering",
+        },
+        {
+            "account": "bob",
+            "durationMs": 300_000,
+            "present": False,
+            "floor": "",
+        },
     ]
 
 
@@ -496,14 +556,15 @@ def test_office_is_a_remote_district_on_continuous_land_with_a_paved_route():
     tower = source(TOWER_PATH)
     for contract in (
         '"forkmesh-continuous-city-land"',
-        'officeLandConnection.name = "forkmesh-office-land-connection"',
-        'officePromenade.name = "forkmesh-office-land-promenade"',
+        '"north-office", [0, -16], [0, OFFICE_BRIDGE_START_Z], OFFICE_BRIDGE_WIDTH',
         'officeBridge.name = "forkmesh-office-bridge"',
+        'officeApproach.name = "forkmesh-office-island-approach"',
         "new THREE.BoxGeometry(OFFICE_BRIDGE_WIDTH, 0.3, officeBridgeLength)",
-        "world.add(officeLandConnection)",
         "world.add(officeBridge)",
     ):
         assert contract in scene
+    assert '"forkmesh-office-land-connection"' not in scene
+    assert '"forkmesh-office-land-promenade"' not in scene
     assert "const bridgeGlass = makeMaterial" not in scene
     for contract in (
         "OFFICE_ISLAND_CENTER = Object.freeze([0, 0, -215])",
@@ -793,15 +854,14 @@ def test_office_walkers_share_world_movement_tuning_and_heading():
         )
     }
 
-    # One cadence owns keyboard acceleration, analog strength, and the user's
-    # per-device tuning in every part of the continuous World.
+    # One cadence owns immediate keyboard speed, analog strength, and the
+    # user's per-device tuning in every part of the continuous World.
     for contract in (
         "PLAYER_MAX_SPEED",
-        "PLAYER_ACCELERATION",
         "moveSpeedScale",
-        "moveAccelScale",
         "keyboardMovementSpeed",
         "inputStrength",
+        "? topSpeed",
     ):
         assert contract in speed
     assert "movementSpeedForInput(" in walkers["walkPlayer"]
@@ -890,9 +950,13 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
         "Walk up to Noah for World and repository tips",
         "officeGreetingBoard.position.set(0, 6.25, -OFFICE_FRONT_Z + 0.5)",
         'officeAttendanceBoard.name = "forkmesh-office-attendance"',
-        "OFFICE · LAST 20 VISITS",
-        "visits.slice(0, 20)",
-        "IN BUILDING",
+        'officeClockInBoard.name = "forkmesh-office-clock-in"',
+        "OFFICE LEADERBOARD",
+        "OFFICE CLOCK · LAST 20 PUNCHES",
+        "officeAttendanceLeaderboardRows",
+        "officeClockInTexture",
+        "One row per member",
+        "One row per punch",
         "function setOfficeAttendance(event = {})",
         'logoFountain.name = "forkmesh-office-logo-fountain"',
         'chromeCube.name = "forkmesh-reflective-fm-cube"',
@@ -1218,8 +1282,9 @@ def test_walk_surfaces_and_every_floor_use_real_collision_constraints():
     scene = source(SCENE_PATH)
     for contract in (
         "function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS)",
-        "const cityRadiusX = CONTINUOUS_CITY_RADIUS_X - margin;",
-        "const cityRadiusZ = CONTINUOUS_CITY_RADIUS_Z - margin;",
+        "const cityRadius = CONTINUOUS_CITY_RADIUS - margin;",
+        "Math.hypot(",
+        ") <= cityRadius",
         "function constrainTownOfficeWalls(previousPosition)",
         "function constrainOfficeInteriorWalls(avatar, previousPosition)",
         "officeInteriorPointIsWalkable(",

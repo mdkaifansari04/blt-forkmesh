@@ -46,14 +46,13 @@ def test_bulletin_separates_every_remaining_task_from_completed_work():
     assert "item.detail" in SCENE
 
 
-def test_pending_cards_are_detailed_straight_and_repo_issues_have_adjacent_board():
+def test_pending_cards_are_detailed_straight_without_the_removed_repo_issues_board():
     assert "const x = 58 + column * 574;" in SCENE
     assert "const y = 200 + row * 218;" in SCENE
     assert "context.rotate(angle)" not in SCENE
     assert "item.detail" in SCENE
     assert "drawNote(item, index);" in SCENE
-    assert '"forkmesh-repo-issues-board-face"' in SCENE
-    assert "worldRepoIssuesTexture" in SCENE
-    assert "DRAG AN ISSUE ONTO THE BUILD BOARD TO ASSIGN IT" in SCENE
+    assert '"forkmesh-repo-issues-board-face"' not in SCENE
+    assert "worldRepoIssuesTexture" not in SCENE
+    assert "FORKMESH · OPEN REPO ISSUES" not in SCENE
     assert '"build-task-board"' in SCENE
-    assert '"repo-issues-board"' in SCENE

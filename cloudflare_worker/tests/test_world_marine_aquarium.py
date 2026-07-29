@@ -146,35 +146,60 @@ def test_aquarium_feeding_action_is_persistently_available_and_accessible():
     assert 'aquariumFeedAction.textContent = "FEED"' in SCENE
     assert 'aquariumFeedAction.dataset.worldAquariumFeed = ""' in SCENE
     assert "updateOfficeAquariumProximity" in SCENE
-    assert 'aquariumControlPanel.style.left = "50%"' in SCENE
+    assert "officeAquarium.controlAnchor" in SCENE
+    assert "updateScreenLabel(" in SCENE
     assert 'removeEventListener("click", handleAquariumFeed)' in SCENE
 
 
-def test_aquarium_bottom_right_control_panel_combines_all_three_actions():
+def test_aquarium_bottom_right_control_panel_combines_all_four_actions():
     assert 'aquariumControlPanel.dataset.worldAquariumControls = ""' in SCENE
     assert 'aquariumControlTitle.textContent = "REEF CONTROL"' in SCENE
+    assert 'aquariumTapAction.dataset.worldAquariumTap = ""' in SCENE
+    assert 'aquariumTapAction.textContent = "TAP GLASS"' in SCENE
     assert 'aquariumBackdropAction.dataset.worldAquariumBackdrop = ""' in SCENE
     assert 'aquariumLightAction.dataset.worldAquariumLight = ""' in SCENE
+    assert "handleAquariumTap" in SCENE
+    assert "officeAquarium.tapGlass()" in SCENE
     assert "handleAquariumBackdrop" in SCENE
     assert "handleAquariumLight" in SCENE
     assert "setBackdropOpaque(!current)" in SCENE
     assert "setLightEnabled(!current)" in SCENE
     # The exhibit controls remain pinned within the lobby viewport instead of
     # disappearing when the player leaves the narrow glass-side trigger.
-    assert 'aquariumControlPanel.style.visibility = "visible"' in SCENE
+    assert '"forkmesh-office-aquarium-control-anchor"' in SCENE
+    assert "officeAquarium.controlAnchor" in SCENE
     assert "aquariumDistance / 9" in SCENE
     assert ".world-aquarium-control-panel" in CSS
-    assert "grid-template-columns: repeat(3" in CSS
+    assert "grid-template-columns: repeat(2" in CSS
     assert ".world-aquarium-feed-action" not in CSS
 
 
-def test_aquarium_fish_react_to_a_nearby_visitor_without_a_second_loop():
+def test_aquarium_fish_approach_a_visitor_gently_without_a_second_loop():
     aquarium = _aquarium_block()
     assert "let visitorReaction = 0" in aquarium
-    assert "setVisitorProximity(value)" in aquarium
-    assert "state.speed * (1 + reaction * 0.68)" in aquarium
-    assert "fish.position.x -= reaction" in aquarium
+    assert "let visitorReactionTarget = 0" in aquarium
+    assert "function selectVisitorFish()" in aquarium
+    assert "visitorApproachCount" in aquarium
+    assert "aquariumFishApproachesVisitor(index)" in aquarium
+    assert "setVisitorProximity(value, target = {})" in aquarium
+    assert "1 - Math.exp(-elapsed / 720)" in aquarium
+    assert "fish.position.lerp(" in aquarium
+    assert "state.visitorPoint" in aquarium
+    assert "reaction * 0.68" not in aquarium
+    assert "fish.position.x -= reaction" not in aquarium
     assert "setVisitorProximity(" in SCENE
+
+
+def test_tap_reverses_routes_continuously_and_one_close_fish_puffs_its_mouth():
+    aquarium = _aquarium_block()
+    assert "function tapGlass(time = performance.now())" in aquarium
+    assert "state.direction *= -1" in aquarium
+    assert "progress - now * state.speed * state.direction" in aquarium
+    assert "AQUARIUM_GLASS_TAP_REACTION_MS = 2_600" in aquarium
+    assert "const mouthPuff =" in aquarium
+    assert "index === visitorFocusIndex" in aquarium
+    assert "state.mouth.scale.setScalar(1 + mouthPuff)" in aquarium
+    assert "tapGlass," in aquarium
 
 
 def test_aquarium_background_and_light_are_real_scene_toggles():

@@ -97,6 +97,18 @@
   const sideInput = document.querySelector("#sideChatInput");
   const fullSend = document.querySelector("#fullChatSend");
   const sideSend = document.querySelector("#sideChatSend");
+  const fullChannel = document.querySelector("#fullChatChannel");
+  const fullRepository = document.querySelector("#fullChatRepo");
+  const fullAction = document.querySelector("#fullChatAction");
+  const fullSendLabel = document.querySelector(
+    "[data-dashboard-chat-send-label]",
+  );
+  const fullComposerHint = document.querySelector(
+    "[data-dashboard-chat-composer-hint]",
+  );
+  const fullComposerStatus = document.querySelector(
+    "[data-dashboard-chat-composer-status]",
+  );
 
   if (!fullLog && !sideLog) return;
 
@@ -1854,7 +1866,19 @@
     }
   }
 
-  function orgAgentScope() {
+  function orgAgentScope(override = null) {
+    const selectedOwner = String(override?.owner || "");
+    const selectedRepo = String(override?.repo || override?.name || "");
+    if (
+      /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(selectedOwner) &&
+      /^[A-Za-z0-9._-]{1,100}$/.test(selectedRepo)
+    ) {
+      return {
+        organization: selectedOwner,
+        owner: selectedOwner,
+        repo: selectedRepo,
+      };
+    }
     if (scopedWorkshop) {
       return { organization: ROOM_OWNER, owner: ROOM_OWNER, repo: ROOM_REPO };
     }
@@ -1893,19 +1917,19 @@
     return orgAgentEngineeringAccess;
   }
 
-  async function maybeAskOrgAgent(text) {
+  async function maybeAskOrgAgent(text, selectedScope = null) {
     const provider = CLAUDE_MENTION_RE.test(text || "")
       ? "claude-code"
       : CODEX_MENTION_RE.test(text || "")
         ? "codex"
         : "";
-    if (!provider) return;
+    if (!provider) return false;
     const session = userSession();
     if (!session || !orgAgentAccessLoaded || !orgAgentEngineeringAccess) {
       appendSystem(
         `Only Engineering team members can use @${provider === "codex" ? "codex" : "claude"}.`,
       );
-      return;
+      return false;
     }
     const botName = provider === "codex" ? CODEX_SENDER_ID : CLAUDE_SENDER_ID;
     const prompt = String(text || "")
@@ -1913,9 +1937,9 @@
       .trim();
     if (!prompt) {
       appendSystem(`Add a task after @${botName}.`);
-      return;
+      return false;
     }
-    const scope = orgAgentScope();
+    const scope = orgAgentScope(selectedScope);
     const taskKeyMatch = prompt.match(
       /\[(task:[a-z0-9-]{1,48}|issue:[a-z0-9-]{1,40}\/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})\]/i,
     );
@@ -1950,6 +1974,7 @@
         `Queued on ${target}. Claude Haiku is checking the prompt before I start.`,
         botName,
       );
+      return true;
     } catch (error) {
       const reason = error.message === "no_eligible_headless_mirror"
         ? "No eligible headless mirror is online."
@@ -1961,6 +1986,7 @@
           ? "Only Engineering team members can start this agent."
           : "I could not queue that task.";
       broadcastBotMessage(reason, botName);
+      return false;
     }
   }
 
@@ -2149,7 +2175,184 @@
     return control;
   }
 
+  function selectedComposerRepository() {
+    const value = String(fullRepository?.value || "");
+    const match = value.match(
+      /^([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\/([A-Za-z0-9._-]{1,100})$/,
+    );
+    return match ? { owner: match[1], name: match[2], repo: match[2] } : null;
+  }
+
+  function setComposerStatus(message = "", tone = "muted") {
+    if (!fullComposerStatus) return;
+    fullComposerStatus.textContent = message;
+    fullComposerStatus.className =
+      tone === "bad"
+        ? "text-destructive"
+        : tone === "good"
+          ? "text-primary"
+          : "text-muted-foreground";
+  }
+
+  function setFullComposerBusy(busy) {
+    for (const control of [
+      fullInput,
+      fullSend,
+      fullChannel,
+      fullRepository,
+      fullAction,
+    ]) {
+      if (control) control.disabled = Boolean(busy);
+    }
+  }
+
+  function syncFullComposerAction() {
+    if (!fullAction || !fullInput) return;
+    const action = fullAction.value;
+    const presentation = {
+      chat: {
+        label: "Send",
+        hint: "Enter sends · Shift+Enter adds a line",
+        placeholder: `Message ${CHANNEL}…`,
+      },
+      issue: {
+        label: "Create issue",
+        hint: "First line becomes the title · remaining lines become the description",
+        placeholder: "Issue title\\nDescribe the expected behavior and context…",
+      },
+      codex: {
+        label: "Assign Codex",
+        hint: "Starts a secured Engineering task on an eligible mirror",
+        placeholder: "Describe the implementation task for Codex…",
+      },
+      "claude-code": {
+        label: "Assign Claude",
+        hint: "Starts a secured Engineering task on an eligible mirror",
+        placeholder: "Describe the implementation task for Claude…",
+      },
+    }[action] || {};
+    if (fullSendLabel) fullSendLabel.textContent = presentation.label || "Send";
+    if (fullComposerHint) fullComposerHint.textContent = presentation.hint || "";
+    fullInput.placeholder = presentation.placeholder || "Write a message…";
+    fullRepository?.classList.toggle("ring-1", action !== "chat");
+    fullRepository?.classList.toggle("ring-primary/50", action !== "chat");
+    setComposerStatus("");
+  }
+
+  async function loadComposerRepositories() {
+    if (!fullRepository) return;
+    try {
+      const response = await fetch("/api/repositories", {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { accept: "application/json" },
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error("repository_catalog_unavailable");
+      const seenRepositories = new Set();
+      const repositories = (Array.isArray(payload?.repositories)
+        ? payload.repositories
+        : [])
+        .map((repository) => {
+          const owner = String(repository?.owner || "");
+          const name = String(repository?.name || repository?.repo || "");
+          const value = `${owner}/${name}`;
+          if (
+            !/^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?\/[A-Za-z0-9._-]{1,100}$/.test(
+              value,
+            ) ||
+            seenRepositories.has(value)
+          ) {
+            return null;
+          }
+          seenRepositories.add(value);
+          return value;
+        })
+        .filter(Boolean)
+        .sort((left, right) => left.localeCompare(right));
+      const previous =
+        sessionStorage.getItem("forkmesh.worldChat.repository") || "";
+      for (const value of repositories.slice(0, 250)) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value;
+        fullRepository.append(option);
+      }
+      if (repositories.includes(previous)) fullRepository.value = previous;
+    } catch (_) {
+      setComposerStatus("Repository catalog unavailable", "bad");
+    }
+  }
+
+  async function runFullComposerAction(inputEl) {
+    const action = String(fullAction?.value || "chat");
+    const text = String(inputEl?.value || "").trim();
+    if (!text) {
+      setComposerStatus("Write something first.", "bad");
+      inputEl?.focus();
+      return;
+    }
+    const repository = selectedComposerRepository();
+    if (!repository) {
+      setComposerStatus("Choose a repository for this action.", "bad");
+      fullRepository?.focus();
+      return;
+    }
+    setFullComposerBusy(true);
+    setComposerStatus(action === "issue" ? "Signing issue…" : "Assigning agent…");
+    try {
+      if (action === "issue") {
+        const lines = text.split(/\r?\n/);
+        const title = String(lines.shift() || "").trim().slice(0, 200);
+        const body = lines.join("\n").trim();
+        if (!title) throw new Error("Issue title is required.");
+        const submitIssue =
+          window.ForkMeshDashboardActions?.submitWebIssue;
+        if (typeof submitIssue !== "function") {
+          throw new Error("Issue authoring is still loading.");
+        }
+        await submitIssue(repository, title, body);
+        appendSystem(`Issue “${title}” was signed and sent to ${repository.owner}/${repository.name}.`);
+        setComposerStatus("Issue sent to the maintainer inbox.", "good");
+      } else {
+        const mention = action === "codex" ? "@codex" : "@claude";
+        appendMessage(
+          "self",
+          displayName(),
+          `${mention} ${text}`,
+          "",
+          "",
+          Date.now(),
+        );
+        const queued = await maybeAskOrgAgent(
+          `${mention} ${text}`,
+          repository,
+        );
+        if (!queued) throw new Error("Agent request was not accepted.");
+        setComposerStatus("Agent request submitted.", "good");
+      }
+      inputEl.value = "";
+      inputEl.style.height = "";
+    } catch (error) {
+      setComposerStatus(
+        String(error?.message || "The action could not be completed."),
+        "bad",
+      );
+    } finally {
+      setFullComposerBusy(false);
+      inputEl?.focus();
+    }
+  }
+
   function sendFrom(inputEl, attachmentControl) {
+    if (
+      inputEl === fullInput &&
+      fullAction &&
+      fullAction.value !== "chat"
+    ) {
+      void runFullComposerAction(inputEl);
+      return;
+    }
     if (!canJoinChat()) {
       showUserOnlyState();
       return;
@@ -2238,6 +2441,11 @@
       }
     });
     inputEl.addEventListener("input", () => updateMentionSuggest(inputEl));
+    inputEl.addEventListener("input", () => {
+      if (inputEl !== fullInput) return;
+      inputEl.style.height = "auto";
+      inputEl.style.height = `${Math.min(inputEl.scrollHeight, 128)}px`;
+    });
     inputEl.addEventListener("click", () => updateMentionSuggest(inputEl));
     inputEl.addEventListener("keyup", (event) => {
       // Caret moves that leave the value alone (no "input" event) can still
@@ -2277,6 +2485,33 @@
     await loadOrgAgentChatAccess();
     ensureEmptyState();
     mountPrivateChannelsLink();
+    if (fullChannel) {
+      fullChannel.value = ACTIVE_SPACE || "";
+      fullChannel.addEventListener("change", () => {
+        const destination = new URL(location.href);
+        destination.searchParams.set("worldEmbed", "1");
+        if (fullChannel.value) {
+          destination.searchParams.set("space", fullChannel.value);
+        } else {
+          destination.searchParams.delete("space");
+        }
+        destination.searchParams.delete("org");
+        destination.searchParams.delete("repo");
+        destination.searchParams.delete("run");
+        location.assign(`${destination.pathname}${destination.search}`);
+      });
+    }
+    fullRepository?.addEventListener("change", () => {
+      try {
+        sessionStorage.setItem(
+          "forkmesh.worldChat.repository",
+          fullRepository.value,
+        );
+      } catch (_) {}
+    });
+    fullAction?.addEventListener("change", syncFullComposerAction);
+    syncFullComposerAction();
+    void loadComposerRepositories();
     wireInput(fullInput, fullSend);
     wireInput(sideInput, sideSend);
     // Connect right away so the room's message history (replayed by the relay

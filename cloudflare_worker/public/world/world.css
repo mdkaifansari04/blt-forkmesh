@@ -1440,9 +1440,10 @@ forkmesh-world {
 .world-diagnostics {
   position: absolute;
   z-index: 45;
-  right: 0;
+  right: auto;
   bottom: 0;
-  width: min(1180px, 100%);
+  left: 0;
+  width: min(1180px, calc(100% - min(440px, calc(100vw - 24px))));
   max-width: 100vw;
   border-top: 1px solid var(--world-line-strong);
   border-left: 1px solid var(--world-line);
@@ -1639,10 +1640,10 @@ forkmesh-world {
   }
 }
 
-/* Chat stays open above the DEBUG strip at the lower-right. */
+/* DEBUG owns the lower-left; chat owns the lower-right all the way down. */
 .world-chat-terminal {
   right: 0;
-  bottom: var(--world-diagnostics-height);
+  bottom: 0;
   left: auto;
   z-index: 46;
   width: min(440px, calc(100vw - 24px));
@@ -1655,7 +1656,6 @@ forkmesh-world {
   border-top: 1px solid var(--world-line);
 }
 
-/* No DEBUG strip reserved below chat, so it can sit flush at the bottom. */
 .world-chat-terminal.world-chat-terminal--debug-hidden {
   bottom: 0;
 }
@@ -1666,6 +1666,33 @@ forkmesh-world {
 }
 
 .world-chat-terminal[open] [data-world-chat-terminal-last] {
+  display: none;
+}
+
+.world-chat-terminal-channel {
+  color: #f0f6fc;
+  font-weight: 700;
+}
+
+.world-chat-terminal-lock,
+.world-chat-terminal-connection {
+  color: #8c959f;
+}
+
+.world-chat-terminal-connection::before {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: #3fb950;
+  content: "";
+  vertical-align: 1px;
+}
+
+.world-chat-terminal:not([open]) .world-chat-terminal-channel,
+.world-chat-terminal:not([open]) .world-chat-terminal-lock,
+.world-chat-terminal:not([open]) .world-chat-terminal-connection {
   display: none;
 }
 
@@ -6450,11 +6477,12 @@ forkmesh-world.world-office-active .world-quick-dock {
 
 .world-aquarium-control-panel {
   position: absolute;
+  z-index: 18;
   display: grid;
-  min-width: min(390px, calc(100vw - 28px));
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-width: min(340px, calc(100vw - 28px));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 5px;
-  transform: translate(-100%, -100%);
+  transform: translate(calc(-100% - 8px), calc(-100% - 8px));
   border: 1px solid rgb(113 239 255 / 0.74);
   border-radius: 8px;
   background:
@@ -7039,6 +7067,18 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
   .world-diagnostics {
     font-size: 0.4rem;
+  }
+
+  .world-diagnostics:not(.world-chat-terminal) {
+    width: calc(100% - 58px);
+  }
+
+  .world-diagnostics:not(.world-chat-terminal):has(
+      + .world-chat-terminal[open]
+    ) {
+    width: 0;
+    overflow: hidden;
+    border: 0;
   }
 
   .world-diagnostics:not(.world-chat-terminal) > summary {

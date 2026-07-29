@@ -7082,6 +7082,74 @@ async def _office_attendance_recent(env, observed_at=None):
     return visits
 
 
+async def _office_attendance_leaderboard(env, observed_at=None):
+    """Return one bounded row per member, ranked by their longest Office stay."""
+    try:
+        observed_at = int(
+            Date.now() if observed_at is None else observed_at)
+    except (TypeError, ValueError):
+        observed_at = 0
+    rows = await d1_all(
+        env,
+        "WITH office_visits AS ("
+        "SELECT account_bi, account_name, in_at, out_at, floor_id, visit_id, "
+        "MAX(0, COALESCE(out_at, ?) - in_at) AS duration_ms, "
+        "ROW_NUMBER() OVER ("
+        "PARTITION BY account_bi "
+        "ORDER BY in_at DESC, visit_id DESC"
+        ") AS newest_rank "
+        "FROM world_office_attendance "
+        "WHERE visit_scope='office'"
+        "), member_totals AS ("
+        "SELECT account_bi, MAX(duration_ms) AS longest_duration_ms, "
+        "MAX(CASE WHEN out_at IS NULL THEN duration_ms ELSE 0 END) "
+        "AS active_duration_ms, "
+        "MAX(CASE WHEN out_at IS NULL THEN 1 ELSE 0 END) AS is_present "
+        "FROM office_visits GROUP BY account_bi"
+        ") "
+        "SELECT office_visits.account_name, "
+        "member_totals.longest_duration_ms, "
+        "member_totals.active_duration_ms, member_totals.is_present, "
+        "CASE WHEN member_totals.is_present=1 "
+        "THEN office_visits.floor_id ELSE '' END AS floor_id "
+        "FROM member_totals "
+        "JOIN office_visits "
+        "ON office_visits.account_bi=member_totals.account_bi "
+        "AND office_visits.newest_rank=1 "
+        "ORDER BY member_totals.longest_duration_ms DESC, "
+        "office_visits.account_name COLLATE NOCASE ASC "
+        "LIMIT 20",
+        observed_at,
+    )
+    leaderboard = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        account = world_protocol.clean_display_name(
+            row.get("account_name"), "Contributor")
+        try:
+            longest_duration_ms = max(
+                0, int(row.get("longest_duration_ms") or 0))
+            active_duration_ms = max(
+                0, int(row.get("active_duration_ms") or 0))
+        except (TypeError, ValueError):
+            continue
+        present = bool(row.get("is_present"))
+        leaderboard.append({
+            "account": account,
+            "longestDurationMs": longest_duration_ms,
+            "activeDurationMs": active_duration_ms if present else 0,
+            "present": present,
+            "floor": (
+                OFFICE_ATTENDANCE_FLOOR_LABELS.get(
+                    str(row.get("floor_id") or "").strip().lower(), "")
+                if present
+                else ""
+            ),
+        })
+    return leaderboard
+
+
 def _chat_direct_ticket(env, conversation_id, key_version, account_bi):
     expires = int(Date.now()) + CHAT_DIRECT_TICKET_TTL_MS
     canonical = ".".join((
@@ -7235,11 +7303,14 @@ async def office_attendance_handler(env, request):
     if method == "GET":
         await ensure_schema(env)
         observed_at = int(Date.now())
+        visits = await _office_attendance_recent(env, observed_at)
         return json_response(
             {
                 "ok": True,
                 "asOfAt": observed_at,
-                "visits": await _office_attendance_recent(env, observed_at),
+                "visits": visits,
+                "leaderboard": await _office_attendance_leaderboard(
+                    env, observed_at),
             },
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"x-content-type-options": "nosniff"},
@@ -7345,11 +7416,13 @@ async def office_attendance_handler(env, request):
             now,
             str(account_bi),
         )
+    visits = await _office_attendance_recent(env, now)
     return json_response(
         {
             "ok": True,
             "asOfAt": now,
-            "visits": await _office_attendance_recent(env, now),
+            "visits": visits,
+            "leaderboard": await _office_attendance_leaderboard(env, now),
         },
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
@@ -34636,6 +34709,8 @@ ADMIN_STYLE = """
  .ab-root .jsoncell{color:var(--ab-muted)}
  .ab-root .s5{color:var(--ab-danger);font-weight:600}
  .ab-root tbody tr:hover{background:var(--ab-card)}
+ .ab-root tr.record-row{cursor:pointer}
+ .ab-root tr.record-row:focus{outline:2px solid var(--ab-link);outline-offset:-2px;background:var(--ab-card)}
  .ab-root .empty{padding:32px 24px;color:var(--ab-muted)}
  .ab-root .title{padding:12px 24px 4px;font-weight:600}
  .ab-root .navcount{color:var(--ab-muted);font-size:11px;font-weight:400}
@@ -34647,6 +34722,14 @@ ADMIN_STYLE = """
  .ab-root .rowfield input,.ab-root .rowfield textarea{width:100%;background:var(--ab-bg);color:var(--ab-fg);
         border:1px solid var(--ab-border-2);border-radius:6px;padding:8px;
         font:13px ui-monospace,monospace}
+ .ab-root .record-detail{margin:12px 24px;max-width:980px;border:1px solid var(--ab-border-2);
+        border-radius:8px;background:var(--ab-card);overflow:hidden}
+ .ab-root .record-detail dl{margin:0}
+ .ab-root .record-detail dl>div{display:block;padding:12px 16px;border-bottom:1px solid var(--ab-border)}
+ .ab-root .record-detail dl>div:last-child{border-bottom:0}
+ .ab-root .record-detail dt{color:var(--ab-muted);font:600 12px system-ui,sans-serif;margin-bottom:5px}
+ .ab-root .record-detail dd{margin:0;color:var(--ab-fg);white-space:pre-wrap;overflow-wrap:anywhere;
+        font:13px/1.55 ui-monospace,monospace}
  .ab-root .tools .navlink{padding:8px 4px}
  .ab-root .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
  .ab-root .account-kind button{padding:3px 8px;font-size:12px}
@@ -34668,6 +34751,13 @@ ADMIN_STYLE = """
  .ab-root .error-bar:focus{outline:2px solid var(--ab-fg);outline-offset:2px}
  .ab-root .error-hours{display:flex;justify-content:space-between;color:var(--ab-muted);font-size:11px;margin-top:6px}
  .ab-root .error-groups{margin-top:16px}
+ .ab-root .error-sparkline{width:180px;height:34px;display:grid;grid-template-columns:repeat(24,1fr);
+        gap:2px;align-items:end;border-bottom:1px solid var(--ab-border);padding:2px 0}
+ .ab-root .error-sparkline:focus{outline:2px solid var(--ab-link);outline-offset:2px}
+ .ab-root .error-spark-bar{display:block;min-height:2px;background:var(--ab-link);
+        border-radius:2px 2px 0 0}
+ .ab-root .error-spark-bar[data-empty="true"]{background:var(--ab-border)}
+ .ab-root .relative-time{color:var(--ab-muted);white-space:nowrap}
 """
 
 # Cloudflare D1 internal bookkeeping stays out of the browser. The following
@@ -34881,6 +34971,18 @@ def _admin_row_checkbox(rowid):
             % _html_escape(rowid))
 
 
+def _admin_record_row_attrs(admin_query, table, rowid):
+    href = _admin_href(
+        admin_query, table=table, action="detail", rowid=rowid)
+    return (
+        ' class="record-row" tabindex="0" role="link" data-href="%s" '
+        'onclick="if(!event.target.closest(\'input,button,a,label\'))'
+        'location.href=this.dataset.href" '
+        'onkeydown="if(event.key===\'Enter\')location.href=this.dataset.href"'
+        % _html_escape(href)
+    )
+
+
 async def _admin_table_columns(env, table):
     # Real column names for the table (table name is validated by the caller).
     rows = await d1_all(env, "PRAGMA table_info(" + table + ")")
@@ -34896,6 +34998,59 @@ async def _render_row_form(env, table, rowid, csrf_field="", admin_query=""):
     return (
         '<div class="empty">Generic row editing is disabled. Use the '
         "purpose-built, audited administration action for this resource.</div>"
+    )
+
+
+async def _render_record_detail(env, table, rowid, admin_query=""):
+    if table in ADMIN_HIDDEN_TABLES:
+        return '<div class="empty">This table is restricted.</div>'
+    try:
+        rowid = int(rowid)
+    except (TypeError, ValueError):
+        return '<div class="empty">Record not found.</div>'
+    if rowid <= 0:
+        return '<div class="empty">Record not found.</div>'
+    row = await d1_first(
+        env,
+        "SELECT rowid AS _rowid_, * FROM " + table + " WHERE rowid=? LIMIT 1",
+        rowid,
+    )
+    if not row:
+        return '<div class="empty">Record not found.</div>'
+    fields = [("_rowid_", rowid)]
+    for key, value in row.items():
+        if key == "_rowid_":
+            continue
+        if key == "data" and isinstance(value, str) and value:
+            decoded = await decrypt_row(env, value)
+            value = (
+                _admin_redact_wallet_keys(decoded)
+                if isinstance(decoded, (dict, list))
+                else decoded
+            )
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value, indent=2, sort_keys=True, default=str)
+        elif value is None:
+            value = "NULL"
+        fields.append((key, value))
+    rows = "".join(
+        "<div><dt>%s</dt><dd>%s</dd></div>"
+        % (_html_escape(key), _html_escape(value))
+        for key, value in fields
+    )
+    return (
+        '<div class="title">Record detail · %s · row %d</div>'
+        '<div class="tools"><a class="navlink" href="%s">← Back to %s</a>'
+        '<span class="meta">Read-only vertical view. Sensitive tables remain '
+        'restricted and encrypted data is redacted before display.</span></div>'
+        '<section class="record-detail"><dl>%s</dl></section>'
+        % (
+            _html_escape(table),
+            rowid,
+            _admin_href(admin_query, table=table),
+            _html_escape(table),
+            rows,
+        )
     )
 
 
@@ -35121,7 +35276,9 @@ async def _render_table_view(
             ok = int(r.get("ok", 0) or 0)
             cls = "" if ok else "s5"
             body.append(
-                "<tr>"
+                "<tr%s>"
+                % _admin_record_row_attrs(
+                    admin_query, table, r.get("_rowid_", ""))
                 + _admin_row_checkbox(r.get("_rowid_", ""))
                 + '<td data-ts="%s">%s</td>'
                 '<td>%s</td><td class="%s">%s</td><td>%s</td><td>%s</td>'
@@ -35172,7 +35329,9 @@ async def _render_table_view(
                 clean_string(row.get("path"), 240),
                 clean_string(row.get("message"), 240),
             )
-            groups[signature] = groups.get(signature, 0) + 1
+            group_hours = groups.setdefault(signature, [0] * 24)
+            if age_hours < 24:
+                group_hours[23 - int(age_hours)] += 1
         peak = max(hourly) if hourly else 0
         bars = []
         for index, count in enumerate(hourly):
@@ -35197,13 +35356,43 @@ async def _render_table_view(
                 )
             )
         group_rows = []
-        for (status, request_method, path, message), count in sorted(
-                groups.items(), key=lambda item: (-item[1], item[0]))[:25]:
+        for (status, request_method, path, message), frequency in sorted(
+                groups.items(),
+                key=lambda item: (-sum(item[1]), item[0]))[:25]:
+            count = sum(frequency)
+            group_peak = max(frequency) if frequency else 0
+            spark_bars = []
+            for index, bucket_count in enumerate(frequency):
+                height = (
+                    max(2, round(28 * bucket_count / group_peak))
+                    if group_peak else 2
+                )
+                hours_ago = 23 - index
+                label = (
+                    "current hour" if hours_ago == 0
+                    else "%d hours ago" % hours_ago
+                )
+                spark_bars.append(
+                    '<span class="error-spark-bar" data-empty="%s" '
+                    'style="height:%dpx" title="%s · %d"></span>'
+                    % (
+                        "true" if bucket_count == 0 else "false",
+                        height,
+                        _html_escape(label),
+                        bucket_count,
+                    )
+                )
             group_rows.append(
-                "<tr><td>%d</td><td>%s</td><td>%s</td><td>%s</td>"
+                '<tr><td>%d</td><td><div class="error-sparkline" '
+                'tabindex="0" role="img" '
+                'aria-label="24-hour frequency: %d occurrence%s">%s</div></td>'
+                "<td>%s</td><td>%s</td><td>%s</td>"
                 "<td title=\"%s\">%s</td></tr>"
                 % (
                     count,
+                    count,
+                    "" if count == 1 else "s",
+                    "".join(spark_bars),
                     _html_escape(status or "error"),
                     _html_escape(request_method or "—"),
                     _html_escape(path or "—"),
@@ -35223,7 +35412,8 @@ async def _render_table_view(
                 "" if len(recent_24h or []) == 1 else "s",
                 "".join(bars),
                 (
-                    "<table><thead><tr><th>Count</th><th>Status</th>"
+                    "<table><thead><tr><th>Count</th><th>24-hour frequency</th>"
+                    "<th>Status</th>"
                     "<th>Method</th><th>Path</th><th>Message</th></tr></thead>"
                     "<tbody>" + "".join(group_rows) + "</tbody></table>"
                     if group_rows
@@ -35236,7 +35426,9 @@ async def _render_table_view(
             status = r.get("status", "")
             cls = "s5" if str(status).startswith("5") else ""
             body.append(
-                "<tr>"
+                "<tr%s>"
+                % _admin_record_row_attrs(
+                    admin_query, table, r.get("_rowid_", ""))
                 + _admin_row_checkbox(r.get("_rowid_", ""))
                 + '<td data-ts="%s">%s</td>'
                 '<td class="%s">%s</td>'
@@ -35342,7 +35534,14 @@ async def _render_table_view(
         for col in json_cols:
             cells.append(_admin_compact_cell(
                 None if decoded_data is None else decoded_data.get(col)))
-        body.append("<tr>" + "".join(cells) + "</tr>")
+        body.append(
+            "<tr%s>%s</tr>"
+            % (
+                _admin_record_row_attrs(
+                    admin_query, table, rid),
+                "".join(cells),
+            )
+        )
 
     head = (_admin_select_all_th() if purge_allowed else "") + "".join(
         "<th>%s</th>" % _html_escape(c) for c in columns) + "".join(
@@ -35530,9 +35729,22 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         + _render_admin_nav(tables, active_table, counts, admin_query, sort_records)
         + "<main>" + table_html + "</main>"
         + "</div></div>"
-        "<script>for (const el of document.querySelectorAll('[data-ts]')){"
-        "const ms=Number(el.getAttribute('data-ts'));"
-        "if(ms)el.textContent=new Date(ms).toLocaleString();}"
+        "<script>const adminTimes=[];"
+        "for(const el of document.querySelectorAll('[data-ts]')){"
+        "let ms=Number(el.getAttribute('data-ts'));if(ms&&ms<1e11)ms*=1000;"
+        "if(!ms)continue;el.textContent=new Date(ms).toLocaleString();"
+        "const rel=document.createElement('span');rel.className='relative-time';"
+        "el.append(' · ',rel);adminTimes.push([rel,ms]);}"
+        "function updateAdminRelativeTimes(){const now=Date.now();"
+        "for(const pair of adminTimes){const rel=pair[0],ms=pair[1];"
+        "const future=ms>now,seconds=Math.max(0,Math.floor(Math.abs(now-ms)/1000));"
+        "let value,unit;if(seconds<60){value=seconds;unit='second';}"
+        "else if(seconds<3600){value=Math.floor(seconds/60);unit='minute';}"
+        "else if(seconds<86400){value=Math.floor(seconds/3600);unit='hour';}"
+        "else{value=Math.floor(seconds/86400);unit='day';}"
+        "rel.textContent=future?'in '+value+' '+unit+(value===1?'':'s'):"
+        "value+' '+unit+(value===1?'':'s')+' ago';}}"
+        "updateAdminRelativeTimes();setInterval(updateAdminRelativeTimes,30000);"
         "if(location.hash==='#operational-alerts'){"
         "var a=document.getElementById('operational-alerts');"
         "if(a){a.scrollIntoView({block:'center'});a.focus({preventScroll:true});}"
@@ -38857,8 +39069,16 @@ class Default(WorkerEntrypoint):
         else:
             active = tables[0] if tables else ""
 
-        # Edit/create forms are full-page GET views for the active table.
-        if action == "edit" and active:
+        # Every visible record has a read-only, vertically listed detail page.
+        # Legacy edit/new bookmarks remain fail-closed below.
+        if action == "detail" and active:
+            table_html = await _render_record_detail(
+                self.env,
+                active,
+                params.get("rowid", [""])[0],
+                admin_query,
+            )
+        elif action == "edit" and active:
             rowid = params.get("rowid", [""])[0]
             table_html = await _render_row_form(
                 self.env, active, rowid, csrf_field, admin_query)

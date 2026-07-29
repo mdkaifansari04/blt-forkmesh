@@ -1126,6 +1126,15 @@
     return data;
   }
 
+  // The compact World chat composer is a second presentation of the canonical
+  // dashboard actions. Expose the signed issue operation narrowly so the chat
+  // bundle can file into the same maintainer inbox without duplicating key,
+  // signature, authorization, or payload logic.
+  window.ForkMeshDashboardActions = Object.assign(
+    window.ForkMeshDashboardActions || {},
+    { submitWebIssue },
+  );
+
   // Mirrors IssueStore::contentForSigning's "comment" case (body NUL
   // attachments) and the desktop's inbox POST (verify_issue_event in the
   // worker). Unlike a new issue's "open" event, a comment is signed against the
@@ -1909,6 +1918,21 @@
   const ORG_ROLE_OPTIONS = ["owner", "admin", "member"];
   const ORG_TEAM_PERMISSIONS = ["read", "write", "maintain", "admin"];
   const ORG_WORLD_ACCESS_OPTIONS = ["public", "restricted", "private"];
+  // Keep these aliases aligned with world-office-tower.js and the Worker's
+  // OFFICE_FLOOR_TEAM_ALIASES. The server remains authoritative for elevator
+  // access; this organization-admin matrix explains every floor group a user
+  // can belong to and highlights access granted by their current teams.
+  const ORG_OFFICE_FLOOR_GROUPS = Object.freeze([
+    { id: "marketing", label: "Marketing", aliases: ["marketing", "marketing-team", "growth", "brand", "comms", "communications"] },
+    { id: "engineering", label: "Engineering", aliases: ["engineering", "engineers", "development", "developers", "platform", "frontend", "backend"] },
+    { id: "product-design", label: "Product & Design", aliases: ["product-design", "product", "design", "ux", "ui-ux"] },
+    { id: "security", label: "Security", aliases: ["security", "security-team", "trust-safety", "trust-and-safety"] },
+    { id: "infrastructure", label: "Infrastructure", aliases: ["infrastructure", "infra", "devops", "site-reliability", "sre"] },
+    { id: "community", label: "Community", aliases: ["community", "community-team", "developer-relations", "devrel"] },
+    { id: "partnerships", label: "Partnerships", aliases: ["partnerships", "partnership", "business-development", "bizdev"] },
+    { id: "operations", label: "Operations", aliases: ["operations", "ops", "people-operations", "finance-operations"] },
+    { id: "executive", label: "Executive", aliases: ["executive", "executives", "leadership", "organization-leadership", "org-leadership"] },
+  ]);
 
   // Worker org-endpoint error codes -> human text. Unknown codes fall through
   // to a generic message so the UI never shows a raw slug.
@@ -1987,6 +2011,38 @@
         : "border-border bg-secondary text-muted-foreground";
     return '<span class="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ' +
       tone + '">' + escapeHtml(clean) + "</span>";
+  }
+
+  function orgMemberFloorGroups(member) {
+    const teams = new Set(
+      (Array.isArray(member?.teams) ? member.teams : [])
+        .map((team) => String(team || "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const groups = ORG_OFFICE_FLOOR_GROUPS.map((group) => {
+      const matchingTeams = group.aliases.filter((team) => teams.has(team));
+      const active = matchingTeams.length > 0;
+      const state = active ? "In group" : "Available";
+      const title = active
+        ? group.label + " floor through " + matchingTeams.join(", ")
+        : group.label + " floor group is available";
+      return '<span title="' + escapeHtml(title) + '" aria-label="' +
+        escapeHtml(group.label + ": " + state) + '" class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold ' +
+        (active
+          ? "border-[#238636]/50 bg-[#238636]/10 text-[#238636]"
+          : "border-border bg-background text-muted-foreground") + '">' +
+        '<span aria-hidden="true" class="h-1.5 w-1.5 rounded-full ' +
+        (active ? "bg-[#238636]" : "bg-muted-foreground/40") + '"></span>' +
+        escapeHtml(group.label) + "</span>";
+    }).join("");
+    const activeCount = ORG_OFFICE_FLOOR_GROUPS.filter(
+      (group) => group.aliases.some((team) => teams.has(team)),
+    ).length;
+    return '<div data-org-member-floor-groups class="mt-2 border-t border-border/70 pt-2">' +
+      '<div class="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">' +
+        '<span class="font-semibold text-foreground">Office floor groups</span>' +
+        '<span>' + activeCount + " of " + ORG_OFFICE_FLOOR_GROUPS.length + " active</span>" +
+      '</div><div class="flex flex-wrap gap-1.5">' + groups + "</div></div>";
   }
 
   function orgOptionTags(options, selected) {
@@ -2159,9 +2215,13 @@
             'class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-red-500 hover:border-red-500/50">' +
             '<i data-lucide="user-minus" class="h-4 w-4"></i></button>'
         : orgRoleBadge(member.role);
-      return '<div class="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2">' +
-        '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName + "</span>" +
-        controls + "</div>";
+      return '<div class="rounded-md border border-border bg-card px-3 py-2">' +
+        '<div class="flex items-center gap-2">' +
+          '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName + "</span>" +
+          controls +
+        "</div>" +
+        (canManage ? orgMemberFloorGroups(member) : "") +
+      "</div>";
     }).join("") || '<p class="text-sm text-muted-foreground">No members.</p>';
 
     const teamRows = teams.map((team) => {

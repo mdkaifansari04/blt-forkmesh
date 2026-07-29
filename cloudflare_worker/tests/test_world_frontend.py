@@ -972,8 +972,29 @@ def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
     assert 'destination.searchParams.set("worldEmbed", "1")' in APP
     assert "data-world-chat-terminal" in APP
     assert "data-world-chat-terminal-frame" in APP
+    assert "world-chat-terminal-channel" in APP
+    assert "world-chat-terminal-connection" in APP
     assert '"/dashboard/chat?worldEmbed=1"' in APP
     assert "world-chat-terminal" in CSS
+    assert "DEBUG owns the lower-left; chat owns the lower-right" in CSS
+    diagnostics = CSS[
+        CSS.index(".world-diagnostics {"):
+        CSS.index(".world-diagnostics summary {")
+    ]
+    assert "left: 0;" in diagnostics
+    terminal = CSS[
+        CSS.index(".world-chat-terminal {"):
+        CSS.index(".world-chat-terminal-body {")
+    ]
+    assert "bottom: 0;" in terminal
+    bind_ui = APP[
+        APP.index("  bindUI() {"):
+        APP.index("\n  bindDetailResize()", APP.index("  bindUI() {"))
+    ]
+    assert '!event.target.closest("[data-world-chat-terminal]")' in bind_ui
+    assert "chatTerminal.removeAttribute(\"open\")" in bind_ui
+    assert '!event.target.closest("[data-world-right-rail]")' in bind_ui
+    assert "this.setWorldRightRailExpanded(false)" in bind_ui
     assert 'a[href^=\'/dashboard/chat\']' in APP
     assert 'href="/dashboard/chat" target="_blank"' not in APP
     assert 'playMode: "external"' in DATA
@@ -2045,15 +2066,13 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
     assert "pointerLockElement" not in SCENE
     assert "raycaster.intersectObject(ground" not in SCENE
 
-    # Keyboard movement accelerates toward a named cap and resets to the base
-    # from-rest speed as soon as movement input is released or focus is lost.
-    # Speed and acceleration are scaled by per-device controls; an infinite
-    # acceleration scale collapses the ramp to instant top speed.
+    # Keyboard movement reaches its named cap on the first frame, while analog
+    # input retains proportional control and blur still clears stale input.
     for contract in (
         "PLAYER_MAX_SPEED",
-        "PLAYER_ACCELERATION",
         "function movementSpeedForInput",
-        "PLAYER_ACCELERATION * moveAccelScale * Math.max(0, delta)",
+        "? topSpeed",
+        "topSpeed * inputStrength",
         "keyboardMovementSpeed = baseMoveSpeed()",
         "function setMovementTuning",
         "setMovementTuning,",
@@ -2074,7 +2093,7 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
 
 
 def test_world_overview_zoom_keeps_the_finite_ground_inside_camera_depth():
-    assert "const CONTINUOUS_CITY_RADIUS_Z = 365;" in SCENE
+    assert "const CONTINUOUS_CITY_RADIUS = 365;" in SCENE
     assert "const CAMERA_OFFSET = [17, 16, 21];" in SCENE
     assert "const CAMERA_ZOOM_MIN = 0.06;" in SCENE
     assert "const CAMERA_ZOOM_MAX = 28;" in SCENE
@@ -2097,7 +2116,7 @@ def test_world_overview_zoom_keeps_the_finite_ground_inside_camera_depth():
 def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
     assert "const WORLD_RADIUS = 620" in SCENE
     assert '"forkmesh-continuous-city-land"' in SCENE
-    assert "const CONTINUOUS_CITY_RADIUS_X = 260" in SCENE
+    assert "const CONTINUOUS_CITY_RADIUS = 365" in SCENE
     assert "electric-mesh-city-block-grid" not in SCENE
     assert "electricMeshConduit" not in SCENE
     assert "electricMeshJunction" not in SCENE
@@ -2123,9 +2142,10 @@ def test_leaderboards_share_walkable_grass_and_keep_an_inward_facing_ring():
         in SCENE
     )
     assert 'leaderboardPromenade.name = "forkmesh-leaderboard-promenade"' in SCENE
-    assert "CONTINUOUS_CITY_RADIUS_X - margin" in SCENE
+    assert "CONTINUOUS_CITY_RADIUS - margin" in SCENE
     assert "Math.atan2(-x, -z)" in SCENE
-    assert "placeLeaderboardIslandSign(" in SCENE
+    assert "placeBillboardOnIsland(" in SCENE
+    assert "makeReferralLeaderboardSign(THREE)" in SCENE
 
 
 def test_world_has_no_pale_plaza_and_places_trees_deterministically_clear_of_use():
@@ -2375,28 +2395,22 @@ def test_world_right_rail_is_compact_by_default_and_expands_as_one_control():
     assert "aside:not(.world-right-rail)" in CSS
 
 
-def test_world_movement_speed_and_acceleration_are_locally_adjustable():
-    # Scene exposes a movement-tuning setter and scales the shared defaults by
-    # per-device speed/acceleration factors, with Infinity meaning instant.
+def test_world_movement_speed_is_adjustable_and_keyboard_input_is_immediate():
+    # Scene exposes speed tuning, but digital input has no configurable ramp.
     assert "function setMovementTuning" in SCENE
     assert "setMovementTuning," in SCENE
     assert "let moveSpeedScale = 1" in SCENE
-    assert "let moveAccelScale = 1" in SCENE
     assert "PLAYER_MAX_SPEED * moveSpeedScale" in SCENE
-    assert "PLAYER_ACCELERATION * moveAccelScale * Math.max(0, delta)" in SCENE
-    assert "moveAccelScale = Number.isFinite(numeric)" in SCENE
-    # App renders local-controls sliders wired to persisted settings and pushes
-    # the tuning (Infinity at the top acceleration position) into the scene.
+    assert "input.keyboardActive" in SCENE
+    assert "? topSpeed" in SCENE
+    assert "moveAccelScale" not in SCENE
+    # App retains speed control and explains immediate keyboard response.
     assert "data-world-move-speed" in APP
-    assert "data-world-move-accel" in APP
     assert "data-world-move-speed-output" in APP
-    assert "data-world-move-accel-output" in APP
     assert "this.settings.moveSpeed = next" in APP
-    assert "this.settings.moveAccel = next" in APP
     assert "this.world?.setMovementTuning?.(this.movementTuning())" in APP
-    assert "? Infinity" in APP
     assert "moveSpeed: WORLD_MOVE_SPEED_DEFAULT" in APP
-    assert "moveAccel: WORLD_MOVE_ACCEL_DEFAULT" in APP
+    assert "responds at the selected speed on its first frame" in APP
 
 
 def test_double_clicking_the_ground_dashes_the_avatar_to_that_point():

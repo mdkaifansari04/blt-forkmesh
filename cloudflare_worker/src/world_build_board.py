@@ -8,6 +8,10 @@ MAX_ITEMS = 64
 BODY_LIMIT = 8 * 1024
 KEY_RE = re.compile(r"^(?:task:[a-z0-9-]{1,48}|issue:[a-z0-9-]{1,40}/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})$")
 BUILTIN_KEYS = frozenset({
+    "task:engineering-debug-panel",
+    "task:compact-leaderboard",
+    "task:leaderboard-grid",
+    "task:reward-node-download",
     "task:world-ground-cleanup",
     "task:world-bike-groove",
     "task:world-record-detail",
@@ -15,6 +19,11 @@ BUILTIN_KEYS = frozenset({
     "task:world-sky-hud",
     "task:repo-record-tower-scale",
     "task:world-primer-hud",
+    "task:world-chat-composer",
+    "task:world-member-path",
+    "task:world-office-path",
+    "task:world-circular-foundation",
+    "task:world-frame-hot-loop",
     "task:web-pull-workbench",
     "task:session-audit",
     "task:world-board-detail",

@@ -211,11 +211,6 @@ const WORLD_MOVE_SPEED_DEFAULT = 100;
 const WORLD_SWING_SPEED_MIN = 10;
 const WORLD_SWING_SPEED_MAX = 100;
 const WORLD_SWING_SPEED_DEFAULT = 55;
-const WORLD_MOVE_ACCEL_MIN = 25;
-// The top slider position is the "instant" sentinel — it maps to infinite
-// acceleration so the player reaches top speed the moment a key is pressed.
-const WORLD_MOVE_ACCEL_MAX = 1000;
-const WORLD_MOVE_ACCEL_DEFAULT = 100;
 const WORLD_DIAGNOSTICS_INTERVAL_MS = 1000;
 const WORLD_DIAGNOSTICS_COUNTER_MAX = 1_000_000_000;
 // Debug readings are graded green / orange / red so a glance separates a
@@ -1023,7 +1018,6 @@ function defaultSettings() {
     daylightMode: "auto",
     lightLevel: WORLD_LIGHT_LEVEL_DEFAULT,
     moveSpeed: WORLD_MOVE_SPEED_DEFAULT,
-    moveAccel: WORLD_MOVE_ACCEL_DEFAULT,
     focusMusicTrackId: DEFAULT_FOCUS_MUSIC_TRACK_ID,
     focusMusicVolume: DEFAULT_FOCUS_MUSIC_VOLUME,
     focusMusicMuted: false,
@@ -1090,15 +1084,6 @@ function mergeSettings(stored) {
         Number.isFinite(Number(stored?.moveSpeed))
           ? Number(stored.moveSpeed)
           : WORLD_MOVE_SPEED_DEFAULT,
-      ),
-    ),
-    moveAccel: Math.min(
-      WORLD_MOVE_ACCEL_MAX,
-      Math.max(
-        WORLD_MOVE_ACCEL_MIN,
-        Number.isFinite(Number(stored?.moveAccel))
-          ? Number(stored.moveAccel)
-          : WORLD_MOVE_ACCEL_DEFAULT,
       ),
     ),
     focusMusicTrackId: FOCUS_MUSIC_TRACKS.some(
@@ -3951,6 +3936,9 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <summary aria-label="Open World chat in a terminal panel">
             <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
             <strong>CHAT</strong>
+            <span class="world-chat-terminal-channel" aria-label="Current channel"># general</span>
+            <span class="world-chat-terminal-lock" aria-label="Public channel is relay protected">▣</span>
+            <span class="world-chat-terminal-connection">Connected</span>
             <span
               class="world-chat-terminal-unread"
               data-world-chat-terminal-unread
@@ -4450,25 +4438,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               />
               <small>Scales how fast your avatar walks and runs. 100% is the default pace.</small>
             </label>
-            <label class="world-light-control">
-              <span>
-                <strong>Acceleration</strong>
-                <output data-world-move-accel-output>${escapeHTML(
-                  settings.moveAccel >= WORLD_MOVE_ACCEL_MAX
-                    ? "∞"
-                    : `${settings.moveAccel}%`,
-                )}</output>
-              </span>
-              <input
-                type="range"
-                min="${WORLD_MOVE_ACCEL_MIN}"
-                max="${WORLD_MOVE_ACCEL_MAX}"
-                step="25"
-                value="${escapeHTML(settings.moveAccel)}"
-                data-world-move-accel
-              />
-              <small>How quickly you reach top speed from rest. Slide all the way up for instant (∞) acceleration.</small>
-            </label>
+            <p class="world-setting-note">Keyboard movement responds at the selected speed on its first frame; touch remains proportional for precise positioning.</p>
           </fieldset>
 
           <fieldset class="world-setting-group">
@@ -5751,6 +5721,10 @@ class ForkMeshWorld extends HTMLElement {
         },
         onCreateRepository: (options) =>
           this.openRepositoryCreateForm(options),
+        onStartNodeDownload: () => {
+          window.open("/desktop", "_blank", "noopener,noreferrer");
+          this.toast("Opening the ForkMesh node download page.");
+        },
         onSwingRide: (state) => this.handleSwingRide(state),
         onCameraMode: (state) => this.handleWorldCameraMode(state),
         onStartHereSelect: ({ completed = 0, total = 0 } = {}) => {
@@ -8126,6 +8100,19 @@ class ForkMeshWorld extends HTMLElement {
     // the most recent global #general message, not a static placeholder.
     this.loadChatTerminalFrame();
     this.addEventListener("click", (event) => {
+      if (
+        chatTerminal?.open &&
+        !event.target.closest("[data-world-chat-terminal]")
+      ) {
+        chatTerminal.removeAttribute("open");
+      }
+      const rightRail = this.$("[data-world-right-rail]");
+      if (
+        rightRail?.dataset.expanded === "true" &&
+        !event.target.closest("[data-world-right-rail]")
+      ) {
+        this.setWorldRightRailExpanded(false);
+      }
       if (event.target.closest("[data-world-save-view]")) {
         this.saveCurrentWorldView();
         this.setSavedViewsExpanded(true);
@@ -8757,11 +8744,6 @@ class ForkMeshWorld extends HTMLElement {
         this.setMoveSpeed(moveSpeed.value);
         return;
       }
-      const moveAccel = event.target.closest("[data-world-move-accel]");
-      if (moveAccel) {
-        this.setMoveAccel(moveAccel.value);
-        return;
-      }
       const swingSpeed = event.target.closest("[data-world-swing-speed]");
       if (swingSpeed) {
         this.setSwingSpeed(swingSpeed.value);
@@ -9058,13 +9040,6 @@ class ForkMeshWorld extends HTMLElement {
       setOutput(
         "[data-world-move-speed-output]",
         `${this.settings.moveSpeed}%`,
-      );
-      setValue("[data-world-move-accel]", this.settings.moveAccel);
-      setOutput(
-        "[data-world-move-accel-output]",
-        this.settings.moveAccel >= WORLD_MOVE_ACCEL_MAX
-          ? "∞"
-          : `${this.settings.moveAccel}%`,
       );
       setValue("[data-world-availability]", this.settings.availability);
       setValue("[data-world-public-door]", this.settings.publicDoor);
@@ -11346,8 +11321,8 @@ class ForkMeshWorld extends HTMLElement {
           ${
             record.emailVerified === true
               ? '<span class="world-status-pill">✓ VERIFIED EMAIL</span>'
-              : String(record.accountStatus || "").toLowerCase() ===
-                  "registered"
+              : String(record.accountStatus || "Guest").toLowerCase() !==
+                  "guest"
                 ? '<span class="world-status-pill world-status-pill-danger">✕ EMAIL NOT VERIFIED</span>'
                 : ""
           }
@@ -11481,7 +11456,7 @@ class ForkMeshWorld extends HTMLElement {
             ? `<div class="world-detail-actions">
                 <a class="world-primary-action" href="${escapeHTML(
                   adminUserUrl,
-                )}">Open admin user detail</a>
+                )}" target="_blank" rel="noopener noreferrer">Open admin user detail</a>
               </div>`
             : ""
         }
@@ -20402,12 +20377,6 @@ class ForkMeshWorld extends HTMLElement {
   movementTuning() {
     return {
       speed: this.settings.moveSpeed / 100,
-      // The max slider position means "instant" — hand the scene Infinity so it
-      // snaps to top speed with no ramp.
-      acceleration:
-        this.settings.moveAccel >= WORLD_MOVE_ACCEL_MAX
-          ? Infinity
-          : this.settings.moveAccel / 100,
     };
   }
 
@@ -20427,27 +20396,6 @@ class ForkMeshWorld extends HTMLElement {
     const output = this.$("[data-world-move-speed-output]");
     if (input && Number(input.value) !== next) input.value = String(next);
     if (output) output.textContent = `${next}%`;
-    return next;
-  }
-
-  setMoveAccel(value) {
-    const numeric = Number(value);
-    const next = Math.min(
-      WORLD_MOVE_ACCEL_MAX,
-      Math.max(
-        WORLD_MOVE_ACCEL_MIN,
-        Number.isFinite(numeric) ? numeric : WORLD_MOVE_ACCEL_DEFAULT,
-      ),
-    );
-    this.settings.moveAccel = next;
-    this.saveSettings();
-    this.world?.setMovementTuning?.(this.movementTuning());
-    const input = this.$("[data-world-move-accel]");
-    const output = this.$("[data-world-move-accel-output]");
-    if (input && Number(input.value) !== next) input.value = String(next);
-    if (output) {
-      output.textContent = next >= WORLD_MOVE_ACCEL_MAX ? "∞" : `${next}%`;
-    }
     return next;
   }
 
