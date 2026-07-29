@@ -290,6 +290,37 @@ public:
 #ifdef FORKMESH_WINDOW_TESTS
     using TestIssueHistoryDeleteRunner =
         std::function<bool(int number, QString *error)>;
+    QString testMostRecentUnreadConversation(
+        const QString &currentConversation, const QStringList &channels,
+        const QSet<QString> &unread,
+        const QHash<QString, qint64> &lastMessageMs)
+    {
+        const QString savedCurrent = m_currentConversation;
+        const QStringList savedChannels = m_channels;
+        const QStringList savedOpenDms = m_openDms;
+        const QSet<QString> savedUnread = m_unread;
+        const auto savedHistory = m_history;
+
+        m_currentConversation = currentConversation;
+        m_channels = channels;
+        m_openDms.clear();
+        m_unread = unread;
+        m_history.clear();
+        for (auto it = lastMessageMs.constBegin(); it != lastMessageMs.constEnd();
+             ++it) {
+            ChatMessage message;
+            message.timestampMs = it.value();
+            m_history[it.key()].append(message);
+        }
+        const QString result = mostRecentUnreadConversation();
+
+        m_currentConversation = savedCurrent;
+        m_channels = savedChannels;
+        m_openDms = savedOpenDms;
+        m_unread = savedUnread;
+        m_history = savedHistory;
+        return result;
+    }
     void testSetRoster(const QList<MemberInfo> &members) { setRoster(members); }
     void testResetRosterForAlerts()
     {
@@ -956,6 +987,10 @@ private:
     // actually visible (chat section shown, or window regains focus while
     // already on it) — called from showSection() and changeEvent().
     void clearActiveConversationUnread();
+    // Conversation carrying unread messages that opening chat should land on:
+    // the one with the newest unread message. Empty when nothing is unread (or
+    // only the open conversation is), so the caller leaves the view alone.
+    QString mostRecentUnreadConversation() const;
     // Show/hide the in-transcript unread banner and update its count text.
     void updateChatUnreadBanner();
     // Mark every conversation read at once (from the unread banner's arrow) and
