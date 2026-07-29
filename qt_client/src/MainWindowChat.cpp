@@ -5186,6 +5186,11 @@ const char *kSolanaRpcEndpoints[] = {
     "https://solana-rpc.publicnode.com",
 };
 
+// How long a fetched balance stays good. Hovering the top-bar label again
+// inside this window re-uses the cached figure instead of spending another
+// public-endpoint getBalance call.
+const qint64 kNavSolanaBalanceTtlMs = 60 * 1000;
+
 bool isLikelySolanaAddress(const QString &address)
 {
     static const QRegularExpression re(
@@ -5410,8 +5415,18 @@ void MainWindow::updateNavSolanaBalance()
         m_webSolanaKnown && m_webSolanaAccount == account
             ? m_webSolanaAddress
             : savedSolanaAddress();
-    if (addr != m_navSolanaBalanceAddress)
-        m_navSolanaLamports = -1; // address changed: cached balance no longer applies
+    if (addr != m_navSolanaBalanceAddress) {
+        // Address changed: the in-memory balance no longer applies. Seed from
+        // the balance we persisted for this address last time so the label can
+        // show a figure straight away — a hover is what refreshes it.
+        m_navSolanaLamports = -1;
+        m_navSolanaFetchedMs = 0;
+        const QVariant saved = QSettings().value(lastSolanaBalanceSetting(addr));
+        bool savedOk = false;
+        const qint64 savedLamports = saved.toString().toLongLong(&savedOk);
+        if (saved.isValid() && savedOk && savedLamports >= 0)
+            m_navSolanaLamports = savedLamports;
+    }
     m_navSolanaBalanceAddress = addr;
     if (addr.isEmpty()) {
         m_navSolanaLamports = -1;
@@ -5431,21 +5446,28 @@ void MainWindow::updateNavSolanaBalance()
         return;
     }
 
-    m_navSolanaBalance->setText(QStringLiteral("SOL ..."));
-    m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
-        QStringLiteral("Checking your public Solana balance.")));
-    queryNavSolanaBalance(addr, 0);
+    // No getBalance here: every caller of this function is a profile/identity
+    // hydration path, and they fire often enough that querying from each one
+    // hammered the public Solana endpoints. Render what we have; the RPC is
+    // issued when the pointer enters the label (refreshNavSolanaBalance).
+    renderNavSolanaBalance();
 }
 
 // Re-render the balance label from the cached lamports + fiat rate, without
-// touching the network. Falls back to a full refresh when we don't have a
-// cached balance yet, and to a single price fetch when the rate is stale.
+// touching Solana. Shows a "hover to load" placeholder when nothing is cached
+// yet, and fetches a single price when the fiat rate is stale.
 void MainWindow::renderNavSolanaBalance()
 {
     if (!m_navSolanaBalance)
         return;
-    if (m_navSolanaLamports < 0 || m_navSolanaBalanceAddress.isEmpty()) {
-        updateNavSolanaBalance(); // nothing cached yet — do the real fetch
+    if (m_navSolanaBalanceAddress.isEmpty())
+        return; // updateNavSolanaBalance() already painted the empty state
+    if (m_navSolanaLamports < 0) {
+        if (m_navSolanaFetchInFlight)
+            return; // a hover-triggered query is already painting "SOL ..."
+        m_navSolanaBalance->setText(QString::fromUtf8("SOL \xE2\x80\x94"));
+        m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
+            QStringLiteral("Hover to check your public Solana balance.")));
         return;
     }
     const QString cur = solanaDisplayCurrency();
@@ -5472,7 +5494,19 @@ void MainWindow::renderNavSolanaBalance()
                     .arg(fiatBalance, solBalance)));
         return;
     }
-    // No fresh rate cached: show the SOL figure with a hint and fetch one rate.
+    // No fresh rate cached. This function now runs on every profile-hydration
+    // pass, so back off after a recent attempt (successful or not) instead of
+    // re-asking the price API each time; show the SOL figure meanwhile.
+    const bool attemptedRecently =
+        it != m_navFiatRates.constEnd() && now - it->second < 60 * 1000;
+    if (attemptedRecently || m_navFiatFetchInFlight) {
+        m_navSolanaBalance->setText(solBalance);
+        m_navSolanaBalance->setToolTip(
+            externalWalletBalanceTooltip(
+                QStringLiteral("SOL/%1 price unavailable. Public balance: %2")
+                    .arg(cur.toUpper(), solBalance)));
+        return;
+    }
     m_navSolanaBalance->setText(QStringLiteral("%1 ...").arg(fiatCurrencySymbol(cur)));
     m_navSolanaBalance->setToolTip(
         externalWalletBalanceTooltip(
@@ -5481,11 +5515,41 @@ void MainWindow::renderNavSolanaBalance()
     queryNavSolanaUsdPrice(m_navSolanaBalanceAddress, m_navSolanaLamports);
 }
 
+// Hovering the top-bar balance is the only thing that spends a Solana RPC
+// call: everything else renders the cached figure. Repeat hovers inside the
+// TTL (and hovers while a query is already out) are no-ops.
+void MainWindow::refreshNavSolanaBalance(bool force)
+{
+    if (!m_navSolanaBalance || !m_networkAccess)
+        return;
+    const QString addr = m_navSolanaBalanceAddress;
+    if (addr.isEmpty() || !isLikelySolanaAddress(addr))
+        return;
+    if (m_navSolanaFetchInFlight)
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (!force && m_navSolanaFetchedMs > 0 &&
+        now - m_navSolanaFetchedMs < kNavSolanaBalanceTtlMs)
+        return;
+    if (m_navSolanaLamports < 0) {
+        m_navSolanaBalance->setText(QStringLiteral("SOL ..."));
+        m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
+            QStringLiteral("Checking your public Solana balance.")));
+    }
+    m_navSolanaFetchInFlight = true;
+    queryNavSolanaBalance(addr, 0);
+}
+
 void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
 {
     const int count = int(sizeof(kSolanaRpcEndpoints) / sizeof(kSolanaRpcEndpoints[0]));
     if (endpointIndex >= count) {
-        if (m_navSolanaBalance && m_navSolanaBalanceAddress == addr) {
+        m_navSolanaFetchInFlight = false;
+        // Back off for a TTL before the next hover retries, so a dead endpoint
+        // can't be re-probed on every pointer pass over the label.
+        m_navSolanaFetchedMs = QDateTime::currentMSecsSinceEpoch();
+        if (m_navSolanaBalance && m_navSolanaBalanceAddress == addr &&
+            m_navSolanaLamports < 0) {
             m_navSolanaBalance->setText(QStringLiteral("SOL unavailable"));
             m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
                 QStringLiteral("Public Solana balance is temporarily unavailable.")));
@@ -5508,15 +5572,19 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
         const QByteArray raw = reply->readAll();
         const QNetworkReply::NetworkError netError = reply->error();
         reply->deleteLater();
-        if (!m_navSolanaBalance || m_navSolanaBalanceAddress != addr)
+        if (!m_navSolanaBalance || m_navSolanaBalanceAddress != addr) {
+            m_navSolanaFetchInFlight = false;
             return;
+        }
 
         const QJsonObject root = QJsonDocument::fromJson(raw).object();
         const QJsonObject result = root.value("result").toObject();
         if (netError != QNetworkReply::NoError || !result.contains("value")) {
-            queryNavSolanaBalance(addr, endpointIndex + 1);
+            queryNavSolanaBalance(addr, endpointIndex + 1); // stays in-flight
             return;
         }
+        m_navSolanaFetchInFlight = false;
+        m_navSolanaFetchedMs = QDateTime::currentMSecsSinceEpoch();
         const qint64 lamports = result.value("value").toVariant().toLongLong();
         m_navSolanaLamports = lamports; // cache so currency switches don't re-query
         QSettings settings;
@@ -5560,6 +5628,9 @@ void MainWindow::queryNavSolanaUsdPrice(const QString &addr, qint64 lamports)
     const QString cur = solanaDisplayCurrency();
     if (cur == QLatin1String("sol"))
         return;
+    if (m_navFiatFetchInFlight)
+        return;
+    m_navFiatFetchInFlight = true;
     QNetworkRequest request(QUrl(
         QStringLiteral("https://api.coingecko.com/api/v3/simple/price"
                        "?ids=solana&vs_currencies=%1").arg(cur)));
@@ -5569,15 +5640,20 @@ void MainWindow::queryNavSolanaUsdPrice(const QString &addr, qint64 lamports)
         const QByteArray raw = reply->readAll();
         const QNetworkReply::NetworkError netError = reply->error();
         reply->deleteLater();
+        m_navFiatFetchInFlight = false;
+        const double rate =
+            QJsonDocument::fromJson(raw).object()
+                .value(QStringLiteral("solana")).toObject()
+                .value(cur).toDouble();
+        // Stamp the attempt either way: a 0 rate marks "tried and failed" so
+        // renderNavSolanaBalance backs off instead of retrying on every pass.
+        if (netError != QNetworkReply::NoError || rate <= 0.0)
+            m_navFiatRates[cur] = {0.0, QDateTime::currentMSecsSinceEpoch()};
         if (!m_navSolanaBalance || m_navSolanaBalanceAddress != addr ||
             solanaDisplayCurrency() != cur)
             return;
 
         const QString solBalance = formatSolanaBalance(lamports);
-        const double rate =
-            QJsonDocument::fromJson(raw).object()
-                .value(QStringLiteral("solana")).toObject()
-                .value(cur).toDouble();
         if (netError != QNetworkReply::NoError || rate <= 0.0) {
             m_navSolanaBalance->setText(solBalance);
             m_navSolanaBalance->setToolTip(
