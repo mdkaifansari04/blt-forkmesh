@@ -5215,8 +5215,11 @@ inline QByteArray forkMeshNodeAvatarPng(const QString &seed)
     return png;
 }
 
-// Clip avatar PNG bytes into a rounded-rect pixmap for the nav button.
-inline QPixmap roundedAvatar(const QByteArray &png, int side)
+// Clip avatar PNG bytes into a rounded-rect pixmap for the nav button. The
+// corner radius is a fraction of the side, so 0.5 gives a full circle (what the
+// website shows for an account's picture).
+inline QPixmap roundedAvatar(const QByteArray &png, int side,
+                             qreal radiusRatio = 0.28)
 {
     QPixmap src;
     if (png.isEmpty() || !src.loadFromData(png))
@@ -5226,7 +5229,8 @@ inline QPixmap roundedAvatar(const QByteArray &png, int side)
     QPainter p(&out);
     p.setRenderHint(QPainter::Antialiasing);
     QPainterPath clip;
-    clip.addRoundedRect(0, 0, side, side, side * 0.28, side * 0.28);
+    const qreal radius = side * radiusRatio;
+    clip.addRoundedRect(0, 0, side, side, radius, radius);
     p.setClipPath(clip);
     p.drawPixmap(0, 0, src.scaled(side, side, Qt::KeepAspectRatioByExpanding,
                                   Qt::SmoothTransformation));
@@ -6495,6 +6499,16 @@ inline void setOcticon(QPushButton *button, const QString &name, int size = 16,
     button->setProperty("forkmeshOcticonRotation", rotationDeg);
     applyStoredOcticon(button);
 }
+
+// Width of one activity-rail entry, and of the rail (scroll area) itself. Every
+// badge in the rail rides its own icon's corner rather than the item's outer
+// edge, so an item only has to be as wide as its icon plus its caption — the
+// rail no longer reserves a column of empty space for a count (adhoc #19).
+constexpr int kRailItemWidth = 46;
+constexpr int kRailWidth = kRailItemWidth + 8; // + room for the scrollbar
+// Size of the bell glyph on the rail's Alerts item — updateNotificationButton
+// needs it to park the pending-approval count on the glyph's corner.
+constexpr int kNotificationBellIconPx = 16;
 
 // One entry in the app-wide activity rail: an octicon over an optional small
 // label, VS-Code style, with the selected state drawn as a 2px accent line along

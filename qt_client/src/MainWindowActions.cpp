@@ -1570,12 +1570,21 @@ void MainWindow::updateNotificationButton()
             const QString text =
                 pending > 99 ? QStringLiteral("99+") : QString::number(pending);
             m_notificationRailBadge->setText(text);
+            const int height = 14; // matches #chatUnreadBadge's 7px radius
             const int width =
-                qMax(15, m_notificationRailBadge->fontMetrics()
-                             .horizontalAdvance(text) + 10);
-            m_notificationRailBadge->resize(width, 15);
+                qMax(height, m_notificationRailBadge->fontMetrics()
+                                 .horizontalAdvance(text) + 8);
+            // Ride the bell's own top-right corner, the way every other rail
+            // item paints its count (ActivityRailButton), instead of the
+            // button's far right edge — a badge parked out there forced the
+            // rail to reserve a whole empty column for it (adhoc #19).
+            const int buttonWidth = m_notificationButton->width();
+            const int iconRight = (buttonWidth + kNotificationBellIconPx) / 2;
+            m_notificationRailBadge->resize(width, height);
             m_notificationRailBadge->move(
-                qMax(0, m_notificationButton->width() - width), 0);
+                qBound(0, iconRight - width + height / 2 + 2,
+                       qMax(0, buttonWidth - width)),
+                0);
             m_notificationRailBadge->show();
             m_notificationRailBadge->raise();
         } else {
