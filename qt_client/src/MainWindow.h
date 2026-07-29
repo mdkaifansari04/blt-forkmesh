@@ -222,6 +222,12 @@ struct RepositoryRecord {
     // push and can't be triggered manually, but stay listed so past runs remain
     // visible and the switch can be flipped back on.
     QStringList disabledWorkflows;
+    // Node each workflow is pinned to from the Actions tab's "Run on" dropdown,
+    // as "<workflow path>\t<node label>" entries. A pin overrides the workflow's
+    // own `runs-on:` line for this node's copy of the repo, so the owner can say
+    // "build the iOS app on the Mac" without editing the YAML. No entry means
+    // the file decides (and an undedicated workflow runs wherever it lands).
+    QStringList workflowNodes;
     // Block pushes when the diff introduces a high-confidence secret (API key,
     // private key, etc.). Enabled by default; the user can bypass per-push or
     // turn it off entirely here.
@@ -2141,8 +2147,30 @@ private:
     // another node is never queued here, so a mesh can pin tests to one machine,
     // Cloudflare deploys to a mirror and iOS builds to a Mac.
     QStringList actionNodeLabels() const;
+    // The node pinned to `path` from the Actions tab's "Run on" dropdown, or an
+    // empty string when the workflow's own `runs-on:` decides.
+    QString workflowNodePin(const RepositoryRecord &repo,
+                            const QString &path) const;
+    // The labels that decide where a workflow may run: the dropdown's pin when
+    // one is set, otherwise the `runs-on:` labels parsed out of the file.
+    QStringList workflowRunsOnLabels(const RepositoryRecord &repo,
+                                     const ActionWorkflow &workflow) const;
+    // True when this node may execute the workflow, pin included.
+    bool workflowRunsOnThisNode(const RepositoryRecord &repo,
+                                const ActionWorkflow &workflow) const;
     // Human-readable "this workflow belongs to <node>" text for logs and the UI.
-    QString workflowDedicationLabel(const ActionWorkflow &workflow) const;
+    QString workflowDedicationLabel(const RepositoryRecord &repo,
+                                    const ActionWorkflow &workflow) const;
+    // Nodes offered by the "Run on" dropdown: this machine, every node in the
+    // roster, and any label the repo's workflows already name in `runs-on:`.
+    QStringList actionNodeCandidates() const;
+    // Pin the selected workflow (or every workflow while "All workflows" is
+    // selected) to `node`; an empty node clears the pin.
+    void setWorkflowNode(const QString &node);
+    void refreshWorkflowNodeCombo();
+    void updateWorkflowListItem(QListWidgetItem *item,
+                                const ActionWorkflow &workflow,
+                                const RepositoryRecord &repo);
     void processActionQueue();
     // An encrypted repository is served out of a temporary materialization whose
     // directory is recreated by every sealing pass and deleted as soon as the
@@ -5257,6 +5285,8 @@ private:
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page
     int m_selectedRunId = -1;
     QListWidget *m_actionWorkflowList = nullptr; // available actions (left column)
+    QComboBox *m_actionNodeCombo = nullptr;      // node the selected action runs on
+    QLabel *m_actionNodeLabel = nullptr;         // caption above that dropdown
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
     // Coalesces push-driven refreshOpenRepoDetail() calls: a burst of pushes
