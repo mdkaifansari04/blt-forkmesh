@@ -5345,16 +5345,6 @@ function createAvatar(THREE, identity, options = {}) {
   head.position.y = 3.36;
   group.add(head);
 
-  const hair = new THREE.Mesh(
-    new THREE.SphereGeometry(0.47, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.52),
-    dark,
-  );
-  hair.position.set(0, 3.46, 0.07);
-  // Tilted back so the cap clears the forehead and the wrapped emoji face
-  // has the whole front of the head to itself.
-  hair.rotation.x = 0.42;
-  group.add(hair);
-
   // The face wears the last world-status emoji the visitor set (default
   // smile). Avatar fronts face -Z; the emoji is mapped onto a thin curved
   // shell hugging the head sphere so it wraps the whole face, and

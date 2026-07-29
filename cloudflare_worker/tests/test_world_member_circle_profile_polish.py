@@ -42,6 +42,14 @@ def test_public_chat_line_repaints_matching_avatar_chest_only():
     assert "this.world?.setAvatarRecentPublicMessage?.(" in APP
 
 
+def test_world_users_do_not_have_a_separate_top_hair_cap():
+    avatar = SCENE.split(
+        "function createAvatar(THREE, identity, options = {})", 1
+    )[1].split("\nconst WORK_BADGE_ROWS", 1)[0]
+    assert "const hair = new THREE.Mesh(" not in avatar
+    assert "group.add(hair)" not in avatar
+
+
 def test_user_selection_has_a_scoped_clock_and_prefers_avatar_hit():
     selection = SCENE.split(
         "function setActiveAvatarSelection", 1

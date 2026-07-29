@@ -317,7 +317,7 @@ def test_dashboard_side_chat_orders_by_ts_with_avatar_and_time():
     assert "tsMs: Number(tsMs) || Date.now()" in CHAT
     assert "sideEntries.splice(index, 0, entry)" in CHAT
     assert "fmtChatTime(message.tsMs)" in CHAT
-    assert "avatarLetter(message.who)" in CHAT
+    assert "hydrateChatAvatar(row.querySelector" in CHAT
     # Call sites hand the epoch timestamp through (formatting happens at
     # render), so ordering never depends on arrival order.
     assert (
