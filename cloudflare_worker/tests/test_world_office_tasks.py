@@ -859,6 +859,23 @@ async def test_assignee_or_manager_can_complete_and_only_manager_can_delete():
     assert "Implemented the requested flow" not in sealed
     assert runtime.audits[-1]["details"]["hasCompletionNote"] is True
 
+    revised = await tasks_api.handle(
+        runtime.use("POST", "bob", {
+            "completionNote": (
+                "Implemented, reviewed the diff, and passed focused QA."
+            ),
+        }),
+        f"{tasks_api.PREFIX}/{task_id}/complete",
+    )
+    assert revised["status"] == 200
+    assert revised["data"]["task"]["completedAt"] == runtime.now_ms
+    assert revised["data"]["task"]["completionNote"] == (
+        "Implemented, reviewed the diff, and passed focused QA."
+    )
+    assert runtime.audits[-1]["action"] == (
+        "organization.task_completion_note_updated"
+    )
+
     restart = await tasks_api.handle(
         runtime.use("POST", "bob", {}),
         f"{tasks_api.PREFIX}/{task_id}/start",

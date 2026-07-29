@@ -1117,6 +1117,38 @@ async def _complete(
         int(row.get("completed_at") or 0) > 0
         and int(row.get("qa_requested_at") or 0) > 0
     ):
+        # Completion is idempotent, but a retried client may be adding the
+        # human-readable work note after an older client already finished the
+        # task. Preserve the completed/QA state and update only encrypted copy.
+        if "completionNote" in data:
+            try:
+                completed_data = await runtime.open(row.get("data"))
+            except Exception:
+                completed_data = None
+            if not isinstance(completed_data, dict):
+                return _response(
+                    runtime, {"error": "task_unavailable"}, status=500)
+            completed_data["completionNote"] = _text(
+                data.get("completionNote"), MAX_COMPLETION_NOTE)
+            await runtime.d1_run(
+                "UPDATE organization_tasks SET data=?,updated_at=? "
+                "WHERE org_bi=? AND task_id=? AND completed_at>0",
+                await runtime.seal(completed_data),
+                now,
+                org_bi,
+                task_id,
+            )
+            await runtime.audit(
+                actor,
+                "organization.task_completion_note_updated",
+                "organization_task",
+                task_id,
+                details={
+                    "hasCompletionNote": bool(
+                        completed_data["completionNote"]),
+                },
+            )
+            row = await _task(runtime, org_bi, task_id)
         return await _task_response(runtime, row, now)
     try:
         current = await runtime.open(row.get("data"))
