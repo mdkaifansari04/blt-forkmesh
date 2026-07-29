@@ -17,7 +17,7 @@ def test_member_circle_uses_dirt_and_tracks_firewood_per_member():
     assert "function rebuildCampfireMemberLogs(total)" in SCENE
     assert "rebuildCampfireMemberLogs(count)" in SCENE
     assert "log.userData.memberLogIndex = index" in SCENE
-    assert "fireLevel = clamp(1.08 + count * 0.012, 1.08, 1.85)" in SCENE
+    assert "fireLevel = clamp(1.28 + count * 0.014, 1.28, 2.2)" in SCENE
 
 
 def test_email_pin_switches_between_verified_check_and_unverified_x():

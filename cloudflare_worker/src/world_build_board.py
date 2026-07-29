@@ -47,6 +47,8 @@ BUILTIN_KEYS = frozenset({
     "task:qt-execution-aware-stalls",
     "task:world-profile-social",
     "task:world-reactive-reef",
+    "task:discord-human-authorization",
+    "task:discord-public-chat-connector",
     "task:repo-code-landing",
     "task:repo-board-view-pads",
     "task:world-continuous-city",
