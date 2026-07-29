@@ -4739,7 +4739,7 @@ private:
     QWidget *m_scmPanel = nullptr;
     QWidget *m_scmControlsPanel = nullptr;
     QTreeWidget *m_scmTree = nullptr;
-    QLineEdit *m_scmMessage = nullptr;
+    QPlainTextEdit *m_scmMessage = nullptr; // compact two-line commit/post draft
     QTextBrowser *m_scmDiff = nullptr;
     QLabel *m_scmCountLabel = nullptr;
     QLabel *m_scmViewedLabel = nullptr;  // "3 of 26 files viewed"
