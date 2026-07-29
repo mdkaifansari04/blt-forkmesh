@@ -2142,6 +2142,75 @@ bool vultrInstallNeedsLocalBinary(const QString &installOutput)
     return false;
 }
 
+QString savedHostVultrInstanceId(const QJsonObject &host)
+{
+    const QString provider =
+        host.value(QStringLiteral("provider")).toString().trimmed();
+    if (provider.compare(QStringLiteral("Vultr"), Qt::CaseInsensitive) != 0)
+        return {};
+    return host.value(QStringLiteral("instanceId")).toString().trimmed();
+}
+
+QString vultrInstanceIdForAddress(const QJsonArray &instances,
+                                  const QString &address)
+{
+    const QString wanted = address.trimmed().toLower();
+    if (wanted.isEmpty())
+        return {};
+    QString match;
+    for (const QJsonValue &value : instances) {
+        const QJsonObject instance = value.toObject();
+        const QString id = instance.value(QStringLiteral("id")).toString().trimmed();
+        if (id.isEmpty())
+            continue;
+        bool hit = false;
+        for (const QString &field : {QStringLiteral("main_ip"),
+                                     QStringLiteral("v6_main_ip"),
+                                     QStringLiteral("label"),
+                                     QStringLiteral("hostname")}) {
+            const QString candidate =
+                instance.value(field).toString().trimmed().toLower();
+            // Vultr reports an unassigned address as "0.0.0.0"/"", which would
+            // otherwise let two booting instances "match" each other.
+            if (candidate.isEmpty() ||
+                candidate == QLatin1String("0.0.0.0")) {
+                continue;
+            }
+            if (candidate == wanted) {
+                hit = true;
+                break;
+            }
+        }
+        if (!hit)
+            continue;
+        if (!match.isEmpty() && match != id)
+            return {}; // ambiguous — fail closed rather than destroy a guess
+        match = id;
+    }
+    return match;
+}
+
+QString validateVultrDestroyRequest(const QString &apiKey,
+                                    const QString &instanceId)
+{
+    static const QRegularExpression keyPattern(
+        QStringLiteral("^[A-Za-z0-9]{20,128}$"));
+    if (!keyPattern.match(apiKey.trimmed()).hasMatch()) {
+        return QStringLiteral(
+            "Enter your Vultr API key (Account \xE2\x86\x92 API in the Vultr "
+            "panel). It is used from memory only and never saved to disk.");
+    }
+    static const QRegularExpression idPattern(QStringLiteral(
+        "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+        "[0-9a-fA-F]{12}$"));
+    if (!idPattern.match(instanceId.trimmed()).hasMatch()) {
+        return QStringLiteral(
+            "No Vultr instance is recorded for this host, so there is nothing "
+            "safe to destroy. Delete it from the Vultr panel instead.");
+    }
+    return {};
+}
+
 bool agentCliCredentialsAreEmpty(const AgentCliCredentials &credentials)
 {
     return credentials.claudeCredentials.trimmed().isEmpty() &&

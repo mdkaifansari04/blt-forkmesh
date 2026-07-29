@@ -462,6 +462,31 @@ QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables);
 // (adhoc #408).
 bool vultrInstallNeedsLocalBinary(const QString &installOutput);
 
+// --- Destroying a Vultr mirror (adhoc #24) ---------------------------------
+// The Hosts page's "Destroy" button deletes the VPS itself on the user's Vultr
+// account (billing stops), unlike Uninstall (wipes ForkMesh, keeps the server)
+// and Remove (forgets the host here only).
+
+// The Vultr instance id recorded for a saved host when this app provisioned it,
+// or empty when the host is not a Vultr instance we can address by id (another
+// provider, or a host added before the id was recorded — those are resolved by
+// address instead, see vultrInstanceIdForAddress).
+QString savedHostVultrInstanceId(const QJsonObject &host);
+
+// From GET /v2/instances: the id of the instance serving `address`, matched
+// against main_ip, v6_main_ip and the instance label/hostname so a saved host
+// stored under its DNS name still resolves. Empty when nothing matches, and
+// also empty when more than one instance matches — destroying the wrong server
+// is unrecoverable, so an ambiguous match must fail closed.
+QString vultrInstanceIdForAddress(const QJsonArray &instances,
+                                  const QString &address);
+
+// Empty string when the key and instance id are safe to send to DELETE
+// /v2/instances/{id}, otherwise a user-facing error. Same loose key shape as
+// validateVultrMirrorRequest; the id must look like the UUID Vultr issues.
+QString validateVultrDestroyRequest(const QString &apiKey,
+                                    const QString &instanceId);
+
 // --- Agent CLIs on a fresh mirror (adhoc #418) -----------------------------
 // A brand-new mirror can install the Claude Code and Codex CLIs, but until it
 // is signed in they cannot run a single session — and there is no browser on a
