@@ -1435,15 +1435,20 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentTerminal, &TerminalWidget::finished, this, [this](int) {
         if (m_terminalSessionId <= 0)
             return;
-        if (AgentSession *s = findAgentSession(m_terminalSessionId)) {
+        const int sid = m_terminalSessionId; // reloadAgents() below dangles `s`
+        bool finished = false;
+        if (AgentSession *s = findAgentSession(sid)) {
             if (s->status == AgentStatus::Running) {
                 s->status = AgentStatus::Success;
                 s->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
                 m_agentStore->saveSession(*s);
                 scheduleAgentSessionsPush(); // adhoc #182
                 reloadAgents();
+                finished = true;
             }
         }
+        if (finished)
+            maybeAutoMergeForSession(sid); // adhoc #12
     });
     // Extension-style transcript for Claude Code (issue #191 follow-up): renders
     // the CLI's stream-json events as native cards.
@@ -5736,6 +5741,7 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     session.issueTitle = issue.title;
     session.provider = provider;
     session.createPr = createPr;
+    session.yolo = m_quickAddYolo && m_quickAddYolo->isChecked(); // adhoc #12
     session.model = model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
@@ -6095,6 +6101,10 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     session.prompt = task;   // persisted so the run can resume after a restart
     session.provider = provider;
     session.createPr = createPr;
+    // Snapshot the YOLO toggle now (adhoc #12) rather than reading the checkbox
+    // when the run ends: a session auto-merges because that is what was asked for
+    // when it was launched, not because the box happens to be ticked hours later.
+    session.yolo = m_quickAddYolo && m_quickAddYolo->isChecked();
     session.model = model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
@@ -7581,6 +7591,11 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             }
         }
         maybeCreatePullForStreamSession(sid);
+        // Land the branch straight away when the session was started in YOLO mode
+        // (adhoc #12). Before cleanupStreamWorktree, so the merge still has the
+        // worktree to bring up to date with base first — and after the PR, so the
+        // pull request exists as a record of what was merged.
+        maybeAutoMergeForSession(sid);
         // The PR captured the diff as a patch, so the worktree is no longer
         // needed; drop it to free the branch for checkout (issue #74).
         cleanupStreamWorktree(sid);
@@ -9846,6 +9861,57 @@ void MainWindow::landAgentPullForSession(AgentSession session, const QString &pa
                      .arg(repo.owner, repo.name));
 }
 
+// "YOLO" auto-merge (adhoc #12): a session launched with the quick-add YOLO
+// toggle on lands its own branch in the repo's default branch as soon as its run
+// finishes cleanly — the same thing the detail page's "Merge into main" button
+// does, without waiting for a human to click it. Every safety gate lives in
+// mergeWorktreeIntoMain (dirty checkout, wrong branch, conflicts, and the
+// is-ancestor proof before anything is deleted), so a merge that can't land
+// cleanly leaves the branch and worktree exactly where they are.
+void MainWindow::maybeAutoMergeForSession(int sessionId)
+{
+    const AgentSession *s = findAgentSession(sessionId);
+    if (!s || !s->yolo || s->merged || s->branchName.isEmpty() ||
+        s->status != AgentStatus::Success || isExternalSession(sessionId))
+        return;
+    const int ri = repoIndexFor(s->owner, s->name);
+    if (ri < 0)
+        return;
+    // Snapshot by value before anything below: openRepoDetail and the merge both
+    // pump the GUI event loop over blocking git reads, and a reloadAgents() fired
+    // during the pump rebuilds m_agentSessions — `s` would dangle (git-pump UAF
+    // family, adhoc #106/#119/#124/#149).
+    const AgentSession session = *s;
+    if (m_agentStore)
+        m_agentStore->appendLog(
+            session,
+            QStringLiteral("==> YOLO: merging %1 into the default branch.\n")
+                .arg(session.branchName));
+    // mergeWorktreeIntoMain operates on the repository currently loaded in the
+    // detail view (repoGitDir/m_repoDetailIndex), but a YOLO run can finish while
+    // a different repo is open — merging then would target the wrong checkout. So
+    // bind the detail view to this session's repo first; that only reloads which
+    // repo the detail page holds, it doesn't switch the visible page.
+    if (ri != m_repoDetailIndex)
+        openRepoDetail(ri);
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size() ||
+        m_repositories.at(m_repoDetailIndex).owner != session.owner ||
+        m_repositories.at(m_repoDetailIndex).name != session.name) {
+        // Couldn't bind to it (a repo load was already in flight, or the record
+        // moved) — leave the branch alone rather than merge into someone else's.
+        if (m_agentStore)
+            m_agentStore->appendLog(
+                session,
+                QStringLiteral("!! YOLO: %1/%2 could not be opened; merge %3 by hand.\n")
+                    .arg(session.owner, session.name, session.branchName));
+        return;
+    }
+    mergeWorktreeIntoMain(
+        session.branchName,
+        worktreePathForBranch(m_repositories.at(m_repoDetailIndex).localPath,
+                              session.branchName));
+}
+
 // Release the temp worktree a stream session ran in once the run is over. The
 // worktree at /tmp/forkmesh-worktrees/issue-N-sSID holds its branch checked out,
 // so leaving it behind makes any later `git checkout <branch>` (e.g. opening the
@@ -10018,6 +10084,7 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
             landAgentPullForSession(*session, patch, QString());
     }
     reloadAgents(); // rebuilds m_agentSessions; `session` is dangling after this
+    maybeAutoMergeForSession(sessionId); // adhoc #12: YOLO lands it without review
     if (sessionId == m_selectedAgentSessionId)
         showAgentSession(sessionId);
     refreshIssueList();

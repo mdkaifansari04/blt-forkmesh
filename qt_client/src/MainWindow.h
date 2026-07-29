@@ -4341,6 +4341,12 @@ private:
     // is submitted (same as Enter/Send) as soon as a voice dictation finishes its
     // final transcription, so you can dictate-and-go without reaching for the keyboard.
     QCheckBox *m_quickAddVoiceAutoSubmit = nullptr;
+    // "YOLO" toggle beside it (adhoc #12): when checked, every agent started while
+    // it is on merges its own branch into the default branch the moment its run
+    // finishes successfully, instead of waiting for a pull-request review. Read at
+    // launch time and stamped onto the session (AgentSession::yolo), so flipping it
+    // later never changes what an already-running agent will do.
+    QCheckBox *m_quickAddYolo = nullptr;
     // Dictation can target any text box, not just the footer prompt: m_voiceTargetEdit
     // is the box the current capture writes into and m_voiceActiveButton the mic that
     // started it (so its icon swaps to red while recording). m_voiceIdlePlaceholder is
@@ -5688,6 +5694,10 @@ private:
     // the main repo. `git worktree remove` keeps the branch ref itself, so the
     // pull request still resolves. No-op for sessions without a worktree.
     void cleanupStreamWorktree(int sessionId);
+    // "YOLO" auto-merge (adhoc #12): land a finished session's branch in its
+    // repo's default branch without a review step. No-op unless the session was
+    // started with the quick-add YOLO toggle on and finished successfully.
+    void maybeAutoMergeForSession(int sessionId);
 
     // ---- External Claude Code sessions ------------------------------------
     // Claude Code runs started outside ForkMesh (a terminal, another editor) are
