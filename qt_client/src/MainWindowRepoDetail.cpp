@@ -92,21 +92,6 @@ void MainWindow::startIssueInIde(int issueNumber, const QString &title,
                          false);
 }
 
-// The repo header's action buttons (Notify/Fork/Mirror/Source/Open) operate on
-// the repository as a whole. On the Agents tab (m_repoDetailStack index 3) they
-// have no bearing and just crowd the tab bar, so hide them there and show them
-// on every other tab. Wired to m_repoDetailStack::currentChanged so it tracks
-// tab switches however they happen (click, programmatic jump, Back/Forward).
-void MainWindow::updateRepoActionButtonsVisibility(int stackIndex)
-{
-    const bool onAgentsTab = stackIndex == 3;
-    for (QPushButton *b : {m_notifyButton, m_forkButton, m_mirrorButton,
-                           m_sourceButton, m_repoOpenButton}) {
-        if (b)
-            b->setVisible(!onAgentsTab);
-    }
-}
-
 // Show/hide the issue-detail "run in IDE" buttons based on the toggle + whether
 // a live extension is detected. Called whenever an issue is rendered.
 void MainWindow::updateIssueIdeButtons()
@@ -424,16 +409,8 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeCoveExplorerButton, &QPushButton::clicked, this,
             [this] { showRepoCoveExplorer(); });
 
-    // Git identity (name <email>) configured for the repo we're viewing, left
-    // aligned right after the mode toggles it sits beside. Filled in by
-    // updateFooterGitIdentity() each time a repo opens.
-    m_footerGitIdentity = new QLabel;
-    m_footerGitIdentity->setObjectName("footerGitIdentity");
-    m_footerGitIdentity->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    m_footerGitIdentity->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_footerGitIdentity->setToolTip(
-        "Git author identity configured for the repository you're viewing");
-
+    // The git identity that used to sit beside these mode toggles now lives in
+    // the bottom status bar (see buildStatusBar).
     m_repoFilesModeBar = new QWidget;
     auto *modeRow = new QHBoxLayout(m_repoFilesModeBar);
     modeRow->setContentsMargins(16, 6, 16, 0);
@@ -441,8 +418,6 @@ QWidget *MainWindow::buildRepoFilesPanel()
     modeRow->addWidget(m_filesModeOverviewButton);
     modeRow->addWidget(m_filesModeExplorerButton);
     modeRow->addWidget(m_filesModeCoveExplorerButton);
-    modeRow->addSpacing(12);
-    modeRow->addWidget(m_footerGitIdentity);
     modeRow->addStretch();
 
     auto *panel = new QWidget;
@@ -560,12 +535,8 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_readmeView->setObjectName("readmeView");
     m_readmeView->setOpenExternalLinks(true);
 
-    // Toolbar: branch switcher + tags + "go to file" search.
-    m_branchButton = new QPushButton("main");
-    m_branchButton->setObjectName("ghostButton");
-    m_branchButton->setCursor(Qt::PointingHandCursor);
-    m_branchButton->setToolTip("Switch branch");
-    setOcticon(m_branchButton, "git-branch", 16);
+    // Toolbar: branch counts + tags + "go to file" search. The branch switcher
+    // itself moved to the bottom status bar (see buildStatusBar).
     m_branchesButton = new QPushButton("0 branches");
     m_branchesButton->setObjectName("ghostButton");
     m_branchesButton->setCursor(Qt::PointingHandCursor);
@@ -643,7 +614,6 @@ QWidget *MainWindow::buildRepoOverviewPage()
     auto *toolbar = new QHBoxLayout;
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(8);
-    toolbar->addWidget(m_branchButton);
     toolbar->addWidget(m_branchesButton);
     toolbar->addWidget(m_worktreesButton);
     toolbar->addWidget(m_remotesButton);
@@ -8367,13 +8337,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     // every such move is a step the arrows can return to. Debounced and guarded
     // against replays, so it coalesces a repo-open's tab churn into one entry.
     connect(m_repoDetailStack, &QStackedWidget::currentChanged, this,
-            [this](int index) {
-                scheduleNavRecord();
-                // The repo action buttons (Notify/Fork/Mirror/Source/Open) act on
-                // the repository itself and are irrelevant on the Agents tab
-                // (index 3), where they crowd the tab bar — hide them there.
-                updateRepoActionButtonsVisibility(index);
-            });
+            [this](int) { scheduleNavRecord(); });
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         ensureRepoDetailTabBuilt(id);
         m_repoDetailStack->setCurrentIndex(id);
@@ -8566,11 +8530,17 @@ void MainWindow::updateRepoActivityRail()
     const bool onChanges =
         onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
+    const bool onAgents =
+        onHome && m_repoDetailStack && m_repoDetailStack->currentIndex() == 3;
     // Git is its own activity-rail destination. Hide every Code/repository
     // header above the source-control workspace instead of leaving several
-    // rows of unrelated repository navigation on screen.
+    // rows of unrelated repository navigation on screen. The Agents tab gets
+    // the same treatment for the repository band: the session list is its own
+    // workspace, and the repo switcher, repo actions and Code/Issues/PRs… tabs
+    // only pushed it down the page. The activity rail's Code/Git entries stay
+    // the way back out of both.
     if (m_repoDetailChrome)
-        m_repoDetailChrome->setVisible(!onChanges);
+        m_repoDetailChrome->setVisible(!onChanges && !onAgents);
     if (m_repoFilesModeBar)
         m_repoFilesModeBar->setVisible(!onChanges);
     if (m_repoOverviewChrome)
@@ -8580,9 +8550,7 @@ void MainWindow::updateRepoActivityRail()
     m_railCodeButton->setChecked(onCode && !onChanges);
     m_railGitButton->setChecked(onChanges);
     if (m_agentsNavButton)
-        m_agentsNavButton->setChecked(
-            onHome && m_repoDetailStack &&
-            m_repoDetailStack->currentIndex() == 3);
+        m_agentsNavButton->setChecked(onAgents);
 }
 
 

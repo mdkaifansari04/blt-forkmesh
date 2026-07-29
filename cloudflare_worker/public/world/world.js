@@ -111,7 +111,7 @@ const DETAIL_WIDTH_MIN = 320;
 const DETAIL_WIDTH_STEP = 48;
 const REFRESH_POSITION_KEY = "forkmesh.world.refresh-position.v1";
 const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1.";
-const SAVED_VIEWS_MAX = 4;
+const SAVED_VIEWS_MAX = 5;
 const RENDERER_RECOVERY_DELAY_MS = 1500;
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 // The Mastodon kiosk refetches the public profile on this cadence; the MM:SS
@@ -130,6 +130,8 @@ const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
 // Placements this browser locked in, kept only long enough to outlive a stale
 // read of the shared layout document. See rememberWorldLayout.
 const WORLD_LAYOUT_ECHO_KEY = "forkmesh.world.layout.echo.v1";
+const ADMIN_ERROR_SEEN_KEY = "forkmesh.world.adminErrorsSeen.v1";
+const ADMIN_ERROR_POLL_MS = 15_000;
 const WORLD_LAYOUT_ECHO_TTL_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
@@ -3562,7 +3564,12 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
     /^[A-Za-z0-9+/=]+$/.test(String(accountSession.avatarPng))
       ? String(accountSession.avatarPng)
       : "";
-  const mapItems = LANDMARKS.map(
+  // Repository portals remain present and interactive in the scene. The
+  // compact map is for travel shortcuts, and Code already owns repository
+  // navigation, so do not duplicate a repository view in this rail.
+  const mapItems = LANDMARKS.filter(
+    (landmark) => landmark.id !== "repositories",
+  ).map(
     (landmark) => `
       <li>
         <button
@@ -3734,7 +3741,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               rel="noreferrer"
               title="Support ForkMesh on Patreon to unlock outfit colors"
             >
-              <span aria-hidden="true">♥</span><span>Upgrade</span>
+              <span aria-hidden="true">♥</span><span class="world-visually-hidden">Upgrade</span>
             </a>`
             }
             <button
@@ -3742,9 +3749,10 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               type="button"
               data-world-camera-toggle
               aria-pressed="false"
+              aria-label="Enter first-person view"
               title="Enter first-person view"
             >
-              <span aria-hidden="true">⌖</span><span data-world-camera-label>First person</span>
+              <span aria-hidden="true">⌖</span><span class="world-visually-hidden" data-world-camera-label>First person</span>
             </button>
             <button
               class="world-top-link world-wave-button"
@@ -3753,24 +3761,26 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               title="Wave to everyone in the world"
               aria-label="Wave your avatar's arm"
             >
-              <span aria-hidden="true">👋</span><span>Wave</span>
+              <span aria-hidden="true">👋</span><span class="world-visually-hidden">Wave</span>
             </button>
             <button
               class="world-top-link"
               type="button"
               data-world-sound-toggle
               aria-pressed="false"
+              aria-label="Enable World sounds"
               title="Enable World sounds"
             >
-              <span aria-hidden="true">♪</span><span data-world-sound-label>Sound</span>
+              <span aria-hidden="true">♪</span><span class="world-visually-hidden" data-world-sound-label>Sound</span>
             </button>
             <button
               class="world-top-link"
               type="button"
               data-world-screenshot
+              aria-label="Capture and annotate a screenshot"
               title="Capture and annotate a screenshot"
             >
-              <span aria-hidden="true">📷</span><span>Capture</span>
+              <span aria-hidden="true">📷</span><span class="world-visually-hidden">Capture</span>
             </button>
             <button
               class="world-top-link world-notification-button"
@@ -3779,8 +3789,42 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               title="Show global and personal notifications"
               aria-label="Open World notifications"
             >
-              <span aria-hidden="true">🔔</span><span>Notifications</span>
+              <span aria-hidden="true">🔔</span><span class="world-visually-hidden">Notifications</span>
               <span data-world-notification-count hidden>0</span>
+            </button>
+            <button
+              class="world-top-link world-admin-errors-button"
+              type="button"
+              data-world-admin-errors
+              title="Open newly logged errors"
+              aria-label="Open newly logged errors"
+              hidden
+            >
+              <span aria-hidden="true">!</span>
+              <span class="world-visually-hidden">New errors</span>
+              <span data-world-admin-error-count hidden>0</span>
+            </button>
+            <a
+              class="world-top-link world-dashboard-link"
+              href="/dashboard"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Open Dashboard in a new tab"
+              title="Open Dashboard in a new tab"
+            >
+              <span aria-hidden="true">▦</span>
+              <span class="world-visually-hidden">Dashboard</span>
+            </a>
+            <button
+              class="world-top-link world-tasks-button"
+              type="button"
+              data-world-tasks-open
+              aria-label="Open organization tasks"
+              title="Open organization tasks"
+            >
+              <span aria-hidden="true">✓</span>
+              <span class="world-visually-hidden">Tasks</span>
+              <span data-world-task-count hidden>0</span>
             </button>
             <button
               class="world-shirt-badge"
@@ -3844,25 +3888,17 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <span aria-hidden="true">🔗</span>
             <span>Share exact view</span>
           </button>
-          <section class="world-saved-views" data-world-saved-views data-expanded="false" aria-label="Saved World views">
+          <section class="world-saved-views" data-world-saved-views data-expanded="true" aria-label="Five most recent saved World views">
             <div class="world-saved-views-heading">
-              <button
-                class="world-saved-views-toggle"
-                type="button"
-                data-world-saved-views-toggle
-                aria-expanded="false"
-              >
-                <span aria-hidden="true">▸</span>
-                <span>Saved views</span>
-              </button>
+              <span class="world-saved-views-title">Quick views</span>
               <button
                 type="button"
                 data-world-save-view
                 aria-label="Save this location and perspective"
                 title="Save this view"
-              ><span aria-hidden="true">⌖＋</span><span>Map</span></button>
+              ><span aria-hidden="true">＋</span><span class="world-visually-hidden">Save current map view</span></button>
             </div>
-            <div class="world-saved-view-list" data-world-saved-view-list hidden></div>
+            <div class="world-saved-view-list" data-world-saved-view-list></div>
           </section>
           <section
             class="world-community-placement"
@@ -3896,9 +3932,19 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </div>
 
         <details class="world-diagnostics" data-world-diagnostics ${settings.debugPanel ? "" : "hidden"}>
-          <summary aria-label="Open local World performance and connection details">
-            <span class="world-diagnostics-light" data-world-diagnostics-light data-state="connecting" aria-hidden="true"></span>
-            <strong>DEBUG</strong>
+          <summary aria-label="Open local World performance and connection details" title="World performance">
+            <span class="world-diagnostics-orb" data-world-diagnostics-dots aria-hidden="true">
+              <span data-diagnostic-dot="fps" data-level="caution"></span>
+              <span data-diagnostic-dot="frame" data-level="caution"></span>
+              <span data-diagnostic-dot="draw" data-level="caution"></span>
+              <span data-diagnostic-dot="input" data-level="caution"></span>
+              <span data-diagnostic-dot="network" data-level="caution"></span>
+              <span data-diagnostic-dot="traffic" data-level="good"></span>
+              <span data-diagnostic-dot="queue" data-level="good"></span>
+              <span data-diagnostic-dot="build" data-level="caution"></span>
+              <span data-diagnostic-dot="world" data-level="good"></span>
+            </span>
+            <strong>WORLD DEBUG</strong>
             <span class="world-diagnostics-compact" data-world-diagnostics-summary>
               <span data-world-diagnostics-renderer-compact title="Renderer">R starting</span>
               <span data-world-diagnostics-frame-compact title="Frame health">F sampling</span>
@@ -3933,9 +3979,12 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </details>
 
         <details class="world-diagnostics world-chat-terminal${settings.debugPanel ? "" : " world-chat-terminal--debug-hidden"}" data-world-chat-terminal>
-          <summary aria-label="Open World chat in a terminal panel">
-            <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
-            <strong>CHAT</strong>
+          <summary aria-label="Open World chat and activity">
+            <span class="world-chat-terminal-avatar" data-world-chat-terminal-avatar aria-hidden="true">
+              <img data-world-chat-terminal-avatar-image alt="" hidden>
+              <span data-world-chat-terminal-avatar-initial>#</span>
+            </span>
+            <strong>CHAT + ACTIVITY</strong>
             <span class="world-chat-terminal-channel" aria-label="Current channel"># general</span>
             <span class="world-chat-terminal-lock" aria-label="Public channel is relay protected">▣</span>
             <span class="world-chat-terminal-connection">Connected</span>
@@ -3958,7 +4007,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
         </details>
 
-        <div class="world-toast" data-world-toast role="status"></div>
+        <div class="world-activity-stream" data-world-activity-stream role="log" aria-live="polite" aria-label="Recent World chat, notifications, and status changes"></div>
         <div class="world-swing-panel" data-world-swing-panel hidden>
           <span>
             <strong>Swing speed</strong>
@@ -4340,6 +4389,17 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 tasks and recent issue assignments ride the private board on
                 the back of your own avatar; nobody else can read it and
                 built-in screenshots hide it.
+              </small>
+            </fieldset>
+            <fieldset class="world-setting-group">
+              <legend data-world-organization-task-heading>Organization tasks · private to the organization</legend>
+              <ol class="world-office-task-list" data-world-organization-task-list aria-label="Universal organization task list">
+                <li class="world-office-task-empty">Sign in to load organization tasks.</li>
+              </ol>
+              <small>
+                Department, team, repository, QA, Claude, and Codex routes all
+                use this one encrypted task catalog. QA results include the
+                latest pass, fail, or unknown verdict and its reviewer.
               </small>
             </fieldset>
           </div>
@@ -4733,6 +4793,7 @@ class ForkMeshWorld extends HTMLElement {
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
+    this.openFeedbackKioskOnLoad = worldQuery.get("feedback") === "1";
     this.requestedSpaceExplicit = WORLD_SPACE_IDS.has(requestedSpace);
     this.currentSpace = WORLD_SPACE_IDS.has(requestedSpace)
       ? requestedSpace
@@ -4766,6 +4827,10 @@ class ForkMeshWorld extends HTMLElement {
     this.rendererRecoveryTimer = 0;
     this.viewportSyncTimer = 0;
     this.lastStableViewportHeight = 0;
+    this.lastStableViewportWidth = 0;
+    this.coarsePointerViewport = Boolean(
+      window.matchMedia?.("(pointer: coarse)")?.matches,
+    );
     this.buildDiagnostics = { version: "", revision: "" };
     this.qaDeck = {
       authenticated: false,
@@ -4817,6 +4882,10 @@ class ForkMeshWorld extends HTMLElement {
     this.mirrorPushRefreshTimer = 0;
     this.eventsTimer = 0;
     this.notificationsTimer = 0;
+    this.adminErrorTimer = 0;
+    this.adminErrorLatestId = 0;
+    this.adminErrorCount = 0;
+    this.adminErrorEffectTimer = 0;
     // GETs from bootstrap, visibility recovery, timers, and socket doorbells
     // share one request. Successful snapshots can be reused briefly and
     // repeated failures cool down exponentially instead of becoming a storm.
@@ -4937,6 +5006,7 @@ class ForkMeshWorld extends HTMLElement {
     });
     this.addEventListener("touchmove", this.blockWorldPullToRefresh, {
       passive: false,
+      capture: true,
     });
     window.addEventListener("keydown", this.handlePublicInputActivity);
     window.addEventListener("message", this.handleWorldChatMessage);
@@ -4965,6 +5035,7 @@ class ForkMeshWorld extends HTMLElement {
     this.startUpdateWatch();
     this.startDeployStatusWatch();
     this.startWorldLayoutWatch();
+    this.startAdminErrorPolling();
   }
 
   disconnectedCallback() {
@@ -5088,7 +5159,15 @@ class ForkMeshWorld extends HTMLElement {
     ].filter(Boolean);
     if (!chatSources.includes(event.source)) return;
     const data = event.data;
-    if (!data || data.type !== "forkmesh:world-chat") return;
+    if (!data) return;
+    if (data.type === "forkmesh:world-activity") {
+      this.activityNotice(data.text, {
+        kind: String(data.kind || "status"),
+        sender: "ForkMesh",
+      });
+      return;
+    }
+    if (data.type !== "forkmesh:world-chat") return;
     const text = String(data.text || "")
       .replace(/\s+/g, " ")
       .trim()
@@ -5157,6 +5236,10 @@ class ForkMeshWorld extends HTMLElement {
     this.recentWorldChatMessages.sort((left, right) => left.ts - right.ts);
     this.recentWorldChatMessages = this.recentWorldChatMessages.slice(-40);
     this.world?.updateWorldGeneralChat?.(this.recentWorldChatMessages);
+    this.world?.setAvatarRecentPublicMessage?.(
+      sender,
+      text || `Shared ${attachmentName}`,
+    );
     if (ts >= this.chatTerminalNewestAt) {
       this.chatTerminalNewestAt = ts;
       this.setChatTerminalLastMessage(
@@ -5167,6 +5250,10 @@ class ForkMeshWorld extends HTMLElement {
     // Replayed history updates only the collapsed CHAT bar — never a bubble,
     // so reconnects do not resurrect old messages above avatars.
     if (data.history === true) return;
+    this.activityNotice(
+      `${sender}: ${text || `Shared ${attachmentName}`}`,
+      { kind: "chat", sender },
+    );
     // Own lines never count as unread — `self` is this browser, `own` also
     // covers the signed-in account talking from another tab or device.
     if (data.self !== true && data.own !== true) this.bumpChatTerminalUnread();
@@ -5680,6 +5767,10 @@ class ForkMeshWorld extends HTMLElement {
         onReferralBoardSelect: () => void this.copyReferralLink(),
         onSiteReferrerOpen: (url) => this.openSiteReferrerLink(url),
         onLobbyLinkKioskSelect: () => void this.openLobbyLinkKiosk(),
+        onLobbyFeedbackKioskSelect: () =>
+          void this.openLobbyFeedbackKiosk(),
+        onLobbyTaskBidKioskSelect: () =>
+          void this.openLobbyTaskBidKiosk(),
         onSystemCapacityTableSelect: (table) =>
           this.openSystemCapacityTables(table),
         onInfrastructureConsoleToggle: ({ enabled }) =>
@@ -5814,6 +5905,8 @@ class ForkMeshWorld extends HTMLElement {
           this.postJSON(path, body, options),
         getSession: readSession,
         toast: (message) => this.toast(message),
+        onQaVerdict: ({ task, verdict }) =>
+          this.recordTaskQaVerdict(task, verdict),
       });
       this.syncRecentIssueAssignments();
       this.officeController = createWorldOfficeController({
@@ -5942,6 +6035,10 @@ class ForkMeshWorld extends HTMLElement {
       if (this.requestedLandmark) {
         this.openLandmark(this.requestedLandmark);
       }
+      if (this.openFeedbackKioskOnLoad) {
+        this.officeController?.focusOffice();
+        void this.openLobbyFeedbackKiosk();
+      }
     } catch (error) {
       console.warn("ForkMesh World could not start WebGL", error);
       this.renderWebGLFallback();
@@ -5953,6 +6050,9 @@ class ForkMeshWorld extends HTMLElement {
       this.announceWorldNotifications();
       if (this.requestedLandmark) {
         this.openLandmark(this.requestedLandmark);
+      }
+      if (this.openFeedbackKioskOnLoad) {
+        void this.openLobbyFeedbackKiosk();
       }
     }
   }
@@ -6110,7 +6210,33 @@ class ForkMeshWorld extends HTMLElement {
             }
           : { pass: 0, fail: 0, unsure: 0, total: 0 };
         return key && title && howToTest
-          ? { key, title, howToTest, verdict, global }
+          ? {
+              key,
+              title,
+              howToTest,
+              verdict,
+              global,
+              organizationTask: card?.organizationTask === true,
+              department: sanitizePresenceText(
+                card?.department, "", 64),
+              team: sanitizePresenceText(card?.team, "", 64),
+              taskQaStatus: ["passed", "failed"].includes(
+                String(card?.taskQaStatus || ""))
+                ? String(card.taskQaStatus)
+                : "unknown",
+              lastReviewer: sanitizePresenceText(
+                card?.lastReviewer, "", 64),
+              lastReviewedAt: Math.max(
+                0, Number(card?.lastReviewedAt) || 0),
+              failureReason: sanitizePresenceText(
+                card?.failureReason || reviews?.[key]?.failureReason,
+                "",
+                1000,
+              ),
+              hasFailureScreenshot:
+                card?.hasFailureScreenshot === true ||
+                reviews?.[key]?.hasFailureScreenshot === true,
+            }
           : null;
       })
       .filter(Boolean)
@@ -6121,6 +6247,9 @@ class ForkMeshWorld extends HTMLElement {
     });
     this.qaDeck = {
       authenticated: payload?.authenticated === true,
+      authorized: payload?.authorized === true,
+      requiredTeam: sanitizePresenceText(
+        payload?.requiredTeam, "quality-assurance", 64),
       revision: sanitizePresenceText(payload?.revision, "", 80),
       cards,
       reviews,
@@ -6191,6 +6320,8 @@ class ForkMeshWorld extends HTMLElement {
     }
     this.world?.updateQaBoard?.({
       authenticated: this.qaDeck.authenticated,
+      authorized: this.qaDeck.authorized,
+      requiredTeam: this.qaDeck.requiredTeam,
       current:
         (view === "detail"
           ? this.qaDeck.cards.find(
@@ -6315,6 +6446,157 @@ class ForkMeshWorld extends HTMLElement {
     return this.qaLoad;
   }
 
+  async compactQaFailureScreenshot(file) {
+    if (
+      !file ||
+      !/^image\/(?:png|jpeg|webp)$/i.test(String(file.type || "")) ||
+      Number(file.size) > 8 * 1024 * 1024
+    ) {
+      throw new Error("Choose a PNG, JPEG, or WebP image under 8 MB.");
+    }
+    if (typeof createImageBitmap !== "function") {
+      throw new Error("Screenshot attachments are unavailable in this browser.");
+    }
+    const bitmap = await createImageBitmap(file);
+    try {
+      const encode = (maxWidth, maxHeight, quality) => {
+        const scale = Math.min(
+          1,
+          maxWidth / Math.max(1, bitmap.width),
+          maxHeight / Math.max(1, bitmap.height),
+        );
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        canvas.getContext("2d")?.drawImage(
+          bitmap,
+          0,
+          0,
+          canvas.width,
+          canvas.height,
+        );
+        return canvas.toDataURL("image/webp", quality);
+      };
+      for (const [width, height, quality] of [
+        [1280, 900, 0.7],
+        [1024, 720, 0.58],
+        [800, 600, 0.5],
+      ]) {
+        const encoded = encode(width, height, quality);
+        if (encoded.length <= 480_000) return encoded;
+      }
+      throw new Error("That screenshot could not be compacted below 480 KB.");
+    } finally {
+      bitmap.close?.();
+    }
+  }
+
+  collectQaFailureEvidence(card) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "world-qa-failure-overlay";
+      overlay.setAttribute("role", "dialog");
+      overlay.setAttribute("aria-modal", "true");
+      overlay.setAttribute("aria-labelledby", "world-qa-failure-title");
+      overlay.innerHTML = `
+        <form class="world-qa-failure-dialog">
+          <header>
+            <div>
+              <span>Private organization QA</span>
+              <strong id="world-qa-failure-title">Why did this task fail?</strong>
+            </div>
+            <button type="button" data-qa-failure-cancel aria-label="Cancel failure report">×</button>
+          </header>
+          <p>${escapeHTML(card?.title || "QA task")}</p>
+          <label>
+            Reason
+            <textarea name="reason" maxlength="1000" rows="4" required
+              placeholder="Describe what failed, what you expected, and how to reproduce it."></textarea>
+          </label>
+          <label class="world-qa-failure-file">
+            Screenshot <small>optional · PNG, JPEG, or WebP</small>
+            <input type="file" name="screenshot" accept="image/png,image/jpeg,image/webp" />
+          </label>
+          <div class="world-qa-failure-preview" hidden>
+            <img alt="Failure screenshot preview" />
+            <button type="button" data-qa-failure-clear>Remove screenshot</button>
+          </div>
+          <small data-qa-failure-status>Choose a file or paste a screenshot anywhere in this panel.</small>
+          <footer>
+            <button type="button" data-qa-failure-cancel>Cancel</button>
+            <button type="submit">Save failed result</button>
+          </footer>
+        </form>`;
+      const form = overlay.querySelector("form");
+      const input = form.elements.screenshot;
+      const preview = overlay.querySelector(".world-qa-failure-preview");
+      const previewImage = preview.querySelector("img");
+      const status = overlay.querySelector("[data-qa-failure-status]");
+      let screenshot = "";
+      let closed = false;
+      const finish = (value) => {
+        if (closed) return;
+        closed = true;
+        overlay.remove();
+        resolve(value);
+      };
+      const setScreenshot = async (file) => {
+        if (!file) return;
+        status.textContent = "Preparing screenshot…";
+        try {
+          screenshot = await this.compactQaFailureScreenshot(file);
+          previewImage.src = screenshot;
+          preview.hidden = false;
+          status.textContent =
+            "Screenshot ready. It will be encrypted with this QA review.";
+        } catch (error) {
+          screenshot = "";
+          preview.hidden = true;
+          input.value = "";
+          status.textContent = String(
+            error?.message || "The screenshot could not be attached.",
+          );
+        }
+      };
+      input.addEventListener("change", () => {
+        void setScreenshot(input.files?.[0]);
+      });
+      overlay.addEventListener("paste", (event) => {
+        const file = [...(event.clipboardData?.files || [])].find((entry) =>
+          String(entry.type || "").startsWith("image/"),
+        );
+        if (file) {
+          event.preventDefault();
+          void setScreenshot(file);
+        }
+      });
+      overlay.querySelector("[data-qa-failure-clear]").addEventListener(
+        "click",
+        () => {
+          screenshot = "";
+          input.value = "";
+          preview.hidden = true;
+          status.textContent =
+            "Choose a file or paste a screenshot anywhere in this panel.";
+        },
+      );
+      overlay.querySelectorAll("[data-qa-failure-cancel]").forEach((button) => {
+        button.addEventListener("click", () => finish(null));
+      });
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const failureReason = String(form.elements.reason.value || "").trim();
+        if (!failureReason) {
+          form.elements.reason.reportValidity();
+          return;
+        }
+        finish({ failureReason, screenshot });
+      });
+      this.$("[data-world-root]")?.append(overlay);
+      form.elements.reason.focus();
+    });
+  }
+
   async recordQaVerdict(verdict) {
     if (
       this.qaSaving ||
@@ -6328,11 +6610,21 @@ class ForkMeshWorld extends HTMLElement {
       this.toast("Sign in to save QA results to your account.");
       return false;
     }
+    const evidence =
+      verdict === "fail" && card.organizationTask
+        ? await this.collectQaFailureEvidence(card)
+        : { failureReason: "", screenshot: "" };
+    if (!evidence) return false;
     this.qaSaving = true;
     try {
       const payload = await this.postJSON(
         WORLD_QA_ENDPOINT,
-        { key: card.key, verdict },
+        {
+          key: card.key,
+          verdict,
+          failureReason: evidence.failureReason,
+          screenshot: evidence.screenshot,
+        },
         { timeout: 8000 },
       );
       this.applyQaDeck(payload, { afterKey: card.key });
@@ -6347,6 +6639,51 @@ class ForkMeshWorld extends HTMLElement {
       return false;
     } finally {
       this.qaSaving = false;
+    }
+  }
+
+  async recordTaskQaVerdict(task, verdict) {
+    const taskId = String(task?.id || "").trim().toLowerCase();
+    if (
+      !/^[a-f0-9]{32}$/.test(taskId) ||
+      !["pass", "fail", "unsure"].includes(verdict)
+    ) {
+      return false;
+    }
+    if (!validWorldSession()) {
+      this.toast("Sign in to review completed organization tasks.");
+      return false;
+    }
+    const key = `task:${taskId}`;
+    try {
+      if (!Number(task?.qa?.requestedAt)) {
+        await this.postJSON(
+          `/api/tasks/${encodeURIComponent(taskId)}/qa`,
+          {
+            howToTest:
+              "Open the completed feature and follow its normal user flow. " +
+              "Confirm the requested behavior works, existing behavior did " +
+              "not regress, and no console or network error appears.",
+          },
+          { timeout: 8_000 },
+        );
+      }
+      await this.refreshQaDeck({ quiet: true });
+      const index = this.qaDeck.cards.findIndex((card) => card.key === key);
+      if (index < 0 || !this.qaDeck.authorized) {
+        this.toast(
+          "Join the Quality Assurance team to review completed tasks.",
+        );
+        return false;
+      }
+      this.qaCardIndex = index;
+      this.qaDeckSelectedKey = key;
+      return await this.recordQaVerdict(verdict);
+    } catch (error) {
+      this.toast(
+        String(error?.message || "The QA result could not be saved."),
+      );
+      return false;
     }
   }
 
@@ -6552,14 +6889,42 @@ class ForkMeshWorld extends HTMLElement {
     // Hold the last stable viewport until the gesture ends, then reconcile it
     // once without interrupting movement.
     if (this.mobileMovementActive) return;
+    const width = Math.max(
+      240,
+      Math.round(window.innerWidth || document.documentElement.clientWidth || 0),
+    );
+    // On touch devices, address-bar expansion and contraction changes only
+    // the visual viewport height. Resizing the WebGL buffer for that browser
+    // chrome animation clears the frame and looks like a full World refresh.
+    // Keep the mounted buffer stable until the viewport width changes (real
+    // rotation/window resize). Desktop resizes remain fully responsive.
+    if (
+      this.coarsePointerViewport &&
+      this.lastStableViewportWidth > 0 &&
+      Math.abs(width - this.lastStableViewportWidth) < 2
+    ) {
+      return;
+    }
     const commit = () => {
       this.viewportSyncTimer = 0;
       if (this.mobileMovementActive || this.destroyed) return;
+      const committedWidth = Math.max(
+        240,
+        Math.round(
+          window.innerWidth || document.documentElement.clientWidth || 0,
+        ),
+      );
       const height = Math.max(
         240,
         Math.round(window.visualViewport?.height || window.innerHeight || 0),
       );
-      if (Math.abs(height - this.lastStableViewportHeight) < 2) return;
+      if (
+        Math.abs(height - this.lastStableViewportHeight) < 2 &&
+        Math.abs(committedWidth - this.lastStableViewportWidth) < 2
+      ) {
+        return;
+      }
+      this.lastStableViewportWidth = committedWidth;
       this.lastStableViewportHeight = height;
       this.style.setProperty("--world-viewport-height", `${height}px`);
     };
@@ -8089,6 +8454,43 @@ class ForkMeshWorld extends HTMLElement {
 
   bindUI() {
     const chatTerminal = this.$("[data-world-chat-terminal]");
+    const diagnostics = this.$("[data-world-diagnostics]");
+    const hoverCapable = window.matchMedia?.(
+      "(hover: hover) and (pointer: fine)",
+    )?.matches;
+    const wireHoverOrb = (details, onOpen = () => {}) => {
+      if (!details || !hoverCapable) return;
+      let closeTimer = 0;
+      details.addEventListener("pointerenter", () => {
+        window.clearTimeout(closeTimer);
+        details.open = true;
+        onOpen();
+      });
+      details.addEventListener("pointerleave", () => {
+        window.clearTimeout(closeTimer);
+        closeTimer = window.setTimeout(() => {
+          if (!details.matches(":focus-within")) details.open = false;
+        }, 220);
+      });
+      details.addEventListener("focusin", () => {
+        window.clearTimeout(closeTimer);
+        details.open = true;
+        onOpen();
+      });
+      details.addEventListener("focusout", () => {
+        window.clearTimeout(closeTimer);
+        closeTimer = window.setTimeout(() => {
+          if (!details.matches(":focus-within,:hover")) details.open = false;
+        }, 220);
+      });
+    };
+    wireHoverOrb(diagnostics, () => {
+      chatTerminal?.removeAttribute("open");
+    });
+    wireHoverOrb(chatTerminal, () => {
+      diagnostics?.removeAttribute("open");
+      this.loadChatTerminalFrame();
+    });
     chatTerminal?.addEventListener("toggle", () => {
       if (chatTerminal.open) {
         this.$("[data-world-diagnostics]")?.removeAttribute("open");
@@ -8115,12 +8517,6 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-save-view]")) {
         this.saveCurrentWorldView();
-        this.setSavedViewsExpanded(true);
-        return;
-      }
-      if (event.target.closest("[data-world-saved-views-toggle]")) {
-        const section = this.$("[data-world-saved-views]");
-        this.setSavedViewsExpanded(section?.dataset.expanded !== "true");
         return;
       }
       const savedViewEdit = event.target.closest("[data-world-saved-view-edit]");
@@ -8201,6 +8597,10 @@ class ForkMeshWorld extends HTMLElement {
         void this.refreshPersonalNotifications(true);
         return;
       }
+      if (event.target.closest("[data-world-admin-errors]")) {
+        this.openAdminErrors();
+        return;
+      }
       const mapToggle = event.target.closest("[data-world-map-toggle]");
       if (mapToggle) {
         const rail = this.$("[data-world-right-rail]");
@@ -8250,6 +8650,11 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-settings-open]")) {
         this.toggleSettings(true);
+        return;
+      }
+      if (event.target.closest("[data-world-tasks-open]")) {
+        this.toggleSettings(true);
+        this.selectSettingsTab("work");
         return;
       }
       if (event.target.closest("[data-world-settings-close]")) {
@@ -8916,14 +9321,12 @@ class ForkMeshWorld extends HTMLElement {
   setSavedViewsExpanded(expanded) {
     const section = this.$("[data-world-saved-views]");
     const list = this.$("[data-world-saved-view-list]");
-    const toggle = this.$("[data-world-saved-views-toggle]");
-    if (!section || !list || !toggle) return;
-    const active = expanded === true;
-    section.dataset.expanded = String(active);
-    list.hidden = !active;
-    toggle.setAttribute("aria-expanded", String(active));
-    const icon = toggle.querySelector("span");
-    if (icon) icon.textContent = active ? "▾" : "▸";
+    if (!section || !list) return;
+    // Quick views are intentionally always exposed. Retain this method for
+    // older callers and synchronized preference snapshots without allowing a
+    // stale collapsed preference to hide the five thumbnail shortcuts.
+    section.dataset.expanded = "true";
+    list.hidden = false;
   }
 
   setWorldRightRailExpanded(expanded) {
@@ -9174,6 +9577,9 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     list.innerHTML = this.savedViews
+      .slice()
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, SAVED_VIEWS_MAX)
       .map(
         (view) => `
           <article class="world-saved-view">
@@ -9890,9 +10296,141 @@ class ForkMeshWorld extends HTMLElement {
     // Selection is handle-free and preserves the camera's drag/wheel gestures.
     this.layoutEditorAnnounced = true;
     this.toast(
-      "Layout editing on: click an object to select it, use arrow keys to " +
-        "move it, and R or Shift+R to rotate it.",
+      "Layout editing on: hold Shift and drag an object to move it, or click " +
+        "then use arrow keys. R and Shift+R rotate it.",
     );
+  }
+
+  adminErrorStorageKey() {
+    const account = String(
+      validWorldSession()?.nodeName || this.identity?.name || "",
+    ).trim().toLowerCase();
+    return `${ADMIN_ERROR_SEEN_KEY}:${account || "admin"}`;
+  }
+
+  storedAdminErrorSeenId() {
+    try {
+      const value = Number(
+        window.localStorage.getItem(this.adminErrorStorageKey()),
+      );
+      return Number.isSafeInteger(value) && value >= 0 ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  storeAdminErrorSeenId(value) {
+    try {
+      window.localStorage.setItem(
+        this.adminErrorStorageKey(),
+        String(Math.max(0, Number(value) || 0)),
+      );
+    } catch (_) {}
+  }
+
+  renderAdminErrors(count = 0, animate = false) {
+    const button = this.$("[data-world-admin-errors]");
+    const badge = this.$("[data-world-admin-error-count]");
+    if (!button || !badge) return;
+    const isAdmin = this.identity?.isAdmin === true;
+    const total = isAdmin ? Math.max(0, Number(count) || 0) : 0;
+    button.hidden = !isAdmin;
+    badge.hidden = total <= 0;
+    badge.textContent = total > 99 ? "99+" : String(total);
+    button.classList.toggle("has-new-errors", total > 0);
+    button.setAttribute(
+      "aria-label",
+      total > 0
+        ? `${total} newly logged error${total === 1 ? "" : "s"}`
+        : "No newly logged errors",
+    );
+    if (!animate || total <= 0) return;
+    this.classList.remove("world-admin-error-arrival");
+    // Restart the short HUD flash even when two poll responses arrive close
+    // together; no detail or route is exposed in the public World.
+    void this.offsetWidth;
+    this.classList.add("world-admin-error-arrival");
+    window.clearTimeout(this.adminErrorEffectTimer);
+    this.adminErrorEffectTimer = window.setTimeout(() => {
+      this.classList.remove("world-admin-error-arrival");
+      this.adminErrorEffectTimer = 0;
+    }, 1500);
+  }
+
+  async refreshAdminErrors() {
+    if (
+      this.destroyed ||
+      this.identity?.isAdmin !== true ||
+      !validWorldSession()
+    ) {
+      this.renderAdminErrors(0);
+      return;
+    }
+    const seen = this.storedAdminErrorSeenId();
+    try {
+      const payload = await this.fetchJSON(
+        `/api/world/admin/errors?after=${Math.max(0, seen || 0)}`,
+        { cache: "no-store", timeout: 5000 },
+      );
+      if (this.destroyed || this.identity?.isAdmin !== true) return;
+      this.adminErrorLatestId = Math.max(
+        0,
+        Number(payload?.latestId) || 0,
+      );
+      // The first successful read establishes the baseline. A historic error
+      // backlog must never be presented as a fresh incident.
+      if (seen === null) {
+        this.storeAdminErrorSeenId(this.adminErrorLatestId);
+        this.adminErrorCount = 0;
+        this.renderAdminErrors(0);
+        return;
+      }
+      const nextCount = Math.max(0, Number(payload?.newCount) || 0);
+      const arrived = nextCount > this.adminErrorCount;
+      this.adminErrorCount = nextCount;
+      this.renderAdminErrors(nextCount, arrived);
+    } catch (_) {
+      // This is an operational convenience only. A failed badge poll must not
+      // interfere with movement, rendering, or the existing admin surface.
+    }
+  }
+
+  startAdminErrorPolling() {
+    window.clearInterval(this.adminErrorTimer);
+    this.adminErrorTimer = 0;
+    if (this.identity?.isAdmin !== true) {
+      this.renderAdminErrors(0);
+      return;
+    }
+    void this.refreshAdminErrors();
+    this.adminErrorTimer = window.setInterval(() => {
+      if (!this.destroyed && !document.hidden) {
+        void this.refreshAdminErrors();
+      }
+    }, ADMIN_ERROR_POLL_MS);
+  }
+
+  stopAdminErrorPolling() {
+    window.clearInterval(this.adminErrorTimer);
+    this.adminErrorTimer = 0;
+    this.adminErrorCount = 0;
+    this.renderAdminErrors(0);
+  }
+
+  openAdminErrors() {
+    if (this.identity?.isAdmin !== true) return;
+    this.storeAdminErrorSeenId(this.adminErrorLatestId);
+    this.adminErrorCount = 0;
+    this.renderAdminErrors(0);
+    const configured = String(validWorldSession()?.adminUrl || "").trim();
+    const destination = new URL(configured || "/admin", location.origin);
+    destination.searchParams.set("table", "error_log");
+    const opened = window.open(
+      destination.href,
+      "_blank",
+      "noopener,noreferrer",
+    );
+    if (opened) opened.opener = null;
   }
 
   // Read the locked placement document. Every read goes through here so a
@@ -19829,6 +20367,8 @@ class ForkMeshWorld extends HTMLElement {
   selectSettingsTab(tab) {
     const selected = ["view", "work", "security"].includes(tab) ? tab : "view";
     this.settingsTab = selected;
+    const panel = this.$("[data-world-settings]");
+    if (panel) panel.dataset.activeTab = selected;
     this.$$("[data-world-settings-tab]").forEach((button) => {
       button.setAttribute(
         "aria-selected",
@@ -20035,7 +20575,7 @@ class ForkMeshWorld extends HTMLElement {
   // hand the composer a starting message so a visitor talking to ForkBot can
   // start typing immediately. Uses postMessage rather than a query param
   // because the terminal iframe is loaded once and kept alive across clicks.
-  openChatTerminal(prefillText = "") {
+  openChatTerminal(prefillText = "", attachment = null) {
     const details = this.$("[data-world-chat-terminal]");
     const frame = this.$("[data-world-chat-terminal-frame]");
     if (!details || !frame) return;
@@ -20048,7 +20588,19 @@ class ForkMeshWorld extends HTMLElement {
     details.open = true;
     const sendPrefill = () => {
       frame.contentWindow?.postMessage(
-        { type: "forkmesh:chat-prefill", text: prefillText },
+        {
+          type: "forkmesh:chat-prefill",
+          text: prefillText,
+          attachment:
+            attachment && typeof attachment === "object"
+              ? {
+                  dataUrl: String(attachment.dataUrl || ""),
+                  fileName: String(attachment.fileName || ""),
+                  fileMime: String(attachment.fileMime || ""),
+                  altText: String(attachment.altText || ""),
+                }
+              : null,
+        },
         location.origin,
       );
     };
@@ -20063,8 +20615,47 @@ class ForkMeshWorld extends HTMLElement {
   // bottom strip shows the latest message without opening the panel.
   setChatTerminalLastMessage(sender, text) {
     const label = this.$("[data-world-chat-terminal-last]");
-    if (!label) return;
-    label.textContent = sender ? `${sender}: ${text}` : text;
+    if (label) label.textContent = sender ? `${sender}: ${text}` : text;
+    const summary = this.$("[data-world-chat-terminal] > summary");
+    const cleanSender = String(sender || "Chat").trim().slice(0, 64);
+    const initial = this.$("[data-world-chat-terminal-avatar-initial]");
+    const image = this.$("[data-world-chat-terminal-avatar-image]");
+    if (initial) {
+      initial.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "#";
+    }
+    if (image) {
+      const session = validWorldSession();
+      const own =
+        cleanSender.toLowerCase() ===
+        String(session?.nodeName || "").toLowerCase();
+      const ownPng =
+        own && /^[A-Za-z0-9+/=]+$/.test(String(session?.avatarPng || ""))
+          ? String(session.avatarPng)
+          : "";
+      const member = this.memberDirectory.find(
+        (entry) =>
+          String(entry?.name || "").toLowerCase() === cleanSender.toLowerCase(),
+      );
+      const publicAvatar = safeHTTPURL(member?.avatar || "");
+      const source = ownPng
+        ? `data:image/png;base64,${ownPng}`
+        : publicAvatar;
+      image.onload = () => {
+        image.hidden = false;
+        if (initial) initial.hidden = true;
+      };
+      image.onerror = () => {
+        image.hidden = true;
+        image.removeAttribute("src");
+        if (initial) initial.hidden = false;
+      };
+      if (source) image.src = source;
+      else image.onerror();
+    }
+    summary?.setAttribute(
+      "title",
+      `${cleanSender}: ${String(text || "").slice(0, 160)}`,
+    );
   }
 
   // Unread pill on the collapsed CHAT bar: on mobile the bar shrinks to the
@@ -20895,6 +21486,15 @@ class ForkMeshWorld extends HTMLElement {
           <button type="button" class="world-shot-undo" data-shot-undo>Undo</button>
         </div>
         <div class="world-shot-stage"></div>
+        <label class="world-shot-alt">
+          <span>Alt text</span>
+          <input
+            type="text"
+            data-shot-alt
+            maxlength="500"
+            value="Annotated screenshot of the current ForkMesh World view."
+          >
+        </label>
         <footer class="world-shot-footer">
           <button type="button" class="world-shot-ghost" data-shot-close>Discard</button>
           <button type="button" class="world-shot-ghost" data-shot-copy>Copy to Clipboard</button>
@@ -20903,6 +21503,7 @@ class ForkMeshWorld extends HTMLElement {
             <button type="button" data-shot-share="twitter" title="Copy the screenshot, then open X / Twitter to share it">X / Twitter</button>
             <button type="button" data-shot-share="reddit" title="Copy the screenshot, then open Reddit to share it">Reddit</button>
           </div>
+          <button type="button" class="world-shot-primary" data-shot-compose>Add to chat / prompt</button>
           <button type="button" class="world-shot-primary" data-shot-download>Download PNG</button>
         </footer>
       </div>
@@ -21134,6 +21735,50 @@ class ForkMeshWorld extends HTMLElement {
           .catch((error) => this.toast(error.message));
         return;
       }
+      const composeButton = event.target.closest("[data-shot-compose]");
+      if (composeButton) {
+        composeButton.disabled = true;
+        const altText = String(
+          modal.querySelector("[data-shot-alt]")?.value || "",
+        )
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 500);
+        void canvasBlob()
+          .then((blob) =>
+            this.compactQaFailureScreenshot(
+              new File([blob], "forkmesh-world-screenshot.png", {
+                type: "image/png",
+              }),
+            ),
+          )
+          .then((dataUrl) => {
+            const stamp = new Date()
+              .toISOString()
+              .replace(/[:T]/g, "-")
+              .slice(0, 19);
+            this.closeScreenshotUI();
+            this.openChatTerminal(altText, {
+              dataUrl,
+              fileName: `forkmesh-world-${stamp}.webp`,
+              fileMime: "image/webp",
+              altText,
+            });
+            this.toast(
+              "Screenshot attached. Choose chat, issue, task, or agent, then send.",
+            );
+          })
+          .catch((error) => {
+            composeButton.disabled = false;
+            this.toast(
+              String(
+                error?.message ||
+                  "The screenshot could not be added to the composer.",
+              ),
+            );
+          });
+        return;
+      }
       const shareButton = event.target.closest("[data-shot-share]");
       if (shareButton) {
         const network = shareButton.dataset.shotShare;
@@ -21319,21 +21964,63 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   toast(message, { priority = 0, lockMs = 0 } = {}) {
-    const element = this.$("[data-world-toast]");
-    if (!element) return;
     const now = performance.now();
     const safePriority = Number.isFinite(priority) ? priority : 0;
     if (now < this.toastLockUntil && safePriority < this.toastPriority) return;
     window.clearTimeout(this.toastTimer);
     this.toastPriority = safePriority;
     this.toastLockUntil = now + Math.max(0, Number(lockMs) || 0);
-    element.textContent = message;
-    element.dataset.open = "true";
+    const copy = String(message || "").trim();
+    const kind =
+      /\b(?:failed|error|unavailable|could not|denied)\b/i.test(copy)
+        ? "error"
+        : /\b(?:saved|ready|complete|success|online)\b/i.test(copy)
+          ? "success"
+          : "status";
+    this.activityNotice(copy, { kind, sender: "ForkMesh" });
     this.toastTimer = window.setTimeout(() => {
-      element.dataset.open = "false";
       this.toastPriority = 0;
       this.toastLockUntil = 0;
-    }, 4200);
+    }, Math.max(10_000, Number(lockMs) || 0));
+  }
+
+  activityNotice(message, { kind = "status", sender = "" } = {}) {
+    const stream = this.$("[data-world-activity-stream]");
+    const copy = String(message || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 280);
+    if (!stream || !copy) return;
+    const article = document.createElement("article");
+    article.dataset.kind = ["chat", "error", "success"].includes(kind)
+      ? kind
+      : "status";
+    const icon = document.createElement("span");
+    icon.className = "world-activity-icon";
+    const cleanSender = String(sender || "ForkMesh").trim().slice(0, 64);
+    const member = this.memberDirectory.find(
+      (entry) =>
+        String(entry?.name || "").toLowerCase() === cleanSender.toLowerCase(),
+    );
+    const publicAvatar = safeHTTPURL(member?.avatar || "");
+    if (publicAvatar) {
+      const image = document.createElement("img");
+      image.alt = "";
+      image.src = publicAvatar;
+      image.onerror = () => {
+        image.remove();
+        icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
+      };
+      icon.append(image);
+    } else {
+      icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
+    }
+    const body = document.createElement("p");
+    body.textContent = copy;
+    article.append(icon, body);
+    stream.prepend(article);
+    while (stream.childElementCount > 6) stream.lastElementChild?.remove();
+    window.setTimeout(() => article.remove(), 10_100);
   }
 
   startTour() {
@@ -21806,6 +22493,55 @@ class ForkMeshWorld extends HTMLElement {
             ? "connecting"
             : "offline";
     }
+    const worstLevel = (...levels) =>
+      levels.includes("high")
+        ? "high"
+        : levels.includes("caution")
+          ? "caution"
+          : "good";
+    const dotLevels = {
+      fps: renderer ? diagnosticLevel("fps", renderer.fps) : "high",
+      frame: renderer
+        ? worstLevel(
+            diagnosticLevel("longFrames", renderer.longFrames),
+            diagnosticLevel("longestFrameMs", renderer.longestFrameMs),
+          )
+        : "high",
+      draw: renderer
+        ? worstLevel(
+            diagnosticLevel("calls", renderer.calls),
+            diagnosticLevel("triangles", renderer.triangles),
+          )
+        : "high",
+      input: renderer
+        ? worstLevel(
+            diagnosticLevel("movementInputMs", renderer.inputResponseMs),
+            diagnosticLevel("pointerGapMs", renderer.pointerWorstGapMs),
+          )
+        : "high",
+      network: diagnosticStateLevel(connection.state),
+      traffic: worstLevel(
+        diagnosticLevel("frameRate", traffic.inboundRate),
+        diagnosticLevel("frameRate", traffic.outboundRate),
+      ),
+      queue: worstLevel(
+        diagnosticLevel(
+          "coalesced",
+          queues.movementCoalesced + queues.profileCoalesced,
+        ),
+        diagnosticLevel("backpressure", queues.backpressureEvents),
+      ),
+      build: build.version && build.revision ? "good" : "caution",
+      world: renderer?.paused ? "caution" : renderer ? "good" : "high",
+    };
+    for (const [metric, level] of Object.entries(dotLevels)) {
+      const dot = this.$(`[data-diagnostic-dot="${metric}"]`);
+      if (!dot) continue;
+      dot.dataset.level = level;
+      dot.title = `${metric}: ${
+        level === "high" ? "needs attention" : level === "caution" ? "watch" : "healthy"
+      }`;
+    }
     const rendererDetail = this.$("[data-world-diagnostics-renderer]");
     if (rendererDetail) {
       rendererDetail.innerHTML = renderer
@@ -22135,6 +22871,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldTicket = String(ticket.ticket || "");
     this.worldTicketExpires = Number(ticket.expiresAt || 0);
     void this.loadWorldPreferences();
+    this.startAdminErrorPolling();
     return true;
   }
 
@@ -22146,6 +22883,7 @@ class ForkMeshWorld extends HTMLElement {
       this.identity.joinedAt = 0;
       this.identity.nodes = [];
     }
+    this.stopAdminErrorPolling();
     this.worldTicket = "";
     this.worldTicketExpires = 0;
     this.resetWorldActivity();
@@ -23063,6 +23801,183 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  async openLobbyFeedbackKiosk() {
+    document.querySelector("[data-world-feedback-kiosk-dialog]")?.remove();
+    const dialog = document.createElement("dialog");
+    dialog.dataset.worldFeedbackKioskDialog = "true";
+    dialog.style.cssText =
+      "width:min(620px,calc(100vw - 28px));border:1px solid #d0d7de;border-radius:12px;background:#fff;color:#24292f;padding:0;box-shadow:0 24px 80px #1f232833";
+    dialog.innerHTML = `
+      <header style="display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:20px 22px;border-bottom:1px solid #d0d7de;background:#f6f8fa">
+        <div><p style="margin:0 0 5px;color:#1a7f37;font:800 12px ForkMesh Mono,monospace;letter-spacing:.08em">OFFICE LOBBY · FEEDBACK KIOSK</p><h2 style="margin:0;font-size:24px">How are we doing?</h2></div>
+        <button type="button" data-world-feedback-kiosk-close aria-label="Close feedback kiosk" style="border:0;background:transparent;color:#57606a;font-size:28px;cursor:pointer">×</button>
+      </header>
+      <form data-world-feedback-kiosk-form style="display:grid;gap:14px;padding:22px">
+        <p style="margin:0;color:#57606a;line-height:1.55">Tell us what worked, what was confusing, or the one thing you want us to improve next. This feedback is stored for ForkMesh operators and is not published in the World.</p>
+        <label style="display:grid;gap:7px;font-weight:700"><span>Your feedback</span><textarea name="message" required minlength="2" maxlength="2000" rows="7" autofocus placeholder="What should we know?" style="resize:vertical;border:1px solid #8c959f;border-radius:6px;background:#fff;color:#24292f;padding:10px 12px;font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"></textarea></label>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span data-world-feedback-kiosk-status role="status" style="color:#57606a;font-size:13px"></span><button type="submit" style="min-height:40px;border:1px solid #1a7f37;border-radius:6px;background:#1f883d;color:#fff;padding:8px 16px;font-weight:800;cursor:pointer">Send feedback</button></div>
+      </form>`;
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog
+      .querySelector("[data-world-feedback-kiosk-close]")
+      ?.addEventListener("click", () => dialog.close());
+    dialog
+      .querySelector("[data-world-feedback-kiosk-form]")
+      ?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const message = String(new FormData(form).get("message") || "").trim();
+        const status = form.querySelector(
+          "[data-world-feedback-kiosk-status]",
+        );
+        const submit = form.querySelector('button[type="submit"]');
+        if (message.length < 2) return;
+        submit.disabled = true;
+        if (status) status.textContent = "Sending…";
+        try {
+          const response = await fetch("/api/feedback", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              source: "world",
+              vote: "feedback",
+              path: "/world/#lobby-feedback",
+              message,
+            }),
+          });
+          if (!response.ok) throw new Error("feedback was not accepted");
+          form.reset();
+          if (status) status.textContent = "Thank you — feedback sent.";
+          submit.textContent = "Sent";
+          window.setTimeout(() => dialog.open && dialog.close(), 900);
+        } catch (_) {
+          submit.disabled = false;
+          if (status) {
+            status.textContent =
+              "Feedback could not be sent. Please try again.";
+          }
+        }
+      });
+    dialog.showModal();
+    if (this.openFeedbackKioskOnLoad) {
+      this.openFeedbackKioskOnLoad = false;
+      const url = new URL(location.href);
+      url.searchParams.delete("feedback");
+      history.replaceState(history.state, "", url);
+    }
+  }
+
+  async openLobbyTaskBidKiosk() {
+    if (!validWorldSession()?.sessionToken) {
+      this.toast("Sign in with an organization account to submit a task bid.");
+      this.toggleSettings(true);
+      return;
+    }
+    document.querySelector("[data-world-task-bid-dialog]")?.remove();
+    const dialog = document.createElement("dialog");
+    dialog.dataset.worldTaskBidDialog = "true";
+    dialog.style.cssText =
+      "width:min(680px,calc(100vw - 28px));max-height:min(820px,calc(100vh - 28px));overflow:auto;border:1px solid #e3b341;border-radius:6px;background:#0d1117;color:#f0f6fc;padding:0;box-shadow:0 24px 80px #010409cc";
+    const departments = [
+      ["general", "General"],
+      ["engineering", "Engineering"],
+      ["product-design", "Product + design"],
+      ["marketing", "Marketing"],
+      ["security", "Security"],
+      ["infrastructure", "Infrastructure"],
+      ["community", "Community"],
+      ["partnerships", "Partnerships"],
+      ["operations", "Operations"],
+      ["executive", "Executive"],
+      ["quality-assurance", "Quality assurance"],
+    ];
+    dialog.innerHTML = `
+      <header style="display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:20px 22px;border-bottom:1px solid #30363d;background:#161b22">
+        <div><p style="margin:0 0 5px;color:#e3b341;font:800 12px ForkMesh Mono,monospace;letter-spacing:.08em">OFFICE LOBBY · TASK BOUNTY DESK</p><h2 style="margin:0;font-size:24px">Bid to complete a task</h2></div>
+        <button type="button" data-world-task-bid-close aria-label="Close task bounty desk" style="border:1px solid #30363d;background:#21262d;color:#f0f6fc;font-size:22px;line-height:1;cursor:pointer;width:36px;height:36px">×</button>
+      </header>
+      <form data-world-task-bid-form style="display:grid;gap:14px;padding:22px">
+        <p style="margin:0;color:#8c959f;line-height:1.55">Describe useful organization work and the SOL amount you would want for completing it. Your account is attached as the bidder, and the request appears in the shared task list.</p>
+        <label style="display:grid;gap:7px;font-weight:700"><span>Task</span><input name="title" required minlength="3" maxlength="160" autofocus placeholder="What would you complete?" style="min-height:40px;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:8px 12px;font:14px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"></label>
+        <label style="display:grid;gap:7px;font-weight:700"><span>Details</span><textarea name="details" maxlength="4000" rows="5" placeholder="Scope, deliverables, and anything reviewers should know…" style="resize:vertical;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:10px 12px;font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"></textarea></label>
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px">
+          <label style="display:grid;gap:7px;font-weight:700"><span>Requested bounty (SOL)</span><input name="amountSol" required inputmode="decimal" autocomplete="off" pattern="(?:0|[1-9][0-9]{0,6})(?:\\.[0-9]{1,9})?" placeholder="0.10" style="min-height:40px;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:8px 12px;font:14px/1.4 ForkMesh Mono,monospace"></label>
+          <label style="display:grid;gap:7px;font-weight:700"><span>Department</span><select name="department" style="min-height:40px;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:8px 12px;font:14px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif">${departments
+            .map(
+              ([value, label]) =>
+                `<option value="${value}">${label}</option>`,
+            )
+            .join("")}</select></label>
+        </div>
+        <p style="margin:0;border:1px solid #30363d;background:#161b22;color:#8c959f;padding:10px 12px;font-size:12px;line-height:1.5">This is a compensation request only. ForkMesh does not reserve, custody, or transfer SOL when you submit a bid.</p>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span data-world-task-bid-status role="status" aria-live="polite" style="color:#8c959f;font-size:13px"></span><button type="submit" style="min-height:40px;border:1px solid #2ea043;background:#238636;color:#fff;padding:8px 16px;font-weight:800;cursor:pointer">Submit bid</button></div>
+      </form>`;
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog
+      .querySelector("[data-world-task-bid-close]")
+      ?.addEventListener("click", () => dialog.close());
+    dialog
+      .querySelector("[data-world-task-bid-form]")
+      ?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const values = new FormData(form);
+        const title = String(values.get("title") || "").trim();
+        const details = String(values.get("details") || "").trim();
+        const amountSol = String(values.get("amountSol") || "").trim();
+        const department = String(values.get("department") || "general");
+        const status = form.querySelector("[data-world-task-bid-status]");
+        const submit = form.querySelector('button[type="submit"]');
+        if (
+          title.length < 3 ||
+          !/^(?:0|[1-9][0-9]{0,6})(?:\.[0-9]{1,9})?$/.test(amountSol)
+        ) {
+          if (status) status.textContent = "Enter a task and a valid SOL amount.";
+          return;
+        }
+        submit.disabled = true;
+        if (status) status.textContent = "Submitting encrypted task bid…";
+        try {
+          await this.postJSON(
+            "/api/tasks",
+            {
+              kind: "bid",
+              title,
+              details,
+              bountyAmountSol: amountSol,
+              department,
+              destination: "department",
+              assigneeKind: "user",
+            },
+            { timeout: 10_000 },
+          );
+          await this.officeTasks?.refreshNow?.();
+          if (status) {
+            status.textContent =
+              "Bid added to the organization task list.";
+          }
+          submit.textContent = "Bid submitted";
+          this.toast("Task bid added with its SOL bounty request.");
+          window.setTimeout(() => dialog.open && dialog.close(), 1200);
+        } catch (error) {
+          submit.disabled = false;
+          const reason = String(error?.message || "");
+          if (status) {
+            status.textContent =
+              reason === "org_member_required"
+                ? "Organization membership is required."
+                : reason === "invalid_bounty_request"
+                  ? "Enter a positive SOL amount with at most 9 decimals."
+                  : "The bid could not be submitted. Please try again.";
+          }
+        }
+      });
+    dialog.showModal();
+  }
+
   async openLobbyLinkKiosk() {
     document.querySelector("[data-world-link-kiosk-dialog]")?.remove();
     const dialog = document.createElement("dialog");
@@ -23442,7 +24357,11 @@ class ForkMeshWorld extends HTMLElement {
     window.removeEventListener("storage", this.handleStorage);
     window.removeEventListener("pointerdown", this.handlePublicInputActivity);
     window.removeEventListener("pointermove", this.handlePublicInputActivity);
-    this.removeEventListener("touchmove", this.blockWorldPullToRefresh);
+    this.removeEventListener(
+      "touchmove",
+      this.blockWorldPullToRefresh,
+      true,
+    );
     window.removeEventListener("keydown", this.handlePublicInputActivity);
     window.removeEventListener("message", this.handleWorldChatMessage);
     window.removeEventListener("pagehide", this.handlePageHide);
@@ -23479,6 +24398,8 @@ class ForkMeshWorld extends HTMLElement {
     window.clearTimeout(this.mirrorPushRefreshTimer);
     window.clearInterval(this.eventsTimer);
     window.clearInterval(this.notificationsTimer);
+    window.clearInterval(this.adminErrorTimer);
+    window.clearTimeout(this.adminErrorEffectTimer);
     window.clearInterval(this.mediaTimer);
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);

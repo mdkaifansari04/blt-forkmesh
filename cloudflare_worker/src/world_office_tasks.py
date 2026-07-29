@@ -1,17 +1,13 @@
-"""Private organization marketing tasks for the in-world Office.
+"""Organization-private universal tasks for the World and dashboard HUD.
 
-The Worker adapter owns account sessions, organization membership, row
-encryption, and D1 access.  This module deliberately receives no platform
-administrator primitive: only active members of the configured organization
-can manage the board, while any active registered user can read and operate
-only work assigned to that account. Organization owner/admin or maintain+
-members can create or reassign work only to active members of the Marketing
-team.
+The legacy Marketing wall is a filtered view of the same task catalog. The
+Worker adapter owns account sessions, organization membership, row encryption,
+and D1 access; no task record is returned outside the configured organization.
 
 Task copy, assignee labels, and check-in notes are encrypted at rest.  The
-plaintext columns contain only opaque blind indexes, bounded state, and
-server-authoritative timer metadata.  Nothing in this module is stored in or
-published through the Office Durable Object.
+plaintext columns contain only opaque blind indexes, bounded routing/state,
+and server-authoritative timer metadata. Nothing is stored in or published
+through the Office Durable Object.
 """
 
 import re
@@ -19,13 +15,17 @@ from urllib.parse import urlsplit
 
 
 PREFIX = "/api/world/office/marketing-tasks"
+UNIVERSAL_PREFIX = "/api/tasks"
+LEGACY_MARKETING_PREFIX = PREFIX
 BODY_MAX_BYTES = 12 * 1024
-MAX_TASKS = 250
+MAX_TASKS = 2000
 MAX_CHECKINS_PER_TASK = 50
 MAX_TITLE = 160
 MAX_DETAILS = 4000
+MAX_COMPLETION_NOTE = 4000
 MAX_CHECKIN_NOTE = 500
 MAX_ELAPSED_MS = 10 * 365 * 24 * 60 * 60 * 1000
+MAX_BOUNTY_LAMPORTS = 1_000_000 * 1_000_000_000
 MAX_PROOFS = 5000
 MAX_PROOFS_PER_MEMBER = 100
 MAX_INITIATIVES = 250
@@ -33,7 +33,18 @@ CHECKIN_MIN_MS = 4 * 60 * 1000
 CHECKIN_MAX_MS = 9 * 60 * 1000
 
 TASK_STATES = frozenset({"idle", "active", "done"})
+TASK_KINDS = frozenset({"task", "bid"})
 CHECKIN_STATES = frozenset({"going_well", "blocked", "needs_help"})
+DESTINATIONS = frozenset({
+    "department", "personal", "repository", "qa", "agent",
+})
+ASSIGNEE_KINDS = frozenset({"user", "unassigned", "claude", "codex"})
+QA_STATES = frozenset({"unknown", "passed", "failed"})
+DEPARTMENTS = (
+    "general", "marketing", "engineering", "product-design", "security",
+    "infrastructure", "community", "partnerships", "operations", "executive",
+    "quality-assurance",
+)
 PERMISSION_RANK = {
     "read": 0,
     "write": 1,
@@ -43,6 +54,8 @@ PERMISSION_RANK = {
 
 _ID_RE = re.compile(r"^[a-f0-9]{32}$")
 _REPO_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+_SCOPE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+_SOL_AMOUNT_RE = re.compile(r"^(0|[1-9][0-9]{0,6})(?:\.([0-9]{1,9}))?$")
 
 
 def _response(runtime, data, status=200, allow=""):
@@ -74,27 +87,55 @@ def valid_id(value):
     return bool(_ID_RE.fullmatch(str(value or "").strip().lower()))
 
 
+def _sol_amount(value):
+    """Return a canonical SOL string backed by an exact lamport integer."""
+
+    match = _SOL_AMOUNT_RE.fullmatch(str(value or "").strip())
+    if not match:
+        return "", 0
+    whole = int(match.group(1))
+    fraction = (match.group(2) or "").ljust(9, "0")
+    lamports = whole * 1_000_000_000 + int(fraction or "0")
+    if lamports <= 0 or lamports > MAX_BOUNTY_LAMPORTS:
+        return "", 0
+    canonical_fraction = f"{lamports % 1_000_000_000:09d}".rstrip("0")
+    canonical = str(lamports // 1_000_000_000)
+    if canonical_fraction:
+        canonical += "." + canonical_fraction
+    return canonical, lamports
+
+
 def _route(path):
     clean = str(path or "").rstrip("/")
-    if clean == PREFIX:
+    base = next(
+        (
+            candidate
+            for candidate in (UNIVERSAL_PREFIX, LEGACY_MARKETING_PREFIX)
+            if clean == candidate or clean.startswith(candidate + "/")
+        ),
+        "",
+    )
+    if not base:
+        return None
+    if clean == base:
         return ("collection", "", "")
     # Collection actions must be resolved before the opaque task-id parser.
-    if clean == PREFIX + "/stop-active":
+    if clean == base + "/stop-active":
         return ("stop-active", "", "stop-active")
-    if clean == PREFIX + "/proofs":
+    if clean == base + "/proofs":
         return ("proofs", "", "proofs")
-    if clean == PREFIX + "/initiatives":
+    if clean == base + "/initiatives":
         return ("initiatives", "", "initiatives")
-    if not clean.startswith(PREFIX + "/"):
+    if not clean.startswith(base + "/"):
         return None
-    parts = clean[len(PREFIX) + 1:].split("/")
+    parts = clean[len(base) + 1:].split("/")
     if not parts or not valid_id(parts[0]):
         return None
     task_id = parts[0].lower()
     if len(parts) == 1:
         return ("task", task_id, "")
     if len(parts) == 2 and parts[1] in (
-            "start", "stop", "checkin", "complete"):
+            "start", "stop", "checkin", "complete", "qa"):
         return ("action", task_id, parts[1])
     return None
 
@@ -148,11 +189,11 @@ async def _latest_checkins(runtime, task_ids):
         chunk = task_ids[offset:offset + 50]
         placeholders = ",".join("?" for _value in chunk)
         rows.extend(await runtime.d1_all(
-            "SELECT c.* FROM world_office_marketing_checkins c "
+            "SELECT c.* FROM organization_task_checkins c "
             "WHERE c.task_id IN (" + placeholders + ") "
             "AND c.checkin_id=("
             "SELECT newest.checkin_id "
-            "FROM world_office_marketing_checkins newest "
+            "FROM organization_task_checkins newest "
             "WHERE newest.task_id=c.task_id "
             "ORDER BY newest.created_at DESC,newest.checkin_id DESC LIMIT 1)",
             *chunk,
@@ -197,11 +238,52 @@ async def _project_task(runtime, row, now, checkin=None):
     elapsed_ms = max(0, int(row.get("elapsed_ms") or 0))
     if started_at:
         elapsed_ms += max(0, int(now) - started_at)
+    assignee_kind = str(row.get("assignee_kind") or "user")
+    if assignee_kind not in ASSIGNEE_KINDS:
+        assignee_kind = "user"
+    qa_status = str(row.get("qa_status") or "unknown")
+    if qa_status not in QA_STATES:
+        qa_status = "unknown"
+    task_kind = str(data.get("kind") or "task").strip().lower()
+    if task_kind not in TASK_KINDS:
+        task_kind = "task"
+    bounty_request = None
+    if task_kind == "bid":
+        amount_sol, lamports = _sol_amount(
+            (data.get("bountyRequest") or {}).get("amountSol")
+            if isinstance(data.get("bountyRequest"), dict)
+            else ""
+        )
+        if amount_sol and lamports:
+            bounty_request = {
+                "currency": "SOL",
+                "amountSol": amount_sol,
+                "lamports": lamports,
+                "status": "requested",
+            }
     return {
         "id": str(row.get("task_id") or ""),
-        "title": _text(data.get("title"), MAX_TITLE, "Marketing task"),
+        "kind": task_kind,
+        "title": _text(data.get("title"), MAX_TITLE, "Organization task"),
         "details": _text(data.get("details"), MAX_DETAILS),
+        "completionNote": _text(
+            data.get("completionNote"), MAX_COMPLETION_NOTE),
+        "createdBy": _text(data.get("createdBy"), 64).lower(),
+        "bountyRequest": bounty_request,
         "assignee": _text(data.get("assignee"), 64).lower(),
+        "assigneeKind": assignee_kind,
+        "department": _text(row.get("department"), 64, "general").lower(),
+        "team": _text(row.get("team"), 64).lower(),
+        "destination": str(row.get("destination") or "department"),
+        "repository": _text(data.get("repository"), 201),
+        "agentSessionId": str(row.get("agent_session_id") or ""),
+        "qa": {
+            "status": qa_status,
+            "reviewer": _text(data.get("qaReviewer"), 64).lower(),
+            "reviewedAt": int(row.get("qa_reviewed_at") or 0),
+            "requestedAt": int(row.get("qa_requested_at") or 0),
+            "howToTest": _text(data.get("howToTest"), 720),
+        },
         "status": state,
         "elapsedMs": min(MAX_ELAPSED_MS, elapsed_ms),
         "startedAt": started_at,
@@ -218,7 +300,7 @@ async def _project_task(runtime, row, now, checkin=None):
 
 async def _task(runtime, org_bi, task_id):
     return await runtime.d1_first(
-        "SELECT * FROM world_office_marketing_tasks "
+        "SELECT * FROM organization_tasks "
         "WHERE org_bi=? AND task_id=?",
         org_bi,
         task_id,
@@ -241,23 +323,35 @@ async def _task_response(runtime, row, now, status=200):
     return _response(runtime, {"ok": True, "task": task}, status=status)
 
 
-async def _list(runtime, org_bi, account_bi, actor, can_manage, now):
-    if can_manage:
-        rows = await runtime.d1_all(
-            "SELECT * FROM world_office_marketing_tasks "
-            "WHERE org_bi=? ORDER BY updated_at DESC,task_id DESC LIMIT ?",
-            org_bi,
-            MAX_TASKS,
-        )
+async def _list(
+        runtime, org_bi, account_bi, actor, can_manage, now,
+        marketing_only=False, department="", team=""):
+    where = ["org_bi=?"]
+    arguments = [org_bi]
+    if marketing_only:
+        where.append("department='marketing'")
+    elif department:
+        where.append("department=?")
+        arguments.append(department)
+    if team:
+        where.append("team=?")
+        arguments.append(team)
+    rows = await runtime.d1_all(
+        "SELECT * FROM organization_tasks WHERE "
+        + " AND ".join(where)
+        + " ORDER BY updated_at DESC,task_id DESC LIMIT ?",
+        *arguments,
+        MAX_TASKS,
+    )
+    if marketing_only and not can_manage:
+        # Preserve the private assignee-only behavior of the physical Marketing
+        # wall while the universal organization list remains member-visible.
+        rows = [
+            row for row in rows or []
+            if str(row.get("assignee_bi") or "") == account_bi
+        ]
     else:
-        rows = await runtime.d1_all(
-            "SELECT * FROM world_office_marketing_tasks "
-            "WHERE org_bi=? AND assignee_bi=? "
-            "ORDER BY updated_at DESC,task_id DESC LIMIT ?",
-            org_bi,
-            account_bi,
-            MAX_TASKS,
-        )
+        rows = rows or []
     latest = await _latest_checkins(
         runtime, [str(row.get("task_id") or "") for row in rows or []])
     tasks = []
@@ -270,8 +364,13 @@ async def _list(runtime, org_bi, account_bi, actor, can_manage, now):
         )
         if task is not None:
             tasks.append(task)
-    marketing_members = await runtime.marketing_members(org_bi)
-    marketing_actor = await runtime.marketing_member(org_bi, actor)
+    marketing_members = (
+        await runtime.marketing_members(org_bi) if marketing_only else []
+    )
+    marketing_actor = (
+        await runtime.marketing_member(org_bi, actor)
+        if marketing_only else None
+    )
     marketing_names = [
         _text(member.get("name"), 64).lower()
         for member in marketing_members
@@ -279,6 +378,8 @@ async def _list(runtime, org_bi, account_bi, actor, can_manage, now):
     ]
     result = {
         "ok": True,
+        "authorized": True,
+        "privacyBoundary": "organization-private-encrypted-at-rest",
         "actor": actor,
         "canManage": bool(can_manage),
         "serverNow": int(now),
@@ -297,10 +398,17 @@ async def _list(runtime, org_bi, account_bi, actor, can_manage, now):
             if marketing_actor else []
         ),
     }
-    if can_manage:
+    if marketing_only and can_manage:
         # Assignment is deliberately narrower than organization management:
         # even an owner may only place Marketing work onto a Marketing member.
         result["members"] = marketing_names
+    elif not marketing_only:
+        result["members"] = [
+            member["name"]
+            for member in await runtime.organization_members(org_bi)
+        ]
+        result["teams"] = await runtime.organization_teams(org_bi)
+        result["departments"] = list(DEPARTMENTS)
     return _response(runtime, result)
 
 
@@ -558,21 +666,125 @@ async def _proof_create(
 
 
 async def _create(
-        runtime, org_bi, account_bi, actor, data, can_manage, now):
-    if not can_manage:
+        runtime, org_bi, account_bi, actor, data, can_manage, now,
+        marketing_only=False):
+    if marketing_only and not can_manage:
         return _response(runtime, {"error": "forbidden"}, status=403)
     title = _text(data.get("title"), MAX_TITLE)
     details = _text(data.get("details"), MAX_DETAILS)
+    department = (
+        "marketing"
+        if marketing_only
+        else _text(data.get("department"), 64, "general").lower()
+    )
+    team = (
+        "marketing"
+        if marketing_only
+        else _text(data.get("team"), 64).lower()
+    )
+    destination = (
+        "department"
+        if marketing_only
+        else str(data.get("destination") or "department").strip().lower()
+    )
+    assignee_kind = (
+        "user"
+        if marketing_only
+        else str(data.get("assigneeKind") or "user").strip().lower()
+    )
+    task_kind = (
+        "task"
+        if marketing_only
+        else str(data.get("kind") or "task").strip().lower()
+    )
+    if (
+        not title
+        or task_kind not in TASK_KINDS
+        or not _SCOPE_RE.fullmatch(department)
+        or (team and not _SCOPE_RE.fullmatch(team))
+        or destination not in DESTINATIONS
+        or assignee_kind not in ASSIGNEE_KINDS
+    ):
+        return _response(runtime, {"error": "invalid_task_routing"}, status=400)
+    if department not in DEPARTMENTS:
+        return _response(runtime, {"error": "invalid_department"}, status=400)
+
+    bounty_request = None
+    if task_kind == "bid":
+        amount_sol, lamports = _sol_amount(data.get("bountyAmountSol"))
+        if not amount_sol or not lamports:
+            return _response(
+                runtime, {"error": "invalid_bounty_request"}, status=400)
+        # A lobby bid is always made by and assigned to the authenticated
+        # organization member. Client-supplied assignee fields cannot make a
+        # compensation request appear to come from somebody else.
+        assignee_kind = "user"
+        data = dict(data)
+        data["assignee"] = actor
+        bounty_request = {
+            "currency": "SOL",
+            "amountSol": amount_sol,
+            "lamports": lamports,
+            "status": "requested",
+        }
+
     assignee = _text(data.get("assignee"), 64).lower()
-    if not title or not assignee:
+    member = None
+    assignee_bi = ""
+    if assignee_kind == "user":
+        assignee = assignee or actor
+        member = (
+            await runtime.marketing_member(org_bi, assignee)
+            if marketing_only
+            else await runtime.organization_member(org_bi, assignee)
+        )
+        if not member:
+            return _response(
+                runtime,
+                {
+                    "error": (
+                        "assignee_not_marketing_member"
+                        if marketing_only else "assignee_not_org_member"
+                    )
+                },
+                status=400,
+            )
+        if not can_manage and member["name"] != actor:
+            return _response(
+                runtime, {"error": "cannot_assign_other_member"}, status=403)
+        if team and not marketing_only and not await runtime.team_member(
+                org_bi, team, member["name"]):
+            return _response(
+                runtime, {"error": "assignee_not_team_member"}, status=400)
+        assignee = member["name"]
+        assignee_bi = member["bi"]
+    elif assignee_kind in ("claude", "codex"):
+        assignee = assignee_kind
+        destination = "agent"
+    else:
+        assignee = ""
+
+    repository = _text(data.get("repository"), 201)
+    if repository:
+        parts = repository.split("/", 1)
+        if (
+            len(parts) != 2
+            or not _REPO_SEGMENT_RE.fullmatch(parts[0])
+            or not _REPO_SEGMENT_RE.fullmatch(parts[1])
+        ):
+            return _response(
+                runtime, {"error": "invalid_repository"}, status=400)
+    if destination in ("repository", "agent") and not repository:
         return _response(
-            runtime, {"error": "title_and_assignee_required"}, status=400)
-    member = await runtime.marketing_member(org_bi, assignee)
-    if not member:
-        return _response(
-            runtime, {"error": "assignee_not_marketing_member"}, status=400)
+            runtime, {"error": "repository_required"}, status=400)
+    how_to_test = _text(data.get("howToTest"), 720)
+    qa_requested_at = (
+        now
+        if destination == "qa" or data.get("sendToQa") is True
+        else 0
+    )
     count = await runtime.d1_first(
-        "SELECT COUNT(*) AS count FROM world_office_marketing_tasks "
+        "SELECT COUNT(*) AS count FROM organization_tasks "
         "WHERE org_bi=?",
         org_bi,
     )
@@ -583,21 +795,32 @@ async def _create(
     if not valid_id(task_id):
         return _response(runtime, {"error": "id_generation_failed"}, status=500)
     sealed = await runtime.seal({
+        "kind": task_kind,
         "title": title,
         "details": details,
-        "assignee": member["name"],
+        "completionNote": "",
+        "assignee": assignee,
         "createdBy": actor,
+        "bountyRequest": bounty_request,
+        "repository": repository,
+        "howToTest": how_to_test,
+        "qaReviewer": "",
     })
     try:
         await runtime.d1_run(
-            "INSERT INTO world_office_marketing_tasks "
-            "(task_id,org_bi,status,assignee_bi,data,created_by_bi,"
-            "created_at,updated_at,elapsed_ms,started_at,next_checkin_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO organization_tasks "
+            "(task_id,org_bi,department,team,destination,assignee_kind,"
+            "status,assignee_bi,data,created_by_bi,created_at,updated_at,"
+            "elapsed_ms,started_at,next_checkin_at,qa_requested_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             task_id,
             org_bi,
+            department,
+            team,
+            destination,
+            assignee_kind,
             "idle",
-            member["bi"],
+            assignee_bi,
             sealed,
             account_bi,
             now,
@@ -605,6 +828,7 @@ async def _create(
             0,
             0,
             0,
+            qa_requested_at,
         )
     except Exception as error:
         if "catalog_full" in str(error):
@@ -613,19 +837,33 @@ async def _create(
         raise
     await runtime.audit(
         actor,
-        "office.marketing_task_created",
-        "office_task",
+        (
+            "office.marketing_task_created"
+            if marketing_only else "organization.task_created"
+        ),
+        "organization_task",
         task_id,
-        details={"assigned": True},
+        details=(
+            {"assigned": True}
+            if marketing_only
+            else {
+                "kind": task_kind,
+                "department": department,
+                "destination": destination,
+                "assigneeKind": assignee_kind,
+                "bountyAmountSol": (
+                    bounty_request["amountSol"] if bounty_request else ""
+                ),
+            }
+        ),
     )
     row = await _task(runtime, org_bi, task_id)
     return await _task_response(runtime, row, now, status=201)
 
 
 async def _update(
-        runtime, org_bi, actor, task_id, data, can_manage, now):
-    if not can_manage:
-        return _response(runtime, {"error": "forbidden"}, status=403)
+        runtime, org_bi, account_bi, actor, task_id, data, can_manage, now,
+        marketing_only=False):
     row = await _task(runtime, org_bi, task_id)
     if not row:
         return _response(runtime, {"error": "task_not_found"}, status=404)
@@ -635,6 +873,31 @@ async def _update(
         return _response(runtime, {"error": "task_unavailable"}, status=500)
     if not isinstance(current, dict):
         return _response(runtime, {"error": "task_unavailable"}, status=500)
+    if set(data).issubset({"agentSessionId", "sessionToken"}):
+        session_id = str(data.get("agentSessionId") or "").strip().lower()
+        if (
+            str(row.get("assignee_kind") or "") not in ("claude", "codex")
+            or not re.fullmatch(r"[a-f0-9-]{16,64}", session_id)
+            or (
+                not can_manage
+                and str(row.get("created_by_bi") or "") != account_bi
+            )
+        ):
+            return _response(
+                runtime, {"error": "invalid_agent_session_link"}, status=400)
+        await runtime.d1_run(
+            "UPDATE organization_tasks SET agent_session_id=?,updated_at=? "
+            "WHERE org_bi=? AND task_id=?",
+            session_id, now, org_bi, task_id,
+        )
+        await runtime.audit(
+            actor, "organization.task_agent_linked", "organization_task",
+            task_id, details={"linked": True},
+        )
+        return await _task_response(
+            runtime, await _task(runtime, org_bi, task_id), now)
+    if not can_manage:
+        return _response(runtime, {"error": "forbidden"}, status=403)
     allowed = {"title", "details", "assignee", "sessionToken"}
     changed = [
         field for field in ("title", "details", "assignee") if field in data
@@ -659,10 +922,22 @@ async def _update(
     if not title or not assignee:
         return _response(
             runtime, {"error": "title_and_assignee_required"}, status=400)
-    member = await runtime.marketing_member(org_bi, assignee)
+    member = (
+        await runtime.marketing_member(org_bi, assignee)
+        if marketing_only
+        else await runtime.organization_member(org_bi, assignee)
+    )
     if not member:
         return _response(
-            runtime, {"error": "assignee_not_marketing_member"}, status=400)
+            runtime,
+            {
+                "error": (
+                    "assignee_not_marketing_member"
+                    if marketing_only else "assignee_not_org_member"
+                )
+            },
+            status=400,
+        )
     if int(row.get("completed_at") or 0) > 0:
         return _response(
             runtime, {"error": "completed_task_cannot_be_updated"}, status=409)
@@ -670,13 +945,28 @@ async def _update(
         return _response(
             runtime, {"error": "active_task_cannot_be_updated"}, status=409)
     sealed = await runtime.seal({
+        "kind": (
+            str(current.get("kind") or "task")
+            if str(current.get("kind") or "task") in TASK_KINDS
+            else "task"
+        ),
         "title": title,
         "details": details,
+        "completionNote": _text(
+            current.get("completionNote"), MAX_COMPLETION_NOTE),
         "assignee": member["name"],
         "createdBy": _text(current.get("createdBy"), 64).lower(),
+        "bountyRequest": (
+            current.get("bountyRequest")
+            if isinstance(current.get("bountyRequest"), dict)
+            else None
+        ),
+        "repository": _text(current.get("repository"), 201),
+        "howToTest": _text(current.get("howToTest"), 720),
+        "qaReviewer": _text(current.get("qaReviewer"), 64).lower(),
     })
     await runtime.d1_run(
-        "UPDATE world_office_marketing_tasks "
+        "UPDATE organization_tasks "
         "SET assignee_bi=?,data=?,updated_at=? "
         "WHERE org_bi=? AND task_id=? AND status='idle'",
         member["bi"],
@@ -695,8 +985,11 @@ async def _update(
         return _response(runtime, {"error": "task_state_conflict"}, status=409)
     await runtime.audit(
         actor,
-        "office.marketing_task_updated",
-        "office_task",
+        (
+            "office.marketing_task_updated"
+            if marketing_only else "organization.task_updated"
+        ),
+        "organization_task",
         task_id,
         details={"fields": ",".join(changed)},
     )
@@ -712,7 +1005,7 @@ async def _start(
     if str(row.get("status") or "") == "active":
         return await _task_response(runtime, row, now)
     existing = await runtime.d1_first(
-        "SELECT task_id FROM world_office_marketing_tasks "
+        "SELECT task_id FROM organization_tasks "
         "WHERE org_bi=? AND active_assignee_bi=? AND status='active' "
         "LIMIT 1",
         org_bi,
@@ -730,7 +1023,7 @@ async def _start(
     deadline = _checkin_deadline(runtime, now)
     try:
         await runtime.d1_run(
-            "UPDATE world_office_marketing_tasks SET "
+            "UPDATE organization_tasks SET "
             "status='active',active_assignee_bi=?,started_at=?,"
             "next_checkin_at=?,updated_at=? "
             "WHERE org_bi=? AND task_id=? AND assignee_bi=? "
@@ -758,6 +1051,17 @@ async def _start(
         task_id,
         details={"state": "active"},
     )
+    # Starting the timer also yields an encrypted per-account HUD notice for
+    # Organization Engineering. It never enters the selected chat channel or
+    # multiplayer presence, and notification fan-out remains best effort.
+    notifier = getattr(runtime, "notify_engineering_task_started", None)
+    if callable(notifier):
+        try:
+            projected = await _project_task(runtime, changed, now)
+            if projected:
+                await notifier(org_bi, actor, task_id, projected)
+        except Exception:
+            pass
     return await _task_response(runtime, changed, now)
 
 
@@ -777,7 +1081,7 @@ async def _stop(
         max(0, int(row.get("elapsed_ms") or 0)) + addition,
     )
     await runtime.d1_run(
-        "UPDATE world_office_marketing_tasks SET "
+        "UPDATE organization_tasks SET "
         "status='idle',active_assignee_bi='',elapsed_ms=?,started_at=0,"
         "next_checkin_at=0,updated_at=? "
         "WHERE org_bi=? AND task_id=? AND assignee_bi=? "
@@ -801,15 +1105,72 @@ async def _stop(
 
 
 async def _complete(
-        runtime, org_bi, account_bi, actor, task_id, row, can_manage, now):
-    """Finish assigned work while retaining its time and encrypted history."""
+        runtime, org_bi, account_bi, actor, task_id, row, data,
+        can_manage, now):
+    """Finish assigned work and place it in the private QA review queue."""
     if (
         not can_manage
         and str(row.get("assignee_bi") or "") != account_bi
     ):
         return _response(runtime, {"error": "assignee_or_manager_only"}, status=403)
-    if int(row.get("completed_at") or 0) > 0:
+    if (
+        int(row.get("completed_at") or 0) > 0
+        and int(row.get("qa_requested_at") or 0) > 0
+    ):
+        # Completion is idempotent, but a retried client may be adding the
+        # human-readable work note after an older client already finished the
+        # task. Preserve the completed/QA state and update only encrypted copy.
+        if "completionNote" in data:
+            try:
+                completed_data = await runtime.open(row.get("data"))
+            except Exception:
+                completed_data = None
+            if not isinstance(completed_data, dict):
+                return _response(
+                    runtime, {"error": "task_unavailable"}, status=500)
+            completed_data["completionNote"] = _text(
+                data.get("completionNote"), MAX_COMPLETION_NOTE)
+            await runtime.d1_run(
+                "UPDATE organization_tasks SET data=?,updated_at=? "
+                "WHERE org_bi=? AND task_id=? AND completed_at>0",
+                await runtime.seal(completed_data),
+                now,
+                org_bi,
+                task_id,
+            )
+            await runtime.audit(
+                actor,
+                "organization.task_completion_note_updated",
+                "organization_task",
+                task_id,
+                details={
+                    "hasCompletionNote": bool(
+                        completed_data["completionNote"]),
+                },
+            )
+            row = await _task(runtime, org_bi, task_id)
         return await _task_response(runtime, row, now)
+    try:
+        current = await runtime.open(row.get("data"))
+    except Exception:
+        current = None
+    if not isinstance(current, dict):
+        return _response(runtime, {"error": "task_unavailable"}, status=500)
+    current["completionNote"] = _text(
+        data.get("completionNote")
+        if "completionNote" in data
+        else current.get("completionNote"),
+        MAX_COMPLETION_NOTE,
+    )
+    if not _text(current.get("howToTest"), 720):
+        current["howToTest"] = (
+            "Open the completed feature and follow its normal user flow. "
+            "Confirm the requested behavior works, existing behavior did not "
+            "regress, and no console or network error appears."
+        )
+    current["qaReviewer"] = ""
+    current["qaFailureReason"] = ""
+    current["qaFailureScreenshot"] = ""
     started_at = int(row.get("started_at") or 0)
     addition = (
         max(0, int(now) - started_at)
@@ -821,12 +1182,16 @@ async def _complete(
         max(0, int(row.get("elapsed_ms") or 0)) + addition,
     )
     await runtime.d1_run(
-        "UPDATE world_office_marketing_tasks SET "
+        "UPDATE organization_tasks SET "
         "status='idle',active_assignee_bi='',elapsed_ms=?,started_at=0,"
-        "next_checkin_at=0,completed_at=?,updated_at=? "
-        "WHERE org_bi=? AND task_id=? AND completed_at=0",
+        "next_checkin_at=0,completed_at=?,destination='qa',"
+        "qa_status='unknown',qa_reviewer_bi='',qa_reviewed_at=0,"
+        "qa_requested_at=?,data=?,updated_at=? "
+        "WHERE org_bi=? AND task_id=?",
         elapsed,
         now,
+        now,
+        await runtime.seal(current),
         now,
         org_bi,
         task_id,
@@ -839,22 +1204,73 @@ async def _complete(
         "office.marketing_task_completed",
         "office_task",
         task_id,
-        details={"state": "done"},
+        details={
+            "state": "done",
+            "qa": "ready",
+            "hasCompletionNote": bool(current["completionNote"]),
+        },
     )
     return await _task_response(runtime, changed, now)
+
+
+async def _request_qa(
+        runtime, org_bi, account_bi, actor, task_id, row, data,
+        can_manage, now):
+    if (
+        not can_manage
+        and str(row.get("created_by_bi") or "") != account_bi
+        and str(row.get("assignee_bi") or "") != account_bi
+    ):
+        return _response(
+            runtime, {"error": "task_owner_or_manager_only"}, status=403)
+    try:
+        current = await runtime.open(row.get("data"))
+    except Exception:
+        current = None
+    if not isinstance(current, dict):
+        return _response(runtime, {"error": "task_unavailable"}, status=500)
+    how_to_test = _text(
+        data.get("howToTest"),
+        720,
+        _text(
+            current.get("howToTest"),
+            720,
+            "Follow the normal user flow and confirm the requested behavior.",
+        ),
+    )
+    current["howToTest"] = how_to_test
+    current["qaReviewer"] = ""
+    await runtime.d1_run(
+        "UPDATE organization_tasks SET destination='qa',qa_status='unknown',"
+        "qa_reviewer_bi='',qa_reviewed_at=0,qa_requested_at=?,data=?,"
+        "updated_at=? WHERE org_bi=? AND task_id=?",
+        now, await runtime.seal(current), now, org_bi, task_id,
+    )
+    await runtime.audit(
+        actor, "organization.task_sent_to_qa", "organization_task", task_id,
+        details={"qa": "requested"},
+    )
+    return await _task_response(
+        runtime, await _task(runtime, org_bi, task_id), now)
 
 
 async def _delete(runtime, org_bi, actor, task_id, can_manage):
     if not can_manage:
         return _response(runtime, {"error": "forbidden"}, status=403)
     await runtime.d1_run(
-        "DELETE FROM world_office_marketing_checkins "
+        "DELETE FROM organization_task_checkins "
         "WHERE org_bi=? AND task_id=?",
         org_bi,
         task_id,
     )
     await runtime.d1_run(
-        "DELETE FROM world_office_marketing_tasks "
+        "DELETE FROM organization_task_qa_reviews "
+        "WHERE org_bi=? AND task_id=?",
+        org_bi,
+        task_id,
+    )
+    await runtime.d1_run(
+        "DELETE FROM organization_tasks "
         "WHERE org_bi=? AND task_id=?",
         org_bi,
         task_id,
@@ -876,7 +1292,7 @@ async def _stop_active(runtime, org_bi, account_bi, actor, now):
     """Idempotently stop this account's active timer using server time."""
     row = await runtime.d1_first(
         "SELECT task_id,elapsed_ms,started_at "
-        "FROM world_office_marketing_tasks "
+        "FROM organization_tasks "
         "WHERE org_bi=? AND active_assignee_bi=? AND status='active' "
         "LIMIT 1",
         org_bi,
@@ -896,7 +1312,7 @@ async def _stop_active(runtime, org_bi, account_bi, actor, now):
     )
     task_id = str(row.get("task_id") or "")
     await runtime.d1_run(
-        "UPDATE world_office_marketing_tasks SET "
+        "UPDATE organization_tasks SET "
         "status='idle',active_assignee_bi='',elapsed_ms=?,started_at=0,"
         "next_checkin_at=0,updated_at=? "
         "WHERE org_bi=? AND task_id=? AND active_assignee_bi=? "
@@ -908,7 +1324,7 @@ async def _stop_active(runtime, org_bi, account_bi, actor, now):
         account_bi,
     )
     changed = await runtime.d1_first(
-        "SELECT status FROM world_office_marketing_tasks "
+        "SELECT status FROM organization_tasks "
         "WHERE org_bi=? AND task_id=?",
         org_bi,
         task_id,
@@ -948,8 +1364,8 @@ async def _checkin(
     # Retain a small per-task history; the migration's global trigger is the
     # final race-safe guard against an unbounded table.
     await runtime.d1_run(
-        "DELETE FROM world_office_marketing_checkins WHERE checkin_id IN ("
-        "SELECT checkin_id FROM world_office_marketing_checkins "
+        "DELETE FROM organization_task_checkins WHERE checkin_id IN ("
+        "SELECT checkin_id FROM organization_task_checkins "
         "WHERE task_id=? ORDER BY created_at DESC,checkin_id DESC "
         "LIMIT -1 OFFSET ?)",
         task_id,
@@ -957,10 +1373,10 @@ async def _checkin(
     )
     try:
         await runtime.d1_run(
-            "INSERT INTO world_office_marketing_checkins "
+            "INSERT INTO organization_task_checkins "
             "(checkin_id,task_id,org_bi,account_bi,state,data,created_at) "
             "SELECT ?,?,?,?,?,?,? "
-            "FROM world_office_marketing_tasks "
+            "FROM organization_tasks "
             "WHERE org_bi=? AND task_id=? AND status='active' "
             "AND assignee_bi=? AND active_assignee_bi=?",
             checkin_id,
@@ -981,7 +1397,7 @@ async def _checkin(
                 runtime, {"error": "checkin_capacity_reached"}, status=409)
         raise
     inserted = await runtime.d1_first(
-        "SELECT checkin_id FROM world_office_marketing_checkins "
+        "SELECT checkin_id FROM organization_task_checkins "
         "WHERE checkin_id=?",
         checkin_id,
     )
@@ -989,7 +1405,7 @@ async def _checkin(
         return _response(runtime, {"error": "task_state_conflict"}, status=409)
     deadline = _checkin_deadline(runtime, now)
     await runtime.d1_run(
-        "UPDATE world_office_marketing_tasks "
+        "UPDATE organization_tasks "
         "SET next_checkin_at=?,updated_at=? "
         "WHERE org_bi=? AND task_id=? AND status='active' "
         "AND active_assignee_bi=?",
@@ -1015,6 +1431,8 @@ async def handle(runtime, path):
     if route is None:
         return _response(runtime, {"error": "not_found"}, status=404)
     method = runtime.method()
+    marketing_only = str(path or "").rstrip("/").startswith(
+        LEGACY_MARKETING_PREFIX)
     allowed = (
         ("GET", "POST")
         if route[0] in ("collection", "proofs", "initiatives")
@@ -1053,7 +1471,13 @@ async def handle(runtime, path):
     now = int(runtime.now())
 
     kind, task_id, action = route
+    if not role:
+        # Task titles and routing are organization-private. A valid ForkMesh
+        # account without current membership receives no existence signal.
+        return _response(runtime, {"error": "org_member_required"}, status=403)
     if kind == "initiatives":
+        if not marketing_only:
+            return _response(runtime, {"error": "not_found"}, status=404)
         marketing_actor = await runtime.marketing_member(org_bi, actor)
         if method == "GET":
             if not marketing_actor:
@@ -1067,6 +1491,8 @@ async def handle(runtime, path):
         return await _initiative_create(
             runtime, org_bi, account_bi, actor, data, can_manage, now)
     if kind == "proofs":
+        if not marketing_only:
+            return _response(runtime, {"error": "not_found"}, status=404)
         if not await runtime.marketing_member(org_bi, actor):
             return _response(
                 runtime, {"error": "marketing_team_only"}, status=403)
@@ -1083,18 +1509,46 @@ async def handle(runtime, path):
             runtime, org_bi, account_bi, actor, now)
     if kind == "collection":
         if method == "GET":
+            department = ""
+            team = ""
+            if not marketing_only:
+                department = _text(
+                    runtime.query("department"), 64).lower()
+                team = _text(runtime.query("team"), 64).lower()
+                if (
+                    (department and (
+                        department not in DEPARTMENTS
+                        or not _SCOPE_RE.fullmatch(department)
+                    ))
+                    or (team and not _SCOPE_RE.fullmatch(team))
+                ):
+                    return _response(
+                        runtime, {"error": "invalid_task_filter"}, status=400)
             return await _list(
-                runtime, org_bi, account_bi, actor, can_manage, now)
+                runtime, org_bi, account_bi, actor, can_manage, now,
+                marketing_only=marketing_only,
+                department=department,
+                team=team,
+            )
         return await _create(
-            runtime, org_bi, account_bi, actor, data, can_manage, now)
+            runtime, org_bi, account_bi, actor, data, can_manage, now,
+            marketing_only=marketing_only,
+        )
 
     row = await _task(runtime, org_bi, task_id)
-    if not row:
+    if (
+        not row
+        or (
+            marketing_only
+            and str(row.get("department") or "") != "marketing"
+        )
+    ):
         return _response(runtime, {"error": "task_not_found"}, status=404)
     if kind == "task":
         if method == "GET":
             if (
-                not can_manage
+                marketing_only
+                and not can_manage
                 and str(row.get("assignee_bi") or "") != account_bi
             ):
                 return _response(
@@ -1104,7 +1558,9 @@ async def handle(runtime, path):
             return await _delete(
                 runtime, org_bi, actor, task_id, can_manage)
         return await _update(
-            runtime, org_bi, actor, task_id, data, can_manage, now)
+            runtime, org_bi, account_bi, actor, task_id, data, can_manage, now,
+            marketing_only=marketing_only,
+        )
     if action == "start":
         return await _start(
             runtime, org_bi, account_bi, actor, task_id, row, now)
@@ -1113,6 +1569,11 @@ async def handle(runtime, path):
             runtime, org_bi, account_bi, actor, task_id, row, now)
     if action == "complete":
         return await _complete(
-            runtime, org_bi, account_bi, actor, task_id, row, can_manage, now)
+            runtime, org_bi, account_bi, actor, task_id, row, data,
+            can_manage, now)
+    if action == "qa":
+        return await _request_qa(
+            runtime, org_bi, account_bi, actor, task_id, row, data,
+            can_manage, now)
     return await _checkin(
         runtime, org_bi, account_bi, actor, task_id, row, data, now)

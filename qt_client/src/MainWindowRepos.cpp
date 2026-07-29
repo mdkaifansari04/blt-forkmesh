@@ -321,6 +321,9 @@ QJsonObject normalizedCatalogV2Record(const QJsonObject &data)
          cleanCatalogString(data, QStringLiteral("artifactCount"), 12)},
         {QStringLiteral("platform"),
          cleanCatalogString(data, QStringLiteral("platform"), 16)},
+        {QStringLiteral("runtimeMode"),
+         cleanCatalogString(data, QStringLiteral("runtimeMode"), 12)
+             .toLower()},
         {QStringLiteral("version"),
          cleanCatalogString(data, QStringLiteral("version"), 32)},
         {QStringLiteral("nodeId"),
@@ -2196,9 +2199,20 @@ void MainWindow::updateRepoActionMenus()
 
 void MainWindow::deleteCurrentMirror()
 {
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+    // The repo Settings tab deletes the open repository and stays in the repo
+    // view afterwards, landing on whatever repository takes the deleted one's
+    // place in the list.
+    deleteRepositoryAt(m_repoDetailIndex, true);
+}
+
+// Delete `index` from this machine: mirror on disk, catalog entry, sealed
+// archives and the ForkMesh record itself. `reopenRepoDetail` is for callers
+// that were already inside the repo view; the Repos list passes false so
+// deleting a row doesn't yank the user into a repository page.
+void MainWindow::deleteRepositoryAt(int index, bool reopenRepoDetail)
+{
+    if (index < 0 || index >= m_repositories.size())
         return;
-    const int index = m_repoDetailIndex;
     const RepositoryRecord repo = m_repositories.at(index);
     const QString rawPath = repo.mirrorPath.trimmed();
     const QString rawWorktree = repo.localPath.trimmed();
@@ -2239,6 +2253,12 @@ void MainWindow::deleteCurrentMirror()
     if (box.exec() != QMessageBox::Yes)
         return;
     const bool keepFiles = keepFilesCheck && keepFilesCheck->isChecked();
+    // exec() above pumped the event loop, so a sync that landed while the
+    // confirmation was up may have shifted m_repositories. Re-find the record
+    // by owner/name rather than deleting whatever now sits at the old index.
+    index = findNetworkRepoIndex(repo.owner, repo.name, true);
+    if (index < 0)
+        return;
 
     if (!keepFiles && !path.isEmpty() && path == worktree) {
         QMessageBox::warning(
@@ -2296,11 +2316,19 @@ void MainWindow::deleteCurrentMirror()
     }
     startRepoHosts();
     refreshRepositoryList();
-    m_repoDetailIndex = -1;
-    if (!m_repositories.isEmpty())
-        openRepoDetail(qMin(index, m_repositories.size() - 1));
-    else if (m_repoDetailStack)
-        m_repoDetailStack->setCurrentIndex(0); // Code (empty)
+    // Removing a record shifts every later index down by one: keep the open
+    // repository pointing at the same record, and only clear the selection when
+    // the repository that just went is the one on screen.
+    if (m_repoDetailIndex == index)
+        m_repoDetailIndex = -1;
+    else if (m_repoDetailIndex > index)
+        --m_repoDetailIndex;
+    if (reopenRepoDetail) {
+        if (!m_repositories.isEmpty())
+            openRepoDetail(qMin(index, m_repositories.size() - 1));
+        else if (m_repoDetailStack)
+            m_repoDetailStack->setCurrentIndex(0); // Code (empty)
+    }
     logSystem("Deleted repository " + repo.owner + "/" + repo.name + ".");
     setRepoDetailNotice(keepFiles ? "Removed repository from ForkMesh. Files kept on disk."
                                    : "Deleted repository.");
@@ -4347,6 +4375,13 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                          {"worktreeCount", QString::number(worktreeCount)},
                          {"artifactCount", QString::number(artifactCount)},
                          {"platform", selfPlatform},
+                         // This signed capability separates an attended local
+                         // Qt app from an unattended mirror. The Worker uses it
+                         // when a platform administrator explicitly routes a
+                         // web-created agent job to their own running desktop.
+                         {"runtimeMode",
+                          m_headless ? QStringLiteral("headless")
+                                     : QStringLiteral("desktop")},
                          {"version", selfVersion},
                          {"nodeId", selfNodeId},
                          {"clonesServed", QString::number(clonesServed)},

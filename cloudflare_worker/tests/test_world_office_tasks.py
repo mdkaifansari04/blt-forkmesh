@@ -41,8 +41,12 @@ class FakeRuntime:
         self.db.executescript(
             (ROOT / "migrations" / "0101_world_office_marketing_initiatives.sql")
             .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" / "0105_organization_tasks.sql")
+            .read_text(encoding="utf-8"))
         self.request_method = "GET"
         self.request_data = {}
+        self.query_data = {}
         self.actor = ""
         self.same_origin_request = True
         self.now_ms = NOW
@@ -72,12 +76,18 @@ class FakeRuntime:
             "carol": ("member", "read"),
             "inactive": ("member", "read"),
         }
+        self.teams = {
+            "engineering": {"alice", "bob"},
+            "marketing": {"alice", "bob", "carol"},
+            "quality-assurance": {"alice", "carol"},
+        }
 
-    def use(self, method, actor="", data=None, same_origin=True):
+    def use(self, method, actor="", data=None, same_origin=True, query=None):
         self.request_method = method
         self.actor = actor
         self.request_data = {} if data is None else data
         self.same_origin_request = same_origin
+        self.query_data = dict(query or {})
         return self
 
     def method(self):
@@ -92,6 +102,9 @@ class FakeRuntime:
 
     def same_origin(self):
         return self.same_origin_request
+
+    def query(self, name):
+        return self.query_data.get(name, "")
 
     def response(self, data, status=200, cache_control=None,
                  extra_headers=None):
@@ -136,6 +149,32 @@ class FakeRuntime:
         return sorted(
             name for name, user in self.users.items() if user["active"]
         )
+
+    async def organization_members(self, _org_bi):
+        return [
+            {"bi": self.users[name]["bi"], "name": name}
+            for name in sorted(self.memberships)
+            if self.users.get(name, {}).get("active")
+        ]
+
+    async def organization_member(self, org_bi, name):
+        return next(
+            (
+                member
+                for member in await self.organization_members(org_bi)
+                if member["name"] == name
+            ),
+            None,
+        )
+
+    async def organization_teams(self, _org_bi):
+        return [
+            {"team": team, "permission": "read", "members": len(members)}
+            for team, members in sorted(self.teams.items())
+        ]
+
+    async def team_member(self, _org_bi, team, name):
+        return name in self.teams.get(team, set())
 
     async def marketing_members(self, _org_bi):
         return [
@@ -216,6 +255,201 @@ async def create_task(runtime, assignee="bob", title="Write launch post",
 
 
 @run_async_test
+async def test_start_uses_optional_private_engineering_notifier():
+    runtime = FakeRuntime()
+    notices = []
+
+    async def notify(org_bi, actor, task_id, task):
+        notices.append((org_bi, actor, task_id, task))
+
+    runtime.notify_engineering_task_started = notify
+    created = await create_task(runtime)
+    task = created["data"]["task"]
+    started = await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/start",
+    )
+    assert started["status"] == 200
+    assert len(notices) == 1
+    assert notices[0][1] == "bob"
+    assert notices[0][2] == task["id"]
+    assert notices[0][3]["title"] == "Write launch post"
+    assert notices[0][3]["status"] == "active"
+
+
+@run_async_test
+async def test_universal_tasks_are_org_private_routable_and_marketing_compatible():
+    runtime = FakeRuntime()
+    generic = await tasks_api.handle(
+        runtime.use("POST", "bob", {
+            "title": "Fix the engineering HUD",
+            "details": "Keep this inside the organization.",
+            "department": "engineering",
+            "team": "engineering",
+            "destination": "department",
+            "assigneeKind": "user",
+            "assignee": "bob",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert generic["status"] == 201
+    task = generic["data"]["task"]
+    assert task["department"] == "engineering"
+    assert task["team"] == "engineering"
+    assert task["assigneeKind"] == "user"
+    assert task["qa"]["status"] == "unknown"
+
+    org_view = await tasks_api.handle(
+        runtime.use("GET", "carol"),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert [item["id"] for item in org_view["data"]["tasks"]] == [task["id"]]
+    assert org_view["data"]["privacyBoundary"] == (
+        "organization-private-encrypted-at-rest"
+    )
+    filtered = await tasks_api.handle(
+        runtime.use(
+            "GET", "alice", query={"department": "engineering"}),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert [item["id"] for item in filtered["data"]["tasks"]] == [task["id"]]
+
+    legacy_view = await tasks_api.handle(
+        runtime.use("GET", "alice"),
+        tasks_api.LEGACY_MARKETING_PREFIX,
+    )
+    assert legacy_view["data"]["tasks"] == []
+    outsider = await tasks_api.handle(
+        runtime.use("GET", "eve"),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert outsider["status"] == 403
+    assert outsider["data"]["error"] == "org_member_required"
+
+
+@run_async_test
+async def test_member_can_submit_exact_non_custodial_sol_bounty_bid():
+    runtime = FakeRuntime()
+    response = await tasks_api.handle(
+        runtime.use("POST", "bob", {
+            "kind": "bid",
+            "title": "Improve the lobby onboarding",
+            "details": "Add a concise first-visit checklist.",
+            "bountyAmountSol": "0.125000000",
+            "department": "community",
+            "destination": "department",
+            # A bid cannot impersonate this supplied assignee.
+            "assigneeKind": "user",
+            "assignee": "carol",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert response["status"] == 201
+    task = response["data"]["task"]
+    assert task["kind"] == "bid"
+    assert task["createdBy"] == "bob"
+    assert task["assignee"] == "bob"
+    assert task["assigneeKind"] == "user"
+    assert task["bountyRequest"] == {
+        "currency": "SOL",
+        "amountSol": "0.125",
+        "lamports": 125_000_000,
+        "status": "requested",
+    }
+    stored = runtime.db.execute(
+        "SELECT data FROM organization_tasks WHERE task_id=?",
+        (task["id"],),
+    ).fetchone()
+    assert "Improve the lobby onboarding" not in stored["data"]
+    assert runtime.audits[-1]["action"] == "organization.task_created"
+    assert runtime.audits[-1]["details"]["kind"] == "bid"
+    assert runtime.audits[-1]["details"]["bountyAmountSol"] == "0.125"
+
+
+@run_async_test
+async def test_bounty_bid_rejects_invalid_or_imprecise_sol_amounts():
+    for amount in (
+        "",
+        "0",
+        "-1",
+        "1e-3",
+        "0.0000000001",
+        "1000000.000000001",
+        "not-sol",
+    ):
+        runtime = FakeRuntime()
+        response = await tasks_api.handle(
+            runtime.use("POST", "bob", {
+                "kind": "bid",
+                "title": "Invalid bounty",
+                "bountyAmountSol": amount,
+                "department": "general",
+                "destination": "department",
+            }),
+            tasks_api.UNIVERSAL_PREFIX,
+        )
+        assert response["status"] == 400, amount
+        assert response["data"]["error"] == "invalid_bounty_request"
+        count = runtime.db.execute(
+            "SELECT COUNT(*) FROM organization_tasks"
+        ).fetchone()[0]
+        assert count == 0
+
+
+@run_async_test
+async def test_universal_tasks_route_to_agents_and_private_qa():
+    runtime = FakeRuntime()
+    denied_assignment = await tasks_api.handle(
+        runtime.use("POST", "bob", {
+            "title": "Assign somebody else",
+            "department": "engineering",
+            "assigneeKind": "user",
+            "assignee": "carol",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert denied_assignment["status"] == 403
+    assert denied_assignment["data"]["error"] == "cannot_assign_other_member"
+
+    missing_repo = await tasks_api.handle(
+        runtime.use("POST", "mary", {
+            "title": "Run an agent",
+            "department": "engineering",
+            "assigneeKind": "codex",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert missing_repo["status"] == 400
+    assert missing_repo["data"]["error"] == "repository_required"
+
+    agent = await tasks_api.handle(
+        runtime.use("POST", "mary", {
+            "title": "Run the private verification",
+            "details": "Agent task details",
+            "department": "engineering",
+            "destination": "repository",
+            "repository": "forkmesh/forkmesh",
+            "assigneeKind": "codex",
+            "sendToQa": True,
+            "howToTest": "Open the World and verify the result.",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert agent["status"] == 201
+    task = agent["data"]["task"]
+    assert task["destination"] == "agent"
+    assert task["assignee"] == "codex"
+    assert task["qa"]["requestedAt"] == runtime.now_ms
+    assert task["repository"] == "forkmesh/forkmesh"
+    stored = runtime.db.execute(
+        "SELECT data FROM organization_tasks WHERE task_id=?",
+        (task["id"],),
+    ).fetchone()[0]
+    assert "Run the private verification" not in stored
+    assert "Agent task details" not in stored
+
+
+@run_async_test
 async def test_org_authorization_manager_roles_and_filtered_reads():
     runtime = FakeRuntime()
 
@@ -224,13 +458,11 @@ async def test_org_authorization_manager_roles_and_filtered_reads():
     assert unauthenticated["status"] == 401
 
     # Platform status is deliberately not part of the authorization adapter.
-    # An outside user gets only their own (currently empty) assignment view.
+    # A platform administrator outside the organization cannot infer tasks.
     outsider = await tasks_api.handle(
         runtime.use("GET", "rootadmin"), tasks_api.PREFIX)
-    assert outsider["status"] == 200
-    assert outsider["data"]["canManage"] is False
-    assert outsider["data"]["tasks"] == []
-    assert "members" not in outsider["data"]
+    assert outsider["status"] == 403
+    assert outsider["data"]["error"] == "org_member_required"
     admin_bypass = await tasks_api.handle(
         runtime.use("POST", "rootadmin", {
             "title": "Platform admin is not an org manager",
@@ -303,8 +535,8 @@ async def test_org_authorization_manager_roles_and_filtered_reads():
     assert external_task["data"]["error"] == "assignee_not_marketing_member"
     external_view = await tasks_api.handle(
         runtime.use("GET", "eve"), tasks_api.PREFIX)
-    assert external_view["status"] == 200
-    assert external_view["data"]["tasks"] == []
+    assert external_view["status"] == 403
+    assert external_view["data"]["error"] == "org_member_required"
     external_manage = await tasks_api.handle(
         runtime.use("POST", "eve", {
             "title": "No management bypass",
@@ -564,7 +796,7 @@ async def test_world_exit_stop_active_is_server_timed_idempotent_and_private():
     }
     row = runtime.db.execute(
         "SELECT status,elapsed_ms,started_at,next_checkin_at "
-        "FROM world_office_marketing_tasks WHERE task_id=?",
+        "FROM organization_tasks WHERE task_id=?",
         (task_id,),
     ).fetchone()
     assert tuple(row) == ("idle", 12_345, 0, 0)
@@ -602,13 +834,47 @@ async def test_assignee_or_manager_can_complete_and_only_manager_can_delete():
     )
     assert outsider_done["status"] == 403
     completed = await tasks_api.handle(
-        runtime.use("POST", "bob", {}),
+        runtime.use("POST", "bob", {
+            "completionNote": (
+                "Implemented the requested flow and ran the focused tests."
+            ),
+        }),
         f"{tasks_api.PREFIX}/{task_id}/complete",
     )
     assert completed["status"] == 200
     assert completed["data"]["task"]["status"] == "done"
     assert completed["data"]["task"]["elapsedMs"] == 7_500
     assert completed["data"]["task"]["completedAt"] == runtime.now_ms
+    assert completed["data"]["task"]["destination"] == "qa"
+    assert completed["data"]["task"]["qa"]["status"] == "unknown"
+    assert completed["data"]["task"]["qa"]["requestedAt"] == runtime.now_ms
+    assert completed["data"]["task"]["qa"]["howToTest"]
+    assert completed["data"]["task"]["completionNote"] == (
+        "Implemented the requested flow and ran the focused tests."
+    )
+    sealed = runtime.db.execute(
+        "SELECT data FROM organization_tasks WHERE task_id=?",
+        (task_id,),
+    ).fetchone()[0]
+    assert "Implemented the requested flow" not in sealed
+    assert runtime.audits[-1]["details"]["hasCompletionNote"] is True
+
+    revised = await tasks_api.handle(
+        runtime.use("POST", "bob", {
+            "completionNote": (
+                "Implemented, reviewed the diff, and passed focused QA."
+            ),
+        }),
+        f"{tasks_api.PREFIX}/{task_id}/complete",
+    )
+    assert revised["status"] == 200
+    assert revised["data"]["task"]["completedAt"] == runtime.now_ms
+    assert revised["data"]["task"]["completionNote"] == (
+        "Implemented, reviewed the diff, and passed focused QA."
+    )
+    assert runtime.audits[-1]["action"] == (
+        "organization.task_completion_note_updated"
+    )
 
     restart = await tasks_api.handle(
         runtime.use("POST", "bob", {}),
@@ -629,7 +895,7 @@ async def test_assignee_or_manager_can_complete_and_only_manager_can_delete():
     assert deleted["status"] == 200
     assert deleted["data"]["deleted"] is True
     assert await runtime.d1_first(
-        "SELECT task_id FROM world_office_marketing_tasks WHERE task_id=?",
+        "SELECT task_id FROM organization_tasks WHERE task_id=?",
         task_id,
     ) is None
     assert {
@@ -654,7 +920,7 @@ async def test_encrypted_copy_same_origin_reassignment_and_metadata_only_audit()
     )
     assert denied_origin["status"] == 403
     assert runtime.db.execute(
-        "SELECT COUNT(*) FROM world_office_marketing_tasks"
+        "SELECT COUNT(*) FROM organization_tasks"
     ).fetchone()[0] == 0
 
     title = "Distinctive confidential launch phrase"
@@ -684,10 +950,10 @@ async def test_encrypted_copy_same_origin_reassignment_and_metadata_only_audit()
     assert checkin["status"] == 200
 
     task_storage = runtime.db.execute(
-        "SELECT data FROM world_office_marketing_tasks"
+        "SELECT data FROM organization_tasks"
     ).fetchone()[0]
     checkin_storage = runtime.db.execute(
-        "SELECT data FROM world_office_marketing_checkins"
+        "SELECT data FROM organization_task_checkins"
     ).fetchone()[0]
     assert title not in task_storage
     assert details not in task_storage

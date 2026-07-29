@@ -235,6 +235,78 @@
         }
       }
 
+      .chat-reactions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-top: 4px;
+      }
+
+      .chat-reactions:empty {
+        display: none;
+      }
+
+      .chat-reaction-chip,
+      .chat-reaction-picker button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 24px;
+        border: 1px solid rgb(var(--dashboard-border-rgb));
+        border-radius: 999px;
+        background: rgb(var(--dashboard-muted-rgb));
+        color: var(--foreground);
+        cursor: pointer;
+      }
+
+      .chat-reaction-chip {
+        gap: 4px;
+        padding: 1px 8px;
+        font-size: 12px;
+      }
+
+      .chat-reaction-chip.is-mine {
+        border-color: var(--dashboard-link);
+        background: color-mix(
+          in srgb,
+          var(--dashboard-link) 16%,
+          var(--background)
+        );
+      }
+
+      .chat-reaction-count {
+        color: rgb(var(--dashboard-muted-foreground-rgb));
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .chat-reaction-picker {
+        display: flex;
+        width: max-content;
+        max-width: 100%;
+        gap: 4px;
+        margin-top: 5px;
+        padding: 4px;
+        border: 1px solid rgb(var(--dashboard-border-rgb));
+        border-radius: 8px;
+        background: var(--background);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+      }
+
+      .chat-reaction-picker button {
+        width: 30px;
+        padding: 2px;
+        font-size: 16px;
+      }
+
+      .chat-reaction-chip:hover,
+      .chat-reaction-chip:focus-visible,
+      .chat-reaction-picker button:hover,
+      .chat-reaction-picker button:focus-visible {
+        border-color: var(--dashboard-link);
+        outline: none;
+      }
+
       .chat-mention {
         display: inline-block;
         border-radius: 5px;
@@ -704,8 +776,8 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=736a6e1b0862" defer></script>
-    <script src="/dashboard-chat.js?v=0e214a30f425" defer></script>
+    <script src="/dashboard.js?v=ab55acec0768" defer></script>
+    <script src="/dashboard-chat.js?v=866ba5bb0074" defer></script>
   </head>
   <body class="bg-background text-foreground" data-page="home">
     <div data-dashboard-root data-dashboard-section="home" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">

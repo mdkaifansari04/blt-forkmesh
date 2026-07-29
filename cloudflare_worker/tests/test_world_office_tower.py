@@ -355,6 +355,27 @@ def test_front_elevator_cabin_and_approach_are_walkable_but_glass_sides_are_soli
     assert result["pastCabin"] is False
 
 
+def test_engineering_workstation_gaps_are_walkable():
+    result = run_tower_script(
+        """
+        const radius = tower.OFFICE_AVATAR_RADIUS;
+        process.stdout.write(JSON.stringify({
+          desk: tower.officePointHitsObstacle(
+            "engineering", -36, 0, radius),
+          firstGap: tower.officeInteriorPointIsWalkable(
+            "engineering", -27, 0, radius),
+          centerGap: tower.officeInteriorPointIsWalkable(
+            "engineering", 9, 0, radius),
+        }));
+        """
+    )
+    assert result == {
+        "desk": True,
+        "firstGap": True,
+        "centerGap": True,
+    }
+
+
 def test_every_floor_has_collidable_obstacles_and_reachable_open_space():
     result = run_tower_script(
         """

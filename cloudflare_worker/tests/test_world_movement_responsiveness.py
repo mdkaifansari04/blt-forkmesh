@@ -100,4 +100,54 @@ def test_camera_and_non_motion_frame_work_are_allocation_bounded():
     assert "cameraTarget" in camera
     assert "time >= nextProximityUpdateAt" in animate
     assert "time >= nextScreenLabelUpdateAt" in animate
-    assert "diagnosticsDrawingBuffer" in animate
+    # Drawing-buffer inspection and console I/O are deferred until after the
+    # already-late animation frame has yielded.
+    warning = _section(
+        SCENE,
+        "  function scheduleRenderStallWarning(",
+        "\n  function animate(",
+    )
+    assert "diagnosticsDrawingBuffer" in warning
+    assert "window.setTimeout(" in warning
+    assert "new Error(" not in warning
+
+
+def test_zoom_and_selection_work_are_bounded_to_display_cadences():
+    zoom = _section(SCENE, "  function setCameraZoom(", "\n  function touchDistance")
+    lod = _section(
+        SCENE,
+        "  function updateSceneLevelOfDetail(",
+        "\n  function updateWorldEnvironment",
+    )
+    animate = _section(SCENE, "  function animate(", "\n  function setPaused(")
+    assert "updateSceneLevelOfDetail();" in zoom
+    assert "updateSceneLevelOfDetail(true);" not in zoom
+    assert "if (!force && farSceneDetail === far) return;" in lod
+    assert "nextSceneLodAt = time + SCENE_LOD_SAMPLE_MS" in animate
+    assert "time >= nextAvatarHighlightAt" in animate
+    assert "nextAvatarHighlightAt = time + AVATAR_HIGHLIGHT_SAMPLE_MS" in animate
+
+
+def test_stall_logs_are_aggregated_deferred_and_never_capture_stacks():
+    animate = _section(SCENE, "  function animate(", "\n  function setPaused(")
+    warning = _section(
+        SCENE,
+        "  function scheduleRenderStallWarning(",
+        "\n  function animate(",
+    )
+    assert "const RENDER_STALL_LOG_COOLDOWN_MS = 30_000;" in SCENE
+    assert "suppressedRenderStalls += 1" in animate
+    assert "window.setTimeout(" in warning
+    assert "console.warn(" in warning
+    assert "new Error(" not in animate
+    assert ".stack" not in animate
+
+
+def test_repository_collision_basic_material_has_no_unsupported_emissive_field():
+    collision = _section(
+        SCENE,
+        "    const collisionRing = new THREE.Mesh(",
+        "\n    const sparkleCount",
+    )
+    assert "new THREE.MeshBasicMaterial({" in collision
+    assert "emissive:" not in collision

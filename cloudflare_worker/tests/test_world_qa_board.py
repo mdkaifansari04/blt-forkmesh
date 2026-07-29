@@ -42,7 +42,8 @@ class _Request:
 def _handler_runtime():
     tree = ast.parse(ENTRY, filename=str(ENTRY_PATH))
     wanted_assignments = {
-        "WORLD_QA_DECK_REVISION", "WORLD_QA_CARDS", "WORLD_QA_CARD_KEYS",
+        "WORLD_QA_DECK_REVISION", "WORLD_QA_MAX_CARDS",
+        "WORLD_QA_CARDS", "WORLD_QA_CARD_KEYS",
     }
     selected = []
     for node in tree.body:
@@ -54,7 +55,8 @@ def _handler_runtime():
             if names & wanted_assignments:
                 selected.append(node)
         elif isinstance(node, ast.AsyncFunctionDef) \
-                and node.name == "world_qa_handler":
+                and node.name in (
+                    "_organization_qa_access", "world_qa_handler"):
             selected.append(node)
     assert any(
         isinstance(node, ast.AsyncFunctionDef) for node in selected)
@@ -74,8 +76,8 @@ def _handler_runtime():
     async def org_row(_env, _org):
         return "org:forkmesh", {"name": "forkmesh"}
 
-    async def org_role(_env, _org_bi, _actor):
-        return "owner"
+    async def org_role(_env, _org_bi, actor):
+        return "owner" if actor == "alice" else "member"
 
     async def org_permission(_env, _org_bi, _actor):
         return "admin"
@@ -108,7 +110,11 @@ def _handler_runtime():
             if owner == account_bi
         ]
 
-    async def d1_first(_env, _sql, *_params):
+    async def d1_first(_env, sql, *params):
+        if "FROM org_team_members" in sql:
+            return {"one": 1} if params[-1] == "bi:bob" else None
+        if "FROM org_team_collaborators" in sql:
+            return {"one": 1} if params[-1] == "bi:eve" else None
         return {"priority": 0}
 
     def response(payload, status=200, **_kwargs):
@@ -168,7 +174,9 @@ def test_qa_votes_are_per_account_with_global_aggregate_totals():
     assert anonymous["status"] == 200
     assert anonymous["payload"]["authenticated"] is False
     assert anonymous["payload"]["reviews"] == {}
-    assert len(anonymous["payload"]["cards"]) >= 20
+    assert anonymous["payload"]["authorized"] is False
+    assert anonymous["payload"]["requiredTeam"] == "quality-assurance"
+    assert anonymous["payload"]["cards"] == []
 
     saved = _run(handler(None, _Request(
         method="POST",
@@ -191,6 +199,12 @@ def test_qa_votes_are_per_account_with_global_aggregate_totals():
     assert bob["payload"]["reviews"] == {}
     assert bob["payload"]["stats"]["reviewed"] == 0
     assert bob["payload"]["globalStats"]["pass"] == 1
+
+    non_qa = _run(handler(None, _Request(account="bi:charlie")))
+    assert non_qa["payload"]["authenticated"] is True
+    assert non_qa["payload"]["authorized"] is False
+    assert non_qa["payload"]["cards"] == []
+    assert non_qa["payload"]["canViewPrivateTasks"] is False
 
 
 def test_qa_write_rejects_cross_origin_unknown_items_and_bad_verdicts():
@@ -257,6 +271,48 @@ def test_world_has_one_direct_physical_card_with_swipes_and_stats():
     assert ".world-qa-playing-card" not in CSS
 
 
+def test_qa_catalog_is_not_truncated_to_the_first_64_cards():
+    handler = ENTRY[
+        ENTRY.index("async def world_qa_handler"):
+        ENTRY.index("\n\nWORLD_PREFERENCES_MAX_BYTES")
+    ]
+    assert "WORLD_QA_MAX_CARDS = 4096" in ENTRY
+    assert "deck_cards = deck_cards[:64]" not in handler
+    assert "deck_cards = deck_cards[:128]" not in handler
+    assert "LIMIT 64" not in handler
+    assert handler.count("WORLD_QA_MAX_CARDS") >= 6
+    # The 3D desk remains constant-cost even when the catalog grows.
+    assert "const pageSize = 5;" in WORLD
+    assert "Math.ceil(filtered.length / pageSize)" in WORLD
+
+
+def test_private_task_failures_require_a_reason_and_accept_one_screenshot():
+    handler = ENTRY[
+        ENTRY.index("async def world_qa_handler"):
+        ENTRY.index("\n\nWORLD_PREFERENCES_MAX_BYTES")
+    ]
+    for contract in (
+        '"failure_reason_required"',
+        '"invalid_qa_screenshot"',
+        "len(failure_screenshot) > 480_000",
+        '"qaFailureReason"',
+        '"qaFailureScreenshot"',
+        '"hasScreenshot": bool(failure_screenshot)',
+    ):
+        assert contract in handler
+    for contract in (
+        "collectQaFailureEvidence(card)",
+        "compactQaFailureScreenshot(file)",
+        'accept="image/png,image/jpeg,image/webp"',
+        'placeholder="Describe what failed, what you expected, and how to reproduce it."',
+        "failureReason: evidence.failureReason",
+        "screenshot: evidence.screenshot",
+    ):
+        assert contract in WORLD
+    assert ".world-qa-failure-dialog" in CSS
+    assert "FAIL REASON" in SCENE
+
+
 def test_qa_routing_is_privileged_audited_and_targets_real_work_queues():
     handler = ENTRY[
         ENTRY.index("async def world_qa_handler"):
@@ -302,11 +358,12 @@ def test_exact_view_and_saved_views_live_in_collapsed_right_rail():
     assert "data-world-share-menu" not in WORLD
     assert "data-world-share-current" in WORLD
     assert "shareCurrentWorldView()" in WORLD
-    assert "data-world-saved-views-toggle" in WORLD
-    assert 'data-expanded="false"' in WORLD
-    assert "⌖＋" in WORLD
+    assert "data-world-saved-views-toggle" not in WORLD
+    assert 'data-expanded="true"' in WORLD
+    assert "Quick views" in WORLD
     assert "setSavedViewsExpanded(expanded)" in WORLD
-    assert '<div class="world-saved-view-list" data-world-saved-view-list hidden>' in WORLD
+    assert '<div class="world-saved-view-list" data-world-saved-view-list>' in WORLD
+    assert ".world-right-rail[data-expanded=\"false\"] .world-saved-view-list" in CSS
     # The ordinary right-click menu is untouched and layout editing no longer
     # intercepts it: admins click-select, then use arrows and R instead.
     assert 'renderer.domElement.addEventListener("contextmenu"' not in SCENE

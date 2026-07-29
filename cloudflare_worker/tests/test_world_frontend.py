@@ -263,11 +263,18 @@ def test_avatar_chest_activity_country_shirt_and_input_state_are_privacy_safe():
         'antenna.name = "mouse-activity-antenna"',
         "function syncAvatarActivity",
         "function animateAvatarActivity",
-        'avatar.userData.accountStatus === "Guest"',
-        "inactiveFor >= 12000",
-        'avatar.userData.accountStatus === "Guest"',
+        "Guests and members remain fully",
+        "opaque until they actually leave the World",
     ):
         assert contract in SCENE
+    assert ".world-saved-views {" in CSS
+    assert ".world-saved-view img," in CSS
+    saved_view_render = APP[
+        APP.index("  renderSavedViews() {"):
+        APP.index("\n  captureSavedViewThumbnail()", APP.index("  renderSavedViews() {"))
+    ]
+    assert 'aria-label="Return to ${escapeHTML(view.label)}"' in saved_view_render
+    assert "<span>${escapeHTML(view.label)}</span>" not in saved_view_render
     assert "inputActive:" in APP
     assert "visitCount:" in APP
     assert "firstVisitAge:" in APP
@@ -876,13 +883,17 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
     assert "if (this.mobileMovementActive) return;" in APP
     assert "this.mobileMovementActive = true;" in APP
     assert "this.mobileMovementActive = false;" in APP
-    assert "this.syncViewportHeight();" in APP
+    assert "this.coarsePointerViewport" in APP
+    assert "this.lastStableViewportWidth" in APP
+    assert "Math.abs(width - this.lastStableViewportWidth) < 2" in APP
+    assert "address-bar expansion and contraction" in APP
     assert "overscroll-behavior: none;" in CSS
     assert "position: fixed;" in CSS[
         CSS.index("body.world-active {"):
         CSS.index("}", CSS.index("body.world-active {"))
     ]
     assert 'this.addEventListener("touchmove", this.blockWorldPullToRefresh' in APP
+    assert "capture: true" in APP
     pull_guard = APP[
         APP.index("  blockWorldPullToRefresh ="):
         APP.index("\n  syncViewportHeight =", APP.index("  blockWorldPullToRefresh ="))
@@ -902,7 +913,7 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
 def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
     for contract in (
         'const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1."',
-        "const SAVED_VIEWS_MAX = 4;",
+        "const SAVED_VIEWS_MAX = 5;",
         "function normalizedSavedWorldView(record)",
         "data-world-save-view",
         "data-world-saved-view-list",
@@ -923,14 +934,39 @@ def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
         "restoreSavedViewState,",
     ):
         assert contract in SCENE
-    assert ".world-saved-views {" in CSS
-    assert ".world-saved-view img," in CSS
-    saved_view_render = APP[
-        APP.index("  renderSavedViews() {"):
-        APP.index("\n  captureSavedViewThumbnail()", APP.index("  renderSavedViews() {"))
-    ]
-    assert 'aria-label="Return to ${escapeHTML(view.label)}"' in saved_view_render
-    assert "<span>${escapeHTML(view.label)}</span>" not in saved_view_render
+
+
+def test_world_navigation_uses_five_visible_quick_views_and_no_repo_shortcut():
+    template = APP.split("function worldTemplate(", 1)[1].split(
+        "\nfunction ", 1
+    )[0]
+    assert '(landmark) => landmark.id !== "repositories"' in template
+    assert 'data-expanded="true"' in template
+    assert "Quick views" in template
+    assert '<div class="world-saved-view-list" data-world-saved-view-list>' in template
+    assert '.slice(0, SAVED_VIEWS_MAX)' in APP.split("renderSavedViews()", 1)[1]
+
+
+def test_clicking_the_physical_fire_frames_the_people_around_it():
+    hit = SCENE.split("if (hit?.object?.userData?.campfirePit)", 1)[1].split(
+        "\n    if (", 1
+    )[0]
+    assert "focusCampfireCircle();" in hit
+    focus = SCENE.split("function focusCampfireCircle()", 1)[1].split(
+        "\n  }\n", 1
+    )[0]
+    assert 'setCameraMode("third-person", "campfire-focus")' in focus
+    assert "cameraFocus = campfire.position.clone();" in focus
+    assert "setCameraZoom(Math.min(cameraZoom, 0.68));" in focus
+
+
+def test_retired_vm1_forkmesh_stub_is_not_rendered_as_a_portal():
+    catalog = SCENE.split("function updateRepositoryCatalog(", 1)[1].split(
+        "const activeKey", 1
+    )[0]
+    assert 'String(record.owner || "").toLowerCase() === "vm1"' in catalog
+    assert 'String(record.name || "").toLowerCase() === "forkmesh"' in catalog
+    assert "record.liveHost !== true" in catalog
 
 
 def test_toolbar_sound_button_is_the_master_switch_for_all_local_audio():
@@ -1322,7 +1358,6 @@ def test_world_first_person_camera_has_accessible_toggle_and_scene_api():
         '"First person"',
     ):
         assert contract in sync
-
     scene_mode_start = SCENE.index(
         '  function setCameraMode(mode, reason = "request") {',
     )
@@ -1353,6 +1388,50 @@ def test_world_first_person_camera_has_accessible_toggle_and_scene_api():
     assert "this.syncWorldCameraModeButton();" in reveal
     assert "setCameraMode," in SCENE
     assert "getCameraState:" in SCENE
+
+
+def test_top_toolbar_opens_dashboard_in_a_safe_new_tab():
+    assert 'class="world-top-link world-dashboard-link"' in APP
+    assert 'href="/dashboard"' in APP
+    assert 'target="_blank"' in APP
+    assert 'rel="noopener noreferrer"' in APP
+    assert 'aria-label="Open Dashboard in a new tab"' in APP
+    assert (
+        '.world-top-actions > .world-top-link[href="/dashboard"]'
+        not in CSS
+    )
+
+
+def test_admin_error_button_opens_the_error_table_in_a_safe_new_tab():
+    start = APP.index("  openAdminErrors() {")
+    method = APP[start:APP.index("\n  // Read the locked placement", start)]
+    assert 'destination.searchParams.set("table", "error_log")' in method
+    assert "window.open(" in method
+    assert '"_blank"' in method
+    assert '"noopener,noreferrer"' in method
+    assert "opened.opener = null" in method
+    assert "window.location.assign" not in method
+
+
+def test_world_task_button_and_inactive_avatar_visibility_contracts():
+    assert "data-world-tasks-open" in APP
+    assert "data-world-task-count" in APP
+    assert 'this.selectSettingsTab("work")' in APP
+    assert "avatarOpacity" not in SCENE
+    assert "inactiveSince" not in SCENE
+    assert "never the visibility of the person" in SCENE
+
+
+def test_render_stalls_include_bounded_likely_component_attribution():
+    assert (
+        "Render stall detected; we think it was "
+        "${stallAttribution.component}" in SCENE
+    )
+    assert "likelyCause: stallAttribution" in SCENE
+    assert 'component: "camera controls"' in SCENE
+    assert 'component: "Three.js renderer workload"' in SCENE
+    assert 'component: "JavaScript memory management"' in SCENE
+    assert 'codeArea: "renderer.render(scene, camera)"' in SCENE
 
 
 def test_world_first_person_zoom_out_falls_back_to_third_person():

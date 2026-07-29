@@ -639,6 +639,10 @@ forkmesh-world {
   .world-connection-ring[data-state="connecting"] {
     animation: none;
   }
+
+  .world-office-task[data-status="active"] .world-office-task-state {
+    animation: none;
+  }
 }
 
 .world-top-actions {
@@ -650,14 +654,19 @@ forkmesh-world {
 
 .world-icon-button,
 .world-top-link {
+  display: inline-grid;
+  width: 40px;
+  min-width: 40px;
   min-height: 40px;
-  border: 1px solid var(--world-line);
-  border-radius: 0;
-  background: rgb(7 17 15 / 0.78);
-  color: var(--world-copy);
-  padding: 0 13px;
+  place-items: center;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-control-bg);
+  color: var(--primer-fg-default);
+  padding: 0;
   cursor: pointer;
-  backdrop-filter: blur(18px);
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.04) inset;
+  backdrop-filter: blur(12px);
 }
 
 .world-icon-button {
@@ -668,21 +677,54 @@ forkmesh-world {
 }
 
 .world-icon-button:hover,
+.world-top-link:hover {
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
+  color: var(--primer-fg-default);
+}
+
 .world-icon-button:focus-visible,
-.world-top-link:hover,
 .world-top-link:focus-visible {
-  border-color: var(--world-mint);
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
+  box-shadow: 0 0 0 3px var(--primer-accent-subtle);
   outline: none;
-  color: var(--world-mint);
 }
 
 .world-top-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
   text-decoration: none;
-  font-size: 0.78rem;
+  font-size: 0.88rem;
   font-weight: 600;
+}
+
+.world-top-link[aria-pressed="true"] {
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
+  color: var(--primer-fg-default);
+}
+
+.world-tasks-button {
+  position: relative;
+}
+
+.world-tasks-button [data-world-task-count] {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  display: grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 2px solid var(--primer-canvas-default);
+  border-radius: 999px;
+  background: var(--primer-accent-emphasis);
+  padding: 0 4px;
+  color: #fff;
+  font: 700 10px/1 "ForkMesh Mono", ui-monospace, monospace;
+}
+
+.world-tasks-button [data-world-task-count][hidden] {
+  display: none;
 }
 
 /* The hand mirrors the gesture the avatar plays in the scene. */
@@ -729,7 +771,8 @@ forkmesh-world {
   position: relative;
 }
 
-.world-notification-button [data-world-notification-count] {
+.world-notification-button [data-world-notification-count],
+.world-admin-errors-button [data-world-admin-error-count] {
   position: absolute;
   top: -7px;
   right: -7px;
@@ -748,8 +791,60 @@ forkmesh-world {
   line-height: 1;
 }
 
-.world-notification-button [data-world-notification-count][hidden] {
+.world-notification-button [data-world-notification-count][hidden],
+.world-admin-errors-button [data-world-admin-error-count][hidden] {
   display: none;
+}
+
+.world-admin-errors-button {
+  position: relative;
+}
+
+.world-admin-errors-button[hidden] {
+  display: none;
+}
+
+.world-admin-errors-button.has-new-errors {
+  border-color: #f85149;
+  color: #ff7b72;
+}
+
+.world-admin-errors-button [data-world-admin-error-count] {
+  border-color: #2d1117;
+  background: #da3633;
+  color: #ffffff;
+}
+
+forkmesh-world.world-admin-error-arrival::after {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  border: 3px solid rgb(248 81 73 / 0.72);
+  box-shadow: inset 0 0 54px rgb(248 81 73 / 0.22);
+  content: "";
+  pointer-events: none;
+  animation: world-admin-error-arrival 1.5s ease-out both;
+}
+
+@keyframes world-admin-error-arrival {
+  0% {
+    opacity: 0;
+  }
+
+  18% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  forkmesh-world.world-admin-error-arrival::after {
+    animation: none;
+    opacity: 0;
+  }
 }
 
 .world-eyebrow {
@@ -861,12 +956,10 @@ forkmesh-world {
 .world-right-rail[data-expanded="false"]
   .world-share-view-button
   span:not([aria-hidden="true"]),
-.world-right-rail[data-expanded="false"] .world-saved-views-toggle,
 .world-right-rail[data-expanded="false"]
   .world-saved-views-heading
   > button:last-child
   span:last-child,
-.world-right-rail[data-expanded="false"] .world-saved-view-list,
 .world-right-rail[data-expanded="false"] .world-community-placement,
 .world-right-rail[data-expanded="false"] .world-fediverse-activity {
   display: none;
@@ -879,6 +972,10 @@ forkmesh-world {
   padding: 0;
 }
 
+.world-right-rail[data-expanded="false"] .world-saved-views-title {
+  display: none;
+}
+
 .world-right-rail[data-expanded="false"]
   .world-saved-views-heading
   > button:last-child {
@@ -889,6 +986,21 @@ forkmesh-world {
   grid-template-columns: 1fr;
   border: 0;
   padding: 0;
+}
+
+.world-right-rail[data-expanded="false"] .world-saved-view-list {
+  grid-template-columns: 1fr;
+  gap: 3px;
+  padding: 3px;
+}
+
+.world-right-rail[data-expanded="false"] .world-saved-view img,
+.world-right-rail[data-expanded="false"] .world-saved-view-placeholder {
+  height: 34px;
+}
+
+.world-right-rail[data-expanded="false"] .world-saved-view-edit {
+  display: none;
 }
 
 .world-share-view-button {
@@ -945,19 +1057,16 @@ forkmesh-world {
   cursor: pointer;
 }
 
-.world-saved-views-toggle {
+.world-saved-views-title {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 4px;
-  border: 0;
-  background: transparent;
   padding: 5px 0;
   color: inherit;
   font: inherit;
   letter-spacing: inherit;
   text-transform: inherit;
-  cursor: pointer;
 }
 
 .world-saved-view-list {
@@ -1307,16 +1416,16 @@ forkmesh-world {
 }
 
 .world-map-button[aria-current="true"] {
-  border-color: var(--primer-accent-muted);
-  background: var(--primer-accent-subtle);
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
   color: var(--primer-fg-default);
-  box-shadow: inset 2px 0 var(--primer-accent-fg);
+  box-shadow: inset 2px 0 var(--primer-fg-muted);
 }
 
 .world-map-icon {
   display: grid;
   place-items: center;
-  color: var(--primer-accent-fg);
+  color: var(--primer-fg-muted);
   font-family: "ForkMesh Mono", monospace;
   font-size: 0.66rem;
 }
@@ -1397,9 +1506,9 @@ forkmesh-world {
   width: 40px;
   height: 40px;
   overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 0.22);
-  border-radius: 0;
-  background: #143528;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-control-bg);
   padding: 3px;
   color: white;
   cursor: pointer;
@@ -1407,8 +1516,13 @@ forkmesh-world {
 
 .world-shirt-badge:hover,
 .world-shirt-badge:focus-visible {
-  border-color: var(--world-mint);
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
   outline: none;
+}
+
+.world-shirt-badge:focus-visible {
+  box-shadow: 0 0 0 3px var(--primer-accent-subtle);
 }
 
 .world-shirt-account {
@@ -1748,6 +1862,114 @@ forkmesh-world {
   transform: translate(-50%, 0);
   opacity: 1;
   visibility: visible;
+}
+
+.world-qa-failure-overlay {
+  position: absolute;
+  z-index: 82;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(1 4 9 / 0.72);
+  padding: 18px;
+  pointer-events: auto;
+  backdrop-filter: blur(4px);
+}
+
+.world-qa-failure-dialog {
+  display: grid;
+  width: min(520px, 100%);
+  max-height: calc(100dvh - 36px);
+  gap: 14px;
+  overflow-y: auto;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-canvas-default);
+  padding: 18px;
+  box-shadow: 0 16px 48px rgb(1 4 9 / 0.72);
+  color: var(--primer-fg-default);
+}
+
+.world-qa-failure-dialog header,
+.world-qa-failure-dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.world-qa-failure-dialog header > div,
+.world-qa-failure-dialog label {
+  display: grid;
+  gap: 6px;
+}
+
+.world-qa-failure-dialog header span,
+.world-qa-failure-dialog small {
+  color: var(--primer-fg-muted);
+  font-size: 0.72rem;
+}
+
+.world-qa-failure-dialog p {
+  margin: 0;
+  color: var(--primer-fg-muted);
+  font-size: 0.82rem;
+}
+
+.world-qa-failure-dialog textarea,
+.world-qa-failure-dialog input[type="file"] {
+  width: 100%;
+  border: 1px solid var(--primer-border-default);
+  background: var(--primer-canvas-subtle);
+  padding: 8px;
+  color: var(--primer-fg-default);
+}
+
+.world-qa-failure-dialog textarea:focus,
+.world-qa-failure-dialog input[type="file"]:focus-visible {
+  border-color: #8b949e;
+  box-shadow: 0 0 0 3px var(--primer-accent-subtle);
+  outline: none;
+}
+
+.world-qa-failure-dialog button {
+  min-height: 32px;
+  border: 1px solid var(--primer-border-default);
+  background: var(--primer-control-bg);
+  padding: 0 12px;
+  color: var(--primer-fg-default);
+  cursor: pointer;
+}
+
+.world-qa-failure-dialog button:hover,
+.world-qa-failure-dialog button:focus-visible {
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
+  outline: none;
+}
+
+.world-qa-failure-dialog button[type="submit"] {
+  border-color: #2ea043;
+  background: #238636;
+  color: #fff;
+}
+
+.world-qa-failure-preview {
+  display: grid;
+  gap: 7px;
+}
+
+.world-qa-failure-preview[hidden] {
+  display: none;
+}
+
+.world-qa-failure-preview img {
+  width: 100%;
+  max-height: 220px;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  object-fit: contain;
+  background: var(--primer-canvas-subtle);
 }
 
 .world-swing-panel {
@@ -3172,7 +3394,7 @@ forkmesh-world {
 .world-office-task {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: start;
   gap: 14px;
   min-width: 0;
   border: 1px solid var(--world-line);
@@ -3195,6 +3417,34 @@ forkmesh-world {
   text-decoration-thickness: 1px;
 }
 
+.world-office-task[data-kind="bid"] {
+  border-color: rgb(210 153 34 / 0.48);
+  background: rgb(210 153 34 / 0.06);
+}
+
+.world-office-task-bid-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  margin-right: 7px;
+  border: 1px solid rgb(210 153 34 / 0.7);
+  border-radius: 999px;
+  background: rgb(210 153 34 / 0.13);
+  color: #e3b341;
+  padding: 0 7px;
+  font: 700 0.58rem/1 "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-office-task-details {
+  margin: 0;
+  color: var(--world-copy);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .world-office-task-copy {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -3210,15 +3460,19 @@ forkmesh-world {
 }
 
 .world-office-task-copy strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--world-copy);
+  font-size: 0.9rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .world-office-task-copy small {
   color: var(--world-muted);
   font-family: "ForkMesh Mono", monospace;
-  font-size: 0.6rem;
+  font-size: 0.64rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .world-office-task-state {
@@ -3231,8 +3485,11 @@ forkmesh-world {
 
 .world-office-task[data-status="active"] .world-office-task-state {
   border-color: var(--world-mint);
-  background: var(--world-mint);
+  border-width: 2px;
+  border-top-color: transparent;
+  background: transparent;
   box-shadow: 0 0 12px rgb(158 247 198 / 0.72);
+  animation: world-office-task-spin 720ms linear infinite;
 }
 
 .world-office-task[data-status="done"] .world-office-task-state {
@@ -3242,8 +3499,106 @@ forkmesh-world {
 
 .world-office-task-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+}
+
+.world-office-task-progress-label {
+  width: fit-content;
+  border: 1px solid rgb(158 247 198 / 0.32);
+  border-radius: 999px;
+  background: rgb(158 247 198 / 0.08);
+  color: var(--world-mint);
+  padding: 3px 7px;
+  font: 700 0.58rem/1 "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-office-task-completion,
+.world-office-task-completion-editor {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  border-left: 2px solid rgb(119 217 255 / 0.52);
+  background: rgb(119 217 255 / 0.055);
+  padding: 9px 10px;
+}
+
+.world-office-task-completion > span,
+.world-office-task-completion-editor > span {
+  color: #77d9ff;
+  font: 700 0.58rem/1.3 "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-office-task-completion p {
+  margin: 0;
+  color: var(--world-copy);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.world-office-task-completion-editor textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid var(--world-line-strong);
+  border-radius: 6px;
+  background: #07120f;
+  color: var(--world-copy);
+  padding: 8px 9px;
+  font: 0.74rem/1.45 "ForkMesh Favorit", sans-serif;
+}
+
+.world-office-task-completion-editor textarea:focus-visible {
+  border-color: #77d9ff;
+  box-shadow: 0 0 0 3px rgb(119 217 255 / 0.14);
+  outline: none;
+}
+
+@keyframes world-office-task-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.world-office-task-qa-actions {
+  display: inline-flex;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid var(--world-line);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 0.025);
+}
+
+.world-office-task-qa-actions button {
+  min-height: 28px;
+  padding: 0 7px;
+  border-color: transparent;
+  font-size: 0.64rem;
+}
+
+.world-office-task-qa-pass[aria-pressed="true"] {
+  border-color: rgb(46 160 67 / 0.7);
+  background: rgb(46 160 67 / 0.18);
+  color: #7ee787;
+}
+
+.world-office-task-qa-fail[aria-pressed="true"] {
+  border-color: rgb(248 81 73 / 0.7);
+  background: rgb(248 81 73 / 0.18);
+  color: #ff7b72;
+}
+
+.world-office-task-qa-unsure[aria-pressed="true"] {
+  border-color: rgb(210 153 34 / 0.7);
+  background: rgb(210 153 34 / 0.18);
+  color: #e3b341;
 }
 
 .world-office-task-controls time {
@@ -5727,6 +6082,13 @@ forkmesh-world.world-office-active .world-quick-dock {
   visibility: visible;
 }
 
+.world-settings[data-active-tab="work"] {
+  width: min(
+    920px,
+    calc(100vw - var(--safe-left) - var(--safe-right) - 28px)
+  );
+}
+
 .world-settings-heading {
   display: flex;
   align-items: start;
@@ -6838,12 +7200,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     display: none;
   }
 
-  .world-top-actions > .world-top-link[href="/dashboard"] {
-    /* Keep alerts, in-world chat, sound consent, and settings reachable in one
-       row. The full operations console remains available outside the World. */
-    display: none;
-  }
-
   .world-top-actions {
     /* The wave chip is one more icon in an already tight phone row; a 6px
        gutter keeps the whole row, settings badge included, on screen. */
@@ -7397,6 +7753,29 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   outline: none;
 }
 
+.world-shot-alt {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr);
+  align-items: center;
+  gap: 10px;
+  color: var(--world-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.world-shot-alt input {
+  min-height: 38px;
+  border: 1px solid var(--world-line);
+  background: #0d1117;
+  color: var(--world-copy);
+  padding: 7px 10px;
+}
+
+.world-shot-alt input:focus-visible {
+  border-color: var(--world-mint);
+  outline: 2px solid rgb(158 247 198 / 0.18);
+}
+
 .world-shot-footer {
   display: flex;
   flex-wrap: wrap;
@@ -7458,6 +7837,11 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-shot-primary:focus-visible {
   background: var(--world-mint-deep);
   outline: none;
+}
+
+.world-shot-primary:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 .world-agent-prompt-form {
   display: grid;
@@ -7593,4 +7977,326 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .fm-world :is(button, input, select, textarea):focus-visible {
   outline: 2px solid var(--world-mint);
   outline-offset: 2px;
+}
+
+/* Compact orb HUD. Both controls stay logo-sized until hovered, keyboard
+   focused, or explicitly opened. The expanded surfaces remain ordinary
+   details elements so touch and assistive-technology users can pin them. */
+.world-diagnostics,
+.world-diagnostics:not(.world-chat-terminal) {
+  position: absolute;
+  right: auto;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  left: max(12px, env(safe-area-inset-left));
+  width: 56px;
+  max-width: calc(100vw - 24px);
+  border: 1px solid rgb(139 148 158 / 0.55);
+  border-radius: 50%;
+  background: rgb(13 17 23 / 0.72);
+  box-shadow: 0 8px 30px rgb(1 4 9 / 0.5);
+  overflow: visible;
+  transition:
+    width 170ms ease,
+    border-radius 170ms ease,
+    background-color 170ms ease;
+  backdrop-filter: blur(16px) saturate(1.15);
+}
+
+.world-diagnostics > summary,
+.world-diagnostics:not(.world-chat-terminal) > summary {
+  box-sizing: border-box;
+  width: 56px;
+  height: 56px;
+  min-height: 56px;
+  justify-content: center;
+  padding: 8px;
+  border-radius: 50%;
+  overflow: visible;
+}
+
+.world-diagnostics > summary > :not(.world-diagnostics-orb),
+.world-diagnostics:not(.world-chat-terminal)
+  > summary
+  > :not(.world-diagnostics-orb) {
+  display: none;
+}
+
+.world-diagnostics:is([open], :hover, :focus-within),
+.world-diagnostics:not(.world-chat-terminal):is([open], :hover, :focus-within) {
+  width: min(720px, calc(100vw - 24px));
+  border-radius: 12px;
+  background: rgb(13 17 23 / 0.88);
+}
+
+.world-diagnostics:is([open], :hover, :focus-within) > summary,
+.world-diagnostics:not(.world-chat-terminal):is([open], :hover, :focus-within)
+  > summary {
+  width: 100%;
+  height: auto;
+  min-height: 44px;
+  justify-content: flex-start;
+  padding: 7px 10px;
+  border-radius: 12px 12px 0 0;
+}
+
+.world-diagnostics:is([open], :hover, :focus-within)
+  > summary
+  > :not(.world-diagnostics-orb),
+.world-diagnostics:not(.world-chat-terminal):is([open], :hover, :focus-within)
+  > summary
+  > :not(.world-diagnostics-orb) {
+  display: flex;
+}
+
+.world-diagnostics:is(:hover, :focus-within) > .world-diagnostics-details {
+  display: block;
+}
+
+.world-diagnostics-orb {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(3, 1fr);
+  place-items: center;
+  border: 1px solid rgb(139 148 158 / 0.42);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 35% 28%, rgb(88 166 255 / 0.2), transparent 48%),
+    #0d1117;
+}
+
+.world-diagnostics-orb > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #3fb950;
+  box-shadow: 0 0 5px currentColor;
+}
+
+.world-diagnostics-orb > span[data-level="caution"] {
+  color: #d29922;
+  background: #d29922;
+}
+
+.world-diagnostics-orb > span[data-level="high"] {
+  color: #f85149;
+  background: #f85149;
+}
+
+.world-diagnostics-orb > span[data-level="good"] {
+  color: #3fb950;
+  background: #3fb950;
+}
+
+.world-chat-terminal,
+.world-chat-terminal.world-chat-terminal--debug-hidden {
+  right: max(12px, env(safe-area-inset-right));
+  bottom: max(12px, env(safe-area-inset-bottom));
+  left: auto;
+  width: 56px;
+  border: 1px solid rgb(139 148 158 / 0.55);
+}
+
+.world-chat-terminal > summary {
+  justify-content: center;
+}
+
+.world-diagnostics.world-chat-terminal
+  > summary
+  > .world-chat-terminal-avatar {
+  display: grid;
+}
+
+.world-diagnostics.world-chat-terminal
+  > summary
+  > .world-chat-terminal-unread:not([hidden]) {
+  display: block;
+}
+
+.world-chat-terminal > summary > :not(.world-chat-terminal-avatar):not(.world-chat-terminal-unread) {
+  display: none;
+}
+
+.world-chat-terminal:is([open], :hover, :focus-within) {
+  width: min(460px, calc(100vw - 24px));
+}
+
+.world-chat-terminal:is([open], :hover, :focus-within) > summary {
+  justify-content: flex-start;
+}
+
+.world-chat-terminal:is([open], :hover, :focus-within)
+  > summary
+  > :not(.world-chat-terminal-avatar):not(.world-chat-terminal-unread) {
+  display: flex;
+}
+
+.world-chat-terminal:is(:hover, :focus-within) > .world-chat-terminal-body {
+  display: block;
+}
+
+.world-chat-terminal-avatar {
+  position: relative;
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  place-items: center;
+  overflow: hidden;
+  border: 2px solid #58a6ff;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #1f6feb, #163b67);
+  color: #fff;
+  font: 800 0.8rem/1 "ForkMesh Mono", monospace;
+  box-shadow: 0 0 0 2px rgb(13 17 23 / 0.8);
+}
+
+.world-chat-terminal-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.world-chat-terminal-avatar img[hidden] {
+  display: none;
+}
+
+.world-chat-terminal-unread {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  z-index: 2;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 2px solid #0d1117;
+  background: #f85149;
+  color: #fff;
+  line-height: 14px;
+}
+
+.world-chat-terminal:is([open], :hover, :focus-within)
+  .world-chat-terminal-unread {
+  position: static;
+  border-width: 0;
+}
+
+.world-chat-terminal-body {
+  height: min(70vh, 620px);
+  overflow: hidden;
+  border-radius: 0 0 12px 12px;
+  background: rgb(13 17 23 / 0.6);
+}
+
+.world-chat-terminal-frame {
+  background: transparent;
+}
+
+.world-activity-stream {
+  position: absolute;
+  z-index: 44;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(max(12px, env(safe-area-inset-bottom)) + 66px);
+  display: flex;
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(52vh, 440px);
+  flex-direction: column-reverse;
+  gap: 8px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.world-activity-stream article {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  border: 1px solid rgb(139 148 158 / 0.45);
+  border-radius: 10px;
+  background: rgb(13 17 23 / 0.72);
+  padding: 8px 10px;
+  color: #f0f6fc;
+  box-shadow: 0 8px 24px rgb(1 4 9 / 0.28);
+  font: 0.7rem/1.4 "ForkMesh Mono", monospace;
+  opacity: 0;
+  transform: translateY(8px);
+  animation:
+    world-activity-in 180ms ease forwards,
+    world-activity-out 420ms ease 9.55s forwards;
+  backdrop-filter: blur(14px);
+}
+
+.world-activity-stream article[data-kind="chat"] {
+  border-color: rgb(88 166 255 / 0.55);
+}
+
+.world-activity-stream article[data-kind="error"] {
+  border-color: rgb(248 81 73 / 0.7);
+}
+
+.world-activity-stream article[data-kind="success"] {
+  border-color: rgb(63 185 80 / 0.65);
+}
+
+.world-activity-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: #21262d;
+  color: #fff;
+  font-weight: 800;
+}
+
+.world-activity-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.world-activity-stream p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+@keyframes world-activity-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes world-activity-out {
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+@media (max-width: 680px) {
+  .world-diagnostics,
+  .world-diagnostics:not(.world-chat-terminal),
+  .world-chat-terminal,
+  .world-chat-terminal.world-chat-terminal--debug-hidden {
+    bottom: calc(max(10px, env(safe-area-inset-bottom)) + 58px);
+  }
+
+  .world-chat-terminal-body {
+    height: min(68dvh, 560px);
+  }
+
+  .world-activity-stream {
+    bottom: calc(max(10px, env(safe-area-inset-bottom)) + 124px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-diagnostics,
+  .world-activity-stream article {
+    transition: none;
+    animation-duration: 1ms;
+  }
 }

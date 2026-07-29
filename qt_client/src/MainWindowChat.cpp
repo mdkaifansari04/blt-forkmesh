@@ -456,8 +456,11 @@ QWidget *MainWindow::buildChatPage()
     m_appNavigationRailLayout = new QVBoxLayout(rail);
     m_appNavigationRailLayout->setContentsMargins(0, 4, 0, 4);
     m_appNavigationRailLayout->setSpacing(1);
+    // Agents is deliberately absent here: it lives on the window-chrome line
+    // beside its live fleet matrix (see buildBreadcrumb). Listing it would
+    // re-parent the button into the rail and silently undo that placement.
     for (QPushButton *button :
-         {m_reposNavButton, m_agentsNavButton, m_chatButton,
+         {m_reposNavButton, m_chatButton,
           m_controlNodeNavButton, m_logNavButton, m_hostsNavButton, m_nodesNavButton,
           m_relaysNavButton, m_networkNavButton}) {
         if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
@@ -543,7 +546,65 @@ QWidget *MainWindow::buildChatPage()
     root->setSpacing(0);
     root->addWidget(header);
     root->addWidget(lower, 1);
+    // Thin one-line strip under everything else, spanning the rail as well as
+    // the content shell so it reads as the window's own bottom edge (adhoc #2).
+    root->addWidget(buildStatusBar());
     return page;
+}
+
+// A single text line tall: the branch switcher and the repo's git identity (both
+// of which used to sit inside the repo Code overview) plus the on-disk location
+// of the running executable. The widgets are created here, not in the repo pages
+// they came from, because those pages build lazily on first navigation while the
+// strip has to be populated from the first frame; setRepoBranch /
+// loadBranchesAndTags / updateFooterGitIdentity keep filling them in as before.
+QWidget *MainWindow::buildStatusBar()
+{
+    auto *bar = new QWidget;
+    bar->setObjectName("appStatusBar");
+
+    m_branchButton = new QPushButton("main");
+    m_branchButton->setObjectName("ghostButton");
+    m_branchButton->setCursor(Qt::PointingHandCursor);
+    m_branchButton->setToolTip("Switch branch");
+    setOcticon(m_branchButton, "git-branch", 12);
+
+    m_footerGitIdentity = new QLabel;
+    m_footerGitIdentity->setObjectName("footerGitIdentity");
+    m_footerGitIdentity->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_footerGitIdentity->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_footerGitIdentity->setToolTip(
+        "Git author identity configured for the repository you're viewing");
+
+    // Elided up front rather than on every resize: the path never changes while
+    // the app runs, and a full path left unelided would drag the window's
+    // minimum width out with it. The tooltip keeps the untruncated value.
+    const QString appPath =
+        QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
+    m_statusAppPath = new QLabel;
+    m_statusAppPath->setObjectName("statusAppPath");
+    m_statusAppPath->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_statusAppPath->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_statusAppPath->setText(m_statusAppPath->fontMetrics().elidedText(
+        appPath, Qt::ElideMiddle, 420));
+    m_statusAppPath->setToolTip(
+        QStringLiteral("Running app: %1\nWorking directory: %2")
+            .arg(appPath, QDir::toNativeSeparators(QDir::currentPath())));
+
+    auto *row = new QHBoxLayout(bar);
+    row->setContentsMargins(10, 0, 10, 0);
+    row->setSpacing(10);
+    row->addWidget(m_branchButton);
+    row->addWidget(m_footerGitIdentity);
+    row->addStretch(1);
+    row->addWidget(m_statusAppPath);
+
+    // One line, nothing more: the tallest child (the branch button) is capped to
+    // the strip so the menu indicator can't push the bar taller.
+    const int rowHeight = qMax(20, bar->fontMetrics().height() + 6);
+    bar->setFixedHeight(rowHeight);
+    m_branchButton->setMaximumHeight(rowHeight - 2);
+    return bar;
 }
 
 // kFooterLogSeedLines (MainWindowInternal.h) bounds both the startup seed and
@@ -4326,10 +4387,12 @@ QWidget *MainWindow::buildBreadcrumb()
 
     // Agents: a shortcut into the current repo's Agents tab (adhoc #194), not a
     // section of its own — it just jumps via openAgentsOverview() the same way
-    // the footer "Agents:" label does. Sits between Repo and Chat in the nav
-    // row. Checkable to show when the Agents tab is active (adhoc #201).
-    m_agentsNavButton = new ActivityRailButton(QStringLiteral("terminal"),
-                                               QStringLiteral("Agents"));
+    // the footer "Agents:" label does. Checkable to show when the Agents tab is
+    // active (adhoc #201). Unlike its neighbours it is NOT an ActivityRailButton
+    // and does not live in the app navigation rail: it heads the window-chrome
+    // line's search cluster, immediately left of Back/Forward, so the live agent
+    // matrix can ride beside it along the horizontal top bar.
+    m_agentsNavButton = new QPushButton(QStringLiteral("Agents"));
     m_agentsNavButton->setObjectName("topNavButton");
     m_agentsNavButton->setCheckable(true);
     m_agentsNavButton->setCursor(Qt::PointingHandCursor);
@@ -4337,6 +4400,17 @@ QWidget *MainWindow::buildBreadcrumb()
     setOcticon(m_agentsNavButton, "terminal", 16);
     connect(m_agentsNavButton, &QPushButton::clicked, this,
             &MainWindow::openAgentsOverview);
+
+    // One tiny square per agent session, right of the button: the whole fleet's
+    // status as a matrix, with running sessions sweeping in time with their live
+    // output. Populated (and kept current) by refreshAgentDotMatrix().
+    m_agentDotMatrix = new AgentDotMatrix;
+    m_agentDotMatrix->onDotClicked = [this](int sessionId) {
+        if (sessionId > 0)
+            switchToAgentsTab(sessionId);
+        else
+            openAgentsOverview();
+    };
 
     // Chat: its own top-level section (m_sectionStack index 2).
     m_chatButton = new ActivityRailButton(QStringLiteral("comment"),
@@ -4569,6 +4643,11 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *searchClusterRow = new QHBoxLayout(searchCluster);
     searchClusterRow->setContentsMargins(0, 0, 0, 0);
     searchClusterRow->setSpacing(8);
+    // Agents + its live status matrix lead the cluster, so the fleet is visible
+    // from every section without leaving room for the search box to shift.
+    searchClusterRow->addWidget(m_agentsNavButton);
+    searchClusterRow->addWidget(m_agentDotMatrix);
+    searchClusterRow->addSpacing(4);
     searchClusterRow->addWidget(createNavHistoryButtons());
     searchClusterRow->addWidget(createGlobalSearchBox());
     chromeRow->addWidget(searchCluster, 0, Qt::AlignCenter);
@@ -7620,23 +7699,34 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         const bool isPrivate = repo.value("private").toBool(false) ||
                                repo.value("isPrivate").toBool(false);
         const bool liveHost = repo.value("liveHost").toBool(false);
-        const QString description = repo.value("description").toString().trimmed();
         const QString commit = repo.value("commit").toString().trimmed();
         const QString branch = repo.value("branch").toString().trimmed();
+        // The catalog publishes the HEAD commit date as epoch milliseconds, as
+        // a string on nodes that advertise it (older nodes omit the key).
+        const QJsonValue commitAtValue = repo.value(QStringLiteral("commitAt"));
+        const qint64 commitAtMs =
+            commitAtValue.isDouble()
+                ? qint64(commitAtValue.toDouble())
+                : commitAtValue.toString().trimmed().toLongLong();
 
+        // No "about" blurb on the row: what matters here is where the
+        // repository stands (commit, branch, when it last moved), and the
+        // description only ever pushed that off the end of the line. It still
+        // shows on the repository's own page.
         QStringList details;
         if (!commit.isEmpty()) {
             QString commitLine = QStringLiteral("commit %1").arg(commit.left(12));
             if (!branch.isEmpty())
                 commitLine += QStringLiteral(" on %1").arg(branch);
+            if (commitAtMs > 0)
+                commitLine += QStringLiteral(" \xC2\xB7 %1")
+                                  .arg(formatIssueRelativeTime(commitAtMs));
             details << commitLine;
         }
         if (isPrivate)
             details << QStringLiteral("private");
         if (liveHost)
             details << QStringLiteral("live");
-        if (!description.isEmpty())
-            details << description.left(90);
 
         auto *repoItem = new QTableWidgetItem(
             details.isEmpty() ? key : key + "\n" + details.join(QStringLiteral(" | ")));
@@ -7651,6 +7741,9 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
             repoToolTip << QStringLiteral("Commit: %1").arg(commit);
         if (!branch.isEmpty())
             repoToolTip << QStringLiteral("Branch: %1").arg(branch);
+        if (commitAtMs > 0)
+            repoToolTip << QStringLiteral("Last commit: %1")
+                               .arg(formatRepoDate(commitAtMs));
         if (!cloneUrl.isEmpty())
             repoToolTip << cloneUrl;
         repoItem->setToolTip(repoToolTip.join('\n'));
@@ -7697,6 +7790,8 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         actionRow->setContentsMargins(4, 2, 4, 2);
         actionRow->setSpacing(6);
 
+        // Three groups, left to right: switch to it, get a copy of it
+        // (fork/mirror), then — set apart by a gap — remove this machine's copy.
         auto *openButton = new QPushButton(QStringLiteral("Switch"));
         openButton->setObjectName("primaryButton");
         openButton->setCursor(Qt::PointingHandCursor);
@@ -7752,6 +7847,46 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
                     });
         }
         actionRow->addWidget(mirrorButton);
+
+        // Delete this machine's copy without first opening the repository and
+        // digging into its Settings tab. The row already resolved which record
+        // is local across every owner it groups — mirror first, then fork; with
+        // neither, there is nothing here to delete.
+        const int deleteIndex = mirroredIndex >= 0 ? mirroredIndex : localFork;
+        auto *deleteButton = new QPushButton(QStringLiteral("Delete"));
+        deleteButton->setObjectName("dangerButton");
+        deleteButton->setCursor(Qt::PointingHandCursor);
+        setOcticon(deleteButton, "trash", 13);
+        if (deleteIndex < 0) {
+            deleteButton->setEnabled(false);
+            deleteButton->setToolTip(
+                QStringLiteral("This repository is not on this machine"));
+        } else {
+            const QString targetOwner = m_repositories.at(deleteIndex).owner;
+            const QString targetName = m_repositories.at(deleteIndex).name;
+            deleteButton->setToolTip(
+                QStringLiteral("Delete %1/%2 from this machine")
+                    .arg(targetOwner, targetName));
+            connect(deleteButton, &QPushButton::clicked, this,
+                    [this, targetOwner, targetName] {
+                        // Re-resolve by owner/name rather than capturing the
+                        // index: it is only valid for the m_repositories
+                        // snapshot this row was built from, which a
+                        // fork/mirror/delete elsewhere may since have shifted.
+                        const int index =
+                            findNetworkRepoIndex(targetOwner, targetName, true);
+                        if (index >= 0)
+                            deleteRepositoryAt(index, false);
+                        // Next tick: re-listing the table tears down this very
+                        // button's row, so don't do it from inside its own
+                        // click handler. Runs even when the record had already
+                        // gone, so the row stops offering a stale action.
+                        QTimer::singleShot(0, this,
+                                           [this] { refreshNetworkReposPage(); });
+                    });
+        }
+        actionRow->addSpacing(10);
+        actionRow->addWidget(deleteButton);
         actionRow->addStretch();
         m_networkReposTable->setCellWidget(row, 3, actions);
 
@@ -11992,17 +12127,23 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setObjectName(QStringLiteral("hostDiskUsageDialog"));
     dialog->setWindowTitle(QStringLiteral("Size map: %1").arg(node));
-    dialog->setMinimumSize(820, 560);
+    dialog->setMinimumSize(1060, 620);
     auto *layout = new QVBoxLayout(dialog);
 
     auto *hint = new QLabel(QString::fromUtf8(
         "ForkMesh measures one directory level at a time with <b>du</b> over "
         "the same authenticated SSH channel the installer uses \xE2\x80\x94 "
-        "nothing is written on the host. Double-click a folder to drill into "
-        "the space it uses."));
+        "nothing is written on the host. Enter any absolute folder, "
+        "double-click a folder to drill in, or use a mount map on the right."));
     hint->setObjectName("mutedLabel");
     hint->setWordWrap(true);
     layout->addWidget(hint);
+
+    auto *body = new QHBoxLayout;
+    body->setSpacing(14);
+    auto *mainPane = new QWidget(dialog);
+    auto *mainLayout = new QVBoxLayout(mainPane);
+    mainLayout->setContentsMargins(0, 0, 0, 0);
 
     auto *nav = new QHBoxLayout;
     auto *upButton = new QPushButton(QStringLiteral("Up"));
@@ -12018,6 +12159,8 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
     auto *openButton = new QPushButton(QStringLiteral("Open"));
     openButton->setObjectName(QStringLiteral("hostDiskOpenButton"));
     openButton->setCursor(Qt::PointingHandCursor);
+    openButton->setToolTip(
+        QStringLiteral("Open the absolute folder entered to the left."));
     setOcticon(openButton, "file-directory", 12);
     nav->addWidget(openButton);
     auto *refreshButton = new QPushButton(QStringLiteral("Refresh"));
@@ -12025,14 +12168,14 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
     refreshButton->setCursor(Qt::PointingHandCursor);
     setOcticon(refreshButton, "sync", 12);
     nav->addWidget(refreshButton);
-    layout->addLayout(nav);
+    mainLayout->addLayout(nav);
 
     auto *totalLabel = new QLabel;
     totalLabel->setObjectName(QStringLiteral("hostDiskTotalLabel"));
     QFont totalFont = totalLabel->font();
     totalFont.setBold(true);
     totalLabel->setFont(totalFont);
-    layout->addWidget(totalLabel);
+    mainLayout->addWidget(totalLabel);
 
     auto *table = new QTableWidget(0, 4);
     table->setObjectName("issueTable");
@@ -12051,13 +12194,43 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
         2, QHeaderView::ResizeToContents);
     table->horizontalHeader()->setSectionResizeMode(
         3, QHeaderView::ResizeToContents);
-    layout->addWidget(table, 1);
+    mainLayout->addWidget(table, 1);
 
     auto *status = new QLabel(QString::fromUtf8(
         "Measuring the host root \xE2\x80\xA6"));
     status->setObjectName("mutedLabel");
     status->setWordWrap(true);
-    layout->addWidget(status);
+    mainLayout->addWidget(status);
+    body->addWidget(mainPane, 1);
+
+    auto *mountPane = new QWidget(dialog);
+    mountPane->setObjectName(QStringLiteral("hostDiskMountPane"));
+    mountPane->setMinimumWidth(235);
+    mountPane->setMaximumWidth(285);
+    auto *mountPaneLayout = new QVBoxLayout(mountPane);
+    mountPaneLayout->setContentsMargins(10, 10, 10, 10);
+    auto *mountHeading = new QLabel(QStringLiteral("Mount points"));
+    QFont mountHeadingFont = mountHeading->font();
+    mountHeadingFont.setBold(true);
+    mountHeading->setFont(mountHeadingFont);
+    mountPaneLayout->addWidget(mountHeading);
+    auto *mountStatus = new QLabel(QStringLiteral("Loading mount maps..."));
+    mountStatus->setObjectName(QStringLiteral("mutedLabel"));
+    mountStatus->setWordWrap(true);
+    mountPaneLayout->addWidget(mountStatus);
+    auto *mountScroll = new QScrollArea(mountPane);
+    mountScroll->setObjectName(QStringLiteral("hostDiskMountScroll"));
+    mountScroll->setWidgetResizable(true);
+    mountScroll->setFrameShape(QFrame::NoFrame);
+    auto *mountCards = new QWidget(mountScroll);
+    auto *mountCardsLayout = new QVBoxLayout(mountCards);
+    mountCardsLayout->setContentsMargins(0, 0, 0, 0);
+    mountCardsLayout->setSpacing(8);
+    mountCardsLayout->addStretch();
+    mountScroll->setWidget(mountCards);
+    mountPaneLayout->addWidget(mountScroll, 1);
+    body->addWidget(mountPane);
+    layout->addLayout(body, 1);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
     if (auto *closeBtn = buttons->button(QDialogButtonBox::Close))
@@ -12068,7 +12241,8 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
     auto currentPath = std::make_shared<QString>(QStringLiteral("/"));
     auto loadPath = std::make_shared<std::function<void(const QString &)>>();
     *loadPath = [this, dialog, table, pathEdit, status, totalLabel, upButton,
-                 openButton, refreshButton, currentPath, ip, user, pass,
+                 openButton, refreshButton, currentPath, mountCardsLayout,
+                 mountStatus, loadPath, ip, user, pass,
                  node](const QString &requested) {
         if (m_hostDiskProcess &&
             m_hostDiskProcess->state() != QProcess::NotRunning) {
@@ -12079,13 +12253,16 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
         const QString path =
             forkmesh::control::normalizeRemoteDiskPath(requested);
         QString commandError;
-        const QString remoteCommand =
+        const QString diskCommand =
             forkmesh::control::buildHostDiskUsageCommand(path, &commandError);
-        if (remoteCommand.isEmpty()) {
+        if (diskCommand.isEmpty()) {
             status->setText(commandError);
             pathEdit->setText(*currentPath);
             return;
         }
+        const QString remoteCommand =
+            forkmesh::control::buildHostMountUsageCommand() +
+            QLatin1Char('\n') + diskCommand;
         QString sshError;
         const forkmesh::control::HostSshCommand ssh =
             forkmesh::control::buildHostSshCommand(
@@ -12119,11 +12296,95 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
                 [proc, output] { output->append(proc->readAllStandardOutput()); });
         connect(proc, &QProcess::finished, dialog,
                 [this, proc, output, table, status, totalLabel, navWidgets,
-                 path, ip, user](int code, QProcess::ExitStatus exitStatus) {
+                 path, ip, user, mountCardsLayout, mountStatus, loadPath](
+                    int code, QProcess::ExitStatus exitStatus) {
                     if (m_hostDiskProcess == proc)
                         m_hostDiskProcess = nullptr;
                     for (QWidget *w : navWidgets)
                         w->setEnabled(true);
+                    while (QLayoutItem *item = mountCardsLayout->takeAt(0)) {
+                        if (QWidget *widget = item->widget())
+                            widget->deleteLater();
+                        delete item;
+                    }
+                    const forkmesh::control::HostMountUsageList mounts =
+                        forkmesh::control::parseHostMountUsage(*output);
+                    if (!mounts.error.isEmpty()) {
+                        mountStatus->setText(mounts.error);
+                    } else if (!mounts.complete || mounts.mounts.isEmpty()) {
+                        mountStatus->setText(QStringLiteral(
+                            "Mount details were not reported by this host."));
+                    } else {
+                        mountStatus->setText(QString::fromUtf8(
+                            "%1 filesystem%2 \xE2\x80\x94 click a mini map to "
+                            "open any mount.")
+                                                 .arg(mounts.mounts.size())
+                                                 .arg(mounts.mounts.size() == 1
+                                                          ? QString()
+                                                          : QStringLiteral("s")));
+                        QString activeMountPath;
+                        for (const forkmesh::control::HostMountUsage &mount :
+                             mounts.mounts) {
+                            const bool containsPath =
+                                path == mount.path ||
+                                (mount.path == QStringLiteral("/")
+                                     ? path.startsWith(QLatin1Char('/'))
+                                     : path.startsWith(mount.path +
+                                                       QLatin1Char('/')));
+                            if (containsPath &&
+                                mount.path.size() > activeMountPath.size()) {
+                                activeMountPath = mount.path;
+                            }
+                        }
+                        for (const forkmesh::control::HostMountUsage &mount :
+                             mounts.mounts) {
+                            const double usedShare =
+                                mount.totalBytes > 0
+                                    ? qBound(
+                                          0.0,
+                                          static_cast<double>(mount.usedBytes) /
+                                              static_cast<double>(
+                                                  mount.totalBytes),
+                                          1.0)
+                                    : 0.0;
+                            const int filled =
+                                qBound(0,
+                                       static_cast<int>(
+                                           std::lround(usedShare * 12.0)),
+                                       12);
+                            const QString miniMap =
+                                QString(filled, QChar(0x2588)) +
+                                QString(12 - filled, QChar(0x2591));
+                            auto *mountButton = new QPushButton(
+                                QStringLiteral("%1\n%2  %3%\n%4 of %5")
+                                    .arg(mount.path, miniMap)
+                                    .arg(usedShare * 100.0, 0, 'f', 0)
+                                    .arg(forkmesh::control::formatDiskSize(
+                                             mount.usedBytes),
+                                         forkmesh::control::formatDiskSize(
+                                             mount.totalBytes)));
+                            mountButton->setObjectName(
+                                QStringLiteral("hostDiskMountButton"));
+                            mountButton->setProperty("mountPath", mount.path);
+                            mountButton->setCursor(Qt::PointingHandCursor);
+                            mountButton->setCheckable(true);
+                            mountButton->setChecked(
+                                mount.path == activeMountPath);
+                            mountButton->setToolTip(
+                                QString::fromUtf8(
+                                    "Open %1 \xE2\x80\x94 %2 available")
+                                    .arg(mount.path,
+                                         forkmesh::control::formatDiskSize(
+                                             mount.availableBytes)));
+                            connect(mountButton, &QPushButton::clicked,
+                                    mountButton,
+                                    [loadPath, mount] {
+                                        (*loadPath)(mount.path);
+                                    });
+                            mountCardsLayout->addWidget(mountButton);
+                        }
+                    }
+                    mountCardsLayout->addStretch();
                     const forkmesh::control::HostDiskUsage usage =
                         forkmesh::control::parseHostDiskUsage(*output, path);
                     proc->deleteLater();
