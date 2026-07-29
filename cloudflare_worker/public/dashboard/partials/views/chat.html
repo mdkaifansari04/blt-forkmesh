@@ -122,10 +122,11 @@
                   padding-right: max(0.75rem, env(safe-area-inset-right, 0px));
                   padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
                   padding-left: max(0.75rem, env(safe-area-inset-left, 0px));
-                  background: #0d1117 !important;
+                  background: rgb(13 17 23 / 0.72) !important;
                   color: #f0f6fc !important;
                   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
                     sans-serif !important;
+                  backdrop-filter: blur(18px) saturate(1.15);
                 }
 
                 html[data-world-embed="1"] [data-dashboard-chat-composer] > div,
@@ -133,14 +134,14 @@
                 html[data-world-embed="1"] [data-dashboard-chat-composer] select,
                 html[data-world-embed="1"] [data-dashboard-chat-composer] textarea {
                   border-color: #30363d !important;
-                  background: #161b22 !important;
+                  background: rgb(22 27 34 / 0.78) !important;
                   color: #f0f6fc !important;
                   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
                     sans-serif !important;
                 }
 
                 html[data-world-embed="1"] [data-dashboard-chat-composer] textarea {
-                  background: #0d1117 !important;
+                  background: rgb(13 17 23 / 0.46) !important;
                 }
 
                 html[data-world-embed="1"] [data-dashboard-chat-composer] textarea::placeholder {
@@ -170,17 +171,36 @@
 
                 html[data-world-embed="1"] [data-dashboard-chat-compose-row] {
                   display: grid;
-                  grid-template-columns: minmax(0, 1fr) auto;
+                  grid-template-columns: minmax(0, 1fr) auto auto;
                   align-items: end;
                 }
 
-                html[data-world-embed="1"] #fullChatSend {
+                html[data-world-embed="1"] #fullChatSend,
+                html[data-world-embed="1"] #fullChatTaskSend {
                   box-sizing: border-box;
-                  width: auto !important;
-                  min-width: 4.25rem;
-                  max-width: 8rem;
+                  width: 2.75rem !important;
+                  min-width: 2.75rem;
+                  max-width: 2.75rem;
+                  height: 2.75rem;
+                  justify-content: center;
+                  border-radius: 999px;
                   color: #ffffff !important;
                   background: #238636 !important;
+                  white-space: nowrap;
+                }
+
+                html[data-world-embed="1"] #fullChatTaskSend {
+                  border: 1px solid #58a6ff !important;
+                  color: #dbeafe !important;
+                  background: rgb(31 111 235 / 0.5) !important;
+                }
+
+                html[data-world-embed="1"] :is(#fullChatSend, #fullChatTaskSend) span {
+                  position: absolute;
+                  width: 1px;
+                  height: 1px;
+                  overflow: hidden;
+                  clip: rect(0 0 0 0);
                   white-space: nowrap;
                 }
 
@@ -190,9 +210,10 @@
                     font-size: 16px;
                   }
 
-                  html[data-world-embed="1"] #fullChatSend {
-                    width: auto !important;
-                    min-width: 4.25rem;
+                  html[data-world-embed="1"] #fullChatSend,
+                  html[data-world-embed="1"] #fullChatTaskSend {
+                    width: 2.75rem !important;
+                    min-width: 2.75rem;
                     height: 2.75rem;
                   }
                 }
@@ -350,7 +371,11 @@
                   ></textarea>
                   <button id="fullChatSend" type="button" class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50">
                     <i data-lucide="send" class="h-3.5 w-3.5"></i>
-                    <span data-dashboard-chat-send-label>Send</span>
+                    <span data-dashboard-chat-send-label>Send to chat</span>
+                  </button>
+                  <button id="fullChatTaskSend" type="button" title="Create and route a task" aria-label="Create and route a task" class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-primary bg-primary/20 px-3 text-xs font-semibold text-primary shadow-sm transition-colors hover:bg-primary/30 disabled:cursor-not-allowed disabled:opacity-50">
+                    <i data-lucide="clipboard-plus" class="h-3.5 w-3.5"></i>
+                    <span data-dashboard-chat-task-label>Task</span>
                   </button>
                 </div>
                 <div class="flex items-center justify-between gap-2 border-t border-border bg-secondary/20 px-3 py-1.5 text-[10px] text-muted-foreground">

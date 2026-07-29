@@ -96,6 +96,7 @@
   const fullInput = document.querySelector("#fullChatInput");
   const sideInput = document.querySelector("#sideChatInput");
   const fullSend = document.querySelector("#fullChatSend");
+  const fullTaskSend = document.querySelector("#fullChatTaskSend");
   const sideSend = document.querySelector("#sideChatSend");
   const fullChannel = document.querySelector("#fullChatChannel");
   const fullRepository = document.querySelector("#fullChatRepo");
@@ -1371,6 +1372,7 @@
       fullLog.append(row);
       fullLog.scrollTop = fullLog.scrollHeight;
     }
+    emitWorldActivity(text, "status");
   }
 
   function removeMessage(id) {
@@ -1416,6 +1418,23 @@
   const WORLD_EMBED_BUBBLES =
     requestedParams.get("worldEmbed") === "1" && window.parent !== window;
   const worldAttachmentPreviewCache = new WeakMap();
+
+  function emitWorldActivity(text, kind = "status") {
+    if (!WORLD_EMBED_BUBBLES) return;
+    const message = String(text || "").replace(/\s+/g, " ").trim().slice(0, 240);
+    if (!message) return;
+    try {
+      window.parent.postMessage(
+        {
+          type: "forkmesh:world-activity",
+          kind: String(kind || "status").slice(0, 24),
+          text: message,
+          ts: Date.now(),
+        },
+        location.origin,
+      );
+    } catch (_) {}
+  }
 
   function worldAttachmentPreview(attachment) {
     if (
@@ -2220,6 +2239,7 @@
     for (const control of [
       fullInput,
       fullSend,
+      fullTaskSend,
       fullChannel,
       fullRepository,
       fullAction,
@@ -2262,7 +2282,7 @@
         placeholder: "Describe the implementation task for Claude…",
       },
     }[action] || {};
-    if (fullSendLabel) fullSendLabel.textContent = presentation.label || "Send";
+    if (fullSendLabel) fullSendLabel.textContent = "Send to chat";
     if (fullComposerHint) fullComposerHint.textContent = presentation.hint || "";
     fullInput.placeholder = presentation.placeholder || "Write a message…";
     if (taskRouting) taskRouting.hidden = action !== "task";
@@ -2619,10 +2639,16 @@
     void sendDashboardDraft(attachmentControl);
   }
 
-  function wireInput(inputEl, sendEl) {
+  function wireInput(inputEl, sendEl, { forceChat = false } = {}) {
     if (!inputEl || !sendEl) return;
     const attachmentControl = mountAttachmentControl(inputEl);
-    sendEl.addEventListener("click", () => sendFrom(inputEl, attachmentControl));
+    sendEl.addEventListener("click", () => {
+      if (forceChat && fullAction) {
+        fullAction.value = "chat";
+        syncFullComposerAction();
+      }
+      sendFrom(inputEl, attachmentControl);
+    });
     inputEl.addEventListener("paste", (event) => {
       const items = Array.from(event.clipboardData?.items || []);
       const item = items.find((candidate) =>
@@ -2678,6 +2704,22 @@
       }
     });
     inputEl.addEventListener("blur", closeMentionSuggest);
+  }
+
+  function wireTaskSend() {
+    if (!fullTaskSend || !fullAction || !fullInput) return;
+    fullTaskSend.addEventListener("click", () => {
+      if (fullAction.value !== "task") {
+        fullAction.value = "task";
+        syncFullComposerAction();
+        setComposerStatus(
+          "Choose a team, then assign this task to a person or an agent.",
+        );
+        taskDepartment?.focus();
+        return;
+      }
+      void runFullComposerAction(fullInput);
+    });
   }
 
   function mountPrivateChannelsLink() {
@@ -2738,7 +2780,8 @@
     syncFullComposerAction();
     void loadComposerRepositories();
     void loadTaskRouting();
-    wireInput(fullInput, fullSend);
+    wireInput(fullInput, fullSend, { forceChat: true });
+    wireTaskSend();
     wireInput(sideInput, sideSend);
     // Connect right away so the room's message history (replayed by the relay
     // on WebSocket open) is visible without the visitor first focusing an input.

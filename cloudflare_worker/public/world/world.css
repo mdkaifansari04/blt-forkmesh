@@ -7840,3 +7840,325 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   outline: 2px solid var(--world-mint);
   outline-offset: 2px;
 }
+
+/* Compact orb HUD. Both controls stay logo-sized until hovered, keyboard
+   focused, or explicitly opened. The expanded surfaces remain ordinary
+   details elements so touch and assistive-technology users can pin them. */
+.world-diagnostics,
+.world-diagnostics:not(.world-chat-terminal) {
+  position: absolute;
+  right: auto;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  left: max(12px, env(safe-area-inset-left));
+  width: 56px;
+  max-width: calc(100vw - 24px);
+  border: 1px solid rgb(139 148 158 / 0.55);
+  border-radius: 50%;
+  background: rgb(13 17 23 / 0.72);
+  box-shadow: 0 8px 30px rgb(1 4 9 / 0.5);
+  overflow: visible;
+  transition:
+    width 170ms ease,
+    border-radius 170ms ease,
+    background-color 170ms ease;
+  backdrop-filter: blur(16px) saturate(1.15);
+}
+
+.world-diagnostics > summary,
+.world-diagnostics:not(.world-chat-terminal) > summary {
+  box-sizing: border-box;
+  width: 56px;
+  height: 56px;
+  min-height: 56px;
+  justify-content: center;
+  padding: 8px;
+  border-radius: 50%;
+  overflow: visible;
+}
+
+.world-diagnostics > summary > :not(.world-diagnostics-orb),
+.world-diagnostics:not(.world-chat-terminal)
+  > summary
+  > :not(.world-diagnostics-orb) {
+  display: none;
+}
+
+.world-diagnostics:is([open], :hover, :focus-within),
+.world-diagnostics:not(.world-chat-terminal):is([open], :hover, :focus-within) {
+  width: min(720px, calc(100vw - 24px));
+  border-radius: 12px;
+  background: rgb(13 17 23 / 0.88);
+}
+
+.world-diagnostics:is([open], :hover, :focus-within) > summary,
+.world-diagnostics:not(.world-chat-terminal):is([open], :hover, :focus-within)
+  > summary {
+  width: 100%;
+  height: auto;
+  min-height: 44px;
+  justify-content: flex-start;
+  padding: 7px 10px;
+  border-radius: 12px 12px 0 0;
+}
+
+.world-diagnostics:is([open], :hover, :focus-within)
+  > summary
+  > :not(.world-diagnostics-orb),
+.world-diagnostics:not(.world-chat-terminal):is([open], :hover, :focus-within)
+  > summary
+  > :not(.world-diagnostics-orb) {
+  display: flex;
+}
+
+.world-diagnostics:is(:hover, :focus-within) > .world-diagnostics-details {
+  display: block;
+}
+
+.world-diagnostics-orb {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(3, 1fr);
+  place-items: center;
+  border: 1px solid rgb(139 148 158 / 0.42);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 35% 28%, rgb(88 166 255 / 0.2), transparent 48%),
+    #0d1117;
+}
+
+.world-diagnostics-orb > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #3fb950;
+  box-shadow: 0 0 5px currentColor;
+}
+
+.world-diagnostics-orb > span[data-level="caution"] {
+  color: #d29922;
+  background: #d29922;
+}
+
+.world-diagnostics-orb > span[data-level="high"] {
+  color: #f85149;
+  background: #f85149;
+}
+
+.world-diagnostics-orb > span[data-level="good"] {
+  color: #3fb950;
+  background: #3fb950;
+}
+
+.world-chat-terminal,
+.world-chat-terminal.world-chat-terminal--debug-hidden {
+  right: max(12px, env(safe-area-inset-right));
+  bottom: max(12px, env(safe-area-inset-bottom));
+  left: auto;
+  width: 56px;
+  border: 1px solid rgb(139 148 158 / 0.55);
+}
+
+.world-chat-terminal > summary {
+  justify-content: center;
+}
+
+.world-diagnostics.world-chat-terminal
+  > summary
+  > .world-chat-terminal-avatar {
+  display: grid;
+}
+
+.world-diagnostics.world-chat-terminal
+  > summary
+  > .world-chat-terminal-unread:not([hidden]) {
+  display: block;
+}
+
+.world-chat-terminal > summary > :not(.world-chat-terminal-avatar):not(.world-chat-terminal-unread) {
+  display: none;
+}
+
+.world-chat-terminal:is([open], :hover, :focus-within) {
+  width: min(460px, calc(100vw - 24px));
+}
+
+.world-chat-terminal:is([open], :hover, :focus-within) > summary {
+  justify-content: flex-start;
+}
+
+.world-chat-terminal:is([open], :hover, :focus-within)
+  > summary
+  > :not(.world-chat-terminal-avatar):not(.world-chat-terminal-unread) {
+  display: flex;
+}
+
+.world-chat-terminal:is(:hover, :focus-within) > .world-chat-terminal-body {
+  display: block;
+}
+
+.world-chat-terminal-avatar {
+  position: relative;
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  place-items: center;
+  overflow: hidden;
+  border: 2px solid #58a6ff;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #1f6feb, #163b67);
+  color: #fff;
+  font: 800 0.8rem/1 "ForkMesh Mono", monospace;
+  box-shadow: 0 0 0 2px rgb(13 17 23 / 0.8);
+}
+
+.world-chat-terminal-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.world-chat-terminal-avatar img[hidden] {
+  display: none;
+}
+
+.world-chat-terminal-unread {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  z-index: 2;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 2px solid #0d1117;
+  background: #f85149;
+  color: #fff;
+  line-height: 14px;
+}
+
+.world-chat-terminal:is([open], :hover, :focus-within)
+  .world-chat-terminal-unread {
+  position: static;
+  border-width: 0;
+}
+
+.world-chat-terminal-body {
+  height: min(70vh, 620px);
+  overflow: hidden;
+  border-radius: 0 0 12px 12px;
+  background: rgb(13 17 23 / 0.6);
+}
+
+.world-chat-terminal-frame {
+  background: transparent;
+}
+
+.world-activity-stream {
+  position: absolute;
+  z-index: 44;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(max(12px, env(safe-area-inset-bottom)) + 66px);
+  display: flex;
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(52vh, 440px);
+  flex-direction: column-reverse;
+  gap: 8px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.world-activity-stream article {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  border: 1px solid rgb(139 148 158 / 0.45);
+  border-radius: 10px;
+  background: rgb(13 17 23 / 0.72);
+  padding: 8px 10px;
+  color: #f0f6fc;
+  box-shadow: 0 8px 24px rgb(1 4 9 / 0.28);
+  font: 0.7rem/1.4 "ForkMesh Mono", monospace;
+  opacity: 0;
+  transform: translateY(8px);
+  animation:
+    world-activity-in 180ms ease forwards,
+    world-activity-out 420ms ease 9.55s forwards;
+  backdrop-filter: blur(14px);
+}
+
+.world-activity-stream article[data-kind="chat"] {
+  border-color: rgb(88 166 255 / 0.55);
+}
+
+.world-activity-stream article[data-kind="error"] {
+  border-color: rgb(248 81 73 / 0.7);
+}
+
+.world-activity-stream article[data-kind="success"] {
+  border-color: rgb(63 185 80 / 0.65);
+}
+
+.world-activity-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: #21262d;
+  color: #fff;
+  font-weight: 800;
+}
+
+.world-activity-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.world-activity-stream p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+@keyframes world-activity-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes world-activity-out {
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+@media (max-width: 680px) {
+  .world-diagnostics,
+  .world-diagnostics:not(.world-chat-terminal),
+  .world-chat-terminal,
+  .world-chat-terminal.world-chat-terminal--debug-hidden {
+    bottom: calc(max(10px, env(safe-area-inset-bottom)) + 58px);
+  }
+
+  .world-chat-terminal-body {
+    height: min(68dvh, 560px);
+  }
+
+  .world-activity-stream {
+    bottom: calc(max(10px, env(safe-area-inset-bottom)) + 124px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-diagnostics,
+  .world-activity-stream article {
+    transition: none;
+    animation-duration: 1ms;
+  }
+}
