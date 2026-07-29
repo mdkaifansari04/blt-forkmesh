@@ -14,11 +14,16 @@
 #include <QCheckBox>
 #include <QLayout>
 #include <QFutureWatcher>
+#include <QGraphicsOpacityEffect>
+#include <QMenu>
+#include <QPlainTextEdit>
+#include <QPropertyAnimation>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QTextBlock>
 #include <QTimer>
 #include <QUrl>
+#include <QWidgetAction>
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
@@ -124,13 +129,22 @@ public:
             m_actions->hide();
     }
 
+    void setSelected(bool selected)
+    {
+        if (m_selected == selected)
+            return;
+        m_selected = selected;
+        applyStyle();
+    }
+
     std::function<void()> onClicked;
 
 protected:
     void enterEvent(QEnterEvent *event) override
     {
         QWidget::enterEvent(event);
-        applyHover(true);
+        m_hovered = true;
+        applyStyle();
     }
 
     void leaveEvent(QEvent *event) override
@@ -139,8 +153,10 @@ protected:
         // Moving from the row into one of its tool buttons can briefly produce
         // a leave event. Recheck after Qt settles the mouse target.
         QTimer::singleShot(0, this, [this] {
-            if (!underMouse())
-                applyHover(false);
+            if (!underMouse()) {
+                m_hovered = false;
+                applyStyle();
+            }
         });
     }
 
@@ -152,23 +168,32 @@ protected:
     }
 
 private:
-    void applyHover(bool hovered)
+    void applyStyle()
     {
         const bool dark =
             palette().color(QPalette::Base).lightness() < 128;
+        const QString background =
+            m_selected
+                ? (dark ? QStringLiteral("#15251a")
+                        : QStringLiteral("#eef8f0"))
+                : (m_hovered
+                       ? (dark ? QStringLiteral("#21262d")
+                               : QStringLiteral("#f1f3f5"))
+                       : QStringLiteral("transparent"));
+        const QString border =
+            (m_selected || m_hovered) ? QStringLiteral("#2da44e")
+                                      : QStringLiteral("transparent");
         setStyleSheet(
-            hovered
-                ? QStringLiteral(
-                      "QWidget#scmFileRow{background:%1;border-radius:3px;}")
-                      .arg(dark ? QStringLiteral("#21262d")
-                                : QStringLiteral("#f1f3f5"))
-                : QStringLiteral(
-                      "QWidget#scmFileRow{background:transparent;}"));
+            QStringLiteral("QWidget#scmFileRow{background:%1;"
+                           "border:1px solid %2;border-radius:4px;}")
+                .arg(background, border));
         if (m_actions)
-            m_actions->setVisible(hovered);
+            m_actions->setVisible(m_hovered);
     }
 
     QWidget *m_actions = nullptr;
+    bool m_hovered = false;
+    bool m_selected = false;
 };
 } // namespace
 
@@ -197,13 +222,19 @@ QWidget *MainWindow::buildSourceControlPanel()
     root->setContentsMargins(16, 10, 16, 6);
     root->setSpacing(6);
 
-    // Single-line compose strip on top of the changes: the message field, inline
-    // AI generation (no popup), a live character count, and the stage/commit
-    // controls — all on one row.
-    m_scmMessage = new QLineEdit;
+    // A compact two-line compose field stays visible. Less-common generation
+    // settings live behind the adjacent ellipsis menu so they do not consume
+    // most of this narrow source-control pane.
+    m_scmMessage = new QPlainTextEdit;
     m_scmMessage->setObjectName("messageInput");
-    m_scmMessage->setClearButtonEnabled(true);
     m_scmMessage->setPlaceholderText("Message (Ctrl+Enter to commit)");
+    m_scmMessage->setTabChangesFocus(true);
+    m_scmMessage->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_scmMessage->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_scmMessage->setFixedHeight(
+        m_scmMessage->fontMetrics().lineSpacing() * 2 + 14);
+    m_scmMessage->setStyleSheet(
+        "QPlainTextEdit#messageInput{font-size:11px;padding:4px 6px;}");
     auto *commitShortcut =
         new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), m_scmMessage);
     commitShortcut->setContext(Qt::WidgetWithChildrenShortcut);
@@ -266,7 +297,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     setOcticon(m_scmCopyButton, "copy", 14);
     connect(m_scmCopyButton, &QPushButton::clicked, this, [this] {
         const QString text =
-            m_scmMessage ? m_scmMessage->text().trimmed() : QString();
+            m_scmMessage ? m_scmMessage->toPlainText().trimmed() : QString();
         if (text.isEmpty()) {
             if (m_scmGenStatus)
                 m_scmGenStatus->setText("Nothing to copy.");
@@ -285,12 +316,12 @@ QWidget *MainWindow::buildSourceControlPanel()
     auto updateCharCount = [this] {
         if (!m_scmGenStatus || !m_scmMessage)
             return;
-        const int n = m_scmMessage->text().size();
+        const int n = m_scmMessage->toPlainText().size();
         const bool tweet = m_scmGenKind && m_scmGenKind->currentIndex() == 1;
         m_scmGenStatus->setText(tweet ? QStringLiteral("%1/280").arg(n)
                                       : QStringLiteral("%1 chars").arg(n));
     };
-    connect(m_scmMessage, &QLineEdit::textChanged, this, updateCharCount);
+    connect(m_scmMessage, &QPlainTextEdit::textChanged, this, updateCharCount);
     connect(m_scmGenKind, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [updateCharCount](int) { updateCharCount(); });
     updateCharCount();
@@ -329,20 +360,52 @@ QWidget *MainWindow::buildSourceControlPanel()
         b->setCursor(Qt::PointingHandCursor);
     }
 
-    // The message field gets the full panel width on its own row (VS-Code
-    // style). The dense power-user toolbar sits beneath it and wraps its
-    // buttons onto extra rows when the panel is narrow, so every action stays
-    // visible instead of scrolling horizontally off the edge (issue #52).
-    root->addWidget(m_scmMessage);
+    auto *generationMenu = new QMenu(panel);
+    generationMenu->setObjectName(QStringLiteral("scmGenerationMenu"));
+    auto *generationAction = new QWidgetAction(generationMenu);
+    auto *generationPanel = new QWidget(generationMenu);
+    generationPanel->setMinimumWidth(260);
+    auto *generationLayout = new QVBoxLayout(generationPanel);
+    generationLayout->setContentsMargins(10, 10, 10, 10);
+    generationLayout->setSpacing(6);
+    auto addGenerationField = [&](const QString &label, QWidget *field) {
+        auto *caption = new QLabel(label, generationPanel);
+        caption->setObjectName(QStringLiteral("statusLine"));
+        generationLayout->addWidget(caption);
+        field->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        generationLayout->addWidget(field);
+    };
+    generationLayout->addWidget(m_scmGenerateButton);
+    addGenerationField(QStringLiteral("Draft with"), m_scmGenModel);
+    addGenerationField(QStringLiteral("Create"), m_scmGenKind);
+    addGenerationField(QStringLiteral("Include"), m_scmGenDuration);
+    auto *copyStatusRow = new QHBoxLayout;
+    copyStatusRow->setContentsMargins(0, 2, 0, 0);
+    copyStatusRow->addWidget(m_scmCopyButton);
+    copyStatusRow->addWidget(m_scmGenStatus, 1);
+    generationLayout->addLayout(copyStatusRow);
+    generationAction->setDefaultWidget(generationPanel);
+    generationMenu->addAction(generationAction);
+
+    auto *generationMenuButton = new QToolButton(panel);
+    generationMenuButton->setObjectName(QStringLiteral("ghostButton"));
+    generationMenuButton->setText(QString::fromUtf8("\xE2\x8B\xAF"));
+    generationMenuButton->setToolTip(
+        QStringLiteral("Message generation and copy options"));
+    generationMenuButton->setPopupMode(QToolButton::InstantPopup);
+    generationMenuButton->setMenu(generationMenu);
+    generationMenuButton->setCursor(Qt::PointingHandCursor);
+    generationMenuButton->setFixedWidth(30);
+
+    auto *composeRow = new QHBoxLayout;
+    composeRow->setContentsMargins(0, 0, 0, 0);
+    composeRow->setSpacing(4);
+    composeRow->addWidget(m_scmMessage, 1);
+    composeRow->addWidget(generationMenuButton, 0, Qt::AlignTop);
+    root->addLayout(composeRow);
 
     m_scmControlsPanel = new QWidget;
     auto *controlsRow = new FlowLayout(m_scmControlsPanel, 0, 6, 6);
-    controlsRow->addWidget(m_scmGenerateButton);
-    controlsRow->addWidget(m_scmGenModel);
-    controlsRow->addWidget(m_scmGenKind);
-    controlsRow->addWidget(m_scmGenDuration);
-    controlsRow->addWidget(m_scmCopyButton);
-    controlsRow->addWidget(m_scmGenStatus);
     controlsRow->addWidget(m_scmStageAllButton);
     controlsRow->addWidget(m_scmUnstageAllButton);
     controlsRow->addWidget(m_scmDiscardAllButton);
@@ -427,9 +490,17 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmTree->setRootIsDecorated(true);
     m_scmTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     connect(m_scmTree, &QTreeWidget::currentItemChanged, this,
-            [this](QTreeWidgetItem *item, QTreeWidgetItem *) {
+            [this](QTreeWidgetItem *item, QTreeWidgetItem *previous) {
+                if (previous) {
+                    if (auto *row = dynamic_cast<ScmFileRow *>(
+                            m_scmTree->itemWidget(previous, 0)))
+                        row->setSelected(false);
+                }
                 if (!item)
                     return;
+                if (auto *row = dynamic_cast<ScmFileRow *>(
+                        m_scmTree->itemWidget(item, 0)))
+                    row->setSelected(true);
                 const QString path = item->data(0, Qt::UserRole).toString();
                 if (path.isEmpty())
                     return; // group header
@@ -857,8 +928,12 @@ void MainWindow::setupScmDiffPane()
         QStringLiteral("#diffStickyHeader{background:%1;border-bottom:1px solid %2;}"
                        "#diffStickyHeader QLabel{background:transparent;color:%3;}"
                        "#diffStickyHeader QPushButton{background:transparent;"
-                       "border:none;color:%3;font-size:11px;padding:2px 4px;}"
-                       "#diffStickyHeader QPushButton:hover{color:#3fb950;}")
+                       "border:1px solid %2;border-radius:5px;color:%3;"
+                       "font-size:11px;padding:3px 7px;}"
+                       "#diffStickyHeader QPushButton:hover{color:#3fb950;"
+                       "border-color:#3fb950;}"
+                       "#diffStickyHeader QPushButton:checked{background:#238636;"
+                       "border-color:#2ea043;color:#ffffff;}")
             .arg(dark ? "#161b22" : "#f6f8fa", dark ? "#30363d" : "#d0d7de",
                  dark ? "#8b949e" : "#57606a"));
     auto *sl = new QHBoxLayout(m_scmStickyHeader);
@@ -876,6 +951,7 @@ void MainWindow::setupScmDiffPane()
     m_scmStickyPercent->setToolTip(m_scmStickyPacman->toolTip());
     sl->addWidget(m_scmStickyPercent, 0);
     m_scmStickyViewed = new QPushButton(m_scmStickyHeader);
+    m_scmStickyViewed->setCheckable(true);
     m_scmStickyViewed->setCursor(Qt::PointingHandCursor);
     m_scmStickyViewed->setToolTip(QStringLiteral("Mark this file as viewed"));
     connect(m_scmStickyViewed, &QPushButton::clicked, this, [this] {
@@ -885,6 +961,22 @@ void MainWindow::setupScmDiffPane()
         const QString path = m_scmSectionPaths.at(idx);
         const QString ctx = scmViewedContext();
         setDiffViewed(ctx, path, !loadDiffViewed(ctx).contains(path));
+        // Give the completed whole-button checkbox a quick, restrained fade-in
+        // so the state change is noticeable without shifting the header.
+        auto *effect = new QGraphicsOpacityEffect(m_scmStickyViewed);
+        effect->setOpacity(0.55);
+        m_scmStickyViewed->setGraphicsEffect(effect);
+        auto *animation =
+            new QPropertyAnimation(effect, "opacity", m_scmStickyViewed);
+        animation->setDuration(180);
+        animation->setStartValue(0.55);
+        animation->setEndValue(1.0);
+        connect(animation, &QPropertyAnimation::finished,
+                m_scmStickyViewed, [button = m_scmStickyViewed, effect] {
+                    button->setGraphicsEffect(nullptr);
+                    effect->deleteLater();
+                });
+        animation->start(QAbstractAnimation::DeleteWhenStopped);
         renderScmCombinedDiff();
         scrollScmDiffToFile(path, m_scmSectionKeys.at(idx).startsWith(
                                       QLatin1String("s|")));
@@ -1155,8 +1247,15 @@ void MainWindow::updateScmDiffScrollState()
         }
     }
     if (idx < 0) {
-        m_scmStickyHeader->hide();
-        return;
+        // Text layout can take one event-loop turn after a large diff is
+        // replaced. Never let that transient anchor gap hide the filename:
+        // retain the current section, or pin the first file until positions
+        // become available on the next scroll/layout tick.
+        idx = m_scmSectionKeys.indexOf(m_scmStickySection);
+        if (idx < 0)
+            idx = 0;
+        fileTop = 0;
+        fileBottom = qMax(1, docHeight);
     }
 
     // How much of the file has been read: the fraction of its extent that has
@@ -1176,6 +1275,7 @@ void MainWindow::updateScmDiffScrollState()
     }
     m_scmStickyViewed->setText(isViewed ? QString::fromUtf8("\xE2\x98\x91 Viewed")
                                         : QString::fromUtf8("\xE2\x98\x90 Viewed"));
+    m_scmStickyViewed->setChecked(isViewed);
     // A finished / already-viewed file reads as done (full green circle);
     // otherwise the chart tracks the scroll in blue and greens on arrival.
     const double shown = isViewed ? 1.0 : progress;
@@ -1421,7 +1521,8 @@ bool MainWindow::performScmCommit()
     const QString dir = repoGitDir();
     if (dir.isEmpty() || !repoHasWorkingTree())
         return false;
-    const QString msg = m_scmMessage ? m_scmMessage->text().trimmed() : QString();
+    const QString msg =
+        m_scmMessage ? m_scmMessage->toPlainText().trimmed() : QString();
     if (msg.isEmpty()) {
         QMessageBox::information(this, "Commit", "Enter a commit message first.");
         return false;
@@ -1476,7 +1577,7 @@ void MainWindow::scmStageAllCommitAndPush()
         return;
     // Check the message before staging, so a missing one doesn't leave everything
     // staged for nothing (performScmCommit re-checks once the commit runs).
-    if (!m_scmMessage || m_scmMessage->text().trimmed().isEmpty()) {
+    if (!m_scmMessage || m_scmMessage->toPlainText().trimmed().isEmpty()) {
         QMessageBox::information(this, "Commit", "Enter a commit message first.");
         return;
     }
@@ -2018,13 +2119,13 @@ void MainWindow::autoFillScmMessage()
     // models, and never over a message the user has started typing.
     if (m_scmGenerating || !m_scmMessage || !m_scmGenModel
         || m_scmGenModel->currentData().toInt() != -1
-        || !m_scmMessage->text().trimmed().isEmpty())
+        || !m_scmMessage->toPlainText().trimmed().isEmpty())
         return;
     const QString msg = scmHeuristicCommitMessage(0); // 0 = the deterministic best
     if (msg.isEmpty())
         return;
     m_scmHeuristicVariant = 0; // a fresh auto-fill restarts the "vary on click" cycle
-    m_scmMessage->setText(msg);
+    m_scmMessage->setPlainText(msg);
     if (m_scmGenStatus)
         m_scmGenStatus->setText(QString::fromUtf8(
             "%1 chars \xc2\xb7 on-device, auto \xc2\xb7 \xE2\x86\xBB click to vary")
@@ -2053,8 +2154,9 @@ void MainWindow::generateScmMessage()
             return;
         }
         if (m_scmMessage)
-            m_scmMessage->setText(msg);
-        const int n = m_scmMessage ? m_scmMessage->text().size() : msg.size();
+            m_scmMessage->setPlainText(msg);
+        const int n =
+            m_scmMessage ? m_scmMessage->toPlainText().size() : msg.size();
         if (m_scmGenStatus)
             m_scmGenStatus->setText(
                 QString::fromUtf8("%1 chars \xc2\xb7 on-device, no cost \xc2\xb7 \xE2\x86\xBB click to vary").arg(n));
@@ -2178,15 +2280,18 @@ void MainWindow::generateScmMessage()
                         m_scmGenStatus->setText("Empty response.");
                     return;
                 }
-                // The message field is single-line, so collapse any stray
-                // newlines before showing it (the clipboard keeps the original).
                 if (m_scmMessage) {
-                    QString oneLine = text;
-                    oneLine.replace(QLatin1Char('\n'), QLatin1Char(' '));
-                    m_scmMessage->setText(oneLine.simplified());
+                    if (isCommit) {
+                        QString oneLine = text;
+                        oneLine.replace(QLatin1Char('\n'), QLatin1Char(' '));
+                        m_scmMessage->setPlainText(oneLine.simplified());
+                    } else {
+                        m_scmMessage->setPlainText(text);
+                    }
                 }
                 // Char count first (what the user asked to see), then the cost.
-                const int n = m_scmMessage ? m_scmMessage->text().size()
+                const int n = m_scmMessage
+                                  ? m_scmMessage->toPlainText().size()
                                            : text.size();
                 QString line = isCommit ? QStringLiteral("%1 chars").arg(n)
                                         : QStringLiteral("%1/280").arg(n);
