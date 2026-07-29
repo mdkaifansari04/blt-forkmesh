@@ -88,6 +88,7 @@ def test_client_profile_writes_only_when_the_value_changed():
 def test_public_directory_carries_the_saved_client_profile():
     payload = ast.unparse(_top_level_node("_account_chat_user_payload"))
     assert "_account_world_client_fields(rec)" in payload
+    assert "emailVerified" in payload
     fields = ast.unparse(_top_level_node("_account_world_client_fields"))
     # Read back through the same normalizer, so a record edited outside this
     # endpoint can still only publish the coarse allowlisted values.
@@ -95,6 +96,17 @@ def test_public_directory_carries_the_saved_client_profile():
     assert "world_country" in fields
     assert "world_browser" in fields
     assert "world_os" in fields
+
+
+def test_public_account_lookup_enriches_the_chest_without_a_roster_wait():
+    lookup = ast.unparse(_top_level_node("accounts_handler"))
+    assert "_account_world_client_fields(rec)" in lookup
+    profile = APP.split("async loadWorldFediverseProfile", 1)[1].split(
+        "async toggleWorldFediverseFollow", 1
+    )[0]
+    assert "emailVerified: profile.emailVerified === true" in profile
+    assert "countryCode:" in profile
+    assert "avatarUrl:" in profile
 
 
 def test_client_profile_route_is_registered():
@@ -114,6 +126,8 @@ def test_world_client_saves_the_profile_once_per_change():
     # A fingerprint in localStorage keeps an ordinary reload from rewriting
     # the same value.
     assert "CLIENT_PROFILE_KEY" in sync
+    assert "this.memberDirectoryFetchedAt = 0" in sync
+    assert "refreshMemberDirectory(True)" in sync or "refreshMemberDirectory(true)" in sync
     # The privacy toggles all funnel through saveSettings, so hiding a value
     # clears the saved copy immediately.
     saved = APP.split("  saveSettings() {", 1)[1].split("\n  }\n", 1)[0]

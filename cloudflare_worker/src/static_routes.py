@@ -57,6 +57,7 @@ RESERVED_ROUTE_PREFIXES = frozenset({
     "terms",
     "status",
     "referrals",
+    "leaderboards",
     # Referral share links (/r/<name>) are worker-owned counters.
     "r",
 })
@@ -128,6 +129,7 @@ BLOCKED_STATIC_HTML_PATHS = frozenset({
     "/reset-password.html",
     "/mirror-payouts.html",
     "/referrals.html",
+    "/leaderboards.html",
     "/outreach.html",
     "/security-report.html",
     "/docs.html",

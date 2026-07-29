@@ -6689,6 +6689,14 @@ test("pull requests open and become viewed entirely inside the repository World"
   await expect(
     page.getByRole("heading", { name: "Pull request #44" }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Repository portals" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText(
+      "Authorized repositories form distinct perimeter portals with size-weighted file rings.",
+    ),
+  ).toHaveCount(0);
   await expect(page.locator(".world-pull-file-tree button")).toHaveCount(2);
   await expect(page.locator("[data-world-pull-diff-file]")).toHaveCount(2);
   await expect(page.locator("[data-world-pull-diff]")).toContainText(

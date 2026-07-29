@@ -4152,8 +4152,10 @@ void MainWindow::initAgents()
             m_agentStore->appendLog(
                 session, QStringLiteral("\n==> Resuming after ForkMesh restart."));
             m_agentQueue.append(session.id);
+            m_startupQuietAgentSessions.insert(session.id);
         } else if (session.status == AgentStatus::Queued) {
             m_agentQueue.append(session.id);
+            m_startupQuietAgentSessions.insert(session.id);
         }
     }
     m_agentSessions = m_agentStore->loadAllSessions();
@@ -4211,6 +4213,9 @@ void MainWindow::updateAgentsNavBadge()
     if (!m_agentsNavButton)
         return;
     const int total = m_agentSessions.size();
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_agentsNavButton))
+        railButton->setBadgeCount(total);
     if (total > 0) {
         m_agentsNavButton->setText(
             QStringLiteral("Agents (%1)").arg(formatCount(total)));
@@ -7611,7 +7616,9 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // pressed Enter in the composer on the Agents tab): switchToAgentsTab fires
     // extra reloadAgents() calls that can reset the table selection to row 0 and
     // navigate away from the session the user was working with.
-    if (!m_agentQuietResume) {
+    const bool startupQuiet =
+        m_startupQuietAgentSessions.remove(sid) || m_agentQuietResume;
+    if (!startupQuiet) {
         m_terminalSessionId = sid;
         if (m_selectedAgentSessionId != sid)
             switchToAgentsTab(sid);

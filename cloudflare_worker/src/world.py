@@ -742,7 +742,7 @@ def sanitize_message(payload, current, now, country_source="",
         if "faceImage" in payload:
             state["faceImage"] = (
                 payload.get("faceImage") is True
-                and state.get("accountStatus") == "Supporting member")
+                and state.get("accountStatus") != "Guest")
         # The chest wallet QR shows an address its owner already chose to
         # publish on their account. It is validated as base58 and gated to
         # authenticated accounts so an anonymous socket cannot dress itself

@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 import re
 from types import SimpleNamespace
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,12 +20,15 @@ def _load_watchdog():
     wanted_constants = {
         "CRON_WATCHDOG_GRACE_MS",
         "CRON_WATCHDOG_RETRY_MS",
+        "STATUS_DEPLOY_GRACE_MS",
+        "STATUS_DEPLOY_MAX_MS",
     }
     wanted_functions = {
         "_status_alert_manage_url",
         "_email_with_status_alert_manage_link",
         "_cron_watchdog_email_content",
         "_send_cron_watchdog_email",
+        "_status_deploy_semaphore_active",
     }
     selected = []
     for node in ast.parse(ENTRY_TEXT, filename=str(ENTRY)).body:
@@ -70,6 +73,9 @@ def _load_watchdog():
     async def _cloudflare_attention_log_tail(_env, _now):
         return "[999] ERROR scheduled simulated bounded log"
 
+    async def d1_first(_env, _sql, *_args):
+        return namespace.get("_deploy_row")
+
     def _attention_email_with_logs(text, html, log_tail):
         return (
             text + "\n\nCloudflare logs · prior 2 minutes\n" + log_tail,
@@ -85,6 +91,9 @@ def _load_watchdog():
     def _forkmesh_email_card_html(heading, intro, body, footer=""):
         return heading + intro + body + footer
 
+    def _admin_path(_env):
+        return "/admin-test"
+
     def json_response(payload, status=200):
         return SimpleNamespace(status=status, payload=payload)
 
@@ -93,6 +102,7 @@ def _load_watchdog():
         "Date": Date,
         "re": re,
         "urlparse": urlparse,
+        "quote": quote,
         "_repository_monitor_admin_emails":
             _repository_monitor_admin_emails,
         "_status_alert_emails_enabled": _status_alert_emails_enabled,
@@ -101,10 +111,13 @@ def _load_watchdog():
         "_alerts_enabled": True,
         "_send_email": _send_email,
         "_cloudflare_attention_log_tail": _cloudflare_attention_log_tail,
+        "d1_first": d1_first,
+        "_deploy_row": None,
         "_attention_email_with_logs": _attention_email_with_logs,
         "_flagship_monitor_duration": _flagship_monitor_duration,
         "_html_escape": _html_escape,
         "_forkmesh_email_card_html": _forkmesh_email_card_html,
+        "_admin_path": _admin_path,
         "json_response": json_response,
         "durable_object_traffic_note": lambda *_args, **_kwargs: None,
         "durable_object_traffic_flush":
@@ -185,6 +198,41 @@ def test_watchdog_alarm_honors_a_racing_newer_completion():
     asyncio.run(watchdog.alarm())
     assert storage.alarm_at == storage.data["last_completion_at"] + grace
     assert ns["_sends"] == []
+
+
+def test_watchdog_defers_alerts_during_deploy_and_post_ready_grace():
+    ns = _load_watchdog()
+    storage = _Storage()
+    ctx = SimpleNamespace(storage=storage)
+    watchdog = ns["ForkMeshCronWatchdog"](ctx, object())
+    Date = ns["Date"]
+    watchdog_grace = ns["CRON_WATCHDOG_GRACE_MS"]
+    deploy_grace = ns["STATUS_DEPLOY_GRACE_MS"]
+    storage.data["last_completion_at"] = Date.value - watchdog_grace
+
+    ns["_deploy_row"] = {
+        "state": "deploying",
+        "started_at": Date.value,
+        "finished_at": 0,
+    }
+    asyncio.run(watchdog.alarm())
+    assert ns["_sends"] == []
+    assert storage.data.get("outage_started_at") is None
+    assert storage.alarm_at == Date.value + watchdog_grace
+
+    Date.value += watchdog_grace
+    ns["_deploy_row"] = {
+        "state": "ready",
+        "started_at": Date.value - watchdog_grace,
+        "finished_at": Date.value,
+    }
+    asyncio.run(watchdog.alarm())
+    assert ns["_sends"] == []
+    assert storage.data.get("outage_started_at") is None
+
+    Date.value += deploy_grace
+    asyncio.run(watchdog.alarm())
+    assert len(ns["_sends"]) == 1
 
 
 def test_watchdog_rearms_when_alert_delivery_is_unavailable():

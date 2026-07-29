@@ -27,8 +27,13 @@ def test_production_world_has_no_sample_repository_fallback_or_runnable_fake():
     )
     assert "No repository can be opened or analyzed from this panel." in APP
     assert 'this.repositoryCatalogState !== "ready"' in APP
-    assert "if (!catalogCommits.size)" in APP
-    assert "this.world.updateRepositoryGraph?.([], [])" in APP
+    auto = APP.split("async autoLoadFlagshipRepositoryMap()", 1)[1].split(
+        "async fetchRepositoryMapSnapshot", 1)[0]
+    # The real tree may render before mirror metadata converges; no sample or
+    # guessed tree is substituted, and the verified snapshot still replaces it.
+    assert "if (!catalogCommits.size)" not in auto
+    assert "requireComplete: false" in auto
+    assert "this.world.updateRepositoryGraph?.([], [])" not in auto
 
 
 def test_graph_fixture_builds_distinct_commit_matched_contributor_issue_pr_nodes():
@@ -119,7 +124,7 @@ def test_entity_records_fail_closed_on_commit_mismatch_and_remain_bounded():
     assert all("Leak" not in json.dumps(node) for node in nodes)
 
 
-def test_three_scene_creates_selectable_distinct_entity_meshes_and_edges():
+def test_three_scene_creates_selectable_distinct_entity_meshes_without_lines():
     assert "function updateRepositoryGraph(entries = [], entities = [])" in SCENE
     assert "repository-entity-layer" in SCENE
     assert "new THREE.SphereGeometry" in SCENE
@@ -127,7 +132,9 @@ def test_three_scene_creates_selectable_distinct_entity_meshes_and_edges():
     assert "new THREE.TorusGeometry" in SCENE
     assert "mesh.userData.graphNode" in SCENE
     assert "interactive.push(mesh)" in SCENE
-    assert "entityRelationships.push([mesh, meshes[targetIndex]])" in SCENE
     assert "repositoryEntityMeshes" in SCENE
+    assert "new THREE.Line(" not in SCENE
+    assert "new THREE.LineSegments(" not in SCENE
+    assert "new THREE.LineBasicMaterial(" not in SCENE
     assert "meta.graphNode" in APP
     assert "selectRepositoryGraphNode" in APP

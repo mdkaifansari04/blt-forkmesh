@@ -332,6 +332,8 @@ async def test_registered_users_list_and_access_public_but_not_other_private_cha
         "announcements",
         "release-team",
     ]
+    assert "members" not in alice_list["data"]["channels"][0]
+    assert alice_list["data"]["channels"][1]["members"] == ["admin", "alice"]
     assert [item["name"] for item in bob_list["data"]["channels"]] == [
         "announcements"
     ]
