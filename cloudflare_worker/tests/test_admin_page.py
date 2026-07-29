@@ -228,8 +228,8 @@ def test_admin_error_log_has_grouped_24_hour_occurrence_analytics():
         'class="error-spark-bar"',
         "<th>24-hour frequency</th>",
         "WHERE ts>=? ORDER BY ts DESC LIMIT 5000",
-        "groups.setdefault(signature, [0] * 24)",
-        "group_hours[23 - int(age_hours)] += 1",
+        '"hours": [0] * 24',
+        'group["hours"][23 - int(age_hours)] += 1',
         'aria-labelledby="error-analytics-title"',
     ):
         assert contract in ENTRY_TEXT

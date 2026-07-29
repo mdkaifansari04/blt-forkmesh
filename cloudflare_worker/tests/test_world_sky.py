@@ -261,7 +261,7 @@ def test_sky_module_keeps_rendering_and_lifecycle_work_bounded():
     assert "export function normalizeWorldSatelliteSnapshot(" in source
     assert "export function propagateWorldSatelliteOmm(" in source
     assert "const stars = new THREE.Points(" in source
-    assert source.count("new THREE.InstancedMesh(") == 2
+    assert source.count("new THREE.InstancedMesh(") == 3
     assert "satellites.instanceMatrix.setUsage?.(THREE.DynamicDrawUsage)" in source
     assert "now - lastSatelliteTick < safeTickInterval" in source
     assert "const propagated = { x: 0, y: 0, z: 0 };" in source
@@ -274,7 +274,10 @@ def test_sky_module_keeps_rendering_and_lifecycle_work_bounded():
     assert "const moonInstanceIndex = sunInstanceIndex + 1;" in source
     assert "function setDaylightMinute(" in source
     assert "sunAndMoon: 2" in source
-    assert "drawCalls: 3" in source
+    assert "drawCalls: 4" in source
+    assert "forkmesh-world-sun-moon-glows" in source
+    assert "new THREE.RingGeometry(1.08, 1.62, 28)" in source
+    assert "THREE.AdditiveBlending" in source
     for method in (
         "setDaylightMinute,",
         "update,",

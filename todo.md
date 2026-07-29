@@ -5,6 +5,8 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [ ] Complete the remaining web PR lifecycle: proactive readiness/conflict data, live checks, complete commit history, and an auditable signed update-from-main mirror operation. Conversation, peer review, changed files, and protected owner merge are already present.
+- [x] Add a one-line status bar at the bottom of the Qt window carrying the branch switcher, the repository git identity and the running app's on-disk location.
 - [x] Make avatar clicks reliably open the user HUD; remove the out-of-scope animation timestamp crash and prefer a nearby visible avatar hit over surrounding geometry.
 - [x] Give the Members Circle detailed dirt, one visible pile log per member, and a gently growing bounded campfire.
 - [x] Keep the combined aquarium control panel fixed to the lower-right of the tank.
@@ -25,7 +27,6 @@ the implementation and its focused verification are complete.
 - [x] Move World DEBUG to the lower-left and extend the right chat dock to the bottom; add a pinned dark GitHub Primer multiline composer with channel/repository selectors and working chat, signed-issue, and Engineering-agent actions, move channel security/connection into its header, remove the duplicate public notice, and collapse HUD docks when clicking outside.
 - [x] Restyle the compact and expanded World right HUD with GitHub Primer primitives, including selected, hover, focus, and icon-button states.
 - [x] Open both Issue and PR tower records in their canonical, same-origin embedded web workbenches instead of the unrelated Repository portals panel.
-- [ ] Complete the remaining web PR lifecycle: proactive readiness/conflict data, live checks, complete commit history, and an auditable signed update-from-main mirror operation. Conversation, peer review, changed files, and protected owner merge are already present.
 - [x] Audit the full 2026-07-28 request history against the implementation, tests, QA deck, and build-board source; keep every partial or externally unverifiable item open below.
 - [x] Scale repository PR and Issue towers to their complete bounded item counts and move them outside the ActivityPub follower orbit.
 - [x] Remove zoom-out relationship lines, rounded connector pads, colored grass ovals, disjoint terrain remnants, and obstructive agent-terminal blocks; retain one fast continuous walkable grass foundation.
@@ -268,10 +269,27 @@ the implementation and its focused verification are complete.
 
 ## 2026-07-28 current emergency and follow-up
 
-- [x] Restore the complete Office exterior at every camera distance; aerial
-  performance mode may cull furnished interiors, but never the Office landmark.
-- [x] Restore the SOL treasury QR/sign to the front midpoint inside the node
-  circle, including its Start a node download action.
+- [x] Fix the deployed aerial-marker `MEMBER_CIRCLE_CENTER_Z` exception that
+  aborted the animation loop before movement, and make optional LOD marker
+  initialization fail closed without interrupting input.
+- [x] Restore the complete transparent Office cutaway at every camera distance:
+  glass, floor slabs, walls, lighting, and furniture remain visible outdoors,
+  while entered visitors render only their active floor.
+- [x] Keep every World section visible at every zoom level, including
+  repository rings and live layers, the complete public-board circle,
+  organizations, fediverse displays, landscaping, and plaza fixtures; aerial
+  optimization now reduces lighting cost without removing content.
+- [x] Center the SOL sign and deterministically reflow live node cabinets into
+  complete, evenly spaced rings after every join, refresh, or deletion.
+- [x] Remove the round Town path plaza and overlapping edge/path slabs; join
+  the four routes with one concrete-brick junction and terminate district
+  paths exactly where their matching promenade begins.
+- [x] Return Office floors and ceilings to solid finishes and use batched grids
+  of small ceiling fixtures with restrained local lighting.
+- [x] Add a Primer-style top-toolbar Dashboard control beside the avatar that
+  opens the operations console in a safe new tab.
+- [x] Restore the SOL treasury QR/sign at the exact center of the node rings,
+  including its Start a node download action.
 - [x] Deploy and verify the durable Office/SOL emergency production revision
   `2d3602646909`.
 - [ ] Verify the new aerial landmark LOD in production and confirm that zooming

@@ -10,12 +10,18 @@ ENTRY = (ROOT / "src" / "entry.py").read_text()
 
 def test_town_has_four_solid_cardinal_paved_routes():
     for route in (
-        '"east-repositories", [16, 0], [88, 0], 8.4',
-        '"north-office", [0, -16], [0, OFFICE_BRIDGE_START_Z], OFFICE_BRIDGE_WIDTH',
-        '"west-billboards", [-16, 0], [-88, 0], 8.4',
-        '"south-members", [0, 16], [0, MEMBER_PATH_END_Z], 8.4',
+        '"east-repositories",\n      [junctionHalfWidth, 0],\n'
+        '      [REPOSITORY_CONNECTION_MIN_X, 0]',
+        '"north-office",\n      [0, -junctionHalfWidth],\n'
+        '      [0, OFFICE_BRIDGE_START_Z]',
+        '"west-billboards",\n      [-junctionHalfWidth, 0],\n'
+        '      [LEADERBOARD_CONNECTION_MAX_X, 0]',
+        '"south-members",\n      [0, junctionHalfWidth],\n'
+        '      [0, MEMBER_PATH_END_Z]',
     ):
         assert route in SCENE
+    assert '"forkmesh-town-path-junction"' in SCENE
+    assert '"forkmesh-town-stone-plaza"' not in SCENE
     assert "function addRoundedCausewayEnds(" not in SCENE
     assert '"forkmesh-continuous-city-land"' in SCENE
     assert "concreteBrickMaterial(THREE)" in SCENE

@@ -5496,9 +5496,6 @@ function createAvatar(THREE, identity, options = {}) {
     nodeCount: 0,
     accountStatus: identity.accountStatus || "Guest",
     inputActive: identity.inputActive === true,
-    inactiveSince:
-      identity.inputActive === true ? 0 : performance.now(),
-    avatarOpacity: 1,
     statusEmoji: "",
     statusNote: "",
     emojiStatusKey: "",
@@ -5723,11 +5720,6 @@ function syncCountryShirt(THREE, avatar, identity) {
 function syncAvatarActivity(avatar, identity) {
   if (!avatar?.userData) return;
   const active = identity.inputActive === true;
-  if (active && !avatar.userData.inputActive) {
-    avatar.userData.inactiveSince = 0;
-  } else if (!active && avatar.userData.inputActive) {
-    avatar.userData.inactiveSince = performance.now();
-  }
   avatar.userData.inputActive = active;
   avatar.userData.accountStatus = identity.accountStatus || "Guest";
   if (avatar.userData.antenna) avatar.userData.antenna.visible = active;
@@ -5844,41 +5836,9 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
     const lit = reducedMotion || cycle < 0.5;
     bulb.material.color.set(lit ? ANTENNA_LIT_COLOR : ANTENNA_DARK_COLOR);
   }
-  const inactiveFor = avatar.userData.inactiveSince
-    ? Math.max(0, time - avatar.userData.inactiveSince)
-    : 0;
-  const shouldFade =
-    avatar.userData.accountStatus === "Guest" &&
-    avatar.userData.inputActive !== true &&
-    inactiveFor >= 12000;
-  const targetOpacity = shouldFade ? 0.36 : 1;
-  const blend = 1 - Math.pow(0.006, Math.max(0, delta));
-  avatar.userData.avatarOpacity +=
-    (targetOpacity - avatar.userData.avatarOpacity) * blend;
-  const opacity = avatar.userData.avatarOpacity;
-  const materials = new Set();
-  avatar.traverse((child) => {
-    if (
-      !child.isMesh ||
-      (antenna && antenna === child.parent) ||
-      child.userData?.worldModerationControl ||
-      child.userData?.worldOrgTeamControl
-    ) return;
-    const childMaterials = Array.isArray(child.material)
-      ? child.material
-      : [child.material];
-    childMaterials.filter(Boolean).forEach((material) => materials.add(material));
-  });
-  materials.forEach((material) => {
-    if (material.userData.avatarBaseOpacity === undefined) {
-      material.userData.avatarBaseOpacity = Number(material.opacity) || 1;
-      material.userData.avatarBaseTransparent = Boolean(material.transparent);
-    }
-    material.opacity = material.userData.avatarBaseOpacity * opacity;
-    material.transparent =
-      material.userData.avatarBaseTransparent || opacity < 0.995;
-    material.needsUpdate = true;
-  });
+  // Presence is presence: inactivity changes the antenna signal and activity
+  // label, never the visibility of the person. Guests and members remain fully
+  // opaque until they actually leave the World.
 }
 
 function mirrorNodeIsOnline(node) {
@@ -7411,52 +7371,45 @@ function bikeLaneMaterial(THREE) {
 function createTownLandscape(THREE) {
   const group = new THREE.Group();
   group.name = "forkmesh-town-mixed-landscape";
-  const plazaMaterial = makeMaterial(THREE, "#8a857a", {
-    roughness: 0.94,
-  });
-  const pathMaterial = makeMaterial(THREE, "#b29a76", {
-    roughness: 0.98,
-  });
-  pathMaterial.map = concreteBrickTexture(THREE);
-  pathMaterial.needsUpdate = true;
-  const pathEdgeMaterial = makeMaterial(THREE, "#625f59", {
-    roughness: 0.9,
-  });
-  const plaza = new THREE.Mesh(
-    new THREE.CircleGeometry(20, 64),
-    plazaMaterial,
+  const pathMaterial = concreteBrickMaterial(THREE);
+  const junctionWidth = OFFICE_BRIDGE_WIDTH;
+  const junctionHalfWidth = junctionWidth / 2;
+  const junction = new THREE.Mesh(
+    new THREE.BoxGeometry(junctionWidth, 0.08, junctionWidth),
+    pathMaterial,
   );
-  plaza.name = "forkmesh-town-stone-plaza";
-  plaza.rotation.x = -Math.PI / 2;
-  plaza.position.y = 0.045;
-  plaza.receiveShadow = true;
-  plaza.userData.ground = true;
-  group.add(plaza);
-  const plazaEdge = new THREE.Mesh(
-    new THREE.TorusGeometry(20, 0.28, 8, 96),
-    pathEdgeMaterial,
-  );
-  plazaEdge.name = "forkmesh-town-plaza-edge";
-  plazaEdge.rotation.x = Math.PI / 2;
-  plazaEdge.position.y = 0.08;
-  group.add(plazaEdge);
+  junction.name = "forkmesh-town-path-junction";
+  junction.position.y = 0.065;
+  junction.receiveShadow = true;
+  junction.userData.ground = true;
+  group.add(junction);
 
   [
-    ["east-repositories", [16, 0], [88, 0], 8.4],
-    ["north-office", [0, -16], [0, OFFICE_BRIDGE_START_Z], OFFICE_BRIDGE_WIDTH],
-    ["west-billboards", [-16, 0], [-88, 0], 8.4],
-    ["south-members", [0, 16], [0, MEMBER_PATH_END_Z], 8.4],
+    [
+      "east-repositories",
+      [junctionHalfWidth, 0],
+      [REPOSITORY_CONNECTION_MIN_X, 0],
+      8.4,
+    ],
+    [
+      "north-office",
+      [0, -junctionHalfWidth],
+      [0, OFFICE_BRIDGE_START_Z],
+      OFFICE_BRIDGE_WIDTH,
+    ],
+    [
+      "west-billboards",
+      [-junctionHalfWidth, 0],
+      [LEADERBOARD_CONNECTION_MAX_X, 0],
+      8.4,
+    ],
+    [
+      "south-members",
+      [0, junctionHalfWidth],
+      [0, MEMBER_PATH_END_Z],
+      8.4,
+    ],
   ].forEach(([id, start, end, width]) => {
-    const edge = createLandscapePath(
-      THREE,
-      `forkmesh-town-path-edge-${id}`,
-      start,
-      end,
-      width + 0.7,
-      pathEdgeMaterial,
-    );
-    edge.position.y = 0.035;
-    group.add(edge);
     group.add(
       createLandscapePath(
         THREE,
@@ -7848,9 +7801,10 @@ function createFountain(THREE, position, interactive, animated) {
   group.add(light);
 
   const treasurySign = createRewardTreasurySign(THREE);
-  // The Members Circle sits due south (+Z). Put the SOL board at the front
-  // midpoint of the first 10.8-unit node ring and face it toward those users.
-  treasurySign.position.set(0, 0, 10.8);
+  // The SOL board is the fixed centre of the service yard. Live node cabinets
+  // form complete, evenly spaced rings around this point and are reflowed
+  // whenever membership changes.
+  treasurySign.position.set(0, 0, 0);
   treasurySign.rotation.y = 0;
   group.add(treasurySign);
   group.userData.treasurySign = treasurySign;
@@ -14123,6 +14077,15 @@ export function createWorldScene({
   sun.shadow.camera.far = 220;
   sun.shadow.bias = -0.0003;
   scene.add(sun);
+  scene.add(sun.target);
+  const moon = new THREE.DirectionalLight("#c8eaff", 0.82);
+  moon.name = "forkmesh-world-moonlight";
+  moon.position.set(24, 48, -18);
+  // The sun owns the one shadow map. Moonlight is a cheap cool fill, so a
+  // bright night does not double the scene's shadow-rendering cost.
+  moon.castShadow = false;
+  scene.add(moon);
+  scene.add(moon.target);
 
   const world = new THREE.Group();
   scene.add(world);
@@ -14668,7 +14631,7 @@ export function createWorldScene({
     concreteBrickMaterial(THREE),
   );
   repositoryPromenade.name = "hosted-repository-promenade";
-  repositoryPromenade.position.y = 0.19;
+  repositoryPromenade.position.y = 0.065;
   repositoryPromenade.receiveShadow = true;
   repositoryPromenade.userData.ground = true;
   repositoryBridge.add(repositoryPromenade);
@@ -14691,7 +14654,7 @@ export function createWorldScene({
     concreteBrickMaterial(THREE),
   );
   leaderboardPromenade.name = "forkmesh-leaderboard-promenade";
-  leaderboardPromenade.position.y = 0.19;
+  leaderboardPromenade.position.y = 0.065;
   leaderboardPromenade.receiveShadow = true;
   leaderboardPromenade.userData.ground = true;
   leaderboardConnection.add(leaderboardPromenade);
@@ -14705,7 +14668,7 @@ export function createWorldScene({
         roughness: 0.25,
       }),
     );
-    guide.position.set(0, 0.28, z);
+    guide.position.set(0, 0.15, z);
     leaderboardConnection.add(guide);
   }
   for (const x of [-10, -5, 0, 5, 10]) {
@@ -16216,52 +16179,19 @@ export function createWorldScene({
   function officeFloorFinishMaterial(index = 0, lobby = false) {
     const accent =
       officeInteriorAccents[index % officeInteriorAccents.length];
-    const texture = canvasTexture(THREE, 512, 512, (context) => {
-      context.fillStyle = lobby ? "#173129" : "#12251f";
-      context.fillRect(0, 0, 512, 512);
-      const gradient = context.createLinearGradient(0, 0, 512, 512);
-      gradient.addColorStop(0, "rgba(255,255,255,0.055)");
-      gradient.addColorStop(0.5, "rgba(255,255,255,0)");
-      gradient.addColorStop(1, "rgba(0,0,0,0.16)");
-      context.fillStyle = gradient;
-      context.fillRect(0, 0, 512, 512);
-      context.strokeStyle = `${accent}38`;
-      context.lineWidth = lobby ? 3 : 2;
-      const spacing = lobby ? 64 : 48;
-      for (let offset = 0; offset <= 512; offset += spacing) {
-        context.beginPath();
-        context.moveTo(offset, 0);
-        context.lineTo(offset, 512);
-        context.stroke();
-        context.beginPath();
-        context.moveTo(0, offset);
-        context.lineTo(512, offset);
-        context.stroke();
-      }
-      context.strokeStyle = `${accent}88`;
-      context.lineWidth = 5;
-      context.strokeRect(12, 12, 488, 488);
-      if (lobby) {
-        for (let index = 0; index < 180; index += 1) {
-          const x = (index * 83) % 506;
-          const y = (index * 157) % 506;
-          context.fillStyle =
-            index % 3 === 0 ? `${accent}85` : "rgba(232,255,246,0.18)";
-          context.fillRect(x, y, index % 4 === 0 ? 3 : 2, 2);
-        }
-      }
-    });
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(5, 3);
-    texture.needsUpdate = true;
-    return makeMaterial(THREE, "#ffffff", {
-      map: texture,
-      emissive: lobby ? "#091b15" : "#071710",
-      emissiveIntensity: lobby ? 0.36 : 0.28,
-      metalness: lobby ? 0.08 : 0.16,
-      roughness: lobby ? 0.72 : 0.76,
-    });
+    const solidColors = ["#243c35", "#293b3f", "#3d3a2d", "#3e3038"];
+    return makeMaterial(
+      THREE,
+      lobby
+        ? "#29473d"
+        : solidColors[index % solidColors.length],
+      {
+        emissive: accent,
+        emissiveIntensity: lobby ? 0.045 : 0.025,
+        metalness: 0.04,
+        roughness: 0.9,
+      },
+    );
   }
   const officeLobbyFloorMaterial = officeFloorFinishMaterial(0, true);
   const officeFloorGroups = new Map([["lobby", officeInterior]]);
@@ -16349,15 +16279,44 @@ export function createWorldScene({
       metalness: 0.42,
       roughness: 0.44,
     });
+    const fixtureGeometry = new THREE.BoxGeometry(5.2, 0.07, 0.34);
+    const fixtureMaterial = new THREE.MeshBasicMaterial({
+      color: floorIndex % 2 ? "#dff4ff" : "#fff1d6",
+      toneMapped: false,
+    });
+    const fixtureColumns = [-60, -36, -12, 12, 36, 60];
+    const fixtureRows = [-18, 0, 18];
+    const fixtureGrid = new THREE.InstancedMesh(
+      fixtureGeometry,
+      fixtureMaterial,
+      fixtureColumns.length * fixtureRows.length,
+    );
+    fixtureGrid.name = `forkmesh-office-${floorId}-ceiling-light-grid`;
+    const fixtureTransform = new THREE.Object3D();
+    let fixtureIndex = 0;
+    fixtureRows.forEach((z) => {
+      fixtureColumns.forEach((x) => {
+        fixtureTransform.position.set(
+          x,
+          OFFICE_FLOOR_HEIGHT - 0.3,
+          z,
+        );
+        fixtureTransform.updateMatrix();
+        fixtureGrid.setMatrixAt(fixtureIndex, fixtureTransform.matrix);
+        fixtureIndex += 1;
+      });
+    });
+    fixtureGrid.instanceMatrix.needsUpdate = true;
+    floorGroup.add(fixtureGrid);
     for (const [lightIndex, x] of [-38, 38].entries()) {
       const light = new THREE.PointLight(
         lightIndex ? "#b9e9ff" : "#fff0cf",
-        1.25,
-        54,
+        1.45,
+        48,
         1.8,
       );
       light.name = `forkmesh-office-${floorId}-ambient-light-${lightIndex + 1}`;
-      light.position.set(x, OFFICE_FLOOR_HEIGHT - 1.15, -2);
+      light.position.set(x, OFFICE_FLOOR_HEIGHT - 1.1, 0);
       light.castShadow = false;
       floorGroup.add(light);
     }
@@ -16640,16 +16599,6 @@ export function createWorldScene({
       floorGroup,
       officeFloorFinishMaterial(interiorIndex + 1),
     );
-    if (floor.id !== "rooftop") {
-      for (let x = -72; x <= 72; x += 24) {
-        const light = new THREE.Mesh(
-          new THREE.BoxGeometry(12, 0.08, 0.28),
-          officeFloorAccent,
-        );
-        light.position.set(x, OFFICE_FLOOR_HEIGHT - 0.34, 0);
-        floorGroup.add(light);
-      }
-    }
     const sign = makeOfficeWallPlacard(
       THREE,
       `${floor.level + 1} · ${floor.label.toUpperCase()}`,
@@ -16672,9 +16621,9 @@ export function createWorldScene({
       floor.id,
       interiorIndex + 1,
     );
-    // The visitor starts outside. Upper-floor interiors stay out of the
-    // initial frame entirely and are enabled only for the active floor.
-    floorGroup.visible = false;
+    // The transparent tower is an exterior cutaway: visitors should see every
+    // furnished floor through its glass before they enter the building.
+    floorGroup.visible = true;
     officeInterior.add(floorGroup);
     officeFloorGroups.set(floor.id, floorGroup);
   });
@@ -19140,11 +19089,6 @@ export function createWorldScene({
   const neighborhoodHomes = new Map();
   const nodeInfrastructure = new Map();
   const deletedNodeIdentifiers = new Set();
-  // Slot ownership is session-stable: a health refresh, response-time reorder,
-  // or another node joining must not make every cabinet jump to a new place.
-  // Positions remain derived from the live reward-pool location, so moving
-  // the pool still moves the whole ring as one layout.
-  const nodeSlotAssignments = new Map();
   let networkNodeSnapshot = [];
   const mirrorAgentTasksByNode = new Map();
   const repositoryAgentTasksByRepository = new Map();
@@ -19337,8 +19281,8 @@ export function createWorldScene({
   let officeDoorwayEntryPending = false;
   let officeExitHandler = null;
   const weather = createWeather(THREE, scene);
-  const farDetailVisibility = new WeakMap();
   let aerialLandmarkMarkers = null;
+  let aerialLandmarkMarkersUnavailable = false;
 
   function ensureAerialLandmarkMarkers() {
     if (aerialLandmarkMarkers) return aerialLandmarkMarkers;
@@ -19355,7 +19299,7 @@ export function createWorldScene({
       ["TOWN", 0, 0, "#9ef7c6"],
       ["REPOSITORIES", REPOSITORY_ISLAND_CENTER_X, 0, "#77d9ff"],
       ["LEADERBOARDS", LEADERBOARD_ISLAND_CENTER_X, 0, "#d5b6ff"],
-      ["MEMBERS", 0, MEMBER_CIRCLE_CENTER_Z, "#f7c96b"],
+      ["MEMBERS", 0, MEMBER_ISLAND_CENTER_Z, "#f7c96b"],
       ["OFFICE", OFFICE_ISLAND_CENTER[0], OFFICE_ISLAND_CENTER[2], "#9ef7c6"],
       ["BEACH", BEACH_CENTER_X, BEACH_CENTER_Z, "#77d9ff"],
     ].forEach(([label, x, z, color]) => {
@@ -19378,20 +19322,6 @@ export function createWorldScene({
     return aerialLandmarkMarkers;
   }
 
-  function setFarDetailVisible(object, visible) {
-    if (!object) return;
-    if (!visible) {
-      if (!farDetailVisibility.has(object)) {
-        farDetailVisibility.set(object, object.visible);
-      }
-      object.visible = false;
-      return;
-    }
-    if (!farDetailVisibility.has(object)) return;
-    object.visible = farDetailVisibility.get(object);
-    farDetailVisibility.delete(object);
-  }
-
   function updateSceneLevelOfDetail(force = false) {
     const far =
       officeSceneMode === "town" &&
@@ -19406,47 +19336,35 @@ export function createWorldScene({
       renderer.shadowMap.needsUpdate = !compactRenderer && !far;
     }
 
-    // The glass tower shell remains visible from every distance. Its complete
-    // furnished interior is useful only near the entrance or while visiting a
-    // floor; omitting it from the aerial view removes hundreds of submissions
-    // that collapse to sub-pixel fragments.
-    const officeDistance = Math.hypot(
-      player.position.x - officeInterior.position.x,
-      player.position.z - officeInterior.position.z,
-    );
-    const showOfficeInterior =
-      officeSceneMode !== "town" || (!far && officeDistance <= 150);
-    officeInterior.visible = showOfficeInterior;
+    // The Office is intentionally a transparent cutaway tower. Keep its walls,
+    // floor slabs, lighting, and furniture visible from the outdoor World at
+    // every camera distance. Once a visitor enters, isolate the active floor
+    // to avoid drawing ten floors through the one they are using.
+    officeInterior.visible = true;
     for (const [floorId, floorGroup] of officeFloorGroups) {
       if (floorId === "lobby") continue;
       floorGroup.visible =
-        showOfficeInterior &&
-        officeSceneMode !== "town" &&
-        floorId === officeCurrentFloorId;
+        officeSceneMode === "town" || floorId === officeCurrentFloorId;
     }
 
-    const repositoryDistrict = landmarkObjects.get("repositories");
-    const organizationDistrict = landmarkObjects.get("organizations");
-    const federationDistrict = landmarkObjects.get("fediverse");
-    ensureAerialLandmarkMarkers().visible = far;
-    const detailTargets = [
-      repositoryDistrict,
-      organizationDistrict,
-      federationDistrict,
-      leaderboardDistrict,
-      startHereBoard,
-      memberPathSign,
-      arrivalBox,
-      systemCapacityPlatform,
-      campfire,
-      officeLandscaping,
-      world.userData.repositorySizeLayer,
-      world.userData.repositoryRecordDeskLayer,
-      world.userData.repositoryActivityLayer,
-    ];
-    detailTargets.forEach((object) =>
-      setFarDetailVisible(object, !far),
-    );
+    // A purely visual LOD helper must never be able to interrupt movement.
+    // Fail it closed once if a future marker asset cannot be constructed; the
+    // full scene remains usable and the animation loop does not retry a broken
+    // allocation on every frame.
+    if (!aerialLandmarkMarkersUnavailable) {
+      try {
+        ensureAerialLandmarkMarkers().visible = far;
+      } catch (error) {
+        aerialLandmarkMarkersUnavailable = true;
+        console.warn("[ForkMesh World] Aerial markers unavailable", {
+          message: String(error?.message || error || "unknown"),
+        });
+      }
+    }
+    // Distance may reduce expensive lighting work, but it must never remove
+    // World content. Repositories, organizations, fediverse displays, every
+    // public board, landscaping, and live repository layers remain visible at
+    // every zoom level so the aerial view is a faithful view of the World.
   }
 
   function updateWorldEnvironment() {
@@ -19481,7 +19399,7 @@ export function createWorldScene({
     state.hemiSky.lerp(new THREE.Color("#dff5ff"), easedDaylight);
     state.hemiGround.lerp(new THREE.Color("#566a48"), easedDaylight);
     state.sun.lerp(new THREE.Color("#fff6d5"), easedDaylight);
-    state.sunPower *= 0.18 + easedDaylight * 0.82;
+    state.sunPower *= 0.04 + easedDaylight * 0.96;
     state.hemiPower *= 0.42 + easedDaylight * 0.58;
     state.exposure *= 0.72 + easedDaylight * 0.28;
     const overlay = LOCAL_ENVIRONMENT_OVERLAYS[currentTheme];
@@ -19500,11 +19418,15 @@ export function createWorldScene({
     sun.color.copy(state.sun);
     sun.intensity =
       state.sunPower * (overlay?.lightMultiplier || 1) * lightMultiplier;
-    sun.position.set(
-      Math.cos(solarAngle) * 92,
-      8 + Math.max(0, Math.sin(solarAngle)) * 82,
-      Math.sin(solarAngle * 0.72) * 58,
-    );
+    const solarX = Math.cos(solarAngle) * 92;
+    const solarY = 8 + Math.max(0, Math.sin(solarAngle)) * 82;
+    const solarZ = Math.sin(solarAngle * 0.72) * 58;
+    sun.position.set(solarX, solarY, solarZ);
+    moon.intensity =
+      (0.08 + (1 - easedDaylight) * 0.9) *
+      (overlay?.lightMultiplier || 1) *
+      lightMultiplier;
+    moon.position.set(-solarX, 44 + (1 - easedDaylight) * 30, -solarZ);
     renderer.toneMappingExposure =
       state.exposure *
       (overlay?.exposureMultiplier || 1) *
@@ -22875,6 +22797,24 @@ export function createWorldScene({
     return true;
   }
 
+  function showAgentTaskBubble(botId, title) {
+    if (!agentBotAccessAllowed) return false;
+    const state = agentBotStates.get(String(botId || "").toLowerCase());
+    const taskTitle = String(title || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 110);
+    if (!state || !taskTitle) return false;
+    state.excitement = null;
+    state.completion = null;
+    state.target.copy(state.avatar.position);
+    state.nextWanderAt = performance.now() + 9000;
+    return showAvatarChatBubble(
+      state.avatar,
+      `New organization task: ${taskTitle}`,
+    );
+  }
+
   function setAgentBotAccess(allowed) {
     agentBotAccessAllowed = allowed === true;
     for (const [botId, avatar] of agentBots.entries()) {
@@ -24307,134 +24247,41 @@ export function createWorldScene({
     return true;
   }
 
-  // Concentric rings of cabinets around the reward pool, innermost first.
-  // Every ring is fully ordered before `count` is sliced, so the prefix is
-  // identical for 2, 20, or 64 nodes: adding one node never shifts survivors.
-  // Live scene keep-outs are optional so the geometry stays directly testable
-  // without constructing WebGL.
-  function rewardCircleSlots(centreX, centreZ, count, options = {}) {
-    const spacing = 3.8;
+  // Concentric complete rings around the centred SOL board. Each populated
+  // ring distributes its current members at equal angular intervals; a join
+  // or deletion deliberately reflows that ring so gaps never accumulate.
+  function rewardCircleSlots(centreX, centreZ, count) {
+    const minimumSpacing = 4.4;
+    const ringGap = 5.4;
     const requested = Math.max(0, Math.min(64, Math.round(Number(count) || 0)));
-    const defaultCampfire = landmarkById("campfire").position;
-    const campfirePosition = Array.isArray(options.campfirePosition)
-      ? options.campfirePosition
-      : defaultCampfire;
-    const campfireClearance = Math.max(
-      8.2,
-      Number(options.campfireClearance) || 0,
-    );
-    const circleKeepouts = [
-      {
-        x: Number(campfirePosition[0]) || 0,
-        z: Number(campfirePosition[2]) || 0,
-        radius: campfireClearance,
-      },
-      ...(Array.isArray(options.circleKeepouts)
-        ? options.circleKeepouts
-        : []),
-    ];
-    const rectangleKeepouts = Array.isArray(options.rectangleKeepouts)
-      ? options.rectangleKeepouts
-      : [];
-    const isWalkable =
-      typeof options.isWalkable === "function"
-        ? options.isWalkable
-        : () => true;
     const slots = [];
-    let radius = 10.8;
-    while (slots.length < requested && radius < Math.min(68, WORLD_RADIUS - 6)) {
+    let remaining = requested;
+    let radius = 20.5;
+    let ringIndex = 0;
+    while (remaining > 0 && radius < Math.min(68, WORLD_RADIUS - 6)) {
       const capacity = Math.max(
         1,
-        Math.floor((Math.PI * 2 * radius) / spacing),
+        Math.floor((Math.PI * 2 * radius) / minimumSpacing),
       );
-      const open = [];
-      for (let index = 0; index < capacity; index += 1) {
-        const angle = (index / capacity) * Math.PI * 2;
-        const x = centreX + Math.cos(angle) * radius;
-        const z = centreZ + Math.sin(angle) * radius;
-        if (!isWalkable(x, z)) continue;
-        if (
-          circleKeepouts.some((keepout) => {
-            const clearance = Math.max(0, Number(keepout?.radius) || 0);
-            return (
-              Math.hypot(
-                x - (Number(keepout?.x) || 0),
-                z - (Number(keepout?.z) || 0),
-              ) < clearance
-            );
-          })
-        ) {
-          continue;
-        }
-        if (
-          rectangleKeepouts.some((keepout) => {
-            const padding = Math.max(0, Number(keepout?.padding) || 0);
-            return (
-              x >= (Number(keepout?.minX) || 0) - padding &&
-              x <= (Number(keepout?.maxX) || 0) + padding &&
-              z >= (Number(keepout?.minZ) || 0) - padding &&
-              z <= (Number(keepout?.maxZ) || 0) + padding
-            );
-          })
-        ) {
-          continue;
-        }
-        open.push({ x, z, angle });
-      }
-
-      // Farthest-point order gives every prefix a balanced spread. It is
-      // computed from the complete obstacle-filtered ring, independent of
-      // `requested`, which is the stability guarantee membership changes need.
-      const ordered = [];
-      const remaining = open.slice();
-      while (remaining.length) {
-        let bestIndex = 0;
-        let bestDistance = -1;
-        let bestBalance = Number.POSITIVE_INFINITY;
-        remaining.forEach((candidate, candidateIndex) => {
-          const nearest = ordered.length
-            ? Math.min(
-                ...ordered.map((selected) =>
-                  Math.hypot(
-                    candidate.x - selected.x,
-                    candidate.z - selected.z,
-                  ),
-                ),
-              )
-            : candidate.angle <= Math.PI
-              ? Math.PI - candidate.angle
-              : candidate.angle - Math.PI;
-          // Equal-distance candidates are common on a ring. Prefer the one
-          // that keeps this prefix's centroid nearest the relocated pool,
-          // rather than consistently breaking ties toward one semicircle.
-          const balance = Math.hypot(
-            ordered.reduce(
-              (sum, selected) => sum + selected.x - centreX,
-              candidate.x - centreX,
-            ),
-            ordered.reduce(
-              (sum, selected) => sum + selected.z - centreZ,
-              candidate.z - centreZ,
-            ),
-          );
-          if (
-            nearest > bestDistance + 1e-9 ||
-            (
-              Math.abs(nearest - bestDistance) <= 1e-9 &&
-              balance < bestBalance - 1e-9
-            )
-          ) {
-            bestIndex = candidateIndex;
-            bestDistance = nearest;
-            bestBalance = balance;
-          }
+      const ringCount = Math.min(remaining, capacity);
+      const angleStep = (Math.PI * 2) / ringCount;
+      // Offset alternate rings so their cabinets do not line up radially.
+      const phase =
+        Math.PI / 4 +
+        Math.PI / ringCount +
+        (ringIndex % 2) * angleStep * 0.5;
+      for (let index = 0; index < ringCount; index += 1) {
+        const angle = phase + index * angleStep;
+        slots.push({
+          x: centreX + Math.cos(angle) * radius,
+          z: centreZ + Math.sin(angle) * radius,
         });
-        ordered.push(remaining.splice(bestIndex, 1)[0]);
       }
-      slots.push(...ordered.map(({ x, z }) => ({ x, z })));
-      radius += 4.2;
+      remaining -= ringCount;
+      radius += ringGap;
+      ringIndex += 1;
     }
-    return slots.slice(0, requested);
+    return slots;
   }
 
   function deleteNetworkNode(target = {}) {
@@ -24509,6 +24356,7 @@ export function createWorldScene({
       };
       animated.push(animateDeletion);
     });
+    if (matches.length) relayoutNetworkNodes();
     return matches.length > 0;
   }
 
@@ -24575,54 +24423,12 @@ export function createWorldScene({
           entry.name.toLowerCase() !== entries[index - 1].name.toLowerCase(),
       )
       .slice(0, 64);
-    const usableIds = new Set(
-      usableNodes.map(({ name }) => `node:${name.toLowerCase()}`),
-    );
-    nodeSlotAssignments.forEach((_slotIndex, id) => {
-      if (!usableIds.has(id)) nodeSlotAssignments.delete(id);
-    });
-    const usedSlotIndexes = new Set(nodeSlotAssignments.values());
-    usableNodes.forEach(({ name }) => {
-      const id = `node:${name.toLowerCase()}`;
-      if (nodeSlotAssignments.has(id)) return;
-      let slotIndex = 0;
-      while (usedSlotIndexes.has(slotIndex) && slotIndex < 64) {
-        slotIndex += 1;
-      }
-      if (slotIndex >= 64) return;
-      nodeSlotAssignments.set(id, slotIndex);
-      usedSlotIndexes.add(slotIndex);
-    });
-    const campfireRadius =
-      Math.max(6.2, Number(campfire.userData.seatRadius) || 0) + 2;
     const circleSlots = rewardCircleSlots(
       routingX,
       routingZ,
-      64,
-      {
-        campfirePosition: [
-          campfire.position.x,
-          campfire.position.y,
-          campfire.position.z,
-        ],
-        campfireClearance: campfireRadius,
-        circleKeepouts: [
-          {
-            x: swingSet.position.x,
-            z: swingSet.position.z,
-            radius: 6.2,
-          },
-        ],
-        rectangleKeepouts: [
-          {
-            ...ARRIVAL_GRID_BOUNDS,
-            padding: 1.8,
-          },
-        ],
-        isWalkable: (x, z) => worldWalkSurfaceContains(x, z, 1.7),
-      },
+      usableNodes.length,
     );
-    usableNodes.forEach(({ node, name: nodeName }) => {
+    usableNodes.forEach(({ node, name: nodeName }, nodeIndex) => {
       const id = `node:${nodeName.toLowerCase()}`;
       const dataKey = nodeDataKey({ ...node, name: nodeName });
       seen.add(id);
@@ -24671,7 +24477,7 @@ export function createWorldScene({
         }
         nodeInfrastructure.set(id, cabinet);
       }
-      const slot = circleSlots[nodeSlotAssignments.get(id)];
+      const slot = circleSlots[nodeIndex];
       if (!slot) return;
       cabinet.position.set(slot.x, 0.38, slot.z);
       // The front display faces inward so each cabinet remains individually
@@ -29622,10 +29428,62 @@ export function createWorldScene({
         diagnosticsDrawingBuffer,
       );
       const memory = performance.memory;
-      console.warn("[ForkMesh World] Render stall detected", {
+      const heapPressure = memory
+        ? memory.usedJSHeapSize / Math.max(1, memory.jsHeapSizeLimit)
+        : 0;
+      const renderCalls = Number(renderer.info?.render?.calls) || 0;
+      const renderedTriangles = Number(renderer.info?.render?.triangles) || 0;
+      let stallAttribution = {
+        component: `${currentSpace} scene`,
+        codeArea: "world-scene animate() update/render pipeline",
+        confidence: "low",
+        evidence: "No single dominant signal; attribution uses the active scene.",
+      };
+      if (pinchActive || primaryPointerId !== null) {
+        stallAttribution = {
+          component: "camera controls",
+          codeArea: "world-scene pointer/pinch camera update",
+          confidence: "medium",
+          evidence: pinchActive
+            ? "A pinch gesture was active across the stalled frame."
+            : "A pointer drag was active across the stalled frame.",
+        };
+      } else if (heapPressure >= 0.72) {
+        stallAttribution = {
+          component: "JavaScript memory management",
+          codeArea: "browser garbage collection / world-scene allocations",
+          confidence: "medium",
+          evidence: `Heap was ${Math.round(heapPressure * 100)}% of its reported limit.`,
+        };
+      } else if (renderCalls >= 450 || renderedTriangles >= 750_000) {
+        stallAttribution = {
+          component: "Three.js renderer workload",
+          codeArea: "renderer.render(scene, camera)",
+          confidence: "medium",
+          evidence: `${renderCalls} draw calls and ${renderedTriangles} triangles were reported.`,
+        };
+      } else if (animated.length >= 180) {
+        stallAttribution = {
+          component: "scene animation workload",
+          codeArea: "world-scene animate() animated object updates",
+          confidence: "medium",
+          evidence: `${animated.length} animated objects were active.`,
+        };
+      } else if (officeSceneMode !== "town") {
+        stallAttribution = {
+          component: `office ${officeSceneMode} scene`,
+          codeArea: "world-scene office movement and environment updates",
+          confidence: "low",
+          evidence: `The active Office scene mode was ${officeSceneMode}.`,
+        };
+      }
+      console.warn(
+        `[ForkMesh World] Render stall detected; we think it was ${stallAttribution.component} (${stallAttribution.codeArea})`,
+        {
         observedAt: new Date().toISOString(),
         frameMs: Math.round(rawFrameMs),
         estimatedMissedFrames: Math.max(0, Math.round(rawFrameMs / 16.67) - 1),
+        likelyCause: stallAttribution,
         detectionPoint: "world-scene animate()",
         cameraMode,
         camera: {
@@ -29654,8 +29512,8 @@ export function createWorldScene({
         renderer: {
           pixelRatio: renderer.getPixelRatio(),
           drawingBuffer: [drawingBuffer.x, drawingBuffer.y],
-          calls: Number(renderer.info?.render?.calls) || 0,
-          triangles: Number(renderer.info?.render?.triangles) || 0,
+          calls: renderCalls,
+          triangles: renderedTriangles,
           geometries: Number(renderer.info?.memory?.geometries) || 0,
           textures: Number(renderer.info?.memory?.textures) || 0,
         },
@@ -29674,7 +29532,8 @@ export function createWorldScene({
         interactiveObjects: interactive.length,
         animatedObjects: animated.length,
         stack: new Error("Render stall observed").stack,
-      });
+        },
+      );
     }
     updateOfficeElevator(time);
     if (officeSceneMode === "town") {
@@ -30345,6 +30204,7 @@ export function createWorldScene({
     setAgentBotAccess,
     exciteAgentBot,
     completeAgentTask,
+    showAgentTaskBubble,
     updateRewardPool,
     playRewardEvent,
     setPaused,

@@ -2147,7 +2147,7 @@
     let teams = [];
     let repos = [];
     let fediverse = { controls: { enabled: true }, repos: [] };
-    let botTokens = { permissions: [], tokens: [] };
+    let botTokens = { permissions: [], tokens: [], usagePreview: [] };
     try {
       const [profileData, membersData, teamsData, reposData] = await Promise.all([
         orgApiRequest("GET", "/api/orgs/" + encodeURIComponent(name)),
@@ -2351,6 +2351,18 @@
               '<p class="mt-2 break-all font-mono text-[10px] text-muted-foreground">' +
                 escapeHtml((token.scopes || []).join(" · ")) + "</p></div>";
           }).join("") || '<p class="text-sm text-muted-foreground">No bot tokens yet.</p>';
+          const usageRows = (botTokens?.usagePreview || []).slice(0, 5).map((usage) =>
+            '<li class="flex items-start justify-between gap-3 rounded-md border border-border bg-background px-3 py-2">' +
+              '<span class="min-w-0"><strong class="block truncate text-xs text-foreground">' +
+                escapeHtml(usage.label || usage.provider || "Bot token") +
+              '</strong><span class="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">' +
+                escapeHtml((usage.method || "GET") + " " + (usage.action || "/api/bot/session")) +
+              "</span></span>" +
+              '<time class="shrink-0 text-[10px] text-muted-foreground" title="' +
+                escapeHtml(formatDate(Number(usage.usedAt || 0))) + '">' +
+                escapeHtml(formatTimeAgo(Number(usage.usedAt || 0))) +
+              "</time></li>"
+          ).join("") || '<li class="text-xs text-muted-foreground">No token use recorded yet.</li>';
           return '<section class="mt-6 rounded-md border border-border bg-card p-4" data-org-bot-tokens>' +
             '<div class="flex items-center gap-2"><i data-lucide="bot" class="h-4 w-4 text-[#58a6ff]"></i>' +
               '<h4 class="text-sm font-semibold text-foreground">Bot tokens</h4></div>' +
@@ -2370,6 +2382,11 @@
             "</form>" +
             '<div data-org-bot-secret hidden class="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-3"></div>' +
             '<div class="mt-4 grid gap-2">' + tokenRows + "</div>" +
+            '<div class="mt-5 border-t border-border pt-4" data-org-bot-usage-preview>' +
+              '<h5 class="text-xs font-semibold text-foreground">Recent token use</h5>' +
+              '<p class="mt-1 text-[11px] leading-4 text-muted-foreground">Latest five successful authentications. The full metadata-only log is available to platform administrators; secrets, bodies, network addresses, and user agents are never logged.</p>' +
+              '<ol class="mt-2 grid gap-2">' + usageRows + "</ol>" +
+            "</div>" +
           "</section>";
         })()
       : "";

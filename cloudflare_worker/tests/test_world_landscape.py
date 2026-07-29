@@ -16,13 +16,15 @@ def test_world_uses_a_mixed_city_and_woodland_surface():
     for contract in (
         '"forkmesh-continuous-city-land"',
         'group.name = "forkmesh-town-mixed-landscape"',
-        '"forkmesh-town-stone-plaza"',
+        '"forkmesh-town-path-junction"',
         "`forkmesh-town-path-${id}`",
         "deterministicTreeLayout().forEach",
-        '"#b29a76"',
         '"/world/assets/city-park-grass-v1.webp"',
     ):
         assert contract in scene
+    assert '"forkmesh-town-stone-plaza"' not in scene
+    assert '"forkmesh-town-plaza-edge"' not in scene
+    assert "forkmesh-town-path-edge-" not in scene
     assert "forkmesh-town-grass-patch" not in scene
     assert 'makeMaterial(THREE, "#174434"' not in scene
 
@@ -48,9 +50,11 @@ def test_repository_and_office_paths_share_the_continuous_grass():
     scene = source()
     for contract in (
         '"hosted-repository-promenade"',
-        '"south-members", [0, 16], [0, MEMBER_PATH_END_Z], 8.4',
+        '"south-members"',
+        "[0, MEMBER_PATH_END_Z]",
         '"forkmesh-leaderboard-promenade"',
-        '"north-office", [0, -16], [0, OFFICE_BRIDGE_START_Z], OFFICE_BRIDGE_WIDTH',
+        '"north-office"',
+        "[0, OFFICE_BRIDGE_START_Z]",
         '"forkmesh-office-bridge"',
         '"forkmesh-office-island-approach"',
         "concreteBrickMaterial(THREE)",
@@ -140,10 +144,10 @@ def test_two_clickable_bikes_use_normal_movement_and_collision():
         assert contract in scene
 
 
-def test_treasury_sign_is_front_centered_with_a_new_window_node_download():
+def test_treasury_sign_is_centered_with_a_new_window_node_download():
     scene = source()
     for contract in (
-        "treasurySign.position.set(0, 0, 10.8)",
+        "treasurySign.position.set(0, 0, 0)",
         '"reward-treasury-start-node-button"',
         '"start-node-download"',
         '"START A NODE"',
@@ -230,3 +234,7 @@ def test_environment_tracks_the_visitors_local_daylight_without_frame_churn():
     assert "const easedDaylight =" in scene
     assert "nextEnvironmentCheckAt = time + 15_000;" in scene
     assert "if (minuteOfDay !== localDaylightMinute)" in scene
+    assert 'moon.name = "forkmesh-world-moonlight"' in scene
+    assert "moon.castShadow = false" in scene
+    assert "scene.add(sun.target)" in scene
+    assert "(1 - easedDaylight) * 0.9" in scene

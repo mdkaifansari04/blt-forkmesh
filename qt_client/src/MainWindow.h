@@ -955,6 +955,8 @@ private:
     void updateNodeOnlineControls();
     // Bottom quick-add issue bar (the network log now lives in its own section).
     QWidget *buildNetworkLogDock();
+    // One-line strip pinned to the very bottom of the window (adhoc #2).
+    QWidget *buildStatusBar();
     // Compact footer queue between the live log and agent prompt. It is always on
     // screen (reading "idle" when nothing is running) and gives each kind of job
     // a spinner plus a one-word tag ("git", "net", "fork" …); past five tags it
@@ -1464,6 +1466,11 @@ private:
     // lazy tab-click path that reuses the last scan of the same repo.
     QWidget *buildSizeMapTab();
     void refreshSizeMapTab(bool force);
+    // Folder the size map scans: m_sizeMapRootOverride when the user picked one
+    // with "Choose folder…", otherwise this repository's working copy.
+    QString sizeMapRoot() const;
+    void chooseSizeMapFolder();
+    void setSizeMapRootOverride(const QString &path);
     QWidget *buildPlaceholderTab(const QString &name);
 
     // Discussions tab (signed repository discussions with inbox fallback).
@@ -1845,15 +1852,9 @@ private:
     // disturbing whatever session is currently selected in the UI.
     void continueAgentSession(int sessionId);
     // Ask the given session's agent to merge base and resolve conflicts, then
-    // resume it. Used by the auto-fix setting below (any idle session whose
-    // branch conflicts with base).
+    // resume it. Driven by the agents list's orange conflict button (adhoc
+    // #446); a no-op while that session is already running or queued.
     void fixAgentConflictsWithAgent(int sessionId);
-    // If kAutoFixAgentConflictsSetting is on and `stat` says session's branch
-    // conflicts with base, automatically triggers fixAgentConflictsWithAgent().
-    // De-duped per session so a conflict that persists across a failed retry
-    // isn't retried forever; the guard clears once the conflict is gone.
-    void maybeAutoFixAgentConflict(const AgentSession &session,
-                                   const AgentDiffStat &stat);
     // Stash the quick-add composer's provider/model/mode dropdowns onto the
     // given session, so the next resume runs with what the user has selected
     // right now. Shared by the follow-up path and the bare "add" (continue,
@@ -4385,9 +4386,12 @@ private:
     // text, so the textChanged handler doesn't mistake the recall for a manual
     // edit and reset the history position.
     bool m_quickAddHistoryNavigating = false;
-    // Centered in the footer: the git identity (name <email>) configured for the
-    // repo currently open in the detail view. Updated by openRepoDetail.
+    // In the bottom status bar: the git identity (name <email>) configured for
+    // the repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
+    // Right of the status bar: where the running executable lives on disk, so
+    // it is obvious which build/checkout the open window came from.
+    QLabel *m_statusAppPath = nullptr;
     // Footer diagnostics: live CPU/memory readout + UI-stall watchdog state.
     QPushButton *m_footerDiagnostics = nullptr;
     // Live one-per-second moving sparklines for CPU, host memory and disk
@@ -4473,6 +4477,12 @@ private:
     QLabel *m_sizeMapStatus = nullptr;
     // Checkbox that drops .gitignored paths from the scan (adhoc #197).
     QCheckBox *m_sizeMapHideIgnored = nullptr;
+    // Folder picked with "Choose folder…" so the map can size any directory on
+    // disk, not just this repository's working copy. Empty means "the working
+    // copy"; the reset button clears it back to that.
+    QString m_sizeMapRootOverride;
+    QLabel *m_sizeMapRootLabel = nullptr;
+    QPushButton *m_sizeMapResetRoot = nullptr;
     QString m_sizeMapScannedPath;
     bool m_sizeMapScanning = false;
     int m_sizeMapScanEpoch = 0;
@@ -5470,10 +5480,6 @@ private:
     bool m_agentDiffStatsRefreshing = false;
     bool m_agentDiffStatsRefreshQueued = false;
     int m_agentDiffStatsGen = 0;
-    // Sessions maybeAutoFixAgentConflict() has already auto-triggered a fix for.
-    // Prevents an unresolved conflict from re-queuing the agent on every refresh;
-    // cleared once the session's AgentDiffStat stops reporting conflicted.
-    QSet<int> m_agentAutoFixAttempted;
     // Re-entrancy guard for refreshAgentTable(): its cold-cache Diff cells shell
     // git and pump the event loop (GitKeepAlive), so a queued slot can re-enter
     // and corrupt the half-built table unless we skip the nested rebuild.
