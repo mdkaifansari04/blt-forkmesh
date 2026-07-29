@@ -19,8 +19,8 @@ function text(value, limit = 160) {
     .slice(0, limit);
 }
 
-function escapeHTML(value) {
-  return text(value, 500)
+function escapeHTML(value, limit = 500) {
+  return text(value, limit)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -86,10 +86,30 @@ function normalizedTask(task) {
   const status = ["active", "done"].includes(task.status)
     ? task.status
     : "idle";
+  const kind = task.kind === "bid" ? "bid" : "task";
+  const bountyAmountSol =
+    kind === "bid" &&
+    /^(?:0|[1-9][0-9]{0,6})(?:\.[0-9]{1,9})?$/.test(
+      String(task.bountyRequest?.amountSol || ""),
+    )
+      ? String(task.bountyRequest.amountSol)
+      : "";
   if (!id || !title || (assigneeKind === "user" && !assignee)) return null;
+  if (kind === "bid" && !bountyAmountSol) return null;
   return {
     id,
+    kind,
     title,
+    details: text(task.details, 4000),
+    createdBy: text(task.createdBy, 64).toLowerCase(),
+    bountyRequest:
+      kind === "bid"
+        ? {
+            currency: "SOL",
+            amountSol: bountyAmountSol,
+            status: "requested",
+          }
+        : null,
     assignee,
     assigneeKind,
     department: text(task.department, 64).toLowerCase() || "general",
@@ -193,6 +213,7 @@ export function createWorldOfficeTasksController({
   postJSON,
   getSession = () => null,
   toast = () => {},
+  onQaVerdict = async () => false,
   random = Math.random,
 }) {
   const panel = root.querySelector("[data-world-office-task-panel]");
@@ -384,26 +405,61 @@ export function createWorldOfficeTasksController({
     const own = task.assigneeKind === "user" && task.assignee === actor;
     const activeTask = task.status === "active";
     const doneTask = task.status === "done";
+    const qaReady = doneTask || task.qa.requestedAt > 0;
+    const qaVerdict =
+      task.qa.status === "passed"
+        ? "pass"
+        : task.qa.status === "failed"
+          ? "fail"
+          : task.qa.reviewer
+            ? "unsure"
+            : "";
+    const qaLabel =
+      qaVerdict === "pass"
+        ? "QA passed"
+        : qaVerdict === "fail"
+          ? "QA failed"
+          : qaVerdict === "unsure"
+            ? "QA unsure"
+            : qaReady
+              ? "Ready for QA"
+              : "";
     const checkinState = checkinLabel(task.lastCheckin?.state);
+    const bid = task.kind === "bid";
+    const bidder = task.createdBy || task.assignee;
     return `
-      <li class="world-office-task" data-status="${doneTask ? "done" : activeTask ? "active" : "idle"}">
+      <li class="world-office-task" data-kind="${bid ? "bid" : "task"}" data-status="${doneTask ? "done" : activeTask ? "active" : "idle"}">
         <div class="world-office-task-copy">
           <span class="world-office-task-state" aria-hidden="true"></span>
           <div>
-            <strong>${escapeHTML(task.title)}</strong>
+            <strong>${
+              bid
+                ? '<span class="world-office-task-bid-badge">Bid</span>'
+                : ""
+            }${escapeHTML(task.title)}</strong>
+            ${
+              task.details
+                ? `<p class="world-office-task-details">${escapeHTML(
+                    task.details,
+                    1000,
+                  )}</p>`
+                : ""
+            }
             <small>
               ${escapeHTML(
-                task.assigneeKind === "user"
-                  ? `@${task.assignee}`
-                  : task.assigneeKind === "unassigned"
-                    ? "Unassigned"
-                    : task.assigneeKind === "codex"
-                      ? "Codex"
-                      : "Claude",
+                bid
+                  ? `${task.bountyRequest.amountSol} SOL bounty requested · bidder @${bidder}`
+                  : task.assigneeKind === "user"
+                    ? `@${task.assignee}`
+                    : task.assigneeKind === "unassigned"
+                      ? "Unassigned"
+                      : task.assigneeKind === "codex"
+                        ? "Codex"
+                        : "Claude",
               )}
               · ${escapeHTML(task.department)}
               ${task.team ? ` / ${escapeHTML(task.team)}` : ""}
-              ${task.destination === "qa" ? ` · QA: ${escapeHTML(task.qa.status)}` : ""}
+              ${qaLabel ? ` · ${escapeHTML(qaLabel)}` : ""}
               ${task.qa.reviewer ? ` by @${escapeHTML(task.qa.reviewer)}` : ""}
               ${doneTask ? " · done" : ""}
               ${checkinState ? ` · last check-in: ${escapeHTML(checkinState)}` : ""}
@@ -433,6 +489,24 @@ export function createWorldOfficeTasksController({
                   data-world-office-task-id="${task.id}"
                   ${busyTaskId === task.id ? "disabled" : ""}
                 >Done</button>`
+              : ""
+          }
+          ${
+            doneTask
+              ? `<span class="world-office-task-qa-actions" role="group" aria-label="QA verdict">
+                  ${["pass", "fail", "unsure"]
+                    .map(
+                      (verdict) => `<button
+                        type="button"
+                        class="world-office-task-qa-${verdict}"
+                        data-world-office-task-action="qa-${verdict}"
+                        data-world-office-task-id="${task.id}"
+                        aria-pressed="${qaVerdict === verdict}"
+                        ${busyTaskId === task.id ? "disabled" : ""}
+                      >${verdict[0].toUpperCase() + verdict.slice(1)}</button>`,
+                    )
+                    .join("")}
+                </span>`
               : ""
           }
           ${
@@ -859,7 +933,30 @@ export function createWorldOfficeTasksController({
     if (!actionButton) return;
     const action = actionButton.dataset.worldOfficeTaskAction;
     const id = safeTaskId(actionButton.dataset.worldOfficeTaskId);
-    if (!id || !["start", "stop", "complete", "delete"].includes(action)) {
+    if (
+      !id ||
+      ![
+        "start", "stop", "complete", "delete",
+        "qa-pass", "qa-fail", "qa-unsure",
+      ].includes(action)
+    ) {
+      return;
+    }
+    if (action.startsWith("qa-")) {
+      const verdict = action.slice(3);
+      const task = tasks.find((item) => item.id === id);
+      if (!task || task.status !== "done") return;
+      busyTaskId = id;
+      render();
+      let saved = false;
+      try {
+        saved = await onQaVerdict({ task, verdict });
+        if (saved) await refresh({ quiet: true });
+      } finally {
+        busyTaskId = "";
+        render();
+      }
+      if (saved) toast(`QA verdict saved: ${verdict}.`);
       return;
     }
     if (
@@ -883,7 +980,7 @@ export function createWorldOfficeTasksController({
           : action === "stop"
             ? "Task timer stopped."
             : action === "complete"
-              ? "Task marked done."
+              ? "Task marked done and ready for QA."
               : "Task deleted.",
       );
     }
@@ -1059,6 +1156,17 @@ export function createWorldOfficeTasksController({
     return true;
   }
 
+  function refreshNow() {
+    if (!getSession()?.sessionToken) return Promise.resolve(false);
+    monitoring = true;
+    if (!tickTimer) {
+      tickTimer = window.setInterval(updateElapsedLabels, OFFICE_TASKS_TICK_MS);
+    }
+    const result = refresh({ quiet: tasks.length > 0 });
+    schedulePoll();
+    return result;
+  }
+
   function setRecentIssues(items = []) {
     const seen = new Set();
     recentIssues = (Array.isArray(items) ? items : [])
@@ -1152,6 +1260,7 @@ export function createWorldOfficeTasksController({
     physicalAction,
     prime,
     refresh,
+    refreshNow,
     setActive,
     setPersonalView,
     setRecentIssues,

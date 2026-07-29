@@ -3932,9 +3932,19 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </div>
 
         <details class="world-diagnostics" data-world-diagnostics ${settings.debugPanel ? "" : "hidden"}>
-          <summary aria-label="Open local World performance and connection details">
-            <span class="world-diagnostics-light" data-world-diagnostics-light data-state="connecting" aria-hidden="true"></span>
-            <strong>DEBUG</strong>
+          <summary aria-label="Open local World performance and connection details" title="World performance">
+            <span class="world-diagnostics-orb" data-world-diagnostics-dots aria-hidden="true">
+              <span data-diagnostic-dot="fps" data-level="caution"></span>
+              <span data-diagnostic-dot="frame" data-level="caution"></span>
+              <span data-diagnostic-dot="draw" data-level="caution"></span>
+              <span data-diagnostic-dot="input" data-level="caution"></span>
+              <span data-diagnostic-dot="network" data-level="caution"></span>
+              <span data-diagnostic-dot="traffic" data-level="good"></span>
+              <span data-diagnostic-dot="queue" data-level="good"></span>
+              <span data-diagnostic-dot="build" data-level="caution"></span>
+              <span data-diagnostic-dot="world" data-level="good"></span>
+            </span>
+            <strong>WORLD DEBUG</strong>
             <span class="world-diagnostics-compact" data-world-diagnostics-summary>
               <span data-world-diagnostics-renderer-compact title="Renderer">R starting</span>
               <span data-world-diagnostics-frame-compact title="Frame health">F sampling</span>
@@ -3969,9 +3979,12 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </details>
 
         <details class="world-diagnostics world-chat-terminal${settings.debugPanel ? "" : " world-chat-terminal--debug-hidden"}" data-world-chat-terminal>
-          <summary aria-label="Open World chat in a terminal panel">
-            <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
-            <strong>CHAT</strong>
+          <summary aria-label="Open World chat and activity">
+            <span class="world-chat-terminal-avatar" data-world-chat-terminal-avatar aria-hidden="true">
+              <img data-world-chat-terminal-avatar-image alt="" hidden>
+              <span data-world-chat-terminal-avatar-initial>#</span>
+            </span>
+            <strong>CHAT + ACTIVITY</strong>
             <span class="world-chat-terminal-channel" aria-label="Current channel"># general</span>
             <span class="world-chat-terminal-lock" aria-label="Public channel is relay protected">▣</span>
             <span class="world-chat-terminal-connection">Connected</span>
@@ -3994,7 +4007,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
         </details>
 
-        <div class="world-toast" data-world-toast role="status"></div>
+        <div class="world-activity-stream" data-world-activity-stream role="log" aria-live="polite" aria-label="Recent World chat, notifications, and status changes"></div>
         <div class="world-swing-panel" data-world-swing-panel hidden>
           <span>
             <strong>Swing speed</strong>
@@ -4814,6 +4827,10 @@ class ForkMeshWorld extends HTMLElement {
     this.rendererRecoveryTimer = 0;
     this.viewportSyncTimer = 0;
     this.lastStableViewportHeight = 0;
+    this.lastStableViewportWidth = 0;
+    this.coarsePointerViewport = Boolean(
+      window.matchMedia?.("(pointer: coarse)")?.matches,
+    );
     this.buildDiagnostics = { version: "", revision: "" };
     this.qaDeck = {
       authenticated: false,
@@ -4989,6 +5006,7 @@ class ForkMeshWorld extends HTMLElement {
     });
     this.addEventListener("touchmove", this.blockWorldPullToRefresh, {
       passive: false,
+      capture: true,
     });
     window.addEventListener("keydown", this.handlePublicInputActivity);
     window.addEventListener("message", this.handleWorldChatMessage);
@@ -5141,7 +5159,15 @@ class ForkMeshWorld extends HTMLElement {
     ].filter(Boolean);
     if (!chatSources.includes(event.source)) return;
     const data = event.data;
-    if (!data || data.type !== "forkmesh:world-chat") return;
+    if (!data) return;
+    if (data.type === "forkmesh:world-activity") {
+      this.activityNotice(data.text, {
+        kind: String(data.kind || "status"),
+        sender: "ForkMesh",
+      });
+      return;
+    }
+    if (data.type !== "forkmesh:world-chat") return;
     const text = String(data.text || "")
       .replace(/\s+/g, " ")
       .trim()
@@ -5224,6 +5250,10 @@ class ForkMeshWorld extends HTMLElement {
     // Replayed history updates only the collapsed CHAT bar — never a bubble,
     // so reconnects do not resurrect old messages above avatars.
     if (data.history === true) return;
+    this.activityNotice(
+      `${sender}: ${text || `Shared ${attachmentName}`}`,
+      { kind: "chat", sender },
+    );
     // Own lines never count as unread — `self` is this browser, `own` also
     // covers the signed-in account talking from another tab or device.
     if (data.self !== true && data.own !== true) this.bumpChatTerminalUnread();
@@ -5739,6 +5769,8 @@ class ForkMeshWorld extends HTMLElement {
         onLobbyLinkKioskSelect: () => void this.openLobbyLinkKiosk(),
         onLobbyFeedbackKioskSelect: () =>
           void this.openLobbyFeedbackKiosk(),
+        onLobbyTaskBidKioskSelect: () =>
+          void this.openLobbyTaskBidKiosk(),
         onSystemCapacityTableSelect: (table) =>
           this.openSystemCapacityTables(table),
         onInfrastructureConsoleToggle: ({ enabled }) =>
@@ -5873,6 +5905,8 @@ class ForkMeshWorld extends HTMLElement {
           this.postJSON(path, body, options),
         getSession: readSession,
         toast: (message) => this.toast(message),
+        onQaVerdict: ({ task, verdict }) =>
+          this.recordTaskQaVerdict(task, verdict),
       });
       this.syncRecentIssueAssignments();
       this.officeController = createWorldOfficeController({
@@ -6608,6 +6642,51 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  async recordTaskQaVerdict(task, verdict) {
+    const taskId = String(task?.id || "").trim().toLowerCase();
+    if (
+      !/^[a-f0-9]{32}$/.test(taskId) ||
+      !["pass", "fail", "unsure"].includes(verdict)
+    ) {
+      return false;
+    }
+    if (!validWorldSession()) {
+      this.toast("Sign in to review completed organization tasks.");
+      return false;
+    }
+    const key = `task:${taskId}`;
+    try {
+      if (!Number(task?.qa?.requestedAt)) {
+        await this.postJSON(
+          `/api/tasks/${encodeURIComponent(taskId)}/qa`,
+          {
+            howToTest:
+              "Open the completed feature and follow its normal user flow. " +
+              "Confirm the requested behavior works, existing behavior did " +
+              "not regress, and no console or network error appears.",
+          },
+          { timeout: 8_000 },
+        );
+      }
+      await this.refreshQaDeck({ quiet: true });
+      const index = this.qaDeck.cards.findIndex((card) => card.key === key);
+      if (index < 0 || !this.qaDeck.authorized) {
+        this.toast(
+          "Join the Quality Assurance team to review completed tasks.",
+        );
+        return false;
+      }
+      this.qaCardIndex = index;
+      this.qaDeckSelectedKey = key;
+      return await this.recordQaVerdict(verdict);
+    } catch (error) {
+      this.toast(
+        String(error?.message || "The QA result could not be saved."),
+      );
+      return false;
+    }
+  }
+
   async refreshOrgAgentBots() {
     if (
       this.destroyed ||
@@ -6810,14 +6889,42 @@ class ForkMeshWorld extends HTMLElement {
     // Hold the last stable viewport until the gesture ends, then reconcile it
     // once without interrupting movement.
     if (this.mobileMovementActive) return;
+    const width = Math.max(
+      240,
+      Math.round(window.innerWidth || document.documentElement.clientWidth || 0),
+    );
+    // On touch devices, address-bar expansion and contraction changes only
+    // the visual viewport height. Resizing the WebGL buffer for that browser
+    // chrome animation clears the frame and looks like a full World refresh.
+    // Keep the mounted buffer stable until the viewport width changes (real
+    // rotation/window resize). Desktop resizes remain fully responsive.
+    if (
+      this.coarsePointerViewport &&
+      this.lastStableViewportWidth > 0 &&
+      Math.abs(width - this.lastStableViewportWidth) < 2
+    ) {
+      return;
+    }
     const commit = () => {
       this.viewportSyncTimer = 0;
       if (this.mobileMovementActive || this.destroyed) return;
+      const committedWidth = Math.max(
+        240,
+        Math.round(
+          window.innerWidth || document.documentElement.clientWidth || 0,
+        ),
+      );
       const height = Math.max(
         240,
         Math.round(window.visualViewport?.height || window.innerHeight || 0),
       );
-      if (Math.abs(height - this.lastStableViewportHeight) < 2) return;
+      if (
+        Math.abs(height - this.lastStableViewportHeight) < 2 &&
+        Math.abs(committedWidth - this.lastStableViewportWidth) < 2
+      ) {
+        return;
+      }
+      this.lastStableViewportWidth = committedWidth;
       this.lastStableViewportHeight = height;
       this.style.setProperty("--world-viewport-height", `${height}px`);
     };
@@ -8347,6 +8454,43 @@ class ForkMeshWorld extends HTMLElement {
 
   bindUI() {
     const chatTerminal = this.$("[data-world-chat-terminal]");
+    const diagnostics = this.$("[data-world-diagnostics]");
+    const hoverCapable = window.matchMedia?.(
+      "(hover: hover) and (pointer: fine)",
+    )?.matches;
+    const wireHoverOrb = (details, onOpen = () => {}) => {
+      if (!details || !hoverCapable) return;
+      let closeTimer = 0;
+      details.addEventListener("pointerenter", () => {
+        window.clearTimeout(closeTimer);
+        details.open = true;
+        onOpen();
+      });
+      details.addEventListener("pointerleave", () => {
+        window.clearTimeout(closeTimer);
+        closeTimer = window.setTimeout(() => {
+          if (!details.matches(":focus-within")) details.open = false;
+        }, 220);
+      });
+      details.addEventListener("focusin", () => {
+        window.clearTimeout(closeTimer);
+        details.open = true;
+        onOpen();
+      });
+      details.addEventListener("focusout", () => {
+        window.clearTimeout(closeTimer);
+        closeTimer = window.setTimeout(() => {
+          if (!details.matches(":focus-within,:hover")) details.open = false;
+        }, 220);
+      });
+    };
+    wireHoverOrb(diagnostics, () => {
+      chatTerminal?.removeAttribute("open");
+    });
+    wireHoverOrb(chatTerminal, () => {
+      diagnostics?.removeAttribute("open");
+      this.loadChatTerminalFrame();
+    });
     chatTerminal?.addEventListener("toggle", () => {
       if (chatTerminal.open) {
         this.$("[data-world-diagnostics]")?.removeAttribute("open");
@@ -20457,8 +20601,47 @@ class ForkMeshWorld extends HTMLElement {
   // bottom strip shows the latest message without opening the panel.
   setChatTerminalLastMessage(sender, text) {
     const label = this.$("[data-world-chat-terminal-last]");
-    if (!label) return;
-    label.textContent = sender ? `${sender}: ${text}` : text;
+    if (label) label.textContent = sender ? `${sender}: ${text}` : text;
+    const summary = this.$("[data-world-chat-terminal] > summary");
+    const cleanSender = String(sender || "Chat").trim().slice(0, 64);
+    const initial = this.$("[data-world-chat-terminal-avatar-initial]");
+    const image = this.$("[data-world-chat-terminal-avatar-image]");
+    if (initial) {
+      initial.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "#";
+    }
+    if (image) {
+      const session = validWorldSession();
+      const own =
+        cleanSender.toLowerCase() ===
+        String(session?.nodeName || "").toLowerCase();
+      const ownPng =
+        own && /^[A-Za-z0-9+/=]+$/.test(String(session?.avatarPng || ""))
+          ? String(session.avatarPng)
+          : "";
+      const member = this.memberDirectory.find(
+        (entry) =>
+          String(entry?.name || "").toLowerCase() === cleanSender.toLowerCase(),
+      );
+      const publicAvatar = safeHTTPURL(member?.avatar || "");
+      const source = ownPng
+        ? `data:image/png;base64,${ownPng}`
+        : publicAvatar;
+      image.onload = () => {
+        image.hidden = false;
+        if (initial) initial.hidden = true;
+      };
+      image.onerror = () => {
+        image.hidden = true;
+        image.removeAttribute("src");
+        if (initial) initial.hidden = false;
+      };
+      if (source) image.src = source;
+      else image.onerror();
+    }
+    summary?.setAttribute(
+      "title",
+      `${cleanSender}: ${String(text || "").slice(0, 160)}`,
+    );
   }
 
   // Unread pill on the collapsed CHAT bar: on mobile the bar shrinks to the
@@ -21713,21 +21896,63 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   toast(message, { priority = 0, lockMs = 0 } = {}) {
-    const element = this.$("[data-world-toast]");
-    if (!element) return;
     const now = performance.now();
     const safePriority = Number.isFinite(priority) ? priority : 0;
     if (now < this.toastLockUntil && safePriority < this.toastPriority) return;
     window.clearTimeout(this.toastTimer);
     this.toastPriority = safePriority;
     this.toastLockUntil = now + Math.max(0, Number(lockMs) || 0);
-    element.textContent = message;
-    element.dataset.open = "true";
+    const copy = String(message || "").trim();
+    const kind =
+      /\b(?:failed|error|unavailable|could not|denied)\b/i.test(copy)
+        ? "error"
+        : /\b(?:saved|ready|complete|success|online)\b/i.test(copy)
+          ? "success"
+          : "status";
+    this.activityNotice(copy, { kind, sender: "ForkMesh" });
     this.toastTimer = window.setTimeout(() => {
-      element.dataset.open = "false";
       this.toastPriority = 0;
       this.toastLockUntil = 0;
-    }, 4200);
+    }, Math.max(10_000, Number(lockMs) || 0));
+  }
+
+  activityNotice(message, { kind = "status", sender = "" } = {}) {
+    const stream = this.$("[data-world-activity-stream]");
+    const copy = String(message || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 280);
+    if (!stream || !copy) return;
+    const article = document.createElement("article");
+    article.dataset.kind = ["chat", "error", "success"].includes(kind)
+      ? kind
+      : "status";
+    const icon = document.createElement("span");
+    icon.className = "world-activity-icon";
+    const cleanSender = String(sender || "ForkMesh").trim().slice(0, 64);
+    const member = this.memberDirectory.find(
+      (entry) =>
+        String(entry?.name || "").toLowerCase() === cleanSender.toLowerCase(),
+    );
+    const publicAvatar = safeHTTPURL(member?.avatar || "");
+    if (publicAvatar) {
+      const image = document.createElement("img");
+      image.alt = "";
+      image.src = publicAvatar;
+      image.onerror = () => {
+        image.remove();
+        icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
+      };
+      icon.append(image);
+    } else {
+      icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
+    }
+    const body = document.createElement("p");
+    body.textContent = copy;
+    article.append(icon, body);
+    stream.prepend(article);
+    while (stream.childElementCount > 6) stream.lastElementChild?.remove();
+    window.setTimeout(() => article.remove(), 10_100);
   }
 
   startTour() {
@@ -22199,6 +22424,55 @@ class ForkMeshWorld extends HTMLElement {
               )
             ? "connecting"
             : "offline";
+    }
+    const worstLevel = (...levels) =>
+      levels.includes("high")
+        ? "high"
+        : levels.includes("caution")
+          ? "caution"
+          : "good";
+    const dotLevels = {
+      fps: renderer ? diagnosticLevel("fps", renderer.fps) : "high",
+      frame: renderer
+        ? worstLevel(
+            diagnosticLevel("longFrames", renderer.longFrames),
+            diagnosticLevel("longestFrameMs", renderer.longestFrameMs),
+          )
+        : "high",
+      draw: renderer
+        ? worstLevel(
+            diagnosticLevel("calls", renderer.calls),
+            diagnosticLevel("triangles", renderer.triangles),
+          )
+        : "high",
+      input: renderer
+        ? worstLevel(
+            diagnosticLevel("movementInputMs", renderer.inputResponseMs),
+            diagnosticLevel("pointerGapMs", renderer.pointerWorstGapMs),
+          )
+        : "high",
+      network: diagnosticStateLevel(connection.state),
+      traffic: worstLevel(
+        diagnosticLevel("frameRate", traffic.inboundRate),
+        diagnosticLevel("frameRate", traffic.outboundRate),
+      ),
+      queue: worstLevel(
+        diagnosticLevel(
+          "coalesced",
+          queues.movementCoalesced + queues.profileCoalesced,
+        ),
+        diagnosticLevel("backpressure", queues.backpressureEvents),
+      ),
+      build: build.version && build.revision ? "good" : "caution",
+      world: renderer?.paused ? "caution" : renderer ? "good" : "high",
+    };
+    for (const [metric, level] of Object.entries(dotLevels)) {
+      const dot = this.$(`[data-diagnostic-dot="${metric}"]`);
+      if (!dot) continue;
+      dot.dataset.level = level;
+      dot.title = `${metric}: ${
+        level === "high" ? "needs attention" : level === "caution" ? "watch" : "healthy"
+      }`;
     }
     const rendererDetail = this.$("[data-world-diagnostics-renderer]");
     if (rendererDetail) {
@@ -23527,6 +23801,115 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  async openLobbyTaskBidKiosk() {
+    if (!validWorldSession()?.sessionToken) {
+      this.toast("Sign in with an organization account to submit a task bid.");
+      this.toggleSettings(true);
+      return;
+    }
+    document.querySelector("[data-world-task-bid-dialog]")?.remove();
+    const dialog = document.createElement("dialog");
+    dialog.dataset.worldTaskBidDialog = "true";
+    dialog.style.cssText =
+      "width:min(680px,calc(100vw - 28px));max-height:min(820px,calc(100vh - 28px));overflow:auto;border:1px solid #e3b341;border-radius:6px;background:#0d1117;color:#f0f6fc;padding:0;box-shadow:0 24px 80px #010409cc";
+    const departments = [
+      ["general", "General"],
+      ["engineering", "Engineering"],
+      ["product-design", "Product + design"],
+      ["marketing", "Marketing"],
+      ["security", "Security"],
+      ["infrastructure", "Infrastructure"],
+      ["community", "Community"],
+      ["partnerships", "Partnerships"],
+      ["operations", "Operations"],
+      ["executive", "Executive"],
+      ["quality-assurance", "Quality assurance"],
+    ];
+    dialog.innerHTML = `
+      <header style="display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:20px 22px;border-bottom:1px solid #30363d;background:#161b22">
+        <div><p style="margin:0 0 5px;color:#e3b341;font:800 12px ForkMesh Mono,monospace;letter-spacing:.08em">OFFICE LOBBY · TASK BOUNTY DESK</p><h2 style="margin:0;font-size:24px">Bid to complete a task</h2></div>
+        <button type="button" data-world-task-bid-close aria-label="Close task bounty desk" style="border:1px solid #30363d;background:#21262d;color:#f0f6fc;font-size:22px;line-height:1;cursor:pointer;width:36px;height:36px">×</button>
+      </header>
+      <form data-world-task-bid-form style="display:grid;gap:14px;padding:22px">
+        <p style="margin:0;color:#8c959f;line-height:1.55">Describe useful organization work and the SOL amount you would want for completing it. Your account is attached as the bidder, and the request appears in the shared task list.</p>
+        <label style="display:grid;gap:7px;font-weight:700"><span>Task</span><input name="title" required minlength="3" maxlength="160" autofocus placeholder="What would you complete?" style="min-height:40px;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:8px 12px;font:14px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"></label>
+        <label style="display:grid;gap:7px;font-weight:700"><span>Details</span><textarea name="details" maxlength="4000" rows="5" placeholder="Scope, deliverables, and anything reviewers should know…" style="resize:vertical;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:10px 12px;font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"></textarea></label>
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px">
+          <label style="display:grid;gap:7px;font-weight:700"><span>Requested bounty (SOL)</span><input name="amountSol" required inputmode="decimal" autocomplete="off" pattern="(?:0|[1-9][0-9]{0,6})(?:\\.[0-9]{1,9})?" placeholder="0.10" style="min-height:40px;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:8px 12px;font:14px/1.4 ForkMesh Mono,monospace"></label>
+          <label style="display:grid;gap:7px;font-weight:700"><span>Department</span><select name="department" style="min-height:40px;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:8px 12px;font:14px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif">${departments
+            .map(
+              ([value, label]) =>
+                `<option value="${value}">${label}</option>`,
+            )
+            .join("")}</select></label>
+        </div>
+        <p style="margin:0;border:1px solid #30363d;background:#161b22;color:#8c959f;padding:10px 12px;font-size:12px;line-height:1.5">This is a compensation request only. ForkMesh does not reserve, custody, or transfer SOL when you submit a bid.</p>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span data-world-task-bid-status role="status" aria-live="polite" style="color:#8c959f;font-size:13px"></span><button type="submit" style="min-height:40px;border:1px solid #2ea043;background:#238636;color:#fff;padding:8px 16px;font-weight:800;cursor:pointer">Submit bid</button></div>
+      </form>`;
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog
+      .querySelector("[data-world-task-bid-close]")
+      ?.addEventListener("click", () => dialog.close());
+    dialog
+      .querySelector("[data-world-task-bid-form]")
+      ?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const values = new FormData(form);
+        const title = String(values.get("title") || "").trim();
+        const details = String(values.get("details") || "").trim();
+        const amountSol = String(values.get("amountSol") || "").trim();
+        const department = String(values.get("department") || "general");
+        const status = form.querySelector("[data-world-task-bid-status]");
+        const submit = form.querySelector('button[type="submit"]');
+        if (
+          title.length < 3 ||
+          !/^(?:0|[1-9][0-9]{0,6})(?:\.[0-9]{1,9})?$/.test(amountSol)
+        ) {
+          if (status) status.textContent = "Enter a task and a valid SOL amount.";
+          return;
+        }
+        submit.disabled = true;
+        if (status) status.textContent = "Submitting encrypted task bid…";
+        try {
+          await this.postJSON(
+            "/api/tasks",
+            {
+              kind: "bid",
+              title,
+              details,
+              bountyAmountSol: amountSol,
+              department,
+              destination: "department",
+              assigneeKind: "user",
+            },
+            { timeout: 10_000 },
+          );
+          await this.officeTasks?.refreshNow?.();
+          if (status) {
+            status.textContent =
+              "Bid added to the organization task list.";
+          }
+          submit.textContent = "Bid submitted";
+          this.toast("Task bid added with its SOL bounty request.");
+          window.setTimeout(() => dialog.open && dialog.close(), 1200);
+        } catch (error) {
+          submit.disabled = false;
+          const reason = String(error?.message || "");
+          if (status) {
+            status.textContent =
+              reason === "org_member_required"
+                ? "Organization membership is required."
+                : reason === "invalid_bounty_request"
+                  ? "Enter a positive SOL amount with at most 9 decimals."
+                  : "The bid could not be submitted. Please try again.";
+          }
+        }
+      });
+    dialog.showModal();
+  }
+
   async openLobbyLinkKiosk() {
     document.querySelector("[data-world-link-kiosk-dialog]")?.remove();
     const dialog = document.createElement("dialog");
@@ -23906,7 +24289,11 @@ class ForkMeshWorld extends HTMLElement {
     window.removeEventListener("storage", this.handleStorage);
     window.removeEventListener("pointerdown", this.handlePublicInputActivity);
     window.removeEventListener("pointermove", this.handlePublicInputActivity);
-    this.removeEventListener("touchmove", this.blockWorldPullToRefresh);
+    this.removeEventListener(
+      "touchmove",
+      this.blockWorldPullToRefresh,
+      true,
+    );
     window.removeEventListener("keydown", this.handlePublicInputActivity);
     window.removeEventListener("message", this.handleWorldChatMessage);
     window.removeEventListener("pagehide", this.handlePageHide);

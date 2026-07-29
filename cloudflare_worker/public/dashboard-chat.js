@@ -89,6 +89,7 @@
   const MAX_ATTACHMENT_NAME = 180;
   const MAX_ATTACHMENT_MIME = 100;
   const MAX_SIDE_MESSAGES = 3;
+  const REACTION_EMOJI = Object.freeze(["👍", "❤️", "😂", "🎉", "👀", "🚀"]);
   const CHAT_MENTION_RE = /(^|[^A-Za-z0-9_-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\b/gi;
 
   const fullLog = document.querySelector("#fullChatMessages");
@@ -96,6 +97,7 @@
   const fullInput = document.querySelector("#fullChatInput");
   const sideInput = document.querySelector("#sideChatInput");
   const fullSend = document.querySelector("#fullChatSend");
+  const fullTaskSend = document.querySelector("#fullChatTaskSend");
   const sideSend = document.querySelector("#sideChatSend");
   const fullChannel = document.querySelector("#fullChatChannel");
   const fullRepository = document.querySelector("#fullChatRepo");
@@ -183,6 +185,9 @@
   let orgAgentAccessLoaded = false;
   const seen = new Set();
   const rows = new Map();
+  // messageId -> Map(emoji -> Map(reactorId -> reactorName)); identical to
+  // the full web/Qt protocol shape so reactions converge across every client.
+  const reactions = new Map();
   const sideEntries = [];
   const attachmentControls = [];
   const attachmentUrls = new Set();
@@ -199,6 +204,7 @@
     if (recentContext.length > RECENT_CONTEXT_MAX) recentContext.shift();
   }
   const mentionProfileCache = new Map();
+  const chatAvatarCache = new Map();
   let mentionCardEl = null;
   let activeMentionAnchor = null;
   let mentionHideTimer = null;
@@ -995,8 +1001,65 @@
     });
   }
 
-  function avatarLetter(handle) {
-    return escapeHtml((handle || "?").slice(0, 1).toUpperCase());
+  function generatedChatFace(handle) {
+    const faces = ["🙂", "😄", "😊", "🤓", "🧐", "😎", "😁", "🤠"];
+    let hash = 2166136261;
+    for (const char of String(handle || "guest").toLowerCase()) {
+      hash ^= char.charCodeAt(0);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return faces[hash % faces.length];
+  }
+
+  function publicChatAvatar(handle) {
+    const name = String(handle || "").trim().toLowerCase();
+    const session = userSession();
+    if (
+      session?.nodeName?.toLowerCase() === name &&
+      String(session.avatarPng || "").length
+    ) {
+      return Promise.resolve(String(session.avatarPng));
+    }
+    if (!/^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) {
+      return Promise.resolve("");
+    }
+    if (chatAvatarCache.has(name)) return chatAvatarCache.get(name);
+    const pending = fetch(`/api/accounts/${encodeURIComponent(name)}`, {
+      headers: { accept: "application/json" },
+    })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((profile) => {
+        const avatar = String(profile?.avatarPng || "");
+        return (
+          profile?.exists === true &&
+          profile?.profilePrivate !== true &&
+          avatar.length <= 350_000 &&
+          /^[A-Za-z0-9+/=]+$/.test(avatar)
+        )
+          ? avatar
+          : "";
+      })
+      .catch(() => "");
+    chatAvatarCache.set(name, pending);
+    return pending;
+  }
+
+  function hydrateChatAvatar(avatar, handle) {
+    if (!avatar) return;
+    const name = String(handle || "guest").trim() || "guest";
+    avatar.textContent =
+      ["forkbot", "claude", "codex"].includes(name.toLowerCase())
+        ? "🤖"
+        : generatedChatFace(name);
+    avatar.setAttribute("aria-label", `${name} avatar`);
+    void publicChatAvatar(name).then((avatarPng) => {
+      if (!avatar.isConnected || !avatarPng) return;
+      const image = document.createElement("img");
+      image.src = `data:image/png;base64,${avatarPng}`;
+      image.alt = "";
+      image.className = "h-full w-full rounded-full object-cover";
+      avatar.replaceChildren(image);
+    });
   }
 
   function fmtChatTime(tsMs) {
@@ -1097,7 +1160,7 @@
     const row = document.createElement("div");
     row.className = "flex items-start gap-3 group rounded-lg px-2 py-1 hover:bg-secondary/40 transition-colors mt-3";
     row.innerHTML = `
-      <span class="avatar flex h-7 w-7 shrink-0 items-center justify-center rounded-full border font-mono text-[11px] font-semibold ${self ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-secondary text-foreground"}">${avatarLetter(who)}</span>
+      <span class="chat-message-avatar avatar flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full border text-base ${self ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-secondary text-foreground"}"></span>
       <div class="min-w-0 flex-1">
         <div class="mb-0.5 flex items-baseline gap-2">
           <span class="text-xs font-semibold ${self ? "text-primary" : "text-foreground"}">${escapeHtml(who)}</span>
@@ -1105,6 +1168,7 @@
         </div>
         <p class="text-sm text-muted-foreground leading-relaxed break-words"></p>
       </div>`;
+    hydrateChatAvatar(row.querySelector(".chat-message-avatar"), who);
     const textEl = row.querySelector("p");
     if (textEl) {
       if (text) appendMentionText(textEl, text);
@@ -1113,6 +1177,9 @@
     const content = row.querySelector(".min-w-0.flex-1");
     const renderedAttachment = renderAttachment(attachment);
     if (content && renderedAttachment) content.append(renderedAttachment);
+    const reactionsEl = document.createElement("div");
+    reactionsEl.className = "chat-reactions";
+    content?.append(reactionsEl);
     fullLog.append(row);
     fullLog.scrollTop = fullLog.scrollHeight;
     if (!id) return;
@@ -1122,12 +1189,14 @@
       senderId: senderId || "",
       textEl,
       contentEl: content,
+      reactionsEl,
       attachment,
       text: text || "",
       self,
     };
     rows.set(id, record);
-    if (self && senderId === selfId) row.append(buildMessageActions(record));
+    row.append(buildMessageActions(record));
+    renderReactions(id);
   }
 
   // ---- edit / delete own messages ----------------------------------------
@@ -1156,14 +1225,135 @@
     // dashboard shell stylesheet (Tailwind's group-hover variant is not in the
     // pre-built dashboard/tailwind.css, so the reveal is hand-written CSS).
     actions.className = "chat-message-actions ml-auto flex shrink-0 items-center gap-1";
-    if (record.text) {
-      actions.append(messageActionButton("Edit", () => beginMessageEdit(record)));
-    }
     actions.append(
-      messageActionButton("Delete", () => requestMessageDelete(record), { danger: true })
+      messageActionButton("React", (event) =>
+        showReactionPicker(record, event.currentTarget), {
+        ariaLabel: "Add reaction",
+      }),
     );
+    if (record.self && record.senderId === selfId) {
+      if (record.text) {
+        actions.append(messageActionButton("Edit", () => beginMessageEdit(record)));
+      }
+      actions.append(
+        messageActionButton("Delete", () => requestMessageDelete(record), { danger: true })
+      );
+    }
     record.actionsEl = actions;
     return actions;
+  }
+
+  let activeReactionPicker = null;
+
+  function reactionKey(plain) {
+    return String(plain.reactorId || plain.senderId || "");
+  }
+
+  function applyReaction(plain) {
+    const target = String(plain.target || "");
+    const emoji = String(plain.emoji || "").slice(0, 8);
+    const reactor = reactionKey(plain);
+    if (!target || !emoji || !reactor) return;
+    const perMessage = reactions.get(target) || new Map();
+    reactions.set(target, perMessage);
+    const perEmoji = perMessage.get(emoji) || new Map();
+    perMessage.set(emoji, perEmoji);
+    if (plain.added) {
+      perEmoji.set(
+        reactor,
+        String(plain.reactorName || plain.sender || "peer").slice(0, MAX_NAME),
+      );
+    } else {
+      perEmoji.delete(reactor);
+    }
+    if (!perEmoji.size) perMessage.delete(emoji);
+    if (!perMessage.size) reactions.delete(target);
+    renderReactions(target);
+  }
+
+  function renderReactions(messageId) {
+    const record = rows.get(messageId);
+    if (!record?.reactionsEl) return;
+    record.reactionsEl.textContent = "";
+    const perMessage = reactions.get(messageId);
+    if (!perMessage) return;
+    for (const [emoji, reactors] of perMessage) {
+      if (!reactors.size) continue;
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className =
+        "chat-reaction-chip" + (reactors.has(selfId) ? " is-mine" : "");
+      chip.title = [...reactors.values()].join(", ");
+      chip.setAttribute(
+        "aria-label",
+        `${emoji} reaction from ${reactors.size} ${
+          reactors.size === 1 ? "person" : "people"
+        }`,
+      );
+      const face = document.createElement("span");
+      face.textContent = emoji;
+      const count = document.createElement("span");
+      count.className = "chat-reaction-count";
+      count.textContent = String(reactors.size);
+      chip.append(face, count);
+      chip.addEventListener("click", () => toggleReaction(messageId, emoji));
+      record.reactionsEl.append(chip);
+    }
+  }
+
+  function toggleReaction(messageId, emoji) {
+    if (!canJoinChat()) {
+      showUserOnlyState();
+      return;
+    }
+    const mine = Boolean(reactions.get(messageId)?.get(emoji)?.has(selfId));
+    const plain = makePlain("reaction", {
+      conversation: CHANNEL_LABEL,
+      target: messageId,
+      emoji,
+      reactorId: selfId,
+      reactorName: displayName(),
+      added: !mine,
+    });
+    seen.add(plain.id);
+    applyReaction(plain);
+    runWhenConnected(() => send(plain));
+  }
+
+  function closeReactionPicker({ restoreFocus = false } = {}) {
+    if (!activeReactionPicker) return;
+    const { element, trigger } = activeReactionPicker;
+    element.remove();
+    activeReactionPicker = null;
+    if (restoreFocus) trigger?.focus();
+  }
+
+  function showReactionPicker(record, trigger) {
+    if (!record?.id || !record.contentEl) return;
+    closeReactionPicker();
+    const picker = document.createElement("div");
+    picker.className = "chat-reaction-picker";
+    picker.setAttribute("role", "toolbar");
+    picker.setAttribute("aria-label", "Choose a reaction");
+    REACTION_EMOJI.forEach((emoji) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = emoji;
+      button.setAttribute("aria-label", `React with ${emoji}`);
+      button.addEventListener("click", () => {
+        toggleReaction(record.id, emoji);
+        closeReactionPicker();
+      });
+      picker.append(button);
+    });
+    picker.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeReactionPicker({ restoreFocus: true });
+    });
+    record.contentEl.append(picker);
+    activeReactionPicker = { element: picker, trigger };
+    picker.querySelector("button")?.focus();
   }
 
   // An "(edited)" marker so a rewritten message never silently replaces what
@@ -1312,7 +1502,7 @@
       const row = document.createElement("div");
       row.className = "flex items-start gap-2 px-1 py-1 rounded-md hover:bg-secondary/40 transition-colors mt-2";
       row.innerHTML = `
-        <span class="avatar flex h-6 w-6 shrink-0 items-center justify-center rounded-full border font-mono text-[10px] font-semibold ${self ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-secondary text-foreground"}">${avatarLetter(message.who)}</span>
+        <span class="chat-message-avatar avatar flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full border text-sm ${self ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-secondary text-foreground"}"></span>
         <div class="min-w-0 flex-1">
           <div class="flex items-baseline gap-1.5">
             <span class="text-[11px] font-semibold ${self ? "text-primary" : "text-foreground"}">${escapeHtml(message.who)}</span>
@@ -1320,6 +1510,7 @@
           </div>
           <p class="text-xs text-muted-foreground leading-relaxed break-words"></p>
         </div>`;
+      hydrateChatAvatar(row.querySelector(".chat-message-avatar"), message.who);
       const textEl = row.querySelector("p");
       if (textEl) {
         if (message.text) appendMentionText(textEl, message.text);
@@ -1371,10 +1562,15 @@
       fullLog.append(row);
       fullLog.scrollTop = fullLog.scrollHeight;
     }
+    emitWorldActivity(text, "status");
   }
 
   function removeMessage(id) {
     const rec = rows.get(id);
+    if (activeReactionPicker?.element && rec?.el?.contains(
+        activeReactionPicker.element)) {
+      closeReactionPicker();
+    }
     if (rec?.el?.parentNode) rec.el.parentNode.removeChild(rec.el);
     if (rec?.attachment) releaseAttachment(rec.attachment);
     rows.delete(id);
@@ -1383,6 +1579,7 @@
       releaseAttachment(sideEntries[idx].attachment);
     }
     if (idx >= 0) sideEntries.splice(idx, 1);
+    reactions.delete(id);
     renderSideMessages();
   }
 
@@ -1416,6 +1613,23 @@
   const WORLD_EMBED_BUBBLES =
     requestedParams.get("worldEmbed") === "1" && window.parent !== window;
   const worldAttachmentPreviewCache = new WeakMap();
+
+  function emitWorldActivity(text, kind = "status") {
+    if (!WORLD_EMBED_BUBBLES) return;
+    const message = String(text || "").replace(/\s+/g, " ").trim().slice(0, 240);
+    if (!message) return;
+    try {
+      window.parent.postMessage(
+        {
+          type: "forkmesh:world-activity",
+          kind: String(kind || "status").slice(0, 24),
+          text: message,
+          ts: Date.now(),
+        },
+        location.origin,
+      );
+    } catch (_) {}
+  }
 
   function worldAttachmentPreview(attachment) {
     if (
@@ -1652,6 +1866,10 @@
       if (plain.channel === CHANNEL) renderChatEntry(plain, "peer", true);
     } else if (type === "history") {
       for (const entry of plain.entries || []) {
+        if (entry?.type && entry.type !== "chat") {
+          handlePlain(entry);
+          continue;
+        }
         if (
           entry &&
           entry.channel === CHANNEL &&
@@ -1660,6 +1878,8 @@
           renderChatEntry(entry, "peer");
         }
       }
+    } else if (type === "reaction") {
+      if (once(plain.id)) applyReaction(plain);
     } else if (type === "edit") {
       const rec = rows.get(plain.target);
       if (rec && rec.senderId === plain.senderId && rec.textEl) {
@@ -2220,6 +2440,7 @@
     for (const control of [
       fullInput,
       fullSend,
+      fullTaskSend,
       fullChannel,
       fullRepository,
       fullAction,
@@ -2262,7 +2483,9 @@
         placeholder: "Describe the implementation task for Claude…",
       },
     }[action] || {};
-    if (fullSendLabel) fullSendLabel.textContent = presentation.label || "Send";
+    if (fullSendLabel) {
+      fullSendLabel.textContent = presentation.label || "Send";
+    }
     if (fullComposerHint) fullComposerHint.textContent = presentation.hint || "";
     fullInput.placeholder = presentation.placeholder || "Write a message…";
     if (taskRouting) taskRouting.hidden = action !== "task";
@@ -2622,7 +2845,9 @@
   function wireInput(inputEl, sendEl) {
     if (!inputEl || !sendEl) return;
     const attachmentControl = mountAttachmentControl(inputEl);
-    sendEl.addEventListener("click", () => sendFrom(inputEl, attachmentControl));
+    sendEl.addEventListener("click", () =>
+      sendFrom(inputEl, attachmentControl),
+    );
     inputEl.addEventListener("paste", (event) => {
       const items = Array.from(event.clipboardData?.items || []);
       const item = items.find((candidate) =>
@@ -2678,6 +2903,22 @@
       }
     });
     inputEl.addEventListener("blur", closeMentionSuggest);
+  }
+
+  function wireTaskSend() {
+    if (!fullTaskSend || !fullAction || !fullInput) return;
+    fullTaskSend.addEventListener("click", () => {
+      if (fullAction.value !== "task") {
+        fullAction.value = "task";
+        syncFullComposerAction();
+        setComposerStatus(
+          "Choose a team, then assign this task to a person or an agent.",
+        );
+        taskDepartment?.focus();
+        return;
+      }
+      void runFullComposerAction(fullInput);
+    });
   }
 
   function mountPrivateChannelsLink() {
@@ -2739,6 +2980,7 @@
     void loadComposerRepositories();
     void loadTaskRouting();
     wireInput(fullInput, fullSend);
+    wireTaskSend();
     wireInput(sideInput, sideSend);
     // Connect right away so the room's message history (replayed by the relay
     // on WebSocket open) is visible without the visitor first focusing an input.

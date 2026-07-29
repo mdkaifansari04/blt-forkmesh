@@ -700,6 +700,22 @@ def test_office_uses_solid_floor_finishes_and_batched_ceiling_light_grids():
     assert "const solidColors = [" in finish
     assert "canvasTexture(" not in finish
     assert "map:" not in finish
+    ceiling_finish = function_body(scene, "officeCeilingFinishMaterial")
+    assert "const solidColors = [" in ceiling_finish
+    assert "transparent: false" in ceiling_finish
+    assert "opacity: 1" in ceiling_finish
+    assert "canvasTexture(" not in ceiling_finish
+    ceiling_surface = function_body(scene, "addOfficeCeilingSurface")
+    assert "forkmesh-office-ceiling-slab-" in ceiling_surface
+    assert (
+        "OFFICE_FLOOR_HEIGHT - OFFICE_LOBBY_SURFACE_Y / 2"
+        in ceiling_surface
+    )
+    assert "elevatorCutMinX" in ceiling_surface
+    assert "elevatorCutMaxX" in ceiling_surface
+    assert "elevatorCutMinZ" in ceiling_surface
+    assert "addOfficeCeilingSurface(" in scene
+    assert 'if (floor.id !== "rooftop")' in scene
     atmosphere_start = scene.index("function addOfficeFloorAtmosphere(")
     atmosphere_end = scene.index(
         'addOfficeFloorAtmosphere(officeInterior, "lobby", 0)',
@@ -1250,6 +1266,19 @@ def test_elevator_animates_between_floors_and_emits_departure_and_arrival_audio(
         "officeCurrentFloorId = ride.floorId",
         'currentSpace = `office-${ride.floorId}`',
         'onOfficeElevatorSound("arrive"',
+    ):
+        assert contract in scene
+
+
+def test_every_non_lobby_floor_has_a_return_to_lobby_portal():
+    scene = source(SCENE_PATH)
+    for contract in (
+        "forkmesh-office-${floor.id}-lobby-portal",
+        '"office-lobby-return-portal"',
+        '"LOBBY PORTAL"',
+        '"CLICK TO RETURN"',
+        'warpToOfficeFloor("lobby")',
+        "OFFICE_FLOORS.slice(1).forEach",
     ):
         assert contract in scene
 

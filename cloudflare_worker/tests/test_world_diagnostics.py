@@ -115,6 +115,9 @@ def test_mobile_renderer_has_low_memory_and_page_lifecycle_recovery():
     assert "compactRenderer ? 1" in SCENE
     assert '"webglcontextlost"' in SCENE
     assert '"webglcontextrestored"' in SCENE
+    assert "event.preventDefault();" in SCENE
+    assert "renderer.resetState();" in SCENE
+    assert "renderer.shadowMap.needsUpdate = renderer.shadowMap.enabled;" in SCENE
     assert 'onRendererStateChange("lost")' in SCENE
     assert 'onRendererStateChange("restored")' in SCENE
     assert 'window.addEventListener("pagehide", this.handlePageHide);' in APP

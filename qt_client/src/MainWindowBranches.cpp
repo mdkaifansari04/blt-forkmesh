@@ -4068,9 +4068,23 @@ void MainWindow::updateBranchFromBase(const QString &branch)
         box.setDetailedText(files.join('\n'));
         QPushButton *stashBtn = box.addButton(
             QStringLiteral("Stash, update & restore"), QMessageBox::AcceptRole);
+        // Third way out: the user may just want to look at (or commit) those
+        // files first. Send them to the commits view, whose working-changes
+        // panel lists exactly these paths, instead of making them find it.
+        QPushButton *reviewBtn = box.addButton(QStringLiteral("Review changes"),
+                                               QMessageBox::ActionRole);
         box.addButton(QMessageBox::Cancel);
         box.setDefaultButton(stashBtn);
         box.exec();
+        if (box.clickedButton() == reviewBtn) {
+            setRepoDetailNotice(
+                QStringLiteral("Left %1 unchanged — review its %2 uncommitted file%3 "
+                               "below, then update from %4.")
+                    .arg(branch, n, plural, base));
+            showOverviewCommits(); // the commits panel inside the Code overview
+            loadCommits();         // refresh history + the working-changes panel
+            return;
+        }
         if (box.clickedButton() != stashBtn) {
             setRepoDetailNotice(
                 QStringLiteral("Left %1 unchanged; commit or stash its %2 uncommitted "

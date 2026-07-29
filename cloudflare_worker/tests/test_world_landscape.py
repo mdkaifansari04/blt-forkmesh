@@ -144,6 +144,26 @@ def test_two_clickable_bikes_use_normal_movement_and_collision():
         assert contract in scene
 
 
+def test_clickable_quadcopter_flies_on_three_axes_to_a_bounded_high_altitude():
+    scene = source()
+    for contract in (
+        'quadcopter.name = "forkmesh-world-quadcopter"',
+        "const QUADCOPTER_HORIZONTAL_SPEED = 42",
+        "const QUADCOPTER_VERTICAL_SPEED = 28",
+        "const QUADCOPTER_MAX_ALTITUDE = 480",
+        "function rideQuadcopter(index)",
+        "function dismountQuadcopter(",
+        "function toggleNearestQuadcopterRide()",
+        "function updateQuadcopterRide(input, delta, time)",
+        '["Space", "KeyC", "ControlLeft", "ControlRight"]',
+        "hit.object.userData.quadcopterIndex",
+        "prepareRoofParachute()",
+        "QUADCOPTER_RIDING_ACTIVITY",
+        "getQuadcopterState:",
+    ):
+        assert contract in scene
+
+
 def test_treasury_sign_is_centered_with_a_new_window_node_download():
     scene = source()
     for contract in (

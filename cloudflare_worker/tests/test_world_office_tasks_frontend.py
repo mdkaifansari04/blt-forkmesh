@@ -220,6 +220,24 @@ def test_assignment_control_has_explicit_contrast_and_tasks_can_finish_or_delete
     assert '.world-office-task[data-status="done"]' in css
 
 
+def test_completed_tasks_are_ready_for_qa_with_three_verdict_controls():
+    tasks = source(TASKS)
+    world = source(WORLD)
+    css = source(CSS)
+    for contract in (
+        '"Ready for QA"',
+        'data-world-office-task-action="qa-${verdict}"',
+        '["pass", "fail", "unsure"]',
+        "onQaVerdict({ task, verdict })",
+        "Task marked done and ready for QA.",
+    ):
+        assert contract in tasks
+    assert "this.recordTaskQaVerdict(task, verdict)" in world
+    assert "async recordTaskQaVerdict(task, verdict)" in world
+    assert "this.recordQaVerdict(verdict)" in world
+    assert ".world-office-task-qa-actions" in css
+
+
 def test_marketing_members_can_add_private_proof_from_their_own_desk():
     tasks = source(TASKS)
     scene = source(SCENE)
@@ -271,6 +289,43 @@ def test_task_text_is_bounded_and_html_escaped_before_rendering():
     assert "`@${task.assignee}`" in tasks
     assert "escapeHTML(" in tasks
     assert "safeTaskId" in tasks
+
+
+def test_lobby_task_bounty_desk_creates_visible_non_custodial_bids():
+    world = source(WORLD)
+    scene = source(SCENE)
+    tasks = source(TASKS)
+    css = source(CSS)
+    for contract in (
+        "async openLobbyTaskBidKiosk()",
+        'data-world-task-bid-form',
+        'kind: "bid"',
+        "bountyAmountSol: amountSol",
+        '"/api/tasks"',
+        "This is a compensation request only.",
+        "does not reserve, custody, or transfer SOL",
+        "this.officeTasks?.refreshNow?.()",
+    ):
+        assert contract in world
+    for contract in (
+        '"forkmesh-office-task-bid-kiosk"',
+        '"TASK BOUNTY DESK"',
+        '"office-task-bid-kiosk"',
+        "onLobbyTaskBidKioskSelect()",
+        '"REQUEST ONLY · NO FUNDS HELD"',
+        '{ key: "task:lobby-task-bounties"',
+    ):
+        assert contract in scene
+    for contract in (
+        'const kind = task.kind === "bid" ? "bid" : "task"',
+        'data-kind="${bid ? "bid" : "task"}"',
+        "SOL bounty requested · bidder @",
+        "world-office-task-bid-badge",
+        "function refreshNow()",
+    ):
+        assert contract in tasks
+    assert '.world-office-task[data-kind="bid"]' in css
+    assert ".world-office-task-bid-badge" in css
 
 
 def test_task_panel_is_overlayed_responsive_and_reduced_motion_safe():

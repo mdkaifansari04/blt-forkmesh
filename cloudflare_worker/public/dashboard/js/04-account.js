@@ -474,7 +474,7 @@
       tone + '">' + escapeHtml(clean) + "</span>";
   }
 
-  function orgMemberFloorGroups(member) {
+  function orgMemberFloorGroups(member, canManage) {
     const teams = new Set(
       (Array.isArray(member?.teams) ? member.teams : [])
         .map((team) => String(team || "").trim().toLowerCase())
@@ -485,16 +485,25 @@
       const active = matchingTeams.length > 0;
       const state = active ? "In group" : "Available";
       const title = active
-        ? group.label + " floor through " + matchingTeams.join(", ")
-        : group.label + " floor group is available";
-      return '<span title="' + escapeHtml(title) + '" aria-label="' +
-        escapeHtml(group.label + ": " + state) + '" class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold ' +
+        ? "Remove from " + group.label + " (" + matchingTeams.join(", ") + ")"
+        : "Add to " + group.label;
+      const tag = canManage ? "button" : "span";
+      const controls = canManage
+        ? ' type="button" data-org-member-floor-group="' + escapeHtml(group.id) +
+          '" data-org-member="' + escapeHtml(member?.name || "") +
+          '" aria-pressed="' + (active ? "true" : "false") + '"'
+        : "";
+      return "<" + tag + controls + ' title="' + escapeHtml(title) + '" aria-label="' +
+        escapeHtml(group.label + ": " + state) + '" class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold transition-colors ' +
         (active
           ? "border-[#238636]/50 bg-[#238636]/10 text-[#238636]"
-          : "border-border bg-background text-muted-foreground") + '">' +
+          : "border-border bg-background text-muted-foreground") +
+        (canManage
+          ? " cursor-pointer hover:border-[#2f81f7]/70 hover:bg-[#2f81f7]/10 hover:text-[#2f81f7] disabled:cursor-wait disabled:opacity-60"
+          : "") + '">' +
         '<span aria-hidden="true" class="h-1.5 w-1.5 rounded-full ' +
         (active ? "bg-[#238636]" : "bg-muted-foreground/40") + '"></span>' +
-        escapeHtml(group.label) + "</span>";
+        escapeHtml(group.label) + "</" + tag + ">";
     }).join("");
     const activeCount = ORG_OFFICE_FLOOR_GROUPS.filter(
       (group) => group.aliases.some((team) => teams.has(team)),
@@ -689,7 +698,7 @@
           '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName + "</span>" +
           controls +
         "</div>" +
-        (canManage ? orgMemberFloorGroups(member) : "") +
+        orgMemberFloorGroups(member, canManage) +
       "</div>";
     }).join("") || '<p class="text-sm text-muted-foreground">No members.</p>';
 
@@ -900,10 +909,10 @@
       botTokenControls;
 
     window.lucide?.createIcons();
-    wireOrgDetail(root, name, members);
+    wireOrgDetail(root, name, members, teams);
   }
 
-  function wireOrgDetail(root, name, members) {
+  function wireOrgDetail(root, name, members, teams) {
     const reload = () => showOrgDetail(name);
     const guard = async (fn) => {
       try {
@@ -955,6 +964,56 @@
         const member = button.dataset.orgMemberRemove;
         if (!window.confirm("Remove " + member + " from " + name + "?")) return;
         guard(() => orgApiRequest("DELETE", "/api/orgs/" + encodeURIComponent(name) + "/members", { member }));
+      });
+    });
+    root.querySelectorAll("[data-org-member-floor-group]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const member = String(button.dataset.orgMember || "").trim().toLowerCase();
+        const groupId = String(button.dataset.orgMemberFloorGroup || "");
+        const group = ORG_OFFICE_FLOOR_GROUPS.find((item) => item.id === groupId);
+        const memberRecord = members.find(
+          (item) => String(item?.name || "").trim().toLowerCase() === member);
+        if (!member || !group || !memberRecord) return;
+        const memberships = new Set(
+          (Array.isArray(memberRecord.teams) ? memberRecord.teams : [])
+            .map((team) => String(team || "").trim().toLowerCase())
+            .filter(Boolean),
+        );
+        const matchingTeams = group.aliases.filter((team) => memberships.has(team));
+        const knownTeams = new Set(
+          (Array.isArray(teams) ? teams : [])
+            .map((team) => String(team?.team || "").trim().toLowerCase())
+            .filter(Boolean),
+        );
+        button.disabled = true;
+        button.setAttribute("aria-busy", "true");
+        guard(async () => {
+          if (matchingTeams.length) {
+            for (const team of matchingTeams) {
+              await orgApiRequest(
+                "DELETE",
+                "/api/orgs/" + encodeURIComponent(name) + "/teams/" +
+                  encodeURIComponent(team) + "/members",
+                { member },
+              );
+            }
+            return;
+          }
+          const team = group.id;
+          if (!knownTeams.has(team)) {
+            await orgApiRequest(
+              "POST",
+              "/api/orgs/" + encodeURIComponent(name) + "/teams",
+              { team, permission: "read" },
+            );
+          }
+          await orgApiRequest(
+            "POST",
+            "/api/orgs/" + encodeURIComponent(name) + "/teams/" +
+              encodeURIComponent(team) + "/members",
+            { member },
+          );
+        });
       });
     });
 

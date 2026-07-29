@@ -79,6 +79,11 @@ const WORLD_BIKE_LANE_CENTER_Z = CONTINUOUS_CITY_CENTER_Z;
 const WORLD_BIKE_MOUNT_DISTANCE = 5;
 const CAR_RIDE_SPEED_MULTIPLIER = 3.2;
 const CAR_RIDING_ACTIVITY = "driving the beach road";
+const QUADCOPTER_HORIZONTAL_SPEED = 42;
+const QUADCOPTER_VERTICAL_SPEED = 28;
+const QUADCOPTER_MAX_ALTITUDE = 480;
+const QUADCOPTER_MOUNT_DISTANCE = 7;
+const QUADCOPTER_RIDING_ACTIVITY = "flying the World quadcopter";
 // Double-clicking the ground sends the avatar to that spot at a dash speed far
 // above the walking cap, so crossing the whole square takes a couple of seconds
 // without teleporting the avatar out from under the camera.
@@ -144,6 +149,12 @@ const OFFICE_INTERIOR_EXIT_Z =
 const OFFICE_ELEVATOR_HALF_WIDTH = 5;
 const OFFICE_ELEVATOR_HALF_DEPTH = 4;
 const OFFICE_ELEVATOR_CUT_MARGIN = 0.35;
+const OFFICE_FLOOR_WARP_DOOR_WIDTH = 5.3;
+const OFFICE_FLOOR_WARP_DOOR_HEIGHT = 5.8;
+const OFFICE_FLOOR_WARP_DOOR_SPACING = 5.95;
+const OFFICE_FLOOR_WARP_DOOR_START_X = -81.2;
+const OFFICE_FLOOR_WARP_DOOR_Z = -OFFICE_DEPTH / 2 + 0.34;
+const OFFICE_FLOOR_WARP_TRIGGER_Z = -OFFICE_DEPTH / 2 + 1.18;
 // The reef is a scene-owned lobby exhibit rather than part of the reusable
 // tower shell. Keep its physical footprint beside its scene integration so
 // every movement path observes the same cabinet and glass boundary.
@@ -3066,12 +3077,14 @@ function officeReclaimedWoodTexture(THREE) {
 // the active implementation queue in a fixed, readable grid. Keep the ordering
 // stable so a repaint never makes cards jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
+  { key: "task:lobby-task-bounties", task: "Lobby task bounty bidding desk", detail: "Organization members can propose scoped work in the lobby, name an exact SOL compensation request, and publish the encrypted record into the shared task catalog as a clearly labeled bid. The request is non-custodial and records no transfer or reserved funds.", estimate: "implemented · focused QA", done: true },
+  { key: "task:world-orb-hud", task: "Compact debug + unified activity orbs", detail: "Replaced the bottom bars with logo-sized status circles. DEBUG summarizes every performance grade as green, yellow, or red dots and expands on hover or focus. CHAT shows the latest speaker and unread count, then opens a translucent channel composer with image attachment, separate chat/task actions, human-or-agent routing, team categorization, and a ten-second unified activity stream.", estimate: "deployed · ready for QA", done: true },
   { key: "task:avatar-selection-runtime", task: "Reliable user HUD selection", detail: "Avatar clicks use a scoped frame timestamp, prefer the visible avatar hit over nearby geometry, and open the privacy-filtered member side panel without throwing.", estimate: "implemented · focused QA", done: true },
   { key: "task:member-circle-fire", task: "Dirt Members Circle + growing fire", detail: "The complete member seating circle sits on detailed dirt; every member adds one visible log and slightly increases the bounded campfire scale.", estimate: "implemented · focused QA", done: true },
   { key: "task:aquarium-fixed-controls", task: "Tank-fixed reef controls", detail: "Feed, tap, backdrop, and light controls stay anchored to the aquarium's lower-right control point instead of floating with the player.", estimate: "implemented · focused QA", done: true },
   { key: "task:recent-public-chat-card", task: "Recent public chat on chest", detail: "Each avatar chest includes one sanitized line from that account's latest public-channel message; private and direct messages never enter the card.", estimate: "implemented · focused QA", done: true },
   { key: "task:verification-pin-state", task: "Green verified pin / red unverified X", detail: "Every signed-in avatar shows a green check when email-verified and a red X in the same front pin when unverified; guests remain neutral.", estimate: "implemented · focused QA", done: true },
-  { key: "task:office-floor-warps", task: "Lobby floor warp hub", detail: "A compact set of ten labeled portal pads left of Noah's lobby desk jumps authorized visitors directly to each accessible floor.", estimate: "implemented · focused QA", done: true },
+  { key: "task:office-floor-warps", task: "Walk-through floor doorways", detail: "Ten straight, wall-mounted lobby doorways sit left of Noah's desk. Walking through an authorized doorway changes floors; inaccessible floors stay visibly closed and cannot be crossed.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-console-cleanup", task: "World console runtime cleanup", detail: "Asset preloads share the texture loader's CORS mode, external avatar failures use stable initial art, and unavailable Actions summaries return retryable application state instead of repeating HTTP 503s.", estimate: "implemented · focused QA", done: true },
   { key: "task:admin-record-detail", task: "Admin database record detail pages", detail: "Every visible database row opens a read-only page that lists the complete redacted record vertically, with a clear route back to its table.", estimate: "implemented · focused QA", done: true },
   { key: "task:member-verification-admin-link", task: "Member verification + admin detail", detail: "Member panels show a red X for every non-guest account without a verified email, and the privileged admin-detail action opens safely in a new tab.", estimate: "implemented · focused QA", done: true },
@@ -5338,16 +5351,6 @@ function createAvatar(THREE, identity, options = {}) {
   head.scale.y = 1.05;
   head.position.y = 3.36;
   group.add(head);
-
-  const hair = new THREE.Mesh(
-    new THREE.SphereGeometry(0.47, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.52),
-    dark,
-  );
-  hair.position.set(0, 3.46, 0.07);
-  // Tilted back so the cap clears the forehead and the wrapped emoji face
-  // has the whole front of the head to itself.
-  hair.rotation.x = 0.42;
-  group.add(hair);
 
   // The face wears the last world-status emoji the visitor set (default
   // smile). Avatar fronts face -Z; the emoji is mapped onto a thin curved
@@ -14021,6 +14024,7 @@ export function createWorldScene({
   onSiteReferrerOpen = () => {},
   onLobbyLinkKioskSelect = () => {},
   onLobbyFeedbackKioskSelect = () => {},
+  onLobbyTaskBidKioskSelect = () => {},
   onSystemCapacityTableSelect = () => {},
   onInfrastructureConsoleToggle = () => {},
   onBuildBoardNearby = () => {},
@@ -14102,11 +14106,31 @@ export function createWorldScene({
   renderer.domElement.dataset.cameraMode = "third-person";
   renderer.domElement.dataset.dragging = "false";
   container.appendChild(renderer.domElement);
-  const handleContextLost = () => {
+  const handleContextLost = (event) => {
+    // preventDefault opts into WebGL's restoration path. Without it, a
+    // transient mobile GPU reset can leave partially redrawn "scratchy"
+    // geometry in place until the whole page is reloaded.
+    event.preventDefault();
     onRendererStateChange("lost");
   };
   const handleContextRestored = () => {
+    renderer.resetState();
+    renderer.info.reset();
+    renderer.shadowMap.needsUpdate = renderer.shadowMap.enabled;
+    scene.traverse((object) => {
+      if (!object.isMesh) return;
+      const materials = Array.isArray(object.material)
+        ? object.material
+        : [object.material];
+      materials.filter(Boolean).forEach((material) => {
+        material.needsUpdate = true;
+        if (material.map) material.map.needsUpdate = true;
+      });
+    });
     resize();
+    running = true;
+    lastFrame = performance.now();
+    renderer.setAnimationLoop(animate);
     onRendererStateChange("restored");
   };
   renderer.domElement.addEventListener(
@@ -14670,6 +14694,91 @@ export function createWorldScene({
     carStates.push({ car, wheels, moving: false });
   }
   addBeachCar();
+
+  // One lightweight, person-sized quadcopter waits beside the Town Square.
+  // It is deliberately built from a handful of low-segment primitives: the
+  // rotors remain legible nearby without adding meaningful cost to aerial or
+  // map-scale views.
+  const quadcopterStates = [];
+  function addWorldQuadcopter() {
+    const quadcopter = new THREE.Group();
+    quadcopter.name = "forkmesh-world-quadcopter";
+    const frameMaterial = makeMaterial(THREE, "#1f6feb", {
+      metalness: 0.62,
+      roughness: 0.28,
+    });
+    const darkMaterial = makeMaterial(THREE, "#161b22", {
+      metalness: 0.42,
+      roughness: 0.5,
+    });
+    const lightMaterial = makeMaterial(THREE, "#79c0ff", {
+      emissive: "#1f6feb",
+      emissiveIntensity: 1.15,
+      roughness: 0.22,
+    });
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.25, 1.45, 0.58, 12),
+      frameMaterial,
+    );
+    body.position.y = 0.52;
+    quadcopter.add(body);
+    const seat = new THREE.Mesh(
+      new THREE.BoxGeometry(0.82, 0.18, 0.92),
+      darkMaterial,
+    );
+    seat.position.set(0, 0.94, 0);
+    quadcopter.add(seat);
+    const rotors = [];
+    for (const [x, z] of [
+      [-2.25, -2.25],
+      [2.25, -2.25],
+      [-2.25, 2.25],
+      [2.25, 2.25],
+    ]) {
+      const arm = new THREE.Mesh(
+        new THREE.BoxGeometry(0.18, 0.14, 3.05),
+        frameMaterial,
+      );
+      arm.position.set(x * 0.5, 0.62, z * 0.5);
+      arm.rotation.y = Math.atan2(x, z);
+      quadcopter.add(arm);
+      const motor = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.32, 0.38, 0.34, 10),
+        darkMaterial,
+      );
+      motor.position.set(x, 0.72, z);
+      quadcopter.add(motor);
+      const rotor = new THREE.Mesh(
+        new THREE.BoxGeometry(3.1, 0.045, 0.16),
+        lightMaterial,
+      );
+      rotor.position.set(x, 0.96, z);
+      rotor.userData.quadcopterIndex = 0;
+      quadcopter.add(rotor);
+      rotors.push(rotor);
+    }
+    const landingLight = new THREE.Mesh(
+      new THREE.SphereGeometry(0.22, 10, 7),
+      lightMaterial,
+    );
+    landingLight.position.set(0, 0.34, -1.32);
+    quadcopter.add(landingLight);
+    quadcopter.position.set(-34, 0.24, -42);
+    quadcopter.traverse((child) => {
+      if (!child.isMesh) return;
+      child.userData.quadcopterIndex = 0;
+      interactive.push(child);
+    });
+    setShadows(quadcopter);
+    world.add(quadcopter);
+    quadcopterStates.push({
+      quadcopter,
+      rotors,
+      seat,
+      moving: false,
+    });
+  }
+  addWorldQuadcopter();
 
   // Every repository imported from an external provider lives on its own
   // district, whether it is already hosted by a mirror or remains an external
@@ -16251,7 +16360,26 @@ export function createWorldScene({
       },
     );
   }
+  function officeCeilingFinishMaterial(index = 0, lobby = false) {
+    const solidColors = ["#31433d", "#334247", "#454235", "#473842"];
+    return makeMaterial(
+      THREE,
+      lobby
+        ? "#354a43"
+        : solidColors[index % solidColors.length],
+      {
+        emissive: lobby ? "#16332a" : "#17231f",
+        emissiveIntensity: 0.035,
+        metalness: 0.02,
+        roughness: 0.94,
+        transparent: false,
+        opacity: 1,
+      },
+    );
+  }
   const officeLobbyFloorMaterial = officeFloorFinishMaterial(0, true);
+  const officeLobbyCeilingMaterial =
+    officeCeilingFinishMaterial(0, true);
   const officeFloorGroups = new Map([["lobby", officeInterior]]);
   const officeFloorAccent = makeMaterial(THREE, "#67efb1", {
     emissive: "#1a9a68",
@@ -16317,7 +16445,57 @@ export function createWorldScene({
       parent.add(slab);
     });
   }
+  function addOfficeCeilingSurface(parent, material) {
+    const minX = -OFFICE_WIDTH / 2;
+    const maxX = OFFICE_WIDTH / 2;
+    const minZ = -OFFICE_DEPTH / 2;
+    const maxZ = OFFICE_DEPTH / 2;
+    const segments = [
+      {
+        minX,
+        maxX,
+        minZ,
+        maxZ: elevatorCutMinZ,
+      },
+      {
+        minX,
+        maxX: elevatorCutMinX,
+        minZ: elevatorCutMinZ,
+        maxZ,
+      },
+      {
+        minX: elevatorCutMaxX,
+        maxX,
+        minZ: elevatorCutMinZ,
+        maxZ,
+      },
+    ];
+    segments.forEach((segment, index) => {
+      const ceiling = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          segment.maxX - segment.minX,
+          OFFICE_LOBBY_SURFACE_Y,
+          segment.maxZ - segment.minZ,
+        ),
+        material,
+      );
+      ceiling.name =
+        `forkmesh-office-ceiling-slab-` +
+        `${parent.userData.officeFloorId || "lobby"}-${index + 1}`;
+      ceiling.position.set(
+        (segment.minX + segment.maxX) / 2,
+        OFFICE_FLOOR_HEIGHT - OFFICE_LOBBY_SURFACE_Y / 2,
+        (segment.minZ + segment.maxZ) / 2,
+      );
+      ceiling.receiveShadow = true;
+      parent.add(ceiling);
+    });
+  }
   addOfficeFloorSurface(officeInterior, officeLobbyFloorMaterial);
+  addOfficeCeilingSurface(
+    officeInterior,
+    officeLobbyCeilingMaterial,
+  );
   function addOfficeFloorAtmosphere(
     floorGroup,
     floorId,
@@ -16653,10 +16831,17 @@ export function createWorldScene({
     floorGroup.name = `forkmesh-office-floor-${floor.id}`;
     floorGroup.position.y = officeFloorY(floor.id);
     floorGroup.userData.officeFloorId = floor.id;
+    const floorFinish = officeFloorFinishMaterial(interiorIndex + 1);
     addOfficeFloorSurface(
       floorGroup,
-      officeFloorFinishMaterial(interiorIndex + 1),
+      floorFinish,
     );
+    if (floor.id !== "rooftop") {
+      addOfficeCeilingSurface(
+        floorGroup,
+        officeCeilingFinishMaterial(interiorIndex + 1),
+      );
+    }
     const sign = makeOfficeWallPlacard(
       THREE,
       `${floor.level + 1} · ${floor.label.toUpperCase()}`,
@@ -16679,6 +16864,51 @@ export function createWorldScene({
       floor.id,
       interiorIndex + 1,
     );
+    const lobbyPortal = new THREE.Group();
+    lobbyPortal.name = `forkmesh-office-${floor.id}-lobby-portal`;
+    lobbyPortal.position.set(53, 3.25, -27);
+    const portalRing = new THREE.Mesh(
+      new THREE.TorusGeometry(2.45, 0.24, 10, 40),
+      makeMaterial(THREE, "#58a6ff", {
+        emissive: "#1f6feb",
+        emissiveIntensity: 1.7,
+        metalness: 0.5,
+        roughness: 0.22,
+      }),
+    );
+    const portalFace = new THREE.Mesh(
+      new THREE.CircleGeometry(2.2, 32),
+      new THREE.MeshBasicMaterial({
+        color: "#0d419d",
+        transparent: true,
+        opacity: 0.52,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    portalFace.position.z = -0.02;
+    for (const surface of [portalRing, portalFace]) {
+      surface.userData.interactive = "office-lobby-return-portal";
+      surface.userData.officeFloorId = floor.id;
+      interactive.push(surface);
+    }
+    lobbyPortal.add(portalRing, portalFace);
+    const portalLabel = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: wordTexture(
+          THREE,
+          "LOBBY PORTAL",
+          "CLICK TO RETURN",
+          "#79c0ff",
+        ),
+        transparent: true,
+        depthWrite: false,
+      }),
+    );
+    portalLabel.position.set(0, 3.55, 0);
+    portalLabel.scale.set(6.4, 2.4, 1);
+    lobbyPortal.add(portalLabel);
+    floorGroup.add(lobbyPortal);
     // The transparent tower is an exterior cutaway: visitors should see every
     // furnished floor through its glass before they enter the building.
     floorGroup.visible = true;
@@ -17675,44 +17905,148 @@ export function createWorldScene({
   officeReception.add(noahNameplate);
   officeInterior.add(officeReception);
 
+  const officeFloorWarpDoors = [];
   const officeFloorWarpHub = new THREE.Group();
   officeFloorWarpHub.name = "forkmesh-office-floor-warp-hub";
-  officeFloorWarpHub.position.set(-25.5, 0.04, -32.8);
+  officeFloorWarpHub.position.set(0, 0, 0);
+  officeFloorWarpHub.userData.officeFloorId = "lobby";
   OFFICE_FLOORS.forEach((floor, index) => {
-    const column = index % 2;
-    const row = Math.floor(index / 2);
-    const pad = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.42, 1.42, 0.12, 40),
-      makeMaterial(THREE, column ? "#77d9ff" : "#9ef7c6", {
-        emissive: column ? "#24637c" : "#236847",
-        emissiveIntensity: 0.8,
-        metalness: 0.34,
-        roughness: 0.34,
-      }),
+    const accent = index % 2 ? "#77d9ff" : "#9ef7c6";
+    const doorway = new THREE.Group();
+    doorway.name = `forkmesh-office-floor-doorway-${floor.id}`;
+    doorway.position.set(
+      OFFICE_FLOOR_WARP_DOOR_START_X +
+        index * OFFICE_FLOOR_WARP_DOOR_SPACING,
+      0,
+      OFFICE_FLOOR_WARP_DOOR_Z,
     );
-    pad.name = `forkmesh-office-floor-warp-${floor.id}`;
-    pad.position.set(column * 3.35, 0.06, row * -3.2);
-    pad.userData.interactive = "office-floor-warp";
-    pad.userData.officeFloorId = floor.id;
-    pad.userData.officeFloorNumber = floor.level + 1;
-    interactive.push(pad);
-    officeFloorWarpHub.add(pad);
-    const label = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: wordTexture(
-          THREE,
-          `${floor.level + 1}`,
-          floor.label.toUpperCase(),
-          column ? "#77d9ff" : "#9ef7c6",
-        ),
+    doorway.userData.officeFloorId = "lobby";
+    doorway.userData.officeFloorTargetId = floor.id;
+
+    const frameMaterial = makeMaterial(THREE, "#132d28", {
+      emissive: "#236847",
+      emissiveIntensity: 0.42,
+      metalness: 0.4,
+      roughness: 0.36,
+    });
+    const frameThickness = 0.24;
+    const sideGeometry = new THREE.BoxGeometry(
+      frameThickness,
+      OFFICE_FLOOR_WARP_DOOR_HEIGHT,
+      0.4,
+    );
+    for (const side of [-1, 1]) {
+      const jamb = new THREE.Mesh(sideGeometry, frameMaterial);
+      jamb.position.set(
+        side * (OFFICE_FLOOR_WARP_DOOR_WIDTH / 2),
+        OFFICE_FLOOR_WARP_DOOR_HEIGHT / 2,
+        0,
+      );
+      doorway.add(jamb);
+    }
+    const lintel = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        OFFICE_FLOOR_WARP_DOOR_WIDTH + frameThickness,
+        frameThickness,
+        0.4,
+      ),
+      frameMaterial,
+    );
+    lintel.position.set(0, OFFICE_FLOOR_WARP_DOOR_HEIGHT, 0);
+    doorway.add(lintel);
+
+    const portal = new THREE.Mesh(
+      new THREE.PlaneGeometry(
+        OFFICE_FLOOR_WARP_DOOR_WIDTH - 0.38,
+        OFFICE_FLOOR_WARP_DOOR_HEIGHT - 0.36,
+      ),
+      new THREE.MeshBasicMaterial({
+        color: accent,
         transparent: true,
+        opacity: 0.22,
+        side: THREE.DoubleSide,
         depthWrite: false,
+        toneMapped: false,
       }),
     );
-    label.name = `forkmesh-office-floor-warp-label-${floor.id}`;
-    label.position.set(pad.position.x, 1.05, pad.position.z);
-    label.scale.set(2.6, 1.3, 1);
-    officeFloorWarpHub.add(label);
+    portal.name = `forkmesh-office-floor-warp-${floor.id}`;
+    portal.position.set(0, OFFICE_FLOOR_WARP_DOOR_HEIGHT / 2, 0.23);
+    portal.userData.interactive = "office-floor-warp";
+    portal.userData.officeFloorId = "lobby";
+    portal.userData.officeFloorTargetId = floor.id;
+    portal.userData.officeFloorNumber = floor.level + 1;
+    doorway.add(portal);
+    interactive.push(portal);
+
+    const closedDoor = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        OFFICE_FLOOR_WARP_DOOR_WIDTH - 0.38,
+        OFFICE_FLOOR_WARP_DOOR_HEIGHT - 0.36,
+        0.24,
+      ),
+      makeMaterial(THREE, "#2b2628", {
+        emissive: "#6e2737",
+        emissiveIntensity: 0.25,
+        metalness: 0.24,
+        roughness: 0.72,
+      }),
+    );
+    closedDoor.name = `forkmesh-office-floor-door-${floor.id}`;
+    closedDoor.position.set(0, OFFICE_FLOOR_WARP_DOOR_HEIGHT / 2, 0.12);
+    closedDoor.userData.interactive = "office-floor-warp";
+    closedDoor.userData.officeFloorId = "lobby";
+    closedDoor.userData.officeFloorTargetId = floor.id;
+    closedDoor.userData.officeFloorNumber = floor.level + 1;
+    doorway.add(closedDoor);
+    interactive.push(closedDoor);
+
+    const openLabel = makeOfficeWallPlacard(
+      THREE,
+      `${floor.level + 1} · ${floor.label.toUpperCase()}`,
+      floor.id === "lobby" ? "YOU ARE HERE" : "OPEN · WALK THROUGH",
+      accent,
+      OFFICE_FLOOR_WARP_DOOR_WIDTH - 0.46,
+      1.2,
+    );
+    openLabel.name = `forkmesh-office-floor-warp-label-${floor.id}`;
+    openLabel.position.set(0, OFFICE_FLOOR_WARP_DOOR_HEIGHT - 0.72, 0.38);
+    openLabel.userData.interactive = "office-floor-warp";
+    openLabel.userData.officeFloorId = "lobby";
+    openLabel.userData.officeFloorTargetId = floor.id;
+    doorway.add(openLabel);
+    interactive.push(openLabel);
+
+    const lockedLabel = makeOfficeWallPlacard(
+      THREE,
+      `${floor.level + 1} · ${floor.label.toUpperCase()}`,
+      "CLOSED · ACCESS REQUIRED",
+      "#ff7b83",
+      OFFICE_FLOOR_WARP_DOOR_WIDTH - 0.46,
+      1.2,
+    );
+    lockedLabel.name = `forkmesh-office-floor-warp-locked-${floor.id}`;
+    lockedLabel.position.copy(openLabel.position);
+    lockedLabel.userData.interactive = "office-floor-warp";
+    lockedLabel.userData.officeFloorId = "lobby";
+    lockedLabel.userData.officeFloorTargetId = floor.id;
+    doorway.add(lockedLabel);
+    interactive.push(lockedLabel);
+
+    officeFloorWarpDoors.push({
+      floorId: floor.id,
+      x: doorway.position.x,
+      frameMaterial,
+      portal,
+      closedDoor,
+      openLabel,
+      lockedLabel,
+      allowed: false,
+    });
+    portal.visible = false;
+    openLabel.visible = false;
+    closedDoor.visible = true;
+    lockedLabel.visible = true;
+    officeFloorWarpHub.add(doorway);
   });
   officeInterior.add(officeFloorWarpHub);
 
@@ -17818,6 +18152,56 @@ export function createWorldScene({
   officeFeedbackKiosk.add(officeFeedbackKioskFace);
   interactive.push(officeFeedbackKioskFace);
   officeInterior.add(officeFeedbackKiosk);
+
+  // Members can propose scoped work and attach an exact SOL compensation
+  // request at this lobby desk. The mesh only opens the authenticated form;
+  // task copy and bounty metadata remain in the encrypted task catalog.
+  const officeTaskBidKiosk = new THREE.Group();
+  officeTaskBidKiosk.name = "forkmesh-office-task-bid-kiosk";
+  officeTaskBidKiosk.position.set(0, 0, -25.5);
+  const officeTaskBidKioskStand = new THREE.Mesh(
+    new THREE.BoxGeometry(10.8, 3.4, 2.8),
+    makeMaterial(THREE, "#24292f", {
+      metalness: 0.38,
+      roughness: 0.4,
+    }),
+  );
+  officeTaskBidKioskStand.position.y = 1.7;
+  officeTaskBidKiosk.add(officeTaskBidKioskStand);
+  const officeTaskBidKioskFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(12.8, 7.4),
+    new THREE.MeshBasicMaterial({
+      map: canvasTexture(THREE, 1280, 740, (context) => {
+        context.fillStyle = "#0d1117";
+        context.fillRect(0, 0, 1280, 740);
+        context.strokeStyle = "#e3b341";
+        context.lineWidth = 18;
+        context.strokeRect(12, 12, 1256, 716);
+        context.fillStyle = "#e3b341";
+        context.font = '900 64px "ForkMesh Mono", ui-monospace, monospace';
+        context.textAlign = "center";
+        context.fillText("TASK BOUNTY DESK", 640, 130);
+        context.fillStyle = "#f0f6fc";
+        context.font = '800 40px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("PROPOSE THE WORK", 640, 270);
+        context.fillText("NAME YOUR SOL REQUEST", 640, 326);
+        context.fillStyle = "#7ee787";
+        context.font = '900 44px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("CLICK TO SUBMIT A BID", 640, 520);
+        context.fillStyle = "#8c959f";
+        context.font = '650 24px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("REQUEST ONLY · NO FUNDS HELD", 640, 642);
+      }),
+      toneMapped: false,
+    }),
+  );
+  officeTaskBidKioskFace.name = "forkmesh-office-task-bid-kiosk-screen";
+  officeTaskBidKioskFace.position.set(0, 6.7, 0.15);
+  officeTaskBidKioskFace.userData.officeFloorId = "lobby";
+  officeTaskBidKioskFace.userData.interactive = "office-task-bid-kiosk";
+  officeTaskBidKiosk.add(officeTaskBidKioskFace);
+  interactive.push(officeTaskBidKioskFace);
+  officeInterior.add(officeTaskBidKiosk);
 
   // A separate live board beside the submission terminal makes the public
   // links, their submitters, transparent reach inputs, tiny SOL appreciation
@@ -19085,6 +19469,7 @@ export function createWorldScene({
   const movementPreviousPosition = new THREE.Vector3();
   const movementDashDirection = new THREE.Vector3();
   const bikeSeatPosition = new THREE.Vector3();
+  const quadcopterHorizontal = new THREE.Vector3();
   const screenLabelPosition = new THREE.Vector3();
   const seatedMovementVector = new THREE.Vector3();
   const movementInputState = {
@@ -19189,6 +19574,10 @@ export function createWorldScene({
   // The beach car uses the same immediate input path as walking and cycling;
   // only the top-speed multiplier and seated vehicle pose differ.
   let carRide = null;
+  // The quadcopter owns all three movement axes while mounted. Its position
+  // remains local scene state; the ordinary bounded presence frame carries
+  // only the rider position and activity, just like the bike and car.
+  let quadcopterRide = null;
   // 0..1 from the shell's swing-speed slider; maps onto the pendulum amplitude.
   let swingSpeedLevel = 0.55;
   let primaryPointerId = null;
@@ -19528,6 +19917,25 @@ export function createWorldScene({
     officeFloorHandler = typeof handler === "function" ? handler : null;
   }
 
+  function refreshOfficeFloorWarpDoors() {
+    officeFloorWarpDoors.forEach((doorway) => {
+      const allowed = canAccessOfficeFloor(
+        officeFloorAccess,
+        doorway.floorId,
+      );
+      doorway.allowed = allowed;
+      doorway.portal.visible = allowed;
+      doorway.openLabel.visible = allowed;
+      doorway.closedDoor.visible = !allowed;
+      doorway.lockedLabel.visible = !allowed;
+      doorway.frameMaterial.color.set(allowed ? "#173d32" : "#31282b");
+      doorway.frameMaterial.emissive?.set?.(
+        allowed ? "#1f9c6a" : "#6e2737",
+      );
+      doorway.frameMaterial.emissiveIntensity = allowed ? 0.72 : 0.2;
+    });
+  }
+
   function setOfficeAccess(payload = {}) {
     officeFloorAccess = normalizeOfficeFloorAccess(payload);
     officeElevatorButtons.forEach((button) => {
@@ -19540,6 +19948,7 @@ export function createWorldScene({
       button.material.emissive?.set?.(allowed ? "#1f9c6a" : "#6e2737");
       button.material.emissiveIntensity = allowed ? 0.9 : 0.2;
     });
+    refreshOfficeFloorWarpDoors();
     return { ...officeFloorAccess };
   }
 
@@ -19757,6 +20166,42 @@ export function createWorldScene({
       warp: true,
     });
     return true;
+  }
+
+  function tryOfficeFloorWarpDoorway(avatar, previousPosition) {
+    if (
+      !avatar ||
+      !previousPosition ||
+      officeSceneMode !== "lobby" ||
+      officeCurrentFloorId !== "lobby" ||
+      officeElevatorRide
+    ) {
+      return false;
+    }
+    const current = officeAvatarLocalPosition(avatar);
+    const previous = previousPosition.clone();
+    avatar.parent?.localToWorld?.(previous);
+    officeInterior.worldToLocal(previous);
+    if (
+      current.z > OFFICE_FLOOR_WARP_TRIGGER_Z ||
+      previous.z <= OFFICE_FLOOR_WARP_TRIGGER_Z ||
+      current.z >= previous.z - 1e-5
+    ) {
+      return false;
+    }
+    const doorway = officeFloorWarpDoors.find(
+      (candidate) =>
+        Math.abs(current.x - candidate.x) <=
+        OFFICE_FLOOR_WARP_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS,
+    );
+    if (
+      !doorway ||
+      !doorway.allowed ||
+      doorway.floorId === officeCurrentFloorId
+    ) {
+      return false;
+    }
+    return warpToOfficeFloor(doorway.floorId);
   }
 
   function constrainTownOfficeWalls(previousPosition) {
@@ -20121,6 +20566,8 @@ export function createWorldScene({
       dismountBike({ relocate: false });
     if (enteringFromTown)
       dismountCar({ relocate: false });
+    if (enteringFromTown)
+      dismountQuadcopter({ relocate: false });
     standUpFromOfficeChair();
     const meetingAvatar = leavingMeeting
       ? officeParticipants.get(officeLocalParticipantId)
@@ -21182,6 +21629,7 @@ export function createWorldScene({
     dismountSwing({ relocate: false });
     dismountBike({ relocate: false });
     dismountCar({ relocate: false });
+    dismountQuadcopter({ relocate: false });
     standUpFromBench();
     cancelDash();
     const standingPoint = pad.getWorldPosition(new THREE.Vector3());
@@ -21225,6 +21673,7 @@ export function createWorldScene({
     dismountSwing({ relocate: false });
     dismountBike({ relocate: false });
     dismountCar({ relocate: false });
+    dismountQuadcopter({ relocate: false });
     standUpFromBench();
     cancelDash();
     const standingPoint = standingTarget.getWorldPosition(
@@ -21629,6 +22078,12 @@ export function createWorldScene({
       avatar.rotation.y = Math.atan2(-movement.x, -movement.z);
       if (
         !officeRoofJumping &&
+        tryOfficeFloorWarpDoorway(avatar, previousPosition)
+      ) {
+        return;
+      }
+      if (
+        !officeRoofJumping &&
         constrainOfficeInteriorWalls(avatar, previousPosition)
       ) {
         return;
@@ -21656,6 +22111,12 @@ export function createWorldScene({
         avatar.position.y = officeFloorY(officeCurrentFloorId) + 0.38;
       }
       walking = true;
+      if (
+        !officeRoofJumping &&
+        tryOfficeFloorWarpDoorway(avatar, previousPosition)
+      ) {
+        return;
+      }
       if (
         !officeRoofJumping &&
         constrainOfficeInteriorWalls(avatar, previousPosition)
@@ -21741,6 +22202,7 @@ export function createWorldScene({
     dismountSwing({ relocate: false });
     dismountBike({ relocate: false });
     dismountCar({ relocate: false });
+    dismountQuadcopter({ relocate: false });
     const seatPoint = seat.getWorldPosition(new THREE.Vector3());
     benchSeat = {
       // Hips on the plank, not feet: the avatar drops until its thighs rest on
@@ -21798,6 +22260,7 @@ export function createWorldScene({
     dismountSwing({ relocate: false });
     dismountBike({ relocate: false });
     dismountCar({ relocate: false });
+    dismountQuadcopter({ relocate: false });
     const seatPoint = seat.getWorldPosition(new THREE.Vector3());
     benchSeat = {
       position: new THREE.Vector3(
@@ -21956,6 +22419,7 @@ export function createWorldScene({
     dismountSwing({ relocate: false });
     standUpFromBench();
     dismountCar({ relocate: false });
+    dismountQuadcopter({ relocate: false });
     bikeRide = { index };
     completeStartHereStep("explore");
     cancelDash();
@@ -22060,6 +22524,7 @@ export function createWorldScene({
     }
     dismountSwing({ relocate: false });
     dismountBike({ relocate: false });
+    dismountQuadcopter({ relocate: false });
     standUpFromBench();
     carRide = { index };
     completeStartHereStep("explore");
@@ -22122,6 +22587,170 @@ export function createWorldScene({
     lastPosition.copy(player.position);
   }
 
+  function rideQuadcopter(index) {
+    if (officeSceneMode !== "town") return;
+    const state = quadcopterStates[index];
+    if (!state) return;
+    if (quadcopterRide?.index === index) {
+      dismountQuadcopter();
+      return;
+    }
+    dismountSwing({ relocate: false });
+    dismountBike({ relocate: false });
+    dismountCar({ relocate: false });
+    standUpFromBench();
+    quadcopterRide = { index };
+    completeStartHereStep("explore");
+    cancelDash();
+    cameraFocus = null;
+    jumpVelocity = 0;
+    jumpQueued = false;
+    removeRoofParachute();
+    player.position.set(
+      state.quadcopter.position.x,
+      state.quadcopter.position.y + 1.02,
+      state.quadcopter.position.z,
+    );
+    player.rotation.y = state.quadcopter.rotation.y;
+    player.userData.leftArm.rotation.x = -0.28;
+    player.userData.rightArm.rotation.x = -0.28;
+    applySeatedLegPose(player);
+    lastPosition.copy(player.position);
+    cameraSnapPending = true;
+    queueMovementEvent({
+      x: Number(player.position.x.toFixed(2)),
+      y: Number(player.position.y.toFixed(2)),
+      z: Number(player.position.z.toFixed(2)),
+      heading: Number(player.rotation.y.toFixed(3)),
+      space: currentSpace,
+      moving: false,
+      activity: QUADCOPTER_RIDING_ACTIVITY,
+    });
+  }
+
+  function toggleNearestQuadcopterRide() {
+    if (quadcopterRide) {
+      dismountQuadcopter();
+      return true;
+    }
+    if (officeSceneMode !== "town") return false;
+    let nearestIndex = -1;
+    let nearestDistanceSquared = QUADCOPTER_MOUNT_DISTANCE ** 2;
+    quadcopterStates.forEach((state, index) => {
+      const distanceSquared =
+        (state.quadcopter.position.x - player.position.x) ** 2 +
+        (state.quadcopter.position.z - player.position.z) ** 2 +
+        (state.quadcopter.position.y - player.position.y) ** 2;
+      if (distanceSquared > nearestDistanceSquared) return;
+      nearestDistanceSquared = distanceSquared;
+      nearestIndex = index;
+    });
+    if (nearestIndex < 0) return false;
+    rideQuadcopter(nearestIndex);
+    return true;
+  }
+
+  function dismountQuadcopter({ relocate = true } = {}) {
+    if (!quadcopterRide) return;
+    const state = quadcopterStates[quadcopterRide.index];
+    quadcopterRide = null;
+    if (state) state.moving = false;
+    player.userData.leftArm.rotation.x = 0;
+    player.userData.rightArm.rotation.x = 0;
+    applyLegPitch(player, 0, 0);
+    if (relocate && state) {
+      player.position.x += Math.cos(player.rotation.y) * 2.2;
+      player.position.z -= Math.sin(player.rotation.y) * 2.2;
+    }
+    if (player.position.y > currentFloorY + 2) {
+      prepareRoofParachute();
+      jumpVelocity = -0.4;
+    } else {
+      player.position.y = currentFloorY;
+      jumpVelocity = 0;
+    }
+    lastPosition.copy(player.position);
+  }
+
+  function updateQuadcopterRide(input, delta, time) {
+    if (!quadcopterRide) return false;
+    const state = quadcopterStates[quadcopterRide.index];
+    if (!state) {
+      quadcopterRide = null;
+      return false;
+    }
+    cameraFocus = null;
+    cancelDash();
+    focusedRepositoryKey = "";
+    jumpQueued = false;
+    jumpVelocity = 0;
+    const horizontal = quadcopterHorizontal.copy(input.movement);
+    const vertical =
+      Number(keys.has("Space")) -
+      Number(keys.has("KeyC") || keys.has("ControlLeft") || keys.has("ControlRight"));
+    const moving = horizontal.lengthSq() > 0 || vertical !== 0;
+    if (horizontal.lengthSq()) {
+      state.quadcopter.position.addScaledVector(
+        horizontal,
+        QUADCOPTER_HORIZONTAL_SPEED * delta,
+      );
+      const distance = Math.hypot(
+        state.quadcopter.position.x,
+        state.quadcopter.position.z,
+      );
+      const boundary = WORLD_RADIUS - 12;
+      if (distance > boundary) {
+        const scale = boundary / Math.max(1, distance);
+        state.quadcopter.position.x *= scale;
+        state.quadcopter.position.z *= scale;
+      }
+      state.quadcopter.rotation.y = Math.atan2(
+        -horizontal.x,
+        -horizontal.z,
+      );
+    }
+    state.quadcopter.position.y = clamp(
+      state.quadcopter.position.y +
+        vertical * QUADCOPTER_VERTICAL_SPEED * delta,
+      0.24,
+      QUADCOPTER_MAX_ALTITUDE,
+    );
+    state.moving = moving;
+    const rotorSpeed = moving ? 0.42 : 0.19;
+    state.rotors.forEach((rotor, index) => {
+      rotor.rotation.y += rotorSpeed * (index % 2 ? -1 : 1);
+    });
+    player.position.set(
+      state.quadcopter.position.x,
+      state.quadcopter.position.y + 1.02,
+      state.quadcopter.position.z,
+    );
+    player.rotation.y = state.quadcopter.rotation.y;
+    player.userData.leftArm.rotation.x = -0.28;
+    player.userData.rightArm.rotation.x = -0.28;
+    applySeatedLegPose(player);
+    player.userData.inputEnergy = decayedPointerEnergy(performance.now());
+    animateAvatarActivity(player, time, delta, reducedMotion);
+    if (
+      performance.now() - lastMovementEmit > 250 &&
+      player.position.distanceToSquared(lastPosition) > 0.025
+    ) {
+      lastMovementEmit = performance.now();
+      lastPosition.copy(player.position);
+      queueMovementEvent({
+        x: Number(player.position.x.toFixed(2)),
+        y: Number(player.position.y.toFixed(2)),
+        z: Number(player.position.z.toFixed(2)),
+        heading: Number(player.rotation.y.toFixed(3)),
+        space: currentSpace,
+        moving,
+        activity: QUADCOPTER_RIDING_ACTIVITY,
+      });
+    }
+    wasWalking = moving;
+    return true;
+  }
+
   // The world map's Campfire spot is a trip home: it puts the avatar on the
   // bench that carries this member's name and holds the same seated pose
   // clicking the plank gives. Guests — and members the directory has not
@@ -22174,6 +22803,20 @@ export function createWorldScene({
       inputStrength,
       movement,
     } = movementInput();
+    if (quadcopterRide) {
+      updateQuadcopterRide(
+        {
+          keyboardActive,
+          sprinting,
+          touchStrength,
+          inputStrength,
+          movement,
+        },
+        delta,
+        time,
+      );
+      return;
+    }
     if (swingRide) {
       // Like the bench below: relocation ends the ride, and so does any
       // movement input, which keeps WASD as the universal "get off" gesture
@@ -28411,11 +29054,22 @@ export function createWorldScene({
       return;
     }
     if (hit?.object?.userData?.interactive === "office-floor-warp") {
-      warpToOfficeFloor(hit.object.userData.officeFloorId);
+      warpToOfficeFloor(hit.object.userData.officeFloorTargetId);
+      return;
+    }
+    if (
+      hit?.object?.userData?.interactive ===
+      "office-lobby-return-portal"
+    ) {
+      warpToOfficeFloor("lobby");
       return;
     }
     if (hit?.object?.userData?.interactive === "office-feedback-kiosk") {
       onLobbyFeedbackKioskSelect();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "office-task-bid-kiosk") {
+      onLobbyTaskBidKioskSelect();
       return;
     }
     if (hit?.object?.userData?.interactive === "system-capacity-table") {
@@ -28537,6 +29191,10 @@ export function createWorldScene({
     }
     if (Number.isInteger(hit?.object?.userData?.carIndex)) {
       rideCar(hit.object.userData.carIndex);
+      return;
+    }
+    if (Number.isInteger(hit?.object?.userData?.quadcopterIndex)) {
+      rideQuadcopter(hit.object.userData.quadcopterIndex);
       return;
     }
     if (hit?.object?.userData?.forkbotChat) {
@@ -29051,6 +29709,18 @@ export function createWorldScene({
       rideBike(bikeHit.object.userData.bikeIndex);
       return;
     }
+    const quadcopterHit = raycaster
+      .intersectObjects(interactive, false)
+      .find(
+        ({ object }) =>
+          Number.isInteger(object.userData?.quadcopterIndex) &&
+          objectIsEffectivelyVisible(object),
+      );
+    if (quadcopterHit) {
+      event.preventDefault();
+      rideQuadcopter(quadcopterHit.object.userData.quadcopterIndex);
+      return;
+    }
     const point = groundPointAt(event.clientX, event.clientY);
     if (!point) return;
     event.preventDefault();
@@ -29158,6 +29828,14 @@ export function createWorldScene({
       keys.add(event.code);
       event.preventDefault();
     }
+    if (
+      quadcopterRide &&
+      ["Space", "KeyC", "ControlLeft", "ControlRight"].includes(event.code)
+    ) {
+      keys.add(event.code);
+      event.preventDefault();
+      return;
+    }
     if (event.code === "Space") {
       const roofJumpStarted = beginOfficeRoofJump();
       const canJump =
@@ -29169,7 +29847,12 @@ export function createWorldScene({
       event.preventDefault();
     }
     if (event.code === "KeyE" && !event.repeat) {
-      if (toggleNearestBikeRide()) event.preventDefault();
+      if (
+        toggleNearestQuadcopterRide() ||
+        toggleNearestBikeRide()
+      ) {
+        event.preventDefault();
+      }
     }
     // R turns the selected object a step at a time; hold Shift to turn it back
     // the other way. Selection never changes the behavior for non-admins.
@@ -30062,6 +30745,18 @@ export function createWorldScene({
     focusCampfireCircle,
     rideSwing,
     dismountSwing,
+    rideQuadcopter,
+    dismountQuadcopter,
+    getQuadcopterState: () => ({
+      riding: Boolean(quadcopterRide),
+      altitude: quadcopterRide
+        ? Number(
+            quadcopterStates[quadcopterRide.index]?.quadcopter.position.y
+              .toFixed(2),
+          )
+        : 0,
+      maxAltitude: QUADCOPTER_MAX_ALTITUDE,
+    }),
     setSwingSpeed,
     getSwingState: () => ({
       riding: Boolean(swingRide),

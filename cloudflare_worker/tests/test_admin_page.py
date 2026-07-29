@@ -228,9 +228,30 @@ def test_admin_error_log_has_grouped_24_hour_occurrence_analytics():
         'class="error-spark-bar"',
         "<th>24-hour frequency</th>",
         "WHERE ts>=? ORDER BY ts DESC LIMIT 5000",
-        "groups.setdefault(signature, [0] * 24)",
-        "group_hours[23 - int(age_hours)] += 1",
+        '"hours": [0] * 24',
+        'group["hours"][23 - int(age_hours)] += 1',
         'aria-labelledby="error-analytics-title"',
+    ):
+        assert contract in ENTRY_TEXT
+
+
+def test_admin_error_log_labels_sources_and_deletes_rows_or_groups():
+    for contract in (
+        "def _admin_error_source(method, path):",
+        'return "JavaScript" if is_javascript else "Worker"',
+        'class="error-source %s"',
+        "<th>Source</th>",
+        "<th>First seen</th><th>Last seen</th>",
+        '"firstSeen": ts',
+        '"lastSeen": ts',
+        'action="delete_error_row"',
+        'action="delete_error_group"',
+        "Delete group</button></form>",
+        'name="error_id"',
+        "DELETE FROM error_log WHERE rowid=?",
+        '"WHERE CAST(status AS TEXT)=? AND UPPER(method)=? "',
+        '"AND path=? AND message=?"',
+        '"delete_error_row", "delete_error_group"',
     ):
         assert contract in ENTRY_TEXT
 
