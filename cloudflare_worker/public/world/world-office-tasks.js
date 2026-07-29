@@ -134,6 +134,14 @@ function normalizedTask(task) {
     kind,
     title,
     details: text(task.details, 4000),
+    attachments: (Array.isArray(task.attachments) ? task.attachments : [])
+      .slice(0, 4)
+      .map((attachment) => ({
+        name: text(attachment?.name, 180),
+        mime: text(attachment?.mime, 100),
+        size: Math.max(0, Math.min(1024 * 1024, Number(attachment?.size) || 0)),
+      }))
+      .filter((attachment) => attachment.name && attachment.size),
     completionNote: text(task.completionNote, 4000),
     createdBy: text(task.createdBy, 64).toLowerCase(),
     bountyRequest:
@@ -150,6 +158,7 @@ function normalizedTask(task) {
     department: text(task.department, 64).toLowerCase() || "general",
     team: text(task.team, 64).toLowerCase(),
     destination: text(task.destination, 32).toLowerCase() || "department",
+    priority: Math.max(1, Math.min(999, Number(task.priority) || 500)),
     repository: text(task.repository, 201),
     agent: normalizedAgentRun(task.agent),
     qa:
@@ -484,12 +493,26 @@ export function createWorldOfficeTasksController({
                 ? '<span class="world-office-task-bid-badge">Bid</span>'
                 : ""
             }${escapeHTML(task.title)}</strong>
+            <span class="world-office-task-priority">Global P${task.priority}</span>
             ${
               task.details
                 ? `<p class="world-office-task-details">${escapeHTML(
                     task.details,
                     1000,
                   )}</p>`
+                : ""
+            }
+            ${
+              task.attachments.length
+                ? `<ul class="world-office-task-attachments" aria-label="Task attachments">${task.attachments
+                    .map(
+                      (attachment) =>
+                        `<li title="${escapeHTML(attachment.mime)}">📎 ${escapeHTML(
+                          attachment.name,
+                          180,
+                        )}</li>`,
+                    )
+                    .join("")}</ul>`
                 : ""
             }
             <small>

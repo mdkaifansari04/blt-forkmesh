@@ -2,7 +2,7 @@
 // Keeps the current dashboard UI, but uses the same encrypted room protocol as
 // the production chat from forkmesh-today/cloudflare_worker/public/chat.js.
 
-(() => {
+function mountForkMeshDashboardChat() {
   const ROOM_NAME = "general";
   const PUBLIC_WORLD_GENERAL_ROOM = "world-general";
   let roomPassphrase = null;
@@ -130,10 +130,16 @@
   const contextAction = document.querySelector(
     "[data-dashboard-chat-context-action]",
   );
+  const chatScrollRail = document.querySelector(
+    "[data-dashboard-chat-scroll-rail]",
+  );
 
-  if (!fullLog && !sideLog) return;
+  if (!fullLog && !sideLog) return false;
+  if (fullLog?.dataset.forkmeshChatMounted === "true") return true;
+  if (fullLog) fullLog.dataset.forkmeshChatMounted = "true";
 
   let pendingWorldComposerPrefill = null;
+  const seenParentNotifications = new Set();
 
   function fileFromWorldComposerAttachment(value) {
     if (!value || typeof value !== "object") return null;
@@ -189,7 +195,21 @@
   window.addEventListener("message", (event) => {
     if (event.origin !== location.origin) return;
     const data = event.data;
-    if (!data || data.type !== "forkmesh:chat-prefill") return;
+    if (!data) return;
+    if (data.type === "forkmesh:chat-notification") {
+      const id = String(data.id || "").slice(0, 96);
+      if (id && seenParentNotifications.has(id)) return;
+      const text = String(data.text || "").replace(/\s+/g, " ").trim().slice(
+        0,
+        240,
+      );
+      if (text) {
+        if (id) seenParentNotifications.add(id);
+        appendSystem(text, false);
+      }
+      return;
+    }
+    if (data.type !== "forkmesh:chat-prefill") return;
     pendingWorldComposerPrefill = {
       text: String(data.text || "").slice(0, MAX_TEXT),
       attachment:
@@ -199,6 +219,18 @@
     };
     applyWorldComposerPrefill();
   });
+  if (window.parent !== window) {
+    window.parent.postMessage(
+      { type: "forkmesh:chat-ready" },
+      location.origin,
+    );
+  } else if (document.querySelector("[data-world-native-chat]")) {
+    window.dispatchEvent(
+      new CustomEvent("forkmesh:world-chat-native", {
+        detail: { type: "forkmesh:chat-ready" },
+      }),
+    );
+  }
 
   const enc = new TextEncoder();
   const dec = new TextDecoder();
@@ -251,6 +283,14 @@
   let orgAgentAccessLoaded = false;
   const seen = new Set();
   const rows = new Map();
+  const HISTORY_INITIAL_MESSAGES = 5;
+  const HISTORY_BATCH_MESSAGES = 5;
+  const historyRowIds = [];
+  let historyVisibleCount = HISTORY_INITIAL_MESSAGES;
+  let historyIndicator = null;
+  let revealingHistory = false;
+  let lastFullLogScrollTop = 0;
+  let historyTouchStartY = null;
   // messageId -> Map(emoji -> Map(reactorId -> reactorName)); identical to
   // the full web/Qt protocol shape so reactions converge across every client.
   const reactions = new Map();
@@ -1221,7 +1261,74 @@
     return wrapper;
   }
 
-  function appendFullMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
+  function ensureHistoryIndicator() {
+    if (!fullLog) return null;
+    if (historyIndicator?.isConnected) return historyIndicator;
+    historyIndicator = document.createElement("button");
+    historyIndicator.type = "button";
+    historyIndicator.className = "chat-history-indicator";
+    historyIndicator.setAttribute("aria-live", "polite");
+    historyIndicator.addEventListener("click", () => revealOlderHistory());
+    fullLog.prepend(historyIndicator);
+    return historyIndicator;
+  }
+
+  function currentHistoryRows() {
+    return historyRowIds
+      .map((id) => rows.get(id))
+      .filter((record) => record?.el?.isConnected);
+  }
+
+  function renderHistoryWindow({ preserveScroll = false } = {}) {
+    if (!fullLog) return;
+    const records = currentHistoryRows();
+    if (!records.length) return;
+    const previousHeight = fullLog.scrollHeight;
+    const visibleCount = Math.min(historyVisibleCount, records.length);
+    const hiddenCount = Math.max(0, records.length - visibleCount);
+    records.forEach((record, index) => {
+      record.el.hidden = index < hiddenCount;
+    });
+    const indicator = ensureHistoryIndicator();
+    indicator.dataset.complete = hiddenCount ? "false" : "true";
+    indicator.disabled = hiddenCount <= 0;
+    indicator.textContent = hiddenCount
+      ? `↑ ${hiddenCount} earlier message${hiddenCount === 1 ? "" : "s"} · scroll up to load ${Math.min(HISTORY_BATCH_MESSAGES, hiddenCount)}`
+      : "Beginning of conversation";
+    if (preserveScroll) {
+      fullLog.scrollTop += Math.max(0, fullLog.scrollHeight - previousHeight);
+    } else {
+      fullLog.scrollTop = fullLog.scrollHeight;
+    }
+    lastFullLogScrollTop = fullLog.scrollTop;
+    syncChatScrollThumb();
+  }
+
+  function revealOlderHistory() {
+    if (revealingHistory || !fullLog) return;
+    const records = currentHistoryRows();
+    if (historyVisibleCount >= records.length) return;
+    revealingHistory = true;
+    historyVisibleCount = Math.min(
+      records.length,
+      historyVisibleCount + HISTORY_BATCH_MESSAGES,
+    );
+    renderHistoryWindow({ preserveScroll: true });
+    requestAnimationFrame(() => {
+      revealingHistory = false;
+    });
+  }
+
+  function appendFullMessage(
+    kind,
+    who,
+    text,
+    id,
+    senderId,
+    tsMs,
+    attachment = null,
+    deferHistory = false,
+  ) {
     if (!fullLog) return;
     clearEmptyState();
     const self = kind === "self";
@@ -1250,8 +1357,12 @@
     const reactionsEl = document.createElement("div");
     reactionsEl.className = "chat-reactions";
     content?.append(reactionsEl);
+    if (deferHistory) {
+      row.hidden = true;
+      row.dataset.chatHistory = "";
+    }
     fullLog.append(row);
-    fullLog.scrollTop = fullLog.scrollHeight;
+    if (!deferHistory) fullLog.scrollTop = fullLog.scrollHeight;
     if (!id) return;
     const record = {
       id,
@@ -1265,7 +1376,8 @@
       self,
     };
     rows.set(id, record);
-    row.append(buildMessageActions(record));
+    if (deferHistory) historyRowIds.push(id);
+    content?.append(buildMessageActions(record));
     renderReactions(id);
   }
 
@@ -1296,7 +1408,7 @@
     // pre-built dashboard/tailwind.css, so the reveal is hand-written CSS).
     actions.className = "chat-message-actions ml-auto flex shrink-0 items-center gap-1";
     actions.append(
-      messageActionButton("React", (event) =>
+      messageActionButton("☺", (event) =>
         showReactionPicker(record, event.currentTarget), {
         ariaLabel: "Add reaction",
       }),
@@ -1616,14 +1728,32 @@
     renderSideMessages();
   }
 
-  function appendMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
+  function appendMessage(
+    kind,
+    who,
+    text,
+    id,
+    senderId,
+    tsMs,
+    attachment = null,
+    deferHistory = false,
+  ) {
     if (orgAgentIdentity(who, senderId) && !orgAgentEngineeringAccess) return;
-    appendFullMessage(kind, who, text, id, senderId, tsMs, attachment);
+    appendFullMessage(
+      kind,
+      who,
+      text,
+      id,
+      senderId,
+      tsMs,
+      attachment,
+      deferHistory,
+    );
     appendSideMessage(kind, who, text, id, senderId, tsMs, attachment);
     rememberContext(who, text);
   }
 
-  function appendSystem(text) {
+  function appendSystem(text, emit = true) {
     if (fullLog) {
       clearEmptyState();
       const row = document.createElement("div");
@@ -1632,7 +1762,7 @@
       fullLog.append(row);
       fullLog.scrollTop = fullLog.scrollHeight;
     }
-    emitWorldActivity(text, "status");
+    if (emit) emitWorldActivity(text, "status");
   }
 
   function removeMessage(id) {
@@ -1649,6 +1779,8 @@
       releaseAttachment(sideEntries[idx].attachment);
     }
     if (idx >= 0) sideEntries.splice(idx, 1);
+    const historyIndex = historyRowIds.indexOf(id);
+    if (historyIndex >= 0) historyRowIds.splice(historyIndex, 1);
     reactions.delete(id);
     renderSideMessages();
   }
@@ -1681,7 +1813,8 @@
   // marked so the parent updates only its collapsed CHAT bar with the most
   // recent line — reconnects never resurrect old bubbles.
   const WORLD_EMBED_BUBBLES =
-    requestedParams.get("worldEmbed") === "1" && window.parent !== window;
+    requestedParams.get("worldEmbed") === "1" ||
+    Boolean(document.querySelector("[data-world-native-chat]"));
   const worldAttachmentPreviewCache = new WeakMap();
 
   function emitWorldActivity(text, kind = "status") {
@@ -1788,10 +1921,18 @@
         };
     const post = (attachmentPreview = "") => {
       try {
-        window.parent.postMessage(
-          { ...payload, attachmentPreview },
-          location.origin,
-        );
+        if (window.parent !== window) {
+          window.parent.postMessage(
+            { ...payload, attachmentPreview },
+            location.origin,
+          );
+        } else {
+          window.dispatchEvent(
+            new CustomEvent("forkmesh:world-chat-native", {
+              detail: { ...payload, attachmentPreview },
+            }),
+          );
+        }
       } catch (_) {}
     };
     post();
@@ -1854,8 +1995,16 @@
     if (entry.senderId !== selfId) {
       rememberMentionPerson(who, live ? Date.now() : Number(entry.ts) || 0);
     }
-    appendMessage(kind, who, text, entry.id, entry.senderId,
-                  Number(entry.ts) || Date.now(), attachment);
+    appendMessage(
+      kind,
+      who,
+      text,
+      entry.id,
+      entry.senderId,
+      Number(entry.ts) || Date.now(),
+      attachment,
+      !live,
+    );
     if (live) {
       newestHistoryTs = Math.max(newestHistoryTs, Number(entry.ts) || 0);
       emitWorldChatBubble(who, entry.senderId, text, false, {
@@ -1948,6 +2097,7 @@
           renderChatEntry(entry, "peer");
         }
       }
+      renderHistoryWindow();
     } else if (type === "reaction") {
       if (once(plain.id)) applyReaction(plain);
     } else if (type === "edit") {
@@ -2483,7 +2633,9 @@
       fileInput.value = "";
       if (files.length) {
         stageDashboardAttachments(control, files);
-        void sendDashboardDraft(control);
+        if (inputEl !== fullInput || String(fullAction?.value || "chat") === "chat") {
+          void sendDashboardDraft(control);
+        }
       }
     });
     control.button.disabled = !canJoinChat();
@@ -2614,6 +2766,20 @@
     }
   }
 
+  function syncChatScrollThumb() {
+    if (!fullLog || !chatScrollRail) return;
+    const available = Math.max(0, fullLog.scrollHeight - fullLog.clientHeight);
+    const progress = available > 0
+      ? Math.max(0, Math.min(1, fullLog.scrollTop / available))
+      : 1;
+    chatScrollRail.style.setProperty("--chat-scroll-progress", progress);
+    chatScrollRail.toggleAttribute("data-at-start", fullLog.scrollTop <= 1);
+    chatScrollRail.toggleAttribute(
+      "data-at-end",
+      available <= 1 || fullLog.scrollTop >= available - 1,
+    );
+  }
+
   async function taskApiRequest(method, path, body = null) {
     const token = String(userSession()?.sessionToken || "");
     const headers = { accept: "application/json" };
@@ -2742,8 +2908,13 @@
         })
         .filter(Boolean)
         .sort((left, right) => left.label.localeCompare(right.label));
+      const requestedDefault = String(
+        document.querySelector("[data-world-native-chat]")
+          ?.dataset.worldDefaultRepository || "forkmesh/forkmesh",
+      );
       const previous =
-        sessionStorage.getItem("forkmesh.worldChat.repository") || "";
+        sessionStorage.getItem("forkmesh.worldChat.repository") ||
+        requestedDefault;
       for (const repository of repositories.slice(0, 250)) {
         const option = document.createElement("option");
         option.value = repository.value;
@@ -2762,7 +2933,7 @@
     }
   }
 
-  async function runFullComposerAction(inputEl) {
+  async function runFullComposerAction(inputEl, attachmentControl = null) {
     const action = String(fullAction?.value || "chat");
     const text = String(inputEl?.value || "").trim();
     if (!text) {
@@ -2809,6 +2980,13 @@
         const destination = botTask
           ? "agent"
           : String(taskDestination?.value || "department");
+        const taskAttachments = (attachmentControl?.draft || []).map(
+          ({ file }) => ({
+            name: safeAttachmentName(file?.name),
+            mime: safeAttachmentMime(file?.type),
+            size: Math.max(0, Number(file?.size) || 0),
+          }),
+        );
         const created = await taskApiRequest("POST", "/api/tasks", {
           title,
           details,
@@ -2824,6 +3002,7 @@
           repository: repository
             ? `${repository.logicalOwner}/${repository.logicalName}`
             : "",
+          attachments: taskAttachments,
           ...(destination === "qa"
             ? {
                 howToTest:
@@ -2865,6 +3044,9 @@
                   : `${task.department || "general"}`
           }.`,
         );
+        if (taskAttachments.length) {
+          await sendDashboardDraft(attachmentControl);
+        }
         setComposerStatus("Organization task created.", "good");
       } else if (action === "issue") {
         const lines = text.split(/\r?\n/);
@@ -2880,6 +3062,28 @@
         appendSystem(`Issue “${title}” was signed and sent to ${repository.owner}/${repository.name}.`);
         setComposerStatus("Issue sent to the maintainer inbox.", "good");
       } else {
+        const lines = text.split(/\r?\n/);
+        const title = String(lines.shift() || "").trim().slice(0, 160);
+        const details = lines.join("\n").trim().slice(0, 4000);
+        const taskAttachments = (attachmentControl?.draft || []).map(
+          ({ file }) => ({
+            name: safeAttachmentName(file?.name),
+            mime: safeAttachmentMime(file?.type),
+            size: Math.max(0, Number(file?.size) || 0),
+          }),
+        );
+        const created = await taskApiRequest("POST", "/api/tasks", {
+          title,
+          details,
+          department: "engineering",
+          team: "",
+          destination: "agent",
+          assigneeKind: "agent",
+          assignee: "",
+          repository: `${repository.logicalOwner}/${repository.logicalName}`,
+          attachments: taskAttachments,
+        });
+        const task = created?.task || {};
         const mention = "@bot";
         appendMessage(
           "self",
@@ -2891,12 +3095,26 @@
         );
         const queued = await queueOrgAgent(
           "agent",
-          text,
+          `[task:${task.id}] ${text}`,
           ORG_BOT_SENDER_ID,
           repository,
         );
-        if (!queued) throw new Error("Agent request was not accepted.");
-        setComposerStatus("Agent request submitted.", "good");
+        if (!queued) {
+          throw new Error(
+            "The task is in the task list, but no bot node accepted it yet.",
+          );
+        }
+        const sessionId = String(queued?.session?.id || "");
+        if (sessionId) {
+          await taskApiRequest("PATCH", `/api/tasks/${task.id}`, {
+            agentSessionId: sessionId,
+          });
+        }
+        if (attachmentControl?.draft.length) {
+          await sendDashboardDraft(attachmentControl);
+        }
+        appendSystem(`Private task “${title}” was added to the bot queue.`);
+        setComposerStatus("Bot task created.", "good");
       }
       inputEl.value = "";
       inputEl.style.height = "";
@@ -2917,7 +3135,7 @@
       fullAction &&
       fullAction.value !== "chat"
     ) {
-      void runFullComposerAction(inputEl);
+      void runFullComposerAction(inputEl, attachmentControl);
       return;
     }
     if (!canJoinChat()) {
@@ -2977,7 +3195,12 @@
       if (!file) return;
       event.preventDefault();
       stageDashboardAttachments(attachmentControl, [file]);
-      void sendDashboardDraft(attachmentControl);
+      if (
+        inputEl !== fullInput ||
+        String(fullAction?.value || "chat") === "chat"
+      ) {
+        void sendDashboardDraft(attachmentControl);
+      }
     });
     inputEl.addEventListener("keydown", (event) => {
       // While the mention list is open it owns Enter/Tab/arrows, so accepting a
@@ -3117,18 +3340,63 @@
           });
         });
       });
+    fullLog?.addEventListener("scroll", () => {
+      syncChatScrollThumb();
+      const currentTop = fullLog.scrollTop;
+      if (
+        currentTop <= 32 &&
+        currentTop < lastFullLogScrollTop - 1
+      ) {
+        revealOlderHistory();
+      }
+      lastFullLogScrollTop = currentTop;
+    }, {
+      passive: true,
+    });
+    fullLog?.addEventListener("wheel", (event) => {
+      if (event.deltaY < 0 && fullLog.scrollTop <= 32) revealOlderHistory();
+    }, { passive: true });
+    fullLog?.addEventListener("touchstart", (event) => {
+      historyTouchStartY =
+        fullLog.scrollTop <= 32
+          ? Number(event.touches?.[0]?.clientY)
+          : null;
+    }, { passive: true });
+    fullLog?.addEventListener("touchmove", (event) => {
+      const currentY = Number(event.touches?.[0]?.clientY);
+      if (
+        Number.isFinite(historyTouchStartY) &&
+        Number.isFinite(currentY) &&
+        currentY - historyTouchStartY >= 28
+      ) {
+        historyTouchStartY = currentY;
+        revealOlderHistory();
+      }
+    }, { passive: true });
+    fullLog?.addEventListener("touchend", () => {
+      historyTouchStartY = null;
+    }, { passive: true });
+    if (fullLog && "ResizeObserver" in window) {
+      new ResizeObserver(syncChatScrollThumb).observe(fullLog);
+    }
+    syncChatScrollThumb();
     document
       .querySelectorAll("[data-dashboard-chat-emote]")
       .forEach((button) => {
         button.addEventListener("click", () => {
-          if (window.parent === window) return;
-          window.parent.postMessage(
-            {
-              type: "forkmesh:world-emote",
-              emote: String(button.dataset.dashboardChatEmote || ""),
-            },
-            location.origin,
-          );
+          const emote = String(button.dataset.dashboardChatEmote || "");
+          if (window.parent !== window) {
+            window.parent.postMessage(
+              { type: "forkmesh:world-emote", emote },
+              location.origin,
+            );
+          } else {
+            window.dispatchEvent(
+              new CustomEvent("forkmesh:world-emote-native", {
+                detail: { emote },
+              }),
+            );
+          }
         });
       });
     void loadComposerRepositories();
@@ -3145,4 +3413,10 @@
   }
 
   initChat();
-})();
+  return true;
+}
+
+window.ForkMeshDashboardChat = Object.freeze({
+  mount: mountForkMeshDashboardChat,
+});
+mountForkMeshDashboardChat();

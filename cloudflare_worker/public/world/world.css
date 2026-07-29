@@ -556,8 +556,8 @@ forkmesh-world {
   position: relative;
   display: grid;
   place-items: center;
-  width: 46px;
-  height: 46px;
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
   background: rgb(7 17 15 / 0.76);
   padding: 4px;
@@ -566,8 +566,8 @@ forkmesh-world {
 }
 
 .world-brand img {
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   /* The mark asset is portrait, so cover cropped its top and bottom inside
      the status ring. Preserve the complete logo instead. */
   object-fit: contain;
@@ -1627,24 +1627,6 @@ forkmesh-world.world-admin-error-arrival::after {
   box-shadow:
     0 0 0 3px rgb(158 247 198 / 0.14),
     0 10px 24px rgb(1 4 9 / 0.45);
-}
-
-.world-shirt-account {
-  position: absolute;
-  bottom: -3px;
-  left: -3px;
-  z-index: 3;
-  display: grid;
-  width: 15px;
-  height: 15px;
-  place-items: center;
-  border: 2px solid var(--primer-canvas-default);
-  border-radius: 50%;
-  background: #163928;
-  font-family: "ForkMesh Mono", monospace;
-  font-size: 0.44rem;
-  line-height: 1;
-  color: #9ef7c6;
 }
 
 .world-shirt-avatar {
@@ -3573,6 +3555,17 @@ forkmesh-world.world-admin-error-arrival::after {
   font: 700 0.58rem/1 "ForkMesh Mono", monospace;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.world-office-task-priority {
+  display: inline-flex;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border: 1px solid var(--borderColor-accent-emphasis, #1f6feb);
+  border-radius: 999px;
+  color: var(--fgColor-link, #58a6ff);
+  font: 700 0.66rem/1.2 "ForkMesh Mono", ui-monospace, monospace;
+  white-space: nowrap;
 }
 
 .world-office-task-details {
@@ -8264,11 +8257,12 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   bottom: max(12px, env(safe-area-inset-bottom));
   left: auto;
   width: 56px;
-  border: 1px solid rgb(139 148 158 / 0.48);
+  border: 0 !important;
+  outline: 0;
   border-radius: 28px;
-  background: rgb(13 17 23 / 0.18);
-  box-shadow: 0 12px 36px rgb(1 4 9 / 0.24);
-  backdrop-filter: blur(18px) saturate(1.25);
+  background: transparent !important;
+  box-shadow: none;
+  backdrop-filter: none;
   transition:
     width 260ms cubic-bezier(0.2, 0.8, 0.2, 1),
     border-radius 260ms ease,
@@ -8277,6 +8271,11 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
 .world-chat-terminal > summary {
   justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
 .world-diagnostics.world-chat-terminal
@@ -8298,17 +8297,21 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-chat-terminal:is([open], :hover, :focus-within) {
   width: min(460px, calc(100vw - 24px));
   border-radius: 18px;
-  background: rgb(13 17 23 / 0.08);
+  background: transparent !important;
 }
 
 .world-chat-terminal:is([open], :hover, :focus-within) > summary {
-  justify-content: flex-start;
+  justify-content: center;
 }
 
 .world-chat-terminal:is([open], :hover, :focus-within)
   > summary
   > :not(.world-chat-terminal-avatar):not(.world-chat-terminal-unread) {
-  display: flex;
+  display: none;
+}
+
+.world-chat-terminal[open] > summary {
+  display: none;
 }
 
 .world-chat-terminal:is(:hover, :focus-within) > .world-chat-terminal-body {
@@ -8318,8 +8321,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-chat-terminal-avatar {
   position: relative;
   display: grid;
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   flex: 0 0 auto;
   place-items: center;
   overflow: hidden;
@@ -8329,6 +8332,19 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   color: #fff;
   font: 800 0.8rem/1 "ForkMesh Mono", monospace;
   box-shadow: 0 0 0 2px rgb(13 17 23 / 0.8);
+}
+
+.world-chat-terminal-avatar::after {
+  position: absolute;
+  right: 1px;
+  bottom: 2px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #0d1117;
+  border-radius: 50%;
+  background: #3fb950;
+  box-shadow: 0 0 8px rgb(63 185 80 / 0.8);
+  content: "";
 }
 
 .world-chat-terminal-avatar img {
@@ -8370,6 +8386,11 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   animation: world-chat-unfurl 260ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+.world-chat-terminal[open] .world-chat-terminal-body {
+  border: 0;
+  border-radius: 0;
+}
+
 .world-chat-terminal-frame {
   background: transparent;
 }
@@ -8384,6 +8405,467 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     opacity: 1;
     transform: scale(1);
     clip-path: circle(150% at calc(100% - 28px) calc(100% - 28px));
+  }
+}
+
+/* Native World chat: each surface floats independently over the scene. */
+.world-chat-terminal[open] {
+  top: max(12px, env(safe-area-inset-top));
+  bottom: max(12px, env(safe-area-inset-bottom));
+  width: min(600px, calc(100vw - 24px));
+  height: auto;
+  max-height: none;
+  border: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+.world-chat-terminal[open] .world-chat-terminal-body {
+  display: grid !important;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  animation: world-chat-panel-rise 300ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.world-native-chat {
+  position: relative;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  grid-template-areas:
+    "transcript"
+    "context"
+    "emotes"
+    "composer";
+  grid-template-rows: minmax(0, 1fr) auto auto auto;
+  gap: 8px;
+  overflow: visible;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.world-native-chat [data-dashboard-chat-context-rail],
+.world-native-chat [data-dashboard-chat-emotes] {
+  display: flex;
+  min-width: 0;
+  gap: 6px;
+  padding-inline: 8px 52px;
+}
+
+.world-native-chat [data-dashboard-chat-context-rail] {
+  flex-wrap: wrap;
+}
+
+.world-native-chat button,
+.world-native-chat select,
+.world-native-chat textarea {
+  box-sizing: border-box;
+  border: 1px solid rgb(139 148 158 / 0.55);
+  border-radius: 999px;
+  background: rgb(13 17 23 / 0.58);
+  color: #f0f6fc;
+  font: 600 0.7rem/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  backdrop-filter: blur(18px) saturate(1.25);
+}
+
+.world-native-chat button,
+.world-native-chat select {
+  min-height: 32px;
+  padding: 5px 10px;
+}
+
+.world-native-chat [data-dashboard-chat-emotes] button {
+  width: 42px;
+  min-height: 42px;
+  padding: 0;
+  font-size: 1.1rem;
+}
+
+.world-native-chat #fullChatMessages {
+  grid-area: transcript;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding: 8px 64px 8px 8px;
+  scrollbar-width: none;
+}
+
+.world-native-chat #fullChatMessages::-webkit-scrollbar {
+  display: none;
+}
+
+.world-native-chat .chat-message-row[hidden] {
+  display: none !important;
+}
+
+.world-native-chat .chat-history-indicator {
+  position: sticky;
+  top: 2px;
+  z-index: 4;
+  align-self: center;
+  min-height: 28px;
+  margin: 0 auto 4px;
+  border-color: rgb(88 166 255 / 0.38);
+  background: rgb(13 17 23 / 0.72);
+  padding: 4px 12px;
+  color: #b6d7ff;
+  font-size: 0.62rem;
+  box-shadow: 0 8px 22px rgb(1 4 9 / 0.2);
+}
+
+.world-native-chat .chat-history-indicator[data-complete="true"] {
+  border-color: rgb(139 148 158 / 0.26);
+  color: #8c959f;
+  opacity: 0.82;
+}
+
+.world-native-chat .chat-message-row {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  margin: 0 !important;
+  padding: 0;
+}
+
+.world-native-chat .chat-message-avatar {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgb(139 148 158 / 0.6);
+  border-radius: 50%;
+  background: rgb(13 17 23 / 0.62);
+}
+
+.world-native-chat .chat-message-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.world-native-chat .chat-message-bubble {
+  min-width: 0;
+  border: 1px solid rgb(139 148 158 / 0.45);
+  border-radius: 16px 16px 16px 5px;
+  background: rgb(13 17 23 / 0.5);
+  padding: 10px 12px;
+  box-shadow: 0 10px 28px rgb(1 4 9 / 0.16);
+  color: #f0f6fc;
+  backdrop-filter: blur(18px) saturate(1.2);
+}
+
+.world-native-chat .chat-message-row--self .chat-message-bubble {
+  border-color: rgb(88 166 255 / 0.6);
+  background: rgb(31 111 235 / 0.28);
+}
+
+.world-native-chat .chat-message-bubble > div:first-child {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+
+.world-native-chat .chat-message-bubble p {
+  margin: 0;
+  color: #c9d1d9;
+  font: 400 0.78rem/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow-wrap: anywhere;
+}
+
+.world-native-chat .chat-message-actions,
+.world-native-chat .chat-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.world-native-chat .chat-message-actions {
+  justify-content: flex-end;
+  margin-top: 7px;
+}
+
+.world-native-chat .chat-message-actions button {
+  min-height: 25px;
+  padding: 3px 7px;
+  font-size: 0.6rem;
+}
+
+.world-native-chat .chat-message-actions button:first-child {
+  width: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-color: rgb(139 148 158 / 0.4);
+  background: transparent;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.world-native-chat .chat-system-bubble {
+  align-self: stretch;
+  margin: 0 0 0 40px;
+  border: 1px solid rgb(139 148 158 / 0.38);
+  border-radius: 14px;
+  background: rgb(22 27 34 / 0.5);
+  padding: 9px 12px;
+  color: #c9d1d9;
+  font: 500 0.72rem/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  backdrop-filter: blur(16px) saturate(1.2);
+}
+
+.world-native-chat [data-dashboard-chat-scroll-rail] {
+  position: relative;
+  z-index: 5;
+  grid-area: transcript;
+  align-self: stretch;
+  justify-self: end;
+  display: grid;
+  width: 38px;
+  height: 100%;
+  grid-template-rows: auto 1fr auto;
+  gap: 5px;
+  place-items: center;
+  padding-block: 8px;
+}
+
+.world-native-chat [data-dashboard-chat-scroll-rail] button {
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+}
+
+.world-native-chat [data-dashboard-chat-scroll-track] {
+  position: relative;
+  width: 8px;
+  height: 100%;
+  min-height: 50px;
+  border: 1px solid rgb(139 148 158 / 0.45);
+  border-radius: 999px;
+  background: rgb(13 17 23 / 0.38);
+  backdrop-filter: blur(16px);
+}
+
+.world-native-chat [data-dashboard-chat-scroll-thumb] {
+  position: absolute;
+  top: calc((100% - 28px) * var(--chat-scroll-progress, 1));
+  left: 1px;
+  width: 4px;
+  height: 28px;
+  border-radius: 999px;
+  background: #58a6ff;
+  box-shadow: 0 0 10px rgb(88 166 255 / 0.8);
+}
+
+.world-native-chat [data-dashboard-chat-composer] {
+  z-index: 6;
+  grid-area: composer;
+  padding: 0;
+  background: transparent;
+  transform-origin: 50% 100%;
+}
+
+.world-chat-terminal[open]
+  .world-native-chat
+  [data-dashboard-chat-composer] {
+  animation: world-chat-composer-rise 360ms 70ms
+    cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+.world-native-chat [data-dashboard-chat-context-rail] {
+  grid-area: context;
+}
+
+.world-chat-terminal[open]
+  .world-native-chat
+  [data-dashboard-chat-context-rail] {
+  animation: world-chat-controls-rise 300ms 35ms
+    cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+.world-native-chat [data-dashboard-chat-emotes] {
+  grid-area: emotes;
+}
+
+.world-chat-terminal[open]
+  .world-native-chat
+  [data-dashboard-chat-emotes] {
+  animation: world-chat-controls-rise 320ms 50ms
+    cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+.world-native-chat [data-dashboard-chat-composer] > div {
+  display: grid;
+  gap: 7px;
+}
+
+.world-native-chat [data-dashboard-chat-composer-toolbar],
+.world-native-chat [data-dashboard-chat-compose-row],
+.world-native-chat [data-dashboard-chat-composer] footer {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 6px;
+  border: 1px solid rgb(139 148 158 / 0.48);
+  border-radius: 16px;
+  background: rgb(13 17 23 / 0.46);
+  padding: 7px;
+  box-shadow: 0 12px 28px rgb(1 4 9 / 0.18);
+  backdrop-filter: blur(20px) saturate(1.3);
+}
+
+.world-native-chat [data-dashboard-chat-composer-toolbar] select {
+  min-width: 0;
+  flex: 1 1 130px;
+}
+
+.world-native-chat [data-dashboard-task-routing] {
+  display: contents;
+}
+
+.world-native-chat [data-dashboard-task-routing][hidden] {
+  display: none;
+}
+
+.world-native-chat [data-dashboard-chat-compose-row] {
+  align-items: flex-end;
+}
+
+.world-native-chat #fullChatInput {
+  min-width: 0;
+  min-height: 58px;
+  flex: 1 1 280px;
+  resize: none;
+  border-radius: 12px;
+  padding: 10px 12px;
+  outline: 0;
+}
+
+.world-native-chat #fullChatInput:focus {
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 3px rgb(88 166 255 / 0.18);
+}
+
+.world-native-chat #fullChatSend {
+  border-color: #2ea043;
+  background: rgb(35 134 54 / 0.88);
+}
+
+.world-native-chat #fullChatTaskSend {
+  border-color: #58a6ff;
+  background: rgb(31 111 235 / 0.78);
+}
+
+.world-native-chat [data-dashboard-chat-composer] footer {
+  justify-content: space-between;
+  padding: 5px 10px;
+  color: #8c959f;
+  font: 500 0.6rem/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.world-native-chat [data-dashboard-chat-attachments] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+}
+
+.world-office-task-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 7px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.world-office-task-attachments li {
+  border: 1px solid var(--world-line);
+  border-radius: 999px;
+  background: rgb(88 166 255 / 0.1);
+  padding: 3px 8px;
+  color: var(--world-ink);
+  font-size: 0.65rem;
+}
+
+@keyframes world-chat-panel-rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes world-chat-controls-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes world-chat-composer-rise {
+  from {
+    opacity: 0;
+    transform: translateY(calc(100% + 18px)) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 620px) {
+  .world-chat-terminal[open] {
+    top: max(8px, env(safe-area-inset-top));
+    right: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    width: calc(100vw - 16px);
+  }
+
+  .world-native-chat {
+    height: 100%;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr) auto auto auto;
+  }
+
+  .world-native-chat [data-dashboard-chat-context-rail],
+  .world-native-chat [data-dashboard-chat-emotes] {
+    padding-inline: 4px 46px;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+
+  .world-native-chat #fullChatMessages {
+    padding-right: 48px;
+  }
+
+  .world-native-chat [data-dashboard-chat-scroll-rail] {
+    right: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-chat-terminal[open] .world-chat-terminal-body,
+  .world-native-chat [data-dashboard-chat-context-rail],
+  .world-native-chat [data-dashboard-chat-emotes],
+  .world-native-chat [data-dashboard-chat-composer] {
+    animation: none;
   }
 }
 
@@ -8407,18 +8889,20 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   align-items: center;
   gap: 9px;
   border: 1px solid rgb(139 148 158 / 0.45);
-  border-radius: 10px;
-  background: rgb(13 17 23 / 0.72);
+  border-radius: 16px 16px 16px 5px;
+  background: rgb(13 17 23 / 0.34);
   padding: 8px 10px;
   color: #f0f6fc;
-  box-shadow: 0 8px 24px rgb(1 4 9 / 0.28);
-  font: 0.7rem/1.4 "ForkMesh Mono", monospace;
+  box-shadow:
+    0 8px 24px rgb(1 4 9 / 0.2),
+    inset 0 1px 0 rgb(255 255 255 / 0.05);
+  font: 0.72rem/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   opacity: 0;
   transform: translateY(8px);
   animation:
     world-activity-in 180ms ease forwards,
     world-activity-out 420ms ease 9.55s forwards;
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(16px) saturate(1.2);
 }
 
 .world-activity-stream article[data-kind="chat"] {
@@ -8473,12 +8957,12 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 @media (max-width: 680px) {
   .world-diagnostics,
   .world-diagnostics:not(.world-chat-terminal),
-  .world-chat-terminal,
-  .world-chat-terminal.world-chat-terminal--debug-hidden {
+  .world-chat-terminal:not([open]),
+  .world-chat-terminal.world-chat-terminal--debug-hidden:not([open]) {
     bottom: calc(max(10px, env(safe-area-inset-bottom)) + 58px);
   }
 
-  .world-chat-terminal-body {
+  .world-chat-terminal:not([open]) .world-chat-terminal-body {
     height: min(68dvh, 560px);
   }
 
@@ -8870,6 +9354,35 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   place-items: center;
   padding: 0;
   color: var(--fgColor-muted);
+}
+
+/* HUD popout chrome stays reachable while the panel body scrolls. The
+   translucent header also keeps underlying copy from showing through the
+   close control without turning the popout back into an opaque slab. */
+.world-detail-header,
+.world-settings-heading,
+.world-account-heading,
+.world-chat-heading,
+.world-office-panel-heading,
+.world-office-chat__heading {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  background: rgb(13 17 23 / 0.72);
+  box-shadow: 0 1px 0 rgb(139 148 158 / 0.34);
+  backdrop-filter: blur(18px) saturate(1.2);
+}
+
+.world-detail-close,
+.world-settings-close,
+.world-account-heading > button,
+.world-chat-heading > button,
+.world-office-panel-heading > button,
+.world-office-chat__heading > button {
+  position: sticky;
+  top: 12px;
+  z-index: 13;
+  flex: 0 0 auto;
 }
 
 .world-account-access {
@@ -9332,6 +9845,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 /* Fixed launcher geometry. The account avatar reveals these controls, but
    every revealed shortcut keeps the same square footprint. */
 .fm-world .world-shirt-badge {
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
 }
 
@@ -9508,5 +10023,181 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
   .world-saved-views {
     width: 48px;
+  }
+}
+
+/* On-demand Discord bridge. This deliberately lives outside the render loop:
+ * no animation, polling, or automatic message relay is attached to the World. */
+.world-discord-trigger {
+  position: fixed;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(max(12px, env(safe-area-inset-bottom)) + 54px);
+  z-index: 62;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--primer-border-default, #30363d);
+  border-radius: 6px;
+  background: var(--primer-canvas-default, #0d1117);
+  color: var(--primer-fg-default, #f0f6fc);
+  font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  box-shadow: 0 8px 24px rgb(1 4 9 / 0.48);
+}
+
+.world-discord-trigger:hover,
+.world-discord-trigger:focus-visible {
+  border-color: var(--primer-accent-emphasis, #1f6feb);
+  outline: none;
+}
+
+[data-world-discord-root] {
+  position: fixed;
+  z-index: 63;
+  right: max(10px, env(safe-area-inset-right));
+  top: max(58px, env(safe-area-inset-top));
+  width: min(380px, calc(100vw - 20px));
+  max-height: min(76dvh, 700px);
+}
+
+.world-discord-panel {
+  display: grid;
+  gap: 10px;
+  overflow: auto;
+  max-height: inherit;
+  padding: 12px;
+  border: 1px solid var(--primer-border-default, #30363d);
+  border-radius: 8px;
+  background: var(--primer-canvas-default, #0d1117);
+  color: var(--primer-fg-default, #f0f6fc);
+  box-shadow: 0 16px 32px rgb(1 4 9 / 0.58);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.world-discord-panel button,
+.world-discord-panel input,
+.world-discord-panel select,
+.world-discord-panel textarea {
+  box-sizing: border-box;
+  min-height: 32px;
+  border: 1px solid var(--primer-border-default, #30363d);
+  border-radius: 6px;
+  background: var(--primer-canvas-inset, #010409);
+  color: inherit;
+  font: inherit;
+}
+
+.world-discord-panel button {
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.world-discord-panel button:hover,
+.world-discord-panel button:focus-visible {
+  border-color: var(--primer-accent-emphasis, #1f6feb);
+  outline: none;
+}
+
+.world-discord-panel input,
+.world-discord-panel select,
+.world-discord-panel textarea {
+  width: 100%;
+  padding: 6px 8px;
+}
+
+.world-discord-panel textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.world-discord-title,
+.world-discord-tools,
+.world-discord-connect,
+.world-discord-compose {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.world-discord-title {
+  justify-content: space-between;
+  color: var(--primer-fg-default, #f0f6fc);
+  font-weight: 700;
+}
+
+.world-discord-close {
+  width: 32px;
+  padding: 0 !important;
+}
+
+.world-discord-connect,
+.world-discord-compose {
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+
+.world-discord-connect input,
+.world-discord-compose textarea {
+  flex: 1 1 180px;
+}
+
+.world-discord-setup,
+.world-discord-channel-chooser,
+.world-discord-messages article {
+  padding: 9px;
+  border: 1px solid var(--primer-border-default, #30363d);
+  border-radius: 6px;
+  background: var(--primer-canvas-subtle, #161b22);
+}
+
+.world-discord-setup ol {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+.world-discord-setup p,
+.world-discord-panel p {
+  margin: 0;
+  color: var(--primer-fg-muted, #8b949e);
+}
+
+.world-discord-state,
+.world-discord-notice {
+  color: var(--primer-accent-fg, #58a6ff) !important;
+}
+
+.world-discord-channel-chooser {
+  display: grid;
+  gap: 6px;
+}
+
+.world-discord-channel-chooser label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.world-discord-channel-chooser input[type="checkbox"] {
+  width: auto;
+  min-height: auto;
+}
+
+.world-discord-messages {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.world-discord-messages article {
+  overflow-wrap: anywhere;
+}
+
+.world-discord-messages strong {
+  color: var(--primer-fg-default, #f0f6fc);
+}
+
+@media (max-width: 680px) {
+  [data-world-discord-root] {
+    top: max(50px, env(safe-area-inset-top));
+    max-height: 70dvh;
   }
 }

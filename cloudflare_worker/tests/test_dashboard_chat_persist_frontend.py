@@ -55,6 +55,24 @@ def test_replayed_self_messages_are_rendered_after_refresh():
         assert 'entry.senderId === selfId ? "self" : kind' in render_entry
 
 
+def test_dashboard_history_starts_at_five_and_reveals_five_per_scroll():
+    assert "const HISTORY_INITIAL_MESSAGES = 5;" in CHAT
+    assert "const HISTORY_BATCH_MESSAGES = 5;" in CHAT
+    assert "function renderHistoryWindow(" in CHAT
+    assert "function revealOlderHistory()" in CHAT
+    assert "row.dataset.chatHistory" in CHAT
+    assert "row.hidden = true;" in CHAT
+    assert "scroll up to load" in CHAT
+    assert "Beginning of conversation" in CHAT
+    assert "fullLog.scrollTop += Math.max(" in CHAT
+    assert "if (event.deltaY < 0 && fullLog.scrollTop <= 32)" in CHAT
+    history = CHAT[
+        CHAT.index('} else if (type === "history")'):
+        CHAT.index('} else if (type === "reaction")')
+    ]
+    assert "renderHistoryWindow();" in history
+
+
 def test_durable_type_set_matches_the_node():
     # Same set as the desktop node's kDurableTypes (ServerNode.cpp).
     for kind in ("chat", "edit", "delete", "reaction", "admin-delete"):
@@ -320,11 +338,18 @@ def test_dashboard_side_chat_orders_by_ts_with_avatar_and_time():
     assert "hydrateChatAvatar(row.querySelector" in CHAT
     # Call sites hand the epoch timestamp through (formatting happens at
     # render), so ordering never depends on arrival order.
-    assert (
-        "appendMessage(kind, who, text, entry.id, entry.senderId,\n"
-        "                  Number(entry.ts) || Date.now(), attachment)"
-        in CHAT
-    )
+    render_entry = CHAT[
+        CHAT.index("function renderChatEntry("):
+        CHAT.index("async function verifyAdminDelete(")
+    ]
+    for marker in (
+        "appendMessage(",
+        "entry.id,",
+        "entry.senderId,",
+        "Number(entry.ts) || Date.now(),",
+        "attachment,",
+    ):
+        assert marker in render_entry
 
 
 def test_dashboard_side_chat_keeps_its_socket_alive_and_reconnects():
@@ -405,7 +430,7 @@ def test_world_chat_has_a_primer_multiline_repository_action_composer():
         '<option value="chat">Send to chat</option>',
         '<option value="task">Create team task</option>',
         '<option value="issue">Create repository issue</option>',
-        '<option value="agent">Send to bot</option>',
+        '<option value="agent" selected>Send to bot</option>',
         'id="fullChatInput"',
         'rows="2"',
         "border-border",
@@ -416,7 +441,7 @@ def test_world_chat_has_a_primer_multiline_repository_action_composer():
     for contract in (
         'fetch("/api/repositories"',
         "selectedComposerRepository()",
-        "runFullComposerAction(inputEl)",
+        "runFullComposerAction(inputEl, attachmentControl)",
         "ForkMeshDashboardActions?.submitWebIssue",
         "const queued = await queueOrgAgent(",
         '"agent",',
@@ -448,6 +473,13 @@ def test_world_chat_is_a_transparent_bubble_hud_with_context_and_emotes():
         assert marker in CHAT_VIEW
     assert 'type: "forkmesh:world-emote"' in CHAT
     assert "fullLog.scrollTo({" in CHAT
+
+
+def test_world_todo_actions_replay_as_chat_notification_bubbles():
+    assert 'type: "forkmesh:chat-ready"' in CHAT
+    assert 'data.type === "forkmesh:chat-notification"' in CHAT
+    assert "seenParentNotifications" in CHAT
+    assert "appendSystem(text, false)" in CHAT
 
 
 def test_world_embed_uses_one_dark_primer_header_and_pinned_grid_composer():
