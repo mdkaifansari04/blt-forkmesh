@@ -15729,7 +15729,9 @@ export function createWorldScene({
   }
   animated.push((time) => {
     const flicker = 1 + Math.sin(time * 0.011) * 0.12 + Math.sin(time * 0.023) * 0.06;
-    const size = fireLevel * flicker;
+    // A milestone fire grows mostly upward: widening it at the same rate would
+    // push the flames out past their own stone ring.
+    const size = (1 + (fireLevel - 1) * 0.45) * flicker;
     const height = fireLevel * (1 + Math.sin(time * 0.017) * 0.16);
     flame.scale.set(size, height, size);
     innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
