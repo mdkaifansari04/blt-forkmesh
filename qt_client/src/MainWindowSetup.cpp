@@ -1525,15 +1525,9 @@ void MainWindow::sendNodeHeartbeat()
         const bool wasAdmin = m_isAdmin;
         m_isAdmin = resp.value("isAdmin").toBool();
         // Admin status is learned after the initial nav render, so refresh the
-        // top-bar name once when it flips to show/hide the crown — without the
-        // balance re-query the heartbeat path otherwise avoids.
-        if (m_isAdmin != wasAdmin && m_navNodeName) {
-            const QString name = accountNameFromInput(m_userName, QString());
-            const QString crown = QString::fromUtf8(" \xF0\x9F\x91\x91");
-            m_navNodeName->setText(m_isAdmin && !name.isEmpty() ? name + crown : name);
-            m_navNodeName->setToolTip(
-                m_isAdmin && !name.isEmpty() ? name + " (admin)" : name);
-        }
+        // avatar crown badge once when it flips.
+        if (m_isAdmin != wasAdmin)
+            updateAdminCrownBadge();
         // Fetch the shared room-chat key once the account identity is available,
         // so it's cached before the user opens chat (no-op once fetched).
         fetchRoomPassphrase();
