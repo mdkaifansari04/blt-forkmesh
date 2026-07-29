@@ -4761,7 +4761,8 @@ async def install_source(env):
     if not candidates:
         return json_response({"ok": False, "error": "no_online_install_source"},
                              status=503,
-                             cache_control="no-store, max-age=0, must-revalidate")
+                             cache_control="no-store, max-age=0, must-revalidate",
+                             extra_headers=EXPECTED_DEGRADED_HEADERS)
 
     start = now - ONLINE_HISTORY_RETAIN_MS
     uptime_rows = await d1_all(
@@ -43306,6 +43307,16 @@ class Default(WorkerEntrypoint):
                 # guessed private/missing repository therefore cannot reveal
                 # whether a room or retained history exists.
                 return _private_replica_not_found()
+            if url.path.endswith("/clients"):
+                # The per-room observer was retired in favor of the bounded
+                # network stats snapshot. Older desktop builds still poll this
+                # path; answer before touching a Durable Object so those
+                # clients cannot repeatedly wake or exhaust a room isolate.
+                return json_response(
+                    {"error": "observers_removed"},
+                    status=410,
+                    cache_control="no-store",
+                )
             room_id = self.env.FORKMESH_MAINNODE_ROOM.idFromName(room["key"])
             # The platform can abort a room DO mid-request — the free-tier
             # duration cap kills long-lived requests, and any co-located DO
