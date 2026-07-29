@@ -35,6 +35,7 @@ from js import fetch as js_fetch
 from pyodide.ffi import to_js as _to_js
 from workers import DurableObject, Response, WorkerEntrypoint
 
+import organization_discord
 from discord_rate import DiscordRateCoordinator
 
 # Solana read-only plumbing (address/base64url codecs, JSON-RPC, price reads)
