@@ -8507,3 +8507,736 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     animation-duration: 1ms;
   }
 }
+
+/* -------------------------------------------------------------------------
+   Primer product UI
+
+   The World is intentionally framework-free, so these are the functional
+   Primer primitives and component recipes used by the HUD rather than a
+   second component runtime. Feature CSS above still owns placement and
+   animation; this layer owns the shared visual language.
+   ------------------------------------------------------------------------- */
+:root {
+  --bgColor-default: #0d1117;
+  --bgColor-muted: #161b22;
+  --bgColor-inset: #010409;
+  --bgColor-emphasis: #6e7681;
+  --fgColor-default: #e6edf3;
+  --fgColor-muted: #8d96a0;
+  --fgColor-disabled: #6e7681;
+  --fgColor-link: #4493f8;
+  --fgColor-accent: #4493f8;
+  --fgColor-success: #3fb950;
+  --fgColor-attention: #d29922;
+  --fgColor-danger: #f85149;
+  --fgColor-onEmphasis: #ffffff;
+  --borderColor-default: #30363d;
+  --borderColor-muted: #21262d;
+  --borderColor-emphasis: #8b949e;
+  --borderColor-accent-emphasis: #1f6feb;
+  --borderColor-success-emphasis: #238636;
+  --borderColor-danger-emphasis: #da3633;
+  --control-bgColor-rest: #21262d;
+  --control-bgColor-hover: #30363d;
+  --control-bgColor-active: #282e33;
+  --control-borderColor-rest: rgb(240 246 252 / 0.1);
+  --control-borderColor-emphasis: #8b949e;
+  --button-primary-bgColor-rest: #238636;
+  --button-primary-bgColor-hover: #2ea043;
+  --button-primary-bgColor-active: #238636;
+  --button-danger-bgColor-hover: #da3633;
+  --button-danger-fgColor-rest: #f85149;
+  --focus-outlineColor: #1f6feb;
+  --overlay-bgColor: #161b22;
+  --overlay-borderColor: #30363d;
+  --overlay-shadow: 0 8px 24px rgb(1 4 9 / 0.48);
+  --base-size-4: 4px;
+  --base-size-8: 8px;
+  --base-size-12: 12px;
+  --base-size-16: 16px;
+  --base-size-24: 24px;
+  --base-size-32: 32px;
+  --borderRadius-small: 3px;
+  --borderRadius-medium: 6px;
+  --borderRadius-large: 12px;
+  --base-text-weight-normal: 400;
+  --base-text-weight-medium: 500;
+  --base-text-weight-semibold: 600;
+
+  /* Keep the existing World API stable while every HUD feature moves through
+     the same Primer functional tokens. */
+  --world-ink: var(--bgColor-default);
+  --world-ink-soft: var(--bgColor-muted);
+  --world-panel: rgb(22 27 34 / 0.96);
+  --world-panel-solid: var(--overlay-bgColor);
+  --world-line: var(--borderColor-default);
+  --world-line-strong: var(--borderColor-default);
+  --world-copy: var(--fgColor-default);
+  --world-muted: var(--fgColor-muted);
+  --world-mint: var(--fgColor-accent);
+  --world-mint-deep: var(--focus-outlineColor);
+  --world-sun: var(--fgColor-attention);
+  --world-sky: #79c0ff;
+  --world-danger: var(--fgColor-danger);
+  --primer-accent-emphasis: var(--focus-outlineColor);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica,
+    Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+.fm-world,
+.world-hud {
+  color: var(--fgColor-default);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica,
+    Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.world-hud :is(h1, h2, h3, h4, strong) {
+  font-family: inherit;
+}
+
+.world-hud :is(.world-eyebrow, .world-mono) {
+  color: var(--fgColor-muted);
+  font-family:
+    ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono,
+    monospace;
+  font-weight: var(--base-text-weight-semibold);
+  letter-spacing: 0.04em;
+}
+
+/* Overlay, Box, Dialog, and card surfaces. */
+.world-hud :is(
+  .world-detail,
+  .world-settings,
+  .world-account,
+  .world-office-lobby,
+  .world-office-room,
+  .world-office-task-panel,
+  .world-office-task-checkin,
+  .world-office-chat,
+  .world-map,
+  .world-saved-views,
+  .world-shot-dialog,
+  .world-chat-terminal,
+  .world-notice,
+  .world-tour-card
+) {
+  border: 1px solid var(--overlay-borderColor);
+  border-radius: var(--borderRadius-medium);
+  background: var(--overlay-bgColor);
+  color: var(--fgColor-default);
+  box-shadow: var(--overlay-shadow);
+}
+
+.world-hud :is(
+  .world-detail-header,
+  .world-office-panel-heading,
+  .world-account-heading
+) {
+  border-bottom-color: var(--borderColor-default);
+  background: var(--bgColor-muted);
+}
+
+.world-detail-header {
+  padding: var(--base-size-16) var(--base-size-24);
+}
+
+.world-detail-header::before {
+  display: none;
+}
+
+.world-detail-header h2 {
+  margin-top: var(--base-size-4);
+  font-size: clamp(1.5rem, 4vw, 2rem);
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+.world-detail-scroll {
+  padding: var(--base-size-24);
+}
+
+/* Primer Button: secondary is the default; primary and danger are explicit. */
+.world-hud :is(
+  .world-primary-action,
+  .world-secondary-action,
+  .world-link-action,
+  .world-share-view-button,
+  .world-detail-close,
+  .world-settings-close,
+  .world-office-panel-heading > button,
+  .world-office-panel-actions button,
+  .world-office-task-manager button,
+  .world-office-task-controls button,
+  .world-office-task-checkin button,
+  .world-account-access button,
+  .world-session-actions button,
+  .world-account-form > button,
+  .world-account-signed-in > button,
+  .world-daylight-options button,
+  .world-shot-tools button,
+  .world-shot-undo,
+  .world-shot-ghost,
+  .world-shot-share button
+) {
+  min-height: 32px;
+  border: 1px solid var(--control-borderColor-rest);
+  border-radius: var(--borderRadius-medium);
+  background: var(--control-bgColor-rest);
+  color: var(--fgColor-default);
+  padding: 5px 12px;
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.04) inset;
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: var(--base-text-weight-semibold);
+  line-height: 20px;
+  text-transform: none;
+}
+
+.world-hud :is(
+  .world-secondary-action,
+  .world-share-view-button,
+  .world-detail-close,
+  .world-settings-close,
+  .world-office-panel-heading > button,
+  .world-office-panel-actions button,
+  .world-office-task-manager button,
+  .world-office-task-controls button,
+  .world-office-task-checkin button,
+  .world-account-access button,
+  .world-session-actions button,
+  .world-daylight-options button,
+  .world-shot-tools button,
+  .world-shot-undo,
+  .world-shot-ghost,
+  .world-shot-share button
+):hover {
+  border-color: var(--control-borderColor-emphasis);
+  background: var(--control-bgColor-hover);
+  color: var(--fgColor-default);
+}
+
+.world-hud :is(
+  .world-primary-action,
+  .world-account-form > button,
+  .world-office-composer > button,
+  .world-shot-primary
+) {
+  border-color: rgb(240 246 252 / 0.1);
+  background: var(--button-primary-bgColor-rest);
+  color: var(--fgColor-onEmphasis);
+}
+
+.world-hud :is(
+  .world-primary-action,
+  .world-account-form > button,
+  .world-office-composer > button,
+  .world-shot-primary
+):hover {
+  background: var(--button-primary-bgColor-hover);
+  color: var(--fgColor-onEmphasis);
+}
+
+.world-hud :is(
+  .world-danger-action,
+  .world-office-task-delete,
+  [data-world-session-revoke="all"]
+) {
+  border-color: var(--borderColor-danger-emphasis);
+  background: var(--control-bgColor-rest);
+  color: var(--button-danger-fgColor-rest);
+}
+
+.world-hud :is(
+  .world-danger-action,
+  .world-office-task-delete,
+  [data-world-session-revoke="all"]
+):hover {
+  border-color: var(--button-danger-bgColor-hover);
+  background: var(--button-danger-bgColor-hover);
+  color: var(--fgColor-onEmphasis);
+}
+
+.world-hud :is(button, a, input, select, textarea):focus-visible {
+  border-color: var(--focus-outlineColor);
+  outline: 2px solid var(--focus-outlineColor);
+  outline-offset: -1px;
+  box-shadow: 0 0 0 3px rgb(31 111 235 / 0.3);
+}
+
+.world-hud :is(button, input, select, textarea):disabled {
+  border-color: var(--borderColor-muted);
+  background: var(--control-bgColor-rest);
+  color: var(--fgColor-disabled);
+  box-shadow: none;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+/* Primer FormControl. */
+.world-hud :is(
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="url"],
+  input[type="number"],
+  select,
+  textarea
+) {
+  border: 1px solid var(--borderColor-default);
+  border-radius: var(--borderRadius-medium);
+  background: var(--bgColor-default);
+  color: var(--fgColor-default);
+  box-shadow: 0 0 transparent;
+  font-family: inherit;
+  font-size: 0.875rem;
+}
+
+.world-hud :is(input, textarea)::placeholder {
+  color: var(--fgColor-muted);
+  opacity: 1;
+}
+
+.world-hud :is(input[type="checkbox"], input[type="radio"]) {
+  accent-color: var(--focus-outlineColor);
+}
+
+/* UnderlineNav treatment for settings and account tabs. */
+.world-settings-tabs,
+.world-account-tabs {
+  display: flex;
+  gap: var(--base-size-16);
+  margin-top: var(--base-size-16);
+  overflow-x: auto;
+  border: 0;
+  border-bottom: 1px solid var(--borderColor-default);
+}
+
+.world-settings-tabs button,
+.world-account-tabs button {
+  position: relative;
+  min-height: 40px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fgColor-muted);
+  padding: 8px 4px;
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: var(--base-text-weight-semibold);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.world-settings-tabs button + button,
+.world-account-tabs button + button {
+  border-left: 0;
+}
+
+.world-settings-tabs button:hover,
+.world-account-tabs button:hover,
+.world-settings-tabs button:focus-visible,
+.world-account-tabs button:focus-visible {
+  background: transparent;
+  color: var(--fgColor-default);
+}
+
+.world-settings-tabs button[aria-selected="true"],
+.world-account-tabs button[aria-selected="true"] {
+  background: transparent;
+  color: var(--fgColor-default);
+}
+
+.world-settings-tabs button[aria-selected="true"]::after,
+.world-account-tabs button[aria-selected="true"]::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: #f78166;
+  content: "";
+}
+
+/* Preferences are composed from Primer Box and FormControl patterns. */
+.world-settings {
+  padding: var(--base-size-24);
+}
+
+.world-settings h2 {
+  margin-top: 0;
+  font-size: 1.5rem;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+.world-settings-close,
+.world-detail-close {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  place-items: center;
+  padding: 0;
+  color: var(--fgColor-muted);
+}
+
+.world-account-access {
+  margin-top: var(--base-size-16);
+  border: 1px solid var(--borderColor-default);
+  border-radius: var(--borderRadius-medium);
+  background: var(--bgColor-muted);
+  padding: var(--base-size-16);
+}
+
+.world-account-access strong {
+  font-size: 0.875rem;
+}
+
+.world-account-access span {
+  color: var(--fgColor-muted);
+  font-size: 0.75rem;
+}
+
+.world-setting-group {
+  margin-top: var(--base-size-24);
+  border: 0;
+  padding: 0;
+}
+
+.world-setting-group legend,
+.world-work-issue-heading {
+  margin-bottom: var(--base-size-8);
+  color: var(--fgColor-muted);
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: var(--base-text-weight-semibold);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.world-setting-group > small {
+  display: block;
+  margin-top: var(--base-size-8);
+  color: var(--fgColor-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.world-theme-option,
+.world-daylight-control,
+.world-light-control,
+.world-privacy-option,
+.world-status-editor,
+.world-session {
+  border-color: var(--borderColor-default);
+  border-radius: var(--borderRadius-medium);
+  background: var(--bgColor-muted);
+}
+
+/* Primer Counter + Box patterns for assigned work. */
+.world-work-stats {
+  gap: var(--base-size-8);
+  margin-bottom: var(--base-size-16);
+}
+
+.world-work-stats div {
+  gap: var(--base-size-4);
+  border: 1px solid var(--borderColor-default);
+  border-radius: var(--borderRadius-medium);
+  background: var(--bgColor-muted);
+  padding: var(--base-size-12) var(--base-size-16);
+}
+
+.world-work-stats strong {
+  color: var(--fgColor-default);
+  font-family: inherit;
+  font-size: 1.25rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+
+.world-work-stats span {
+  color: var(--fgColor-muted);
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: var(--base-text-weight-medium);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.world-office-task-list {
+  display: grid;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--borderColor-default);
+  border-radius: var(--borderRadius-medium);
+  background: var(--bgColor-default);
+  padding: 0;
+}
+
+.world-office-task {
+  gap: var(--base-size-16);
+  border: 0;
+  border-bottom: 1px solid var(--borderColor-muted);
+  border-radius: 0;
+  background: var(--bgColor-default);
+  padding: var(--base-size-16);
+}
+
+.world-office-task:last-child {
+  border-bottom: 0;
+}
+
+.world-office-task:hover {
+  background: var(--bgColor-muted);
+}
+
+.world-office-task[data-status="active"] {
+  border-color: var(--borderColor-muted);
+  background: rgb(31 111 235 / 0.08);
+}
+
+.world-office-task[data-status="done"] {
+  border-color: var(--borderColor-muted);
+  background: var(--bgColor-default);
+  opacity: 1;
+}
+
+.world-office-task[data-status="done"] .world-office-task-copy {
+  opacity: 0.72;
+}
+
+.world-office-task[data-kind="bid"] {
+  border-color: var(--borderColor-muted);
+  background: rgb(210 153 34 / 0.06);
+}
+
+.world-office-task-copy {
+  gap: var(--base-size-8);
+}
+
+.world-office-task-copy > div {
+  gap: var(--base-size-4);
+}
+
+.world-office-task-copy strong {
+  color: var(--fgColor-default);
+  font-size: 0.875rem;
+  font-weight: var(--base-text-weight-semibold);
+  line-height: 1.4;
+}
+
+.world-office-task-copy small,
+.world-office-task-details,
+.world-office-task-copy small.world-office-task-agent-run {
+  color: var(--fgColor-muted);
+  font-family: inherit;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.world-office-task-state {
+  width: 14px;
+  height: 14px;
+  margin-top: 3px;
+  border-color: var(--fgColor-muted);
+}
+
+.world-office-task[data-status="active"] .world-office-task-state {
+  border-color: var(--fgColor-accent);
+  border-top-color: transparent;
+  box-shadow: none;
+}
+
+.world-office-task[data-status="done"] .world-office-task-state {
+  border-color: var(--fgColor-accent);
+  background: var(--fgColor-accent);
+}
+
+.world-work-issue[data-status="issue"] .world-office-task-state {
+  background: var(--fgColor-accent);
+  box-shadow: none;
+}
+
+.world-office-task-controls {
+  gap: var(--base-size-8);
+}
+
+.world-office-task-controls time {
+  min-width: 52px;
+  color: var(--fgColor-muted);
+  font-family:
+    ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono,
+    monospace;
+  font-size: 0.75rem;
+}
+
+.world-office-task-controls .world-office-task-return {
+  border-color: var(--control-borderColor-rest);
+  color: var(--fgColor-default);
+}
+
+.world-office-task-progress-label,
+.world-office-task-bid-badge {
+  min-height: 20px;
+  border-color: rgb(56 139 253 / 0.4);
+  border-radius: 2em;
+  background: rgb(56 139 253 / 0.15);
+  color: var(--fgColor-accent);
+  padding: 0 7px;
+  font-family: inherit;
+  font-size: 0.6875rem;
+  font-weight: var(--base-text-weight-medium);
+  letter-spacing: 0;
+  line-height: 18px;
+  text-transform: none;
+}
+
+.world-office-task-bid-badge {
+  border-color: rgb(210 153 34 / 0.4);
+  background: rgb(210 153 34 / 0.15);
+  color: #e3b341;
+}
+
+.world-office-task-completion,
+.world-office-task-completion-editor {
+  margin-top: var(--base-size-8);
+  border: 1px solid var(--borderColor-muted);
+  border-left: 3px solid var(--borderColor-accent-emphasis);
+  border-radius: var(--borderRadius-medium);
+  background: var(--bgColor-muted);
+  padding: var(--base-size-12);
+}
+
+.world-office-task-completion > span,
+.world-office-task-completion-editor > span {
+  color: var(--fgColor-accent);
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: var(--base-text-weight-semibold);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.world-office-task-completion p {
+  color: var(--fgColor-default);
+  font-size: 0.8125rem;
+}
+
+.world-office-task-completion-editor textarea {
+  background: var(--bgColor-default);
+  font-family: inherit;
+}
+
+.world-office-task-empty,
+.world-session-empty {
+  border: 0;
+  background: var(--bgColor-default);
+  color: var(--fgColor-muted);
+  padding: var(--base-size-32) var(--base-size-16);
+}
+
+.world-office-panel-status:empty {
+  display: none;
+}
+
+.world-office-panel-status {
+  border-color: var(--borderColor-muted);
+  color: var(--fgColor-muted);
+  font-family: inherit;
+}
+
+.world-work-issue-link {
+  border-color: var(--control-borderColor-rest);
+  border-radius: var(--borderRadius-medium);
+  background: var(--control-bgColor-rest);
+  color: var(--fgColor-default);
+  font-family: inherit;
+  font-size: 0.75rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* Compact HUD launchers and notices use the same controls and neutral glass. */
+.world-brand {
+  border: 1px solid var(--borderColor-default);
+  background: rgb(13 17 23 / 0.88);
+  box-shadow: var(--overlay-shadow);
+}
+
+.world-connection-ring {
+  border-color: var(--fgColor-success);
+  box-shadow: none;
+}
+
+.world-icon-button,
+.world-top-link,
+.world-share-view-button {
+  border-color: var(--control-borderColor-rest);
+  background: rgb(33 38 45 / 0.92);
+  color: var(--fgColor-default);
+}
+
+.world-icon-button:hover,
+.world-top-link:hover,
+.world-share-view-button:hover {
+  border-color: var(--control-borderColor-emphasis);
+  background: var(--control-bgColor-hover);
+}
+
+.world-top-link[aria-pressed="true"] {
+  border-color: var(--borderColor-accent-emphasis);
+  background: var(--control-bgColor-active);
+  color: var(--fgColor-accent);
+}
+
+.world-notification-button [data-world-notification-count],
+.world-admin-errors-button [data-world-admin-error-count],
+.world-tasks-button [data-world-task-count] {
+  border-color: var(--bgColor-default);
+  background: var(--fgColor-danger);
+  color: var(--fgColor-onEmphasis);
+  font-family: inherit;
+}
+
+.world-activity-stream article {
+  border-color: var(--borderColor-default);
+  border-radius: var(--borderRadius-medium);
+  background: rgb(22 27 34 / 0.96);
+  color: var(--fgColor-default);
+  font-family: inherit;
+}
+
+@media (max-width: 720px) {
+  .world-settings {
+    padding: var(--base-size-16);
+  }
+
+  .world-settings-tabs,
+  .world-account-tabs {
+    gap: var(--base-size-12);
+  }
+
+  .world-work-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .world-office-task {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .world-office-task-controls {
+    justify-content: flex-start;
+    padding-left: 22px;
+  }
+
+  .world-office-task-controls time {
+    margin-right: auto;
+    text-align: left;
+  }
+}
