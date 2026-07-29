@@ -1583,7 +1583,9 @@ void MainWindow::tickBackgroundQueue()
             layout->setSpacing(6);
             spinner = new QLabel(glyph);
             spinner->setObjectName("backgroundTaskSpinner");
-            spinner->setStyleSheet(QStringLiteral("color:#3fb950;font-weight:700;"));
+            spinner->setStyleSheet(
+                QStringLiteral("color:%1;font-weight:700;")
+                    .arg(QString::fromLatin1(Theme::kRunning)));
             spinner->setFixedWidth(14);
             label = new QLabel(word);
             label->setObjectName("backgroundTaskNote");

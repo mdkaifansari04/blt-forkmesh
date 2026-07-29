@@ -2109,10 +2109,14 @@ void MainWindow::refreshIssueList()
             // Provider name, prefixed with a spinner frame while the agent is
             // still working so the list shows live activity at a glance.
             QString text = agentProviderName(session->provider);
-            if (agentSessionActive(session))
+            const bool working = agentSessionActive(session);
+            if (working)
                 text = QString::fromUtf8(kAgentSpinFrames[m_issueSpinFrame % 10]) +
                        QStringLiteral(" ") + text;
             auto *agentItem = new QTableWidgetItem(text);
+            // Running rows carry the same orange as every other spinner (adhoc #23).
+            if (working)
+                agentItem->setForeground(QColor(Theme::kRunning));
             agentItem->setData(Qt::UserRole, session->id);
             m_issueTable->setItem(row, 9, agentItem);
         } else {

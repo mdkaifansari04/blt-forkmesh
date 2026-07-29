@@ -356,10 +356,11 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
 {
     cell->setText(s.merged ? QStringLiteral("merged") : agentStatusText(s.status));
     cell->setForeground(s.merged ? QColor("#a371f7") : agentStatusColor(s.status));
-    // Status glyph next to the text (issue #108): a green spinner while running, a
-    // purple merge mark once it lands, a green check on success, a red stop sign
-    // when halted, an orange hand while it waits on the user, and a red X circle
-    // on failure (issue #322). The running glyph is seeded at frame 0 here;
+    // Status glyph next to the text (issue #108): an orange spinner while running
+    // (adhoc #23), a purple merge mark once it lands, a green check on success, a
+    // red stop sign when halted, an orange hand while it waits on the user, and a
+    // red X circle on failure (issue #322). The running glyph is seeded at frame 0
+    // here;
     // animateRunningAgentIcons() spins it. A queued session gets the amber clock
     // (adhoc #433) — with the concurrency cap in place it can sit there for a
     // while, so the list has to say why nothing is happening. Other states carry
@@ -367,7 +368,7 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     if (s.merged)
         cell->setIcon(themedOcticon("git-merge", QColor("#a371f7"), 14));
     else if (s.status == AgentStatus::Running)
-        cell->setIcon(themedOcticon("sync", QColor("#3fb950"), 14));
+        cell->setIcon(themedOcticon("sync", QColor(Theme::kRunning), 14));
     else if (s.status == AgentStatus::Success)
         cell->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
     else if (s.status == AgentStatus::Stopped)
@@ -6495,7 +6496,7 @@ void MainWindow::switchToAgentsTab(int sessionId)
 // Rebuild the footer "Agents:" status strip (adhoc #111) from m_agentSessions:
 // one small status glyph per known session (adhoc #114 swapped the plain
 // colored dots for the same icon set the Agents table's Status column uses —
-// a green spinner while running, purple merge mark once landed, orange hand
+// an orange spinner while running, purple merge mark once landed, orange hand
 // while waiting, etc — via agentStatusOcticon), click-through to that
 // session's Agents tab. Called after every reloadAgents() so the strip tracks
 // the same data as the Agents table.
@@ -6573,7 +6574,7 @@ void MainWindow::refreshAgentStatusRow()
     }
 }
 
-// Spin the green "sync" glyph on every running icon in the footer "Agents:"
+// Spin the orange "sync" glyph on every running icon in the footer "Agents:"
 // strip (adhoc #114), mirroring animateRunningAgentIcons()'s treatment of the
 // Agents table. Driven by m_agentStatusSpinTimer, which only ticks while at
 // least one session in the strip is running (see refreshAgentStatusRow).
@@ -6583,7 +6584,7 @@ void MainWindow::animateAgentStatusIcons()
         return;
     m_agentStatusSpinFrame = (m_agentStatusSpinFrame + 1) % 10;
     const QIcon icon(rotatedTintedOcticonPixmap(
-        "sync", QColor("#3fb950"), 14, m_agentStatusSpinFrame * 36.0));
+        "sync", QColor(Theme::kRunning), 14, m_agentStatusSpinFrame * 36.0));
     for (int i = 0; i < m_agentStatusIconsLayout->count(); ++i) {
         QWidget *w = m_agentStatusIconsLayout->itemAt(i)->widget();
         if (w && w->property("agentStatusSpin").toBool())
@@ -8993,7 +8994,7 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
     m_agentStatusPill->setText(pill);
 }
 
-// Spin the green "sync" glyph on every running row's Status cell so the agents
+// Spin the orange "sync" glyph on every running row's Status cell so the agents
 // list shows a live spinner (issue #108). Driven by m_agentsSpinTimer, which only
 // ticks while a session is running, so finished rows keep their static icon.
 void MainWindow::animateRunningAgentIcons()
@@ -9001,7 +9002,7 @@ void MainWindow::animateRunningAgentIcons()
     if (!m_agentTable)
         return;
     const QIcon icon(rotatedTintedOcticonPixmap(
-        "sync", QColor("#3fb950"), 14, m_agentsSpinFrame * 36.0));
+        "sync", QColor(Theme::kRunning), 14, m_agentsSpinFrame * 36.0));
     QSignalBlocker block(m_agentTable);
     for (int r = 0; r < m_agentTable->rowCount(); ++r) {
         QTableWidgetItem *idItem = m_agentTable->item(r, 0);
