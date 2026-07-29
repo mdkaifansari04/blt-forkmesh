@@ -8,9 +8,20 @@ speaking JSON-RPC 2.0 over the stdio transport (newline-delimited JSON on
 stdin/stdout, diagnostics on stderr). stdio is fine for local-first: Claude Code
 launches it as a subprocess and auto-discovers it from a `.mcp.json` entry.
 
-Read tools:  list_repos, read_file, search_issues, get_pr_diff
+Read tools:  whoami, list_repos, read_file, search_issues, get_pr_diff
 Write tools: create_issue, comment_on_issue, create_milestone, update_milestone,
              create_project, update_project, open_pr_from_branch
+
+Connector token (adhoc #16). The write tools sign as this node, so holding them
+is holding the node's identity. The desktop client's Settings -> MCP tab mints a
+connector token into
+    $XDG_DATA_HOME/ForkMesh/ForkMesh/mcp/connector.json
+and puts it in the agent's MCP config as FORKMESH_MCP_TOKEN. When that file
+exists the write tools require a matching token; reads stay open so an agent can
+still browse without being granted the identity. When it does not exist (the
+historical setup: a subprocess you launched yourself) everything is allowed, so
+existing .mcp.json entries keep working. Revoking is deleting the file — every
+config still holding the old string is demoted to read-only at once.
 
 Write tools sign with the node identity key and write the exact same native
 ForkMesh entries the Qt client's IssueStore / ProjectStore / PullStore write —
@@ -36,6 +47,7 @@ Which repo the tools act on:
 import base64
 import datetime
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -59,6 +71,15 @@ BASE_BRANCH = "main"
 
 DATA_HOME = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local/share")
 KEY_PATH = Path(DATA_HOME) / "ForkMesh/ForkMesh/identity/ed25519.pem"
+CONNECTOR_PATH = Path(
+    os.environ.get("FORKMESH_MCP_CONNECTOR")
+    or Path(DATA_HOME) / "ForkMesh/ForkMesh/mcp/connector.json")
+
+# Tools that sign with — and therefore act as — the node identity.
+WRITE_TOOLS = {
+    "create_issue", "comment_on_issue", "create_milestone", "update_milestone",
+    "create_project", "update_project", "open_pr_from_branch",
+}
 
 
 def log(msg):
@@ -142,6 +163,43 @@ def load_identity():
 
 def b64url(data):
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+
+# ------------------------------------------------------------------ connector
+def connector_record():
+    """The minted connector, or {} when this node has not published one."""
+    try:
+        record = json.loads(CONNECTOR_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) and record.get("token") else {}
+
+
+def presented_token():
+    return (os.environ.get("FORKMESH_MCP_TOKEN") or "").strip()
+
+
+def access_level():
+    """'open' (no connector), 'write' (token matches), or 'read' (no token)."""
+    record = connector_record()
+    if not record:
+        return "open"
+    # Constant-time: a token comparison that leaks length/prefix by timing is
+    # exactly the kind of side channel a local agent could grind.
+    return "write" if hmac.compare_digest(
+        str(record["token"]), presented_token()) else "read"
+
+
+def require_write_access(name):
+    if name not in WRITE_TOOLS or access_level() != "read":
+        return
+    raise ValueError(
+        f"{name} needs the connector token: this node published an MCP "
+        "connector, so write tools require a matching FORKMESH_MCP_TOKEN. "
+        "Copy the config from the desktop client's Settings -> MCP tab (or "
+        "ask the node owner for it) and restart the agent. Read tools "
+        "(whoami, list_repos, read_file, search_issues, get_pr_diff) work "
+        "without it.")
 
 
 def author_name(repo):
@@ -815,6 +873,38 @@ def _commit(repo, pathspec, message):
 
 
 # ----------------------------------------------------------------------- tools
+def tool_whoami(_args):
+    """Who the agent is acting as, and what it is allowed to do.
+
+    The first call an agent should make: it answers "do I have the token?"
+    without having to trip over a refused write halfway through a task.
+    """
+    level = access_level()
+    try:
+        _, pub = load_identity()
+    except ValueError as exc:
+        pub = None
+        identity_error = str(exc)
+    else:
+        identity_error = None
+
+    info = {
+        "node": pub,
+        "access": level,
+        "canWrite": level != "read",
+        "connector": bool(connector_record()),
+        "tokenPresented": bool(presented_token()),
+        "repos": [p.name for p in list_repo_paths()],
+        "writeTools": sorted(WRITE_TOOLS),
+    }
+    if identity_error:
+        info["identityError"] = identity_error
+    if level == "read":
+        info["hint"] = ("Set FORKMESH_MCP_TOKEN from the desktop client's "
+                        "Settings -> MCP tab to enable the write tools.")
+    return json.dumps(info, indent=2)
+
+
 def tool_list_repos(_args):
     out = []
     for p in list_repo_paths():
@@ -928,6 +1018,13 @@ DATE_ARG = {"type": ["string", "integer"],
             "description": "YYYY-MM-DD or epoch milliseconds"}
 
 TOOLS = [
+    {
+        "name": "whoami",
+        "description": "Identity this connector acts as, its access level "
+                       "(open/write/read), and the repos it can reach.",
+        "inputSchema": {"type": "object", "properties": {}},
+        "handler": tool_whoami,
+    },
     {
         "name": "list_repos",
         "description": "List the repositories this ForkMesh node exposes.",
@@ -1109,10 +1206,28 @@ def handle_request(msg):
 
     if method == "initialize":
         client_ver = params.get("protocolVersion", PROTOCOL_VERSION)
+        level = access_level()
+        # `instructions` is the spec's slot for telling the model how to use the
+        # server; say up front whether writes are available so it plans a task
+        # it can actually finish.
+        instructions = (
+            "ForkMesh mesh access. Read: whoami, list_repos, read_file, "
+            "search_issues, get_pr_diff. Write (signed as this node): "
+            "create_issue, comment_on_issue, create_milestone, "
+            "update_milestone, create_project, update_project, "
+            "open_pr_from_branch. Work a task by finding it with "
+            "search_issues, commenting progress with comment_on_issue, and "
+            "landing it with open_pr_from_branch. ")
+        instructions += (
+            "This connector is read-only: no valid FORKMESH_MCP_TOKEN was "
+            "presented, so write tools will refuse."
+            if level == "read" else
+            "This connector may write.")
         return _result(mid, {
             "protocolVersion": client_ver,
             "capabilities": {"tools": {}},
             "serverInfo": SERVER_INFO,
+            "instructions": instructions,
         })
     if method in ("notifications/initialized", "initialized"):
         return None
@@ -1126,6 +1241,7 @@ def handle_request(msg):
         if not tool:
             return _error(mid, -32602, f"unknown tool: {name}")
         try:
+            require_write_access(name)
             text = tool["handler"](params.get("arguments") or {})
         except Exception as exc:  # noqa: BLE001 — surface as a tool error
             log(f"tool {name} failed: {exc}")
@@ -1165,7 +1281,7 @@ def serve(stdin, stdout):
 
 
 def main():
-    log(f"listening on stdio; identity {KEY_PATH}")
+    log(f"listening on stdio; identity {KEY_PATH}; access {access_level()}")
     serve(sys.stdin, sys.stdout)
 
 

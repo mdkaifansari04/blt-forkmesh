@@ -235,6 +235,8 @@ set(FORKMESH_APP_SOURCES
     src/SystemStats.cpp
     src/LocalBackupStore.h
     src/LocalBackupStore.cpp
+    src/McpConnector.h
+    src/McpConnector.cpp
     src/MainWindowInternal.h
     src/MainWindow.h
     src/MainWindow.cpp
@@ -253,6 +255,7 @@ set(FORKMESH_APP_SOURCES
     src/MainWindowShortcuts.cpp
     src/MainWindowSearch.cpp
     src/MainWindowSettings.cpp
+    src/MainWindowMcp.cpp
     src/MainWindowData.cpp
     src/MainWindowMessages.cpp
     src/MainWindowRepos.cpp
@@ -434,6 +437,9 @@ install(PROGRAMS
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/headless_mirror_refresh.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/hosted_repository_sync.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/mirror_gateway.py"
+    # Settings -> MCP points external agents at this script, so an installed
+    # client has to ship it too, not just a source checkout.
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/forkmesh_mcp_server.py"
     DESTINATION "${FORKMESH_RESOURCE_INSTALL_ROOT}/tools")
 install(FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/../cloudflare_worker/wrangler.toml"
@@ -512,6 +518,8 @@ if(FORKMESH_BUILD_TESTS)
         src/RepoSecurity.cpp
         src/LocalBackupStore.h
         src/LocalBackupStore.cpp
+        src/McpConnector.h
+        src/McpConnector.cpp
         src/ReferenceLinks.h
         src/ChatHistoryLimits.h
         src/ChatVisitorPresence.h
