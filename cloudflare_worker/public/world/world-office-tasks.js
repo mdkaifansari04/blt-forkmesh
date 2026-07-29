@@ -73,6 +73,37 @@ function timestampMs(value) {
   return Math.max(0, numeric > 0 && numeric < 10 ** 11 ? numeric * 1000 : numeric);
 }
 
+// Provenance a desktop stamps on a task it opened from a prompt: the bot that
+// launched the run, the bot that reported it finished, and the model,
+// permission mode, and reasoning strength it ran with.
+function normalizedAgentRun(agent) {
+  if (!agent || typeof agent !== "object") return null;
+  const run = {
+    provider: text(agent.provider, 40).toLowerCase(),
+    startedBy: text(agent.startedBy, 64).toLowerCase(),
+    finishedBy: text(agent.finishedBy, 64).toLowerCase(),
+    model: text(agent.model, 64),
+    mode: text(agent.mode, 40),
+    strength: text(agent.strength, 32).toLowerCase(),
+    sessionId: text(agent.sessionId, 64),
+  };
+  return Object.values(run).some(Boolean) ? run : null;
+}
+
+// The one-line "how this ran" summary shown under a bot-assigned task.
+function agentRunSummary(run) {
+  if (!run) return "";
+  return [
+    run.startedBy ? `started by ${run.startedBy}` : "",
+    run.finishedBy ? `finished by ${run.finishedBy}` : "",
+    run.model ? `model ${run.model}` : "",
+    run.mode ? `mode ${run.mode}` : "",
+    run.strength ? `strength ${run.strength}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 function normalizedTask(task) {
   if (!task || typeof task !== "object") return null;
   const id = safeTaskId(task.id);
@@ -120,6 +151,7 @@ function normalizedTask(task) {
     team: text(task.team, 64).toLowerCase(),
     destination: text(task.destination, 32).toLowerCase() || "department",
     repository: text(task.repository, 201),
+    agent: normalizedAgentRun(task.agent),
     qa:
       task.qa && typeof task.qa === "object"
         ? {
@@ -474,6 +506,14 @@ export function createWorldOfficeTasksController({
               ${doneTask ? " · done" : ""}
               ${checkinState ? ` · last check-in: ${escapeHTML(checkinState)}` : ""}
             </small>
+            ${
+              agentRunSummary(task.agent)
+                ? `<small class="world-office-task-agent-run">${escapeHTML(
+                    agentRunSummary(task.agent),
+                    300,
+                  )}</small>`
+                : ""
+            }
             ${
               activeTask
                 ? '<span class="world-office-task-progress-label">In progress</span>'
