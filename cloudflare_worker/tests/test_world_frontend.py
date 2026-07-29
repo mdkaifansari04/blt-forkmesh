@@ -2351,6 +2351,28 @@ def test_world_right_rail_is_compact_by_default_and_expands_as_one_control():
     assert "rail.dataset.expanded = String(active)" in APP
     assert ".world-right-rail[data-expanded=\"false\"]" in CSS
     assert "width: 44px;" in CSS
+    for token in (
+        "--primer-canvas-default:",
+        "--primer-canvas-subtle:",
+        "--primer-control-bg:",
+        "--primer-control-hover:",
+        "--primer-border-default:",
+        "--primer-fg-default:",
+        "--primer-fg-muted:",
+        "--primer-accent-fg:",
+        "--primer-accent-subtle:",
+    ):
+        assert token in CSS
+    right_rail = CSS[
+        CSS.index(".world-right-rail {"):
+        CSS.index(".world-map-list {")
+    ]
+    assert "var(--primer-canvas-default)" in right_rail
+    assert "var(--primer-border-default)" in right_rail
+    assert "var(--primer-control-bg)" in right_rail
+    assert "var(--primer-control-hover)" in right_rail
+    assert "border-radius: 6px;" in right_rail
+    assert "aside:not(.world-right-rail)" in CSS
 
 
 def test_world_movement_speed_and_acceleration_are_locally_adjustable():

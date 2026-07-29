@@ -2826,6 +2826,10 @@ function officeReclaimedWoodTexture(THREE) {
 // the active implementation queue in a fixed, readable grid. Keep the ordering
 // stable so a repaint never makes cards jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
+  { key: "task:world-primer-hud", task: "Primer-styled compact World HUD", detail: "The compact and expanded right-side navigation rail now uses GitHub Primer canvas, border, spacing, button, focus, hover, and selected-state primitives.", estimate: "implemented · focused QA", done: true },
+  { key: "task:web-pull-workbench", task: "Full web Issue and PR workbench", detail: "Record clicks now open canonical same-origin web pages. Still open: proactive conflict/check readiness and a signed mirror capability for auditable update-from-main before protected merge.", estimate: "record routing done · lifecycle active", done: false },
+  { key: "task:session-audit", task: "Audit today’s requested work", detail: "Reconciled the full request history against code, tests, QA, and the build board; restored missing social-frame, repository-orbit, signage, and exact-view tracking while keeping partial and external work open.", estimate: "audit complete · open work retained", done: true },
+  { key: "task:repo-record-tower-scale", task: "Count-scaled PR and Issue towers", detail: "Each repository work tower now rises with its complete bounded record count, so a 61-item Issue tower is visibly taller than a 43-item PR tower; both stand beyond the ActivityPub follower orbit.", estimate: "verified · ready for QA", done: true },
   { key: "task:world-ground-cleanup", task: "Clean, continuous World ground", detail: "Removed zoom-distance relationship lines, connector end pads, colored grass overlays, disjoint terrain layers, and obstructive agent-terminal blocks while keeping one fast walkable grass foundation.", estimate: "verified · ready for QA", done: true },
   { key: "task:world-bike-groove", task: "Groove-locked circular bikes", detail: "Replaced the wandering perimeter spline with one true circular lane; E mounts or dismounts and forward/backward movement remains locked to the center groove.", estimate: "verified · ready for QA", done: true },
   { key: "task:world-record-detail", task: "Focused PR and Issue details", detail: "PR and Issue selections now open a record-only drawer without inheriting the generic Repository portals introduction, repository list, or unrelated actions.", estimate: "verified · ready for QA", done: true },
@@ -24834,18 +24838,18 @@ export function createWorldScene({
       if (!allItems.length) return null;
       const desk = new THREE.Group();
       const pageInfo = repositoryRecordPage(kind, allItems.length);
-      // Page zero contains the newest records. Reverse only the visible page
-      // so its chronology reads downward and the newest entry lands at the
-      // physical bottom without changing pagination semantics.
+      // Page zero contains the newest records. Every page keeps its records
+      // in newest-first data order, then maps them into their absolute tower
+      // slots so the newest entry is physically lowest and older pages climb.
       const items = allItems
-        .slice(pageInfo.start, pageInfo.end)
-        .reverse();
+        .slice(pageInfo.start, pageInfo.end);
       desk.name = `repository-${kind}-desk:${repositoryKey}`;
       desk.position.set(x, 0, 2.05);
       // A single reading column keeps every record and its controls aligned.
-      // Its height is content-driven: short pages stay short and full 25-item
-      // pages retain normal readable rows.
-      const rows = items.length;
+      // Tower height represents the complete bounded record collection, not
+      // merely the current 25-record page. The lightweight slot separators
+      // keep that truthful silhouette to one additional instanced draw call.
+      const rows = Math.max(1, allItems.length);
       const rowPitch = 0.52;
       const boardHeight = 0.74 + rows * rowPitch;
       const boardBottomY = groundY + 2.62;
@@ -24866,6 +24870,38 @@ export function createWorldScene({
       board.userData.repositoryRecordPageKind = kind;
       desk.add(board);
       interactive.push(board);
+      const slotGeometry = new THREE.BoxGeometry(
+        boardWidth - 0.16,
+        0.014,
+        0.018,
+      );
+      const slotMaterial = makeMaterial(
+        THREE,
+        kind === "issue" ? "#426d59" : "#554d78",
+        {
+          emissive: kind === "issue" ? "#214b38" : "#302959",
+          emissiveIntensity: 0.24,
+          roughness: 0.8,
+        },
+      );
+      const slots = new THREE.InstancedMesh(
+        slotGeometry,
+        slotMaterial,
+        rows,
+      );
+      slots.name = `repository-${kind}-tower-slots:${repositoryKey}`;
+      const slotTransform = new THREE.Object3D();
+      for (let slot = 0; slot < rows; slot += 1) {
+        slotTransform.position.set(
+          0,
+          boardBottomY + 0.22 + slot * rowPitch,
+          0.071,
+        );
+        slotTransform.updateMatrix();
+        slots.setMatrixAt(slot, slotTransform.matrix);
+      }
+      slots.instanceMatrix.needsUpdate = true;
+      desk.add(slots);
       [-boardWidth / 2 + 0.28, boardWidth / 2 - 0.28].forEach((legX) => {
         const legHeight = boardBottomY - groundY;
         const leg = new THREE.Mesh(
@@ -24877,10 +24913,10 @@ export function createWorldScene({
       });
       items.forEach((record, index) => {
         const isIssue = kind === "issue";
-        const row = index;
+        const towerSlot = pageInfo.start + index;
         const cardX = 0;
         const cardY =
-          boardBottomY + boardHeight - 0.52 - row * rowPitch;
+          boardBottomY + 0.48 + towerSlot * rowPitch;
         const card = new THREE.Mesh(
           new THREE.PlaneGeometry(3.78, 0.46),
           new THREE.MeshBasicMaterial({
@@ -25143,13 +25179,13 @@ export function createWorldScene({
     const pullBoard = addRecordBoard(
       pulls,
       "pull",
-      -5.25,
+      -7.75,
       "#d5b6ff",
     );
     const issueBoard = addRecordBoard(
       issues,
       "issue",
-      5.25,
+      7.75,
       "#9ef7c6",
     );
 

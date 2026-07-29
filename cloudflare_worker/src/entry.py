@@ -24433,7 +24433,16 @@ async def accounts_handler(env, request):
                    "kind": kind,
                    "online": online,
                    "owner": rec.get("owner", ""),
-                   "nodes": _owned_nodes(rec)}
+                   "nodes": _owned_nodes(rec),
+                   # A payout address is intentionally public profile data. Qt
+                   # uses this exact web-user value for its top-bar balance
+                   # instead of a machine-local node setting.
+                   "solana": ((rec.get("solana") or "").strip()
+                              if SOLANA_RE.match(
+                                  (rec.get("solana") or "").strip())
+                              else ""),
+                   "hasPayoutAddress": bool(
+                       SOLANA_RE.match((rec.get("solana") or "").strip()))}
         # viewer=<name> lets the public-profile page show the caller's own
         # Follow/Following state. Display-only: a spoofed viewer can only see
         # a wrong button label; actual follow writes are session-token gated.

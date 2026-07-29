@@ -5652,7 +5652,7 @@ class ForkMeshWorld extends HTMLElement {
             return;
           }
           if (id === "repositories" && meta.repositoryPullPage) {
-            this.loadRepositoryPullReview(meta.repositoryPullPage.number);
+            this.openRepositoryPullWorkbench(meta.repositoryPullPage);
             return;
           }
           if (id === "repositories" && meta.graphNode) {
@@ -8399,7 +8399,11 @@ class ForkMeshWorld extends HTMLElement {
       }
       const pullOpen = event.target.closest("[data-world-pull-open]");
       if (pullOpen) {
-        this.loadRepositoryPullReview(pullOpen.dataset.worldPullNumber);
+        this.openRepositoryPullWorkbench({
+          owner: this.activeRepository?.owner,
+          name: this.activeRepository?.repo,
+          number: pullOpen.dataset.worldPullNumber,
+        });
         return;
       }
       const pullBack = event.target.closest("[data-world-pull-back]");
@@ -16283,50 +16287,67 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   openRepositoryIssueWorkbench(page) {
+    return this.openRepositoryRecordWebWorkbench("issue", page);
+  }
+
+  openRepositoryRecordWebWorkbench(kind, page) {
     const owner = sanitizePresenceText(page?.owner, "", 40);
     const name = sanitizePresenceText(page?.name || page?.repo, "", 60);
-    const number = safePullNumber(page?.number);
-    if (!owner || !name || !number) {
-      this.toast("That repository issue could not be opened.");
+    const number = page?.number ? safePullNumber(page.number) : 0;
+    const recordKind = kind === "pull" ? "pull" : "issue";
+    if (!owner || !name || (page?.number && !number)) {
+      this.toast(`That repository ${recordKind} could not be opened.`);
       return false;
     }
     const path = `/${encodeURIComponent(owner)}/${encodeURIComponent(
       name,
-    )}/issues/${number}`;
+    )}/${recordKind === "pull" ? "pulls" : "issues"}${
+      number ? `/${number}` : ""
+    }`;
     const detail = this.$("[data-world-detail]");
     const backdrop = this.$("[data-world-detail-backdrop]");
     if (!detail || !backdrop) return false;
     const repository = `${owner}/${name}`;
-    detail.dataset.openLandmark = "repository-issue";
+    const title = number
+      ? `${repository} #${number}`
+      : `${repository} ${recordKind === "pull" ? "pull requests" : "issues"}`;
+    detail.dataset.openLandmark = `repository-${recordKind}`;
+    detail.dataset.issueWorkbench = String(recordKind === "issue");
+    detail.dataset.repositoryWebWorkbench = recordKind;
     detail.dataset.repositoryReview = "false";
-    detail.style.setProperty("--detail-color", "var(--world-mint)");
+    detail.style.setProperty(
+      "--detail-color",
+      recordKind === "pull" ? "var(--world-blue)" : "var(--world-mint)",
+    );
     detail.innerHTML = `
       <header class="world-detail-header world-issue-workbench-header">
         <div>
-          <p class="world-eyebrow">LIVE REPOSITORY ISSUE</p>
-          <h2 id="world-detail-title">${escapeHTML(
-            repository,
-          )} #${number}</h2>
+          <p class="world-eyebrow">LIVE REPOSITORY ${recordKind === "pull" ? "PULL REQUEST" : "ISSUE"}</p>
+          <h2 id="world-detail-title">${escapeHTML(title)}</h2>
         </div>
         <div class="world-issue-workbench-actions">
           <a
             href="${escapeHTML(path)}"
             target="_blank"
             rel="noopener noreferrer"
-            aria-label="Open ${escapeHTML(repository)} issue ${number} in a new tab"
+            aria-label="Open ${escapeHTML(title)} in a new tab"
           >Open tab ↗</a>
           <button
             class="world-detail-close"
             type="button"
             data-world-detail-close
-            aria-label="Close ${escapeHTML(repository)} issue ${number}"
+            aria-label="Close ${escapeHTML(title)}"
           >×</button>
         </div>
       </header>
-      <div class="world-detail-scroll world-issue-workbench" data-world-issue-workbench>
+      <div
+        class="world-detail-scroll world-issue-workbench"
+        data-world-issue-workbench
+        data-world-repository-web-workbench="${recordKind}"
+      >
         <iframe
           src="${escapeHTML(path)}"
-          title="${escapeHTML(repository)} issue ${number}"
+          title="${escapeHTML(title)}"
           loading="eager"
           referrerpolicy="same-origin"
         ></iframe>
@@ -16339,7 +16360,9 @@ class ForkMeshWorld extends HTMLElement {
       focusDelay: 80,
     });
     this.toast(
-      `Opened issue #${number} in the World sidebar with its live details and controls.`,
+      `Opened ${recordKind === "pull" ? "pull request" : "issue"}${
+        number ? ` #${number}` : ""
+      } in the World sidebar with its live details and controls.`,
     );
     return true;
   }
@@ -17838,64 +17861,24 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   openRepositoryPullList() {
-    if (!this.activeRepository) return;
+    if (!this.activeRepository) return false;
     this.repositoryView = "list";
     this.clearPullReviewScrollTracking();
-    if (
-      this.$("[data-world-detail]")?.dataset.openLandmark !==
-      "repository-pull"
-    ) {
-      this.openRepositoryPullWorkbench();
-      return;
-    }
-    this.renderRepositoryExplorer();
+    return this.openRepositoryPullWorkbench();
   }
 
-  openRepositoryPullWorkbench() {
+  openRepositoryPullWorkbench(page = null) {
     const active = this.activeRepository;
-    if (!active) return false;
-    const detail = this.$("[data-world-detail]");
-    const backdrop = this.$("[data-world-detail-backdrop]");
-    if (!detail || !backdrop) return false;
-    const number = safePullNumber(this.pullReview?.number);
-    const repository = `${active.owner}/${active.repo}`;
-    detail.dataset.openLandmark = "repository-pull";
-    detail.dataset.issueWorkbench = "false";
-    detail.style.setProperty("--detail-color", "var(--world-blue)");
-    detail.innerHTML = `
-      <header class="world-detail-header">
-        <div>
-          <p class="world-eyebrow">LIVE PULL REQUEST</p>
-          <h2 id="world-detail-title">${escapeHTML(repository)}${
-            number ? ` #${number}` : " pull requests"
-          }</h2>
-        </div>
-        <button
-          class="world-detail-close"
-          type="button"
-          data-world-detail-close
-          aria-label="Close ${escapeHTML(repository)} pull request"
-        >×</button>
-      </header>
-      <div class="world-detail-scroll">
-        <div data-world-repo-explorer>
-          ${this.repositoryExplorerHTML(active)}
-        </div>
-      </div>`;
-    this.showDetailOverlay(detail, backdrop, {
-      returnFocus:
-        document.activeElement instanceof HTMLElement
-          ? document.activeElement
-          : null,
-      focusDelay: 80,
+    const owner = page?.owner || active?.owner;
+    const name = page?.name || page?.repo || active?.repo;
+    const number =
+      safePullNumber(page?.number) ||
+      safePullNumber(this.pullReview?.number);
+    return this.openRepositoryRecordWebWorkbench("pull", {
+      owner,
+      name,
+      ...(number ? { number } : {}),
     });
-    this.updateRepositoryReviewMode();
-    if (this.repositoryView === "review" && this.pullReview?.state === "ready") {
-      window.requestAnimationFrame(() =>
-        this.setupPullReviewScrollTracking(),
-      );
-    }
-    return true;
   }
 
   async fetchRepositoryPullReview(active, record, metadataCommit) {

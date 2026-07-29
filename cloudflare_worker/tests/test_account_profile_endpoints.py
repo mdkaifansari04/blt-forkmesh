@@ -102,6 +102,8 @@ def test_worker_profile_contract_includes_avatar_updates():
     assert 'data.get("avatarPng", "")' in heartbeat_body
     assert 'rec["avatar_png"] = avatar_png' in heartbeat_body
     assert '"avatarPng": rec.get("avatar_png", "")' in public_lookup_body
+    assert '"solana": ((rec.get("solana") or "").strip()' in public_lookup_body
+    assert '"hasPayoutAddress": bool(' in public_lookup_body
 
 
 def test_public_lookup_reads_only_users_nodes_tables():

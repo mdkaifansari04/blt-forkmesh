@@ -518,6 +518,12 @@ QPushButton#memberDeleteButton:hover {
     background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 6px;
 }
 #promptWrapper:focus-within { border-color: #39d353; }
+#footerLogPanel, #backgroundTaskQueue {
+    background-color: #0d1117;
+    border: 1px solid rgba(57,211,83,0.55);
+    border-radius: 6px;
+}
+#footerDivider { background-color: #30363d; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
 }
@@ -870,6 +876,12 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 8px;
 }
 #promptWrapper:focus-within { border-color: #39d353; }
+#footerLogPanel, #backgroundTaskQueue {
+    background-color: #0d1117;
+    border: 1px solid rgba(57,211,83,0.55);
+    border-radius: 8px;
+}
+#footerDivider { background-color: #30363d; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
     min-height: 38px; max-height: 38px;
@@ -1749,6 +1761,12 @@ QPushButton#memberDeleteButton:hover {
     background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 6px;
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
+#footerLogPanel, #backgroundTaskQueue {
+    background-color: #ffffff;
+    border: 1px solid rgba(26,127,55,0.5);
+    border-radius: 6px;
+}
+#footerDivider { background-color: #d0d7de; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
 }
@@ -2082,6 +2100,12 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 8px;
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
+#footerLogPanel, #backgroundTaskQueue {
+    background-color: #ffffff;
+    border: 1px solid rgba(26,127,55,0.5);
+    border-radius: 8px;
+}
+#footerDivider { background-color: #d0d7de; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
     min-height: 38px; max-height: 38px;
