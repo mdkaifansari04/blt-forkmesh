@@ -250,7 +250,10 @@ def main():
     os.environ["FORKMESH_REPO"] = str(repo)
     # reset cached identity/paths picked up at import time
     srv.KEY_PATH = key_dir / "ed25519.pem"
+    connector_path = data_home / "ForkMesh/ForkMesh/mcp/connector.json"
+    srv.CONNECTOR_PATH = connector_path
     srv._key = srv._pub = None
+    os.environ.pop("FORKMESH_MCP_TOKEN", None)
 
     def git(*args):
         subprocess.run(["git", "-C", str(repo), *args], check=True,
@@ -286,11 +289,11 @@ def main():
                 "params": {"protocolVersion": "2025-06-18"}})
     check("initialize", resp["result"]["serverInfo"]["name"] == "forkmesh")
 
-    # tools/list advertises all 11 tools
+    # tools/list advertises all 12 tools
     resp = rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     names = {t["name"] for t in resp["result"]["tools"]}
-    check("tools/list has 11 tools", names == {
-        "list_repos", "read_file", "search_issues", "create_issue",
+    check("tools/list has 12 tools", names == {
+        "whoami", "list_repos", "read_file", "search_issues", "create_issue",
         "comment_on_issue", "create_milestone", "update_milestone",
         "create_project", "update_project", "open_pr_from_branch",
         "get_pr_diff"})
@@ -527,6 +530,56 @@ def main():
     check("open_pr idempotent", not err and "already open" in text)
     text, err = call("get_pr_diff", {"number": 1})
     check("get_pr_diff", not err and "feature.txt" in text)
+
+    # ---- connector token (adhoc #16) ----------------------------------------
+    # No connector file: the historical local-subprocess setup stays fully open.
+    text, err = call("whoami", {})
+    me = json.loads(text)
+    check("whoami without a connector is open",
+          not err and me["access"] == "open" and me["canWrite"] and
+          not me["connector"] and me["node"] == pub_b64)
+    check("whoami lists reachable repos", me["repos"] == ["repo"])
+
+    # Mint one the way the desktop client's Settings -> MCP tab does.
+    connector_path.parent.mkdir(parents=True, exist_ok=True)
+    token = "fmcp_" + base64.urlsafe_b64encode(b"k" * 32).decode().rstrip("=")
+    connector_path.write_text(json.dumps({
+        "version": 1, "token": token, "node": pub_b64,
+        "label": "test", "created_ms": 1}))
+
+    text, err = call("whoami", {})
+    me = json.loads(text)
+    check("whoami without the token is read-only",
+          me["access"] == "read" and not me["canWrite"] and me["connector"]
+          and not me["tokenPresented"])
+    resp = rpc({"jsonrpc": "2.0", "id": 3, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    check("initialize announces read-only",
+          "read-only" in resp["result"]["instructions"])
+    text, err = call("comment_on_issue", {"number": 1, "body": "no token"})
+    check("write refused without the token",
+          err and "connector token" in text and "Settings -> MCP" in text)
+    _, err = call("search_issues", {"query": ""})
+    check("reads still work without the token", not err)
+
+    os.environ["FORKMESH_MCP_TOKEN"] = token + "x"
+    _, err = call("comment_on_issue", {"number": 1, "body": "wrong token"})
+    check("write refused with a wrong token", err)
+
+    os.environ["FORKMESH_MCP_TOKEN"] = token
+    text, err = call("whoami", {})
+    me = json.loads(text)
+    check("whoami with the token can write",
+          me["access"] == "write" and me["canWrite"] and me["tokenPresented"])
+    _, err = call("comment_on_issue", {"number": 1, "body": "with token"})
+    check("write allowed with the token", not err)
+
+    # Revoking is deleting the file; every config still holding the string is
+    # demoted at once — and the node falls back to open local mode.
+    connector_path.unlink()
+    check("revoked connector falls back to open mode",
+          srv.access_level() == "open")
+    os.environ.pop("FORKMESH_MCP_TOKEN", None)
 
     print()
     if FAILURES:
