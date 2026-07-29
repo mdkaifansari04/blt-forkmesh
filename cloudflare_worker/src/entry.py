@@ -391,6 +391,7 @@ from urls import (  # noqa: E402
     ORG_BOT_TOKENS_RE,
     ORG_DISCORD_RE,
     DISCORD_OAUTH_CALLBACK_RE,
+    MAILTRAP_WEBHOOK_RE,
     BOT_SESSION_RE,
     ORG_SUCCESSION_RE,
     ORG_FEDIVERSE_RE,
@@ -8258,6 +8259,22 @@ class _OfficeMarketingTasksRuntime:
             extra_headers=extra_headers,
         )
 
+    def binary_response(self, data, mime, name):
+        safe_name = re.sub(
+            r"[^A-Za-z0-9._ -]+", "_", str(name or "task-image"))[:120]
+        return JsResponse.new(Uint8Array.new(_to_js(bytes(data))), to_js({
+            "status": 200,
+            "headers": {
+                "content-type": str(mime),
+                "content-disposition": (
+                    'inline; filename="' + safe_name.replace('"', "_") + '"'
+                ),
+                "cache-control": "private, no-store, max-age=0",
+                "content-security-policy": "default-src 'none'; sandbox",
+                "x-content-type-options": "nosniff",
+            },
+        }))
+
     async def ensure_schema(self):
         await ensure_schema(self.env)
 
@@ -15334,7 +15351,8 @@ def _account_world_client_fields(rec):
     )
 
 
-def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
+def _account_chat_user_payload(
+        rec, total_active_ms=0, activity_bucket="", email_activity=None):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     return {
         "name": name,
@@ -15356,6 +15374,10 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         # this function never sees (or could leak) that timestamp itself.
         "activityBucket": activity_bucket,
         **_account_world_client_fields(rec),
+        "lastEmailAt": max(
+            0, int((email_activity or {}).get("sent_at") or 0)),
+        "lastEmailStatus": clean_string(
+            (email_activity or {}).get("status") or "", 40).lower(),
     }
 
 
@@ -15414,6 +15436,19 @@ async def _account_users_directory(env, request):
     # A bucket label only, joined in from its own query so this function
     # body never handles the raw touch timestamp behind it.
     activity_buckets = await _world_user_activity_buckets(env)
+    email_activity = {}
+    try:
+        send_rows = await d1_all(
+            env,
+            "SELECT account_bi,status,sent_at FROM mailtrap_email_sends "
+            "ORDER BY sent_at DESC LIMIT 5000",
+        )
+        for send in send_rows or []:
+            account_bi = str(send.get("account_bi") or "")
+            if account_bi and account_bi not in email_activity:
+                email_activity[account_bi] = send
+    except Exception:
+        email_activity = {}
     for row in rows or []:
         rec = await decrypt_row(env, row.get("data", ""))
         if (not rec or _account_kind(rec) != "user"
@@ -15426,7 +15461,8 @@ async def _account_users_directory(env, request):
         seen.add(name)
         out.append(_account_chat_user_payload(
             rec, row.get("total_active_ms", 0),
-            activity_buckets.get(row.get("user_bi"), "")))
+            activity_buckets.get(row.get("user_bi"), ""),
+            email_activity.get(row.get("user_bi"))))
 
     # The campfire seats members in this same array order, one bench per
     # account for the session — so this is sorted by join date (oldest
@@ -23619,8 +23655,47 @@ MAILTRAP_SEND_URL = "https://send.api.mailtrap.io/api/send"
 FORKMESH_SITE_URL = "https://forkmesh.com/"
 
 
+async def _mailtrap_account_for_email(env, email):
+    try:
+        email_bi = await blind_index(
+            env, clean_string(email or "", 254).strip().lower())
+        if not email_bi:
+            return ""
+        row = await d1_first(
+            env, "SELECT user_bi FROM users WHERE email_bi=? LIMIT 1",
+            email_bi)
+        return str((row or {}).get("user_bi") or "")
+    except Exception:
+        return ""
+
+
+async def _record_mailtrap_send(
+        env, send_id, account_bi, kind, accepted, status=""):
+    if not send_id or not account_bi:
+        return
+    now = int(Date.now())
+    try:
+        await d1_run(
+            env,
+            "INSERT INTO mailtrap_email_sends "
+            "(send_id,account_bi,kind,sent_at,accepted,status,status_at,"
+            "message_id) VALUES(?,?,?,?,?,?,?,?)",
+            send_id,
+            account_bi,
+            clean_string(kind or "account", 40),
+            now,
+            1 if accepted else 0,
+            clean_string(status or (
+                "accepted" if accepted else "failed"), 40),
+            now,
+            "",
+        )
+    except Exception:
+        pass
+
+
 async def _send_email(env, to_email, subject, text, html=None,
-                      from_email=None, from_name=None):
+                      from_email=None, from_name=None, email_kind="account"):
     token = (getattr(env, "MAILTRAP_API_TOKEN", "") or "").strip()
     if not token or not to_email:
         return False
@@ -23654,6 +23729,14 @@ async def _send_email(env, to_email, subject, text, html=None,
         "subject": subject,
         "text": text,
     }
+    account_bi = await _mailtrap_account_for_email(env, to_email)
+    send_id = _ap_uuid() if account_bi else ""
+    if send_id:
+        payload["custom_variables"] = {
+            "forkmesh_send_id": send_id,
+            "forkmesh_account_bi": account_bi,
+            "forkmesh_kind": clean_string(email_kind or "account", 40),
+        }
     if html:
         payload["html"] = html
     try:
@@ -23669,9 +23752,136 @@ async def _send_email(env, to_email, subject, text, html=None,
             },
             CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS,
         )
-        return 200 <= int(getattr(resp, "status", 0)) < 300
+        accepted = 200 <= int(getattr(resp, "status", 0)) < 300
+        await _record_mailtrap_send(
+            env, send_id, account_bi, email_kind, accepted)
+        return accepted
     except Exception:
+        await _record_mailtrap_send(
+            env, send_id, account_bi, email_kind, False)
         return False
+
+
+MAILTRAP_WEBHOOK_EVENTS = {
+    "delivery",
+    "open",
+    "click",
+    "unsubscribe",
+    "spam",
+    "soft bounce",
+    "bounce",
+    "suspension",
+    "reject",
+}
+
+
+def _mailtrap_webhook_payload(raw):
+    raw = str(raw or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            parsed = parsed.get("events", [parsed])
+        return parsed if isinstance(parsed, list) else None
+    except Exception:
+        events = []
+        for line in raw.splitlines():
+            try:
+                event = json.loads(line)
+            except Exception:
+                return None
+            if not isinstance(event, dict):
+                return None
+            events.append(event)
+        return events
+
+
+async def mailtrap_webhook_handler(env, request):
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            extra_headers={"allow": "POST"})
+    secret = str(
+        getattr(env, "MAILTRAP_WEBHOOK_SECRET", "") or "").strip()
+    if not secret:
+        return json_response(
+            {"error": "mailtrap_webhook_not_configured"}, status=503)
+    try:
+        raw = await request.text()
+    except Exception:
+        return json_response({"error": "invalid_payload"}, status=400)
+    if len(raw.encode("utf-8")) > 1024 * 1024:
+        return json_response({"error": "payload_too_large"}, status=413)
+    presented = str(
+        request.headers.get("mailtrap-signature") or "").strip().lower()
+    expected = hmac.new(
+        secret.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    if not presented or not hmac.compare_digest(presented, expected):
+        return json_response({"error": "invalid_signature"}, status=401)
+    events = _mailtrap_webhook_payload(raw)
+    if events is None or len(events) > 500:
+        return json_response({"error": "invalid_payload"}, status=400)
+    await ensure_schema(env)
+    accepted = 0
+    now = int(Date.now())
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_id = clean_string(
+            event.get("event_id") or event.get("id") or "", 160)
+        status = clean_string(
+            event.get("event") or event.get("type") or "", 40).lower()
+        variables = event.get("custom_variables")
+        if not isinstance(variables, dict):
+            variables = event.get("customVariables")
+        variables = variables if isinstance(variables, dict) else {}
+        send_id = clean_string(
+            variables.get("forkmesh_send_id") or "", 64).lower()
+        account_bi = clean_string(
+            variables.get("forkmesh_account_bi") or "", 128)
+        if not event_id or status not in MAILTRAP_WEBHOOK_EVENTS:
+            continue
+        prior = await d1_first(
+            env,
+            "SELECT event_id FROM mailtrap_webhook_events WHERE event_id=?",
+            event_id)
+        if prior:
+            accepted += 1
+            continue
+        try:
+            await d1_run(
+                env,
+                "INSERT INTO mailtrap_webhook_events(event_id,received_at) "
+                "VALUES(?,?)",
+                event_id, now)
+        except Exception:
+            continue
+        if send_id and account_bi:
+            await d1_run(
+                env,
+                "UPDATE mailtrap_email_sends SET status=?,status_at=?,"
+                "message_id=? WHERE send_id=? AND account_bi=?",
+                status,
+                now,
+                clean_string(event.get("message_id") or "", 160),
+                send_id,
+                account_bi,
+            )
+        accepted += 1
+    cutoff = now - 90 * 24 * 60 * 60 * 1000
+    await d1_run(
+        env, "DELETE FROM mailtrap_webhook_events WHERE received_at<?", cutoff)
+    await d1_run(
+        env, "DELETE FROM mailtrap_email_sends WHERE sent_at<?", cutoff)
+    try:
+        await js_caches.default.delete(USERS_DIRECTORY_CACHE_KEY)
+    except Exception:
+        pass
+    return json_response(
+        {"ok": True, "accepted": accepted},
+        cache_control="no-store, max-age=0")
 
 
 # --- Account email activity ---------------------------------------------------
@@ -42706,6 +42916,8 @@ class Default(WorkerEntrypoint):
             return await accounts_handler(self.env, request)
 
         # --- Organizations + teams (issue #388) --------------------------
+        if MAILTRAP_WEBHOOK_RE.match(url.path):
+            return await mailtrap_webhook_handler(self.env, request)
         if BOT_SESSION_RE.match(url.path):
             return await bot_session_handler(self.env, request)
         if ORGS_RE.match(url.path):

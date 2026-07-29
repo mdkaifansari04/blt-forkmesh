@@ -427,10 +427,28 @@ def test_one_general_bot_replaces_the_claude_and_codex_task_choice():
     assert '<option value="codex">Codex</option>' not in chat_view
     assert '<option value="claude">Claude</option>' not in chat_view
     assert 'const ORG_BOT_SENDER_ID = "agent"' in chat
-    assert "queueOrgAgent(\n            \"agent\"," in chat
+    assert "MCP bots consume repository-linked agent tasks" in chat
+    assert "MCP task created." in chat
+    assert "no bot node accepted it yet" not in chat
     assert '"Bot",' in tasks
     assert '"Codex"' not in tasks
     assert '"Claude"' not in tasks
+
+
+def test_task_images_are_embedded_on_tasks_and_lazy_loaded():
+    tasks = source(TASKS)
+    css = source(CSS)
+    chat = (ROOT / "public" / "dashboard-chat.js").read_text(encoding="utf-8")
+    assert "async function taskImageAttachments(control)" in chat
+    assert "Each task image must be 256 KiB or smaller." in chat
+    assert "file: bytesToB64(await file.arrayBuffer())" in chat
+    assert "await sendDashboardDraft(attachmentControl)" not in chat[
+        chat.index("async function runFullComposerAction"):
+        chat.index("function sendFrom")
+    ]
+    assert 'loading="lazy"' in tasks
+    assert "world-office-task-image" in tasks
+    assert ".world-office-task-image img" in css
 
 
 def test_queued_bot_tasks_can_be_returned_to_the_task_list():

@@ -2760,6 +2760,48 @@ function mountForkMeshDashboardChat() {
     return sent;
   }
 
+  function clearDashboardDraft(control) {
+    if (!control) return;
+    for (const record of control.draft || []) {
+      if (record.previewUrl) URL.revokeObjectURL(record.previewUrl);
+    }
+    control.draft = [];
+    renderDashboardDraft(control);
+  }
+
+  async function taskImageAttachments(control) {
+    const records = [...(control?.draft || [])];
+    const allowed = new Set([
+      "image/gif",
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+    ]);
+    const attachments = [];
+    let total = 0;
+    for (const { file } of records) {
+      const mime = safeAttachmentMime(file?.type).toLowerCase();
+      if (!allowed.has(mime)) {
+        throw new Error("Tasks accept PNG, JPEG, GIF, or WebP images.");
+      }
+      const size = Math.max(0, Number(file?.size) || 0);
+      if (!size || size > 256 * 1024) {
+        throw new Error("Each task image must be 256 KiB or smaller.");
+      }
+      total += size;
+      if (total > 1024 * 1024) {
+        throw new Error("Task images must total 1 MiB or less.");
+      }
+      attachments.push({
+        name: safeAttachmentName(file?.name),
+        mime,
+        size,
+        file: bytesToB64(await file.arrayBuffer()),
+      });
+    }
+    return attachments;
+  }
+
   function mountAttachmentControl(inputEl) {
     if (!inputEl?.parentElement) return null;
     const bar = inputEl.parentElement;
@@ -3150,13 +3192,7 @@ function mountForkMeshDashboardChat() {
         const destination = botTask
           ? "agent"
           : String(taskDestination?.value || "department");
-        const taskAttachments = (attachmentControl?.draft || []).map(
-          ({ file }) => ({
-            name: safeAttachmentName(file?.name),
-            mime: safeAttachmentMime(file?.type),
-            size: Math.max(0, Number(file?.size) || 0),
-          }),
-        );
+        const taskAttachments = await taskImageAttachments(attachmentControl);
         const created = await taskApiRequest("POST", "/api/tasks", {
           title,
           details,
@@ -3182,27 +3218,8 @@ function mountForkMeshDashboardChat() {
             : {}),
         });
         const task = created?.task || {};
-        if (botTask) {
-          // The task is already on the board; queueing it on a node is the
-          // follow-up, and a failure there leaves the task list authoritative.
-          const queued = await queueOrgAgent(
-            "agent",
-            `[task:${task.id}] ${title}\n\n${details}`.trim(),
-            ORG_BOT_SENDER_ID,
-            repository,
-          );
-          if (!queued) {
-            throw new Error(
-              "The task was saved to the task list, but no bot node accepted it yet.",
-            );
-          }
-          const sessionId = String(queued?.session?.id || "");
-          if (sessionId) {
-            await taskApiRequest("PATCH", `/api/tasks/${task.id}`, {
-              agentSessionId: sessionId,
-            });
-          }
-        }
+        // Bot work remains in the shared organization queue. MCP workers claim
+        // it there, so the browser never creates a second mirror-local job.
         appendSystem(
           `Private task “${title}” was sent to ${
             destination === "qa"
@@ -3214,9 +3231,7 @@ function mountForkMeshDashboardChat() {
                   : `${task.department || "general"}`
           }.`,
         );
-        if (taskAttachments.length) {
-          await sendDashboardDraft(attachmentControl);
-        }
+        if (taskAttachments.length) clearDashboardDraft(attachmentControl);
         setComposerStatus("Organization task created.", "good");
       } else if (action === "issue") {
         const lines = text.split(/\r?\n/);
@@ -3235,13 +3250,7 @@ function mountForkMeshDashboardChat() {
         const lines = text.split(/\r?\n/);
         const title = String(lines.shift() || "").trim().slice(0, 160);
         const details = lines.join("\n").trim().slice(0, 4000);
-        const taskAttachments = (attachmentControl?.draft || []).map(
-          ({ file }) => ({
-            name: safeAttachmentName(file?.name),
-            mime: safeAttachmentMime(file?.type),
-            size: Math.max(0, Number(file?.size) || 0),
-          }),
-        );
+        const taskAttachments = await taskImageAttachments(attachmentControl);
         const created = await taskApiRequest("POST", "/api/tasks", {
           title,
           details,
@@ -3263,28 +3272,13 @@ function mountForkMeshDashboardChat() {
           "",
           Date.now(),
         );
-        const queued = await queueOrgAgent(
-          "agent",
-          `[task:${task.id}] ${text}`,
-          ORG_BOT_SENDER_ID,
-          repository,
+        // MCP bots consume repository-linked agent tasks directly from the
+        // organization queue; do not duplicate them in a mirror-local queue.
+        if (taskAttachments.length) clearDashboardDraft(attachmentControl);
+        appendSystem(
+          `Private task “${title}” was added to the MCP task queue.`,
         );
-        if (!queued) {
-          throw new Error(
-            "The task is in the task list, but no bot node accepted it yet.",
-          );
-        }
-        const sessionId = String(queued?.session?.id || "");
-        if (sessionId) {
-          await taskApiRequest("PATCH", `/api/tasks/${task.id}`, {
-            agentSessionId: sessionId,
-          });
-        }
-        if (attachmentControl?.draft.length) {
-          await sendDashboardDraft(attachmentControl);
-        }
-        appendSystem(`Private task “${title}” was added to the bot queue.`);
-        setComposerStatus("Bot task created.", "good");
+        setComposerStatus("MCP task created.", "good");
       }
       inputEl.value = "";
       inputEl.style.height = "";

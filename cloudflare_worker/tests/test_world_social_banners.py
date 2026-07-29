@@ -375,6 +375,16 @@ def test_world_drives_the_banner_clocks_on_a_one_second_tick():
     assert "1000" in world[idx:idx + 300]
 
 
+def test_status_board_fetches_immediately_and_counts_down_to_a_fresh_read():
+    world = _source(WORLD_PATH)
+    scene = _source(SCENE_PATH)
+    assert "const WORLD_STATUS_POLL_MS = 60 * 1000;" in world
+    assert "void this.refreshSystemStatusBoard().catch(() => {});" in world
+    assert 'maxAge: 0,' in world
+    assert "this.statusBoardFetchedAt = Date.now();" in world
+    assert "[...socialBanners, statusBannerRecord]" in scene
+
+
 def test_worker_folds_the_blog_feed_into_the_social_snapshot():
     entry = _source(ENTRY_PATH)
     assert "blog_feed.BLOG_INDEX_ASSET" in entry

@@ -51,6 +51,10 @@ class FakeRuntime:
             (ROOT / "migrations" /
              "0112_organization_task_global_priority.sql")
             .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" /
+             "0113_task_images_mailtrap_webhook.sql")
+            .read_text(encoding="utf-8"))
         self.request_method = "GET"
         self.request_data = {}
         self.query_data = {}
@@ -120,6 +124,14 @@ class FakeRuntime:
             "data": data,
             "cache_control": cache_control,
             "headers": dict(extra_headers or {}),
+        }
+
+    def binary_response(self, data, mime, name):
+        return {
+            "status": 200,
+            "data": data,
+            "mime": mime,
+            "name": name,
         }
 
     async def ensure_schema(self):
@@ -513,6 +525,68 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
     ).fetchone()[0]
     assert "Run the private verification" not in stored
     assert "Agent task details" not in stored
+
+
+@run_async_test
+async def test_task_image_is_encrypted_and_served_only_to_org_members():
+    runtime = FakeRuntime()
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+        "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    created = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Verify the status board",
+            "assignee": "alice",
+            "attachments": [{
+                "name": "status.png",
+                "mime": "image/png",
+                "size": len(png),
+                "file": base64.b64encode(png).decode("ascii"),
+            }],
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert created["status"] == 201
+    task = created["data"]["task"]
+    attachment = task["attachments"][0]
+    assert attachment["url"].startswith(
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/attachments/")
+    sealed = runtime.db.execute(
+        "SELECT data FROM organization_task_attachments "
+        "WHERE attachment_id=?",
+        (attachment["id"],),
+    ).fetchone()[0]
+    assert base64.b64encode(png).decode("ascii") not in sealed
+
+    image = await tasks_api.handle(
+        runtime.use("GET", "alice"), attachment["url"])
+    assert image["status"] == 200
+    assert image["data"] == png
+    assert image["mime"] == "image/png"
+    outsider = await tasks_api.handle(
+        runtime.use("GET", "eve"), attachment["url"])
+    assert outsider["status"] == 403
+
+
+@run_async_test
+async def test_task_image_rejects_active_or_spoofed_content():
+    runtime = FakeRuntime()
+    response = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Bad image",
+            "assignee": "alice",
+            "attachments": [{
+                "name": "not-really.png",
+                "mime": "image/png",
+                "size": 12,
+                "file": base64.b64encode(b"<svg></svg>").decode("ascii"),
+            }],
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert response["status"] == 400
+    assert response["data"]["error"] == "invalid_task_image"
 
 
 @run_async_test

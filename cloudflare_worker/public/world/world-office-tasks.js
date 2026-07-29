@@ -137,9 +137,13 @@ function normalizedTask(task) {
     attachments: (Array.isArray(task.attachments) ? task.attachments : [])
       .slice(0, 4)
       .map((attachment) => ({
+        id: text(attachment?.id, 64).toLowerCase(),
         name: text(attachment?.name, 180),
         mime: text(attachment?.mime, 100),
         size: Math.max(0, Math.min(1024 * 1024, Number(attachment?.size) || 0)),
+        url: String(attachment?.url || "").startsWith("/api/tasks/")
+          ? String(attachment.url)
+          : "",
       }))
       .filter((attachment) => attachment.name && attachment.size),
     completionNote: text(task.completionNote, 4000),
@@ -507,10 +511,22 @@ export function createWorldOfficeTasksController({
                 ? `<ul class="world-office-task-attachments" aria-label="Task attachments">${task.attachments
                     .map(
                       (attachment) =>
-                        `<li title="${escapeHTML(attachment.mime)}">📎 ${escapeHTML(
-                          attachment.name,
-                          180,
-                        )}</li>`,
+                        attachment.url
+                          ? `<li class="world-office-task-image"><a href="${escapeHTML(
+                              attachment.url,
+                            )}" target="_blank" rel="noopener"><img src="${escapeHTML(
+                              attachment.url,
+                            )}" alt="${escapeHTML(
+                              attachment.name,
+                              180,
+                            )}" loading="lazy" decoding="async"><span>${escapeHTML(
+                              attachment.name,
+                              180,
+                            )}</span></a></li>`
+                          : `<li title="${escapeHTML(attachment.mime)}">📎 ${escapeHTML(
+                              attachment.name,
+                              180,
+                            )}</li>`,
                     )
                     .join("")}</ul>`
                 : ""

@@ -8868,6 +8868,36 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   font-size: 0.65rem;
 }
 
+.world-office-task-attachments .world-office-task-image {
+  padding: 0;
+  overflow: hidden;
+  border-radius: 6px;
+}
+
+.world-office-task-image a {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  max-width: 180px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.world-office-task-image img {
+  width: 42px;
+  height: 34px;
+  object-fit: cover;
+  background: var(--world-panel);
+}
+
+.world-office-task-image span {
+  overflow: hidden;
+  padding-right: 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @keyframes world-chat-panel-rise {
   from {
     opacity: 0;
