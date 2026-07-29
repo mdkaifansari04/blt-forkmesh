@@ -321,6 +321,9 @@ QJsonObject normalizedCatalogV2Record(const QJsonObject &data)
          cleanCatalogString(data, QStringLiteral("artifactCount"), 12)},
         {QStringLiteral("platform"),
          cleanCatalogString(data, QStringLiteral("platform"), 16)},
+        {QStringLiteral("runtimeMode"),
+         cleanCatalogString(data, QStringLiteral("runtimeMode"), 12)
+             .toLower()},
         {QStringLiteral("version"),
          cleanCatalogString(data, QStringLiteral("version"), 32)},
         {QStringLiteral("nodeId"),
@@ -338,6 +341,31 @@ QJsonObject normalizedCatalogV2Record(const QJsonObject &data)
         {QStringLiteral("stateSig"),
          cleanCatalogString(data, QStringLiteral("stateSig"), 220)},
     };
+    QJsonArray changedFiles;
+    for (const QJsonValue &value :
+         data.value(QStringLiteral("changedFiles")).toArray()) {
+        QString path =
+            QDir::fromNativeSeparators(value.toString()).trimmed().left(160);
+        if (path.isEmpty() || path.startsWith(QLatin1Char('/')) ||
+            path == QLatin1String("..") ||
+            path.startsWith(QLatin1String("../")) ||
+            changedFiles.contains(path)) {
+            continue;
+        }
+        bool safe = true;
+        for (const QChar ch : path) {
+            if (ch.unicode() < 0x20 || ch.unicode() == 0x7f) {
+                safe = false;
+                break;
+            }
+        }
+        if (safe)
+            changedFiles.append(path);
+        if (changedFiles.size() >= 8)
+            break;
+    }
+    if (!changedFiles.isEmpty())
+        record.insert(QStringLiteral("changedFiles"), changedFiles);
     // Optional extension fields are omitted when not shared. Besides preserving
     // a truthful "unknown", this keeps catalog-v2 signatures from older clients
     // valid after the Worker learns about host telemetry.
@@ -355,6 +383,19 @@ QJsonObject normalizedCatalogV2Record(const QJsonObject &data)
         cleanCatalogString(data, QStringLiteral("machineName"), 63);
     if (!machineName.isEmpty())
         record.insert(QStringLiteral("machineName"), machineName);
+    QJsonArray agentProviders;
+    const QJsonArray rawAgentProviders =
+        data.value(QStringLiteral("agentProviders")).toArray();
+    for (const QJsonValue &value : rawAgentProviders) {
+        const QString provider = value.toString().trimmed().toLower();
+        if ((provider == QLatin1String("claude-code") ||
+             provider == QLatin1String("codex")) &&
+            !agentProviders.contains(provider)) {
+            agentProviders.append(provider);
+        }
+    }
+    if (!agentProviders.isEmpty())
+        record.insert(QStringLiteral("agentProviders"), agentProviders);
     // Latest-commit subject/author/date: same optional-extension rule again, so
     // a node that can't read them (or an older client) publishes no key at all
     // rather than an empty one that would change the signed record.
@@ -1189,99 +1230,119 @@ void MainWindow::refreshRepositoryList()
             clearRepoDetail();
     }
 
-    // Advertise our own mirrors so other nodes can see and mirror them too.
-    // Use the SAME owner/name in the signed catalog, direct-HTTPS route binding,
-    // and minimal update channel (catalogOwner + canonical name), not the raw
-    // repo.owner. A mismatch makes peers resolve the wrong mirror group even
-    // when this endpoint is healthy.
-    if (m_backend) {
-        // Building the adverts shells ~9 git subprocesses per repo (head, commit,
-        // size, issue/pull/discussion/commit/branch counts, worktree count). None of
-        // that changes when we merely serve a request, yet refreshRepositoryList runs
-        // on every onRequestServed and a 1-minute timer, so recomputing it every time
-        // blocked the GUI thread for seconds (adhoc #83). A mirror's stats only move
-        // when it is re-synced (repo.lastSyncMs), a source row's latest commit moves
-        // with the primary branch tip, and the worktree count only when a worktree
-        // is added/removed (the .git/worktrees dir mtime) — so skip the whole
-        // rebuild while that signature is unchanged, and when it did change run the
-        // git reads under GitKeepAlive so the window keeps breathing.
-        QString advertSig;
-        for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
-            if (repo.previewOnly)
-                continue;
+    refreshMirrorAdverts();
+}
+
+void MainWindow::refreshMirrorAdverts()
+{
+    if (!m_backend)
+        return;
+
+    // This signature is intentionally filesystem-only. The old "skip" check
+    // launched several synchronous Git subprocesses just to decide whether the
+    // expensive snapshot could be skipped, defeating its own purpose.
+    QString inputSignature;
+    struct AdvertInput {
+        RepositoryRecord repo;
+        QString catalogOwner;
+    };
+    QList<AdvertInput> repositories;
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (repo.previewOnly)
+            continue;
+        repositories.append({repo, catalogOwner(repo)});
+        const QFileInfo mirrorHead(
+            QDir(repo.mirrorPath).filePath(QStringLiteral("HEAD")));
+        const QFileInfo mirrorRefs(
+            QDir(repo.mirrorPath).filePath(QStringLiteral("refs")));
+        const QFileInfo workHead(
+            QDir(repo.localPath).filePath(QStringLiteral(".git/HEAD")));
+        const QFileInfo worktrees(
+            QDir(repo.localPath).filePath(QStringLiteral(".git/worktrees")));
+        inputSignature +=
+            repo.owner + QLatin1Char('|') + repo.name + QLatin1Char('|') +
+            repo.cloneUrl + QLatin1Char('|') +
+            QString::number(repo.publishToNetwork) + QLatin1Char('|') +
+            repo.mirrorPath + QLatin1Char('|') +
+            QString::number(repo.lastSyncMs) + QLatin1Char('|') +
+            repo.localPath + QLatin1Char('|') +
+            QString::number(mirrorHead.lastModified().toMSecsSinceEpoch()) +
+            QLatin1Char('|') +
+            QString::number(mirrorRefs.lastModified().toMSecsSinceEpoch()) +
+            QLatin1Char('|') +
+            QString::number(workHead.lastModified().toMSecsSinceEpoch()) +
+            QLatin1Char('|') +
+            QString::number(worktrees.lastModified().toMSecsSinceEpoch()) +
+            QLatin1Char('\n');
+    }
+
+    if (m_mirrorAdvertRefreshInFlight)
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    constexpr qint64 kAdvertRefreshMs = 60 * 1000;
+    if (!m_mirrorAdvertSig.isEmpty() &&
+        inputSignature == m_mirrorAdvertInputSig &&
+        m_mirrorAdvertCompletedAtMs > 0 &&
+        now - m_mirrorAdvertCompletedAtMs < kAdvertRefreshMs) {
+        return;
+    }
+
+    m_mirrorAdvertRefreshInFlight = true;
+    m_mirrorAdvertInputSig = inputSignature;
+    auto adverts = std::make_shared<QList<MirrorAdvert>>();
+    QThread *worker = QThread::create([repositories, adverts] {
+        const forkmesh::BackgroundScope activity(
+            QStringLiteral("mirrors"),
+            QStringLiteral("refresh %1 repository advert(s)")
+                .arg(repositories.size()),
+            forkmesh::ActionTelemetry::Execution::Worker);
+        for (const AdvertInput &input : repositories) {
+            const RepositoryRecord &repo = input.repo;
+            MirrorAdvert advert;
+            advert.ownerName =
+                input.catalogOwner + "/" +
+                repoSegment(repo.name, QStringLiteral("repository"));
+            advert.source =
+                repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
+                repoSegment(repo.name, QStringLiteral("repository"));
             const MirrorBranchTip primaryTip =
                 mirrorPrimaryBranchTip(repo.mirrorPath, repo.localPath);
-            advertSig +=
-                repo.owner + QLatin1Char('|') + repo.name + QLatin1Char('|') +
-                repo.cloneUrl + QLatin1Char('|') +
-                QString::number(repo.publishToNetwork ? 1 : 0) + QLatin1Char('|') +
-                repo.mirrorPath + QLatin1Char('|') +
-                QString::number(repo.lastSyncMs) + QLatin1Char('|') + repo.localPath +
-                QLatin1Char('|') + primaryTip.branch + QLatin1Char('|') +
-                primaryTip.commit + QLatin1Char('|') +
-                QString::number(mirrorArtifactCount(repo.mirrorPath)) +
-                QLatin1Char('|') +
-                QString::number(
-                    QFileInfo(repo.localPath + QStringLiteral("/.git/worktrees"))
-                        .lastModified()
-                        .toMSecsSinceEpoch()) +
-                QLatin1Char('\n');
+            advert.branch = primaryTip.branch;
+            advert.commit = primaryTip.commit;
+            if (advert.commit.isEmpty())
+                continue;
+            advert.commitIdentity = mirrorCommitIdentity(
+                repo.mirrorPath, repo.localPath, advert.commit);
+            advert.updatedMs = repo.lastSyncMs;
+            advert.sizeBytes = mirrorRepoSizeBytes(repo.mirrorPath);
+            advert.issueCount =
+                mirrorIssueCount(repo.mirrorPath, advert.branch);
+            advert.commitCount =
+                mirrorCommitCount(repo.mirrorPath, advert.branch);
+            advert.branchCount = mirrorBranchCount(repo.mirrorPath);
+            advert.pullCount =
+                mirrorPullCount(repo.mirrorPath, advert.branch);
+            advert.discussionCount =
+                mirrorDiscussionCount(repo.mirrorPath, advert.branch);
+            advert.worktreeCount = mirrorWorktreeCount(repo.localPath);
+            advert.artifactCount = mirrorArtifactCount(repo.mirrorPath);
+            adverts->append(advert);
         }
-        if (advertSig != m_mirrorAdvertSig) {
-            GitKeepAlive keepAlive;
-            QList<MirrorAdvert> ours;
-            for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
-                if (repo.previewOnly)
-                    continue;
-                MirrorAdvert advert;
-                advert.ownerName =
-                    catalogOwner(repo) + "/" +
-                    repoSegment(repo.name, QStringLiteral("repository"));
-                // Shared upstream identity: every node mirroring the same source repo
-                // carries the same "<sourceOwner>/name", so the mirror-nodes view can
-                // group them even though each advertises its own clone (catalog) owner.
-                advert.source =
-                    repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
-                    repoSegment(repo.name, QStringLiteral("repository"));
-                // Advertise the stable primary branch, not whichever branch the
-                // source node currently has checked out. A source-of-truth node can
-                // still report its working tree's primary-branch commit when that
-                // branch is ahead of the served bare mirror, so peers see freshness
-                // against main rather than a transient feature branch.
-                const MirrorBranchTip primaryTip =
-                    mirrorPrimaryBranchTip(repo.mirrorPath, repo.localPath);
-                advert.branch = primaryTip.branch;
-                advert.commit = primaryTip.commit;
-                if (advert.commit.isEmpty())
-                    continue;
-                // Subject/author/date of that tip, so peers can name our latest
-                // commit rather than showing a hash they may not hold.
-                advert.commitIdentity = mirrorCommitIdentity(
-                    repo.mirrorPath, repo.localPath, advert.commit);
-                advert.updatedMs = repo.lastSyncMs;
-                // On-disk mirror size so peers can show how much data we're holding.
-                advert.sizeBytes = mirrorRepoSizeBytes(repo.mirrorPath);
-                // Issues we're mirroring, so peers can show the count per node.
-                advert.issueCount = mirrorIssueCount(repo.mirrorPath, advert.branch);
-                // More tallies the Mirror nodes view shows per node: history depth,
-                // branch/PR/discussion counts, and our live worktree (agent task)
-                // count.
-                advert.commitCount =
-                    mirrorCommitCount(repo.mirrorPath, advert.branch);
-                advert.branchCount = mirrorBranchCount(repo.mirrorPath);
-                advert.pullCount = mirrorPullCount(repo.mirrorPath, advert.branch);
-                advert.discussionCount =
-                    mirrorDiscussionCount(repo.mirrorPath, advert.branch);
-                advert.worktreeCount = mirrorWorktreeCount(repo.localPath);
-                // Release artifacts we're actually hosting for download (issue #304
-                // CAS blobs), so peers can see which nodes can serve a binary.
-                advert.artifactCount = mirrorArtifactCount(repo.mirrorPath);
-                ours.append(advert);
-            }
-            m_backend->setMirroredRepos(ours);
-            m_mirrorAdvertSig = advertSig;
-        }
-    }
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    connect(worker, &QThread::finished, this,
+            [this, adverts, inputSignature] {
+                m_mirrorAdvertRefreshInFlight = false;
+                m_mirrorAdvertCompletedAtMs =
+                    QDateTime::currentMSecsSinceEpoch();
+                m_mirrorAdvertSig = inputSignature;
+                if (m_backend)
+                    m_backend->setMirroredRepos(*adverts);
+                // If a sync landed while this worker was reading, immediately
+                // queue the newer snapshot; unchanged data remains throttled.
+                refreshMirrorAdverts();
+            });
+    worker->start();
 }
 
 void MainWindow::mirrorAdvertisedRepo(const QString &ownerName)
@@ -3881,6 +3942,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     const QString name = repoSegment(repo.name, QStringLiteral("repository"));
     QString updatedAt = QString::number(now);
     QJsonObject contributionFields;
+    QStringList changedFiles;
     // A stable identity for the logical repo: its first (root) commit, shared by
     // every node mirroring it. The network page groups mirrors by this so the same
     // repo under different owners shows as one card. Not part of the signature.
@@ -4125,6 +4187,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
         }
 
         if (cachedSnapshot->complete && cachedSnapshot->error.isEmpty()) {
+            changedFiles = cachedSnapshot->changedFiles;
             contributionLogoPayload = cachedSnapshot->payload;
             const qint64 capturedAt = qint64(
                 cachedSnapshot->payload.value(QStringLiteral("capturedAt"))
@@ -4287,6 +4350,13 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                          {"worktreeCount", QString::number(worktreeCount)},
                          {"artifactCount", QString::number(artifactCount)},
                          {"platform", selfPlatform},
+                         // This signed capability separates an attended local
+                         // Qt app from an unattended mirror. The Worker uses it
+                         // when a platform administrator explicitly routes a
+                         // web-created agent job to their own running desktop.
+                         {"runtimeMode",
+                          m_headless ? QStringLiteral("headless")
+                                     : QStringLiteral("desktop")},
                          {"version", selfVersion},
                          {"nodeId", selfNodeId},
                          {"clonesServed", QString::number(clonesServed)},
@@ -4317,6 +4387,27 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                                      ? QStringLiteral("remote-clone")
                                      : QStringLiteral("local-node"))},
                          {"maintainer", m_profileIdentity.publicKey()}};
+    // Advertise only binaries this node can actually resolve. The complete
+    // normalized record is catalog-v2 signed below, making this a bounded
+    // capability lease for Worker-side agent routing rather than a relay hint.
+    const QStringList agentSearchPaths{
+        QDir::homePath() + QStringLiteral("/.local/bin"),
+        QDir::homePath() + QStringLiteral("/.claude/bin"),
+        QDir::homePath() + QStringLiteral("/.codex/bin"),
+    };
+    QJsonArray agentProviders;
+    if (!QStandardPaths::findExecutable(
+             QStringLiteral("claude"), agentSearchPaths).isEmpty() ||
+        !QStandardPaths::findExecutable(QStringLiteral("claude")).isEmpty()) {
+        agentProviders.append(QStringLiteral("claude-code"));
+    }
+    if (!QStandardPaths::findExecutable(
+             QStringLiteral("codex"), agentSearchPaths).isEmpty() ||
+        !QStandardPaths::findExecutable(QStringLiteral("codex")).isEmpty()) {
+        agentProviders.append(QStringLiteral("codex"));
+    }
+    if (!agentProviders.isEmpty())
+        metadata.insert(QStringLiteral("agentProviders"), agentProviders);
     // These values come from our self roster entry, which ServerNode populates
     // only for the per-metric telemetry toggles the operator enabled. Do not
     // insert disabled/unknown metrics: safe_catalog_record normalizes them to
@@ -4339,6 +4430,11 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     for (auto it = contributionFields.constBegin();
          it != contributionFields.constEnd(); ++it) {
         metadata.insert(it.key(), it.value());
+    }
+    if (!repo.isPrivate && !changedFiles.isEmpty()) {
+        metadata.insert(
+            QStringLiteral("changedFiles"),
+            QJsonArray::fromStringList(changedFiles.mid(0, 8)));
     }
     const bool contributionSubmitted =
         metadata.contains(QStringLiteral("contributionPayload")) &&

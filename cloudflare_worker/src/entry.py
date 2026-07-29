@@ -131,7 +131,19 @@ LOCAL_DEMO_EMAIL = "demo@forkmesh.local"
 LOCAL_DEMO_NAME = "demo-node"
 LOCAL_DEMO_PASSWORD = "forkmesh-demo"
 MAX_CATALOG_REPOS = 200
-MAX_ERROR_LOG = 500
+MAX_ERROR_LOG = 5000
+# Uncaught browser exceptions share the operational error_log after aggressive
+# server-side redaction. The public collector is rate-limited from its own
+# bounded rows so one broken or hostile browser cannot displace server errors.
+CLIENT_ERROR_MAX_BODY = 8 * 1024
+CLIENT_ERROR_RATE_WINDOW_MS = 60 * 1000
+CLIENT_ERROR_RATE_PER_CLIENT = 8
+CLIENT_ERROR_RATE_GLOBAL = 120
+CLIENT_ERROR_SURFACES = frozenset({
+    "home", "world", "dashboard", "documentation", "blog", "network",
+    "chat", "account", "repository", "public-page",
+})
+CLIENT_ERROR_KINDS = frozenset({"error", "unhandledrejection"})
 # Anonymous installer diagnostics: one row per reported install step. Bounded the
 # same way as the error log so the unauthenticated POST endpoint can't grow D1.
 MAX_INSTALL_DIAG = 5000
@@ -139,14 +151,14 @@ INSTALL_DIAG_RETAIN_MS = 30 * 24 * 60 * 60 * 1000  # surface a 30-day window
 # Private vulnerability reports: bounded so the open endpoint can't grow D1.
 MAX_SECURITY_REPORTS = 1000
 SECURITY_AUDIT_RETAIN_MS = 365 * 24 * 60 * 60 * 1000
-# Anonymous website feedback from static pages. Bounded like telemetry and
-# install diagnostics so the unauthenticated endpoint cannot grow D1 forever.
+# Anonymous website and World-kiosk feedback. Bounded like telemetry and install
+# diagnostics so the unauthenticated endpoint cannot grow D1 forever.
 MAX_FEEDBACK = 5000
 FEEDBACK_MAX_BODY = 16 * 1024
 FEEDBACK_MAX_MESSAGE = 2000
 FEEDBACK_MAX_PATH = 300
-FEEDBACK_SOURCES = frozenset({"docs"})
-FEEDBACK_VOTES = frozenset({"like", "dislike"})
+FEEDBACK_SOURCES = frozenset({"docs", "world"})
+FEEDBACK_VOTES = frozenset({"like", "dislike", "feedback"})
 MAX_WAITLIST_FIELD = 300
 _WAITLIST_EMAIL_RE = re.compile(
     r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
@@ -372,6 +384,8 @@ from urls import (  # noqa: E402
     ORG_TEAMS_RE,
     ORG_TEAM_MEMBERS_RE,
     ORG_REPOS_RE,
+    ORG_BOT_TOKENS_RE,
+    BOT_SESSION_RE,
     ORG_SUCCESSION_RE,
     ORG_FEDIVERSE_RE,
     BADGES_RE,
@@ -452,6 +466,7 @@ from mirrors import (  # noqa: E402
     accepted_mirror_requests,
     ack_mirror_requests,
     add_mirror_request,
+    agent_provider_mirror_candidates,
     browse_mirror_candidates,
     build_repo_mirrors_payload,
     clone_state_pins,
@@ -557,6 +572,7 @@ import world_workshops  # noqa: E402
 # and its human-readable task/check-in data is encrypted at rest.
 import world_office_tasks  # noqa: E402
 import world_build_board  # noqa: E402
+import world_link_kiosk  # noqa: E402
 # Private administrator-created channel policy is kept in a pure module and
 # receives only this Worker's narrow session, crypto, D1, and audit adapter.
 import chat_channels_api  # noqa: E402
@@ -1172,7 +1188,7 @@ async def purge_catalog_related_caches():
 # host_presence catalog.
 CATALOG_CACHE_KEY = (
     "https://forkmesh.internal/api/repositories"
-    "?privacy=v2&availability=signed-v1"
+    "?privacy=v2&availability=signed-v1&terms=v1"
 )
 # Guest (viewer-less) GET /api/accounts/<name> payloads, keyed by name.
 ACCOUNT_LOOKUP_CACHE_PREFIX = "https://forkmesh.internal/api/accounts/"
@@ -1952,6 +1968,10 @@ INSTALLER_CHECK_INTERVAL_MS = 10 * 60 * 1000
 # Worker/static activation can briefly interrupt the flagship's mirror-routed
 # tree and blob reads. Do not turn that expected handoff into an outage.
 STATUS_DEPLOY_GRACE_MS = 5 * 60 * 1000
+# A crashed deploy client must not suppress genuine incidents indefinitely.
+# deploy.sh refreshes started_at for every rollout, so anything older than this
+# is a stale semaphore and monitoring fails open.
+STATUS_DEPLOY_MAX_MS = 30 * 60 * 1000
 
 STATUS_MONITOR_GUIDANCE = {
     "website": (
@@ -2288,10 +2308,9 @@ async def _installer_delivery_status(env, now):
     return is_up, reason
 
 
-# Per-repository operational-alert switches the repo's org admin manages from
-# the same About/settings form as the fediverse switches. Everything defaults
-# to OFF: a deployment (and every repository that has no row) mails nobody
-# until an admin explicitly opts in, so nobody inherits the alert pager.
+# Platform operational-alert state. It uses the flagship repository identity
+# as a stable storage key, but only the is_admin console may mutate it.
+# Everything defaults to OFF so nobody silently inherits the alert pager.
 REPO_ALERT_SETTING_DEFAULTS = {
     # "[ForkMesh outage]" / "[ForkMesh recovered]" mail for the systems on
     # /status and the independent cron watchdog. One switch covers both
@@ -2336,11 +2355,10 @@ async def _repo_alert_settings_get(env, owner, repo):
 
 
 async def _status_alert_emails_enabled(env):
-    """Has the flagship repository's org admin opted into outage mail?
+    """Has a platform is_admin opted into outage mail?
 
     The /status systems and the cron watchdog are properties of the whole
-    deployment, so they hang off the flagship repository's settings — the one
-    repo whose org admin also administers the relay.
+    deployment, so they hang off the flagship repository's stable storage key.
     """
     owner, _, repo = FLAGSHIP_MONITOR_ID.partition("/")
     settings = await _repo_alert_settings_get(env, owner, repo)
@@ -2523,18 +2541,21 @@ def _attention_email_with_logs(text, html, log_tail):
     return text + "\n\n" + heading + "\n" + safe_tail, rendered_html
 
 
-def _status_alert_manage_url(system_id=""):
-    # Alert mail is controlled from the flagship repository's owner-only
-    # Settings tab. The old /status#system-* destination only explained the
-    # failing check and offered no way to enable/disable the alert.
+def _status_alert_manage_url(env, system_id=""):
+    # Alert mail is controlled only from the platform is_admin console. Build
+    # the destination from the configured secret path instead of leaking the
+    # control back into a repository-owner page.
+    admin_path = _admin_path(env)
+    if not admin_path:
+        return "https://forkmesh.com/dashboard"
     return (
-        "https://forkmesh.com/forkmesh/forkmesh/settings"
+        "https://forkmesh.com/" + quote(admin_path, safe="/") +
         "#operational-alerts"
     )
 
 
-def _email_with_status_alert_manage_link(text, html, system_id=""):
-    manage_url = _status_alert_manage_url(system_id)
+def _email_with_status_alert_manage_link(env, text, html, system_id=""):
+    manage_url = _status_alert_manage_url(env, system_id)
     manage_text = "\n\nManage this alert: " + manage_url
     manage_html = (
         "<p class=\"fm-actions\" style=\"margin:20px 0 0\">"
@@ -2552,7 +2573,7 @@ def _email_with_status_alert_manage_link(text, html, system_id=""):
     return text + manage_text, rendered_html
 
 
-def _cron_watchdog_email_content(recovered, outage_started_at, now):
+def _cron_watchdog_email_content(env, recovered, outage_started_at, now):
     duration = _flagship_monitor_duration(
         max(0, int(now) - int(outage_started_at or now)))
     if recovered:
@@ -2607,7 +2628,7 @@ def _cron_watchdog_email_content(recovered, outage_started_at, now):
         "href=\"https://forkmesh.com/status\">Open ForkMesh status</a>"
         "</p>")
     text, html = _email_with_status_alert_manage_link(
-        text, html, "scheduled-jobs")
+        env, text, html, "scheduled-jobs")
     return subject, text, html
 
 
@@ -2628,7 +2649,7 @@ async def _send_cron_watchdog_email(
     if not recipients:
         return False
     subject, text, html = _cron_watchdog_email_content(
-        recovered, outage_started_at, now)
+        env, recovered, outage_started_at, now)
     if not recovered:
         log_tail = await _cloudflare_attention_log_tail(env, now)
         text, html = _attention_email_with_logs(text, html, log_tail)
@@ -2823,7 +2844,7 @@ async def _record_status_monitor_transitions(
             text, html = _attention_email_with_logs(
                 text, html, attention_log_tail)
         text, html = _email_with_status_alert_manage_link(
-            text, html, system_id)
+            env, text, html, system_id)
         delivered = True
         for email in recipients:
             delivered = bool(await _send_email(
@@ -2927,16 +2948,39 @@ def _status_minute(minute_ts, current_minute_ts, row):
     }
 
 
-async def _status_deploy_semaphore_active(env):
-    """True only while deploy.sh owns the live deployment semaphore."""
+async def _status_deploy_semaphore_active(env, now=None):
+    """Suppress alerts during a bounded deploy and its activation grace.
+
+    D1 is shared by the retiring and newly activated Workers, unlike a build
+    timestamp environment variable. That makes this lifecycle the authority
+    for every health monitor during the rollout handoff.
+    """
     try:
         row = await d1_first(
             env,
-            "SELECT state FROM world_deploy_status WHERE singleton=1",
+            "SELECT state,started_at,finished_at "
+            "FROM world_deploy_status WHERE singleton=1",
         )
     except Exception:
         return False
-    return str((row or {}).get("state") or "") == "deploying"
+    if not row:
+        return False
+    if now is None:
+        now = int(Date.now())
+    try:
+        now = int(now)
+        started_at = int(row.get("started_at") or 0)
+        finished_at = int(row.get("finished_at") or 0)
+    except (TypeError, ValueError):
+        return False
+    state = str(row.get("state") or "")
+    if state == "deploying":
+        age = now - started_at
+        return started_at > 0 and 0 <= age < STATUS_DEPLOY_MAX_MS
+    if state == "ready":
+        age = now - finished_at
+        return finished_at > 0 and 0 <= age < STATUS_DEPLOY_GRACE_MS
+    return False
 
 
 async def _record_status_deploy_sample(env, now):
@@ -3011,7 +3055,7 @@ async def record_status_sample(env):
     # system so one failing check can't blank the rest of the page.
     await ensure_schema(env)
     now = int(Date.now())
-    if await _status_deploy_semaphore_active(env):
+    if await _status_deploy_semaphore_active(env, now):
         await _record_status_deploy_sample(env, now)
         return
     day_ts = (now // 86400000) * 86400000
@@ -4339,6 +4383,133 @@ async def site_referrer_leaderboard(env):
         cache_seconds=SITE_REFERRER_LEADERBOARD_TTL)
     await edge_cache_put(SITE_REFERRER_LEADERBOARD_CACHE_KEY, resp)
     return resp
+
+
+async def leaderboards_overview(env):
+    """One public leaderboard model shared by the website and World.
+
+    Source endpoints keep their own cache and privacy boundaries. This view
+    only normalizes their already-public rows so clients cannot drift on which
+    boards exist, how they are titled, or which value each board ranks.
+    """
+    # These four public sources are independent. Resolve them concurrently so
+    # the combined endpoint costs the slowest cache/database read, not the sum
+    # of all four, which keeps both the page and World island quick at startup.
+    network_response, referral_response, site_response, users_response = (
+        await asyncio.gather(
+            network_leaderboards(env),
+            referral_leaderboard(env),
+            site_referrer_leaderboard(env),
+            _account_users_directory(env, None),
+        )
+    )
+    network, referrals, sites, users = await asyncio.gather(
+        _response_json(network_response),
+        _response_json(referral_response),
+        _response_json(site_response),
+        _response_json(users_response),
+    )
+    activity_rows = []
+    for user in users.get("users", []):
+        if not isinstance(user, dict):
+            continue
+        name = clean_string(user.get("name", ""), MAX_NODE_NAME)
+        total_active_ms = _world_public_total_active_ms(
+            user.get("totalActiveMs", 0))
+        if not name or total_active_ms <= 0:
+            continue
+        activity_rows.append({
+            "name": name,
+            "totalActiveMs": total_active_ms,
+            "activityBucket": clean_string(
+                user.get("activityBucket", ""), 24),
+        })
+    activity_rows.sort(
+        key=lambda row: (-row["totalActiveMs"], row["name"].lower()))
+    activity_rows = activity_rows[:LEADERBOARD_LIMIT]
+
+    def board(board_id, title, subtitle, value_kind, rows, category):
+        return {
+            "id": board_id,
+            "title": title,
+            "subtitle": subtitle,
+            "valueKind": value_kind,
+            "category": category,
+            "rows": rows if isinstance(rows, list) else [],
+        }
+
+    window_hours = int(network.get("windowHours") or 48)
+    boards = [
+        board(
+            "activity", "World activity",
+            "Registered members by total public active time",
+            "duration", activity_rows, "community"),
+        board(
+            "uptime", "Mainnode uptime",
+            "Most minutes online · last %dh" % window_hours,
+            "minutes", network.get("uptime"), "network"),
+        board(
+            "node-storage", "Node storage",
+            "Public mirror bytes reported by each connected node",
+            "bytes", network.get("nodes"), "network"),
+        board(
+            "repos", "Top owners", "Most public repositories",
+            "repos", network.get("repos"), "repositories"),
+        board(
+            "mirrors", "Most mirrored",
+            "Repositories hosted under the most owners",
+            "mirrors", network.get("mirrors"), "repositories"),
+        board(
+            "hosted", "Longest hosted", "Repositories online the longest",
+            "age", network.get("hosted"), "repositories"),
+        board(
+            "largest", "Largest repositories",
+            "Most mirror data per repository",
+            "bytes", network.get("largest"), "repositories"),
+        board(
+            "data-hosted", "Most data hosted",
+            "Public mirror data hosted per owner",
+            "bytes", network.get("dataHosted"), "network"),
+        board(
+            "contributors", "Contributor activity",
+            "Issues + pull requests + commits",
+            "contributions", network.get("contributors"), "community"),
+        board(
+            "referrals", "Member referrals",
+            "Signups first; clicks break ties",
+            "referrals", referrals.get("board"), "community"),
+        board(
+            "referring-sites", "Referring websites",
+            "External sites sending visits to ForkMesh",
+            "visits", sites.get("board"), "community"),
+        board(
+            "funds-mainnodes", "Legacy funds · mainnodes",
+            "Historical reporting aggregate; not a balance",
+            "sol", network.get("fundsMainnodes"), "historical"),
+        board(
+            "funds-contributors", "Legacy funds · contributors",
+            "Historical reporting aggregate; not pending funds",
+            "sol", network.get("fundsContributors"), "historical"),
+        board(
+            "funds-projects", "Legacy funds · projects",
+            "Historical migration records; not current funding",
+            "sol", network.get("fundsProjects"), "historical"),
+    ]
+    return json_response(
+        {
+            "ok": True,
+            "observedAt": int(Date.now()),
+            "boards": boards,
+            "network": network,
+            "activity": {"board": activity_rows},
+            "referrals": referrals,
+            "sites": sites,
+            "fundsNotice": network.get("fundsNotice", ""),
+            "fundsState": network.get("fundsState", ""),
+            "fundsCustody": network.get("fundsCustody", ""),
+        },
+        cache_seconds=NETWORK_STATS_TTL,
+    )
 
 
 async def prune_site_referrers(env):
@@ -6119,6 +6290,42 @@ async def _world_social_fetch_text(url, headers):
         return None
 
 
+async def _world_x_api_posts(env):
+    """Read @forkmesh through the official X API when a token is configured."""
+    token = clean_string(
+        getattr(env, "X_API_BEARER_TOKEN", ""), 512).strip()
+    if not token:
+        return [], "X public embed returned no posts and no API token is configured."
+    headers = {
+        "accept": "application/json",
+        "authorization": "Bearer " + token,
+    }
+    user_text = await _world_social_fetch_text(
+        world_social_feeds.X_API_USER_URL, headers)
+    try:
+        user_payload = json.loads(user_text) if user_text else {}
+    except ValueError:
+        user_payload = {}
+    user_id = str((user_payload.get("data") or {}).get("id") or "")
+    if not re.fullmatch(r"[0-9]{1,32}", user_id):
+        return [], "The configured X API token could not resolve @forkmesh."
+    posts_url = (
+        world_social_feeds.X_API_POSTS_URL.format(user_id=quote(user_id)) +
+        "?max_results=10&exclude=replies,retweets&"
+        "tweet.fields=created_at,public_metrics"
+    )
+    posts_text = await _world_social_fetch_text(posts_url, headers)
+    try:
+        posts_payload = json.loads(posts_text) if posts_text else {}
+    except ValueError:
+        posts_payload = {}
+    posts = world_social_feeds.normalize_x_api_timeline(
+        posts_payload, world_social_feeds.TWITTER_HANDLE)
+    if not posts:
+        return [], "The X API returned no recent public @forkmesh posts."
+    return posts, ""
+
+
 async def world_social_posts_handler(env, request):
     """Public read-only proxy feeding the Twitter, Reddit, and blog world
     banners.
@@ -6138,6 +6345,8 @@ async def world_social_posts_handler(env, request):
     if cached is not None:
         return cached
     twitter_posts, twitter_ok = [], False
+    twitter_source = "public-syndication"
+    twitter_reason = "The public X timeline could not be reached."
     twitter_html = await _world_social_fetch_text(
         world_social_feeds.TWITTER_SYNDICATION_URL,
         {"accept": "text/html,application/json"},
@@ -6147,7 +6356,19 @@ async def world_social_posts_handler(env, request):
         if next_data is not None:
             twitter_posts = world_social_feeds.normalize_twitter_timeline(
                 next_data)
+            twitter_ok = bool(twitter_posts)
+            if not twitter_ok:
+                twitter_reason = (
+                    "X's public embed returned no recent @forkmesh posts.")
+    if not twitter_ok:
+        api_posts, api_reason = await _world_x_api_posts(env)
+        if api_posts:
+            twitter_posts = api_posts
             twitter_ok = True
+            twitter_source = "x-api-v2"
+            twitter_reason = ""
+        elif api_reason:
+            twitter_reason = api_reason
     reddit_posts, reddit_ok = [], False
     reddit_text = await _world_social_fetch_text(
         world_social_feeds.REDDIT_LISTING_URL,
@@ -6195,7 +6416,9 @@ async def world_social_posts_handler(env, request):
     resp = json_response(
         world_social_feeds.social_posts_payload(
             int(Date.now()), twitter_posts, reddit_posts, blog_posts,
-            twitter_ok, reddit_ok, blog_ok),
+            twitter_ok, reddit_ok, blog_ok,
+            twitter_reason=twitter_reason,
+            twitter_source=twitter_source),
         cache_seconds=WORLD_SOCIAL_POSTS_TTL,
     )
     await edge_cache_put(WORLD_SOCIAL_POSTS_CACHE_KEY, resp)
@@ -6471,6 +6694,17 @@ def _office_entry_ticket(env, account_bi):
         "sha256",
     ).hexdigest()
     return canonical + "." + signature
+
+
+def _desktop_office_session_id(account_bi, actor):
+    """Stable opaque Office session id for an authenticated desktop key."""
+    material = (
+        "forkmesh-desktop-office-session-v1\n"
+        + str(account_bi or "")
+        + "\n"
+        + str(actor or "").strip().lower()
+    ).encode()
+    return "desktop_" + hashlib.sha256(material).hexdigest()[:32]
 
 
 def _office_entry_ticket_claims(env, token):
@@ -6773,6 +7007,7 @@ OFFICE_ATTENDANCE_FLOOR_LABELS = {
     "community": "Community",
     "partnerships": "Partnerships",
     "operations": "Operations",
+    "executive": "Executive",
     "rooftop": "Rooftop",
 }
 
@@ -6859,6 +7094,74 @@ async def _office_attendance_recent(env, observed_at=None):
         if visit is not None:
             visits.append(visit)
     return visits
+
+
+async def _office_attendance_leaderboard(env, observed_at=None):
+    """Return one bounded row per member, ranked by their longest Office stay."""
+    try:
+        observed_at = int(
+            Date.now() if observed_at is None else observed_at)
+    except (TypeError, ValueError):
+        observed_at = 0
+    rows = await d1_all(
+        env,
+        "WITH office_visits AS ("
+        "SELECT account_bi, account_name, in_at, out_at, floor_id, visit_id, "
+        "MAX(0, COALESCE(out_at, ?) - in_at) AS duration_ms, "
+        "ROW_NUMBER() OVER ("
+        "PARTITION BY account_bi "
+        "ORDER BY in_at DESC, visit_id DESC"
+        ") AS newest_rank "
+        "FROM world_office_attendance "
+        "WHERE visit_scope='office'"
+        "), member_totals AS ("
+        "SELECT account_bi, MAX(duration_ms) AS longest_duration_ms, "
+        "MAX(CASE WHEN out_at IS NULL THEN duration_ms ELSE 0 END) "
+        "AS active_duration_ms, "
+        "MAX(CASE WHEN out_at IS NULL THEN 1 ELSE 0 END) AS is_present "
+        "FROM office_visits GROUP BY account_bi"
+        ") "
+        "SELECT office_visits.account_name, "
+        "member_totals.longest_duration_ms, "
+        "member_totals.active_duration_ms, member_totals.is_present, "
+        "CASE WHEN member_totals.is_present=1 "
+        "THEN office_visits.floor_id ELSE '' END AS floor_id "
+        "FROM member_totals "
+        "JOIN office_visits "
+        "ON office_visits.account_bi=member_totals.account_bi "
+        "AND office_visits.newest_rank=1 "
+        "ORDER BY member_totals.longest_duration_ms DESC, "
+        "office_visits.account_name COLLATE NOCASE ASC "
+        "LIMIT 20",
+        observed_at,
+    )
+    leaderboard = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        account = world_protocol.clean_display_name(
+            row.get("account_name"), "Contributor")
+        try:
+            longest_duration_ms = max(
+                0, int(row.get("longest_duration_ms") or 0))
+            active_duration_ms = max(
+                0, int(row.get("active_duration_ms") or 0))
+        except (TypeError, ValueError):
+            continue
+        present = bool(row.get("is_present"))
+        leaderboard.append({
+            "account": account,
+            "longestDurationMs": longest_duration_ms,
+            "activeDurationMs": active_duration_ms if present else 0,
+            "present": present,
+            "floor": (
+                OFFICE_ATTENDANCE_FLOOR_LABELS.get(
+                    str(row.get("floor_id") or "").strip().lower(), "")
+                if present
+                else ""
+            ),
+        })
+    return leaderboard
 
 
 def _chat_direct_ticket(env, conversation_id, key_version, account_bi):
@@ -7014,11 +7317,14 @@ async def office_attendance_handler(env, request):
     if method == "GET":
         await ensure_schema(env)
         observed_at = int(Date.now())
+        visits = await _office_attendance_recent(env, observed_at)
         return json_response(
             {
                 "ok": True,
                 "asOfAt": observed_at,
-                "visits": await _office_attendance_recent(env, observed_at),
+                "visits": visits,
+                "leaderboard": await _office_attendance_leaderboard(
+                    env, observed_at),
             },
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"x-content-type-options": "nosniff"},
@@ -7124,11 +7430,13 @@ async def office_attendance_handler(env, request):
             now,
             str(account_bi),
         )
+    visits = await _office_attendance_recent(env, now)
     return json_response(
         {
             "ok": True,
             "asOfAt": now,
-            "visits": await _office_attendance_recent(env, now),
+            "visits": visits,
+            "leaderboard": await _office_attendance_leaderboard(env, now),
         },
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
@@ -7246,6 +7554,10 @@ OFFICE_FLOOR_TEAM_ALIASES = {
     },
     "operations": {
         "operations", "ops", "people-operations", "finance-operations",
+    },
+    "executive": {
+        "executive", "executives", "leadership", "organization-leadership",
+        "org-leadership",
     },
 }
 
@@ -7651,6 +7963,12 @@ class _WorldCommunityRuntime:
     def method(self):
         return method_name(self.request) if self.request is not None else "GET"
 
+    def same_origin(self):
+        return bool(
+            self.request is not None
+            and _request_same_origin(self.request)
+        )
+
     def now(self):
         return int(Date.now())
 
@@ -7883,6 +8201,12 @@ class _OfficeMarketingTasksRuntime:
     def same_origin(self):
         return _request_same_origin(self.request)
 
+    def query(self, name):
+        try:
+            return URL(self.request.url).searchParams.get(str(name)) or ""
+        except Exception:
+            return ""
+
     def response(self, data, status=200, cache_control=None,
                  extra_headers=None):
         return json_response(
@@ -7980,6 +8304,59 @@ class _OfficeMarketingTasksRuntime:
             ):
                 members.append(name)
         return members
+
+    async def organization_members(self, org_bi):
+        rows = await d1_all(
+            self.env,
+            "SELECT name FROM org_members WHERE org_bi=? "
+            "ORDER BY name COLLATE NOCASE LIMIT 1000",
+            str(org_bi or ""),
+        )
+        members = []
+        for row in rows or []:
+            member = await self.active_user(row.get("name"))
+            if member and member["name"] not in {
+                    item["name"] for item in members}:
+                members.append(member)
+        return members
+
+    async def organization_member(self, org_bi, name):
+        requested = clean_string(
+            name or "", MAX_NODE_NAME).strip().lower()
+        if not requested:
+            return None
+        for member in await self.organization_members(org_bi):
+            if member["name"] == requested:
+                return member
+        return None
+
+    async def organization_teams(self, org_bi):
+        rows = await d1_all(
+            self.env,
+            "SELECT team FROM org_teams WHERE org_bi=? "
+            "ORDER BY team COLLATE NOCASE LIMIT 200",
+            str(org_bi or ""),
+        )
+        return [
+            clean_string(row.get("team"), MAX_NODE_NAME).strip().lower()
+            for row in rows or []
+            if valid_node_name(clean_string(
+                row.get("team"), MAX_NODE_NAME).strip().lower())
+        ]
+
+    async def team_member(self, org_bi, team, name):
+        member = await self.organization_member(org_bi, name)
+        if not member:
+            return False
+        row = await d1_first(
+            self.env,
+            "SELECT 1 AS one FROM org_team_members "
+            "WHERE org_bi=? AND team=? AND member_bi=?",
+            str(org_bi or ""),
+            clean_string(team, MAX_NODE_NAME).strip().lower(),
+            member["bi"],
+        )
+        return bool(row)
 
     async def marketing_members(self, org_bi):
         """Return active users on an authoritative Marketing floor team."""
@@ -8141,7 +8518,15 @@ class _ChatChannelsRuntime(_WorldCommunityRuntime):
         )
         ticket = _chat_channel_ticket(
             self.env, channel_id, key_version, account_bi)
-        session_id = _request_account_session_id(self.request)
+        # Browser requests carry a revocable account-session id. The desktop
+        # client authenticates this read with its account key instead, so give
+        # that already-authorized path a stable opaque session id rather than
+        # passing an empty value into _office_meeting_ticket (which rejects it
+        # and previously escaped as Cloudflare Error 1101).
+        session_id = (
+            _request_account_session_id(self.request)
+            or _desktop_office_session_id(account_bi, actor)
+        )
         meeting_ticket = _office_meeting_ticket(
             self.env, channel_id, key_version, account_bi, actor, session_id)
         return {
@@ -8261,9 +8646,12 @@ async def world_workshops_handler(env, request, path):
         _WorldCommunityRuntime(env, request), path)
 
 
-async def world_office_marketing_tasks_handler(env, request, path):
+async def organization_tasks_handler(env, request, path):
     return await world_office_tasks.handle(
         _OfficeMarketingTasksRuntime(env, request), path)
+
+
+world_office_marketing_tasks_handler = organization_tasks_handler
 
 
 async def world_build_board_handler(env, request, path):
@@ -8291,6 +8679,11 @@ async def world_build_board_handler(env, request, path):
         ):
             return await world_build_board.handle(runtime, path, [])
     return await world_build_board.handle(runtime, path, [])
+
+
+async def world_link_kiosk_handler(env, request, path):
+    return await world_link_kiosk.handle(
+        _WorldCommunityRuntime(env, request), path)
 
 
 async def world_deploy_status_handler(env, request):
@@ -8323,8 +8716,188 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-27-24h-1"
+WORLD_QA_DECK_REVISION = "2026-07-28-24h-24"
 WORLD_QA_CARDS = (
+    ("world-repository-agent-live-terminals",
+     "Interactive repository agent terminals",
+     "As an Engineering team member, open a repository with a running Claude "
+     "or Codex session. Confirm its small robot screen shows the exact task, "
+     "status, mirror, and latest terminal line. Click it and confirm the exact "
+     "session opens with transcript plus a working secure follow-up prompt. "
+     "Repeat as a non-engineer and confirm the controls remain inaccessible."),
+    ("world-repository-record-view-pads",
+     "Repository list order, footer, and viewing pads",
+     "Open forkmesh/forkmesh in the World. Confirm the PR and Issue boards "
+     "each grow only as tall as the records on the current page, the newest "
+     "record is at the bottom, and the large open count plus pagination sit "
+     "below the list. Click the floor pad beneath each board and confirm the "
+     "World enters first-person at a distance and pitch that frame the complete "
+     "panel; walk away and confirm ordinary first-person controls still work."),
+    ("world-continuous-city-round", "Continuous World city foundation",
+     "Walk between the central nodes, repositories, users, billboards, and "
+     "Office without jumping a gap. Confirm every route rests on one finished "
+     "city foundation with grass and concrete textures and no visible seam."),
+    ("world-start-here-progress", "START HERE destination progress",
+     "Open a fresh World profile and use the START HERE map. Visit the users "
+     "circle, nodes, repository district, Office, and an exploration stop. "
+     "Confirm each bounded step checks once and remains checked after reload."),
+    ("world-roof-jump-seating", "Roof jump and universal seating",
+     "Ride to the Office roof, press Space, clear the perimeter, and confirm "
+     "the avatar returns outdoors with an attendance checkout. Click several "
+     "park benches and chairs and confirm each seats and releases the avatar."),
+    ("world-connected-beach-car", "Connected beach and driveable car",
+     "Follow the eastern road to the beach, drive the car both directions, "
+     "then dismount. Confirm sand, water, the local horizon, and seating load "
+     "without a remote request, invisible wall, or disconnected land."),
+    ("world-perimeter-bike-loop", "Perimeter bicycle route",
+     "Ride both bicycles around the complete outer loop. Confirm the lane "
+     "stays outside activity areas, remains on solid land, and reconnects "
+     "without a narrow bridge or collision stop."),
+    ("world-billboard-circle", "Circular public billboard layout",
+     "Visit the billboard district from the center and perimeter. Confirm all "
+     "public boards form one readable tangent circle, only one leaderboard "
+     "panel exists, and no obsolete center monument remains."),
+    ("world-github-dark-system", "Shared GitHub-dark World controls",
+     "Open the map, settings, account, repository detail, Office task, and "
+     "notice panels. Confirm they share the same dark surfaces, borders, "
+     "button radii, focus states, and readable contrast."),
+    ("world-local-daylight-textures", "Local daylight and optimized textures",
+     "Compare the World at daytime and nighttime or simulate the local clock. "
+     "Confirm sky and sun follow local time, chest time is local, organization "
+     "stars render, and grass, path, and beach textures load from local WebP."),
+    ("world-node-delete-alias-regression", "Canonical World node deletion",
+     "As is_admin, delete a disposable cabinet whose visible machine name, "
+     "account, and node ID differ. Confirm the API resolves the canonical node, "
+     "removes only that cabinet and owner link, and plays the removal effect."),
+    ("world-admin-member-detail-email-state",
+     "Admin member detail and email state",
+     "Open a registered member from their World avatar. Confirm the side "
+     "panel always shows either a green VERIFIED EMAIL check or a red EMAIL "
+     "NOT VERIFIED mark. As is_admin, select Open admin user detail and "
+     "confirm the secret admin console opens directly to only that user's "
+     "record with prefilled password-reset and verification tools. Repeat as "
+     "a non-admin and confirm the link is absent."),
+    ("world-repository-split-panels-agent-dock",
+     "Split repository work panels and agent dock",
+     "Open forkmesh/forkmesh in the World. Confirm pull requests occupy the "
+     "left panel and issues the right panel, each uses one 25-record column, "
+     "shows a star-sized OPEN count, and only bottom controls contain Prev, "
+     "Next, page, and range. Page each side independently and open one card "
+     "from each. Confirm the "
+     "repository name is part of the angled commit-activity pedestal. While "
+     "an Engineering-authorized Claude or Codex session runs for this repo, "
+     "confirm one compact 45-degree robot screen appears in front with its "
+     "provider, live state, task snapshot, and target node; confirm a "
+     "non-Engineering member sees no agent terminal."),
+    ("world-object-click-keyboard-layout", "Click-selected World object editing",
+     "Click a movable Town object and confirm a restrained mint outline appears "
+     "while its related information opens in the side panel. As an is_admin "
+     "user, use all four arrow keys and confirm they nudge the selected object "
+     "relative to the camera; press R and Shift+R to rotate both ways. Confirm "
+     "the placement persists in a second browser. Drag the camera and use the "
+     "mouse wheel to confirm neither gesture moves or rotates the object."),
+    ("world-member-click-detail", "Clickable World member information",
+     "Click the body or chest of your own avatar and two other visible users, "
+     "including one inside the Office. Confirm a subtle blue outline follows "
+     "the selected avatar and the side panel shows the privacy-filtered member, "
+     "status, verified-email state, public teams, activity, nodes, and "
+     "Fediverse information. Confirm private IP and full User-Agent never "
+     "appear in this general member panel."),
+    ("world-admin-node-delete-machine-name", "Admin World node deletion",
+     "As is_admin, open a mirror cabinet whose operator account differs from "
+     "its machine name. Confirm the danger zone asks for DELETE plus the mirror "
+     "machine name, rejects a mismatched confirmation, and deletes only after "
+     "the browser confirmation. Confirm the cabinet list force-refreshes and "
+     "the removed mirror disappears; verify a non-admin sees no delete form."),
+    ("world-annotated-cardinal-districts", "Cardinal World district layout",
+     "From an overhead view confirm exactly four broad paved routes leave the "
+     "central live-node plaza. Walk each route and confirm its rounded join is "
+     "seamless: east reaches every fully expanded repository, west reaches all "
+     "bulletins and boards, south reaches the member/campfire circle, and north "
+     "reaches the Office. Confirm no mirror cabinet moved out of the center and "
+     "that old saved board coordinates do not pull a board back into town."),
+    ("world-flagship-always-expanded", "Flagship repository opens without mirror delay",
+     "Open a fresh World tab with normal network throttling. Confirm the "
+     "forkmesh/forkmesh repository wheel expands as soon as its tree arrives "
+     "and never collapses to a flat MIRRORS SYNCING disc while mirror status "
+     "metadata converges. Confirm files remain clickable after the mirror "
+     "details finish loading."),
+    ("world-avatar-identity-refresh", "Immediate avatar flags and verified pin",
+     "Join from a newly verified account with country sharing enabled. From a "
+     "second World tab, confirm its country flag appears without reloading and "
+     "a small green verified check pin is visible on the avatar front. Disable "
+     "country sharing and confirm the country is removed without exposing an "
+     "email address."),
+    ("world-unique-uploaded-faces", "Unique generated and uploaded avatar faces",
+     "Compare several users who have no account photo and confirm each gets a "
+     "stable, visibly different generated face after reload. In World settings "
+     "upload a JPEG, WebP, or PNG and confirm it is center-cropped, reported as "
+     "at most 128px/64 KiB, replaces the generated face, and appears in the "
+     "top-right account button at the same size as neighboring controls."),
+    ("world-cabinet-side-layout", "Cabinet operational and agent side layout",
+     "Walk around a live mirror cabinet. Confirm Actions runs face the "
+     "operational walkway, server information is on the opposite face, Claude "
+     "tasks appear only on the left side, and Codex tasks only on the right. "
+     "Open each panel and confirm its existing authorized detail action works."),
+    ("world-connected-mixed-landscape", "Connected city and woodland landscape",
+     "Walk from Town Square to the repository district and Office. Confirm "
+     "both routes are broad continuous pieces of land with no narrow bridge "
+     "or invisible gap. Look across the Town Square for warm stone plazas, "
+     "edged paths, varied grass pockets, and trees instead of one flat green "
+     "surface. Pull the camera below an island edge and confirm finished dirt "
+     "layers and hanging roots are visible."),
+    ("world-aquarium-control-panel", "Aquarium control panel",
+     "Walk to the Office lobby aquarium and confirm one compact panel is "
+     "mounted at its bottom-right corner. Feed the fish, switch the backdrop "
+     "between opaque and clear, and switch the aquarium light off and on. "
+     "Confirm every button updates immediately, remains keyboard accessible, "
+     "and the two toggle preferences survive a reload."),
+    ("world-aquarium-user-school", "Users represented by aquarium fish",
+     "Compare the public account directory with the Office aquarium. Confirm "
+     "there is one small, unlabeled fish per public user, each user's color "
+     "and size remain stable after reload, active/recent users swim in upper "
+     "lanes, inactive users stay near the bottom, and the full school fits "
+     "inside the tank without oversized fish."),
+    ("world-admin-direct-layout", "Admin direct World layout editing",
+     "Sign in as a platform administrator. Drag the visible base of several "
+     "Town Square objects and confirm each follows without a tiny edit handle. "
+     "Right-drag and Shift-drag left/right to rotate, then reload and confirm "
+     "both position and heading persist. Repeat as a non-admin and confirm "
+     "objects retain their normal click behavior and cannot be moved."),
+    ("world-mirror-live-cabinets", "Live green World mirror cabinets",
+     "Open the repository Mirror nodes view and ForkMesh World together. "
+     "Confirm mirror2, mirror3, and mirror6 each have a cabinet and every "
+     "reachable machine has a steady green roof beacon. Open mirror2 detail "
+     "and confirm clone availability and integrity remain truthful even while "
+     "the physical-node beacon reports it alive."),
+    ("qt-mirror-latest-commit-age", "Mirror latest-commit age",
+     "Open the Qt repository Mirror nodes table. Confirm each reported Latest "
+     "commit shows its short hash, branch, and an x-ago age derived from that "
+     "commit's timestamp; hover it and confirm the full commit evidence remains."),
+    ("open-pr-audit", "Open pull-request disposition audit",
+     "Open the PR board and compare every record marked Open with "
+     "docs/operations/open-pull-audit-2026-07-28.md. Confirm PR #52's change "
+     "is present on main and its chat disclosure survives a dashboard asset "
+     "rebuild. Confirm deleted-head PRs show their recorded stale, represented, "
+     "or recover-before-review disposition rather than implying mergeability."),
+    ("mirror-service-counters", "Mirror clone and website counters",
+     "Open the repository Mirror nodes table and the matching World cabinet. "
+     "Confirm mirror6 shows numeric Clones and Websites values, including "
+     "truthful zeroes before its first request. Browse one repository page and "
+     "complete one clone through an eligible direct mirror, wait for its signed "
+     "catalog refresh, and confirm only the corresponding counters increase. "
+     "Provision or restart a mirror and confirm both values remain available."),
+    ("mirror-actions-cabinet", "Mirror cabinet Actions runs",
+     "Sign in as a repository owner or organization writer and walk behind "
+     "the active mirror cabinet. Confirm recent Actions runs show running, "
+     "done, or error plus a bounded redacted log tail. Click the Actions face "
+     "and confirm the full authorized run list opens. Repeat without write "
+     "access and confirm no private run or log data appears."),
+    ("executive-office-floor", "Executive Office floor",
+     "Sign in as an Executive-team member and ride the elevator to Executive. "
+     "Confirm the strategy table, ten chairs, organization map and floor label "
+     "render without intersecting adjacent stories. Confirm a non-Executive "
+     "member cannot select the floor and attendance reports Executive."),
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
      "appears immediately, animates while work is active, and ends with a "
@@ -8354,6 +8927,10 @@ WORLD_QA_CARDS = (
      "Open the forkmesh/forkmesh repository circle. Confirm Mastodon follower "
      "avatars form the outer orbit and individual Git contributor avatars form "
      "the inner orbit at normal camera angles."),
+    ("bulk-import-retirement", "Bulk repository import retirement",
+     "Open the repository district and catalog. Confirm the 54 repositories "
+     "from the retired mirror2/mirror3 import burst are gone, the temporary "
+     "import island is empty, and forkmesh plus unrelated repositories remain."),
     ("repo-pr-board", "Pull-request status and mergeability",
      "Page and scroll through the PR board. Confirm each card shows its actual "
      "state, mergeability score and evidence, and that 25 records fit each page."),
@@ -8372,6 +8949,17 @@ WORLD_QA_CARDS = (
      "In Qt Hosts, run Install Claude + Codex on a reachable mirror. Confirm the "
      "saved managed SSH identity is used, and unreachable versus rejected-key "
      "failures produce different actionable messages."),
+    ("mirror-agent-provider-routing", "Signed mirror agent-provider routing",
+     "Open Qt Hosts and confirm mirror6 reports both Claude Code and Codex for "
+     "the forkmesh-node service account. Start a Claude task from an Engineering "
+     "account and confirm it targets mirror6; confirm an offline, stale, or "
+     "Claude-missing mirror is never offered or selected."),
+    ("headless-agent-checkout", "Headless mirror agent checkout",
+     "Provision a new headless mirror and confirm its private service-owned "
+     "forkmesh working checkout exists before forkmesh-node starts. Restart the "
+     "service twice and confirm the checkout remains selected, the signed "
+     "catalog stays fresh, and a Claude or Codex job can be claimed without a "
+     "\"no local checkout\" error."),
     ("mirror-agent-status", "Mirror cabinet agent status",
      "Inspect each mirror cabinet side. Confirm agent tasks show running, "
      "stopped, merged, or attention and the authorized detail panel agrees."),
@@ -8381,12 +8969,18 @@ WORLD_QA_CARDS = (
      "desk and attendance calendar, and the old guide/banner are absent."),
     ("marketing-table", "Marketing reclaimed-wood table",
      "Inspect the Marketing room table from above and at seated height. Confirm "
-     "it is round reclaimed wood with the ForkMesh cube embedded beneath a "
-     "clear epoxy-like surface."),
+     "it is round reclaimed wood with the supplied chrome ForkMesh cube image "
+     "embedded beneath a clear epoxy-like surface. Confirm front-window desks "
+     "face outward, chairs face their desks, and names are small desktop plaques."),
     ("marketing-proof", "Private Marketing proof links",
      "As a Marketing member, submit an HTTPS social proof link from your own "
      "desk and confirm it appears there. Verify a non-Marketing account cannot "
      "read or submit any proof records."),
+    ("general-chat-board", "Recent #general World board",
+     "Open the World beside the event bulletin. Confirm the #general board "
+     "fills from retained and live encrypted chat with author, time, message, "
+     "image thumbnail/file label and reaction count when present. Click it and "
+     "confirm the complete #general chat opens."),
     ("avatar-team-badges", "Avatar team badges",
      "View members from the front-left and confirm each authorized team appears "
      "as a readable badge on the member's left arm, without exposing private "
@@ -8415,6 +9009,11 @@ WORLD_QA_CARDS = (
      "Hard-load the World on desktop and mobile. Confirm the real scene remains "
      "visible behind a small animated progress cover and objects do not shift "
      "noticeably as initial data arrives."),
+    ("dashboard-home-data", "Dashboard home repositories and blog",
+     "Sign in on Dashboard. Confirm Top repositories includes linked "
+     "organization aliases with an organization label, Latest from the blog "
+     "shows current posts and artwork, and either ForkMesh logo cleanly reloads "
+     "the Dashboard."),
     ("fresh-code-surge", "Fresh Code mirror-push effect",
      "Keep the World open while a mirror publishes a new verified commit. "
      "Confirm the cabinet emits the tall green beam and expanding ground "
@@ -8430,8 +9029,15 @@ WORLD_QA_CARDS = (
      "states, then shows Claude and Codex as Installed or Not installed."),
     ("alert-management-link", "Alert email management destination",
      "Open Manage this alert from a component or scheduled-job email. Confirm "
-     "it opens forkmesh/forkmesh Settings, scrolls to Operational alerts, and "
-     "focuses the checkbox used to enable or disable those emails."),
+     "it opens the secret platform is_admin console, scrolls to Operational "
+     "alerts, and focuses the checkbox used to enable or disable those emails. "
+     "Confirm a non-admin account cannot open or change it."),
+    ("admin-node-delete", "Admin-only permanent node deletion",
+     "As a platform is_admin, open a disposable node cabinet and confirm the "
+     "danger action requires typing DELETE plus the exact node name. Cancel "
+     "once, then delete the disposable node and confirm its cabinet, catalog "
+     "repositories, endpoint, and owner fleet entry disappear. Confirm the "
+     "control is absent for a non-admin."),
     ("qa-history-routing", "QA history tabs and routing",
      "Use the physical Cards, Pass, Fail, and Unsure tabs. Page the shared task "
      "lists, select a task, then as an authorized maintainer send one back to "
@@ -8457,8 +9063,62 @@ WORLD_QA_CARDS = (
      "Walk around and through the Office approach. Confirm flowers, bushes, "
      "and low-poly trees surround the island without blocking the bridge, "
      "doorway, or smooth entry and exit."),
+    ("twitter-public-feed", "Twitter/X public board fallback",
+     "Open the Twitter/X board. If public @forkmesh posts exist, confirm their "
+     "text, age, likes, and reposts render. If X returns no public timeline, "
+     "confirm the board explains why and the Engineering Human TODO board "
+     "shows the read-only X API setup action."),
+    ("chest-auth-profile-reload", "Authenticated chest profile reload",
+     "Open the World while signed in and wait for the temporary guest identity "
+     "to become your account. Confirm the chest changes from Loading to your "
+     "actual @account Fediverse details without a page refresh. On a walletless "
+     "self card, select Add Wallet and confirm the payout editor opens."),
+    ("qt-host-plan-cost", "Qt Host provider and plan provenance",
+     "Provision a new Vultr mirror, reopen Hosts, and confirm its status row "
+     "retains Vultr, plan type, region, and expected monthly cost after the "
+     "install finishes and after restarting Qt."),
+    ("marketing-initiatives", "Repository issue Marketing initiatives",
+     "As an organization manager, open a numbered web issue and choose Move "
+     "to Marketing initiatives. Confirm a current Marketing member sees one "
+     "deduplicated card on the private Marketing floor panel and can click it "
+     "to reopen the exact issue. Confirm non-Marketing members cannot read "
+     "the panel or its encrypted issue details."),
+    ("admin-error-analytics", "Admin 24-hour error analytics",
+     "As a platform is_admin, open the secret admin console and select Error "
+     "logs. Confirm the previous-24-hours chart has 24 accessible hourly bars, "
+     "equivalent status/method/path/message rows are grouped with counts, and "
+     "the bounded redacted raw log remains available below."),
+    ("repository-terms-flags", "Repository Terms moderation flags",
+     "As a platform is_admin, apply a Terms flag to a disposable repository "
+     "with a private note. Confirm the repository list, detail page, and World "
+     "portal show a red flag and public category but never the note. Clear it "
+     "and confirm the badges disappear after the catalog refresh."),
 )
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
+
+
+async def _organization_qa_access(env, org_bi, account_bi, actor):
+    """QA access without broadening organization or Office permissions."""
+    role = await _org_role(env, org_bi, actor)
+    if role in ("owner", "admin"):
+        return True, role, False
+    internal = await d1_first(
+        env,
+        "SELECT 1 AS one FROM org_team_members "
+        "WHERE org_bi=? AND member_bi=? "
+        "AND team IN ('quality-assurance','qa') LIMIT 1",
+        org_bi, str(account_bi or ""),
+    )
+    if internal:
+        return True, role, False
+    external = await d1_first(
+        env,
+        "SELECT 1 AS one FROM org_team_collaborators "
+        "WHERE org_bi=? AND account_bi=? "
+        "AND team IN ('quality-assurance','qa') LIMIT 1",
+        org_bi, str(account_bi or ""),
+    )
+    return bool(external), role, bool(external)
 
 
 async def world_qa_handler(env, request):
@@ -8476,7 +9136,10 @@ async def world_qa_handler(env, request):
             return json_response({"ok": False, "error": "origin_not_allowed"},
                                  status=403)
         try:
-            data = await bounded_json_request(request, 2048)
+            # A failed private task may include one compact screenshot. The
+            # image is validated and encrypted below; keep the whole request
+            # bounded well below the general upload ceiling.
+            data = await bounded_json_request(request, 640 * 1024)
         except RequestBodyTooLarge:
             return json_response({"ok": False, "error": "payload_too_large"},
                                  status=413)
@@ -8543,29 +9206,27 @@ async def world_qa_handler(env, request):
         return json_response({
             "ok": True,
             "authenticated": False,
+            "authorized": False,
+            "requiredTeam": "quality-assurance",
             "revision": WORLD_QA_DECK_REVISION,
-            "cards": [
-                {
-                    "key": key,
-                    "title": title,
-                    "howToTest": how_to_test,
-                    "global": global_reviews.get(
-                        key,
-                        {"pass": 0, "fail": 0, "unsure": 0, "total": 0},
-                    ),
-                }
-                for key, title, how_to_test in deck_cards
-            ],
+            "cards": [],
             "reviews": {},
             "stats": {"pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
-                      "total": len(deck_cards)},
-            "globalReviews": global_reviews,
-            "globalStats": global_stats,
+                      "total": 0},
+            "globalReviews": {},
+            "globalStats": {
+                "pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
+                "testers": 0, "total": 0,
+            },
             "canRoute": False,
         }, cache_control="no-store")
     actor = clean_string(
         (record or {}).get("name"), MAX_NODE_NAME).strip().lower()
     can_route = False
+    can_private_qa = False
+    external_qa = False
+    private_tasks = {}
+    qa_org_bi = ""
     if actor:
         org_bi, org_row = await _org_row(env, "forkmesh")
         if org_row:
@@ -8575,6 +9236,73 @@ async def world_qa_handler(env, request):
                 role in ("owner", "admin")
                 or permission in ("maintain", "admin")
             )
+            can_private_qa, _role, external_qa = (
+                await _organization_qa_access(
+                    env, org_bi, account_bi, actor)
+            )
+            qa_org_bi = org_bi
+    if not can_private_qa:
+        return json_response({
+            "ok": True,
+            "authenticated": True,
+            "authorized": False,
+            "requiredTeam": "quality-assurance",
+            "revision": WORLD_QA_DECK_REVISION,
+            "cards": [],
+            "reviews": {},
+            "stats": {
+                "pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
+                "total": 0,
+            },
+            "globalReviews": {},
+            "globalStats": {
+                "pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
+                "testers": 0, "total": 0,
+            },
+            "canRoute": False,
+            "canViewPrivateTasks": False,
+        }, cache_control="no-store")
+    if can_private_qa and qa_org_bi:
+        task_rows = await d1_all(
+            env,
+            "SELECT task_id,department,team,qa_status,qa_reviewed_at,data "
+            "FROM organization_tasks "
+            "WHERE org_bi=? AND qa_requested_at>0 "
+            "ORDER BY qa_requested_at DESC,task_id DESC LIMIT 64",
+            qa_org_bi,
+        )
+        for task_row in task_rows or []:
+            task_id = str(task_row.get("task_id") or "").lower()
+            if not re.fullmatch(r"[a-f0-9]{32}", task_id):
+                continue
+            try:
+                task_data = await decrypt_row(env, task_row.get("data"))
+            except Exception:
+                task_data = None
+            if not isinstance(task_data, dict):
+                continue
+            key = "task:" + task_id
+            title = clean_string(task_data.get("title"), 160).strip()
+            how_to_test = clean_string(
+                task_data.get("howToTest"), 720).strip()
+            if not title:
+                continue
+            if not how_to_test:
+                how_to_test = (
+                    "Follow the normal user flow and confirm the requested "
+                    "behavior without regressions."
+                )
+            private_tasks[key] = {
+                "row": task_row,
+                "data": task_data,
+                "title": title,
+                "howToTest": how_to_test,
+            }
+            if key not in deck_keys:
+                deck_cards.append((key, title, how_to_test))
+                deck_keys.add(key)
+    deck_cards = deck_cards[:128]
+    deck_keys = {item[0] for item in deck_cards}
     if method == "POST":
         item_key = clean_string(data.get("key"), 80)
         if item_key not in deck_keys:
@@ -8660,14 +9388,100 @@ async def world_qa_handler(env, request):
             if verdict not in ("pass", "fail", "unsure"):
                 return json_response(
                     {"ok": False, "error": "invalid_verdict"}, status=400)
-            await d1_run(
-                env,
-                "INSERT INTO world_qa_reviews("
-                "account_bi,item_key,verdict,reviewed_at) VALUES(?,?,?,?) "
-                "ON CONFLICT(account_bi,item_key) DO UPDATE SET "
-                "verdict=excluded.verdict,reviewed_at=excluded.reviewed_at",
-                account_bi, item_key, verdict, int(Date.now()),
-            )
+            if item_key in private_tasks:
+                if not can_private_qa or not qa_org_bi:
+                    return json_response(
+                        {"ok": False, "error": "qa_team_required"},
+                        status=403,
+                    )
+                task_id = item_key[5:]
+                task_record = private_tasks[item_key]
+                task_verdict = {
+                    "pass": "passed",
+                    "fail": "failed",
+                    "unsure": "unknown",
+                }[verdict]
+                failure_reason = clean_string(
+                    data.get("failureReason"), 1000).strip()
+                failure_screenshot = str(
+                    data.get("screenshot") or "").strip()
+                if verdict == "fail" and not failure_reason:
+                    return json_response(
+                        {"ok": False, "error": "failure_reason_required"},
+                        status=400,
+                    )
+                if failure_screenshot and (
+                    verdict != "fail"
+                    or len(failure_screenshot) > 480_000
+                    or not re.fullmatch(
+                        r"data:image/(?:png|jpeg|webp);base64,"
+                        r"[A-Za-z0-9+/=]+",
+                        failure_screenshot,
+                    )
+                ):
+                    return json_response(
+                        {"ok": False, "error": "invalid_qa_screenshot"},
+                        status=400,
+                    )
+                if verdict != "fail":
+                    failure_reason = ""
+                    failure_screenshot = ""
+                reviewed_at = int(Date.now())
+                review_data = {
+                    "reviewer": actor,
+                    "failureReason": failure_reason,
+                    "failureScreenshot": failure_screenshot,
+                }
+                await d1_run(
+                    env,
+                    "INSERT INTO organization_task_qa_reviews "
+                    "(task_id,org_bi,reviewer_bi,verdict,data,reviewed_at) "
+                    "VALUES (?,?,?,?,?,?) "
+                    "ON CONFLICT(task_id,reviewer_bi) DO UPDATE SET "
+                    "verdict=excluded.verdict,data=excluded.data,"
+                    "reviewed_at=excluded.reviewed_at",
+                    task_id, qa_org_bi, account_bi, task_verdict,
+                    await encrypt_row(env, review_data),
+                    reviewed_at,
+                )
+                task_data = dict(task_record["data"])
+                task_data["qaReviewer"] = actor
+                task_data["qaFailureReason"] = failure_reason
+                task_data["qaFailureScreenshot"] = failure_screenshot
+                await d1_run(
+                    env,
+                    "UPDATE organization_tasks SET qa_status=?,"
+                    "qa_reviewer_bi=?,qa_reviewed_at=?,data=?,updated_at=? "
+                    "WHERE org_bi=? AND task_id=? AND qa_requested_at>0",
+                    task_verdict, account_bi, reviewed_at,
+                    await encrypt_row(env, task_data), reviewed_at,
+                    qa_org_bi, task_id,
+                )
+                task_record["row"] = {
+                    **task_record["row"],
+                    "qa_status": task_verdict,
+                    "qa_reviewed_at": reviewed_at,
+                }
+                task_record["data"] = task_data
+                await _audit_sensitive_action(
+                    env, actor, "organization.task_qa_reviewed",
+                    "organization_task", task_id, "success",
+                    {
+                        "verdict": task_verdict,
+                        "external": external_qa,
+                        "hasFailureReason": bool(failure_reason),
+                        "hasScreenshot": bool(failure_screenshot),
+                    },
+                )
+            else:
+                await d1_run(
+                    env,
+                    "INSERT INTO world_qa_reviews("
+                    "account_bi,item_key,verdict,reviewed_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(account_bi,item_key) DO UPDATE SET "
+                    "verdict=excluded.verdict,reviewed_at=excluded.reviewed_at",
+                    account_bi, item_key, verdict, int(Date.now()),
+                )
         global_reviews, global_stats = await global_qa_snapshot()
     rows = await d1_all(
         env,
@@ -8684,6 +9498,39 @@ async def world_qa_handler(env, request):
                 "verdict": verdict,
                 "reviewedAt": max(0, int(row.get("reviewed_at") or 0)),
             }
+    if private_tasks:
+        private_rows = await d1_all(
+            env,
+            "SELECT task_id,verdict,data,reviewed_at "
+            "FROM organization_task_qa_reviews "
+            "WHERE org_bi=? AND reviewer_bi=? "
+            "ORDER BY reviewed_at DESC LIMIT 128",
+            qa_org_bi, account_bi,
+        )
+        for row in private_rows or []:
+            key = "task:" + str(row.get("task_id") or "")
+            task_verdict = str(row.get("verdict") or "")
+            if key in private_tasks and task_verdict in (
+                    "passed", "failed", "unknown"):
+                try:
+                    review_data = await decrypt_row(env, row.get("data"))
+                except Exception:
+                    review_data = {}
+                if not isinstance(review_data, dict):
+                    review_data = {}
+                reviews[key] = {
+                    "verdict": {
+                        "passed": "pass",
+                        "failed": "fail",
+                        "unknown": "unsure",
+                    }[task_verdict],
+                    "reviewedAt": max(
+                        0, int(row.get("reviewed_at") or 0)),
+                    "failureReason": clean_string(
+                        review_data.get("failureReason"), 1000).strip(),
+                    "hasFailureScreenshot": bool(
+                        review_data.get("failureScreenshot")),
+                }
     stats = {
         "pass": sum(1 for item in reviews.values()
                     if item["verdict"] == "pass"),
@@ -8697,6 +9544,8 @@ async def world_qa_handler(env, request):
     return json_response({
         "ok": True,
         "authenticated": True,
+        "authorized": True,
+        "requiredTeam": "quality-assurance",
         "revision": WORLD_QA_DECK_REVISION,
         "cards": [
             {
@@ -8706,6 +9555,32 @@ async def world_qa_handler(env, request):
                 "global": global_reviews.get(
                     key, {"pass": 0, "fail": 0, "unsure": 0, "total": 0}),
                 **reviews.get(key, {}),
+                **({
+                    "organizationTask": True,
+                    "department": str(
+                        private_tasks[key]["row"].get("department") or ""),
+                    "team": str(
+                        private_tasks[key]["row"].get("team") or ""),
+                    "taskQaStatus": str(
+                        private_tasks[key]["row"].get("qa_status")
+                        or "unknown"),
+                    "lastReviewer": clean_string(
+                        private_tasks[key]["data"].get("qaReviewer"),
+                        MAX_NODE_NAME,
+                    ).strip().lower(),
+                    "lastReviewedAt": max(
+                        0,
+                        int(private_tasks[key]["row"].get(
+                            "qa_reviewed_at") or 0),
+                    ),
+                    "failureReason": clean_string(
+                        private_tasks[key]["data"].get("qaFailureReason"),
+                        1000,
+                    ).strip(),
+                    "hasFailureScreenshot": bool(
+                        private_tasks[key]["data"].get(
+                            "qaFailureScreenshot")),
+                } if key in private_tasks else {}),
             }
             for key, title, how_to_test in deck_cards
         ],
@@ -8714,13 +9589,15 @@ async def world_qa_handler(env, request):
         "globalReviews": global_reviews,
         "globalStats": global_stats,
         "canRoute": can_route,
+        "canViewPrivateTasks": can_private_qa,
+        "externalQaCollaborator": external_qa,
         **({"routeResult": route_result}
            if method == "POST" and "route_result" in locals() else {}),
     }, cache_control="no-store")
 
 
 WORLD_PREFERENCES_MAX_BYTES = 320 * 1024
-WORLD_PREFERENCES_MAX_VIEWS = 4
+WORLD_PREFERENCES_MAX_VIEWS = 5
 WORLD_PREFERENCES_PRIVACY_KEYS = (
     "name", "country", "browser", "os", "activity", "inactivity",
     "localTime", "nodes",
@@ -8740,6 +9617,7 @@ def _clean_world_settings(raw):
     result = {}
     string_limits = {
         "theme": 24,
+        "daylightMode": 8,
         "focusMusicTrackId": 80,
         "availability": 20,
         "activityCategory": 48,
@@ -8752,6 +9630,8 @@ def _clean_world_settings(raw):
     for key, limit in string_limits.items():
         if key in source:
             result[key] = clean_string(source.get(key), limit)
+    if result.get("daylightMode") not in (None, "auto", "day", "night"):
+        result.pop("daylightMode", None)
     number_bounds = {
         "lightLevel": (40, 140),
         "moveSpeed": (50, 300),
@@ -8810,7 +9690,7 @@ def _clean_world_saved_view(raw, now):
     if (
         any(not math.isfinite(value) for value in (
             x, y, z, heading, yaw, pitch, zoom))
-        or abs(x) > 100 or abs(y) > 100 or abs(z) > 100
+        or abs(x) > 620 or abs(y) > 100 or abs(z) > 620
         or abs(heading) > math.pi or abs(yaw) > math.pi * 2
         or abs(pitch) > math.pi / 2 or not 0.2 <= zoom <= 8
     ):
@@ -9400,6 +10280,17 @@ SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
     """ALTER TABLE chat_direct_participants
        ADD COLUMN initiated INTEGER NOT NULL DEFAULT 0
        CHECK (initiated IN (0, 1))""",
+    # These columns must exist before SCHEMA_STATEMENTS creates their live and
+    # scoped attendance indexes on databases that predate migration 0090.
+    """ALTER TABLE world_office_attendance
+       ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0
+       CHECK (last_seen_at >= 0)""",
+    """ALTER TABLE world_office_attendance
+       ADD COLUMN floor_id TEXT NOT NULL DEFAULT ''
+       CHECK (length(floor_id) <= 32)""",
+    """ALTER TABLE world_office_attendance
+       ADD COLUMN visit_scope TEXT NOT NULL DEFAULT 'legacy'
+       CHECK (visit_scope IN ('legacy', 'office'))""",
 ]
 
 # Post-CREATE column additions for tables that predate them. Idempotent: a
@@ -9425,29 +10316,22 @@ SCHEMA_ALTER_STATEMENTS = [
     """CREATE INDEX IF NOT EXISTS idx_world_office_marketing_tasks_completion
        ON world_office_marketing_tasks(
            org_bi, completed_at, updated_at DESC)""",
-    # A bounded heartbeat closes interrupted Office visits and carries only the
-    # public floor label used by the lobby board.
-    """ALTER TABLE world_office_attendance
-       ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0
-       CHECK (last_seen_at >= 0)""",
-    """ALTER TABLE world_office_attendance
-       ADD COLUMN floor_id TEXT NOT NULL DEFAULT ''
-       CHECK (length(floor_id) <= 32)""",
-    """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_live
-       ON world_office_attendance(out_at, last_seen_at DESC)""",
-    """ALTER TABLE world_office_attendance
-       ADD COLUMN visit_scope TEXT NOT NULL DEFAULT 'legacy'
-       CHECK (visit_scope IN ('legacy', 'office'))""",
-    """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_scope
-       ON world_office_attendance(visit_scope, account_bi, in_at)""",
     # Assigned issue titles are already public repository metadata; retain a
     # bounded copy so the build-board card survives the recent-issues window.
     """ALTER TABLE world_build_board_items
        ADD COLUMN title TEXT NOT NULL DEFAULT ''
        CHECK (length(title) <= 160)""",
     "ALTER TABLE pull_inbox ADD COLUMN submitter_bi TEXT",
+    "ALTER TABLE pull_inbox ADD COLUMN claimed_by_bi TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE pull_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE pull_inbox ADD COLUMN mirrored_by_bi TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE pull_inbox ADD COLUMN mirrored_at INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE commit_inbox ADD COLUMN submitter_bi TEXT",
     "ALTER TABLE discussion_inbox ADD COLUMN submitter_bi TEXT",
+    "ALTER TABLE discussion_inbox ADD COLUMN claimed_by_bi TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE discussion_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE discussion_inbox ADD COLUMN mirrored_by_bi TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE discussion_inbox ADD COLUMN mirrored_at INTEGER NOT NULL DEFAULT 0",
     # Raw User-Agent of each release download, shown in the admin list (migration 0034).
     "ALTER TABLE release_downloads ADD COLUMN ua TEXT",
     # Operator-settable flag granting a user access to the /outreach console
@@ -11068,6 +11952,107 @@ async def signup_rate_check(env, ip_bi):
     return None
 
 
+async def _catalog_logical_owners(env, repository_rows):
+    """Return public user/organization owners for physical catalog routes.
+
+    Repository bytes are published by nodes, but authoring controls should be
+    presented in terms of the user or organization that owns the work.  Both
+    relationships are already public (node ownership and organization repo
+    aliases); resolving them in bounded batches avoids an account request for
+    every option in the World composer.
+    """
+
+    rows = [
+        (record, str(owner_bi or ""))
+        for record, owner_bi in repository_rows
+        if isinstance(record, dict) and str(owner_bi or "")
+    ]
+    owner_bis = list(dict.fromkeys(owner_bi for _record, owner_bi in rows))
+    user_by_owner_bi = {}
+    for offset in range(0, len(owner_bis), 80):
+        chunk = owner_bis[offset:offset + 80]
+        placeholders = ",".join("?" for _value in chunk)
+        direct = await d1_all(
+            env,
+            "SELECT user_bi,username FROM users WHERE user_bi IN ("
+            + placeholders + ")",
+            *chunk,
+        )
+        linked = await d1_all(
+            env,
+            "SELECT n.node_bi,u.username FROM nodes n "
+            "JOIN users u ON u.user_bi=n.user_bi WHERE n.node_bi IN ("
+            + placeholders + ")",
+            *chunk,
+        )
+        for value in direct or []:
+            owner = clean_string(
+                value.get("username"), MAX_NODE_NAME).strip().lower()
+            if valid_node_name(owner):
+                user_by_owner_bi[str(value.get("user_bi") or "")] = owner
+        for value in linked or []:
+            owner = clean_string(
+                value.get("username"), MAX_NODE_NAME).strip().lower()
+            if valid_node_name(owner):
+                user_by_owner_bi[str(value.get("node_bi") or "")] = owner
+
+    organization_by_route = {}
+    routes = list(dict.fromkeys(
+        (
+            clean_string(record.get("owner"), MAX_NODE_NAME).strip().lower(),
+            clean_string(record.get("name"), MAX_REPO_SEGMENT).strip(),
+        )
+        for record, _owner_bi in rows
+    ))
+    for offset in range(0, len(routes), 40):
+        chunk = routes[offset:offset + 40]
+        where = " OR ".join(
+            "(r.node_owner=? AND r.repo=?)" for _route in chunk)
+        arguments = [
+            item for route in chunk for item in route
+        ]
+        aliases = await d1_all(
+            env,
+            "SELECT r.node_owner,r.repo,o.name FROM org_repos r "
+            "JOIN orgs o ON o.org_bi=r.org_bi WHERE " + where
+            + " ORDER BY o.name",
+            *arguments,
+        )
+        for value in aliases or []:
+            route = (
+                clean_string(
+                    value.get("node_owner"), MAX_NODE_NAME).strip().lower(),
+                clean_string(value.get("repo"), MAX_REPO_SEGMENT).strip(),
+            )
+            organization = clean_string(
+                value.get("name"), MAX_NODE_NAME).strip().lower()
+            if valid_node_name(organization):
+                organization_by_route.setdefault(route, []).append(
+                    organization)
+
+    for record, owner_bi in rows:
+        route = (
+            clean_string(record.get("owner"), MAX_NODE_NAME).strip().lower(),
+            clean_string(record.get("name"), MAX_REPO_SEGMENT).strip(),
+        )
+        logical = []
+        user_owner = user_by_owner_bi.get(owner_bi, "")
+        if user_owner:
+            logical.append({"kind": "user", "owner": user_owner})
+        for organization in organization_by_route.get(route, []):
+            if not any(
+                    value["kind"] == "organization"
+                    and value["owner"] == organization
+                    for value in logical):
+                logical.append({
+                    "kind": "organization",
+                    "owner": organization,
+                })
+        record["ownerKind"] = logical[0]["kind"] if logical else "node"
+        record["logicalOwner"] = logical[0]["owner"] if logical else ""
+        record["logicalOwners"] = logical[:20]
+
+
 async def catalog_handler(env, request):
     await ensure_schema(env)
     method = method_name(request)
@@ -11150,7 +12135,18 @@ async def catalog_handler(env, request):
             for row in live_rows or []
             if str(row.get("node_bi") or "")
         }
+        terms_rows = await d1_all(
+            env,
+            "SELECT repo_bi,category FROM repo_terms_flags WHERE active=1",
+        )
+        terms_flags = {
+            str(row.get("repo_bi") or ""): clean_string(
+                row.get("category"), 20).lower()
+            for row in terms_rows or []
+            if str(row.get("repo_bi") or "")
+        }
         repos = []
+        repository_owner_rows = []
         ssh_gateway = _ssh_gateway_settings(env)
         for r in rows:
             rec = await decrypt_row(env, r["data"])
@@ -11200,6 +12196,10 @@ async def catalog_handler(env, request):
                 rec["sharedWithMe"] = bool(
                     authed_viewer and rec["isPrivate"]
                     and rec.get("owner") != authed_viewer)
+                terms_category = terms_flags.get(str(r.get("key_bi") or ""))
+                rec["termsFlagged"] = bool(terms_category)
+                if terms_category:
+                    rec["termsCategory"] = terms_category
                 # Publish an SSH clone/push URL only when a separate gateway
                 # host and its Worker authorization token are both configured.
                 # The URL is never a claim that this HTTP Worker terminates SSH.
@@ -11222,6 +12222,8 @@ async def catalog_handler(env, request):
                         rec["privateAccessPath"] = (
                             "/api/private-replicas/" + access_id)
                 repos.append(rec)
+                repository_owner_rows.append((rec, owner_bi))
+        await _catalog_logical_owners(env, repository_owner_rows)
         # Second pass: mark each repo cloneable when its own host is offline but a
         # peer mirroring the same logical repo is online — the relay serves that
         # mirror in place through the repo's own URL (adhoc #61), so the website
@@ -11506,7 +12508,8 @@ async def catalog_handler(env, request):
                 and new_commit != prior_commit):
             try:
                 await _world_broadcast_mirror_push(
-                    env, owner, record["name"], new_commit)
+                    env, owner, record["name"], new_commit,
+                    record.get("changedFiles", []))
             except Exception:
                 pass
         payload = {
@@ -11998,10 +13001,6 @@ async def _repo_about_public(env, request, owner, repo):
             "followersList": followers_list,
             "settings": ap_settings,
         },
-        # Admin-only switches, echoed so the settings form can seed itself and
-        # round-trip an untouched save. Booleans about who gets operational
-        # mail — no address or recipient is exposed here.
-        "alerts": await _repo_alert_settings_get(env, owner, repo),
     }, cache_control="public, max-age=30")
 
 
@@ -12170,26 +13169,6 @@ async def repo_about_handler(env, request, owner, repo):
                     "_ap_purge_repo_digest_queues")
                 if callable(purge_digests):
                     await purge_digests(env, owner, repo)
-    # Per-repo operational-alert switches ride the same save (an `alerts`
-    # object, like `fediverse`). The About handler already proves the caller
-    # administers this repo's owner account, which is exactly the "org admin"
-    # gate these switches need. Absent = unchanged; unchanged writes nothing.
-    alert_settings = None
-    alerts_data = data.get("alerts")
-    if isinstance(alerts_data, dict):
-        current_alerts = await _repo_alert_settings_get(env, owner, repo)
-        alert_settings = dict(current_alerts)
-        for key in REPO_ALERT_SETTING_DEFAULTS:
-            if key in alerts_data:
-                alert_settings[key] = bool(alerts_data.get(key))
-        if alert_settings != current_alerts:
-            await d1_run(
-                env,
-                "INSERT INTO repo_alert_settings (repo_bi, data, updated_at)"
-                " VALUES (?,?,?) ON CONFLICT(repo_bi) DO UPDATE SET"
-                " data=excluded.data, updated_at=excluded.updated_at",
-                await _repo_alert_settings_bi(env, owner, repo),
-                json.dumps(alert_settings), int(Date.now()))
     if text_changed:
         # Queue the edit for the owner's desktop node, which writes it into the
         # repo's committed .forkmesh/info.json (the same file the desktop app's
@@ -12235,8 +13214,6 @@ async def repo_about_handler(env, request, owner, repo):
     }
     if ap_settings is not None:
         result["fediverse"] = {"settings": ap_settings}
-    if alert_settings is not None:
-        result["alerts"] = alert_settings
     return json_response(result)
 
 
@@ -13762,6 +14739,7 @@ async def _account_public_payload(
     }
     payload.update(social)
     payload.update(_account_profile_fields(rec))
+    payload.update(_account_world_client_fields(rec))
     if is_admin:
         admin_path = _admin_path(env)
         if admin_path:
@@ -13802,6 +14780,9 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         "status": rec.get("status", "active"),
         "avatarPng": rec.get("avatar_png", ""),
         "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
+        # Public boolean only; the email address itself never enters the
+        # directory or World. It drives the verified pin on the avatar front.
+        "emailVerified": bool(rec.get("email_verified")),
         "createdAt": rec.get("created_at", 0),
         "kind": "user",
         "nodes": _owned_nodes(rec),
@@ -14318,20 +15299,47 @@ async def _world_disconnect_manual_block(
     return max(0, min(64, int(result.get("disconnected") or 0)))
 
 
-def _world_mirror_push_signature(env, node, repo, commit):
+def _world_mirror_push_changed_files(value):
+    files = []
+    if isinstance(value, list):
+        for item in value[:16]:
+            path = clean_string(item, 160).strip().replace("\\", "/")
+            if (
+                not path
+                or path.startswith("/")
+                or path == ".."
+                or path.startswith("../")
+                or path in files
+            ):
+                continue
+            files.append(path)
+            if len(files) >= 8:
+                break
+    return files
+
+
+def _world_mirror_push_signature(env, node, repo, commit, changed_files=None):
+    files = _world_mirror_push_changed_files(changed_files)
     canonical = (
-        "forkmesh-world-mirror-push-v1\n%s\n%s\n%s"
-        % (node, repo, commit)
+        "forkmesh-world-mirror-push-v2\n%s\n%s\n%s\n%s"
+        % (node, repo, commit, "\n".join(files))
     ).encode()
     return hmac.new(
         _account_session_secret(env), canonical, "sha256").hexdigest()
 
 
-async def _world_broadcast_mirror_push(env, node, repo, commit):
+async def _world_broadcast_mirror_push(
+        env, node, repo, commit, changed_files=None):
     """Tell the live World room a mirror node's served head just advanced."""
     world_id = env.FORKMESH_WORLD.idFromName("town-square-v1")
     world_object = env.FORKMESH_WORLD.get(world_id)
-    payload = {"node": node, "repo": repo, "commit": commit}
+    files = _world_mirror_push_changed_files(changed_files)
+    payload = {
+        "node": node,
+        "repo": repo,
+        "commit": commit,
+        "changedFiles": files,
+    }
     control_request = JsRequest.new(
         "https://forkmesh.internal/api/world/mirror-push",
         to_js({
@@ -14339,7 +15347,7 @@ async def _world_broadcast_mirror_push(env, node, repo, commit):
             "headers": {
                 "content-type": "application/json",
                 "x-forkmesh-world-control": _world_mirror_push_signature(
-                    env, node, repo, commit),
+                    env, node, repo, commit, files),
             },
             "body": json.dumps(payload, separators=(",", ":")),
         }),
@@ -14462,6 +15470,174 @@ async def world_moderation_handler(env, request):
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
     )
+
+
+async def world_admin_delete_node_handler(env, request):
+    """Permanently remove one named node after an exact admin confirmation."""
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "POST"})
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response(
+            {"error": "invalid_json"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+    actor = await _authed_account_name(env, request, data)
+    if not actor or not await _is_admin(env, actor):
+        return json_response(
+            {"error": "not_admin"}, status=403,
+            cache_control="no-store, max-age=0, must-revalidate")
+    target = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    requested_target = target
+    node_id = clean_string(data.get("nodeId", ""), 120)
+    machine_name = clean_string(
+        data.get("machineName", ""), MAX_NODE_NAME).lower()
+    confirmation = clean_string(data.get("confirmation", ""), 128)
+    if not valid_node_name(target):
+        return json_response({"error": "invalid_node_name"}, status=400)
+    required = "DELETE " + requested_target
+    if confirmation != required:
+        return json_response(
+            {"error": "confirmation_mismatch",
+             "requiredConfirmation": required}, status=400)
+    if target == actor or target in ("forkmesh", "forkmesh-mainnode"):
+        await _audit_sensitive_action(
+            env, actor, "world.node_delete", "node", target, "denied",
+            {"reason": "protected_node"})
+        return json_response({"error": "protected_node"}, status=409)
+    target_bi, record = await _account_row(env, target)
+    requested_bi = target_bi
+    node_row = await d1_first(
+        env, "SELECT node_bi,name FROM nodes WHERE node_bi=?", target_bi)
+    if not record or not node_row:
+        # Public mirror catalogs distinguish an operator account name, a
+        # machine label, and a cryptographic node id. Older World panels used
+        # the machine label as if it were the account key, so deletion could
+        # fail with node_not_found even while the cabinet was visibly online.
+        # Resolve either bounded public identifier back to the canonical node
+        # row, then perform every destructive operation on that canonical key.
+        resolved = await d1_first(
+            env,
+            "SELECT node_bi,name FROM nodes "
+            "WHERE lower(name) IN (?,?) OR pubkey=? LIMIT 1",
+            requested_target, machine_name, node_id)
+        canonical = clean_string(
+            (resolved or {}).get("name", ""), MAX_NODE_NAME).lower()
+        if resolved and canonical and valid_node_name(canonical):
+            resolved_bi, resolved_record = await _account_row(env, canonical)
+            if resolved_bi == resolved.get("node_bi"):
+                target = canonical
+                target_bi = resolved_bi
+                record = resolved_record
+                node_row = resolved
+    if not node_row:
+        # A half-removed node can remain visible through its durable repository
+        # catalog or signed HTTPS endpoint after the account row is gone.
+        # Resolve that endpoint without requiring the already-missing account
+        # ciphertext, then finish the same idempotent scoped cleanup.
+        endpoint = await d1_first(
+            env,
+            "SELECT node_bi,node_name FROM mirror_https_endpoints "
+            "WHERE lower(node_name) IN (?,?) OR public_key=? LIMIT 1",
+            requested_target, machine_name, node_id)
+        endpoint_name = clean_string(
+            (endpoint or {}).get("node_name", ""), MAX_NODE_NAME).lower()
+        if endpoint and endpoint_name and valid_node_name(endpoint_name):
+            target = endpoint_name
+            target_bi = endpoint.get("node_bi") or target_bi
+            _, endpoint_record = await _account_row(env, endpoint_name)
+            record = record or endpoint_record
+            node_row = endpoint
+    if (
+        record
+        and not node_row
+        and (
+            clean_string(record.get("kind", ""), 16).lower() == "user"
+            or bool(record.get("pass_hash"))
+        )
+    ):
+        return json_response({"error": "not_a_node"}, status=409)
+    if target == actor or target in ("forkmesh", "forkmesh-mainnode"):
+        await _audit_sensitive_action(
+            env, actor, "world.node_delete", "node", target, "denied",
+            {"reason": "protected_node"})
+        return json_response({"error": "protected_node"}, status=409)
+    if record and await _is_admin(env, target):
+        await _audit_sensitive_action(
+            env, actor, "world.node_delete", "node", target, "denied",
+            {"reason": "admin_node"})
+        return json_response({"error": "protected_node"}, status=409)
+
+    owner = clean_string(
+        (record or {}).get("owner", ""), MAX_NODE_NAME).lower()
+    if owner:
+        owner_bi, owner_record = await _account_row(env, owner)
+        if owner_record:
+            owner_record["nodes"] = [
+                node for node in _owned_nodes(owner_record)
+                if str(node).lower() != target
+            ]
+            await _save_account(env, owner_bi, owner_record)
+
+    identifiers = {
+        value for value in (requested_target, machine_name, target)
+        if value and valid_node_name(value)
+    }
+    identity_bis = {
+        value for value in (requested_bi, target_bi) if value
+    }
+    # Finish every node-scoped namespace even when an earlier attempt already
+    # removed one of the primary rows. Deleting twice is intentionally safe.
+    for identity_bi in identity_bis:
+        await d1_run(
+            env, "DELETE FROM reward_node_observations WHERE node_bi=?",
+            identity_bi)
+        await d1_run(
+            env, "DELETE FROM private_mirror_routes WHERE node_bi=?",
+            identity_bi)
+        await d1_run(
+            env, "DELETE FROM mirror_https_endpoints WHERE node_bi=?",
+            identity_bi)
+    for identifier in identifiers:
+        await d1_run(
+            env, "DELETE FROM org_agent_jobs WHERE target_node=?",
+            identifier)
+        await d1_run(
+            env, "DELETE FROM org_agent_sessions WHERE target_node=?",
+            identifier)
+        await d1_run(
+            env, "DELETE FROM mirror_https_endpoints "
+            "WHERE lower(node_name)=?",
+            identifier)
+    for identity_bi in identity_bis:
+        cleanup_name = (
+            target if identity_bi == target_bi else requested_target
+        )
+        cleanup_record = (
+            record if identity_bi == target_bi and record
+            else {"name": cleanup_name, "kind": "node"}
+        )
+        await _delete_account_namespace(
+            env, identity_bi, cleanup_record)
+    await _audit_sensitive_action(
+        env, actor, "world.node_delete", "node", target, "success",
+        {
+            "owner": owner,
+            "requestedTarget": requested_target,
+            "identifiers": sorted(identifiers),
+            "idempotent": not bool(node_row),
+        })
+    return json_response(
+        {
+            "ok": True,
+            "nodeDeleted": target,
+            "identifiers": sorted(identifiers),
+            "alreadyAbsent": not bool(node_row),
+        },
+        cache_control="no-store, max-age=0, must-revalidate")
 
 
 async def _world_layout_objects(env):
@@ -19972,6 +21148,9 @@ async def org_handler(env, request, org):
             await d1_run(env, "DELETE FROM org_repos WHERE org_bi=?", org_bi)
             await d1_run(
                 env, "DELETE FROM org_team_members WHERE org_bi=?", org_bi)
+            await d1_run(
+                env, "DELETE FROM org_team_collaborators WHERE org_bi=?",
+                org_bi)
             await d1_run(env, "DELETE FROM org_teams WHERE org_bi=?", org_bi)
             await d1_run(env, "DELETE FROM org_members WHERE org_bi=?", org_bi)
             await d1_run(
@@ -20212,11 +21391,12 @@ async def org_teams_handler(env, request, org):
             return json_response({"error": "forbidden"}, status=403)
         rows = await d1_all(
             env,
-            "SELECT t.team AS team, t.permission AS permission, "
-            "COUNT(m.member_bi) AS members FROM org_teams t "
-            "LEFT JOIN org_team_members m "
-            "ON m.org_bi = t.org_bi AND m.team = t.team "
-            "WHERE t.org_bi=? GROUP BY t.team, t.permission ORDER BY t.team",
+            "SELECT t.team AS team,t.permission AS permission,"
+            "(SELECT COUNT(*) FROM org_team_members m "
+            " WHERE m.org_bi=t.org_bi AND m.team=t.team)+"
+            "(SELECT COUNT(*) FROM org_team_collaborators c "
+            " WHERE c.org_bi=t.org_bi AND c.team=t.team) AS members "
+            "FROM org_teams t WHERE t.org_bi=? ORDER BY t.team",
             org_bi)
         return json_response({"ok": True, "visibility": access["floors"],
                               "teams": [
@@ -20249,6 +21429,11 @@ async def org_teams_handler(env, request, org):
         try:
             await d1_run(
                 env, "DELETE FROM org_team_members WHERE org_bi=? AND team=?",
+                org_bi, team)
+            await d1_run(
+                env,
+                "DELETE FROM org_team_collaborators "
+                "WHERE org_bi=? AND team=?",
                 org_bi, team)
             await d1_run(
                 env, "DELETE FROM org_teams WHERE org_bi=? AND team=?",
@@ -20321,14 +21506,18 @@ async def org_team_members_handler(env, request, org, team):
             return json_response({"error": "forbidden"}, status=403)
         rows = await d1_all(
             env,
-            "SELECT name, created_at FROM org_team_members "
-            "WHERE org_bi=? AND team=? ORDER BY created_at ASC",
-            org_bi, team)
+            "SELECT name,created_at,0 AS external FROM org_team_members "
+            "WHERE org_bi=? AND team=? UNION ALL "
+            "SELECT name,created_at,1 AS external "
+            "FROM org_team_collaborators WHERE org_bi=? AND team=? "
+            "ORDER BY created_at ASC",
+            org_bi, team, org_bi, team)
         return json_response({
             "ok": True, "team": team,
             "permission": str(team_row.get("permission") or ""),
             "members": [{"name": str(r.get("name") or ""),
-                         "since": int(r.get("created_at") or 0)}
+                         "since": int(r.get("created_at") or 0),
+                         "external": int(r.get("external") or 0) == 1}
                         for r in rows or []]})
     if method not in ("POST", "DELETE"):
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -20360,6 +21549,11 @@ async def org_team_members_handler(env, request, org, team):
                 "DELETE FROM org_team_members "
                 "WHERE org_bi=? AND team=? AND member_bi=?",
                 org_bi, team, member_bi)
+            await d1_run(
+                env,
+                "DELETE FROM org_team_collaborators "
+                "WHERE org_bi=? AND team=? AND account_bi=?",
+                org_bi, team, member_bi)
         except Exception:
             await _audit_sensitive_action(
                 env, account, audit_action, "organization_team_member",
@@ -20371,14 +21565,42 @@ async def org_team_members_handler(env, request, org, team):
             org_name + "/" + team + "/" + member, "success")
         return json_response({"ok": True, "team": team, "member": member,
                               "removed": True})
-    if not await _org_role(env, org_bi, member):
-        return json_response({"error": "not_a_member"}, status=400)
+    member_role = await _org_role(env, org_bi, member)
+    external = data.get("external") is True and not member_role
+    if not member_role and not external:
+        return json_response({
+            "error": "not_a_member",
+            "hint": "Set external=true to add a limited team collaborator.",
+        }, status=400)
+    if external:
+        _, member_record = await _account_row(env, member)
+        if (
+            not member_record
+            or member_record.get("status") != "active"
+            or _account_kind(member_record) != "user"
+        ):
+            return json_response(
+                {"error": "active_user_required"}, status=400)
     try:
-        await d1_run(
-            env,
-            "INSERT OR IGNORE INTO org_team_members "
-            "(org_bi, team, member_bi, name, created_at) VALUES (?,?,?,?,?)",
-            org_bi, team, member_bi, member, int(Date.now()))
+        if external:
+            await d1_run(
+                env,
+                "INSERT OR IGNORE INTO org_team_collaborators "
+                "(org_bi,team,account_bi,name,added_by_bi,created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                org_bi, team, member_bi, member,
+                await blind_index(env, account), int(Date.now()))
+        else:
+            await d1_run(
+                env,
+                "INSERT OR IGNORE INTO org_team_members "
+                "(org_bi, team, member_bi, name, created_at) VALUES (?,?,?,?,?)",
+                org_bi, team, member_bi, member, int(Date.now()))
+            await d1_run(
+                env,
+                "DELETE FROM org_team_collaborators "
+                "WHERE org_bi=? AND team=? AND account_bi=?",
+                org_bi, team, member_bi)
     except Exception:
         await _audit_sensitive_action(
             env, account, audit_action, "organization_team_member",
@@ -20389,7 +21611,7 @@ async def org_team_members_handler(env, request, org, team):
         env, account, audit_action, "organization_team_member",
         org_name + "/" + team + "/" + member, "success")
     return json_response({"ok": True, "team": team, "member": member,
-                          "added": True})
+                          "external": external, "added": True})
 
 
 async def org_repos_handler(env, request, org):
@@ -21089,6 +22311,7 @@ async def _admin_verify_email(env, request):
 # When it's unset the sender is a no-op, so a fork without an email provider
 # still works — callers fall back to the admin verification queue.
 MAILTRAP_SEND_URL = "https://send.api.mailtrap.io/api/send"
+FORKMESH_SITE_URL = "https://forkmesh.com/"
 
 
 async def _send_email(env, to_email, subject, text, html=None,
@@ -21101,6 +22324,25 @@ async def _send_email(env, to_email, subject, text, html=None,
     sender_name = (from_name or getattr(env, "MAILTRAP_SENDER_NAME", "")
                    or "ForkMesh").strip()
     url = (getattr(env, "MAILTRAP_API_URL", "") or MAILTRAP_SEND_URL).strip()
+    text = str(text or "").rstrip()
+    if "Open ForkMesh: " + FORKMESH_SITE_URL not in text:
+        text += "\n\nOpen ForkMesh: " + FORKMESH_SITE_URL
+    if not html:
+        html = _forkmesh_email_card_html(
+            _html_escape(subject or "ForkMesh"),
+            "A message from ForkMesh.",
+            "<div class=\"fm-text\" style=\"white-space:pre-wrap;color:#24292f;"
+            "font-size:14px\">" + _html_escape(text) + "</div>",
+        )
+    elif "data-forkmesh-site-action" not in html:
+        action_html = _forkmesh_email_action_html(
+            "Open ForkMesh", FORKMESH_SITE_URL)
+        closing = "</div></div></body></html>"
+        html = (
+            html.replace(closing, action_html + closing, 1)
+            if closing in html else html + action_html
+        )
+    html = _light_email_fragment(html)
     payload = {
         "from": {"email": sender, "name": sender_name},
         "to": [{"email": to_email}],
@@ -21509,9 +22751,11 @@ FEEDBACK_EMAIL_FROM_NAME = "ForkMesh Founders"
 
 
 def _feedback_email_content(name):
+    feedback_url = (
+        "https://forkmesh.com/world/?landmark=office&feedback=1")
     subject = "How's ForkMesh treating you, %s?" % name
     text = (
-        "Hey %s,\n\n"
+        "Hey " + name + ",\n\n"
         "You joined ForkMesh yesterday — thank you for giving it a shot. "
         "We're a small team building this in the open, and honest answers "
         "from real users steer what we build next.\n\n"
@@ -21521,9 +22765,10 @@ def _feedback_email_content(name):
         "3. If we could build or fix ONE thing for you next, what would it be?\n\n"
         "Anything else on your mind — rough edges, wild ideas, dealbreakers — "
         "we want that too.\n\n"
-        "Just hit reply; this address goes straight to the founders and we "
-        "read and answer every message.\n\n"
-        "— the ForkMesh founders\n" % name)
+        "Use the Office lobby feedback kiosk:\n" + feedback_url + "\n\n"
+        "Or just hit reply; this address goes straight to the founders and "
+        "we read and answer every message.\n\n"
+        "— the ForkMesh founders\n")
     intro = (
         "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#d4d4d8;font-size:14px\">"
         "Hey <strong class=\"fm-strong\" style=\"color:#f5f5f5\">@" + _html_escape(name) +
@@ -21546,14 +22791,19 @@ def _feedback_email_content(name):
         "Anything else on your mind — rough edges, wild ideas, dealbreakers — "
         "we want that too.</p>"
         "<p class=\"fm-text\" style=\"margin:12px 0 0;color:#d4d4d8;font-size:14px\">"
-        "<strong class=\"fm-strong\" style=\"color:#f5f5f5\">Just hit reply</strong> — "
-        "this address goes straight to the founders and we read and answer "
-        "every message.</p>")
+        "Add feedback in the Office lobby kiosk, or "
+        "<strong class=\"fm-strong\" style=\"color:#f5f5f5\">just hit reply</strong> — "
+        "this address goes straight to the founders.</p>"
+        "<p style=\"margin:18px 0 0\"><a href=\"" + feedback_url + "\" "
+        "style=\"display:inline-block;border:1px solid #1a7f37;"
+        "border-radius:6px;background:#1f883d;color:#ffffff;padding:10px 15px;"
+        "text-decoration:none;font-size:14px;font-weight:800\">"
+        "Add feedback in the lobby</a></p>")
     footer_html = (
         "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">"
         "— the ForkMesh founders</p>")
-    html = _forkmesh_email_card_html("How are we doing?", intro, body_html,
-                                     footer_html)
+    html = _forkmesh_email_card_html(
+        "How are we doing?", intro, body_html, footer_html)
     return subject, text, html
 
 
@@ -23751,7 +25001,16 @@ async def accounts_handler(env, request):
                    "kind": kind,
                    "online": online,
                    "owner": rec.get("owner", ""),
-                   "nodes": _owned_nodes(rec)}
+                   "nodes": _owned_nodes(rec),
+                   # A payout address is intentionally public profile data. Qt
+                   # uses this exact web-user value for its top-bar balance
+                   # instead of a machine-local node setting.
+                   "solana": ((rec.get("solana") or "").strip()
+                              if SOLANA_RE.match(
+                                  (rec.get("solana") or "").strip())
+                              else ""),
+                   "hasPayoutAddress": bool(
+                       SOLANA_RE.match((rec.get("solana") or "").strip()))}
         # viewer=<name> lets the public-profile page show the caller's own
         # Follow/Following state. Display-only: a spoofed viewer can only see
         # a wrong button label; actual follow writes are session-token gated.
@@ -23762,6 +25021,11 @@ async def accounts_handler(env, request):
             env, rec.get("name", name), viewer)
         payload = {**payload, "social": social, **social}
         payload = {**payload, **_account_profile_fields(rec)}
+        # The account explicitly controls these three coarse World fields.
+        # Including them in this no-store/public profile lookup lets a newly
+        # arrived avatar paint its flag immediately instead of waiting for the
+        # next directory-cache cycle.
+        payload = {**payload, **_account_world_client_fields(rec)}
         if cacheable_guest:
             resp = json_response(payload, cache_seconds=60)
             await edge_cache_put(lookup_cache_key, resp)
@@ -24068,32 +25332,13 @@ async def _ap_repo_is_official_actor(env, owner, repo):
 
 
 async def _ap_prune_actor_inventory(env):
-    # Old deployments minted an instance actor and accepted remote-clone
-    # mirrors as repository actors. Reconcile the small local actor inventory
-    # on schema startup so the admin table reflects only official repos.
-    rows = await d1_all(
-        env, "SELECT actor_bi, kind, data FROM ap_actors")
-    for row in rows or []:
-        actor_bi = str(row.get("actor_bi") or "")
-        kind = str(row.get("kind") or "")
-        rec = await decrypt_row(env, row.get("data"))
-        handle = str((rec or {}).get("handle") or "").lower()
-        parsed = ap.split_handle(handle)
-        keep = (
-            kind == AP_ACTOR_REPO
-            and bool(parsed)
-            and parsed[0] != "user"
-            and await _ap_repo_is_official_actor(
-                env, parsed[1], parsed[2])
-        )
-        if keep or not actor_bi:
-            continue
-        await d1_run(
-            env, "DELETE FROM ap_followers WHERE actor_bi=?", actor_bi)
-        await d1_run(
-            env, "DELETE FROM ap_objects WHERE actor_bi=?", actor_bi)
-        await d1_run(
-            env, "DELETE FROM ap_actors WHERE actor_bi=?", actor_bi)
+    # Actor visibility is enforced by the public resolution/federation gates,
+    # not by erasing the durable social graph during schema startup. Catalog
+    # records and org aliases can be temporarily unavailable or misclassified;
+    # deleting here previously turned that transient state into permanent loss
+    # of followers, actors, signing identities, and posts. Keep this hook for
+    # callers from older deployments, but make reconciliation non-destructive.
+    return
 
 
 async def _ap_repo_federates(env, owner, repo):
@@ -25294,6 +26539,227 @@ async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
             queued = True
     if queued:
         await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
+
+
+async def world_profile_social_handler(env, request):
+    """Authenticated self-profile social controls used by the World drawer.
+
+    The follower list exposes only the same active, non-private public avatar
+    fields used elsewhere in the World. Publishing writes the Note to the
+    user's durable ActivityPub object collection before attempting delivery,
+    so a temporarily unavailable remote inbox cannot lose the update.
+    """
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            extra_headers={"allow": "POST"})
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    account_bi, account = await _account_session_record(env, request, data)
+    if not account_bi or not account:
+        return json_response({"error": "invalid_session"}, status=401)
+    name = clean_string(
+        account.get("name", ""), MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(name):
+        return json_response({"error": "invalid_session"}, status=401)
+
+    action = clean_string(data.get("action", "load"), 24).strip().lower()
+    if action == "load":
+        rows = await d1_all(
+            env,
+            "SELECT follower_name FROM profile_follows "
+            "WHERE target_bi=? ORDER BY created_at DESC LIMIT 24",
+            account_bi)
+        followers = []
+        seen = set()
+        for row in rows or []:
+            follower_name = clean_string(
+                row.get("follower_name", ""), MAX_NODE_NAME
+            ).strip().lower()
+            if not valid_node_name(follower_name) or follower_name in seen:
+                continue
+            seen.add(follower_name)
+            _, follower = await _account_row(env, follower_name)
+            if (
+                not follower
+                or follower.get("status") != "active"
+                or bool(follower.get("profile_private"))
+            ):
+                continue
+            followers.append({
+                "name": follower_name,
+                "avatarPng": follower.get("avatar_png", ""),
+                "profileUrl": "/@" + quote(follower_name),
+            })
+        actor_bi = await _ap_actor_bi(env, AP_ACTOR_USER, name)
+        remote_count_row = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM ap_followers WHERE actor_bi=?",
+            actor_bi)
+        remote_rows = await d1_all(
+            env,
+            "SELECT follower_id, follower_handle, display_name, avatar_url,"
+            " url FROM ap_followers "
+            "LEFT JOIN ap_remote_actors ON actor_id=follower_id "
+            "WHERE actor_bi=? ORDER BY created_at DESC LIMIT ?",
+            actor_bi, max(0, 24 - len(followers)))
+        for follower in remote_rows or []:
+            actor_id = str(follower.get("follower_id") or "").strip()
+            profile_url = (
+                ap.public_media_url(follower.get("url") or "") or actor_id)
+            handle = clean_string(
+                follower.get("follower_handle") or "", 120).strip()
+            label = clean_string(
+                follower.get("display_name") or handle or "Fediverse follower",
+                80).strip()
+            if not profile_url:
+                continue
+            followers.append({
+                "name": label,
+                "handle": handle,
+                "avatarUrl": ap.public_media_url(
+                    follower.get("avatar_url") or ""),
+                "profileUrl": profile_url,
+            })
+        social = await _account_social_counts(env, name)
+        return json_response({
+            "ok": True,
+            "followers": followers,
+            "followerCount": (
+                social["followers"]
+                + int((remote_count_row or {}).get("n", 0) or 0)
+            ),
+        }, cache_control="no-store")
+
+    if action != "publish":
+        return json_response({"error": "invalid_action"}, status=400)
+    if not await _ap_enabled(env):
+        return _ap_disabled_response()
+    if not await _ap_user_federates(env, name):
+        return json_response({"error": "profile_not_public"}, status=403)
+
+    text = clean_string(data.get("text", ""), 500).strip()
+    image_data = clean_string(
+        data.get("imageData", ""), ap.MAX_NOTE_IMAGE_BYTES * 2).strip()
+    alt_text = clean_string(data.get("altText", ""), 420).strip()
+    if not text and not image_data:
+        return json_response({"error": "empty_update"}, status=400)
+
+    images = []
+    if image_data:
+        _unused, images = ap.extract_body_images(
+            "![world-selfie](%s)" % image_data, max_images=1)
+        if not images:
+            return json_response({"error": "invalid_or_large_image"}, status=400)
+        images[0]["name"] = alt_text or "A selfie from ForkMesh World."
+
+    origin = _ap_origin(env, request)
+    actor = await _ap_local_actor(env, AP_ACTOR_USER, name, create=True)
+    actor_bi = actor.get("actorBi") if actor else ""
+    if not actor or not actor_bi:
+        return json_response({"error": "actor_unavailable"}, status=503)
+
+    # Keep accidental double-clicks bounded without making the composer feel
+    # sluggish. This count is over encrypted objects' public timestamps only.
+    now = int(Date.now())
+    recent = await d1_first(
+        env,
+        "SELECT COUNT(*) AS n FROM ap_objects "
+        "WHERE actor_bi=? AND published>=?",
+        actor_bi, now - 60 * 1000)
+    if int((recent or {}).get("n", 0) or 0) >= 5:
+        return json_response({"error": "publish_rate_limited"}, status=429)
+
+    actor_url = _ap_actor_url(origin, AP_ACTOR_USER, name)
+    object_uuid = _ap_uuid()
+    object_url = origin + "/ap/o/" + object_uuid
+    web_url = origin + "/@" + quote(name)
+    attachments = []
+    for index, image in enumerate(images):
+        item = ap.image_object(
+            "%s/media/%d" % (object_url, index),
+            media_type=image["mediaType"])
+        item["name"] = image.get("name", "")
+        attachments.append(item)
+    note = ap.note_doc(
+        object_url,
+        actor_url,
+        actor_url + "/followers",
+        ap.note_html_from_text(text),
+        now,
+        web_url=web_url,
+        attachments=attachments,
+    )
+    context_bi = await blind_index(
+        env, "ap-context:user-update:" + name + ":" + object_uuid)
+    await d1_run(
+        env,
+        "INSERT INTO ap_objects (object_uuid, actor_bi, context_bi, data,"
+        " published) VALUES (?,?,?,?,?)",
+        object_uuid,
+        actor_bi,
+        context_bi,
+        await encrypt_row(env, {
+            "note": note,
+            "context": {
+                "kind": "user-update",
+                "author": name,
+                "key": object_uuid,
+            },
+            "media": images,
+        }),
+        now,
+    )
+
+    followers = await d1_all(
+        env,
+        "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
+        actor_bi)
+    body_str = json.dumps(ap.create_activity(note))
+    out_data = await encrypt_row(env, {
+        "body": body_str,
+        "actorKind": AP_ACTOR_USER,
+        "actorHandle": name,
+        "actorUrl": actor_url,
+    })
+    queued = 0
+    seen_inboxes = set()
+    for follower in followers or []:
+        inbox = (
+            str(follower.get("shared_inbox") or "").strip()
+            or str(follower.get("inbox") or "").strip()
+        )
+        if not inbox or inbox in seen_inboxes:
+            continue
+        seen_inboxes.add(inbox)
+        await d1_run(
+            env,
+            "INSERT INTO ap_outbox (inbox, data, attempts, next_ts, created_at)"
+            " VALUES (?,?,0,?,?)",
+            inbox, out_data, now, now)
+        queued += 1
+
+    await _audit_sensitive_action(
+        env,
+        name,
+        "world.activitypub.publish",
+        "activitypub_note",
+        object_uuid,
+        details={
+            "hasImage": bool(images),
+            "queuedDeliveries": queued,
+        },
+    )
+    if queued:
+        await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
+    return json_response({
+        "ok": True,
+        "published": True,
+        "objectUrl": object_url,
+        "queuedDeliveries": queued,
+    }, status=201, cache_control="no-store")
 
 
 # --- Inbound: the shared/actor inbox --------------------------------------------
@@ -27475,22 +28941,53 @@ async def send_general_chat_digests(env):
         await _save_account(env, name_bi, rec)
 
 
-def _forkmesh_email_card_html(heading, intro_html, body_html, footer_html=""):
-    # Inline light colors are the reliable fallback for older mail clients;
-    # clients that honor the native setting apply the dark override below.
+def _light_email_fragment(fragment):
+    """Normalize legacy dark inline fragments into one high-contrast theme."""
+    rendered = str(fragment or "")
+    for old, new in (
+        ("#090909", "#f6f8fa"),
+        ("#0f0f11", "#f6f8fa"),
+        ("#141416", "#ffffff"),
+        ("#313134", "#d0d7de"),
+        ("#f5f5f5", "#24292f"),
+        ("#d4d4d8", "#24292f"),
+        ("#a3a3a3", "#57606a"),
+        ("#8a8a93", "#57606a"),
+        ("#4ade80", "#1f883d"),
+        ("#052e16", "#ffffff"),
+    ):
+        rendered = rendered.replace(old, new)
+    return rendered
+
+
+def _forkmesh_email_action_html(label, url):
+    return (
+        "<p data-forkmesh-site-action style=\"margin:22px 0 0\">"
+        "<a href=\"" + _html_escape(url or FORKMESH_SITE_URL) + "\" "
+        "style=\"display:inline-block;border:1px solid #1a7f37;"
+        "border-radius:6px;background:#1f883d;color:#ffffff;"
+        "padding:10px 15px;text-decoration:none;font-size:14px;"
+        "font-weight:800\">" + _html_escape(label or "Open ForkMesh") +
+        "</a></p>"
+    )
+
+
+def _forkmesh_email_card_html(
+        heading, intro_html, body_html, footer_html="",
+        action_label="Open ForkMesh",
+        action_url="https://forkmesh.com/"):
+    # One explicit light palette avoids the unreadable hybrid produced when an
+    # email client honors only some dark-mode declarations or inline colors.
+    intro_html = _light_email_fragment(intro_html)
+    body_html = _light_email_fragment(body_html)
+    footer_html = _light_email_fragment(footer_html)
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        "<meta name=\"color-scheme\" content=\"light dark\">"
-        "<meta name=\"supported-color-schemes\" content=\"light dark\">"
-        "<style>:root{color-scheme:light dark;supported-color-schemes:light dark}"
-        "@media (prefers-color-scheme:dark){body,.fm-bg{background:#090909!important;"
-        "color:#f5f5f5!important}.fm-card{background:#141416!important;"
-        "border-color:#313134!important}.fm-h1,.fm-strong,.fm-item-title{"
-        "color:#f5f5f5!important}.fm-text,.fm-item-body{color:#d4d4d8!important}"
-        ".fm-brand,.fm-muted{color:#a3a3a3!important}.fm-item{background:#0f0f11"
-        "!important;border-color:#313134!important}.fm-link{color:#4ade80!important}}"
-        "</style>"
+        "<meta name=\"color-scheme\" content=\"light\">"
+        "<meta name=\"supported-color-schemes\" content=\"light\">"
+        "<style>:root{color-scheme:light;supported-color-schemes:light}"
+        "a{color:#0969da}</style>"
         "</head>"
         "<body style=\"margin:0;padding:0;background:#f4f4f5\">"
         "<div class=\"fm-bg\" style=\"margin:0;padding:28px 16px;background:#f4f4f5;"
@@ -27505,6 +29002,7 @@ def _forkmesh_email_card_html(heading, intro_html, body_html, footer_html=""):
         "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#3f3f46;font-size:15px\">" +
         intro_html + "</p>" + body_html +
         (footer_html if footer_html else "") +
+        _forkmesh_email_action_html(action_label, action_url) +
         "</div></div></body></html>")
 
 
@@ -29135,6 +30633,56 @@ async def _materialize_issue_inbox_on_mirror(
     return count
 
 
+async def _claim_collaboration_inbox_on_mirror(
+        env, table, repo_bi, signing_key):
+    """Lease unmaterialized PR/discussion rows to one approved mirror."""
+    if table not in ("pull_inbox", "discussion_inbox") or not signing_key:
+        return ""
+    claimant_bi = await blind_index(
+        env, "collaboration-inbox-claim:" + table + ":" + signing_key)
+    now = int(Date.now())
+    await d1_run(
+        env,
+        "UPDATE %s SET claimed_by_bi=?, claim_expires_at=? "
+        "WHERE repo_bi=? AND mirrored_at=0 AND "
+        "(claimed_by_bi='' OR claim_expires_at<=? OR claimed_by_bi=?)" % table,
+        claimant_bi, now + ISSUE_INBOX_CLAIM_TTL_MS, repo_bi, now,
+        claimant_bi,
+    )
+    return claimant_bi
+
+
+async def _materialize_collaboration_inbox_on_mirror(
+        env, request, table, repo_bi, claimant_bi, mirror_node):
+    """Mark exact PR/discussion rows browsable without consuming source sync."""
+    if table not in ("pull_inbox", "discussion_inbox"):
+        return 0
+    ids = _drain_ids_from_request(request)
+    if not ids or not claimant_bi or not mirror_node:
+        return 0
+    marks = ",".join("?" for _ in ids)
+    mirror_bi = await blind_index(
+        env, "collaboration-mirror:" + table + ":" + mirror_node)
+    row = await d1_first(
+        env,
+        "SELECT COUNT(*) AS c FROM %s WHERE repo_bi=? "
+        "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0"
+        % (table, marks),
+        repo_bi, *ids, claimant_bi,
+    )
+    count = int((row or {}).get("c") or 0)
+    if count:
+        await d1_run(
+            env,
+            "UPDATE %s SET mirrored_by_bi=?,mirrored_at=?,"
+            "claimed_by_bi='',claim_expires_at=0 WHERE repo_bi=? "
+            "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0"
+            % (table, marks),
+            mirror_bi, int(Date.now()), repo_bi, *ids, claimant_bi,
+        )
+    return count
+
+
 async def _drain_issue_inbox(env, request, repo_bi, claimant_bi=""):
     """Ack (delete) the exact issue-inbox rows named by ?ids=, returning how many
     were removed, and record the drain in inbox_drain_log. Rows the node did not
@@ -29463,6 +31011,7 @@ async def pulls_handler(env, request, owner, repo):
                                      repo_web_href(owner, repo))
             await subscribe_thread(env, owner, repo, "pull", number, actor)
             await notify_repo_host(env, owner, repo, "pulls")
+            await notify_repo_mirrors(env, owner, repo, "pulls")
             if event.get("type") in ("comment", "review"):
                 await _best_effort_inbox_side_effect(_ap_publish_repo_event(
                     env, request, owner, repo, "pull", event.get("type"),
@@ -29521,6 +31070,7 @@ async def pulls_handler(env, request, owner, repo):
         await notify_mentions(env, owner, repo, actor, title, description,
                               repo_web_href(owner, repo), "pull")
         await notify_repo_host(env, owner, repo, "pulls")
+        await notify_repo_mirrors(env, owner, repo, "pulls")
         # Badge (adhoc #44): render the PR's visual fingerprint from the
         # signed patch and attach it to the federated note as its lead image.
         # Best-effort — a badge failure must never block the submission.
@@ -29543,18 +31093,68 @@ async def pulls_handler(env, request, owner, repo):
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
-        if not await _authorize_repo_inbox_owner(
-                env, request, owner, repo):
-            return json_response({"error": "unauthorized"}, status=401)
-        rows = await d1_all(
-            env, "SELECT data FROM pull_inbox WHERE repo_bi=? ORDER BY id ASC",
-            repo_bi,
-        )
-        pending = [rec for rec in
-                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
-        return json_response({"ok": True, "pending": pending})
+        mirror_intake = (
+            parse_qs(urlparse(request.url).query).get("mirror", [""])[0]
+            == "1")
+        mirror_node = ""
+        if mirror_intake:
+            signing_key, mirror_node = (
+                await _authorized_mirror_issue_signing_key(
+                    env, request, owner, repo))
+            claimant_bi = await _claim_collaboration_inbox_on_mirror(
+                env, "pull_inbox", repo_bi, signing_key)
+            if not claimant_bi:
+                return json_response({"error": "unauthorized"}, status=401)
+            rows = await d1_all(
+                env,
+                "SELECT id,data FROM pull_inbox WHERE repo_bi=? "
+                "AND claimed_by_bi=? AND mirrored_at=0 ORDER BY id ASC",
+                repo_bi, claimant_bi,
+            )
+        else:
+            if not await _authorize_repo_inbox_owner(
+                    env, request, owner, repo):
+                return json_response({"error": "unauthorized"}, status=401)
+            rows = await d1_all(
+                env,
+                "SELECT id,data FROM pull_inbox WHERE repo_bi=? ORDER BY id ASC",
+                repo_bi,
+            )
+        pending = []
+        for row in rows:
+            rec = await decrypt_row(env, row["data"])
+            if rec:
+                rec["id"] = row.get("id")
+                pending.append(rec)
+        return json_response({
+            "ok": True,
+            "pending": pending,
+            "mirrorIntake": mirror_intake,
+            "mirror": mirror_node,
+        })
 
     if method == "DELETE":
+        mirror_intake = (
+            parse_qs(urlparse(request.url).query).get("mirror", [""])[0]
+            == "1")
+        if mirror_intake:
+            signing_key, mirror_node = (
+                await _authorized_mirror_issue_signing_key(
+                    env, request, owner, repo))
+            claimant_bi = await blind_index(
+                env, "collaboration-inbox-claim:pull_inbox:" + signing_key
+            ) if signing_key else ""
+            if not claimant_bi:
+                return json_response({"error": "unauthorized"}, status=401)
+            materialized = await _materialize_collaboration_inbox_on_mirror(
+                env, request, "pull_inbox", repo_bi, claimant_bi,
+                mirror_node)
+            return json_response({
+                "ok": True,
+                "drained": 0,
+                "materialized": materialized,
+                "retainedForSource": True,
+            })
         if not await _authorize_repo_inbox_owner(
                 env, request, owner, repo):
             return json_response({"error": "unauthorized"}, status=401)
@@ -29681,6 +31281,7 @@ async def discussions_handler(env, request, owner, repo):
         await notify_mentions(env, owner, repo, actor, title, event.get("body", ""),
                               repo_web_href(owner, repo), "discussion", number=number)
         await notify_repo_host(env, owner, repo, "discussions")
+        await notify_repo_mirrors(env, owner, repo, "discussions")
         if event.get("type") in ("open", "comment"):
             await _best_effort_inbox_side_effect(_ap_publish_repo_event(
                 env, request, owner, repo, "discussion", event.get("type"),
@@ -29689,18 +31290,73 @@ async def discussions_handler(env, request, owner, repo):
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
-        if not await _authorize_owner(env, request, owner):
-            return json_response({"error": "unauthorized"}, status=401)
-        rows = await d1_all(
-            env, "SELECT data FROM discussion_inbox WHERE repo_bi=? ORDER BY id ASC",
-            repo_bi,
-        )
-        pending = [rec for rec in
-                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
-        return json_response({"ok": True, "pending": pending})
+        mirror_intake = (
+            parse_qs(urlparse(request.url).query).get("mirror", [""])[0]
+            == "1")
+        mirror_node = ""
+        if mirror_intake:
+            signing_key, mirror_node = (
+                await _authorized_mirror_issue_signing_key(
+                    env, request, owner, repo))
+            claimant_bi = await _claim_collaboration_inbox_on_mirror(
+                env, "discussion_inbox", repo_bi, signing_key)
+            if not claimant_bi:
+                return json_response({"error": "unauthorized"}, status=401)
+            rows = await d1_all(
+                env,
+                "SELECT id,data FROM discussion_inbox WHERE repo_bi=? "
+                "AND claimed_by_bi=? AND mirrored_at=0 ORDER BY id ASC",
+                repo_bi, claimant_bi,
+            )
+        else:
+            signing_key = await _authorized_repo_inbox_signing_key(
+                env, request, owner, repo)
+            if not signing_key:
+                return json_response({"error": "unauthorized"}, status=401)
+            rows = await d1_all(
+                env,
+                "SELECT id,data FROM discussion_inbox "
+                "WHERE repo_bi=? ORDER BY id ASC",
+                repo_bi,
+            )
+        pending = []
+        for row in rows:
+            rec = await decrypt_row(env, row["data"])
+            if rec:
+                rec["id"] = row.get("id")
+                pending.append(rec)
+        return json_response({
+            "ok": True,
+            "pending": pending,
+            "mirrorIntake": mirror_intake,
+            "mirror": mirror_node,
+        })
 
     if method == "DELETE":
-        if not await _authorize_owner(env, request, owner):
+        mirror_intake = (
+            parse_qs(urlparse(request.url).query).get("mirror", [""])[0]
+            == "1")
+        if mirror_intake:
+            signing_key, mirror_node = (
+                await _authorized_mirror_issue_signing_key(
+                    env, request, owner, repo))
+            claimant_bi = await blind_index(
+                env,
+                "collaboration-inbox-claim:discussion_inbox:" + signing_key,
+            ) if signing_key else ""
+            if not claimant_bi:
+                return json_response({"error": "unauthorized"}, status=401)
+            materialized = await _materialize_collaboration_inbox_on_mirror(
+                env, request, "discussion_inbox", repo_bi, claimant_bi,
+                mirror_node)
+            return json_response({
+                "ok": True,
+                "drained": 0,
+                "materialized": materialized,
+                "retainedForSource": True,
+            })
+        if not await _authorize_repo_inbox_signing_key(
+                env, request, owner, repo):
             return json_response({"error": "unauthorized"}, status=401)
         await d1_run(env, "DELETE FROM discussion_inbox WHERE repo_bi=?", repo_bi)
         return json_response({"ok": True})
@@ -29729,8 +31385,10 @@ async def repo_pending_counts_handler(env, request, owner, repo):
         env,
         "SELECT 'issues' AS k, COUNT(*) AS c FROM issue_inbox "
         "WHERE repo_bi=? AND mirrored_at=0 "
-        "UNION ALL SELECT 'pulls', COUNT(*) FROM pull_inbox WHERE repo_bi=? "
-        "UNION ALL SELECT 'discussions', COUNT(*) FROM discussion_inbox WHERE repo_bi=? "
+        "UNION ALL SELECT 'pulls', COUNT(*) FROM pull_inbox "
+        "WHERE repo_bi=? AND mirrored_at=0 "
+        "UNION ALL SELECT 'discussions', COUNT(*) FROM discussion_inbox "
+        "WHERE repo_bi=? AND mirrored_at=0 "
         "UNION ALL SELECT 'commits', COUNT(*) FROM commit_inbox WHERE repo_bi=?",
         repo_bi, repo_bi, repo_bi, repo_bi,
     )
@@ -30747,6 +32405,305 @@ async def agents_ack_handler(env, request, owner, repo):
     return json_response({"ok": True, "acknowledged": len(sealed_ids)})
 
 
+# --- Organization bot credentials ------------------------------------------
+
+ORG_BOT_TOKEN_PROVIDERS = ("codex", "claude-code")
+ORG_BOT_TOKEN_SCOPES = {
+    "world.presence": "Appear as an identified bot in the World",
+    "world.chat.write": "Publish bot updates to permitted World chat",
+    "world.interact": "Move and use non-administrative World interactions",
+    "organization.tasks.read": "Read organization tasks assigned to the bot",
+    "organization.tasks.write": "Create and update organization tasks",
+    "repository.contents.read": "Read linked repository content",
+    "repository.issues.write": "Create and update linked repository issues",
+    "repository.pulls.review": "Inspect and review pull requests",
+    "agents.sessions.run": "Claim and run scoped Codex or Claude sessions",
+    "local.connect": "Link this credential to an attended local computer",
+}
+ORG_BOT_DEFAULT_SCOPES = tuple(ORG_BOT_TOKEN_SCOPES.keys())
+ORG_BOT_TOKEN_RE = re.compile(
+    r"^fmbot_([0-9a-f]{32})_([A-Za-z0-9_-]{43})$")
+ORG_BOT_TOKEN_MAX_ACTIVE = 32
+
+
+def _new_org_bot_token():
+    token_id = _ap_uuid().replace("-", "")
+    raw = bytes(js_crypto.getRandomValues(Uint8Array.new(32)).to_py())
+    secret = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    return token_id, "fmbot_%s_%s" % (token_id, secret)
+
+
+def _org_bot_scopes(value, default=False):
+    supplied = (
+        list(ORG_BOT_DEFAULT_SCOPES)
+        if default and value is None
+        else value
+    )
+    if not isinstance(supplied, list):
+        return None
+    scopes = []
+    for item in supplied:
+        scope = clean_string(item, 64).strip().lower()
+        if scope not in ORG_BOT_TOKEN_SCOPES:
+            return None
+        if scope not in scopes:
+            scopes.append(scope)
+    return scopes
+
+
+async def _org_bot_token_context(env, request, touch=False):
+    header = str(request.headers.get("authorization") or "").strip()
+    if not header.lower().startswith("bearer "):
+        return None
+    token = header[7:].strip()
+    match = ORG_BOT_TOKEN_RE.fullmatch(token)
+    if not match:
+        return None
+    row = await d1_first(
+        env,
+        "SELECT t.token_id,t.org_bi,t.provider,t.data,t.created_at,"
+        "t.last_used_at,t.expires_at,t.revoked_at,o.name AS org_name "
+        "FROM org_bot_tokens t JOIN orgs o ON o.org_bi=t.org_bi "
+        "WHERE t.secret_bi=?",
+        await blind_index(env, "org-bot-token:" + token),
+    )
+    now = int(Date.now())
+    if (
+        not row
+        or str(row.get("token_id") or "") != match.group(1)
+        or int(row.get("revoked_at") or 0) > 0
+        or (
+            int(row.get("expires_at") or 0) > 0
+            and int(row.get("expires_at") or 0) <= now
+        )
+    ):
+        return None
+    record = await decrypt_row(env, row.get("data"))
+    if not isinstance(record, dict):
+        return None
+    scopes = _org_bot_scopes(record.get("scopes"))
+    if scopes is None:
+        return None
+    context = {
+        "tokenId": str(row.get("token_id") or ""),
+        "orgBi": str(row.get("org_bi") or ""),
+        "org": str(row.get("org_name") or ""),
+        "provider": str(row.get("provider") or ""),
+        "label": clean_string(record.get("label"), 80),
+        "deviceName": clean_string(record.get("deviceName"), 80),
+        "linkedAt": int(record.get("linkedAt") or 0),
+        "scopes": scopes,
+        "record": record,
+        "createdAt": int(row.get("created_at") or 0),
+        "expiresAt": int(row.get("expires_at") or 0),
+    }
+    if touch and now - int(row.get("last_used_at") or 0) >= 60_000:
+        await d1_run(
+            env,
+            "UPDATE org_bot_tokens SET last_used_at=? "
+            "WHERE token_id=? AND revoked_at=0",
+            now, context["tokenId"],
+        )
+    return context
+
+
+async def org_bot_tokens_handler(env, request, org):
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST", "DELETE"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    data = {}
+    if method != "GET":
+        if not _request_same_origin(request):
+            return json_response({"error": "origin_not_allowed"}, status=403)
+        try:
+            data = await bounded_json_request(request)
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+    org_bi, org_row = await _org_row(env, org)
+    if not org_row:
+        return json_response({"error": "not_found"}, status=404)
+    account_bi, account = await _account_session_record(env, request, data)
+    actor = clean_string(
+        (account or {}).get("name"), MAX_NODE_NAME).strip().lower()
+    if not account_bi or not actor:
+        return json_response({"error": "invalid_session"}, status=401)
+    if await _org_role(env, org_bi, actor) not in ("owner", "admin"):
+        return json_response({"error": "forbidden"}, status=403)
+    org_name = str(org_row.get("name") or org)
+
+    if method == "GET":
+        rows = await d1_all(
+            env,
+            "SELECT token_id,provider,data,created_at,last_used_at,expires_at,"
+            "revoked_at FROM org_bot_tokens WHERE org_bi=? "
+            "ORDER BY created_at DESC LIMIT 64",
+            org_bi,
+        )
+        tokens = []
+        for row in rows or []:
+            record = await decrypt_row(env, row.get("data"))
+            if not isinstance(record, dict):
+                continue
+            tokens.append({
+                "id": str(row.get("token_id") or ""),
+                "provider": str(row.get("provider") or ""),
+                "label": clean_string(record.get("label"), 80),
+                "deviceName": clean_string(record.get("deviceName"), 80),
+                "linkedAt": int(record.get("linkedAt") or 0),
+                "scopes": _org_bot_scopes(record.get("scopes")) or [],
+                "createdBy": clean_string(record.get("createdBy"), MAX_NODE_NAME),
+                "createdAt": int(row.get("created_at") or 0),
+                "lastUsedAt": int(row.get("last_used_at") or 0),
+                "expiresAt": int(row.get("expires_at") or 0),
+                "revokedAt": int(row.get("revoked_at") or 0),
+            })
+        return json_response({
+            "ok": True,
+            "organization": org_name,
+            "permissions": [
+                {"scope": scope, "description": description, "default": True}
+                for scope, description in ORG_BOT_TOKEN_SCOPES.items()
+            ],
+            "tokens": tokens,
+            "plaintextRecovery": False,
+        }, cache_control="no-store")
+
+    if method == "DELETE":
+        token_id = clean_string(data.get("tokenId"), 32).lower()
+        if not re.fullmatch(r"[0-9a-f]{32}", token_id):
+            return json_response({"error": "invalid_token_id"}, status=400)
+        existing = await d1_first(
+            env,
+            "SELECT 1 AS one FROM org_bot_tokens "
+            "WHERE token_id=? AND org_bi=? AND revoked_at=0",
+            token_id, org_bi,
+        )
+        changed = bool(existing)
+        await d1_run(
+            env,
+            "UPDATE org_bot_tokens SET revoked_at=? "
+            "WHERE token_id=? AND org_bi=? AND revoked_at=0",
+            int(Date.now()), token_id, org_bi,
+        )
+        await _audit_sensitive_action(
+            env, actor, "organization.bot_token_revoke",
+            "organization_bot_token", org_name + "/" + token_id,
+            "success", {"changed": changed})
+        return json_response({
+            "ok": True,
+            "tokenId": token_id,
+            "revoked": changed,
+        }, cache_control="no-store")
+
+    provider = clean_string(data.get("provider"), 24).lower()
+    if provider not in ORG_BOT_TOKEN_PROVIDERS:
+        return json_response({"error": "invalid_provider"}, status=400)
+    label = clean_string(data.get("label"), 80).strip()
+    if not label:
+        label = "Codex bot" if provider == "codex" else "Claude bot"
+    scopes = _org_bot_scopes(data.get("scopes"), default=True)
+    if scopes is None or not scopes:
+        return json_response({"error": "invalid_bot_permissions"}, status=400)
+    count = await d1_first(
+        env,
+        "SELECT COUNT(*) AS n FROM org_bot_tokens "
+        "WHERE org_bi=? AND revoked_at=0 AND (expires_at=0 OR expires_at>?)",
+        org_bi, int(Date.now()),
+    )
+    if int((count or {}).get("n") or 0) >= ORG_BOT_TOKEN_MAX_ACTIVE:
+        return json_response({"error": "too_many_bot_tokens"}, status=429)
+    try:
+        expires_days = int(data.get("expiresDays") or 90)
+    except (TypeError, ValueError):
+        expires_days = 90
+    if expires_days < 1 or expires_days > 365:
+        return json_response({"error": "invalid_expiration"}, status=400)
+    now = int(Date.now())
+    expires_at = now + expires_days * 24 * 60 * 60 * 1000
+    token_id, token = _new_org_bot_token()
+    record = {
+        "label": label,
+        "scopes": scopes,
+        "createdBy": actor,
+        "deviceName": "",
+        "linkedAt": 0,
+    }
+    await d1_run(
+        env,
+        "INSERT INTO org_bot_tokens "
+        "(token_id,org_bi,secret_bi,provider,data,created_by_bi,created_at,"
+        "last_used_at,expires_at,revoked_at) VALUES (?,?,?,?,?,?,?,0,?,0)",
+        token_id, org_bi,
+        await blind_index(env, "org-bot-token:" + token),
+        provider, await encrypt_row(env, record), str(account_bi), now,
+        expires_at,
+    )
+    await _audit_sensitive_action(
+        env, actor, "organization.bot_token_create",
+        "organization_bot_token", org_name + "/" + token_id, "success",
+        {"provider": provider, "scopes": scopes, "expiresAt": expires_at})
+    return json_response({
+        "ok": True,
+        "token": token,
+        "tokenId": token_id,
+        "provider": provider,
+        "label": label,
+        "scopes": scopes,
+        "expiresAt": expires_at,
+        "shownOnce": True,
+    }, status=201, cache_control="no-store")
+
+
+async def bot_session_handler(env, request):
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    context = await _org_bot_token_context(env, request, touch=True)
+    if not context:
+        return json_response({"error": "invalid_bot_token"}, status=401)
+    if method == "POST":
+        try:
+            data = await bounded_json_request(request)
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        if "local.connect" not in context["scopes"]:
+            return json_response({"error": "permission_denied"}, status=403)
+        device_name = clean_string(data.get("deviceName"), 80).strip()
+        if not device_name:
+            return json_response({"error": "device_name_required"}, status=400)
+        now = int(Date.now())
+        context["record"]["deviceName"] = device_name
+        context["record"]["linkedAt"] = now
+        await d1_run(
+            env,
+            "UPDATE org_bot_tokens SET data=?,last_used_at=? "
+            "WHERE token_id=? AND revoked_at=0",
+            await encrypt_row(env, context["record"]), now,
+            context["tokenId"],
+        )
+        context["deviceName"] = device_name
+        context["linkedAt"] = now
+        await _audit_sensitive_action(
+            env, context["provider"],
+            "organization.bot_token_link_local",
+            "organization_bot_token",
+            context["org"] + "/" + context["tokenId"], "success",
+            {"deviceName": device_name})
+    return json_response({
+        "ok": True,
+        "tokenId": context["tokenId"],
+        "organization": context["org"],
+        "provider": context["provider"],
+        "label": context["label"],
+        "deviceName": context["deviceName"],
+        "linkedAt": context["linkedAt"],
+        "scopes": context["scopes"],
+        "expiresAt": context["expiresAt"],
+    }, cache_control="no-store")
+
+
 # --- Organization-scoped Claude/Codex bots ---------------------------------
 #
 # This is intentionally NOT an authorization shortcut into repo_agents. Those
@@ -30829,24 +32786,77 @@ async def _org_agent_member_context(env, request, org, repo, data=None):
     }, None
 
 
-async def _org_agent_target_mirror(env, context, preferred_node=""):
-    mirror_context = await _https_mirror_public_context(
-        env, context["nodeOwner"], context["repo"])
-    if not mirror_context:
+async def _org_agent_target_mirror(
+    env, context, provider, preferred_node="",
+):
+    now = int(Date.now())
+    rows = await _decrypted_public_catalog(env, now)
+    records = [
+        row.get("data") or {}
+        for row in rows or []
+        if not row.get("is_private")
+    ]
+    target = next((
+        record for record in records
+        if (
+            str(record.get("owner") or "").strip().lower()
+            == context["nodeOwner"].lower()
+            and str(record.get("name") or "").strip().lower()
+            == context["repo"].lower()
+        )
+    ), None)
+    if not target:
         return ""
-    candidates = await _https_mirror_candidates(env, mirror_context, "")
-    source = context["nodeOwner"].lower()
+    # An attended desktop is a separate trust class from a headless mirror.
+    # Only a platform administrator may route a web-created task to it, and
+    # only when the source account/node is theirs, the desktop signed the exact
+    # provider capability, and its short publication lease is still fresh.
+    # The Qt client still applies the mandatory tool-free Haiku preflight after
+    # leasing the job, so this does not turn administrator status into code
+    # execution authority by itself.
+    source_node = context["nodeOwner"].lower()
+    source_providers = {
+        str(value or "").strip().lower()
+        for value in (
+            target.get("agentProviders")
+            if isinstance(target.get("agentProviders"), list)
+            else []
+        )
+    }
+    try:
+        source_seen_at = int(
+            target.get("updatedAt") or target.get("lastSync") or 0)
+    except (TypeError, ValueError):
+        source_seen_at = 0
+    desktop_eligible = bool(
+        str(target.get("runtimeMode") or "").strip().lower() == "desktop"
+        and provider in source_providers
+        and source_seen_at >= now - 10 * 60 * 1000
+        and await _is_admin(env, context["actor"])
+        and await _account_owns_node(
+            env, context["actor"], source_node)
+    )
+    eligible = agent_provider_mirror_candidates(
+        records,
+        target,
+        context["nodeOwner"],
+        provider,
+        now,
+        10 * 60 * 1000,
+    )
     preferred = clean_string(
         preferred_node, MAX_NODE_NAME).strip().lower()
-    eligible = []
-    for candidate in candidates or []:
-        node = clean_string(
-            candidate.get("node"), MAX_NODE_NAME).strip().lower()
-        if valid_node_name(node) and node != source:
-            eligible.append(node)
     if preferred:
-        return preferred if preferred in eligible else ""
-    if eligible:
+        if desktop_eligible and preferred == source_node:
+            return source_node
+        return (
+            preferred
+            if valid_node_name(preferred) and preferred in eligible
+            else ""
+        )
+    if desktop_eligible:
+        return source_node
+    if eligible and valid_node_name(eligible[0]):
         return eligible[0]
     # A source node is not described as a headless mirror. Fail closed rather
     # than silently running an org member's prompt on a different trust class.
@@ -31090,10 +33100,10 @@ async def org_agent_bots_handler(env, request, org, repo):
     if preferred_node and not valid_node_name(preferred_node):
         return json_response({"error": "invalid_target_node"}, status=400)
     target_node = await _org_agent_target_mirror(
-        env, context, preferred_node)
+        env, context, provider, preferred_node)
     if not target_node:
         return json_response(
-            {"error": "no_eligible_headless_mirror"}, status=503,
+            {"error": "no_eligible_agent_node"}, status=503,
             extra_headers=EXPECTED_DEGRADED_HEADERS)
     now = int(Date.now())
     session_id = _ap_uuid()
@@ -31434,9 +33444,42 @@ async def repo_org_agent_job_result_handler(
         "running" if keep_running else "done", now, int(job_id), lease_id,
     )
     task_key = clean_string(session.get("taskKey"), 96)
+    private_task_match = re.fullmatch(r"task:([a-f0-9]{32})", task_key)
+    if private_task_match and run_status == "completed":
+        private_task_id = private_task_match.group(1)
+        private_task_row = await d1_first(
+            env,
+            "SELECT data FROM organization_tasks "
+            "WHERE org_bi=? AND task_id=? "
+            "AND assignee_kind IN ('claude','codex')",
+            row["org_bi"], private_task_id,
+        )
+        private_task_data = (
+            await decrypt_row(env, private_task_row.get("data"))
+            if private_task_row else None
+        )
+        if isinstance(private_task_data, dict):
+            if not clean_string(
+                    private_task_data.get("howToTest"), 720).strip():
+                private_task_data["howToTest"] = (
+                    "Open the completed feature and follow its normal user "
+                    "flow. Confirm the requested behavior works, existing "
+                    "behavior did not regress, and no console or network "
+                    "error appears."
+                )
+            await d1_run(
+                env,
+                "UPDATE organization_tasks SET status='idle',completed_at=?,"
+                "destination='qa',qa_status='unknown',qa_reviewer_bi='',"
+                "qa_reviewed_at=0,qa_requested_at=?,data=?,updated_at=? "
+                "WHERE org_bi=? AND task_id=?",
+                now, now, await encrypt_row(env, private_task_data), now,
+                row["org_bi"], private_task_id,
+            )
     if (
         str(row.get("provider") or "") == "codex"
         and run_status == "completed"
+        and private_task_match is None
         and re.fullmatch(
             r"(?:task:[a-z0-9-]{1,48}|"
             r"issue:[a-z0-9-]{1,40}/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})",
@@ -31913,6 +33956,195 @@ async def _write_error_log(env, status, method, path, message, ray=""):
         pass
 
 
+def _sanitize_client_error_text(value, maximum):
+    """Keep debugging shape while stripping URLs, routes, ids and secrets."""
+    text = "".join(
+        character if character >= " " and character != "\x7f" else " "
+        for character in str(value or "")
+    )
+    text = re.sub(
+        r"\b(?:authorization|bearer|password|passwd|secret|token|"
+        r"api[_-]?key)\b\s*[:=]?\s*[^\s,;]+",
+        "[redacted-secret]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+        "[redacted-email]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\b[A-Za-z0-9_-]{32,}\b", "[redacted-id]", text)
+    text = re.sub(r"\bhttps?://[^\s)]+", "[redacted-url]", text)
+    text = re.sub(
+        r"/(?:[A-Za-z0-9._~%-]+/)+[A-Za-z0-9._~%-]+"
+        r"(?:[?#][^\s]*)?",
+        "/[redacted-path]",
+        text,
+    )
+    return " ".join(text.split()).strip()[:maximum]
+
+
+def _client_error_fields(payload):
+    if not isinstance(payload, dict):
+        return None
+    surface = str(payload.get("surface") or "").strip().lower()
+    kind = str(payload.get("kind") or "").strip().lower()
+    if surface not in CLIENT_ERROR_SURFACES or kind not in CLIENT_ERROR_KINDS:
+        return None
+    message = _sanitize_client_error_text(payload.get("message"), 500)
+    if not message:
+        message = "Unspecified browser exception"
+    stack = _sanitize_client_error_text(payload.get("stack"), 700)
+    source_value = re.split(
+        r"[?#]", str(payload.get("source") or ""), maxsplit=1)[0]
+    source = re.sub(
+        r"[^A-Za-z0-9._-]+", "",
+        source_value.rsplit("/", 1)[-1],
+    )[:80]
+    try:
+        line = max(0, min(10_000_000, int(payload.get("line") or 0)))
+        column = max(0, min(10_000_000, int(payload.get("column") or 0)))
+    except (TypeError, ValueError):
+        line = column = 0
+    detail = "client %s [%s] %s" % (kind, surface, message)
+    if source:
+        detail += " (%s:%d:%d)" % (source, line, column)
+    if stack:
+        detail += " | " + stack
+    return surface, detail[:1000]
+
+
+async def client_error_handler(env, request):
+    """Store redacted uncaught browser errors without trusting client paths."""
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            extra_headers={"allow": "POST"},
+        )
+    if not _request_same_origin(request):
+        return json_response({"error": "origin_not_allowed"}, status=403)
+    try:
+        payload = await bounded_json_request(request, CLIENT_ERROR_MAX_BODY)
+    except RequestBodyTooLarge:
+        return json_response({"error": "payload_too_large"}, status=413)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    fields = _client_error_fields(payload)
+    if not fields:
+        return json_response({"error": "invalid_client_error"}, status=400)
+    surface, detail = fields
+    now = int(Date.now())
+    client_address = _transient_client_address(request)
+    try:
+        client_hash = await blind_index(
+            env, "client-error:" + (client_address or "unknown"))
+    except Exception:
+        client_hash = "unknown"
+    source_key = "client:" + str(client_hash)[:32]
+    try:
+        await ensure_schema(env)
+        per_client = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM error_log "
+            "WHERE ts>=? AND method='JS' AND ray=?",
+            now - CLIENT_ERROR_RATE_WINDOW_MS,
+            source_key,
+        )
+        global_rate = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM error_log "
+            "WHERE ts>=? AND method='JS'",
+            now - CLIENT_ERROR_RATE_WINDOW_MS,
+        )
+        duplicate = await d1_first(
+            env,
+            "SELECT 1 AS one FROM error_log "
+            "WHERE ts>=? AND method='JS' AND path=? AND message=? AND ray=? "
+            "LIMIT 1",
+            now - CLIENT_ERROR_RATE_WINDOW_MS,
+            "/client-error/" + surface,
+            detail,
+            source_key,
+        )
+        if (
+            duplicate
+            or int((per_client or {}).get("n") or 0)
+            >= CLIENT_ERROR_RATE_PER_CLIENT
+            or int((global_rate or {}).get("n") or 0)
+            >= CLIENT_ERROR_RATE_GLOBAL
+        ):
+            return json_response(
+                {"ok": True, "stored": False},
+                status=202,
+                cache_control="no-store",
+            )
+        await _write_error_log(
+            env,
+            520,
+            "JS",
+            "/client-error/" + surface,
+            detail,
+            source_key,
+        )
+    except Exception:
+        # Error reporting must never become a new user-visible error.
+        return json_response(
+            {"ok": True, "stored": False},
+            status=202,
+            cache_control="no-store",
+        )
+    return json_response(
+        {"ok": True, "stored": True},
+        status=202,
+        cache_control="no-store",
+    )
+
+
+async def world_admin_errors_handler(env, request):
+    """Return only the aggregate new-error cursor used by the admin HUD."""
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            cache_control="no-store",
+            extra_headers={"allow": "GET"},
+        )
+    _, rec = await _account_session_record(env, request)
+    actor = clean_string(
+        (rec or {}).get("name", ""), MAX_NODE_NAME).strip().lower()
+    if not actor:
+        return json_response(
+            {"error": "invalid_session"}, status=401,
+            cache_control="no-store")
+    if not await _has_role(env, actor, "platform_administrator"):
+        return json_response(
+            {"error": "forbidden"}, status=403,
+            cache_control="no-store")
+    try:
+        raw_after = parse_qs(urlparse(request.url).query).get(
+            "after", ["0"])[0]
+        after = max(0, int(raw_after or 0))
+    except (TypeError, ValueError):
+        after = 0
+    await ensure_schema(env)
+    latest = await d1_first(
+        env, "SELECT id,ts FROM error_log ORDER BY id DESC LIMIT 1")
+    count = await d1_first(
+        env, "SELECT COUNT(*) AS n FROM error_log WHERE id>?", after)
+    return json_response(
+        {
+            "ok": True,
+            "latestId": max(0, int((latest or {}).get("id") or 0)),
+            "latestAt": max(0, int((latest or {}).get("ts") or 0)),
+            "newCount": min(9999, max(0, int((count or {}).get("n") or 0))),
+        },
+        cache_control="no-store",
+    )
+
+
 def _privacy_redacted_log_path(path):
     path = str(path or "")
     return (
@@ -31984,6 +34216,10 @@ async def _privacy_safe_log_path(env, path):
     if path == "/api/private-replicas" or path.startswith(
             "/api/private-replicas/"):
         return "/api/private-replicas/[opaque]"
+    if path.startswith("/api/chat/channels/"):
+        return "/api/chat/channels/[opaque]"
+    if path.startswith("/api/chat/direct-messages/"):
+        return "/api/chat/direct-messages/[opaque]"
     match = REPO_API_PREFIX_RE.match(path)
     if not match:
         for pattern in (
@@ -32306,12 +34542,23 @@ def _sanitize_feedback_text(value, max_length, allow_newlines=False):
 
 
 def _feedback_fields(payload):
-    """Normalize a docs feedback payload into stored columns, or None."""
+    """Normalize a bounded website feedback payload into stored columns."""
     if not isinstance(payload, dict):
         return None
     source = _sanitize_feedback_text(payload.get("source"), 32).lower()
     vote = _sanitize_feedback_text(payload.get("vote"), 16).lower()
     if source not in FEEDBACK_SOURCES or vote not in FEEDBACK_VOTES:
+        return None
+    if source == "world":
+        if vote != "feedback":
+            return None
+        message = _sanitize_feedback_text(
+            payload.get("message"), FEEDBACK_MAX_MESSAGE,
+            allow_newlines=True)
+        if not message:
+            return None
+        return source, vote, "/world/#lobby-feedback", message
+    if vote not in ("like", "dislike"):
         return None
     # Feedback is a docs-only feature. Never accept an arbitrary URL, query,
     # private repository path, or search value into this plaintext metrics
@@ -32398,10 +34645,9 @@ async def install_diag_handler(env, request):
 
 
 async def feedback_handler(env, request):
-    # Anonymous website feedback from static pages. This is intentionally
-    # unauthenticated: the goal is click-level docs usefulness tracking, not user
-    # identity. The body is capped before JSON parsing and the table is pruned
-    # after inserts so this open endpoint cannot grow D1 without limit.
+    # Anonymous docs and lobby-kiosk feedback. This is intentionally
+    # unauthenticated; the body is capped before JSON parsing and the table is
+    # pruned after inserts so this open endpoint cannot grow D1 without limit.
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
@@ -33522,10 +35768,18 @@ ADMIN_STYLE = """
         padding:6px 12px;font:600 13px system-ui;cursor:pointer}
  .ab-root button:hover{background:var(--ab-btn-hover)}
  .ab-root button[disabled]{background:var(--ab-border-2);border-color:var(--ab-border-2);color:var(--ab-muted);cursor:not-allowed}
- .ab-root input[type=text],.ab-root input[type=password]{background:var(--ab-bg);color:var(--ab-fg);
+ .ab-root input[type=text],.ab-root input[type=password],.ab-root select{background:var(--ab-bg);color:var(--ab-fg);
         border:1px solid var(--ab-border-2);border-radius:6px;padding:6px 8px;font:13px system-ui}
  .ab-root .banner{margin:0 24px 8px;padding:10px 14px;border-radius:6px;border:1px solid var(--ab-btn-hover);
          background:var(--ab-ok-bg);color:var(--ab-ok-fg);white-space:pre-wrap;font:13px ui-monospace,monospace}
+ .ab-root .admin-setting{margin:12px 24px 4px;padding:14px 16px;border:1px solid var(--ab-border-2);
+        border-radius:8px;background:var(--ab-card);display:flex;align-items:center;justify-content:space-between;
+        gap:18px;scroll-margin-top:20px;outline:none}
+ .ab-root .admin-setting:focus{box-shadow:0 0 0 3px color-mix(in srgb,var(--ab-link) 35%,transparent)}
+ .ab-root .admin-setting h2{font-size:15px;margin:0 0 4px}
+ .ab-root .admin-setting p{color:var(--ab-muted);font-size:12px;margin:0;max-width:760px}
+ .ab-root .admin-setting form{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+ .ab-root .admin-setting label{white-space:nowrap;font-size:13px}
  .ab-root .layout{display:flex;align-items:flex-start;width:100%}
  .ab-root nav{width:210px;flex:none;border-right:1px solid var(--ab-border);min-height:60vh;padding:8px 0}
  .ab-root nav a{display:block;padding:5px 20px;color:var(--ab-fg);font-size:13px}
@@ -33546,6 +35800,8 @@ ADMIN_STYLE = """
  .ab-root .jsoncell{color:var(--ab-muted)}
  .ab-root .s5{color:var(--ab-danger);font-weight:600}
  .ab-root tbody tr:hover{background:var(--ab-card)}
+ .ab-root tr.record-row{cursor:pointer}
+ .ab-root tr.record-row:focus{outline:2px solid var(--ab-link);outline-offset:-2px;background:var(--ab-card)}
  .ab-root .empty{padding:32px 24px;color:var(--ab-muted)}
  .ab-root .title{padding:12px 24px 4px;font-weight:600}
  .ab-root .navcount{color:var(--ab-muted);font-size:11px;font-weight:400}
@@ -33557,6 +35813,14 @@ ADMIN_STYLE = """
  .ab-root .rowfield input,.ab-root .rowfield textarea{width:100%;background:var(--ab-bg);color:var(--ab-fg);
         border:1px solid var(--ab-border-2);border-radius:6px;padding:8px;
         font:13px ui-monospace,monospace}
+ .ab-root .record-detail{margin:12px 24px;max-width:980px;border:1px solid var(--ab-border-2);
+        border-radius:8px;background:var(--ab-card);overflow:hidden}
+ .ab-root .record-detail dl{margin:0}
+ .ab-root .record-detail dl>div{display:block;padding:12px 16px;border-bottom:1px solid var(--ab-border)}
+ .ab-root .record-detail dl>div:last-child{border-bottom:0}
+ .ab-root .record-detail dt{color:var(--ab-muted);font:600 12px system-ui,sans-serif;margin-bottom:5px}
+ .ab-root .record-detail dd{margin:0;color:var(--ab-fg);white-space:pre-wrap;overflow-wrap:anywhere;
+        font:13px/1.55 ui-monospace,monospace}
  .ab-root .tools .navlink{padding:8px 4px}
  .ab-root .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
  .ab-root .account-kind button{padding:3px 8px;font-size:12px}
@@ -33571,6 +35835,20 @@ ADMIN_STYLE = """
  .ab-root .diagcol{min-width:240px}
  .ab-root .diagcol h3{font-size:13px;color:var(--ab-muted);margin:8px 0 4px;font-weight:600}
  .ab-root .diagcol table{width:auto;min-width:220px}
+ .ab-root .error-analytics{padding:4px 24px 18px}
+ .ab-root .error-chart{height:150px;display:grid;grid-template-columns:repeat(24,minmax(8px,1fr));gap:4px;align-items:end;border-bottom:1px solid var(--ab-border);padding-top:12px}
+ .ab-root .error-bar{min-height:2px;background:var(--ab-link);border-radius:3px 3px 0 0;position:relative}
+ .ab-root .error-bar[data-empty="true"]{background:var(--ab-border)}
+ .ab-root .error-bar:focus{outline:2px solid var(--ab-fg);outline-offset:2px}
+ .ab-root .error-hours{display:flex;justify-content:space-between;color:var(--ab-muted);font-size:11px;margin-top:6px}
+ .ab-root .error-groups{margin-top:16px}
+ .ab-root .error-sparkline{width:180px;height:34px;display:grid;grid-template-columns:repeat(24,1fr);
+        gap:2px;align-items:end;border-bottom:1px solid var(--ab-border);padding:2px 0}
+ .ab-root .error-sparkline:focus{outline:2px solid var(--ab-link);outline-offset:2px}
+ .ab-root .error-spark-bar{display:block;min-height:2px;background:var(--ab-link);
+        border-radius:2px 2px 0 0}
+ .ab-root .error-spark-bar[data-empty="true"]{background:var(--ab-border)}
+ .ab-root .relative-time{color:var(--ab-muted);white-space:nowrap}
 """
 
 # Cloudflare D1 internal bookkeeping stays out of the browser. The following
@@ -33587,6 +35865,7 @@ ADMIN_HIDDEN_TABLES = (
     "agent_prompts",
     "owner_encryption_keys",
     "repo_privacy_policy",
+    "repo_terms_flags",
     "security_reports",
     "repo_security_scans",
     "repo_security_scan_reviews",
@@ -33783,6 +36062,18 @@ def _admin_row_checkbox(rowid):
             % _html_escape(rowid))
 
 
+def _admin_record_row_attrs(admin_query, table, rowid):
+    href = _admin_href(
+        admin_query, table=table, action="detail", rowid=rowid)
+    return (
+        ' class="record-row" tabindex="0" role="link" data-href="%s" '
+        'onclick="if(!event.target.closest(\'input,button,a,label\'))'
+        'location.href=this.dataset.href" '
+        'onkeydown="if(event.key===\'Enter\')location.href=this.dataset.href"'
+        % _html_escape(href)
+    )
+
+
 async def _admin_table_columns(env, table):
     # Real column names for the table (table name is validated by the caller).
     rows = await d1_all(env, "PRAGMA table_info(" + table + ")")
@@ -33798,6 +36089,59 @@ async def _render_row_form(env, table, rowid, csrf_field="", admin_query=""):
     return (
         '<div class="empty">Generic row editing is disabled. Use the '
         "purpose-built, audited administration action for this resource.</div>"
+    )
+
+
+async def _render_record_detail(env, table, rowid, admin_query=""):
+    if table in ADMIN_HIDDEN_TABLES:
+        return '<div class="empty">This table is restricted.</div>'
+    try:
+        rowid = int(rowid)
+    except (TypeError, ValueError):
+        return '<div class="empty">Record not found.</div>'
+    if rowid <= 0:
+        return '<div class="empty">Record not found.</div>'
+    row = await d1_first(
+        env,
+        "SELECT rowid AS _rowid_, * FROM " + table + " WHERE rowid=? LIMIT 1",
+        rowid,
+    )
+    if not row:
+        return '<div class="empty">Record not found.</div>'
+    fields = [("_rowid_", rowid)]
+    for key, value in row.items():
+        if key == "_rowid_":
+            continue
+        if key == "data" and isinstance(value, str) and value:
+            decoded = await decrypt_row(env, value)
+            value = (
+                _admin_redact_wallet_keys(decoded)
+                if isinstance(decoded, (dict, list))
+                else decoded
+            )
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value, indent=2, sort_keys=True, default=str)
+        elif value is None:
+            value = "NULL"
+        fields.append((key, value))
+    rows = "".join(
+        "<div><dt>%s</dt><dd>%s</dd></div>"
+        % (_html_escape(key), _html_escape(value))
+        for key, value in fields
+    )
+    return (
+        '<div class="title">Record detail · %s · row %d</div>'
+        '<div class="tools"><a class="navlink" href="%s">← Back to %s</a>'
+        '<span class="meta">Read-only vertical view. Sensitive tables remain '
+        'restricted and encrypted data is redacted before display.</span></div>'
+        '<section class="record-detail"><dl>%s</dl></section>'
+        % (
+            _html_escape(table),
+            rowid,
+            _admin_href(admin_query, table=table),
+            _html_escape(table),
+            rows,
+        )
     )
 
 
@@ -33927,7 +36271,8 @@ def _render_install_diag_overview(summary):
     )
 
 
-async def _render_table_view(env, table, csrf_field="", admin_query=""):
+async def _render_table_view(
+        env, table, csrf_field="", admin_query="", user_filter=""):
     # Generic "show all rows" view for one D1 table. The encrypted `data` column
     # (users/nodes/repos/inboxes store an AES-GCM blob there) is decrypted in place
     # so the admin can actually read it. The table name is validated by the
@@ -33939,23 +36284,52 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
     # every table — including the error log, which reads from these rows.
     if table in ADMIN_HIDDEN_TABLES:
         return '<div class="empty">This table is restricted.</div>'
-    rows = await d1_all(
-        env, "SELECT rowid AS _rowid_, * FROM " + table
-        + " ORDER BY rowid DESC LIMIT 500")
-    count_row = await d1_first(env, "SELECT COUNT(*) AS n FROM " + table)
-    total = int((count_row or {}).get("n", 0) or 0)
+    requested_user = (
+        clean_string(user_filter or "", MAX_NODE_NAME).strip().lower()
+        if table == "users" else ""
+    )
+    if requested_user:
+        requested_user_bi = await blind_index(env, requested_user)
+        rows = await d1_all(
+            env,
+            "SELECT rowid AS _rowid_, * FROM users "
+            "WHERE user_bi=? LIMIT 1",
+            requested_user_bi,
+        )
+        total = len(rows)
+    else:
+        rows = await d1_all(
+            env, "SELECT rowid AS _rowid_, * FROM " + table
+            + " ORDER BY rowid DESC LIMIT 500")
+        count_row = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM " + table)
+        total = int((count_row or {}).get("n", 0) or 0)
 
     # Admin tool: reset any user account's login password. Shown above the
     # users table; posts back to ?action=set_password (handled in _admin).
     prefix = ""
     if table == "users":
+        user_value = (
+            ' value="%s"' % _html_escape(requested_user)
+            if requested_user else ""
+        )
+        detail_heading = (
+            '<div class="title" id="user-detail">User detail · %s · '
+            '<a class="navlink" href="%s">Back to all users</a></div>'
+            % (
+                _html_escape(requested_user),
+                _admin_href(admin_query, table="users"),
+            )
+            if requested_user else ""
+        )
         prefix = (
+            detail_heading +
             '<div class="tools">'
             '<form method="post" action="%s" '
             'onsubmit="return confirm(\'Set a new login password for this '
             'account?\')">'
             + csrf_field +
-            '<input type="text" name="name" placeholder="user name" '
+            '<input type="text" name="name" placeholder="user name"%s '
             'autocomplete="off" required>'
             '<input type="password" name="password" '
             'placeholder="new password (min 8 chars)" minlength="8" required>'
@@ -33967,7 +36341,7 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             'onsubmit="return confirm(\'Resend the verification email for this '
             'account?\')">'
             + csrf_field +
-            '<input type="text" name="name" placeholder="user name" '
+            '<input type="text" name="name" placeholder="user name"%s '
             'autocomplete="off" required>'
             '<button type="submit">Resend verify email</button>'
             '</form>'
@@ -33975,8 +36349,12 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             'stored address; queues it for manual verification if email is not '
             'configured.</span>'
             '</div>'
-        ) % (_admin_href(admin_query, table="users", action="set_password"),
-             _admin_href(admin_query, table="users", action="resend_verify"))
+        ) % (
+            _admin_href(admin_query, table="users", action="set_password"),
+            user_value,
+            _admin_href(admin_query, table="users", action="resend_verify"),
+            user_value,
+        )
 
     if table == "install_diag":
         # Purpose-built anonymous install funnel + recent events, newest first.
@@ -33989,7 +36367,9 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             ok = int(r.get("ok", 0) or 0)
             cls = "" if ok else "s5"
             body.append(
-                "<tr>"
+                "<tr%s>"
+                % _admin_record_row_attrs(
+                    admin_query, table, r.get("_rowid_", ""))
                 + _admin_row_checkbox(r.get("_rowid_", ""))
                 + '<td data-ts="%s">%s</td>'
                 '<td>%s</td><td class="%s">%s</td><td>%s</td><td>%s</td>'
@@ -34015,13 +36395,131 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
                 % (len(recent), total) + events)
 
     if table == "error_log":
-        # Keep the purpose-built, time-formatted error view.
+        # Keep the purpose-built, time-formatted error view and add a bounded
+        # 24-hour occurrence overview. The aggregation uses the same already
+        # redacted fields as the raw admin-only table.
+        now = int(Date.now())
+        recent_24h = await d1_all(
+            env,
+            "SELECT ts,status,method,path,message FROM error_log "
+            "WHERE ts>=? ORDER BY ts DESC LIMIT 5000",
+            now - 24 * 60 * 60 * 1000,
+        )
+        hourly = [0] * 24
+        groups = {}
+        for row in recent_24h or []:
+            ts = int(row.get("ts") or 0)
+            if 0 < ts < 10 ** 11:
+                ts *= 1000
+            age_hours = max(0, (now - ts) // (60 * 60 * 1000))
+            if age_hours < 24:
+                hourly[23 - int(age_hours)] += 1
+            signature = (
+                clean_string(row.get("status"), 12),
+                clean_string(row.get("method"), 12).upper(),
+                clean_string(row.get("path"), 240),
+                clean_string(row.get("message"), 240),
+            )
+            group_hours = groups.setdefault(signature, [0] * 24)
+            if age_hours < 24:
+                group_hours[23 - int(age_hours)] += 1
+        peak = max(hourly) if hourly else 0
+        bars = []
+        for index, count in enumerate(hourly):
+            height = max(2, round(132 * count / peak)) if peak else 2
+            hours_ago = 23 - index
+            label = (
+                "current hour" if hours_ago == 0
+                else "%d hours ago" % hours_ago
+            )
+            bars.append(
+                '<div class="error-bar" tabindex="0" role="img" '
+                'aria-label="%s: %d error%s" data-empty="%s" '
+                'style="height:%dpx" title="%s · %d"></div>'
+                % (
+                    _html_escape(label),
+                    count,
+                    "" if count == 1 else "s",
+                    "true" if count == 0 else "false",
+                    height,
+                    _html_escape(label),
+                    count,
+                )
+            )
+        group_rows = []
+        for (status, request_method, path, message), frequency in sorted(
+                groups.items(),
+                key=lambda item: (-sum(item[1]), item[0]))[:25]:
+            count = sum(frequency)
+            group_peak = max(frequency) if frequency else 0
+            spark_bars = []
+            for index, bucket_count in enumerate(frequency):
+                height = (
+                    max(2, round(28 * bucket_count / group_peak))
+                    if group_peak else 2
+                )
+                hours_ago = 23 - index
+                label = (
+                    "current hour" if hours_ago == 0
+                    else "%d hours ago" % hours_ago
+                )
+                spark_bars.append(
+                    '<span class="error-spark-bar" data-empty="%s" '
+                    'style="height:%dpx" title="%s · %d"></span>'
+                    % (
+                        "true" if bucket_count == 0 else "false",
+                        height,
+                        _html_escape(label),
+                        bucket_count,
+                    )
+                )
+            group_rows.append(
+                '<tr><td>%d</td><td><div class="error-sparkline" '
+                'tabindex="0" role="img" '
+                'aria-label="24-hour frequency: %d occurrence%s">%s</div></td>'
+                "<td>%s</td><td>%s</td><td>%s</td>"
+                "<td title=\"%s\">%s</td></tr>"
+                % (
+                    count,
+                    count,
+                    "" if count == 1 else "s",
+                    "".join(spark_bars),
+                    _html_escape(status or "error"),
+                    _html_escape(request_method or "—"),
+                    _html_escape(path or "—"),
+                    _html_escape(message or "—"),
+                    _html_escape((message or "—")[:160]),
+                )
+            )
+        analytics = (
+            '<section class="error-analytics" aria-labelledby="error-analytics-title">'
+            '<h2 id="error-analytics-title">Previous 24 hours · %d occurrence%s</h2>'
+            '<div class="error-chart">%s</div>'
+            '<div class="error-hours"><span>24h ago</span><span>12h ago</span>'
+            '<span>now</span></div><div class="error-groups">'
+            '<h3>Equivalent errors</h3>%s</div></section>'
+            % (
+                len(recent_24h or []),
+                "" if len(recent_24h or []) == 1 else "s",
+                "".join(bars),
+                (
+                    "<table><thead><tr><th>Count</th><th>24-hour frequency</th>"
+                    "<th>Status</th>"
+                    "<th>Method</th><th>Path</th><th>Message</th></tr></thead>"
+                    "<tbody>" + "".join(group_rows) + "</tbody></table>"
+                    if group_rows
+                    else '<div class="empty">No errors in the previous 24 hours.</div>'
+                ),
+            )
+        )
         body = []
         for r in rows:
             status = r.get("status", "")
             cls = "s5" if str(status).startswith("5") else ""
             body.append(
-                "<tr>"
+                "<tr%s>"
+                % _admin_record_row_attrs(
+                    admin_query, table, r.get("_rowid_", ""))
                 + _admin_row_checkbox(r.get("_rowid_", ""))
                 + '<td data-ts="%s">%s</td>'
                 '<td class="%s">%s</td>'
@@ -34039,7 +36537,11 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
                      + "<th>Time</th><th>Status</th><th>Method</th>"
                      "<th>Path</th><th>Message</th><th>CF-Ray</th></tr></thead><tbody>"
                      + "".join(body) + "</tbody></table></form>")
-        return ('<div class="title">Error logs · %d row(s)</div>' % total) + inner
+        return (
+            '<div class="title">Error logs · %d row(s)</div>' % total
+            + analytics
+            + inner
+        )
 
     purge_allowed = _admin_purge_allowed(table)
     add_link = ""
@@ -34123,7 +36625,14 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
         for col in json_cols:
             cells.append(_admin_compact_cell(
                 None if decoded_data is None else decoded_data.get(col)))
-        body.append("<tr>" + "".join(cells) + "</tr>")
+        body.append(
+            "<tr%s>%s</tr>"
+            % (
+                _admin_record_row_attrs(
+                    admin_query, table, rid),
+                "".join(cells),
+            )
+        )
 
     head = (_admin_select_all_th() if purge_allowed else "") + "".join(
         "<th>%s</th>" % _html_escape(c) for c in columns) + "".join(
@@ -34169,6 +36678,52 @@ def _render_admin_stats(stats):
     return '<div class="cards">' + "".join(out) + "</div>"
 
 
+def _render_admin_operational_alerts(
+        enabled, csrf_field="", admin_query=""):
+    checked = " checked" if enabled else ""
+    return (
+        '<section id="operational-alerts" class="admin-setting" '
+        'tabindex="-1"><div><h2>Operational alerts</h2>'
+        '<p>Email platform administrators when a ForkMesh system check '
+        'fails, and again when it recovers. Attention emails include a '
+        'redacted two-minute Cloudflare log excerpt when credentials are '
+        'configured.</p></div>'
+        '<form method="post" action="%s">' %
+        _admin_href(admin_query, action="set_operational_alerts") +
+        csrf_field +
+        '<label><input type="checkbox" name="enabled" value="1"%s> '
+        'Send outage and recovery email</label>'
+        '<button type="submit">Save alert setting</button></form></section>'
+        % checked
+    )
+
+
+def _render_admin_repo_terms_flags(csrf_field="", admin_query=""):
+    return (
+        '<section id="repository-terms-flags" class="admin-setting" '
+        'tabindex="-1"><div><h2>Repository Terms flags</h2>'
+        '<p>Apply or clear the public policy-warning badge for a repository. '
+        'The operator note is encrypted and remains admin-only.</p></div>'
+        '<form method="post" action="%s">' %
+        _admin_href(admin_query, action="set_repo_terms_flag") +
+        csrf_field +
+        '<input type="text" name="owner" placeholder="owner" '
+        'pattern="[A-Za-z0-9._-]{1,100}" required>'
+        '<input type="text" name="repo" placeholder="repository" '
+        'pattern="[A-Za-z0-9._-]{1,100}" required>'
+        '<select name="category" aria-label="Terms category">'
+        '<option value="spam">Spam</option>'
+        '<option value="malware">Malware</option>'
+        '<option value="harassment">Harassment</option>'
+        '<option value="illegal">Illegal content</option>'
+        '<option value="other">Other</option></select>'
+        '<input type="text" name="note" maxlength="500" '
+        'placeholder="private operator note">'
+        '<label><input type="checkbox" name="clear" value="1"> Clear</label>'
+        '<button type="submit">Save flag</button></form></section>'
+    )
+
+
 def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=False):
     counts = counts or {}
     if sort_records:
@@ -34194,7 +36749,8 @@ def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=
 
 
 def render_admin_html(env_stats, tables, active_table, table_html, banner="",
-                      counts=None, csrf_field="", admin_query="", sort_records=False):
+                      counts=None, csrf_field="", admin_query="",
+                      sort_records=False, operational_alerts_enabled=False):
     banner_html = ('<div class="banner">%s</div>' % _html_escape(banner)) if banner else ""
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -34235,6 +36791,9 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         "<div class=\"meta\">Live Durable Object load, every D1 table, and "
         "Solana payment-reference status.</div></header>"
         + _render_admin_stats(env_stats)
+        + _render_admin_operational_alerts(
+            operational_alerts_enabled, csrf_field, admin_query)
+        + _render_admin_repo_terms_flags(csrf_field, admin_query)
         + '<div class="tools"><form method="post" action="%s" '
           'onsubmit="return confirm(\'Show legacy custody migration status?\')">'
           % _admin_href(admin_query, action="disburse")
@@ -34261,9 +36820,26 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         + _render_admin_nav(tables, active_table, counts, admin_query, sort_records)
         + "<main>" + table_html + "</main>"
         + "</div></div>"
-        "<script>for (const el of document.querySelectorAll('[data-ts]')){"
-        "const ms=Number(el.getAttribute('data-ts'));"
-        "if(ms)el.textContent=new Date(ms).toLocaleString();}</script>"
+        "<script>const adminTimes=[];"
+        "for(const el of document.querySelectorAll('[data-ts]')){"
+        "let ms=Number(el.getAttribute('data-ts'));if(ms&&ms<1e11)ms*=1000;"
+        "if(!ms)continue;el.textContent=new Date(ms).toLocaleString();"
+        "const rel=document.createElement('span');rel.className='relative-time';"
+        "el.append(' · ',rel);adminTimes.push([rel,ms]);}"
+        "function updateAdminRelativeTimes(){const now=Date.now();"
+        "for(const pair of adminTimes){const rel=pair[0],ms=pair[1];"
+        "const future=ms>now,seconds=Math.max(0,Math.floor(Math.abs(now-ms)/1000));"
+        "let value,unit;if(seconds<60){value=seconds;unit='second';}"
+        "else if(seconds<3600){value=Math.floor(seconds/60);unit='minute';}"
+        "else if(seconds<86400){value=Math.floor(seconds/3600);unit='hour';}"
+        "else{value=Math.floor(seconds/86400);unit='day';}"
+        "rel.textContent=future?'in '+value+' '+unit+(value===1?'':'s'):"
+        "value+' '+unit+(value===1?'':'s')+' ago';}}"
+        "updateAdminRelativeTimes();setInterval(updateAdminRelativeTimes,30000);"
+        "if(location.hash==='#operational-alerts'){"
+        "var a=document.getElementById('operational-alerts');"
+        "if(a){a.scrollIntoView({block:'center'});a.focus({preventScroll:true});}"
+        "}</script>"
         "</body></html>"
     )
 
@@ -36102,6 +38678,7 @@ def _https_mirror_merge_result(value, request):
         error = str(value.get("error") or "")
         if error not in {
             "merge_conflict", "pull_not_found", "pull_not_open",
+            "review_required",
             "stale_base", "stale_head", "stale_pull_metadata",
             "unsupported_pull",
         }:
@@ -36407,9 +38984,18 @@ async def repository_actions_status_handler(env, request, owner, repo):
             return json_response(
                 result,
                 cache_control="private, no-store, max-age=0, must-revalidate")
+    # An attested executor being temporarily offline is application state, not
+    # a broken HTTP route. Return a bounded empty snapshot so authorized World
+    # clients can keep the cabinet UI quiet and retry on their normal cadence
+    # without generating a repeating 503 in every visitor's console.
     return json_response(
-        {"error": "actions_status_unavailable"}, status=503,
-        cache_control="no-store")
+        {
+            "ok": False,
+            "state": "unavailable",
+            "runs": [],
+            "retryable": True,
+        },
+        cache_control="private, no-store, max-age=0, must-revalidate")
 
 
 async def _organization_owner_can_merge_repo(
@@ -37378,6 +39964,99 @@ class Default(WorkerEntrypoint):
                     )
                 except Exception as error:
                     banner = "Ownership request failed: " + repr(error)
+            elif action == "set_operational_alerts":
+                try:
+                    enabled = form.get("enabled", [""])[0] == "1"
+                    current_alerts = await _repo_alert_settings_get(
+                        self.env, *FLAGSHIP_MONITOR_ID.split("/", 1))
+                    updated_alerts = dict(current_alerts)
+                    updated_alerts["statusEmails"] = enabled
+                    await d1_run(
+                        self.env,
+                        "INSERT INTO repo_alert_settings "
+                        "(repo_bi, data, updated_at) VALUES (?,?,?) "
+                        "ON CONFLICT(repo_bi) DO UPDATE SET "
+                        "data=excluded.data, updated_at=excluded.updated_at",
+                        await _repo_alert_settings_bi(
+                            self.env,
+                            *FLAGSHIP_MONITOR_ID.split("/", 1)),
+                        json.dumps(updated_alerts), int(Date.now()))
+                    banner = (
+                        "Operational alert email is now " +
+                        ("enabled." if enabled else "disabled."))
+                    audit_details = {"enabled": enabled}
+                except Exception as error:
+                    banner = (
+                        "Operational alert update failed: " + repr(error))
+            elif action == "set_repo_terms_flag":
+                try:
+                    owner = safe_segment(
+                        form.get("owner", [""])[0]).lower()
+                    repo = safe_segment(
+                        form.get("repo", [""])[0]).lower()
+                    category = clean_string(
+                        form.get("category", [""])[0], 20).lower()
+                    note = clean_string(form.get("note", [""])[0], 500)
+                    clear = form.get("clear", [""])[0] == "1"
+                    if (
+                        not owner
+                        or not repo
+                        or category not in (
+                            "spam", "malware", "harassment",
+                            "illegal", "other",
+                        )
+                        or (not clear and not note)
+                    ):
+                        banner = "Repository Terms flag failed: invalid fields."
+                    else:
+                        repo_bi = await blind_index(
+                            self.env, owner + "/" + repo)
+                        exists = await d1_first(
+                            self.env,
+                            "SELECT 1 AS found FROM repositories "
+                            "WHERE key_bi=? LIMIT 1",
+                            repo_bi,
+                        )
+                        if not exists:
+                            banner = (
+                                "Repository Terms flag failed: repository "
+                                "was not found."
+                            )
+                        else:
+                            await d1_run(
+                                self.env,
+                                "INSERT INTO repo_terms_flags "
+                                "(repo_bi,active,category,data,updated_by_bi,"
+                                "updated_at) VALUES (?,?,?,?,?,?) "
+                                "ON CONFLICT(repo_bi) DO UPDATE SET "
+                                "active=excluded.active,"
+                                "category=excluded.category,"
+                                "data=excluded.data,"
+                                "updated_by_bi=excluded.updated_by_bi,"
+                                "updated_at=excluded.updated_at",
+                                repo_bi,
+                                0 if clear else 1,
+                                category,
+                                await encrypt_row(self.env, {
+                                    "note": note,
+                                    "actor": account_cookie_name,
+                                }),
+                                await blind_index(
+                                    self.env, account_cookie_name),
+                                int(Date.now()),
+                            )
+                            await purge_catalog_related_caches()
+                            banner = (
+                                "Repository Terms flag cleared."
+                                if clear
+                                else "Repository Terms flag applied."
+                            )
+                            audit_details = {
+                                "active": not clear,
+                                "category": category,
+                            }
+                except Exception as error:
+                    banner = "Repository Terms flag failed: " + repr(error)
             elif action == "delete_rows":
                 try:
                     tables = await _admin_list_tables(self.env)
@@ -37440,7 +40119,8 @@ class Default(WorkerEntrypoint):
             if action in (
                     "disburse", "set_password", "resend_verify",
                     "request_ownership", "delete_rows", "update_row",
-                    "insert_row"):
+                    "insert_row", "set_operational_alerts",
+                    "set_repo_terms_flag"):
                 audit_actor = (
                     account_cookie_name
                     or params.get("admin", [""])[0])
@@ -37448,6 +40128,10 @@ class Default(WorkerEntrypoint):
                     "account" if action in (
                         "set_password", "resend_verify",
                         "request_ownership")
+                    else "platform_alerts"
+                    if action == "set_operational_alerts"
+                    else "repository"
+                    if action == "set_repo_terms_flag"
                     else "database_table" if action in (
                         "delete_rows", "update_row", "insert_row")
                     else "legacy_custody")
@@ -37456,6 +40140,13 @@ class Default(WorkerEntrypoint):
                         "set_password", "resend_verify")
                     else form.get("target", [""])[0]
                     if action == "request_ownership"
+                    else "forkmesh-system-checks"
+                    if action == "set_operational_alerts"
+                    else (
+                        form.get("owner", [""])[0] + "/"
+                        + form.get("repo", [""])[0]
+                    )
+                    if action == "set_repo_terms_flag"
                     else params.get("table", [""])[0])
                 lowered_banner = str(banner or "").lower()
                 outcome = (
@@ -37478,8 +40169,16 @@ class Default(WorkerEntrypoint):
         else:
             active = tables[0] if tables else ""
 
-        # Edit/create forms are full-page GET views for the active table.
-        if action == "edit" and active:
+        # Every visible record has a read-only, vertically listed detail page.
+        # Legacy edit/new bookmarks remain fail-closed below.
+        if action == "detail" and active:
+            table_html = await _render_record_detail(
+                self.env,
+                active,
+                params.get("rowid", [""])[0],
+                admin_query,
+            )
+        elif action == "edit" and active:
             rowid = params.get("rowid", [""])[0]
             table_html = await _render_row_form(
                 self.env, active, rowid, csrf_field, admin_query)
@@ -37488,7 +40187,8 @@ class Default(WorkerEntrypoint):
                 self.env, active, None, csrf_field, admin_query)
         else:
             table_html = (await _render_table_view(
-                              self.env, active, csrf_field, admin_query)
+                              self.env, active, csrf_field, admin_query,
+                              params.get("user", [""])[0])
                           if active
                           else '<div class="empty">No tables found.</div>')
 
@@ -37501,13 +40201,17 @@ class Default(WorkerEntrypoint):
             except Exception:
                 counts[t] = 0
         stats = await admin_stats(self.env)
+        operational_alerts_enabled = await _status_alert_emails_enabled(
+            self.env)
         # Default the table browser to most-records-first; ?sort=name opts back
         # into the A–Z ordering.
         sort_records = params.get("sort", [""])[0] != "name"
         return Response(
             render_admin_html(stats, tables, active, table_html, banner, counts,
                               csrf_field=csrf_field, admin_query=admin_query,
-                              sort_records=sort_records),
+                              sort_records=sort_records,
+                              operational_alerts_enabled=(
+                                  operational_alerts_enabled)),
             status=200,
             headers={"content-type": "text/html; charset=utf-8"},
         )
@@ -37644,11 +40348,20 @@ class Default(WorkerEntrypoint):
             return await world_social_posts_handler(self.env, request)
 
         if url.path in (
+                "/api/world/profile-social", "/api/world/profile-social/"):
+            return await world_profile_social_handler(self.env, request)
+
+        if url.path in (
                 "/api/world/satellites", "/api/world/satellites/"):
             return await world_satellites_handler(self.env, request)
 
         if url.path in ("/api/world/layout", "/api/world/layout/"):
             return await world_layout_handler(self.env, request)
+
+        if url.path in (
+                "/api/world/admin/errors",
+                "/api/world/admin/errors/"):
+            return await world_admin_errors_handler(self.env, request)
 
         if url.path in (
                 "/api/world/organizations",
@@ -37700,6 +40413,19 @@ class Default(WorkerEntrypoint):
                 "/api/world/moderation", "/api/world/moderation/"):
             return await world_moderation_handler(self.env, request)
 
+        if url.path in (
+                "/api/world/admin/nodes/delete",
+                "/api/world/admin/nodes/delete/"):
+            return await world_admin_delete_node_handler(self.env, request)
+
+        if (
+            url.path == "/api/tasks"
+            or url.path == "/api/tasks/"
+            or url.path.startswith("/api/tasks/")
+        ):
+            return await organization_tasks_handler(
+                self.env, request, url.path)
+
         if (
             url.path == "/api/world/office/marketing-tasks"
             or url.path == "/api/world/office/marketing-tasks/"
@@ -37711,6 +40437,11 @@ class Default(WorkerEntrypoint):
         if url.path in (
                 "/api/world/build-board", "/api/world/build-board/"):
             return await world_build_board_handler(
+                self.env, request, url.path)
+
+        if url.path in (
+                "/api/world/link-kiosk", "/api/world/link-kiosk/"):
+            return await world_link_kiosk_handler(
                 self.env, request, url.path)
 
         if url.path in (
@@ -37882,6 +40613,8 @@ class Default(WorkerEntrypoint):
         # Public ranking boards (node uptime + repos per owner) for /network/.
         if url.path in ("/api/network/leaderboards", "/api/network/leaderboards/"):
             return await network_leaderboards(self.env)
+        if url.path in ("/api/leaderboards", "/api/leaderboards/"):
+            return await leaderboards_overview(self.env)
 
         # Referral-program board (clicks + signups per share link) for the
         # /referrals page and the World's referral leaderboard sign.
@@ -37926,6 +40659,9 @@ class Default(WorkerEntrypoint):
         # Anonymous docs/page feedback: like/dislike clicks with optional text.
         if url.path in ("/api/feedback", "/api/feedback/"):
             return await feedback_handler(self.env, request)
+
+        if url.path in ("/api/client-errors", "/api/client-errors/"):
+            return await client_error_handler(self.env, request)
 
         # Private vulnerability reports — stored encrypted, emailed to security@.
         if url.path in ("/api/security/report", "/api/security/report/"):
@@ -38069,8 +40805,17 @@ class Default(WorkerEntrypoint):
             return await accounts_handler(self.env, request)
 
         # --- Organizations + teams (issue #388) --------------------------
+        if BOT_SESSION_RE.match(url.path):
+            return await bot_session_handler(self.env, request)
         if ORGS_RE.match(url.path):
             return await orgs_handler(self.env, request)
+        org_bot_tokens_match = ORG_BOT_TOKENS_RE.match(url.path)
+        if org_bot_tokens_match:
+            org = safe_segment(org_bot_tokens_match.group(1))
+            if not org:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_bot_tokens_handler(
+                self.env, request, org)
         org_members_match = ORG_MEMBERS_RE.match(url.path)
         if org_members_match:
             org = safe_segment(org_members_match.group(1))
@@ -39204,6 +41949,14 @@ class ForkMeshCronWatchdog(DurableObject):
             # deadline instead of manufacturing an outage.
             await self.ctx.storage.setAlarm(deadline)
             return
+        if await _status_deploy_semaphore_active(self.env, now):
+            # A Worker rollout can interrupt the cron runner long enough to
+            # trip this independent watchdog. Keep observing, but do not turn
+            # expected deployment handoff time into an incident. The shared
+            # semaphore also includes the bounded post-activation grace.
+            await self.ctx.storage.setAlarm(
+                now + CRON_WATCHDOG_GRACE_MS)
+            return
 
         outage_started_at = int(
             await self.ctx.storage.get("outage_started_at") or 0)
@@ -39514,12 +42267,15 @@ class ForkMeshWorld(DurableObject):
         node = clean_string(data.get("node", ""), MAX_NODE_NAME).strip()
         repo = clean_string(data.get("repo", ""), 120).strip()
         commit = str(data.get("commit") or "").strip().lower()
+        changed_files = _world_mirror_push_changed_files(
+            data.get("changedFiles"))
         try:
             signature = str(
                 request.headers.get("x-forkmesh-world-control") or "")
         except Exception:
             signature = ""
-        expected = _world_mirror_push_signature(self.env, node, repo, commit)
+        expected = _world_mirror_push_signature(
+            self.env, node, repo, commit, changed_files)
         if (
             not node
             or not re.fullmatch(r"[0-9a-f]{40,64}", commit)
@@ -39533,6 +42289,7 @@ class ForkMeshWorld(DurableObject):
             # A short id is plenty for the announcement; the full head comes
             # from the signed mirror payload each client refreshes.
             "commit": commit[:12],
+            "changedFiles": changed_files,
         })
         return json_response({"ok": True, "delivered": True})
 
@@ -40322,16 +43079,27 @@ class ForkMeshOfficeRoom(DurableObject):
         ):
             return False
         try:
-            account = await d1_first(
-                self.env,
-                "SELECT u.data,u.is_admin FROM account_sessions s "
-                "JOIN users u ON u.user_bi=s.account_bi "
-                "WHERE s.session_id=? AND s.account_bi=? "
-                "AND s.revoked_at=0 AND s.expires_at>?",
-                session_id,
-                account_bi,
-                now,
-            )
+            if session_id.startswith("desktop_"):
+                # Desktop admission was authorized by the account-key signature
+                # before its HMAC ticket was issued. It has no browser
+                # account_sessions row, so recheck the active account directly;
+                # channel version/membership are still checked below each time.
+                account = await d1_first(
+                    self.env,
+                    "SELECT data,is_admin FROM users WHERE user_bi=?",
+                    account_bi,
+                )
+            else:
+                account = await d1_first(
+                    self.env,
+                    "SELECT u.data,u.is_admin FROM account_sessions s "
+                    "JOIN users u ON u.user_bi=s.account_bi "
+                    "WHERE s.session_id=? AND s.account_bi=? "
+                    "AND s.revoked_at=0 AND s.expires_at>?",
+                    session_id,
+                    account_bi,
+                    now,
+                )
             if not account:
                 return False
             account_record = await decrypt_row(self.env, account.get("data"))

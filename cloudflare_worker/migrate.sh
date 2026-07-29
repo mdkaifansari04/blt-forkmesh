@@ -10,6 +10,16 @@ cd "$(dirname "$0")"
 
 DB="${FORKMESH_D1_NAME:-forkmesh}"
 
+# A migration cannot reconstruct remote follower relationships after deleting
+# them. Visibility changes belong in routing/policy code, never in destructive
+# DDL/DML against the durable ActivityPub social graph.
+if grep -RinE \
+    'DELETE[[:space:]]+FROM[[:space:]]+ap_followers|DROP[[:space:]]+TABLE([[:space:]]+IF[[:space:]]+EXISTS)?[[:space:]]+ap_followers' \
+    migrations; then
+  echo "migrate.sh: refusing a migration that deletes the ActivityPub follower graph." >&2
+  exit 1
+fi
+
 # Nothing to do until a real D1 database is wired up: skip (don't fail the
 # build) while wrangler.toml still has the placeholder id.
 if grep -q "REPLACE_WITH_D1_DATABASE_ID" wrangler.toml; then

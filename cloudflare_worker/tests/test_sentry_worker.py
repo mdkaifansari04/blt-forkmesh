@@ -374,6 +374,16 @@ def test_sentry_redacts_opaque_private_access_locator_and_query():
     assert "credential" not in rendered
 
 
+def test_sentry_redacts_chat_room_identifiers_from_error_paths():
+    privacy_filter = ENTRY_TEXT.split(
+        "async def _privacy_safe_log_path", 1)[1].split(
+            "async def capture_worker_exception", 1)[0]
+    assert '"/api/chat/channels/[opaque]"' in privacy_filter
+    assert '"/api/chat/direct-messages/[opaque]"' in privacy_filter
+    assert 'path.startswith("/api/chat/channels/")' in privacy_filter
+    assert 'path.startswith("/api/chat/direct-messages/")' in privacy_filter
+
+
 def test_simulate_sentry_error_route_is_worker_owned_and_raises():
     run_worker_first = WRANGLER_DATA["assets"]["run_worker_first"]
     assert "/simulate-sentry-error" in run_worker_first

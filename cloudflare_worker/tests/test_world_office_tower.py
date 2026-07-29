@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runtime contracts for the unified ten-storey World office campus."""
+"""Runtime contracts for the unified eleven-storey World office campus."""
 
 import ast
 import json
@@ -39,7 +39,7 @@ def entry_constant(name):
     raise AssertionError(f"{name} not found")
 
 
-def test_tower_has_ten_floors_and_is_about_ten_times_the_old_width():
+def test_tower_has_eleven_floors_and_is_about_ten_times_the_old_width():
     assert TOWER_MODULE.exists()
     result = run_tower_script(
         """
@@ -60,15 +60,15 @@ def test_tower_has_ten_floors_and_is_about_ten_times_the_old_width():
         """
     )
 
-    assert result["count"] == 10
-    assert len(result["floors"]) == 10
-    assert [floor["level"] for floor in result["floors"]] == list(range(10))
-    assert len({floor["id"] for floor in result["floors"]}) == 10
+    assert result["count"] == 11
+    assert len(result["floors"]) == 11
+    assert [floor["level"] for floor in result["floors"]] == list(range(11))
+    assert len({floor["id"] for floor in result["floors"]}) == 11
     assert 9 <= result["oldWidthRatio"] <= 11
     assert result["floorHeight"] == 16
-    assert result["towerHeight"] == 10 * 16
+    assert result["towerHeight"] == 11 * 16
     assert [floor["y"] for floor in result["floors"]] == [
-        level * 16 for level in range(10)
+        level * 16 for level in range(11)
     ]
 
     public_floors = {
@@ -80,9 +80,10 @@ def test_tower_has_ten_floors_and_is_about_ten_times_the_old_width():
     restricted = [
         floor for floor in result["floors"] if not floor["publicForMembers"]
     ]
-    assert len(restricted) == 8
+    assert len(restricted) == 9
     assert all(floor["team"] for floor in restricted)
     assert "marketing" in {floor["id"] for floor in restricted}
+    assert "executive" in {floor["id"] for floor in restricted}
 
 
 def test_authenticated_members_get_two_common_floors_but_team_floors_stay_restricted():
@@ -367,7 +368,8 @@ def test_every_floor_has_collidable_obstacles_and_reachable_open_space():
           community: [0, -3],
           partnerships: [0, 0],
           operations: [0, 0],
-              rooftop: [0, 8],
+          executive: [0, 0],
+          rooftop: [0, 8],
         };
         const floors = tower.OFFICE_FLOORS.map((floor) => {
           const blocked = obstacleSamples[floor.id];
@@ -437,7 +439,7 @@ def test_every_floor_has_collidable_obstacles_and_reachable_open_space():
         """
     )
 
-    assert len(result["floors"]) == 10
+    assert len(result["floors"]) == 11
     assert all(floor["obstacleHit"] for floor in result["floors"])
     assert all(floor["obstacleNotWalkable"] for floor in result["floors"])
     assert all(floor["openSpaceWalkable"] for floor in result["floors"])

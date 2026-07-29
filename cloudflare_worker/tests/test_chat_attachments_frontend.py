@@ -30,6 +30,20 @@ def test_full_chat_uses_desktop_compatible_encrypted_attachment_fields():
     assert "event.preventDefault()" in CHAT
 
 
+def test_full_chat_sends_picker_and_pasted_attachment_drafts_immediately():
+    attachment_controls = CHAT[
+        CHAT.index("if (attachmentBtn && attachmentInput) {"):
+        CHAT.index("if (threadAttachmentBtn && threadAttachmentInput) {")
+    ]
+    paste = CHAT[
+        CHAT.index('input.addEventListener("paste"'):
+        CHAT.index('threadInput?.addEventListener("paste"')
+    ]
+    assert "stageAttachments(files);" in attachment_controls
+    assert "void sendAttachmentDraft();" in attachment_controls
+    assert "stageAttachments([file]);\n    void sendAttachmentDraft();" in paste
+
+
 def test_full_chat_renders_safe_images_and_downloadable_documents():
     assert 'className = "chat-attachment-image"' in CHAT
     assert 'className = "chat-attachment-card"' in CHAT

@@ -195,6 +195,23 @@ def safe_catalog_record(data):
         )
     ):
         return None
+    changed_files = []
+    raw_changed_files = data.get("changedFiles")
+    if isinstance(raw_changed_files, list):
+        for value in raw_changed_files[:16]:
+            path = clean_string(value, 160).strip().replace("\\", "/")
+            if (
+                not path
+                or path.startswith("/")
+                or path == ".."
+                or path.startswith("../")
+                or path in changed_files
+                or any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in path)
+            ):
+                continue
+            changed_files.append(path)
+            if len(changed_files) >= 8:
+                break
     record = {
         "owner": owner,
         "name": name,
@@ -263,6 +280,8 @@ def safe_catalog_record(data):
     if actions_fields:
         record["actionsEnabled"] = actions_enabled
         record["actionsState"] = actions_state
+    if changed_files:
+        record["changedFiles"] = changed_files
     # Keep absent telemetry absent (rather than adding null fields) so a
     # catalog-v2 signature produced by an older, opted-out client continues to
     # verify after this schema extension. Consumers still expose unknown values
@@ -282,6 +301,9 @@ def safe_catalog_record(data):
     machine_name = clean_string(data.get("machineName", ""), 63)
     if machine_name:
         record["machineName"] = machine_name
+    runtime_mode = clean_string(data.get("runtimeMode", ""), 12).lower()
+    if runtime_mode in {"desktop", "headless"}:
+        record["runtimeMode"] = runtime_mode
     # Subject / author / date of the advertised head commit, so the Mirror nodes
     # view and the World cabinets can name a node's latest commit instead of
     # showing a bare hash. Same optional-extension rule: absent when the node
@@ -295,4 +317,19 @@ def safe_catalog_record(data):
     commit_at = clean_string(data.get("commitAt", ""), 16)
     if commit_at:
         record["commitAt"] = commit_at
+    # Agent runtimes are optional, signed catalog-v2 capabilities. Keep the
+    # field absent for older clients and nodes with no supported binary so
+    # routing fails closed without invalidating legacy signatures.
+    agent_providers = []
+    raw_agent_providers = data.get("agentProviders")
+    if isinstance(raw_agent_providers, list):
+        for value in raw_agent_providers:
+            provider = clean_string(value, 40).strip().lower()
+            if (
+                provider in {"claude-code", "codex"}
+                and provider not in agent_providers
+            ):
+                agent_providers.append(provider)
+    if agent_providers:
+        record["agentProviders"] = agent_providers
     return record

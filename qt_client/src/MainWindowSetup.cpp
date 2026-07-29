@@ -1014,6 +1014,16 @@ bool MainWindow::testIssueLooperRowAligned() const
 
 int MainWindow::testTopNavTrailingGap() const
 {
+    // Navigation utilities now live in the full-height left rail. Preserve this
+    // responsive-shell probe's contract ("anchored within 28px of its edge")
+    // using the rail's leading edge instead of the retired top row's trailing
+    // edge.
+    if (QWidget *rail =
+            findChild<QWidget *>(QStringLiteral("appNavigationRail"))) {
+        const QRect rect(rail->mapTo(const_cast<MainWindow *>(this), QPoint(0, 0)),
+                         rail->size());
+        return rect.left();
+    }
     int rightEdge = -1;
     for (QWidget *widget :
          {static_cast<QWidget *>(m_navDrawButton),
@@ -1027,6 +1037,80 @@ int MainWindow::testTopNavTrailingGap() const
         rightEdge = qMax(rightEdge, rect.right());
     }
     return rightEdge >= 0 ? width() - rightEdge - 1 : -1;
+}
+
+void MainWindow::testSetDirectoryUserNodes(const QString &user,
+                                           const QStringList &nodes)
+{
+    MemberInfo member;
+    member.id = QStringLiteral("user:") + user.toLower();
+    member.name = user;
+    member.ownerUser = user;
+    member.accountKind = QStringLiteral("user");
+    member.nodeName = nodes.join(QStringLiteral(", "));
+    m_chatDirectoryUsers.insert(user.toLower(), member);
+    m_chatDirectoryLoaded = true;
+}
+
+void MainWindow::testShowNodesSection()
+{
+    showSection(kNodesSectionIndex);
+    refreshNodesTable();
+}
+
+QStringList MainWindow::testNodeDirectoryNames() const
+{
+    QStringList names;
+    if (!m_nodesTable)
+        return names;
+    for (int row = 0; row < m_nodesTable->rowCount(); ++row) {
+        if (QTableWidgetItem *item = m_nodesTable->item(row, 0))
+            names.append(item->data(Qt::UserRole).toString());
+    }
+    names.sort(Qt::CaseInsensitive);
+    return names;
+}
+
+void MainWindow::testRenderNetworkRepos(const QJsonArray &repos)
+{
+    showSection(kNetworkReposSectionIndex);
+    // Any real request started by opening the lazy section is now stale; the
+    // fixture below owns the table deterministically.
+    ++m_networkReposLoadGen;
+    renderNetworkRepos(repos);
+}
+
+QStringList MainWindow::testNetworkRepoNames() const
+{
+    QStringList names;
+    if (!m_networkReposTable)
+        return names;
+    for (int row = 0; row < m_networkReposTable->rowCount(); ++row) {
+        if (QTableWidgetItem *item = m_networkReposTable->item(row, 0))
+            names.append(item->data(Qt::UserRole).toString());
+    }
+    return names;
+}
+
+QString MainWindow::testNetworkRepoActionText(int row) const
+{
+    if (!m_networkReposTable || row < 0 ||
+        row >= m_networkReposTable->rowCount())
+        return QString();
+    QWidget *cell = m_networkReposTable->cellWidget(row, 3);
+    if (!cell)
+        return QString();
+    const QList<QPushButton *> buttons =
+        cell->findChildren<QPushButton *>(QString(), Qt::FindDirectChildrenOnly);
+    return buttons.isEmpty() ? QString() : buttons.first()->text();
+}
+
+QString MainWindow::testNetworkRepoMirrorHeader() const
+{
+    if (!m_networkReposTable ||
+        !m_networkReposTable->horizontalHeaderItem(2))
+        return QString();
+    return m_networkReposTable->horizontalHeaderItem(2)->text();
 }
 #endif
 
@@ -1131,42 +1215,36 @@ void MainWindow::startSession()
         m_headless &&
         installerLinkCodeRe.match(installerLinkCode).hasMatch() &&
         m_nodeOwnerUser.trimmed().isEmpty();
-    if ((m_headless || publishesMirror) &&
-        (!hasOwnerSigningCapability(name) || installerLinkPending) &&
-        isValidNodeName(name)) {
-        bool registered = false;
+    const bool shouldHost =
+        (m_headless || publishesMirror) && isValidNodeName(name);
+    bool hostingReady = hasOwnerSigningCapability(name);
+    if (shouldHost && (!hostingReady || installerLinkPending)) {
 #ifdef FORKMESH_WINDOW_TESTS
         if (!m_testBypassServerStart)
-            registered = registerNodeAccountSilently(name);
+            hostingReady = registerNodeAccountSilently(name);
 #else
-        registered = registerNodeAccountSilently(name);
+        hostingReady = registerNodeAccountSilently(name);
 #endif
-        // A just-registered node has no catalog record yet, and an already-synced
-        // mirror won't re-publish on the next (quiet, unchanged) auto-sync — so
-        // seed the catalog now for every mirror we already hold. The repo page
-        // builds its mirror rows from catalog records, so without this the node
-        // would host (host_presence) yet never appear in the list.
-        if (registered) {
-            if (m_headless)
-                ensureFlagshipRepo();
-            for (int i = 0; i < m_repositories.size(); ++i) {
-                const RepositoryRecord &r = m_repositories.at(i);
-                if (!r.previewOnly && r.publishToNetwork &&
-                    !r.mirrorPath.isEmpty() && QDir(r.mirrorPath).exists())
-                    publishRepository(i, false);
-            }
-        } else if (m_headless || publishesMirror) {
-            // Nothing else in an unattended run ever calls
-            // registerNodeAccountSilently() again — so a transient failure here
-            // (relay unreachable right at boot is the common case on a fresh
-            // VPS) would otherwise strand the node unregistered forever, even
-            // though it keeps mirroring/chatting fine: no account means no host
-            // token, so it never marks host_presence and never appears on the
-            // website. This covers both a headless VM and a node that only
-            // qualified via publishesMirror — the same set registered above.
-            // Retry with backoff.
-            scheduleHeadlessRegisterRetry(name);
+    }
+    // A just-registered node—and a returning headless node after every service
+    // restart—needs a fresh catalog row. An unchanged mirror does not naturally
+    // re-publish during a quiet sync, so seeding only inside the registration
+    // branch makes a healthy cabinet disappear when the prior row ages out.
+    if (shouldHost && hostingReady) {
+        if (m_headless)
+            ensureFlagshipRepo();
+        for (int i = 0; i < m_repositories.size(); ++i) {
+            const RepositoryRecord &r = m_repositories.at(i);
+            if (!r.previewOnly && r.publishToNetwork &&
+                !r.mirrorPath.isEmpty() && QDir(r.mirrorPath).exists())
+                publishRepository(i, false);
         }
+    } else if (shouldHost) {
+        // Nothing else in an unattended run ever calls
+        // registerNodeAccountSilently() again — so a transient failure here
+        // (relay unreachable right at boot is the common case on a fresh VPS)
+        // would otherwise strand the node unregistered forever.
+        scheduleHeadlessRegisterRetry(name);
     }
 
     if (m_serverUrlEdit->text().trimmed().isEmpty())
@@ -1787,18 +1865,47 @@ void MainWindow::startOfficeChannelMirror()
         m_officeChannelMirror->setSigner([this](const QByteArray &canonical) {
             return m_profileIdentity.signData(canonical);
         });
+        m_officeChannelMirror->setConnectionAuthorizer(
+            [this](const QUrl &endpoint) {
+                return authorizeFirewallConnection(QStringLiteral("WebSocket"),
+                                                   endpoint);
+            });
         connect(m_officeChannelMirror, &OfficeChannelMirror::messageArrived,
                 this, &MainWindow::onMessage);
+        connect(m_officeChannelMirror, &OfficeChannelMirror::sendActivity,
+                this, &MainWindow::logSystem);
+        connect(m_officeChannelMirror, &OfficeChannelMirror::messageSendFailed,
+                this,
+                [this](const QString &conversation, const QString &text,
+                       const QString &reason) {
+                    logSystem(QStringLiteral("Office chat: could not send to %1 "
+                                             "(%2).")
+                                  .arg(conversation, reason));
+                    // Preserve the user's text when an async ticket/socket
+                    // operation fails instead of silently eating the message.
+                    if (conversation == m_currentConversation &&
+                        m_messageInput && m_messageInput->text().isEmpty()) {
+                        m_messageInput->setText(text);
+                        m_messageInput->setFocus();
+                    }
+                });
         connect(m_officeChannelMirror, &OfficeChannelMirror::conversationsChanged,
                 this, [this](const QStringList &conversations) {
                     m_officeConversations = conversations;
                     // setChannels() rebuilds the sidebar from the mesh rooms
                     // plus these mirrors, so re-entering it merges them in.
                     setChannels(m_channels);
+                    refreshChatMembers();
+                });
+        connect(m_officeChannelMirror, &OfficeChannelMirror::roomMembersChanged,
+                this, [this](const QString &conversation, const QStringList &) {
+                    if (conversation == m_currentConversation)
+                        refreshChatMembers();
                 });
     }
     m_officeChannelMirror->setApiBase(catalogApiUrl());
-    m_officeChannelMirror->setIdentity(node, m_profileIdentity.publicKey());
+    m_officeChannelMirror->setIdentity(node, m_profileIdentity.publicKey(),
+                                       chatDisplayName());
     m_officeChannelMirror->start(); // no-op once polling
 }
 
@@ -2352,8 +2459,28 @@ void MainWindow::ensureFlagshipRepo()
                 changed = true;
             }
             if (m_headless && !repo.localPath.trimmed().isEmpty()) {
-                repo.localPath.clear();
-                changed = true;
+                // Headless agent workers need a real working tree. Older
+                // bootstrap code unconditionally discarded the installer-
+                // provisioned checkout here, leaving a healthy mirror and
+                // installed provider CLIs unable to claim any job. Preserve a
+                // private checkout beneath the service account's home, while
+                // still rejecting stale, external, or missing paths copied
+                // from another machine.
+                const QString localPath =
+                    QFileInfo(repo.localPath).canonicalFilePath();
+                const QString serviceHome =
+                    QFileInfo(QDir::homePath()).canonicalFilePath();
+                const bool serviceManagedCheckout =
+                    !localPath.isEmpty() && !serviceHome.isEmpty() &&
+                    (localPath == serviceHome ||
+                     localPath.startsWith(serviceHome + QLatin1Char('/'))) &&
+                    QFileInfo(QDir(localPath).filePath(
+                                  QStringLiteral(".git")))
+                        .exists();
+                if (!serviceManagedCheckout) {
+                    repo.localPath.clear();
+                    changed = true;
+                }
             }
             if (repo.mirrorPath.trimmed().isEmpty() ||
                 (m_headless &&
@@ -2511,6 +2638,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         m_profileIsUserAccount =
             lookup.value(QStringLiteral("kind")).toString() ==
             QStringLiteral("user");
+        cacheWebUserSolanaProfile(accountName, lookup);
         QSettings().setValue(kAuthedAccountSetting, accountName);
         applyAccountEmailVerified(accountName,
                                   lookup.value("emailVerified").toBool());
@@ -2666,6 +2794,13 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
         lookup.value("pubkey").toString() == m_profileIdentity.publicKey()) {
         if (reclaimWithInstallerLinkCode())
             return true;
+        // The node half may arrive before the installing desktop's signed
+        // offer. Do not declare this orphan account ready: keep the bounded
+        // retry alive until the rendezvous attaches an owner, otherwise the
+        // node can chat while every authenticated catalog write is rejected.
+        if (installerLinkPending &&
+            lookup.value("owner").toString().trimmed().isEmpty())
+            return false;
         activateSession(lookup.value("owner").toString(),
                         lookup.value("emailVerified").toBool());
         return true;
@@ -2750,7 +2885,15 @@ void MainWindow::scheduleHeadlessRegisterRetry(const QString &accountName)
         m_headlessRegisterRetryTimer->setSingleShot(true);
         connect(m_headlessRegisterRetryTimer, &QTimer::timeout, this,
                 [this, accountName] {
-                    if (hasOwnerSigningCapability(accountName))
+                    const QString linkCode =
+                        qEnvironmentVariable("FORKMESH_LINK_CODE").trimmed();
+                    static const QRegularExpression linkCodeRe(
+                        QStringLiteral("^[0-9]{6}$"));
+                    const bool installerLinkPending =
+                        linkCodeRe.match(linkCode).hasMatch() &&
+                        m_nodeOwnerUser.trimmed().isEmpty();
+                    if (hasOwnerSigningCapability(accountName) &&
+                        !installerLinkPending)
                         return;
                     if (registerNodeAccountSilently(accountName)) {
                         m_headlessRegisterAttempt = 0;
@@ -2836,6 +2979,10 @@ bool MainWindow::verifyTotpLogin(const QString &email,
         // and the web dashboard show the same picture. Adopt a picture already
         // set on the account; otherwise upload the one chosen locally.
         m_accountSessionToken = payload.value("sessionToken").toString();
+        m_profileIsUserAccount =
+            payload.value(QStringLiteral("kind")).toString() ==
+            QStringLiteral("user");
+        cacheWebUserSolanaProfile(m_accountName, payload);
         // Register only this device's public hybrid encryption bundle. This
         // makes the account ready to be named as a private-repo collaborator;
         // the X25519 and ML-KEM private halves stay in the encrypted local vault.
@@ -2855,6 +3002,7 @@ bool MainWindow::verifyTotpLogin(const QString &email,
         } else {
             pushAccountAvatar();
         }
+        updateUserSwitcher();
     };
 
     if (status == 200 && resp.value("ok").toBool()) {

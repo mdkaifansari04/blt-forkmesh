@@ -613,11 +613,14 @@ void ServerNode::handleLinkLost()
         m_helloAdvertiseTimer->stop();
     if (m_connectTimeoutTimer)
         m_connectTimeoutTimer->stop();
+    const bool wasConnected = m_wsReady;
     m_wsReady = false;
     m_wsConnectedAtMs = 0;
     m_peers.clear();
     m_lastHelloReplyMs.clear();
     emit networkDiagnosticsChanged();
+    if (wasConnected)
+        emit connectionChanged(false);
     updateRosterAndStatus();
     scheduleReconnect();
 }
@@ -686,6 +689,7 @@ void ServerNode::onSocketReadyRead()
         emit channelsChanged(m_channels);
         updateRosterAndStatus();
         emit statusChanged("Connected to encrypted mainnode room " + m_roomName);
+        emit connectionChanged(true);
         emit networkDiagnosticsChanged();
         sendHello(true, true);
         if (!m_avatarPng.isEmpty())
@@ -1558,10 +1562,13 @@ void ServerNode::shutdown()
         m_connectTimeoutTimer->stop();
     QJsonObject bye = makeMessage("bye");
     sendEncrypted(bye, true);
+    const bool wasConnected = m_wsReady;
     discardCurrentSocket();
     m_attemptActive = false;
     m_wsReady = false;
     m_wsConnectedAtMs = 0;
+    if (wasConnected)
+        emit connectionChanged(false);
     emit networkDiagnosticsChanged();
 }
 

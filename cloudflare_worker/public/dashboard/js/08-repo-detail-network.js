@@ -98,7 +98,7 @@
             <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="settings" class="h-3.5 w-3.5 text-primary"></i>Repository settings</span>
           </div>
           <form data-repo-settings-form class="grid gap-4 p-4">
-            <fieldset id="operational-alerts" data-repo-operational-alerts tabindex="-1" class="grid gap-2 scroll-mt-20 rounded-md border border-border p-3 text-xs text-muted-foreground outline-none focus:ring-2 focus:ring-primary/50">
+            <fieldset class="grid gap-2 rounded-md border border-border p-3 text-xs text-muted-foreground">
               <legend class="px-1 text-[11px] font-semibold uppercase tracking-wide">ActivityPub federation</legend>
               <label class="inline-flex items-start gap-2"><input data-repo-ap-federate type="checkbox" class="mt-0.5 h-3.5 w-3.5" checked />Federate this repository (fediverse actor and handle)</label>
               <label class="inline-flex items-start gap-2"><input data-repo-ap-broadcast type="checkbox" class="mt-0.5 h-3.5 w-3.5" checked />Include meaningful public updates in one automated digest at most every 24 hours</label>
@@ -112,11 +112,6 @@
                 <p class="mt-1 leading-5">Only public titles, stable links, categories and UTC times enter the encrypted bounded queue. Empty digests are never posted.</p>
                 <pre data-repo-digest-preview class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-3 font-mono text-[11px] leading-5 text-foreground">Loading preview…</pre>
               </div>`}
-            </fieldset>
-            <fieldset class="grid gap-2 rounded-md border border-border p-3 text-xs text-muted-foreground">
-              <legend class="px-1 text-[11px] font-semibold uppercase tracking-wide">Operational alerts</legend>
-              <label class="inline-flex items-start gap-2"><input data-repo-alert-status-emails type="checkbox" class="mt-0.5 h-3.5 w-3.5" />Email this organization's administrators when a ForkMesh system check fails, and again when it recovers</label>
-              <p class="leading-5">Off by default. Nobody receives outage or recovery mail until an organization administrator turns this on.</p>
             </fieldset>
             <p class="text-[11px] leading-5 text-muted-foreground">Saved to the relay now and written into the repository's committed <span class="font-mono">.forkmesh/info.json</span> the next time the owner's node syncs.</p>
             <div class="flex flex-wrap items-center justify-between gap-2">
@@ -148,6 +143,7 @@
                 <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
                 <h2 class="min-w-0 truncate text-lg font-semibold text-foreground"><span class="text-muted-foreground"><a href="/@${encodeURIComponent(String(repo.owner || "").toLowerCase())}" data-repo-owner-link class="hover:text-foreground hover:underline">${escapeHtml(repo.owner || "owner")}</a>/</span>${escapeHtml(repo.name || "repository")}</h2>
                 <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${repo.isPrivate ? "private" : "public"}</span>
+                ${repositoryTermsBadge(repo)}
                 <span data-repo-availability-status class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "served by mirror" : live ? "mirror online" : "mirror offline"}</span>
               </div>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
@@ -400,16 +396,6 @@
     // markup underneath) is already on the right tab.
     const initialTab = repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code";
     setRepoTab(initialTab);
-    if (
-      initialTab === "settings" &&
-      window.location.hash === "#operational-alerts"
-    ) {
-      window.requestAnimationFrame(() => {
-        const alerts = document.querySelector("[data-repo-operational-alerts]");
-        alerts?.scrollIntoView({ block: "center" });
-        alerts?.focus({ preventScroll: true });
-      });
-    }
     window.lucide?.createIcons();
     // When the URL restored a feature tab (or a record detail), the tree/README
     // load is only a warm-up for a later click on Code — run it in background
@@ -1302,6 +1288,7 @@
     // The blog card fills in from the edge-cached feed; the baked markup
     // already shows its loading state.
     void loadHomeBlogPosts();
+    void loadHomeOrganizationRepositories();
     // Feed + top repositories fill in when loadRepositories()/loadNotifications()
     // resolve — both re-render the home containers.
     // Active agent sessions (adhoc #81) need the catalog first so we know which
@@ -2040,6 +2027,14 @@
         return;
       }
 
+      const marketingInitiativeButton = event.target.closest(
+        "[data-repo-marketing-initiative]",
+      );
+      if (marketingInitiativeButton) {
+        void moveIssueToMarketingInitiatives(marketingInitiativeButton);
+        return;
+      }
+
       const pullViewedButton = event.target.closest("[data-repo-pull-viewed]");
       if (pullViewedButton && state.selectedRepo) {
         toggleRepoPullViewed(
@@ -2193,9 +2188,6 @@
             federate: Boolean(settingsForm.querySelector("[data-repo-ap-federate]")?.checked),
             broadcastEvents: Boolean(settingsForm.querySelector("[data-repo-ap-broadcast]")?.checked),
             acceptComments: Boolean(settingsForm.querySelector("[data-repo-ap-comments]")?.checked),
-          },
-          alerts: {
-            statusEmails: Boolean(settingsForm.querySelector("[data-repo-alert-status-emails]")?.checked),
           },
         });
         setRepoSettingsStatus("Settings saved.", "good");

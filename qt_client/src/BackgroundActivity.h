@@ -1,6 +1,10 @@
 #pragma once
 
+#include "ActionTelemetry.h"
+
 #include <QAtomicInteger>
+#include <QDateTime>
+#include <QHash>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QString>
@@ -27,21 +31,53 @@ class BackgroundActivity
 {
 public:
     // started == false means the ticket is being retired; kind/detail are empty.
+    // Execution is retained on both edges so the UI can distinguish genuinely
+    // asynchronous work from a GUI-thread blocking scope without guessing from
+    // how quickly it happened to finish.
     using Listener = std::function<void(quint64 id, const QString &kind,
-                                        const QString &detail, bool started)>;
+                                        const QString &detail,
+                                        ActionTelemetry::Execution execution,
+                                        bool started)>;
 
-    static quint64 begin(const QString &kind, const QString &detail = QString())
+    static quint64 begin(
+        const QString &kind, const QString &detail = QString(),
+        ActionTelemetry::Execution execution = ActionTelemetry::Execution::Async)
     {
         const quint64 id = state().nextId.fetchAndAddOrdered(1);
-        notify(id, kind, detail, true);
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        {
+            QMutexLocker lock(&state().mutex);
+            state().tickets.insert(id, Ticket{kind, detail, execution, now});
+        }
+        ActionTelemetry::started(id, kind, detail, execution, now);
+        notify(id, kind, detail, execution, true);
         return id;
     }
 
-    static void end(quint64 id)
+    static void end(quint64 id,
+                    const QString &outcome = QStringLiteral("completed"))
     {
         if (id == 0)
             return;
-        notify(id, QString(), QString(), false);
+        Ticket ticket;
+        bool found = false;
+        {
+            QMutexLocker lock(&state().mutex);
+            const auto it = state().tickets.find(id);
+            if (it != state().tickets.end()) {
+                ticket = *it;
+                state().tickets.erase(it);
+                found = true;
+            }
+        }
+        if (found) {
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            ActionTelemetry::finished(id, ticket.kind, ticket.detail,
+                                      ticket.execution, ticket.startedAtMs, now,
+                                      outcome);
+        }
+        if (found)
+            notify(id, QString(), QString(), ticket.execution, false);
     }
 
     // Only the window installs a listener; passing a default-constructed
@@ -53,9 +89,18 @@ public:
     }
 
 private:
+    struct Ticket {
+        QString kind;
+        QString detail;
+        ActionTelemetry::Execution execution =
+            ActionTelemetry::Execution::Async;
+        qint64 startedAtMs = 0;
+    };
+
     struct State {
         QMutex mutex;
         Listener listener;
+        QHash<quint64, Ticket> tickets;
         QAtomicInteger<quint64> nextId = 1;
     };
 
@@ -66,18 +111,17 @@ private:
     }
 
     static void notify(quint64 id, const QString &kind, const QString &detail,
-                       bool started)
+                       ActionTelemetry::Execution execution, bool started)
     {
         QMutexLocker lock(&state().mutex);
         if (state().listener)
-            state().listener(id, kind, detail, started);
+            state().listener(id, kind, detail, execution, started);
     }
 };
 
-// Work that retires inside this window never gets a row in the strip, so the
-// same threshold is what the log's outcome marker means: ✓ "this ran in the
-// background" vs ✕ "this finished inline, nothing was ever backgrounded"
-// (adhoc #419).
+// Work that retires inside this window never gets a row in the strip. This
+// delay is presentation-only; execution metadata, not elapsed time, determines
+// whether the work was actually backgrounded.
 constexpr qint64 kBackgroundShowAfterMs = 200;
 
 inline QString backgroundOkGlyph() { return QString::fromUtf8("\xE2\x9C\x93"); }
@@ -96,9 +140,9 @@ inline QString backgroundElapsedText(qint64 ms)
 // of same-kind tickets that all came and went too fast to be backgrounded, in
 // which case `elapsedMs` is the longest of them.
 inline QString backgroundOutcomeLine(const QString &word, int runs,
-                                     qint64 elapsedMs, const QString &detail)
+                                     qint64 elapsedMs, const QString &detail,
+                                     bool backgrounded)
 {
-    const bool backgrounded = elapsedMs >= kBackgroundShowAfterMs;
     QString line = QStringLiteral("Background %1 %2")
                        .arg(backgrounded ? backgroundOkGlyph()
                                          : backgroundNotGlyph(),
@@ -149,8 +193,10 @@ class BackgroundScope
 {
 public:
     explicit BackgroundScope(const QString &kind,
-                             const QString &detail = QString())
-        : m_id(BackgroundActivity::begin(kind, detail))
+                             const QString &detail = QString(),
+                             ActionTelemetry::Execution execution =
+                                 ActionTelemetry::Execution::Async)
+        : m_id(BackgroundActivity::begin(kind, detail, execution))
     {
     }
     ~BackgroundScope() { BackgroundActivity::end(m_id); }

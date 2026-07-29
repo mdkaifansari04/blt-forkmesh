@@ -1,6 +1,6 @@
 // Local control-node operations: mirror lifecycle/sync/health, repository
 // permissions, local identity and public wallet connection, Cloudflare relay
-// bootstrap, remote hosts, logs, and the browser World portal.
+// bootstrap, remote hosts, and logs.
 
 #include "ControlNode.h"
 #include "MainWindow.h"
@@ -8,7 +8,6 @@
 #include "PrivateMirrorStore.h"
 #include "PublicMirrorRuntime.h"
 
-#include <QDesktopServices>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHeaderView>
@@ -217,6 +216,18 @@ bool controlMirrorReady(const RepositoryRecord &repo)
         root, repo.privateReplicaId, &metadata, nullptr);
 }
 
+QString controlMirrorReadyKey(const RepositoryRecord &repo)
+{
+    if (repo.isPrivate) {
+        return PrivateMirrorStore::isOpaqueId(repo.privateReplicaId)
+                   ? QStringLiteral("private:") + repo.privateReplicaId
+                   : QString();
+    }
+    return PublicMirrorRuntime::isArchiveId(repo.publicArchiveId)
+               ? QStringLiteral("public:") + repo.publicArchiveId
+               : QString();
+}
+
 } // namespace
 
 QWidget *MainWindow::buildControlNodeSection()
@@ -236,14 +247,6 @@ QWidget *MainWindow::buildControlNodeSection()
     title->setFont(titleFont);
     header->addWidget(title);
     header->addStretch();
-    auto *worldButton = new QPushButton(QStringLiteral("Open ForkMesh World"));
-    worldButton->setObjectName(QStringLiteral("controlOpenWorldButton"));
-    worldButton->setProperty("buttonSize", "primary");
-    worldButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(worldButton, QStringLiteral("home"), 14);
-    connect(worldButton, &QPushButton::clicked, this,
-            &MainWindow::openForkMeshWorld);
-    header->addWidget(worldButton);
     outer->addLayout(header);
     outer->addWidget(controlHint(
         QStringLiteral(
@@ -596,7 +599,11 @@ QWidget *MainWindow::buildControlNodeSection()
     outer->addWidget(scroll, 1);
 
     m_controlNodeRefreshTimer = new QTimer(page);
-    m_controlNodeRefreshTimer->setInterval(3000);
+    // Process/gateway labels are cheap, but the mirror readiness snapshot is
+    // deliberately cached and backgrounded below. Ten seconds is ample for an
+    // operational dashboard and avoids rebuilding widgets while the user is
+    // interacting with the table.
+    m_controlNodeRefreshTimer->setInterval(10000);
     connect(m_controlNodeRefreshTimer, &QTimer::timeout, this, [this] {
         if (m_sectionStack &&
             m_sectionStack->currentIndex() == kControlNodeSectionIndex) {
@@ -624,16 +631,30 @@ void MainWindow::openCloudflareSetupFromSystemLink()
 
 void MainWindow::refreshControlNode()
 {
+    refreshControlMirrorReadiness();
+
     int tracked = 0;
     int mirrors = 0;
     int missing = 0;
+    int checking = 0;
     int serving = 0;
+    QHash<QString, int> readiness;
     for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
         if (repo.previewOnly)
             continue;
         ++tracked;
-        if (controlMirrorReady(repo)) {
+        const QString key = controlMirrorReadyKey(repo);
+        const auto cached = m_controlMirrorReadyCache.constFind(key);
+        const int state =
+            key.isEmpty() ? 0
+                          : (cached == m_controlMirrorReadyCache.constEnd()
+                                 ? -1
+                                 : (*cached ? 1 : 0));
+        readiness.insert(repoControlKey(repo), state);
+        if (state > 0) {
             ++mirrors;
+        } else if (state < 0) {
+            ++checking;
         } else {
             ++missing;
         }
@@ -655,7 +676,7 @@ void MainWindow::refreshControlNode()
                 "<b>%1</b> · HTTPS gateway %2 · Tunnel %3 · "
                 "repository signals use bounded HTTPS sync · "
                 "%4/%5 encrypted mirror(s) · "
-                "%6 configured to serve · %7 sync job(s)")
+                "%6 configured to serve · %7 sync job(s)%8")
                 .arg(state)
                 .arg(gatewayRunning
                          ? (m_directMirrorGatewayHealthy
@@ -667,7 +688,11 @@ void MainWindow::refreshControlNode()
                 .arg(mirrors)
                 .arg(tracked)
                 .arg(serving)
-                .arg(m_syncingRepos.size()));
+                .arg(m_syncingRepos.size())
+                .arg(checking > 0
+                         ? QStringLiteral(" · %1 readiness check(s) running")
+                               .arg(checking)
+                         : QString()));
         m_controlNodeStatus->setTextFormat(Qt::RichText);
     }
     if (m_controlNodeHealth) {
@@ -727,6 +752,23 @@ void MainWindow::refreshControlNode()
 
     if (!m_controlPermissionsTable || m_controlRefreshingPermissions)
         return;
+    QString permissionsSignature;
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (repo.previewOnly)
+            continue;
+        permissionsSignature +=
+            repoControlKey(repo) + QLatin1Char('|') +
+            QString::number(readiness.value(repoControlKey(repo), -1)) +
+            QLatin1Char('|') + QString::number(repo.isPrivate) +
+            QLatin1Char('|') + QString::number(repo.publishToNetwork) +
+            QLatin1Char('|') + QString::number(repo.actionsEnabled) +
+            QLatin1Char('|') + QString::number(repo.secretScanningEnabled) +
+            QLatin1Char('|') + QString::number(repo.lastSyncMs) +
+            QLatin1Char('\n');
+    }
+    if (permissionsSignature == m_controlPermissionsSignature)
+        return;
+    m_controlPermissionsSignature = permissionsSignature;
     m_controlRefreshingPermissions = true;
     m_controlPermissionsTable->setRowCount(0);
     for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
@@ -739,17 +781,25 @@ void MainWindow::refreshControlNode()
         name->setData(Qt::UserRole, key);
         name->setFlags(name->flags() & ~Qt::ItemIsEditable);
         m_controlPermissionsTable->setItem(row, 0, name);
+        const int mirrorState = readiness.value(key, -1);
         auto *mirror = new QTableWidgetItem(
-            controlMirrorReady(repo) ? QStringLiteral("Ready")
-                                     : QStringLiteral("Missing"));
+            mirrorState > 0
+                ? QStringLiteral("Ready")
+                : (mirrorState < 0 ? QStringLiteral("Checking…")
+                                   : QStringLiteral("Missing")));
         mirror->setFlags(mirror->flags() & ~Qt::ItemIsEditable);
         mirror->setToolTip(
-            controlMirrorReady(repo)
+            mirrorState > 0
                 ? QStringLiteral(
                       "Authenticated encrypted mirror storage is ready. "
                       "Plaintext exists only in owner-only runtime storage.")
-                : QStringLiteral(
-                      "No authenticated encrypted mirror archive is ready."));
+                : (mirrorState < 0
+                       ? QStringLiteral(
+                             "Authenticating encrypted mirror storage on a "
+                             "background worker.")
+                       : QStringLiteral(
+                             "No authenticated encrypted mirror archive is "
+                             "ready.")));
         m_controlPermissionsTable->setItem(row, 1, mirror);
 
         auto addToggle = [this, row, &key](int column, const QString &permission,
@@ -787,6 +837,63 @@ void MainWindow::refreshControlNode()
         m_controlPermissionsTable->setItem(row, 6, last);
     }
     m_controlRefreshingPermissions = false;
+}
+
+void MainWindow::refreshControlMirrorReadiness()
+{
+    if (m_controlMirrorProbeInFlight)
+        return;
+
+    struct Probe {
+        QString key;
+        RepositoryRecord repo;
+    };
+    QList<Probe> probes;
+    bool hasUnknown = false;
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (repo.previewOnly)
+            continue;
+        const QString key = controlMirrorReadyKey(repo);
+        if (key.isEmpty())
+            continue;
+        probes.append({key, repo});
+        hasUnknown = hasUnknown || !m_controlMirrorReadyCache.contains(key);
+    }
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    constexpr qint64 kReadinessRefreshMs = 5 * 60 * 1000;
+    if (!hasUnknown && m_controlMirrorProbeCompletedAtMs > 0 &&
+        now - m_controlMirrorProbeCompletedAtMs < kReadinessRefreshMs) {
+        return;
+    }
+    if (probes.isEmpty()) {
+        m_controlMirrorReadyCache.clear();
+        m_controlMirrorProbeCompletedAtMs = now;
+        return;
+    }
+
+    m_controlMirrorProbeInFlight = true;
+    auto result = std::make_shared<QHash<QString, bool>>();
+    QThread *worker = QThread::create([probes, result] {
+        const forkmesh::BackgroundScope activity(
+            QStringLiteral("mirrors"),
+            QStringLiteral("authenticate %1 encrypted mirror(s)")
+                .arg(probes.size()),
+            forkmesh::ActionTelemetry::Execution::Worker);
+        for (const Probe &probe : probes)
+            result->insert(probe.key, controlMirrorReady(probe.repo));
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    connect(worker, &QThread::finished, this, [this, result] {
+        m_controlMirrorProbeInFlight = false;
+        m_controlMirrorProbeCompletedAtMs =
+            QDateTime::currentMSecsSinceEpoch();
+        if (m_controlMirrorReadyCache != *result) {
+            m_controlMirrorReadyCache = *result;
+            m_controlPermissionsSignature.clear();
+        }
+        refreshControlNode();
+    });
+    worker->start();
 }
 
 void MainWindow::runControlNodeHealthCheck()
@@ -833,14 +940,28 @@ void MainWindow::runControlNodeHealthCheck()
                  .isEmpty()
              ? QStringLiteral("verified cloudflared installer missing")
              : QStringLiteral("verified cloudflared installer OK"));
+    refreshControlMirrorReadiness();
     int unhealthy = 0;
+    int checking = 0;
     for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
-        if (!repo.previewOnly &&
-            !controlMirrorReady(repo)) {
+        if (repo.previewOnly)
+            continue;
+        const QString key = controlMirrorReadyKey(repo);
+        const auto cached = m_controlMirrorReadyCache.constFind(key);
+        if (!key.isEmpty() &&
+            cached == m_controlMirrorReadyCache.constEnd()) {
+            ++checking;
+        } else if (key.isEmpty() ||
+                   cached == m_controlMirrorReadyCache.constEnd() ||
+                   !*cached) {
             ++unhealthy;
         }
     }
     results << QStringLiteral("%1 missing mirror path(s)").arg(unhealthy);
+    if (checking > 0) {
+        results << QStringLiteral("%1 mirror check(s) running in background")
+                       .arg(checking);
+    }
     results << (m_backend ? QStringLiteral("relay connected")
                           : QStringLiteral("relay offline"));
     checkDirectMirrorGatewayHealth();
@@ -2414,53 +2535,6 @@ void MainWindow::connectToDeployedRelay(const QString &hostname)
         QStringLiteral("Added %1 to this desktop's relay list.\n").arg(host));
     refreshRelaysTable();
     switchToServer(index);
-}
-
-void MainWindow::openForkMeshWorld()
-{
-    const QString relay =
-        (m_activeServer >= 0 && m_activeServer < m_servers.size())
-            ? m_servers.at(m_activeServer).url
-            : QString(kDefaultServerUrl);
-    const QUrl relayWorld = forkmesh::control::worldUrlForRelay(relay);
-    const auto openWorld = [this](const QUrl &url, const QString &where) {
-        if (!url.isValid() || url.host().isEmpty() ||
-            !QDesktopServices::openUrl(url)) {
-            flashMessage(QStringLiteral("Could not open ForkMesh World."), true);
-            return;
-        }
-        logSystem(QStringLiteral("Control node: opened %1 in the browser.")
-                      .arg(where));
-    };
-
-    // Prefer a running local World dev server (tools/world_dev_server.py): it
-    // serves the checkout's frontend while its API + login stay proxied to the
-    // main server, so local World changes are tested against live accounts.
-    // The probe is async and only trusts the server's marker header, so a
-    // stranger listening on the port cannot claim the World button.
-    const QUrl devUrl = forkmesh::control::worldDevServerUrl(
-        QSettings().value(kWorldDevUrlSetting).toString());
-    if (!devUrl.isValid() || !m_networkAccess) {
-        openWorld(relayWorld, QStringLiteral("ForkMesh World"));
-        return;
-    }
-    QNetworkRequest probe(devUrl);
-    probe.setTransferTimeout(700);
-    QNetworkReply *reply = m_networkAccess->head(probe);
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, devUrl, relayWorld, openWorld] {
-                reply->deleteLater();
-                const bool isDevServer =
-                    reply->error() == QNetworkReply::NoError &&
-                    reply->hasRawHeader("X-ForkMesh-World-Dev");
-                if (isDevServer) {
-                    openWorld(devUrl,
-                              QStringLiteral("the local World dev copy (%1)")
-                                  .arg(devUrl.toString()));
-                } else {
-                    openWorld(relayWorld, QStringLiteral("ForkMesh World"));
-                }
-            });
 }
 
 void MainWindow::deploySavedHostsFromControl()

@@ -68,6 +68,25 @@ MAX_ACTIONS_SUMMARY_BYTES = 256 * 1024
 MAX_ACTIONS_SUMMARY_RUNS = 20
 MAX_ACTIONS_LOG_TAIL_BYTES = 16 * 1024
 MAX_ACTIONS_SUMMARY_LEASE_MS = 15 * 60 * 1000
+SERVICE_COUNTERS_FILE = "service-counters.json"
+SERVICE_COUNTERS_TYPE = "forkmesh.mirror-service-counters"
+MAX_SERVICE_COUNTERS_BYTES = 1024 * 1024
+MAX_SERVICE_COUNTER = 999_999_999_999
+MAX_SAFE_JSON_INTEGER = (1 << 53) - 1
+WEBSITE_COUNTER_OPERATIONS = frozenset({
+    "tree",
+    "blobs",
+    "blob",
+    "raw",
+    "history",
+    "commit",
+    "compare",
+    "branches",
+    "search",
+    "stats",
+    "sizes",
+    "release-blob",
+})
 MAX_ACTIONS_SUMMARY_CLOCK_SKEW_MS = 60 * 1000
 SYSTEM_ACTIONS_SUMMARY_PATH = Path(
     "/var/lib/forkmesh-mirror/gateway/actions-summary.json"
@@ -3072,6 +3091,203 @@ class ReplayCache:
             return True
 
 
+class GatewayServiceCounters:
+    """Persist content-free clone and website totals beside gateway config."""
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        clock_ms: Callable[[], int],
+    ) -> None:
+        self.path = path
+        self.clock_ms = clock_ms
+        self._lock = threading.Lock()
+        self._repositories: dict[str, dict[str, int]] = {}
+        self._dirty = False
+        self._flush_timer: threading.Timer | None = None
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            info = self.path.lstat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or not 0 < info.st_size <= MAX_SERVICE_COUNTERS_BYTES
+            ):
+                return
+            value = json.loads(self.path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"schemaVersion", "type", "repositories"}
+            or value.get("schemaVersion") != SCHEMA_VERSION
+            or value.get("type") != SERVICE_COUNTERS_TYPE
+            or not isinstance(value.get("repositories"), dict)
+        ):
+            return
+        loaded: dict[str, dict[str, int]] = {}
+        for key, row in list(value["repositories"].items())[:4096]:
+            if (
+                not isinstance(key, str)
+                or len(key) > 220
+                or key.count("/") != 1
+                or not isinstance(row, dict)
+                or set(row)
+                != {"clonesServed", "websiteServed", "updatedAt"}
+            ):
+                continue
+            owner, repository = key.split("/", 1)
+            if (
+                not NODE_RE.fullmatch(owner)
+                or not REPO_RE.fullmatch(repository)
+            ):
+                continue
+            fields: dict[str, int] = {}
+            valid = True
+            for field in ("clonesServed", "websiteServed", "updatedAt"):
+                raw = row.get(field)
+                if isinstance(raw, bool):
+                    valid = False
+                    break
+                try:
+                    fields[field] = int(raw)
+                except (TypeError, ValueError, OverflowError):
+                    valid = False
+                    break
+            if (
+                not valid
+                or not 0 <= fields["clonesServed"] <= MAX_SERVICE_COUNTER
+                or not 0 <= fields["websiteServed"] <= MAX_SERVICE_COUNTER
+                or not 0 <= fields["updatedAt"] <= MAX_SAFE_JSON_INTEGER
+            ):
+                continue
+            loaded[key] = fields
+        self._repositories = loaded
+
+    def _save(self) -> None:
+        payload = _canonical_json({
+            "schemaVersion": SCHEMA_VERSION,
+            "type": SERVICE_COUNTERS_TYPE,
+            "repositories": self._repositories,
+        }) + "\n"
+        encoded = payload.encode("utf-8")
+        if len(encoded) > MAX_SERVICE_COUNTERS_BYTES:
+            raise GatewayError("service counters are full")
+        parent = self.path.parent
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor, staged_name = tempfile.mkstemp(
+            prefix=".service-counters-",
+            suffix=".json",
+            dir=parent,
+        )
+        staged = Path(staged_name)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = -1
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(staged, self.path)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            try:
+                staged.unlink()
+            except FileNotFoundError:
+                pass
+
+    def record(
+        self,
+        owner: str,
+        repository: str,
+        operation: str,
+    ) -> bool:
+        if operation == "git-upload-pack":
+            field = "clonesServed"
+        elif operation in WEBSITE_COUNTER_OPERATIONS:
+            field = "websiteServed"
+        else:
+            return False
+        key = owner.lower() + "/" + repository.lower()
+        if (
+            not NODE_RE.fullmatch(owner.lower())
+            or not REPO_RE.fullmatch(repository)
+        ):
+            return False
+        with self._lock:
+            previous = dict(self._repositories.get(key, {
+                "clonesServed": 0,
+                "websiteServed": 0,
+                "updatedAt": 0,
+            }))
+            previous[field] = min(
+                MAX_SERVICE_COUNTER,
+                previous[field] + 1,
+            )
+            previous["updatedAt"] = min(
+                MAX_SAFE_JSON_INTEGER,
+                max(0, int(self.clock_ms())),
+            )
+            self._repositories[key] = previous
+            self._dirty = True
+            if self._flush_timer is None:
+                self._flush_timer = threading.Timer(1.0, self.flush)
+                self._flush_timer.daemon = True
+                self._flush_timer.start()
+        return True
+
+    def ensure_repository(self, owner: str, repository: str) -> bool:
+        clean_owner = owner.lower()
+        clean_repository = repository.lower()
+        if (
+            not NODE_RE.fullmatch(clean_owner)
+            or not REPO_RE.fullmatch(clean_repository)
+        ):
+            return False
+        key = clean_owner + "/" + clean_repository
+        with self._lock:
+            if key in self._repositories:
+                return True
+            self._repositories[key] = {
+                "clonesServed": 0,
+                "websiteServed": 0,
+                "updatedAt": min(
+                    MAX_SAFE_JSON_INTEGER,
+                    max(0, int(self.clock_ms())),
+                ),
+            }
+            self._dirty = True
+            if self._flush_timer is None:
+                self._flush_timer = threading.Timer(1.0, self.flush)
+                self._flush_timer.daemon = True
+                self._flush_timer.start()
+        return True
+
+    def flush(self) -> bool:
+        with self._lock:
+            timer = self._flush_timer
+            self._flush_timer = None
+            if timer is not None and timer is not threading.current_thread():
+                timer.cancel()
+            if not self._dirty:
+                return True
+            try:
+                self._save()
+            except (OSError, GatewayError):
+                return False
+            self._dirty = False
+            return True
+
+    def close(self) -> None:
+        self.flush()
+
+
 class GatewayApplication:
     def __init__(
         self,
@@ -3100,6 +3316,10 @@ class GatewayApplication:
         )
         self._materializer = materializer or ArchiveMaterializer()
         self.replays = ReplayCache()
+        self.service_counters = GatewayServiceCounters(
+            config.config_path.parent / SERVICE_COUNTERS_FILE,
+            clock_ms=clock_ms,
+        )
         self._merge_lock = threading.Lock()
         self._merge_threads: dict[str, threading.Thread] = {}
         self._merge_results: dict[str, dict[str, Any]] = {}
@@ -3144,6 +3364,10 @@ class GatewayApplication:
                 if not runtime.check_integrity(force=True):
                     raise GatewayError("public repository integrity pin mismatch")
                 self.repositories[(repository.owner, repository.name.lower())] = runtime
+                self.service_counters.ensure_repository(
+                    repository.owner,
+                    repository.name,
+                )
             except (GatewayError, GitError, OSError):
                 # Do not log the repository identity or local storage path.
                 self.quarantined_count += 1
@@ -3151,6 +3375,7 @@ class GatewayApplication:
         self._manifest = config.manifest_path.read_bytes()
 
     def close(self) -> None:
+        self.service_counters.close()
         self._temporary_root.cleanup()
         for root in self._retired_roots:
             root.cleanup()
@@ -3255,6 +3480,10 @@ class GatewayApplication:
         self._manifest = replacement._manifest
         self._temporary_root = replacement._temporary_root
         self._retired_roots.append(old_root)
+        # The replacement loaded the same durable counter file only so its
+        # newly validated repositories could be initialized. Keep this live
+        # application's in-memory tally and stop the replacement's timer.
+        replacement.service_counters.close()
 
     @staticmethod
     def _merge_response(value: Mapping[str, Any]) -> GatewayResponse:
@@ -3433,6 +3662,36 @@ class GatewayApplication:
                 "durationMs": max(0, int((time.monotonic() - started) * 1000)),
                 "bytes": max(0, int(byte_count)),
             }
+        )
+
+    def record_service_counter(
+        self,
+        target: str,
+        operation: str,
+        status: int,
+        *,
+        delivered: bool,
+    ) -> bool:
+        if not delivered or not 200 <= int(status) < 300:
+            return False
+        try:
+            pieces = urlsplit(target).path.split("/")
+            if (
+                len(pieces) != 6
+                or pieces[1:3] != ["v1", "repositories"]
+            ):
+                return False
+            owner = unquote(pieces[3], errors="strict").lower()
+            repository = unquote(pieces[4], errors="strict")
+            route_operation = unquote(pieces[5], errors="strict")
+        except (UnicodeError, ValueError):
+            return False
+        if operation != route_operation:
+            return False
+        return self.service_counters.record(
+            owner,
+            repository,
+            operation,
         )
 
     def _authorize(
@@ -3872,6 +4131,7 @@ class MirrorGatewayHandler(BaseHTTPRequestHandler):
         except GatewayError:
             response = json_response({"ok": False, "error": "bad_request"}, 400)
         byte_count = 0
+        delivered = False
         try:
             if response.stream is not None:
                 content_length = response.stream.content_length
@@ -3879,12 +4139,14 @@ class MirrorGatewayHandler(BaseHTTPRequestHandler):
                 content_length = len(response.body)
             self._send_headers(response, content_length=content_length)
             if self.command == "HEAD":
+                delivered = True
                 return
             if response.stream is not None:
                 byte_count = self._stream(response.stream)
             else:
                 self.wfile.write(response.body)
                 byte_count = len(response.body)
+            delivered = True
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
         finally:
@@ -3897,6 +4159,12 @@ class MirrorGatewayHandler(BaseHTTPRequestHandler):
                 status=response.status,
                 started=started,
                 byte_count=byte_count,
+            )
+            self.application.record_service_counter(
+                self.path,
+                operation,
+                response.status,
+                delivered=delivered,
             )
 
     def _send_headers(

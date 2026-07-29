@@ -817,7 +817,12 @@ def test_wire_contracts_across_worker_qt_and_installer():
     assert 'postAccountSync(\n            "reclaim-node"' in qt_setup
     assert '"forkmesh-reclaim-node-v1\\n" + accountName + "\\n" + pubkey +' in qt_setup
     assert "hasOwnerSigningCapability(accountName) && !installerLinkPending" in qt_setup
-    assert "!hasOwnerSigningCapability(name) || installerLinkPending" in qt_setup
+    assert "if (shouldHost && (!hostingReady || installerLinkPending))" in qt_setup
+    assert (
+        'if (installerLinkPending &&\n'
+        '            lookup.value("owner").toString().trimmed().isEmpty())'
+        in qt_setup
+    )
 
     # The heartbeat is the only channel that carries the claim code out.
     assert 'response["claim"]' in entry

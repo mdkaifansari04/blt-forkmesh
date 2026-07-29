@@ -184,6 +184,11 @@ void testDeterministicRecovery()
                     QStringLiteral("alice"), QStringLiteral("stable-node-id"),
                     harness.url(), forkmesh::mainnode::kDefaultRoomName,
                     QString(), QStringLiteral("test-room-passphrase"));
+    bool connectionSignalState = false;
+    QObject::connect(&node, &ServerNode::connectionChanged, &node,
+                     [&connectionSignalState](bool connectedNow) {
+                         connectionSignalState = connectedNow;
+                     });
     node.setTransportLimitsForTests(60, 20, 2048);
     node.setNetworkAvailable(false);
     check(node.start(), "ServerNode starts against the test endpoint");
@@ -196,6 +201,8 @@ void testDeterministicRecovery()
               return harness.connectionCount == 2 && connected(node);
           }, 1200),
           "a blackholed CONNECTING attempt times out and reconnects");
+    check(connectionSignalState,
+          "transport users are notified when encrypted sending is ready");
     check(!harness.requests.isEmpty() &&
               harness.requests.last().startsWith(
                   "GET " + forkmesh::mainnode::kRoomPath.toUtf8() + " "),
@@ -223,6 +230,8 @@ void testDeterministicRecovery()
     node.setNetworkAvailable(false);
     check(waitUntil([&] { return !connected(node); }, 200),
           "network loss tears down the live socket");
+    check(!connectionSignalState,
+          "transport users are notified when encrypted sending stops");
     const int offlineConnections = harness.connectionCount;
     waitUntil([] { return false; }, 120);
     check(harness.connectionCount == offlineConnections,
@@ -246,11 +255,9 @@ void testDeterministicRecovery()
 }
 
 
-// The World office's channel rooms reach the desktop as read-only mirrors: the
-// relay hands over the room's still-encrypted backlog, and this client opens it
-// with the room key. Pin the proof strings the account key signs (the Worker
-// verifies the same bytes), the conversation naming, and the fact that a frame
-// the office wrote decrypts into a desktop chat row.
+// The World office's channel rooms reach the desktop over signed history and
+// room-access endpoints. Pin the proof strings the account key signs (the
+// Worker verifies the same bytes), the conversation naming, and decryption.
 void testOfficeChannelMirror()
 {
     using namespace forkmesh::office;
@@ -272,6 +279,11 @@ void testOfficeChannelMirror()
               QByteArray("forkmesh-chat-channel-history-v1\nada\n") +
                   QByteArray(32, 'a') + QByteArray("\n17"),
           "channel-history proof matches CHAT_CHANNEL_HISTORY_PROOF");
+    check(channelAccessProof(QStringLiteral("ada"), QString(32, 'a'),
+                             QStringLiteral("17")) ==
+              QByteArray("forkmesh-chat-channel-access-v1\nada\n") +
+                  QByteArray(32, 'a') + QByteArray("\n17"),
+          "channel-access proof matches CHAT_CHANNEL_ACCESS_PROOF");
 
     const QString room = QStringLiteral("chat-channel:") + QString(32, 'b') +
                          QStringLiteral(":v1");

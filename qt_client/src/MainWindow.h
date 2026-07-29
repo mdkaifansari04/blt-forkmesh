@@ -64,6 +64,7 @@ struct AgentDiffStat {
 #include <QMap>
 #include <QMetaType>
 #include <QPixmap>
+#include <QPointer>
 #include <QSet>
 #include <QTextBlockUserData>
 #include <QTextCursor>
@@ -312,6 +313,14 @@ public:
     void testShowSettingsSection() { showSection(1); }
     void testShowLogSection() { showSection(4); }
     void testShowHostsSection() { showSection(7); }
+    void testSetDirectoryUserNodes(const QString &user,
+                                   const QStringList &nodes);
+    void testShowNodesSection();
+    QStringList testNodeDirectoryNames() const;
+    void testRenderNetworkRepos(const QJsonArray &repos);
+    QStringList testNetworkRepoNames() const;
+    QString testNetworkRepoActionText(int row) const;
+    QString testNetworkRepoMirrorHeader() const;
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
     // Quick log filter (the chip row above the log): the chips currently offered,
     // and clicking one by category ("" = All).
@@ -753,13 +762,14 @@ private:
     // longer a public constant baked into the client. Cached in m_roomPassphrase
     // and passed to ServerNode; empty falls back to the legacy app key.
     void fetchRoomPassphrase();
-    // Start (once the account identity is known) the read-only poll that brings
-    // the World virtual office's channel conversations into the chat sidebar.
+    // Start (once the account identity is known) the asynchronous bridge that
+    // brings World-office channels into chat and opens their send sockets.
     // The office's #general room needs nothing here: it is the same mainnode
     // room this client already joins, so it lands in #general.
     void startOfficeChannelMirror();
-    // True for a conversation this client can read but never publish into.
-    bool isReadOnlyConversation(const QString &conversation) const;
+    // True for a World-office conversation whose text sends use the office
+    // bridge rather than the primary mesh backend.
+    bool isOfficeConversation(const QString &conversation) const;
     void showAdminVerifyDialog();
     bool adminVerifyEmail(const QString &target);
     void verifyWallet();
@@ -872,7 +882,10 @@ private:
     void updateChatIdentity();     // push user name/avatar into the chat backend
     void updateUserSwitcher();     // refresh top-bar user label/avatar
     void updateNodeSwitcher();     // refresh top-bar node label / count
-    void updateNavSolanaBalance(); // refresh top-bar balance for this node
+    void updateNavSolanaBalance(); // refresh top-bar balance for the web user
+    void refreshWebUserSolanaAddress();
+    void cacheWebUserSolanaProfile(const QString &account,
+                                   const QJsonObject &profile);
     void cycleNavSolanaCurrency(); // SOL -> USD -> INR -> SOL on balance click
     // Re-render the top-bar balance from the cached lamports/fiat rate without
     // re-hitting the network, so cycling SOL/USD/INR is instant and can't stall
@@ -942,6 +955,8 @@ private:
     void updateNodeOnlineControls();
     // Bottom quick-add issue bar (the network log now lives in its own section).
     QWidget *buildNetworkLogDock();
+    // One-line strip pinned to the very bottom of the window (adhoc #2).
+    QWidget *buildStatusBar();
     // Compact footer queue between the live log and agent prompt. It is always on
     // screen (reading "idle" when nothing is running) and gives each kind of job
     // a spinner plus a one-word tag ("git", "net", "fork" …); past five tags it
@@ -952,13 +967,15 @@ private:
                               const QString &detail = QString());
     // BackgroundActivity listener body, always run on the GUI thread.
     void noteBackgroundActivity(quint64 id, const QString &kind,
-                                const QString &detail, bool started);
+                                const QString &detail, bool backgrounded,
+                                bool started);
     // Spin the glyphs and reconcile the visible rows with the open tickets.
     void tickBackgroundQueue();
     // Tally a finished run of one kind of work for the log's ✓ / ✕ outcome line,
     // and emit the tallies that are ready (or all of them, when force is set).
     void recordBackgroundOutcome(const QString &word, qint64 elapsedMs,
-                                 const QString &detail, qint64 now);
+                                 const QString &detail, qint64 now,
+                                 bool backgrounded);
     void flushBackgroundOutcomes(bool force);
     // Collapse a caller's note to the single lowercase word shown in the strip.
     static QString backgroundTaskWord(const QString &kind);
@@ -982,6 +999,9 @@ private:
     // true if an agent was started. Backs the dialog's "Send to a new agent" button.
     bool sendStallLogToAgent();
     void showDiagnosticsDialog();
+    void showHighMemoryProcessPanel();
+    void refreshHighMemoryProcessTable();
+    void killHighMemoryProcess(qint64 pid, const QString &name);
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
     void showCloudflareWorkerLogs();
@@ -1059,10 +1079,6 @@ private:
     void stopLiveServicesForDataOp();
     void relaunchForkMesh();
     QWidget *buildNotificationsSection();
-    // Network leaderboards (issue #11): fetched from /api/network/leaderboards.
-    QWidget *buildLeaderboardsSection();
-    void refreshLeaderboards();
-    void populateLeaderboards(const QJsonObject &data);
     // Network repository catalog: all repos known by the active relay, with local
     // fork/mirror actions and the relay's mirror-node list per repo.
     QWidget *buildNetworkReposSection();
@@ -1085,6 +1101,7 @@ private:
     // permissions, Cloudflare relay bootstrap, and remote host deployment.
     QWidget *buildControlNodeSection();
     void refreshControlNode();
+    void refreshControlMirrorReadiness();
     void runControlNodeHealthCheck();
     void startControlNodeServing();
     void stopControlNodeServing();
@@ -1102,7 +1119,6 @@ private:
     void checkDirectMirrorGatewayHealth();
     void appendControlNodeOutput(const QString &text);
     void connectToDeployedRelay(const QString &hostname);
-    void openForkMeshWorld();
     void deploySavedHostsFromControl();
     // First-instance-owner community reward-pool signer. The Solana private key
     // is imported into an encrypted local vault and never leaves this desktop;
@@ -1267,7 +1283,8 @@ private:
     void addHostFromForm();
     void rememberHost(const QString &name, const QString &ip, const QString &user,
                       const QString &pass, const QString &status = QStringLiteral("installed"),
-                      const QString &identityFile = QString());
+                      const QString &identityFile = QString(),
+                      const QJsonObject &metadata = QJsonObject());
     // The managed private-key path configured for a host. The SSH command
     // builder validates that it still exists and fails closed instead of
     // silently falling back to a password.
@@ -1371,6 +1388,7 @@ private:
 
     // Repo detail view (files + issues tabs), opened by clicking a repository.
     void ensureRepoDetailSectionBuilt();
+    void ensureRepoDetailTabBuilt(int index);
     QWidget *buildRepoDetailSection();
     QWidget *buildRepoFilesPanel();
     QWidget *buildRepoOverviewPage();
@@ -1448,6 +1466,11 @@ private:
     // lazy tab-click path that reuses the last scan of the same repo.
     QWidget *buildSizeMapTab();
     void refreshSizeMapTab(bool force);
+    // Folder the size map scans: m_sizeMapRootOverride when the user picked one
+    // with "Choose folder…", otherwise this repository's working copy.
+    QString sizeMapRoot() const;
+    void chooseSizeMapFolder();
+    void setSizeMapRootOverride(const QString &path);
     QWidget *buildPlaceholderTab(const QString &name);
 
     // Discussions tab (signed repository discussions with inbox fallback).
@@ -1473,6 +1496,11 @@ private:
     QWidget *buildPullsTab();
     PullStore pullStoreForCurrentRepo() const;
     void reloadPulls();
+    // Push/sync refreshes use the worker-backed variant so deriving every PR's
+    // patch/commit series never serializes git on the event thread.
+    void reloadPullsInBackground();
+    void applyLoadedPulls(const PullStore &store, QList<PullRequest> pulls,
+                          const QString &baseTip);
     // Drains m_pendingPullConflictChecks one PR per event-loop turn so the (slow)
     // `git apply --check` dry-runs never block the GUI thread in a single sweep.
     void processPendingPullConflicts(quint64 gen);
@@ -1706,10 +1734,9 @@ private:
     // message re-refreshes it (adhoc #74).
     void applyAgentRowCells(int row, const AgentSession &session,
                             const QString &agentGitDir, const QString &agentBase);
-    // Files-changed + branch ahead/behind summary for a session's Diff cell
-    // (issue #170), computed against the given git dir / base branch and memoised
-    // in m_agentDiffStats. Both git args are hoisted by the caller so the per-row
-    // loop doesn't re-resolve them.
+    // Files-changed + branch ahead/behind summary for a session's Diff cell.
+    // This is deliberately a cache-only UI accessor: cold disk/git probes are
+    // gathered by refreshAgentTable() on its worker and delivered later.
     AgentDiffStat agentDiffStat(const AgentSession &session, const QString &gitDir,
                                 const QString &base);
     void updateAgentTokenCell(int sessionId);  // live Tokens-column update
@@ -2892,6 +2919,10 @@ private:
     IssueStore issueStoreForCurrentRepo() const; // build a store for that repo
     void refreshIssuesRepoCombo();
     void reloadIssues();        // load issues + label/milestone filters from the store
+    void reloadIssuesInBackground();
+    void applyLoadedIssues(const QString &signature, QList<Issue> issues,
+                           QList<IssueLabel> labels,
+                           QList<IssueMilestone> milestones);
     // Splice a just-created issue into m_currentIssues and redisplay it, without
     // the full loadAll() reloadIssues() would do — that re-reads every issue
     // file in the repo, which is what made the redirect to the new issue feel
@@ -3251,10 +3282,12 @@ private:
                                  const QJsonArray &pending, bool interactive,
                                  bool mirrorIntake = false);
     void applyPullsInboxPayload(const RepositoryRecord &repo,
-                                const QJsonArray &pending, bool interactive);
+                                const QJsonArray &pending, bool interactive,
+                                bool mirrorIntake = false);
     void applyDiscussionsInboxPayload(const RepositoryRecord &repo,
                                       const QJsonArray &pending,
-                                      bool interactive);
+                                      bool interactive,
+                                      bool mirrorIntake = false);
     void applyCommitInboxPayload(const RepositoryRecord &repo,
                                  const QJsonArray &pending, bool interactive);
     void applyAgentPromptsPayload(const RepositoryRecord &repo,
@@ -3393,7 +3426,8 @@ private:
     void openDirectChat(const QString &peerId, const QString &peerName);
     void refreshChannelList();
     void refreshDmList();
-    // Rebuild the chat's right-hand user column from live roster + directory.
+    // Rebuild the current-room members popup from the live roster, enriched by
+    // matching account-directory records.
     void refreshChatMembers();
     void refreshChatUserDirectory();
     void mergeChatUserDirectory(const QJsonArray &users);
@@ -3631,6 +3665,10 @@ private:
     QStackedWidget *m_stack;
     QStackedWidget *m_sectionStack = nullptr;
     QButtonGroup *m_navGroup = nullptr;
+    // Full-height, app-wide activity rail. Primary section buttons are created
+    // by buildBreadcrumb(), then placed here by buildChatPage(); repository-only
+    // tools (currently Git) are inserted when the lazy repo detail is built.
+    QVBoxLayout *m_appNavigationRailLayout = nullptr;
     QSystemTrayIcon *m_trayIcon;
 
     // Configured mainnode relays (switched via the top-bar relay dropdown).
@@ -3653,9 +3691,8 @@ private:
     // Top breadcrumb bar (active server favicon + server > section).
     QLabel *m_breadcrumb = nullptr;
     // Top-bar relay switcher: a "favicon  domain ▾ count" dropdown button
-    // (search/switch/add relays), plus a separate open-in-browser icon.
+    // (search/switch/add relays).
     QPushButton *m_relayMenuButton = nullptr;
-    QPushButton *m_relayOpenButton = nullptr;
     // Spinning-radar + latency readout sitting on the window-chrome line just
     // left of the CPU/MEM/DISK sparklines: probes the active relay once a
     // minute and shows the round-trip time (e.g. "33ms") centered in the dish,
@@ -3677,7 +3714,7 @@ private:
     // switcher shows its favicon in the dropdown itself instead of a caption).
     QLabel *m_nodeLabel = nullptr;
     QLabel *m_repoLabel = nullptr;
-    QLabel *m_navNodeName = nullptr;     // "user/node" shown above the balance
+    QLabel *m_navNodeName = nullptr;     // "user/node" beside the balance
     QLabel *m_navSolanaBalance = nullptr;
     // Super-tiny Claude Code and Codex usage charts in the top-right cluster
     // (issue #266): two horizontal bars (5-hour + weekly) sitting beside the
@@ -3704,6 +3741,14 @@ private:
     // click (which used to rate-limit and leave the figure stuck).
     qint64 m_navSolanaLamports = -1; // last known balance, -1 = not yet fetched
     QHash<QString, QPair<double, qint64>> m_navFiatRates; // cur -> {rate, fetchedMs}
+    // The web user's public profile is authoritative for the top-bar wallet.
+    // A local node setting is used only until that user profile has resolved.
+    QString m_webSolanaAccount;
+    QString m_webSolanaAddress;
+    bool m_webSolanaKnown = false;
+    bool m_webSolanaFetchInFlight = false;
+    qint64 m_webSolanaFetchedMs = 0;
+    QTimer *m_webSolanaTimer = nullptr;
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
     QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
     QPushButton *m_agentsNavButton = nullptr; // top-bar shortcut to the Agents tab, between Repo and Chat
@@ -3758,6 +3803,9 @@ private:
     // variant) so each line can lead with the site favicon <img> the full Log
     // view uses — QPlainTextEdit drops images (adhoc #436).
     QTextEdit *m_footerUpdateLog = nullptr;
+    // Whole mini-log/background/agent-prompt footer. The focused Git workspace
+    // hides it to give the changes list and diff the full window height.
+    QWidget *m_footerDock = nullptr;
     // Background-activity strip, wedged between the live log and the prompt. One
     // row per open *kind* of work, not per ticket: dozens of concurrent git reads
     // collapse into a single "git ×12" line, so the strip stays readable and the
@@ -3777,9 +3825,10 @@ private:
     QHash<QString, qint64> m_backgroundTaskSince;        // word -> first ticket ms
     QHash<QString, QString> m_backgroundTaskDetails;     // word -> newest note
     QHash<quint64, QString> m_backgroundTaskWords;       // ticket -> word
-    // Pending log outcome per kind: one tally for work that was backgrounded (✓)
-    // and one for work that finished before the strip would have drawn it (✕), so
-    // a burst of same-kind tickets becomes one summary line instead of hundreds.
+    QHash<QString, bool> m_backgroundTaskHadUiBlocking;  // word -> any UI scope
+    // Pending log outcome per kind: one tally for asynchronous/worker work (✓)
+    // and one for a group that included GUI-thread blocking work (✕), so a burst
+    // of same-kind tickets becomes one accurate summary instead of hundreds.
     struct BackgroundOutcomeTally {
         int runs = 0;
         qint64 longestMs = 0;
@@ -3787,7 +3836,7 @@ private:
         QString detail;
     };
     QHash<QString, BackgroundOutcomeTally> m_backgroundTaskDone; // word -> ✓
-    QHash<QString, BackgroundOutcomeTally> m_backgroundTaskFast; // word -> ✕
+    QHash<QString, BackgroundOutcomeTally> m_backgroundTaskUiBlocking; // word -> ✕
     QTimer *m_backgroundTaskSpinTimer = nullptr;
     int m_backgroundTaskRowHeight = 18;
     int m_backgroundTaskSpinFrame = 0;
@@ -3819,11 +3868,9 @@ private:
     QPushButton *m_repoViewButton = nullptr; // "Code" button on the repo header row
     QPushButton *m_reposNavButton = nullptr; // network-wide "Repos" section
     QPushButton *m_settingsNavButton = nullptr; // Settings button on the repo header row
-    QPushButton *m_logNavButton = nullptr; // retired (adhoc #137): Log now opens via m_floatingLogButton
-    QPushButton *m_floatingLogButton = nullptr; // "Log" button floating over the live-log strip
-    QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
+    QPushButton *m_logNavButton = nullptr; // full Log destination in the left rail
+    QPushButton *m_floatingLogButton = nullptr; // retired; retained for safe resize no-op
     QPushButton *m_controlNodeNavButton = nullptr; // local control-node operations
-    QPushButton *m_worldNavButton = nullptr; // opens the active relay's 3D world
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
     QPushButton *m_nodesNavButton = nullptr;  // "Nodes" top-nav button (adhoc #9)
     QPushButton *m_relaysNavButton = nullptr; // "Relays" top-nav button
@@ -3840,12 +3887,11 @@ private:
     // for agent-completion paths that miss their maybeStartQueuedRebuild() call
     // (adhoc #104/#111/#116/#134/#143 each found one more).
     QTimer *m_rebuildQueuePollTimer = nullptr;
-    QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
-    QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
     QTableWidget *m_networkReposTable = nullptr;
     QLabel *m_networkReposStatus = nullptr;
     QPushButton *m_networkReposRefreshButton = nullptr;
     int m_networkReposLoadGen = 0;
+    QJsonArray m_networkReposLastPayload; // regroup when user/node ownership arrives
     // Opaque private archive ids are delivered only in an authenticated,
     // ACL-filtered catalog response. They let the client use a name-free
     // /api/private-replicas/<id> URL; no private owner/repository identity is
@@ -3890,6 +3936,13 @@ private:
     bool m_cloudflareConnectAfterDeploy = false;
     QTimer *m_controlNodeRefreshTimer = nullptr;
     QTimer *m_directMirrorRegistrationTimer = nullptr;
+    // Full encrypted-archive authentication hashes hundreds of megabytes for a
+    // large mirror. Keep it off the GUI thread and let the Control page render
+    // the most recent completed snapshot.
+    QHash<QString, bool> m_controlMirrorReadyCache;
+    bool m_controlMirrorProbeInFlight = false;
+    qint64 m_controlMirrorProbeCompletedAtMs = 0;
+    QString m_controlPermissionsSignature;
     // Community reward pool: no private material is held in these widgets or
     // members. Only the vault's public address, public chain intents, and public
     // submitted transaction identifiers are retained in memory/settings.
@@ -3982,6 +4035,10 @@ private:
     // toggling it mid-provision cannot change what the run does.
     bool m_vultrInstallAgentClis = false;
     QString m_vultrDnsHostname;      // Cloudflare name provisioned this run
+    // Non-secret billing/provenance facts captured from Vultr's selected plan
+    // and created instance. These are persisted with the saved Host row so an
+    // operator can identify the plan and expected monthly cost later.
+    QJsonObject m_vultrHostMetadata;
     // "Attempt N of M at HH:mm:ss — outcome" per install attempt this run, so
     // the window can show what every attempt did instead of only the last one.
     QStringList m_vultrInstallAttemptLog;
@@ -4060,8 +4117,10 @@ private:
     };
     QList<RepoMenuEntry> m_repoMenuEntries;
     QListWidget *m_dmList;
-    // Right-hand users column in the chat view: live roster + offline account
-    // directory entries, rendered as people rather than nodes.
+    // Current-room members live in an on-demand popup opened from the chat
+    // header. The public account directory enriches those rows but does not add
+    // people who are absent from the active room.
+    QPushButton *m_chatMembersButton = nullptr;
     QVBoxLayout *m_chatMembersLayout = nullptr;
     QLabel *m_chatMembersHeading = nullptr;
     QWidget *m_firewallBanner;
@@ -4103,6 +4162,8 @@ private:
     QLabel *m_settingsAvatarPreview = nullptr;
     QLabel *m_identityBackupNag = nullptr; // #368: "back up your key" warning
     QTextBrowser *m_settingsLog = nullptr;
+    QPushButton *m_logScrollLockButton = nullptr;
+    bool m_logScrollLocked = false;
     QHBoxLayout *m_logFilterRow = nullptr;    // chip row above the network log
     QButtonGroup *m_logFilterGroup = nullptr; // exclusive group for filter chips
     QString m_logFilter;                      // active category badge ("" = All)
@@ -4331,9 +4392,12 @@ private:
     // text, so the textChanged handler doesn't mistake the recall for a manual
     // edit and reset the history position.
     bool m_quickAddHistoryNavigating = false;
-    // Centered in the footer: the git identity (name <email>) configured for the
-    // repo currently open in the detail view. Updated by openRepoDetail.
+    // In the bottom status bar: the git identity (name <email>) configured for
+    // the repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
+    // Right of the status bar: where the running executable lives on disk, so
+    // it is obvious which build/checkout the open window came from.
+    QLabel *m_statusAppPath = nullptr;
     // Footer diagnostics: live CPU/memory readout + UI-stall watchdog state.
     QPushButton *m_footerDiagnostics = nullptr;
     // Live one-per-second moving sparklines for CPU, host memory and disk
@@ -4351,6 +4415,11 @@ private:
     // Stall signatures already handed to an agent this session, so a recurring
     // freeze doesn't spawn a fresh agent task every time it fires (adhoc #205).
     QSet<QString> m_autoFiledStallSignatures;
+    bool m_highMemoryAlertArmed = true;
+    QPointer<QDialog> m_highMemoryDialog;
+    QTableWidget *m_highMemoryProcessTable = nullptr;
+    QLabel *m_highMemoryProcessStatus = nullptr;
+    QPointer<QProcess> m_highMemoryProcessQuery;
     qulonglong m_diagLastCpuTicks = 0;
     qint64 m_diagLastCpuMs = 0;
 
@@ -4358,6 +4427,11 @@ private:
     int m_repoDetailIndex = -1;
     QButtonGroup *m_issueTabGroup = nullptr; // Issues / Milestones / Labels tabs
     QButtonGroup *m_repoDetailTabs = nullptr;
+    // Repository chrome is hidden while the activity-rail Git workspace is
+    // active so source control can use the page's full height.
+    QWidget *m_repoDetailChrome = nullptr;   // repo actions + repository tabs
+    QWidget *m_repoFilesModeBar = nullptr;   // Code overview / Explorer toggles
+    QWidget *m_repoOverviewChrome = nullptr; // branch toolbar + commit strip
     // Thin activity rail down the repo detail page's left edge (adhoc #357):
     // Code (file browser) and Git (current changes) entries. The Git one carries
     // the working-tree change-count badge and spins while a sync is in flight;
@@ -4409,6 +4483,12 @@ private:
     QLabel *m_sizeMapStatus = nullptr;
     // Checkbox that drops .gitignored paths from the scan (adhoc #197).
     QCheckBox *m_sizeMapHideIgnored = nullptr;
+    // Folder picked with "Choose folder…" so the map can size any directory on
+    // disk, not just this repository's working copy. Empty means "the working
+    // copy"; the reset button clears it back to that.
+    QString m_sizeMapRootOverride;
+    QLabel *m_sizeMapRootLabel = nullptr;
+    QPushButton *m_sizeMapResetRoot = nullptr;
     QString m_sizeMapScannedPath;
     bool m_sizeMapScanning = false;
     int m_sizeMapScanEpoch = 0;
@@ -4670,7 +4750,7 @@ private:
     QWidget *m_scmPanel = nullptr;
     QWidget *m_scmControlsPanel = nullptr;
     QTreeWidget *m_scmTree = nullptr;
-    QLineEdit *m_scmMessage = nullptr;
+    QPlainTextEdit *m_scmMessage = nullptr; // compact two-line commit/post draft
     QTextBrowser *m_scmDiff = nullptr;
     QLabel *m_scmCountLabel = nullptr;
     QLabel *m_scmViewedLabel = nullptr;  // "3 of 26 files viewed"
@@ -5024,6 +5104,9 @@ private:
     // Generation counter: each reloadPulls() bumps it so any in-flight async
     // conflict pass aborts once the repo/list it was started for has changed.
     quint64 m_pullConflictGen = 0;
+    quint64 m_pullLoadGen = 0;
+    bool m_pullBackgroundLoadInFlight = false;
+    bool m_pullBackgroundReloadQueued = false;
     // (PR number, patch fingerprint) pairs whose dry-run apply is still pending,
     // drained one per event-loop turn by processPendingPullConflicts() so a cold
     // cache never blocks the GUI in a single sweep.
@@ -5075,6 +5158,7 @@ private:
     qint64 m_lastExternalActionsScanMs = 0;
     QList<AppNotification> m_notifications;
     QPushButton *m_notificationButton = nullptr;
+    QLabel *m_notificationRailBadge = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page
     int m_selectedRunId = -1;
     QListWidget *m_actionWorkflowList = nullptr; // available actions (left column)
@@ -5164,6 +5248,11 @@ private:
     // openRepoDetail() before the first frame (~2s of git reads), which the
     // last-repo restore then redid from scratch moments later.
     bool m_agentQuietResume = false;
+    // Sessions restored from the startup queue stay quiet through asynchronous
+    // worktree preparation. m_agentQuietResume only covers the synchronous
+    // queue drain; without this per-session marker its later continuation could
+    // still switch to Agents after the flag had already been cleared.
+    QSet<int> m_startupQuietAgentSessions;
     int m_selectedAgentSessionId = -1;
     // The session whose detail page last reset the Agent|Files tab selection. Used
     // so showAgentSession() lands on the Agent tab when a *different* session is
@@ -5385,11 +5474,8 @@ private:
     // it survives full table rebuilds) and the timer that animates the active ones.
     QHash<int, AgentScannerState> m_scannerStates;
     QTimer *m_scannerTimer = nullptr;
-    // Cached agents-list diff summaries keyed by sessionId (issue #170), so the
-    // search-as-you-type refresh reuses them instead of re-shelling git per row.
-    // No longer wiped wholesale on reloadAgents(): a plain tab switch (issue #289)
-    // re-validates each entry against m_agentDiffSig and only re-shells the rows
-    // whose state actually moved, so an idle Issues→Agents switch runs zero git.
+    // Cached agents-list diff summaries keyed by sessionId (issue #170). Cold
+    // values are computed on a worker; table painting only reads this map.
     QHash<int, AgentDiffStat> m_agentDiffStats;
     // Per-session fingerprint of the inputs the cached AgentDiffStat was computed
     // from (status/branch/merge/finish + the base tip). reloadAgents() flips
@@ -5397,6 +5483,9 @@ private:
     // entries whose fingerprint changed (issue #289).
     QHash<int, QString> m_agentDiffSig;
     bool m_agentDiffRefreshPending = false;
+    bool m_agentDiffStatsRefreshing = false;
+    bool m_agentDiffStatsRefreshQueued = false;
+    int m_agentDiffStatsGen = 0;
     // Sessions maybeAutoFixAgentConflict() has already auto-triggered a fix for.
     // Prevents an unresolved conflict from re-queuing the agent on every refresh;
     // cleared once the session's AgentDiffStat stops reporting conflicted.
@@ -5706,6 +5795,10 @@ private:
     // onRequestServed (adhoc #83); skip the rebuild while the signature is
     // unchanged. Reset by attachBackend so a freshly attached backend is re-pushed.
     QString m_mirrorAdvertSig;
+    QString m_mirrorAdvertInputSig;
+    bool m_mirrorAdvertRefreshInFlight = false;
+    qint64 m_mirrorAdvertCompletedAtMs = 0;
+    void refreshMirrorAdverts();
     int m_repoOpenPending = -1;        // repo index queued by openRepoDetailDeferred
     // True while a user-driven repo load (a node switch or opening a repo) runs,
     // so nodeSwitchStep narrates progress for both, not just node switches.
@@ -5854,6 +5947,9 @@ private:
     // nothing changed (a rebuild mid-interaction drops the click/keystroke the user
     // aimed at a row or the search box). Empty = "unknown", never skip.
     QString m_issuesLoadedSig;
+    int m_issueLoadGen = 0;
+    bool m_issueBackgroundLoadInFlight = false;
+    bool m_issueBackgroundReloadQueued = false;
     QStringList m_pendingIssueAttachments; // images queued for the next comment
 
     // Projects tab widgets + state (issue #384).
@@ -5954,8 +6050,8 @@ private:
     QString m_profileSolanaValue;
 
     QStringList m_channels;
-    // Read-only mirrors of the World virtual office's channel rooms, merged
-    // into the sidebar beside the mesh rooms (adhoc #412).
+    // World virtual-office channel conversations, merged into the sidebar
+    // beside the mesh rooms and carried by OfficeChannelMirror (adhoc #412).
     QStringList m_officeConversations;
     // Invite-only rooms this node owns or was invited to. Badged in the sidebar
     // and persisted so they reappear after a reconnect (the backend clears its

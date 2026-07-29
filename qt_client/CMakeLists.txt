@@ -140,6 +140,8 @@ set(FORKMESH_APP_SOURCES
     src/NodeEventSocket.h
     src/NodeEventSocket.cpp
     src/BackgroundActivity.h
+    src/ActionTelemetry.h
+    src/ActionTelemetry.cpp
     src/NetworkBackoff.h
     src/BackoffNetworkAccessManager.h
     src/BackoffNetworkAccessManager.cpp
@@ -427,6 +429,8 @@ install(PROGRAMS
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/cloudflare_bootstrap.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/cloudflare_tunnel_bootstrap.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/cloudflared_install.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/headless_mirror_refresh.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/hosted_repository_sync.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/mirror_gateway.py"
     DESTINATION "${FORKMESH_RESOURCE_INSTALL_ROOT}/tools")
 install(FILES
@@ -458,6 +462,8 @@ if(FORKMESH_BUILD_TESTS)
         src/PlatformLogFilter.h
         src/PlatformLogFilter.cpp
         src/BackgroundActivity.h
+        src/ActionTelemetry.h
+        src/ActionTelemetry.cpp
         src/BackoffNetworkAccessManager.h
         src/BackoffNetworkAccessManager.cpp
         src/ActionFile.h
@@ -700,6 +706,8 @@ if(FORKMESH_BUILD_TESTS)
     qt_add_executable(forkmesh-e2e
         tests/test_mesh_e2e.cpp
         src/BackgroundActivity.h
+        src/ActionTelemetry.h
+        src/ActionTelemetry.cpp
         src/BackoffNetworkAccessManager.h
         src/BackoffNetworkAccessManager.cpp
         src/ActionFile.h

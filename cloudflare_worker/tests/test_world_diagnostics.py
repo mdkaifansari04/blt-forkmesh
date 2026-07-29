@@ -182,3 +182,16 @@ def test_readings_are_graded_green_orange_red_from_local_thresholds_only():
     assert "var(--world-mint)" in CSS
     assert "var(--world-sun)" in CSS
     assert "var(--world-danger)" in CSS
+
+
+def test_world_socket_recovery_reports_current_retries_not_lifetime_attempts():
+    assert 'from "./world-socket-recovery.js"' in APP
+    assert "createWorldSocketRecoveryTimers" in APP
+    assert "this.socketRecovery = createWorldSocketRecoveryTimers" in APP
+    diagnostics = _section(
+        APP,
+        "  collectDiagnostics(",
+        "\n  renderDiagnostics()",
+    )
+    assert "this.socketRecoveryAttempts" in diagnostics
+    assert "this.socketConnectionAttempts - 1" not in diagnostics

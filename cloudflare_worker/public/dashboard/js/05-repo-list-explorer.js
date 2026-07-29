@@ -13,6 +13,15 @@
     return haystack.includes(query);
   }
 
+  function repositoryTermsBadge(repo, compact = false) {
+    if (repo?.termsFlagged !== true) return "";
+    const category = String(repo.termsCategory || "policy").replace(
+      /[^a-z-]/gi,
+      "",
+    ).slice(0, 20);
+    return `<span title="This repository has an active ForkMesh Terms of Service moderation flag${category ? `: ${escapeHtml(category)}` : ""}." class="inline-flex shrink-0 items-center gap-1 rounded-full border border-destructive/60 bg-destructive/10 ${compact ? "px-1 py-0.5 text-[8px]" : "px-2 py-0.5 text-[10px]"} font-semibold text-destructive"><i data-lucide="flag" class="${compact ? "h-2.5 w-2.5" : "h-3 w-3"}"></i>${compact ? "ToS" : "Terms flag"}</span>`;
+  }
+
   function groupMatchesGlobalSearch(group, query) {
     if (!query) return true;
     if (repositoryMatchesQuery(sourceOfTruth(group), query)) return true;
@@ -357,6 +366,7 @@
               <span class="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${statusClass}">
                 ${statusText}
               </span>
+              ${repositoryTermsBadge(origin)}
               <button data-repo-star-button data-repo-key="${escapeHtml(key)}" type="button" aria-pressed="false" aria-label="Star ${escapeHtml(key)}" class="ml-auto hidden shrink-0 items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs text-foreground hover:bg-background sm:inline-flex">
                 <i data-lucide="star" data-repo-star-icon class="h-3.5 w-3.5 text-muted-foreground"></i>
                 <span data-repo-star-label>Star</span>
@@ -402,6 +412,7 @@
         <span class="flex min-w-0 flex-wrap items-center gap-2">
           <span class="min-w-0 truncate text-lg font-semibold text-accent hover:underline">${escapeHtml(repo.name || "repository")}</span>
           <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${escapeHtml(visibility)}</span>
+          ${repositoryTermsBadge(repo)}
         </span>
         <span class="mt-1 block text-xs text-muted-foreground">Published from ${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repository")}</span>
         <span class="mt-2 line-clamp-2 text-sm text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</span>
@@ -501,20 +512,45 @@
     const groups = Array.isArray(state.filteredGroups)
       ? state.filteredGroups
       : groupRepositories(state.repositories || []);
-    if (count) count.textContent = formatCount(groups.length);
+    const organizationRepositories = Array.isArray(
+      state.homeOrganizationRepositories,
+    )
+      ? state.homeOrganizationRepositories
+      : [];
+    const entries = [
+      ...organizationRepositories.map((repo) => ({
+        repo,
+        key: `${repo.owner}/${repo.name}`,
+        href: `/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
+        organization: true,
+      })),
+      ...groups.map((group) => {
+        const repo = sourceOfTruth(group);
+        return {
+          repo,
+          key: repoKey(repo),
+          href: repoPathUrl(repo),
+          organization: false,
+        };
+      }),
+    ].filter((entry, index, values) =>
+      values.findIndex((candidate) =>
+        candidate.key.toLowerCase() === entry.key.toLowerCase()) === index);
+    if (count) count.textContent = formatCount(entries.length);
     if (!list) return;
-    if (!groups.length) {
+    if (!entries.length) {
       list.innerHTML = '<div class="rounded-md border border-border bg-background px-2.5 py-2 text-xs text-muted-foreground">No mirrored repositories yet.</div>';
       return;
     }
-    list.innerHTML = groups.slice(0, 12).map((group) => {
-      const repo = sourceOfTruth(group);
-      const key = repoKey(repo);
+    list.innerHTML = entries.slice(0, 12).map((entry) => {
+      const repo = entry.repo;
       const live = repoIsLive(repo);
       return `
-        <a href="${escapeHtml(repoPathUrl(repo))}" class="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
+        <a href="${escapeHtml(entry.href)}" class="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
           <span class="h-2 w-2 shrink-0 rounded-full ${live ? "bg-primary" : "bg-muted-foreground/40"}"></span>
           <span class="min-w-0 flex-1 truncate"><span class="text-muted-foreground">${escapeHtml(repo.owner || "owner")}/</span><span class="text-foreground">${escapeHtml(repo.name || "repository")}</span></span>
+          ${repositoryTermsBadge(repo, true)}
+          ${entry.organization ? '<span class="shrink-0 rounded border border-border px-1 py-0.5 font-mono text-[8px] uppercase text-muted-foreground">org</span>' : ""}
         </a>`;
     }).join("");
   }
@@ -523,17 +559,34 @@
     const container = $("[data-home-top-repositories]");
     if (!container) return;
     const query = ($("[data-home-repo-search]")?.value || "").trim().toLowerCase();
-    const groups = groupRepositories(state.repositories || []).filter((group) => {
-      return repositoryMatchesQuery(sourceOfTruth(group), query);
-    }).slice(0, 8);
+    const entries = [
+      ...(Array.isArray(state.homeOrganizationRepositories)
+        ? state.homeOrganizationRepositories
+        : []).map((repo) => ({
+          repo,
+          href: `/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
+          organization: true,
+        })),
+      ...groupRepositories(state.repositories || []).map((group) => {
+        const repo = sourceOfTruth(group);
+        return { repo, href: repoPathUrl(repo), organization: false };
+      }),
+    ].filter((entry) => repositoryMatchesQuery(entry.repo, query))
+      .filter((entry, index, values) =>
+        values.findIndex((candidate) =>
+          repoKey(candidate.repo).toLowerCase() ===
+          repoKey(entry.repo).toLowerCase()) === index)
+      .slice(0, 8);
     container.innerHTML = `
-      ${groups.length
-        ? `<div class="grid gap-1">${groups.map((group) => {
-            const repo = sourceOfTruth(group);
+      ${entries.length
+        ? `<div class="grid gap-1">${entries.map((entry) => {
+            const repo = entry.repo;
             const key = repoKey(repo);
-            return `<a href="${escapeHtml(repoPathUrl(repo))}" class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground">
-              <i data-lucide="book-marked" class="h-3.5 w-3.5 shrink-0"></i>
+            return `<a href="${escapeHtml(entry.href)}" class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground">
+              <i data-lucide="${entry.organization ? "building-2" : "book-marked"}" class="h-3.5 w-3.5 shrink-0"></i>
               <span class="min-w-0 truncate">${escapeHtml(key)}</span>
+              ${repositoryTermsBadge(repo, true)}
+              ${entry.organization ? '<span class="ml-auto shrink-0 text-[9px] uppercase text-muted-foreground">organization</span>' : ""}
             </a>`;
           }).join("")}</div>`
         : '<div class="px-2 py-3 text-sm text-muted-foreground">No repositories match this filter.</div>'}
@@ -607,7 +660,7 @@
   // (see blog_feed.py), so this is one cheap same-origin read per dashboard
   // load rather than a second hand-maintained copy of the post list.
   const HOME_BLOG_POST_LIMIT = 3;
-  const HOME_BLOG_FEED_URL = "/blog/rss.xml";
+  const HOME_BLOG_FEED_URL = "/rss.xml";
 
   // Feed URLs are absolute against forkmesh.com; keep only the path so the
   // dashboard links and paints artwork from whatever origin it is served on
@@ -675,6 +728,43 @@
       state.homeBlogPosts = [];
     }
     renderHomeBlogPosts();
+  }
+
+  async function loadHomeOrganizationRepositories() {
+    if (!state.session?.sessionToken) {
+      state.homeOrganizationRepositories = [];
+      return;
+    }
+    try {
+      const organizations = await fetchJson("/api/orgs");
+      const orgs = Array.isArray(organizations?.orgs)
+        ? organizations.orgs.slice(0, 20)
+        : [];
+      const linked = await Promise.all(orgs.map(async (organization) => {
+        const owner = String(organization?.name || "").trim().toLowerCase();
+        if (!owner) return [];
+        try {
+          const data = await fetchJson(
+            `/api/orgs/${encodeURIComponent(owner)}/repos`,
+          );
+          return (Array.isArray(data?.repos) ? data.repos : []).map((item) => ({
+            owner,
+            name: String(item?.repo || "").trim(),
+            linkedNode: String(item?.node || "").trim(),
+            source: "organization-alias",
+            organizationOwned: true,
+            cloneOnline: true,
+          })).filter((repo) => repo.name);
+        } catch (_) {
+          return [];
+        }
+      }));
+      state.homeOrganizationRepositories = linked.flat();
+    } catch (_) {
+      state.homeOrganizationRepositories = [];
+    }
+    renderSidebarRepositories(state.session);
+    renderHomeRepositories();
   }
 
   // Home left-rail "Active agent sessions" (adhoc #81). Renders the aggregated

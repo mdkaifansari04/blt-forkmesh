@@ -55,7 +55,6 @@ def test_live_node_builder_preserves_signed_repo_facts_and_unknown_telemetry():
     result = subprocess.run(
         [
             "node",
-            "--experimental-default-type=module",
             "--input-type=module",
             "-e",
             script,
@@ -120,7 +119,6 @@ def test_live_node_builder_keeps_long_names_distinct_and_rejected_routes_blocked
     result = subprocess.run(
         [
             "node",
-            "--experimental-default-type=module",
             "--input-type=module",
             "-e",
             script,
@@ -172,7 +170,6 @@ def test_live_node_builder_uses_the_freshest_repository_state_per_node():
     result = subprocess.run(
         [
             "node",
-            "--experimental-default-type=module",
             "--input-type=module",
             "-e",
             script,
@@ -223,7 +220,6 @@ def test_live_node_builder_retains_offline_payload_rows_but_not_unrelated_names(
     result = subprocess.run(
         [
             "node",
-            "--experimental-default-type=module",
             "--input-type=module",
             "-e",
             script,
@@ -255,11 +251,43 @@ def test_live_node_builder_retains_offline_payload_rows_but_not_unrelated_names(
     assert retired["repositories"][0]["status"] == "offline"
 
 
+def test_recent_signed_endpoint_health_keeps_a_physical_cabinet_live_during_pin_convergence():
+    script = f"""
+      import {{ buildLiveMirrorNodes }} from {json.dumps(MODULE.as_uri())};
+      const checkedAt = Date.now() - 30_000;
+      const payload = {{
+        requestedOwner: "forkmesh", requestedRepo: "forkmesh",
+        mirrors: [{{
+          node: "mirror2", status: "offline", integrity: "rejected",
+          cloneAvailable: false, endpointHealthy: true, endpointFresh: false,
+          checkedAt, commit: "a".repeat(40), branch: "main"
+        }}]
+      }};
+      process.stdout.write(JSON.stringify(buildLiveMirrorNodes({{}}, payload)));
+    """
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    node = json.loads(result.stdout)[0]
+    # The machine is alive, so its cabinet remains present and green. The
+    # repository route remains blocked and its integrity evidence is retained.
+    assert node["name"] == "mirror2"
+    assert node["online"] is True
+    assert node["status"] == "online"
+    assert node["cloneAvailable"] is False
+    assert node["integrity"] == "rejected"
+    assert node["repositories"][0]["status"] == "offline"
+    assert node["repositories"][0]["endpointHealthy"] is True
+
+
 def test_world_fetches_the_flagship_mirror_snapshot_once_and_uses_cabinets():
     # Bootstrap and the bounded visible-page fallback share one cached,
     # single-flight/backoff helper. Push signals remain the instant path.
     assert APP.count('this.fetchJSON("/api/repo/forkmesh/forkmesh/mirrors"') == 1
-    assert "this.fetchMirrorCatalog()" in APP
+    assert "this.fetchMirrorCatalog({ force: forceMirrors })" in APP
     assert "this.fetchMirrorCatalog({ force })" in APP
     assert "const MIRROR_STATUS_POLL_MS = 5 * 60 * 1000" in APP
     assert "if (this.destroyed || document.hidden) return;" in APP
@@ -300,7 +328,28 @@ def test_status_beacons_are_open_topped_and_alert_colours_sweep():
     # uncapped for the status colour to be visible at all.
     assert "beaconCap" not in SCENE
     assert "beaconCollar" in SCENE
-    # Only degraded (red) and healing (yellow) beacons carry the rotating lobes.
+    # The physical liveness beacon is green whenever the node is reachable;
+    # offline integrity/healing states keep their red/yellow attention sweep.
+    assert 'online\n      ? "#00cc44"' in SCENE
     assert 'statusColor === "#ff0000" || statusColor === "#ffcc00"' in SCENE
     assert "group.userData.beaconSweep = beaconSweep" in SCENE
     assert "sweep.rotation.y = time * 0.0038" in SCENE
+
+
+def test_cabinet_back_shows_authorized_actions_runs_and_bounded_log_tails():
+    assert (
+        '"/api/repo/forkmesh/forkmesh/actions/runs"' in APP
+    )
+    assert "const MIRROR_ACTIONS_POLL_MS = 20 * 1000" in APP
+    assert "normalizeMirrorActionRuns" in APP
+    assert "this.sessionAuthenticated" in APP
+    assert "actionRunsAvailable: actionRunsByNode.has(name)" in APP
+    assert "mirrorNodeActionsHTML(node)" in APP
+    assert "No authorized, fresh Actions summary" in APP
+    assert "bounded, already-redacted log tail" in APP
+    assert "function mirrorActionsPanelTexture" in SCENE
+    assert '"ACTIONS RUNS"' in SCENE
+    assert '"SIGNED · REDACTED LOG TAILS · CLICK FOR ALL"' in SCENE
+    assert "mirror-server-rear-panel" in SCENE
+    assert "actionPulseAttention" in SCENE
+    assert "Math.sin(time * 0.0065)" in SCENE

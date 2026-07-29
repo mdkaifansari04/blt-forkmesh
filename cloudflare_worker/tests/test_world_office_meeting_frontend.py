@@ -94,14 +94,17 @@ def test_marketing_furniture_is_open_clickable_and_faces_the_table():
     scene = source(SCENE)
     for contract in (
         'officeTable.name = "forkmesh-office-marketing-tabletop"',
-        'officeTable.position.set(0, officeFloorY("marketing") + 1.8, 0)',
+        'officeTableLogo.name = "forkmesh-office-marketing-cube-inlay"',
+        'officeTableEpoxy.name = "forkmesh-office-marketing-logo-epoxy"',
+        'officeTable.position.set(0, officeFloorY("marketing") + 2.1, 0)',
         'tableLeg.name = "forkmesh-office-marketing-table-leg"',
-        'tableLeg.position.set(x, officeFloorY("marketing") + 1.02, z)',
+        'tableLeg.position.set(x, officeFloorY("marketing") + 1.2, z)',
         "chair.name = `forkmesh-office-${chairId}`",
         "const yaw = Math.atan2(-x, -z)",
         "back.position.set(0, 1.42, -0.48)",
         "function sitOnOfficeChair(chairId)",
-        'officeCurrentFloorId !== "marketing"',
+        'String(chair.userData.officeFloorId || "marketing") !==',
+        "officeCurrentFloorId",
         "applyOfficeChairSeatPose()",
         'hit?.object?.userData?.interactive === "office-chair"',
         "sitOnOfficeChair(hit.object.userData.officeChairId)",
@@ -118,10 +121,11 @@ def test_all_office_labels_are_mounted_planes_instead_of_hovering_sprites():
     for contract in (
         "makeOfficeWallPlacard(",
         "forkmesh-office-wall-placard-",
-        'officeRoomSign.name = "forkmesh-office-marketing-wall-title"',
-        'label.name = `forkmesh-office-reception-nameplate-${index + 1}`',
+        'nameplate.name = `forkmesh-office-marketing-desk-plaque:${member}`',
+        'noahNameplate.name = "forkmesh-office-reception-nameplate-noah"',
     ):
         assert contract in scene
+    assert 'officeRoomSign.name = "forkmesh-office-marketing-wall-title"' not in scene
     office_build = scene[
         scene.index("const officeFloorGroups ="):
         scene.index("// One physical selector rides inside")
@@ -238,7 +242,8 @@ def test_native_office_entry_ticket_is_minted_lazily_for_meetings():
     )
     assert ticket_wiring in office
     assert "async function authorizeMeeting()" in office
-    assert "const entered = completeOfficeEntry()" in office
+    assert "const entered = completeOfficeEntry({" in office
+    assert 'source: doorwayEntry ? "doorway" : ""' in office
     assert "setEntryTicketProvider" in world
     assert "let entryTicketProvider = null" in meeting
     assert "await entryTicketProvider()" in meeting

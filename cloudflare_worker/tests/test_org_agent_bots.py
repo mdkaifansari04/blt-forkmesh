@@ -16,6 +16,9 @@ SCENE = (ROOT / "public/world/world-scene.js").read_text(encoding="utf-8")
 QT = (ROOT.parent / "qt_client/src/MainWindowAgents.cpp").read_text(
     encoding="utf-8"
 )
+QT_REPOS = (ROOT.parent / "qt_client/src/MainWindowRepos.cpp").read_text(
+    encoding="utf-8"
+)
 
 
 def test_org_agents_are_separate_member_scoped_encrypted_records():
@@ -37,13 +40,24 @@ def test_org_agents_are_separate_member_scoped_encrypted_records():
         "visible and controllable only by current members"
         in ENTRY
     )
+    assert ENTRY.count("context, error = await _org_agent_member_context(") >= 1
+    assert (
+        "if not engineering:\n"
+        "        return None, json_response("
+    ) in ENTRY
 
 
-def test_only_an_integrity_approved_mirror_receives_bounded_jobs():
-    assert "_https_mirror_public_context" in ENTRY
-    assert "_https_mirror_candidates" in ENTRY
-    assert "node != source" in ENTRY
-    assert "no_eligible_headless_mirror" in ENTRY
+def test_only_a_fresh_signed_provider_capable_mirror_receives_bounded_jobs():
+    assert "agent_provider_mirror_candidates" in ENTRY
+    assert "10 * 60 * 1000" in ENTRY
+    assert "context[\"nodeOwner\"]" in ENTRY
+    assert "provider, preferred_node" in ENTRY
+    assert '"agentProviders"' in QT_REPOS
+    assert 'QStringLiteral("claude-code")' in QT_REPOS
+    assert 'QStringLiteral("codex")' in QT_REPOS
+    assert "no_eligible_agent_node" in ENTRY
+    assert '"runtimeMode") or "").strip().lower() == "desktop"' in ENTRY
+    assert "await _is_admin(env, context[\"actor\"])" in ENTRY
     assert "ORG_AGENT_MAX_PROMPT = 8000" in ENTRY
     assert "ORG_AGENT_JOB_LEASE_MS = 2 * 60 * 1000" in ENTRY
     assert "status='leased'" in ENTRY
@@ -121,9 +135,10 @@ def test_world_explains_stalled_agent_jobs_and_bot_clicks_open_full_status():
     assert '"diagnostic": diagnostic' in ENTRY
     assert "session?.diagnostic" in SCENE
     assert 'diagnostic.level || "").toLowerCase() === "attention"' in SCENE
-    assert "openAgentBotDetail(name)" in WORLD
+    assert "openAgentBotDetail(name, {" in WORLD
     assert "ENGINEERING AGENT / LIVE SESSION STATUS" in WORLD
-    assert "{ provider, allNodes: true }" in WORLD
+    assert "provider," in WORLD
+    assert "allNodes: true" in WORLD
     assert "data-world-agent-open-chat" in WORLD
 
 

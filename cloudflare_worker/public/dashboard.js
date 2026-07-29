@@ -63,6 +63,10 @@
     // parsed from /blog/rss.xml. null until the feed read resolves so the card
     // can tell "loading" apart from "feed unavailable".
     homeBlogPosts: null,
+    // Organization aliases are not duplicate catalog publications: load the
+    // signed-in viewer's linked aliases separately so Top repositories can
+    // show the stable organization path with a clear owner label.
+    homeOrganizationRepositories: [],
     repoCommitDetail: null,
     repoRecordDetail: null,
     profileContributions: {
@@ -211,8 +215,7 @@
       // The Worker owns session invalidation: this clears the HttpOnly
       // forkmesh_admin cookie so the admin page is unreachable after logout.
       // site-header.js (marketing pages) calls the same endpoint.
-      serverLogout = fetch("/api/accounts/logout", {
-        method: "POST",
+      serverLogout = fetch("/api/accounts/logout", { method: "POST",
         keepalive: true,
         credentials: "same-origin",
         cache: "no-store",
@@ -1123,6 +1126,15 @@
     return data;
   }
 
+  // The compact World chat composer is a second presentation of the canonical
+  // dashboard actions. Expose the signed issue operation narrowly so the chat
+  // bundle can file into the same maintainer inbox without duplicating key,
+  // signature, authorization, or payload logic.
+  window.ForkMeshDashboardActions = Object.assign(
+    window.ForkMeshDashboardActions || {},
+    { submitWebIssue },
+  );
+
   // Mirrors IssueStore::contentForSigning's "comment" case (body NUL
   // attachments) and the desktop's inbox POST (verify_issue_event in the
   // worker). Unlike a new issue's "open" event, a comment is signed against the
@@ -1251,7 +1263,7 @@
     if (!response.ok || data.ok === false) {
       throw new Error(data.error || `HTTP ${response.status}`);
     }
-    return data;
+    return { ...data, event };
   }
 
   async function submitWebPullComment(repo, number, body) {
@@ -1906,6 +1918,21 @@
   const ORG_ROLE_OPTIONS = ["owner", "admin", "member"];
   const ORG_TEAM_PERMISSIONS = ["read", "write", "maintain", "admin"];
   const ORG_WORLD_ACCESS_OPTIONS = ["public", "restricted", "private"];
+  // Keep these aliases aligned with world-office-tower.js and the Worker's
+  // OFFICE_FLOOR_TEAM_ALIASES. The server remains authoritative for elevator
+  // access; this organization-admin matrix explains every floor group a user
+  // can belong to and highlights access granted by their current teams.
+  const ORG_OFFICE_FLOOR_GROUPS = Object.freeze([
+    { id: "marketing", label: "Marketing", aliases: ["marketing", "marketing-team", "growth", "brand", "comms", "communications"] },
+    { id: "engineering", label: "Engineering", aliases: ["engineering", "engineers", "development", "developers", "platform", "frontend", "backend"] },
+    { id: "product-design", label: "Product & Design", aliases: ["product-design", "product", "design", "ux", "ui-ux"] },
+    { id: "security", label: "Security", aliases: ["security", "security-team", "trust-safety", "trust-and-safety"] },
+    { id: "infrastructure", label: "Infrastructure", aliases: ["infrastructure", "infra", "devops", "site-reliability", "sre"] },
+    { id: "community", label: "Community", aliases: ["community", "community-team", "developer-relations", "devrel"] },
+    { id: "partnerships", label: "Partnerships", aliases: ["partnerships", "partnership", "business-development", "bizdev"] },
+    { id: "operations", label: "Operations", aliases: ["operations", "ops", "people-operations", "finance-operations"] },
+    { id: "executive", label: "Executive", aliases: ["executive", "executives", "leadership", "organization-leadership", "org-leadership"] },
+  ]);
 
   // Worker org-endpoint error codes -> human text. Unknown codes fall through
   // to a generic message so the UI never shows a raw slug.
@@ -1932,6 +1959,11 @@
     enabled_required: "Choose whether organization digests are enabled.",
     invalid_logo_url: "Logo URLs must use HTTPS and cannot contain credentials or fragments.",
     invalid_world_access: "Choose a valid access level for every organization space.",
+    invalid_provider: "Choose Codex or Claude Code.",
+    invalid_bot_permissions: "Choose at least one valid bot permission.",
+    invalid_expiration: "Bot tokens may expire in 1–365 days.",
+    too_many_bot_tokens: "This organization has reached its active bot-token limit.",
+    invalid_token_id: "That bot token is invalid.",
   };
 
   function orgErrorText(code) {
@@ -1984,6 +2016,38 @@
         : "border-border bg-secondary text-muted-foreground";
     return '<span class="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ' +
       tone + '">' + escapeHtml(clean) + "</span>";
+  }
+
+  function orgMemberFloorGroups(member) {
+    const teams = new Set(
+      (Array.isArray(member?.teams) ? member.teams : [])
+        .map((team) => String(team || "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const groups = ORG_OFFICE_FLOOR_GROUPS.map((group) => {
+      const matchingTeams = group.aliases.filter((team) => teams.has(team));
+      const active = matchingTeams.length > 0;
+      const state = active ? "In group" : "Available";
+      const title = active
+        ? group.label + " floor through " + matchingTeams.join(", ")
+        : group.label + " floor group is available";
+      return '<span title="' + escapeHtml(title) + '" aria-label="' +
+        escapeHtml(group.label + ": " + state) + '" class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold ' +
+        (active
+          ? "border-[#238636]/50 bg-[#238636]/10 text-[#238636]"
+          : "border-border bg-background text-muted-foreground") + '">' +
+        '<span aria-hidden="true" class="h-1.5 w-1.5 rounded-full ' +
+        (active ? "bg-[#238636]" : "bg-muted-foreground/40") + '"></span>' +
+        escapeHtml(group.label) + "</span>";
+    }).join("");
+    const activeCount = ORG_OFFICE_FLOOR_GROUPS.filter(
+      (group) => group.aliases.some((team) => teams.has(team)),
+    ).length;
+    return '<div data-org-member-floor-groups class="mt-2 border-t border-border/70 pt-2">' +
+      '<div class="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">' +
+        '<span class="font-semibold text-foreground">Office floor groups</span>' +
+        '<span>' + activeCount + " of " + ORG_OFFICE_FLOOR_GROUPS.length + " active</span>" +
+      '</div><div class="flex flex-wrap gap-1.5">' + groups + "</div></div>";
   }
 
   function orgOptionTags(options, selected) {
@@ -2083,6 +2147,7 @@
     let teams = [];
     let repos = [];
     let fediverse = { controls: { enabled: true }, repos: [] };
+    let botTokens = { permissions: [], tokens: [] };
     try {
       const [profileData, membersData, teamsData, reposData] = await Promise.all([
         orgApiRequest("GET", "/api/orgs/" + encodeURIComponent(name)),
@@ -2095,8 +2160,12 @@
       teams = teamsData.teams || [];
       repos = reposData.repos || [];
       if (profile.viewerRole === "owner" || profile.viewerRole === "admin") {
-        fediverse = await orgApiRequest(
-          "GET", "/api/orgs/" + encodeURIComponent(name) + "/fediverse");
+        [fediverse, botTokens] = await Promise.all([
+          orgApiRequest(
+            "GET", "/api/orgs/" + encodeURIComponent(name) + "/fediverse"),
+          orgApiRequest(
+            "GET", "/api/orgs/" + encodeURIComponent(name) + "/bot-tokens"),
+        ]);
       }
     } catch (error) {
       root.innerHTML =
@@ -2107,10 +2176,13 @@
       root.querySelector("[data-org-back]")?.addEventListener("click", showOrgsList);
       return;
     }
-    renderOrgDetail(root, name, profile, members, teams, repos, fediverse);
+    renderOrgDetail(
+      root, name, profile, members, teams, repos, fediverse, botTokens);
   }
 
-  function renderOrgDetail(root, name, profile, members, teams, repos, fediverse) {
+  function renderOrgDetail(
+    root, name, profile, members, teams, repos, fediverse, botTokens,
+  ) {
     const canManage = profile.viewerRole === "owner" || profile.viewerRole === "admin";
     const isOwner = profile.viewerRole === "owner";
     const title = escapeHtml(profile.displayName || profile.org || name);
@@ -2156,9 +2228,13 @@
             'class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-red-500 hover:border-red-500/50">' +
             '<i data-lucide="user-minus" class="h-4 w-4"></i></button>'
         : orgRoleBadge(member.role);
-      return '<div class="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2">' +
-        '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName + "</span>" +
-        controls + "</div>";
+      return '<div class="rounded-md border border-border bg-card px-3 py-2">' +
+        '<div class="flex items-center gap-2">' +
+          '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName + "</span>" +
+          controls +
+        "</div>" +
+        (canManage ? orgMemberFloorGroups(member) : "") +
+      "</div>";
     }).join("") || '<p class="text-sm text-muted-foreground">No members.</p>';
 
     const teamRows = teams.map((team) => {
@@ -2240,6 +2316,63 @@
           '<div class="mt-3 grid gap-2">' + digestRows + "</div>" +
         "</section>"
       : "";
+    const botTokenControls = canManage
+      ? (() => {
+          const permissionRows = (botTokens?.permissions || []).map((permission) =>
+            '<label class="flex items-start gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground">' +
+              '<input type="checkbox" data-org-bot-scope value="' +
+                escapeHtml(permission.scope || "") + '" class="mt-0.5 h-4 w-4"' +
+                (permission.default === false ? "" : " checked") + " />" +
+              '<span><strong class="font-mono">' +
+                escapeHtml(permission.scope || "") + "</strong>" +
+                '<span class="mt-0.5 block leading-4 text-muted-foreground">' +
+                  escapeHtml(permission.description || "") +
+                "</span></span></label>"
+          ).join("");
+          const tokenRows = (botTokens?.tokens || []).map((token) => {
+            const revoked = Number(token.revokedAt || 0) > 0;
+            const linked = token.deviceName
+              ? "linked to " + escapeHtml(token.deviceName)
+              : "not linked yet";
+            return '<div class="rounded-md border border-border bg-card p-3">' +
+              '<div class="flex items-start gap-3">' +
+                '<div class="min-w-0 flex-1"><strong class="block truncate text-sm text-foreground">' +
+                  escapeHtml(token.label || token.provider || "Bot") +
+                "</strong>" +
+                '<span class="mt-1 block text-xs text-muted-foreground">' +
+                  escapeHtml(token.provider || "") + " · " + linked +
+                  (revoked ? " · revoked" : "") + "</span></div>" +
+                (!revoked
+                  ? '<button type="button" data-org-bot-revoke="' +
+                      escapeHtml(token.id || "") + '" class="' +
+                      ORG_BTN_SECONDARY + ' text-red-500">Revoke</button>'
+                  : "") +
+              "</div>" +
+              '<p class="mt-2 break-all font-mono text-[10px] text-muted-foreground">' +
+                escapeHtml((token.scopes || []).join(" · ")) + "</p></div>";
+          }).join("") || '<p class="text-sm text-muted-foreground">No bot tokens yet.</p>';
+          return '<section class="mt-6 rounded-md border border-border bg-card p-4" data-org-bot-tokens>' +
+            '<div class="flex items-center gap-2"><i data-lucide="bot" class="h-4 w-4 text-[#58a6ff]"></i>' +
+              '<h4 class="text-sm font-semibold text-foreground">Bot tokens</h4></div>' +
+            '<p class="mt-1 text-xs leading-5 text-muted-foreground">Create a revocable Codex or Claude credential for an attended local computer. The secret is shown once. Destructive node, membership, organization-administration, and merge permissions are intentionally unavailable.</p>' +
+            '<form data-org-bot-create class="mt-4 grid gap-3">' +
+              '<div class="grid gap-3 sm:grid-cols-3">' +
+                '<label class="grid gap-1 text-xs font-semibold text-foreground">Provider<select data-org-bot-provider class="' +
+                  ORG_INPUT_CLASS + '"><option value="codex">Codex</option><option value="claude-code">Claude Code</option></select></label>' +
+                '<label class="grid gap-1 text-xs font-semibold text-foreground">Label<input data-org-bot-label maxlength="80" value="Codex bot" class="' +
+                  ORG_INPUT_CLASS + '" /></label>' +
+                '<label class="grid gap-1 text-xs font-semibold text-foreground">Expires in days<input data-org-bot-expiry type="number" min="1" max="365" value="90" class="' +
+                  ORG_INPUT_CLASS + '" /></label>' +
+              "</div>" +
+              '<div><span class="text-xs font-semibold text-foreground">Permissions</span>' +
+                '<div class="mt-2 grid gap-2 md:grid-cols-2">' + permissionRows + "</div></div>" +
+              '<button type="submit" class="' + ORG_BTN_PRIMARY + ' w-fit">Create bot token</button>' +
+            "</form>" +
+            '<div data-org-bot-secret hidden class="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-3"></div>' +
+            '<div class="mt-4 grid gap-2">' + tokenRows + "</div>" +
+          "</section>";
+        })()
+      : "";
     const accessSummary =
       '<aside class="rounded-md border border-[#2f81f7]/30 bg-[#2f81f7]/5 p-4 lg:sticky lg:top-4 lg:self-start" data-org-access-summary>' +
         '<div class="flex items-center gap-2"><i data-lucide="shield-check" class="h-4 w-4 text-[#2f81f7]"></i>' +
@@ -2248,11 +2381,12 @@
           '<section><strong class="block text-foreground">Every organization member can</strong>' +
             '<ul class="mt-1 list-disc space-y-1 pl-5">' +
               '<li>View the organization, linked repositories, member directory, and teams.</li>' +
-              '<li>Enter member-restricted World floors and see organization agents.</li>' +
-              '<li>Start, review, and continue Claude or Codex sessions on approved headless mirrors.</li>' +
+              '<li>Enter member-restricted World floors and see non-private organization activity.</li>' +
             "</ul></section>" +
+          '<section><strong class="block text-foreground">Engineering team members can</strong>' +
+            '<p class="mt-1">View organization agents and start, review, re-prompt, and continue Claude or Codex sessions on approved headless mirrors. This is checked server-side on every agent request; organization role alone does not grant access.</p></section>' +
           '<section><strong class="block text-foreground">Member role cannot</strong>' +
-            '<p class="mt-1">Change organization settings, membership, teams, or repository links. Team permissions can grant repository work, but protected mirror approval and merge remain owner-only.</p></section>' +
+            '<p class="mt-1">Change organization settings, membership, teams, or repository links. Members outside Engineering also cannot view or control Claude/Codex sessions. Team permissions can grant repository work, but protected mirror approval and merge remain owner-only.</p></section>' +
           '<section><strong class="block text-foreground">Admin role adds</strong>' +
             '<p class="mt-1">Organization settings, members, teams, linked repositories, World access, and federation controls. Admins cannot remove the final owner.</p></section>' +
           '<section><strong class="block text-foreground">Owner role adds</strong>' +
@@ -2289,7 +2423,8 @@
       memberAndTeamSettings +
       '<section class="mt-6"><h4 class="text-sm font-semibold text-foreground">Linked repos</h4>' +
         '<div class="mt-2 grid gap-2">' + repoRows + "</div>" + repoAdd + "</section>" +
-      digestControls;
+      digestControls +
+      botTokenControls;
 
     window.lucide?.createIcons();
     wireOrgDetail(root, name, members);
@@ -2396,6 +2531,72 @@
           "POST", "/api/orgs/" + encodeURIComponent(name) + "/fediverse",
           { enabled: Boolean(event.target.checked) }));
       });
+
+    const botProvider = root.querySelector("[data-org-bot-provider]");
+    const botLabel = root.querySelector("[data-org-bot-label]");
+    botProvider?.addEventListener("change", () => {
+      if (!botLabel) return;
+      botLabel.value = botProvider.value === "claude-code"
+        ? "Claude bot"
+        : "Codex bot";
+    });
+    root.querySelector("[data-org-bot-create]")?.addEventListener(
+      "submit", async (event) => {
+        event.preventDefault();
+        const secretPanel = root.querySelector("[data-org-bot-secret]");
+        const scopes = [...root.querySelectorAll("[data-org-bot-scope]:checked")]
+          .map((input) => input.value);
+        try {
+          const created = await orgApiRequest(
+            "POST",
+            "/api/orgs/" + encodeURIComponent(name) + "/bot-tokens",
+            {
+              provider: botProvider?.value || "codex",
+              label: (botLabel?.value || "").trim(),
+              expiresDays: Number(
+                root.querySelector("[data-org-bot-expiry]")?.value || 90),
+              scopes,
+            },
+          );
+          if (!secretPanel) return;
+          secretPanel.hidden = false;
+          secretPanel.replaceChildren();
+          const heading = document.createElement("strong");
+          heading.className = "block text-sm text-foreground";
+          heading.textContent = "Copy this token now — it cannot be recovered";
+          const token = document.createElement("code");
+          token.className =
+            "mt-2 block select-all break-all rounded border border-border bg-background p-2 text-xs text-foreground";
+          token.textContent = created.token || "";
+          const instructions = document.createElement("p");
+          instructions.className = "mt-2 text-xs leading-5 text-muted-foreground";
+          instructions.textContent =
+            "On the attended local computer, store it in FORKMESH_BOT_TOKEN, then POST /api/bot/session with a deviceName to bind and verify the connection. Revoking this row stops the credential immediately.";
+          const copy = document.createElement("button");
+          copy.type = "button";
+          copy.className = ORG_BTN_SECONDARY + " mt-2";
+          copy.textContent = "Copy token";
+          copy.addEventListener("click", async () => {
+            await navigator.clipboard.writeText(created.token || "");
+            copy.textContent = "Copied";
+          });
+          secretPanel.append(heading, token, instructions, copy);
+          orgStatus(root, "Bot token created. Copy it before leaving this page.", true);
+        } catch (error) {
+          orgStatus(root, error.message, false);
+        }
+      },
+    );
+    root.querySelectorAll("[data-org-bot-revoke]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (!window.confirm("Revoke this bot token? Its local connection and API access will stop immediately.")) return;
+        guard(() => orgApiRequest(
+          "DELETE",
+          "/api/orgs/" + encodeURIComponent(name) + "/bot-tokens",
+          { tokenId: button.dataset.orgBotRevoke },
+        ));
+      });
+    });
   }
 
   function wireOrgMemberAutocomplete(root, members) {
@@ -2477,18 +2678,28 @@
     const rows = teamMembers.map((member) => {
       const memberName = escapeHtml(member.name || "");
       return '<div class="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2">' +
-        '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName + "</span>" +
+        '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName +
+          (member.external
+            ? ' <small class="ml-1 rounded-full border border-border px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">outside collaborator</small>'
+            : "") + "</span>" +
         '<button type="button" data-org-team-member-remove="' + memberName + '" title="Remove from team" ' +
           'class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-red-500 hover:border-red-500/50">' +
           '<i data-lucide="x" class="h-4 w-4"></i></button></div>';
     }).join("") || '<p class="text-sm text-muted-foreground">No members on this team yet.</p>';
-    const addForm = candidates.length
-      ? '<form data-org-team-member-add class="mt-3 flex flex-wrap items-center gap-2">' +
-          '<select data-team-member-name class="' + ORG_INPUT_CLASS + ' flex-1 min-w-[10rem]">' +
-            candidates.map((member) => '<option value="' + escapeHtml(member.name) + '">' + escapeHtml(member.name) + "</option>").join("") +
-          "</select>" +
-          '<button type="submit" class="' + ORG_BTN_SECONDARY + '">Add to team</button></form>'
-      : '<p class="mt-3 text-xs text-muted-foreground">Every org member is already on this team.</p>';
+    const addForm =
+      '<form data-org-team-member-add class="mt-3 grid gap-2 rounded-md border border-border bg-card p-3">' +
+        '<div class="flex flex-wrap items-center gap-2">' +
+          '<input data-team-member-name list="org-team-member-candidates" autocomplete="off" placeholder="ForkMesh account name" class="' + ORG_INPUT_CLASS + ' flex-1 min-w-[10rem]" />' +
+          '<datalist id="org-team-member-candidates">' +
+            candidates.map((member) => '<option value="' + escapeHtml(member.name) + '"></option>').join("") +
+          "</datalist>" +
+          '<button type="submit" class="' + ORG_BTN_SECONDARY + '">Add to team</button>' +
+        "</div>" +
+        '<label class="flex items-start gap-2 text-xs leading-5 text-muted-foreground">' +
+          '<input type="checkbox" data-team-member-external class="mt-1 h-4 w-4" />' +
+          '<span><strong class="text-foreground">Outside collaborator</strong> — team-limited access only. This does not make the account an organization member and does not grant Office entry or repository permissions.</span>' +
+        "</label>" +
+      "</form>";
     root.innerHTML =
       '<button type="button" data-org-team-back class="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">' +
         '<i data-lucide="arrow-left" class="h-4 w-4"></i> ' + escapeHtml(name) + "</button>" +
@@ -2509,9 +2720,10 @@
     root.querySelector("[data-org-team-back]")?.addEventListener("click", () => showOrgDetail(name));
     root.querySelector("[data-org-team-member-add]")?.addEventListener("submit", (event) => {
       event.preventDefault();
-      const member = root.querySelector("[data-team-member-name]")?.value || "";
+      const member = (root.querySelector("[data-team-member-name]")?.value || "").trim().toLowerCase();
+      const external = root.querySelector("[data-team-member-external]")?.checked === true;
       if (!member) return;
-      guard(() => orgApiRequest("POST", "/api/orgs/" + encodeURIComponent(name) + "/teams/" + encodeURIComponent(team) + "/members", { member }));
+      guard(() => orgApiRequest("POST", "/api/orgs/" + encodeURIComponent(name) + "/teams/" + encodeURIComponent(team) + "/members", { member, external }));
     });
     root.querySelectorAll("[data-org-team-member-remove]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -4744,6 +4956,15 @@
     return haystack.includes(query);
   }
 
+  function repositoryTermsBadge(repo, compact = false) {
+    if (repo?.termsFlagged !== true) return "";
+    const category = String(repo.termsCategory || "policy").replace(
+      /[^a-z-]/gi,
+      "",
+    ).slice(0, 20);
+    return `<span title="This repository has an active ForkMesh Terms of Service moderation flag${category ? `: ${escapeHtml(category)}` : ""}." class="inline-flex shrink-0 items-center gap-1 rounded-full border border-destructive/60 bg-destructive/10 ${compact ? "px-1 py-0.5 text-[8px]" : "px-2 py-0.5 text-[10px]"} font-semibold text-destructive"><i data-lucide="flag" class="${compact ? "h-2.5 w-2.5" : "h-3 w-3"}"></i>${compact ? "ToS" : "Terms flag"}</span>`;
+  }
+
   function groupMatchesGlobalSearch(group, query) {
     if (!query) return true;
     if (repositoryMatchesQuery(sourceOfTruth(group), query)) return true;
@@ -5088,6 +5309,7 @@
               <span class="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${statusClass}">
                 ${statusText}
               </span>
+              ${repositoryTermsBadge(origin)}
               <button data-repo-star-button data-repo-key="${escapeHtml(key)}" type="button" aria-pressed="false" aria-label="Star ${escapeHtml(key)}" class="ml-auto hidden shrink-0 items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs text-foreground hover:bg-background sm:inline-flex">
                 <i data-lucide="star" data-repo-star-icon class="h-3.5 w-3.5 text-muted-foreground"></i>
                 <span data-repo-star-label>Star</span>
@@ -5133,6 +5355,7 @@
         <span class="flex min-w-0 flex-wrap items-center gap-2">
           <span class="min-w-0 truncate text-lg font-semibold text-accent hover:underline">${escapeHtml(repo.name || "repository")}</span>
           <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${escapeHtml(visibility)}</span>
+          ${repositoryTermsBadge(repo)}
         </span>
         <span class="mt-1 block text-xs text-muted-foreground">Published from ${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repository")}</span>
         <span class="mt-2 line-clamp-2 text-sm text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</span>
@@ -5232,20 +5455,45 @@
     const groups = Array.isArray(state.filteredGroups)
       ? state.filteredGroups
       : groupRepositories(state.repositories || []);
-    if (count) count.textContent = formatCount(groups.length);
+    const organizationRepositories = Array.isArray(
+      state.homeOrganizationRepositories,
+    )
+      ? state.homeOrganizationRepositories
+      : [];
+    const entries = [
+      ...organizationRepositories.map((repo) => ({
+        repo,
+        key: `${repo.owner}/${repo.name}`,
+        href: `/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
+        organization: true,
+      })),
+      ...groups.map((group) => {
+        const repo = sourceOfTruth(group);
+        return {
+          repo,
+          key: repoKey(repo),
+          href: repoPathUrl(repo),
+          organization: false,
+        };
+      }),
+    ].filter((entry, index, values) =>
+      values.findIndex((candidate) =>
+        candidate.key.toLowerCase() === entry.key.toLowerCase()) === index);
+    if (count) count.textContent = formatCount(entries.length);
     if (!list) return;
-    if (!groups.length) {
+    if (!entries.length) {
       list.innerHTML = '<div class="rounded-md border border-border bg-background px-2.5 py-2 text-xs text-muted-foreground">No mirrored repositories yet.</div>';
       return;
     }
-    list.innerHTML = groups.slice(0, 12).map((group) => {
-      const repo = sourceOfTruth(group);
-      const key = repoKey(repo);
+    list.innerHTML = entries.slice(0, 12).map((entry) => {
+      const repo = entry.repo;
       const live = repoIsLive(repo);
       return `
-        <a href="${escapeHtml(repoPathUrl(repo))}" class="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
+        <a href="${escapeHtml(entry.href)}" class="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
           <span class="h-2 w-2 shrink-0 rounded-full ${live ? "bg-primary" : "bg-muted-foreground/40"}"></span>
           <span class="min-w-0 flex-1 truncate"><span class="text-muted-foreground">${escapeHtml(repo.owner || "owner")}/</span><span class="text-foreground">${escapeHtml(repo.name || "repository")}</span></span>
+          ${repositoryTermsBadge(repo, true)}
+          ${entry.organization ? '<span class="shrink-0 rounded border border-border px-1 py-0.5 font-mono text-[8px] uppercase text-muted-foreground">org</span>' : ""}
         </a>`;
     }).join("");
   }
@@ -5254,17 +5502,34 @@
     const container = $("[data-home-top-repositories]");
     if (!container) return;
     const query = ($("[data-home-repo-search]")?.value || "").trim().toLowerCase();
-    const groups = groupRepositories(state.repositories || []).filter((group) => {
-      return repositoryMatchesQuery(sourceOfTruth(group), query);
-    }).slice(0, 8);
+    const entries = [
+      ...(Array.isArray(state.homeOrganizationRepositories)
+        ? state.homeOrganizationRepositories
+        : []).map((repo) => ({
+          repo,
+          href: `/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
+          organization: true,
+        })),
+      ...groupRepositories(state.repositories || []).map((group) => {
+        const repo = sourceOfTruth(group);
+        return { repo, href: repoPathUrl(repo), organization: false };
+      }),
+    ].filter((entry) => repositoryMatchesQuery(entry.repo, query))
+      .filter((entry, index, values) =>
+        values.findIndex((candidate) =>
+          repoKey(candidate.repo).toLowerCase() ===
+          repoKey(entry.repo).toLowerCase()) === index)
+      .slice(0, 8);
     container.innerHTML = `
-      ${groups.length
-        ? `<div class="grid gap-1">${groups.map((group) => {
-            const repo = sourceOfTruth(group);
+      ${entries.length
+        ? `<div class="grid gap-1">${entries.map((entry) => {
+            const repo = entry.repo;
             const key = repoKey(repo);
-            return `<a href="${escapeHtml(repoPathUrl(repo))}" class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground">
-              <i data-lucide="book-marked" class="h-3.5 w-3.5 shrink-0"></i>
+            return `<a href="${escapeHtml(entry.href)}" class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground">
+              <i data-lucide="${entry.organization ? "building-2" : "book-marked"}" class="h-3.5 w-3.5 shrink-0"></i>
               <span class="min-w-0 truncate">${escapeHtml(key)}</span>
+              ${repositoryTermsBadge(repo, true)}
+              ${entry.organization ? '<span class="ml-auto shrink-0 text-[9px] uppercase text-muted-foreground">organization</span>' : ""}
             </a>`;
           }).join("")}</div>`
         : '<div class="px-2 py-3 text-sm text-muted-foreground">No repositories match this filter.</div>'}
@@ -5338,7 +5603,7 @@
   // (see blog_feed.py), so this is one cheap same-origin read per dashboard
   // load rather than a second hand-maintained copy of the post list.
   const HOME_BLOG_POST_LIMIT = 3;
-  const HOME_BLOG_FEED_URL = "/blog/rss.xml";
+  const HOME_BLOG_FEED_URL = "/rss.xml";
 
   // Feed URLs are absolute against forkmesh.com; keep only the path so the
   // dashboard links and paints artwork from whatever origin it is served on
@@ -5406,6 +5671,43 @@
       state.homeBlogPosts = [];
     }
     renderHomeBlogPosts();
+  }
+
+  async function loadHomeOrganizationRepositories() {
+    if (!state.session?.sessionToken) {
+      state.homeOrganizationRepositories = [];
+      return;
+    }
+    try {
+      const organizations = await fetchJson("/api/orgs");
+      const orgs = Array.isArray(organizations?.orgs)
+        ? organizations.orgs.slice(0, 20)
+        : [];
+      const linked = await Promise.all(orgs.map(async (organization) => {
+        const owner = String(organization?.name || "").trim().toLowerCase();
+        if (!owner) return [];
+        try {
+          const data = await fetchJson(
+            `/api/orgs/${encodeURIComponent(owner)}/repos`,
+          );
+          return (Array.isArray(data?.repos) ? data.repos : []).map((item) => ({
+            owner,
+            name: String(item?.repo || "").trim(),
+            linkedNode: String(item?.node || "").trim(),
+            source: "organization-alias",
+            organizationOwned: true,
+            cloneOnline: true,
+          })).filter((repo) => repo.name);
+        } catch (_) {
+          return [];
+        }
+      }));
+      state.homeOrganizationRepositories = linked.flat();
+    } catch (_) {
+      state.homeOrganizationRepositories = [];
+    }
+    renderSidebarRepositories(state.session);
+    renderHomeRepositories();
   }
 
   // Home left-rail "Active agent sessions" (adhoc #81). Renders the aggregated
@@ -8081,12 +8383,42 @@
     return Array.from(byAuthor.values());
   }
 
-  function renderPullReviewers(events) {
+  function pullReviewPolicy(events, pullAuthor = "") {
+    const authorKey = String(pullAuthor || "").trim();
+    const latest = new Map();
+    for (const ev of Array.isArray(events) ? events : []) {
+      // Inbox reviews are not authoritative merge evidence until the owner
+      // node drains, validates, commits, and republishes them on the pinned
+      // pull-metadata ref.
+      if (ev?.type !== "review" || ev.pending === true) continue;
+      const key = String(ev.author || "").trim();
+      if (!key || key === authorKey) continue;
+      if (ev.state === "approved" || ev.state === "changes_requested") {
+        latest.set(key, ev.state);
+      } else {
+        latest.delete(key);
+      }
+    }
+    const approvals = Array.from(latest.values())
+      .filter((stateName) => stateName === "approved").length;
+    const blockers = Array.from(latest.values())
+      .filter((stateName) => stateName === "changes_requested").length;
+    return {
+      approvals,
+      blockers,
+      ready: approvals >= 1 && blockers === 0,
+    };
+  }
+
+  function renderPullReviewers(events, pullAuthor = "") {
     const reviewers = pullReviewSummary(events);
-    if (!reviewers.length) return "No reviews";
+    const policy = pullReviewPolicy(events, pullAuthor);
+    const gateTone = policy.ready ? "text-emerald-400" : "text-amber-400";
+    const gate = `<span class="mb-2 flex items-center justify-between gap-2"><strong class="${gateTone}">${policy.ready ? "Peer gate met" : "Peer approval required"}</strong><span>${policy.approvals} approved${policy.blockers ? ` · ${policy.blockers} blocking` : ""}</span></span>`;
+    if (!reviewers.length) return `${gate}<span>No reviews yet</span>`;
     // sidebarSection wraps this in a <p>, so rows must stay phrasing content
     // (span, not div) or the browser silently closes the paragraph early.
-    return reviewers.map((reviewer) => {
+    return gate + reviewers.map((reviewer) => {
       const tone = reviewer.state === "approved" ? "text-emerald-400" : reviewer.state === "changes_requested" ? "text-red-400" : "text-muted-foreground";
       const label = reviewer.state === "approved" ? "Approved" : reviewer.state === "changes_requested" ? "Requested changes" : "Commented";
       return `<span class="mt-1.5 flex items-center justify-between gap-2 first:mt-0"><span class="truncate font-medium text-foreground">${escapeHtml(reviewer.authorName)}</span><span class="shrink-0 text-[10px] font-semibold ${tone}">${escapeHtml(label)}</span></span>`;
@@ -8285,18 +8617,21 @@
     buttons.forEach((button) => { button.disabled = true; });
     setHint("Signing and sending…");
     try {
+      let result;
       if (isReview) {
-        await submitWebPullReview(repo, number, action, body);
+        result = await submitWebPullReview(repo, number, action, body);
       } else {
-        await submitWebPullComment(repo, number, body);
+        result = await submitWebPullComment(repo, number, body);
       }
+      const signedEvent = result?.event || {};
       const newEvent = {
         type: isReview ? "review" : "comment",
         state: isReview ? action : "",
         authorName: state.session?.nodeName || "you",
-        author: state.session?.nodeName || "",
+        author: signedEvent.author || "",
         ts: Math.floor(Date.now() / 1000),
         body,
+        pending: true,
       };
       const list = form.parentElement?.querySelector("[data-repo-pull-conversation]");
       if (list) {
@@ -8308,7 +8643,17 @@
         const conversation = [...(state.repoRecordDetail.parsed.pullConversation || []), newEvent];
         state.repoRecordDetail.parsed.pullConversation = conversation;
         const reviewers = document.querySelector("[data-repo-pull-reviewers]");
-        if (reviewers) reviewers.innerHTML = renderPullReviewers(conversation);
+        if (reviewers) {
+          reviewers.innerHTML = renderPullReviewers(
+            conversation,
+            state.repoRecordDetail.parsed.values?.author || "",
+          );
+        }
+        updateRepoPullMergePanel(
+          repo,
+          number,
+          state.repoRecordDetail.parsed,
+        );
       }
       if (bodyInput) bodyInput.value = "";
       buttons.forEach((button) => { button.disabled = false; });
@@ -8386,10 +8731,24 @@
       parsed.values || {},
       parsed.pullMetadataCommit || "",
     );
+    const reviewPolicy = pullReviewPolicy(
+      parsed.pullConversation || [],
+      parsed.values?.author || "",
+    );
     if (!context) {
       return `
         <div data-repo-pull-merge-panel class="rounded-lg border border-border bg-secondary/30 p-4 text-xs text-muted-foreground">
           Owner-only mirror merge is unavailable until the open pull request exposes matching immutable base, head, and pull-metadata commits.
+        </div>`;
+    }
+    if (!reviewPolicy.ready) {
+      const reason = reviewPolicy.blockers
+        ? `${reviewPolicy.blockers} independent reviewer${reviewPolicy.blockers === 1 ? " has" : "s have"} requested changes.`
+        : "At least one approval from a peer other than the pull-request author is required.";
+      return `
+        <div data-repo-pull-merge-panel class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4">
+          <span class="min-w-0 text-xs leading-5 text-muted-foreground"><strong class="text-amber-300">Independent review required.</strong> ${escapeHtml(reason)} Additional distinct approvals strengthen the review signal.</span>
+          <button type="button" disabled class="inline-flex h-9 shrink-0 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"><i data-lucide="shield-check" class="h-4 w-4"></i>Merge locked</button>
         </div>`;
     }
     const stateName = String(merge.state || "ready");
@@ -8498,6 +8857,7 @@
             stale_head: "The pull-request head changed; reload and review it again.",
             stale_pull_metadata: "The pull-request metadata changed; reload before merging.",
             merge_node_unavailable: "No eligible online mirror can merge this pull request right now.",
+            review_required: "At least one independent peer approval is required, with no unresolved request for changes.",
           };
           parsed.pullMerge = {
             state: "failed",
@@ -8619,6 +8979,67 @@
     }
   }
 
+  async function moveIssueToMarketingInitiatives(button) {
+    const detail = state.repoRecordDetail;
+    const repo = state.selectedRepo;
+    if (
+      !button ||
+      !repo ||
+      detail?.kind !== "issues" ||
+      !state.session?.sessionToken
+    ) {
+      if (!state.session?.sessionToken) location.href = "/login";
+      return false;
+    }
+    const title = String(
+      detail.parsed?.values?.title || `Issue #${detail.number}`,
+    ).slice(0, 160);
+    const original = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML =
+      '<span class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-r-transparent"></span>Moving…';
+    try {
+      const response = await fetch(
+        "/api/world/office/marketing-tasks/initiatives",
+        {
+          method: "POST",
+          credentials: "same-origin",
+          cache: "no-store",
+          headers: {
+            accept: "application/json",
+            authorization: `Bearer ${state.session.sessionToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            owner: repo.owner,
+            repo: repo.name,
+            number: Number(detail.number),
+            title,
+            sessionToken: state.session.sessionToken,
+          }),
+        },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+      button.dataset.moved = "true";
+      button.innerHTML =
+        '<i data-lucide="check" class="h-3.5 w-3.5"></i>In Marketing initiatives';
+      window.lucide?.createIcons();
+      return true;
+    } catch (error) {
+      button.disabled = false;
+      button.innerHTML = original;
+      button.title = String(error?.message || "Unable to move issue").slice(
+        0,
+        160,
+      );
+      window.lucide?.createIcons();
+      return false;
+    }
+  }
+
   function renderRepoRecordDetail(repo, kind, number, parsed) {
     const options = parsed.options || {};
     const config = repoCollectionConfig[kind] || repoCollectionConfig.issues;
@@ -8640,6 +9061,10 @@
     const pendingNotice = options.pending ? `
         <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is still syncing to the maintainer's inbox and hasn't been drained to the public mirror yet, so it doesn't have a number assigned.</div>` : "";
     const isIssues = !isPulls && !isDiscussions;
+    const marketingInitiativeAction =
+      isIssues && !options.pending
+        ? `<button type="button" data-repo-marketing-initiative class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="megaphone" class="h-3.5 w-3.5 text-primary"></i>Move to Marketing initiatives</button>`
+        : "";
     const issueTimeline = isIssues ? renderIssueTimeline(parsed.issueEvents) : "";
     // Always mount the timeline container for issues so a comment posted from
     // the form below has somewhere to land, but keep it borderless while empty.
@@ -8699,7 +9124,10 @@
       <article data-repo-record-detail="${escapeHtml(kind)}" class="grid gap-5 border-t border-border bg-background p-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <button type="button" data-repo-record-back="${escapeHtml(kind)}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to ${escapeHtml(config.label)}</button>
-          <span class="font-mono text-xs text-muted-foreground">${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repo")} · ${recordLabel}</span>
+          <div class="flex flex-wrap items-center justify-end gap-2">
+            ${marketingInitiativeAction}
+            <span class="font-mono text-xs text-muted-foreground">${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repo")} · ${recordLabel}</span>
+          </div>
         </div>
         ${pendingNotice}
         <header data-repo-record-hero class="grid gap-3">
@@ -8752,7 +9180,7 @@
               </div>` : ""}
           </div>
           <aside data-repo-record-sidebar class="min-w-0 text-xs">
-            ${isPulls ? sidebarSection("Reviewers", `<span data-repo-pull-reviewers class="grid gap-0.5">${renderPullReviewers(pullConversation)}</span>`) : ""}
+            ${isPulls ? sidebarSection("Reviewers", `<span data-repo-pull-reviewers class="grid gap-0.5">${renderPullReviewers(pullConversation, values.author || "")}</span>`) : ""}
             ${sidebarSection("Assignees", "No one assigned")}
             ${sidebarSection("Labels", labelValue)}
             ${sidebarSection("Type", isPulls ? "Pull request" : isDiscussions ? "Discussion" : "Issue")}
@@ -10115,8 +10543,6 @@
       }
       // Admin-only operational-alert switches, seeded the same way. Absent or
       // never saved reads as off, which is the stored default.
-      const alertBox = $("[data-repo-alert-status-emails]");
-      if (alertBox) alertBox.checked = Boolean(body.alerts?.statusEmails);
       // Mirrors may report their own actor handle, but the repository UI
       // advertises the canonical ForkMesh actor everywhere.
       const handle = "@forkmesh.forkmesh@forkmesh.com";
@@ -13016,7 +13442,7 @@
             <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="settings" class="h-3.5 w-3.5 text-primary"></i>Repository settings</span>
           </div>
           <form data-repo-settings-form class="grid gap-4 p-4">
-            <fieldset id="operational-alerts" data-repo-operational-alerts tabindex="-1" class="grid gap-2 scroll-mt-20 rounded-md border border-border p-3 text-xs text-muted-foreground outline-none focus:ring-2 focus:ring-primary/50">
+            <fieldset class="grid gap-2 rounded-md border border-border p-3 text-xs text-muted-foreground">
               <legend class="px-1 text-[11px] font-semibold uppercase tracking-wide">ActivityPub federation</legend>
               <label class="inline-flex items-start gap-2"><input data-repo-ap-federate type="checkbox" class="mt-0.5 h-3.5 w-3.5" checked />Federate this repository (fediverse actor and handle)</label>
               <label class="inline-flex items-start gap-2"><input data-repo-ap-broadcast type="checkbox" class="mt-0.5 h-3.5 w-3.5" checked />Include meaningful public updates in one automated digest at most every 24 hours</label>
@@ -13030,11 +13456,6 @@
                 <p class="mt-1 leading-5">Only public titles, stable links, categories and UTC times enter the encrypted bounded queue. Empty digests are never posted.</p>
                 <pre data-repo-digest-preview class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-3 font-mono text-[11px] leading-5 text-foreground">Loading preview…</pre>
               </div>`}
-            </fieldset>
-            <fieldset class="grid gap-2 rounded-md border border-border p-3 text-xs text-muted-foreground">
-              <legend class="px-1 text-[11px] font-semibold uppercase tracking-wide">Operational alerts</legend>
-              <label class="inline-flex items-start gap-2"><input data-repo-alert-status-emails type="checkbox" class="mt-0.5 h-3.5 w-3.5" />Email this organization's administrators when a ForkMesh system check fails, and again when it recovers</label>
-              <p class="leading-5">Off by default. Nobody receives outage or recovery mail until an organization administrator turns this on.</p>
             </fieldset>
             <p class="text-[11px] leading-5 text-muted-foreground">Saved to the relay now and written into the repository's committed <span class="font-mono">.forkmesh/info.json</span> the next time the owner's node syncs.</p>
             <div class="flex flex-wrap items-center justify-between gap-2">
@@ -13066,6 +13487,7 @@
                 <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
                 <h2 class="min-w-0 truncate text-lg font-semibold text-foreground"><span class="text-muted-foreground"><a href="/@${encodeURIComponent(String(repo.owner || "").toLowerCase())}" data-repo-owner-link class="hover:text-foreground hover:underline">${escapeHtml(repo.owner || "owner")}</a>/</span>${escapeHtml(repo.name || "repository")}</h2>
                 <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${repo.isPrivate ? "private" : "public"}</span>
+                ${repositoryTermsBadge(repo)}
                 <span data-repo-availability-status class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "served by mirror" : live ? "mirror online" : "mirror offline"}</span>
               </div>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
@@ -13318,16 +13740,6 @@
     // markup underneath) is already on the right tab.
     const initialTab = repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code";
     setRepoTab(initialTab);
-    if (
-      initialTab === "settings" &&
-      window.location.hash === "#operational-alerts"
-    ) {
-      window.requestAnimationFrame(() => {
-        const alerts = document.querySelector("[data-repo-operational-alerts]");
-        alerts?.scrollIntoView({ block: "center" });
-        alerts?.focus({ preventScroll: true });
-      });
-    }
     window.lucide?.createIcons();
     // When the URL restored a feature tab (or a record detail), the tree/README
     // load is only a warm-up for a later click on Code — run it in background
@@ -14220,6 +14632,7 @@
     // The blog card fills in from the edge-cached feed; the baked markup
     // already shows its loading state.
     void loadHomeBlogPosts();
+    void loadHomeOrganizationRepositories();
     // Feed + top repositories fill in when loadRepositories()/loadNotifications()
     // resolve — both re-render the home containers.
     // Active agent sessions (adhoc #81) need the catalog first so we know which
@@ -14958,6 +15371,14 @@
         return;
       }
 
+      const marketingInitiativeButton = event.target.closest(
+        "[data-repo-marketing-initiative]",
+      );
+      if (marketingInitiativeButton) {
+        void moveIssueToMarketingInitiatives(marketingInitiativeButton);
+        return;
+      }
+
       const pullViewedButton = event.target.closest("[data-repo-pull-viewed]");
       if (pullViewedButton && state.selectedRepo) {
         toggleRepoPullViewed(
@@ -15111,9 +15532,6 @@
             federate: Boolean(settingsForm.querySelector("[data-repo-ap-federate]")?.checked),
             broadcastEvents: Boolean(settingsForm.querySelector("[data-repo-ap-broadcast]")?.checked),
             acceptComments: Boolean(settingsForm.querySelector("[data-repo-ap-comments]")?.checked),
-          },
-          alerts: {
-            statusEmails: Boolean(settingsForm.querySelector("[data-repo-alert-status-emails]")?.checked),
           },
         });
         setRepoSettingsStatus("Settings saved.", "good");

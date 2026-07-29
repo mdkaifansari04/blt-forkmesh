@@ -179,3 +179,68 @@ def test_admin_resend_verify_tool_on_users_table():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert "_admin_resend_verification" in admin_calls
+
+
+def test_admin_users_supports_a_direct_filtered_detail_view():
+    table_view = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _render_table_view("):
+        ENTRY_TEXT.index("def _render_admin_stats(")
+    ]
+    assert 'user_filter=""' in table_view
+    assert 'if table == "users" else ""' in table_view
+    assert "requested_user_bi = await blind_index(env, requested_user)" in table_view
+    assert '"WHERE user_bi=? LIMIT 1"' in table_view
+    assert 'id="user-detail"' in table_view
+    assert "Back to all users" in table_view
+
+    admin = ENTRY_TEXT[
+        ENTRY_TEXT.index("    async def _admin(self, request):"):
+        ENTRY_TEXT.index("\n    async def _route(", ENTRY_TEXT.index(
+            "    async def _admin(self, request):"))
+    ]
+    assert 'params.get("user", [""])[0]' in admin
+
+
+def test_admin_database_rows_open_read_only_vertical_detail_pages():
+    for contract in (
+        "async def _render_record_detail(",
+        '"SELECT rowid AS _rowid_, * FROM " + table + " WHERE rowid=? LIMIT 1"',
+        'class="record-detail"',
+        "<dl>%s</dl>",
+        "Read-only vertical view",
+        'action="detail"',
+        'class="record-row"',
+        'data-href="%s"',
+        "location.href=this.dataset.href",
+        'if action == "detail" and active:',
+        'params.get("rowid", [""])[0]',
+    ):
+        assert contract in ENTRY_TEXT
+
+
+def test_admin_error_log_has_grouped_24_hour_occurrence_analytics():
+    for contract in (
+        "Previous 24 hours",
+        "Equivalent errors",
+        'class="error-chart"',
+        'class="error-bar"',
+        'class="error-sparkline"',
+        'class="error-spark-bar"',
+        "<th>24-hour frequency</th>",
+        "WHERE ts>=? ORDER BY ts DESC LIMIT 5000",
+        "groups.setdefault(signature, [0] * 24)",
+        "group_hours[23 - int(age_hours)] += 1",
+        'aria-labelledby="error-analytics-title"',
+    ):
+        assert contract in ENTRY_TEXT
+
+
+def test_admin_timestamps_show_exact_and_live_relative_time():
+    for contract in (
+        "new Date(ms).toLocaleString()",
+        "className='relative-time'",
+        "function updateAdminRelativeTimes()",
+        "' ago'",
+        "setInterval(updateAdminRelativeTimes,30000)",
+    ):
+        assert contract in ENTRY_TEXT

@@ -97,7 +97,6 @@ def test_world_entry_modules_have_valid_ecmascript_module_syntax():
         completed = subprocess.run(
             [
                 "node",
-                "--experimental-default-type=module",
                 "--check",
                 str(module),
             ],
@@ -112,8 +111,8 @@ def test_world_entry_modules_have_valid_ecmascript_module_syntax():
 
 def test_world_contains_the_initial_city_districts_without_a_clock():
     for landmark in (
-        "information",
         "fountain",
+        "campfire",
         "repositories",
         "office",
     ):
@@ -143,40 +142,28 @@ def test_forkmesh_office_is_a_navigable_world_landmark():
     assert 'id: "office"' in DATA
     assert 'label: "ForkMesh Office"' in DATA
     assert 'shortLabel: "Office"' in DATA
-    assert "position: [45, 0, -27]" in DATA
+    assert "position: [0, 0, -215]" in DATA
     assert 'id: "visiting-office"' in DATA
 
 
-def test_landmarks_are_spread_out_inside_the_repository_portal_perimeter():
+def test_landmarks_use_stable_positions_inside_the_world_and_office_campus():
     positions = {
-        "information": (-40, 30),
         "fountain": (0, 0),
+        "campfire": (0, 130),
         "repositories": (35, 38),
-        "office": (45, -27),
+        "office": (0, -215),
     }
     for landmark, (x, z) in positions.items():
         start = DATA.index(f'id: "{landmark}"')
         block = DATA[start: DATA.index("\n  },", start)]
         assert f"position: [{x}, 0, {z}]" in block
 
-    perimeter_radius = 68
-    noncentral = {
-        landmark: position
-        for landmark, position in positions.items()
-        if landmark != "fountain"
-    }
-    assert all(
-        math.hypot(x, z) <= perimeter_radius - 15
-        for x, z in noncentral.values()
-    )
-    assert min(
-        math.dist(left, right)
-        for index, left in enumerate(noncentral.values())
-        for right in list(noncentral.values())[index + 1:]
-    ) >= 18
+    town_landmarks = [positions["campfire"], positions["repositories"]]
+    assert min(math.dist(left, right) for left in town_landmarks for right in town_landmarks if left != right) >= 18
+    assert math.dist(positions["office"], positions["fountain"]) >= 180
     assert "const REPOSITORY_EDGE_RADIUS = 68" in SCENE
     assert "const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0])" in SCENE
-    assert "const SYSTEM_CAPACITY_PLATFORM_POSITION = Object.freeze([8, 0, -27])" in SCENE
+    assert "const SYSTEM_CAPACITY_INFRASTRUCTURE_POSITION = Object.freeze([-24, 0, 7])" in SCENE
 
 
 def test_static_world_fallback_links_to_chat():
@@ -187,7 +174,6 @@ def test_static_world_fallback_links_to_chat():
 def test_scene_builds_playable_landmarks_and_badged_avatars():
     for builder in (
         "createAvatar",
-        "createInformationBooth",
         "createFountain",
         "createRepositoryDistrict",
         "createOrganizationQuarter",
@@ -215,7 +201,14 @@ def test_scene_builds_playable_landmarks_and_badged_avatars():
     ):
         assert status_icon in APP
         assert status_icon in SCENE
-    assert "You entered as a guest immediately" in DATA
+    for source in (APP, SCENE):
+        assert "function accountStatusIcon(identity)" in source
+        assert (
+            'status === "Registered" && identity?.emailVerified !== true'
+            in source
+        )
+        assert 'return "×";' in source
+    assert "Everyone, including guests, can cross the bridge and enter the lobby" in DATA
     assert "function updateOrganizations" in SCENE
     assert "organization-profiles" in SCENE
     assert "organization.memberList" in SCENE
@@ -275,6 +268,14 @@ def test_avatar_chest_activity_country_shirt_and_input_state_are_privacy_safe():
         'avatar.userData.accountStatus === "Guest"',
     ):
         assert contract in SCENE
+    assert ".world-saved-views {" in CSS
+    assert ".world-saved-view img," in CSS
+    saved_view_render = APP[
+        APP.index("  renderSavedViews() {"):
+        APP.index("\n  captureSavedViewThumbnail()", APP.index("  renderSavedViews() {"))
+    ]
+    assert 'aria-label="Return to ${escapeHTML(view.label)}"' in saved_view_render
+    assert "<span>${escapeHTML(view.label)}</span>" not in saved_view_render
     assert "inputActive:" in APP
     assert "visitCount:" in APP
     assert "firstVisitAge:" in APP
@@ -370,6 +371,11 @@ def test_unified_chest_card_uses_public_profile_wallet_and_explicit_follow():
     ):
         assert contract in SCENE
     assert '"account-activity-light"' not in SCENE
+    assert 'window.location.assign("/dashboard/settings/payout")' in APP
+    assert "const previousName = String(identity.name" in SCENE
+    assert "nextName !== previousName || nextStatus !== previousStatus" in SCENE
+    assert "player.userData.fediverseProfile = loadingProfile;" in SCENE
+    assert "onFediverseProfile({" in SCENE
     # The unified card is loaded when an avatar is registered; there are no
     # runtime mode buttons to hide identity fields from seated members.
     register = SCENE[
@@ -390,6 +396,35 @@ def test_unified_chest_card_uses_public_profile_wallet_and_explicit_follow():
     assert (
         '`/api/accounts/${encodeURIComponent(account)}/follow`' in APP
     )
+
+
+def test_self_profile_has_follower_avatars_and_activitypub_selfie_composer():
+    for contract in (
+        "data-world-profile-followers",
+        "data-world-profile-publisher",
+        "data-world-profile-selfie",
+        "data-world-profile-alt-text",
+        '"/api/world/profile-social"',
+        "wireWorldProfileSocial(detail, backdrop)",
+        "captureWorldSelfie(detail, backdrop)",
+        "compactWorldSelfie(source)",
+        '"image/webp"',
+        "A selfie from ForkMesh World while",
+        "Published to ActivityPub.",
+    ):
+        assert contract in APP
+    assert "requestIdleCallback" in APP
+    assert "blob.size < 63 * 1024" in APP
+    assert ".world-profile-follower-strip" in CSS
+    assert ".world-profile-selfie-preview" in CSS
+    # The private profile drawer is omitted from the selfie while the rest of
+    # the current World view and public HUD are captured.
+    selfie = APP[
+        APP.index("  async captureWorldSelfie"):
+        APP.index("  async compactWorldSelfie")
+    ]
+    assert 'detail.style.visibility = "hidden"' in selfie
+    assert 'backdrop.style.visibility = "hidden"' in selfie
     assert 'method: following ? "DELETE" : "POST"' in APP
     assert "function worldFediverseFeedLines(recentActivity)" in APP
     for timer in ("setInterval", "setTimeout"):
@@ -607,7 +642,6 @@ def test_avatar_faces_keyboard_travel_direction_without_an_entry_gate():
         SCENE.index("  function handlePointerUp")
     ]
     assert "dashTarget" not in single_tap
-    assert "player.rotation.y = Math.PI" in SCENE
     assert "function arrivalFacingHeading(x, z, heading)" in SCENE
     assert "isArrivalGridPosition(x, z) ? Math.PI : heading" in SCENE
     assert "player.rotation.y = arrivalFacingHeading(x, z, heading)" in SCENE
@@ -804,7 +838,7 @@ def test_focus_music_is_local_long_form_playback_without_polling():
     assert "focusMusicTrackId: DEFAULT_FOCUS_MUSIC_TRACK_ID" in APP
     assert "focusMusicVolume: DEFAULT_FOCUS_MUSIC_VOLUME" in APP
     assert "focusMusicMuted: false" in APP
-    assert "writeJSON(localStorage, SETTINGS_KEY, this.settings)" in APP
+    assert "writeJSON(localStorage, SETTINGS_KEY, {" in APP
 
     start = APP.index("  async playFocusMusic(")
     end = APP.index("\n  stopFocusMusic(", start)
@@ -876,7 +910,7 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
 def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
     for contract in (
         'const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1."',
-        "const SAVED_VIEWS_MAX = 4;",
+        "const SAVED_VIEWS_MAX = 5;",
         "function normalizedSavedWorldView(record)",
         "data-world-save-view",
         "data-world-saved-view-list",
@@ -897,8 +931,39 @@ def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
         "restoreSavedViewState,",
     ):
         assert contract in SCENE
-    assert ".world-saved-views {" in CSS
-    assert ".world-saved-view img," in CSS
+
+
+def test_world_navigation_uses_five_visible_quick_views_and_no_repo_shortcut():
+    template = APP.split("function worldTemplate(", 1)[1].split(
+        "\nfunction ", 1
+    )[0]
+    assert '(landmark) => landmark.id !== "repositories"' in template
+    assert 'data-expanded="true"' in template
+    assert "Quick views" in template
+    assert '<div class="world-saved-view-list" data-world-saved-view-list>' in template
+    assert '.slice(0, SAVED_VIEWS_MAX)' in APP.split("renderSavedViews()", 1)[1]
+
+
+def test_clicking_the_physical_fire_frames_the_people_around_it():
+    hit = SCENE.split("if (hit?.object?.userData?.campfirePit)", 1)[1].split(
+        "\n    if (", 1
+    )[0]
+    assert "focusCampfireCircle();" in hit
+    focus = SCENE.split("function focusCampfireCircle()", 1)[1].split(
+        "\n  }\n", 1
+    )[0]
+    assert 'setCameraMode("third-person", "campfire-focus")' in focus
+    assert "cameraFocus = campfire.position.clone();" in focus
+    assert "setCameraZoom(Math.min(cameraZoom, 0.68));" in focus
+
+
+def test_retired_vm1_forkmesh_stub_is_not_rendered_as_a_portal():
+    catalog = SCENE.split("function updateRepositoryCatalog(", 1)[1].split(
+        "const activeKey", 1
+    )[0]
+    assert 'String(record.owner || "").toLowerCase() === "vm1"' in catalog
+    assert 'String(record.name || "").toLowerCase() === "forkmesh"' in catalog
+    assert "record.liveHost !== true" in catalog
 
 
 def test_toolbar_sound_button_is_the_master_switch_for_all_local_audio():
@@ -940,8 +1005,29 @@ def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
     assert 'destination.searchParams.set("worldEmbed", "1")' in APP
     assert "data-world-chat-terminal" in APP
     assert "data-world-chat-terminal-frame" in APP
+    assert "world-chat-terminal-channel" in APP
+    assert "world-chat-terminal-connection" in APP
     assert '"/dashboard/chat?worldEmbed=1"' in APP
     assert "world-chat-terminal" in CSS
+    assert "DEBUG owns the lower-left; chat owns the lower-right" in CSS
+    diagnostics = CSS[
+        CSS.index(".world-diagnostics {"):
+        CSS.index(".world-diagnostics summary {")
+    ]
+    assert "left: 0;" in diagnostics
+    terminal = CSS[
+        CSS.index(".world-chat-terminal {"):
+        CSS.index(".world-chat-terminal-body {")
+    ]
+    assert "bottom: 0;" in terminal
+    bind_ui = APP[
+        APP.index("  bindUI() {"):
+        APP.index("\n  bindDetailResize()", APP.index("  bindUI() {"))
+    ]
+    assert '!event.target.closest("[data-world-chat-terminal]")' in bind_ui
+    assert "chatTerminal.removeAttribute(\"open\")" in bind_ui
+    assert '!event.target.closest("[data-world-right-rail]")' in bind_ui
+    assert "this.setWorldRightRailExpanded(false)" in bind_ui
     assert 'a[href^=\'/dashboard/chat\']' in APP
     assert 'href="/dashboard/chat" target="_blank"' not in APP
     assert 'playMode: "external"' in DATA
@@ -1031,7 +1117,7 @@ def test_mobile_world_chat_composer_stays_above_safe_area_and_terminal_bars():
 
 
 def test_world_receives_private_notifications_and_global_announcements():
-    assert "WORLD_NOTIFICATION_POLL_MS = 30 * 1000" in APP
+    assert "WORLD_NOTIFICATION_POLL_MS = 60 * 1000" in APP
     assert "normalizeWorldNotifications" in APP
     assert "/api/notifications?node=${encodeURIComponent(" in APP
     assert 'this.fetchJSON("/api/world/events"' in APP
@@ -1094,8 +1180,13 @@ def test_repository_world_uses_authorized_https_metadata_and_size_aware_nodes():
     assert "hydrateHostedRepositorySizeMaps" in APP
     assert "repositorySizeTrees" in APP
     assert "repository-mini-size-map:" in SCENE
-    assert 'record.source === "hosted-import"' in SCENE
-    assert 'repositoryIsland.name = "hosted-repository-island"' in SCENE
+    assert '"bulk-import"' in SCENE
+    assert "const coreRecords = [];" in SCENE
+    assert "const hostedRecords = records;" in SCENE
+    assert "const islandRecord = true;" in SCENE
+    assert "legacyBulkGroups" in APP
+    assert 'mirrorOwners: ["mirror2", "mirror3"]' in APP
+    assert '"forkmesh-continuous-city-land"' in SCENE
     assert 'repositoryBridge.name = "hosted-repository-bridge"' in SCENE
     assert "REPOSITORY_ISLAND_CENTER_X" in SCENE
     for entity in (
@@ -1112,14 +1203,73 @@ def test_repository_world_uses_authorized_https_metadata_and_size_aware_nodes():
         "modificationBand",
         "redundantCandidate",
         "dependencyDepth",
-        "repository-relationship-lines",
     ):
         assert graph_feature in APP or graph_feature in SCENE
+    assert "repository-relationship-lines" not in SCENE
     for data_filter in ("frequency", "dependency", "security", "coverage"):
         assert f'data-world-repo-filter="{data_filter}"' in APP
     assert 'data-world-repo-filter="frequency" disabled' not in APP
     assert 'data-world-repo-filter="dependency" disabled' not in APP
     assert 'data-world-repo-filter="coverage" disabled' not in APP
+
+
+def test_legacy_bulk_import_pair_is_coalesced_onto_import_island_only():
+    script = "const SOURCE = " + json.dumps(APP) + ";\n" + r"""
+const assert = require("assert");
+function extract(name) {
+  const start = SOURCE.indexOf(`function ${name}(`);
+  assert(start >= 0);
+  const open = SOURCE.indexOf("{", start);
+  let depth = 0;
+  for (let i = open; i < SOURCE.length; i += 1) {
+    if (SOURCE[i] === "{") depth += 1;
+    if (SOURCE[i] === "}" && --depth === 0) return SOURCE.slice(start, i + 1);
+  }
+  throw new Error(`unterminated ${name}`);
+}
+eval(extract("mergeHostedRepositoryImports"));
+const base = 1785054296350;
+const repositories = [];
+for (let index = 0; index < 54; index += 1) {
+  for (const owner of ["mirror2", "mirror3"]) {
+    repositories.push({
+      owner,
+      name: `import-${index}`,
+      source: "remote-clone",
+      hostedSince: base + index * 3000,
+      updatedAt: base + index,
+      liveHost: owner === "mirror2",
+    });
+  }
+}
+repositories.push(
+  { owner: "jett", name: "forkmesh", source: "local-node", hostedSince: 1 },
+  { owner: "mirror2", name: "forkmesh", source: "remote-clone", hostedSince: 2 },
+  {
+    owner: "mirror2",
+    name: "ordinary",
+    source: "remote-clone",
+    hostedSince: base + 86400000,
+  },
+  {
+    owner: "mirror3",
+    name: "ordinary",
+    source: "remote-clone",
+    hostedSince: base + 86401000,
+  },
+);
+const output = mergeHostedRepositoryImports(repositories, []);
+assert.equal(output.filter((record) => record.source === "bulk-import").length, 54);
+assert.equal(output.filter((record) => record.name === "ordinary").length, 2);
+assert.equal(output.filter((record) => record.name === "forkmesh").length, 2);
+"""
+    subprocess.run(
+        ["node"],
+        input=script,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_repository_world_reuses_the_star_api_and_keeps_login_in_world():
@@ -1443,9 +1593,12 @@ def test_repository_map_autoload_is_deduplicated_and_never_overrides_manual_choi
     ]
     assert "this.repositoryManualSelection" in auto
     assert "this.activeRepository" in auto
-    assert "this.world.updateRepositoryGraph?.([], []);" in auto
-    assert "requireComplete: true" in auto
-    assert "expectedCommits: catalogCommits" in auto
+    # The tree preview paints immediately; mirror metadata may converge behind
+    # it without collapsing the flagship wheel into a syncing placeholder.
+    assert "this.world.updateRepositoryGraph?.([], []);" not in auto
+    assert "if (!catalogCommits.size)" not in auto
+    assert "requireComplete: false" in auto
+    assert "catalogCommits.size ? catalogCommits : undefined" in auto
 
     load_map = APP[
         APP.index("  async loadRepositoryMap("):
@@ -1478,11 +1631,11 @@ def test_repository_graph_uses_commit_produced_edges_coverage_and_scan_state():
         assert contract in APP
     for graph_contract in (
         "edgeIndexes",
-        "relationshipPairs",
         "forces",
-        "repository-relationship-lines",
     ):
         assert graph_contract in SCENE
+    assert "relationshipPairs" not in SCENE
+    assert "repository-relationship-lines" not in SCENE
     assert "currentRoot" not in SCENE
     assert "previousRoot" not in SCENE
     assert "security: \"unavailable\"" in APP
@@ -1842,10 +1995,10 @@ def test_known_bots_are_verified_from_a_deployed_public_directory():
 
 def test_financial_and_security_metaphors_disclose_current_limitations():
     assert (
-        "Worker stores only public payout addresses, unsigned intents, and "
-        "finalized signatures"
+        "The production mainnet-beta flow reads public on-chain state, accepts "
+        "direct wallet-to-pool contributions"
     ) in DATA
-    assert "community-pool signer stays in the first instance operator’s encrypted local Qt client" in DATA
+    assert "sends unsigned plans to the instance owner’s local Qt signer" in DATA
     assert "Mainnet-beta · external signer" in DATA
     assert "Development instances may explicitly select a test network" in DATA
     assert "Visual coins are not guaranteed rewards or investments" in DATA
@@ -1854,8 +2007,8 @@ def test_financial_and_security_metaphors_disclose_current_limitations():
         "platform administrators do not automatically receive those recipient "
         "private keys"
     ) in PRIVACY
-    assert "Raw IP addresses are never shown in the world" in DATA
-    assert "does not eliminate endpoint, authorization, or operational risk" in DATA
+    assert "Raw IP addresses, full User-Agent strings, and precise location are never public" in PRIVACY
+    assert "Every metaphor has a technical panel" in DATA
     assert "availability, not automatic trust" in DATA
     assert "Normal repository traffic stays on HTTPS" in DATA
     assert "What is actually happening" in APP
@@ -1946,15 +2099,13 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
     assert "pointerLockElement" not in SCENE
     assert "raycaster.intersectObject(ground" not in SCENE
 
-    # Keyboard movement accelerates toward a named cap and resets to the base
-    # from-rest speed as soon as movement input is released or focus is lost.
-    # Speed and acceleration are scaled by per-device controls; an infinite
-    # acceleration scale collapses the ramp to instant top speed.
+    # Keyboard movement reaches its named cap on the first frame, while analog
+    # input retains proportional control and blur still clears stale input.
     for contract in (
         "PLAYER_MAX_SPEED",
-        "PLAYER_ACCELERATION",
         "function movementSpeedForInput",
-        "PLAYER_ACCELERATION * moveAccelScale * Math.max(0, delta)",
+        "? topSpeed",
+        "topSpeed * inputStrength",
         "keyboardMovementSpeed = baseMoveSpeed()",
         "function setMovementTuning",
         "setMovementTuning,",
@@ -1975,11 +2126,11 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
 
 
 def test_world_overview_zoom_keeps_the_finite_ground_inside_camera_depth():
-    assert "const WORLD_GROUND_RADIUS = 88;" in SCENE
+    assert "const CONTINUOUS_CITY_RADIUS = 365;" in SCENE
     assert "const CAMERA_OFFSET = [17, 16, 21];" in SCENE
-    assert "const CAMERA_ZOOM_MIN = 0.12;" in SCENE
-    assert "const CAMERA_ZOOM_MAX = 3.2;" in SCENE
-    assert "const CAMERA_FAR_PLANE = 240;" in SCENE
+    assert "const CAMERA_ZOOM_MIN = 0.06;" in SCENE
+    assert "const CAMERA_ZOOM_MAX = 28;" in SCENE
+    assert "const CAMERA_FAR_PLANE = 1800;" in SCENE
     assert (
         "new THREE.PerspectiveCamera(\n"
         "    44,\n"
@@ -1992,20 +2143,13 @@ def test_world_overview_zoom_keeps_the_finite_ground_inside_camera_depth():
     # At maximum strategic zoom, a camera looking at the world center can still
     # see through the opposite edge of the finite ground before its far plane.
     camera_distance = math.hypot(17, 16, 21)
-    assert camera_distance * 3.2 + 88 < 240
-
-    zoom_fog_start = SCENE.index("  function zoomFogMultiplier() {")
-    zoom_fog = SCENE[
-        zoom_fog_start:
-        SCENE.index("\n  function setLightLevel(", zoom_fog_start)
-    ]
-    assert "CAMERA_ZOOM_MAX - 1" in zoom_fog
-    assert "(cameraZoom - 1) / 7" not in zoom_fog
+    assert camera_distance * 28 + 365 < 1800
 
 
 def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
-    assert "const WORLD_RADIUS = 174" in SCENE
-    assert "const WORLD_GROUND_RADIUS = 88" in SCENE
+    assert "const WORLD_RADIUS = 620" in SCENE
+    assert '"forkmesh-continuous-city-land"' in SCENE
+    assert "const CONTINUOUS_CITY_RADIUS = 365" in SCENE
     assert "electric-mesh-city-block-grid" not in SCENE
     assert "electricMeshConduit" not in SCENE
     assert "electricMeshJunction" not in SCENE
@@ -2022,17 +2166,19 @@ def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
     assert 'avatar.userData.loungeActivity === "recent"' in SCENE
 
 
-def test_active_leaderboard_position_and_orientation():
+def test_leaderboards_share_walkable_grass_and_keep_an_inward_facing_ring():
+    assert "const LEADERBOARD_ISLAND_CENTER_X = -130;" in SCENE
+    assert "const LEADERBOARD_CONNECTION_MIN_X = -103;" in SCENE
+    assert '"forkmesh-continuous-city-land"' in SCENE
     assert (
-        "const ACTIVE_LEADERBOARD_POSITION = Object.freeze([-11.5, 0, 25]);"
+        'leaderboardConnection.name = "forkmesh-leaderboard-island-connection"'
         in SCENE
     )
-    assert (
-        "activeLeaderboardSign.position.set(...ACTIVE_LEADERBOARD_POSITION)"
-        in SCENE
-    )
-    assert "-ACTIVE_LEADERBOARD_POSITION[0]" in SCENE
-    assert "-ACTIVE_LEADERBOARD_POSITION[2]" in SCENE
+    assert 'leaderboardPromenade.name = "forkmesh-leaderboard-promenade"' in SCENE
+    assert "CONTINUOUS_CITY_RADIUS - margin" in SCENE
+    assert "Math.atan2(-x, -z)" in SCENE
+    assert "placeBillboardOnIsland(" in SCENE
+    assert "makeReferralLeaderboardSign(THREE)" in SCENE
 
 
 def test_world_has_no_pale_plaza_and_places_trees_deterministically_clear_of_use():
@@ -2215,10 +2361,14 @@ def test_detail_panels_resize_from_their_left_border_and_never_drift():
     assert "scrollIntoView({ block: \"center\" })" not in APP
 
 
-def test_world_lighting_is_static_daylight_with_a_local_persisted_control():
+def test_world_lighting_supports_local_auto_day_night_and_brightness_controls():
     assert "DAYLIGHT_ENVIRONMENT" in SCENE
     assert "function updateWorldEnvironment" in SCENE
     assert "function setLightLevel" in SCENE
+    assert "function setDaylightMode" in SCENE
+    assert 'daylightMode === "day"' in SCENE
+    assert 'daylightMode === "night"' in SCENE
+    assert "worldSky.setDaylightMinute?.(minuteOfDay, easedDaylight)" in SCENE
     assert "lightLevel / LIGHT_LEVEL_DEFAULT" in SCENE
     assert "setLightLevel," in SCENE
     assert "getEnvironmentState" in SCENE
@@ -2232,9 +2382,14 @@ def test_world_lighting_is_static_daylight_with_a_local_persisted_control():
     assert "LOCAL_ENVIRONMENT_OVERLAYS" in SCENE
     assert "data-world-light-level" in APP
     assert "data-world-light-level-output" in APP
+    assert 'data-world-daylight-mode="auto"' in APP
+    assert 'data-world-daylight-mode="day"' in APP
+    assert 'data-world-daylight-mode="night"' in APP
+    assert "this.settings.daylightMode = mode" in APP
+    assert "this.world?.setDaylightMode?.(mode)" in APP
     assert "this.settings.lightLevel = next" in APP
     assert "this.world?.setLightLevel(next)" in APP
-    assert "writeJSON(localStorage, SETTINGS_KEY, this.settings)" in APP
+    assert "writeJSON(localStorage, SETTINGS_KEY, {" in APP
     assert "lightLevel" not in APP[
         APP.index("function publicIdentity"):APP.index("function presenceBrowser")
     ]
@@ -2242,28 +2397,53 @@ def test_world_lighting_is_static_daylight_with_a_local_persisted_control():
         assert overlay in SCENE
 
 
-def test_world_movement_speed_and_acceleration_are_locally_adjustable():
-    # Scene exposes a movement-tuning setter and scales the shared defaults by
-    # per-device speed/acceleration factors, with Infinity meaning instant.
+def test_world_right_rail_is_compact_by_default_and_expands_as_one_control():
+    assert "data-world-right-rail" in APP
+    assert 'data-expanded="false"' in APP
+    assert "setWorldRightRailExpanded(expanded)" in APP
+    assert "rail.dataset.expanded = String(active)" in APP
+    assert ".world-right-rail[data-expanded=\"false\"]" in CSS
+    assert "width: 44px;" in CSS
+    for token in (
+        "--primer-canvas-default:",
+        "--primer-canvas-subtle:",
+        "--primer-control-bg:",
+        "--primer-control-hover:",
+        "--primer-border-default:",
+        "--primer-fg-default:",
+        "--primer-fg-muted:",
+        "--primer-accent-fg:",
+        "--primer-accent-subtle:",
+    ):
+        assert token in CSS
+    right_rail = CSS[
+        CSS.index(".world-right-rail {"):
+        CSS.index(".world-map-list {")
+    ]
+    assert "var(--primer-canvas-default)" in right_rail
+    assert "var(--primer-border-default)" in right_rail
+    assert "var(--primer-control-bg)" in right_rail
+    assert "var(--primer-control-hover)" in right_rail
+    assert "border-radius: 6px;" in right_rail
+    assert "aside:not(.world-right-rail)" in CSS
+
+
+def test_world_movement_speed_is_adjustable_and_keyboard_input_is_immediate():
+    # Scene exposes speed tuning, but digital input has no configurable ramp.
     assert "function setMovementTuning" in SCENE
     assert "setMovementTuning," in SCENE
     assert "let moveSpeedScale = 1" in SCENE
-    assert "let moveAccelScale = 1" in SCENE
     assert "PLAYER_MAX_SPEED * moveSpeedScale" in SCENE
-    assert "PLAYER_ACCELERATION * moveAccelScale * Math.max(0, delta)" in SCENE
-    assert "moveAccelScale = Number.isFinite(numeric)" in SCENE
-    # App renders local-controls sliders wired to persisted settings and pushes
-    # the tuning (Infinity at the top acceleration position) into the scene.
+    assert "input.keyboardActive" in SCENE
+    assert "? topSpeed" in SCENE
+    assert "moveAccelScale" not in SCENE
+    # App retains speed control and explains immediate keyboard response.
     assert "data-world-move-speed" in APP
-    assert "data-world-move-accel" in APP
     assert "data-world-move-speed-output" in APP
-    assert "data-world-move-accel-output" in APP
     assert "this.settings.moveSpeed = next" in APP
-    assert "this.settings.moveAccel = next" in APP
     assert "this.world?.setMovementTuning?.(this.movementTuning())" in APP
-    assert "? Infinity" in APP
     assert "moveSpeed: WORLD_MOVE_SPEED_DEFAULT" in APP
-    assert "moveAccel: WORLD_MOVE_ACCEL_DEFAULT" in APP
+    assert "responds at the selected speed on its first frame" in APP
 
 
 def test_double_clicking_the_ground_dashes_the_avatar_to_that_point():
@@ -2304,9 +2484,11 @@ def test_double_clicking_the_ground_dashes_the_avatar_to_that_point():
     assert "cancelDash();" in blur
 
 
-def test_qt_main_navigation_opens_the_world_root():
-    assert 'setToolTip("Open ForkMesh World in your browser")' in QT_CHAT
-    assert "[this] { openServerWebsite(m_activeServer); }" in QT_CHAT
+def test_qt_main_navigation_does_not_open_the_world_root():
+    assert 'setToolTip("Open ForkMesh World in your browser")' not in QT_CHAT
+    assert "[this] { openServerWebsite(m_activeServer); }" not in QT_CHAT
+    assert "m_worldNavButton" not in QT_CHAT
+    assert "m_relayOpenButton" not in QT_CHAT
     assert "Non-custodial payout address" in QT_CHAT
     assert "Never enter a private key or recovery" in QT_CHAT
 
@@ -2321,14 +2503,8 @@ def test_approved_federated_instances_render_without_private_relay_material():
     assert "instance?.approved === true" in SCENE
 
 
-def test_information_booth_deep_link_carries_no_cloudflare_secret():
+def test_cloudflare_setup_deep_link_carries_no_cloudflare_secret():
     exact = "forkmesh://control/cloudflare"
-    assert exact in APP
-    assert "The hosted World never accepts, proxies, or stores a Cloudflare API token" in APP
-    assert 'type="password"' not in APP[
-        APP.index("informationPanelHTML()"):
-        APP.index("rewardPanelHTML()")
-    ]
     assert exact in QT_MAIN
     assert "target == QLatin1String" in QT_MAIN
     assert "openCloudflareSetupFromSystemLink" in QT_CONTROL
@@ -2491,7 +2667,7 @@ def test_forkbot_mention_excites_the_droid_with_echo_screen_and_thinking_dots():
         "const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\\b/i;"
         in APP
     )
-    assert APP.count("this.world?.exciteForkbot?.(") == 2
+    assert APP.count("this.world?.exciteForkbot?.(") == 1
 
 
 def test_collapsed_chat_bar_shows_an_unread_count_excluding_own_lines():
@@ -2669,3 +2845,14 @@ def test_arrival_grid_sign_is_a_front_plaque_with_visit_counters():
     assert "updateArrivalStats" in APP
     assert '"/api/world/visitors", "/api/world/visitors/"' in ENTRY
     assert "record_world_visit" in ENTRY
+
+
+def test_world_presence_socket_has_a_bounded_open_deadline_and_retirement():
+    connect = APP[
+        APP.index("  async connectPresence() {"):
+        APP.index("  setPresenceState(", APP.index("  async connectPresence() {"))
+    ]
+    assert "this.socketRecovery.adopt(socket" in connect
+    assert "this.socketRecovery.markOpen(socket)" in connect
+    assert "this.socketRecovery.retire(socket)" in connect
+    assert "this.socketRecovery.scheduleReconnect(" in APP

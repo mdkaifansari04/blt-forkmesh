@@ -105,6 +105,11 @@ public:
     void shutdown() override;
     QString modeName() const override { return "Mainnode"; }
 
+signals:
+    // Transport state for on-demand users of ServerNode. statusChanged is
+    // human-readable and must not be parsed to decide when a frame can be sent.
+    void connectionChanged(bool connected);
+
 private:
     struct Peer {
         QString name;

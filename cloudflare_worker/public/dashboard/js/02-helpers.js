@@ -119,8 +119,7 @@
       // The Worker owns session invalidation: this clears the HttpOnly
       // forkmesh_admin cookie so the admin page is unreachable after logout.
       // site-header.js (marketing pages) calls the same endpoint.
-      serverLogout = fetch("/api/accounts/logout", {
-        method: "POST",
+      serverLogout = fetch("/api/accounts/logout", { method: "POST",
         keepalive: true,
         credentials: "same-origin",
         cache: "no-store",

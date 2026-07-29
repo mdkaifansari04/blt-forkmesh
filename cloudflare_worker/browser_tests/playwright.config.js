@@ -19,7 +19,7 @@ module.exports = defineConfig({
   webServer: {
     command: "bash run-browser-worker.sh",
     cwd: __dirname,
-    url: "http://127.0.0.1:4179/world/",
+    url: "http://127.0.0.1:4179/world",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

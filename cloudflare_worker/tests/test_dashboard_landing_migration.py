@@ -703,7 +703,7 @@ def test_home_right_rail_lists_latest_blog_posts_with_artwork():
 
     for marker in (
         "const HOME_BLOG_POST_LIMIT = 3;",
-        'const HOME_BLOG_FEED_URL = "/blog/rss.xml";',
+        'const HOME_BLOG_FEED_URL = "/rss.xml";',
         "function parseHomeBlogFeed(xml)",
         'doc.querySelectorAll("item")',
         'item.querySelector("enclosure")?.getAttribute("url")',
@@ -717,6 +717,29 @@ def test_home_right_rail_lists_latest_blog_posts_with_artwork():
     assert 'loading="lazy" class="block aspect-[16/9] w-full object-cover"' in dashboard_js
     assert "${escapeHtml(post.image)}" in dashboard_js
     assert "${escapeHtml(post.title)}" in dashboard_js
+
+
+def test_dashboard_top_repositories_include_linked_organization_aliases():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    for marker in (
+        "homeOrganizationRepositories",
+        "async function loadHomeOrganizationRepositories()",
+        'await fetchJson("/api/orgs")',
+        'source: "organization-alias"',
+        "organizationOwned: true",
+        ">organization</span>",
+        "void loadHomeOrganizationRepositories();",
+    ):
+        assert marker in dashboard_js
+
+
+def test_dashboard_logo_refreshes_the_dashboard_document():
+    header = _read(PUBLIC / "dashboard" / "partials" / "header.html")
+    sidebar = _read(PUBLIC / "dashboard" / "partials" / "sidebar.html")
+    for fragment in (header, sidebar):
+        assert "data-dashboard-logo" in fragment
+        assert 'href="/dashboard"' in fragment
+        assert 'aria-label="Refresh ForkMesh Dashboard"' in fragment
 
 
 def test_dashboard_has_mobile_responsive_navigation_drawers():

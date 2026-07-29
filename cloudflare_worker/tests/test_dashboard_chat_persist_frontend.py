@@ -180,6 +180,24 @@ def test_dashboard_chat_composer_offers_mention_autocomplete():
     )
 
 
+def test_dashboard_enter_sends_without_blocking_shift_enter_newlines():
+    wire = CHAT[CHAT.index("function wireInput("):CHAT.index("async function initChat(")]
+    assert 'event.key === "Enter" && !event.shiftKey' in wire
+
+
+def test_dashboard_picker_and_paste_attachments_send_without_an_extra_click():
+    picker = CHAT[
+        CHAT.index('fileInput.addEventListener("change"'):
+        CHAT.index("control.button.disabled", CHAT.index('fileInput.addEventListener("change"'))
+    ]
+    paste = CHAT[
+        CHAT.index('inputEl.addEventListener("paste"'):
+        CHAT.index('inputEl.addEventListener("keydown"')
+    ]
+    assert "void sendDashboardDraft(control);" in picker
+    assert "void sendDashboardDraft(attachmentControl);" in paste
+
+
 def test_chat_mention_styles_are_available_on_all_chat_surfaces():
     for source in (DASHBOARD_HTML, PUBLIC_CHAT_CSS, STYLES):
         assert ".chat-mention {" in source
@@ -377,3 +395,48 @@ def test_world_embedded_dashboard_chat_keeps_mobile_composer_usable():
     assert "env(safe-area-inset-right, 0px)" in CHAT_VIEW
     assert 'aria-label="Message #general"' in CHAT_VIEW
     assert 'enterkeyhint="send"' in CHAT_VIEW
+
+
+def test_world_chat_has_a_primer_multiline_repository_action_composer():
+    for marker in (
+        'id="fullChatChannel"',
+        'id="fullChatRepo"',
+        'id="fullChatAction"',
+        '<option value="chat">Send to chat</option>',
+        '<option value="issue">Create issue</option>',
+        '<option value="codex">Assign Codex</option>',
+        '<option value="claude-code">Assign Claude</option>',
+        'id="fullChatInput"',
+        'rows="2"',
+        "border-border",
+        "bg-card",
+        "focus:ring-1",
+    ):
+        assert marker in CHAT_VIEW
+    for contract in (
+        'fetch("/api/repositories"',
+        "selectedComposerRepository()",
+        "runFullComposerAction(inputEl)",
+        "ForkMeshDashboardActions?.submitWebIssue",
+        "const queued = await maybeAskOrgAgent(",
+        "`${mention} ${text}`",
+        'fullAction.value !== "chat"',
+        "inputEl.style.height",
+        'destination.searchParams.set("worldEmbed", "1")',
+    ):
+        assert contract in CHAT
+
+
+def test_world_embed_uses_one_dark_primer_header_and_pinned_grid_composer():
+    for marker in (
+        "color-scheme: dark",
+        "--background: #0d1117",
+        "[data-dashboard-chat-channel-header]",
+        "display: none;",
+        "[data-dashboard-chat-composer-toolbar]",
+        "grid-template-columns:",
+        "[data-dashboard-chat-action]",
+        "grid-column: 1 / -1",
+    ):
+        assert marker in CHAT_VIEW
+    assert "Public World <strong" not in CHAT_VIEW

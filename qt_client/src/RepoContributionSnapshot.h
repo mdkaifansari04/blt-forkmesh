@@ -14,6 +14,10 @@ class ForkMeshIdentity;
 struct RepoContributionSnapshot {
     QJsonObject payload;
     QByteArray compactPayload;
+    // Bounded paths changed by the advertised head commit. Calculated inside
+    // the existing contribution worker so catalog publication never adds a
+    // synchronous git probe to the GUI thread.
+    QStringList changedFiles;
     QString error;
     bool complete = false;
 };

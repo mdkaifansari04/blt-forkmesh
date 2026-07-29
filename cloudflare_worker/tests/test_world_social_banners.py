@@ -204,9 +204,29 @@ def test_twitter_timeline_extraction_and_normalization():
     assert feeds.normalize_twitter_timeline({"props": {}}) == []
 
 
+def test_official_x_api_timeline_normalization():
+    posts = feeds.normalize_x_api_timeline({"data": [{
+        "id": "123",
+        "text": "Fresh public update",
+        "created_at": "2026-07-27T16:30:00.000Z",
+        "public_metrics": {"like_count": 4, "retweet_count": 2},
+    }]})
+    assert posts == [{
+        "id": "123",
+        "text": "Fresh public update",
+        "author": "@forkmesh",
+        "likes": 4,
+        "retweets": 2,
+        "createdAt": 1785169800000,
+        "url": "https://x.com/forkmesh/status/123",
+    }]
+    assert feeds.normalize_x_api_timeline({"data": "bad"}) == []
+
+
 def test_payload_states_gate_each_feed_independently():
     payload = feeds.social_posts_payload(
-        123, [{"id": "t"}], [{"id": "r"}], [{"id": "b"}], False, True, True)
+        123, [{"id": "t"}], [{"id": "r"}], [{"id": "b"}], False, True, True,
+        twitter_reason="No public posts")
     assert payload["ok"] is True and payload["now"] == 123
     assert payload["twitter"]["state"] == "unavailable"
     assert payload["twitter"]["posts"] == []
@@ -215,12 +235,29 @@ def test_payload_states_gate_each_feed_independently():
     assert payload["blog"]["state"] == "ready"
     assert payload["blog"]["posts"] == [{"id": "b"}]
     assert payload["twitter"]["url"] == "https://x.com/forkmesh"
+    assert payload["twitter"]["reason"] == "No public posts"
+    assert "X_API_BEARER_TOKEN" in payload["twitter"]["humanTodo"]
     assert payload["reddit"]["url"] == "https://www.reddit.com/r/forkmesh/"
     assert payload["blog"]["url"] == "https://forkmesh.com/blog"
     gated = feeds.social_posts_payload(1, [], [], [{"id": "b"}], True, True,
                                        False)
     assert gated["blog"]["state"] == "unavailable"
     assert gated["blog"]["posts"] == []
+
+
+def test_twitter_fallback_and_unavailable_reason_are_wired_end_to_end():
+    entry = _source(ENTRY_PATH)
+    world = _source(WORLD_PATH)
+    scene = _source(SCENE_PATH)
+    assert "world_social_feeds.X_API_USER_URL" in entry
+    assert "world_social_feeds.X_API_POSTS_URL" in entry
+    assert 'getattr(env, "X_API_BEARER_TOKEN", "")' in entry
+    assert "normalize_x_api_timeline" in entry
+    assert "reason: String(feed?.reason" in world
+    assert "humanTodo: String(feed?.humanTodo" in world
+    assert "PUBLIC FEED UNAVAILABLE" in scene
+    assert "system:x-api" in scene
+    assert "repaintHumanTodoBoard();" in scene
 
 
 _BLOG_CARD_HTML = (

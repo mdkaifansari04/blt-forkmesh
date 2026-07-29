@@ -312,8 +312,8 @@ def test_about_get_returns_followers_list_and_settings():
                                      "broadcastEvents": True,
                                      "acceptComments": False}
     assert fediverse["enabled"] is True
-    # No repo_alert_settings row: every operational alert email reads back off.
-    assert resp["data"]["alerts"] == {"statusEmails": False}
+    # Platform operational-alert state is not exposed from a public repo API.
+    assert "alerts" not in resp["data"]
 
 
 # --- POST /about: owner-key auth + settings save -------------------------------
@@ -471,9 +471,9 @@ def _alert_writes(log):
     return [e for e in _writes(log) if "repo_alert_settings" in e[1]]
 
 
-def test_admin_can_switch_status_alert_mail_on_and_back_off():
-    # Off is the stored default, so turning it on is the only write the first
-    # save makes; re-saving the same value writes nothing.
+def test_repo_owner_cannot_switch_platform_status_alert_mail():
+    # Operational mail is a platform is_admin control. Repository owners may
+    # still send a legacy alerts object, but the repo About API ignores it.
     log = []
     ns = _about_post_env(log)
     resp = _run(ns["repo_about_handler"](
@@ -481,29 +481,9 @@ def test_admin_can_switch_status_alert_mail_on_and_back_off():
                      "alerts": {"statusEmails": True}}),
         "alice", "proj"))
     assert resp["status"] == 200
-    writes = _alert_writes(log)
-    assert len(writes) == 1
-    assert writes[0][2][0] == "bi:repo-alert-settings:alice/proj"
-    assert json.loads(writes[0][2][1]) == {"statusEmails": True}
-    assert resp["data"]["alerts"] == {"statusEmails": True}
-    # Federation is untouched by an alerts-only save.
-    assert _settings_writes(log) == []
-
-    log = []
-    ns = _about_post_env(log, stored_alerts={"statusEmails": True})
-    _run(ns["repo_about_handler"](
-        None, _post({"ts": "1750000000000", "ownerSig": "GOODSIG",
-                     "alerts": {"statusEmails": True}}),
-        "alice", "proj"))
     assert _alert_writes(log) == []
-
-    log = []
-    ns = _about_post_env(log, stored_alerts={"statusEmails": True})
-    _run(ns["repo_about_handler"](
-        None, _post({"ts": "1750000000000", "ownerSig": "GOODSIG",
-                     "alerts": {"statusEmails": False}}),
-        "alice", "proj"))
-    assert json.loads(_alert_writes(log)[0][2][1]) == {"statusEmails": False}
+    assert "alerts" not in resp["data"]
+    assert _settings_writes(log) == []
 
 
 def test_bad_signature_is_rejected_before_any_write():

@@ -97,6 +97,23 @@
   const sideInput = document.querySelector("#sideChatInput");
   const fullSend = document.querySelector("#fullChatSend");
   const sideSend = document.querySelector("#sideChatSend");
+  const fullChannel = document.querySelector("#fullChatChannel");
+  const fullRepository = document.querySelector("#fullChatRepo");
+  const fullAction = document.querySelector("#fullChatAction");
+  const taskRouting = document.querySelector("[data-dashboard-task-routing]");
+  const taskDepartment = document.querySelector("[data-dashboard-task-department]");
+  const taskTeam = document.querySelector("[data-dashboard-task-team]");
+  const taskDestination = document.querySelector("[data-dashboard-task-destination]");
+  const taskAssignee = document.querySelector("[data-dashboard-task-assignee]");
+  const fullSendLabel = document.querySelector(
+    "[data-dashboard-chat-send-label]",
+  );
+  const fullComposerHint = document.querySelector(
+    "[data-dashboard-chat-composer-hint]",
+  );
+  const fullComposerStatus = document.querySelector(
+    "[data-dashboard-chat-composer-status]",
+  );
 
   if (!fullLog && !sideLog) return;
 
@@ -1398,6 +1415,50 @@
   // recent line — reconnects never resurrect old bubbles.
   const WORLD_EMBED_BUBBLES =
     requestedParams.get("worldEmbed") === "1" && window.parent !== window;
+  const worldAttachmentPreviewCache = new WeakMap();
+
+  function worldAttachmentPreview(attachment) {
+    if (
+      !attachment ||
+      typeof attachment !== "object" ||
+      !String(attachment.fileMime || "").startsWith("image/")
+    ) {
+      return Promise.resolve("");
+    }
+    if (worldAttachmentPreviewCache.has(attachment)) {
+      return worldAttachmentPreviewCache.get(attachment);
+    }
+    const pending = new Promise((resolve) => {
+      const image = new Image();
+      image.onload = () => {
+        try {
+          const scale = Math.min(1, 160 / Math.max(image.width, image.height));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(image.width * scale));
+          canvas.height = Math.max(1, Math.round(image.height * scale));
+          canvas.getContext("2d")?.drawImage(
+            image,
+            0,
+            0,
+            canvas.width,
+            canvas.height,
+          );
+          const preview = canvas.toDataURL("image/webp", 0.7);
+          resolve(preview.length <= 120_000 ? preview : "");
+        } catch (_) {
+          resolve("");
+        }
+      };
+      image.onerror = () => resolve("");
+      try {
+        image.src = attachmentObjectUrl(attachment);
+      } catch (_) {
+        resolve("");
+      }
+    });
+    worldAttachmentPreviewCache.set(attachment, pending);
+    return pending;
+  }
 
   // Authored by the signed-in account, but not necessarily by this browser —
   // another tab, a phone, or the desktop client counts too. Kept apart from
@@ -1411,35 +1472,67 @@
     return String(sender || "").trim().toLowerCase() === account;
   }
 
-  function emitWorldChatBubble(sender, senderId, text, history = false) {
+  function emitWorldChatBubble(
+    sender,
+    senderId,
+    text,
+    history = false,
+    meta = {},
+  ) {
     if (!WORLD_EMBED_BUBBLES) return;
     if (orgAgentIdentity(sender, senderId) && !orgAgentEngineeringAccess) return;
     const line = String(text || "").trim().slice(0, 200);
-    if (!line) return;
-    try {
-      window.parent.postMessage(
-        {
+    const attachmentName = safeAttachmentName(meta?.attachment?.fileName || "");
+    if (!line && !attachmentName) return;
+    const payload = {
           type: "forkmesh:world-chat",
+          id: String(meta?.id || "").slice(0, 96),
           sender: String(sender || "").slice(0, MAX_NAME),
           self: senderId === selfId,
           own: isOwnChatLine(sender, senderId),
           text: line,
+          ts: Number(meta?.ts) || Date.now(),
+          attachmentName: attachmentName === "file" ? "" : attachmentName,
+          attachmentMime: safeAttachmentMime(
+            meta?.attachment?.fileMime || "",
+          ).slice(0, MAX_ATTACHMENT_MIME),
+          reactionCount: Math.max(
+            0,
+            Math.min(999, Number(meta?.reactionCount) || 0),
+          ),
           history,
-        },
-        location.origin
-      );
-    } catch (_) {}
+        };
+    const post = (attachmentPreview = "") => {
+      try {
+        window.parent.postMessage(
+          { ...payload, attachmentPreview },
+          location.origin,
+        );
+      } catch (_) {}
+    };
+    post();
+    if (meta?.attachment) {
+      void worldAttachmentPreview(meta.attachment).then((preview) => {
+        if (preview) post(preview);
+      });
+    }
   }
 
-  // Replayed entries can arrive out of order, so only forward a history line
-  // when it is the newest one seen — the parent's CHAT bar keeps the latest.
+  // Replayed entries can arrive out of order. Forward each bounded record so
+  // the physical World board can sort the recent backlog; the parent updates
+  // its collapsed CHAT label only when the timestamp is newer.
   let newestHistoryTs = 0;
   function emitWorldChatHistory(entry) {
-    if (!WORLD_EMBED_BUBBLES || !entry.text) return;
+    if (!WORLD_EMBED_BUBBLES) return;
     const ts = Number(entry.ts) || 0;
-    if (ts < newestHistoryTs) return;
-    newestHistoryTs = ts;
-    emitWorldChatBubble(entry.sender, entry.senderId, entry.text, true);
+    newestHistoryTs = Math.max(newestHistoryTs, ts);
+    emitWorldChatBubble(
+      entry.sender,
+      entry.senderId,
+      entry.text,
+      true,
+      entry,
+    );
   }
 
   function allowedChatAccountKind(value) {
@@ -1481,9 +1574,22 @@
                   Number(entry.ts) || Date.now(), attachment);
     if (live) {
       newestHistoryTs = Math.max(newestHistoryTs, Number(entry.ts) || 0);
-      emitWorldChatBubble(who, entry.senderId, text);
+      emitWorldChatBubble(who, entry.senderId, text, false, {
+        id: entry.id,
+        ts: entry.ts,
+        attachment,
+        reactionCount: entry.reactionCount,
+      });
     } else {
-      emitWorldChatHistory({ sender: who, senderId: entry.senderId, text, ts: entry.ts });
+      emitWorldChatHistory({
+        id: entry.id,
+        sender: who,
+        senderId: entry.senderId,
+        text,
+        ts: entry.ts,
+        attachment,
+        reactionCount: entry.reactionCount,
+      });
     }
   }
 
@@ -1765,7 +1871,19 @@
     }
   }
 
-  function orgAgentScope() {
+  function orgAgentScope(override = null) {
+    const selectedOwner = String(override?.owner || "");
+    const selectedRepo = String(override?.repo || override?.name || "");
+    if (
+      /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(selectedOwner) &&
+      /^[A-Za-z0-9._-]{1,100}$/.test(selectedRepo)
+    ) {
+      return {
+        organization: selectedOwner,
+        owner: selectedOwner,
+        repo: selectedRepo,
+      };
+    }
     if (scopedWorkshop) {
       return { organization: ROOM_OWNER, owner: ROOM_OWNER, repo: ROOM_REPO };
     }
@@ -1804,19 +1922,19 @@
     return orgAgentEngineeringAccess;
   }
 
-  async function maybeAskOrgAgent(text) {
+  async function maybeAskOrgAgent(text, selectedScope = null) {
     const provider = CLAUDE_MENTION_RE.test(text || "")
       ? "claude-code"
       : CODEX_MENTION_RE.test(text || "")
         ? "codex"
         : "";
-    if (!provider) return;
+    if (!provider) return false;
     const session = userSession();
     if (!session || !orgAgentAccessLoaded || !orgAgentEngineeringAccess) {
       appendSystem(
         `Only Engineering team members can use @${provider === "codex" ? "codex" : "claude"}.`,
       );
-      return;
+      return false;
     }
     const botName = provider === "codex" ? CODEX_SENDER_ID : CLAUDE_SENDER_ID;
     const prompt = String(text || "")
@@ -1824,9 +1942,9 @@
       .trim();
     if (!prompt) {
       appendSystem(`Add a task after @${botName}.`);
-      return;
+      return false;
     }
-    const scope = orgAgentScope();
+    const scope = orgAgentScope(selectedScope);
     const taskKeyMatch = prompt.match(
       /\[(task:[a-z0-9-]{1,48}|issue:[a-z0-9-]{1,40}\/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})\]/i,
     );
@@ -1861,6 +1979,7 @@
         `Queued on ${target}. Claude Haiku is checking the prompt before I start.`,
         botName,
       );
+      return data;
     } catch (error) {
       const reason = error.message === "no_eligible_headless_mirror"
         ? "No eligible headless mirror is online."
@@ -1872,6 +1991,7 @@
           ? "Only Engineering team members can start this agent."
           : "I could not queue that task.";
       broadcastBotMessage(reason, botName);
+      return false;
     }
   }
 
@@ -2049,7 +2169,10 @@
     fileInput.addEventListener("change", () => {
       const files = Array.from(fileInput.files || []);
       fileInput.value = "";
-      if (files.length) stageDashboardAttachments(control, files);
+      if (files.length) {
+        stageDashboardAttachments(control, files);
+        void sendDashboardDraft(control);
+      }
     });
     control.button.disabled = !canJoinChat();
     control.input.disabled = !canJoinChat();
@@ -2057,7 +2180,402 @@
     return control;
   }
 
+  function selectedComposerRepository() {
+    const value = String(fullRepository?.value || "");
+    const match = value.match(
+      /^([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\/([A-Za-z0-9._-]{1,100})$/,
+    );
+    if (!match) return null;
+    const selected = fullRepository?.selectedOptions?.[0];
+    const routeOwner = String(selected?.dataset?.routeOwner || match[1]);
+    const routeName = String(selected?.dataset?.routeName || match[2]);
+    if (
+      !/^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(routeOwner) ||
+      !/^[A-Za-z0-9._-]{1,100}$/.test(routeName)
+    ) {
+      return null;
+    }
+    return {
+      owner: routeOwner,
+      name: routeName,
+      repo: routeName,
+      logicalOwner: match[1],
+      logicalName: match[2],
+      logicalKind: String(selected?.dataset?.logicalKind || "user"),
+    };
+  }
+
+  function setComposerStatus(message = "", tone = "muted") {
+    if (!fullComposerStatus) return;
+    fullComposerStatus.textContent = message;
+    fullComposerStatus.className =
+      tone === "bad"
+        ? "text-destructive"
+        : tone === "good"
+          ? "text-primary"
+          : "text-muted-foreground";
+  }
+
+  function setFullComposerBusy(busy) {
+    for (const control of [
+      fullInput,
+      fullSend,
+      fullChannel,
+      fullRepository,
+      fullAction,
+      taskDepartment,
+      taskTeam,
+      taskDestination,
+      taskAssignee,
+    ]) {
+      if (control) control.disabled = Boolean(busy);
+    }
+  }
+
+  function syncFullComposerAction() {
+    if (!fullAction || !fullInput) return;
+    const action = fullAction.value;
+    const presentation = {
+      chat: {
+        label: "Send",
+        hint: "Enter sends · Shift+Enter adds a line",
+        placeholder: `Message ${CHANNEL}…`,
+      },
+      issue: {
+        label: "Create issue",
+        hint: "First line becomes the title · remaining lines become the description",
+        placeholder: "Issue title\\nDescribe the expected behavior and context…",
+      },
+      task: {
+        label: "Create task",
+        hint: "First line is the title · route by department, team, destination, and assignee",
+        placeholder: "Task title\\nAdd details or QA instructions…",
+      },
+      codex: {
+        label: "Assign Codex",
+        hint: "Starts a secured Engineering task on an eligible mirror",
+        placeholder: "Describe the implementation task for Codex…",
+      },
+      "claude-code": {
+        label: "Assign Claude",
+        hint: "Starts a secured Engineering task on an eligible mirror",
+        placeholder: "Describe the implementation task for Claude…",
+      },
+    }[action] || {};
+    if (fullSendLabel) fullSendLabel.textContent = presentation.label || "Send";
+    if (fullComposerHint) fullComposerHint.textContent = presentation.hint || "";
+    fullInput.placeholder = presentation.placeholder || "Write a message…";
+    if (taskRouting) taskRouting.hidden = action !== "task";
+    const repositoryRelevant =
+      action !== "chat" &&
+      (
+        action !== "task" ||
+        String(taskDestination?.value || "") === "repository" ||
+        ["codex", "claude"].includes(String(taskAssignee?.value || ""))
+      );
+    fullRepository?.classList.toggle("ring-1", repositoryRelevant);
+    fullRepository?.classList.toggle("ring-primary/50", repositoryRelevant);
+    setComposerStatus("");
+  }
+
+  async function taskApiRequest(method, path, body = null) {
+    const token = String(userSession()?.sessionToken || "");
+    const headers = { accept: "application/json" };
+    if (body !== null) headers["content-type"] = "application/json";
+    if (token && token !== "cookie") headers.authorization = `Bearer ${token}`;
+    const response = await fetch(path, {
+      method,
+      cache: "no-store",
+      credentials: "same-origin",
+      headers,
+      ...(body === null
+        ? {}
+        : {
+            body: JSON.stringify({
+              ...body,
+              ...(token && token !== "cookie"
+                ? { sessionToken: token }
+                : {}),
+            }),
+          }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(String(payload?.error || `HTTP ${response.status}`));
+    }
+    return payload;
+  }
+
+  async function loadTaskRouting() {
+    if (!taskAssignee || !taskTeam) return;
+    try {
+      const payload = await taskApiRequest("GET", "/api/tasks");
+      const selfName = String(payload?.actor || displayName()).toLowerCase();
+      for (const value of Array.isArray(payload?.members)
+        ? payload.members
+        : []) {
+        const name = String(value || "").trim().toLowerCase();
+        if (!/^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) continue;
+        const option = document.createElement("option");
+        option.value = `user:${name}`;
+        option.textContent = name === selfName ? `${name} (you)` : name;
+        taskAssignee.append(option);
+      }
+      if (
+        selfName &&
+        Array.from(taskAssignee.options).some(
+          (option) => option.value === `user:${selfName}`,
+        )
+      ) {
+        taskAssignee.value = `user:${selfName}`;
+      }
+      for (const value of Array.isArray(payload?.teams)
+        ? payload.teams
+        : []) {
+        const team = String(value || "").trim().toLowerCase();
+        if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(team)) continue;
+        const option = document.createElement("option");
+        option.value = team;
+        option.textContent = team;
+        taskTeam.append(option);
+      }
+    } catch (_) {
+      setComposerStatus(
+        "Task routing is available only to organization members.",
+        "bad",
+      );
+    }
+  }
+
+  async function loadComposerRepositories() {
+    if (!fullRepository) return;
+    try {
+      const response = await fetch("/api/repositories", {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { accept: "application/json" },
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error("repository_catalog_unavailable");
+      const seenRepositories = new Set();
+      const repositories = (Array.isArray(payload?.repositories)
+        ? payload.repositories
+        : [])
+        .flatMap((repository) => {
+          const routeOwner = String(repository?.owner || "");
+          const name = String(repository?.name || repository?.repo || "");
+          const logicalOwners = Array.isArray(repository?.logicalOwners)
+            ? repository.logicalOwners
+            : (
+                ["user", "organization"].includes(
+                  String(repository?.ownerKind || ""),
+                ) && repository?.logicalOwner
+                  ? [{
+                      kind: repository.ownerKind,
+                      owner: repository.logicalOwner,
+                    }]
+                  : []
+              );
+          return logicalOwners.map((identity) => {
+            const kind = String(identity?.kind || "").toLowerCase();
+            const logicalOwner = String(identity?.owner || "").toLowerCase();
+            const value = `${logicalOwner}/${name}`;
+            const key = `${kind}:${value}`;
+            if (
+              !["user", "organization"].includes(kind) ||
+              !/^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?\/[A-Za-z0-9._-]{1,100}$/.test(
+                value,
+              ) ||
+              !/^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(routeOwner) ||
+              seenRepositories.has(key)
+            ) {
+              return null;
+            }
+            seenRepositories.add(key);
+            return {
+              value,
+              label: `${value} · ${
+                kind === "organization" ? "Organization" : "User"
+              }`,
+              kind,
+              routeOwner:
+                kind === "organization" ? logicalOwner : routeOwner,
+              routeName: name,
+            };
+          });
+        })
+        .filter(Boolean)
+        .sort((left, right) => left.label.localeCompare(right.label));
+      const previous =
+        sessionStorage.getItem("forkmesh.worldChat.repository") || "";
+      for (const repository of repositories.slice(0, 250)) {
+        const option = document.createElement("option");
+        option.value = repository.value;
+        option.textContent = repository.label;
+        option.dataset.logicalKind = repository.kind;
+        option.dataset.routeOwner = repository.routeOwner;
+        option.dataset.routeName = repository.routeName;
+        fullRepository.append(option);
+      }
+      if (repositories.some((repository) => repository.value === previous)) {
+        fullRepository.value = previous;
+      }
+    } catch (_) {
+      setComposerStatus("Repository catalog unavailable", "bad");
+    }
+  }
+
+  async function runFullComposerAction(inputEl) {
+    const action = String(fullAction?.value || "chat");
+    const text = String(inputEl?.value || "").trim();
+    if (!text) {
+      setComposerStatus("Write something first.", "bad");
+      inputEl?.focus();
+      return;
+    }
+    const repository = selectedComposerRepository();
+    const taskAssigneeValue = String(taskAssignee?.value || "unassigned");
+    const taskNeedsRepository =
+      action === "task" &&
+      (
+        String(taskDestination?.value || "") === "repository" ||
+        ["codex", "claude"].includes(taskAssigneeValue)
+      );
+    if (!repository && (action !== "task" || taskNeedsRepository)) {
+      setComposerStatus("Choose a repository for this action.", "bad");
+      fullRepository?.focus();
+      return;
+    }
+    if (action === "task" && !String(taskTeam?.value || "")) {
+      setComposerStatus("Choose the team responsible for this task.", "bad");
+      taskTeam?.focus();
+      return;
+    }
+    setFullComposerBusy(true);
+    setComposerStatus(
+      action === "issue"
+        ? "Signing issue…"
+        : action === "task"
+          ? "Saving private task…"
+          : "Assigning agent…",
+    );
+    try {
+      if (action === "task") {
+        const lines = text.split(/\r?\n/);
+        const title = String(lines.shift() || "").trim().slice(0, 160);
+        const details = lines.join("\n").trim().slice(0, 4000);
+        if (!title) throw new Error("Task title is required.");
+        const agentKind = ["codex", "claude"].includes(taskAssigneeValue)
+          ? taskAssigneeValue
+          : "";
+        const userAssignee = taskAssigneeValue.startsWith("user:")
+          ? taskAssigneeValue.slice(5)
+          : "";
+        const destination = agentKind
+          ? "agent"
+          : String(taskDestination?.value || "department");
+        const created = await taskApiRequest("POST", "/api/tasks", {
+          title,
+          details,
+          department: String(taskDepartment?.value || "general"),
+          team: String(taskTeam?.value || ""),
+          destination,
+          assigneeKind: agentKind || (userAssignee ? "user" : "unassigned"),
+          assignee: userAssignee,
+          repository: repository
+            ? `${repository.logicalOwner}/${repository.logicalName}`
+            : "",
+          ...(destination === "qa"
+            ? {
+                howToTest:
+                  details ||
+                  "Follow the normal user flow and confirm the requested behavior.",
+              }
+            : {}),
+        });
+        const task = created?.task || {};
+        if (agentKind) {
+          const mention = agentKind === "codex" ? "@codex" : "@claude";
+          const queued = await maybeAskOrgAgent(
+            `${mention} [task:${task.id}] ${title}\n\n${details}`.trim(),
+            repository,
+          );
+          if (!queued) {
+            throw new Error(
+              "The task was saved, but the agent request was not accepted.",
+            );
+          }
+          const sessionId = String(queued?.session?.id || "");
+          if (sessionId) {
+            await taskApiRequest("PATCH", `/api/tasks/${task.id}`, {
+              agentSessionId: sessionId,
+            });
+          }
+        }
+        appendSystem(
+          `Private task “${title}” was sent to ${
+            destination === "qa"
+              ? "the QA board"
+              : destination === "agent"
+                ? agentKind === "codex" ? "Codex" : "Claude"
+                : destination === "repository"
+                  ? `${repository.owner}/${repository.name}`
+                  : `${task.department || "general"}`
+          }.`,
+        );
+        setComposerStatus("Organization task created.", "good");
+      } else if (action === "issue") {
+        const lines = text.split(/\r?\n/);
+        const title = String(lines.shift() || "").trim().slice(0, 200);
+        const body = lines.join("\n").trim();
+        if (!title) throw new Error("Issue title is required.");
+        const submitIssue =
+          window.ForkMeshDashboardActions?.submitWebIssue;
+        if (typeof submitIssue !== "function") {
+          throw new Error("Issue authoring is still loading.");
+        }
+        await submitIssue(repository, title, body);
+        appendSystem(`Issue “${title}” was signed and sent to ${repository.owner}/${repository.name}.`);
+        setComposerStatus("Issue sent to the maintainer inbox.", "good");
+      } else {
+        const mention = action === "codex" ? "@codex" : "@claude";
+        appendMessage(
+          "self",
+          displayName(),
+          `${mention} ${text}`,
+          "",
+          "",
+          Date.now(),
+        );
+        const queued = await maybeAskOrgAgent(
+          `${mention} ${text}`,
+          repository,
+        );
+        if (!queued) throw new Error("Agent request was not accepted.");
+        setComposerStatus("Agent request submitted.", "good");
+      }
+      inputEl.value = "";
+      inputEl.style.height = "";
+    } catch (error) {
+      setComposerStatus(
+        String(error?.message || "The action could not be completed."),
+        "bad",
+      );
+    } finally {
+      setFullComposerBusy(false);
+      inputEl?.focus();
+    }
+  }
+
   function sendFrom(inputEl, attachmentControl) {
+    if (
+      inputEl === fullInput &&
+      fullAction &&
+      fullAction.value !== "chat"
+    ) {
+      void runFullComposerAction(inputEl);
+      return;
+    }
     if (!canJoinChat()) {
       showUserOnlyState();
       return;
@@ -2113,6 +2631,7 @@
       if (!file) return;
       event.preventDefault();
       stageDashboardAttachments(attachmentControl, [file]);
+      void sendDashboardDraft(attachmentControl);
     });
     inputEl.addEventListener("keydown", (event) => {
       // While the mention list is open it owns Enter/Tab/arrows, so accepting a
@@ -2139,12 +2658,17 @@
           return;
         }
       }
-      if (event.key === "Enter") {
+      if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         sendFrom(inputEl, attachmentControl);
       }
     });
     inputEl.addEventListener("input", () => updateMentionSuggest(inputEl));
+    inputEl.addEventListener("input", () => {
+      if (inputEl !== fullInput) return;
+      inputEl.style.height = "auto";
+      inputEl.style.height = `${Math.min(inputEl.scrollHeight, 128)}px`;
+    });
     inputEl.addEventListener("click", () => updateMentionSuggest(inputEl));
     inputEl.addEventListener("keyup", (event) => {
       // Caret moves that leave the value alone (no "input" event) can still
@@ -2184,6 +2708,36 @@
     await loadOrgAgentChatAccess();
     ensureEmptyState();
     mountPrivateChannelsLink();
+    if (fullChannel) {
+      fullChannel.value = ACTIVE_SPACE || "";
+      fullChannel.addEventListener("change", () => {
+        const destination = new URL(location.href);
+        destination.searchParams.set("worldEmbed", "1");
+        if (fullChannel.value) {
+          destination.searchParams.set("space", fullChannel.value);
+        } else {
+          destination.searchParams.delete("space");
+        }
+        destination.searchParams.delete("org");
+        destination.searchParams.delete("repo");
+        destination.searchParams.delete("run");
+        location.assign(`${destination.pathname}${destination.search}`);
+      });
+    }
+    fullRepository?.addEventListener("change", () => {
+      try {
+        sessionStorage.setItem(
+          "forkmesh.worldChat.repository",
+          fullRepository.value,
+        );
+      } catch (_) {}
+    });
+    fullAction?.addEventListener("change", syncFullComposerAction);
+    taskDestination?.addEventListener("change", syncFullComposerAction);
+    taskAssignee?.addEventListener("change", syncFullComposerAction);
+    syncFullComposerAction();
+    void loadComposerRepositories();
+    void loadTaskRouting();
     wireInput(fullInput, fullSend);
     wireInput(sideInput, sideSend);
     // Connect right away so the room's message history (replayed by the relay

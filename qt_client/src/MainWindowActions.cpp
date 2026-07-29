@@ -965,19 +965,29 @@ void MainWindow::refreshOpenRepoDetail()
             focused->window() == this)
             typingFocus = focused;
     }
-    // Re-read the branch tip, commit list, About sidebar and the current file
-    // view so a freshly pushed commit shows without reopening the repo.
-    loadBranchesAndTags();
-    loadCommits();
-    reloadAgents();
-    // Issues and pull requests live on refs/heads, so a mirror fetch already
-    // brought any new ones along with the code; re-read them so a mirror node
-    // reflects fresh issues/PRs (and review conversations) without reopening.
-    reloadIssues();
-    reloadPulls();
+    // Refresh the visible surface immediately and leave hidden, expensive tables
+    // lazy. Every repo tab already reloads itself when selected; rebuilding
+    // commits + agents + issues + actions + mirrors after *every* push was the
+    // source of long back-to-back git/layout stalls while the user was looking
+    // at only one of them.
+    const int visibleTab =
+        m_repoDetailStack ? m_repoDetailStack->currentIndex() : -1;
+    if (visibleTab == 0 ||
+        (m_branchesTabIndex >= 0 && visibleTab == m_branchesTabIndex))
+        loadBranchesAndTags();
+    if (m_commitsTable && m_commitsTable->isVisibleTo(this))
+        loadCommits();
+    if (visibleTab == 3)
+        reloadAgents();
+    if (visibleTab == 2)
+        reloadIssuesInBackground();
+    // Pull metadata still feeds counts and agent state, but its git/disk load is
+    // worker-backed; applying the resulting table is a single model allocation.
+    reloadPullsInBackground();
     // Re-read .forkmesh/ workflows so the "Actions (N)" badge tracks any added
     // or removed workflows a sync may have brought in.
-    refreshRepoActions();
+    if (visibleTab == 6)
+        refreshRepoActions();
     // loadCommits() above already refreshed the Insights counts if that tab is on
     // screen; off-screen it reloads when next opened, so no extra pass here.
     updateRepoDetailStatus();
@@ -989,10 +999,12 @@ void MainWindow::refreshOpenRepoDetail()
     m_treeLoadedForIndex = -1; // force the explorer tree to rebuild on next use
     if (m_filesStack && m_filesStack->currentIndex() == 2)
         loadCoveExplorer();
-    loadRepoOverview(m_overviewPath);
-    // Rebuild the Mirror nodes view (cheap, roster-based) so its tab count badge
-    // stays current even when that tab isn't the one on screen.
-    loadMirrorNodesPanel();
+    if (visibleTab == 0)
+        loadRepoOverview(m_overviewPath);
+    // Mirror-node aggregation shells several git reads and resolves every
+    // roster row. Keep hidden tabs lazy; the tab switch loads a fresh snapshot.
+    if (m_mirrorNodesTable && m_mirrorNodesTable->isVisible())
+        loadMirrorNodesPanel();
     // Restore focus to the field the user was typing in if the rebuild moved it
     // (adhoc #160). Only when it's still alive, on-screen and editable, and only
     // if focus actually drifted — so we never fight a focus the user just moved.
@@ -1553,6 +1565,23 @@ void MainWindow::updateNotificationButton()
     m_notificationButton->setProperty("alert", pending > 0);
     m_notificationButton->style()->unpolish(m_notificationButton);
     m_notificationButton->style()->polish(m_notificationButton);
+    if (m_notificationRailBadge) {
+        if (pending > 0) {
+            const QString text =
+                pending > 99 ? QStringLiteral("99+") : QString::number(pending);
+            m_notificationRailBadge->setText(text);
+            const int width =
+                qMax(15, m_notificationRailBadge->fontMetrics()
+                             .horizontalAdvance(text) + 10);
+            m_notificationRailBadge->resize(width, 15);
+            m_notificationRailBadge->move(
+                qMax(0, m_notificationButton->width() - width), 0);
+            m_notificationRailBadge->show();
+            m_notificationRailBadge->raise();
+        } else {
+            m_notificationRailBadge->hide();
+        }
+    }
 }
 
 void MainWindow::openActionRunFromNotification(int runId)

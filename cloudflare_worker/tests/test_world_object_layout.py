@@ -308,13 +308,16 @@ def test_world_frontend_loads_applies_and_admin_locks_the_layout():
 
     scene_js = WORLD_SCENE_JS.read_text(encoding="utf-8")
     assert "registerMovableObject" in scene_js
-    assert "layoutHandle" in scene_js
-    assert "OctahedronGeometry(0.09" in scene_js
+    assert "layoutObjectAtPointer" in scene_js
+    assert "layoutObjectForDescendant" in scene_js
+    assert "OctahedronGeometry(0.09" not in scene_js
+    assert "world-layout-handle-" not in scene_js
     for object_id in (
         "world-bulletin", "arrival-box", "mastodon-kiosk", "campfire",
-        "active-leaderboard-sign",
     ):
         assert '"%s"' % object_id in scene_js
+    assert 'leaderboardDistrict.name = "forkmesh-leaderboard-district"' in scene_js
+    assert 'registerMovableObject("active-leaderboard-sign"' not in scene_js
     assert (
         'registerMovableObject("system-capacity-platform"'
         not in scene_js
@@ -361,8 +364,8 @@ def test_layout_reads_retry_skip_the_cache_and_keep_the_last_save():
 
 def test_layout_editor_rotates_with_the_r_key_and_saves_the_heading():
     scene_js = WORLD_SCENE_JS.read_text(encoding="utf-8")
-    # R (Shift+R for the other direction) turns the dragged or last-grabbed
-    # object; the heading rides along with the position on every save.
+    # R (Shift+R for the other direction) turns the selected object; the
+    # heading rides along with the position on every save.
     assert 'event.code === "KeyR" && layoutEditingEnabled' in scene_js
     assert "rotateActiveLayoutObject(event.shiftKey ? -1 : 1)" in scene_js
     assert "const LAYOUT_ROTATION_STEP = Math.PI / 12;" in scene_js
@@ -372,31 +375,29 @@ def test_layout_editor_rotates_with_the_r_key_and_saves_the_heading():
     # (rotation 0) row never spins a prop away from where the scene aimed it.
     assert "object.userData.layoutBaseRotation" in scene_js
     assert "scheduleLayoutCommit" in scene_js
-    # Rotation happens about the handle (the object's visible centre), so a
-    # group whose geometry sits far from its origin spins where it stands.
-    assert "function layoutHandlePoint(object)" in scene_js
-    assert "const pivot = layoutHandlePoint(target);" in scene_js
+    # Rotation happens about the object's visible centre, so a group whose
+    # geometry sits far from its origin spins where it stands.
+    assert "function layoutObjectPoint(object)" in scene_js
+    assert "const pivot = layoutObjectPoint(target);" in scene_js
+    # A normal click selects the physical object without stealing the camera's
+    # drag and wheel gestures. Arrow keys nudge the selected object.
+    assert "const selectedLayoutObject = layoutObjectAtPointer();" in scene_js
+    assert "setActiveLayoutObject(selectedLayoutObject);" in scene_js
+    assert "layoutSelectionHighlight" in scene_js
+    assert "nudgeActiveLayoutObject(event.code)" in scene_js
+    assert "draggedLayoutObject" not in scene_js
 
     world_js = WORLD_JS.read_text(encoding="utf-8")
     assert "rotation: Number.isFinite(rotation) ? rotation : 0," in world_js
 
 
-def test_layout_editor_rotates_with_the_wheel_while_dragging():
+def test_layout_editor_keeps_the_wheel_for_camera_zoom():
     scene_js = WORLD_SCENE_JS.read_text(encoding="utf-8")
-    # While a handle drag is live the wheel turns the object instead of
-    # zooming the camera; the release then saves position and heading.
-    assert "rotateActiveLayoutObject(Math.sign(deltaPixels))" in scene_js
-    wheel_grab = scene_js.index(
-        "rotateActiveLayoutObject(Math.sign(deltaPixels))")
-    zoom = scene_js.index("currentZoom * Math.exp(deltaPixels", wheel_grab)
-    assert wheel_grab < zoom
-    # A mid-drag turn folds its recentring shift into the drag offset so the
-    # next pointer move does not snap the object back.
-    assert "layoutDragOffset.x += pivot.x - moved.x;" in scene_js
-    assert "layoutDragOffset.z += pivot.z - moved.z;" in scene_js
-    # The one-per-session hint tells administrators the wheel gesture exists.
+    assert "rotateActiveLayoutObject(Math.sign(deltaPixels))" not in scene_js
+    assert "currentZoom * Math.exp(deltaPixels" in scene_js
     world_js = WORLD_JS.read_text(encoding="utf-8")
-    assert "mouse wheel while dragging" in world_js
+    assert "use arrow keys to" in world_js
+    assert "R or Shift+R to rotate it" in world_js
 
 
 def test_individual_placards_are_movable_but_node_cabinets_stay_automatic():
@@ -408,9 +409,12 @@ def test_individual_placards_are_movable_but_node_cabinets_stay_automatic():
     assert "plaque.userData.plaqueLayoutId = plaqueLayoutId(title);" in scene_js
     assert 'plaqueLayoutId("arrival")' in scene_js
     assert "registerMovableObject(plaqueId, child);" in scene_js
-    # A placard nested in a section group is dragged in its parent's space.
-    assert "function layoutGroundPoint(object, clientX, clientY)" in scene_js
-    assert "parent.worldToLocal(point)" in scene_js
+    # Keyboard nudging updates the selected placard in the coordinate space
+    # its position already belongs to, including nested section placards.
+    assert "function nudgeActiveLayoutObject(code)" in scene_js
+    assert "target.position.x +" in scene_js
+    assert "target.position.z +" in scene_js
+    assert "scheduleLayoutCommit(target);" in scene_js
 
     # Live node cabinets are deterministically re-slotted around the global
     # reward pool. They are intentionally absent from the saved layout editor,

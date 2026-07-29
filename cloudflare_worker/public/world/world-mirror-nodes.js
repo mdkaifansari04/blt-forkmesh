@@ -106,6 +106,9 @@ function publicRepositoryRecord(mirror, payload) {
     activity: text(mirror?.activity, "unknown", 32).toLowerCase(),
     activityUpdatedAt: timestamp(mirror?.activityUpdatedAt),
     cloneAvailable: mirror?.cloneAvailable === true,
+    endpointHealthy: mirror?.endpointHealthy === true,
+    endpointFresh: mirror?.endpointFresh === true,
+    checkedAt: timestamp(mirror?.checkedAt),
     behind: mirror?.behind === true,
     lastSeen: timestamp(mirror?.lastSeen),
     lastSync: timestamp(mirror?.lastSync),
@@ -255,12 +258,33 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
         .slice(0, 32);
       const primary = repositories[0] || {};
       const hasPrimary = repositories.length > 0;
+      const now = Date.now();
+      // The cabinet represents the physical node, not just this repository's
+      // clone route. A recent generic signed endpoint challenge proves that
+      // mirror2 is alive even while an exact refs pin is converging; the
+      // repository record still keeps cloneAvailable=false and its integrity
+      // verdict so the detail panel never implies that blocked bytes are
+      // currently routable.
       const online = repositories.some(
-        (repository) => repository.status === "online",
+        (repository) =>
+          repository.status === "online" ||
+          (
+            repository.endpointHealthy === true &&
+            Number(repository.checkedAt) > 0 &&
+            now - Number(repository.checkedAt) <= 10 * 60 * 1000
+          ),
       );
       const healthy = repositories.some(
         (repository) =>
-          repository.status === "online" && repository.integrity === "ok",
+          (
+            repository.status === "online" ||
+            (
+              repository.endpointHealthy === true &&
+              Number(repository.checkedAt) > 0 &&
+              now - Number(repository.checkedAt) <= 10 * 60 * 1000
+            )
+          ) &&
+          repository.integrity === "ok",
       );
       const resources = publicResourceRecord({
         ...detail,
@@ -274,7 +298,7 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
         machineName: primary.machineName || aggregate.machineName || null,
         online,
         healthy,
-        status: primary.status || "offline",
+        status: online ? "online" : primary.status || "offline",
         integrity: primary.integrity || "unknown",
         activity: primary.activity || "unknown",
         activityUpdatedAt: primary.activityUpdatedAt || null,

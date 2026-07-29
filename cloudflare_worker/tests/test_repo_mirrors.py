@@ -32,17 +32,100 @@ def _load(*names, extra_globals=None):
 
 (
     _mirror_ms,
+    agent_provider_mirror_candidates,
     build_repo_mirrors_payload,
     clone_state_pins,
     repo_mirror_group_key,
     repo_mirror_same_group,
 ) = _load(
     "_mirror_ms",
+    "agent_provider_mirror_candidates",
     "build_repo_mirrors_payload",
     "clone_state_pins",
     "repo_mirror_group_key",
     "repo_mirror_same_group",
 )
+
+
+def test_agent_jobs_use_fresh_signed_provider_capability_not_https_presence():
+    now = 1_000_000
+    target = {
+        "owner": "jett",
+        "name": "forkmesh",
+        "visibility": "public",
+        "rootCommit": "abc",
+    }
+    records = [
+        target,
+        {
+            "owner": "jett",
+            "machineName": "mirror6",
+            "name": "forkmesh",
+            "visibility": "public",
+            "rootCommit": "abc",
+            "lastSync": str(now - 1_000),
+            "agentProviders": ["claude-code", "codex"],
+        },
+        {
+            "owner": "jett",
+            "machineName": "mirror7",
+            "name": "forkmesh",
+            "visibility": "public",
+            "rootCommit": "abc",
+            "lastSync": str(now - 2_000),
+            "agentProviders": ["codex"],
+        },
+        {
+            "owner": "jett",
+            "machineName": "mirror8",
+            "name": "forkmesh",
+            "visibility": "public",
+            "rootCommit": "abc",
+            "lastSync": str(now - 700_000),
+            "agentProviders": ["claude-code"],
+        },
+    ]
+    assert agent_provider_mirror_candidates(
+        records, target, "jett", "claude-code", now, 600_000
+    ) == ["mirror6"]
+    assert agent_provider_mirror_candidates(
+        records, target, "jett", "codex", now, 600_000
+    ) == ["mirror6", "mirror7"]
+    assert agent_provider_mirror_candidates(
+        records, target, "jett", "unknown", now, 600_000
+    ) == []
+
+
+def test_fresh_agent_only_headless_node_is_live_but_not_clone_ready():
+    now = 1_000_000
+    source = _row(
+        "source", "jett", "forkmesh", root="abc", synced=str(now - 5_000)
+    )
+    mirror = _row(
+        "mirror6",
+        "jett",
+        "forkmesh",
+        root="abc",
+        synced=str(now - 1_000),
+        source="remote-clone",
+    )
+    mirror["data"]["machineName"] = "mirror6"
+    mirror["data"]["agentProviders"] = ["claude-code", "codex"]
+    payload = build_repo_mirrors_payload(
+        "jett",
+        "forkmesh",
+        [source, mirror],
+        {},
+        {},
+        now,
+        30_000,
+        30_000,
+    )
+    item = next(entry for entry in payload["mirrors"] if entry["node"] == "mirror6")
+    assert item["status"] == "online"
+    assert item["lastSeen"] == now - 1_000
+    assert item["cloneAvailable"] is False
+    assert item["agentProviders"] == ["claude-code", "codex"]
 
 
 def _row(key, owner, name, *, root="", visibility="public", hosted="", synced="",

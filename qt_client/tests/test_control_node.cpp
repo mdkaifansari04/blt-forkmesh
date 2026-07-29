@@ -762,6 +762,7 @@ int main(int argc, char **argv)
     const QString loginRemote =
         forkmesh::control::buildHostAgentLoginRemoteCommand();
     check(loginRemote.contains(QStringLiteral("$HOME/.local/bin")) &&
+              loginRemote.contains(QStringLiteral("forkmesh-node")) &&
               loginRemote.contains(QStringLiteral("codex login")) &&
               loginRemote.contains(QStringLiteral("exec \"${SHELL:-/bin/sh}\"")),
           "the sign-in shell puts the CLI prefixes on PATH and execs a login shell");
@@ -1150,11 +1151,15 @@ int main(int argc, char **argv)
           "the install-only command reads no stdin and writes no login file");
     check(agentWithLogins.contains(QStringLiteral("cat > \"$tmp\"")) &&
               agentWithLogins.contains(
-                  QStringLiteral("$home/.claude/.credentials.json")) &&
+                  QStringLiteral("$agent_home/.claude/.credentials.json")) &&
               agentWithLogins.contains(
-                  QStringLiteral("$home/.codex/auth.json")) &&
+                  QStringLiteral("$agent_home/.codex/auth.json")) &&
               agentWithLogins.contains(
-                  QStringLiteral("$home/.forkmesh/agent-env")) &&
+                  QStringLiteral("$agent_home/.forkmesh/agent-env")) &&
+              agentWithLogins.contains(
+                  QStringLiteral("id forkmesh-node")) &&
+              agentWithLogins.contains(
+                  QStringLiteral("/usr/local/bin/$program")) &&
               agentWithLogins.contains(QStringLiteral("chmod 600")) &&
               agentWithLogins.contains(QStringLiteral("umask 077")),
           "the credential command writes each login file with private modes");
@@ -1380,6 +1385,30 @@ int main(int argc, char **argv)
     check(!persistedAfterSave.contains(legacyPassword.toUtf8()) &&
               !persistedAfterSave.contains("sshPassword"),
           "host settings writer strips password-like fields defensively");
+    QJsonObject providerHost = migratedHost;
+    providerHost.insert(QStringLiteral("provider"), QStringLiteral("Vultr"));
+    providerHost.insert(QStringLiteral("planType"),
+                        QStringLiteral("vc2-1c-1gb"));
+    providerHost.insert(QStringLiteral("displayName"),
+                        QStringLiteral("mirror6"));
+    providerHost.insert(QStringLiteral("monthlyCost"), 6.0);
+    forkmesh::control::saveSavedHosts(
+        hostSettings, QStringLiteral("hosts/list"),
+        QJsonArray{providerHost});
+    const QJsonObject reloadedProviderHost =
+        forkmesh::control::loadSavedHosts(
+            hostSettings, QStringLiteral("hosts/list"), nullptr)
+            .at(0)
+            .toObject();
+    check(reloadedProviderHost.value(QStringLiteral("provider")).toString() ==
+                  QStringLiteral("Vultr") &&
+              reloadedProviderHost.value(QStringLiteral("planType")).toString() ==
+                  QStringLiteral("vc2-1c-1gb") &&
+              reloadedProviderHost.value(QStringLiteral("displayName")).toString() ==
+                  QStringLiteral("mirror6") &&
+              reloadedProviderHost.value(QStringLiteral("monthlyCost")).toDouble() ==
+                  6.0,
+          "saved hosts preserve non-secret provider, plan, display name and cost metadata");
 
     auto invalidActions = actionsRequest;
     invalidActions.replaceVariables = false;

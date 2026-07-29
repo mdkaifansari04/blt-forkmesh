@@ -105,8 +105,9 @@ def test_reward_circle_slots_clear_the_pool_and_never_collide():
             radius = math.hypot(slot["x"], slot["z"])
             # Outside the 5.25 pool rim and the 6.4–8.5 tree circle.
             assert radius >= 10.7
-            # Outside the campfire's complete bench-and-walkway clearing.
-            assert math.hypot(slot["x"] - 8, slot["z"] - 8) >= 8.2
+            # The member fire now occupies its own south island, safely clear
+            # of every central service-yard slot.
+            assert math.hypot(slot["x"], slot["z"] - 130) >= 8.2
         for index, left in enumerate(slots):
             for right in slots[index + 1:]:
                 assert math.dist(

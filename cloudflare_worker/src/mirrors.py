@@ -85,6 +85,53 @@ def repo_mirror_same_group(target, record):
     return bool(tname) and tname == rname
 
 
+def agent_provider_mirror_candidates(
+    records, target, source_node, provider, now, fresh_ms,
+):
+    """Return fresh same-repo headless nodes that signed the required runtime.
+
+    Agent jobs are claimed over the polling API, so a direct HTTPS clone
+    endpoint is neither required nor sufficient. The catalog-v2 record is the
+    account-signed capability lease; the node still performs a local binary
+    and login check before it executes a claimed job.
+    """
+    provider = str(provider or "").strip().lower()
+    if provider not in {"claude-code", "codex"}:
+        return []
+    source = str(source_node or "").strip().lower()
+    try:
+        now_ms = int(now)
+        lease_ms = max(1, int(fresh_ms))
+    except (TypeError, ValueError):
+        return []
+    eligible = []
+    seen_nodes = set()
+    for rec in records or []:
+        rec = rec if isinstance(rec, dict) else {}
+        if rec.get("visibility") == "private":
+            continue
+        if not repo_mirror_same_group(target, rec):
+            continue
+        node = (
+            str(rec.get("machineName") or "").strip()
+            or str(rec.get("owner") or "").strip()
+        ).lower()
+        if not node or node == source or node in seen_nodes:
+            continue
+        providers = rec.get("agentProviders")
+        if not isinstance(providers, list) or provider not in {
+            str(value or "").strip().lower() for value in providers
+        }:
+            continue
+        last_sync = _mirror_ms(rec.get("lastSync"))
+        if not last_sync or now_ms - last_sync > lease_ms:
+            continue
+        seen_nodes.add(node)
+        eligible.append((last_sync, node))
+    eligible.sort(key=lambda item: (-item[0], item[1]))
+    return [node for _last_sync, node in eligible]
+
+
 def mirroring_owner_set(records):
     # Owners (node names) that host at least one repo ALSO hosted by a DIFFERENT
     # owner — i.e. a repo genuinely mirrored across nodes. Repos that only one
@@ -313,6 +360,18 @@ def build_repo_mirrors_payload(
         seen = _mirror_ms((presence or {}).get(key))
         hosted = _mirror_ms(rec.get("hostedSince")) or _mirror_ms((first_hosted or {}).get(key))
         last_sync = _mirror_ms(rec.get("lastSync"))
+        agent_providers = [
+            provider
+            for provider in ("claude-code", "codex")
+            if provider in {
+                str(value or "").strip().lower()
+                for value in (
+                    rec.get("agentProviders")
+                    if isinstance(rec.get("agentProviders"), list)
+                    else []
+                )
+            }
+        ]
         # Public byte serving no longer keeps the legacy host WebSocket open.
         # A source-of-truth desktop still signs and publishes its local-node
         # catalog while it is alive, so that fresh publication is its bounded
@@ -333,6 +392,17 @@ def build_repo_mirrors_payload(
             effective_seen and now - effective_seen <= effective_stale_ms)
         if reachable_nodes is not None:
             online = online and node_name.lower() in reachable_nodes
+        # A polling headless node may intentionally expose no direct HTTPS
+        # clone endpoint. Its fresh, signed agent capability publication still
+        # proves the machine is active, while cloneAvailable remains false.
+        # This lets World render the cabinet as live/yellow instead of treating
+        # an eligible worker as a dead machine.
+        agent_runtime_online = bool(
+            agent_providers
+            and last_sync
+            and now - last_sync <= 10 * 60 * 1000
+        )
+        node_online = online or agent_runtime_online
         try:
             size_bytes = max(0, int(rec.get("sizeBytes") or 0))
         except (TypeError, ValueError):
@@ -403,7 +473,7 @@ def build_repo_mirrors_payload(
             integrity = "healing"
         else:
             integrity = "rejected"
-        if not online:
+        if not node_online:
             activity = "offline"
         elif actions_state == "running":
             activity = "running-actions"
@@ -433,8 +503,12 @@ def build_repo_mirrors_payload(
             # the owning account); display-only, never an identity key.
             "machineName": str(rec.get("machineName") or "").strip(),
             "repo": str(rec.get("name") or "").strip(),
-            "status": "online" if serving else "offline",
-            "lastSeen": effective_seen if online else None,
+            "status": "online" if node_online else "offline",
+            "lastSeen": (
+                effective_seen
+                if online
+                else last_sync if agent_runtime_online else None
+            ),
             "hostedSince": hosted,
             "syncAgeMs": max(0, now - last_sync) if last_sync else None,
             "lastSync": last_sync,
@@ -462,7 +536,14 @@ def build_repo_mirrors_payload(
             "worktreeCount": _int_field(rec, "worktreeCount"),
             "artifactCount": _int_field(rec, "artifactCount"),
             "platform": str(rec.get("platform") or "").strip(),
+            "runtimeMode": (
+                str(rec.get("runtimeMode") or "").strip().lower()
+                if str(rec.get("runtimeMode") or "").strip().lower()
+                in {"desktop", "headless"}
+                else ""
+            ),
             "version": str(rec.get("version") or "").strip(),
+            "agentProviders": agent_providers,
             # Missing and malformed legacy records fail closed to disabled.
             # Only the bounded status pair signed into catalog-v2 is exposed.
             "actionsEnabled": actions_enabled,
@@ -481,7 +562,9 @@ def build_repo_mirrors_payload(
             "diskTotalBytes": disk_total,
             "integrity": integrity,
             "activity": activity,
-            "activityUpdatedAt": effective_seen or last_sync,
+            "activityUpdatedAt": (
+                effective_seen if online else last_sync
+            ),
         })
 
     mirrors.sort(

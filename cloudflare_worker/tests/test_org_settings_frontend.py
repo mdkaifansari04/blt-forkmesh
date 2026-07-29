@@ -93,6 +93,9 @@ def test_org_detail_explains_member_role_and_team_access_on_the_right():
     for copy in (
         "What organization access means",
         "Every organization member can",
+        "Engineering team members can",
+        "organization role alone does not grant access",
+        "Members outside Engineering also cannot view or control Claude/Codex sessions",
         "Member role cannot",
         "Admin role adds",
         "Owner role adds",
@@ -101,3 +104,27 @@ def test_org_detail_explains_member_role_and_team_access_on_the_right():
         "data-org-access-summary",
     ):
         assert copy in DASHBOARD_JS
+
+
+def test_org_admin_lists_every_office_floor_group_for_each_user():
+    for contract in (
+        "const ORG_OFFICE_FLOOR_GROUPS",
+        "function orgMemberFloorGroups(member)",
+        "data-org-member-floor-groups",
+        "Office floor groups",
+        "activeCount",
+        "canManage ? orgMemberFloorGroups(member) :",
+        '"Marketing"',
+        '"Engineering"',
+        '"Product & Design"',
+        '"Security"',
+        '"Infrastructure"',
+        '"Community"',
+        '"Partnerships"',
+        '"Operations"',
+        '"Executive"',
+        '"frontend"',
+        '"sre"',
+        '"devrel"',
+    ):
+        assert contract in DASHBOARD_JS

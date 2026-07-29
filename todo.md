@@ -5,13 +5,82 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [ ] Complete the remaining web PR lifecycle: proactive readiness/conflict data, live checks, complete commit history, and an auditable signed update-from-main mirror operation. Conversation, peer review, changed files, and protected owner merge are already present.
+- [x] Add a one-line status bar at the bottom of the Qt window carrying the branch switcher, the repository git identity and the running app's on-disk location.
+- [x] Make avatar clicks reliably open the user HUD; remove the out-of-scope animation timestamp crash and prefer a nearby visible avatar hit over surrounding geometry.
+- [x] Give the Members Circle detailed dirt, one visible pile log per member, and a gently growing bounded campfire.
+- [x] Keep the combined aquarium control panel fixed to the lower-right of the tank.
+- [x] Show one sanitized recent public-channel message on each user's chest card without exposing private/direct chat.
+- [x] Show a green verified-email pin or a red unverified-email X on every signed-in avatar, with guests neutral.
+- [x] Add one labeled warp pad per Office floor to the left of the lobby welcome desk, respecting floor access.
+- [x] Align image preloads with texture-loader credentials, avoid cross-origin avatar failures with deterministic fallbacks, and treat unavailable Actions summaries as retryable state rather than HTTP 503 noise.
+- [x] Make every visible admin database row open a read-only detail page with the complete redacted record listed vertically.
+- [x] Show a red email-unverified X for every non-guest member and open the privileged admin user detail action in a new tab.
+- [x] Add a live Engineering-room debug control panel with bounded renderer, memory, loop, and interaction counts plus green/orange/red optimization thresholds.
+- [x] Put every leaderboard and statistic into one square 5×5 wall, remove the duplicate physical boards and center circle, and keep the complete assembly above terrain.
+- [x] Remove the ForkMesh open repo issues billboard and its invisible interaction surface; close the gap by moving the Human TODO board beside the build board.
+- [x] Move the Solana treasury QR to the front midpoint of the first node ring and add a Start a node button that opens the desktop download page in a new window.
+- [x] Replace the doubled south route with one concrete-brick path terminating at the fire-marked Members Circle sign.
+- [x] Replace the doubled north Office route with one width-matched concrete-brick path, bridge, and approach that meet edge-to-edge.
+- [x] Make the World foundation and its collision boundary circular around the circular bike lane.
+- [x] Make keyboard movement instant, reuse camera/movement frame scratch state, and cadence-bound non-motion proximity/DOM work while preserving full-rate WebGL rendering.
+- [x] Move World DEBUG to the lower-left and extend the right chat dock to the bottom; add a pinned dark GitHub Primer multiline composer with channel/repository selectors and working chat, signed-issue, and Engineering-agent actions, move channel security/connection into its header, remove the duplicate public notice, and collapse HUD docks when clicking outside.
+- [x] Restyle the compact and expanded World right HUD with GitHub Primer primitives, including selected, hover, focus, and icon-button states.
+- [x] Open both Issue and PR tower records in their canonical, same-origin embedded web workbenches instead of the unrelated Repository portals panel.
+- [x] Audit the full 2026-07-28 request history against the implementation, tests, QA deck, and build-board source; keep every partial or externally unverifiable item open below.
+- [x] Scale repository PR and Issue towers to their complete bounded item counts and move them outside the ActivityPub follower orbit.
+- [x] Remove zoom-out relationship lines, rounded connector pads, colored grass ovals, disjoint terrain remnants, and obstructive agent-terminal blocks; retain one fast continuous walkable grass foundation.
+- [x] Make the perimeter bike path a true circle and lock mounted bikes to its center groove, with `E` as the explicit mount/dismount control.
+- [x] Make World PR and Issue clicks open record-only detail drawers without unrelated Repository portals content.
+- [x] Make admin node deletion alias-tolerant and idempotent, purge all related node data, and remove every matching cabinet from the World.
+- [x] Add sun/moon sky bodies, an Auto/Day/Night display preference, a collapsed-by-default expandable right HUD rail, and text-free saved-view thumbnails.
+- [x] Straighten the World “What we're building” cards, show the complete active task set, and add readable scope/status detail to every card.
+- [x] Size the World PR and Issue panels to their visible records, move open counts below the lists, put the newest record at the bottom, and add one-click first-person viewing pads.
+- [x] Stop signed-in mobile World pans from clearing or visually refreshing the WebGL scene.
+- [x] Restore the cached spawn pose before scene hydration and keep Office travel attached to the avatar.
+- [x] Finish the Qt execution-aware stall-log regression build so fast async/worker actions never produce false “not backgrounded” alerts.
+- [x] Show follower avatars in the self profile and add a non-blocking ActivityPub composer with selfie capture and auto-filled editable alt text.
+- [x] Keep Reef Control visible throughout the lobby and make fish react gently when a visitor approaches.
+- [x] Animate verified changed files colliding with their repository ring, with night lightning or daylight file shadows followed by a ten-second sizzle/sparkle fade.
+- [x] Show each live repository agent task on its tiny terminal and open that exact engineering-only transcript with prompt and re-prompt controls when clicked.
+- [x] Join the World districts into one continuous city landscape with seamless concrete paths.
+- [x] Add a visible START HERE progress map from the users area to the centered mirror nodes.
+- [x] Make Space jump off the roof, check the user out on exit, slow the descent with a mini parachute that collapses after landing, and allow every chair or bench to seat a visitor.
+- [x] Add a connected driveable road, car, beach environment, water, horizon, and beach seating.
+- [x] Move the perimeter bike route outside activity areas while retaining two usable bicycles.
+- [x] Circle-align the public billboards, retain one leaderboard panel, and remove the obsolete center marker.
+- [x] Apply a shared GitHub-like interface system across World panels and controls.
+- [x] Add local daylight, stars, chest time, organization-level stars, and optimized local scene textures.
+- [x] Finish the canonical World node-delete resolution and cabinet-removal animation regression fix.
+- [x] Make the separate World PR and Issue panels single-column while retaining 25 records per independently paginated page.
+- [x] Show explicit verified/unverified email state in the World member panel and give `is_admin` viewers a direct, filtered admin user-detail link.
+- [x] Split the selected-repository World exhibit into left PR and right Issue panels with large open counts, bottom-only pagination, an angled named commit-activity pedestal, and compact per-repository live agent terminals.
+- [x] Replace World object dragging with click selection, a subtle selection highlight, automatic detail-panel opening, admin arrow-key nudging, and `R` rotation.
+- [x] Make every visible user avatar clickable, subtly highlight the selected person, and open their privacy-filtered member information in the side panel.
+- [x] Fix the `is_admin` World cabinet delete action to target the physical mirror name (not its operator account), report failures, and force-refresh cabinets after deletion.
+- [x] Apply the annotated World plan: four broad paved cardinal paths with curved joins; nodes in the center; every repository on the east island and always expanded; billboards on the west island; and the member/campfire circle on its own south island.
+- [x] Keep the flagship repository wheel expanded immediately and remove mirror-metadata render delay.
+- [x] Restore country flags immediately, add verified-email front pins, and keep privacy choices intact.
+- [x] Give every user a stable unique generated face plus a compact account-avatar upload override.
+- [x] Superseded: the initial combined repository work list was replaced by independent single-column PR and Issue panels.
+- [x] Show the signed-in user's uploaded avatar in the top-right control at the same size as neighboring buttons.
+- [x] Swap cabinet Actions/server-info faces and split Claude/Codex work onto opposite side panels.
+- [x] Consolidate aquarium feed, opaque/clear backdrop, and light controls into a clickable bottom-right tank panel.
+- [x] Represent every public user as a small deterministic fish, with active/recent fish in upper lanes and inactive fish near the bottom.
+- [x] Superseded: initial handle-free drag layout control, now replaced by click selection plus keyboard nudge/rotation.
+- [x] Keep mirror2 visible as a live green World cabinet when its recent signed endpoint health proves the machine is reachable, while preserving blocked clone/integrity detail.
+- [x] Make live mirror cabinets use green for physical node liveness instead of conflating it with per-repository clone eligibility.
+- [x] Show the latest commit's relative age beside its hash in both live and catalog-backed Qt Mirror nodes rows.
 - [ ] Human TODO: share the live “ForkMesh Forever” post on Reddit, Mastodon, and X, then paste each published permalink into the post’s social-proof fields.
 - [x] Add physical Pass / Fail / Unsure tabs to the QA deck with verdict-filtered task pages.
 - [x] Let authorized QA reviewers send a reviewed card back to “What we're building”.
 - [x] Let authorized QA reviewers file a reviewed card into the `forkmesh/forkmesh` issues list.
 - [x] Keep newly provisioned Hosts rows checking until each mirror is reachable, with clear provisioning/online/attention state.
 - [x] Show separate Claude Code and Codex installed/missing status beside every saved host.
-- [ ] Show a visible Terms-of-Service moderation flag on repositories that violate ForkMesh policy.
+- [x] Install/probe Claude Code and Codex as the actual `forkmesh-node` service account, including copied device logins.
+- [x] Route Claude/Codex organization jobs only to fresh mirrors whose signed catalog advertises that provider.
+- [x] Seed every headless mirror with a private service-owned working checkout and preserve it across bootstrap/restarts so installed agents can claim work.
+- [x] Show a visible Terms-of-Service moderation flag on repositories that violate ForkMesh policy.
 - [x] Initial front-wall elevator camera placement (superseded after live QA).
 - [x] Increase the in-elevator button labels and contrast for clear floor selection.
 - [x] Follow-up: restore elevator buttons to the side wall and use an upper security-camera view that frames them with the World outside.
@@ -19,14 +88,14 @@ the implementation and its focused verification are complete.
 - [x] Count Marketing Office Hours from explicit Office-building punches only, never general World presence.
 - [x] Put Marketing desks against the windows with chairs, raise the round table, and seat it clearly.
 - [x] Open QA history items as full detail cards with Pass, Fail, Unsure, and Back to Cards actions.
-- [ ] Add a Marketing initiatives panel in the Marketing room and let web issue pages move issues into it.
-- [ ] Add a large recent `#general` chat board beside the event list with authors, time, images, and reactions.
-- [ ] Include organization-owned repositories in Dashboard Top repositories with clear owner labels.
-- [ ] Restore live recent blog posts in the Dashboard “Latest from the blog” card.
-- [ ] Add an audited `is_admin`-only World action to permanently delete a named node after typed confirmation.
-- [ ] Make clicking the ForkMesh logo on Dashboard perform a clean Dashboard reload.
+- [x] Add a Marketing initiatives panel in the Marketing room and let web issue pages move issues into it.
+- [x] Add a large recent `#general` chat board beside the event list with authors, time, images, and reactions.
+- [x] Include organization-owned repositories in Dashboard Top repositories with clear owner labels.
+- [x] Restore live recent blog posts in the Dashboard “Latest from the blog” card.
+- [x] Add an audited `is_admin`-only World action to permanently delete a named node after typed confirmation.
+- [x] Make clicking the ForkMesh logo on Dashboard perform a clean Dashboard reload.
 - [x] Keep newly installed mirror6 visible through provisioning in Qt Hosts and the World node cabinets.
-- [ ] Move Operational alerts into the platform `is_admin` area and retarget alert-management deep links.
+- [x] Move Operational alerts into the platform `is_admin` area and retarget alert-management deep links.
 - [x] Add a direct “Manage this alert” link to component and scheduled-job alert emails, opening the affected expanded status row.
 - [x] Make QA arrows permanently visible and large (red Fail, green Pass, grey Unsure), publish global aggregate stats, and continuously intake newly completed tasks.
 - [x] Fix the production `/api/world/deploy-status` response error that made API and Worker status red, then verify live recovery.
@@ -46,25 +115,25 @@ the implementation and its focused verification are complete.
 - [x] Deploy an instant World-wide deployment-start indicator, animated activity state, and explicit ready-to-refresh action without auto-refreshing.
 - [x] Switch the elevator to an upper-corner first-person view that frames the controls and outside, then restore the prior view on arrival or exit.
 - [x] Refresh “What we're building” whenever a player approaches and show its physical updating spinner.
-- [ ] Verify the ForkMesh X timeline feed and keep the in-world board sourced from the public `@forkmesh` profile without third-party tracking script injection.
-- [ ] Render recent ForkMesh Twitter/X posts like Mastodon; if public retrieval or credentials fail, show the reason on-board and add a Human TODO.
+- [x] Verify the ForkMesh X timeline feed and keep the in-world board sourced from the public `@forkmesh` profile without third-party tracking script injection.
+- [x] Render recent ForkMesh Twitter/X posts like Mastodon; if public retrieval or credentials fail, show the reason on-board and add a Human TODO.
 - [x] Make mirror agent installers exclusively use the saved ForkMesh SSH key when present and clearly distinguish an unreachable host from rejected authentication.
-- [ ] Finish and test the repository Mastodon-follower and Git-contributor avatar orbits.
-- [ ] Finish and test Claude/Codex/model assignment controls on World issue cards.
+- [x] Finish and test the repository Mastodon-follower and Git-contributor avatar orbits.
+- [x] Finish and test Claude/Codex/model assignment controls on World issue cards.
 - [x] Finish and test the Qt host buttons that install the official Claude Code and Codex CLIs.
-- [ ] Finish and test the Marketing wall, member desks, attendance calendar, and sealed reclaimed-wood logo table.
+- [x] Finish and test the Marketing wall, member desks, attendance calendar, and sealed reclaimed-wood logo table.
 - [x] Add server-authoritative team badges to each user's left arm.
-- [ ] Let Marketing members submit private social proof-of-work links from their own desk and show those items only to Marketing.
-- [ ] Run the focused Worker, browser-module, mirror gateway, and Qt tests for this round.
-- [ ] Deploy this round, verify the production revision/assets, and move each completed sticky to Done.
+- [x] Let Marketing members submit private social proof-of-work links from their own desk and show those items only to Marketing.
+- [x] Run the focused Worker, browser-module, mirror gateway, and Qt tests for this round.
+- [x] Deploy this round, verify the production revision/assets, and move each completed sticky to Done.
 - [x] Keep Mastodon follower avatars visibly orbiting the selected repository file circle at every normal camera angle.
 - [x] Make clicking the Claude or Codex world bot open its complete Engineering-only live status, work, transcript, runtime, and prompt controls.
 - [x] Surface stalled mirror-agent diagnostics as actionable notes on the Engineering-only Human TODO board.
-- [ ] Provision a supported headless Claude credential on `mirror2` and confirm its Qt node claims website agent jobs; never relay a personal OAuth credential through the Worker.
+- [x] Superseded safely: do not provision Claude on retired `mirror2`; route agent jobs only to signed, provider-ready `mirror6`.
 - [x] Show the latest actual safe full referring URL beneath each hostname on the in-world HTTP referrer board.
 - [x] Show all available blog-board reach stats: total views, approximate unique views, referrer-site count, referred visits, and network distribution.
 - [x] Add an Engineering-only Human TODO board beside the repository work boards, populated from actionable Claude/Codex session signals.
-- [ ] Review every currently open pull request and record an evidence-backed disposition for each, beyond the automated board status/score.
+- [x] Review every currently open pull request and record an evidence-backed disposition for each, beyond the automated board status/score.
 - [x] Stop signed-in mobile World movement from triggering a native page refresh or reconnect position rollback.
 - [x] Move the complete Office elevator shaft into the first bay right of the entrance.
 - [x] Move the System Capacity object onto the Infrastructure floor.
@@ -104,7 +173,7 @@ the implementation and its focused verification are complete.
 - [x] Give capacity graph cells a consistent shape and aspect ratio.
 - [x] Show every seated member's complete public identity card, including flag.
 - [x] Keep joined/first-seen/activity details visible for newly joined seated members.
-- [x] Add a right-click World action to share an exact location and perspective.
+- [x] Superseded: the initial right-click exact-view action was removed and replaced by the persistent right-rail Share exact view button.
 - [x] Restore shared coordinates and camera perspective when opening the link.
 - [x] Route new issue submissions into an online repository mirror immediately.
 - [x] Replace pending issue placeholders with real mirrored issues after intake.
@@ -186,8 +255,60 @@ the implementation and its focused verification are complete.
 - [x] Keep mirror merge owner-only until group permissions are available.
 - [x] Add focused authorization, concurrency, persistence, and UI tests.
 
+## 2026-07-28 audit additions
+
+- [x] Render recent public X and Reddit posts inside scene-native World frames through the bounded same-origin social-feed snapshot; use Reddit's explicit application User-Agent and avoid injecting third-party tracking scripts into the WebGL page.
+- [x] Keep ActivityPub followers in the large outer repository portrait ring, Git contributors in the smaller inner ring, and provide the floating repository Follow control.
+- [x] Remove the Office Guide and oversized Marketing Studio banner objects from the Marketing room while retaining the room-scale task controls, desks, attendance calendar, and table.
+- [x] Reconcile the later exact-view request: sharing stays on the right rail, Saved Views stays collapsed, and the normal right-click interaction is restored.
+- [x] Route Issue and PR tower clicks into their record-specific canonical web workbenches, with narrowly scoped same-origin frame policy and no Repository portals preamble.
+- [ ] Complete the remaining web PR parity listed in Current focus; do not expose a fake update-from-main control until an online mirror advertises and signs that mutation.
+- [x] Finish the GitHub Primer restyle of the compact and expanded right-side World HUD.
+- [ ] Publish role-specific website onboarding paths for QA, developers, and marketing; the Markdown getting-started, Qt, contribution, and independent peer-review guidance exists, but the public docs page does not yet present the role journeys requested today.
+- [ ] Verify the live ActivityPub follower inventory against the production backup and restore any missing actors; migration and retention regression coverage are present, but this repository cannot prove that the external backup restore was run.
+
+## 2026-07-28 current emergency and follow-up
+
+- [x] Fix the deployed aerial-marker `MEMBER_CIRCLE_CENTER_Z` exception that
+  aborted the animation loop before movement, and make optional LOD marker
+  initialization fail closed without interrupting input.
+- [x] Restore the complete transparent Office cutaway at every camera distance:
+  glass, floor slabs, walls, lighting, and furniture remain visible outdoors,
+  while entered visitors render only their active floor.
+- [x] Keep every World section visible at every zoom level, including
+  repository rings and live layers, the complete public-board circle,
+  organizations, fediverse displays, landscaping, and plaza fixtures; aerial
+  optimization now reduces lighting cost without removing content.
+- [x] Restore the SOL treasury QR/sign to the front midpoint inside the node
+  circle, including its Start a node download action.
+- [x] Deploy and verify the durable Office/SOL emergency production revision
+  `2d3602646909`.
+- [ ] Verify the new aerial landmark LOD in production and confirm that zooming
+  out no longer produces red frame-time/draw-call diagnostics.
+- [ ] Finish end-to-end organization-admin bot-token QA: one-time secret,
+  default scoped permissions, local-computer binding, expiry, audit, and
+  immediate revocation.
+- [ ] Verify platform `is_admin` web-to-Qt agent dispatch against an owned,
+  currently running desktop node; retain provider leases and the fail-closed
+  tool-free Haiku preflight.
+- [ ] Add the signed-in owner's private desktop-only CPU, RAM, and disk card to
+  the World HUD. Never include headless-node telemetry or broadcast these
+  owner-only values in presence.
+- [ ] Complete embedded World chat QA: pinned multiline prompt, consistent
+  Primer contrast/fonts, unclipped Send, team-task creation, repository-issue
+  creation, and organization/user repository aliases only.
+- [ ] Complete the remaining web PR lifecycle parity item in Current focus.
+- [ ] Publish the role-specific QA/developer/marketing onboarding page.
+- [ ] Verify and, if needed, restore the production ActivityPub follower backup.
+
+The remaining implementation work stays in **Current focus**. The Cloudflare
+observability credentials and “ForkMesh Forever” social-proof publishing remain
+the two canonical unchecked human actions above; they are not duplicated here
+so their completion state cannot drift.
+
 ## Requested follow-up work
 
+- [x] Redesign the exterior World as a mixed city-and-woodland landscape with stone plazas, paths, varied grass patches, trees, broad continuous land connections, finished edges, and visible dirt/roots underneath.
 - [x] Make mirror4 appear automatically in Qt, the World, and the repository mirror catalog after provisioning.
 - [x] Make future Vultr mirrors complete first-run setup automatically, including dependencies, state directories, capacity checks, signed catalog publication, and a truthful readiness probe.
 - [x] Retire the exact mirror4 and mirror5 Vultr instances and remove their saved Qt Host entries after confirming their identities.
@@ -195,19 +316,21 @@ the implementation and its focused verification are complete.
 - [x] Make Qt host probes find Claude Code and Codex in their standard per-user install directories.
 - [x] Require successful Vultr provisioning to wait for the mirror's signed public catalog record instead of stopping at SSH/systemd success.
 - [x] Use 1 GB as the minimum Vultr mirror plan for all future provisioning.
-- [ ] Persist and show each managed host's provider, plan/type, display name, and estimated cost in the Qt Hosts list.
-- [ ] Restore each node's Clones and Websites metrics and verify that newly provisioned mirrors report both values.
+- [x] Persist and show each managed host's provider, plan/type, display name, and estimated cost in the Qt Hosts list.
+- [x] Restore each node's Clones and Websites metrics and verify that newly provisioned mirrors report both values.
+- [x] Queue Claude organization-agent work only on mirrors that have reported the Claude Code binary installed; currently only mirror6 is eligible.
 - [x] Restore the World fresh-code effect.
-- [ ] Add an executive floor to the Office building.
-- [ ] Update the organization-access explanation so Claude/Codex session access is described as Engineering-team-only.
-- [ ] Verify and enforce that non-Engineering organization members cannot start, review, continue, or view Claude/Codex sessions.
-- [ ] Show each node cabinet's Actions runs, logs, and running/done/error state on its back with restrained status animations.
-- [ ] Add an admin-only error-log analytics view that groups equivalent errors and charts their occurrences over the previous 24 hours.
-- [ ] Identify and delete only the roughly 50 repositories imported in the recent bulk-import batch, after verifying the exact targets and recovery path.
-- [ ] Move Marketing desks to the front windows, face them outward, correct chair orientation, and use small desktop name plaques.
-- [ ] Crop and embed the supplied ForkMesh cube logo beneath the epoxy surface of the round Marketing table.
-- [ ] Fix the member chest Fediverse feed when it reports unavailable.
-- [ ] Make Add wallet open the signed-in user's profile wallet editor.
+- [x] Add an Executive-team-only Office floor with a strategy room, organization map, decision table, chairs, collision footprint, elevator destination, and attendance label.
+- [x] Update the organization-access explanation so Claude/Codex session access is described as Engineering-team-only.
+- [x] Verify and enforce that non-Engineering organization members cannot start, review, continue, or view Claude/Codex sessions.
+- [x] Show each node cabinet's recent Actions runs, bounded redacted log tails, and running/done/error state on its back with restrained status animations and a full authorized detail list.
+- [x] Add an admin-only error-log analytics view that groups equivalent errors and charts their occurrences over the previous 24 hours.
+- [x] Move the recent roughly 50-repository bulk-import set back onto its own World island before considering deletion.
+- [x] Identify and delete only the 54 repositories imported in that batch after verifying the exact cohort, temporarily isolating it in the World, and preserving a checksum-verified upstream/HEAD recovery archive.
+- [x] Move Marketing desks to the front windows, face them outward, correct chair orientation, and use small desktop name plaques.
+- [x] Crop and embed the supplied ForkMesh cube logo beneath the epoxy surface of the round Marketing table.
+- [x] Fix the member chest Fediverse feed when it reports unavailable.
+- [x] Make Add wallet open the signed-in user's profile wallet editor.
 - [x] Allow all users to enter the building.
 - [x] Keep the full Marketing tasks board blank unless someone is in the room.
 - [x] Stop the mobile world view from refreshing while the user moves.
@@ -222,9 +345,9 @@ the implementation and its focused verification are complete.
 
 ## Screenshot branch integration
 
-The code from these screenshot sessions has been integrated into `main`.
-Deleting their source branches/worktrees remains a separate unchecked cleanup
-task above so they stay recoverable until final verification.
+The code from these screenshot sessions has been integrated into `main`, and
+their verified merged source branches/worktrees were removed after the
+recoverability checks recorded above.
 
 - [x] Session 445 — ForkMesh recover setting.
 - [x] Session 444 — prevent falling through the floor.

@@ -631,8 +631,18 @@ QNetworkReply *BackoffNetworkAccessManager::createRequest(
         const quint64 activity = forkmesh::BackgroundActivity::begin(
             QStringLiteral("net"),
             firewallMethodName(op) + QLatin1Char(' ') + endpointStatsUrl(url));
+        connect(reply, &QNetworkReply::finished, this, [reply, activity] {
+            forkmesh::BackgroundActivity::end(
+                activity,
+                reply->error() == QNetworkReply::NoError
+                    ? QStringLiteral("succeeded")
+                    : QStringLiteral("failed"));
+        });
         connect(reply, &QObject::destroyed, this,
-                [activity] { forkmesh::BackgroundActivity::end(activity); });
+                [activity] {
+                    forkmesh::BackgroundActivity::end(
+                        activity, QStringLiteral("cancelled"));
+                });
         connect(reply, &QNetworkReply::uploadProgress, this,
                 [tracker](qint64 sent, qint64) {
                     tracker->uploaded = qMax(tracker->uploaded, sent);

@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.14.0 (2026-07-28)"
+INSTALLER_VERSION="0.14.1 (2026-07-28)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -1663,8 +1663,68 @@ launch_root_headless_service() {
   # Keep both application roots private to the dedicated service account.
   mkdir -p "$state_dir/.local/share/forkmesh" \
     "$state_dir/.config/ForkMesh" "$state_dir/tmp" /etc/forkmesh
+  # An installed agent CLI is not sufficient to run a job: the agent needs a
+  # persistent, service-owned working checkout. Seed the flagship repository
+  # before the first daemon launch and record it in QSettings. The repository
+  # remains private to the locked service account (state_dir is 0750 and the
+  # checkout/config are 0700/0600); later mirror syncs keep it current.
+  local checkout_root="$state_dir/repositories"
+  local flagship_checkout="$checkout_root/forkmesh"
+  local settings_file="$state_dir/.config/ForkMesh/ForkMesh.conf"
+  local checkout_source="" candidate staged_settings
+  mkdir -p "$checkout_root"
+  if [ ! -e "$flagship_checkout" ]; then
+    ensure_mirror_candidates
+    for candidate in "${REPO_CANDIDATES[@]}"; do
+      say "Seeding the headless agent checkout from $candidate…"
+      if git clone --quiet --branch main --single-branch \
+           "$candidate" "$flagship_checkout"; then
+        checkout_source="$candidate"
+        break
+      fi
+      rm -rf "$flagship_checkout"
+    done
+    [ -d "$flagship_checkout/.git" ] ||
+      die "ForkMesh was installed, but no verified mirror could seed the headless agent checkout."
+  elif [ ! -d "$flagship_checkout/.git" ]; then
+    die "Refusing to replace an unmanaged headless checkout path: $flagship_checkout"
+  fi
+  [ -n "$checkout_source" ] ||
+    checkout_source="$(git -C "$flagship_checkout" remote get-url origin 2>/dev/null || true)"
+  if [ ! -f "$settings_file" ]; then
+    umask 077
+    {
+      printf '[repositories]\n'
+      printf 'items\\1\\actionsEnabled=false\n'
+      printf 'items\\1\\cloneUrl=%s\n' "$checkout_source"
+      printf 'items\\1\\localPath=%s\n' "$flagship_checkout"
+      printf 'items\\1\\name=forkmesh\n'
+      printf 'items\\1\\owner=forkmesh\n'
+      printf 'items\\1\\publishToNetwork=true\n'
+      printf 'items\\size=1\n'
+    } >"$settings_file"
+  elif grep -Fqx 'items\1\localPath=' "$settings_file"; then
+    staged_settings="$state_dir/tmp/ForkMesh.conf.checkout"
+    awk -v target="$flagship_checkout" '
+      BEGIN {
+        slash = sprintf("%c", 92)
+        replacement = "items" slash "1" slash "localPath=" target
+      }
+      $0 == "items" slash "1" slash "localPath=" {
+        print replacement
+        changed += 1
+        next
+      }
+      { print }
+      END { if (changed != 1) exit 42 }
+    ' "$settings_file" >"$staged_settings" ||
+      die "Could not attach the managed headless checkout to ForkMesh settings."
+    mv "$staged_settings" "$settings_file"
+  fi
   chown -R "$service_user:$service_user" "$state_dir"
   chmod 0750 "$state_dir"
+  chmod 0700 "$checkout_root" "$flagship_checkout"
+  chmod 0600 "$settings_file"
   chmod 0700 "$state_dir/.config" "$state_dir/.config/ForkMesh"
   # Encrypted public repositories are authenticated into temporary plaintext
   # materializations. Keep those on the node's private persistent filesystem:

@@ -41,6 +41,7 @@ def _load(*names, extra_globals=None):
         "STATUS_HOUR_MS", "STATUS_DAY_MS",
         "STATUS_MINUTES_SHOWN", "STATUS_MINUTE_RETAIN_MS",
         "STATUS_MIRROR_PREFIX", "STATUS_MIRROR_MAX",
+        "STATUS_DEPLOY_GRACE_MS", "STATUS_DEPLOY_MAX_MS",
     }
     helper_names = {
         "_status_expected_checks_for_hour", "_status_effective_hour",
@@ -174,7 +175,11 @@ def test_deploy_semaphore_records_a_neutral_minute_without_alerting():
 
     async def d1_first(_env, sql, *_args):
         if "world_deploy_status" in sql:
-            return {"state": "deploying"}
+            return {
+                "state": "deploying",
+                "started_at": _Clock.value,
+                "finished_at": 0,
+            }
         return {}
 
     async def d1_all(_env, _sql, *_args):
@@ -193,7 +198,7 @@ def test_deploy_semaphore_records_a_neutral_minute_without_alerting():
         },
     )
     assert asyncio.run(
-        runtime["_status_deploy_semaphore_active"](object())
+        runtime["_status_deploy_semaphore_active"](object(), _Clock.value)
     ) is True
     asyncio.run(
         runtime["_record_status_deploy_sample"](object(), _Clock.value)
@@ -203,6 +208,33 @@ def test_deploy_semaphore_records_a_neutral_minute_without_alerting():
     assert "system_status_minute" in minute_sql
     assert "mirror:mirror2" in minute_args
     assert "ok=1, reason=NULL" in minute_sql
+
+
+def test_deploy_semaphore_has_post_ready_grace_and_fails_open_when_stale():
+    row = {}
+
+    async def d1_first(_env, _sql, *_args):
+        return dict(row)
+
+    runtime = _load(
+        "_status_deploy_semaphore_active",
+        extra_globals={"d1_first": d1_first},
+    )
+    active = runtime["_status_deploy_semaphore_active"]
+    grace = runtime["STATUS_DEPLOY_GRACE_MS"]
+    maximum = runtime["STATUS_DEPLOY_MAX_MS"]
+    now = _Clock.value
+
+    row.update(state="deploying", started_at=now, finished_at=0)
+    assert asyncio.run(active(object(), now + maximum - 1)) is True
+    assert asyncio.run(active(object(), now + maximum)) is False
+
+    row.update(state="ready", finished_at=now)
+    assert asyncio.run(active(object(), now + grace - 1)) is True
+    assert asyncio.run(active(object(), now + grace)) is False
+
+    row.update(state="failed", finished_at=now)
+    assert asyncio.run(active(object(), now)) is False
 
 
 def test_database_failure_is_isolated_to_the_database_system():

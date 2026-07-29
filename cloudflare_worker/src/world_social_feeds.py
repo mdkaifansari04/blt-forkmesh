@@ -9,6 +9,7 @@ Cloudflare/Pyodide runtime.
 
 import json
 import re
+from datetime import datetime
 from email.utils import parsedate_to_datetime
 
 import blog_feed
@@ -23,6 +24,10 @@ TWITTER_SYNDICATION_URL = (
     "https://syndication.twitter.com/srv/timeline-profile/screen-name/"
     + TWITTER_HANDLE
 )
+X_API_USER_URL = (
+    "https://api.x.com/2/users/by/username/" + TWITTER_HANDLE
+)
+X_API_POSTS_URL = "https://api.x.com/2/users/{user_id}/tweets"
 REDDIT_SUBREDDIT = "forkmesh"
 REDDIT_PROFILE_URL = "https://www.reddit.com/r/forkmesh/"
 REDDIT_LISTING_URL = (
@@ -120,7 +125,11 @@ def _twitter_created_ms(value):
     try:
         return int(parsedate_to_datetime(str(value or "")).timestamp() * 1000)
     except (ValueError, TypeError):
-        return 0
+        try:
+            return int(datetime.fromisoformat(
+                str(value or "").replace("Z", "+00:00")).timestamp() * 1000)
+        except (ValueError, TypeError):
+            return 0
 
 
 def normalize_twitter_timeline(next_data):
@@ -166,6 +175,36 @@ def normalize_twitter_timeline(next_data):
                 if tweet_id
                 else TWITTER_PROFILE_URL
             ),
+        })
+        if len(posts) >= SOCIAL_POSTS_LIMIT:
+            break
+    return posts
+
+
+def normalize_x_api_timeline(payload, username=TWITTER_HANDLE):
+    """Normalize the official X API v2 user-post timeline response."""
+    records = payload.get("data") if isinstance(payload, dict) else None
+    posts = []
+    for record in records if isinstance(records, list) else []:
+        if not isinstance(record, dict):
+            continue
+        text = _clean_text(record.get("text"))
+        tweet_id = _clean_text(record.get("id"), 40)
+        if not text or not tweet_id:
+            continue
+        metrics = (
+            record.get("public_metrics")
+            if isinstance(record.get("public_metrics"), dict)
+            else {}
+        )
+        posts.append({
+            "id": tweet_id,
+            "text": text,
+            "author": "@" + _clean_text(username, MAX_POST_AUTHOR),
+            "likes": int(metrics.get("like_count") or 0),
+            "retweets": int(metrics.get("retweet_count") or 0),
+            "createdAt": _twitter_created_ms(record.get("created_at")),
+            "url": "https://x.com/%s/status/%s" % (username, tweet_id),
         })
         if len(posts) >= SOCIAL_POSTS_LIMIT:
             break
@@ -237,7 +276,8 @@ def normalize_blog_distribution(html):
 
 
 def social_posts_payload(now, twitter_posts, reddit_posts, blog_posts,
-                         twitter_ok, reddit_ok, blog_ok):
+                         twitter_ok, reddit_ok, blog_ok,
+                         twitter_reason="", twitter_source="public-syndication"):
     """One public payload for all three banners; states let a banner keep
     its static sign when its feed is unreachable while the others stay
     live."""
@@ -249,6 +289,13 @@ def social_posts_payload(now, twitter_posts, reddit_posts, blog_posts,
             "url": TWITTER_PROFILE_URL,
             "state": "ready" if twitter_ok else "unavailable",
             "posts": twitter_posts if twitter_ok else [],
+            "source": twitter_source,
+            "reason": _clean_text(twitter_reason, 180),
+            "humanTodo": (
+                "" if twitter_ok else
+                "Add X_API_BEARER_TOKEN to the Worker deployment, or publish "
+                "at least one public embeddable post from @forkmesh."
+            ),
         },
         "reddit": {
             "handle": "r/" + REDDIT_SUBREDDIT,

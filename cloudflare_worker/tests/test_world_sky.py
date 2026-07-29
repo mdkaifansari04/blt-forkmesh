@@ -270,8 +270,18 @@ def test_sky_module_keeps_rendering_and_lifecycle_work_bounded():
     assert "solveEccentricAnomaly" not in source
     assert "EARTH_MU_KM3_S2" not in source
     assert "transform.updateMatrix();" in source
+    assert "const sunInstanceIndex = WORLD_SKY_PLANETS.length;" in source
+    assert "const moonInstanceIndex = sunInstanceIndex + 1;" in source
+    assert "function setDaylightMinute(" in source
+    assert "sunAndMoon: 2" in source
     assert "drawCalls: 3" in source
-    for method in ("update,", "tick,", "dispose,", "getState,"):
+    for method in (
+        "setDaylightMinute,",
+        "update,",
+        "tick,",
+        "dispose,",
+        "getState,",
+    ):
         assert method in source
 
     # Fetch ownership stays in world.js. This rendering module has no timers,
@@ -321,7 +331,7 @@ def test_sgp4_bundle_load_is_local_deferred_and_not_world_boot_blocking():
     assert "satellite-js-7.1.0.esm.js" not in index_source
 
     load_start = source.index("  async loadSatelliteSky() {")
-    load_end = source.index("\n  async loadWorldData()", load_start)
+    load_end = source.index("\n  async loadWorldData(", load_start)
     load_body = source[load_start:load_end]
     assert load_body.index(
         'await this.fetchJSON("/api/world/satellites"'

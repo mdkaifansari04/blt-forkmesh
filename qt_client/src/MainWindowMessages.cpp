@@ -86,7 +86,7 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
         row->setReactions(m_reactions.value(message.id));
     connect(row, &MessageRow::reactionToggled, this,
             [this](const QString &messageId, const QString &emoji) {
-                if (m_backend && !isReadOnlyConversation(m_currentConversation))
+                if (m_backend && !isOfficeConversation(m_currentConversation))
                     m_backend->sendReaction(m_currentConversation, messageId, emoji);
             });
     connect(row, &MessageRow::editRequested, this, &MainWindow::promptEditMessage);
@@ -327,7 +327,7 @@ void MainWindow::onMessageDeleted(const QString &conversation, const QString &me
 void MainWindow::promptEditMessage(const QString &messageId, const QString &currentText)
 {
     if (!m_backend || messageId.isEmpty() ||
-        isReadOnlyConversation(m_currentConversation))
+        isOfficeConversation(m_currentConversation))
         return;
     bool ok = false;
     const QString text = QInputDialog::getMultiLineText(
@@ -341,7 +341,7 @@ void MainWindow::promptEditMessage(const QString &messageId, const QString &curr
 void MainWindow::confirmDeleteMessage(const QString &messageId)
 {
     if (!m_backend || messageId.isEmpty() ||
-        isReadOnlyConversation(m_currentConversation))
+        isOfficeConversation(m_currentConversation))
         return;
     const int result = QMessageBox::question(
         this, "Delete message", "Delete this message for everyone?");
@@ -480,8 +480,8 @@ void MainWindow::setChannels(const QStringList &channels)
         if (!forkmesh::office::isOfficeConversation(channel))
             m_channels.append(channel);
     // The World office's channel rooms sit in the same sidebar as the mesh
-    // rooms. They are read-only mirrors polled by OfficeChannelMirror, so the
-    // chat backend never carries them and they are merged in here instead —
+    // rooms. OfficeChannelMirror carries them independently of the primary
+    // chat backend, so they are merged in here instead —
     // including when this is re-entered with m_channels itself (adhoc #412).
     for (const QString &conversation : std::as_const(m_officeConversations))
         if (!m_channels.contains(conversation))
@@ -851,6 +851,13 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
     }
     m_chatDirectoryLoaded = true;
     m_chatDirectoryUsers = next;
+    // The public user directory is also the database-backed source of each
+    // account's linked node fleet. Keep the Nodes page in step so offline nodes
+    // do not disappear merely because they are absent from this chat roster.
+    if (m_nodesTable)
+        refreshNodesTable();
+    if (m_networkReposTable && !m_networkReposLastPayload.isEmpty())
+        renderNetworkRepos(m_networkReposLastPayload);
     refreshMentionCandidates();
     refreshChatMembers();
     if (m_messageLayout && !m_currentConversation.isEmpty()) {
@@ -864,7 +871,7 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
 void MainWindow::refreshChatMembers()
 {
     // Keep the @-mention candidates in step with the roster (this runs on every
-    // roster update), even before the members column itself exists.
+    // roster update), even before the room-members popup itself exists.
     refreshMentionCandidates();
     if (!m_chatMembersLayout)
         return;
@@ -990,10 +997,68 @@ void MainWindow::refreshChatMembers()
             }
         }
     };
-    for (const MemberInfo &member : std::as_const(m_homeRoster))
-        addMember(member);
-    for (const MemberInfo &member : std::as_const(m_chatDirectoryUsers))
-        addMember(member);
+    // Resolve the live roster to registered accounts first. Roster identities
+    // that have no database directory row are transient nodes/Guest users and
+    // must never appear in the room's user picker.
+    QHash<QString, QList<MemberInfo>> liveByUser;
+    for (const MemberInfo &member : std::as_const(m_homeRoster)) {
+        if (!member.self && !member.online)
+            continue;
+        const QString key = groupKeyFor(member);
+        if (!m_chatDirectoryUsers.contains(key))
+            continue;
+        liveByUser[key].append(member);
+    }
+
+    QSet<QString> roomUserKeys;
+    const bool privateOfficeRoom =
+        m_officeChannelMirror &&
+        m_officeChannelMirror->isPrivateConversation(m_currentConversation);
+    if (privateOfficeRoom) {
+        // The channel list is authorized for this account and returns the
+        // private room's stored database membership. It is deliberately not
+        // inferred from the global presence roster.
+        for (const QString &username :
+             m_officeChannelMirror->membersForConversation(
+                 m_currentConversation)) {
+            const QString key = username.trimmed().toLower();
+            if (!key.isEmpty() && m_chatDirectoryUsers.contains(key))
+                roomUserKeys.insert(key);
+        }
+    } else if (isDirectConversation(m_currentConversation)) {
+        // A direct room contains the two registered accounts, not everyone
+        // currently visible on the relay.
+        const QString selfKey = accountOwner().trimmed().toLower();
+        if (m_chatDirectoryUsers.contains(selfKey))
+            roomUserKeys.insert(selfKey);
+        const QString peerId = dmPeerId(m_currentConversation);
+        const QString peerName =
+            m_dmNames.value(peerId).trimmed().toLower();
+        if (m_chatDirectoryUsers.contains(peerName))
+            roomUserKeys.insert(peerName);
+        for (const MemberInfo &member : std::as_const(m_homeRoster)) {
+            if (member.id != peerId)
+                continue;
+            const QString key = groupKeyFor(member);
+            if (m_chatDirectoryUsers.contains(key))
+                roomUserKeys.insert(key);
+            break;
+        }
+    } else {
+        // Public mesh/office rooms expose live presence, but only database
+        // accounts are users. Guests and unregistered node aliases stay out.
+        for (auto it = liveByUser.constBegin(); it != liveByUser.constEnd(); ++it)
+            roomUserKeys.insert(it.key());
+    }
+
+    for (const QString &key : std::as_const(roomUserKeys)) {
+        const auto directory = m_chatDirectoryUsers.constFind(key);
+        if (directory == m_chatDirectoryUsers.constEnd())
+            continue;
+        addMember(*directory);
+        for (const MemberInfo &member : liveByUser.value(key))
+            addMember(member);
+    }
 
     // Fill in any owned nodes we didn't see live, as offline badges, so a user's
     // full fleet shows even when some (or all) of it is offline.
@@ -1026,11 +1091,8 @@ void MainWindow::refreshChatMembers()
     for (const ChatUserGroup &g : std::as_const(groups))
         ++nameCounts[g.primary.name.toLower()];
 
-    int onlineCount = 0;
     for (const ChatUserGroup &group : std::as_const(groups)) {
         const MemberInfo &member = group.primary;
-        if (group.online)
-            ++onlineCount;
 
         // The whole card is clickable: it opens the user's profile popup with
         // their join date and account info (adhoc #209).
@@ -1147,9 +1209,16 @@ void MainWindow::refreshChatMembers()
 
     if (m_chatMembersHeading)
         m_chatMembersHeading->setText(
-            QString::fromUtf8("USERS \xE2\x80\x94 %1 \xC2\xB7 %2 online")
-                .arg(groups.size())
-                .arg(onlineCount));
+            QString::fromUtf8("DATABASE USERS IN THIS ROOM \xE2\x80\x94 %1")
+                .arg(groups.size()));
+    if (m_chatMembersButton) {
+        m_chatMembersButton->setText(QString::number(groups.size()));
+        m_chatMembersButton->setToolTip(
+            groups.size() == 1
+                ? QStringLiteral("Show the 1 database user in this room")
+                : QStringLiteral("Show the %1 database users in this room")
+                      .arg(groups.size()));
+    }
 }
 
 // Profile popup for a chat users-column row (adhoc #209): identity, when they
@@ -1512,16 +1581,13 @@ void MainWindow::switchConversation(const QString &conversation)
         title = kDmPrefix + m_dmNames.value(dmPeerId(conversation),
                                             QStringLiteral("unknown"));
     m_channelTitle->setText(title);
-    const bool readOnly = isReadOnlyConversation(conversation);
-    m_messageInput->setReadOnly(readOnly);
-    m_messageInput->setPlaceholderText(
-        readOnly ? QStringLiteral("Read-only mirror \xE2\x80\x94 reply from the "
-                                  "World office")
-                 : "Message " + title);
+    m_messageInput->setReadOnly(false);
+    m_messageInput->setPlaceholderText("Message " + title);
     if (m_inviteButton)
         m_inviteButton->setVisible(m_privateChannels.contains(conversation));
     rebuildConversationView();
     refreshTypingLabel();
+    refreshChatMembers();
 
     // Selection lives in exactly one sidebar list at a time.
     if (isDirectConversation(conversation)) {
@@ -1679,11 +1745,10 @@ void MainWindow::persistPrivateChannels()
     QSettings().setValue(QStringLiteral("chat/privateChannels"), list);
 }
 
-// A conversation this client can read but not publish into. The World office's
-// channel rooms are mirrored over a read-only relay endpoint (the desktop holds
-// no room socket for them), so an outbound frame here would either go nowhere
-// or, worse, be misrouted into the mesh room under the office room's name.
-bool MainWindow::isReadOnlyConversation(const QString &conversation) const
+// Office conversations use a separate ticketed socket. This predicate keeps
+// unsupported operations (typing/reactions/attachments) off the mesh backend;
+// plain text is routed through OfficeChannelMirror below.
+bool MainWindow::isOfficeConversation(const QString &conversation) const
 {
     return forkmesh::office::isOfficeConversation(conversation);
 }
@@ -1691,14 +1756,20 @@ bool MainWindow::isReadOnlyConversation(const QString &conversation) const
 void MainWindow::sendCurrentMessage()
 {
     const QString text = m_messageInput->text().trimmed();
-    if (text.isEmpty() || !m_backend || m_currentConversation.isEmpty())
+    if (text.isEmpty() || m_currentConversation.isEmpty())
         return;
-    if (isReadOnlyConversation(m_currentConversation)) {
-        logSystem(m_currentConversation +
-                  " is a read-only mirror of a World office room. Join it in "
-                  "the World to reply.");
+    if (isOfficeConversation(m_currentConversation)) {
+        if (!m_officeChannelMirror ||
+            !m_officeChannelMirror->sendMessage(m_currentConversation, text)) {
+            logSystem(QStringLiteral("Office chat: %1 is not currently writable.")
+                          .arg(m_currentConversation));
+            return;
+        }
+        m_messageInput->clear();
         return;
     }
+    if (!m_backend)
+        return;
     sendTypingState(false);
     if (isDirectConversation(m_currentConversation)) {
         m_backend->sendDirect(dmPeerId(m_currentConversation), text);
@@ -1939,7 +2010,7 @@ void MainWindow::sendTypingState(bool active)
 {
     if (!m_backend)
         return;
-    if (active && isReadOnlyConversation(m_currentConversation))
+    if (active && isOfficeConversation(m_currentConversation))
         return;
     if (active) {
         if (m_currentConversation.isEmpty())
@@ -1983,7 +2054,7 @@ void MainWindow::refreshTypingLabel()
 void MainWindow::attachFile()
 {
     if (!m_backend || m_currentConversation.isEmpty() ||
-        isReadOnlyConversation(m_currentConversation))
+        isOfficeConversation(m_currentConversation))
         return;
     const QString path =
         QFileDialog::getOpenFileName(this, "Share a file", QString(), "All files (*)");
@@ -2084,7 +2155,7 @@ void MainWindow::showChatImageDetail(const QString &fileName,
 bool MainWindow::trySendClipboardImage()
 {
     if (!m_backend || m_currentConversation.isEmpty() ||
-        isReadOnlyConversation(m_currentConversation))
+        isOfficeConversation(m_currentConversation))
         return false;
     const QMimeData *mime = QGuiApplication::clipboard()->mimeData();
     if (!mime || !mime->hasImage())
