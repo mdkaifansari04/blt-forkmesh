@@ -272,8 +272,8 @@ the implementation and its focused verification are complete.
   performance mode may cull furnished interiors, but never the Office landmark.
 - [x] Restore the SOL treasury QR/sign to the front midpoint inside the node
   circle, including its Start a node download action.
-- [x] Deploy and verify the Office/SOL emergency production revision
-  `6a075b4e190d-dirty-1785289718`.
+- [x] Deploy and verify the durable Office/SOL emergency production revision
+  `2d3602646909`.
 - [ ] Verify the new aerial landmark LOD in production and confirm that zooming
   out no longer produces red frame-time/draw-call diagnostics.
 - [ ] Finish end-to-end organization-admin bot-token QA: one-time secret,
