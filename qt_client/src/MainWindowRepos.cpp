@@ -841,6 +841,7 @@ void MainWindow::loadRepositories()
         repo.secretScanningEnabled =
             settings.value("secretScanningEnabled", true).toBool();
         repo.disabledWorkflows = settings.value("disabledWorkflows").toStringList();
+        repo.workflowNodes = settings.value("workflowNodes").toStringList();
         repo.hostedSinceMs = settings.value("hostedSinceMs").toLongLong();
         repo.lastSyncMs = settings.value("lastSyncMs").toLongLong();
         repo.publishedAtMs = settings.value("publishedAtMs").toLongLong();
@@ -967,6 +968,7 @@ void MainWindow::saveRepositories() const
         settings.setValue("externalActionsRef", repo.externalActionsRef);
         settings.setValue("secretScanningEnabled", repo.secretScanningEnabled);
         settings.setValue("disabledWorkflows", repo.disabledWorkflows);
+        settings.setValue("workflowNodes", repo.workflowNodes);
         settings.setValue("hostedSinceMs", repo.hostedSinceMs);
         settings.setValue("lastSyncMs", repo.lastSyncMs);
         settings.setValue("publishedAtMs", repo.publishedAtMs);
