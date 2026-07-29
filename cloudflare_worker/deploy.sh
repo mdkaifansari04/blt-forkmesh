@@ -4,7 +4,7 @@
 # The Worker serves the static site from public/ (Cloudflare Static Assets)
 # and hosts the API/relay/catalog routes, so a single deploy ships both.
 #
-#   ./deploy.sh          deploy to production (+ push secrets from .env.production)
+#   ./deploy.sh          deploy to production (+ validate/push secrets from .env.production)
 #   ./deploy.sh secrets  (re)push only the .env.production secrets, no redeploy
 #   ./deploy.sh dev      run the Worker locally instead of deploying
 #   ./deploy.sh dry-run   build and validate without uploading
@@ -579,9 +579,18 @@ verify_marketing_routes() {
 # publishes another Worker version, which needlessly restarts Durable Objects
 # and scheduled-runner isolates during an otherwise single deployment.
 push_secrets() {
+    local action="${1:-publish}"
+    case "$action" in
+        validate|publish) ;;
+        *)
+            echo "ERROR: internal push_secrets action must be validate or publish." >&2
+            return 2
+            ;;
+    esac
     if [ ! -f "$ENV_FILE" ]; then
-        echo "note: $ENV_FILE not found — no secrets to push." >&2
-        return 0
+        echo "ERROR: $ENV_FILE not found; production secrets cannot be validated or published." >&2
+        echo "       Copy .env.production.example, supply real values, and keep the file untracked." >&2
+        return 1
     fi
     # Worker secrets that MUST be set for the site to work; an empty/missing one
     # is a hard error, not a silent skip (that's what made a broken deploy look
@@ -590,9 +599,13 @@ push_secrets() {
     # production deploy is guaranteed to push and register it (the Worker still
     # no-ops gracefully if it's ever unset). A fork that doesn't send email can
     # drop it from this list.
-    local required=" ADMIN_PATH MAILTRAP_API_TOKEN DATA_KEY TREASURY_SOLANA_ADDRESS MIRROR_ROUTER_PUBLIC_KEY MIRROR_ROUTER_SIGNING_SEED "
+    local required=" ADMIN_PATH MAILTRAP_API_TOKEN DATA_KEY TREASURY_SOLANA_ADDRESS MIRROR_ROUTER_PUBLIC_KEY MIRROR_ROUTER_SIGNING_SEED DISCORD_CLIENT_ID DISCORD_CLIENT_SECRET DISCORD_BOT_TOKEN "
 
-    echo "Pushing secrets from: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
+    if [ "$action" = "validate" ]; then
+        echo "Validating production secrets in: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
+    else
+        echo "Pushing secrets from: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
+    fi
     local count=0
     local pushed=()
     local secret_values=()
@@ -648,6 +661,24 @@ push_secrets() {
         echo "ERROR: required secret(s) empty or missing in $ENV_FILE: ${missing_req[*]}" >&2
         echo "       Set them (real values, not blank) and re-run './deploy.sh secrets'." >&2
         return 1
+    fi
+    # Do not infer array positions: optional secrets may appear before or after
+    # Discord values. Validate the public application ID without printing it.
+    local discord_client_id=""
+    local index
+    for index in "${!pushed[@]}"; do
+        if [ "${pushed[$index]}" = "DISCORD_CLIENT_ID" ]; then
+            discord_client_id="${secret_values[$index]}"
+            break
+        fi
+    done
+    if ! [[ "$discord_client_id" =~ ^[0-9]{17,20}$ ]]; then
+        echo "ERROR: DISCORD_CLIENT_ID must be a 17-20 digit Discord application ID." >&2
+        return 1
+    fi
+    if [ "$action" = "validate" ]; then
+        echo "Validated ${#pushed[@]} production secret(s), including Discord bot and OAuth credentials."
+        return 0
     fi
 
     # Build a JSON object in a mode-0600 temporary file, then publish every
@@ -957,6 +988,10 @@ case "${1:-deploy}" in
     deploy)
         require_cloudflare_account
         require_cloudflare_auth
+        # Fail before migrations, deploy signalling, or a Worker upload if the
+        # complete production secret set is unavailable. The same parsed file
+        # is atomically published after the Worker version exists.
+        push_secrets validate
         build_dashboard_assets
         BUILD_REV="$(build_rev)"
         APP_VERSION="$(app_version)"

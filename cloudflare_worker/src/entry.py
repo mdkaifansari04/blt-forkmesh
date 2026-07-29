@@ -35,6 +35,9 @@ from js import fetch as js_fetch
 from pyodide.ffi import to_js as _to_js
 from workers import DurableObject, Response, WorkerEntrypoint
 
+import organization_discord
+from discord_rate import DiscordRateCoordinator
+
 # Solana read-only plumbing (address/base64url codecs, JSON-RPC, price reads)
 # lives in its own module. Wallet signing is intentionally not imported into the
 # Worker: reward transfers are prepared as intents for a local external signer.
@@ -273,6 +276,7 @@ NOTIFICATION_KINDS = frozenset({
     "org_succession",
     "repository_hosted",
     "organization_task_started",
+    "organization_task_activity",
 })
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
@@ -386,6 +390,8 @@ from urls import (  # noqa: E402
     ORG_TEAM_MEMBERS_RE,
     ORG_REPOS_RE,
     ORG_BOT_TOKENS_RE,
+    ORG_DISCORD_RE,
+    DISCORD_OAUTH_CALLBACK_RE,
     BOT_SESSION_RE,
     ORG_SUCCESSION_RE,
     ORG_FEDIVERSE_RE,
@@ -4755,7 +4761,8 @@ async def install_source(env):
     if not candidates:
         return json_response({"ok": False, "error": "no_online_install_source"},
                              status=503,
-                             cache_control="no-store, max-age=0, must-revalidate")
+                             cache_control="no-store, max-age=0, must-revalidate",
+                             extra_headers=EXPECTED_DEGRADED_HEADERS)
 
     start = now - ONLINE_HISTORY_RETAIN_MS
     uptime_rows = await d1_all(
@@ -8423,9 +8430,9 @@ class _OfficeMarketingTasksRuntime:
         )
         return bool(row)
 
-    async def notify_engineering_task_started(
-            self, org_bi, actor, task_id, task):
-        """Send one private HUD notification to each Engineering member."""
+    async def notify_organization_task_activity(
+            self, org_bi, actor, task_id, task, action):
+        """Send bounded private task activity to Engineering members."""
         rows = await d1_all(
             self.env,
             "SELECT DISTINCT tm.name AS name "
@@ -8443,6 +8450,18 @@ class _OfficeMarketingTasksRuntime:
         title = clean_string(
             (task or {}).get("title") or "Organization task", 160
         ).strip()
+        safe_action = clean_string(
+            action or "updated", 32
+        ).strip().lower().replace("_", " ")
+        action_copy = {
+            "created": "created",
+            "started": "started",
+            "stopped": "stopped",
+            "completed": "completed",
+            "returned": "returned",
+            "qa requested": "sent to QA",
+            "deleted": "deleted",
+        }.get(safe_action, safe_action or "updated")
         for row in rows or []:
             recipient = clean_string(
                 row.get("name") or "", MAX_NODE_NAME
@@ -8452,14 +8471,19 @@ class _OfficeMarketingTasksRuntime:
             await enqueue_notification(
                 self.env,
                 recipient,
-                "organization_task_started",
-                "Engineering task taken",
-                body="@%s started %s" % (safe_actor, title),
+                "organization_task_activity",
+                "Organization task activity",
+                body="@%s %s %s" % (safe_actor, action_copy, title),
                 actor="",
                 source=str(task_id or ""),
-                dedupe="organization-task-started:" + str(task_id or ""),
+                dedupe="organization-task:%s:%s:%s" % (
+                    safe_action.replace(" ", "-"),
+                    str(task_id or ""),
+                    str((task or {}).get("updatedAt") or ""),
+                ),
                 meta={
                     "taskId": str(task_id or ""),
+                    "action": safe_action,
                     "department": clean_string(
                         (task or {}).get("department") or "", 64
                     ).strip().lower(),
@@ -8468,6 +8492,12 @@ class _OfficeMarketingTasksRuntime:
                     ).strip().lower(),
                 },
             )
+
+    async def notify_engineering_task_started(
+            self, org_bi, actor, task_id, task):
+        """Compatibility wrapper for older task module deployments."""
+        return await self.notify_organization_task_activity(
+            org_bi, actor, task_id, task, "started")
 
     async def marketing_members(self, org_bi):
         """Return active users on an authoritative Marketing floor team."""
@@ -8812,6 +8842,286 @@ async def organization_tasks_handler(env, request, path):
 
 
 world_office_marketing_tasks_handler = organization_tasks_handler
+
+
+REMOTE_MCP_PROTOCOL_VERSION = "2025-06-18"
+REMOTE_MCP_TASK_ID_RE = re.compile(r"^[a-f0-9]{32}$")
+REMOTE_MCP_TOOLS = [
+    {
+        "name": "list_org_tasks",
+        "title": "List organization tasks",
+        "description": (
+            "List unfinished private tasks for the organization authorized "
+            "by this ForkMesh credential."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "department": {"type": "string"},
+                "team": {"type": "string"},
+                "limit": {
+                    "type": "integer", "minimum": 1, "maximum": 200,
+                    "default": 50,
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_org_task",
+        "title": "Get organization task",
+        "description": (
+            "Read one private organization task and its repository, "
+            "assignment, completion, and QA details."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string", "pattern": "^[a-f0-9]{32}$",
+                },
+            },
+            "required": ["task_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "complete_org_task",
+        "title": "Complete organization task",
+        "description": (
+            "Send completed work to human QA with a concrete evidence note. "
+            "Do not call this before the pull request or deploy is verified."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string", "pattern": "^[a-f0-9]{32}$",
+                },
+                "completion_note": {
+                    "type": "string", "minLength": 1, "maxLength": 4000,
+                },
+            },
+            "required": ["task_id", "completion_note"],
+            "additionalProperties": False,
+        },
+    },
+]
+
+
+def _remote_mcp_response(data, status=200):
+    return json_response(
+        data,
+        status=status,
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={
+            "x-content-type-options": "nosniff",
+            "vary": "authorization, accept",
+        },
+    )
+
+
+def _remote_mcp_result(request_id, result):
+    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+
+def _remote_mcp_error(request_id, code, message):
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "error": {"code": int(code), "message": str(message)},
+    }
+
+
+def _remote_mcp_tool_result(data, failed=False):
+    result = {
+        "content": [{
+            "type": "text",
+            "text": json.dumps(
+                data, separators=(",", ":"), ensure_ascii=False),
+        }],
+        "structuredContent": data,
+    }
+    if failed:
+        result["isError"] = True
+    return result
+
+
+async def _remote_mcp_task_request(
+        env, request, context, method, path, body=None):
+    """Reuse the task service and its authorization with a JS-owned request."""
+
+    headers = {
+        "authorization": str(
+            request.headers.get("authorization") or "").strip(),
+        "accept": "application/json",
+    }
+    init = {"method": method, "headers": headers}
+    if body is not None:
+        headers["content-type"] = "application/json"
+        init["body"] = json.dumps(body, separators=(",", ":"))
+    internal = JsRequest.new(
+        _public_base_url(env, request).rstrip("/") + path, to_js(init))
+    response = await world_office_tasks.handle(
+        _OfficeMarketingTasksRuntime(env, internal, context),
+        urlparse(path).path,
+    )
+    data = await response.json()
+    if hasattr(data, "to_py"):
+        data = data.to_py()
+    try:
+        data = data if isinstance(data, dict) else dict(data)
+    except Exception:
+        data = {"error": "invalid_task_service_response"}
+    return int(getattr(response, "status", 500) or 500), data
+
+
+async def _remote_mcp_call_tool(env, request, context, name, arguments):
+    if not isinstance(arguments, dict):
+        return _remote_mcp_tool_result(
+            {"error": "arguments_must_be_an_object"}, failed=True)
+    scopes = set(context.get("scopes") or [])
+    required = (
+        "organization.tasks.write"
+        if name == "complete_org_task"
+        else "organization.tasks.read"
+    )
+    if required not in scopes:
+        return _remote_mcp_tool_result({
+            "error": "permission_denied", "requiredScope": required,
+        }, failed=True)
+
+    if name == "list_org_tasks":
+        department = clean_string(arguments.get("department"), 64).lower()
+        team = clean_string(arguments.get("team"), 64).lower()
+        try:
+            limit = max(1, min(200, int(arguments.get("limit") or 50)))
+        except (TypeError, ValueError):
+            return _remote_mcp_tool_result(
+                {"error": "invalid_limit"}, failed=True)
+        query = []
+        if department:
+            query.append(("department", department))
+        if team:
+            query.append(("team", team))
+        path = "/api/tasks" + (
+            "?" + urlencode(query) if query else "")
+        status, data = await _remote_mcp_task_request(
+            env, request, context, "GET", path)
+        if status >= 400:
+            return _remote_mcp_tool_result(data, failed=True)
+        tasks = [
+            task for task in list(data.get("tasks") or [])
+            if not int(task.get("completedAt") or 0)
+            and str(task.get("status") or "") != "done"
+        ]
+        return _remote_mcp_tool_result({
+            "ok": True,
+            "organization": context.get("org") or "",
+            "tasks": tasks[:limit],
+            "returned": min(limit, len(tasks)),
+            "available": len(tasks),
+        })
+
+    task_id = clean_string(arguments.get("task_id"), 32).lower()
+    if not REMOTE_MCP_TASK_ID_RE.fullmatch(task_id):
+        return _remote_mcp_tool_result(
+            {"error": "invalid_task_id"}, failed=True)
+    if name == "get_org_task":
+        status, data = await _remote_mcp_task_request(
+            env, request, context, "GET", "/api/tasks/" + task_id)
+        return _remote_mcp_tool_result(data, failed=status >= 400)
+    if name == "complete_org_task":
+        note = clean_string(arguments.get("completion_note"), 4000).strip()
+        if not note:
+            return _remote_mcp_tool_result(
+                {"error": "completion_note_required"}, failed=True)
+        status, data = await _remote_mcp_task_request(
+            env,
+            request,
+            context,
+            "POST",
+            "/api/tasks/" + task_id + "/complete",
+            {"completionNote": note},
+        )
+        return _remote_mcp_tool_result(data, failed=status >= 400)
+    return None
+
+
+async def remote_mcp_handler(env, request):
+    """Authenticated, stateless MCP Streamable HTTP endpoint."""
+
+    method = method_name(request)
+    if method == "GET":
+        return _remote_mcp_response(
+            {"error": "sse_not_supported"}, status=405)
+    if method != "POST":
+        return _remote_mcp_response(
+            {"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    context = await _org_bot_token_context(env, request, touch=True)
+    if not context:
+        return _remote_mcp_response(
+            {"error": "invalid_bot_token"}, status=401)
+    try:
+        message = await bounded_json_request(request, max_bytes=64 * 1024)
+    except RequestBodyTooLarge:
+        return _remote_mcp_response(
+            _remote_mcp_error(None, -32600, "Request too large"), status=413)
+    except Exception:
+        return _remote_mcp_response(
+            _remote_mcp_error(None, -32700, "Parse error"), status=400)
+    if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
+        return _remote_mcp_response(
+            _remote_mcp_error(
+                message.get("id") if isinstance(message, dict) else None,
+                -32600,
+                "Invalid Request",
+            ),
+            status=400,
+        )
+    request_id = message.get("id")
+    rpc_method = str(message.get("method") or "")
+    params = message.get("params") or {}
+    if rpc_method.startswith("notifications/"):
+        return Response(
+            None,
+            status=202,
+            headers={
+                "cache-control": "no-store",
+                "x-content-type-options": "nosniff",
+            },
+        )
+    if rpc_method == "initialize":
+        return _remote_mcp_response(_remote_mcp_result(request_id, {
+            "protocolVersion": REMOTE_MCP_PROTOCOL_VERSION,
+            "capabilities": {"tools": {"listChanged": False}},
+            "serverInfo": {
+                "name": "ForkMesh Remote MCP", "version": "1.0.0",
+            },
+            "instructions": (
+                "Use these scoped organization task tools only for work "
+                "authorized by the revocable ForkMesh credential."
+            ),
+        }))
+    if rpc_method == "ping":
+        return _remote_mcp_response(_remote_mcp_result(request_id, {}))
+    if rpc_method == "tools/list":
+        return _remote_mcp_response(_remote_mcp_result(
+            request_id, {"tools": REMOTE_MCP_TOOLS}))
+    if rpc_method == "tools/call":
+        if not isinstance(params, dict):
+            return _remote_mcp_response(
+                _remote_mcp_error(request_id, -32602, "Invalid params"))
+        name = clean_string(params.get("name"), 80)
+        result = await _remote_mcp_call_tool(
+            env, request, context, name, params.get("arguments") or {})
+        if result is None:
+            return _remote_mcp_response(
+                _remote_mcp_error(request_id, -32601, "Unknown tool"))
+        return _remote_mcp_response(_remote_mcp_result(request_id, result))
+    return _remote_mcp_response(
+        _remote_mcp_error(request_id, -32601, "Method not found"))
 
 
 async def world_build_board_handler(env, request, path):
@@ -10469,6 +10779,11 @@ SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
     """ALTER TABLE world_office_attendance
        ADD COLUMN visit_scope TEXT NOT NULL DEFAULT 'legacy'
        CHECK (visit_scope IN ('legacy', 'office'))""",
+    # Organization tasks share one explicit ordering across the World,
+    # dashboard, bot API, and remote MCP surface.
+    """ALTER TABLE organization_tasks
+       ADD COLUMN priority INTEGER NOT NULL DEFAULT 500
+       CHECK (priority BETWEEN 1 AND 999)""",
 ]
 
 # Post-CREATE column additions for tables that predate them. Idempotent: a
@@ -14661,6 +14976,29 @@ async def _delete_account_namespace(env, name_bi, rec):
         env, "DELETE FROM account_ssh_keys WHERE account_bi=?", name_bi)
     await d1_run(
         env, "DELETE FROM account_sessions WHERE account_bi=?", name_bi)
+    # Remove every account-keyed auxiliary row as well as the primary identity.
+    # These tables contain no independently owned resource that should survive
+    # a complete account deletion.
+    for table in (
+            "repo_stars",
+            "feedback_email_sends",
+            "role_grants",
+            "owner_encryption_keys",
+            "world_inactive_presence",
+            "world_media_roles",
+            "world_workshop_participants",
+            "world_user_activity",
+            "badge_awards",
+            "world_office_attendance",
+            "world_office_marketing_proofs",
+            "world_qa_reviews",
+            "world_lobby_links",
+            "org_team_collaborators",
+            "world_office_marketing_checkins",
+            "organization_task_checkins",
+    ):
+        await d1_run(
+            env, "DELETE FROM " + table + " WHERE account_bi=?", name_bi)
     await _delete_chat_channel_memberships(env, name_bi)
     await _delete_chat_direct_conversations(env, name_bi)
     if email:
@@ -14668,6 +15006,13 @@ async def _delete_account_namespace(env, name_bi, rec):
         await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
     await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
     await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
+    await asyncio.gather(
+        purge_catalog_related_caches(),
+        edge_cache_delete(ACCOUNT_LOOKUP_CACHE_PREFIX + quote(name)),
+        edge_cache_delete(USERS_DIRECTORY_CACHE_KEY),
+        edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY),
+        return_exceptions=True,
+    )
 
 
 def _owned_nodes(rec):
@@ -21110,6 +21455,662 @@ async def process_organization_succession_warnings(env):
         _OrganizationSuccessionRuntime(env), limit=50)
 
 
+# --- Organization Discord connector ----------------------------------------
+# The Discord API token stays exclusively in the Worker secret binding.  The
+# policy module receives only the narrow operations below, so a dashboard body,
+# D1 value, audit event, or future connector field cannot accidentally expose
+# or reuse it as an application credential.
+DISCORD_API_ORIGIN = "https://discord.com/api/v10"
+DISCORD_OAUTH_API_ORIGIN = "https://discord.com/api"
+DISCORD_OAUTH_AUTHORIZE_ORIGIN = "https://discord.com/oauth2/authorize"
+DISCORD_OAUTH_CALLBACK_PATH = "/api/integrations/discord/callback"
+DISCORD_OAUTH_TRANSACTION_COOKIE = "forkmesh_discord_oauth"
+DISCORD_API_TIMEOUT_SECONDS = 8
+DISCORD_API_MAX_RESPONSE_BYTES = 512 * 1024
+_DISCORD_SNOWFLAKE_RE = re.compile(r"^[0-9]{17,20}$")
+_DISCORD_OAUTH_TRANSACTION_RE = re.compile(r"^[a-f0-9]{64}$")
+_DISCORD_GUILD_CHANNELS_PATH_RE = re.compile(
+    r"^/guilds/[0-9]{17,20}/channels$")
+_DISCORD_GUILD_ROLES_PATH_RE = re.compile(
+    r"^/guilds/[0-9]{17,20}/roles$")
+_DISCORD_CHANNEL_MESSAGES_GET_PATH_RE = re.compile(
+    r"^/channels/[0-9]{17,20}/messages\?limit=[1-9][0-9]?$" )
+_DISCORD_CHANNEL_MESSAGES_POST_PATH_RE = re.compile(
+    r"^/channels/[0-9]{17,20}/messages$")
+_DISCORD_OAUTH_TOKEN_PATH = "/oauth2/token"
+_DISCORD_OAUTH_IDENTITY_PATH = "/users/@me"
+_DISCORD_OAUTH_GUILDS_PATH = "/users/@me/guilds"
+# One best-effort coordinator is shared by every connector request handled by
+# this Worker isolate. It is intentionally not a durable cross-colo global
+# limiter and carries only short-lived rate metadata plus minimized public
+# channel/@everyone-role projections—never credentials, OAuth values, raw
+# private catalogs, or message history.
+_discord_rate_coordinator = DiscordRateCoordinator()
+
+
+def _discord_bot_token(env):
+    """Return the server-only secret without placing it in any application row."""
+
+    return str(getattr(env, "DISCORD_BOT_TOKEN", "") or "").strip()
+
+
+def _discord_oauth_config(env):
+    """Read only the server-side OAuth application configuration.
+
+    The redirect URI is fixed to the one global callback path.  It is never
+    taken from a dashboard request, so an owner cannot use this connector as an
+    OAuth redirector or turn a bot's global guild visibility into org consent.
+    """
+
+    client_id = _discord_snowflake(
+        getattr(env, "DISCORD_CLIENT_ID", "") or "")
+    client_secret = str(
+        getattr(env, "DISCORD_CLIENT_SECRET", "") or "").strip()
+    redirect_uri = str(
+        getattr(env, "DISCORD_OAUTH_REDIRECT_URI", "") or "").strip()
+    public_base_url = str(
+        getattr(env, "PUBLIC_BASE_URL", "") or "https://forkmesh.com").strip()
+    try:
+        parsed = urlparse(redirect_uri)
+        public_origin = urlparse(public_base_url)
+        redirect_origin = (
+            parsed.scheme, parsed.hostname, parsed.port
+        ) if parsed else None
+        canonical_origin = (
+            public_origin.scheme, public_origin.hostname, public_origin.port
+        ) if public_origin else None
+    except Exception:
+        parsed = None
+        public_origin = None
+        redirect_origin = None
+        canonical_origin = None
+    if not (
+        client_id
+        and client_secret
+        and parsed
+        and public_origin
+        and parsed.scheme == "https"
+        and parsed.hostname
+        and public_origin.scheme == "https"
+        and public_origin.hostname
+        and redirect_origin == canonical_origin
+        and public_origin.path.rstrip("/") in {"", "/"}
+        and not public_origin.params
+        and not public_origin.query
+        and not public_origin.fragment
+        and not public_origin.username
+        and not public_origin.password
+        and parsed.path == DISCORD_OAUTH_CALLBACK_PATH
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+        and not parsed.username
+        and not parsed.password
+    ):
+        return None
+    return {
+        "clientId": client_id,
+        "clientSecret": client_secret,
+        "redirectUri": redirect_uri,
+    }
+
+
+def _discord_oauth_transaction_cookie(value):
+    value = str(value or "").lower()
+    if not _DISCORD_OAUTH_TRANSACTION_RE.fullmatch(value):
+        return ""
+    return (
+        DISCORD_OAUTH_TRANSACTION_COOKIE + "=" + value
+        + "; Path=" + DISCORD_OAUTH_CALLBACK_PATH
+        + "; Max-Age=600; HttpOnly; Secure; SameSite=Lax"
+    )
+
+
+def _clear_discord_oauth_transaction_cookie():
+    return (
+        DISCORD_OAUTH_TRANSACTION_COOKIE + "=; Path="
+        + DISCORD_OAUTH_CALLBACK_PATH
+        + "; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
+    )
+
+
+def _discord_snowflake(value):
+    value = str(value or "").strip()
+    return value if _DISCORD_SNOWFLAKE_RE.fullmatch(value) else ""
+
+
+def _discord_api_path_allowed(method, path):
+    if method == "GET":
+        return (
+            bool(_DISCORD_GUILD_CHANNELS_PATH_RE.fullmatch(path))
+            or bool(_DISCORD_GUILD_ROLES_PATH_RE.fullmatch(path))
+            or bool(_DISCORD_CHANNEL_MESSAGES_GET_PATH_RE.fullmatch(path))
+        )
+    return (
+        method == "POST"
+        and bool(_DISCORD_CHANNEL_MESSAGES_POST_PATH_RE.fullmatch(path))
+    )
+
+
+def _discord_rate_major(path):
+    match = re.match(r"^/(guilds|channels)/([0-9]{17,20})/", str(path or ""))
+    return (match.group(1) + ":" + match.group(2)) if match else "global"
+
+
+def _discord_rate_route(path):
+    return re.sub(r"[0-9]{17,20}", ":id", str(path or "")).split("?", 1)[0]
+
+
+async def _discord_provider_request(env, method, path, body=None):
+    """Perform one fixed-shape Discord provider request inside the rate DO.
+
+    No caller-provided origin/path/header reaches this helper.  Error bodies
+    and exceptions are deliberately reduced to status + retry metadata before
+    crossing the adapter boundary, because provider errors can echo request
+    context and must never become a token or message-content diagnostic.
+    """
+
+    method = str(method or "").upper()
+    path = str(path or "")
+    if not _discord_api_path_allowed(method, path):
+        return {"status": 400, "data": None, "retryAfterMs": 0}
+    token = _discord_bot_token(env)
+    if not token:
+        return {"status": 0, "data": None, "retryAfterMs": 0}
+    now = int(Date.now())
+    reserved_for = _discord_rate_coordinator.reserve(path, now)
+    if reserved_for:
+        return {"status": 429, "data": None, "retryAfterMs": reserved_for}
+    headers = {
+        "accept": "application/json",
+        "authorization": "Bot " + token,
+        "user-agent": "ForkMesh-Discord-connector/1.0",
+    }
+    options = {
+        "method": method,
+        "headers": headers,
+        # Never forward the credential across a provider redirect.
+        "redirect": "manual",
+    }
+    if body is not None:
+        if method != "POST" or not isinstance(body, dict):
+            return {"status": 400, "data": None, "retryAfterMs": 0}
+        headers["content-type"] = "application/json"
+        options["body"] = json.dumps(body, separators=(",", ":"))
+    try:
+        response = await js_fetch_with_timeout(
+            DISCORD_API_ORIGIN + path, options, DISCORD_API_TIMEOUT_SECONDS)
+        status = int(getattr(response, "status", 0) or 0)
+        try:
+            announced = int(response.headers.get("content-length") or 0)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            announced = 0
+        if announced > DISCORD_API_MAX_RESPONSE_BYTES:
+            return {"status": 502, "data": None, "retryAfterMs": 0}
+        try:
+            raw = str(await response.text())
+        except Exception:
+            return {"status": 502, "data": None, "retryAfterMs": 0}
+        if len(raw.encode("utf-8")) > DISCORD_API_MAX_RESPONSE_BYTES:
+            return {"status": 502, "data": None, "retryAfterMs": 0}
+        try:
+            data = json.loads(raw) if raw else None
+        except Exception:
+            data = None
+        # Keep only the narrow rate headers used by the shared coordinator;
+        # provider response headers never reach the dashboard or audit trail.
+        rate_headers = {}
+        for name in (
+                "x-ratelimit-bucket", "x-ratelimit-reset-after",
+                "x-ratelimit-reset", "x-ratelimit-remaining",
+                "x-ratelimit-global", "x-ratelimit-scope",
+                "retry-after"):
+            try:
+                rate_headers[name] = str(response.headers.get(name) or "")
+            except Exception:
+                rate_headers[name] = ""
+        observed_now = int(Date.now())
+        coordinated_retry = _discord_rate_coordinator.observe(
+            path, status, rate_headers, data, observed_now)
+        retry_after = 0
+        try:
+            retry_after = int(float(response.headers.get("retry-after") or 0) * 1000)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            retry_after = 0
+        if not retry_after and isinstance(data, dict):
+            try:
+                retry_after = int(float(data.get("retry_after") or 0) * 1000)
+            except (TypeError, ValueError, OverflowError):
+                retry_after = 0
+        return {
+            "status": max(0, min(599, status)),
+            "data": data,
+            "retryAfterMs": max(
+                max(0, min(retry_after, 3_600_000)), coordinated_retry),
+            # Internal-only metadata consumed by ForkMeshDiscordGate. The
+            # outer adapter strips these fields before returning to policy.
+            "rateBucket": rate_headers.get("x-ratelimit-bucket", "")[:100],
+            "rateGlobal": bool(
+                rate_headers.get("x-ratelimit-global")
+                or rate_headers.get("x-ratelimit-scope") == "global"
+                or (isinstance(data, dict) and data.get("global"))),
+        }
+    except Exception:
+        return {"status": 0, "data": None, "retryAfterMs": 0}
+
+
+async def _discord_api_request(env, method, path, body=None):
+    """Route every production bot call through one global Durable Object."""
+
+    method = str(method or "").upper()
+    path = str(path or "")
+    if (
+        not _discord_api_path_allowed(method, path)
+        or (body is not None and (method != "POST" or not isinstance(body, dict)))
+    ):
+        return {"status": 400, "data": None, "retryAfterMs": 0}
+    try:
+        gate_id = env.FORKMESH_DISCORD_GATE.idFromName("bot-rate-v1")
+        gate = env.FORKMESH_DISCORD_GATE.get(gate_id)
+        request = JsRequest.new(
+            "https://forkmesh.internal/discord-gate/request",
+            to_js({
+                "method": "POST",
+                "headers": {"content-type": "application/json"},
+                "body": json.dumps({
+                    "method": method,
+                    "path": path,
+                    "body": body,
+                }, separators=(",", ":")),
+            }),
+        )
+        response = await gate.fetch(request)
+        raw = str(await response.text())
+        result = json.loads(raw) if raw else {}
+        if not isinstance(result, dict):
+            raise ValueError("invalid Discord gate response")
+        return {
+            "status": max(0, min(599, int(result.get("status") or 0))),
+            "data": result.get("data"),
+            "retryAfterMs": max(
+                0, min(3_600_000, int(result.get("retryAfterMs") or 0))),
+        }
+    except Exception:
+        # Production and dev both bind the gate. Missing/broken bindings fail
+        # closed; the stateless Worker must never bypass the global limiter.
+        return {"status": 0, "data": None, "retryAfterMs": 0}
+
+
+def _discord_oauth_path_allowed(method, path):
+    method = str(method or "").upper()
+    path = str(path or "")
+    return bool(
+        (method == "POST" and path == _DISCORD_OAUTH_TOKEN_PATH)
+        or (method == "GET" and path in {
+            _DISCORD_OAUTH_IDENTITY_PATH,
+            _DISCORD_OAUTH_GUILDS_PATH,
+        })
+    )
+
+
+async def _discord_oauth_request(env, method, path, form=None, access_token=""):
+    """Call one fixed Discord OAuth path without persisting a bearer token."""
+
+    method = str(method or "").upper()
+    path = str(path or "")
+    if not _discord_oauth_path_allowed(method, path):
+        return {"status": 400, "data": None}
+    headers = {
+        "accept": "application/json",
+        "user-agent": "ForkMesh-Discord-oauth/1.0",
+    }
+    options = {
+        "method": method,
+        "headers": headers,
+        # OAuth bearer credentials must never cross a provider redirect.
+        "redirect": "manual",
+    }
+    if method == "POST":
+        if not isinstance(form, dict):
+            return {"status": 400, "data": None}
+        headers["content-type"] = "application/x-www-form-urlencoded"
+        options["body"] = urlencode(form)
+    else:
+        token = str(access_token or "")
+        if not token or len(token) > 4096 or any(
+                not char.isprintable() or char.isspace() for char in token):
+            return {"status": 400, "data": None}
+        headers["authorization"] = "Bearer " + token
+    try:
+        response = await js_fetch_with_timeout(
+            DISCORD_OAUTH_API_ORIGIN + path, options,
+            DISCORD_API_TIMEOUT_SECONDS)
+        status = int(getattr(response, "status", 0) or 0)
+        try:
+            announced = int(response.headers.get("content-length") or 0)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            announced = 0
+        if announced > DISCORD_API_MAX_RESPONSE_BYTES:
+            return {"status": 502, "data": None}
+        try:
+            raw = str(await response.text())
+        except Exception:
+            return {"status": 502, "data": None}
+        if len(raw.encode("utf-8")) > DISCORD_API_MAX_RESPONSE_BYTES:
+            return {"status": 502, "data": None}
+        try:
+            data = json.loads(raw) if raw else None
+        except Exception:
+            data = None
+        return {"status": max(0, min(599, status)), "data": data}
+    except Exception:
+        return {"status": 0, "data": None}
+
+
+class _OrganizationDiscordRuntime:
+    """Narrow adapter for the organization Discord policy module."""
+
+    def __init__(self, env, request):
+        self.env = env
+        self.request = request
+
+    def method(self):
+        return method_name(self.request)
+
+    def now(self):
+        return int(Date.now())
+
+    def new_id(self):
+        return _ap_uuid()
+
+    def query(self, name):
+        try:
+            values = parse_qs(
+                urlparse(str(self.request.url)).query,
+                keep_blank_values=True,
+            )
+            first = values.get(str(name), [""])[0]
+            return str(first or "")
+        except Exception:
+            return ""
+
+    def same_origin(self):
+        return _request_same_origin(self.request)
+
+    def response(self, data, status=200, cache_control=None,
+                 extra_headers=None):
+        return json_response(
+            data,
+            status=status,
+            cache_control=cache_control,
+            extra_headers=extra_headers,
+        )
+
+    async def ensure_schema(self):
+        await ensure_schema(self.env)
+
+    async def json_body(self, limit):
+        try:
+            raw_length = self.request.headers.get("content-length") or ""
+            if raw_length and int(raw_length) > int(limit):
+                return None, "payload_too_large"
+        except (TypeError, ValueError):
+            return None, "invalid_content_length"
+        try:
+            raw = await self.request.text()
+        except Exception:
+            return None, "invalid_json"
+        if len(str(raw or "").encode("utf-8")) > int(limit):
+            return None, "payload_too_large"
+        if not str(raw or "").strip():
+            return {}, ""
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None, "invalid_json"
+        return (data, "") if isinstance(data, dict) else (None, "invalid_json")
+
+    async def session(self, data=None):
+        return await _account_session_record(
+            self.env, self.request, data if isinstance(data, dict) else {})
+
+    async def session_id(self):
+        """Return only the currently validated session's opaque id."""
+
+        try:
+            token, _cookie_auth = _request_account_session_token(
+                self.request, {})
+            _account_bi, _record, session_id = await _account_session_lookup(
+                self.env, token)
+            return str(session_id or "")
+        except Exception:
+            return ""
+
+    async def session_active(self, account_bi, session_id):
+        row = await d1_first(
+            self.env,
+            "SELECT session_id FROM account_sessions WHERE account_bi=? "
+            "AND session_id=? AND revoked_at=0 AND expires_at>?",
+            str(account_bi or ""), str(session_id or ""), int(Date.now()),
+        )
+        return bool(row)
+
+    async def organization(self, org):
+        return await _org_row(self.env, org)
+
+    async def org_role(self, org_bi, account):
+        return await _org_role(self.env, org_bi, account)
+
+    async def seal(self, value):
+        return await encrypt_row(self.env, value)
+
+    async def open(self, value):
+        return await decrypt_row(self.env, value)
+
+    async def d1_first(self, sql, *args):
+        return await d1_first(self.env, sql, *args)
+
+    async def d1_run(self, sql, *args):
+        return await d1_run(self.env, sql, *args)
+
+    async def audit(self, actor, action, target_type="", target="",
+                    outcome="success", details=None):
+        await _audit_sensitive_action(
+            self.env, actor, action, target_type, target, outcome, details)
+
+    def discord_ready(self):
+        return bool(_discord_bot_token(self.env))
+
+    def discord_oauth_ready(self):
+        return bool(_discord_oauth_config(self.env))
+
+    def discord_oauth_redirect_uri(self):
+        config = _discord_oauth_config(self.env) or {}
+        return str(config.get("redirectUri") or "")
+
+    def discord_oauth_authorization_url(self, state, challenge):
+        config = _discord_oauth_config(self.env) or {}
+        state = str(state or "")
+        challenge = str(challenge or "")
+        if (
+            not config
+            or not _DISCORD_OAUTH_TRANSACTION_RE.fullmatch(state)
+            or not challenge
+        ):
+            return ""
+        return DISCORD_OAUTH_AUTHORIZE_ORIGIN + "?" + urlencode({
+            "client_id": config["clientId"],
+            "redirect_uri": config["redirectUri"],
+            "response_type": "code",
+            # Keep the user authorization-code grant separate from Discord's
+            # callback-less bot-install shortcut. Combining `bot` here causes
+            # some Discord clients to return an install result without the
+            # code/state required to verify the organization owner.
+            "scope": "identify guilds",
+            "state": state,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "prompt": "consent",
+        })
+
+    def oauth_transaction_cookie(self):
+        return _cookie_value(self.request, DISCORD_OAUTH_TRANSACTION_COOKIE)
+
+    def oauth_start_response(self, data, transaction):
+        cookie = _discord_oauth_transaction_cookie(transaction)
+        if not cookie:
+            return self.response({"error": "oauth_transaction_required"}, 500)
+        return self.response(
+            data, cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={
+                "set-cookie": cookie,
+                "referrer-policy": "no-referrer",
+                "x-content-type-options": "nosniff",
+            })
+
+    def oauth_callback_response(self, outcome):
+        outcome = str(outcome or "invalid")
+        if outcome not in {
+            "connected", "denied", "failed", "invalid", "setup",
+            "invalid_state_format", "invalid_state_missing",
+            "invalid_state_expired", "invalid_state_claim",
+            "invalid_record", "invalid_record_storage",
+            "invalid_record_decrypt", "invalid_record_state",
+            "invalid_record_verifier", "invalid_record_guild",
+            "invalid_context", "invalid_code",
+        }:
+            outcome = "invalid"
+        # Strip OAuth code/state/error from the browser address before any
+        # World UI loads. The one-time callback cookie is cleared regardless of
+        # outcome, and the response is non-cacheable/non-referring.
+        return Response("", status=303, headers={
+            "location": "/world/?discord=" + outcome,
+            "cache-control": "no-store, max-age=0, must-revalidate",
+            "referrer-policy": "no-referrer",
+            "x-content-type-options": "nosniff",
+            "set-cookie": _clear_discord_oauth_transaction_cookie(),
+        })
+
+    async def discord_channels(self, guild_id):
+        guild_id = _discord_snowflake(guild_id)
+        if not guild_id:
+            return {"status": 400, "data": None, "retryAfterMs": 0}
+        return await _discord_api_request(
+            self.env, "GET", "/guilds/" + guild_id + "/channels")
+
+    def discord_public_channels_cache(self, guild_id):
+        guild_id = _discord_snowflake(guild_id)
+        if not guild_id:
+            return None
+        return _discord_rate_coordinator.catalog_get(
+            "public-channels:" + guild_id, int(Date.now()))
+
+    def cache_discord_public_channels(self, guild_id, channels):
+        guild_id = _discord_snowflake(guild_id)
+        if not guild_id or not isinstance(channels, list):
+            return
+        # The policy module has already removed private/NSFW/thread metadata;
+        # cache only its small id/name/type public projection.
+        _discord_rate_coordinator.catalog_put(
+            "public-channels:" + guild_id, channels, int(Date.now()))
+
+    async def discord_guild_roles(self, guild_id):
+        guild_id = _discord_snowflake(guild_id)
+        if not guild_id:
+            return {"status": 400, "data": None, "retryAfterMs": 0}
+        result = await _discord_api_request(
+            self.env, "GET", "/guilds/" + guild_id + "/roles")
+        if int(result.get("status") or 0) != 200:
+            return result
+        roles = result.get("data") if isinstance(result.get("data"), list) else []
+        # Only the @everyone base role participates in ForkMesh's public
+        # channel calculation. Discard every other role before short caching.
+        projected = []
+        for role in roles:
+            if not isinstance(role, dict) or _discord_snowflake(role.get("id")) != guild_id:
+                continue
+            projected.append({
+                "id": guild_id,
+                "permissions": str(role.get("permissions") or "0")[:40],
+            })
+            break
+        return {
+            "status": 200,
+            "data": projected,
+            "retryAfterMs": 0,
+        }
+
+    async def discord_oauth_exchange(self, code, verifier):
+        config = _discord_oauth_config(self.env) or {}
+        if not config:
+            return {"status": 0, "accessToken": ""}
+        result = await _discord_oauth_request(
+            self.env, "POST", _DISCORD_OAUTH_TOKEN_PATH, {
+                "client_id": config["clientId"],
+                "client_secret": config["clientSecret"],
+                "grant_type": "authorization_code",
+                "code": str(code or ""),
+                "redirect_uri": config["redirectUri"],
+                "code_verifier": str(verifier or ""),
+            })
+        data = result.get("data") if isinstance(result, dict) else None
+        access_token = str((data or {}).get("access_token") or "")
+        # Do not return provider response fields such as refresh_token,
+        # scope, or token_type beyond this transient call frame.
+        return {
+            "status": int((result or {}).get("status") or 0),
+            "accessToken": access_token[:4096],
+        }
+
+    async def discord_oauth_identity(self, access_token):
+        return await _discord_oauth_request(
+            self.env, "GET", _DISCORD_OAUTH_IDENTITY_PATH,
+            access_token=access_token)
+
+    async def discord_oauth_guilds(self, access_token):
+        return await _discord_oauth_request(
+            self.env, "GET", _DISCORD_OAUTH_GUILDS_PATH,
+            access_token=access_token)
+
+    async def discord_messages(self, channel_id, limit):
+        channel_id = _discord_snowflake(channel_id)
+        try:
+            limit = max(1, min(50, int(limit)))
+        except (TypeError, ValueError, OverflowError):
+            limit = 50
+        if not channel_id:
+            return {"status": 400, "data": None, "retryAfterMs": 0}
+        return await _discord_api_request(
+            self.env, "GET", "/channels/" + channel_id
+            + "/messages?limit=" + str(limit))
+
+    async def discord_send(self, channel_id, content):
+        channel_id = _discord_snowflake(channel_id)
+        if not channel_id:
+            return {"status": 400, "data": None, "retryAfterMs": 0}
+        # Explicitly disable all Discord mention parsing.  A ForkMesh owner can
+        # choose where a text message goes, never who it pings.
+        return await _discord_api_request(
+            self.env,
+            "POST",
+            "/channels/" + channel_id + "/messages",
+            {
+                "content": str(content or ""),
+                "allowed_mentions": {"parse": []},
+            },
+        )
+
+
+async def organization_discord_handler(env, request, org, action=""):
+    return await organization_discord.handle(
+        _OrganizationDiscordRuntime(env, request), org, action)
+
+
+async def organization_discord_oauth_callback_handler(env, request):
+    return await organization_discord.handle_oauth_callback(
+        _OrganizationDiscordRuntime(env, request))
+
+
 async def world_organizations_handler(env, request):
     """List only organization lobbies this world viewer may enter.
 
@@ -21393,6 +22394,51 @@ async def org_handler(env, request, org):
                 env, "DELETE FROM org_team_collaborators WHERE org_bi=?",
                 org_bi)
             await d1_run(env, "DELETE FROM org_teams WHERE org_bi=?", org_bi)
+            # Disconnect all Discord connector material before the deterministic
+            # org id can ever be reused. This includes encrypted consent and
+            # one-time OAuth state, so recreating an alias cannot inherit a
+            # former organization's external bridge.
+            await d1_run(
+                env, "DELETE FROM organization_discord_connectors WHERE org_bi=?",
+                org_bi)
+            # The setup-task marker is the authoritative scope for the
+            # connector's human-action tasks. Remove every dependent record
+            # before the task rows themselves so a deleted organization cannot
+            # leave orphaned check-ins, QA verdicts, replies, or attachments.
+            await d1_run(
+                env, "DELETE FROM organization_task_checkins WHERE task_id IN "
+                "(SELECT task_id FROM organization_discord_setup_tasks "
+                "WHERE org_bi=?)",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_task_qa_reviews WHERE task_id IN "
+                "(SELECT task_id FROM organization_discord_setup_tasks "
+                "WHERE org_bi=?)",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_task_responses WHERE task_id IN "
+                "(SELECT task_id FROM organization_discord_setup_tasks "
+                "WHERE org_bi=?)",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_task_attachments WHERE task_id IN "
+                "(SELECT task_id FROM organization_discord_setup_tasks "
+                "WHERE org_bi=?)",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_tasks WHERE task_id IN "
+                "(SELECT task_id FROM organization_discord_setup_tasks "
+                "WHERE org_bi=?)",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_discord_setup_tasks WHERE org_bi=?",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_discord_oauth_grants WHERE org_bi=?",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_discord_oauth_states WHERE org_bi=?",
+                org_bi)
             await d1_run(env, "DELETE FROM org_members WHERE org_bi=?", org_bi)
             await d1_run(
                 env, "DELETE FROM ap_org_digest_settings WHERE org_bi=?", org_bi)
@@ -22549,6 +23595,63 @@ async def _admin_verify_email(env, request):
     return json_response({"ok": True, "target": target, "emailVerified": True})
 
 
+async def _admin_delete_unverified_account(env, request, raw_target):
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    _, actor_rec = await _account_session_record(env, request, data)
+    actor = clean_string(
+        (actor_rec or {}).get("name", ""), MAX_NODE_NAME).strip().lower()
+    target = clean_string(raw_target, MAX_NODE_NAME).strip().lower()
+    if not actor_rec:
+        return json_response({"error": "unauthorized"}, status=401)
+    if not await _has_role(env, actor, "platform_administrator"):
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "denied", {"reason": "admin_required"})
+        return json_response({"error": "forbidden"}, status=403)
+    if not valid_node_name(target):
+        return json_response({"error": "invalid_account"}, status=400)
+    if target == actor:
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "denied", {"reason": "self_delete_forbidden"})
+        return json_response({"error": "self_delete_forbidden"}, status=409)
+
+    target_bi, target_rec = await _account_row(env, target)
+    if (
+            not target_rec or target_rec.get("status") != "active"
+            or _account_kind(target_rec) != "user"):
+        return json_response({"error": "no_such_user"}, status=404)
+    if target_rec.get("email_verified") is True:
+        return json_response({"error": "email_already_verified"}, status=409)
+    if not clean_string(target_rec.get("email", ""), 254).strip():
+        return json_response({"error": "account_has_no_email"}, status=409)
+    # Never let the convenience gesture erase another administrator. Revoking
+    # an administrator remains an explicit security-control-plane operation.
+    if await _is_admin(env, target):
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "denied", {"reason": "target_is_admin"})
+        return json_response({"error": "target_is_admin"}, status=409)
+
+    try:
+        await _delete_account_namespace(env, target_bi, target_rec)
+    except Exception:
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "failed", {})
+        raise
+    await _audit_sensitive_action(
+        env, actor, "admin.unverified_account_delete", "account",
+        target, "success", {})
+    return json_response(
+        {"ok": True, "target": target, "accountDeleted": True},
+        cache_control="no-store, max-age=0, must-revalidate",
+    )
+
+
 # --- Transactional email (Mailtrap) -----------------------------------------
 # Signup confirmation goes out through Mailtrap's HTTP sending API. The token is
 # a Worker secret (MAILTRAP_API_TOKEN, pushed from .env.production by deploy.sh).
@@ -22915,7 +24018,7 @@ async def _email_verify_token(env, name, email):
     return bytes(Uint8Array.new(sig).to_py()).hex()[:32]
 
 
-def _public_base_url(env, request):
+def _public_base_url(env, request=None):
     base = (getattr(env, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
     if base:
         return base
@@ -25090,6 +26193,14 @@ async def accounts_handler(env, request):
         return await _admin_pending(env, request)
     if url.path == "/api/accounts/admin-verify-email" and method == "POST":
         return await _admin_verify_email(env, request)
+    admin_unverified_prefix = "/api/accounts/admin-unverified/"
+    if (
+            url.path.startswith(admin_unverified_prefix)
+            and method == "DELETE"):
+        target = url.path[len(admin_unverified_prefix):].strip("/")
+        if target and "/" not in target:
+            return await _admin_delete_unverified_account(
+                env, request, target)
     if url.path == "/api/accounts/admin-relays" and method == "GET":
         return await _admin_relays(env, request)
     if url.path == "/api/accounts/admin-relay-approve" and method == "POST":
@@ -41255,6 +42366,9 @@ class Default(WorkerEntrypoint):
             return await organization_tasks_handler(
                 self.env, request, url.path)
 
+        if url.path in ("/mcp", "/mcp/"):
+            return await remote_mcp_handler(self.env, request)
+
         if (
             url.path == "/api/world/office/marketing-tasks"
             or url.path == "/api/world/office/marketing-tasks/"
@@ -41638,6 +42752,9 @@ class Default(WorkerEntrypoint):
             return await bot_session_handler(self.env, request)
         if ORGS_RE.match(url.path):
             return await orgs_handler(self.env, request)
+        if DISCORD_OAUTH_CALLBACK_RE.match(url.path):
+            return await organization_discord_oauth_callback_handler(
+                self.env, request)
         org_bot_tokens_match = ORG_BOT_TOKENS_RE.match(url.path)
         if org_bot_tokens_match:
             org = safe_segment(org_bot_tokens_match.group(1))
@@ -41645,6 +42762,14 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await org_bot_tokens_handler(
                 self.env, request, org)
+        org_discord_match = ORG_DISCORD_RE.match(url.path)
+        if org_discord_match:
+            org = safe_segment(org_discord_match.group(1))
+            action = str(org_discord_match.group(2) or "")
+            if not org or action not in {"", "messages", "oauth/start"}:
+                return json_response({"error": "not_found"}, status=404)
+            return await organization_discord_handler(
+                self.env, request, org, action)
         org_members_match = ORG_MEMBERS_RE.match(url.path)
         if org_members_match:
             org = safe_segment(org_members_match.group(1))
@@ -42182,6 +43307,16 @@ class Default(WorkerEntrypoint):
                 # guessed private/missing repository therefore cannot reveal
                 # whether a room or retained history exists.
                 return _private_replica_not_found()
+            if url.path.endswith("/clients"):
+                # The per-room observer was retired in favor of the bounded
+                # network stats snapshot. Older desktop builds still poll this
+                # path; answer before touching a Durable Object so those
+                # clients cannot repeatedly wake or exhaust a room isolate.
+                return json_response(
+                    {"error": "observers_removed"},
+                    status=410,
+                    cache_control="no-store",
+                )
             room_id = self.env.FORKMESH_MAINNODE_ROOM.idFromName(room["key"])
             # The platform can abort a room DO mid-request — the free-tier
             # duration cap kills long-lived requests, and any co-located DO
@@ -42650,6 +43785,20 @@ async def chat_history_recent(env, room_key):
     return [str(r["body"]) for r in rows]
 
 
+def chat_history_replay_body(body):
+    """Mark a stored cipher as backlog without changing its encrypted payload."""
+    source = str(body)
+    try:
+        envelope = json.loads(source)
+    except (TypeError, ValueError):
+        return source
+    if not isinstance(envelope, dict) or envelope.get("kind") != "cipher":
+        return source
+    replay = dict(envelope)
+    replay["historyReplay"] = True
+    return json.dumps(replay, separators=(",", ":"))
+
+
 async def chat_history_since(env, room_key, since_ts=0):
     # The same retained (encrypted) frames chat_history_recent replays to a
     # joining socket, but stamped with their store time and filtered to what
@@ -42722,6 +43871,148 @@ async def chat_history_prune_expired(env):
     await ensure_schema(env)
     cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
     await d1_run(env, "DELETE FROM chat_history WHERE ts<?", cutoff)
+
+
+class ForkMeshDiscordGate(DurableObject):
+    """One production-wide Discord bot rate gate.
+
+    The singleton persists only bounded expiry/bucket metadata. Bot
+    credentials, message bodies, channel catalogs, and provider responses are
+    never written to Durable Object storage.
+    """
+
+    traffic_binding = "FORKMESH_DISCORD_GATE"
+    _MAX_KEYS = 256
+    _RESERVATION_MS = (DISCORD_API_TIMEOUT_SECONDS * 1000) + 1_000
+
+    async def _state(self, now):
+        value = await self.ctx.storage.get("rate_state")
+        try:
+            state = json.loads(str(value or "{}"))
+        except Exception:
+            state = {}
+        state = state if isinstance(state, dict) else {}
+        state = {
+            "globalUntil": max(0, int(state.get("globalUntil") or 0)),
+            "routes": dict(state.get("routes") or {}),
+            "buckets": dict(state.get("buckets") or {}),
+            "routeBuckets": dict(state.get("routeBuckets") or {}),
+        }
+        for group in ("routes", "buckets"):
+            state[group] = {
+                str(key)[:220]: max(0, int(until or 0))
+                for key, until in list(state[group].items())[:self._MAX_KEYS]
+                if int(until or 0) > now
+            }
+        state["routeBuckets"] = {
+            str(key)[:220]: str(bucket)[:100]
+            for key, bucket in list(
+                state["routeBuckets"].items())[:self._MAX_KEYS]
+            if str(bucket or "")
+        }
+        return state
+
+    @staticmethod
+    def _wait_ms(state, route_key, major, now):
+        waits = [
+            int(state.get("globalUntil") or 0) - now,
+            int(state["routes"].get(route_key) or 0) - now,
+        ]
+        bucket = str(state["routeBuckets"].get(route_key) or "")
+        if bucket:
+            waits.append(
+                int(state["buckets"].get(bucket + "|" + major) or 0) - now)
+        return max(0, min(3_600_000, max(waits)))
+
+    async def fetch(self, request):
+        if (
+            str(getattr(request, "method", "GET")).upper() != "POST"
+            or urlparse(request.url).path != "/discord-gate/request"
+        ):
+            return json_response({"error": "not_found"}, status=404)
+        try:
+            raw = str(await request.text())
+            if len(raw.encode("utf-8")) > 8 * 1024:
+                raise ValueError("request too large")
+            payload = json.loads(raw)
+        except Exception:
+            return json_response({
+                "status": 400, "data": None, "retryAfterMs": 0,
+            }, cache_control="no-store")
+        if not isinstance(payload, dict) or set(payload) - {
+                "method", "path", "body"}:
+            return json_response({
+                "status": 400, "data": None, "retryAfterMs": 0,
+            }, cache_control="no-store")
+        method = str(payload.get("method") or "").upper()
+        path = str(payload.get("path") or "")
+        body = payload.get("body")
+        if (
+            not _discord_api_path_allowed(method, path)
+            or (body is not None
+                and (method != "POST" or not isinstance(body, dict)))
+        ):
+            return json_response({
+                "status": 400, "data": None, "retryAfterMs": 0,
+            }, cache_control="no-store")
+
+        now = int(Date.now())
+        major = _discord_rate_major(path)
+        route_key = _discord_rate_route(path) + "|" + major
+        state = await self._state(now)
+        wait_ms = self._wait_ms(state, route_key, major, now)
+        if wait_ms:
+            return json_response({
+                "status": 429, "data": None, "retryAfterMs": wait_ms,
+            }, cache_control="no-store")
+
+        # Reserve before the outbound await. This closes the first-request
+        # race even when concurrent invocations arrive before Discord has
+        # advertised a bucket id.
+        state["routes"][route_key] = now + self._RESERVATION_MS
+        await self.ctx.storage.put(
+            "rate_state", json.dumps(state, separators=(",", ":")))
+        result = await _discord_provider_request(
+            self.env, method, path, body)
+        observed_at = int(Date.now())
+        # Another route may have completed during our provider await. Reload
+        # before merging this observation so disjoint bucket metadata cannot
+        # overwrite one another.
+        state = await self._state(observed_at)
+        state["routes"].pop(route_key, None)
+        retry_ms = max(
+            0, min(3_600_000, int(result.get("retryAfterMs") or 0)))
+        bucket = str(result.get("rateBucket") or "")[:100]
+        if bucket:
+            state["routeBuckets"][route_key] = bucket
+        if retry_ms:
+            until = observed_at + retry_ms
+            if result.get("rateGlobal"):
+                state["globalUntil"] = max(state["globalUntil"], until)
+            elif bucket:
+                bucket_key = bucket + "|" + major
+                state["buckets"][bucket_key] = max(
+                    int(state["buckets"].get(bucket_key) or 0), until)
+            else:
+                state["routes"][route_key] = max(
+                    int(state["routes"].get(route_key) or 0), until)
+        await self.ctx.storage.put(
+            "rate_state", json.dumps(state, separators=(",", ":")))
+        public_result = {
+            "status": max(0, min(599, int(result.get("status") or 0))),
+            "data": result.get("data"),
+            "retryAfterMs": retry_ms,
+        }
+        # Aggregate byte/message counters only; the capacity row never sees
+        # the request body or provider response.
+        durable_object_traffic_note(
+            self,
+            bytes_in=len(raw.encode("utf-8")),
+            bytes_out=len(json.dumps(public_result).encode("utf-8")),
+            messages=1,
+        )
+        await durable_object_traffic_flush(self)
+        return json_response(public_result, cache_control="no-store")
 
 
 class ForkMeshCronWatchdog(DurableObject):
@@ -44191,15 +45482,29 @@ class ForkMeshRoom(DurableObject):
             try:
                 await chat_history_prune(self.env, room_key)
                 for body in await chat_history_recent(self.env, room_key):
+                    replay_body = chat_history_replay_body(body)
                     try:
-                        server.send(body)
+                        server.send(replay_body)
                     except Exception:
                         pass
                     else:
                         durable_object_traffic_note(
-                            self, bytes_out=len(str(body).encode("utf-8")))
+                            self,
+                            bytes_out=len(replay_body.encode("utf-8")),
+                        )
             except Exception:
                 pass
+            try:
+                history_end = json.dumps({
+                    "kind": "forkmesh-history-end",
+                    "v": 1,
+                }, separators=(",", ":"))
+                server.send(history_end)
+            except Exception:
+                pass
+            else:
+                durable_object_traffic_note(
+                    self, bytes_out=len(history_end.encode("utf-8")))
             await durable_object_traffic_flush(self)
 
         return JsResponse.new(None, to_js({"status": 101, "webSocket": client}))
@@ -44269,6 +45574,23 @@ class ForkMeshRoom(DurableObject):
         if not await self._private_room_current(ws):
             self._close_all_chat_sockets(1008, "room access revoked")
             return
+        # Replay markers are server-owned transport metadata. Chat clients send
+        # only encrypted envelopes; dropping plaintext controls and stripping a
+        # forged replay bit prevents a peer from flushing another reader's
+        # backlog or disguising a live message as retained history.
+        try:
+            envelope = json.loads(message)
+        except Exception:
+            return
+        if (
+            not isinstance(envelope, dict)
+            or envelope.get("kind") != "cipher"
+        ):
+            return
+        if "historyReplay" in envelope:
+            envelope = dict(envelope)
+            envelope.pop("historyReplay", None)
+            message = json.dumps(envelope, separators=(",", ":"))
         frame_bytes = len(message.encode("utf-8"))
         durable_object_traffic_note(self, bytes_in=frame_bytes, messages=1)
         sender_id = _ws_attr(ws, "id")

@@ -223,6 +223,12 @@
         transition: opacity 120ms ease;
       }
 
+      [data-dashboard-chat-context-rail],
+      [data-dashboard-chat-scroll-rail],
+      [data-dashboard-chat-emotes] {
+        display: none;
+      }
+
       .group:hover > .chat-message-actions,
       .chat-message-actions:focus-within {
         opacity: 1;
@@ -776,8 +782,8 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=ab55acec0768" defer></script>
-    <script src="/dashboard-chat.js?v=0a9c0813c020" defer></script>
+    <script src="/dashboard.js?v=acb09d937175" defer></script>
+    <script src="/dashboard-chat.js?v=6cb50c59f5cf" defer></script>
   </head>
   <body class="bg-background text-foreground" data-page="repos">
     <div data-dashboard-root data-dashboard-section="repos" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">

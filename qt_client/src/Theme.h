@@ -387,9 +387,11 @@ QPushButton#topNavButton:checked {
 QPushButton#topNavButton[railUtility="true"]:checked {
     border-left: 2px solid #2ea043;
 }
-QPushButton#topNavButton[alert="true"] { color: #d29922; border-color: #9e6a03; }
+/* No alert border: the amber glyph plus the corner count badge already read as
+   "pending", and an extra outline boxed the rail's Alerts bell on its own. */
+QPushButton#topNavButton[alert="true"] { color: #d29922; }
 QPushButton#topNavButton[alert="true"]:checked {
-    background-color: #1c1908; color: #f0b72f; border-color: #9e6a03;
+    background-color: #1c1908; color: #f0b72f;
 }
 QPushButton#floatingLogButton {
     background-color: #21262d; border: 1px solid #30363d; border-radius: 6px;
@@ -1641,9 +1643,10 @@ QPushButton#topNavButton:checked {
 QPushButton#topNavButton[railUtility="true"]:checked {
     border-left: 2px solid #2ea043;
 }
-QPushButton#topNavButton[alert="true"] { color: #9a6700; border-color: #d4a72c; }
+/* Border-less for the same reason as the dark sheet: glyph tint + count badge. */
+QPushButton#topNavButton[alert="true"] { color: #9a6700; }
 QPushButton#topNavButton[alert="true"]:checked {
-    background-color: #fff8c5; color: #7d4e00; border-color: #d4a72c;
+    background-color: #fff8c5; color: #7d4e00;
 }
 QPushButton#floatingLogButton {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;

@@ -18,9 +18,15 @@ def test_member_circle_uses_dirt_and_tracks_firewood_per_member():
     assert "rebuildCampfireMemberLogs(count)" in SCENE
     assert "log.userData.memberLogIndex = index" in SCENE
     # adhoc #427: the blaze is a milestone marker — it holds its size through a
-    # hundred accounts and steps up when the next century lands.
+    # hundred accounts and steps up only when the next century lands.
+    assert "const CAMPFIRE_BASE_FIRE_LEVEL = 1.45;" in SCENE
+    assert "const CAMPFIRE_FIRE_LEVEL_PER_CENTURY = 0.3;" in SCENE
+    assert "const CAMPFIRE_MAX_FIRE_LEVEL = 3.55;" in SCENE
     assert "const fireCenturies = Math.floor(count / 100);" in SCENE
-    assert "fireLevel = clamp(1.6 + fireCenturies * 0.35, 1.6, 4.4)" in SCENE
+    assert (
+        "CAMPFIRE_BASE_FIRE_LEVEL + fireCenturies * CAMPFIRE_FIRE_LEVEL_PER_CENTURY"
+        in SCENE
+    )
     # Growing cones are re-pinned to the logs so the fire never sinks into the pit.
     assert "flame.position.y = FLAME_BASE_Y + (FLAME_HEIGHT * height) / 2;" in SCENE
 
@@ -28,9 +34,11 @@ def test_member_circle_uses_dirt_and_tracks_firewood_per_member():
 def test_member_total_hangs_high_and_large_above_the_fire():
     # adhoc #427: the count reads as the clearing's headline, so it sits well
     # clear of the flames and rises further as the fire grows.
-    assert "const MEMBER_COUNT_HOVER_Y = 3.55;" in SCENE
+    assert "const MEMBER_COUNT_HOVER_Y = 3.9;" in SCENE
     assert "memberCountSprite.scale.set(5.2, 2.6, 1);" in SCENE
-    assert "FLAME_HEIGHT * Math.max(0, fireLevel - 1.6)" in SCENE
+    assert (
+        "FLAME_HEIGHT * Math.max(0, fireLevel - CAMPFIRE_BASE_FIRE_LEVEL)" in SCENE
+    )
 
 
 def test_email_pin_switches_between_verified_check_and_unverified_x():

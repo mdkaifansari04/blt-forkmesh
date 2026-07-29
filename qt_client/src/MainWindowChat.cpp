@@ -4428,6 +4428,7 @@ QWidget *MainWindow::buildBreadcrumb()
     });
     updateUserSwitcher();
     updateAvatarButton();
+    updateAdminCrownBadge();
 
     // Connection status dot, overlaid on the bottom-right of the (now sole)
     // avatar. It's purely decorative (clicks fall through to the avatar); the
@@ -4441,6 +4442,20 @@ QWidget *MainWindow::buildBreadcrumb()
     // part of it.
     m_connectionDot->move(40 - 12 - 3, 40 - 12 - 3);
     m_connectionDot->raise();
+
+    // Admin crown badge, overlaid on the top-left of the same avatar (mirroring
+    // the connection dot's bottom-right corner). Hidden unless this node is an
+    // admin; updateAdminCrownBadge() keeps it in sync with m_isAdmin.
+    m_adminCrownBadge = new QLabel(QString::fromUtf8("\xF0\x9F\x91\x91"),
+                                   m_userAvatarNavButton);
+    m_adminCrownBadge->setObjectName("adminCrownBadge");
+    m_adminCrownBadge->setFixedSize(14, 14);
+    m_adminCrownBadge->setAlignment(Qt::AlignCenter);
+    m_adminCrownBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_adminCrownBadge->setStyleSheet(QStringLiteral("font-size:11px;"));
+    m_adminCrownBadge->move(-2, -2);
+    m_adminCrownBadge->raise();
+    m_adminCrownBadge->hide();
 
     // Captions for the top-bar dropdowns.
     auto makeCaption = [](const QString &t) {
@@ -4950,6 +4965,14 @@ void MainWindow::updateConnectionStatus()
         QStringLiteral("background:%1; border-radius:6px;").arg(color));
 }
 
+void MainWindow::updateAdminCrownBadge()
+{
+    if (!m_adminCrownBadge)
+        return;
+    m_adminCrownBadge->setVisible(m_isAdmin);
+    m_adminCrownBadge->setToolTip(m_isAdmin ? QStringLiteral("Admin") : QString());
+}
+
 // Flip this node online/offline from the profile toggle. "Offline" keeps the user
 // in the app but stops two reward-eligibility signals — the heartbeat and live
 // repo serving — and folds the open session into the saved uptime total.
@@ -5384,11 +5407,10 @@ QString externalWalletBalanceTooltip(const QString &detail)
 void MainWindow::updateNodeSwitcher()
 {
     updateUserSwitcher();
-    // Keep the Nodes directory in step with the dropdown's node list.
+    // Keep the Nodes directory in step with the dropdown's node list. It owns the
+    // rail badge too — m_nodeMenuEntries also holds chat user accounts and repo
+    // owners, which are not nodes, so counting it here over-badged the rail.
     refreshNodesTable();
-    if (auto *railButton =
-            dynamic_cast<ActivityRailButton *>(m_nodesNavButton))
-        railButton->setBadgeCount(m_nodeMenuEntries.size());
     if (!m_nodeMenuButton)
         return;
     const QString caret = QString::fromUtf8("\xE2\x96\xBE");
@@ -5547,11 +5569,13 @@ void MainWindow::updateNavSolanaBalance()
              user.compare(nodeName, Qt::CaseInsensitive) != 0)
                 ? user + QStringLiteral("/") + nodeName
                 : nodeName;
-        // Admins get a little crown next to their name. U+1F451 (👑).
-        const QString crown = QString::fromUtf8(" \xF0\x9F\x91\x91");
-        m_navNodeName->setText(m_isAdmin && !name.isEmpty() ? name + crown : name);
-        m_navNodeName->setToolTip(m_isAdmin && !name.isEmpty() ? name + " (admin)" : name);
+        m_navNodeName->setText(name);
+        m_navNodeName->setToolTip(name);
         m_navNodeName->setVisible(!name.isEmpty());
+        // Admin status is shown as a crown badge on the avatar button instead
+        // of appended to this text; piggyback on this frequently-called
+        // refresh so the badge stays in sync wherever m_isAdmin changes.
+        updateAdminCrownBadge();
     }
     if (!m_navSolanaBalance)
         return;
@@ -8676,6 +8700,24 @@ void MainWindow::refreshHostsTable()
         });
         cellRow->addWidget(uninstallBtn);
 
+        // Per-row Destroy button: delete the server itself on Vultr. Uninstall
+        // above only wipes ForkMesh (the VPS keeps running and billing), so a
+        // mirror that is no longer wanted still has to be torn down by hand in
+        // the Vultr panel — this does it from here and then forgets the host.
+        auto *destroyBtn = new QPushButton(QStringLiteral("Destroy"));
+        destroyBtn->setObjectName(QStringLiteral("hostDestroyButton"));
+        destroyBtn->setCursor(Qt::PointingHandCursor);
+        destroyBtn->setToolTip(QStringLiteral(
+            "Destroy this server on Vultr: the instance is deleted, billing "
+            "stops and everything on it is gone permanently. Needs the Vultr "
+            "API key from the field above (or a stored VULTR_API_KEY "
+            "variable)."));
+        setOcticon(destroyBtn, "alert", 12);
+        connect(destroyBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] { destroyVultrHostAtRow(i); });
+        });
+        cellRow->addWidget(destroyBtn);
+
         // Per-row Remove button: drop this host from the saved list only. Unlike
         // Uninstall, this opens no SSH session and changes nothing on the remote
         // host \xe2\x80\x94 it just stops the app tracking it here (e.g. to clean
@@ -9969,14 +10011,15 @@ void MainWindow::fetchRelayOnlineNodes(bool force)
 
 void MainWindow::refreshNodesTable()
 {
-    if (!m_nodesTable)
-        return;
+    // No early return on a missing table: the Nodes page is built lazily, but the
+    // rail badge has to show the real node count from the first launch on, and
+    // this is the only place that knows which roster entries are actually nodes.
 
     // Ask the relay who is serving right now (throttled internally), so mirror
     // nodes outside this client's chat room still show online. Only while the
     // Nodes page is actually visible — this also runs on every roster tick, and
     // a hidden page must not keep polling the quota-limited relay.
-    if (m_nodesTable->isVisible())
+    if (m_nodesTable && m_nodesTable->isVisible())
         fetchRelayOnlineNodes();
 
     // The roster record (version / owner / telemetry / mirrors) for a node.
@@ -10017,9 +10060,6 @@ void MainWindow::refreshNodesTable()
     };
     const QString dash = QString::fromUtf8("\xE2\x80\x94");
 
-    // Which node the detail panel is currently showing, so a rebuild can keep it.
-    const QString shown = m_nodesTable->property("shownNode").toString();
-
     // Build the database-backed node -> owning-user map. The public user
     // directory deliberately exposes linked node names but no private profile
     // fields, and unlike the live roster it retains offline nodes.
@@ -10050,6 +10090,17 @@ void MainWindow::refreshNodesTable()
     // the self row on the local predicate directly so it never leaks through.
     const bool selfIsUserAccount =
         m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty();
+    // A name the public account directory lists as a *user* and that no account
+    // lists as a linked node is a person, not a node. Those reach the switcher
+    // list purely as repository owners (refreshRepositoryList adds an entry for
+    // every repo owner) and never carry a roster identity to be filtered by
+    // accountKind, so every account with a listed repo was being counted and
+    // drawn as a node (adhoc #26). An owner whose machine node shares the account
+    // name stays: the relay's live set still reports it serving.
+    auto isDirectoryUserOnly = [&](const QString &key) {
+        return m_chatDirectoryUsers.contains(key) &&
+               !directoryOwner.contains(key) && !relayOnline(key);
+    };
     QList<NodeMenuEntry> visible;
     QList<MemberInfo> visibleRoster;
     QSet<QString> visibleNames;
@@ -10066,6 +10117,8 @@ void MainWindow::refreshNodesTable()
             continue;
         const QString key = e.name.trimmed().toLower();
         if (key.isEmpty() || visibleNames.contains(key))
+            continue;
+        if (!e.self && isDirectoryUserOnly(key))
             continue;
         if (mi.ownerUser.trimmed().isEmpty())
             mi.ownerUser = directoryOwner.value(key);
@@ -10116,6 +10169,20 @@ void MainWindow::refreshNodesTable()
         visibleRoster.append(info);
         visibleNames.insert(key);
     }
+
+    // The rail badge counts the rows this page would show — real serving nodes —
+    // and nothing else. It used to be re-stamped with m_nodeMenuEntries.size()
+    // right after this function ran (updateNodeSwitcher), which is the *unfiltered*
+    // switcher list: every chat user account, world-chat guest and repo owner in
+    // it was counted as a node, so a mesh of four nodes badged "21" (adhoc #26).
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_nodesNavButton))
+        railButton->setBadgeCount(visible.size());
+    if (!m_nodesTable)
+        return; // page not built yet — the badge above is all that's on screen
+
+    // Which node the detail panel is currently showing, so a rebuild can keep it.
+    const QString shown = m_nodesTable->property("shownNode").toString();
 
     // Populate with sorting off so inserted rows don't reshuffle mid-fill.
     m_nodesTable->setSortingEnabled(false);
@@ -10232,9 +10299,6 @@ void MainWindow::refreshNodesTable()
         m_nodesNavButton->setText(visible.isEmpty()
             ? QStringLiteral("Nodes")
             : QStringLiteral("Nodes (%1)").arg(visible.size()));
-    if (auto *railButton =
-            dynamic_cast<ActivityRailButton *>(m_nodesNavButton))
-        railButton->setBadgeCount(visible.size());
 
     // Re-open the previously shown node's detail (find it by name post-sort), or
     // default to the first row.
@@ -12713,6 +12777,131 @@ void MainWindow::forgetHostAtRow(int row)
     }
 }
 
+void MainWindow::destroyVultrHostAtRow(int row)
+{
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    if (row >= hosts.size())
+        return;
+    const QJsonObject host = hosts.at(row).toObject();
+    const QString name = host.value(QStringLiteral("name")).toString();
+    const QString ip = host.value(QStringLiteral("ip")).toString();
+    const auto setStatus = [this](const QString &text) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(text);
+    };
+
+    // Same key resolution as the create flow: the field first, then a
+    // device-local Actions variable. The key stays in memory for this call.
+    QString apiKey =
+        m_vultrApiKeyEdit ? m_vultrApiKeyEdit->text().trimmed() : QString();
+    if (apiKey.isEmpty()) {
+        apiKey = forkmesh::control::vultrApiKeyFromVariables(
+            ActionStore::variables());
+    }
+    if (apiKey.isEmpty()) {
+        setStatus(QStringLiteral(
+            "Enter your Vultr API key above (or store it as a VULTR_API_KEY "
+            "variable) to destroy a server."));
+        return;
+    }
+
+    const auto reply = QMessageBox::question(
+        this, QStringLiteral("Destroy server"),
+        QString::fromUtf8(
+            "This DELETES the Vultr server behind \"%1\" (%2). The instance and "
+            "everything on it are gone permanently, billing stops, and the host "
+            "is removed from this list. This cannot be undone. Continue?")
+            .arg(name, ip),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (reply != QMessageBox::Yes)
+        return;
+
+    const QString recorded = forkmesh::control::savedHostVultrInstanceId(host);
+    if (!recorded.isEmpty()) {
+        sendVultrInstanceDestroy(apiKey, recorded, name);
+        return;
+    }
+    // Hosts saved before the instance id was recorded (or added by hand) still
+    // have an address, so ask Vultr which instance that is. An ambiguous or
+    // missing match destroys nothing.
+    setStatus(QString::fromUtf8("Looking up \"%1\" on Vultr\xE2\x80\xA6").arg(name));
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/instances?per_page=500"),
+        QByteArrayLiteral("GET"), {},
+        [this, apiKey, name, ip, setStatus](QJsonObject result, QString error) {
+            if (!error.isEmpty()) {
+                setStatus(QString::fromUtf8("Could not destroy \"%1\": %2")
+                              .arg(name, error));
+                return;
+            }
+            const QString instanceId =
+                forkmesh::control::vultrInstanceIdForAddress(
+                    result.value(QStringLiteral("instances")).toArray(), ip);
+            if (instanceId.isEmpty()) {
+                setStatus(QString::fromUtf8(
+                    "No single Vultr instance matches \"%1\" (%2), so nothing "
+                    "was destroyed. Delete it from the Vultr panel instead.")
+                              .arg(name, ip));
+                return;
+            }
+            sendVultrInstanceDestroy(apiKey, instanceId, name);
+        });
+}
+
+void MainWindow::sendVultrInstanceDestroy(const QString &apiKey,
+                                          const QString &instanceId,
+                                          const QString &name)
+{
+    const auto setStatus = [this](const QString &text) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(text);
+    };
+    const QString invalid =
+        forkmesh::control::validateVultrDestroyRequest(apiKey, instanceId);
+    if (!invalid.isEmpty()) {
+        setStatus(invalid);
+        return;
+    }
+    setStatus(QString::fromUtf8("Destroying \"%1\" on Vultr\xE2\x80\xA6").arg(name));
+    appendHostInstallLog(
+        QString::fromUtf8("Destroying Vultr instance %1 (\"%2\")\xE2\x80\xA6\n")
+            .arg(instanceId, name));
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/instances/") + instanceId,
+        QByteArrayLiteral("DELETE"), {},
+        [this, name, instanceId, setStatus](QJsonObject, QString error) {
+            if (!error.isEmpty()) {
+                setStatus(QString::fromUtf8("Could not destroy \"%1\": %2")
+                              .arg(name, error));
+                appendHostInstallLog(
+                    QString::fromUtf8("Vultr destroy failed: %1\n").arg(error));
+                return;
+            }
+            appendHostInstallLog(QString::fromUtf8(
+                "Vultr instance %1 destroyed.\n").arg(instanceId));
+            // Only now does the saved row become meaningless. Re-resolve it by
+            // name: the table may have been rebuilt while the call was in
+            // flight, so the row index this started from can be stale.
+            QSettings settings;
+            const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+                settings, kHostsSetting, &m_hostSessionPasswords);
+            for (int i = 0; i < hosts.size(); ++i) {
+                if (hosts.at(i).toObject().value(QStringLiteral("name"))
+                        .toString() == name) {
+                    forgetHostAtRow(i);
+                    break;
+                }
+            }
+            setStatus(QString::fromUtf8(
+                "Destroyed \"%1\" on Vultr and removed it from this list.")
+                          .arg(name));
+        });
+}
+
 QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip,
                                           const QString &user) const
 {
@@ -12850,12 +13039,21 @@ void MainWindow::vultrApiCall(const QString &apiKey, const QString &path,
                          QByteArrayLiteral("Bearer ") + apiKey.toUtf8());
     request.setHeader(QNetworkRequest::ContentTypeHeader,
                       QStringLiteral("application/json"));
-    QNetworkReply *reply =
-        method == QByteArrayLiteral("POST")
-            ? m_networkAccess->post(
-                  request,
-                  QJsonDocument(body).toJson(QJsonDocument::Compact))
-            : m_networkAccess->get(request);
+    QNetworkReply *reply = nullptr;
+    if (method == QByteArrayLiteral("POST")) {
+        reply = m_networkAccess->post(
+            request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    } else if (method == QByteArrayLiteral("GET") || method.isEmpty()) {
+        reply = m_networkAccess->get(request);
+    } else {
+        // DELETE and friends: Qt has no typed overload, and a successful
+        // DELETE /v2/instances/{id} answers 204 with no body at all.
+        reply = m_networkAccess->sendCustomRequest(
+            request, method,
+            body.isEmpty()
+                ? QByteArray()
+                : QJsonDocument(body).toJson(QJsonDocument::Compact));
+    }
     connect(reply, &QNetworkReply::finished, this, [reply, onDone] {
         reply->deleteLater();
         const int status =

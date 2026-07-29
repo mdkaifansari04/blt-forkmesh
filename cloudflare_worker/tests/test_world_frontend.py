@@ -190,7 +190,7 @@ def test_scene_builds_playable_landmarks_and_badged_avatars():
     assert "identity.browser" in SCENE
     assert "identity.os" in SCENE
     assert "identity.name" in SCENE
-    assert "world-shirt-account" in APP
+    assert "world-shirt-account" not in APP
     for status_icon in (
         "Guest: \"○\"",
         "Registered: \"✓\"",
@@ -901,6 +901,9 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
     assert "event.preventDefault();" in pull_guard
     assert "[data-world-thumbstick]" in pull_guard
     assert "[data-world-canvas-wrap]" in pull_guard
+    assert "if (touchPointers.size > 0)" in SCENE
+    assert "pendingTouchResize = true;" in SCENE
+    assert "if (!touchPointers.size && pendingTouchResize)" in SCENE
     mobile = CSS[CSS.index("@media (max-width: 720px)"):]
     assert ".world-right-rail {" in mobile
     assert "display: grid;" in mobile
@@ -936,13 +939,15 @@ def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
         assert contract in SCENE
 
 
-def test_world_navigation_uses_five_visible_quick_views_and_no_repo_shortcut():
+def test_world_navigation_uses_fixed_spatial_shortcuts_and_five_saved_views():
     template = APP.split("function worldTemplate(", 1)[1].split(
         "\nfunction ", 1
     )[0]
-    assert '(landmark) => landmark.id !== "repositories"' in template
+    assert 'new Set(["office", "campfire"])' in template
     assert 'data-expanded="true"' in template
-    assert "Quick views" in template
+    assert "Remember" in template
+    assert "Quick views" not in template
+    assert "Reward pool" not in template
     assert '<div class="world-saved-view-list" data-world-saved-view-list>' in template
     assert '.slice(0, SAVED_VIEWS_MAX)' in APP.split("renderSavedViews()", 1)[1]
 
@@ -1003,14 +1008,16 @@ def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
     # replace the terminal, so both entrances are asserted here.
     assert "openWorldChat(" in APP
     assert "closeWorldChat()" in APP
-    assert "destination.origin !== location.origin" in APP
-    assert '["/dashboard/chat", "/dashboard/chat/"]' in APP
-    assert 'destination.searchParams.set("worldEmbed", "1")' in APP
     assert "data-world-chat-terminal" in APP
-    assert "data-world-chat-terminal-frame" in APP
+    assert "data-world-native-chat" in APP
+    assert "data-world-chat-terminal-frame" not in APP
+    assert 'data-world-default-repository="forkmesh/forkmesh"' in APP
+    assert 'id="fullChatAction"' in APP
+    assert '<option value="agent" selected>Send to bot</option>' in APP
     assert "world-chat-terminal-channel" in APP
     assert "world-chat-terminal-connection" in APP
-    assert '"/dashboard/chat?worldEmbed=1"' in APP
+    chat_version = hashlib.sha256(DASHBOARD_CHAT.encode()).hexdigest()[:12]
+    assert f'script.src = "/dashboard-chat.js?v={chat_version}"' in APP
     assert "world-chat-terminal" in CSS
     assert "DEBUG owns the lower-left; chat owns the lower-right" in CSS
     diagnostics = CSS[
@@ -1057,16 +1064,10 @@ def test_mobile_world_chat_composer_stays_above_safe_area_and_terminal_bars():
     )
     open_chat = APP[
         APP.index("  openWorldChat("):
-        APP.index("\n  loadChatTerminalFrame()", APP.index("  openWorldChat("))
+        APP.index("\n  loadNativeWorldChat()", APP.index("  openWorldChat("))
     ]
-    assert (
-        'this.$("[data-world-chat-terminal]")?.removeAttribute("open")'
-        in open_chat
-    )
-    assert (
-        'this.$("[data-world-diagnostics]")?.removeAttribute("open")'
-        in open_chat
-    )
+    assert "this.openChatTerminal();" in open_chat
+    assert ".world-native-chat" in CSS
     assert "var(--forkmesh-chat-viewport-height, 100dvh)" in DASHBOARD_CHAT_VIEW
     assert "const layoutHeight = window.innerHeight" in DASHBOARD_CHAT_VIEW
     assert "window.frameElement?.getBoundingClientRect?.().height" in (
@@ -1425,13 +1426,13 @@ def test_world_task_button_and_inactive_avatar_visibility_contracts():
 def test_render_stalls_include_bounded_likely_component_attribution():
     assert (
         "Render stall detected; we think it was "
-        "${stallAttribution.component}" in SCENE
+        "${component}" in SCENE
     )
-    assert "likelyCause: stallAttribution" in SCENE
-    assert 'component: "camera controls"' in SCENE
-    assert 'component: "Three.js renderer workload"' in SCENE
-    assert 'component: "JavaScript memory management"' in SCENE
-    assert 'codeArea: "renderer.render(scene, camera)"' in SCENE
+    assert "likelyCause: { component, codeArea }," in SCENE
+    assert 'component = "camera controls";' in SCENE
+    assert 'component = "Three.js renderer workload";' in SCENE
+    assert 'component = `office ${officeSceneMode} scene`;' in SCENE
+    assert 'codeArea = "renderer.render(scene, camera)";' in SCENE
 
 
 def test_world_first_person_zoom_out_falls_back_to_third_person():
@@ -2443,13 +2444,19 @@ def test_world_lighting_supports_local_auto_day_night_and_brightness_controls():
         assert overlay in SCENE
 
 
-def test_world_right_rail_is_compact_by_default_and_expands_as_one_control():
+def test_world_right_rail_reveals_as_one_fixed_square_shortcut_column():
     assert "data-world-right-rail" in APP
     assert 'data-expanded="false"' in APP
     assert "setWorldRightRailExpanded(expanded)" in APP
     assert "rail.dataset.expanded = String(active)" in APP
+    assert "data-world-map-toggle" not in APP
+    assert 'map.classList.toggle("is-expanded"' not in APP
     assert ".world-right-rail[data-expanded=\"false\"]" in CSS
-    assert "width: 44px;" in CSS
+    fixed_rail = CSS.rsplit("/* Fixed launcher geometry.", 1)[1]
+    assert "width: 48px;" in fixed_rail
+    assert ".world-map-button," in fixed_rail
+    assert ".world-share-view-button," in fixed_rail
+    assert ".world-remember-view" in fixed_rail
     for token in (
         "--primer-canvas-default:",
         "--primer-canvas-subtle:",
@@ -2462,15 +2469,10 @@ def test_world_right_rail_is_compact_by_default_and_expands_as_one_control():
         "--primer-accent-subtle:",
     ):
         assert token in CSS
-    right_rail = CSS[
-        CSS.index(".world-right-rail {"):
-        CSS.index(".world-map-list {")
-    ]
-    assert "var(--primer-canvas-default)" in right_rail
-    assert "var(--primer-border-default)" in right_rail
-    assert "var(--primer-control-bg)" in right_rail
-    assert "var(--primer-control-hover)" in right_rail
-    assert "border-radius: 6px;" in right_rail
+    assert "var(--primer-border-default)" in fixed_rail
+    assert "var(--primer-control-bg)" in fixed_rail
+    assert "var(--primer-control-hover)" in fixed_rail
+    assert "border-radius: 6px;" in fixed_rail
     assert "aside:not(.world-right-rail)" in CSS
 
 
@@ -2716,6 +2718,59 @@ def test_forkbot_mention_excites_the_droid_with_echo_screen_and_thinking_dots():
     assert APP.count("this.world?.exciteForkbot?.(") == 1
 
 
+def test_unified_chat_stream_does_not_duplicate_replayed_activity():
+    # adhoc #25: a fresh load opened on a stack of activity cards — the chat
+    # backlog the relay re-sends on connect, the first notification/event read,
+    # and any mirror doorbell that landed while the scene was booting. Those
+    # are all old news to someone who just arrived, so the stream only narrates
+    # what happens after the World is up.
+    assert "const ACTIVITY_JOIN_GRACE_MS = CHAT_BUBBLE_JOIN_GRACE_MS;" in APP
+    assert (
+        "this.activityNoticesEnabledAt = Date.now() + ACTIVITY_JOIN_GRACE_MS;"
+        in APP
+    )
+    assert (
+        "  activityNoticesSettled() {\n"
+        "    return Date.now() >= this.activityNoticesEnabledAt;\n"
+        "  }"
+    ) in APP
+    # Native chat already owns both message and system rows. The World accepts
+    # those signals for avatar/unread state without drawing a second overlay.
+    handler = APP[
+        APP.index("  handleWorldChatMessage = (event) => {"):
+        APP.index("\n  };", APP.index("  handleWorldChatMessage = (event) => {"))
+    ]
+    assert (
+        'if (data.type === "forkmesh:world-activity") return;' in handler
+    )
+    assert "this.activityNotice(" not in handler
+    # The first notification/event reads still seed the seen sets, so nothing
+    # already waiting at load is announced on a later poll either.
+    announce = APP[
+        APP.index("  announceWorldNotifications() {"):
+        APP.index("\n  }", APP.index("  announceWorldNotifications() {"))
+    ]
+    assert (
+        "globalEvents.forEach((item) => this.seenWorldEvents.add(item.id));"
+        in announce
+    )
+    assert (
+        "if (announcements.length && this.activityNoticesSettled()) {" in announce
+    )
+    # A mirror doorbell during the grace still arms the scene effect and the
+    # catalog refresh; only its narration is held back.
+    push = APP[
+        APP.index("  handleMirrorPush(message) {"):
+        APP.index("\n  }", APP.index("  handleMirrorPush(message) {"))
+    ]
+    assert "if (this.activityNoticesSettled()) {" in push
+    assert "this.world?.armMirrorPushEffect?.(" in push
+    # Notices a visitor causes by acting are never gated.
+    toast_start = APP.index("  toast(message, { priority = 0, lockMs = 0 } = {}) {")
+    toast = APP[toast_start:APP.index("\n  }", toast_start)]
+    assert "activityNoticesSettled" not in toast
+
+
 def test_collapsed_chat_bar_shows_an_unread_count_excluding_own_lines():
     # adhoc #426: the docked CHAT bar showed only the newest line, so a visitor
     # walking around had no idea how much they had missed. It now carries an
@@ -2762,9 +2817,9 @@ def test_clicking_forkbot_opens_the_terminal_bar_with_a_mention_prefilled():
     assert "this.closeWorldChat();" in terminal
     assert "details.open = true;" in terminal
     assert '"forkmesh:chat-prefill"' in terminal
-    assert "frame.contentWindow?.postMessage(" in terminal
-    # The embedded /dashboard/chat page (used by both the terminal bar and the
-    # full overlay) listens for that message and fills + focuses its composer.
+    assert 'new MessageEvent("message"' in terminal
+    # The native controller listens for that message and fills + focuses its
+    # composer without a nested document.
     assert 'data.type !== "forkmesh:chat-prefill"' in DASHBOARD_CHAT
     assert "input.focus();" in DASHBOARD_CHAT
 

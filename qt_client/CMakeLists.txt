@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.7.4 LANGUAGES CXX)
+project(ForkMesh VERSION 0.7.6 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -448,6 +448,9 @@ install(FILES
     DESTINATION "${FORKMESH_RESOURCE_INSTALL_ROOT}/cloudflare_worker")
 install(PROGRAMS
     "${CMAKE_CURRENT_SOURCE_DIR}/../cloudflare_worker/pywrangler.sh"
+    # The control node's "Deploy to Cloudflare" button runs this script, so an
+    # installed client ships it beside the Worker bundle it deploys.
+    "${CMAKE_CURRENT_SOURCE_DIR}/../cloudflare_worker/deploy.sh"
     DESTINATION "${FORKMESH_RESOURCE_INSTALL_ROOT}/cloudflare_worker")
 install(DIRECTORY
     "${CMAKE_CURRENT_SOURCE_DIR}/../cloudflare_worker/src"

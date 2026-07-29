@@ -47,6 +47,10 @@ class FakeRuntime:
         self.db.executescript(
             (ROOT / "migrations" / "0108_organization_tasks_general_bot.sql")
             .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" /
+             "0112_organization_task_global_priority.sql")
+            .read_text(encoding="utf-8"))
         self.request_method = "GET"
         self.request_data = {}
         self.query_data = {}
@@ -281,6 +285,30 @@ async def test_start_uses_optional_private_engineering_notifier():
 
 
 @run_async_test
+async def test_create_and_lifecycle_emit_private_task_activity():
+    runtime = FakeRuntime()
+    notices = []
+
+    async def notify(org_bi, actor, task_id, task, action):
+        notices.append((actor, task_id, task["title"], action))
+
+    runtime.notify_organization_task_activity = notify
+    created = await create_task(runtime)
+    task = created["data"]["task"]
+    await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/start",
+    )
+    await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/stop",
+    )
+    assert [notice[3] for notice in notices] == [
+        "created", "started", "stopped",
+    ]
+
+
+@run_async_test
 async def test_universal_tasks_are_org_private_routable_and_marketing_compatible():
     runtime = FakeRuntime()
     generic = await tasks_api.handle(
@@ -328,6 +356,55 @@ async def test_universal_tasks_are_org_private_routable_and_marketing_compatible
     )
     assert outsider["status"] == 403
     assert outsider["data"]["error"] == "org_member_required"
+
+
+@run_async_test
+async def test_global_priorities_are_manager_owned_projected_and_sorted():
+    runtime = FakeRuntime()
+    low = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Lower priority",
+            "assignee": "bob",
+            "priority": 80,
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    high = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Highest priority",
+            "assignee": "bob",
+            "priority": 1,
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    denied = await tasks_api.handle(
+        runtime.use("POST", "bob", {
+            "title": "Member cannot self-promote",
+            "assignee": "bob",
+            "priority": 2,
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert denied["status"] == 403
+    assert denied["data"]["error"] == "manager_required"
+    listing = await tasks_api.handle(
+        runtime.use("GET", "carol"), tasks_api.UNIVERSAL_PREFIX)
+    assert [
+        (task["title"], task["priority"])
+        for task in listing["data"]["tasks"]
+    ] == [
+        ("Highest priority", 1),
+        ("Lower priority", 80),
+    ]
+    reprioritized = await tasks_api.handle(
+        runtime.use("PATCH", "alice", {"priority": 3}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{low['data']['task']['id']}",
+    )
+    assert reprioritized["status"] == 200
+    assert reprioritized["data"]["task"]["priority"] == 3
+    assert high["data"]["task"]["priority"] == 1
+    assert runtime.audits[-1]["action"] == (
+        "organization.task_priority_changed")
 
 
 @run_async_test
@@ -436,6 +513,10 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
             "assigneeKind": "codex",
             "sendToQa": True,
             "howToTest": "Open the World and verify the result.",
+            "attachments": [
+                {"name": "hud-notes.md", "mime": "text/markdown", "size": 842},
+                {"name": "world.png", "mime": "image/png", "size": 4096},
+            ],
         }),
         tasks_api.UNIVERSAL_PREFIX,
     )
@@ -446,6 +527,10 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
     assert task["assigneeKind"] == "agent"
     assert task["qa"]["requestedAt"] == runtime.now_ms
     assert task["repository"] == "forkmesh/forkmesh"
+    assert task["attachments"] == [
+        {"name": "hud-notes.md", "mime": "text/markdown", "size": 842},
+        {"name": "world.png", "mime": "image/png", "size": 4096},
+    ]
     stored = runtime.db.execute(
         "SELECT data FROM organization_tasks WHERE task_id=?",
         (task["id"],),
@@ -1059,6 +1144,54 @@ async def test_encrypted_copy_same_origin_reassignment_and_metadata_only_audit()
 
 
 @run_async_test
+async def test_delete_purges_the_promoted_legacy_row_so_it_cannot_return():
+    """A deleted task must not be restored by the legacy Marketing backfill.
+
+    schema.py replays "INSERT OR IGNORE INTO organization_tasks ... SELECT ...
+    FROM world_office_marketing_tasks" whenever the schema fingerprint changes,
+    so a surviving legacy row silently resurrects a deleted task.
+    """
+    runtime = FakeRuntime()
+    created = await create_task(runtime, "bob", "Promoted from Marketing")
+    task_id = created["data"]["task"]["id"]
+    promoted = runtime.db.execute(
+        "SELECT task_id,org_bi,status,assignee_bi,active_assignee_bi,data,"
+        "created_by_bi,created_at,updated_at FROM organization_tasks "
+        "WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    runtime.db.execute(
+        "INSERT INTO world_office_marketing_tasks ("
+        "task_id,org_bi,status,assignee_bi,active_assignee_bi,data,"
+        "created_by_bi,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        tuple(promoted),
+    )
+    runtime.db.execute(
+        "INSERT INTO world_office_marketing_checkins ("
+        "checkin_id,task_id,org_bi,account_bi,state,data,created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        ("c" * 32, task_id, "org-bi", "bi-bob", "going_well", "sealed", NOW),
+    )
+    runtime.db.commit()
+
+    deleted = await tasks_api.handle(
+        runtime.use("DELETE", "mary", {}),
+        f"{tasks_api.PREFIX}/{task_id}",
+    )
+    assert deleted["status"] == 200
+    assert deleted["data"]["deleted"] is True
+    for table in (
+            "organization_tasks",
+            "world_office_marketing_tasks",
+            "world_office_marketing_checkins",
+    ):
+        assert runtime.db.execute(
+            "SELECT COUNT(*) FROM " + table + " WHERE task_id=?",
+            (task_id,),
+        ).fetchone()[0] == 0
+
+
+@run_async_test
 async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
     """A prompt-launched task explains which bot ran it, and how (adhoc #18)."""
 
@@ -1084,7 +1217,7 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
     )
     assert opened["status"] == 201
     task = opened["data"]["task"]
-    assert task["assigneeKind"] == "claude"
+    assert task["assigneeKind"] == "agent"
     assert task["agentSessionId"] == "418"
     assert task["agent"] == {
         "provider": "claude-code",

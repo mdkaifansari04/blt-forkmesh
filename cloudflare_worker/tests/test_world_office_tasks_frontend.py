@@ -49,6 +49,26 @@ def test_marketing_board_has_accessible_create_assign_and_timer_controls():
         assert contract in world
 
 
+def test_work_tab_has_a_compact_universal_task_creator_with_agent_routing():
+    world = source(WORLD)
+    tasks = source(TASKS)
+    css = source(CSS)
+    for contract in (
+        "data-world-work-task-form",
+        "data-world-work-task-title",
+        "data-world-work-task-assignee",
+        "data-world-work-task-department",
+        "data-world-work-task-repository",
+        "data-world-work-task-priority",
+    ):
+        assert contract in world
+    assert "Codex / Claude agent on linked desktop" in tasks
+    assert 'assignment === "agent" ? "agent"' in tasks
+    assert 'mutate(OFFICE_TASKS_PATH, body)' in tasks
+    assert "repository before assigning agent work" in tasks
+    assert ".world-work-quick-entry" in css
+
+
 def test_tasks_use_https_polling_and_server_clock_without_world_socket_data():
     tasks = source(TASKS)
     assert '"/api/world/office/marketing-tasks"' in tasks
@@ -228,11 +248,36 @@ def test_assignment_control_has_explicit_contrast_and_tasks_can_finish_or_delete
     css = source(CSS)
     assert 'data-world-office-task-action="complete"' in tasks
     assert 'data-world-office-task-action="delete"' in tasks
-    assert '{ method: "DELETE" }' in tasks
+    assert '{ method: "DELETE", removeOnSuccess: true }' in tasks
     assert 'window.confirm("Delete this task' in tasks
     assert ".world-office-task-manager select option" in css
     assert "background: #071713" in css
     assert '.world-office-task[data-status="done"]' in css
+
+
+def test_a_confirmed_delete_leaves_every_list_and_a_refusal_is_announced():
+    """A deleted row may never be repainted by a slower or skipped read."""
+    tasks = source(TASKS)
+    world = source(WORLD)
+    for contract in (
+        "function dropTask(taskId)",
+        "if (removeOnSuccess) dropTask(taskId);",
+        "await refresh({ quiet: true, force: true });",
+        # A read that started before the delete must not join it, and its
+        # older payload must not overwrite the newer list.
+        'if ((!monitoring && !force) || typeof fetchJSON !== "function")',
+        "if (refreshPromise && !force) return refreshPromise;",
+        "const sequence = ++refreshSequence;",
+        "if (sequence !== refreshSequence) return false;",
+        "dedupe: !force,",
+        # The Office status line is invisible from the Local controls Work
+        # tab, so a rejected change is also toasted.
+        "toast(errorMessage);",
+    ):
+        assert contract in tasks
+    # fetchJSON honors the dedupe opt-out the forced read relies on.
+    assert "dedupe = true," in world
+    assert "if (canDedupe && this.inflightRequests.has(requestKey))" in world
 
 
 def test_completed_tasks_are_ready_for_qa_with_three_verdict_controls():

@@ -322,7 +322,7 @@ QJsonValue redactProviderCredentials(
     return result;
 }
 
-// Branch a row's session runs on, stashed on its Status cell so
+// Branch a row's session runs on, stashed on its "#" cell so
 // AgentBranchButtonDelegate (below) can paint the row's branch button and route
 // the click without looking the session back up (adhoc #377).
 constexpr int kAgentBranchRole = Qt::UserRole + 33;
@@ -345,18 +345,27 @@ QString agentMergeBase(const AgentSession &s)
     return s.baseBranch.isEmpty() ? QStringLiteral("main") : s.baseBranch;
 }
 
-// Fill the agent table's Status cell for a session. A session whose worktree/PR
-// has landed in the base branch (issue #291) simply reads "merged" in the merged-
-// purple foreground used across the app, with a tooltip spelling out the branch
-// and time so the note is visible straight from the list. The Claude run summary
-// ("N turns · Ms") that used to be appended here now lives in the agent
-// detail-page header's Stats line (adhoc #42).
+// Word a session's run state reads as: "merged" once its worktree/PR has landed
+// in the base branch (issue #291), otherwise the run status. The Status column
+// itself is gone (adhoc #29) — the state now rides the "#" cell's glyph — so this
+// only feeds tooltips and the free-text filter.
+QString agentStatusLabel(const AgentSession &s)
+{
+    return s.merged ? QStringLiteral("merged") : agentStatusText(s.status);
+}
+
+// Fill the agent table's leading "#" cell for a session: the session id, the run
+// state as a coloured glyph, and the branch button's roles (adhoc #29 folded the
+// old Status column's glyph and chip in here, so the icons read down the list's
+// left edge instead of halfway across it). The Claude run summary ("N turns ·
+// Ms") that used to sit in Status now lives in the agent detail-page header's
+// Stats line (adhoc #42).
 void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
                           const AgentDiffStat &stat = AgentDiffStat())
 {
-    cell->setText(s.merged ? QStringLiteral("merged") : agentStatusText(s.status));
-    cell->setForeground(s.merged ? QColor("#a371f7") : agentStatusColor(s.status));
-    // Status glyph next to the text (issue #108): an orange spinner while running
+    cell->setData(Qt::DisplayRole, s.id);
+    cell->setData(Qt::UserRole, s.id);
+    // Status glyph (issue #108): an orange spinner while running
     // (adhoc #23), a purple merge mark once it lands, a green check on success, a
     // red stop sign when halted, an orange hand while it waits on the user, and a
     // red X circle on failure (issue #322). The running glyph is seeded at frame 0
@@ -390,7 +399,9 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     cell->setData(kAgentBranchFilesRole, stat.files);
     cell->setData(kAgentBranchDirtyRole, stat.dirty);
     cell->setData(kAgentBranchWorktreeRole, stat.worktree);
-    QStringList tip;
+    // With the Status column gone the glyph is the only thing showing the run
+    // state, so the tooltip has to name it outright.
+    QStringList tip{agentStatusLabel(s)};
     if (!s.merged && s.status == AgentStatus::Queued)
         tip << QStringLiteral("Queued \xE2\x80\x94 starts when one of the %1 running "
                               "agent slots frees up (Settings \xE2\x86\x92 Agents)")
@@ -535,13 +546,16 @@ void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
 // drops back to a dim resting state and the driving timer stops.
 static constexpr qint64 kScannerIdleMs = 1500;
 // Far-right "Activity" column the scanner is painted into.
-static constexpr int kAgentActivityColumn = 8;
-// "Status" column, which also carries the per-row branch button (adhoc #377).
-static constexpr int kAgentStatusColumn = 4;
+static constexpr int kAgentActivityColumn = 7;
+// Leading "#" column, which also carries the run-state glyph and the per-row
+// branch button (adhoc #377, moved here from the dropped Status column by #29).
+static constexpr int kAgentIdColumn = 0;
 // "Diff" column, which also carries the per-row conflict button (adhoc #446).
-static constexpr int kAgentDiffColumn = 7;
+static constexpr int kAgentDiffColumn = 6;
+// "Speed" column, refreshed in place while a session streams.
+static constexpr int kAgentSpeedColumn = 4;
 
-// Draws a small branch button at the right edge of every Status cell whose
+// Draws a small branch button at the right edge of every "#" cell whose
 // session has a branch, and opens that branch when it's clicked (adhoc #377):
 // jumping to an agent's branch no longer means selecting the row and hunting for
 // the branch chip in the detail header. Subclasses the agents list's own item
@@ -556,7 +570,7 @@ public:
     }
 
     // Reserve the chip's slot in the column's width so ResizeToContents never
-    // sizes the column so tight that the glyph sits on top of the status text.
+    // sizes the column so tight that the chip sits on top of the session id.
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
         QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
@@ -1072,7 +1086,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *heading = new QLabel("Agent sessions");
     heading->setObjectName("channelTitle");
 
-    m_agentTable = new QTableWidget(0, 9);
+    m_agentTable = new QTableWidget(0, 8);
     m_agentTable->setObjectName("issueTable");
     installColumnHeaderMenu(m_agentTable); // 3-dots per-column menu (issue #318)
     // Selected agent rows get a green outline with a transparent fill (rather
@@ -1091,8 +1105,10 @@ QWidget *MainWindow::buildAgentsTab()
     // header (adhoc #42) so the list stays scannable and all of a session's
     // figures read together in one place; Speed (tok/s) stays as the at-a-glance
     // throughput. "Diff" (issue #170) is a compact files-changed + ahead/behind badge.
+    // "Status" is gone too (adhoc #29): its glyph and branch chip now ride the "#"
+    // cell, so both icons sit at the list's left edge without costing a column.
     m_agentTable->setHorizontalHeaderLabels(
-        {"#", "Issue", "Agent", "Model", "Status",
+        {"#", "Issue", "Agent", "Model",
          "Speed", "Updated", "Diff", "Activity"});
     m_agentTable->verticalHeader()->setVisible(false);
     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -1112,7 +1128,7 @@ QWidget *MainWindow::buildAgentsTab()
     // by makeColumnsResizable() below). The custom-painted Activity delegate is
     // bound to its logical column, so it follows the header wherever it lands.
     agentHeader->setSectionsMovable(true);
-    agentHeader->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    agentHeader->setSectionResizeMode(kAgentIdColumn, QHeaderView::ResizeToContents);
     // The Issue (title) column is user-expandable: a draggable Interactive column
     // with a generous default width rather than a locked Stretch flex column, so a
     // long issue title can be widened to read in full.
@@ -1125,10 +1141,10 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTable->setColumnWidth(kAgentActivityColumn, 104);
     m_agentTable->setItemDelegateForColumn(
         kAgentActivityColumn, new AgentScannerDelegate(&m_scannerStates, m_agentTable));
-    // Branch button on every Status cell (adhoc #377): one click from the list
+    // Branch button on every "#" cell (adhoc #377): one click from the list
     // straight to that session's branch in the Branches panel.
     m_agentTable->setItemDelegateForColumn(
-        kAgentStatusColumn,
+        kAgentIdColumn,
         new AgentBranchButtonDelegate(
             m_agentTable, [this](const QString &branch) { switchToBranch(branch); }));
     // Conflict button on every Diff cell whose branch no longer merges cleanly
@@ -4593,9 +4609,12 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
         return it;
     };
 
-    QTableWidgetItem *idItem = plain(0);
-    idItem->setData(Qt::DisplayRole, session.id);
-    idItem->setData(Qt::UserRole, session.id);
+    // Diff figures, memoised — feed both the "#" cell's branch chip (files /
+    // dirty / worktree badges, adhoc #403) and the Diff column below.
+    const AgentDiffStat diffStat = agentDiffStat(session, agentGitDir, agentBase);
+    // "#" column: the session id plus its run-state glyph and branch chip
+    // (adhoc #29 — the old Status column's icons, moved to the left edge).
+    applyAgentStatusCell(plain(kAgentIdColumn), session, diffStat);
     // Issue-scoped sessions show "#<issue> <title>"; PR-scoped ones (e.g. the
     // conflict auto-fixer, issueNumber 0) just show their title.
     plain(1)->setText(session.issueNumber > 0
@@ -4606,27 +4625,23 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
     plain(2)->setText(agentProviderName(session.provider));
     // Model column: the LLM model selected for this session.
     applyAgentModelCell(plain(3), session);
-    // Diff figures, memoised — feed both the Status cell's branch chip (files /
-    // dirty / worktree badges, adhoc #403) and the Diff column below.
-    const AgentDiffStat diffStat = agentDiffStat(session, agentGitDir, agentBase);
-    // Status column: text + coloured glyph (issue #108).
-    applyAgentStatusCell(plain(4), session, diffStat);
     // Turns/Time/Cost/Tokens now live in the detail-page header (adhoc #42); the
     // table keeps only Speed as the at-a-glance throughput. The token total still
     // feeds the Speed figure and is refreshed in place while the session streams
     // (see updateAgentTokenCell).
     const qint64 toks = sessionTokenTotal(session);
     // Speed column: token throughput derived from the token total and run duration.
-    applyAgentSpeedCell(sortable(5), session, toks);
+    applyAgentSpeedCell(sortable(kAgentSpeedColumn), session, toks);
     // "Updated" column: the most recent of created/started/finished/merged, shown
-    // as a friendly "x ago" string. The tooltip carries the full timestamp and the
-    // raw millisecond value drives chronological sorting.
+    // as a compact "7m"-style age (adhoc #29 — "7 minutes ago" spent a wide column
+    // on words the list doesn't need). The tooltip carries the full timestamp and
+    // the raw millisecond value drives chronological sorting.
     const qint64 updatedMs =
         qMax(qMax(session.createdAtMs, session.startedAtMs),
              qMax(session.finishedAtMs, session.mergedAtMs));
-    QTableWidgetItem *updated = sortable(6);
+    QTableWidgetItem *updated = sortable(5);
     updated->setData(Qt::DisplayRole,
-                     updatedMs > 0 ? formatIssueRelativeTime(updatedMs)
+                     updatedMs > 0 ? formatShortRelativeTime(updatedMs / 1000)
                                    : QStringLiteral("-"));
     updated->setData(kTableSortRole, static_cast<qlonglong>(updatedMs));
     updated->setToolTip(updatedMs > 0
@@ -4653,24 +4668,20 @@ AgentSession *MainWindow::findAgentSession(int sessionId)
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
-// issue #291: read back the Status-column text the agent list renders for a
+// issue #291: read back the run-state word the agent list renders for a
 // session — "merged" once its worktree/PR lands in the base branch, otherwise the
 // run status — so a window test can prove the merge note reaches the list. Goes
-// through applyAgentStatusCell (the same painter the live table uses) rather than
-// duplicating its logic.
+// through agentStatusLabel (what the "#" cell's glyph and tooltip are driven off,
+// adhoc #29) rather than duplicating its logic.
 QString MainWindow::testAgentStatusCellText(int sessionId) const
 {
-    for (const AgentSession &s : m_agentSessions) {
-        if (s.id == sessionId) {
-            QTableWidgetItem item;
-            applyAgentStatusCell(&item, s);
-            return item.text();
-        }
-    }
+    for (const AgentSession &s : m_agentSessions)
+        if (s.id == sessionId)
+            return agentStatusLabel(s);
     return QString();
 }
 
-// adhoc #403: read the branch chip's badges back off the Status cell —
+// adhoc #403: read the branch chip's badges back off the "#" cell —
 // AgentBranchButtonDelegate paints straight from these roles, so proving they
 // carry the session's diff stat proves the chip shows the right counts.
 QString MainWindow::testAgentStatusCellBadges(int sessionId,
@@ -4812,6 +4823,7 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch)
     if (!m_agentStore)
         return false;
     bool changed = false;
+    QList<int> mergedIds;
     for (AgentSession &s : m_agentSessions) {
         if (s.merged)
             continue;
@@ -4828,8 +4840,15 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch)
                    .arg(byPr ? QStringLiteral("PR #%1").arg(prNumber)
                              : QStringLiteral("Branch %1").arg(branch),
                         agentMergeBase(s)));
+        mergedIds << s.id;
         changed = true;
     }
+    // The organization task this session mirrors is closed out with the merge in
+    // its note — the run's own completion may have been reported before the
+    // branch landed, or not reported at all (adhoc #30). Outside the loop: the
+    // post's reply handler re-looks-up sessions by id.
+    for (int id : mergedIds)
+        completeOrgTaskForSession(id, QStringLiteral("The work has been merged."));
     if (changed) {
         refreshAgentTable();
         if (m_selectedAgentSessionId > 0)
@@ -4960,6 +4979,7 @@ void MainWindow::markAgentSessionsLanded(const QList<int> &sessionIds, bool refr
     if (!m_agentStore || sessionIds.isEmpty())
         return;
     bool changed = false;
+    QList<int> mergedIds;
     for (AgentSession &s : m_agentSessions) {
         if (!sessionIds.contains(s.id) || s.merged)
             continue;
@@ -4970,8 +4990,13 @@ void MainWindow::markAgentSessionsLanded(const QList<int> &sessionIds, bool refr
         m_agentStore->saveSession(s);
         m_agentStore->appendLog(
             s, QStringLiteral("\n==> Worktree/PR merged into %1.").arg(agentMergeBase(s)));
+        mergedIds << s.id;
         changed = true;
     }
+    // Same as markAgentSessionsMerged(): a landed branch completes the mirrored
+    // organization task and refreshes its note (adhoc #30).
+    for (int id : mergedIds)
+        completeOrgTaskForSession(id, QStringLiteral("The work has been merged."));
     if (changed && refreshUi) {
         // Merge state feeds the Diff-cell fingerprint; arm the re-validation the
         // same way reloadAgents() does (skipped mid-refresh — the pump can service
@@ -6408,6 +6433,17 @@ bool MainWindow::deleteStoredAgentSession(int sessionId, bool cleanupWorktree)
             return false;
         }
     }
+
+    // Close out the organization task before the session record goes away: a
+    // deleted session is finished work as far as the organization is concerned,
+    // and this is the last moment its summary can be read off the session
+    // (adhoc #30).
+    completeOrgTaskForSession(snapshot.id,
+                              snapshot.merged
+                                  ? QStringLiteral("The work has been merged and "
+                                                   "the agent session closed.")
+                                  : QStringLiteral("The agent session was closed "
+                                                   "on the desktop."));
 
     if (!m_agentStore->deleteSession(snapshot)) {
         flashMessage("Could not delete the agent session.", true);
@@ -8936,21 +8972,16 @@ void MainWindow::updateAgentStatusCell(int sessionId)
     if (!m_agentTable)
         return;
     for (int r = 0; r < m_agentTable->rowCount(); ++r) {
-        QTableWidgetItem *idItem = m_agentTable->item(r, 0);
+        QTableWidgetItem *idItem = m_agentTable->item(r, kAgentIdColumn);
         if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
             continue;
         QSignalBlocker block(m_agentTable);
-        // Column 4 is Status (column 3 is Model — see applyAgentRowCells for the
-        // column layout); writing here used to stomp the Model cell instead.
-        QTableWidgetItem *cell = m_agentTable->item(r, 4);
-        if (!cell) {
-            cell = new QTableWidgetItem;
-            m_agentTable->setItem(r, 4, cell);
-        }
+        // The run state rides the leading "#" cell since adhoc #29 — the same cell
+        // the id lives on, so it's the one we just matched on.
         // Reuse the memoised diff stat so the branch chip keeps its files/dirty/
         // worktree badges across a bare status flip without re-shelling git here
         // (an absent entry simply leaves the badges off until the next refresh).
-        applyAgentStatusCell(cell, *s, m_agentDiffStats.value(sessionId));
+        applyAgentStatusCell(idItem, *s, m_agentDiffStats.value(sessionId));
         break;
     }
     // Keep the footer "Agents:" strip's per-session dot (the ones above the
@@ -9024,7 +9055,7 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
     m_agentStatusPill->setText(pill);
 }
 
-// Spin the orange "sync" glyph on every running row's Status cell so the agents
+// Spin the orange "sync" glyph on every running row's "#" cell so the agents
 // list shows a live spinner (issue #108). Driven by m_agentsSpinTimer, which only
 // ticks while a session is running, so finished rows keep their static icon.
 void MainWindow::animateRunningAgentIcons()
@@ -9035,21 +9066,20 @@ void MainWindow::animateRunningAgentIcons()
         "sync", QColor(Theme::kRunning), 14, m_agentsSpinFrame * 36.0));
     QSignalBlocker block(m_agentTable);
     for (int r = 0; r < m_agentTable->rowCount(); ++r) {
-        QTableWidgetItem *idItem = m_agentTable->item(r, 0);
+        QTableWidgetItem *idItem = m_agentTable->item(r, kAgentIdColumn);
         if (!idItem)
             continue;
         const AgentSession *s = findAgentSession(idItem->data(Qt::UserRole).toInt());
         if (!s || s->merged || s->status != AgentStatus::Running)
             continue;
-        // Column 4 is Status (column 3 is Model — the spinner belongs here, not
-        // there; see applyAgentRowCells for the column layout).
-        if (QTableWidgetItem *cell = m_agentTable->item(r, 4))
-            cell->setIcon(icon);
+        // The spinner sits on the "#" cell (adhoc #29 — see applyAgentRowCells for
+        // the column layout).
+        idItem->setIcon(icon);
         // Keep the Speed column's live tok/s figure ticking for running rows
         // (issue #245): its run duration grows against the wall clock, so recompute
         // it here rather than spinning up a second timer. The elapsed-time figure
         // itself now lives in the detail header (adhoc #42), refreshed below.
-        if (QTableWidgetItem *speed = m_agentTable->item(r, 5))
+        if (QTableWidgetItem *speed = m_agentTable->item(r, kAgentSpeedColumn))
             applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
         // Tick the detail header's run stats (elapsed time) for the open session —
         // meta only, so the live transcript isn't rebuilt every second.
@@ -9115,7 +9145,7 @@ void MainWindow::updateAgentTokenCell(int sessionId)
         // Recompute the Speed cell so the tok/s figure climbs in real time while
         // the agent streams — agentEffectiveDurationMs measures a running session
         // against the wall clock, so this uses the freshly-bumped token total.
-        if (QTableWidgetItem *speed = m_agentTable->item(r, 5))
+        if (QTableWidgetItem *speed = m_agentTable->item(r, kAgentSpeedColumn))
             if (const AgentSession *s = findAgentSession(sessionId))
                 applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
         break;
@@ -9158,7 +9188,7 @@ void MainWindow::updateAgentRunSummaryCells(int sessionId)
             continue;
         QSignalBlocker block(m_agentTable);
         // Speed needs both the token total and the now-known run duration.
-        if (QTableWidgetItem *speed = m_agentTable->item(r, 5))
+        if (QTableWidgetItem *speed = m_agentTable->item(r, kAgentSpeedColumn))
             applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
         break;
     }
@@ -10064,16 +10094,21 @@ void MainWindow::openOrgTaskForSession(const AgentSession &session)
     });
 }
 
-void MainWindow::completeOrgTaskForSession(int sessionId)
+void MainWindow::completeOrgTaskForSession(int sessionId, const QString &followUp)
 {
     const AgentSession *s = findAgentSession(sessionId);
-    if (!s || s->orgTaskId.isEmpty() || !s->finishedByBot.isEmpty() ||
-        isExternalSession(sessionId))
+    if (!s || s->orgTaskId.isEmpty() || isExternalSession(sessionId))
+        return;
+    // The run's own completion is reported once; a follow-up event (the branch
+    // landing, the session being deleted) re-posts it with a fresh note so the
+    // task reflects how the work actually ended (adhoc #30).
+    if (!s->finishedByBot.isEmpty() && followUp.trimmed().isEmpty())
         return;
     // Only a run that has actually stopped closes its task out; Queued/Running/
-    // Waiting sessions are still the organization's open work.
-    if (s->status != AgentStatus::Success && s->status != AgentStatus::Failed &&
-        s->status != AgentStatus::Stopped)
+    // Waiting sessions are still the organization's open work — unless a
+    // follow-up event says the work is over regardless of where the run got to.
+    if (followUp.trimmed().isEmpty() && s->status != AgentStatus::Success &&
+        s->status != AgentStatus::Failed && s->status != AgentStatus::Stopped)
         return;
     if (!m_networkAccess)
         return;
@@ -10083,12 +10118,32 @@ void MainWindow::completeOrgTaskForSession(int sessionId)
     QString note = QStringLiteral("%1 finished this run with status %2.")
                        .arg(finishedBy)
                        .arg(session.status);
+    if (!followUp.trimmed().isEmpty())
+        note += QLatin1Char(' ') + followUp.trimmed();
     if (!session.lastError.trimmed().isEmpty())
         note += QStringLiteral(" Last error: %1").arg(session.lastError.trimmed());
     if (session.prNumber > 0)
         note += QStringLiteral(" Opened pull request #%1.").arg(session.prNumber);
     if (session.merged)
-        note += QStringLiteral(" Merged into the default branch.");
+        note += QStringLiteral(" Merged into %1.").arg(agentMergeBase(session));
+    if (!session.branchName.isEmpty())
+        note += QStringLiteral(" Branch %1.").arg(session.branchName);
+    // Run summary, the same figures the detail header's Stats line shows, so the
+    // task carries what the run did without opening the desktop (adhoc #30).
+    QStringList stats;
+    if (session.numTurns > 0)
+        stats << QStringLiteral("%1 turns").arg(session.numTurns);
+    const qint64 dur = agentEffectiveDurationMs(session);
+    if (dur > 0)
+        stats << QStringLiteral("%1s").arg(dur / 1000);
+    if (session.costUsd > 0.0)
+        stats << agentCostText(session.costUsd);
+    const qint64 toks = sessionTokenTotal(session);
+    if (toks > 0)
+        stats << QStringLiteral("%1 tokens").arg(formatCount(toks));
+    if (!stats.isEmpty())
+        note += QStringLiteral(" Run summary: %1.")
+                    .arg(stats.join(QStringLiteral(" \xC2\xB7 ")));
 
     QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/api/tasks/") + session.orgTaskId +

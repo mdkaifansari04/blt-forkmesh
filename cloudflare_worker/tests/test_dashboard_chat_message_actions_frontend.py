@@ -27,10 +27,13 @@ def _region(start, end):
 
 
 def test_reactions_are_on_every_message_but_edits_stay_author_only():
-    append = _region("function appendFullMessage(", "function messageActionButton(")
-    assert "row.append(buildMessageActions(record));" in append
+    materialize = _region(
+        "function materializeFullMessage(record)",
+        "function renderHistoryWindow(",
+    )
+    assert "content?.append(buildMessageActions(record));" in materialize
     actions = _region("function buildMessageActions(", "// An \"(edited)\" marker")
-    assert 'messageActionButton("React"' in actions
+    assert 'messageActionButton("☺"' in actions
     assert "if (record.self && record.senderId === selfId)" in actions
     assert 'messageActionButton("Edit"' in actions
     assert 'messageActionButton("Delete"' in actions
@@ -43,7 +46,7 @@ def test_message_avatars_use_uploaded_faces_with_generated_face_fallbacks():
     assert 'fetch(`/api/accounts/${encodeURIComponent(name)}`' in CHAT
     assert 'image.src = `data:image/png;base64,${avatarPng}`' in CHAT
     assert 'class="chat-message-avatar avatar' in CHAT
-    assert "hydrateChatAvatar(row.querySelector" in CHAT
+    assert "hydrateChatAvatar(avatarEl, record.who)" in CHAT
 
 
 def test_dashboard_reactions_use_the_shared_durable_protocol():
