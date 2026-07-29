@@ -3797,21 +3797,25 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               class="world-top-link world-notification-button"
               type="button"
               data-world-notifications-open
+              data-world-tooltip="Notifications"
               title="Show global and personal notifications"
               aria-label="Open World notifications"
             >
               <span aria-hidden="true">🔔</span><span class="world-top-link-label">Alerts</span>
+              <span class="world-tool-count" data-world-notification-count hidden>0</span>
             </button>
             <button
               class="world-top-link world-admin-errors-button"
               type="button"
               data-world-admin-errors
+              data-world-tooltip="Errors"
               title="Open newly logged errors"
               aria-label="Open newly logged errors"
               hidden
             >
               <span aria-hidden="true">!</span>
               <span class="world-top-link-label">Errors</span>
+              <span class="world-tool-count" data-world-admin-error-count hidden>0</span>
             </button>
             <a
               class="world-top-link world-dashboard-link"
@@ -3828,11 +3832,13 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               class="world-top-link world-tasks-button"
               type="button"
               data-world-tasks-open
+              data-world-tooltip="Tasks"
               aria-label="Open organization tasks"
               title="Open organization tasks"
             >
               <span aria-hidden="true">✓</span>
               <span class="world-top-link-label">Tasks</span>
+              <span class="world-tool-count" data-world-task-count hidden>0</span>
             </button>
             <button
               class="world-shirt-badge"
@@ -3865,9 +3871,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               )}">${escapeHTML(
                 accountStatusIcon(identity),
               )}</span>
-              <span class="world-shirt-count world-shirt-count--alerts" data-world-notification-count hidden>0</span>
-              <span class="world-shirt-count world-shirt-count--errors" data-world-admin-error-count hidden>0</span>
-              <span class="world-shirt-count world-shirt-count--tasks" data-world-task-count hidden>0</span>
             </button>
           </nav>
         </header>

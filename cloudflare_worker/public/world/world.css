@@ -9199,9 +9199,109 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-admin-errors-button [data-world-admin-error-count],
 .world-tasks-button [data-world-task-count] {
   border-color: var(--bgColor-default);
-  background: var(--fgColor-danger);
   color: var(--fgColor-onEmphasis);
   font-family: inherit;
+}
+
+.world-notification-button [data-world-notification-count] {
+  background: var(--fgColor-attention);
+  color: var(--bgColor-default);
+}
+
+.world-admin-errors-button [data-world-admin-error-count] {
+  background: var(--fgColor-danger);
+}
+
+.world-tasks-button [data-world-task-count] {
+  background: var(--fgColor-accent);
+}
+
+/* In compact mode the actionable counters live in their own list beside the
+   avatar. They remain the real notification/error/task controls, so clicking
+   one opens its destination. Expanding the HUD restores each counter to the
+   corner of its respective icon. */
+.world-hud[data-hud-expanded="false"]
+  .world-top-link:has(> .world-tool-count:not([hidden])) {
+  display: inline-grid;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  place-items: center;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+  visibility: visible;
+}
+
+.world-hud[data-hud-expanded="false"]
+  .world-top-link:has(> .world-tool-count:not([hidden]))
+  > :not(.world-tool-count) {
+  display: none;
+}
+
+.world-hud[data-hud-expanded="false"] .world-tool-count {
+  position: static;
+  display: grid;
+  min-width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 2px solid var(--bgColor-default);
+  border-radius: 2em;
+  padding: 0 5px;
+  box-shadow: 0 2px 8px rgb(1 4 9 / 0.48);
+  font-size: 0.6875rem;
+  font-weight: var(--base-text-weight-semibold);
+  line-height: 1;
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.world-hud[data-hud-expanded="false"]
+  .world-top-link:has(> .world-tool-count:not([hidden])):is(:hover, :focus-visible)
+  .world-tool-count {
+  transform: translateY(-1px);
+  box-shadow:
+    0 0 0 2px var(--bgColor-default),
+    0 0 0 4px var(--focus-outlineColor);
+}
+
+.world-hud[data-hud-expanded="false"]
+  .world-top-link[data-world-tooltip]:has(> .world-tool-count:not([hidden]))::after {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  z-index: 20;
+  width: max-content;
+  max-width: 180px;
+  transform: translateX(-50%) translateY(-2px);
+  border: 1px solid var(--borderColor-default);
+  border-radius: var(--borderRadius-medium);
+  background: var(--bgColor-muted);
+  color: var(--fgColor-default);
+  padding: 5px 8px;
+  box-shadow: var(--overlay-shadow);
+  content: attr(data-world-tooltip);
+  font-size: 0.75rem;
+  font-weight: var(--base-text-weight-semibold);
+  line-height: 1.25;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+  white-space: nowrap;
+}
+
+.world-hud[data-hud-expanded="false"]
+  .world-top-link[data-world-tooltip]:has(> .world-tool-count:not([hidden])):is(:hover, :focus-visible)::after {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
 }
 
 .world-activity-stream article {
