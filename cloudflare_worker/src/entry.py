@@ -10476,6 +10476,10 @@ SCHEMA_ALTER_STATEMENTS = [
     # Edge-observed sign-in address of each account session, shown only to the
     # owner of that account in the World security tab and account settings.
     "ALTER TABLE account_sessions ADD COLUMN client_ip TEXT NOT NULL DEFAULT ''",
+    # Account whose own session was making the request that failed (migration
+    # 0108). Empty for anonymous traffic; the admin error view names it per row
+    # and per group so a recurring failure can be traced to the affected user.
+    "ALTER TABLE error_log ADD COLUMN actor TEXT NOT NULL DEFAULT ''",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
@@ -34105,16 +34109,38 @@ def _fire_and_forget(coro, label="background"):
     return task
 
 
-async def _write_error_log(env, status, method, path, message, ray=""):
+async def _error_log_actor(env, request):
+    """Account name the failing request itself proved, or "" when anonymous.
+
+    Never trusts a caller-supplied `node`/`owner` string: only a valid account
+    session names a user here. A request without a session token costs nothing
+    (_account_session_lookup rejects the token shape before any D1 read), so an
+    anonymous error storm does not gain a per-error lookup. Best-effort —
+    error logging must never become a new error.
+    """
+    if request is None:
+        return ""
+    try:
+        _, rec = await _account_session_record(env, request)
+        return clean_string(
+            (rec or {}).get("name", ""), MAX_NODE_NAME).strip().lower()
+    except Exception:
+        return ""
+
+
+async def _write_error_log(env, status, method, path, message, ray="",
+                           actor=""):
     try:
         message = _privacy_safe_error_text(path, message)
         await ensure_schema(env)
         await d1_run(
             env,
-            """INSERT INTO error_log (ts, status, method, path, message, ray)
-               VALUES (?,?,?,?,?,?)""",
+            """INSERT INTO error_log
+                 (ts, status, method, path, message, ray, actor)
+               VALUES (?,?,?,?,?,?,?)""",
             int(Date.now()), int(status), str(method or ""), str(path or ""),
             str(message or "")[:1000], str(ray or ""),
+            clean_string(actor or "", MAX_NODE_NAME).strip().lower(),
         )
         # Keep only the most-recent MAX_ERROR_LOG rows so the table is bounded.
         await d1_run(
@@ -34259,6 +34285,7 @@ async def client_error_handler(env, request):
             "/client-error/" + surface,
             detail,
             source_key,
+            await _error_log_actor(env, request),
         )
     except Exception:
         # Error reporting must never become a new user-visible error.
@@ -34455,7 +34482,9 @@ async def capture_worker_exception(env, request, url, error):
     except BaseException:
         pass
     try:
-        await _write_error_log(env, 500, method, path, message, ray)
+        await _write_error_log(
+            env, 500, method, path, message, ray,
+            await _error_log_actor(env, request))
     except BaseException:
         pass
 
@@ -34590,7 +34619,9 @@ async def log_error(env, status, method, path, message, ray="", request=None,
         path = await privacy_filter(env, path)
     await capture_sentry_error(
         env, status, method, path, message, ray, request=request, error=error)
-    await _write_error_log(env, status, method, path, message, ray)
+    await _write_error_log(
+        env, status, method, path, message, ray,
+        await _error_log_actor(env, request))
 
 
 async def log_durable_object_abort(env, request, path, error):
@@ -34616,7 +34647,8 @@ async def log_durable_object_abort(env, request, path, error):
     await _write_error_log(
         env, 503, method_name(request), safe_path,
         "durable object aborted: " + _safe_error_text(error)[:400],
-        request.headers.get("cf-ray") or "")
+        request.headers.get("cf-ray") or "",
+        await _error_log_actor(env, request))
 
 
 async def log_cron_error(env, path, message, error=None, failures=None):
@@ -36640,7 +36672,7 @@ async def _render_table_view(
         now = int(Date.now())
         recent_24h = await d1_all(
             env,
-            "SELECT ts,status,method,path,message FROM error_log "
+            "SELECT ts,status,method,path,message,actor FROM error_log "
             "WHERE ts>=? ORDER BY ts DESC LIMIT 5000",
             now - 24 * 60 * 60 * 1000,
         )
