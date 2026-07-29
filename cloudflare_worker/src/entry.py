@@ -21440,9 +21440,6 @@ DISCORD_OAUTH_API_ORIGIN = "https://discord.com/api"
 DISCORD_OAUTH_AUTHORIZE_ORIGIN = "https://discord.com/oauth2/authorize"
 DISCORD_OAUTH_CALLBACK_PATH = "/api/integrations/discord/callback"
 DISCORD_OAUTH_TRANSACTION_COOKIE = "forkmesh_discord_oauth"
-# Least privilege needed by the on-demand bridge: view public channels, send
-# messages, and read the selected public channels' recent message history.
-DISCORD_BOT_PERMISSIONS = 1024 | 2048 | 65536
 DISCORD_API_TIMEOUT_SECONDS = 8
 DISCORD_API_MAX_RESPONSE_BYTES = 512 * 1024
 _DISCORD_SNOWFLAKE_RE = re.compile(r"^[0-9]{17,20}$")
@@ -21901,34 +21898,29 @@ class _OrganizationDiscordRuntime:
         config = _discord_oauth_config(self.env) or {}
         return str(config.get("redirectUri") or "")
 
-    def discord_oauth_authorization_url(self, state, challenge, guild_id):
+    def discord_oauth_authorization_url(self, state, challenge):
         config = _discord_oauth_config(self.env) or {}
         state = str(state or "")
         challenge = str(challenge or "")
-        guild_id = _discord_snowflake(guild_id)
         if (
             not config
             or not _DISCORD_OAUTH_TRANSACTION_RE.fullmatch(state)
             or not challenge
-            or not guild_id
         ):
             return ""
         return DISCORD_OAUTH_AUTHORIZE_ORIGIN + "?" + urlencode({
             "client_id": config["clientId"],
             "redirect_uri": config["redirectUri"],
             "response_type": "code",
-            # Discord's advanced bot authorization combines server install
-            # with the user code grant. This prevents a successful account
-            # consent from leaving the connector unusable because its bot was
-            # never separately invited to the verified guild.
-            "scope": "identify guilds bot",
+            # Keep the user authorization-code grant separate from Discord's
+            # callback-less bot-install shortcut. Combining `bot` here causes
+            # some Discord clients to return an install result without the
+            # code/state required to verify the organization owner.
+            "scope": "identify guilds",
             "state": state,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
             "prompt": "consent",
-            "permissions": str(DISCORD_BOT_PERMISSIONS),
-            "guild_id": guild_id,
-            "disable_guild_select": "true",
         })
 
     def oauth_transaction_cookie(self):

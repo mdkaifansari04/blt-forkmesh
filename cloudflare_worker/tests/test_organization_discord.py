@@ -270,13 +270,11 @@ class FakeRuntime:
     def discord_oauth_redirect_uri(self):
         return "https://forkmesh.test/api/integrations/discord/callback"
 
-    def discord_oauth_authorization_url(self, state, challenge, guild_id):
+    def discord_oauth_authorization_url(self, state, challenge):
         return (
             "https://discord.test/oauth2/authorize?state=" + state
             + "&code_challenge=" + challenge
-            + "&scope=identify%20guilds%20bot"
-            + "&permissions=68608&guild_id=" + guild_id
-            + "&disable_guild_select=true")
+            + "&scope=identify%20guilds")
 
     def oauth_transaction_cookie(self):
         return self.oauth_transaction
@@ -476,10 +474,7 @@ async def test_oauth_callback_is_one_time_and_requires_guild_permission():
     assert started["status"] == 200
     params = parse_qs(urlparse(started["data"]["authorizationUrl"]).query)
     state = params["state"][0]
-    assert params["scope"] == ["identify guilds bot"]
-    assert params["permissions"] == ["68608"]
-    assert params["guild_id"] == [GUILD]
-    assert params["disable_guild_select"] == ["true"]
+    assert params["scope"] == ["identify guilds"]
     row = runtime.db.execute(
         "SELECT data FROM organization_discord_oauth_states"
     ).fetchone()
