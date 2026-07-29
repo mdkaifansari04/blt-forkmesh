@@ -7856,6 +7856,7 @@ function createFountain(THREE, position, interactive, animated) {
   // midpoint of the first 10.8-unit node ring and face it toward those users.
   treasurySign.position.set(0, 0, 10.8);
   treasurySign.rotation.y = 0;
+  group.add(treasurySign);
   group.userData.treasurySign = treasurySign;
 
   group.position.set(...position);
@@ -16675,9 +16676,9 @@ export function createWorldScene({
       floor.id,
       interiorIndex + 1,
     );
-    // The visitor starts outside. Upper-floor interiors stay out of the
-    // initial frame entirely and are enabled only for the active floor.
-    floorGroup.visible = false;
+    // The transparent tower is an exterior cutaway: visitors should see every
+    // furnished floor through its glass before they enter the building.
+    floorGroup.visible = true;
     officeInterior.add(floorGroup);
     officeFloorGroups.set(floor.id, floorGroup);
   });
@@ -19236,8 +19237,8 @@ export function createWorldScene({
   let officeDoorwayEntryPending = false;
   let officeExitHandler = null;
   const weather = createWeather(THREE, scene);
-  const farDetailVisibility = new WeakMap();
   let aerialLandmarkMarkers = null;
+  let aerialLandmarkMarkersUnavailable = false;
 
   function ensureAerialLandmarkMarkers() {
     if (aerialLandmarkMarkers) return aerialLandmarkMarkers;
@@ -19254,7 +19255,7 @@ export function createWorldScene({
       ["TOWN", 0, 0, "#9ef7c6"],
       ["REPOSITORIES", REPOSITORY_ISLAND_CENTER_X, 0, "#77d9ff"],
       ["LEADERBOARDS", LEADERBOARD_ISLAND_CENTER_X, 0, "#d5b6ff"],
-      ["MEMBERS", 0, MEMBER_CIRCLE_CENTER_Z, "#f7c96b"],
+      ["MEMBERS", 0, MEMBER_ISLAND_CENTER_Z, "#f7c96b"],
       ["OFFICE", OFFICE_ISLAND_CENTER[0], OFFICE_ISLAND_CENTER[2], "#9ef7c6"],
       ["BEACH", BEACH_CENTER_X, BEACH_CENTER_Z, "#77d9ff"],
     ].forEach(([label, x, z, color]) => {
@@ -19277,20 +19278,6 @@ export function createWorldScene({
     return aerialLandmarkMarkers;
   }
 
-  function setFarDetailVisible(object, visible) {
-    if (!object) return;
-    if (!visible) {
-      if (!farDetailVisibility.has(object)) {
-        farDetailVisibility.set(object, object.visible);
-      }
-      object.visible = false;
-      return;
-    }
-    if (!farDetailVisibility.has(object)) return;
-    object.visible = farDetailVisibility.get(object);
-    farDetailVisibility.delete(object);
-  }
-
   function updateSceneLevelOfDetail(force = false) {
     const far =
       officeSceneMode === "town" &&
@@ -19305,48 +19292,35 @@ export function createWorldScene({
       renderer.shadowMap.needsUpdate = !compactRenderer && !far;
     }
 
-    // The glass tower shell remains visible from every distance. Its complete
-    // furnished interior is useful only near the entrance or while visiting a
-    // floor; omitting it from the aerial view removes hundreds of submissions
-    // that collapse to sub-pixel fragments.
-    const officeDistance = Math.hypot(
-      player.position.x - officeInterior.position.x,
-      player.position.z - officeInterior.position.z,
-    );
-    const showOfficeInterior =
-      officeSceneMode !== "town" || (!far && officeDistance <= 150);
-    officeInterior.visible = showOfficeInterior;
+    // The Office is intentionally a transparent cutaway tower. Keep its walls,
+    // floor slabs, lighting, and furniture visible from the outdoor World at
+    // every camera distance. Once a visitor enters, isolate the active floor
+    // to avoid drawing ten floors through the one they are using.
+    officeInterior.visible = true;
     for (const [floorId, floorGroup] of officeFloorGroups) {
       if (floorId === "lobby") continue;
       floorGroup.visible =
-        showOfficeInterior &&
-        officeSceneMode !== "town" &&
-        floorId === officeCurrentFloorId;
+        officeSceneMode === "town" || floorId === officeCurrentFloorId;
     }
 
-    const repositoryDistrict = landmarkObjects.get("repositories");
-    const organizationDistrict = landmarkObjects.get("organizations");
-    const federationDistrict = landmarkObjects.get("fediverse");
-    ensureAerialLandmarkMarkers().visible = far;
-    const detailTargets = [
-      repositoryDistrict,
-      organizationDistrict,
-      federationDistrict,
-      landmarkObjects.get("office"),
-      leaderboardDistrict,
-      startHereBoard,
-      memberPathSign,
-      arrivalBox,
-      systemCapacityPlatform,
-      campfire,
-      officeLandscaping,
-      world.userData.repositorySizeLayer,
-      world.userData.repositoryRecordDeskLayer,
-      world.userData.repositoryActivityLayer,
-    ];
-    detailTargets.forEach((object) =>
-      setFarDetailVisible(object, !far),
-    );
+    // A purely visual LOD helper must never be able to interrupt movement.
+    // Fail it closed once if a future marker asset cannot be constructed; the
+    // full scene remains usable and the animation loop does not retry a broken
+    // allocation on every frame.
+    if (!aerialLandmarkMarkersUnavailable) {
+      try {
+        ensureAerialLandmarkMarkers().visible = far;
+      } catch (error) {
+        aerialLandmarkMarkersUnavailable = true;
+        console.warn("[ForkMesh World] Aerial markers unavailable", {
+          message: String(error?.message || error || "unknown"),
+        });
+      }
+    }
+    // Distance may reduce expensive lighting work, but it must never remove
+    // World content. Repositories, organizations, fediverse displays, every
+    // public board, landscaping, and live repository layers remain visible at
+    // every zoom level so the aerial view is a faithful view of the World.
   }
 
   function updateWorldEnvironment() {

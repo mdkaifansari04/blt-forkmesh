@@ -642,10 +642,29 @@ def test_tower_is_eleven_stories_and_about_ten_times_the_old_width():
     ):
         assert f'id: "{floor_id}"' in tower
     assert "for (let level = 1; level < OFFICE_FLOOR_COUNT; level += 1)" in scene
-    assert "OFFICE_FLOORS.slice(1).forEach((floor) => {" in scene
+    assert "OFFICE_FLOORS.slice(1).forEach((floor, interiorIndex) => {" in scene
     assert "function addOfficeFunFloorProps()" in scene
     assert 'officeFloorGroups.get("executive")' in scene
     assert "forkmesh-office-executive-strategy-table" in scene
+
+
+def test_aerial_lod_never_removes_world_sections_and_sol_sign_is_attached():
+    scene = source(SCENE_PATH)
+    assert "const detailTargets = [" not in scene
+    assert "setFarDetailVisible(" not in scene
+    assert "farDetailVisibility" not in scene
+    assert "Repositories, organizations, fediverse displays, every" in scene
+    assert "officeInterior.visible = true" in scene
+    assert 'officeSceneMode === "town" || floorId === officeCurrentFloorId' in scene
+    assert "const showOfficeInterior" not in scene
+    assert "floorGroup.visible = true;" in scene
+    assert "group.add(treasurySign);" in scene
+    assert "treasurySign.position.set(0, 0, 10.8);" in scene
+    assert '["MEMBERS", 0, MEMBER_ISLAND_CENTER_Z, "#f7c96b"]' in scene
+    assert "MEMBER_CIRCLE_CENTER_Z" not in scene
+    assert "let aerialLandmarkMarkersUnavailable = false;" in scene
+    assert "if (!aerialLandmarkMarkersUnavailable)" in scene
+    assert "aerialLandmarkMarkersUnavailable = true;" in scene
 
 
 def test_tall_floor_exhibits_and_elevator_openings_stay_between_slabs():

@@ -32573,7 +32573,14 @@ async def org_bot_tokens_handler(env, request, org):
         token_id = clean_string(data.get("tokenId"), 32).lower()
         if not re.fullmatch(r"[0-9a-f]{32}", token_id):
             return json_response({"error": "invalid_token_id"}, status=400)
-        result = await d1_run(
+        existing = await d1_first(
+            env,
+            "SELECT 1 AS one FROM org_bot_tokens "
+            "WHERE token_id=? AND org_bi=? AND revoked_at=0",
+            token_id, org_bi,
+        )
+        changed = bool(existing)
+        await d1_run(
             env,
             "UPDATE org_bot_tokens SET revoked_at=? "
             "WHERE token_id=? AND org_bi=? AND revoked_at=0",
@@ -32582,11 +32589,11 @@ async def org_bot_tokens_handler(env, request, org):
         await _audit_sensitive_action(
             env, actor, "organization.bot_token_revoke",
             "organization_bot_token", org_name + "/" + token_id,
-            "success", {"changed": int(result.get("changes") or 0) > 0})
+            "success", {"changed": changed})
         return json_response({
             "ok": True,
             "tokenId": token_id,
-            "revoked": int(result.get("changes") or 0) > 0,
+            "revoked": changed,
         }, cache_control="no-store")
 
     provider = clean_string(data.get("provider"), 24).lower()
@@ -40798,8 +40805,17 @@ class Default(WorkerEntrypoint):
             return await accounts_handler(self.env, request)
 
         # --- Organizations + teams (issue #388) --------------------------
+        if BOT_SESSION_RE.match(url.path):
+            return await bot_session_handler(self.env, request)
         if ORGS_RE.match(url.path):
             return await orgs_handler(self.env, request)
+        org_bot_tokens_match = ORG_BOT_TOKENS_RE.match(url.path)
+        if org_bot_tokens_match:
+            org = safe_segment(org_bot_tokens_match.group(1))
+            if not org:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_bot_tokens_handler(
+                self.env, request, org)
         org_members_match = ORG_MEMBERS_RE.match(url.path)
         if org_members_match:
             org = safe_segment(org_members_match.group(1))

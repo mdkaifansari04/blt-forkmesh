@@ -55,7 +55,9 @@ def test_only_a_fresh_signed_provider_capable_mirror_receives_bounded_jobs():
     assert '"agentProviders"' in QT_REPOS
     assert 'QStringLiteral("claude-code")' in QT_REPOS
     assert 'QStringLiteral("codex")' in QT_REPOS
-    assert "no_eligible_headless_mirror" in ENTRY
+    assert "no_eligible_agent_node" in ENTRY
+    assert '"runtimeMode") or "").strip().lower() == "desktop"' in ENTRY
+    assert "await _is_admin(env, context[\"actor\"])" in ENTRY
     assert "ORG_AGENT_MAX_PROMPT = 8000" in ENTRY
     assert "ORG_AGENT_JOB_LEASE_MS = 2 * 60 * 1000" in ENTRY
     assert "status='leased'" in ENTRY
