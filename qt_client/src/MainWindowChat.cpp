@@ -456,8 +456,11 @@ QWidget *MainWindow::buildChatPage()
     m_appNavigationRailLayout = new QVBoxLayout(rail);
     m_appNavigationRailLayout->setContentsMargins(0, 4, 0, 4);
     m_appNavigationRailLayout->setSpacing(1);
+    // Agents is deliberately absent here: it lives on the window-chrome line
+    // beside its live fleet matrix (see buildBreadcrumb). Listing it would
+    // re-parent the button into the rail and silently undo that placement.
     for (QPushButton *button :
-         {m_reposNavButton, m_agentsNavButton, m_chatButton,
+         {m_reposNavButton, m_chatButton,
           m_controlNodeNavButton, m_logNavButton, m_hostsNavButton, m_nodesNavButton,
           m_relaysNavButton, m_networkNavButton}) {
         if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
@@ -4384,10 +4387,12 @@ QWidget *MainWindow::buildBreadcrumb()
 
     // Agents: a shortcut into the current repo's Agents tab (adhoc #194), not a
     // section of its own — it just jumps via openAgentsOverview() the same way
-    // the footer "Agents:" label does. Sits between Repo and Chat in the nav
-    // row. Checkable to show when the Agents tab is active (adhoc #201).
-    m_agentsNavButton = new ActivityRailButton(QStringLiteral("terminal"),
-                                               QStringLiteral("Agents"));
+    // the footer "Agents:" label does. Checkable to show when the Agents tab is
+    // active (adhoc #201). Unlike its neighbours it is NOT an ActivityRailButton
+    // and does not live in the app navigation rail: it heads the window-chrome
+    // line's search cluster, immediately left of Back/Forward, so the live agent
+    // matrix can ride beside it along the horizontal top bar.
+    m_agentsNavButton = new QPushButton(QStringLiteral("Agents"));
     m_agentsNavButton->setObjectName("topNavButton");
     m_agentsNavButton->setCheckable(true);
     m_agentsNavButton->setCursor(Qt::PointingHandCursor);
@@ -4395,6 +4400,17 @@ QWidget *MainWindow::buildBreadcrumb()
     setOcticon(m_agentsNavButton, "terminal", 16);
     connect(m_agentsNavButton, &QPushButton::clicked, this,
             &MainWindow::openAgentsOverview);
+
+    // One tiny square per agent session, right of the button: the whole fleet's
+    // status as a matrix, with running sessions sweeping in time with their live
+    // output. Populated (and kept current) by refreshAgentDotMatrix().
+    m_agentDotMatrix = new AgentDotMatrix;
+    m_agentDotMatrix->onDotClicked = [this](int sessionId) {
+        if (sessionId > 0)
+            switchToAgentsTab(sessionId);
+        else
+            openAgentsOverview();
+    };
 
     // Chat: its own top-level section (m_sectionStack index 2).
     m_chatButton = new ActivityRailButton(QStringLiteral("comment"),
@@ -4627,6 +4643,11 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *searchClusterRow = new QHBoxLayout(searchCluster);
     searchClusterRow->setContentsMargins(0, 0, 0, 0);
     searchClusterRow->setSpacing(8);
+    // Agents + its live status matrix lead the cluster, so the fleet is visible
+    // from every section without leaving room for the search box to shift.
+    searchClusterRow->addWidget(m_agentsNavButton);
+    searchClusterRow->addWidget(m_agentDotMatrix);
+    searchClusterRow->addSpacing(4);
     searchClusterRow->addWidget(createNavHistoryButtons());
     searchClusterRow->addWidget(createGlobalSearchBox());
     chromeRow->addWidget(searchCluster, 0, Qt::AlignCenter);
