@@ -49,6 +49,17 @@
   --world-sky: #79c0ff;
   --world-danger: #f85149;
   --world-violet: #a371f7;
+  --primer-canvas-default: #0d1117;
+  --primer-canvas-subtle: #161b22;
+  --primer-control-bg: #21262d;
+  --primer-control-hover: #30363d;
+  --primer-border-default: #30363d;
+  --primer-border-muted: #21262d;
+  --primer-fg-default: #e6edf3;
+  --primer-fg-muted: #8d96a0;
+  --primer-accent-fg: #4493f8;
+  --primer-accent-muted: rgb(56 139 253 / 0.4);
+  --primer-accent-subtle: rgb(56 139 253 / 0.15);
   --safe-top: max(14px, env(safe-area-inset-top));
   --safe-right: max(14px, env(safe-area-inset-right));
   --safe-bottom: max(14px, env(safe-area-inset-bottom));
@@ -639,14 +650,19 @@ forkmesh-world {
 
 .world-icon-button,
 .world-top-link {
+  display: inline-grid;
+  width: 40px;
+  min-width: 40px;
   min-height: 40px;
-  border: 1px solid var(--world-line);
-  border-radius: 0;
-  background: rgb(7 17 15 / 0.78);
-  color: var(--world-copy);
-  padding: 0 13px;
+  place-items: center;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-control-bg);
+  color: var(--primer-fg-default);
+  padding: 0;
   cursor: pointer;
-  backdrop-filter: blur(18px);
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.04) inset;
+  backdrop-filter: blur(12px);
 }
 
 .world-icon-button {
@@ -657,21 +673,30 @@ forkmesh-world {
 }
 
 .world-icon-button:hover,
+.world-top-link:hover {
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
+  color: var(--primer-fg-default);
+}
+
 .world-icon-button:focus-visible,
-.world-top-link:hover,
 .world-top-link:focus-visible {
-  border-color: var(--world-mint);
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
+  box-shadow: 0 0 0 3px var(--primer-accent-subtle);
   outline: none;
-  color: var(--world-mint);
 }
 
 .world-top-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
   text-decoration: none;
-  font-size: 0.78rem;
+  font-size: 0.88rem;
   font-weight: 600;
+}
+
+.world-top-link[aria-pressed="true"] {
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
+  color: var(--primer-fg-default);
 }
 
 /* The hand mirrors the gesture the avatar plays in the scene. */
@@ -718,7 +743,8 @@ forkmesh-world {
   position: relative;
 }
 
-.world-notification-button [data-world-notification-count] {
+.world-notification-button [data-world-notification-count],
+.world-admin-errors-button [data-world-admin-error-count] {
   position: absolute;
   top: -7px;
   right: -7px;
@@ -737,8 +763,60 @@ forkmesh-world {
   line-height: 1;
 }
 
-.world-notification-button [data-world-notification-count][hidden] {
+.world-notification-button [data-world-notification-count][hidden],
+.world-admin-errors-button [data-world-admin-error-count][hidden] {
   display: none;
+}
+
+.world-admin-errors-button {
+  position: relative;
+}
+
+.world-admin-errors-button[hidden] {
+  display: none;
+}
+
+.world-admin-errors-button.has-new-errors {
+  border-color: #f85149;
+  color: #ff7b72;
+}
+
+.world-admin-errors-button [data-world-admin-error-count] {
+  border-color: #2d1117;
+  background: #da3633;
+  color: #ffffff;
+}
+
+forkmesh-world.world-admin-error-arrival::after {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  border: 3px solid rgb(248 81 73 / 0.72);
+  box-shadow: inset 0 0 54px rgb(248 81 73 / 0.22);
+  content: "";
+  pointer-events: none;
+  animation: world-admin-error-arrival 1.5s ease-out both;
+}
+
+@keyframes world-admin-error-arrival {
+  0% {
+    opacity: 0;
+  }
+
+  18% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  forkmesh-world.world-admin-error-arrival::after {
+    animation: none;
+    opacity: 0;
+  }
 }
 
 .world-eyebrow {
@@ -807,6 +885,8 @@ forkmesh-world {
   scrollbar-width: thin;
   scrollbar-color: var(--world-line-strong) transparent;
   transition: width 180ms ease;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .world-right-rail[data-expanded="false"] {
@@ -816,18 +896,22 @@ forkmesh-world {
 }
 
 .world-map {
-  border: 1px solid var(--world-line);
-  background: var(--world-panel);
-  backdrop-filter: blur(22px);
+  overflow: hidden;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-canvas-default);
+  box-shadow: 0 8px 24px rgb(1 4 9 / 0.42);
   transition: width 180ms ease;
 }
 
 .world-saved-views {
   justify-self: end;
   width: 204px;
-  border: 1px solid var(--world-line);
-  background: var(--world-panel);
-  backdrop-filter: blur(18px);
+  overflow: hidden;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-canvas-default);
+  box-shadow: 0 8px 24px rgb(1 4 9 / 0.34);
 }
 
 .world-right-rail[data-expanded="false"] .world-saved-views,
@@ -844,12 +928,10 @@ forkmesh-world {
 .world-right-rail[data-expanded="false"]
   .world-share-view-button
   span:not([aria-hidden="true"]),
-.world-right-rail[data-expanded="false"] .world-saved-views-toggle,
 .world-right-rail[data-expanded="false"]
   .world-saved-views-heading
   > button:last-child
   span:last-child,
-.world-right-rail[data-expanded="false"] .world-saved-view-list,
 .world-right-rail[data-expanded="false"] .world-community-placement,
 .world-right-rail[data-expanded="false"] .world-fediverse-activity {
   display: none;
@@ -860,6 +942,10 @@ forkmesh-world {
   justify-content: center;
   border-bottom: 0;
   padding: 0;
+}
+
+.world-right-rail[data-expanded="false"] .world-saved-views-title {
+  display: none;
 }
 
 .world-right-rail[data-expanded="false"]
@@ -874,25 +960,42 @@ forkmesh-world {
   padding: 0;
 }
 
+.world-right-rail[data-expanded="false"] .world-saved-view-list {
+  grid-template-columns: 1fr;
+  gap: 3px;
+  padding: 3px;
+}
+
+.world-right-rail[data-expanded="false"] .world-saved-view img,
+.world-right-rail[data-expanded="false"] .world-saved-view-placeholder {
+  height: 34px;
+}
+
+.world-right-rail[data-expanded="false"] .world-saved-view-edit {
+  display: none;
+}
+
 .world-share-view-button {
   justify-self: end;
   display: flex;
   min-height: 34px;
   align-items: center;
   gap: 7px;
-  border: 1px solid var(--world-line);
-  background: var(--world-panel);
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-control-bg);
   padding: 7px 10px;
-  color: var(--world-copy);
-  font: 700 0.62rem/1.2 "ForkMesh Mono", monospace;
+  color: var(--primer-fg-default);
+  font: 600 0.72rem/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   cursor: pointer;
-  backdrop-filter: blur(18px);
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.04) inset;
 }
 
 .world-share-view-button:hover,
 .world-share-view-button:focus-visible {
-  border-color: var(--world-mint);
-  color: var(--world-mint);
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
+  color: var(--primer-fg-default);
   outline: none;
 }
 
@@ -902,10 +1005,10 @@ forkmesh-world {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  border-bottom: 1px solid var(--world-line);
+  border-bottom: 1px solid var(--primer-border-muted);
   padding: 4px 7px 4px 9px;
-  color: var(--world-muted);
-  font: 700 0.58rem/1 "ForkMesh Mono", monospace;
+  color: var(--primer-fg-muted);
+  font: 600 0.68rem/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -916,28 +1019,26 @@ forkmesh-world {
   min-height: 23px;
   align-items: center;
   gap: 3px;
-  border: 1px solid var(--world-line);
-  background: rgb(158 247 198 / 0.08);
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-control-bg);
   padding: 3px 5px;
-  color: var(--world-mint);
-  font: 700 0.51rem/1 "ForkMesh Mono", monospace;
+  color: var(--primer-fg-default);
+  font: 600 0.61rem/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   text-transform: uppercase;
   cursor: pointer;
 }
 
-.world-saved-views-toggle {
+.world-saved-views-title {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 4px;
-  border: 0;
-  background: transparent;
   padding: 5px 0;
   color: inherit;
   font: inherit;
   letter-spacing: inherit;
   text-transform: inherit;
-  cursor: pointer;
 }
 
 .world-saved-view-list {
@@ -964,8 +1065,9 @@ forkmesh-world {
   display: grid;
   width: 100%;
   gap: 3px;
-  border: 1px solid var(--world-line);
-  background: rgb(5 15 12 / 0.76);
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-canvas-subtle);
   padding: 2px;
   color: var(--world-copy);
   cursor: pointer;
@@ -977,13 +1079,18 @@ forkmesh-world {
   width: 100%;
   height: 42px;
   object-fit: cover;
-  background: linear-gradient(145deg, #214c3d, #081510);
+  border-radius: 4px;
+  background: linear-gradient(
+    145deg,
+    var(--primer-control-hover),
+    var(--primer-canvas-default)
+  );
 }
 
 .world-saved-view-placeholder {
   display: grid;
   place-items: center;
-  color: var(--world-mint);
+  color: var(--primer-accent-fg);
 }
 
 .world-saved-view-edit {
@@ -994,9 +1101,10 @@ forkmesh-world {
   width: 20px;
   height: 20px;
   place-items: center;
-  border: 1px solid rgb(185 255 219 / 0.35);
-  background: rgb(6 17 14 / 0.9);
-  color: var(--world-mint);
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-control-bg);
+  color: var(--primer-fg-default);
   cursor: pointer;
   font-size: 0.58rem;
 }
@@ -1005,7 +1113,8 @@ forkmesh-world {
 .world-saved-view button:focus-visible,
 .world-saved-views-heading > button:hover,
 .world-saved-views-heading > button:focus-visible {
-  border-color: var(--world-mint);
+  border-color: #8b949e;
+  background-color: var(--primer-control-hover);
   outline: none;
 }
 
@@ -1014,11 +1123,20 @@ forkmesh-world {
   place-items: center;
   width: 28px;
   height: 28px;
-  border: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
   background: transparent;
-  color: var(--world-muted);
+  color: var(--primer-fg-muted);
   cursor: pointer;
   font: 700 0.76rem/1 "ForkMesh Mono", monospace;
+}
+
+.world-map-toggle:hover,
+.world-map-toggle:focus-visible {
+  border-color: var(--primer-border-default);
+  background: var(--primer-control-bg);
+  color: var(--primer-fg-default);
+  outline: none;
 }
 
 .world-map:not(.is-expanded) {
@@ -1057,21 +1175,23 @@ forkmesh-world {
   justify-content: space-between;
   gap: 12px;
   min-height: 38px;
-  border-bottom: 1px solid var(--world-line);
+  border-bottom: 1px solid var(--primer-border-muted);
+  background: var(--primer-canvas-subtle);
   padding: 0 12px;
 }
 
 .world-panel-heading h2 {
   margin: 0;
-  font-family: "ForkMesh Mono", monospace;
-  font-size: 0.61rem;
-  font-weight: 400;
-  letter-spacing: 0.11em;
-  text-transform: uppercase;
+  color: var(--primer-fg-default);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: normal;
 }
 
 .world-panel-heading span {
-  color: var(--world-muted);
+  color: var(--primer-fg-muted);
   font-family: "ForkMesh Mono", monospace;
   font-size: 0.55rem;
 }
@@ -1248,30 +1368,36 @@ forkmesh-world {
   gap: 8px;
   width: 100%;
   min-height: 35px;
-  border: 0;
-  border-left: 2px solid transparent;
-  border-radius: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
   background: transparent;
-  color: var(--world-muted);
+  color: var(--primer-fg-muted);
   padding: 0 8px;
   cursor: pointer;
   text-align: left;
-  font-size: 0.72rem;
+  font-size: 0.76rem;
+  font-weight: 500;
 }
 
 .world-map-button:hover,
-.world-map-button:focus-visible,
-.world-map-button[aria-current="true"] {
-  border-left-color: var(--map-color, var(--world-mint));
-  background: rgb(255 255 255 / 0.045);
-  color: var(--world-copy);
+.world-map-button:focus-visible {
+  border-color: var(--primer-border-default);
+  background: var(--primer-control-bg);
+  color: var(--primer-fg-default);
   outline: none;
+}
+
+.world-map-button[aria-current="true"] {
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
+  color: var(--primer-fg-default);
+  box-shadow: inset 2px 0 var(--primer-fg-muted);
 }
 
 .world-map-icon {
   display: grid;
   place-items: center;
-  color: var(--map-color, var(--world-mint));
+  color: var(--primer-fg-muted);
   font-family: "ForkMesh Mono", monospace;
   font-size: 0.66rem;
 }
@@ -1352,9 +1478,9 @@ forkmesh-world {
   width: 40px;
   height: 40px;
   overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 0.22);
-  border-radius: 0;
-  background: #143528;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-control-bg);
   padding: 3px;
   color: white;
   cursor: pointer;
@@ -1362,8 +1488,13 @@ forkmesh-world {
 
 .world-shirt-badge:hover,
 .world-shirt-badge:focus-visible {
-  border-color: var(--world-mint);
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
   outline: none;
+}
+
+.world-shirt-badge:focus-visible {
+  box-shadow: 0 0 0 3px var(--primer-accent-subtle);
 }
 
 .world-shirt-account {
@@ -1395,9 +1526,10 @@ forkmesh-world {
 .world-diagnostics {
   position: absolute;
   z-index: 45;
-  right: 0;
+  right: auto;
   bottom: 0;
-  width: min(1180px, 100%);
+  left: 0;
+  width: min(1180px, calc(100% - min(440px, calc(100vw - 24px))));
   max-width: 100vw;
   border-top: 1px solid var(--world-line-strong);
   border-left: 1px solid var(--world-line);
@@ -1594,10 +1726,10 @@ forkmesh-world {
   }
 }
 
-/* Chat stays open above the DEBUG strip at the lower-right. */
+/* DEBUG owns the lower-left; chat owns the lower-right all the way down. */
 .world-chat-terminal {
   right: 0;
-  bottom: var(--world-diagnostics-height);
+  bottom: 0;
   left: auto;
   z-index: 46;
   width: min(440px, calc(100vw - 24px));
@@ -1610,7 +1742,6 @@ forkmesh-world {
   border-top: 1px solid var(--world-line);
 }
 
-/* No DEBUG strip reserved below chat, so it can sit flush at the bottom. */
 .world-chat-terminal.world-chat-terminal--debug-hidden {
   bottom: 0;
 }
@@ -1621,6 +1752,33 @@ forkmesh-world {
 }
 
 .world-chat-terminal[open] [data-world-chat-terminal-last] {
+  display: none;
+}
+
+.world-chat-terminal-channel {
+  color: #f0f6fc;
+  font-weight: 700;
+}
+
+.world-chat-terminal-lock,
+.world-chat-terminal-connection {
+  color: #8c959f;
+}
+
+.world-chat-terminal-connection::before {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: #3fb950;
+  content: "";
+  vertical-align: 1px;
+}
+
+.world-chat-terminal:not([open]) .world-chat-terminal-channel,
+.world-chat-terminal:not([open]) .world-chat-terminal-lock,
+.world-chat-terminal:not([open]) .world-chat-terminal-connection {
   display: none;
 }
 
@@ -1676,6 +1834,114 @@ forkmesh-world {
   transform: translate(-50%, 0);
   opacity: 1;
   visibility: visible;
+}
+
+.world-qa-failure-overlay {
+  position: absolute;
+  z-index: 82;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(1 4 9 / 0.72);
+  padding: 18px;
+  pointer-events: auto;
+  backdrop-filter: blur(4px);
+}
+
+.world-qa-failure-dialog {
+  display: grid;
+  width: min(520px, 100%);
+  max-height: calc(100dvh - 36px);
+  gap: 14px;
+  overflow-y: auto;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  background: var(--primer-canvas-default);
+  padding: 18px;
+  box-shadow: 0 16px 48px rgb(1 4 9 / 0.72);
+  color: var(--primer-fg-default);
+}
+
+.world-qa-failure-dialog header,
+.world-qa-failure-dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.world-qa-failure-dialog header > div,
+.world-qa-failure-dialog label {
+  display: grid;
+  gap: 6px;
+}
+
+.world-qa-failure-dialog header span,
+.world-qa-failure-dialog small {
+  color: var(--primer-fg-muted);
+  font-size: 0.72rem;
+}
+
+.world-qa-failure-dialog p {
+  margin: 0;
+  color: var(--primer-fg-muted);
+  font-size: 0.82rem;
+}
+
+.world-qa-failure-dialog textarea,
+.world-qa-failure-dialog input[type="file"] {
+  width: 100%;
+  border: 1px solid var(--primer-border-default);
+  background: var(--primer-canvas-subtle);
+  padding: 8px;
+  color: var(--primer-fg-default);
+}
+
+.world-qa-failure-dialog textarea:focus,
+.world-qa-failure-dialog input[type="file"]:focus-visible {
+  border-color: #8b949e;
+  box-shadow: 0 0 0 3px var(--primer-accent-subtle);
+  outline: none;
+}
+
+.world-qa-failure-dialog button {
+  min-height: 32px;
+  border: 1px solid var(--primer-border-default);
+  background: var(--primer-control-bg);
+  padding: 0 12px;
+  color: var(--primer-fg-default);
+  cursor: pointer;
+}
+
+.world-qa-failure-dialog button:hover,
+.world-qa-failure-dialog button:focus-visible {
+  border-color: #8b949e;
+  background: var(--primer-control-hover);
+  outline: none;
+}
+
+.world-qa-failure-dialog button[type="submit"] {
+  border-color: #2ea043;
+  background: #238636;
+  color: #fff;
+}
+
+.world-qa-failure-preview {
+  display: grid;
+  gap: 7px;
+}
+
+.world-qa-failure-preview[hidden] {
+  display: none;
+}
+
+.world-qa-failure-preview img {
+  width: 100%;
+  max-height: 220px;
+  border: 1px solid var(--primer-border-default);
+  border-radius: 6px;
+  object-fit: contain;
+  background: var(--primer-canvas-subtle);
 }
 
 .world-swing-panel {
@@ -6405,11 +6671,12 @@ forkmesh-world.world-office-active .world-quick-dock {
 
 .world-aquarium-control-panel {
   position: absolute;
+  z-index: 18;
   display: grid;
-  min-width: min(390px, calc(100vw - 28px));
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-width: min(340px, calc(100vw - 28px));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 5px;
-  transform: translate(-100%, -100%);
+  transform: translate(calc(-100% - 8px), calc(-100% - 8px));
   border: 1px solid rgb(113 239 255 / 0.74);
   border-radius: 8px;
   background:
@@ -6996,6 +7263,18 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     font-size: 0.4rem;
   }
 
+  .world-diagnostics:not(.world-chat-terminal) {
+    width: calc(100% - 58px);
+  }
+
+  .world-diagnostics:not(.world-chat-terminal):has(
+      + .world-chat-terminal[open]
+    ) {
+    width: 0;
+    overflow: hidden;
+    border: 0;
+  }
+
   .world-diagnostics:not(.world-chat-terminal) > summary {
     min-height: var(--world-diagnostics-height);
     align-items: flex-start;
@@ -7485,7 +7764,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
    every user-facing surface finishes with the same GitHub dark primitives. */
 .fm-world :is(
   dialog,
-  aside,
+  aside:not(.world-right-rail),
   [class*="world-panel"],
   [class*="world-drawer"],
   [class*="world-dialog"],

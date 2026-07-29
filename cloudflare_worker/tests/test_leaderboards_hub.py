@@ -56,6 +56,22 @@ def test_world_has_the_full_connected_leaderboard_district():
     assert 'continuousCityLand.name = "forkmesh-continuous-city-land"' in SCENE
     assert 'leaderboardConnection.name = "forkmesh-leaderboard-island-connection"' in SCENE
     assert 'leaderboardPromenade.name = "forkmesh-leaderboard-promenade"' in SCENE
+    assert "function leaderboardGridTexture(THREE, state = {})" in SCENE
+    assert '"5 × 5 LIVE GRID · EACH CATEGORY LISTS MEMBERS OR NODES VERTICALLY"' in SCENE
+    assert "new THREE.BoxGeometry(23, 23, 0.45)" in SCENE
+    assert "new THREE.PlaneGeometry(22.4, 22.4)" in SCENE
+    assert "new THREE.BoxGeometry(58, 4.2, 0.35)" not in SCENE
+    assert "leaderboardSuperPanel.position.set(-42, 0.22, 0)" in SCENE
+    assert "footing.position.set(x, 0.25, 0)" in SCENE
+    assert 'leaderboardGridFace.userData.interactive = "leaderboard-grid"' in SCENE
+    assert '"forkmesh-leaderboard-ring-walk"' not in SCENE
+    physical = SCENE.split(
+        "// One square 5×5 wall preserves", 1
+    )[1].split("let leaderboardGridKey", 1)[0]
+    assert "makeActiveLeaderboardSign" not in physical
+    assert "makeReferralLeaderboardSign" not in physical
+    assert "makeSiteReferrerLeaderboardSign" not in physical
+    assert "makeLeaderboardStatSign" not in physical
     assert "function updateLeaderboards(boards = [])" in SCENE
     assert "updateLeaderboards," in SCENE
 

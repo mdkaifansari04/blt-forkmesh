@@ -64,6 +64,7 @@ struct AgentDiffStat {
 #include <QMap>
 #include <QMetaType>
 #include <QPixmap>
+#include <QPointer>
 #include <QSet>
 #include <QTextBlockUserData>
 #include <QTextCursor>
@@ -881,7 +882,10 @@ private:
     void updateChatIdentity();     // push user name/avatar into the chat backend
     void updateUserSwitcher();     // refresh top-bar user label/avatar
     void updateNodeSwitcher();     // refresh top-bar node label / count
-    void updateNavSolanaBalance(); // refresh top-bar balance for this node
+    void updateNavSolanaBalance(); // refresh top-bar balance for the web user
+    void refreshWebUserSolanaAddress();
+    void cacheWebUserSolanaProfile(const QString &account,
+                                   const QJsonObject &profile);
     void cycleNavSolanaCurrency(); // SOL -> USD -> INR -> SOL on balance click
     // Re-render the top-bar balance from the cached lamports/fiat rate without
     // re-hitting the network, so cycling SOL/USD/INR is instant and can't stall
@@ -951,6 +955,8 @@ private:
     void updateNodeOnlineControls();
     // Bottom quick-add issue bar (the network log now lives in its own section).
     QWidget *buildNetworkLogDock();
+    // One-line strip pinned to the very bottom of the window (adhoc #2).
+    QWidget *buildStatusBar();
     // Compact footer queue between the live log and agent prompt. It is always on
     // screen (reading "idle" when nothing is running) and gives each kind of job
     // a spinner plus a one-word tag ("git", "net", "fork" …); past five tags it
@@ -993,6 +999,9 @@ private:
     // true if an agent was started. Backs the dialog's "Send to a new agent" button.
     bool sendStallLogToAgent();
     void showDiagnosticsDialog();
+    void showHighMemoryProcessPanel();
+    void refreshHighMemoryProcessTable();
+    void killHighMemoryProcess(qint64 pid, const QString &name);
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
     void showCloudflareWorkerLogs();
@@ -3698,7 +3707,7 @@ private:
     // switcher shows its favicon in the dropdown itself instead of a caption).
     QLabel *m_nodeLabel = nullptr;
     QLabel *m_repoLabel = nullptr;
-    QLabel *m_navNodeName = nullptr;     // "user/node" shown above the balance
+    QLabel *m_navNodeName = nullptr;     // "user/node" beside the balance
     QLabel *m_navSolanaBalance = nullptr;
     // Super-tiny Claude Code and Codex usage charts in the top-right cluster
     // (issue #266): two horizontal bars (5-hour + weekly) sitting beside the
@@ -3725,6 +3734,14 @@ private:
     // click (which used to rate-limit and leave the figure stuck).
     qint64 m_navSolanaLamports = -1; // last known balance, -1 = not yet fetched
     QHash<QString, QPair<double, qint64>> m_navFiatRates; // cur -> {rate, fetchedMs}
+    // The web user's public profile is authoritative for the top-bar wallet.
+    // A local node setting is used only until that user profile has resolved.
+    QString m_webSolanaAccount;
+    QString m_webSolanaAddress;
+    bool m_webSolanaKnown = false;
+    bool m_webSolanaFetchInFlight = false;
+    qint64 m_webSolanaFetchedMs = 0;
+    QTimer *m_webSolanaTimer = nullptr;
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
     QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
     QPushButton *m_agentsNavButton = nullptr; // top-bar shortcut to the Agents tab, between Repo and Chat
@@ -3844,8 +3861,8 @@ private:
     QPushButton *m_repoViewButton = nullptr; // "Code" button on the repo header row
     QPushButton *m_reposNavButton = nullptr; // network-wide "Repos" section
     QPushButton *m_settingsNavButton = nullptr; // Settings button on the repo header row
-    QPushButton *m_logNavButton = nullptr; // retired (adhoc #137): Log now opens via m_floatingLogButton
-    QPushButton *m_floatingLogButton = nullptr; // "Log" button floating over the live-log strip
+    QPushButton *m_logNavButton = nullptr; // full Log destination in the left rail
+    QPushButton *m_floatingLogButton = nullptr; // retired; retained for safe resize no-op
     QPushButton *m_controlNodeNavButton = nullptr; // local control-node operations
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
     QPushButton *m_nodesNavButton = nullptr;  // "Nodes" top-nav button (adhoc #9)
@@ -4368,9 +4385,12 @@ private:
     // text, so the textChanged handler doesn't mistake the recall for a manual
     // edit and reset the history position.
     bool m_quickAddHistoryNavigating = false;
-    // Centered in the footer: the git identity (name <email>) configured for the
-    // repo currently open in the detail view. Updated by openRepoDetail.
+    // In the bottom status bar: the git identity (name <email>) configured for
+    // the repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
+    // Right of the status bar: where the running executable lives on disk, so
+    // it is obvious which build/checkout the open window came from.
+    QLabel *m_statusAppPath = nullptr;
     // Footer diagnostics: live CPU/memory readout + UI-stall watchdog state.
     QPushButton *m_footerDiagnostics = nullptr;
     // Live one-per-second moving sparklines for CPU, host memory and disk
@@ -4388,6 +4408,11 @@ private:
     // Stall signatures already handed to an agent this session, so a recurring
     // freeze doesn't spawn a fresh agent task every time it fires (adhoc #205).
     QSet<QString> m_autoFiledStallSignatures;
+    bool m_highMemoryAlertArmed = true;
+    QPointer<QDialog> m_highMemoryDialog;
+    QTableWidget *m_highMemoryProcessTable = nullptr;
+    QLabel *m_highMemoryProcessStatus = nullptr;
+    QPointer<QProcess> m_highMemoryProcessQuery;
     qulonglong m_diagLastCpuTicks = 0;
     qint64 m_diagLastCpuMs = 0;
 
@@ -4712,7 +4737,7 @@ private:
     QWidget *m_scmPanel = nullptr;
     QWidget *m_scmControlsPanel = nullptr;
     QTreeWidget *m_scmTree = nullptr;
-    QLineEdit *m_scmMessage = nullptr;
+    QPlainTextEdit *m_scmMessage = nullptr; // compact two-line commit/post draft
     QTextBrowser *m_scmDiff = nullptr;
     QLabel *m_scmCountLabel = nullptr;
     QLabel *m_scmViewedLabel = nullptr;  // "3 of 26 files viewed"

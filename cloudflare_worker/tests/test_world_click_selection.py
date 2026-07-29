@@ -52,3 +52,4 @@ def test_member_panel_shows_email_verification_and_admin_user_detail_link():
     assert 'target.searchParams.set("table", "users")' in member_panel
     assert 'target.searchParams.set("user", name)' in member_panel
     assert "Open admin user detail" in member_panel
+    assert 'target="_blank" rel="noopener noreferrer"' in member_panel

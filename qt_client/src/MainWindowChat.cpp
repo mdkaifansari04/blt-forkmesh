@@ -38,6 +38,12 @@
 
 #include <algorithm>
 
+#if defined(Q_OS_UNIX)
+#include <cerrno>
+#include <cstring>
+#include <signal.h>
+#endif
+
 using namespace forkmesh::ui;
 
 namespace {
@@ -452,7 +458,7 @@ QWidget *MainWindow::buildChatPage()
     m_appNavigationRailLayout->setSpacing(1);
     for (QPushButton *button :
          {m_reposNavButton, m_agentsNavButton, m_chatButton,
-          m_controlNodeNavButton, m_hostsNavButton, m_nodesNavButton,
+          m_controlNodeNavButton, m_logNavButton, m_hostsNavButton, m_nodesNavButton,
           m_relaysNavButton, m_networkNavButton}) {
         if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
             railButton->setCompact(false);
@@ -537,7 +543,65 @@ QWidget *MainWindow::buildChatPage()
     root->setSpacing(0);
     root->addWidget(header);
     root->addWidget(lower, 1);
+    // Thin one-line strip under everything else, spanning the rail as well as
+    // the content shell so it reads as the window's own bottom edge (adhoc #2).
+    root->addWidget(buildStatusBar());
     return page;
+}
+
+// A single text line tall: the branch switcher and the repo's git identity (both
+// of which used to sit inside the repo Code overview) plus the on-disk location
+// of the running executable. The widgets are created here, not in the repo pages
+// they came from, because those pages build lazily on first navigation while the
+// strip has to be populated from the first frame; setRepoBranch /
+// loadBranchesAndTags / updateFooterGitIdentity keep filling them in as before.
+QWidget *MainWindow::buildStatusBar()
+{
+    auto *bar = new QWidget;
+    bar->setObjectName("appStatusBar");
+
+    m_branchButton = new QPushButton("main");
+    m_branchButton->setObjectName("ghostButton");
+    m_branchButton->setCursor(Qt::PointingHandCursor);
+    m_branchButton->setToolTip("Switch branch");
+    setOcticon(m_branchButton, "git-branch", 12);
+
+    m_footerGitIdentity = new QLabel;
+    m_footerGitIdentity->setObjectName("footerGitIdentity");
+    m_footerGitIdentity->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_footerGitIdentity->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_footerGitIdentity->setToolTip(
+        "Git author identity configured for the repository you're viewing");
+
+    // Elided up front rather than on every resize: the path never changes while
+    // the app runs, and a full path left unelided would drag the window's
+    // minimum width out with it. The tooltip keeps the untruncated value.
+    const QString appPath =
+        QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
+    m_statusAppPath = new QLabel;
+    m_statusAppPath->setObjectName("statusAppPath");
+    m_statusAppPath->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_statusAppPath->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_statusAppPath->setText(m_statusAppPath->fontMetrics().elidedText(
+        appPath, Qt::ElideMiddle, 420));
+    m_statusAppPath->setToolTip(
+        QStringLiteral("Running app: %1\nWorking directory: %2")
+            .arg(appPath, QDir::toNativeSeparators(QDir::currentPath())));
+
+    auto *row = new QHBoxLayout(bar);
+    row->setContentsMargins(10, 0, 10, 0);
+    row->setSpacing(10);
+    row->addWidget(m_branchButton);
+    row->addWidget(m_footerGitIdentity);
+    row->addStretch(1);
+    row->addWidget(m_statusAppPath);
+
+    // One line, nothing more: the tallest child (the branch button) is capped to
+    // the strip so the menu indicator can't push the bar taller.
+    const int rowHeight = qMax(20, bar->fontMetrics().height() + 6);
+    bar->setFixedHeight(rowHeight);
+    m_branchButton->setMaximumHeight(rowHeight - 2);
+    return bar;
 }
 
 // kFooterLogSeedLines (MainWindowInternal.h) bounds both the startup seed and
@@ -1183,20 +1247,7 @@ QWidget *MainWindow::buildNetworkLogDock()
         m_footerUpdateLog->setPlainText(QStringLiteral("ForkMesh ready"));
     }
 
-    // Floating "Log" button overlaid on the bottom-right of the live-log strip
-    // (adhoc #137): opens the full network Log section (index 4) without taking a
-    // slot in the crowded section-nav row. Parented to the strip so it floats over
-    // its corner; repositioned as the strip resizes via the eventFilter branch.
-    m_floatingLogButton = new QPushButton(QStringLiteral("Log"), m_footerUpdateLog);
-    m_floatingLogButton->setObjectName("floatingLogButton");
-    m_floatingLogButton->setCursor(Qt::PointingHandCursor);
-    m_floatingLogButton->setToolTip(
-        QString::fromUtf8("Network log \xE2\x80\x94 all activity"));
-    setOcticon(m_floatingLogButton, "list-unordered", 14);
-    connect(m_floatingLogButton, &QPushButton::clicked, this,
-            [this] { showSection(4); });
     m_footerUpdateLog->installEventFilter(this);
-    positionFloatingLogButton();
 
     // Background work is visible without taking over the app: this narrow strip
     // sits exactly between the live log and the agent prompt and lists one
@@ -1274,12 +1325,35 @@ QWidget *MainWindow::buildNetworkLogDock()
                 Qt::QueuedConnection);
         });
 
-    // Horizontal split: live-log strip, transient background queue, then prompt.
+    // The live log and Background queue form one left-hand region. A definite
+    // divider comes after both, so Background can never drift into the prompt
+    // half. Each compact panel has the same rounded green border language as the
+    // prompt.
+    auto *logPanel = new QFrame;
+    logPanel->setObjectName(QStringLiteral("footerLogPanel"));
+    auto *logPanelLayout = new QVBoxLayout(logPanel);
+    logPanelLayout->setContentsMargins(1, 1, 1, 1);
+    logPanelLayout->addWidget(m_footerUpdateLog);
+
+    auto *leftRegion = new QWidget;
+    leftRegion->setObjectName(QStringLiteral("footerLeftRegion"));
+    auto *leftRegionLayout = new QHBoxLayout(leftRegion);
+    leftRegionLayout->setContentsMargins(0, 0, 0, 0);
+    leftRegionLayout->setSpacing(8);
+    leftRegionLayout->addWidget(logPanel, 1);
+    leftRegionLayout->addWidget(m_backgroundQueue, 0);
+
+    auto *footerDivider = new QFrame;
+    footerDivider->setObjectName(QStringLiteral("footerDivider"));
+    footerDivider->setFrameShape(QFrame::VLine);
+    footerDivider->setFixedWidth(1);
+
+    // Horizontal split: bordered log + Background, divider, then prompt.
     auto *dockRow = new QHBoxLayout(dock);
-    dockRow->setContentsMargins(0, 0, 0, 0);
-    dockRow->setSpacing(0);
-    dockRow->addWidget(m_footerUpdateLog, 1);
-    dockRow->addWidget(m_backgroundQueue, 0);
+    dockRow->setContentsMargins(8, 8, 8, 8);
+    dockRow->setSpacing(8);
+    dockRow->addWidget(leftRegion, 1);
+    dockRow->addWidget(footerDivider, 0);
     dockRow->addWidget(card, 1);
 
     // Pin the footer to just the compact card's height (adhoc #107): margins +
@@ -1289,7 +1363,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     // dock is sized to the content instead of stranding blank space above it.
     dock->setFixedHeight(card->sizeHint().height() +
                          m_agentStatusRow->sizeHint().height() +
-                         cardLayout->spacing());
+                         cardLayout->spacing() + 16);
 
     // Enter sends (Shift+Enter inserts a newline) — handled in the event filter
     // since QPlainTextEdit has no returnPressed signal.
@@ -2963,12 +3037,14 @@ void MainWindow::updateFooterDiagnostics()
             tip += QStringLiteral(" \xC2\xB7 %1\xE2\x80\xAFMB resident").arg(rssMb);
         cpu->setToolTip(tip);
     }
+    double hostMemoryPct = -1.0;
     if (auto *mem = static_cast<ResourceSparkline *>(m_memChart)) {
         const qint64 total = SystemStats::totalMemoryBytes();
         const qint64 avail = SystemStats::availableMemoryBytes();
         double pct = -1.0;
         if (total > 0 && avail >= 0 && avail <= total)
             pct = 100.0 * double(total - avail) / double(total);
+        hostMemoryPct = pct;
         mem->addSample(pct >= 0 ? pct : 0.0, 100.0,
                        pct >= 0 ? QStringLiteral("%1%").arg(pct, 0, 'f', 0) : dash);
         mem->setToolTip(
@@ -2978,6 +3054,17 @@ void MainWindow::updateFooterDiagnostics()
                            SystemStats::formatBytes(total))
                 : QStringLiteral("Host memory in use"));
     }
+#ifndef FORKMESH_WINDOW_TESTS
+    // Open once on the upward crossing. It rearms only after memory has fallen
+    // comfortably below the threshold, so dismissing the panel at 91% does not
+    // make it reopen every second.
+    if (hostMemoryPct >= 90.0 && m_highMemoryAlertArmed) {
+        m_highMemoryAlertArmed = false;
+        QTimer::singleShot(0, this, &MainWindow::showHighMemoryProcessPanel);
+    } else if (hostMemoryPct >= 0.0 && hostMemoryPct < 88.0) {
+        m_highMemoryAlertArmed = true;
+    }
+#endif
     if (auto *disk = static_cast<ResourceSparkline *>(m_diskChart)) {
         const QString path = QDir::homePath();
         const qint64 total = SystemStats::diskTotalBytes(path);
@@ -3239,6 +3326,291 @@ void MainWindow::showDiagnosticsDialog()
     row->addWidget(close);
     v->addLayout(row);
     dlg.exec();
+}
+
+void MainWindow::showHighMemoryProcessPanel()
+{
+    if (m_highMemoryDialog) {
+        m_highMemoryDialog->show();
+        m_highMemoryDialog->raise();
+        m_highMemoryDialog->activateWindow();
+        refreshHighMemoryProcessTable();
+        return;
+    }
+
+    auto *dialog = new QDialog(this);
+    m_highMemoryDialog = dialog;
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowModality(Qt::NonModal);
+    dialog->setModal(false);
+    dialog->setWindowTitle(QStringLiteral("High memory usage"));
+    dialog->resize(820, 560);
+    auto *layout = new QVBoxLayout(dialog);
+
+    auto *heading = new QLabel(QStringLiteral(
+        "<b>Host memory is above 90%</b><br>"
+        "Processes are sorted by resident memory. “Kill” requests a normal "
+        "termination; ForkMesh and PID 1 are protected."));
+    heading->setTextFormat(Qt::RichText);
+    heading->setWordWrap(true);
+    layout->addWidget(heading);
+
+    m_highMemoryProcessStatus =
+        new QLabel(QStringLiteral("Scanning for the largest memory users…"));
+    m_highMemoryProcessStatus->setObjectName(QStringLiteral("statusLine"));
+    layout->addWidget(m_highMemoryProcessStatus);
+
+    m_highMemoryProcessTable = new QTableWidget(0, 6);
+    m_highMemoryProcessTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Process"), QStringLiteral("PID"),
+         QStringLiteral("Owner"), QStringLiteral("Memory"),
+         QStringLiteral("Host %"), QStringLiteral("Action")});
+    m_highMemoryProcessTable->verticalHeader()->setVisible(false);
+    m_highMemoryProcessTable->setSelectionBehavior(
+        QAbstractItemView::SelectRows);
+    m_highMemoryProcessTable->setEditTriggers(
+        QAbstractItemView::NoEditTriggers);
+    m_highMemoryProcessTable->setSortingEnabled(false);
+    m_highMemoryProcessTable->setAlternatingRowColors(true);
+    m_highMemoryProcessTable->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::Stretch);
+    for (int column = 1; column < 6; ++column)
+        m_highMemoryProcessTable->horizontalHeader()->setSectionResizeMode(
+            column, QHeaderView::Fixed);
+    m_highMemoryProcessTable->setColumnWidth(1, 72);
+    m_highMemoryProcessTable->setColumnWidth(2, 110);
+    m_highMemoryProcessTable->setColumnWidth(3, 105);
+    m_highMemoryProcessTable->setColumnWidth(4, 72);
+    m_highMemoryProcessTable->setColumnWidth(5, 76);
+    layout->addWidget(m_highMemoryProcessTable, 1);
+
+    auto *refresh = new QPushButton(QStringLiteral("Refresh"));
+    setOcticon(refresh, QStringLiteral("sync"), 14);
+    connect(refresh, &QPushButton::clicked, this,
+            &MainWindow::refreshHighMemoryProcessTable);
+    auto *close = new QPushButton(QStringLiteral("Close"));
+    connect(close, &QPushButton::clicked, dialog, &QDialog::close);
+    auto *buttons = new QHBoxLayout;
+    buttons->addWidget(refresh);
+    buttons->addStretch(1);
+    buttons->addWidget(close);
+    layout->addLayout(buttons);
+
+    connect(dialog, &QObject::destroyed, this, [this] {
+        m_highMemoryDialog = nullptr;
+        m_highMemoryProcessTable = nullptr;
+        m_highMemoryProcessStatus = nullptr;
+        m_highMemoryProcessQuery = nullptr;
+    });
+    auto *autoRefresh = new QTimer(dialog);
+    autoRefresh->setInterval(5000);
+    connect(autoRefresh, &QTimer::timeout, this,
+            &MainWindow::refreshHighMemoryProcessTable);
+    autoRefresh->start();
+    dialog->show();
+    dialog->raise();
+    // Let the new window paint before starting even the lightweight process
+    // query. QProcess remains asynchronous, so a pressured host never blocks
+    // the GUI while the culprit list is collected.
+    QTimer::singleShot(0, this, &MainWindow::refreshHighMemoryProcessTable);
+}
+
+void MainWindow::refreshHighMemoryProcessTable()
+{
+    if (!m_highMemoryDialog || !m_highMemoryProcessTable ||
+        m_highMemoryProcessQuery)
+        return;
+    m_highMemoryProcessStatus->setText(
+        m_highMemoryProcessTable->rowCount() == 0
+            ? QStringLiteral("Scanning for the largest memory users…")
+            : QStringLiteral("Refreshing memory culprits in the background…"));
+    auto *query = new QProcess(m_highMemoryDialog);
+    m_highMemoryProcessQuery = query;
+    connect(query, &QProcess::finished, this,
+            [this, query](int exitCode, QProcess::ExitStatus status) {
+                const QByteArray output = query->readAllStandardOutput();
+                const QByteArray error = query->readAllStandardError();
+                query->deleteLater();
+                m_highMemoryProcessQuery = nullptr;
+                if (!m_highMemoryDialog || !m_highMemoryProcessTable)
+                    return;
+                if (status != QProcess::NormalExit || exitCode != 0) {
+                    const QString detail =
+                        QString::fromLocal8Bit(error).trimmed();
+                    m_highMemoryProcessStatus->setText(
+                        QStringLiteral("Could not list processes: %1")
+                            .arg(detail.isEmpty()
+                                     ? QStringLiteral("the background query timed out")
+                                     : detail));
+                    return;
+                }
+
+                struct ProcessRow {
+                    qint64 pid = 0;
+                    QString owner;
+                    qint64 rssKb = 0;
+                    double percent = 0.0;
+                    QString name;
+                };
+                QVector<ProcessRow> rows;
+                rows.reserve(30);
+                const QList<QByteArray> lines = output.split('\n');
+                int validProcesses = 0;
+                for (const QByteArray &raw : lines) {
+                    const QList<QByteArray> fields =
+                        raw.simplified().split(' ');
+                    if (fields.size() < 5)
+                        continue;
+                    bool pidOk = false;
+                    bool rssOk = false;
+                    const qint64 pid = fields.at(0).toLongLong(&pidOk);
+                    const QString owner = QString::fromLocal8Bit(fields.at(1));
+                    const qint64 rssKb = fields.at(2).toLongLong(&rssOk);
+                    const QString percent =
+                        QString::fromLocal8Bit(fields.at(3));
+                    const QString name =
+                        QString::fromLocal8Bit(
+                            QByteArrayList(fields.mid(4)).join(' '));
+                    if (!pidOk || !rssOk || pid <= 0 || name.isEmpty())
+                        continue;
+                    ++validProcesses;
+                    // `ps` is already RSS-sorted. Only materialize the top
+                    // culprits: hundreds of cell widgets and repeated
+                    // ResizeToContents passes were what made the old alert
+                    // appear frozen under memory pressure.
+                    if (rows.size() < 30)
+                        rows.append({pid, owner, rssKb, percent.toDouble(), name});
+                }
+
+                m_highMemoryProcessTable->setUpdatesEnabled(false);
+                m_highMemoryProcessTable->clearContents();
+                m_highMemoryProcessTable->setRowCount(rows.size());
+                qint64 shownRssKb = 0;
+                for (int row = 0; row < rows.size(); ++row) {
+                    const ProcessRow &process = rows.at(row);
+                    shownRssKb += process.rssKb;
+                    auto put = [this, row](int column, const QString &text,
+                                           const QVariant &sortValue = {}) {
+                        auto *item = new QTableWidgetItem(text);
+                        if (sortValue.isValid())
+                            item->setData(Qt::UserRole, sortValue);
+                        m_highMemoryProcessTable->setItem(row, column, item);
+                    };
+                    put(0, process.name);
+                    put(1, QString::number(process.pid), process.pid);
+                    put(2, process.owner);
+                    put(3, SystemStats::formatBytes(process.rssKb * 1024),
+                        process.rssKb);
+                    put(4, QStringLiteral("%1%").arg(process.percent, 0, 'f', 1),
+                        process.percent);
+                    if (row < 5) {
+                        for (int column = 0; column < 5; ++column) {
+                            QTableWidgetItem *item =
+                                m_highMemoryProcessTable->item(row, column);
+                            QFont font = item->font();
+                            font.setBold(true);
+                            item->setFont(font);
+                            item->setForeground(QColor(QStringLiteral("#cf222e")));
+                        }
+                    }
+
+                    auto *kill = new QPushButton(QStringLiteral("Kill"));
+                    kill->setProperty("buttonSize", "sm");
+                    const bool protectedProcess =
+                        process.pid == 1 ||
+                        process.pid == QCoreApplication::applicationPid();
+                    kill->setEnabled(!protectedProcess);
+                    kill->setToolTip(
+                        protectedProcess
+                            ? QStringLiteral("This process is protected")
+                            : QStringLiteral("Request that %1 terminate")
+                                  .arg(process.name));
+                    connect(kill, &QPushButton::clicked, this,
+                            [this, pid = process.pid, name = process.name] {
+                                killHighMemoryProcess(pid, name);
+                            });
+                    m_highMemoryProcessTable->setCellWidget(row, 5, kill);
+                }
+                m_highMemoryProcessTable->setUpdatesEnabled(true);
+                m_highMemoryProcessTable->viewport()->update();
+                m_highMemoryProcessStatus->setText(
+                    QStringLiteral(
+                        "Top %1 of %2 processes · %3 resident · refreshed %4")
+                        .arg(rows.size())
+                        .arg(validProcesses)
+                        .arg(SystemStats::formatBytes(shownRssKb * 1024))
+                        .arg(QTime::currentTime().toString(
+                            QStringLiteral("h:mm:ss AP"))));
+            });
+    connect(query, &QProcess::errorOccurred, this,
+            [this, query](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart)
+                    return;
+                const QString detail = query->errorString();
+                query->deleteLater();
+                if (m_highMemoryProcessQuery == query)
+                    m_highMemoryProcessQuery = nullptr;
+                if (m_highMemoryProcessStatus)
+                    m_highMemoryProcessStatus->setText(
+                        QStringLiteral("Could not list processes: %1")
+                            .arg(detail));
+            });
+    query->start(QStringLiteral("ps"),
+                 {QStringLiteral("-eo"),
+                  QStringLiteral("pid=,user=,rss=,%mem=,comm="),
+                  QStringLiteral("--sort=-rss")});
+    // A broken or heavily starved `ps` must not leave the panel looking busy
+    // forever. Killing this helper is safe and does not affect listed processes.
+    QTimer::singleShot(3000, query, [query] {
+        if (query->state() != QProcess::NotRunning)
+            query->kill();
+    });
+}
+
+void MainWindow::killHighMemoryProcess(qint64 pid, const QString &name)
+{
+    if (pid <= 1 || pid == QCoreApplication::applicationPid())
+        return;
+    const auto answer = QMessageBox::warning(
+        m_highMemoryDialog ? static_cast<QWidget *>(m_highMemoryDialog.data())
+                           : this,
+        QStringLiteral("Kill process"),
+        QStringLiteral("Request that “%1” (PID %2) terminate?\n\n"
+                       "Unsaved work in that process may be lost.")
+            .arg(name)
+            .arg(pid),
+        QMessageBox::Cancel | QMessageBox::Yes, QMessageBox::Cancel);
+    if (answer != QMessageBox::Yes)
+        return;
+
+#if defined(Q_OS_UNIX)
+    if (::kill(static_cast<pid_t>(pid), SIGTERM) != 0) {
+        QMessageBox::warning(
+            m_highMemoryDialog
+                ? static_cast<QWidget *>(m_highMemoryDialog.data())
+                : this,
+            QStringLiteral("Could not kill process"),
+            QStringLiteral("%1 (PID %2): %3")
+                .arg(name)
+                .arg(pid)
+                .arg(QString::fromLocal8Bit(std::strerror(errno))));
+        return;
+    }
+    if (m_highMemoryProcessStatus)
+        m_highMemoryProcessStatus->setText(
+            QStringLiteral("Termination requested for %1 (PID %2).")
+                .arg(name)
+                .arg(pid));
+    QTimer::singleShot(750, this,
+                       &MainWindow::refreshHighMemoryProcessTable);
+#else
+    QMessageBox::information(
+        m_highMemoryDialog ? static_cast<QWidget *>(m_highMemoryDialog.data())
+                           : this,
+        QStringLiteral("Kill process"),
+        QStringLiteral("Per-process termination is not supported on this "
+                       "platform yet."));
+#endif
 }
 
 void MainWindow::showTreasuryDonateDialog()
@@ -3712,8 +4084,8 @@ QWidget *MainWindow::buildBreadcrumb()
     m_nodeMenuButton->setToolTip("Pick a node to view its repositories");
     connect(m_nodeMenuButton, &QPushButton::clicked, this, &MainWindow::showNodeMenu);
 
-    // Node name shown above the wallet balance in the top-right cluster, as
-    // "user/node" (the user account, if any, plus this node's own name).
+    // Compact "user/node" identity followed by its public wallet balance on
+    // the same top-chrome line.
     m_navNodeName = new QLabel;
     m_navNodeName->setObjectName("navNodeName");
     m_navNodeName->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -4056,9 +4428,19 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_settingsNavButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
 
-    // Log (m_sectionStack index 4) no longer has a labelled tab in the section
-    // nav (adhoc #137): it's opened via the floating "Log" button overlaid on
-    // the always-on live-log strip, created in buildNetworkLogDock().
+    // Full Log: a normal activity-rail destination. The mini log stays clean and
+    // entirely devoted to output instead of carrying a floating navigation
+    // button over its text.
+    m_logNavButton = new ActivityRailButton(QStringLiteral("list-unordered"),
+                                            QStringLiteral("Log"));
+    m_logNavButton->setObjectName("topNavButton");
+    m_logNavButton->setCheckable(true);
+    m_logNavButton->setCursor(Qt::PointingHandCursor);
+    m_logNavButton->setToolTip(QStringLiteral("Network and application log"));
+    setOcticon(m_logNavButton, "list-unordered", 16);
+    m_navGroup->addButton(m_logNavButton, 4);
+    connect(m_logNavButton, &QPushButton::clicked, this,
+            [this] { showSection(4); });
 
     // Control node: this desktop's operational surface for local mirrors,
     // permissions, keys, wallet public address, Cloudflare, and connected hosts.
@@ -4954,7 +5336,90 @@ void MainWindow::updateUserSwitcher()
     updateChatIdentity();
     // The top-right node-name label folds in the user account name
     // ("user/node"), so keep it in step with the user identity too.
+    refreshWebUserSolanaAddress();
     updateNavSolanaBalance();
+}
+
+void MainWindow::cacheWebUserSolanaProfile(const QString &account,
+                                           const QJsonObject &profile)
+{
+    const QString normalized = account.trimmed().toLower();
+    if (normalized.isEmpty() ||
+        profile.value(QStringLiteral("kind")).toString() !=
+            QStringLiteral("user"))
+        return;
+    QString address = profile.value(QStringLiteral("solana")).toString().trimmed();
+    if (!address.isEmpty() &&
+        !forkmesh::control::isValidSolanaPublicAddress(address))
+        address.clear();
+    m_webSolanaAccount = normalized;
+    m_webSolanaAddress = address;
+    m_webSolanaKnown = true;
+    m_webSolanaFetchedMs = QDateTime::currentMSecsSinceEpoch();
+    updateNavSolanaBalance();
+}
+
+void MainWindow::refreshWebUserSolanaAddress()
+{
+    if (!m_networkAccess)
+        return;
+    const QString account = topBarUserName().trimmed().toLower();
+    const bool hasWebUser =
+        !m_nodeOwnerUser.trimmed().isEmpty() || m_profileIsUserAccount ||
+        (m_accountAuthenticated &&
+         settingsAccountName().compare(account, Qt::CaseInsensitive) == 0);
+    if (account.isEmpty() || !hasWebUser) {
+        m_webSolanaAccount.clear();
+        m_webSolanaAddress.clear();
+        m_webSolanaKnown = false;
+        m_webSolanaFetchedMs = 0;
+        return;
+    }
+
+    if (!m_webSolanaTimer) {
+        m_webSolanaTimer = new QTimer(this);
+        m_webSolanaTimer->setInterval(60 * 1000);
+        connect(m_webSolanaTimer, &QTimer::timeout, this,
+                &MainWindow::refreshWebUserSolanaAddress);
+        m_webSolanaTimer->start();
+    }
+    if (m_webSolanaAccount != account) {
+        m_webSolanaAccount = account;
+        m_webSolanaAddress.clear();
+        m_webSolanaKnown = false;
+        m_webSolanaFetchedMs = 0;
+    }
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_webSolanaKnown && now - m_webSolanaFetchedMs < 55 * 1000)
+        return;
+    if (m_webSolanaFetchInFlight)
+        return;
+
+    m_webSolanaFetchInFlight = true;
+    QNetworkRequest request(accountsApiUrl(account));
+    request.setRawHeader("Accept", "application/json");
+    request.setRawHeader("Cache-Control", "no-cache");
+    if (!m_accountSessionToken.trimmed().isEmpty())
+        request.setRawHeader(
+            "Authorization",
+            QByteArrayLiteral("Bearer ") + m_accountSessionToken.toUtf8());
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, account] {
+                m_webSolanaFetchInFlight = false;
+                const bool ok = reply->error() == QNetworkReply::NoError;
+                const QJsonObject profile =
+                    QJsonDocument::fromJson(reply->readAll()).object();
+                reply->deleteLater();
+                if (account != topBarUserName().trimmed().toLower()) {
+                    refreshWebUserSolanaAddress();
+                    return;
+                }
+                if (ok && profile.value(QStringLiteral("exists")).toBool() &&
+                    profile.value(QStringLiteral("kind")).toString() ==
+                        QStringLiteral("user"))
+                    cacheWebUserSolanaProfile(account, profile);
+            });
 }
 
 void MainWindow::cycleNavSolanaCurrency()
@@ -4998,7 +5463,11 @@ void MainWindow::updateNavSolanaBalance()
     if (!m_navSolanaBalance)
         return;
 
-    const QString addr = savedSolanaAddress();
+    const QString account = topBarUserName().trimmed().toLower();
+    const QString addr =
+        m_webSolanaKnown && m_webSolanaAccount == account
+            ? m_webSolanaAddress
+            : savedSolanaAddress();
     if (addr != m_navSolanaBalanceAddress)
         m_navSolanaLamports = -1; // address changed: cached balance no longer applies
     m_navSolanaBalanceAddress = addr;
@@ -15507,6 +15976,7 @@ void MainWindow::refreshProfileAccountStatus()
         m_profileIsUserAccount =
             resp.value(QStringLiteral("kind")).toString() ==
             QStringLiteral("user");
+        cacheWebUserSolanaProfile(node, resp);
         m_profileLinkedNodes =
             profileNodesFromJson(resp.value(QStringLiteral("nodes")));
         updateUserSwitcher();
@@ -15533,9 +16003,12 @@ void MainWindow::fetchLinkedNodesFromOwner(const QString &node,
         reply->deleteLater();
         if (!m_profileIsSelf || accountOwner() != node)
             return;
-        if (resp.value(QStringLiteral("exists")).toBool())
+        if (resp.value(QStringLiteral("exists")).toBool()) {
+            cacheWebUserSolanaProfile(
+                resp.value(QStringLiteral("name")).toString(), resp);
             m_profileLinkedNodes =
                 profileNodesFromJson(resp.value(QStringLiteral("nodes")));
+        }
         renderProfileAccountStatus();
     });
 }

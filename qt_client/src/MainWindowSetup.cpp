@@ -2638,6 +2638,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         m_profileIsUserAccount =
             lookup.value(QStringLiteral("kind")).toString() ==
             QStringLiteral("user");
+        cacheWebUserSolanaProfile(accountName, lookup);
         QSettings().setValue(kAuthedAccountSetting, accountName);
         applyAccountEmailVerified(accountName,
                                   lookup.value("emailVerified").toBool());
@@ -2978,6 +2979,10 @@ bool MainWindow::verifyTotpLogin(const QString &email,
         // and the web dashboard show the same picture. Adopt a picture already
         // set on the account; otherwise upload the one chosen locally.
         m_accountSessionToken = payload.value("sessionToken").toString();
+        m_profileIsUserAccount =
+            payload.value(QStringLiteral("kind")).toString() ==
+            QStringLiteral("user");
+        cacheWebUserSolanaProfile(m_accountName, payload);
         // Register only this device's public hybrid encryption bundle. This
         // makes the account ready to be named as a private-repo collaborator;
         // the X25519 and ML-KEM private halves stay in the encrypted local vault.
@@ -2997,6 +3002,7 @@ bool MainWindow::verifyTotpLogin(const QString &email,
         } else {
             pushAccountAvatar();
         }
+        updateUserSwitcher();
     };
 
     if (status == 200 && resp.value("ok").toBool()) {

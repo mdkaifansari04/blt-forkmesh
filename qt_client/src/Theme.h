@@ -179,6 +179,17 @@ QPushButton#socialIconButton {
 QPushButton#socialIconButton:hover { border-color: #6e7681; }
 #footerGitIdentity { color: #8b949e; font-size: 12px; }
 
+/* --- Bottom status bar: one text line tall, so everything in it is compact. */
+#appStatusBar { background-color: #010409; border-top: 1px solid #30363d; }
+#appStatusBar QLabel {
+    background: transparent; color: #8b949e; font-size: 11px;
+}
+#appStatusBar QPushButton {
+    background: transparent; border: none; color: #c9d1d9;
+    font-size: 11px; padding: 0 4px;
+}
+#appStatusBar QPushButton:hover { color: #58a6ff; }
+
 /* --- Nav rail --- */
 #navRail { background-color: #010409; border-right: 1px solid #30363d; }
 #navRail QLabel { background: transparent; }
@@ -518,6 +529,12 @@ QPushButton#memberDeleteButton:hover {
     background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 6px;
 }
 #promptWrapper:focus-within { border-color: #39d353; }
+#footerLogPanel, #backgroundTaskQueue {
+    background-color: #0d1117;
+    border: 1px solid rgba(57,211,83,0.55);
+    border-radius: 6px;
+}
+#footerDivider { background-color: #30363d; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
 }
@@ -870,6 +887,12 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 8px;
 }
 #promptWrapper:focus-within { border-color: #39d353; }
+#footerLogPanel, #backgroundTaskQueue {
+    background-color: #0d1117;
+    border: 1px solid rgba(57,211,83,0.55);
+    border-radius: 8px;
+}
+#footerDivider { background-color: #30363d; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
     min-height: 38px; max-height: 38px;
@@ -1749,6 +1772,12 @@ QPushButton#memberDeleteButton:hover {
     background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 6px;
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
+#footerLogPanel, #backgroundTaskQueue {
+    background-color: #ffffff;
+    border: 1px solid rgba(26,127,55,0.5);
+    border-radius: 6px;
+}
+#footerDivider { background-color: #d0d7de; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
 }
@@ -1938,6 +1967,18 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 }
 #logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
 #logDock QLabel { background: transparent; }
+
+/* --- Bottom status bar: one text line tall, so everything in it is compact. */
+#appStatusBar { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
+#appStatusBar QLabel {
+    background: transparent; color: #656d76; font-size: 11px;
+}
+#appStatusBar QPushButton {
+    background: transparent; border: none; color: #1f2328;
+    font-size: 11px; padding: 0 4px;
+}
+#appStatusBar QPushButton:hover { color: #0969da; }
+
 #composerBar { background-color: #ffffff; border-top: 1px solid #d0d7de; }
 #composerInputRow {
     background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
@@ -2082,6 +2123,12 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 8px;
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
+#footerLogPanel, #backgroundTaskQueue {
+    background-color: #ffffff;
+    border: 1px solid rgba(26,127,55,0.5);
+    border-radius: 8px;
+}
+#footerDivider { background-color: #d0d7de; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
     min-height: 38px; max-height: 38px;

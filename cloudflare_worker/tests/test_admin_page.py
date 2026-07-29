@@ -201,14 +201,46 @@ def test_admin_users_supports_a_direct_filtered_detail_view():
     assert 'params.get("user", [""])[0]' in admin
 
 
+def test_admin_database_rows_open_read_only_vertical_detail_pages():
+    for contract in (
+        "async def _render_record_detail(",
+        '"SELECT rowid AS _rowid_, * FROM " + table + " WHERE rowid=? LIMIT 1"',
+        'class="record-detail"',
+        "<dl>%s</dl>",
+        "Read-only vertical view",
+        'action="detail"',
+        'class="record-row"',
+        'data-href="%s"',
+        "location.href=this.dataset.href",
+        'if action == "detail" and active:',
+        'params.get("rowid", [""])[0]',
+    ):
+        assert contract in ENTRY_TEXT
+
+
 def test_admin_error_log_has_grouped_24_hour_occurrence_analytics():
     for contract in (
         "Previous 24 hours",
         "Equivalent errors",
         'class="error-chart"',
         'class="error-bar"',
+        'class="error-sparkline"',
+        'class="error-spark-bar"',
+        "<th>24-hour frequency</th>",
         "WHERE ts>=? ORDER BY ts DESC LIMIT 5000",
-        "groups[signature] = groups.get(signature, 0) + 1",
+        "groups.setdefault(signature, [0] * 24)",
+        "group_hours[23 - int(age_hours)] += 1",
         'aria-labelledby="error-analytics-title"',
+    ):
+        assert contract in ENTRY_TEXT
+
+
+def test_admin_timestamps_show_exact_and_live_relative_time():
+    for contract in (
+        "new Date(ms).toLocaleString()",
+        "className='relative-time'",
+        "function updateAdminRelativeTimes()",
+        "' ago'",
+        "setInterval(updateAdminRelativeTimes,30000)",
     ):
         assert contract in ENTRY_TEXT

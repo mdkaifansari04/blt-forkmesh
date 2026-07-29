@@ -16,6 +16,8 @@ CATALOG_TEXT = CATALOG.read_text(encoding="utf-8")
 FUNCS = {
     "clean_string",
     "_html_escape",
+    "_light_email_fragment",
+    "_forkmesh_email_action_html",
     "_forkmesh_email_card_html",
     "_format_email_ts",
     "_notification_digest_email",
@@ -117,9 +119,7 @@ def test_digest_html_escapes_the_actor_name():
     assert "&lt;script&gt;" in html
 
 
-def test_digest_html_follows_native_light_or_dark_mode():
-    # Light is the safe inline fallback; capable readers use the native dark
-    # preference without auto-inverting the brand colors.
+def test_digest_html_uses_one_high_contrast_light_mode():
     ns = _load()
     _subject, _text, html = ns["_notification_digest_email"]("alice", [{
         "kind": "mention",
@@ -130,12 +130,15 @@ def test_digest_html_follows_native_light_or_dark_mode():
         "ts": 1783607520000,
         "meta": {"number": 7},
     }])
-    assert 'name="color-scheme" content="light dark"' in html
-    assert 'name="supported-color-schemes" content="light dark"' in html
-    assert "prefers-color-scheme:dark" in html
+    assert 'name="color-scheme" content="light"' in html
+    assert 'name="supported-color-schemes" content="light"' in html
+    assert "prefers-color-scheme:dark" not in html
     assert "#ffffff" in html
     assert 'class="fm-card"' in html
-    assert "background:#090909" in html
+    assert "background:#090909" not in html
+    assert "background:#0f0f11" not in html
+    assert "data-forkmesh-site-action" in html
+    assert 'href="https://forkmesh.com/"' in html
 
 
 def test_notify_mentions_accepts_an_optional_number_for_the_digest():

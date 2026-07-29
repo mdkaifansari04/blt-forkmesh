@@ -5,6 +5,30 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [ ] Complete the remaining web PR lifecycle: proactive readiness/conflict data, live checks, complete commit history, and an auditable signed update-from-main mirror operation. Conversation, peer review, changed files, and protected owner merge are already present.
+- [x] Add a one-line status bar at the bottom of the Qt window carrying the branch switcher, the repository git identity and the running app's on-disk location.
+- [x] Make avatar clicks reliably open the user HUD; remove the out-of-scope animation timestamp crash and prefer a nearby visible avatar hit over surrounding geometry.
+- [x] Give the Members Circle detailed dirt, one visible pile log per member, and a gently growing bounded campfire.
+- [x] Keep the combined aquarium control panel fixed to the lower-right of the tank.
+- [x] Show one sanitized recent public-channel message on each user's chest card without exposing private/direct chat.
+- [x] Show a green verified-email pin or a red unverified-email X on every signed-in avatar, with guests neutral.
+- [x] Add one labeled warp pad per Office floor to the left of the lobby welcome desk, respecting floor access.
+- [x] Align image preloads with texture-loader credentials, avoid cross-origin avatar failures with deterministic fallbacks, and treat unavailable Actions summaries as retryable state rather than HTTP 503 noise.
+- [x] Make every visible admin database row open a read-only detail page with the complete redacted record listed vertically.
+- [x] Show a red email-unverified X for every non-guest member and open the privileged admin user detail action in a new tab.
+- [x] Add a live Engineering-room debug control panel with bounded renderer, memory, loop, and interaction counts plus green/orange/red optimization thresholds.
+- [x] Put every leaderboard and statistic into one square 5×5 wall, remove the duplicate physical boards and center circle, and keep the complete assembly above terrain.
+- [x] Remove the ForkMesh open repo issues billboard and its invisible interaction surface; close the gap by moving the Human TODO board beside the build board.
+- [x] Move the Solana treasury QR to the front midpoint of the first node ring and add a Start a node button that opens the desktop download page in a new window.
+- [x] Replace the doubled south route with one concrete-brick path terminating at the fire-marked Members Circle sign.
+- [x] Replace the doubled north Office route with one width-matched concrete-brick path, bridge, and approach that meet edge-to-edge.
+- [x] Make the World foundation and its collision boundary circular around the circular bike lane.
+- [x] Make keyboard movement instant, reuse camera/movement frame scratch state, and cadence-bound non-motion proximity/DOM work while preserving full-rate WebGL rendering.
+- [x] Move World DEBUG to the lower-left and extend the right chat dock to the bottom; add a pinned dark GitHub Primer multiline composer with channel/repository selectors and working chat, signed-issue, and Engineering-agent actions, move channel security/connection into its header, remove the duplicate public notice, and collapse HUD docks when clicking outside.
+- [x] Restyle the compact and expanded World right HUD with GitHub Primer primitives, including selected, hover, focus, and icon-button states.
+- [x] Open both Issue and PR tower records in their canonical, same-origin embedded web workbenches instead of the unrelated Repository portals panel.
+- [x] Audit the full 2026-07-28 request history against the implementation, tests, QA deck, and build-board source; keep every partial or externally unverifiable item open below.
+- [x] Scale repository PR and Issue towers to their complete bounded item counts and move them outside the ActivityPub follower orbit.
 - [x] Remove zoom-out relationship lines, rounded connector pads, colored grass ovals, disjoint terrain remnants, and obstructive agent-terminal blocks; retain one fast continuous walkable grass foundation.
 - [x] Make the perimeter bike path a true circle and lock mounted bikes to its center groove, with `E` as the explicit mount/dismount control.
 - [x] Make World PR and Issue clicks open record-only detail drawers without unrelated Repository portals content.
@@ -21,7 +45,7 @@ the implementation and its focused verification are complete.
 - [x] Show each live repository agent task on its tiny terminal and open that exact engineering-only transcript with prompt and re-prompt controls when clicked.
 - [x] Join the World districts into one continuous city landscape with seamless concrete paths.
 - [x] Add a visible START HERE progress map from the users area to the centered mirror nodes.
-- [x] Make Space jump off the roof, check the user out on exit, and allow every chair or bench to seat a visitor.
+- [x] Make Space jump off the roof, check the user out on exit, slow the descent with a mini parachute that collapses after landing, and allow every chair or bench to seat a visitor.
 - [x] Add a connected driveable road, car, beach environment, water, horizon, and beach seating.
 - [x] Move the perimeter bike route outside activity areas while retaining two usable bicycles.
 - [x] Circle-align the public billboards, retain one leaderboard panel, and remove the obsolete center marker.
@@ -149,7 +173,7 @@ the implementation and its focused verification are complete.
 - [x] Give capacity graph cells a consistent shape and aspect ratio.
 - [x] Show every seated member's complete public identity card, including flag.
 - [x] Keep joined/first-seen/activity details visible for newly joined seated members.
-- [x] Add a right-click World action to share an exact location and perspective.
+- [x] Superseded: the initial right-click exact-view action was removed and replaced by the persistent right-rail Share exact view button.
 - [x] Restore shared coordinates and camera perspective when opening the link.
 - [x] Route new issue submissions into an online repository mirror immediately.
 - [x] Replace pending issue placeholders with real mirrored issues after intake.
@@ -231,6 +255,57 @@ the implementation and its focused verification are complete.
 - [x] Keep mirror merge owner-only until group permissions are available.
 - [x] Add focused authorization, concurrency, persistence, and UI tests.
 
+## 2026-07-28 audit additions
+
+- [x] Render recent public X and Reddit posts inside scene-native World frames through the bounded same-origin social-feed snapshot; use Reddit's explicit application User-Agent and avoid injecting third-party tracking scripts into the WebGL page.
+- [x] Keep ActivityPub followers in the large outer repository portrait ring, Git contributors in the smaller inner ring, and provide the floating repository Follow control.
+- [x] Remove the Office Guide and oversized Marketing Studio banner objects from the Marketing room while retaining the room-scale task controls, desks, attendance calendar, and table.
+- [x] Reconcile the later exact-view request: sharing stays on the right rail, Saved Views stays collapsed, and the normal right-click interaction is restored.
+- [x] Route Issue and PR tower clicks into their record-specific canonical web workbenches, with narrowly scoped same-origin frame policy and no Repository portals preamble.
+- [ ] Complete the remaining web PR parity listed in Current focus; do not expose a fake update-from-main control until an online mirror advertises and signs that mutation.
+- [x] Finish the GitHub Primer restyle of the compact and expanded right-side World HUD.
+- [ ] Publish role-specific website onboarding paths for QA, developers, and marketing; the Markdown getting-started, Qt, contribution, and independent peer-review guidance exists, but the public docs page does not yet present the role journeys requested today.
+- [ ] Verify the live ActivityPub follower inventory against the production backup and restore any missing actors; migration and retention regression coverage are present, but this repository cannot prove that the external backup restore was run.
+
+## 2026-07-28 current emergency and follow-up
+
+- [x] Fix the deployed aerial-marker `MEMBER_CIRCLE_CENTER_Z` exception that
+  aborted the animation loop before movement, and make optional LOD marker
+  initialization fail closed without interrupting input.
+- [x] Restore the complete transparent Office cutaway at every camera distance:
+  glass, floor slabs, walls, lighting, and furniture remain visible outdoors,
+  while entered visitors render only their active floor.
+- [x] Keep every World section visible at every zoom level, including
+  repository rings and live layers, the complete public-board circle,
+  organizations, fediverse displays, landscaping, and plaza fixtures; aerial
+  optimization now reduces lighting cost without removing content.
+- [x] Restore the SOL treasury QR/sign to the front midpoint inside the node
+  circle, including its Start a node download action.
+- [x] Deploy and verify the durable Office/SOL emergency production revision
+  `2d3602646909`.
+- [ ] Verify the new aerial landmark LOD in production and confirm that zooming
+  out no longer produces red frame-time/draw-call diagnostics.
+- [ ] Finish end-to-end organization-admin bot-token QA: one-time secret,
+  default scoped permissions, local-computer binding, expiry, audit, and
+  immediate revocation.
+- [ ] Verify platform `is_admin` web-to-Qt agent dispatch against an owned,
+  currently running desktop node; retain provider leases and the fail-closed
+  tool-free Haiku preflight.
+- [ ] Add the signed-in owner's private desktop-only CPU, RAM, and disk card to
+  the World HUD. Never include headless-node telemetry or broadcast these
+  owner-only values in presence.
+- [ ] Complete embedded World chat QA: pinned multiline prompt, consistent
+  Primer contrast/fonts, unclipped Send, team-task creation, repository-issue
+  creation, and organization/user repository aliases only.
+- [ ] Complete the remaining web PR lifecycle parity item in Current focus.
+- [ ] Publish the role-specific QA/developer/marketing onboarding page.
+- [ ] Verify and, if needed, restore the production ActivityPub follower backup.
+
+The remaining implementation work stays in **Current focus**. The Cloudflare
+observability credentials and “ForkMesh Forever” social-proof publishing remain
+the two canonical unchecked human actions above; they are not duplicated here
+so their completion state cannot drift.
+
 ## Requested follow-up work
 
 - [x] Redesign the exterior World as a mixed city-and-woodland landscape with stone plazas, paths, varied grass patches, trees, broad continuous land connections, finished edges, and visible dirt/roots underneath.
@@ -270,9 +345,9 @@ the implementation and its focused verification are complete.
 
 ## Screenshot branch integration
 
-The code from these screenshot sessions has been integrated into `main`.
-Deleting their source branches/worktrees remains a separate unchecked cleanup
-task above so they stay recoverable until final verification.
+The code from these screenshot sessions has been integrated into `main`, and
+their verified merged source branches/worktrees were removed after the
+recoverability checks recorded above.
 
 - [x] Session 445 — ForkMesh recover setting.
 - [x] Session 444 — prevent falling through the floor.

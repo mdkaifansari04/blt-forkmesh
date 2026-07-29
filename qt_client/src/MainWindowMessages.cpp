@@ -1032,6 +1032,10 @@ void MainWindow::refreshChatMembers()
         if (m_chatDirectoryUsers.contains(selfKey))
             roomUserKeys.insert(selfKey);
         const QString peerId = dmPeerId(m_currentConversation);
+        const QString peerName =
+            m_dmNames.value(peerId).trimmed().toLower();
+        if (m_chatDirectoryUsers.contains(peerName))
+            roomUserKeys.insert(peerName);
         for (const MemberInfo &member : std::as_const(m_homeRoster)) {
             if (member.id != peerId)
                 continue;

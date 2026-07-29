@@ -40,6 +40,7 @@ def _load_handler(extra_globals):
         "_office_attendance_floor",
         "_office_attendance_visit",
         "_office_attendance_recent",
+        "_office_attendance_leaderboard",
         "office_attendance_handler",
     }
     tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
@@ -304,6 +305,58 @@ def test_get_returns_only_the_newest_twenty_bounded_public_visits():
         }
         for visit in visits
     )
+    assert response["payload"]["leaderboard"] == []
+
+
+def test_leaderboard_has_one_member_row_ranked_by_longest_office_stay():
+    handler, database, _state = _runtime()
+    database.executemany(
+        "INSERT INTO world_office_attendance "
+        "(visit_id,account_bi,account_name,in_at,out_at,last_seen_at,"
+        "floor_id,visit_scope) VALUES (?,?,?,?,?,?,?,?)",
+        [
+            (
+                "1" * 32, "a" * 64, "alice",
+                _Clock.value - 600_000, _Clock.value - 300_000,
+                _Clock.value - 300_000, "", "office",
+            ),
+            (
+                "2" * 32, "a" * 64, "alice",
+                _Clock.value - 120_000, None,
+                _Clock.value, "engineering", "office",
+            ),
+            (
+                "3" * 32, "b" * 64, "bob",
+                _Clock.value - 500_000, _Clock.value - 100_000,
+                _Clock.value - 100_000, "", "office",
+            ),
+            (
+                "4" * 32, "c" * 64, "legacy-user",
+                _Clock.value - 900_000, _Clock.value,
+                _Clock.value, "", "legacy",
+            ),
+        ],
+    )
+    database.commit()
+
+    payload = _run(handler(None, _Request(method="GET")))["payload"]
+
+    assert payload["leaderboard"] == [
+        {
+            "account": "bob",
+            "longestDurationMs": 400_000,
+            "activeDurationMs": 0,
+            "present": False,
+            "floor": "",
+        },
+        {
+            "account": "alice",
+            "longestDurationMs": 300_000,
+            "activeDurationMs": 120_000,
+            "present": True,
+            "floor": "Engineering",
+        },
+    ]
 
 
 def test_repeated_in_opens_one_visit_and_out_closes_that_same_row_once():
