@@ -167,7 +167,7 @@ def test_new_agent_tasks_show_one_bounded_world_bot_bubble():
     scene = source(SCENE)
     assert "const announcedAgentTaskIds = new Set()" in tasks
     assert "function announceAgentTasks()" in tasks
-    assert '["codex", "claude"].includes(task.assigneeKind)' in tasks
+    assert 'task.assigneeKind === "agent"' in tasks
     assert "world.showAgentTaskBubble?.(task.assigneeKind, task.title)" in tasks
     assert "function showAgentTaskBubble(botId, title)" in scene
     assert "if (!agentBotAccessAllowed) return false" in scene
@@ -390,3 +390,34 @@ def test_physical_board_displays_bounded_authorized_summaries_only():
     assert "officeMarketingRosterGroup" in scene
     assert "officeMarketingAttendanceTexture" in scene
     assert "officeReclaimedWoodTexture" in scene
+
+
+def test_one_general_bot_replaces_the_claude_and_codex_task_choice():
+    tasks = source(TASKS)
+    chat_view = (
+        ROOT / "public" / "dashboard" / "partials" / "views" / "chat.html"
+    ).read_text(encoding="utf-8")
+    chat = (ROOT / "public" / "dashboard-chat.js").read_text(encoding="utf-8")
+    assert '<option value="agent">Bot</option>' in chat_view
+    assert '<option value="codex">Codex</option>' not in chat_view
+    assert '<option value="claude">Claude</option>' not in chat_view
+    assert 'const ORG_BOT_SENDER_ID = "agent"' in chat
+    assert "queueOrgAgent(\n            \"agent\"," in chat
+    assert '"Bot",' in tasks
+    assert '"Codex"' not in tasks
+    assert '"Claude"' not in tasks
+
+
+def test_queued_bot_tasks_can_be_returned_to_the_task_list():
+    tasks = source(TASKS)
+    css = source(CSS)
+    for contract in (
+        'const botTask = task.assigneeKind === "agent"',
+        "canManage || task.createdBy === actor",
+        'data-world-office-task-action="return"',
+        '"start", "stop", "complete", "delete", "return",',
+        "Task returned to the task list.",
+        "queued on a node",
+    ):
+        assert contract in tasks
+    assert ".world-office-task-return" in css

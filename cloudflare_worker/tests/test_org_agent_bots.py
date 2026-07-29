@@ -182,3 +182,17 @@ def test_only_successful_codex_results_complete_a_valid_tracked_board_key():
     ).read_text(encoding="utf-8")
     assert "completeAgentTask" in WORLD
     assert "Completed ${taskLabel}. Moving it to Done." in SCENE
+
+
+def test_a_general_bot_request_picks_whichever_runtime_has_a_mirror():
+    for marker in (
+        'ORG_AGENT_GENERAL_PROVIDERS = ("agent", "bot", "auto")',
+        "general_bot = provider in ORG_AGENT_GENERAL_PROVIDERS",
+        "if not target_node and general_bot:",
+        "for candidate in ORG_AGENT_PROVIDERS[1:]:",
+        "async def cancel_agent_session(self, org_bi, session_id):",
+        "UPDATE org_agent_jobs SET status='cancelled'",
+        "UPDATE org_agent_sessions SET status='cancelled'",
+        "AND assignee_kind IN ('agent','bot','claude','codex')",
+    ):
+        assert marker in ENTRY
