@@ -90,8 +90,10 @@ class PullBadgeWidget;
 // Defined in MainWindowInternal.h, which lives in namespace forkmesh::ui.
 namespace forkmesh::ui {
 class ActivityRailButton;
+class AgentDotMatrix;
 }
 using forkmesh::ui::ActivityRailButton;
+using forkmesh::ui::AgentDotMatrix;
 class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
@@ -1963,6 +1965,10 @@ private:
     // Refreshes the count badge on the top-bar Agents nav button from
     // m_agentSessions.size().
     void updateAgentsNavBadge();
+    // Repaints the matrix of per-agent squares beside that button: one square
+    // per session, tinted like its status icon, with the live output meter of
+    // each running session driving its night-rider pulse.
+    void refreshAgentDotMatrix();
     void processAgentQueue();
     // Re-drain the queue after a slot frees, coalesced onto the event loop and
     // skipped unless something is queued AND there is room to start it.
@@ -3728,7 +3734,10 @@ private:
     QHash<QString, QPair<double, qint64>> m_navFiatRates; // cur -> {rate, fetchedMs}
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
     QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
-    QPushButton *m_agentsNavButton = nullptr; // top-bar shortcut to the Agents tab, between Repo and Chat
+    // "Agents (N)" and its live fleet matrix, both on the window-chrome line
+    // immediately left of the Back/Forward buttons.
+    QPushButton *m_agentsNavButton = nullptr;
+    AgentDotMatrix *m_agentDotMatrix = nullptr;
     // Small connection status dot painted over the top-right avatar (green
     // online / amber connecting / grey offline), replacing the old text pill.
     QLabel *m_connectionDot = nullptr;

@@ -3873,8 +3873,10 @@ QWidget *MainWindow::buildBreadcrumb()
 
     // Agents: a shortcut into the current repo's Agents tab (adhoc #194), not a
     // section of its own — it just jumps via openAgentsOverview() the same way
-    // the footer "Agents:" label does. Sits between Repo and Chat in the nav
-    // row. Checkable to show when the Agents tab is active (adhoc #201).
+    // the footer "Agents:" label does. Checkable to show when the Agents tab is
+    // active (adhoc #201). It used to sit between Repo and Chat in the section
+    // nav; it now heads the window-chrome line's search cluster, immediately
+    // left of Back/Forward, with the live agent matrix beside it.
     m_agentsNavButton = new QPushButton(QStringLiteral("Agents"));
     m_agentsNavButton->setObjectName("topNavButton");
     m_agentsNavButton->setCheckable(true);
@@ -3883,6 +3885,17 @@ QWidget *MainWindow::buildBreadcrumb()
     setOcticon(m_agentsNavButton, "terminal", 16);
     connect(m_agentsNavButton, &QPushButton::clicked, this,
             &MainWindow::openAgentsOverview);
+
+    // One tiny square per agent session, right of the button: the whole fleet's
+    // status as a matrix, with running sessions sweeping in time with their live
+    // output. Populated (and kept current) by refreshAgentDotMatrix().
+    m_agentDotMatrix = new AgentDotMatrix;
+    m_agentDotMatrix->onDotClicked = [this](int sessionId) {
+        if (sessionId > 0)
+            switchToAgentsTab(sessionId);
+        else
+            openAgentsOverview();
+    };
 
     // Chat: its own top-level section (m_sectionStack index 2).
     m_chatButton = new QPushButton(QStringLiteral("Chat"));
@@ -4154,6 +4167,11 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *searchClusterRow = new QHBoxLayout(searchCluster);
     searchClusterRow->setContentsMargins(0, 0, 0, 0);
     searchClusterRow->setSpacing(8);
+    // Agents + its live status matrix lead the cluster, so the fleet is visible
+    // from every section without leaving room for the search box to shift.
+    searchClusterRow->addWidget(m_agentsNavButton);
+    searchClusterRow->addWidget(m_agentDotMatrix);
+    searchClusterRow->addSpacing(4);
     searchClusterRow->addWidget(createNavHistoryButtons());
     searchClusterRow->addWidget(createGlobalSearchBox());
     chromeRow->addWidget(searchCluster, 0, Qt::AlignCenter);
@@ -4282,7 +4300,8 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->setSpacing(8);
     navRow->addWidget(m_repoViewButton);
     navRow->addWidget(m_reposNavButton);
-    navRow->addWidget(m_agentsNavButton);
+    // Agents moved up to the window-chrome line (left of Back/Forward) so its
+    // live matrix rides beside it; the section nav goes Repo -> Repos -> Chat.
     navRow->addWidget(m_chatButton);
     // Notifications (bell) and Settings (gear) moved out of the section nav
     // (adhoc #137): the bell rides beside the avatar in mainRow, and the gear
