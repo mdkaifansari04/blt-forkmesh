@@ -894,6 +894,11 @@ private:
     // re-hitting the network, so cycling SOL/USD/INR is instant and can't stall
     // on getBalance / price rate-limits.
     void renderNavSolanaBalance();
+    // Hover-gated getBalance. Every other path (profile hydration, currency
+    // cycling, the web-profile poll) renders from cache; only pointing at the
+    // top-bar balance actually spends a Solana RPC call, and even then only
+    // once per kNavSolanaBalanceTtlMs.
+    void refreshNavSolanaBalance(bool force = false);
     void queryNavSolanaBalance(const QString &addr, int endpointIndex);
     void queryNavSolanaUsdPrice(const QString &addr, qint64 lamports);
     void showRepoMenu();           // dropdown to open repos / add a local repo
@@ -3753,7 +3758,15 @@ private:
     // already fetched instead of re-querying getBalance / the price API each
     // click (which used to rate-limit and leave the figure stuck).
     qint64 m_navSolanaLamports = -1; // last known balance, -1 = not yet fetched
-    QHash<QString, QPair<double, qint64>> m_navFiatRates; // cur -> {rate, fetchedMs}
+    // getBalance is only issued on hover (see refreshNavSolanaBalance); these
+    // track when the cached figure was fetched and whether a query is already
+    // out, so re-entering the label doesn't queue a second RPC.
+    qint64 m_navSolanaFetchedMs = 0;
+    bool m_navSolanaFetchInFlight = false;
+    // cur -> {rate, attemptedMs}; a 0 rate records a failed attempt so the
+    // price API is backed off rather than re-asked on every render.
+    QHash<QString, QPair<double, qint64>> m_navFiatRates;
+    bool m_navFiatFetchInFlight = false;
     // The web user's public profile is authoritative for the top-bar wallet.
     // A local node setting is used only until that user profile has resolved.
     QString m_webSolanaAccount;
