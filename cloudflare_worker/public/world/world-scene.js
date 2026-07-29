@@ -13999,6 +13999,7 @@ export function createWorldScene({
   onPlayForkmeshSong = () => {},
   onCreateRepository = () => {},
   onStartNodeDownload = () => {},
+  onRewardBoardHover = () => {},
   onSwingRide = () => {},
   onCameraMode = () => {},
   onStartHereSelect = () => {},
@@ -28428,6 +28429,36 @@ export function createWorldScene({
     pointerEnergyY = y;
   }
 
+  // The treasury board only ever shows what the shell last handed to
+  // updateRewardPool, and that balance costs a public Solana RPC round trip,
+  // so it is fetched on demand instead of on a timer. Resting the pointer on
+  // the SOL sign is the refresh gesture; the sample gate keeps a fast mouse
+  // sweep from adding an intersect test to every pointer event, and the edge
+  // transition means holding still asks only once.
+  const REWARD_BOARD_HOVER_SAMPLE_MS = 120;
+  let rewardBoardHoverSampledAt = 0;
+  let rewardBoardHovered = false;
+
+  function updateRewardBoardHover(event, now) {
+    if (now - rewardBoardHoverSampledAt < REWARD_BOARD_HOVER_SAMPLE_MS) return;
+    rewardBoardHoverSampledAt = now;
+    const sign = landmarkObjects.get("fountain")?.userData?.treasurySign;
+    if (
+      !sign ||
+      officeSceneMode !== "town" ||
+      !objectIsEffectivelyVisible(sign)
+    ) {
+      rewardBoardHovered = false;
+      return;
+    }
+    pointerCoordinates(event);
+    raycaster.setFromCamera(pointer, camera);
+    const hovered = raycaster.intersectObject(sign, true).length > 0;
+    if (hovered === rewardBoardHovered) return;
+    rewardBoardHovered = hovered;
+    if (hovered) onRewardBoardHover();
+  }
+
   function handlePointerMove(event) {
     const pointerNow = performance.now();
     recordPointerEnergy(event, pointerNow);
@@ -28464,6 +28495,11 @@ export function createWorldScene({
         event.preventDefault();
         return;
       }
+    }
+    // Only an idle fine pointer is a hover: a held button is a camera drag or
+    // an object gesture, not somebody looking at the treasury board.
+    if (event.pointerType === "mouse" && primaryPointerId === null) {
+      updateRewardBoardHover(event, pointerNow);
     }
     if (event.pointerId !== primaryPointerId) return;
     if (draggedLayoutObject) {
