@@ -3726,7 +3726,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
       </div>
       <div class="world-label-layer" data-world-label-layer></div>
 
-      <div class="world-hud">
+      <div class="world-hud" data-world-hud data-hud-expanded="false">
         <header class="world-topbar">
           <a class="world-brand brand" href="/world/" data-world-logo-refresh aria-label="Refresh ForkMesh World">
             <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
@@ -3735,7 +3735,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </span>
           </a>
 
-          <nav class="world-top-actions" aria-label="World tools">
+          <nav class="world-top-actions" data-world-top-actions aria-label="World tools">
             ${
               identity.accountStatus === "Supporting member"
                 ? ""
@@ -3746,7 +3746,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               rel="noreferrer"
               title="Support ForkMesh on Patreon to unlock outfit colors"
             >
-              <span aria-hidden="true">♥</span><span class="world-visually-hidden">Upgrade</span>
+              <span aria-hidden="true">♥</span><span class="world-top-link-label">Upgrade</span>
             </a>`
             }
             <button
@@ -3757,7 +3757,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               aria-label="Enter first-person view"
               title="Enter first-person view"
             >
-              <span aria-hidden="true">⌖</span><span class="world-visually-hidden" data-world-camera-label>First person</span>
+              <span aria-hidden="true">⌖</span><span class="world-top-link-label" data-world-camera-label>First person</span>
             </button>
             <button
               class="world-top-link world-wave-button"
@@ -3766,7 +3766,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               title="Wave to everyone in the world"
               aria-label="Wave your avatar's arm"
             >
-              <span aria-hidden="true">👋</span><span class="world-visually-hidden">Wave</span>
+              <span aria-hidden="true">👋</span><span class="world-top-link-label">Wave</span>
             </button>
             <button
               class="world-top-link"
@@ -3776,7 +3776,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               aria-label="Enable World sounds"
               title="Enable World sounds"
             >
-              <span aria-hidden="true">♪</span><span class="world-visually-hidden" data-world-sound-label>Sound</span>
+              <span aria-hidden="true">♪</span><span class="world-top-link-label" data-world-sound-label>Sound</span>
             </button>
             <button
               class="world-top-link"
@@ -3785,7 +3785,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               aria-label="Capture and annotate a screenshot"
               title="Capture and annotate a screenshot"
             >
-              <span aria-hidden="true">📷</span><span class="world-visually-hidden">Capture</span>
+              <span aria-hidden="true">📷</span><span class="world-top-link-label">Capture</span>
             </button>
             <button
               class="world-top-link world-notification-button"
@@ -3794,8 +3794,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               title="Show global and personal notifications"
               aria-label="Open World notifications"
             >
-              <span aria-hidden="true">🔔</span><span class="world-visually-hidden">Notifications</span>
-              <span data-world-notification-count hidden>0</span>
+              <span aria-hidden="true">🔔</span><span class="world-top-link-label">Alerts</span>
             </button>
             <button
               class="world-top-link world-admin-errors-button"
@@ -3806,8 +3805,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               hidden
             >
               <span aria-hidden="true">!</span>
-              <span class="world-visually-hidden">New errors</span>
-              <span data-world-admin-error-count hidden>0</span>
+              <span class="world-top-link-label">Errors</span>
             </button>
             <a
               class="world-top-link world-dashboard-link"
@@ -3818,7 +3816,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               title="Open Dashboard in a new tab"
             >
               <span aria-hidden="true">▦</span>
-              <span class="world-visually-hidden">Dashboard</span>
+              <span class="world-top-link-label">Dashboard</span>
             </a>
             <button
               class="world-top-link world-tasks-button"
@@ -3828,14 +3826,14 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               title="Open organization tasks"
             >
               <span aria-hidden="true">✓</span>
-              <span class="world-visually-hidden">Tasks</span>
-              <span data-world-task-count hidden>0</span>
+              <span class="world-top-link-label">Tasks</span>
             </button>
             <button
               class="world-shirt-badge"
               type="button"
               data-world-shirt-badge
               data-world-settings-open
+              aria-expanded="false"
               aria-label="Your public avatar badge — open World and privacy settings"
               title="World and privacy settings"
             >
@@ -3853,13 +3851,17 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span
                 class="world-shirt-initial"
                 data-world-shirt-initial
+                aria-hidden="true"
                 ${accountAvatarPng ? "hidden" : ""}
-              >${escapeHTML((signedInName || identity.name || "?").slice(0, 1).toUpperCase())}</span>
+              ></span>
               <span class="world-shirt-account" data-world-shirt-account title="${escapeHTML(
                 identity.accountStatus,
               )}">${escapeHTML(
                 accountStatusIcon(identity),
               )}</span>
+              <span class="world-shirt-count world-shirt-count--alerts" data-world-notification-count hidden>0</span>
+              <span class="world-shirt-count world-shirt-count--errors" data-world-admin-error-count hidden>0</span>
+              <span class="world-shirt-count world-shirt-count--tasks" data-world-task-count hidden>0</span>
             </button>
           </nav>
         </header>
@@ -8500,6 +8502,23 @@ class ForkMeshWorld extends HTMLElement {
       diagnostics?.removeAttribute("open");
       this.loadChatTerminalFrame();
     });
+    // The account portrait is the World HUD launcher.  It keeps the World
+    // quiet while walking, then fans the fixed-size controls out on hover,
+    // keyboard focus, or the first tap on a touch device.  A launcher stays
+    // open until the player walks again or explicitly clicks away, so moving
+    // from the avatar into a revealed control never makes the row disappear.
+    const topActions = this.$("[data-world-top-actions]");
+    const rightRail = this.$("[data-world-right-rail]");
+    const hudHoverTargets = [topActions, rightRail].filter(Boolean);
+    const openHud = () => this.setWorldRightRailExpanded(true);
+    if (hoverCapable) {
+      hudHoverTargets.forEach((target) => {
+        target.addEventListener("pointerenter", openHud);
+      });
+    }
+    hudHoverTargets.forEach((target) => {
+      target.addEventListener("focusin", openHud);
+    });
     chatTerminal?.addEventListener("toggle", () => {
       if (chatTerminal.open) {
         this.$("[data-world-diagnostics]")?.removeAttribute("open");
@@ -8517,10 +8536,25 @@ class ForkMeshWorld extends HTMLElement {
       ) {
         chatTerminal.removeAttribute("open");
       }
+      const avatarLauncher = event.target.closest("[data-world-shirt-badge]");
+      if (
+        avatarLauncher &&
+        !hoverCapable &&
+        avatarLauncher.getAttribute("aria-expanded") !== "true"
+      ) {
+        // Touch has no hover: the first press exposes the same launcher
+        // controls and the next press still opens account settings.
+        event.preventDefault();
+        this.setWorldRightRailExpanded(true);
+        return;
+      }
       const rightRail = this.$("[data-world-right-rail]");
+      const outsideRightRail = !event.target.closest("[data-world-right-rail]");
+      const outsideTopActions = !event.target.closest("[data-world-top-actions]");
       if (
         rightRail?.dataset.expanded === "true" &&
-        !event.target.closest("[data-world-right-rail]")
+        outsideRightRail &&
+        outsideTopActions
       ) {
         this.setWorldRightRailExpanded(false);
       }
@@ -9342,15 +9376,21 @@ class ForkMeshWorld extends HTMLElement {
     const rail = this.$("[data-world-right-rail]");
     const map = this.$("[data-world-map]");
     const toggle = this.$("[data-world-map-toggle]");
-    if (!rail || !map || !toggle) return false;
+    const hud = this.$("[data-world-hud]");
+    const avatarLauncher = this.$("[data-world-shirt-badge]");
+    if (!rail || !map) return false;
     const active = expanded === true;
     rail.dataset.expanded = String(active);
+    if (hud) hud.dataset.hudExpanded = String(active);
+    if (avatarLauncher) avatarLauncher.setAttribute("aria-expanded", String(active));
     map.classList.toggle("is-expanded", active);
-    toggle.setAttribute("aria-expanded", String(active));
-    toggle.setAttribute(
-      "aria-label",
-      active ? "Collapse World controls" : "Expand World controls",
-    );
+    if (toggle) {
+      toggle.setAttribute("aria-expanded", String(active));
+      toggle.setAttribute(
+        "aria-label",
+        active ? "Collapse World controls" : "Expand World controls",
+      );
+    }
     return active;
   }
 
@@ -10040,7 +10080,11 @@ class ForkMeshWorld extends HTMLElement {
       avatar.hidden = !avatarPng;
     }
     if (initial) {
-      initial.textContent = String(visible.name || "?").slice(0, 1).toUpperCase();
+      // The compact launcher deliberately uses the same faceless round
+      // silhouette for accounts without an uploaded portrait.  Names remain
+      // in the accessible launcher label instead of leaking a lone initial
+      // into the avatar circle.
+      initial.textContent = "";
       initial.hidden = Boolean(avatarPng);
     }
     if (account) {
@@ -22664,6 +22708,7 @@ class ForkMeshWorld extends HTMLElement {
     // teardown that callback must not overwrite the location captured just
     // before it with the Office doorway.
     if (this.destroyed) return;
+    if (movement?.moving === true) this.setWorldRightRailExpanded(false);
     this.scheduleActivityArrival();
     const space = WORLD_SPACE_IDS.has(String(movement?.space || ""))
       ? String(movement.space)

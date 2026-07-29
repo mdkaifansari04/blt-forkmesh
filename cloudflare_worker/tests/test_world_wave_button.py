@@ -23,18 +23,17 @@ def test_a_small_wave_button_sits_in_the_hud_top_bar():
     assert APP.index("data-world-wave") < APP.index("data-world-sound-toggle")
 
 
-def test_the_phone_tool_row_keeps_every_existing_control_on_screen():
-    # The icon-only row is already tight, so the extra chip buys its slot with
-    # a narrower gutter and steps aside entirely on the smallest phones rather
-    # than pushing alerts or settings past the edge of the screen.
+def test_the_phone_launcher_reveals_controls_without_overflowing_the_row():
+    # Touch starts with the circular avatar launcher only.  The controls fan
+    # out in the same fixed-size row after a tap, where the row can scroll
+    # rather than pushing the avatar past the viewport edge.
     compact = STYLES.split("@media (max-width: 720px) {", 1)
     assert len(compact) == 2, "compact top-bar media query is missing"
-    assert "gap: 6px;" in compact[1].split("\n}\n", 1)[0]
-    narrow = STYLES.split("@media (max-width: 375px) {", 1)
-    assert len(narrow) == 2, "narrow-phone rule for the wave chip is missing"
-    narrow_block = narrow[1].split("\n}\n", 1)[0]
-    assert ".world-top-actions > .world-wave-button" in narrow_block
-    assert "display: none;" in narrow_block
+    compact_block = compact[1].split("\n}\n", 1)[0]
+    assert "width: 0;" in compact_block
+    assert ".world-hud[data-hud-expanded=\"true\"] .world-top-actions" in compact_block
+    assert "overflow-x: auto;" in compact_block
+    assert ".world-hud[data-hud-expanded=\"true\"] .world-top-link" in compact_block
 
 
 def test_clicking_the_button_waves_locally_and_broadcasts_one_emote():
