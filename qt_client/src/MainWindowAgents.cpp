@@ -4823,6 +4823,7 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch)
     if (!m_agentStore)
         return false;
     bool changed = false;
+    QList<int> mergedIds;
     for (AgentSession &s : m_agentSessions) {
         if (s.merged)
             continue;
@@ -4839,8 +4840,15 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch)
                    .arg(byPr ? QStringLiteral("PR #%1").arg(prNumber)
                              : QStringLiteral("Branch %1").arg(branch),
                         agentMergeBase(s)));
+        mergedIds << s.id;
         changed = true;
     }
+    // The organization task this session mirrors is closed out with the merge in
+    // its note — the run's own completion may have been reported before the
+    // branch landed, or not reported at all (adhoc #30). Outside the loop: the
+    // post's reply handler re-looks-up sessions by id.
+    for (int id : mergedIds)
+        completeOrgTaskForSession(id, QStringLiteral("The work has been merged."));
     if (changed) {
         refreshAgentTable();
         if (m_selectedAgentSessionId > 0)
@@ -4971,6 +4979,7 @@ void MainWindow::markAgentSessionsLanded(const QList<int> &sessionIds, bool refr
     if (!m_agentStore || sessionIds.isEmpty())
         return;
     bool changed = false;
+    QList<int> mergedIds;
     for (AgentSession &s : m_agentSessions) {
         if (!sessionIds.contains(s.id) || s.merged)
             continue;
@@ -4981,8 +4990,13 @@ void MainWindow::markAgentSessionsLanded(const QList<int> &sessionIds, bool refr
         m_agentStore->saveSession(s);
         m_agentStore->appendLog(
             s, QStringLiteral("\n==> Worktree/PR merged into %1.").arg(agentMergeBase(s)));
+        mergedIds << s.id;
         changed = true;
     }
+    // Same as markAgentSessionsMerged(): a landed branch completes the mirrored
+    // organization task and refreshes its note (adhoc #30).
+    for (int id : mergedIds)
+        completeOrgTaskForSession(id, QStringLiteral("The work has been merged."));
     if (changed && refreshUi) {
         // Merge state feeds the Diff-cell fingerprint; arm the re-validation the
         // same way reloadAgents() does (skipped mid-refresh — the pump can service
@@ -6419,6 +6433,17 @@ bool MainWindow::deleteStoredAgentSession(int sessionId, bool cleanupWorktree)
             return false;
         }
     }
+
+    // Close out the organization task before the session record goes away: a
+    // deleted session is finished work as far as the organization is concerned,
+    // and this is the last moment its summary can be read off the session
+    // (adhoc #30).
+    completeOrgTaskForSession(snapshot.id,
+                              snapshot.merged
+                                  ? QStringLiteral("The work has been merged and "
+                                                   "the agent session closed.")
+                                  : QStringLiteral("The agent session was closed "
+                                                   "on the desktop."));
 
     if (!m_agentStore->deleteSession(snapshot)) {
         flashMessage("Could not delete the agent session.", true);
@@ -10069,16 +10094,21 @@ void MainWindow::openOrgTaskForSession(const AgentSession &session)
     });
 }
 
-void MainWindow::completeOrgTaskForSession(int sessionId)
+void MainWindow::completeOrgTaskForSession(int sessionId, const QString &followUp)
 {
     const AgentSession *s = findAgentSession(sessionId);
-    if (!s || s->orgTaskId.isEmpty() || !s->finishedByBot.isEmpty() ||
-        isExternalSession(sessionId))
+    if (!s || s->orgTaskId.isEmpty() || isExternalSession(sessionId))
+        return;
+    // The run's own completion is reported once; a follow-up event (the branch
+    // landing, the session being deleted) re-posts it with a fresh note so the
+    // task reflects how the work actually ended (adhoc #30).
+    if (!s->finishedByBot.isEmpty() && followUp.trimmed().isEmpty())
         return;
     // Only a run that has actually stopped closes its task out; Queued/Running/
-    // Waiting sessions are still the organization's open work.
-    if (s->status != AgentStatus::Success && s->status != AgentStatus::Failed &&
-        s->status != AgentStatus::Stopped)
+    // Waiting sessions are still the organization's open work — unless a
+    // follow-up event says the work is over regardless of where the run got to.
+    if (followUp.trimmed().isEmpty() && s->status != AgentStatus::Success &&
+        s->status != AgentStatus::Failed && s->status != AgentStatus::Stopped)
         return;
     if (!m_networkAccess)
         return;
@@ -10088,12 +10118,32 @@ void MainWindow::completeOrgTaskForSession(int sessionId)
     QString note = QStringLiteral("%1 finished this run with status %2.")
                        .arg(finishedBy)
                        .arg(session.status);
+    if (!followUp.trimmed().isEmpty())
+        note += QLatin1Char(' ') + followUp.trimmed();
     if (!session.lastError.trimmed().isEmpty())
         note += QStringLiteral(" Last error: %1").arg(session.lastError.trimmed());
     if (session.prNumber > 0)
         note += QStringLiteral(" Opened pull request #%1.").arg(session.prNumber);
     if (session.merged)
-        note += QStringLiteral(" Merged into the default branch.");
+        note += QStringLiteral(" Merged into %1.").arg(agentMergeBase(session));
+    if (!session.branchName.isEmpty())
+        note += QStringLiteral(" Branch %1.").arg(session.branchName);
+    // Run summary, the same figures the detail header's Stats line shows, so the
+    // task carries what the run did without opening the desktop (adhoc #30).
+    QStringList stats;
+    if (session.numTurns > 0)
+        stats << QStringLiteral("%1 turns").arg(session.numTurns);
+    const qint64 dur = agentEffectiveDurationMs(session);
+    if (dur > 0)
+        stats << QStringLiteral("%1s").arg(dur / 1000);
+    if (session.costUsd > 0.0)
+        stats << agentCostText(session.costUsd);
+    const qint64 toks = sessionTokenTotal(session);
+    if (toks > 0)
+        stats << QStringLiteral("%1 tokens").arg(formatCount(toks));
+    if (!stats.isEmpty())
+        note += QStringLiteral(" Run summary: %1.")
+                    .arg(stats.join(QStringLiteral(" \xC2\xB7 ")));
 
     QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/api/tasks/") + session.orgTaskId +
