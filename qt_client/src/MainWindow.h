@@ -1329,6 +1329,16 @@ private:
     // opened and nothing is changed on the remote host itself. Use Uninstall
     // instead to actually remove ForkMesh from the host.
     void forgetHostAtRow(int row);
+    // Destroy the VPS behind a saved host on the user's Vultr account (adhoc
+    // #24): the server itself is deleted and billing stops, which Uninstall
+    // (wipes ForkMesh, keeps the server) and Remove (forgets it here) do not do.
+    // The instance is addressed by the id recorded at provision time, or looked
+    // up by address for hosts saved before that; the row is dropped from the
+    // saved list only once Vultr confirms the delete.
+    void destroyVultrHostAtRow(int row);
+    void sendVultrInstanceDestroy(const QString &apiKey,
+                                  const QString &instanceId,
+                                  const QString &name);
     // --- One-click Vultr mirror (adhoc #315) ---------------------------------
     // Create a brand-new mirror VPS on the user's Vultr account: pick the
     // cheapest plan and newest Debian via the Vultr v2 API, create/reuse the

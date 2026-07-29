@@ -8659,6 +8659,24 @@ void MainWindow::refreshHostsTable()
         });
         cellRow->addWidget(uninstallBtn);
 
+        // Per-row Destroy button: delete the server itself on Vultr. Uninstall
+        // above only wipes ForkMesh (the VPS keeps running and billing), so a
+        // mirror that is no longer wanted still has to be torn down by hand in
+        // the Vultr panel — this does it from here and then forgets the host.
+        auto *destroyBtn = new QPushButton(QStringLiteral("Destroy"));
+        destroyBtn->setObjectName(QStringLiteral("hostDestroyButton"));
+        destroyBtn->setCursor(Qt::PointingHandCursor);
+        destroyBtn->setToolTip(QStringLiteral(
+            "Destroy this server on Vultr: the instance is deleted, billing "
+            "stops and everything on it is gone permanently. Needs the Vultr "
+            "API key from the field above (or a stored VULTR_API_KEY "
+            "variable)."));
+        setOcticon(destroyBtn, "alert", 12);
+        connect(destroyBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] { destroyVultrHostAtRow(i); });
+        });
+        cellRow->addWidget(destroyBtn);
+
         // Per-row Remove button: drop this host from the saved list only. Unlike
         // Uninstall, this opens no SSH session and changes nothing on the remote
         // host \xe2\x80\x94 it just stops the app tracking it here (e.g. to clean
@@ -12696,6 +12714,131 @@ void MainWindow::forgetHostAtRow(int row)
     }
 }
 
+void MainWindow::destroyVultrHostAtRow(int row)
+{
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    if (row >= hosts.size())
+        return;
+    const QJsonObject host = hosts.at(row).toObject();
+    const QString name = host.value(QStringLiteral("name")).toString();
+    const QString ip = host.value(QStringLiteral("ip")).toString();
+    const auto setStatus = [this](const QString &text) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(text);
+    };
+
+    // Same key resolution as the create flow: the field first, then a
+    // device-local Actions variable. The key stays in memory for this call.
+    QString apiKey =
+        m_vultrApiKeyEdit ? m_vultrApiKeyEdit->text().trimmed() : QString();
+    if (apiKey.isEmpty()) {
+        apiKey = forkmesh::control::vultrApiKeyFromVariables(
+            ActionStore::variables());
+    }
+    if (apiKey.isEmpty()) {
+        setStatus(QStringLiteral(
+            "Enter your Vultr API key above (or store it as a VULTR_API_KEY "
+            "variable) to destroy a server."));
+        return;
+    }
+
+    const auto reply = QMessageBox::question(
+        this, QStringLiteral("Destroy server"),
+        QString::fromUtf8(
+            "This DELETES the Vultr server behind \"%1\" (%2). The instance and "
+            "everything on it are gone permanently, billing stops, and the host "
+            "is removed from this list. This cannot be undone. Continue?")
+            .arg(name, ip),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (reply != QMessageBox::Yes)
+        return;
+
+    const QString recorded = forkmesh::control::savedHostVultrInstanceId(host);
+    if (!recorded.isEmpty()) {
+        sendVultrInstanceDestroy(apiKey, recorded, name);
+        return;
+    }
+    // Hosts saved before the instance id was recorded (or added by hand) still
+    // have an address, so ask Vultr which instance that is. An ambiguous or
+    // missing match destroys nothing.
+    setStatus(QString::fromUtf8("Looking up \"%1\" on Vultr\xE2\x80\xA6").arg(name));
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/instances?per_page=500"),
+        QByteArrayLiteral("GET"), {},
+        [this, apiKey, name, ip, setStatus](QJsonObject result, QString error) {
+            if (!error.isEmpty()) {
+                setStatus(QString::fromUtf8("Could not destroy \"%1\": %2")
+                              .arg(name, error));
+                return;
+            }
+            const QString instanceId =
+                forkmesh::control::vultrInstanceIdForAddress(
+                    result.value(QStringLiteral("instances")).toArray(), ip);
+            if (instanceId.isEmpty()) {
+                setStatus(QString::fromUtf8(
+                    "No single Vultr instance matches \"%1\" (%2), so nothing "
+                    "was destroyed. Delete it from the Vultr panel instead.")
+                              .arg(name, ip));
+                return;
+            }
+            sendVultrInstanceDestroy(apiKey, instanceId, name);
+        });
+}
+
+void MainWindow::sendVultrInstanceDestroy(const QString &apiKey,
+                                          const QString &instanceId,
+                                          const QString &name)
+{
+    const auto setStatus = [this](const QString &text) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(text);
+    };
+    const QString invalid =
+        forkmesh::control::validateVultrDestroyRequest(apiKey, instanceId);
+    if (!invalid.isEmpty()) {
+        setStatus(invalid);
+        return;
+    }
+    setStatus(QString::fromUtf8("Destroying \"%1\" on Vultr\xE2\x80\xA6").arg(name));
+    appendHostInstallLog(
+        QString::fromUtf8("Destroying Vultr instance %1 (\"%2\")\xE2\x80\xA6\n")
+            .arg(instanceId, name));
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/instances/") + instanceId,
+        QByteArrayLiteral("DELETE"), {},
+        [this, name, instanceId, setStatus](QJsonObject, QString error) {
+            if (!error.isEmpty()) {
+                setStatus(QString::fromUtf8("Could not destroy \"%1\": %2")
+                              .arg(name, error));
+                appendHostInstallLog(
+                    QString::fromUtf8("Vultr destroy failed: %1\n").arg(error));
+                return;
+            }
+            appendHostInstallLog(QString::fromUtf8(
+                "Vultr instance %1 destroyed.\n").arg(instanceId));
+            // Only now does the saved row become meaningless. Re-resolve it by
+            // name: the table may have been rebuilt while the call was in
+            // flight, so the row index this started from can be stale.
+            QSettings settings;
+            const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+                settings, kHostsSetting, &m_hostSessionPasswords);
+            for (int i = 0; i < hosts.size(); ++i) {
+                if (hosts.at(i).toObject().value(QStringLiteral("name"))
+                        .toString() == name) {
+                    forgetHostAtRow(i);
+                    break;
+                }
+            }
+            setStatus(QString::fromUtf8(
+                "Destroyed \"%1\" on Vultr and removed it from this list.")
+                          .arg(name));
+        });
+}
+
 QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip,
                                           const QString &user) const
 {
@@ -12833,12 +12976,21 @@ void MainWindow::vultrApiCall(const QString &apiKey, const QString &path,
                          QByteArrayLiteral("Bearer ") + apiKey.toUtf8());
     request.setHeader(QNetworkRequest::ContentTypeHeader,
                       QStringLiteral("application/json"));
-    QNetworkReply *reply =
-        method == QByteArrayLiteral("POST")
-            ? m_networkAccess->post(
-                  request,
-                  QJsonDocument(body).toJson(QJsonDocument::Compact))
-            : m_networkAccess->get(request);
+    QNetworkReply *reply = nullptr;
+    if (method == QByteArrayLiteral("POST")) {
+        reply = m_networkAccess->post(
+            request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    } else if (method == QByteArrayLiteral("GET") || method.isEmpty()) {
+        reply = m_networkAccess->get(request);
+    } else {
+        // DELETE and friends: Qt has no typed overload, and a successful
+        // DELETE /v2/instances/{id} answers 204 with no body at all.
+        reply = m_networkAccess->sendCustomRequest(
+            request, method,
+            body.isEmpty()
+                ? QByteArray()
+                : QJsonDocument(body).toJson(QJsonDocument::Compact));
+    }
     connect(reply, &QNetworkReply::finished, this, [reply, onDone] {
         reply->deleteLater();
         const int status =
