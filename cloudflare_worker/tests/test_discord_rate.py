@@ -1,0 +1,52 @@
+"""Focused tests for the shared Discord rate-limit/catalog coordinator."""
+
+from pathlib import Path
+import sys
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from discord_rate import DiscordRateCoordinator  # noqa: E402
+
+
+def test_bucket_reset_and_429_block_only_the_matching_provider_bucket():
+    coordinator = DiscordRateCoordinator()
+    path = "/guilds/100000000000000001/channels"
+    other = "/guilds/100000000000000001/roles"
+    coordinator.observe(path, 200, {
+        "x-ratelimit-bucket": "catalog-a",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset-after": "1.5",
+    }, [], 1_000)
+    assert coordinator.reserve(path, 1_200) == 1_300
+    assert coordinator.reserve(other, 1_200) == 0
+    delay = coordinator.observe(path, 429, {
+        "x-ratelimit-bucket": "catalog-a",
+        "retry-after": "2",
+    }, {"retry_after": 1.0}, 2_500)
+    assert delay == 2_000
+    assert coordinator.reserve(path, 3_000) == 1_500
+
+
+def test_global_429_blocks_every_path_and_catalog_is_short_lived():
+    coordinator = DiscordRateCoordinator()
+    first = "/guilds/100000000000000001/channels"
+    second = "/channels/200000000000000001/messages?limit=50"
+    delay = coordinator.observe(first, 429, {
+        "x-ratelimit-global": "true",
+        "retry-after": "3",
+    }, {"global": True, "retry_after": 3}, 10_000)
+    assert delay == 3_000
+    assert coordinator.reserve(second, 10_001) == 2_999
+    payload = [{"id": "channel"}]
+    coordinator.catalog_put(first, payload, 20_000)
+    assert coordinator.catalog_get(first, 20_100) == payload
+    assert coordinator.catalog_get(first, 25_001) is None
+
+
+def test_429_without_provider_bucket_uses_a_safe_path_fallback():
+    coordinator = DiscordRateCoordinator()
+    path = "/channels/200000000000000001/messages?limit=50"
+    delay = coordinator.observe(path, 429, {}, {}, 4_000)
+    assert delay == 1_000
+    assert coordinator.reserve(path, 4_500) == 500

@@ -386,6 +386,8 @@ from urls import (  # noqa: E402
     ORG_TEAM_MEMBERS_RE,
     ORG_REPOS_RE,
     ORG_BOT_TOKENS_RE,
+    ORG_DISCORD_RE,
+    DISCORD_OAUTH_CALLBACK_RE,
     BOT_SESSION_RE,
     ORG_SUCCESSION_RE,
     ORG_FEDIVERSE_RE,
@@ -21420,6 +21422,571 @@ async def process_organization_succession_warnings(env):
         _OrganizationSuccessionRuntime(env), limit=50)
 
 
+# --- Organization Discord connector ----------------------------------------
+# The Discord API token stays exclusively in the Worker secret binding.  The
+# policy module receives only the narrow operations below, so a dashboard body,
+# D1 value, audit event, or future connector field cannot accidentally expose
+# or reuse it as an application credential.
+DISCORD_API_ORIGIN = "https://discord.com/api/v10"
+DISCORD_OAUTH_API_ORIGIN = "https://discord.com/api"
+DISCORD_OAUTH_AUTHORIZE_ORIGIN = "https://discord.com/oauth2/authorize"
+DISCORD_OAUTH_CALLBACK_PATH = "/api/integrations/discord/callback"
+DISCORD_OAUTH_TRANSACTION_COOKIE = "forkmesh_discord_oauth"
+DISCORD_API_TIMEOUT_SECONDS = 8
+DISCORD_API_MAX_RESPONSE_BYTES = 512 * 1024
+_DISCORD_SNOWFLAKE_RE = re.compile(r"^[0-9]{17,20}$")
+_DISCORD_OAUTH_TRANSACTION_RE = re.compile(r"^[a-f0-9]{64}$")
+_DISCORD_GUILD_CHANNELS_PATH_RE = re.compile(
+    r"^/guilds/[0-9]{17,20}/channels$")
+_DISCORD_GUILD_ROLES_PATH_RE = re.compile(
+    r"^/guilds/[0-9]{17,20}/roles$")
+_DISCORD_CHANNEL_MESSAGES_GET_PATH_RE = re.compile(
+    r"^/channels/[0-9]{17,20}/messages\?limit=[1-9][0-9]?$" )
+_DISCORD_CHANNEL_MESSAGES_POST_PATH_RE = re.compile(
+    r"^/channels/[0-9]{17,20}/messages$")
+_DISCORD_OAUTH_TOKEN_PATH = "/oauth2/token"
+_DISCORD_OAUTH_IDENTITY_PATH = "/users/@me"
+_DISCORD_OAUTH_GUILDS_PATH = "/users/@me/guilds"
+# One best-effort coordinator is shared by every connector request handled by
+# this Worker isolate. It is intentionally not a durable cross-colo global
+# limiter and carries only short-lived rate metadata plus minimized public
+# channel/@everyone-role projections—never credentials, OAuth values, raw
+# private catalogs, or message history.
+_discord_rate_coordinator = DiscordRateCoordinator()
+
+
+def _discord_bot_token(env):
+    """Return the server-only secret without placing it in any application row."""
+
+    return str(getattr(env, "DISCORD_BOT_TOKEN", "") or "").strip()
+
+
+def _discord_oauth_config(env):
+    """Read only the server-side OAuth application configuration.
+
+    The redirect URI is fixed to the one global callback path.  It is never
+    taken from a dashboard request, so an owner cannot use this connector as an
+    OAuth redirector or turn a bot's global guild visibility into org consent.
+    """
+
+    client_id = _discord_snowflake(
+        getattr(env, "DISCORD_CLIENT_ID", "") or "")
+    client_secret = str(
+        getattr(env, "DISCORD_CLIENT_SECRET", "") or "").strip()
+    redirect_uri = str(
+        getattr(env, "DISCORD_OAUTH_REDIRECT_URI", "") or "").strip()
+    try:
+        parsed = urlparse(redirect_uri)
+    except Exception:
+        parsed = None
+    if not (
+        client_id
+        and client_secret
+        and parsed
+        and parsed.scheme == "https"
+        and parsed.hostname
+        and parsed.path == DISCORD_OAUTH_CALLBACK_PATH
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+        and not parsed.username
+        and not parsed.password
+    ):
+        return None
+    return {
+        "clientId": client_id,
+        "clientSecret": client_secret,
+        "redirectUri": redirect_uri,
+    }
+
+
+def _discord_oauth_transaction_cookie(value):
+    value = str(value or "").lower()
+    if not _DISCORD_OAUTH_TRANSACTION_RE.fullmatch(value):
+        return ""
+    return (
+        DISCORD_OAUTH_TRANSACTION_COOKIE + "=" + value
+        + "; Path=" + DISCORD_OAUTH_CALLBACK_PATH
+        + "; Max-Age=600; HttpOnly; Secure; SameSite=Lax"
+    )
+
+
+def _clear_discord_oauth_transaction_cookie():
+    return (
+        DISCORD_OAUTH_TRANSACTION_COOKIE + "=; Path="
+        + DISCORD_OAUTH_CALLBACK_PATH
+        + "; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
+    )
+
+
+def _discord_snowflake(value):
+    value = str(value or "").strip()
+    return value if _DISCORD_SNOWFLAKE_RE.fullmatch(value) else ""
+
+
+def _discord_api_path_allowed(method, path):
+    if method == "GET":
+        return (
+            bool(_DISCORD_GUILD_CHANNELS_PATH_RE.fullmatch(path))
+            or bool(_DISCORD_GUILD_ROLES_PATH_RE.fullmatch(path))
+            or bool(_DISCORD_CHANNEL_MESSAGES_GET_PATH_RE.fullmatch(path))
+        )
+    return (
+        method == "POST"
+        and bool(_DISCORD_CHANNEL_MESSAGES_POST_PATH_RE.fullmatch(path))
+    )
+
+
+async def _discord_api_request(env, method, path, body=None):
+    """Perform one fixed-shape Discord API request with a secret header.
+
+    No caller-provided origin/path/header reaches this helper.  Error bodies
+    and exceptions are deliberately reduced to status + retry metadata before
+    crossing the adapter boundary, because provider errors can echo request
+    context and must never become a token or message-content diagnostic.
+    """
+
+    method = str(method or "").upper()
+    path = str(path or "")
+    if not _discord_api_path_allowed(method, path):
+        return {"status": 400, "data": None, "retryAfterMs": 0}
+    token = _discord_bot_token(env)
+    if not token:
+        return {"status": 0, "data": None, "retryAfterMs": 0}
+    now = int(Date.now())
+    reserved_for = _discord_rate_coordinator.reserve(path, now)
+    if reserved_for:
+        return {"status": 429, "data": None, "retryAfterMs": reserved_for}
+    headers = {
+        "accept": "application/json",
+        "authorization": "Bot " + token,
+        "user-agent": "ForkMesh-Discord-connector/1.0",
+    }
+    options = {
+        "method": method,
+        "headers": headers,
+        # Never forward the credential across a provider redirect.
+        "redirect": "manual",
+    }
+    if body is not None:
+        if method != "POST" or not isinstance(body, dict):
+            return {"status": 400, "data": None, "retryAfterMs": 0}
+        headers["content-type"] = "application/json"
+        options["body"] = json.dumps(body, separators=(",", ":"))
+    try:
+        response = await js_fetch_with_timeout(
+            DISCORD_API_ORIGIN + path, options, DISCORD_API_TIMEOUT_SECONDS)
+        status = int(getattr(response, "status", 0) or 0)
+        try:
+            announced = int(response.headers.get("content-length") or 0)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            announced = 0
+        if announced > DISCORD_API_MAX_RESPONSE_BYTES:
+            return {"status": 502, "data": None, "retryAfterMs": 0}
+        try:
+            raw = str(await response.text())
+        except Exception:
+            return {"status": 502, "data": None, "retryAfterMs": 0}
+        if len(raw.encode("utf-8")) > DISCORD_API_MAX_RESPONSE_BYTES:
+            return {"status": 502, "data": None, "retryAfterMs": 0}
+        try:
+            data = json.loads(raw) if raw else None
+        except Exception:
+            data = None
+        # Keep only the narrow rate headers used by the shared coordinator;
+        # provider response headers never reach the dashboard or audit trail.
+        rate_headers = {}
+        for name in (
+                "x-ratelimit-bucket", "x-ratelimit-reset-after",
+                "x-ratelimit-remaining", "x-ratelimit-global",
+                "retry-after"):
+            try:
+                rate_headers[name] = str(response.headers.get(name) or "")
+            except Exception:
+                rate_headers[name] = ""
+        observed_now = int(Date.now())
+        coordinated_retry = _discord_rate_coordinator.observe(
+            path, status, rate_headers, data, observed_now)
+        retry_after = 0
+        try:
+            retry_after = int(float(response.headers.get("retry-after") or 0) * 1000)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            retry_after = 0
+        if not retry_after and isinstance(data, dict):
+            try:
+                retry_after = int(float(data.get("retry_after") or 0) * 1000)
+            except (TypeError, ValueError, OverflowError):
+                retry_after = 0
+        return {
+            "status": max(0, min(599, status)),
+            "data": data,
+            "retryAfterMs": max(
+                max(0, min(retry_after, 3_600_000)), coordinated_retry),
+        }
+    except Exception:
+        return {"status": 0, "data": None, "retryAfterMs": 0}
+
+
+def _discord_oauth_path_allowed(method, path):
+    method = str(method or "").upper()
+    path = str(path or "")
+    return bool(
+        (method == "POST" and path == _DISCORD_OAUTH_TOKEN_PATH)
+        or (method == "GET" and path in {
+            _DISCORD_OAUTH_IDENTITY_PATH,
+            _DISCORD_OAUTH_GUILDS_PATH,
+        })
+    )
+
+
+async def _discord_oauth_request(env, method, path, form=None, access_token=""):
+    """Call one fixed Discord OAuth path without persisting a bearer token."""
+
+    method = str(method or "").upper()
+    path = str(path or "")
+    if not _discord_oauth_path_allowed(method, path):
+        return {"status": 400, "data": None}
+    headers = {
+        "accept": "application/json",
+        "user-agent": "ForkMesh-Discord-oauth/1.0",
+    }
+    options = {
+        "method": method,
+        "headers": headers,
+        # OAuth bearer credentials must never cross a provider redirect.
+        "redirect": "manual",
+    }
+    if method == "POST":
+        if not isinstance(form, dict):
+            return {"status": 400, "data": None}
+        headers["content-type"] = "application/x-www-form-urlencoded"
+        options["body"] = urlencode(form)
+    else:
+        token = str(access_token or "")
+        if not token or len(token) > 4096 or any(
+                not char.isprintable() or char.isspace() for char in token):
+            return {"status": 400, "data": None}
+        headers["authorization"] = "Bearer " + token
+    try:
+        response = await js_fetch_with_timeout(
+            DISCORD_OAUTH_API_ORIGIN + path, options,
+            DISCORD_API_TIMEOUT_SECONDS)
+        status = int(getattr(response, "status", 0) or 0)
+        try:
+            announced = int(response.headers.get("content-length") or 0)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            announced = 0
+        if announced > DISCORD_API_MAX_RESPONSE_BYTES:
+            return {"status": 502, "data": None}
+        try:
+            raw = str(await response.text())
+        except Exception:
+            return {"status": 502, "data": None}
+        if len(raw.encode("utf-8")) > DISCORD_API_MAX_RESPONSE_BYTES:
+            return {"status": 502, "data": None}
+        try:
+            data = json.loads(raw) if raw else None
+        except Exception:
+            data = None
+        return {"status": max(0, min(599, status)), "data": data}
+    except Exception:
+        return {"status": 0, "data": None}
+
+
+class _OrganizationDiscordRuntime:
+    """Narrow adapter for the organization Discord policy module."""
+
+    def __init__(self, env, request):
+        self.env = env
+        self.request = request
+
+    def method(self):
+        return method_name(self.request)
+
+    def now(self):
+        return int(Date.now())
+
+    def new_id(self):
+        return _ap_uuid()
+
+    def query(self, name):
+        try:
+            return URL(self.request.url).searchParams.get(str(name)) or ""
+        except Exception:
+            return ""
+
+    def same_origin(self):
+        return _request_same_origin(self.request)
+
+    def response(self, data, status=200, cache_control=None,
+                 extra_headers=None):
+        return json_response(
+            data,
+            status=status,
+            cache_control=cache_control,
+            extra_headers=extra_headers,
+        )
+
+    async def ensure_schema(self):
+        await ensure_schema(self.env)
+
+    async def json_body(self, limit):
+        try:
+            raw_length = self.request.headers.get("content-length") or ""
+            if raw_length and int(raw_length) > int(limit):
+                return None, "payload_too_large"
+        except (TypeError, ValueError):
+            return None, "invalid_content_length"
+        try:
+            raw = await self.request.text()
+        except Exception:
+            return None, "invalid_json"
+        if len(str(raw or "").encode("utf-8")) > int(limit):
+            return None, "payload_too_large"
+        if not str(raw or "").strip():
+            return {}, ""
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None, "invalid_json"
+        return (data, "") if isinstance(data, dict) else (None, "invalid_json")
+
+    async def session(self, data=None):
+        return await _account_session_record(
+            self.env, self.request, data if isinstance(data, dict) else {})
+
+    async def session_id(self):
+        """Return only the currently validated session's opaque id."""
+
+        try:
+            token, _cookie_auth = _request_account_session_token(
+                self.request, {})
+            _account_bi, _record, session_id = await _account_session_lookup(
+                self.env, token)
+            return str(session_id or "")
+        except Exception:
+            return ""
+
+    async def session_active(self, account_bi, session_id):
+        row = await d1_first(
+            self.env,
+            "SELECT session_id FROM account_sessions WHERE account_bi=? "
+            "AND session_id=? AND revoked_at=0 AND expires_at>?",
+            str(account_bi or ""), str(session_id or ""), int(Date.now()),
+        )
+        return bool(row)
+
+    async def organization(self, org):
+        return await _org_row(self.env, org)
+
+    async def org_role(self, org_bi, account):
+        return await _org_role(self.env, org_bi, account)
+
+    async def seal(self, value):
+        return await encrypt_row(self.env, value)
+
+    async def open(self, value):
+        return await decrypt_row(self.env, value)
+
+    async def d1_first(self, sql, *args):
+        return await d1_first(self.env, sql, *args)
+
+    async def d1_run(self, sql, *args):
+        return await d1_run(self.env, sql, *args)
+
+    async def audit(self, actor, action, target_type="", target="",
+                    outcome="success", details=None):
+        await _audit_sensitive_action(
+            self.env, actor, action, target_type, target, outcome, details)
+
+    def discord_ready(self):
+        return bool(_discord_bot_token(self.env))
+
+    def discord_oauth_ready(self):
+        return bool(_discord_oauth_config(self.env))
+
+    def discord_oauth_redirect_uri(self):
+        config = _discord_oauth_config(self.env) or {}
+        return str(config.get("redirectUri") or "")
+
+    def discord_oauth_authorization_url(self, state, challenge):
+        config = _discord_oauth_config(self.env) or {}
+        state = str(state or "")
+        challenge = str(challenge or "")
+        if (
+            not config
+            or not _DISCORD_OAUTH_TRANSACTION_RE.fullmatch(state)
+            or not challenge
+        ):
+            return ""
+        return DISCORD_OAUTH_AUTHORIZE_ORIGIN + "?" + urlencode({
+            "client_id": config["clientId"],
+            "redirect_uri": config["redirectUri"],
+            "response_type": "code",
+            "scope": "identify guilds",
+            "state": state,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "prompt": "consent",
+        })
+
+    def oauth_transaction_cookie(self):
+        return _cookie_value(self.request, DISCORD_OAUTH_TRANSACTION_COOKIE)
+
+    def oauth_start_response(self, data, transaction):
+        cookie = _discord_oauth_transaction_cookie(transaction)
+        if not cookie:
+            return self.response({"error": "oauth_transaction_required"}, 500)
+        return self.response(
+            data, cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={
+                "set-cookie": cookie,
+                "referrer-policy": "no-referrer",
+                "x-content-type-options": "nosniff",
+            })
+
+    def oauth_callback_response(self, outcome):
+        outcome = str(outcome or "invalid")
+        if outcome not in {"connected", "denied", "failed", "invalid", "setup"}:
+            outcome = "invalid"
+        # Strip OAuth code/state/error from the browser address before any
+        # World UI loads. The one-time callback cookie is cleared regardless of
+        # outcome, and the response is non-cacheable/non-referring.
+        return Response("", status=303, headers={
+            "location": "/world/?discord=" + outcome,
+            "cache-control": "no-store, max-age=0, must-revalidate",
+            "referrer-policy": "no-referrer",
+            "x-content-type-options": "nosniff",
+            "set-cookie": _clear_discord_oauth_transaction_cookie(),
+        })
+
+    async def discord_channels(self, guild_id):
+        guild_id = _discord_snowflake(guild_id)
+        if not guild_id:
+            return {"status": 400, "data": None, "retryAfterMs": 0}
+        return await _discord_api_request(
+            self.env, "GET", "/guilds/" + guild_id + "/channels")
+
+    def discord_public_channels_cache(self, guild_id):
+        guild_id = _discord_snowflake(guild_id)
+        if not guild_id:
+            return None
+        return _discord_rate_coordinator.catalog_get(
+            "public-channels:" + guild_id, int(Date.now()))
+
+    def cache_discord_public_channels(self, guild_id, channels):
+        guild_id = _discord_snowflake(guild_id)
+        if not guild_id or not isinstance(channels, list):
+            return
+        # The policy module has already removed private/NSFW/thread metadata;
+        # cache only its small id/name/type public projection.
+        _discord_rate_coordinator.catalog_put(
+            "public-channels:" + guild_id, channels, int(Date.now()))
+
+    async def discord_guild_roles(self, guild_id):
+        guild_id = _discord_snowflake(guild_id)
+        if not guild_id:
+            return {"status": 400, "data": None, "retryAfterMs": 0}
+        cache_key = "everyone-role:" + guild_id
+        cached = _discord_rate_coordinator.catalog_get(
+            cache_key, int(Date.now()))
+        if cached is not None:
+            return {"status": 200, "data": cached, "retryAfterMs": 0}
+        result = await _discord_api_request(
+            self.env, "GET", "/guilds/" + guild_id + "/roles")
+        if int(result.get("status") or 0) != 200:
+            return result
+        roles = result.get("data") if isinstance(result.get("data"), list) else []
+        # Only the @everyone base role participates in ForkMesh's public
+        # channel calculation. Discard every other role before short caching.
+        projected = []
+        for role in roles:
+            if not isinstance(role, dict) or _discord_snowflake(role.get("id")) != guild_id:
+                continue
+            projected.append({
+                "id": guild_id,
+                "permissions": str(role.get("permissions") or "0")[:40],
+            })
+            break
+        _discord_rate_coordinator.catalog_put(
+            cache_key, projected, int(Date.now()))
+        return {
+            "status": 200,
+            "data": projected,
+            "retryAfterMs": 0,
+        }
+
+    async def discord_oauth_exchange(self, code, verifier):
+        config = _discord_oauth_config(self.env) or {}
+        if not config:
+            return {"status": 0, "accessToken": ""}
+        result = await _discord_oauth_request(
+            self.env, "POST", _DISCORD_OAUTH_TOKEN_PATH, {
+                "client_id": config["clientId"],
+                "client_secret": config["clientSecret"],
+                "grant_type": "authorization_code",
+                "code": str(code or ""),
+                "redirect_uri": config["redirectUri"],
+                "code_verifier": str(verifier or ""),
+            })
+        data = result.get("data") if isinstance(result, dict) else None
+        access_token = str((data or {}).get("access_token") or "")
+        # Do not return provider response fields such as refresh_token,
+        # scope, or token_type beyond this transient call frame.
+        return {
+            "status": int((result or {}).get("status") or 0),
+            "accessToken": access_token[:4096],
+        }
+
+    async def discord_oauth_identity(self, access_token):
+        return await _discord_oauth_request(
+            self.env, "GET", _DISCORD_OAUTH_IDENTITY_PATH,
+            access_token=access_token)
+
+    async def discord_oauth_guilds(self, access_token):
+        return await _discord_oauth_request(
+            self.env, "GET", _DISCORD_OAUTH_GUILDS_PATH,
+            access_token=access_token)
+
+    async def discord_messages(self, channel_id, limit):
+        channel_id = _discord_snowflake(channel_id)
+        try:
+            limit = max(1, min(50, int(limit)))
+        except (TypeError, ValueError, OverflowError):
+            limit = 50
+        if not channel_id:
+            return {"status": 400, "data": None, "retryAfterMs": 0}
+        return await _discord_api_request(
+            self.env, "GET", "/channels/" + channel_id
+            + "/messages?limit=" + str(limit))
+
+    async def discord_send(self, channel_id, content):
+        channel_id = _discord_snowflake(channel_id)
+        if not channel_id:
+            return {"status": 400, "data": None, "retryAfterMs": 0}
+        # Explicitly disable all Discord mention parsing.  A ForkMesh owner can
+        # choose where a text message goes, never who it pings.
+        return await _discord_api_request(
+            self.env,
+            "POST",
+            "/channels/" + channel_id + "/messages",
+            {
+                "content": str(content or ""),
+                "allowed_mentions": {"parse": []},
+            },
+        )
+
+
+async def organization_discord_handler(env, request, org, action=""):
+    return await organization_discord.handle(
+        _OrganizationDiscordRuntime(env, request), org, action)
+
+
+async def organization_discord_oauth_callback_handler(env, request):
+    return await organization_discord.handle_oauth_callback(
+        _OrganizationDiscordRuntime(env, request))
+
+
 async def world_organizations_handler(env, request):
     """List only organization lobbies this world viewer may enter.
 
@@ -21703,6 +22270,51 @@ async def org_handler(env, request, org):
                 env, "DELETE FROM org_team_collaborators WHERE org_bi=?",
                 org_bi)
             await d1_run(env, "DELETE FROM org_teams WHERE org_bi=?", org_bi)
+            # Disconnect all Discord connector material before the deterministic
+            # org id can ever be reused. This includes encrypted consent and
+            # one-time OAuth state, so recreating an alias cannot inherit a
+            # former organization's external bridge.
+            await d1_run(
+                env, "DELETE FROM organization_discord_connectors WHERE org_bi=?",
+                org_bi)
+            # The setup-task marker is the authoritative scope for the
+            # connector's human-action tasks. Remove every dependent record
+            # before the task rows themselves so a deleted organization cannot
+            # leave orphaned check-ins, QA verdicts, replies, or attachments.
+            await d1_run(
+                env, "DELETE FROM organization_task_checkins WHERE task_id IN "
+                "(SELECT task_id FROM organization_discord_setup_tasks "
+                "WHERE org_bi=?)",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_task_qa_reviews WHERE task_id IN "
+                "(SELECT task_id FROM organization_discord_setup_tasks "
+                "WHERE org_bi=?)",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_task_responses WHERE task_id IN "
+                "(SELECT task_id FROM organization_discord_setup_tasks "
+                "WHERE org_bi=?)",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_task_attachments WHERE task_id IN "
+                "(SELECT task_id FROM organization_discord_setup_tasks "
+                "WHERE org_bi=?)",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_tasks WHERE task_id IN "
+                "(SELECT task_id FROM organization_discord_setup_tasks "
+                "WHERE org_bi=?)",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_discord_setup_tasks WHERE org_bi=?",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_discord_oauth_grants WHERE org_bi=?",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_discord_oauth_states WHERE org_bi=?",
+                org_bi)
             await d1_run(env, "DELETE FROM org_members WHERE org_bi=?", org_bi)
             await d1_run(
                 env, "DELETE FROM ap_org_digest_settings WHERE org_bi=?", org_bi)
@@ -42016,6 +42628,9 @@ class Default(WorkerEntrypoint):
             return await bot_session_handler(self.env, request)
         if ORGS_RE.match(url.path):
             return await orgs_handler(self.env, request)
+        if DISCORD_OAUTH_CALLBACK_RE.match(url.path):
+            return await organization_discord_oauth_callback_handler(
+                self.env, request)
         org_bot_tokens_match = ORG_BOT_TOKENS_RE.match(url.path)
         if org_bot_tokens_match:
             org = safe_segment(org_bot_tokens_match.group(1))
@@ -42023,6 +42638,14 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await org_bot_tokens_handler(
                 self.env, request, org)
+        org_discord_match = ORG_DISCORD_RE.match(url.path)
+        if org_discord_match:
+            org = safe_segment(org_discord_match.group(1))
+            action = str(org_discord_match.group(2) or "")
+            if not org or action not in {"", "messages", "oauth/start"}:
+                return json_response({"error": "not_found"}, status=404)
+            return await organization_discord_handler(
+                self.env, request, org, action)
         org_members_match = ORG_MEMBERS_RE.match(url.path)
         if org_members_match:
             org = safe_segment(org_members_match.group(1))

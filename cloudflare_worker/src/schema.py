@@ -2407,6 +2407,48 @@ SCHEMA_STATEMENTS = [
     "ON org_bot_token_usage(org_bi, used_at DESC, id DESC)",
     "CREATE INDEX IF NOT EXISTS idx_org_bot_token_usage_token_time "
     "ON org_bot_token_usage(token_id, used_at DESC, id DESC)",
+    # Organization Discord connector policy.  The Worker secret used to call
+    # Discord is never persisted here: this encrypted record contains only a
+    # selected guild and bounded allowlist of public text-channel ids.
+    """CREATE TABLE IF NOT EXISTS organization_discord_connectors (
+        org_bi TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        updated_by_bi TEXT NOT NULL,
+        updated_at INTEGER NOT NULL CHECK (updated_at >= 0))""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_discord_connectors_updated "
+    "ON organization_discord_connectors(updated_at DESC)",
+    # A single durable, unassigned human setup task per organization.  It
+    # deduplicates changing Discord setup states without storing the task text
+    # or any credential outside organization_tasks' encrypted payload.
+    """CREATE TABLE IF NOT EXISTS organization_discord_setup_tasks (
+        org_bi TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        updated_at INTEGER NOT NULL CHECK (updated_at >= 0))""",
+    # A bot's global guild membership is not organization consent. This
+    # encrypted OAuth proof binds a single guild to an org before
+    # any bot channel/message call is allowed. OAuth access/refresh tokens,
+    # authorization codes, and raw callback state are never stored.
+    """CREATE TABLE IF NOT EXISTS organization_discord_oauth_grants (
+        org_bi TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        verified_by_bi TEXT NOT NULL,
+        verified_at INTEGER NOT NULL CHECK (verified_at >= 0),
+        updated_at INTEGER NOT NULL CHECK (updated_at >= 0))""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_discord_oauth_grants_verified "
+    "ON organization_discord_oauth_grants(verified_at DESC)",
+    # The raw state and PKCE verifier live only inside this encrypted, ten
+    # minute record. Its SHA-256 lookup digest makes the callback one-time
+    # without persisting a reusable raw state value. org_bi is metadata only,
+    # used to revoke pending attempts when an organization is deleted.
+    """CREATE TABLE IF NOT EXISTS organization_discord_oauth_states (
+        state_hash TEXT PRIMARY KEY,
+        org_bi TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        expires_at INTEGER NOT NULL CHECK (expires_at >= 0))""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_discord_oauth_states_org "
+    "ON organization_discord_oauth_states(org_bi, expires_at)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

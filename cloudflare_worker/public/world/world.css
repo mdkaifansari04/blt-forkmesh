@@ -10014,3 +10014,179 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     width: 48px;
   }
 }
+
+/* On-demand Discord bridge. This deliberately lives outside the render loop:
+ * no animation, polling, or automatic message relay is attached to the World. */
+.world-discord-trigger {
+  position: fixed;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(max(12px, env(safe-area-inset-bottom)) + 54px);
+  z-index: 62;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--primer-border-default, #30363d);
+  border-radius: 6px;
+  background: var(--primer-canvas-default, #0d1117);
+  color: var(--primer-fg-default, #f0f6fc);
+  font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  box-shadow: 0 8px 24px rgb(1 4 9 / 0.48);
+}
+
+.world-discord-trigger:hover,
+.world-discord-trigger:focus-visible {
+  border-color: var(--primer-accent-emphasis, #1f6feb);
+  outline: none;
+}
+
+[data-world-discord-root] {
+  position: fixed;
+  z-index: 63;
+  right: max(10px, env(safe-area-inset-right));
+  top: max(58px, env(safe-area-inset-top));
+  width: min(380px, calc(100vw - 20px));
+  max-height: min(76dvh, 700px);
+}
+
+.world-discord-panel {
+  display: grid;
+  gap: 10px;
+  overflow: auto;
+  max-height: inherit;
+  padding: 12px;
+  border: 1px solid var(--primer-border-default, #30363d);
+  border-radius: 8px;
+  background: var(--primer-canvas-default, #0d1117);
+  color: var(--primer-fg-default, #f0f6fc);
+  box-shadow: 0 16px 32px rgb(1 4 9 / 0.58);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.world-discord-panel button,
+.world-discord-panel input,
+.world-discord-panel select,
+.world-discord-panel textarea {
+  box-sizing: border-box;
+  min-height: 32px;
+  border: 1px solid var(--primer-border-default, #30363d);
+  border-radius: 6px;
+  background: var(--primer-canvas-inset, #010409);
+  color: inherit;
+  font: inherit;
+}
+
+.world-discord-panel button {
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.world-discord-panel button:hover,
+.world-discord-panel button:focus-visible {
+  border-color: var(--primer-accent-emphasis, #1f6feb);
+  outline: none;
+}
+
+.world-discord-panel input,
+.world-discord-panel select,
+.world-discord-panel textarea {
+  width: 100%;
+  padding: 6px 8px;
+}
+
+.world-discord-panel textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.world-discord-title,
+.world-discord-tools,
+.world-discord-connect,
+.world-discord-compose {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.world-discord-title {
+  justify-content: space-between;
+  color: var(--primer-fg-default, #f0f6fc);
+  font-weight: 700;
+}
+
+.world-discord-close {
+  width: 32px;
+  padding: 0 !important;
+}
+
+.world-discord-connect,
+.world-discord-compose {
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+
+.world-discord-connect input,
+.world-discord-compose textarea {
+  flex: 1 1 180px;
+}
+
+.world-discord-setup,
+.world-discord-channel-chooser,
+.world-discord-messages article {
+  padding: 9px;
+  border: 1px solid var(--primer-border-default, #30363d);
+  border-radius: 6px;
+  background: var(--primer-canvas-subtle, #161b22);
+}
+
+.world-discord-setup ol {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+.world-discord-setup p,
+.world-discord-panel p {
+  margin: 0;
+  color: var(--primer-fg-muted, #8b949e);
+}
+
+.world-discord-state,
+.world-discord-notice {
+  color: var(--primer-accent-fg, #58a6ff) !important;
+}
+
+.world-discord-channel-chooser {
+  display: grid;
+  gap: 6px;
+}
+
+.world-discord-channel-chooser label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.world-discord-channel-chooser input[type="checkbox"] {
+  width: auto;
+  min-height: auto;
+}
+
+.world-discord-messages {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.world-discord-messages article {
+  overflow-wrap: anywhere;
+}
+
+.world-discord-messages strong {
+  color: var(--primer-fg-default, #f0f6fc);
+}
+
+@media (max-width: 680px) {
+  [data-world-discord-root] {
+    top: max(50px, env(safe-area-inset-top));
+    max-height: 70dvh;
+  }
+}
