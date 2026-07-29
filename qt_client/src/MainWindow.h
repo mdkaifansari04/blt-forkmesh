@@ -132,6 +132,7 @@ class QListWidgetItem;
 class QMenu;
 class QNetworkAccessManager;
 class QNetworkReply;
+class QNetworkRequest;
 class QPlainTextEdit;
 class QImage;
 class QProgressBar;
@@ -1512,6 +1513,10 @@ private:
     QString sizeMapRoot() const;
     void chooseSizeMapFolder();
     void setSizeMapRootOverride(const QString &path);
+    // Filesystem shortcuts beside the map (adhoc #21): one small used/free map
+    // per mount point, clicking one re-roots the full scan there.
+    QWidget *buildSizeMapVolumesPanel();
+    void refreshSizeMapVolumes();
     QWidget *buildPlaceholderTab(const QString &name);
 
     // Discussions tab (signed repository discussions with inbox fallback).
@@ -4381,6 +4386,12 @@ private:
     // launch time and stamped onto the session (AgentSession::yolo), so flipping it
     // later never changes what an already-running agent will do.
     QCheckBox *m_quickAddYolo = nullptr;
+    // "Task" toggle beside it (adhoc #18): when checked, every agent started while
+    // it is on also opens an organization task for the run. Read at launch time and
+    // stamped onto the session (AgentSession::orgTask), so unticking it later never
+    // orphans the task an already-running agent is going to close out. On by
+    // default, unlike YOLO: opening a task changes nothing about the run itself.
+    QCheckBox *m_quickAddTask = nullptr;
     // Dictation can target any text box, not just the footer prompt: m_voiceTargetEdit
     // is the box the current capture writes into and m_voiceActiveButton the mic that
     // started it (so its icon swaps to red while recording). m_voiceIdlePlaceholder is
@@ -4572,6 +4583,9 @@ private:
     QString m_sizeMapScannedPath;
     bool m_sizeMapScanning = false;
     int m_sizeMapScanEpoch = 0;
+    // Container holding one StorageMiniMap per mounted filesystem; refilled on
+    // every rescan so mounts appearing or vanishing are picked up.
+    QWidget *m_sizeMapVolumesBox = nullptr;
     QPushButton *m_repoProjectsTab = nullptr; // handle for the Projects (N) badge
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
@@ -5743,6 +5757,41 @@ private:
     // repo's default branch without a review step. No-op unless the session was
     // started with the quick-add YOLO toggle on and finished successfully.
     void maybeAutoMergeForSession(int sessionId);
+
+    // ---- Organization tasks for prompted runs (adhoc #18) ------------------
+    // A prompt typed here starts an agent locally; with the composer's "Task"
+    // toggle on it also opens a task in the organization so the run is visible
+    // beyond this desktop. The task carries the run's provenance — the bot that
+    // launched it, the bot that reported it finished, and the model, permission
+    // mode, and reasoning strength it used.
+    //
+    // Both calls are best-effort and fire-and-forget: the relay being down, the
+    // account not being an organization member, or there being no signed-in
+    // account at all never blocks or fails the agent run itself.
+    QString agentBotLabel(const QString &provider) const;
+    // Snapshot the composer's strength (reasoning effort) for a new session.
+    QString composerAgentStrength() const;
+    // Authenticate one task write: the account session token when a password
+    // login produced one, otherwise a proof signed with this node's account key
+    // appended to `url` as node/ts/sig. The silent-auth launch path has no
+    // token at all, so without the signed fallback the Task toggle would do
+    // nothing for most desktops. `resource` names the task a proof is bound to
+    // (empty for the collection). False => this node can present neither.
+    bool authenticateOrgTaskRequest(QUrl &url, QNetworkRequest &request,
+                                    const QString &proofPrefix,
+                                    const QString &resource) const;
+    // POST /api/tasks for a freshly created session and record the id it gets
+    // back on the session. No-op unless session.orgTask is set.
+    void openOrgTaskForSession(const AgentSession &session);
+    // POST /api/tasks/<id>/complete once the run reaches a terminal status,
+    // stamping the finishing bot. No-op without an org task, while the run is
+    // still going, or once finishedByBot is already set.
+    void completeOrgTaskForSession(int sessionId);
+    // Apply an org-task field update to the live session and persist it. The
+    // network callbacks run after event-loop turns that can rebuild
+    // m_agentSessions, so they re-look-up by id rather than hold a pointer.
+    void recordOrgTaskFields(int sessionId, const QString &taskId,
+                             const QString &finishedByBot);
 
     // ---- External Claude Code sessions ------------------------------------
     // Claude Code runs started outside ForkMesh (a terminal, another editor) are

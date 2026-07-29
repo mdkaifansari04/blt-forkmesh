@@ -894,6 +894,20 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_quickAddYolo, &QCheckBox::toggled, this, [](bool on) {
         QSettings().setValue(kQuickAddYoloSetting, on);
     });
+    // "Task" toggle beside YOLO (adhoc #18): when checked, starting an agent from
+    // the prompt bar also opens an organization task for the run, stamped with the
+    // bot that launched it and the model/mode/strength it was given, and closed out
+    // with the bot that finished it. On by default — prompted work should be
+    // visible to the organization — and unticked for throwaway prompts.
+    m_quickAddTask = new QCheckBox("Task");
+    m_quickAddTask->setObjectName("quickAddAutoCheck");
+    m_quickAddTask->setToolTip(
+        "Open an organization task for this run, recording which bot started "
+        "and finished it and the model, mode, and strength it used.");
+    m_quickAddTask->setChecked(QSettings().value(kQuickAddTaskSetting, true).toBool());
+    connect(m_quickAddTask, &QCheckBox::toggled, this, [](bool on) {
+        QSettings().setValue(kQuickAddTaskSetting, on);
+    });
     m_quickAddCreatePr->setChecked(true);
     m_quickAddCreatePr->setEnabled(true);
     m_quickAddAgentProvider->setEnabled(true);
@@ -1068,6 +1082,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBar->addWidget(m_quickAddAttachStrip, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddVoiceAutoSubmit, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddYolo, 0, Qt::AlignBottom);
+    bottomBar->addWidget(m_quickAddTask, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
     // The "/" actions box sits immediately left of the agent box (adhoc #116),
     // matching where the Claude Code extension keeps its actions menu.
@@ -1583,7 +1598,9 @@ void MainWindow::tickBackgroundQueue()
             layout->setSpacing(6);
             spinner = new QLabel(glyph);
             spinner->setObjectName("backgroundTaskSpinner");
-            spinner->setStyleSheet(QStringLiteral("color:#3fb950;font-weight:700;"));
+            spinner->setStyleSheet(
+                QStringLiteral("color:%1;font-weight:700;")
+                    .arg(QString::fromLatin1(Theme::kRunning)));
             spinner->setFixedWidth(14);
             label = new QLabel(word);
             label->setObjectName("backgroundTaskNote");
@@ -5367,11 +5384,10 @@ QString externalWalletBalanceTooltip(const QString &detail)
 void MainWindow::updateNodeSwitcher()
 {
     updateUserSwitcher();
-    // Keep the Nodes directory in step with the dropdown's node list.
+    // Keep the Nodes directory in step with the dropdown's node list. It owns the
+    // rail badge too — m_nodeMenuEntries also holds chat user accounts and repo
+    // owners, which are not nodes, so counting it here over-badged the rail.
     refreshNodesTable();
-    if (auto *railButton =
-            dynamic_cast<ActivityRailButton *>(m_nodesNavButton))
-        railButton->setBadgeCount(m_nodeMenuEntries.size());
     if (!m_nodeMenuButton)
         return;
     const QString caret = QString::fromUtf8("\xE2\x96\xBE");
@@ -9970,14 +9986,15 @@ void MainWindow::fetchRelayOnlineNodes(bool force)
 
 void MainWindow::refreshNodesTable()
 {
-    if (!m_nodesTable)
-        return;
+    // No early return on a missing table: the Nodes page is built lazily, but the
+    // rail badge has to show the real node count from the first launch on, and
+    // this is the only place that knows which roster entries are actually nodes.
 
     // Ask the relay who is serving right now (throttled internally), so mirror
     // nodes outside this client's chat room still show online. Only while the
     // Nodes page is actually visible — this also runs on every roster tick, and
     // a hidden page must not keep polling the quota-limited relay.
-    if (m_nodesTable->isVisible())
+    if (m_nodesTable && m_nodesTable->isVisible())
         fetchRelayOnlineNodes();
 
     // The roster record (version / owner / telemetry / mirrors) for a node.
@@ -10018,9 +10035,6 @@ void MainWindow::refreshNodesTable()
     };
     const QString dash = QString::fromUtf8("\xE2\x80\x94");
 
-    // Which node the detail panel is currently showing, so a rebuild can keep it.
-    const QString shown = m_nodesTable->property("shownNode").toString();
-
     // Build the database-backed node -> owning-user map. The public user
     // directory deliberately exposes linked node names but no private profile
     // fields, and unlike the live roster it retains offline nodes.
@@ -10051,6 +10065,17 @@ void MainWindow::refreshNodesTable()
     // the self row on the local predicate directly so it never leaks through.
     const bool selfIsUserAccount =
         m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty();
+    // A name the public account directory lists as a *user* and that no account
+    // lists as a linked node is a person, not a node. Those reach the switcher
+    // list purely as repository owners (refreshRepositoryList adds an entry for
+    // every repo owner) and never carry a roster identity to be filtered by
+    // accountKind, so every account with a listed repo was being counted and
+    // drawn as a node (adhoc #26). An owner whose machine node shares the account
+    // name stays: the relay's live set still reports it serving.
+    auto isDirectoryUserOnly = [&](const QString &key) {
+        return m_chatDirectoryUsers.contains(key) &&
+               !directoryOwner.contains(key) && !relayOnline(key);
+    };
     QList<NodeMenuEntry> visible;
     QList<MemberInfo> visibleRoster;
     QSet<QString> visibleNames;
@@ -10067,6 +10092,8 @@ void MainWindow::refreshNodesTable()
             continue;
         const QString key = e.name.trimmed().toLower();
         if (key.isEmpty() || visibleNames.contains(key))
+            continue;
+        if (!e.self && isDirectoryUserOnly(key))
             continue;
         if (mi.ownerUser.trimmed().isEmpty())
             mi.ownerUser = directoryOwner.value(key);
@@ -10117,6 +10144,20 @@ void MainWindow::refreshNodesTable()
         visibleRoster.append(info);
         visibleNames.insert(key);
     }
+
+    // The rail badge counts the rows this page would show — real serving nodes —
+    // and nothing else. It used to be re-stamped with m_nodeMenuEntries.size()
+    // right after this function ran (updateNodeSwitcher), which is the *unfiltered*
+    // switcher list: every chat user account, world-chat guest and repo owner in
+    // it was counted as a node, so a mesh of four nodes badged "21" (adhoc #26).
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_nodesNavButton))
+        railButton->setBadgeCount(visible.size());
+    if (!m_nodesTable)
+        return; // page not built yet — the badge above is all that's on screen
+
+    // Which node the detail panel is currently showing, so a rebuild can keep it.
+    const QString shown = m_nodesTable->property("shownNode").toString();
 
     // Populate with sorting off so inserted rows don't reshuffle mid-fill.
     m_nodesTable->setSortingEnabled(false);
@@ -10233,9 +10274,6 @@ void MainWindow::refreshNodesTable()
         m_nodesNavButton->setText(visible.isEmpty()
             ? QStringLiteral("Nodes")
             : QStringLiteral("Nodes (%1)").arg(visible.size()));
-    if (auto *railButton =
-            dynamic_cast<ActivityRailButton *>(m_nodesNavButton))
-        railButton->setBadgeCount(visible.size());
 
     // Re-open the previously shown node's detail (find it by name post-sort), or
     // default to the first row.

@@ -121,6 +121,15 @@
   const fullComposerStatus = document.querySelector(
     "[data-dashboard-chat-composer-status]",
   );
+  const contextChannel = document.querySelector(
+    "[data-dashboard-chat-context-channel]",
+  );
+  const contextSource = document.querySelector(
+    "[data-dashboard-chat-context-source]",
+  );
+  const contextAction = document.querySelector(
+    "[data-dashboard-chat-context-action]",
+  );
 
   if (!fullLog && !sideLog) return;
 
@@ -1217,10 +1226,12 @@
     clearEmptyState();
     const self = kind === "self";
     const row = document.createElement("div");
-    row.className = "flex items-start gap-3 group rounded-lg px-2 py-1 hover:bg-secondary/40 transition-colors mt-3";
+    row.className =
+      `chat-message-row chat-message-row--${self ? "self" : "peer"} ` +
+      "flex items-start gap-3 group px-2 py-1 transition-colors mt-3";
     row.innerHTML = `
       <span class="chat-message-avatar avatar flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full border text-base ${self ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-secondary text-foreground"}"></span>
-      <div class="min-w-0 flex-1">
+      <div class="chat-message-bubble min-w-0 flex-1">
         <div class="mb-0.5 flex items-baseline gap-2">
           <span class="text-xs font-semibold ${self ? "text-primary" : "text-foreground"}">${escapeHtml(who)}</span>
           <span class="text-[10px] text-muted-foreground/50 font-mono">${escapeHtml(fmtChatTime(tsMs))}</span>
@@ -1616,7 +1627,7 @@
     if (fullLog) {
       clearEmptyState();
       const row = document.createElement("div");
-      row.className = "my-2 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground";
+      row.className = "chat-system-bubble my-2 rounded-md border border-border px-3 py-2 text-xs text-muted-foreground";
       row.textContent = text;
       fullLog.append(row);
       fullLog.scrollTop = fullLog.scrollHeight;
@@ -2554,15 +2565,10 @@
         hint: "First line is the title · route by department, team, destination, and assignee",
         placeholder: "Task title\\nAdd details or QA instructions…",
       },
-      codex: {
-        label: "Assign Codex",
+      agent: {
+        label: "Send to bot",
         hint: "Starts a secured Engineering task on an eligible mirror",
-        placeholder: "Describe the implementation task for Codex…",
-      },
-      "claude-code": {
-        label: "Assign Claude",
-        hint: "Starts a secured Engineering task on an eligible mirror",
-        placeholder: "Describe the implementation task for Claude…",
+        placeholder: "Describe what you want the bot to do…",
       },
     }[action] || {};
     if (fullSendLabel) {
@@ -2580,7 +2586,32 @@
       );
     fullRepository?.classList.toggle("ring-1", repositoryRelevant);
     fullRepository?.classList.toggle("ring-primary/50", repositoryRelevant);
+    syncChatContextBubbles();
     setComposerStatus("");
+  }
+
+  function selectedOptionLabel(select, fallback) {
+    return String(
+      select?.selectedOptions?.[0]?.textContent || fallback,
+    ).trim();
+  }
+
+  function syncChatContextBubbles() {
+    if (contextChannel) {
+      contextChannel.textContent = selectedOptionLabel(
+        fullChannel,
+        CHANNEL_LABEL || "# general",
+      );
+    }
+    if (contextSource) {
+      contextSource.textContent = selectedOptionLabel(
+        fullRepository,
+        "No repository",
+      );
+    }
+    if (contextAction) {
+      contextAction.textContent = selectedOptionLabel(fullAction, "Send to chat");
+    }
   }
 
   async function taskApiRequest(method, path, body = null) {
@@ -2725,6 +2756,7 @@
       if (repositories.some((repository) => repository.value === previous)) {
         fullRepository.value = previous;
       }
+      syncChatContextBubbles();
     } catch (_) {
       setComposerStatus("Repository catalog unavailable", "bad");
     }
@@ -2848,7 +2880,7 @@
         appendSystem(`Issue “${title}” was signed and sent to ${repository.owner}/${repository.name}.`);
         setComposerStatus("Issue sent to the maintainer inbox.", "good");
       } else {
-        const mention = action === "codex" ? "@codex" : "@claude";
+        const mention = "@bot";
         appendMessage(
           "self",
           displayName(),
@@ -2857,8 +2889,10 @@
           "",
           Date.now(),
         );
-        const queued = await maybeAskOrgAgent(
-          `${mention} ${text}`,
+        const queued = await queueOrgAgent(
+          "agent",
+          text,
+          ORG_BOT_SENDER_ID,
           repository,
         );
         if (!queued) throw new Error("Agent request was not accepted.");
@@ -3059,11 +3093,44 @@
           fullRepository.value,
         );
       } catch (_) {}
+      syncChatContextBubbles();
     });
     fullAction?.addEventListener("change", syncFullComposerAction);
     taskDestination?.addEventListener("change", syncFullComposerAction);
     taskAssignee?.addEventListener("change", syncFullComposerAction);
     syncFullComposerAction();
+    contextChannel?.addEventListener("click", () => fullChannel?.focus());
+    contextSource?.addEventListener("click", () => fullRepository?.focus());
+    contextAction?.addEventListener("click", () => fullAction?.focus());
+    document
+      .querySelectorAll("[data-dashboard-chat-scroll]")
+      .forEach((button) => {
+        button.addEventListener("click", () => {
+          if (!fullLog) return;
+          const direction = button.dataset.dashboardChatScroll;
+          fullLog.scrollTo({
+            top:
+              direction === "up"
+                ? Math.max(0, fullLog.scrollTop - fullLog.clientHeight * 0.8)
+                : fullLog.scrollHeight,
+            behavior: "smooth",
+          });
+        });
+      });
+    document
+      .querySelectorAll("[data-dashboard-chat-emote]")
+      .forEach((button) => {
+        button.addEventListener("click", () => {
+          if (window.parent === window) return;
+          window.parent.postMessage(
+            {
+              type: "forkmesh:world-emote",
+              emote: String(button.dataset.dashboardChatEmote || ""),
+            },
+            location.origin,
+          );
+        });
+      });
     void loadComposerRepositories();
     void loadTaskRouting();
     wireInput(fullInput, fullSend);

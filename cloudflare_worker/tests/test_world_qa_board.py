@@ -354,16 +354,19 @@ def test_completed_build_tasks_can_be_sent_into_the_shared_qa_deck():
         assert contract in SCENE + WORLD
 
 
-def test_exact_view_and_saved_views_live_in_collapsed_right_rail():
+def test_share_and_saved_views_live_in_the_fixed_square_right_rail():
     assert "data-world-share-menu" not in WORLD
     assert "data-world-share-current" in WORLD
     assert "shareCurrentWorldView()" in WORLD
     assert "data-world-saved-views-toggle" not in WORLD
     assert 'data-expanded="true"' in WORLD
-    assert "Quick views" in WORLD
+    assert "Share view" in WORLD
+    assert "Remember" in WORLD
     assert "setSavedViewsExpanded(expanded)" in WORLD
     assert '<div class="world-saved-view-list" data-world-saved-view-list>' in WORLD
-    assert ".world-right-rail[data-expanded=\"false\"] .world-saved-view-list" in CSS
+    fixed_rail = CSS.rsplit("/* Fixed launcher geometry.", 1)[1]
+    assert "grid-template-columns: 48px;" in fixed_rail
+    assert ".world-saved-view-list:empty" in fixed_rail
     # The ordinary right-click menu is untouched and layout editing no longer
     # intercepts it: admins click-select, then use arrows and R instead.
     assert 'renderer.domElement.addEventListener("contextmenu"' not in SCENE

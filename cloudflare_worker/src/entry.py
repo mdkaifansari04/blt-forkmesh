@@ -8206,11 +8206,37 @@ class _OfficeMarketingTasksRuntime:
     def new_id(self):
         return _ap_uuid()
 
+    def _signed_query(self):
+        """The node/ts/sig triple a desktop puts on a key-signed task write.
+
+        Presence only — session() is what verifies it. Returning a triple here
+        also means session() will refuse to fall back to cookie auth for this
+        request, which is what makes relaxing the origin check below safe.
+        """
+        params = parse_qs(urlparse(self.request.url).query)
+        node = clean_string(
+            params.get("node", [""])[0], MAX_NODE_NAME).lower()
+        ts = clean_string(params.get("ts", [""])[0], 20)
+        sig = clean_string(params.get("sig", [""])[0], 200)
+        return (node, ts, sig) if node and ts and sig else None
+
     def same_origin(self):
-        # A successfully authenticated bearer credential is not ambient
+        # A credential the caller had to present explicitly is not ambient
         # browser authority and therefore is not vulnerable to cross-site
-        # request forgery. Browser sessions retain the strict origin check.
-        return bool(self.bot_context) or _request_same_origin(self.request)
+        # request forgery: an organization bot token, the account-session
+        # bearer, or a key-signed desktop write. Each still has to validate in
+        # session(). Browser sessions carry the session in a cookie, so they
+        # retain the strict origin check.
+        if self.bot_context or self._signed_query():
+            return True
+        header = str(
+            self.request.headers.get("authorization") or ""
+        ).strip()
+        if header.lower().startswith("bearer "):
+            presented = header[7:].strip()
+            if presented and presented != "cookie":
+                return True
+        return _request_same_origin(self.request)
 
     def query(self, name):
         try:
@@ -8260,6 +8286,13 @@ class _OfficeMarketingTasksRuntime:
                 "name": (provider or "organization") + "-bot",
                 "status": "active",
             }
+        # A desktop that authenticated silently holds its account's Ed25519 key
+        # and no session token at all, so a prompt could never open its task
+        # without this. Once a triple is on the URL it is the only credential
+        # considered: never fall through to the cookie, or a cross-site POST
+        # could borrow one by appending a junk signature.
+        if self._signed_query():
+            return await _org_task_signed_session(self.env, self.request)
         return await _account_session_record(
             self.env,
             self.request,
@@ -10848,6 +10881,65 @@ async def _chat_channel_signed_session(env, request):
     elif CHAT_CHANNELS_RE.match(url.path):
         canonical = (
             CHAT_CHANNEL_LIST_PROOF + "\n" + node + "\n" + str(ts)
+        ).encode()
+    else:
+        return "", None
+    pubkey = await _owner_pubkey(env, node)
+    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+        return "", None
+    account_bi, record = await _account_row(env, node)
+    if (
+        not account_bi
+        or not record
+        or record.get("status") != "active"
+        or _account_kind(record) != "user"
+    ):
+        return "", None
+    return account_bi, record
+
+
+# Canonical prefixes a desktop signs with its account's Ed25519 key to open and
+# close an organization task for a prompt it just launched. A desktop that
+# authenticated silently holds keys and no session token, so without these the
+# Agents composer's Task toggle could never reach the board (adhoc #18).
+ORG_TASK_OPEN_PROOF = "forkmesh-org-task-open-v1"
+ORG_TASK_COMPLETE_PROOF = "forkmesh-org-task-complete-v1"
+ORG_TASK_COMPLETE_RE = re.compile(
+    r"^/api/tasks/([a-f0-9]{32})/complete/?$")
+ORG_TASK_COLLECTION_RE = re.compile(r"^/api/tasks/?$")
+
+
+async def _org_task_signed_session(env, request):
+    """Resolve the account behind a key-signed organization-task write.
+
+    Deliberately narrow: only opening a task and reporting one finished, the
+    two writes a desktop performs for its own agent run. Editing, deleting,
+    starting/stopping another member's timer, and QA verdicts all still require
+    a real session. Membership and every other authorization check inside the
+    task API applies to a signed caller exactly as to a session-token one.
+
+    The completion proof names the exact task it closes. The open proof can
+    only be replayed inside the five-minute skew window, and only to open one
+    more task as an account that was already entitled to open tasks.
+    """
+    if method_name(request) != "POST":
+        return "", None
+    url = urlparse(request.url)
+    params = parse_qs(url.query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return "", None
+    complete = ORG_TASK_COMPLETE_RE.match(url.path)
+    if complete:
+        canonical = (
+            ORG_TASK_COMPLETE_PROOF + "\n" + node + "\n"
+            + complete.group(1) + "\n" + str(ts)
+        ).encode()
+    elif ORG_TASK_COLLECTION_RE.match(url.path):
+        canonical = (
+            ORG_TASK_OPEN_PROOF + "\n" + node + "\n" + str(ts)
         ).encode()
     else:
         return "", None
@@ -14569,6 +14661,29 @@ async def _delete_account_namespace(env, name_bi, rec):
         env, "DELETE FROM account_ssh_keys WHERE account_bi=?", name_bi)
     await d1_run(
         env, "DELETE FROM account_sessions WHERE account_bi=?", name_bi)
+    # Remove every account-keyed auxiliary row as well as the primary identity.
+    # These tables contain no independently owned resource that should survive
+    # a complete account deletion.
+    for table in (
+            "repo_stars",
+            "feedback_email_sends",
+            "role_grants",
+            "owner_encryption_keys",
+            "world_inactive_presence",
+            "world_media_roles",
+            "world_workshop_participants",
+            "world_user_activity",
+            "badge_awards",
+            "world_office_attendance",
+            "world_office_marketing_proofs",
+            "world_qa_reviews",
+            "world_lobby_links",
+            "org_team_collaborators",
+            "world_office_marketing_checkins",
+            "organization_task_checkins",
+    ):
+        await d1_run(
+            env, "DELETE FROM " + table + " WHERE account_bi=?", name_bi)
     await _delete_chat_channel_memberships(env, name_bi)
     await _delete_chat_direct_conversations(env, name_bi)
     if email:
@@ -14576,6 +14691,13 @@ async def _delete_account_namespace(env, name_bi, rec):
         await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
     await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
     await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
+    await asyncio.gather(
+        purge_catalog_related_caches(),
+        edge_cache_delete(ACCOUNT_LOOKUP_CACHE_PREFIX + quote(name)),
+        edge_cache_delete(USERS_DIRECTORY_CACHE_KEY),
+        edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY),
+        return_exceptions=True,
+    )
 
 
 def _owned_nodes(rec):
@@ -22457,6 +22579,63 @@ async def _admin_verify_email(env, request):
     return json_response({"ok": True, "target": target, "emailVerified": True})
 
 
+async def _admin_delete_unverified_account(env, request, raw_target):
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    _, actor_rec = await _account_session_record(env, request, data)
+    actor = clean_string(
+        (actor_rec or {}).get("name", ""), MAX_NODE_NAME).strip().lower()
+    target = clean_string(raw_target, MAX_NODE_NAME).strip().lower()
+    if not actor_rec:
+        return json_response({"error": "unauthorized"}, status=401)
+    if not await _has_role(env, actor, "platform_administrator"):
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "denied", {"reason": "admin_required"})
+        return json_response({"error": "forbidden"}, status=403)
+    if not valid_node_name(target):
+        return json_response({"error": "invalid_account"}, status=400)
+    if target == actor:
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "denied", {"reason": "self_delete_forbidden"})
+        return json_response({"error": "self_delete_forbidden"}, status=409)
+
+    target_bi, target_rec = await _account_row(env, target)
+    if (
+            not target_rec or target_rec.get("status") != "active"
+            or _account_kind(target_rec) != "user"):
+        return json_response({"error": "no_such_user"}, status=404)
+    if target_rec.get("email_verified") is True:
+        return json_response({"error": "email_already_verified"}, status=409)
+    if not clean_string(target_rec.get("email", ""), 254).strip():
+        return json_response({"error": "account_has_no_email"}, status=409)
+    # Never let the convenience gesture erase another administrator. Revoking
+    # an administrator remains an explicit security-control-plane operation.
+    if await _is_admin(env, target):
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "denied", {"reason": "target_is_admin"})
+        return json_response({"error": "target_is_admin"}, status=409)
+
+    try:
+        await _delete_account_namespace(env, target_bi, target_rec)
+    except Exception:
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "failed", {})
+        raise
+    await _audit_sensitive_action(
+        env, actor, "admin.unverified_account_delete", "account",
+        target, "success", {})
+    return json_response(
+        {"ok": True, "target": target, "accountDeleted": True},
+        cache_control="no-store, max-age=0, must-revalidate",
+    )
+
+
 # --- Transactional email (Mailtrap) -----------------------------------------
 # Signup confirmation goes out through Mailtrap's HTTP sending API. The token is
 # a Worker secret (MAILTRAP_API_TOKEN, pushed from .env.production by deploy.sh).
@@ -24998,6 +25177,14 @@ async def accounts_handler(env, request):
         return await _admin_pending(env, request)
     if url.path == "/api/accounts/admin-verify-email" and method == "POST":
         return await _admin_verify_email(env, request)
+    admin_unverified_prefix = "/api/accounts/admin-unverified/"
+    if (
+            url.path.startswith(admin_unverified_prefix)
+            and method == "DELETE"):
+        target = url.path[len(admin_unverified_prefix):].strip("/")
+        if target and "/" not in target:
+            return await _admin_delete_unverified_account(
+                env, request, target)
     if url.path == "/api/accounts/admin-relays" and method == "GET":
         return await _admin_relays(env, request)
     if url.path == "/api/accounts/admin-relay-approve" and method == "POST":

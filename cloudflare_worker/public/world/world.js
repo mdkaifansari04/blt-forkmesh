@@ -135,6 +135,12 @@ const ADMIN_ERROR_POLL_MS = 15_000;
 const WORLD_LAYOUT_ECHO_TTL_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
+// Everything a fresh page load pulls in — the relayed chat backlog, the first
+// notification/event read, a mirror doorbell that lands while the scene is
+// still booting — is old news to the visitor. The activity stream stays quiet
+// for the same join grace the chat bubbles use so it only narrates what
+// happens after the World is up.
+const ACTIVITY_JOIN_GRACE_MS = CHAT_BUBBLE_JOIN_GRACE_MS;
 // The cardinal campus now reaches the east/west repository and bulletin
 // islands plus the southern member garden. Keep restored/shared positions
 // inside the scene's 340-unit boundary instead of rejecting valid island
@@ -3569,11 +3575,10 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
     /^[A-Za-z0-9+/=]+$/.test(String(accountSession.avatarPng))
       ? String(accountSession.avatarPng)
       : "";
-  // Repository portals remain present and interactive in the scene. The
-  // compact map is for travel shortcuts, and Code already owns repository
-  // navigation, so do not duplicate a repository view in this rail.
-  const mapItems = LANDMARKS.filter(
-    (landmark) => landmark.id !== "repositories",
+  // The compact rail only needs the two spatial shortcuts people use while
+  // walking. Repository and reward-pool navigation remain in the scene.
+  const mapItems = LANDMARKS.filter((landmark) =>
+    new Set(["office", "campfire"]).has(landmark.id),
   ).map(
     (landmark) => `
       <li>
@@ -3583,17 +3588,10 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           data-world-landmark="${escapeHTML(landmark.id)}"
           style="--map-color:${escapeHTML(landmark.color)}"
           aria-current="${landmark.id === LANDMARKS[0]?.id ? "true" : "false"}"
+          title="Go to ${escapeHTML(landmark.shortLabel)}"
         >
           <span class="world-map-icon" aria-hidden="true">${escapeHTML(landmark.icon)}</span>
-          <span class="world-map-label-copy">
-            <span>${escapeHTML(landmark.shortLabel)}</span>
-            ${constructionMarkerHTML(
-              landmark.id,
-              landmarkCapabilities?.[landmark.id],
-              "world-construction-mark-map",
-            )}
-          </span>
-          <span class="world-map-distance" data-world-distance="${escapeHTML(landmark.id)}">—</span>
+          <span class="world-map-label-copy">${escapeHTML(landmark.shortLabel)}</span>
         </button>
       </li>`,
   ).join("");
@@ -3760,15 +3758,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span aria-hidden="true">⌖</span><span class="world-top-link-label" data-world-camera-label>First person</span>
             </button>
             <button
-              class="world-top-link world-wave-button"
-              type="button"
-              data-world-wave
-              title="Wave to everyone in the world"
-              aria-label="Wave your avatar's arm"
-            >
-              <span aria-hidden="true">👋</span><span class="world-top-link-label">Wave</span>
-            </button>
-            <button
               class="world-top-link"
               type="button"
               data-world-sound-toggle
@@ -3785,27 +3774,35 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               aria-label="Capture and annotate a screenshot"
               title="Capture and annotate a screenshot"
             >
-              <span aria-hidden="true">📷</span><span class="world-top-link-label">Capture</span>
+              <span class="world-hud-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M8 3H4a1 1 0 0 0-1 1v4M16 3h4a1 1 0 0 1 1 1v4M8 21H4a1 1 0 0 1-1-1v-4M16 21h4a1 1 0 0 0 1-1v-4M8 8h8v8H8z"></path>
+                </svg>
+              </span><span class="world-top-link-label">Capture</span>
             </button>
             <button
               class="world-top-link world-notification-button"
               type="button"
               data-world-notifications-open
+              data-world-tooltip="Notifications"
               title="Show global and personal notifications"
               aria-label="Open World notifications"
             >
               <span aria-hidden="true">🔔</span><span class="world-top-link-label">Alerts</span>
+              <span class="world-tool-count" data-world-notification-count hidden>0</span>
             </button>
             <button
               class="world-top-link world-admin-errors-button"
               type="button"
               data-world-admin-errors
+              data-world-tooltip="Errors"
               title="Open newly logged errors"
               aria-label="Open newly logged errors"
               hidden
             >
               <span aria-hidden="true">!</span>
               <span class="world-top-link-label">Errors</span>
+              <span class="world-tool-count" data-world-admin-error-count hidden>0</span>
             </button>
             <a
               class="world-top-link world-dashboard-link"
@@ -3815,18 +3812,29 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               aria-label="Open Dashboard in a new tab"
               title="Open Dashboard in a new tab"
             >
-              <span aria-hidden="true">▦</span>
+              <span class="world-hud-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <circle cx="12" cy="12" r="9"></circle>
+                  <path d="M3 12h18M12 3c2.4 2.5 3.6 5.5 3.6 9S14.4 18.5 12 21M12 3C9.6 5.5 8.4 8.5 8.4 12s1.2 6.5 3.6 9"></path>
+                </svg>
+              </span>
               <span class="world-top-link-label">Dashboard</span>
             </a>
             <button
               class="world-top-link world-tasks-button"
               type="button"
               data-world-tasks-open
+              data-world-tooltip="Tasks"
               aria-label="Open organization tasks"
               title="Open organization tasks"
             >
-              <span aria-hidden="true">✓</span>
+              <span class="world-hud-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M9 6h11M9 12h11M9 18h11M4 6l1.3 1.3L7.6 5M4 12l1.3 1.3L7.6 11M4 18l1.3 1.3L7.6 17"></path>
+                </svg>
+              </span>
               <span class="world-top-link-label">Tasks</span>
+              <span class="world-tool-count" data-world-task-count hidden>0</span>
             </button>
             <button
               class="world-shirt-badge"
@@ -3859,9 +3867,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               )}">${escapeHTML(
                 accountStatusIcon(identity),
               )}</span>
-              <span class="world-shirt-count world-shirt-count--alerts" data-world-notification-count hidden>0</span>
-              <span class="world-shirt-count world-shirt-count--errors" data-world-admin-error-count hidden>0</span>
-              <span class="world-shirt-count world-shirt-count--tasks" data-world-task-count hidden>0</span>
             </button>
           </nav>
         </header>
@@ -3873,17 +3878,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           aria-label="World navigation and activity"
         >
           <section class="world-map" data-world-map>
-            <div class="world-panel-heading">
-              <h2>World map</h2>
-              <span data-world-location-code>TS-01</span>
-              <button
-                class="world-map-toggle"
-                type="button"
-                data-world-map-toggle
-                aria-expanded="false"
-                aria-label="Expand World controls"
-              >☰</button>
-            </div>
             <ul class="world-map-list">${mapItems}</ul>
           </section>
           <button
@@ -3893,18 +3887,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             title="Share a link to this exact location and camera view"
           >
             <span aria-hidden="true">🔗</span>
-            <span>Share exact view</span>
+            <span>Share view</span>
           </button>
           <section class="world-saved-views" data-world-saved-views data-expanded="true" aria-label="Five most recent saved World views">
-            <div class="world-saved-views-heading">
-              <span class="world-saved-views-title">Quick views</span>
-              <button
-                type="button"
-                data-world-save-view
-                aria-label="Save this location and perspective"
-                title="Save this view"
-              ><span aria-hidden="true">＋</span><span class="world-visually-hidden">Save current map view</span></button>
-            </div>
+            <button
+              class="world-remember-view"
+              type="button"
+              data-world-save-view
+              aria-label="Remember this location and perspective"
+              title="Remember this view"
+            ><span aria-hidden="true">＋</span><span>Remember</span></button>
             <div class="world-saved-view-list" data-world-saved-view-list></div>
           </section>
           <section
@@ -4760,6 +4752,7 @@ class ForkMeshWorld extends HTMLElement {
     this.walletBadges = new Map();
     this.memberDirectory = [];
     this.memberDirectoryFetchedAt = 0;
+    this.deletingUnverifiedAccounts = new Set();
     // Lowercased names a completed directory snapshot did not list, so their
     // next presence frame does not force another fetch (noteDirectoryMembers).
     this.unlistedDirectoryNames = new Set();
@@ -4919,6 +4912,7 @@ class ForkMeshWorld extends HTMLElement {
     this.firstVisitAt = firstVisitTimestamp();
     this.publicVisitCount = sessionVisitCount(true);
     this.chatBubblesEnabledAt = Date.now() + CHAT_BUBBLE_JOIN_GRACE_MS;
+    this.activityNoticesEnabledAt = Date.now() + ACTIVITY_JOIN_GRACE_MS;
     this.activityArrivalRecorded = false;
     this.activityArrivalTimer = 0;
     // Unread badge on the collapsed bottom CHAT bar. Counts live lines from
@@ -5168,11 +5162,17 @@ class ForkMeshWorld extends HTMLElement {
     if (!chatSources.includes(event.source)) return;
     const data = event.data;
     if (!data) return;
+    if (data.type === "forkmesh:world-emote") {
+      this.sendWorldEmote(data.emote);
+      return;
+    }
     if (data.type === "forkmesh:world-activity") {
-      this.activityNotice(data.text, {
-        kind: String(data.kind || "status"),
-        sender: "ForkMesh",
-      });
+      if (this.activityNoticesSettled()) {
+        this.activityNotice(data.text, {
+          kind: String(data.kind || "status"),
+          sender: "ForkMesh",
+        });
+      }
       return;
     }
     if (data.type !== "forkmesh:world-chat") return;
@@ -5258,10 +5258,15 @@ class ForkMeshWorld extends HTMLElement {
     // Replayed history updates only the collapsed CHAT bar — never a bubble,
     // so reconnects do not resurrect old messages above avatars.
     if (data.history === true) return;
-    this.activityNotice(
-      `${sender}: ${text || `Shared ${attachmentName}`}`,
-      { kind: "chat", sender },
-    );
+    // The relay also re-sends the tail of the room as ordinary live frames when
+    // the embedded chat connects, so the join grace — not just the history
+    // flag — is what keeps a fresh load from opening on a wall of old lines.
+    if (this.activityNoticesSettled()) {
+      this.activityNotice(
+        `${sender}: ${text || `Shared ${attachmentName}`}`,
+        { kind: "chat", sender },
+      );
+    }
     // Own lines never count as unread — `self` is this browser, `own` also
     // covers the signed-in account talking from another tab or device.
     if (data.self !== true && data.own !== true) this.bumpChatTerminalUnread();
@@ -5856,6 +5861,8 @@ class ForkMeshWorld extends HTMLElement {
         onFediverseFollow: (target) =>
           void this.toggleWorldFediverseFollow(target),
         onAvatarSelect: (member) => this.openWorldMemberDetail(member),
+        onUnverifiedAvatarDelete: (member) =>
+          void this.deleteUnverifiedWorldMember(member),
         onAvatarWalletAction: ({ self, address } = {}) => {
           const wallet = String(address || "").trim();
           if (wallet) {
@@ -8498,7 +8505,15 @@ class ForkMeshWorld extends HTMLElement {
     wireHoverOrb(diagnostics, () => {
       chatTerminal?.removeAttribute("open");
     });
-    wireHoverOrb(chatTerminal, () => {
+    if (chatTerminal && hoverCapable) {
+      chatTerminal.addEventListener("pointerenter", () => {
+        chatTerminal.open = true;
+        diagnostics?.removeAttribute("open");
+        this.loadChatTerminalFrame();
+      });
+    }
+    chatTerminal?.addEventListener("focusin", () => {
+      chatTerminal.open = true;
       diagnostics?.removeAttribute("open");
       this.loadChatTerminalFrame();
     });
@@ -8622,10 +8637,6 @@ class ForkMeshWorld extends HTMLElement {
         this.toggleWorldCameraMode();
         return;
       }
-      if (event.target.closest("[data-world-wave]")) {
-        this.waveToWorld();
-        return;
-      }
       if (event.target.closest("[data-world-swing-dismount]")) {
         this.world?.dismountSwing?.();
         return;
@@ -8642,12 +8653,6 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-admin-errors]")) {
         this.openAdminErrors();
-        return;
-      }
-      const mapToggle = event.target.closest("[data-world-map-toggle]");
-      if (mapToggle) {
-        const rail = this.$("[data-world-right-rail]");
-        this.setWorldRightRailExpanded(rail?.dataset.expanded !== "true");
         return;
       }
       const landmarkButton = event.target.closest("[data-world-landmark]");
@@ -9365,7 +9370,7 @@ class ForkMeshWorld extends HTMLElement {
     const section = this.$("[data-world-saved-views]");
     const list = this.$("[data-world-saved-view-list]");
     if (!section || !list) return;
-    // Quick views are intentionally always exposed. Retain this method for
+    // Saved shortcuts are intentionally always exposed. Retain this method for
     // older callers and synchronized preference snapshots without allowing a
     // stale collapsed preference to hide the five thumbnail shortcuts.
     section.dataset.expanded = "true";
@@ -9374,23 +9379,13 @@ class ForkMeshWorld extends HTMLElement {
 
   setWorldRightRailExpanded(expanded) {
     const rail = this.$("[data-world-right-rail]");
-    const map = this.$("[data-world-map]");
-    const toggle = this.$("[data-world-map-toggle]");
     const hud = this.$("[data-world-hud]");
     const avatarLauncher = this.$("[data-world-shirt-badge]");
-    if (!rail || !map) return false;
+    if (!rail) return false;
     const active = expanded === true;
     rail.dataset.expanded = String(active);
     if (hud) hud.dataset.hudExpanded = String(active);
     if (avatarLauncher) avatarLauncher.setAttribute("aria-expanded", String(active));
-    map.classList.toggle("is-expanded", active);
-    if (toggle) {
-      toggle.setAttribute("aria-expanded", String(active));
-      toggle.setAttribute(
-        "aria-label",
-        active ? "Collapse World controls" : "Expand World controls",
-      );
-    }
     return active;
   }
 
@@ -9621,8 +9616,7 @@ class ForkMeshWorld extends HTMLElement {
     const list = this.$("[data-world-saved-view-list]");
     if (!list) return;
     if (!this.savedViews.length) {
-      list.innerHTML =
-        '<span class="world-saved-view-empty">Tap ＋ to save this spot</span>';
+      list.replaceChildren();
       return;
     }
     list.innerHTML = this.savedViews
@@ -11839,6 +11833,60 @@ class ForkMeshWorld extends HTMLElement {
     this.showDetailOverlay(detail, backdrop, { returnFocus });
     this.wireMirrorNodeAgentWorkspace(node);
     this.wireMirrorNodeAdminDelete(node);
+  }
+
+  async deleteUnverifiedWorldMember(member = {}) {
+    const name = String(member?.name || "").trim().toLowerCase();
+    const ownName = String(this.identity?.name || "").trim().toLowerCase();
+    if (
+      this.identity?.isAdmin !== true ||
+      !validWorldSession() ||
+      !WORLD_ACCOUNT_NAME_RE.test(name) ||
+      name === ownName ||
+      member?.self === true ||
+      member?.emailVerified === true ||
+      String(member?.accountStatus || "").toLowerCase() === "guest" ||
+      this.deletingUnverifiedAccounts.has(name)
+    ) {
+      return false;
+    }
+    this.deletingUnverifiedAccounts.add(name);
+    try {
+      await this.postJSON(
+        `/api/accounts/admin-unverified/${encodeURIComponent(name)}`,
+        {},
+        { method: "DELETE", timeout: 20_000 },
+      );
+      this.memberDirectory = this.memberDirectory.filter(
+        (record) =>
+          String(record?.name || "").trim().toLowerCase() !== name,
+      );
+      this.remotePlayers.forEach((record, peerId) => {
+        if (String(record?.name || "").trim().toLowerCase() === name) {
+          this.remotePlayers.delete(peerId);
+        }
+      });
+      this.inactivePlayers = this.inactivePlayers.filter(
+        (record) =>
+          String(record?.name || "").trim().toLowerCase() !== name,
+      );
+      this.unlistedDirectoryNames.add(name);
+      this.memberDirectoryFetchedAt = 0;
+      this.responseCache.clear();
+      await this.world?.animateUnverifiedAvatarDeletion?.({ ...member, name });
+      this.syncMemberLounge();
+      this.toast(`${name} was deleted. Poof!`);
+      return true;
+    } catch (error) {
+      this.toast(
+        `Could not delete ${name}: ${String(
+          error?.message || "request failed",
+        ).replaceAll("_", " ")}`,
+      );
+      return false;
+    } finally {
+      this.deletingUnverifiedAccounts.delete(name);
+    }
   }
 
   openWorldMemberDetail(member = {}, { returnFocus = null } = {}) {
@@ -14496,7 +14544,11 @@ class ForkMeshWorld extends HTMLElement {
         }`,
       );
     }
-    if (announcements.length) this.toast(announcements.join(" · "));
+    // The first reads seed the seen sets so nothing already waiting at load is
+    // announced; only what arrives on a later poll reaches the stream.
+    if (announcements.length && this.activityNoticesSettled()) {
+      this.toast(announcements.join(" · "));
+    }
   }
 
   recentIssueAssignments() {
@@ -14766,17 +14818,36 @@ class ForkMeshWorld extends HTMLElement {
   // tiny frame. The cooldown is the length of the pose, so holding the button
   // down cannot turn one gesture into a stream of socket frames.
   waveToWorld() {
-    this.world?.playEmote?.(this.identity?.id || "", "wave", true);
+    this.sendWorldEmote("wave");
+  }
+
+  sendWorldEmote(rawEmote) {
+    const emote = String(rawEmote || "").trim().toLowerCase();
+    if (
+      ![
+        "wave",
+        "jump",
+        "spin",
+        "backflip",
+        "dance",
+        "float",
+        "wobble",
+        "sparkle",
+      ].includes(emote)
+    ) {
+      return;
+    }
+    this.world?.playEmote?.(this.identity?.id || "", emote, true);
     const now = Date.now();
     if (now - (this.lastWaveSentAt || 0) < WORLD_WAVE_COOLDOWN_MS) return;
     this.lastWaveSentAt = now;
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      this.toast("Realtime is offline; your wave stayed on this device.");
+      this.toast("Realtime is offline; your reaction stayed on this device.");
       return;
     }
     try {
       this.socket.send(
-        JSON.stringify({ type: "interaction", kind: "emote", emote: "wave" }),
+        JSON.stringify({ type: "interaction", kind: "emote", emote }),
       );
     } catch (_) {}
   }
@@ -22051,6 +22122,15 @@ class ForkMeshWorld extends HTMLElement {
     }, Math.max(10_000, Number(lockMs) || 0));
   }
 
+  // True once the page-load grace has passed. Callers that narrate incoming
+  // world traffic (chat lines, mirror doorbells, the notification/event read)
+  // check this so a fresh load never opens with a stack of replayed cards.
+  // Notices the visitor causes by acting are never gated — those are always
+  // about something that just happened.
+  activityNoticesSettled() {
+    return Date.now() >= this.activityNoticesEnabledAt;
+  }
+
   activityNotice(message, { kind = "status", sender = "" } = {}) {
     const stream = this.$("[data-world-activity-stream]");
     const copy = String(message || "")
@@ -22708,7 +22788,10 @@ class ForkMeshWorld extends HTMLElement {
     // teardown that callback must not overwrite the location captured just
     // before it with the Office doorway.
     if (this.destroyed) return;
-    if (movement?.moving === true) this.setWorldRightRailExpanded(false);
+    if (movement?.moving === true) {
+      this.setWorldRightRailExpanded(false);
+      this.$("[data-world-chat-terminal]")?.removeAttribute("open");
+    }
     this.scheduleActivityArrival();
     const space = WORLD_SPACE_IDS.has(String(movement?.space || ""))
       ? String(movement.space)
@@ -23633,7 +23716,18 @@ class ForkMeshWorld extends HTMLElement {
     } else if (
       message.type === "interaction" &&
       message.kind === "emote" &&
-      ["wave", "idea", "celebrate"].includes(message.emote) &&
+      [
+        "wave",
+        "idea",
+        "celebrate",
+        "jump",
+        "spin",
+        "backflip",
+        "dance",
+        "float",
+        "wobble",
+        "sparkle",
+      ].includes(message.emote) &&
       message.from
     ) {
       this.world?.playEmote?.(String(message.from), message.emote);
@@ -23677,9 +23771,14 @@ class ForkMeshWorld extends HTMLElement {
           paths.indexOf(path) === index,
       )
       .slice(0, 8);
-    this.toast(
-      `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
-    );
+    // The scene effect and catalog refresh below still run during the join
+    // grace; only the narration is held back so the load does not open on a
+    // push that happened before the visitor arrived.
+    if (this.activityNoticesSettled()) {
+      this.toast(
+        `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
+      );
+    }
     // This only arms the scene. No frame directly creates an effect: the next
     // signed catalog payload must confirm the node and commit prefix first.
     this.world?.armMirrorPushEffect?.(

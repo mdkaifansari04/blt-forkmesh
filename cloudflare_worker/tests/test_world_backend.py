@@ -842,7 +842,18 @@ def test_home_grants_and_declines_are_targeted_text_free_consent_frames():
 
 def test_emotes_are_broadcast_as_a_tiny_fixed_vocabulary():
     sender = world.default_presence("peer_sender", 1000)
-    for emote in ("wave", "idea", "celebrate"):
+    for emote in (
+        "wave",
+        "idea",
+        "celebrate",
+        "jump",
+        "spin",
+        "backflip",
+        "dance",
+        "float",
+        "wobble",
+        "sparkle",
+    ):
         assert world.sanitize_interaction({
             "type": "interaction",
             "kind": "emote",

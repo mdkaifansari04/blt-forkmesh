@@ -2109,10 +2109,14 @@ void MainWindow::refreshIssueList()
             // Provider name, prefixed with a spinner frame while the agent is
             // still working so the list shows live activity at a glance.
             QString text = agentProviderName(session->provider);
-            if (agentSessionActive(session))
+            const bool working = agentSessionActive(session);
+            if (working)
                 text = QString::fromUtf8(kAgentSpinFrames[m_issueSpinFrame % 10]) +
                        QStringLiteral(" ") + text;
             auto *agentItem = new QTableWidgetItem(text);
+            // Running rows carry the same orange as every other spinner (adhoc #23).
+            if (working)
+                agentItem->setForeground(QColor(Theme::kRunning));
             agentItem->setData(Qt::UserRole, session->id);
             m_issueTable->setItem(row, 9, agentItem);
         } else {
@@ -4750,6 +4754,22 @@ void MainWindow::queueIssueAttachment(const QString &path)
             QStringLiteral("Attached: %1").arg(m_pendingIssueAttachments.size()));
 }
 
+namespace {
+// The text currently sitting in a prompt/composer field, whatever kind of edit
+// it is (the footer prompt is a QPlainTextEdit, the chat composer a QLineEdit).
+// Empty means there is no draft worth protecting from a focus steal.
+QString promptDraftText(const QWidget *w)
+{
+    if (const auto *plain = qobject_cast<const QPlainTextEdit *>(w))
+        return plain->toPlainText().trimmed();
+    if (const auto *line = qobject_cast<const QLineEdit *>(w))
+        return line->text().trimmed();
+    if (const auto *rich = qobject_cast<const QTextEdit *>(w))
+        return rich->toPlainText().trimmed();
+    return QString();
+}
+} // namespace
+
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
     if (handleFramelessResizeEvent(obj, event))
@@ -4890,6 +4910,30 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             return true;
         if (ke->key() == Qt::Key_Down && navigateQuickAddHistory(1))
             return true;
+    }
+    // Never take the keyboard away from a half-typed prompt (adhoc #26). Section
+    // builds, table rebuilds, terminal/agent panes and deferred startup work all
+    // call setFocus() on their own widgets, and one landing mid-sentence used to
+    // send the next keystrokes somewhere else. Only a programmatic steal is
+    // undone: a click, Tab, shortcut, popup (the "/" actions menu, the @-mention
+    // list) or window switch is the user's own move and is never fought. The
+    // restore is deferred by one event-loop turn so it lands after whatever the
+    // stealing code does next, and only if the prompt still holds a draft.
+    if (event->type() == QEvent::FocusOut &&
+        (obj == m_issueQuickAdd || obj == m_messageInput)) {
+        const Qt::FocusReason reason = static_cast<QFocusEvent *>(event)->reason();
+        if (reason == Qt::OtherFocusReason || reason == Qt::NoFocusReason) {
+            QPointer<QWidget> prompt = qobject_cast<QWidget *>(obj);
+            if (prompt && !promptDraftText(prompt).isEmpty()) {
+                QTimer::singleShot(0, this, [this, prompt] {
+                    if (prompt && prompt->isVisible() && prompt->isEnabled() &&
+                        isActiveWindow() &&
+                        QApplication::focusWidget() != prompt &&
+                        !promptDraftText(prompt).isEmpty())
+                        prompt->setFocus(Qt::OtherFocusReason);
+                });
+            }
+        }
     }
     // Slash-actions popup filter box (adhoc #116): Up/Down walk the visible
     // rows, Enter activates the selected one, Escape closes the popup —

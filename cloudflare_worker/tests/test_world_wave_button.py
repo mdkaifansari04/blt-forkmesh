@@ -12,15 +12,16 @@ APP = (WORLD / "world.js").read_text(encoding="utf-8")
 STYLES = (WORLD / "world.css").read_text(encoding="utf-8")
 
 
-def test_a_small_wave_button_sits_in_the_hud_top_bar():
-    button = APP.split("data-world-wave")
-    assert len(button) == 3, "wave button and its click handler are both needed"
-    markup = button[0].rsplit("<button", 1)[1] + button[1].split("</button>", 1)[0]
-    assert "world-top-link" in markup, "the wave button matches the other HUD chips"
-    assert 'aria-label="Wave your avatar\'s arm"' in markup
-    # The button lives in the top-bar nav, next to the other world tools.
-    assert APP.index("data-world-wave") > APP.index('aria-label="World tools"')
-    assert APP.index("data-world-wave") < APP.index("data-world-sound-toggle")
+def test_avatar_reactions_live_inside_the_embedded_chat():
+    chat = (
+        ROOT / "public" / "dashboard" / "chat" / "index.html"
+    ).read_text(encoding="utf-8")
+    assert 'data-dashboard-chat-emote="wave"' in chat
+    assert 'data-dashboard-chat-emote="jump"' in chat
+    assert 'data-dashboard-chat-emote="spin"' in chat
+    assert 'data-dashboard-chat-emote="backflip"' in chat
+    assert 'data-dashboard-chat-emote="dance"' in chat
+    assert "data-world-wave" not in APP
 
 
 def test_the_phone_launcher_reveals_controls_without_overflowing_the_row():
@@ -36,14 +37,14 @@ def test_the_phone_launcher_reveals_controls_without_overflowing_the_row():
     assert ".world-hud[data-hud-expanded=\"true\"] .world-top-link" in compact_block
 
 
-def test_clicking_the_button_waves_locally_and_broadcasts_one_emote():
-    assert 'event.target.closest("[data-world-wave]")' in APP
-    assert "this.waveToWorld();" in APP
-    wave = APP.split("  waveToWorld() {", 1)[1].split("\n  }\n", 1)[0]
+def test_chat_reactions_play_locally_and_broadcast_one_emote():
+    wave = APP.split("  sendWorldEmote(rawEmote) {", 1)[1].split(
+        "\n  }\n", 1
+    )[0]
     # The local arm plays without waiting on the relay.
-    assert 'this.world?.playEmote?.(this.identity?.id || "", "wave", true);' in wave
+    assert 'this.world?.playEmote?.(this.identity?.id || "", emote, true);' in wave
     # And everybody else sees it through the existing text-free emote frame.
-    assert '{ type: "interaction", kind: "emote", emote: "wave" }' in wave
+    assert '{ type: "interaction", kind: "emote", emote }' in wave
     # Holding the button down must not turn one gesture into a frame stream.
     assert "WORLD_WAVE_COOLDOWN_MS" in wave
     assert "const WORLD_WAVE_COOLDOWN_MS = 2000;" in APP
@@ -80,11 +81,5 @@ def test_the_shoulder_stays_pinned_while_the_arm_swings():
 
 
 def test_the_button_hand_animation_respects_reduced_motion():
-    assert ".world-wave-button" in STYLES
-    assert "@keyframes world-wave-hand" in STYLES
-    hover = STYLES.split(".world-wave-button", 1)[1].split(
-        "[data-world-sound-toggle]", 1
-    )[0]
-    assert "@media (prefers-reduced-motion: reduce)" in hover
     # The scene-side pose drops its shake under the same preference.
     assert "const shake = reducedMotion" in SCENE

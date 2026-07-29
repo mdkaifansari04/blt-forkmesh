@@ -12,6 +12,11 @@ namespace Theme {
 inline const char *kPrimary = "#2ea043";
 inline const char *kTextTertiary = "#8b949e";
 
+// "Something is working right now" orange (adhoc #23): every busy spinner and
+// every running-agent dot/glyph paints in this one colour, so in-flight work
+// reads as its own state instead of borrowing success-green or link-blue.
+inline const char *kRunning = "#f0883e";
+
 // Sender name colors, hashed per user (GitHub label-ish accents).
 inline const char *kSenderPalette[] = {"#f85149", "#e3b341", "#3fb950",
                                        "#58a6ff", "#bc8cff", "#db61a2",
