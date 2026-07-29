@@ -8936,7 +8936,7 @@ async def _remote_mcp_task_request(
         headers["content-type"] = "application/json"
         init["body"] = json.dumps(body, separators=(",", ":"))
     internal = JsRequest.new(
-        _public_base_url(env).rstrip("/") + path, to_js(init))
+        _public_base_url(env, request).rstrip("/") + path, to_js(init))
     response = await world_office_tasks.handle(
         _OfficeMarketingTasksRuntime(env, internal, context),
         urlparse(path).path,
@@ -23976,7 +23976,7 @@ async def _email_verify_token(env, name, email):
     return bytes(Uint8Array.new(sig).to_py()).hex()[:32]
 
 
-def _public_base_url(env, request):
+def _public_base_url(env, request=None):
     base = (getattr(env, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
     if base:
         return base

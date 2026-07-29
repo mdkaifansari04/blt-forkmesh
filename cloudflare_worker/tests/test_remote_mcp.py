@@ -43,6 +43,11 @@ def test_remote_mcp_implements_lifecycle_and_task_tools():
     assert '"organization.tasks.read"' in ENTRY
     assert '"organization.tasks.write"' in ENTRY
     assert "world_office_tasks.handle(" in ENTRY
+    task_request = ENTRY[
+        ENTRY.index("async def _remote_mcp_task_request("):
+        ENTRY.index("async def _remote_mcp_call_tool(")
+    ]
+    assert "_public_base_url(env, request)" in task_request
 
 
 def test_org_admin_generates_one_filled_remote_setup_block():
