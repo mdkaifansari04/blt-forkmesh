@@ -466,7 +466,7 @@ async def test_oauth_grant_is_required_before_any_bot_guild_discovery():
 
 
 @run_async_test
-async def test_oauth_callback_is_one_time_cookie_bound_and_requires_guild_permission():
+async def test_oauth_callback_is_one_time_and_requires_guild_permission():
     runtime = FakeRuntime()
     runtime.oauth_configured = True
     runtime.oauth_guilds = [{"id": GUILD, "owner": False, "permissions": "0"}]
@@ -529,7 +529,7 @@ async def test_oauth_callback_accepts_browser_that_omits_transaction_cookie():
 
 
 @run_async_test
-async def test_oauth_callback_rejects_mismatched_transaction_cookie():
+async def test_oauth_callback_tolerates_replaced_transaction_cookie():
     runtime = FakeRuntime()
     runtime.oauth_configured = True
     started = await discord_api.handle(
@@ -538,14 +538,14 @@ async def test_oauth_callback_rejects_mismatched_transaction_cookie():
     state = parse_qs(
         urlparse(started["data"]["authorizationUrl"]).query)["state"][0]
     runtime.oauth_transaction = "f" * 64
-    rejected = await discord_api.handle_oauth_callback(
+    completed = await discord_api.handle_oauth_callback(
         runtime.use("GET", query={
             "state": state, "code": "oauth-authorization-code-123456",
         }))
-    assert rejected["data"]["outcome"] == "invalid"
+    assert completed["data"]["outcome"] == "connected"
     assert runtime.db.execute(
         "SELECT COUNT(*) AS n FROM organization_discord_oauth_grants"
-    ).fetchone()["n"] == 0
+    ).fetchone()["n"] == 1
 
 
 @run_async_test

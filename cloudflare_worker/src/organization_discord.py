@@ -905,19 +905,12 @@ async def _consume_oauth_state(runtime):
         return None
     if not hmac.compare_digest(str(record.get("state") or ""), state):
         return None
-    transaction = str(runtime.oauth_transaction_cookie() or "").lower()
-    # Some privacy-focused and embedded browsers omit a first-party cookie
-    # after the round-trip through Discord. The returned 256-bit one-time
-    # state, PKCE verifier, active ForkMesh session, exact redirect URI, and
-    # owner/guild permission checks below remain mandatory. Treat the cookie as
-    # a double-submit strengthening check when the browser returns it; never
-    # reject a legitimate callback solely because the browser discarded it.
-    if transaction and (
-        not _OAUTH_STATE_RE.fullmatch(transaction)
-        or not hmac.compare_digest(
-            str(record.get("transaction") or ""), transaction)
-    ):
-        return None
+    # Do not gate the callback on the optional browser transaction cookie.
+    # Privacy controls can omit it, and a second connection attempt can replace
+    # it while Discord is still returning the first valid authorization. The
+    # 256-bit state remains one-time and encrypted at rest; PKCE, the active
+    # ForkMesh session, owner role, exact redirect URI, requested guild, and
+    # Discord permission proof are all independently mandatory below.
     verifier = str(record.get("verifier") or "")
     if not _OAUTH_STATE_RE.fullmatch(verifier):
         return None
