@@ -36275,9 +36275,15 @@ def _admin_json_cell(decoded):
 # --- Admin bulk select + delete helpers (operate on rowid) -------------------
 
 def _admin_bulk_form_open(table, csrf_field="", admin_query=""):
+    # Per-row buttons ride this form with their own formaction (forms cannot
+    # nest) and run their own confirmation, so the bulk prompt must not also
+    # fire for them — it asked "delete the selected rows?" for a row action
+    # that deletes nothing.
     return (
         '<form method="post" action="%s" '
-        'onsubmit="return confirm(\'Delete the selected '
+        'onsubmit="return (event.submitter&&'
+        "event.submitter.hasAttribute('formaction'))||"
+        'confirm(\'Delete the selected '
         'row(s)? This cannot be undone.\')">'
         '%s'
         '<div class="tools">'
