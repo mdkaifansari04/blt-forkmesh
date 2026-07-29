@@ -11,14 +11,20 @@ sys.path.insert(0, str(ROOT / "src"))
 from discord_rate import DiscordRateCoordinator  # noqa: E402
 
 
-def test_worker_entry_imports_rate_coordinator_before_instantiating_it():
+def test_worker_entry_imports_discord_dependencies_before_using_them():
     source = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
+    module_imports = {
+        alias.name
+        for node in tree.body if isinstance(node, ast.Import)
+        for alias in node.names
+    }
     imports = [
         node for node in tree.body
         if isinstance(node, ast.ImportFrom) and node.module == "discord_rate"
     ]
 
+    assert "organization_discord" in module_imports
     assert len(imports) == 1
     assert any(
         alias.name == "DiscordRateCoordinator"
