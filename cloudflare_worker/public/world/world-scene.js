@@ -7856,6 +7856,7 @@ function createFountain(THREE, position, interactive, animated) {
   // midpoint of the first 10.8-unit node ring and face it toward those users.
   treasurySign.position.set(0, 0, 10.8);
   treasurySign.rotation.y = 0;
+  group.add(treasurySign);
   group.userData.treasurySign = treasurySign;
 
   group.position.set(...position);
@@ -19332,7 +19333,6 @@ export function createWorldScene({
       repositoryDistrict,
       organizationDistrict,
       federationDistrict,
-      landmarkObjects.get("office"),
       leaderboardDistrict,
       startHereBoard,
       memberPathSign,

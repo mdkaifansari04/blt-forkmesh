@@ -642,10 +642,22 @@ def test_tower_is_eleven_stories_and_about_ten_times_the_old_width():
     ):
         assert f'id: "{floor_id}"' in tower
     assert "for (let level = 1; level < OFFICE_FLOOR_COUNT; level += 1)" in scene
-    assert "OFFICE_FLOORS.slice(1).forEach((floor) => {" in scene
+    assert "OFFICE_FLOORS.slice(1).forEach((floor, interiorIndex) => {" in scene
     assert "function addOfficeFunFloorProps()" in scene
     assert 'officeFloorGroups.get("executive")' in scene
     assert "forkmesh-office-executive-strategy-table" in scene
+
+
+def test_aerial_lod_never_removes_the_office_landmark_and_sol_sign_is_attached():
+    scene = source(SCENE_PATH)
+    detail_targets = scene[
+        scene.index("    const detailTargets = ["):
+        scene.index("    ];", scene.index("    const detailTargets = ["))
+    ]
+    assert 'landmarkObjects.get("office")' not in detail_targets
+    assert "officeInterior.visible = showOfficeInterior" in scene
+    assert "group.add(treasurySign);" in scene
+    assert "treasurySign.position.set(0, 0, 10.8);" in scene
 
 
 def test_tall_floor_exhibits_and_elevator_openings_stay_between_slabs():

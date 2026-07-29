@@ -266,6 +266,32 @@ the implementation and its focused verification are complete.
 - [ ] Publish role-specific website onboarding paths for QA, developers, and marketing; the Markdown getting-started, Qt, contribution, and independent peer-review guidance exists, but the public docs page does not yet present the role journeys requested today.
 - [ ] Verify the live ActivityPub follower inventory against the production backup and restore any missing actors; migration and retention regression coverage are present, but this repository cannot prove that the external backup restore was run.
 
+## 2026-07-28 current emergency and follow-up
+
+- [x] Restore the complete Office exterior at every camera distance; aerial
+  performance mode may cull furnished interiors, but never the Office landmark.
+- [x] Restore the SOL treasury QR/sign to the front midpoint inside the node
+  circle, including its Start a node download action.
+- [x] Deploy and verify the Office/SOL emergency production revision
+  `6a075b4e190d-dirty-1785289718`.
+- [ ] Verify the new aerial landmark LOD in production and confirm that zooming
+  out no longer produces red frame-time/draw-call diagnostics.
+- [ ] Finish end-to-end organization-admin bot-token QA: one-time secret,
+  default scoped permissions, local-computer binding, expiry, audit, and
+  immediate revocation.
+- [ ] Verify platform `is_admin` web-to-Qt agent dispatch against an owned,
+  currently running desktop node; retain provider leases and the fail-closed
+  tool-free Haiku preflight.
+- [ ] Add the signed-in owner's private desktop-only CPU, RAM, and disk card to
+  the World HUD. Never include headless-node telemetry or broadcast these
+  owner-only values in presence.
+- [ ] Complete embedded World chat QA: pinned multiline prompt, consistent
+  Primer contrast/fonts, unclipped Send, team-task creation, repository-issue
+  creation, and organization/user repository aliases only.
+- [ ] Complete the remaining web PR lifecycle parity item in Current focus.
+- [ ] Publish the role-specific QA/developer/marketing onboarding page.
+- [ ] Verify and, if needed, restore the production ActivityPub follower backup.
+
 The remaining implementation work stays in **Current focus**. The Cloudflare
 observability credentials and “ForkMesh Forever” social-proof publishing remain
 the two canonical unchecked human actions above; they are not duplicated here
