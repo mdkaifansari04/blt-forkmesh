@@ -1852,15 +1852,9 @@ private:
     // disturbing whatever session is currently selected in the UI.
     void continueAgentSession(int sessionId);
     // Ask the given session's agent to merge base and resolve conflicts, then
-    // resume it. Used by the auto-fix setting below (any idle session whose
-    // branch conflicts with base).
+    // resume it. Driven by the agents list's orange conflict button (adhoc
+    // #446); a no-op while that session is already running or queued.
     void fixAgentConflictsWithAgent(int sessionId);
-    // If kAutoFixAgentConflictsSetting is on and `stat` says session's branch
-    // conflicts with base, automatically triggers fixAgentConflictsWithAgent().
-    // De-duped per session so a conflict that persists across a failed retry
-    // isn't retried forever; the guard clears once the conflict is gone.
-    void maybeAutoFixAgentConflict(const AgentSession &session,
-                                   const AgentDiffStat &stat);
     // Stash the quick-add composer's provider/model/mode dropdowns onto the
     // given session, so the next resume runs with what the user has selected
     // right now. Shared by the follow-up path and the bare "add" (continue,
@@ -5486,10 +5480,6 @@ private:
     bool m_agentDiffStatsRefreshing = false;
     bool m_agentDiffStatsRefreshQueued = false;
     int m_agentDiffStatsGen = 0;
-    // Sessions maybeAutoFixAgentConflict() has already auto-triggered a fix for.
-    // Prevents an unresolved conflict from re-queuing the agent on every refresh;
-    // cleared once the session's AgentDiffStat stops reporting conflicted.
-    QSet<int> m_agentAutoFixAttempted;
     // Re-entrancy guard for refreshAgentTable(): its cold-cache Diff cells shell
     // git and pump the event loop (GitKeepAlive), so a queued slot can re-enter
     // and corrupt the half-built table unless we skip the nested rebuild.
