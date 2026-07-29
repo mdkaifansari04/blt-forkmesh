@@ -417,6 +417,36 @@ int main(int argc, char *argv[])
 
     MainWindow window;
 
+    // Bottom status bar (adhoc #2): a strip exactly one text line tall carrying
+    // the branch switcher, the repo's git identity and the location of the
+    // running executable. The first two used to live in the repo Code overview,
+    // which builds lazily — the strip must be populated from the first frame.
+    {
+        QWidget *statusBar =
+            window.findChild<QWidget *>(QStringLiteral("appStatusBar"));
+        check(statusBar != nullptr,
+              QStringLiteral("bottom status bar exists on the app shell"));
+        if (statusBar) {
+            check(statusBar->minimumHeight() == statusBar->maximumHeight() &&
+                      statusBar->maximumHeight() <=
+                          statusBar->fontMetrics().height() + 8,
+                  QStringLiteral("status bar is pinned to a single text line"));
+            QPushButton *branch =
+                statusBar->findChild<QPushButton *>(QStringLiteral("ghostButton"));
+            check(branch && branch->toolTip() == QStringLiteral("Switch branch"),
+                  QStringLiteral("branch switcher sits in the status bar"));
+            check(statusBar->findChild<QLabel *>(
+                      QStringLiteral("footerGitIdentity")) != nullptr,
+                  QStringLiteral("git identity sits in the status bar"));
+            QLabel *appPath =
+                statusBar->findChild<QLabel *>(QStringLiteral("statusAppPath"));
+            check(appPath && !appPath->text().isEmpty() &&
+                      appPath->toolTip().contains(
+                          QCoreApplication::applicationFilePath()),
+                  QStringLiteral("status bar shows the running app's location"));
+        }
+    }
+
     // Fleet "Install from binary" must install the published release, not
     // upload this test process (or any other locally-built executable). The
     // target verifies the release checksum in install.sh, refuses source
@@ -625,10 +655,10 @@ int main(int argc, char *argv[])
               QStringLiteral("retired Claude import cannot modify the clipboard"));
     }
 
-    // Plan §5.1: the desktop exposes a real local control-node surface and a
-    // main-navigation World portal. Navigate to the deferred page exactly as a
-    // user does, then verify that its controls exist before a session connects
-    // and that the Cloudflare credential input remains a password field.
+    // Plan §5.1: the desktop exposes a real local control-node surface. Navigate
+    // to the deferred page exactly as a user does, then verify that its controls
+    // exist before a session connects and that the Cloudflare credential input
+    // remains a password field.
     check(window.testControlNodeSectionIndex() == 14,
           QStringLiteral("local control node has a stable top-level section"));
     window.testShowControlNode();
@@ -658,10 +688,16 @@ int main(int argc, char *argv[])
     check(window.findChild<QTableWidget *>(
               QStringLiteral("controlPermissionsTable")) != nullptr &&
               window.findChild<QPushButton *>(
-                  QStringLiteral("controlManageHostsButton")) != nullptr &&
+                  QStringLiteral("controlManageHostsButton")) != nullptr,
+          QStringLiteral("control node exposes permissions and hosts"));
+    check(window.findChild<QPushButton *>(
+              QStringLiteral("controlOpenWorldButton")) == nullptr &&
               window.findChild<QPushButton *>(
-                  QStringLiteral("controlOpenWorldButton")) != nullptr,
-          QStringLiteral("control node exposes permissions, hosts and World"));
+                  QStringLiteral("relayOpenButton")) == nullptr &&
+              findButtonStartingWith(window, QStringLiteral("World")) == nullptr &&
+              findButtonStartingWith(
+                  window, QStringLiteral("Open World")) == nullptr,
+          QStringLiteral("Qt client does not expose World browser links"));
     QLineEdit *rewardRpc =
         window.findChild<QLineEdit *>(QStringLiteral("rewardPoolRpc"));
     QPushButton *rewardFetch = window.findChild<QPushButton *>(
@@ -901,6 +937,57 @@ int main(int argc, char *argv[])
           QStringLiteral("start preserves the saved Solana address"));
     check(!window.testAccountAuthenticated(),
           QStringLiteral("start does not require or fake an account"));
+
+    // The Nodes page expands the database-backed user directory's linked-node
+    // lists, so offline fleet members do not vanish just because only one node
+    // is currently in the live room roster.
+    window.testSetDirectoryUserNodes(
+        QStringLiteral("alice"),
+        {QStringLiteral("node-a"), QStringLiteral("node-b")});
+    window.testShowNodesSection();
+    const QStringList directoryNodes = window.testNodeDirectoryNames();
+    check(directoryNodes.contains(QStringLiteral("node-a")) &&
+              directoryNodes.contains(QStringLiteral("node-b")),
+          QStringLiteral("Nodes lists offline linked nodes from the relay directory"));
+
+    // The Repos page groups machine publications by logical repository, prefers
+    // a public organization alias, maps a standalone node back to its user, and
+    // exposes an explicit Switch action.
+    const QString rootA(40, QLatin1Char('a'));
+    const QString rootB(40, QLatin1Char('b'));
+    QJsonArray catalogFixture{
+        QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-a")},
+                    {QStringLiteral("name"), QStringLiteral("widget")},
+                    {QStringLiteral("rootCommit"), rootA},
+                    {QStringLiteral("source"), QStringLiteral("local-node")}},
+        QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-b")},
+                    {QStringLiteral("name"), QStringLiteral("widget")},
+                    {QStringLiteral("rootCommit"), rootA},
+                    {QStringLiteral("source"), QStringLiteral("remote-clone")}},
+        QJsonObject{{QStringLiteral("owner"), QStringLiteral("acme")},
+                    {QStringLiteral("name"), QStringLiteral("widget")},
+                    {QStringLiteral("rootCommit"), rootA},
+                    {QStringLiteral("source"),
+                     QStringLiteral("organization-alias")},
+                    {QStringLiteral("servingOwner"),
+                     QStringLiteral("node-a")}},
+        QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-b")},
+                    {QStringLiteral("name"), QStringLiteral("cli")},
+                    {QStringLiteral("rootCommit"), rootB},
+                    {QStringLiteral("source"), QStringLiteral("local-node")}},
+    };
+    window.testRenderNetworkRepos(catalogFixture);
+    const QStringList renderedRepoNames = window.testNetworkRepoNames();
+    const QSet<QString> repoNames(renderedRepoNames.cbegin(),
+                                  renderedRepoNames.cend());
+    check(repoNames == QSet<QString>{
+                           QStringLiteral("acme/widget"),
+                           QStringLiteral("alice/cli")},
+          QStringLiteral("Repos groups mirrors under user and organization owners"));
+    check(window.testNetworkRepoMirrorHeader() == QStringLiteral("Mirrors"),
+          QStringLiteral("Repos uses a compact mirror-count column"));
+    check(window.testNetworkRepoActionText(0) == QStringLiteral("Switch"),
+          QStringLiteral("Repos provides an explicit Switch button"));
 
     // Reward settings must never launch the former reserve/donation/finalize
     // account funnel. A mock account flow is installed specifically to prove it

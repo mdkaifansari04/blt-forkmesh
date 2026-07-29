@@ -1,6 +1,7 @@
 #include "MarkupCanvas.h"
 
 #include <QFont>
+#include <QFontMetrics>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QMouseEvent>
@@ -14,8 +15,6 @@
 namespace {
 // Not all libm headers define M_PI (it's POSIX, not standard C++).
 constexpr double kPi = 3.14159265358979323846;
-constexpr int kTextPointSize = 18;
-
 bool isDirectional(MarkupTool tool)
 {
     return tool == MarkupTool::Line || tool == MarkupTool::Arrow;
@@ -33,7 +32,13 @@ MarkupCanvas::MarkupCanvas(const QImage &base, QWidget *parent)
 void MarkupCanvas::setTool(MarkupTool tool)
 {
     m_tool = tool;
-    setCursor(tool == MarkupTool::Text ? Qt::IBeamCursor : Qt::CrossCursor);
+    if (tool == MarkupTool::Move)
+        setCursor(Qt::OpenHandCursor);
+    else
+        setCursor(tool == MarkupTool::Text ? Qt::IBeamCursor : Qt::CrossCursor);
+    if (tool != MarkupTool::Move && tool != MarkupTool::Text)
+        m_selectedTextIndex = -1;
+    update();
 }
 
 void MarkupCanvas::setColor(const QColor &color)
@@ -41,12 +46,28 @@ void MarkupCanvas::setColor(const QColor &color)
     m_color = color;
 }
 
+void MarkupCanvas::setTextPointSize(int pointSize)
+{
+    m_textPointSize = qBound(8, pointSize, 72);
+}
+
+void MarkupCanvas::pushUndoState()
+{
+    m_undoStack.append(m_ops);
+    constexpr int kMaxUndoStates = 100;
+    if (m_undoStack.size() > kMaxUndoStates)
+        m_undoStack.removeFirst();
+}
+
 void MarkupCanvas::undo()
 {
-    if (!m_ops.isEmpty()) {
-        m_ops.removeLast();
-        update();
-    }
+    if (m_undoStack.isEmpty())
+        return;
+    m_ops = m_undoStack.takeLast();
+    m_drawing = false;
+    m_movingTextIndex = -1;
+    m_selectedTextIndex = -1;
+    update();
 }
 
 QImage MarkupCanvas::flattenedImage() const
@@ -69,13 +90,41 @@ void MarkupCanvas::paintEvent(QPaintEvent *)
     renderOps(painter, m_ops);
     if (m_drawing)
         renderOp(painter, m_current);
+    if (m_selectedTextIndex >= 0 && m_selectedTextIndex < m_ops.size()) {
+        const MarkupOp &selected = m_ops.at(m_selectedTextIndex);
+        if (selected.kind == MarkupOp::Kind::Text) {
+            QPen selectionPen(QColor(46, 160, 67));
+            selectionPen.setWidth(1);
+            selectionPen.setStyle(Qt::DashLine);
+            painter.setPen(selectionPen);
+            painter.setBrush(QColor(46, 160, 67, 28));
+            painter.drawRoundedRect(textBounds(selected).adjusted(-5, -4, 5, 4),
+                                    3, 3);
+        }
+    }
 }
 
 void MarkupCanvas::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() != Qt::LeftButton)
         return;
-    if (m_tool == MarkupTool::Text) {
+    const QPoint position = event->position().toPoint();
+    if (m_tool == MarkupTool::Text || m_tool == MarkupTool::Move) {
+        const int hit = textAt(position);
+        if (hit >= 0) {
+            m_movingTextIndex = hit;
+            m_selectedTextIndex = hit;
+            m_textDragOffset = position - m_ops.at(hit).textPos;
+            m_moveChanged = false;
+            setCursor(Qt::ClosedHandCursor);
+            update();
+            return;
+        }
+        m_selectedTextIndex = -1;
+        if (m_tool == MarkupTool::Move) {
+            update();
+            return;
+        }
         bool ok = false;
         const QString text = QInputDialog::getText(this, tr("Add Text"), tr("Text:"),
                                                      QLineEdit::Normal, QString(), &ok);
@@ -83,9 +132,12 @@ void MarkupCanvas::mousePressEvent(QMouseEvent *event)
             MarkupOp op;
             op.kind = MarkupOp::Kind::Text;
             op.color = m_color;
-            op.textPos = event->position().toPoint();
+            op.textPos = position;
             op.text = text;
+            op.textPointSize = m_textPointSize;
+            pushUndoState();
             m_ops.append(op);
+            m_selectedTextIndex = m_ops.size() - 1;
             update();
         }
         return;
@@ -109,6 +161,16 @@ void MarkupCanvas::mousePressEvent(QMouseEvent *event)
 
 void MarkupCanvas::mouseMoveEvent(QMouseEvent *event)
 {
+    if (m_movingTextIndex >= 0 && m_movingTextIndex < m_ops.size()) {
+        if (!m_moveChanged) {
+            pushUndoState();
+            m_moveChanged = true;
+        }
+        MarkupOp &op = m_ops[m_movingTextIndex];
+        op.textPos = event->position().toPoint() - m_textDragOffset;
+        update();
+        return;
+    }
     if (!m_drawing)
         return;
     const QPoint pos = event->position().toPoint();
@@ -124,23 +186,36 @@ void MarkupCanvas::mouseMoveEvent(QMouseEvent *event)
 
 void MarkupCanvas::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (m_movingTextIndex >= 0 && event->button() == Qt::LeftButton) {
+        m_movingTextIndex = -1;
+        setCursor(m_tool == MarkupTool::Move ? Qt::OpenHandCursor
+                                             : Qt::IBeamCursor);
+        update();
+        return;
+    }
     if (!m_drawing || event->button() != Qt::LeftButton)
         return;
     m_drawing = false;
     const QPoint pos = event->position().toPoint();
     if (m_current.kind == MarkupOp::Kind::Stroke) {
         m_current.points.append(pos);
-        if (!m_current.points.isEmpty())
+        if (!m_current.points.isEmpty()) {
+            pushUndoState();
             m_ops.append(m_current);
+        }
     } else if (isDirectional(m_current.shapeType)) {
         m_current.p2 = pos;
         const QPoint delta = m_current.p2 - m_current.p1;
-        if (delta.manhattanLength() >= 3)
+        if (delta.manhattanLength() >= 3) {
+            pushUndoState();
             m_ops.append(m_current);
+        }
     } else {
         m_current.rect = QRect(m_dragOrigin, pos).normalized();
-        if (m_current.rect.width() >= 3 && m_current.rect.height() >= 3)
+        if (m_current.rect.width() >= 3 && m_current.rect.height() >= 3) {
+            pushUndoState();
             m_ops.append(m_current);
+        }
     }
     m_current = MarkupOp{};
     update();
@@ -164,7 +239,7 @@ void MarkupCanvas::renderOp(QPainter &painter, const MarkupOp &op)
             painter.drawPolyline(op.points.constData(), op.points.size());
     } else if (op.kind == MarkupOp::Kind::Text) {
         QFont font = painter.font();
-        font.setPointSize(kTextPointSize);
+        font.setPointSize(op.textPointSize);
         font.setBold(true);
         painter.setFont(font);
         painter.drawText(op.textPos, op.text);
@@ -194,4 +269,26 @@ void MarkupCanvas::renderOps(QPainter &painter, const QVector<MarkupOp> &ops)
 {
     for (const MarkupOp &op : ops)
         renderOp(painter, op);
+}
+
+QRect MarkupCanvas::textBounds(const MarkupOp &op)
+{
+    QFont font;
+    font.setPointSize(op.textPointSize);
+    font.setBold(true);
+    QFontMetrics metrics(font);
+    QRect bounds = metrics.boundingRect(op.text);
+    bounds.translate(op.textPos);
+    return bounds.normalized();
+}
+
+int MarkupCanvas::textAt(const QPoint &position) const
+{
+    for (int i = m_ops.size() - 1; i >= 0; --i) {
+        const MarkupOp &op = m_ops.at(i);
+        if (op.kind == MarkupOp::Kind::Text &&
+            textBounds(op).adjusted(-7, -7, 7, 7).contains(position))
+            return i;
+    }
+    return -1;
 }

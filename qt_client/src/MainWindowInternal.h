@@ -65,6 +65,8 @@
 #include <QDropEvent>
 #include <QFileInfo>
 #include <QMimeData>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QFrame>
@@ -172,6 +174,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 
@@ -1306,6 +1309,7 @@ public:
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         setFixedSize(kSide, kSide); // same button-sized square as the resource sparklines
+        setCursor(Qt::PointingHandCursor);
         refreshTooltip();
         // Drive the sweep: a slow, steady rotation independent of probe timing.
         m_sweep = new QTimer(this);
@@ -1355,7 +1359,16 @@ public:
         update();
     }
 
+    std::function<void()> onClicked;
+
 protected:
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && onClicked)
+            onClicked();
+        QWidget::mouseReleaseEvent(event);
+    }
+
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
@@ -1508,12 +1521,16 @@ private:
     {
         if (m_unreachable) {
             setToolTip(QStringLiteral(
-                "Relay not responding \xE2\x80\x94 last probe timed out"));
+                "Relay not responding \xE2\x80\x94 last probe timed out\n"
+                "Click to open Mirror nodes"));
         } else if (m_latencyMs < 0) {
-            setToolTip(QStringLiteral("Measuring relay latency\xE2\x80\xA6"));
+            setToolTip(QStringLiteral(
+                "Measuring relay latency\xE2\x80\xA6\n"
+                "Click to open Mirror nodes"));
         } else {
             setToolTip(QStringLiteral(
-                           "Relay round-trip latency: %1 ms\nProbed every minute")
+                           "Relay round-trip latency: %1 ms\n"
+                           "Probed every minute\nClick to open Mirror nodes")
                            .arg(m_latencyMs));
         }
     }
@@ -2852,12 +2869,6 @@ const QString kAutoSwitchToAgentSetting = QStringLiteral("agents/autoSwitchToAge
 // no agent metadata leaves this machine unless the user opts in.
 const QString kPublishAgentsToWebSetting =
     QStringLiteral("agents/publishToWeb");
-// When an idle agent session's branch would conflict with base (the same
-// condition that shows the "Fix conflicts with agent" button), automatically
-// ask the agent to merge base and resolve the conflicts instead of waiting for
-// a manual click. Default on; can be disabled in Settings.
-const QString kAutoFixAgentConflictsSetting =
-    QStringLiteral("agents/autoFixConflicts");
 // When a repo's tests or build fail (the same kind of failure this very task
 // was dispatched to fix), automatically send the failure back to whichever
 // agent session last worked on that branch instead of waiting for a manual
@@ -6383,23 +6394,23 @@ inline void setOcticon(QPushButton *button, const QString &name, int size = 16,
     applyStoredOcticon(button);
 }
 
-// One entry in the thin vertical activity rail down the repo detail page's left
-// edge (adhoc #357): an octicon over an optional small label, VS-Code style,
-// with the selected state drawn as a 2px accent line along the item's left
-// edge. The Git entry rides a blue count badge on the icon's corner (the
-// working-tree change count) which a small rotating sync glyph replaces while
-// the repo is publishing/syncing. Fully custom-painted (icon tint follows the
-// live theme on every repaint), so no QSS or stored-octicon re-tinting applies.
+// One entry in the app-wide activity rail: an octicon over an optional small
+// label, VS-Code style, with the selected state drawn as a 2px accent line along
+// the item's left edge. A blue count badge rides above the icon, where it cannot
+// obscure the caption; a small rotating sync glyph can replace it while a repo
+// is publishing/syncing. Fully custom-painted (icon tint follows the live theme
+// on every repaint), so no QSS or stored-octicon re-tinting applies.
 class ActivityRailButton : public QPushButton
 {
 public:
     explicit ActivityRailButton(const QString &iconName, const QString &label,
                                 QWidget *parent = nullptr)
-        : QPushButton(parent), m_iconName(iconName), m_label(label)
+        : QPushButton(label, parent), m_iconName(iconName), m_label(label)
     {
         setCheckable(true);
         setCursor(Qt::PointingHandCursor);
         setFlat(true);
+        setAccessibleName(m_label);
         setFixedSize(44, m_label.isEmpty() ? 40 : 48);
         // The sync spinner's timer only runs while syncing *and* visible (see
         // show/hideEvent), so an idle or hidden item costs nothing.
@@ -6409,6 +6420,18 @@ public:
             m_spinAngle = (m_spinAngle + 30) % 360;
             update();
         });
+    }
+
+    // The app-wide rail has more destinations than the old repo-only rail.
+    // Its compact mode keeps the same icon, badge, selection line, tooltip and
+    // accessible text while omitting the painted caption.
+    void setCompact(bool compact)
+    {
+        if (m_compact == compact)
+            return;
+        m_compact = compact;
+        setFixedSize(44, m_compact ? 30 : (m_label.isEmpty() ? 40 : 48));
+        update();
     }
 
     // The count riding the icon's corner (0 hides the badge).
@@ -6452,6 +6475,7 @@ protected:
         const bool lit = isChecked() || underMouse();
         const QColor fg = dark ? QColor(lit ? "#e6edf3" : "#8b949e")
                                : QColor(lit ? "#1f2328" : "#656d76");
+        const bool showLabel = !m_compact && !m_label.isEmpty();
 
         // Selection line along the left edge — same accent green as the repo
         // tabs' checked underline.
@@ -6460,12 +6484,12 @@ protected:
 
         const int iconPx = 20;
         const QRect iconRect((width() - iconPx) / 2,
-                             m_label.isEmpty() ? (height() - iconPx) / 2 : 6,
+                             showLabel ? 6 : (height() - iconPx) / 2,
                              iconPx, iconPx);
         p.drawPixmap(iconRect.topLeft(),
                      tintedOcticonPixmap(m_iconName, fg, iconPx));
 
-        if (!m_label.isEmpty()) {
+        if (showLabel) {
             QFont f = font();
             f.setPixelSize(10);
             f.setWeight(QFont::DemiBold);
@@ -6475,10 +6499,11 @@ protected:
                        Qt::AlignHCenter | Qt::AlignTop, m_label);
         }
 
-        // Badge / sync spinner overlapping the icon's bottom-right corner.
+        // Badge / sync spinner on the icon's upper-right corner.
         if (m_syncing) {
             const int s = 14;
-            const QPoint at(iconRect.right() - s / 2 + 4, iconRect.bottom() - s / 2 + 4);
+            const QPoint at(iconRect.right() - s / 2 + 4,
+                            qMax(0, iconRect.top() - 4));
             // Knock out a disc behind the glyph so it reads over the icon.
             p.setPen(Qt::NoPen);
             p.setBrush(QColor(dark ? "#0d1117" : "#ffffff"));
@@ -6493,8 +6518,10 @@ protected:
             p.setFont(f);
             const int h = 14;
             const int w = qMax(h, QFontMetrics(f).horizontalAdvance(text) + 8);
-            const QRectF badge(iconRect.right() - w + h / 2.0 + 2,
-                               iconRect.bottom() - h / 2.0 + 2, w, h);
+            const QRectF badge(
+                iconRect.right() - w + h / 2.0 + 2,
+                qMax(0.0, double(iconRect.top() - 5)),
+                w, h);
             p.setPen(Qt::NoPen);
             p.setBrush(QColor("#1f6feb"));
             p.drawRoundedRect(badge, h / 2.0, h / 2.0);
@@ -6518,6 +6545,7 @@ private:
     QString m_label;
     int m_badge = 0;
     bool m_syncing = false;
+    bool m_compact = false;
     QTimer *m_spinTimer = nullptr;
     int m_spinAngle = 0;
 };
@@ -7932,8 +7960,9 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
     // repo with ~200 issues ran 200+ sequential subprocesses on the GUI thread
     // and the stall watchdog clocked individual publishes at 1.8s+ (adhoc #33).
     // Cache per mirror+branch keyed on the tip commit, and on a miss read every
-    // status through a single `git cat-file --batch` process. UI-thread only,
-    // so a plain static map needs no locking (same as tintedOcticonPixmap).
+    // status through a single `git cat-file --batch` process. Advert snapshots
+    // are gathered on a worker, while explicit publishes can still request the
+    // count elsewhere, so protect the process-wide cache.
     QByteArray tip;
     runGitCapture(mirrorPath, {"rev-parse", "--verify", branch}, &tip, nullptr);
     tip = tip.trimmed();
@@ -7942,8 +7971,10 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
         int count = 0;
     };
     static QHash<QString, OpenIssueCacheEntry> cache;
+    static QMutex cacheMutex;
     const QString cacheKey = mirrorPath + QLatin1Char('\n') + branch;
     if (!tip.isEmpty()) {
+        QMutexLocker lock(&cacheMutex);
         const auto cached = cache.constFind(cacheKey);
         if (cached != cache.constEnd() && cached->tip == tip)
             return cached->count;
@@ -7977,17 +8008,8 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
     // not open — the Issues tab and lists drop it (Issue::isDeleted), so the
     // advertised count must too, or it drifts above the tab (adhoc #16). A
     // delete/self event from anyone else is an unauthorized attempt that still
-    // counts. Deciding needs the record, so read the open/ blobs (open issues
-    // are few); closed/ folders are never open regardless.
-    auto recordTombstoned = [&](const QString &name) {
-        QByteArray blob;
-        if (!runGitCapture(
-                mirrorPath,
-                {"cat-file", "-p",
-                 branch + QStringLiteral(":.forkmesh/issues/open/%1/issue-%1.json")
-                              .arg(name)},
-                &blob, nullptr))
-            return false; // unreadable -> treat as live (matches loadAll)
+    // counts. Closed/ folders are never open regardless.
+    auto recordTombstoned = [](const QByteArray &blob) {
         const QJsonArray events = QJsonDocument::fromJson(blob)
                                       .object()
                                       .value(QStringLiteral("events"))
@@ -8015,13 +8037,48 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
     };
     QSet<QString> counted;
     int open = 0;
-    for (const QString &name :
-         numberedNames(QStringLiteral(".forkmesh/issues/open")))
-        if (!counted.contains(name)) {
-            counted.insert(name);
-            if (!recordTombstoned(name))
-                ++open;
+    const QStringList openNames =
+        numberedNames(QStringLiteral(".forkmesh/issues/open"));
+    for (const QString &name : openNames)
+        counted.insert(name);
+    if (!openNames.isEmpty()) {
+        QByteArray batchIn;
+        for (const QString &name : openNames) {
+            batchIn +=
+                (branch +
+                 QStringLiteral(":.forkmesh/issues/open/%1/issue-%1.json")
+                     .arg(name))
+                    .toUtf8() +
+                '\n';
         }
+        QByteArray batchOut;
+        int remaining = openNames.size();
+        if (runGitCaptureInput(mirrorPath, {"cat-file", "--batch"}, batchIn,
+                               &batchOut, nullptr)) {
+            int pos = 0;
+            while (remaining > 0 && pos < batchOut.size()) {
+                const int eol = batchOut.indexOf('\n', pos);
+                if (eol < 0)
+                    break;
+                const QByteArray header = batchOut.mid(pos, eol - pos);
+                pos = eol + 1;
+                --remaining;
+                const QList<QByteArray> parts = header.split(' ');
+                bool sizeOk = false;
+                const qlonglong size =
+                    parts.size() >= 3 ? parts.at(2).toLongLong(&sizeOk) : 0;
+                if (!sizeOk || size < 0 || pos + size > batchOut.size()) {
+                    ++open; // unreadable records remain live, matching loadAll
+                    continue;
+                }
+                const QByteArray blob = batchOut.mid(pos, size);
+                pos += size + 1; // skip the record's trailing LF
+                if (!recordTombstoned(blob))
+                    ++open;
+            }
+        }
+        open += remaining;
+    }
     for (const QString &name :
          numberedNames(QStringLiteral(".forkmesh/issues/closed")))
         counted.insert(name);
@@ -8073,8 +8130,10 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
         }
         open += remaining; // records the batch never answered default to open
     }
-    if (!tip.isEmpty())
+    if (!tip.isEmpty()) {
+        QMutexLocker lock(&cacheMutex);
         cache.insert(cacheKey, {tip, open});
+    }
     return open;
 }
 

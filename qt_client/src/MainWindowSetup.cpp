@@ -1014,6 +1014,16 @@ bool MainWindow::testIssueLooperRowAligned() const
 
 int MainWindow::testTopNavTrailingGap() const
 {
+    // Navigation utilities now live in the full-height left rail. Preserve this
+    // responsive-shell probe's contract ("anchored within 28px of its edge")
+    // using the rail's leading edge instead of the retired top row's trailing
+    // edge.
+    if (QWidget *rail =
+            findChild<QWidget *>(QStringLiteral("appNavigationRail"))) {
+        const QRect rect(rail->mapTo(const_cast<MainWindow *>(this), QPoint(0, 0)),
+                         rail->size());
+        return rect.left();
+    }
     int rightEdge = -1;
     for (QWidget *widget :
          {static_cast<QWidget *>(m_navDrawButton),
@@ -1027,6 +1037,80 @@ int MainWindow::testTopNavTrailingGap() const
         rightEdge = qMax(rightEdge, rect.right());
     }
     return rightEdge >= 0 ? width() - rightEdge - 1 : -1;
+}
+
+void MainWindow::testSetDirectoryUserNodes(const QString &user,
+                                           const QStringList &nodes)
+{
+    MemberInfo member;
+    member.id = QStringLiteral("user:") + user.toLower();
+    member.name = user;
+    member.ownerUser = user;
+    member.accountKind = QStringLiteral("user");
+    member.nodeName = nodes.join(QStringLiteral(", "));
+    m_chatDirectoryUsers.insert(user.toLower(), member);
+    m_chatDirectoryLoaded = true;
+}
+
+void MainWindow::testShowNodesSection()
+{
+    showSection(kNodesSectionIndex);
+    refreshNodesTable();
+}
+
+QStringList MainWindow::testNodeDirectoryNames() const
+{
+    QStringList names;
+    if (!m_nodesTable)
+        return names;
+    for (int row = 0; row < m_nodesTable->rowCount(); ++row) {
+        if (QTableWidgetItem *item = m_nodesTable->item(row, 0))
+            names.append(item->data(Qt::UserRole).toString());
+    }
+    names.sort(Qt::CaseInsensitive);
+    return names;
+}
+
+void MainWindow::testRenderNetworkRepos(const QJsonArray &repos)
+{
+    showSection(kNetworkReposSectionIndex);
+    // Any real request started by opening the lazy section is now stale; the
+    // fixture below owns the table deterministically.
+    ++m_networkReposLoadGen;
+    renderNetworkRepos(repos);
+}
+
+QStringList MainWindow::testNetworkRepoNames() const
+{
+    QStringList names;
+    if (!m_networkReposTable)
+        return names;
+    for (int row = 0; row < m_networkReposTable->rowCount(); ++row) {
+        if (QTableWidgetItem *item = m_networkReposTable->item(row, 0))
+            names.append(item->data(Qt::UserRole).toString());
+    }
+    return names;
+}
+
+QString MainWindow::testNetworkRepoActionText(int row) const
+{
+    if (!m_networkReposTable || row < 0 ||
+        row >= m_networkReposTable->rowCount())
+        return QString();
+    QWidget *cell = m_networkReposTable->cellWidget(row, 3);
+    if (!cell)
+        return QString();
+    const QList<QPushButton *> buttons =
+        cell->findChildren<QPushButton *>(QString(), Qt::FindDirectChildrenOnly);
+    return buttons.isEmpty() ? QString() : buttons.first()->text();
+}
+
+QString MainWindow::testNetworkRepoMirrorHeader() const
+{
+    if (!m_networkReposTable ||
+        !m_networkReposTable->horizontalHeaderItem(2))
+        return QString();
+    return m_networkReposTable->horizontalHeaderItem(2)->text();
 }
 #endif
 
@@ -1811,6 +1895,12 @@ void MainWindow::startOfficeChannelMirror()
                     // setChannels() rebuilds the sidebar from the mesh rooms
                     // plus these mirrors, so re-entering it merges them in.
                     setChannels(m_channels);
+                    refreshChatMembers();
+                });
+        connect(m_officeChannelMirror, &OfficeChannelMirror::roomMembersChanged,
+                this, [this](const QString &conversation, const QStringList &) {
+                    if (conversation == m_currentConversation)
+                        refreshChatMembers();
                 });
     }
     m_officeChannelMirror->setApiBase(catalogApiUrl());
@@ -2548,6 +2638,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         m_profileIsUserAccount =
             lookup.value(QStringLiteral("kind")).toString() ==
             QStringLiteral("user");
+        cacheWebUserSolanaProfile(accountName, lookup);
         QSettings().setValue(kAuthedAccountSetting, accountName);
         applyAccountEmailVerified(accountName,
                                   lookup.value("emailVerified").toBool());
@@ -2888,6 +2979,10 @@ bool MainWindow::verifyTotpLogin(const QString &email,
         // and the web dashboard show the same picture. Adopt a picture already
         // set on the account; otherwise upload the one chosen locally.
         m_accountSessionToken = payload.value("sessionToken").toString();
+        m_profileIsUserAccount =
+            payload.value(QStringLiteral("kind")).toString() ==
+            QStringLiteral("user");
+        cacheWebUserSolanaProfile(m_accountName, payload);
         // Register only this device's public hybrid encryption bundle. This
         // makes the account ready to be named as a private-repo collaborator;
         // the X25519 and ML-KEM private halves stay in the encrypted local vault.
@@ -2907,6 +3002,7 @@ bool MainWindow::verifyTotpLogin(const QString &email,
         } else {
             pushAccountAvatar();
         }
+        updateUserSwitcher();
     };
 
     if (status == 200 && resp.value("ok").toBool()) {

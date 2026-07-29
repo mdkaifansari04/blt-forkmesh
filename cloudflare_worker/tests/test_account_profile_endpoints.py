@@ -102,6 +102,8 @@ def test_worker_profile_contract_includes_avatar_updates():
     assert 'data.get("avatarPng", "")' in heartbeat_body
     assert 'rec["avatar_png"] = avatar_png' in heartbeat_body
     assert '"avatarPng": rec.get("avatar_png", "")' in public_lookup_body
+    assert '"solana": ((rec.get("solana") or "").strip()' in public_lookup_body
+    assert '"hasPayoutAddress": bool(' in public_lookup_body
 
 
 def test_public_lookup_reads_only_users_nodes_tables():
@@ -551,27 +553,27 @@ def test_signup_verification_email_is_a_professional_welcome_email():
         "founders@forkmesh.com",
         "color:#4ade80",
         "/api/accounts/verify-email?node=",
-        # Renders through the shared branded card (dark-only), rather than a
+        # Renders through the shared branded card, rather than a
         # bespoke inline template.
         "_forkmesh_email_card_html(",
     ):
         assert marker in body
     card_body = ENTRY_TEXT[
-        ENTRY_TEXT.index("def _forkmesh_email_card_html"):
+        ENTRY_TEXT.index("def _light_email_fragment"):
         ENTRY_TEXT.index("def _format_email_ts")
     ]
     for marker in (
-        "background:#090909",
-        "background:#141416",
-        'content="dark"',
+        "background:#f4f4f5",
+        "background:#ffffff",
+        'content=\\"light\\"',
+        "data-forkmesh-site-action",
     ):
         assert marker in card_body
-    # The card must not reintroduce a light/white background that would render
-    # ForkMesh mail white in a dark-mode reader (no media-query override, no
-    # white fills). The word may still appear in an explanatory comment, so we
-    # assert on the actual override markup rather than the term.
+    # One explicit light palette avoids partial dark-mode overrides that can
+    # combine a light card with light text.
     assert "@media" not in card_body
-    assert "#ffffff" not in card_body
+    assert "background:#090909" not in card_body
+    assert "background:#141416" not in card_body
 
 
 def test_login_page_links_to_password_reset():

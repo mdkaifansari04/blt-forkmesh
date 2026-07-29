@@ -44,14 +44,15 @@ def test_only_embedded_application_documents_allow_same_origin_frames():
     assert "X-Frame-Options: DENY" in global_rule
     assert "https://static.cloudflareinsights.com" in global_rule
 
-    # Chat renders inside World frames; issue details render inside the World
-    # workbench; World renders inside the site-footer band. All stay
+    # Chat renders inside World frames; issue and pull details render inside
+    # the World workbench; World renders inside the site-footer band. All stay
     # same-origin only.
     for path in (
         "/dashboard/chat*",
         "/chat",
         "/chat.html",
         "/:owner/:repo/issues/:number",
+        "/:owner/:repo/pulls/:number",
         "/world",
         "/world/*",
     ):
@@ -69,8 +70,8 @@ def test_only_embedded_application_documents_allow_same_origin_frames():
     for path in ("/world", "/world/*"):
         assert "Cache-Control: no-store, max-age=0, must-revalidate" in _rule(path)
 
-    assert HEADERS.count("frame-ancestors 'self'") == 6
-    assert HEADERS.count("X-Frame-Options: SAMEORIGIN") == 6
+    assert HEADERS.count("frame-ancestors 'self'") == 7
+    assert HEADERS.count("X-Frame-Options: SAMEORIGIN") == 7
     assert "https://cdn.tailwindcss.com" not in HEADERS
 
 

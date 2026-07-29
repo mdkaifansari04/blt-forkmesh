@@ -1628,9 +1628,23 @@ int main(int argc, char *argv[])
                 buildRepoContributionSnapshot(input);
             check(snapshot.complete && snapshot.error.isEmpty(),
                   "repository contribution snapshot builds successfully");
+            check(!snapshot.changedFiles.isEmpty() &&
+                      snapshot.changedFiles.size() <= 8 &&
+                      std::all_of(
+                          snapshot.changedFiles.cbegin(),
+                          snapshot.changedFiles.cend(),
+                          [](const QString &path) {
+                              return !path.isEmpty() &&
+                                     !path.startsWith(QLatin1Char('/')) &&
+                                     !path.startsWith(QLatin1String("../"));
+                          }),
+                  "snapshot reports bounded safe paths changed by its head "
+                  "commit from the existing worker scan");
             check(repeated.complete &&
-                      repeated.compactPayload == snapshot.compactPayload,
-                  "repository contribution compact bytes are deterministic");
+                      repeated.compactPayload == snapshot.compactPayload &&
+                      repeated.changedFiles == snapshot.changedFiles,
+                  "repository contribution bytes and changed paths are "
+                  "deterministic");
 
             QStringList payloadKeys = snapshot.payload.keys();
             payloadKeys.sort();
@@ -6367,12 +6381,20 @@ int main(int argc, char *argv[])
         QStringList seen;
         forkmesh::BackgroundActivity::setListener(
             [&seen](quint64 id, const QString &kind, const QString &detail,
+                    forkmesh::ActionTelemetry::Execution execution,
                     bool started) {
-                seen.append(QStringLiteral("%1:%2:%3:%4")
+                const QString lane =
+                    execution == forkmesh::ActionTelemetry::Execution::Async
+                        ? QStringLiteral("async")
+                        : execution ==
+                                  forkmesh::ActionTelemetry::Execution::Worker
+                              ? QStringLiteral("worker")
+                              : QStringLiteral("ui");
+                seen.append(QStringLiteral("%1:%2:%3:%4:%5")
                                 .arg(started ? QStringLiteral("+")
                                              : QStringLiteral("-"))
                                 .arg(id)
-                                .arg(kind, detail));
+                                .arg(kind, detail, lane));
             });
         const quint64 first =
             forkmesh::BackgroundActivity::begin(QStringLiteral("git"),
@@ -6384,10 +6406,11 @@ int main(int argc, char *argv[])
         forkmesh::BackgroundActivity::end(first);
         forkmesh::BackgroundActivity::end(second);
         forkmesh::BackgroundActivity::end(0); // no-op guard for untracked work
-        check(seen == QStringList({QStringLiteral("+:%1:git:git log").arg(first),
-                                   QStringLiteral("+:%1:net:").arg(second),
-                                   QStringLiteral("-:%1::").arg(first),
-                                   QStringLiteral("-:%1::").arg(second)}),
+        check(seen == QStringList({
+                  QStringLiteral("+:%1:git:git log:async").arg(first),
+                  QStringLiteral("+:%1:net::async").arg(second),
+                  QStringLiteral("-:%1:::async").arg(first),
+                  QStringLiteral("-:%1:::async").arg(second)}),
               "every begin/end pair reaches the listener exactly once, in order");
 
         {
@@ -6407,29 +6430,28 @@ int main(int argc, char *argv[])
     }
 
     {
-        // Log outcome lines (adhoc #419): the ✓ / ✕ marker is what tells the user
-        // which work actually made it into the background strip, so the threshold
-        // it is derived from has to match the strip's own show delay.
+        // Log outcome lines (adhoc #419/#421): the ✓ / ✕ marker reflects the
+        // declared execution lane, never how long the operation happened to run.
         const QString ok = forkmesh::backgroundOkGlyph();
         const QString no = forkmesh::backgroundNotGlyph();
         check(forkmesh::backgroundOutcomeLine(QStringLiteral("git"), 1, 1400,
-                                              QStringLiteral("git log")) ==
+                                              QStringLiteral("git log"), true) ==
                   QStringLiteral("Background %1 git backgrounded (1.4s) - git log")
                       .arg(ok),
-              "slow work logs a checkmark, its duration and the caller's note");
+              "async work logs a checkmark, its duration and the caller's note");
         check(forkmesh::backgroundOutcomeLine(QStringLiteral("git"), 24, 61,
-                                              QString()) ==
-                  QStringLiteral("Background %1 git %2%3 not backgrounded "
+                                              QString(), true) ==
+                  QStringLiteral("Background %1 git %2%3 backgrounded "
                                  "(longest 61ms)")
-                      .arg(no)
+                      .arg(ok)
                       .arg(QChar(0x00D7))
                       .arg(24),
-              "a burst of too-fast tickets logs one red-x summary for the kind");
+              "a fast async burst remains correctly marked as backgrounded");
         check(forkmesh::backgroundOutcomeLine(
-                  QString(), 1, forkmesh::kBackgroundShowAfterMs, QString())
-                  .startsWith(QStringLiteral("Background %1 work").arg(ok)),
-              "work exactly at the show delay counts as backgrounded, and an "
-              "unnamed kind still reads as something");
+                  QString(), 1, 1, QString(), false)
+                  .startsWith(QStringLiteral("Background %1 work").arg(no)),
+              "declared GUI-thread work logs a red x even when it is fast, and "
+              "an unnamed kind still reads as something");
         check(forkmesh::backgroundElapsedText(-5) == QStringLiteral("0ms") &&
                   forkmesh::backgroundElapsedText(999) ==
                       QStringLiteral("999ms") &&

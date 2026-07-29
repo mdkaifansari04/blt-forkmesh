@@ -1,4 +1,5 @@
-const OFFICE_TASKS_PATH = "/api/world/office/marketing-tasks";
+const OFFICE_TASKS_PATH = "/api/tasks";
+const MARKETING_TASKS_PATH = "/api/world/office/marketing-tasks";
 // Mutations refresh immediately and opening the board refreshes after five
 // seconds, so a 60-second foreground poll keeps the wall current without
 // making three D1-backed requests a minute per visitor. If an assignee leaves
@@ -18,8 +19,8 @@ function text(value, limit = 160) {
     .slice(0, limit);
 }
 
-function escapeHTML(value) {
-  return text(value, 500)
+function escapeHTML(value, limit = 500) {
+  return text(value, limit)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -77,14 +78,60 @@ function normalizedTask(task) {
   const id = safeTaskId(task.id);
   const title = text(task.title);
   const assignee = text(task.assignee, 64).toLowerCase();
+  const assigneeKind = ["user", "unassigned", "claude", "codex"].includes(
+    task.assigneeKind,
+  )
+    ? task.assigneeKind
+    : "user";
   const status = ["active", "done"].includes(task.status)
     ? task.status
     : "idle";
-  if (!id || !title || !assignee) return null;
+  const kind = task.kind === "bid" ? "bid" : "task";
+  const bountyAmountSol =
+    kind === "bid" &&
+    /^(?:0|[1-9][0-9]{0,6})(?:\.[0-9]{1,9})?$/.test(
+      String(task.bountyRequest?.amountSol || ""),
+    )
+      ? String(task.bountyRequest.amountSol)
+      : "";
+  if (!id || !title || (assigneeKind === "user" && !assignee)) return null;
+  if (kind === "bid" && !bountyAmountSol) return null;
   return {
     id,
+    kind,
     title,
+    details: text(task.details, 4000),
+    createdBy: text(task.createdBy, 64).toLowerCase(),
+    bountyRequest:
+      kind === "bid"
+        ? {
+            currency: "SOL",
+            amountSol: bountyAmountSol,
+            status: "requested",
+          }
+        : null,
     assignee,
+    assigneeKind,
+    department: text(task.department, 64).toLowerCase() || "general",
+    team: text(task.team, 64).toLowerCase(),
+    destination: text(task.destination, 32).toLowerCase() || "department",
+    repository: text(task.repository, 201),
+    qa:
+      task.qa && typeof task.qa === "object"
+        ? {
+            status: ["passed", "failed"].includes(task.qa.status)
+              ? task.qa.status
+              : "unknown",
+            reviewer: text(task.qa.reviewer, 64).toLowerCase(),
+            reviewedAt: timestampMs(task.qa.reviewedAt),
+            requestedAt: timestampMs(task.qa.requestedAt),
+          }
+        : {
+            status: "unknown",
+            reviewer: "",
+            reviewedAt: 0,
+            requestedAt: 0,
+          },
     status,
     elapsedMs: Math.max(0, Number(task.elapsedMs) || 0),
     startedAt: timestampMs(task.startedAt),
@@ -166,6 +213,7 @@ export function createWorldOfficeTasksController({
   postJSON,
   getSession = () => null,
   toast = () => {},
+  onQaVerdict = async () => false,
   random = Math.random,
 }) {
   const panel = root.querySelector("[data-world-office-task-panel]");
@@ -183,6 +231,13 @@ export function createWorldOfficeTasksController({
   // The same board is mirrored into the Local controls "Work" tab so an
   // assignee can start and stop their own work without entering the Office.
   const workList = root.querySelector("[data-world-work-list]");
+  const organizationList = root.querySelector(
+    "[data-world-organization-task-list]",
+  );
+  const organizationHeading = root.querySelector(
+    "[data-world-organization-task-heading]",
+  );
+  const taskCount = root.querySelector("[data-world-task-count]");
   const workStatus = root.querySelector("[data-world-work-status]");
   const workTotal = root.querySelector("[data-world-work-total]");
   const workActive = root.querySelector("[data-world-work-active]");
@@ -207,6 +262,8 @@ export function createWorldOfficeTasksController({
   let attendanceDays = [];
   let proofs = [];
   let initiatives = [];
+  const announcedAgentTaskIds = new Set();
+  let agentTasksInitialized = false;
   let syncedAt = performance.now();
   let serverNowAtSync = Date.now();
   let lastRefreshAt = 0;
@@ -218,7 +275,13 @@ export function createWorldOfficeTasksController({
   let physicalTickBucket = -1;
 
   function ownTasks() {
-    return tasks.filter((task) => task.assignee === actor);
+    return tasks.filter(
+      (task) => task.assigneeKind === "user" && task.assignee === actor,
+    );
+  }
+
+  function marketingTasks() {
+    return tasks.filter((task) => task.department === "marketing");
   }
 
   function ownActiveTasks() {
@@ -293,7 +356,7 @@ export function createWorldOfficeTasksController({
       message: text(message, 80),
       actor,
       canManage,
-      tasks: tasks.map((task) => ({
+      tasks: marketingTasks().map((task) => ({
         id: task.id,
         title: task.title,
         assignee: task.assignee,
@@ -312,6 +375,25 @@ export function createWorldOfficeTasksController({
     selfWorkState(state, message);
   }
 
+  function announceAgentTasks() {
+    const activeAgentTasks = tasks.filter(
+      (task) =>
+        ["codex", "claude"].includes(task.assigneeKind) &&
+        task.status !== "done",
+    );
+    const unseen = activeAgentTasks.filter(
+      (task) => !announcedAgentTaskIds.has(task.id),
+    );
+    activeAgentTasks.forEach((task) => announcedAgentTaskIds.add(task.id));
+    const announcements = agentTasksInitialized
+      ? unseen.slice().reverse()
+      : unseen.slice(0, 1);
+    agentTasksInitialized = true;
+    announcements.forEach((task) => {
+      world.showAgentTaskBubble?.(task.assigneeKind, task.title);
+    });
+  }
+
   function checkinLabel(value) {
     if (value === "blocked") return "Blocked";
     if (value === "needs_help") return "Needs help";
@@ -320,18 +402,65 @@ export function createWorldOfficeTasksController({
   }
 
   function taskHTML(task) {
-    const own = task.assignee === actor;
+    const own = task.assigneeKind === "user" && task.assignee === actor;
     const activeTask = task.status === "active";
     const doneTask = task.status === "done";
+    const qaReady = doneTask || task.qa.requestedAt > 0;
+    const qaVerdict =
+      task.qa.status === "passed"
+        ? "pass"
+        : task.qa.status === "failed"
+          ? "fail"
+          : task.qa.reviewer
+            ? "unsure"
+            : "";
+    const qaLabel =
+      qaVerdict === "pass"
+        ? "QA passed"
+        : qaVerdict === "fail"
+          ? "QA failed"
+          : qaVerdict === "unsure"
+            ? "QA unsure"
+            : qaReady
+              ? "Ready for QA"
+              : "";
     const checkinState = checkinLabel(task.lastCheckin?.state);
+    const bid = task.kind === "bid";
+    const bidder = task.createdBy || task.assignee;
     return `
-      <li class="world-office-task" data-status="${doneTask ? "done" : activeTask ? "active" : "idle"}">
+      <li class="world-office-task" data-kind="${bid ? "bid" : "task"}" data-status="${doneTask ? "done" : activeTask ? "active" : "idle"}">
         <div class="world-office-task-copy">
           <span class="world-office-task-state" aria-hidden="true"></span>
           <div>
-            <strong>${escapeHTML(task.title)}</strong>
+            <strong>${
+              bid
+                ? '<span class="world-office-task-bid-badge">Bid</span>'
+                : ""
+            }${escapeHTML(task.title)}</strong>
+            ${
+              task.details
+                ? `<p class="world-office-task-details">${escapeHTML(
+                    task.details,
+                    1000,
+                  )}</p>`
+                : ""
+            }
             <small>
-              @${escapeHTML(task.assignee)}
+              ${escapeHTML(
+                bid
+                  ? `${task.bountyRequest.amountSol} SOL bounty requested · bidder @${bidder}`
+                  : task.assigneeKind === "user"
+                    ? `@${task.assignee}`
+                    : task.assigneeKind === "unassigned"
+                      ? "Unassigned"
+                      : task.assigneeKind === "codex"
+                        ? "Codex"
+                        : "Claude",
+              )}
+              · ${escapeHTML(task.department)}
+              ${task.team ? ` / ${escapeHTML(task.team)}` : ""}
+              ${qaLabel ? ` · ${escapeHTML(qaLabel)}` : ""}
+              ${task.qa.reviewer ? ` by @${escapeHTML(task.qa.reviewer)}` : ""}
               ${doneTask ? " · done" : ""}
               ${checkinState ? ` · last check-in: ${escapeHTML(checkinState)}` : ""}
             </small>
@@ -360,6 +489,24 @@ export function createWorldOfficeTasksController({
                   data-world-office-task-id="${task.id}"
                   ${busyTaskId === task.id ? "disabled" : ""}
                 >Done</button>`
+              : ""
+          }
+          ${
+            doneTask
+              ? `<span class="world-office-task-qa-actions" role="group" aria-label="QA verdict">
+                  ${["pass", "fail", "unsure"]
+                    .map(
+                      (verdict) => `<button
+                        type="button"
+                        class="world-office-task-qa-${verdict}"
+                        data-world-office-task-action="qa-${verdict}"
+                        data-world-office-task-id="${task.id}"
+                        aria-pressed="${qaVerdict === verdict}"
+                        ${busyTaskId === task.id ? "disabled" : ""}
+                      >${verdict[0].toUpperCase() + verdict.slice(1)}</button>`,
+                    )
+                    .join("")}
+                </span>`
               : ""
           }
           ${
@@ -417,10 +564,11 @@ export function createWorldOfficeTasksController({
       }
     }
     if (list) {
+      const marketing = marketingTasks();
       list.innerHTML = loading
         ? `<li class="world-office-task-empty">Loading marketing tasks…</li>`
-        : tasks.length
-          ? tasks.map(taskHTML).join("")
+        : marketing.length
+          ? marketing.map(taskHTML).join("")
           : `<li class="world-office-task-empty">No marketing tasks are assigned here yet.</li>`;
     }
     if (panel) {
@@ -431,8 +579,8 @@ export function createWorldOfficeTasksController({
     if (!loading) {
       setStatus(
         canManage
-          ? `${tasks.length} task${tasks.length === 1 ? "" : "s"} · assignment is limited to Marketing team members`
-          : tasks.length
+          ? `${marketingTasks().length} task${marketingTasks().length === 1 ? "" : "s"} · assignment is limited to Marketing team members`
+          : marketingTasks().length
             ? "Only tasks assigned to you are shown."
             : "No tasks are currently assigned to you.",
       );
@@ -459,6 +607,15 @@ export function createWorldOfficeTasksController({
 
   function renderWorkPane() {
     const own = updateWorkStats();
+    if (taskCount) {
+      taskCount.textContent = String(tasks.length);
+      taskCount.hidden = !authorized || tasks.length < 1;
+    }
+    if (organizationHeading) {
+      organizationHeading.textContent = canManage
+        ? `All organization tasks · ${tasks.length} · grouped by department`
+        : `Organization tasks · ${tasks.length} · private to the organization`;
+    }
     if (workList) {
       workList.innerHTML = loading
         ? `<li class="world-office-task-empty">Loading your assigned work\u2026</li>`
@@ -468,6 +625,17 @@ export function createWorldOfficeTasksController({
               authorized
                 ? "Nothing is assigned to you right now."
                 : "Sign in to load the work assigned to you."
+            }</li>`;
+    }
+    if (organizationList) {
+      organizationList.innerHTML = loading
+        ? `<li class="world-office-task-empty">Loading organization tasks…</li>`
+        : tasks.length
+          ? tasks.map(taskHTML).join("")
+          : `<li class="world-office-task-empty">${
+              authorized
+                ? "No organization tasks have been created yet."
+                : "Organization membership is required."
             }</li>`;
     }
     if (workStatus && !loading) {
@@ -611,36 +779,42 @@ export function createWorldOfficeTasksController({
         render();
       }
       try {
-        const payload = await fetchJSON(OFFICE_TASKS_PATH, {
-          cache: "no-store",
-          timeout: 8000,
-        });
+        const [payload, marketingPayload] = await Promise.all([
+          fetchJSON(OFFICE_TASKS_PATH, {
+            cache: "no-store",
+            timeout: 8000,
+          }),
+          fetchJSON(MARKETING_TASKS_PATH, {
+            cache: "no-store",
+            timeout: 8000,
+          }).catch(() => ({})),
+        ]);
         actor = text(payload?.actor, 64).toLowerCase();
         canManage = payload?.canManage === true;
         authorized = payload?.authorized !== false;
-        assignable = Array.isArray(payload?.members)
-          ? payload.members
+        assignable = Array.isArray(marketingPayload?.members)
+          ? marketingPayload.members
               .map((name) => text(name, 64).toLowerCase())
               .filter(Boolean)
               .slice(0, 1000)
           : [];
-        marketingMembers = Array.isArray(payload?.marketingMembers)
-          ? payload.marketingMembers
+        marketingMembers = Array.isArray(marketingPayload?.marketingMembers)
+          ? marketingPayload.marketingMembers
               .map((name) => text(name, 64).toLowerCase())
               .filter(Boolean)
               .slice(0, 100)
           : [];
-        attendanceDays = Array.isArray(payload?.attendanceDays)
-          ? payload.attendanceDays.slice(-7)
+        attendanceDays = Array.isArray(marketingPayload?.attendanceDays)
+          ? marketingPayload.attendanceDays.slice(-7)
           : [];
-        proofs = Array.isArray(payload?.proofs)
-          ? payload.proofs
+        proofs = Array.isArray(marketingPayload?.proofs)
+          ? marketingPayload.proofs
               .map(normalizedProof)
               .filter(Boolean)
               .slice(0, 5000)
           : [];
-        initiatives = Array.isArray(payload?.initiatives)
-          ? payload.initiatives
+        initiatives = Array.isArray(marketingPayload?.initiatives)
+          ? marketingPayload.initiatives
               .map(normalizedInitiative)
               .filter(Boolean)
               .slice(0, 250)
@@ -648,6 +822,7 @@ export function createWorldOfficeTasksController({
         tasks = Array.isArray(payload?.tasks)
           ? payload.tasks.map(normalizedTask).filter(Boolean).slice(0, 100)
           : [];
+        announceAgentTasks();
         syncedAt = performance.now();
         serverNowAtSync = timestampMs(payload?.serverNow) || Date.now();
         lastRefreshAt = Date.now();
@@ -711,7 +886,10 @@ export function createWorldOfficeTasksController({
         setStatus("Enter a task and an assignee.", "error");
         return;
       }
-      const saved = await mutate(OFFICE_TASKS_PATH, { title, assignee });
+      const saved = await mutate(
+        MARKETING_TASKS_PATH,
+        { title, assignee },
+      );
       if (saved) {
         form.reset();
         toast("Marketing task added to the Office wall.");
@@ -755,7 +933,30 @@ export function createWorldOfficeTasksController({
     if (!actionButton) return;
     const action = actionButton.dataset.worldOfficeTaskAction;
     const id = safeTaskId(actionButton.dataset.worldOfficeTaskId);
-    if (!id || !["start", "stop", "complete", "delete"].includes(action)) {
+    if (
+      !id ||
+      ![
+        "start", "stop", "complete", "delete",
+        "qa-pass", "qa-fail", "qa-unsure",
+      ].includes(action)
+    ) {
+      return;
+    }
+    if (action.startsWith("qa-")) {
+      const verdict = action.slice(3);
+      const task = tasks.find((item) => item.id === id);
+      if (!task || task.status !== "done") return;
+      busyTaskId = id;
+      render();
+      let saved = false;
+      try {
+        saved = await onQaVerdict({ task, verdict });
+        if (saved) await refresh({ quiet: true });
+      } finally {
+        busyTaskId = "";
+        render();
+      }
+      if (saved) toast(`QA verdict saved: ${verdict}.`);
       return;
     }
     if (
@@ -779,7 +980,7 @@ export function createWorldOfficeTasksController({
           : action === "stop"
             ? "Task timer stopped."
             : action === "complete"
-              ? "Task marked done."
+              ? "Task marked done and ready for QA."
               : "Task deleted.",
       );
     }
@@ -813,7 +1014,7 @@ export function createWorldOfficeTasksController({
         120,
       );
       const saved = await mutate(
-        `${OFFICE_TASKS_PATH}/proofs`,
+        `${MARKETING_TASKS_PATH}/proofs`,
         { url, label },
       );
       if (saved) toast("Proof of work added to your Marketing desk.");
@@ -832,7 +1033,10 @@ export function createWorldOfficeTasksController({
       const entered = window.prompt(`New task for @${assignee}:`, "");
       const title = text(entered);
       if (!title) return false;
-      const saved = await mutate(OFFICE_TASKS_PATH, { title, assignee });
+      const saved = await mutate(
+        MARKETING_TASKS_PATH,
+        { title, assignee },
+      );
       if (saved) toast("Marketing task added to the physical wall.");
       return saved;
     }
@@ -952,6 +1156,17 @@ export function createWorldOfficeTasksController({
     return true;
   }
 
+  function refreshNow() {
+    if (!getSession()?.sessionToken) return Promise.resolve(false);
+    monitoring = true;
+    if (!tickTimer) {
+      tickTimer = window.setInterval(updateElapsedLabels, OFFICE_TASKS_TICK_MS);
+    }
+    const result = refresh({ quiet: tasks.length > 0 });
+    schedulePoll();
+    return result;
+  }
+
   function setRecentIssues(items = []) {
     const seen = new Set();
     recentIssues = (Array.isArray(items) ? items : [])
@@ -1045,6 +1260,7 @@ export function createWorldOfficeTasksController({
     physicalAction,
     prime,
     refresh,
+    refreshNow,
     setActive,
     setPersonalView,
     setRecentIssues,

@@ -12,7 +12,7 @@
 class QPainter;
 
 // The kind of annotation the user is drawing on a captured screenshot.
-enum class MarkupTool { Pencil, Rect, Ellipse, Line, Arrow, Text };
+enum class MarkupTool { Pencil, Rect, Ellipse, Line, Arrow, Text, Move };
 
 // A single annotation: a freehand stroke (a list of points), a shape outline
 // (a rectangle/ellipse bounded by rect, or a directional line/arrow running
@@ -27,6 +27,7 @@ struct MarkupOp {
     QPoint p1, p2; // used when shapeType is Line or Arrow (p2 is the arrow's head)
     QPoint textPos; // used when kind == Text (baseline origin)
     QString text; // used when kind == Text
+    int textPointSize = 18; // used when kind == Text
 };
 
 // The drawable viewport over the screenshot: renders the base image and lets the
@@ -40,6 +41,7 @@ public:
 
     void setTool(MarkupTool tool);
     void setColor(const QColor &color);
+    void setTextPointSize(int pointSize);
     void undo();
 
     // Composite all markup onto the base image and return the flattened result.
@@ -56,12 +58,21 @@ protected:
 private:
     static void renderOp(QPainter &painter, const MarkupOp &op);
     static void renderOps(QPainter &painter, const QVector<MarkupOp> &ops);
+    static QRect textBounds(const MarkupOp &op);
+    int textAt(const QPoint &position) const;
+    void pushUndoState();
 
     QImage m_base;
     QVector<MarkupOp> m_ops;
+    QVector<QVector<MarkupOp>> m_undoStack;
     MarkupOp m_current;
     bool m_drawing = false;
     QPoint m_dragOrigin;
     MarkupTool m_tool = MarkupTool::Pencil;
     QColor m_color;
+    int m_textPointSize = 18;
+    int m_movingTextIndex = -1;
+    int m_selectedTextIndex = -1;
+    QPoint m_textDragOffset;
+    bool m_moveChanged = false;
 };

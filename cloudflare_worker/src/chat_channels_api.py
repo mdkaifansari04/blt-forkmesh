@@ -197,7 +197,24 @@ async def _list_channels(runtime, account_bi, actor, is_admin):
             and not bool(int(row.get("joined") or 0))
         ):
             continue
-        channels.append(_channel_payload(row, record, is_admin))
+        payload = _channel_payload(row, record, is_admin)
+        if _visibility(record) == "private":
+            member_rows = await runtime.d1_all(
+                "SELECT data,joined_at FROM chat_channel_members "
+                "WHERE channel_id=? ORDER BY joined_at,member_bi",
+                str(row.get("channel_id") or ""),
+            )
+            members = []
+            creator = str((record or {}).get("createdBy") or "").strip().lower()
+            if creator:
+                members.append(creator)
+            for member_row in member_rows:
+                member = await _member_payload(runtime, member_row)
+                username = member["username"]
+                if username and username not in members:
+                    members.append(username)
+            payload["members"] = members
+        channels.append(payload)
     return _response(runtime, {"channels": channels})
 
 

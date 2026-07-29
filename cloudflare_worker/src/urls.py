@@ -152,6 +152,8 @@ ORG_MEMBERS_RE = re.compile(r"^/api/orgs/([^/]+)/members$")
 ORG_TEAMS_RE = re.compile(r"^/api/orgs/([^/]+)/teams$")
 ORG_TEAM_MEMBERS_RE = re.compile(r"^/api/orgs/([^/]+)/teams/([^/]+)/members$")
 ORG_REPOS_RE = re.compile(r"^/api/orgs/([^/]+)/repos$")
+ORG_BOT_TOKENS_RE = re.compile(r"^/api/orgs/([^/]+)/bot-tokens$")
+BOT_SESSION_RE = re.compile(r"^/api/bot/session$")
 # Organization-only, non-custodial succession. The optional action is parsed by
 # the isolated API module; the general ORG_RE cannot swallow this subresource.
 ORG_SUCCESSION_RE = re.compile(
