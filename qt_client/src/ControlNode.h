@@ -125,6 +125,21 @@ struct HostDiskUsage {
     bool complete = false;         // the end sentinel arrived
 };
 
+// Capacity for one mounted filesystem in the host size-map navigator. These
+// records power the compact, clickable mount maps beside the folder browser.
+struct HostMountUsage {
+    QString path;                 // absolute mount point, e.g. "/" or "/data"
+    qint64 totalBytes = 0;
+    qint64 usedBytes = 0;
+    qint64 availableBytes = 0;
+};
+
+struct HostMountUsageList {
+    QList<HostMountUsage> mounts;
+    QString error;
+    bool complete = false;
+};
+
 // Collapse a browsed remote path to a canonical absolute POSIX path (no "."
 // or ".." components, no duplicate or trailing slashes). Returns an empty
 // string when the input is not usable as a remote path at all.
@@ -137,6 +152,11 @@ QString normalizeRemoteDiskPath(const QString &path);
 // remote shell or this parser as syntax.
 QString buildHostDiskUsageCommand(const QString &path,
                                   QString *error = nullptr);
+
+// Build and parse the read-only filesystem-capacity query shown as compact
+// mount maps on the right side of the host folder browser.
+QString buildHostMountUsageCommand();
+HostMountUsageList parseHostMountUsage(const QByteArray &output);
 
 // Parse the sentinel-framed listing produced by buildHostDiskUsageCommand().
 // Login banners and other noise around the sentinels are ignored, and entries
