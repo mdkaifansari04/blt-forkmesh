@@ -40,6 +40,7 @@ QJsonObject AgentSession::toJson() const
     obj["model"] = model;
     obj["mode"] = mode;
     obj["createPr"] = createPr;
+    obj["yolo"] = yolo;
     obj["prNumber"] = prNumber;
     obj["status"] = status;
     obj["branchName"] = branchName;
@@ -79,6 +80,7 @@ AgentSession AgentSession::fromJson(const QJsonObject &obj)
     session.model = obj.value("model").toString();
     session.mode = obj.value("mode").toString();
     session.createPr = obj.value("createPr").toBool();
+    session.yolo = obj.value("yolo").toBool();
     session.prNumber = obj.value("prNumber").toInt();
     session.status = obj.value("status").toString(AgentStatus::Queued);
     session.branchName = obj.value("branchName").toString();

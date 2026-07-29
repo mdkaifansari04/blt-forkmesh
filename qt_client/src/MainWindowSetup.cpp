@@ -1562,8 +1562,13 @@ void MainWindow::sendNodeHeartbeat()
         // heartbeat reply and flags when it grew since the last beat. Only then
         // do we refresh the display (which may fire the opt-in balance-change
         // alert). Other refreshes happen on startup / address changes.
-        if (resp.value(QStringLiteral("balanceIncreased")).toBool())
+        // (The display itself is otherwise refreshed only on hover — see
+        // refreshNavSolanaBalance — so this forced query is what still lets the
+        // opt-in balance-change alert fire without the user pointing at it.)
+        if (resp.value(QStringLiteral("balanceIncreased")).toBool()) {
             updateNavSolanaBalance();
+            refreshNavSolanaBalance(true);
+        }
         // A user on forkmesh.com is claiming this node (adhoc #53): the reply
         // carries the confirmation code, which is shown on this machine only.
         // Typing it into the website completes the link. Guard on the code so

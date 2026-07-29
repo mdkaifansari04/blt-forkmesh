@@ -183,7 +183,12 @@ const WORLD_NOTIFICATION_POLL_MS = 60 * 1000;
 const MIRROR_STATUS_POLL_MS = 5 * 60 * 1000;
 const MIRROR_ACTIONS_POLL_MS = 20 * 1000;
 const WORLD_EVENT_POLL_MS = 3 * 60 * 1000;
-const WORLD_REWARD_POLL_MS = 5 * 60 * 1000;
+// The treasury balance is a public Solana RPC round trip per view, so it is
+// not on a timer at all: the bootstrap seeds the board and hovering the SOL
+// sign refreshes it. Everything in between is answered from the cached copy
+// the board is already showing, and repeated hovers are throttled.
+const WORLD_REWARD_CACHE_MS = 30 * 60 * 1000;
+const WORLD_REWARD_HOVER_MS = 60 * 1000;
 const WORLD_MEDIA_PLAYBACK_POLL_MS = 15 * 1000;
 const WORLD_SOCKET_PING_MS = 40 * 1000;
 // One broadcast wave per pose; the local arm still replays on every click.
@@ -4876,7 +4881,8 @@ class ForkMeshWorld extends HTMLElement {
     // treating every reconnect like a new arrival used to snap signed-in
     // visitors back to the entrance and looked exactly like a page refresh.
     this.initialPresenceWelcomePending = true;
-    this.rewardTimer = 0;
+    this.statusBoardTimer = 0;
+    this.rewardHoverRefreshedAt = 0;
     this.mirrorTimer = 0;
     this.repositoryImportTimer = 0;
     this.mirrorPushRefreshTimer = 0;
@@ -5816,6 +5822,9 @@ class ForkMeshWorld extends HTMLElement {
           window.open("/desktop", "_blank", "noopener,noreferrer");
           this.toast("Opening the ForkMesh node download page.");
         },
+        onRewardBoardHover: () => {
+          void this.refreshRewardStateOnHover();
+        },
         onSwingRide: (state) => this.handleSwingRide(state),
         onCameraMode: (state) => this.handleWorldCameraMode(state),
         onStartHereSelect: ({ completed = 0, total = 0 } = {}) => {
@@ -6016,7 +6025,7 @@ class ForkMeshWorld extends HTMLElement {
       this.updateMetrics();
       this.updateDistances();
       this.startActivityTicker();
-      this.startRewardPolling();
+      this.startStatusBoardPolling();
       this.startMirrorPolling();
       this.startMirrorActionsPolling();
       this.startRepositoryImportPolling();
@@ -10622,14 +10631,14 @@ class ForkMeshWorld extends HTMLElement {
       this.fetchJSON("/api/accounts/central-fund", {
         auth: false,
         timeout: 5000,
-        maxAge: force ? 0 : WORLD_REWARD_POLL_MS,
+        maxAge: force ? 0 : WORLD_REWARD_CACHE_MS,
         backoff: true,
         staleIfError: true,
       }),
       hasSession
         ? this.fetchJSON("/api/rewards/pending", {
             timeout: 5000,
-            maxAge: force ? 0 : WORLD_REWARD_POLL_MS,
+            maxAge: force ? 0 : WORLD_REWARD_CACHE_MS,
             backoff: true,
             staleIfError: true,
           })
@@ -10741,23 +10750,37 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  startRewardPolling() {
-    window.clearInterval(this.rewardTimer);
-    this.rewardTimer = window.setInterval(async () => {
+  // Hovering the SOL treasury board is the refresh gesture for the reward
+  // pool: the scene reports the pointer resting on the sign, and only then is
+  // a fresh balance fetched. Repeated hovers inside WORLD_REWARD_HOVER_MS keep
+  // the cached copy that is already painted on the board.
+  async refreshRewardStateOnHover() {
+    if (this.destroyed) return;
+    const now = Date.now();
+    if (now - this.rewardHoverRefreshedAt < WORLD_REWARD_HOVER_MS) return;
+    this.rewardHoverRefreshedAt = now;
+    try {
+      await this.refreshRewardState({ force: true });
+      if (
+        this.$("[data-world-detail]")?.dataset.open === "true" &&
+        this.$("#world-detail-title")?.textContent?.includes("reward")
+      ) {
+        this.openLandmark("fountain");
+      }
+    } catch (_) {}
+  }
+
+  // The system status board reads the Worker's own cached status view rather
+  // than a chain RPC, so it keeps its timer; the treasury balance beside it
+  // does not (see refreshRewardStateOnHover).
+  startStatusBoardPolling() {
+    window.clearInterval(this.statusBoardTimer);
+    this.statusBoardTimer = window.setInterval(async () => {
       if (this.destroyed || document.hidden) return;
       try {
-        await Promise.all([
-          this.refreshRewardState(),
-          this.refreshSystemStatusBoard(),
-        ]);
-        if (
-          this.$("[data-world-detail]")?.dataset.open === "true" &&
-          this.$("#world-detail-title")?.textContent?.includes("reward")
-        ) {
-          this.openLandmark("fountain");
-        }
+        await this.refreshSystemStatusBoard();
       } catch (_) {}
-    }, WORLD_REWARD_POLL_MS);
+    }, WORLD_STATUS_POLL_MS);
   }
 
   async refreshSystemStatusBoard() {
@@ -20367,6 +20390,8 @@ class ForkMeshWorld extends HTMLElement {
   selectSettingsTab(tab) {
     const selected = ["view", "work", "security"].includes(tab) ? tab : "view";
     this.settingsTab = selected;
+    const panel = this.$("[data-world-settings]");
+    if (panel) panel.dataset.activeTab = selected;
     this.$$("[data-world-settings-tab]").forEach((button) => {
       button.setAttribute(
         "aria-selected",
@@ -20573,7 +20598,7 @@ class ForkMeshWorld extends HTMLElement {
   // hand the composer a starting message so a visitor talking to ForkBot can
   // start typing immediately. Uses postMessage rather than a query param
   // because the terminal iframe is loaded once and kept alive across clicks.
-  openChatTerminal(prefillText = "") {
+  openChatTerminal(prefillText = "", attachment = null) {
     const details = this.$("[data-world-chat-terminal]");
     const frame = this.$("[data-world-chat-terminal-frame]");
     if (!details || !frame) return;
@@ -20586,7 +20611,19 @@ class ForkMeshWorld extends HTMLElement {
     details.open = true;
     const sendPrefill = () => {
       frame.contentWindow?.postMessage(
-        { type: "forkmesh:chat-prefill", text: prefillText },
+        {
+          type: "forkmesh:chat-prefill",
+          text: prefillText,
+          attachment:
+            attachment && typeof attachment === "object"
+              ? {
+                  dataUrl: String(attachment.dataUrl || ""),
+                  fileName: String(attachment.fileName || ""),
+                  fileMime: String(attachment.fileMime || ""),
+                  altText: String(attachment.altText || ""),
+                }
+              : null,
+        },
         location.origin,
       );
     };
@@ -21472,6 +21509,15 @@ class ForkMeshWorld extends HTMLElement {
           <button type="button" class="world-shot-undo" data-shot-undo>Undo</button>
         </div>
         <div class="world-shot-stage"></div>
+        <label class="world-shot-alt">
+          <span>Alt text</span>
+          <input
+            type="text"
+            data-shot-alt
+            maxlength="500"
+            value="Annotated screenshot of the current ForkMesh World view."
+          >
+        </label>
         <footer class="world-shot-footer">
           <button type="button" class="world-shot-ghost" data-shot-close>Discard</button>
           <button type="button" class="world-shot-ghost" data-shot-copy>Copy to Clipboard</button>
@@ -21480,6 +21526,7 @@ class ForkMeshWorld extends HTMLElement {
             <button type="button" data-shot-share="twitter" title="Copy the screenshot, then open X / Twitter to share it">X / Twitter</button>
             <button type="button" data-shot-share="reddit" title="Copy the screenshot, then open Reddit to share it">Reddit</button>
           </div>
+          <button type="button" class="world-shot-primary" data-shot-compose>Add to chat / prompt</button>
           <button type="button" class="world-shot-primary" data-shot-download>Download PNG</button>
         </footer>
       </div>
@@ -21709,6 +21756,50 @@ class ForkMeshWorld extends HTMLElement {
         copyCanvasToClipboard()
           .then(() => this.toast("Annotated screenshot copied to clipboard."))
           .catch((error) => this.toast(error.message));
+        return;
+      }
+      const composeButton = event.target.closest("[data-shot-compose]");
+      if (composeButton) {
+        composeButton.disabled = true;
+        const altText = String(
+          modal.querySelector("[data-shot-alt]")?.value || "",
+        )
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 500);
+        void canvasBlob()
+          .then((blob) =>
+            this.compactQaFailureScreenshot(
+              new File([blob], "forkmesh-world-screenshot.png", {
+                type: "image/png",
+              }),
+            ),
+          )
+          .then((dataUrl) => {
+            const stamp = new Date()
+              .toISOString()
+              .replace(/[:T]/g, "-")
+              .slice(0, 19);
+            this.closeScreenshotUI();
+            this.openChatTerminal(altText, {
+              dataUrl,
+              fileName: `forkmesh-world-${stamp}.webp`,
+              fileMime: "image/webp",
+              altText,
+            });
+            this.toast(
+              "Screenshot attached. Choose chat, issue, task, or agent, then send.",
+            );
+          })
+          .catch((error) => {
+            composeButton.disabled = false;
+            this.toast(
+              String(
+                error?.message ||
+                  "The screenshot could not be added to the composer.",
+              ),
+            );
+          });
         return;
       }
       const shareButton = event.target.closest("[data-shot-share]");
@@ -24323,7 +24414,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.clockTimer);
     window.clearInterval(this.distanceTimer);
     window.clearInterval(this.pingTimer);
-    window.clearInterval(this.rewardTimer);
+    window.clearInterval(this.statusBoardTimer);
     window.clearInterval(this.mirrorTimer);
     window.clearInterval(this.mirrorActionsTimer);
     window.clearInterval(this.repositoryImportTimer);

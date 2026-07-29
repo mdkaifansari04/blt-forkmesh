@@ -6,6 +6,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
+SCENE = (ROOT / "public" / "world" / "world-scene.js").read_text(
+    encoding="utf-8"
+)
 
 
 def _between(start, end):
@@ -43,7 +46,7 @@ def test_infrastructure_display_adds_no_durable_object_polling():
     assert APP.count('this.fetchJSON("/api/world/context"') == 1
     assert APP.count('this.fetchJSON("/api/network/overview"') == 1
     for method in (
-        "startRewardPolling",
+        "startStatusBoardPolling",
         "startEventPolling",
         "startNotificationPolling",
         "startMediaPlaybackPolling",
@@ -51,3 +54,22 @@ def test_infrastructure_display_adds_no_durable_object_polling():
         section = _between(f"  {method}(", "\n  }")
         assert "/api/world/context" not in section
         assert "/api/network/overview" not in section
+
+
+def test_treasury_balance_refreshes_on_hover_instead_of_on_a_timer():
+    # Every /api/accounts/central-fund view costs a public Solana RPC round
+    # trip, so the SOL board keeps the balance it is already painted with
+    # until somebody points at it. No timer may fetch it.
+    assert "WORLD_REWARD_POLL_MS" not in APP
+    board = _between("  startStatusBoardPolling() {", "\n  }")
+    assert "this.refreshSystemStatusBoard()" in board
+    assert "refreshRewardState" not in board
+    hover = _between("  async refreshRewardStateOnHover() {", "\n  }")
+    assert "now - this.rewardHoverRefreshedAt < WORLD_REWARD_HOVER_MS" in hover
+    assert "this.refreshRewardState({ force: true })" in hover
+    assert "onRewardBoardHover: () =>" in APP
+    # The hover itself is reported by the scene, from the treasury sign only.
+    assert "onRewardBoardHover = () => {}," in SCENE
+    assert "function updateRewardBoardHover(event, now) {" in SCENE
+    assert 'landmarkObjects.get("fountain")?.userData?.treasurySign' in SCENE
+    assert "if (hovered) onRewardBoardHover();" in SCENE

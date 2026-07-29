@@ -92,21 +92,6 @@ void MainWindow::startIssueInIde(int issueNumber, const QString &title,
                          false);
 }
 
-// The repo header's action buttons (Notify/Fork/Mirror/Source/Open) operate on
-// the repository as a whole. On the Agents tab (m_repoDetailStack index 3) they
-// have no bearing and just crowd the tab bar, so hide them there and show them
-// on every other tab. Wired to m_repoDetailStack::currentChanged so it tracks
-// tab switches however they happen (click, programmatic jump, Back/Forward).
-void MainWindow::updateRepoActionButtonsVisibility(int stackIndex)
-{
-    const bool onAgentsTab = stackIndex == 3;
-    for (QPushButton *b : {m_notifyButton, m_forkButton, m_mirrorButton,
-                           m_sourceButton, m_repoOpenButton}) {
-        if (b)
-            b->setVisible(!onAgentsTab);
-    }
-}
-
 // Show/hide the issue-detail "run in IDE" buttons based on the toggle + whether
 // a live extension is detected. Called whenever an issue is rendered.
 void MainWindow::updateIssueIdeButtons()
@@ -8352,13 +8337,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     // every such move is a step the arrows can return to. Debounced and guarded
     // against replays, so it coalesces a repo-open's tab churn into one entry.
     connect(m_repoDetailStack, &QStackedWidget::currentChanged, this,
-            [this](int index) {
-                scheduleNavRecord();
-                // The repo action buttons (Notify/Fork/Mirror/Source/Open) act on
-                // the repository itself and are irrelevant on the Agents tab
-                // (index 3), where they crowd the tab bar — hide them there.
-                updateRepoActionButtonsVisibility(index);
-            });
+            [this](int) { scheduleNavRecord(); });
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         ensureRepoDetailTabBuilt(id);
         m_repoDetailStack->setCurrentIndex(id);
@@ -8551,11 +8530,17 @@ void MainWindow::updateRepoActivityRail()
     const bool onChanges =
         onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
+    const bool onAgents =
+        onHome && m_repoDetailStack && m_repoDetailStack->currentIndex() == 3;
     // Git is its own activity-rail destination. Hide every Code/repository
     // header above the source-control workspace instead of leaving several
-    // rows of unrelated repository navigation on screen.
+    // rows of unrelated repository navigation on screen. The Agents tab gets
+    // the same treatment for the repository band: the session list is its own
+    // workspace, and the repo switcher, repo actions and Code/Issues/PRs… tabs
+    // only pushed it down the page. The activity rail's Code/Git entries stay
+    // the way back out of both.
     if (m_repoDetailChrome)
-        m_repoDetailChrome->setVisible(!onChanges);
+        m_repoDetailChrome->setVisible(!onChanges && !onAgents);
     if (m_repoFilesModeBar)
         m_repoFilesModeBar->setVisible(!onChanges);
     if (m_repoOverviewChrome)
@@ -8565,9 +8550,7 @@ void MainWindow::updateRepoActivityRail()
     m_railCodeButton->setChecked(onCode && !onChanges);
     m_railGitButton->setChecked(onChanges);
     if (m_agentsNavButton)
-        m_agentsNavButton->setChecked(
-            onHome && m_repoDetailStack &&
-            m_repoDetailStack->currentIndex() == 3);
+        m_agentsNavButton->setChecked(onAgents);
 }
 
 

@@ -69,6 +69,29 @@ def test_repository_and_office_paths_share_the_continuous_grass():
     assert "for (let x = -5.4; x <= 5.4; x += 1.2)" not in scene
 
 
+def test_repository_and_leaderboard_districts_share_textured_flush_paths():
+    scene = source()
+    for contract in (
+        "const WORLD_PATH_WIDTH = OFFICE_BRIDGE_WIDTH;",
+        "const WORLD_PATH_HEIGHT = 0.08;",
+        "const WORLD_PATH_SURFACE_Y = 0.105;",
+        "function createDistrictGroundCircle(THREE, kind)",
+        "`forkmesh-${kind}-textured-ground`",
+        'createDistrictGroundCircle(THREE, "repositories")',
+        'createDistrictGroundCircle(THREE, "leaderboards")',
+        "repositoryConnectionLength,\n      WORLD_PATH_HEIGHT,\n      WORLD_PATH_WIDTH,",
+        "leaderboardConnectionLength,\n      WORLD_PATH_HEIGHT,\n      WORLD_PATH_WIDTH,",
+        "repositoryPromenade.position.y = WORLD_PATH_CENTER_Y;",
+        "leaderboardPromenade.position.y = WORLD_PATH_CENTER_Y;",
+        'importKiosk.position.set(0, 0, 0);',
+    ):
+        assert contract in scene
+    assert "new THREE.BoxGeometry(repositoryConnectionLength, 0.08, 7.2)" not in scene
+    assert "new THREE.BoxGeometry(leaderboardConnectionLength, 0.08, 7.2)" not in scene
+    assert "guide.position.set(0, 0.15, z)" not in scene
+    assert "beacon.position.set(x, 0.72, z)" not in scene
+
+
 def test_continuous_visible_foundation_drives_walkability():
     scene = source()
     for contract in (
