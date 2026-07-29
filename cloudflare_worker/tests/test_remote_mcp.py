@@ -5,12 +5,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
+WRANGLER = (ROOT / "wrangler.toml").read_text(encoding="utf-8")
 DASHBOARD = (
     ROOT / "public" / "dashboard" / "js" / "04-account.js"
 ).read_text(encoding="utf-8")
 
 
 def test_remote_mcp_is_routed_and_requires_org_bot_authentication():
+    assert '"/mcp"' in WRANGLER
+    assert '"/mcp/"' in WRANGLER
     assert 'url.path in ("/mcp", "/mcp/")' in ENTRY
     assert "return await remote_mcp_handler(self.env, request)" in ENTRY
     handler = ENTRY[

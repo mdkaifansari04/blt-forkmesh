@@ -29,6 +29,8 @@ run_worker_first = [
   # static assets, APIs, and realtime chat/presence.
   "/",
   "/health",
+  "/mcp",
+  "/mcp/",
   "/simulate-sentry-error",
   "/admin-*",
   "/dashboard",
