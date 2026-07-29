@@ -9929,6 +9929,47 @@ QString MainWindow::composerAgentStrength() const
         .toLower();
 }
 
+// Authenticate one organization-task write. A desktop that signed in with a
+// password holds an account session token; the ordinary launch path is
+// authenticateSilently(), which proves this install owns the account's key and
+// produces no token at all — so without the signed fallback the Task toggle
+// would silently do nothing for most users. `resource` is the task id for a
+// proof that names one (empty for the collection). Returns false when this node
+// can neither present a session nor sign for the account.
+bool MainWindow::authenticateOrgTaskRequest(QUrl &url, QNetworkRequest &request,
+                                            const QString &proofPrefix,
+                                            const QString &resource) const
+{
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    if (!m_accountSessionToken.trimmed().isEmpty()) {
+        request.setUrl(url);
+        request.setRawHeader("Authorization",
+                             QByteArrayLiteral("Bearer ") +
+                                 m_accountSessionToken.toUtf8());
+        return true;
+    }
+    const QString node = accountOwner().trimmed().toLower();
+    if (node.isEmpty() || !hasOwnerSigningCapability(node))
+        return false;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    // Must match _org_task_signed_session's canonical string byte for byte.
+    QString canonical = proofPrefix + QLatin1Char('\n') + node + QLatin1Char('\n');
+    if (!resource.isEmpty())
+        canonical += resource + QLatin1Char('\n');
+    canonical += ts;
+    const QString sig = m_profileIdentity.signData(canonical.toUtf8());
+    if (sig.isEmpty())
+        return false;
+    QUrlQuery query(url);
+    query.addQueryItem(QStringLiteral("node"), node);
+    query.addQueryItem(QStringLiteral("ts"), ts);
+    query.addQueryItem(QStringLiteral("sig"), sig);
+    url.setQuery(query);
+    request.setUrl(url);
+    return true;
+}
+
 void MainWindow::recordOrgTaskFields(int sessionId, const QString &taskId,
                                      const QString &finishedByBot)
 {
@@ -9949,10 +9990,7 @@ void MainWindow::openOrgTaskForSession(const AgentSession &session)
 {
     if (!session.orgTask || session.id <= 0 || !session.orgTaskId.isEmpty())
         return;
-    // The task board is an account-scoped relay surface, so it needs a signed-in
-    // account session. Without one the run is simply local-only; that is not an
-    // error worth interrupting the prompt for.
-    if (!m_networkAccess || m_accountSessionToken.trimmed().isEmpty())
+    if (!m_networkAccess)
         return;
 
     // Bot-assigned tasks live under the agent destination, which requires the
@@ -9973,12 +10011,11 @@ void MainWindow::openOrgTaskForSession(const AgentSession &session)
     url.setPath(QStringLiteral("/api/tasks"));
     url.setQuery(QString());
     url.setFragment(QString());
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader,
-                      QStringLiteral("application/json"));
-    request.setRawHeader("Authorization",
-                         QByteArrayLiteral("Bearer ") +
-                             m_accountSessionToken.toUtf8());
+    QNetworkRequest request;
+    // No account session and no signing key: the run is simply local-only,
+    // which is not an error worth interrupting the prompt for.
+    if (!authenticateOrgTaskRequest(url, request, kOrgTaskOpenProof, QString()))
+        return;
     const QJsonObject body{
         {QStringLiteral("title"), session.issueTitle},
         {QStringLiteral("details"), details},
@@ -10037,7 +10074,7 @@ void MainWindow::completeOrgTaskForSession(int sessionId)
     if (s->status != AgentStatus::Success && s->status != AgentStatus::Failed &&
         s->status != AgentStatus::Stopped)
         return;
-    if (!m_networkAccess || m_accountSessionToken.trimmed().isEmpty())
+    if (!m_networkAccess)
         return;
 
     const AgentSession session = *s; // by value: the post below pumps the loop
@@ -10057,12 +10094,11 @@ void MainWindow::completeOrgTaskForSession(int sessionId)
                 QStringLiteral("/complete"));
     url.setQuery(QString());
     url.setFragment(QString());
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader,
-                      QStringLiteral("application/json"));
-    request.setRawHeader("Authorization",
-                         QByteArrayLiteral("Bearer ") +
-                             m_accountSessionToken.toUtf8());
+    QNetworkRequest request;
+    // The completion proof names the exact task it closes.
+    if (!authenticateOrgTaskRequest(url, request, kOrgTaskCompleteProof,
+                                    session.orgTaskId))
+        return;
     const QJsonObject body{
         {QStringLiteral("completionNote"), note},
         {QStringLiteral("agent"),

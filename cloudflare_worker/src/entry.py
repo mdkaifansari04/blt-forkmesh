@@ -8206,14 +8206,28 @@ class _OfficeMarketingTasksRuntime:
     def new_id(self):
         return _ap_uuid()
 
+    def _signed_query(self):
+        """The node/ts/sig triple a desktop puts on a key-signed task write.
+
+        Presence only — session() is what verifies it. Returning a triple here
+        also means session() will refuse to fall back to cookie auth for this
+        request, which is what makes relaxing the origin check below safe.
+        """
+        params = parse_qs(urlparse(self.request.url).query)
+        node = clean_string(
+            params.get("node", [""])[0], MAX_NODE_NAME).lower()
+        ts = clean_string(params.get("ts", [""])[0], 20)
+        sig = clean_string(params.get("sig", [""])[0], 200)
+        return (node, ts, sig) if node and ts and sig else None
+
     def same_origin(self):
-        # A successfully authenticated bearer credential is not ambient
+        # A credential the caller had to present explicitly is not ambient
         # browser authority and therefore is not vulnerable to cross-site
-        # request forgery. That covers both an organization bot token and the
-        # account-session bearer the desktop sends when a prompt opens a task;
-        # the token still has to validate in session(). Browser sessions carry
-        # the session in a cookie, so they retain the strict origin check.
-        if self.bot_context:
+        # request forgery: an organization bot token, the account-session
+        # bearer, or a key-signed desktop write. Each still has to validate in
+        # session(). Browser sessions carry the session in a cookie, so they
+        # retain the strict origin check.
+        if self.bot_context or self._signed_query():
             return True
         header = str(
             self.request.headers.get("authorization") or ""
@@ -8272,6 +8286,13 @@ class _OfficeMarketingTasksRuntime:
                 "name": (provider or "organization") + "-bot",
                 "status": "active",
             }
+        # A desktop that authenticated silently holds its account's Ed25519 key
+        # and no session token at all, so a prompt could never open its task
+        # without this. Once a triple is on the URL it is the only credential
+        # considered: never fall through to the cookie, or a cross-site POST
+        # could borrow one by appending a junk signature.
+        if self._signed_query():
+            return await _org_task_signed_session(self.env, self.request)
         return await _account_session_record(
             self.env,
             self.request,
@@ -10834,6 +10855,65 @@ async def _chat_channel_signed_session(env, request):
     elif CHAT_CHANNELS_RE.match(url.path):
         canonical = (
             CHAT_CHANNEL_LIST_PROOF + "\n" + node + "\n" + str(ts)
+        ).encode()
+    else:
+        return "", None
+    pubkey = await _owner_pubkey(env, node)
+    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+        return "", None
+    account_bi, record = await _account_row(env, node)
+    if (
+        not account_bi
+        or not record
+        or record.get("status") != "active"
+        or _account_kind(record) != "user"
+    ):
+        return "", None
+    return account_bi, record
+
+
+# Canonical prefixes a desktop signs with its account's Ed25519 key to open and
+# close an organization task for a prompt it just launched. A desktop that
+# authenticated silently holds keys and no session token, so without these the
+# Agents composer's Task toggle could never reach the board (adhoc #18).
+ORG_TASK_OPEN_PROOF = "forkmesh-org-task-open-v1"
+ORG_TASK_COMPLETE_PROOF = "forkmesh-org-task-complete-v1"
+ORG_TASK_COMPLETE_RE = re.compile(
+    r"^/api/tasks/([a-f0-9]{32})/complete/?$")
+ORG_TASK_COLLECTION_RE = re.compile(r"^/api/tasks/?$")
+
+
+async def _org_task_signed_session(env, request):
+    """Resolve the account behind a key-signed organization-task write.
+
+    Deliberately narrow: only opening a task and reporting one finished, the
+    two writes a desktop performs for its own agent run. Editing, deleting,
+    starting/stopping another member's timer, and QA verdicts all still require
+    a real session. Membership and every other authorization check inside the
+    task API applies to a signed caller exactly as to a session-token one.
+
+    The completion proof names the exact task it closes. The open proof can
+    only be replayed inside the five-minute skew window, and only to open one
+    more task as an account that was already entitled to open tasks.
+    """
+    if method_name(request) != "POST":
+        return "", None
+    url = urlparse(request.url)
+    params = parse_qs(url.query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return "", None
+    complete = ORG_TASK_COMPLETE_RE.match(url.path)
+    if complete:
+        canonical = (
+            ORG_TASK_COMPLETE_PROOF + "\n" + node + "\n"
+            + complete.group(1) + "\n" + str(ts)
+        ).encode()
+    elif ORG_TASK_COLLECTION_RE.match(url.path):
+        canonical = (
+            ORG_TASK_OPEN_PROOF + "\n" + node + "\n" + str(ts)
         ).encode()
     else:
         return "", None

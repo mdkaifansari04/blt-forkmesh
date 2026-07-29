@@ -132,6 +132,7 @@ class QListWidgetItem;
 class QMenu;
 class QNetworkAccessManager;
 class QNetworkReply;
+class QNetworkRequest;
 class QPlainTextEdit;
 class QImage;
 class QProgressBar;
@@ -5750,6 +5751,15 @@ private:
     QString agentBotLabel(const QString &provider) const;
     // Snapshot the composer's strength (reasoning effort) for a new session.
     QString composerAgentStrength() const;
+    // Authenticate one task write: the account session token when a password
+    // login produced one, otherwise a proof signed with this node's account key
+    // appended to `url` as node/ts/sig. The silent-auth launch path has no
+    // token at all, so without the signed fallback the Task toggle would do
+    // nothing for most desktops. `resource` names the task a proof is bound to
+    // (empty for the collection). False => this node can present neither.
+    bool authenticateOrgTaskRequest(QUrl &url, QNetworkRequest &request,
+                                    const QString &proofPrefix,
+                                    const QString &resource) const;
     // POST /api/tasks for a freshly created session and record the id it gets
     // back on the session. No-op unless session.orgTask is set.
     void openOrgTaskForSession(const AgentSession &session);
