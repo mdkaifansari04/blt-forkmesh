@@ -3862,11 +3862,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 aria-hidden="true"
                 ${accountAvatarPng ? "hidden" : ""}
               ></span>
-              <span class="world-shirt-account" data-world-shirt-account title="${escapeHTML(
-                identity.accountStatus,
-              )}">${escapeHTML(
-                accountStatusIcon(identity),
-              )}</span>
             </button>
           </nav>
         </header>
@@ -4753,6 +4748,7 @@ class ForkMeshWorld extends HTMLElement {
     this.memberDirectory = [];
     this.memberDirectoryFetchedAt = 0;
     this.deletingUnverifiedAccounts = new Set();
+    this.chatTaskNotifications = [];
     // Lowercased names a completed directory snapshot did not list, so their
     // next presence frame does not force another fetch (noteDirectoryMembers).
     this.unlistedDirectoryNames = new Set();
@@ -5162,6 +5158,18 @@ class ForkMeshWorld extends HTMLElement {
     if (!chatSources.includes(event.source)) return;
     const data = event.data;
     if (!data) return;
+    if (data.type === "forkmesh:chat-ready") {
+      for (const notification of this.chatTaskNotifications) {
+        event.source?.postMessage(
+          {
+            type: "forkmesh:chat-notification",
+            ...notification,
+          },
+          location.origin,
+        );
+      }
+      return;
+    }
     if (data.type === "forkmesh:world-emote") {
       this.sendWorldEmote(data.emote);
       return;
@@ -5922,7 +5930,10 @@ class ForkMeshWorld extends HTMLElement {
         postJSON: (path, body, options) =>
           this.postJSON(path, body, options),
         getSession: readSession,
-        toast: (message) => this.toast(message),
+        toast: (message) => {
+          this.toast(message);
+          this.notifyChatArea(message, "task");
+        },
         onQaVerdict: ({ task, verdict }) =>
           this.recordTaskQaVerdict(task, verdict),
       });
@@ -6649,6 +6660,10 @@ class ForkMeshWorld extends HTMLElement {
       this.toast(
         `${card.title}: ${verdict}. Your result and the shared QA totals were updated.`,
       );
+      this.notifyChatArea(
+        `${card.title}: QA marked ${verdict}.`,
+        "qa",
+      );
       return true;
     } catch (error) {
       this.toast(
@@ -6795,6 +6810,9 @@ class ForkMeshWorld extends HTMLElement {
       );
       this.world?.updateBuildBoard?.(payload);
       this.toast("Build priorities saved. Priority 1 is highest.");
+      this.notifyChatArea(
+        "Todo priorities were reordered. Priority 1 is highest.",
+      );
       return true;
     } catch (error) {
       await this.refreshBuildBoard({ quiet: true });
@@ -6826,6 +6844,9 @@ class ForkMeshWorld extends HTMLElement {
       );
       this.world?.updateBuildBoard?.(payload);
       this.toast("Issue assigned to What we're building.");
+      this.notifyChatArea(
+        `${sanitizePresenceText(title, "Repository issue", 160)} was added to What we're building.`,
+      );
       return true;
     } catch (error) {
       await this.refreshBuildBoard({ quiet: true });
@@ -6859,6 +6880,10 @@ class ForkMeshWorld extends HTMLElement {
       this.world?.updateBuildBoard?.(payload);
       await this.refreshQaDeck({ quiet: true });
       this.toast(`${taskTitle} moved to Done and was added to shared QA.`);
+      this.notifyChatArea(
+        `${taskTitle} moved to Done and was added to shared QA.`,
+        "qa",
+      );
       return true;
     } catch (error) {
       await this.refreshBuildBoard({ quiet: true });
@@ -8476,33 +8501,14 @@ class ForkMeshWorld extends HTMLElement {
     const hoverCapable = window.matchMedia?.(
       "(hover: hover) and (pointer: fine)",
     )?.matches;
-    const wireHoverOrb = (details, onOpen = () => {}) => {
-      if (!details || !hoverCapable) return;
-      let closeTimer = 0;
-      details.addEventListener("pointerenter", () => {
-        window.clearTimeout(closeTimer);
-        details.open = true;
-        onOpen();
+    if (diagnostics && hoverCapable) {
+      diagnostics.addEventListener("pointerenter", () => {
+        diagnostics.open = true;
+        chatTerminal?.removeAttribute("open");
       });
-      details.addEventListener("pointerleave", () => {
-        window.clearTimeout(closeTimer);
-        closeTimer = window.setTimeout(() => {
-          if (!details.matches(":focus-within")) details.open = false;
-        }, 220);
-      });
-      details.addEventListener("focusin", () => {
-        window.clearTimeout(closeTimer);
-        details.open = true;
-        onOpen();
-      });
-      details.addEventListener("focusout", () => {
-        window.clearTimeout(closeTimer);
-        closeTimer = window.setTimeout(() => {
-          if (!details.matches(":focus-within,:hover")) details.open = false;
-        }, 220);
-      });
-    };
-    wireHoverOrb(diagnostics, () => {
+    }
+    diagnostics?.addEventListener("focusin", () => {
+      diagnostics.open = true;
       chatTerminal?.removeAttribute("open");
     });
     if (chatTerminal && hoverCapable) {
@@ -8550,6 +8556,53 @@ class ForkMeshWorld extends HTMLElement {
         !event.target.closest("[data-world-chat-terminal]")
       ) {
         chatTerminal.removeAttribute("open");
+      }
+      if (
+        diagnostics?.open &&
+        !event.target.closest("[data-world-diagnostics]")
+      ) {
+        diagnostics.removeAttribute("open");
+      }
+      const settingsPanel = this.$("[data-world-settings]");
+      if (
+        settingsPanel?.dataset.open === "true" &&
+        !event.target.closest("[data-world-settings]") &&
+        !event.target.closest(
+          "[data-world-settings-open], [data-world-tasks-open]",
+        )
+      ) {
+        this.toggleSettings(false);
+      }
+      const accountPanel = this.$("[data-world-account]");
+      if (
+        accountPanel?.dataset.open === "true" &&
+        !event.target.closest("[data-world-account]") &&
+        !event.target.closest("[data-world-account-open]")
+      ) {
+        this.toggleWorldAccount(false);
+      }
+      const worldChatPanel = this.$("[data-world-chat]");
+      if (
+        worldChatPanel?.dataset.open === "true" &&
+        !event.target.closest("[data-world-chat]") &&
+        !event.target.closest(
+          "[data-world-chat-open], a[href^='/dashboard/chat']",
+        )
+      ) {
+        this.closeWorldChat();
+      }
+      const detailPanel = this.$("[data-world-detail]");
+      if (
+        detailPanel?.dataset.open === "true" &&
+        !event.target.closest(
+          "[data-world-detail], [data-world-detail-resize]",
+        ) &&
+        !event.target.closest(
+          "[data-world-landmark], [data-world-mirror-node], " +
+          "[data-world-notifications-open], [data-world-admin-errors]",
+        )
+      ) {
+        this.closeLandmark();
       }
       const avatarLauncher = event.target.closest("[data-world-shirt-badge]");
       if (
@@ -10061,7 +10114,6 @@ class ForkMeshWorld extends HTMLElement {
     const visible = publicIdentity(this.identity, this.settings);
     const avatar = this.$("[data-world-shirt-avatar]");
     const initial = this.$("[data-world-shirt-initial]");
-    const account = this.$("[data-world-shirt-account]");
     const badge = this.$("[data-world-shirt-badge]");
     const session = readSession();
     const avatarPng =
@@ -10080,10 +10132,6 @@ class ForkMeshWorld extends HTMLElement {
       // into the avatar circle.
       initial.textContent = "";
       initial.hidden = Boolean(avatarPng);
-    }
-    if (account) {
-      account.textContent = accountStatusIcon(visible);
-      account.title = visible.accountStatus || "Guest";
     }
     if (badge) {
       // The badge is the settings entry point; keep the name/status copy that
@@ -20654,6 +20702,39 @@ class ForkMeshWorld extends HTMLElement {
         : "That device was logged out.",
     );
     return this.loadWorldSessions(true);
+  }
+
+  notifyChatArea(message, kind = "task") {
+    const text = String(message || "").replace(/\s+/g, " ").trim().slice(
+      0,
+      240,
+    );
+    if (!text) return false;
+    const notification = {
+      id: `todo:${Date.now().toString(36)}:${Math.random()
+        .toString(36)
+        .slice(2, 8)}`,
+      text,
+      kind: String(kind || "task").slice(0, 24),
+    };
+    this.chatTaskNotifications.push(notification);
+    if (this.chatTaskNotifications.length > 50) {
+      this.chatTaskNotifications.splice(
+        0,
+        this.chatTaskNotifications.length - 50,
+      );
+    }
+    const payload = {
+      type: "forkmesh:chat-notification",
+      ...notification,
+    };
+    for (const frame of [
+      this.$("[data-world-chat-frame]"),
+      this.$("[data-world-chat-terminal-frame]"),
+    ]) {
+      frame?.contentWindow?.postMessage(payload, location.origin);
+    }
+    return true;
   }
 
   openWorldChat(href = "/dashboard/chat", returnFocus = null) {

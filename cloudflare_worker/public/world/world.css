@@ -556,8 +556,8 @@ forkmesh-world {
   position: relative;
   display: grid;
   place-items: center;
-  width: 46px;
-  height: 46px;
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
   background: rgb(7 17 15 / 0.76);
   padding: 4px;
@@ -566,8 +566,8 @@ forkmesh-world {
 }
 
 .world-brand img {
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   /* The mark asset is portrait, so cover cropped its top and bottom inside
      the status ring. Preserve the complete logo instead. */
   object-fit: contain;
@@ -1627,24 +1627,6 @@ forkmesh-world.world-admin-error-arrival::after {
   box-shadow:
     0 0 0 3px rgb(158 247 198 / 0.14),
     0 10px 24px rgb(1 4 9 / 0.45);
-}
-
-.world-shirt-account {
-  position: absolute;
-  bottom: -3px;
-  left: -3px;
-  z-index: 3;
-  display: grid;
-  width: 15px;
-  height: 15px;
-  place-items: center;
-  border: 2px solid var(--primer-canvas-default);
-  border-radius: 50%;
-  background: #163928;
-  font-family: "ForkMesh Mono", monospace;
-  font-size: 0.44rem;
-  line-height: 1;
-  color: #9ef7c6;
 }
 
 .world-shirt-avatar {
@@ -8264,11 +8246,11 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   bottom: max(12px, env(safe-area-inset-bottom));
   left: auto;
   width: 56px;
-  border: 1px solid rgb(139 148 158 / 0.48);
+  border: 0;
   border-radius: 28px;
-  background: rgb(13 17 23 / 0.18);
-  box-shadow: 0 12px 36px rgb(1 4 9 / 0.24);
-  backdrop-filter: blur(18px) saturate(1.25);
+  background: transparent !important;
+  box-shadow: none;
+  backdrop-filter: none;
   transition:
     width 260ms cubic-bezier(0.2, 0.8, 0.2, 1),
     border-radius 260ms ease,
@@ -8277,6 +8259,11 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
 .world-chat-terminal > summary {
   justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
 .world-diagnostics.world-chat-terminal
@@ -8298,17 +8285,32 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-chat-terminal:is([open], :hover, :focus-within) {
   width: min(460px, calc(100vw - 24px));
   border-radius: 18px;
-  background: rgb(13 17 23 / 0.08);
+  background: transparent !important;
 }
 
 .world-chat-terminal:is([open], :hover, :focus-within) > summary {
-  justify-content: flex-start;
+  justify-content: center;
 }
 
 .world-chat-terminal:is([open], :hover, :focus-within)
   > summary
   > :not(.world-chat-terminal-avatar):not(.world-chat-terminal-unread) {
-  display: flex;
+  display: none;
+}
+
+.world-chat-terminal[open] > summary {
+  position: absolute;
+  z-index: 8;
+  top: 10px;
+  left: 10px;
+  width: 44px;
+  min-height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  padding: 3px;
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
 .world-chat-terminal:is(:hover, :focus-within) > .world-chat-terminal-body {
@@ -8318,8 +8320,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-chat-terminal-avatar {
   position: relative;
   display: grid;
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   flex: 0 0 auto;
   place-items: center;
   overflow: hidden;
@@ -8329,6 +8331,19 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   color: #fff;
   font: 800 0.8rem/1 "ForkMesh Mono", monospace;
   box-shadow: 0 0 0 2px rgb(13 17 23 / 0.8);
+}
+
+.world-chat-terminal-avatar::after {
+  position: absolute;
+  right: 1px;
+  bottom: 2px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #0d1117;
+  border-radius: 50%;
+  background: #3fb950;
+  box-shadow: 0 0 8px rgb(63 185 80 / 0.8);
+  content: "";
 }
 
 .world-chat-terminal-avatar img {
@@ -8370,6 +8385,11 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   animation: world-chat-unfurl 260ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+.world-chat-terminal[open] .world-chat-terminal-body {
+  border: 0;
+  border-radius: 0;
+}
+
 .world-chat-terminal-frame {
   background: transparent;
 }
@@ -8407,18 +8427,20 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   align-items: center;
   gap: 9px;
   border: 1px solid rgb(139 148 158 / 0.45);
-  border-radius: 10px;
-  background: rgb(13 17 23 / 0.72);
+  border-radius: 16px 16px 16px 5px;
+  background: rgb(13 17 23 / 0.34);
   padding: 8px 10px;
   color: #f0f6fc;
-  box-shadow: 0 8px 24px rgb(1 4 9 / 0.28);
-  font: 0.7rem/1.4 "ForkMesh Mono", monospace;
+  box-shadow:
+    0 8px 24px rgb(1 4 9 / 0.2),
+    inset 0 1px 0 rgb(255 255 255 / 0.05);
+  font: 0.72rem/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   opacity: 0;
   transform: translateY(8px);
   animation:
     world-activity-in 180ms ease forwards,
     world-activity-out 420ms ease 9.55s forwards;
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(16px) saturate(1.2);
 }
 
 .world-activity-stream article[data-kind="chat"] {
@@ -8870,6 +8892,35 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   place-items: center;
   padding: 0;
   color: var(--fgColor-muted);
+}
+
+/* HUD popout chrome stays reachable while the panel body scrolls. The
+   translucent header also keeps underlying copy from showing through the
+   close control without turning the popout back into an opaque slab. */
+.world-detail-header,
+.world-settings-heading,
+.world-account-heading,
+.world-chat-heading,
+.world-office-panel-heading,
+.world-office-chat__heading {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  background: rgb(13 17 23 / 0.72);
+  box-shadow: 0 1px 0 rgb(139 148 158 / 0.34);
+  backdrop-filter: blur(18px) saturate(1.2);
+}
+
+.world-detail-close,
+.world-settings-close,
+.world-account-heading > button,
+.world-chat-heading > button,
+.world-office-panel-heading > button,
+.world-office-chat__heading > button {
+  position: sticky;
+  top: 12px;
+  z-index: 13;
+  flex: 0 0 auto;
 }
 
 .world-account-access {
@@ -9332,6 +9383,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 /* Fixed launcher geometry. The account avatar reveals these controls, but
    every revealed shortcut keeps the same square footprint. */
 .fm-world .world-shirt-badge {
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
 }
 

@@ -450,6 +450,13 @@ def test_world_chat_is_a_transparent_bubble_hud_with_context_and_emotes():
     assert "fullLog.scrollTo({" in CHAT
 
 
+def test_world_todo_actions_replay_as_chat_notification_bubbles():
+    assert 'type: "forkmesh:chat-ready"' in CHAT
+    assert 'data.type === "forkmesh:chat-notification"' in CHAT
+    assert "seenParentNotifications" in CHAT
+    assert "appendSystem(text, false)" in CHAT
+
+
 def test_world_embed_uses_one_dark_primer_header_and_pinned_grid_composer():
     for marker in (
         "color-scheme: dark",

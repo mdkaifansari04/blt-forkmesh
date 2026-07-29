@@ -130,10 +130,14 @@
   const contextAction = document.querySelector(
     "[data-dashboard-chat-context-action]",
   );
+  const chatScrollRail = document.querySelector(
+    "[data-dashboard-chat-scroll-rail]",
+  );
 
   if (!fullLog && !sideLog) return;
 
   let pendingWorldComposerPrefill = null;
+  const seenParentNotifications = new Set();
 
   function fileFromWorldComposerAttachment(value) {
     if (!value || typeof value !== "object") return null;
@@ -189,7 +193,21 @@
   window.addEventListener("message", (event) => {
     if (event.origin !== location.origin) return;
     const data = event.data;
-    if (!data || data.type !== "forkmesh:chat-prefill") return;
+    if (!data) return;
+    if (data.type === "forkmesh:chat-notification") {
+      const id = String(data.id || "").slice(0, 96);
+      if (id && seenParentNotifications.has(id)) return;
+      const text = String(data.text || "").replace(/\s+/g, " ").trim().slice(
+        0,
+        240,
+      );
+      if (text) {
+        if (id) seenParentNotifications.add(id);
+        appendSystem(text, false);
+      }
+      return;
+    }
+    if (data.type !== "forkmesh:chat-prefill") return;
     pendingWorldComposerPrefill = {
       text: String(data.text || "").slice(0, MAX_TEXT),
       attachment:
@@ -199,6 +217,12 @@
     };
     applyWorldComposerPrefill();
   });
+  if (window.parent !== window) {
+    window.parent.postMessage(
+      { type: "forkmesh:chat-ready" },
+      location.origin,
+    );
+  }
 
   const enc = new TextEncoder();
   const dec = new TextDecoder();
@@ -1623,7 +1647,7 @@
     rememberContext(who, text);
   }
 
-  function appendSystem(text) {
+  function appendSystem(text, emit = true) {
     if (fullLog) {
       clearEmptyState();
       const row = document.createElement("div");
@@ -1632,7 +1656,7 @@
       fullLog.append(row);
       fullLog.scrollTop = fullLog.scrollHeight;
     }
-    emitWorldActivity(text, "status");
+    if (emit) emitWorldActivity(text, "status");
   }
 
   function removeMessage(id) {
@@ -2614,6 +2638,20 @@
     }
   }
 
+  function syncChatScrollThumb() {
+    if (!fullLog || !chatScrollRail) return;
+    const available = Math.max(0, fullLog.scrollHeight - fullLog.clientHeight);
+    const progress = available > 0
+      ? Math.max(0, Math.min(1, fullLog.scrollTop / available))
+      : 1;
+    chatScrollRail.style.setProperty("--chat-scroll-progress", progress);
+    chatScrollRail.toggleAttribute("data-at-start", fullLog.scrollTop <= 1);
+    chatScrollRail.toggleAttribute(
+      "data-at-end",
+      available <= 1 || fullLog.scrollTop >= available - 1,
+    );
+  }
+
   async function taskApiRequest(method, path, body = null) {
     const token = String(userSession()?.sessionToken || "");
     const headers = { accept: "application/json" };
@@ -3117,6 +3155,13 @@
           });
         });
       });
+    fullLog?.addEventListener("scroll", syncChatScrollThumb, {
+      passive: true,
+    });
+    if (fullLog && "ResizeObserver" in window) {
+      new ResizeObserver(syncChatScrollThumb).observe(fullLog);
+    }
+    syncChatScrollThumb();
     document
       .querySelectorAll("[data-dashboard-chat-emote]")
       .forEach((button) => {

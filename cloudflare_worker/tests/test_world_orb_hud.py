@@ -41,6 +41,46 @@ def test_chat_orb_shows_last_speaker_and_expands_on_hover_or_focus():
     assert "this.memberDirectory.find(" in WORLD
 
 
+def test_hud_popouts_keep_close_controls_sticky_and_dismiss_outside():
+    for heading in (
+        ".world-detail-header",
+        ".world-settings-heading",
+        ".world-account-heading",
+        ".world-chat-heading",
+        ".world-office-panel-heading",
+    ):
+        assert heading in CSS
+    assert "position: sticky;" in CSS
+    assert "top: 12px;" in CSS
+    for selector in (
+        '!event.target.closest("[data-world-settings]")',
+        '!event.target.closest("[data-world-account]")',
+        '!event.target.closest("[data-world-chat]")',
+    ):
+        assert selector in WORLD
+    assert '"[data-world-detail], [data-world-detail-resize]"' in WORLD
+
+
+def test_corner_launchers_match_and_debug_stays_open_until_outside_click():
+    assert "width: 56px;" in CSS
+    assert ".fm-world .world-shirt-badge" in CSS
+    assert 'diagnostics.addEventListener("pointerenter"' in WORLD
+    assert 'diagnostics?.addEventListener("focusin"' in WORLD
+    assert 'diagnostics.removeAttribute("open")' in WORLD
+    assert 'details.addEventListener("pointerleave"' not in WORLD
+
+
+def test_todo_actions_are_bridged_into_the_chat_transcript():
+    assert "notifyChatArea(message, kind" in WORLD
+    assert 'type: "forkmesh:chat-notification"' in WORLD
+    assert 'data.type === "forkmesh:chat-ready"' in WORLD
+    assert "this.chatTaskNotifications" in WORLD
+    assert 'this.notifyChatArea(message, "task")' in WORLD
+    assert '"Todo priorities were reordered.' in WORLD
+    assert "was added to What we're building." in WORLD
+    assert "moved to Done and was added to shared QA." in WORLD
+
+
 def test_world_embed_has_separate_chat_and_task_buttons_and_routing_step():
     assert 'id="fullChatSend"' in CHAT_VIEW
     assert 'id="fullChatTaskSend"' in CHAT_VIEW

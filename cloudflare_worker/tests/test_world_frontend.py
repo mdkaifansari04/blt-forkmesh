@@ -190,7 +190,7 @@ def test_scene_builds_playable_landmarks_and_badged_avatars():
     assert "identity.browser" in SCENE
     assert "identity.os" in SCENE
     assert "identity.name" in SCENE
-    assert "world-shirt-account" in APP
+    assert "world-shirt-account" not in APP
     for status_icon in (
         "Guest: \"○\"",
         "Registered: \"✓\"",
