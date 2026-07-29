@@ -265,3 +265,41 @@ def test_admin_timestamps_show_exact_and_live_relative_time():
         "setInterval(updateAdminRelativeTimes,30000)",
     ):
         assert contract in ENTRY_TEXT
+
+
+def test_admin_error_log_names_the_related_user_per_row_and_group():
+    for contract in (
+        "async def _error_log_actor(env, request):",
+        "_account_session_record(env, request)",
+        '"ALTER TABLE error_log ADD COLUMN actor TEXT NOT NULL DEFAULT \'\'"',
+        "SELECT ts,status,method,path,message,actor FROM error_log ",
+        'group["actors"][actor] = group["actors"].get(actor, 0) + 1',
+        'group["anonymous"] += 1',
+        "def _admin_error_related_users(actors, anonymous=0):",
+        "def _admin_error_row_user_cell(actor):",
+        "<th>Related users</th>",
+        "<th>Related user</th>",
+    ):
+        assert contract in ENTRY_TEXT
+
+    schema_text = (
+        ENTRY_PATH.parent / "schema.py"
+    ).read_text(encoding="utf-8")
+    assert "actor TEXT NOT NULL DEFAULT ''" in schema_text
+
+
+def test_admin_error_log_copies_messages_and_files_bot_tasks():
+    for contract in (
+        "def _admin_error_copy_button(text):",
+        'class="error-copy" data-copy="%s"',
+        "navigator.clipboard.writeText(text)",
+        "document.execCommand('copy')",
+        'action="create_bot_task"',
+        "Create bot task</button>",
+        "async def _admin_error_create_bot_task(env, form, requester):",
+        'source="admin-error-log", labels=["bug", "error-log"],',
+        "_forkbot_enqueue_agent_request(\n        env, owner, repo, number, requester)",
+        '"delete_error_group", "create_bot_task"',
+        "<th>Bot task</th>",
+    ):
+        assert contract in ENTRY_TEXT

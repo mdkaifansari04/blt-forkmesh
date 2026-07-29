@@ -34278,6 +34278,10 @@ async def client_error_handler(env, request):
                 status=202,
                 cache_control="no-store",
             )
+        try:
+            actor = await _error_log_actor(env, request)
+        except BaseException:
+            actor = ""
         await _write_error_log(
             env,
             520,
@@ -34285,7 +34289,7 @@ async def client_error_handler(env, request):
             "/client-error/" + surface,
             detail,
             source_key,
-            await _error_log_actor(env, request),
+            actor,
         )
     except Exception:
         # Error reporting must never become a new user-visible error.
@@ -34481,10 +34485,14 @@ async def capture_worker_exception(env, request, url, error):
         )
     except BaseException:
         pass
+    # Naming the affected account is a nice-to-have; it must never be able to
+    # cost the log row itself, so it resolves in its own guard.
     try:
-        await _write_error_log(
-            env, 500, method, path, message, ray,
-            await _error_log_actor(env, request))
+        actor = await _error_log_actor(env, request)
+    except BaseException:
+        actor = ""
+    try:
+        await _write_error_log(env, 500, method, path, message, ray, actor)
     except BaseException:
         pass
 
@@ -34619,9 +34627,11 @@ async def log_error(env, status, method, path, message, ray="", request=None,
         path = await privacy_filter(env, path)
     await capture_sentry_error(
         env, status, method, path, message, ray, request=request, error=error)
-    await _write_error_log(
-        env, status, method, path, message, ray,
-        await _error_log_actor(env, request))
+    try:
+        actor = await _error_log_actor(env, request)
+    except BaseException:
+        actor = ""
+    await _write_error_log(env, status, method, path, message, ray, actor)
 
 
 async def log_durable_object_abort(env, request, path, error):
@@ -34644,11 +34654,15 @@ async def log_durable_object_abort(env, request, path, error):
         await privacy_filter(env, path)
         if callable(privacy_filter) else path
     )
+    try:
+        actor = await _error_log_actor(env, request)
+    except BaseException:
+        actor = ""
     await _write_error_log(
         env, 503, method_name(request), safe_path,
         "durable object aborted: " + _safe_error_text(error)[:400],
         request.headers.get("cf-ray") or "",
-        await _error_log_actor(env, request))
+        actor)
 
 
 async def log_cron_error(env, path, message, error=None, failures=None):
