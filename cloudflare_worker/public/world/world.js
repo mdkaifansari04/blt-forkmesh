@@ -5775,6 +5775,8 @@ class ForkMeshWorld extends HTMLElement {
         onLobbyLinkKioskSelect: () => void this.openLobbyLinkKiosk(),
         onLobbyFeedbackKioskSelect: () =>
           void this.openLobbyFeedbackKiosk(),
+        onLobbyTaskBidKioskSelect: () =>
+          void this.openLobbyTaskBidKiosk(),
         onSystemCapacityTableSelect: (table) =>
           this.openSystemCapacityTables(table),
         onInfrastructureConsoleToggle: ({ enabled }) =>
@@ -23820,6 +23822,115 @@ class ForkMeshWorld extends HTMLElement {
       url.searchParams.delete("feedback");
       history.replaceState(history.state, "", url);
     }
+  }
+
+  async openLobbyTaskBidKiosk() {
+    if (!validWorldSession()?.sessionToken) {
+      this.toast("Sign in with an organization account to submit a task bid.");
+      this.toggleSettings(true);
+      return;
+    }
+    document.querySelector("[data-world-task-bid-dialog]")?.remove();
+    const dialog = document.createElement("dialog");
+    dialog.dataset.worldTaskBidDialog = "true";
+    dialog.style.cssText =
+      "width:min(680px,calc(100vw - 28px));max-height:min(820px,calc(100vh - 28px));overflow:auto;border:1px solid #e3b341;border-radius:6px;background:#0d1117;color:#f0f6fc;padding:0;box-shadow:0 24px 80px #010409cc";
+    const departments = [
+      ["general", "General"],
+      ["engineering", "Engineering"],
+      ["product-design", "Product + design"],
+      ["marketing", "Marketing"],
+      ["security", "Security"],
+      ["infrastructure", "Infrastructure"],
+      ["community", "Community"],
+      ["partnerships", "Partnerships"],
+      ["operations", "Operations"],
+      ["executive", "Executive"],
+      ["quality-assurance", "Quality assurance"],
+    ];
+    dialog.innerHTML = `
+      <header style="display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:20px 22px;border-bottom:1px solid #30363d;background:#161b22">
+        <div><p style="margin:0 0 5px;color:#e3b341;font:800 12px ForkMesh Mono,monospace;letter-spacing:.08em">OFFICE LOBBY · TASK BOUNTY DESK</p><h2 style="margin:0;font-size:24px">Bid to complete a task</h2></div>
+        <button type="button" data-world-task-bid-close aria-label="Close task bounty desk" style="border:1px solid #30363d;background:#21262d;color:#f0f6fc;font-size:22px;line-height:1;cursor:pointer;width:36px;height:36px">×</button>
+      </header>
+      <form data-world-task-bid-form style="display:grid;gap:14px;padding:22px">
+        <p style="margin:0;color:#8c959f;line-height:1.55">Describe useful organization work and the SOL amount you would want for completing it. Your account is attached as the bidder, and the request appears in the shared task list.</p>
+        <label style="display:grid;gap:7px;font-weight:700"><span>Task</span><input name="title" required minlength="3" maxlength="160" autofocus placeholder="What would you complete?" style="min-height:40px;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:8px 12px;font:14px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"></label>
+        <label style="display:grid;gap:7px;font-weight:700"><span>Details</span><textarea name="details" maxlength="4000" rows="5" placeholder="Scope, deliverables, and anything reviewers should know…" style="resize:vertical;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:10px 12px;font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"></textarea></label>
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px">
+          <label style="display:grid;gap:7px;font-weight:700"><span>Requested bounty (SOL)</span><input name="amountSol" required inputmode="decimal" autocomplete="off" pattern="(?:0|[1-9][0-9]{0,6})(?:\\.[0-9]{1,9})?" placeholder="0.10" style="min-height:40px;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:8px 12px;font:14px/1.4 ForkMesh Mono,monospace"></label>
+          <label style="display:grid;gap:7px;font-weight:700"><span>Department</span><select name="department" style="min-height:40px;border:1px solid #30363d;background:#0d1117;color:#f0f6fc;padding:8px 12px;font:14px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif">${departments
+            .map(
+              ([value, label]) =>
+                `<option value="${value}">${label}</option>`,
+            )
+            .join("")}</select></label>
+        </div>
+        <p style="margin:0;border:1px solid #30363d;background:#161b22;color:#8c959f;padding:10px 12px;font-size:12px;line-height:1.5">This is a compensation request only. ForkMesh does not reserve, custody, or transfer SOL when you submit a bid.</p>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span data-world-task-bid-status role="status" aria-live="polite" style="color:#8c959f;font-size:13px"></span><button type="submit" style="min-height:40px;border:1px solid #2ea043;background:#238636;color:#fff;padding:8px 16px;font-weight:800;cursor:pointer">Submit bid</button></div>
+      </form>`;
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog
+      .querySelector("[data-world-task-bid-close]")
+      ?.addEventListener("click", () => dialog.close());
+    dialog
+      .querySelector("[data-world-task-bid-form]")
+      ?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const values = new FormData(form);
+        const title = String(values.get("title") || "").trim();
+        const details = String(values.get("details") || "").trim();
+        const amountSol = String(values.get("amountSol") || "").trim();
+        const department = String(values.get("department") || "general");
+        const status = form.querySelector("[data-world-task-bid-status]");
+        const submit = form.querySelector('button[type="submit"]');
+        if (
+          title.length < 3 ||
+          !/^(?:0|[1-9][0-9]{0,6})(?:\.[0-9]{1,9})?$/.test(amountSol)
+        ) {
+          if (status) status.textContent = "Enter a task and a valid SOL amount.";
+          return;
+        }
+        submit.disabled = true;
+        if (status) status.textContent = "Submitting encrypted task bid…";
+        try {
+          await this.postJSON(
+            "/api/tasks",
+            {
+              kind: "bid",
+              title,
+              details,
+              bountyAmountSol: amountSol,
+              department,
+              destination: "department",
+              assigneeKind: "user",
+            },
+            { timeout: 10_000 },
+          );
+          await this.officeTasks?.refreshNow?.();
+          if (status) {
+            status.textContent =
+              "Bid added to the organization task list.";
+          }
+          submit.textContent = "Bid submitted";
+          this.toast("Task bid added with its SOL bounty request.");
+          window.setTimeout(() => dialog.open && dialog.close(), 1200);
+        } catch (error) {
+          submit.disabled = false;
+          const reason = String(error?.message || "");
+          if (status) {
+            status.textContent =
+              reason === "org_member_required"
+                ? "Organization membership is required."
+                : reason === "invalid_bounty_request"
+                  ? "Enter a positive SOL amount with at most 9 decimals."
+                  : "The bid could not be submitted. Please try again.";
+          }
+        }
+      });
+    dialog.showModal();
   }
 
   async openLobbyLinkKiosk() {
