@@ -6853,7 +6853,41 @@ void MainWindow::showChatView()
 {
     // Chat is its own top-level section now; switching to it clears the unread
     // marker for the open conversation (handled in showSection).
+    // Opening chat while something else is unread lands on that conversation
+    // instead of whatever was last open — the badge is what the click was
+    // aiming at, so jump straight to the messages behind it.
+    const QString unread = mostRecentUnreadConversation();
     showSection(2);
+    if (!unread.isEmpty())
+        switchConversation(unread);
+}
+
+QString MainWindow::mostRecentUnreadConversation() const
+{
+    if (m_unread.isEmpty() || m_unread.contains(m_currentConversation))
+        return QString();
+    // Sidebar order (channels, then DMs) is the tie-breaker, so an unread with
+    // no local history still resolves to a stable pick.
+    QStringList ordered = m_channels;
+    ordered.reserve(m_channels.size() + m_openDms.size());
+    for (const QString &peerId : std::as_const(m_openDms))
+        ordered.append(dmKey(peerId));
+
+    QString best;
+    qint64 bestStamp = -1;
+    for (const QString &conversation : std::as_const(ordered)) {
+        if (!m_unread.contains(conversation))
+            continue;
+        qint64 stamp = 0;
+        const auto it = m_history.constFind(conversation);
+        if (it != m_history.constEnd() && !it->isEmpty())
+            stamp = it->last().timestampMs;
+        if (stamp > bestStamp) {
+            bestStamp = stamp;
+            best = conversation;
+        }
+    }
+    return best;
 }
 
 void MainWindow::updateChatButton()

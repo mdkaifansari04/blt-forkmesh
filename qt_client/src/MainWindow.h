@@ -950,6 +950,10 @@ private:
     // actually visible (chat section shown, or window regains focus while
     // already on it) — called from showSection() and changeEvent().
     void clearActiveConversationUnread();
+    // Conversation carrying unread messages that opening chat should land on:
+    // the one with the newest unread message. Empty when nothing is unread (or
+    // only the open conversation is), so the caller leaves the view alone.
+    QString mostRecentUnreadConversation() const;
     // Show/hide the in-transcript unread banner and update its count text.
     void updateChatUnreadBanner();
     // Mark every conversation read at once (from the unread banner's arrow) and
