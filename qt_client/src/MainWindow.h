@@ -1503,6 +1503,10 @@ private:
     QString sizeMapRoot() const;
     void chooseSizeMapFolder();
     void setSizeMapRootOverride(const QString &path);
+    // Filesystem shortcuts beside the map (adhoc #21): one small used/free map
+    // per mount point, clicking one re-roots the full scan there.
+    QWidget *buildSizeMapVolumesPanel();
+    void refreshSizeMapVolumes();
     QWidget *buildPlaceholderTab(const QString &name);
 
     // Discussions tab (signed repository discussions with inbox fallback).
@@ -3348,6 +3352,9 @@ private:
     // so the web dashboard shows the same picture. No-op without an authenticated
     // session token or a local avatar to upload.
     void pushAccountAvatar();
+    // The reverse direction: adopt the picture the account carries on the web
+    // (seen in the public user directory) so the desktop avatar matches it.
+    void adoptWebAccountAvatar(const QByteArray &png);
     void updateAvatarButton();
     void updateUserAvatarButton();
     void refreshIssueComposerAvatar();
@@ -4566,6 +4573,9 @@ private:
     QString m_sizeMapScannedPath;
     bool m_sizeMapScanning = false;
     int m_sizeMapScanEpoch = 0;
+    // Container holding one StorageMiniMap per mounted filesystem; refilled on
+    // every rescan so mounts appearing or vanishing are picked up.
+    QWidget *m_sizeMapVolumesBox = nullptr;
     QPushButton *m_repoProjectsTab = nullptr; // handle for the Projects (N) badge
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;

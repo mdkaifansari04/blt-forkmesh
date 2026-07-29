@@ -12,6 +12,11 @@ namespace Theme {
 inline const char *kPrimary = "#2ea043";
 inline const char *kTextTertiary = "#8b949e";
 
+// "Something is working right now" orange (adhoc #23): every busy spinner and
+// every running-agent dot/glyph paints in this one colour, so in-flight work
+// reads as its own state instead of borrowing success-green or link-blue.
+inline const char *kRunning = "#f0883e";
+
 // Sender name colors, hashed per user (GitHub label-ish accents).
 inline const char *kSenderPalette[] = {"#f85149", "#e3b341", "#3fb950",
                                        "#58a6ff", "#bc8cff", "#db61a2",
@@ -336,7 +341,9 @@ QPushButton#serverAddButton:hover { background-color: #2ea043; color: #ffffff; }
 QPushButton#serverAddButton:pressed { background-color: #238636; }
 QPushButton#serverFooterButton {
     background: transparent; border: none; color: #8b949e; font-size: 18px;
-    border-radius: 8px;
+    /* Circular: the account avatar it carries is a circle, so the hover
+       highlight has to be one too. */
+    border-radius: 20px;
 }
 QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3; }
 
@@ -1561,7 +1568,8 @@ QPushButton#serverAddButton:hover { background-color: #1f883d; color: #ffffff; }
 QPushButton#serverAddButton:pressed { background-color: #1a7f37; }
 QPushButton#serverFooterButton {
     background: transparent; border: none; color: #656d76; font-size: 18px;
-    border-radius: 8px;
+    /* Circular: matches the round account avatar it carries. */
+    border-radius: 20px;
 }
 QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328; }
 

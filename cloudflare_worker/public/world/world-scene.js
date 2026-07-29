@@ -3102,6 +3102,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:district-ground-paths", task: "Clean repository + leaderboard districts", detail: "Removed the ground-level VIEW placards, centered repository imports, added efficient textured district circles, and rebuilt every town connector from one solid concrete slab specification with flush endpoints.", estimate: "implemented · focused QA", done: true },
   { key: "task:lobby-task-bounties", task: "Lobby task bounty bidding desk", detail: "Organization members can propose scoped work in the lobby, name an exact SOL compensation request, and publish the encrypted record into the shared task catalog as a clearly labeled bid. The request is non-custodial and records no transfer or reserved funds.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-orb-hud", task: "Compact debug + unified activity orbs", detail: "Replaced the bottom bars with logo-sized status circles. DEBUG summarizes every performance grade as green, yellow, or red dots and expands on hover or focus. CHAT shows the latest speaker and unread count, then opens a translucent channel composer with image attachment, separate chat/task actions, human-or-agent routing, team categorization, and a ten-second unified activity stream.", estimate: "deployed · ready for QA", done: true },
+  { key: "task:avatar-hud-launcher", task: "Restore circular avatar HUD launcher", detail: "The account avatar is again a round launcher: hover or focus fans fixed-size tool boxes out without resizing the HUD, notification/error/task counts stay visible on its edge, touch uses a first tap to reveal controls, and player movement or an outside click closes the launcher.", estimate: "ready to deploy · focused QA", done: true },
   { key: "task:avatar-selection-runtime", task: "Reliable user HUD selection", detail: "Avatar clicks use a scoped frame timestamp, prefer the visible avatar hit over nearby geometry, and open the privacy-filtered member side panel without throwing.", estimate: "implemented · focused QA", done: true },
   { key: "task:member-circle-fire", task: "Dirt Members Circle + growing fire", detail: "The complete member seating circle sits on detailed dirt; every member adds one visible log and slightly increases the bounded campfire scale.", estimate: "implemented · focused QA", done: true },
   { key: "task:aquarium-fixed-controls", task: "Tank-fixed reef controls", detail: "Feed, tap, backdrop, and light controls stay anchored to the aquarium's lower-right control point instead of floating with the player.", estimate: "implemented · focused QA", done: true },
@@ -23355,7 +23356,11 @@ export function createWorldScene({
 
   function showAgentTaskBubble(botId, title) {
     if (!agentBotAccessAllowed) return false;
-    const state = agentBotStates.get(String(botId || "").toLowerCase());
+    // The task board names one general bot, so an unknown id speaks through
+    // whichever bot avatar is present rather than staying silent.
+    const state =
+      agentBotStates.get(String(botId || "").toLowerCase()) ||
+      agentBotStates.values().next().value;
     const taskTitle = String(title || "")
       .replace(/\s+/g, " ")
       .trim()

@@ -109,11 +109,13 @@ function normalizedTask(task) {
   const id = safeTaskId(task.id);
   const title = text(task.title);
   const assignee = text(task.assignee, 64).toLowerCase();
-  const assigneeKind = ["user", "unassigned", "claude", "codex"].includes(
-    task.assigneeKind,
-  )
-    ? task.assigneeKind
-    : "user";
+  // One general bot replaced the Claude/Codex choice; legacy rows still
+  // arrive with the old kind and are shown as the same bot.
+  const assigneeKind = ["agent", "claude", "codex"].includes(task.assigneeKind)
+    ? "agent"
+    : ["user", "unassigned"].includes(task.assigneeKind)
+      ? task.assigneeKind
+      : "user";
   const status = ["active", "done"].includes(task.status)
     ? task.status
     : "idle";
@@ -144,6 +146,7 @@ function normalizedTask(task) {
         : null,
     assignee,
     assigneeKind,
+    agentSessionId: safeTaskId(task.agentSessionId),
     department: text(task.department, 64).toLowerCase() || "general",
     team: text(task.team, 64).toLowerCase(),
     destination: text(task.destination, 32).toLowerCase() || "department",
@@ -410,9 +413,7 @@ export function createWorldOfficeTasksController({
 
   function announceAgentTasks() {
     const activeAgentTasks = tasks.filter(
-      (task) =>
-        ["codex", "claude"].includes(task.assigneeKind) &&
-        task.status !== "done",
+      (task) => task.assigneeKind === "agent" && task.status !== "done",
     );
     const unseen = activeAgentTasks.filter(
       (task) => !announcedAgentTaskIds.has(task.id),
@@ -458,6 +459,11 @@ export function createWorldOfficeTasksController({
               ? "Ready for QA"
               : "";
     const checkinState = checkinLabel(task.lastCheckin?.state);
+    // A bot task waits on a node queue until it reports back. Its author, or
+    // an organization manager, can pull it back onto the task list.
+    const botTask = task.assigneeKind === "agent";
+    const canReturn =
+      botTask && !doneTask && (canManage || task.createdBy === actor);
     const bid = task.kind === "bid";
     const bidder = task.createdBy || task.assignee;
     return `
@@ -490,12 +496,11 @@ export function createWorldOfficeTasksController({
                     ? `@${task.assignee}`
                     : task.assigneeKind === "unassigned"
                       ? "Unassigned"
-                      : task.assigneeKind === "codex"
-                        ? "Codex"
-                        : "Claude",
+                      : "Bot",
               )}
               · ${escapeHTML(task.department)}
               ${task.team ? ` / ${escapeHTML(task.team)}` : ""}
+              ${botTask && task.agentSessionId ? " · queued on a node" : ""}
               ${qaLabel ? ` · ${escapeHTML(qaLabel)}` : ""}
               ${task.qa.reviewer ? ` by @${escapeHTML(task.qa.reviewer)}` : ""}
               ${doneTask ? " · done" : ""}
@@ -578,6 +583,17 @@ export function createWorldOfficeTasksController({
                     )
                     .join("")}
                 </span>`
+              : ""
+          }
+          ${
+            canReturn
+              ? `<button
+                  type="button"
+                  class="world-office-task-return"
+                  data-world-office-task-action="return"
+                  data-world-office-task-id="${task.id}"
+                  ${busyTaskId === task.id ? "disabled" : ""}
+                >Return to tasks</button>`
               : ""
           }
           ${
@@ -1007,7 +1023,7 @@ export function createWorldOfficeTasksController({
     if (
       !id ||
       ![
-        "start", "stop", "complete", "delete",
+        "start", "stop", "complete", "delete", "return",
         "qa-pass", "qa-fail", "qa-unsure",
       ].includes(action)
     ) {
@@ -1062,7 +1078,9 @@ export function createWorldOfficeTasksController({
             ? "Task timer stopped."
             : action === "complete"
               ? "Task marked done and ready for QA."
-              : "Task deleted.",
+              : action === "return"
+                ? "Task returned to the task list."
+                : "Task deleted.",
       );
     }
   }

@@ -798,7 +798,7 @@ QColor agentStatusColor(const QString &status)
 {
     if (status == AgentStatus::Success) return QColor("#3fb950");
     if (status == AgentStatus::Failed) return QColor("#f85149");
-    if (status == AgentStatus::Running) return QColor("#58a6ff");
+    if (status == AgentStatus::Running) return QColor(Theme::kRunning);
     if (status == AgentStatus::Queued) return QColor("#d29922");
     if (status == AgentStatus::Waiting) return QColor("#d29922");
     if (status == AgentStatus::Stopped) return QColor("#8b949e");
@@ -812,7 +812,7 @@ QColor agentStatusColor(const QString &status)
 QColor agentStatusIconColor(const AgentSession &s)
 {
     if (s.merged) return QColor("#a371f7");
-    if (s.status == AgentStatus::Running) return QColor("#3fb950");
+    if (s.status == AgentStatus::Running) return QColor(Theme::kRunning);
     if (s.status == AgentStatus::Success) return QColor("#3fb950");
     if (s.status == AgentStatus::Failed) return QColor("#f85149");
     if (s.status == AgentStatus::Stopped) return QColor("#f85149");

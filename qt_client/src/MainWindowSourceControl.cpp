@@ -21,6 +21,7 @@
 #include <QPropertyAnimation>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QStorageInfo>
 #include <QTextBlock>
 #include <QTimer>
 #include <QUrl>
@@ -3199,6 +3200,31 @@ SunburstNode scanDirectorySizes(const QString &path, int depth,
               });
     return node;
 }
+
+// Mount points offered as size-map shortcuts (adhoc #21) — everything `df`
+// lists, minus the read-only squashfs images snap piles up by the dozen,
+// biggest filesystem first so the real disks lead the column.
+QList<QStorageInfo> sizeMapVolumes()
+{
+    QList<QStorageInfo> volumes;
+    QSet<QString> seen;
+    for (const QStorageInfo &volume : QStorageInfo::mountedVolumes()) {
+        if (!volume.isValid() || !volume.isReady() || volume.bytesTotal() <= 0)
+            continue;
+        if (volume.fileSystemType() == "squashfs")
+            continue;
+        const QString mount = volume.rootPath();
+        if (mount.isEmpty() || seen.contains(mount))
+            continue;
+        seen.insert(mount);
+        volumes.append(volume);
+    }
+    std::sort(volumes.begin(), volumes.end(),
+              [](const QStorageInfo &a, const QStorageInfo &b) {
+                  return a.bytesTotal() > b.bytesTotal();
+              });
+    return volumes;
+}
 } // namespace
 
 QWidget *MainWindow::buildSizeMapTab()
@@ -3217,7 +3243,7 @@ QWidget *MainWindow::buildSizeMapTab()
         "(.git excluded). Click a directory to zoom in, the centre to zoom "
         "back out; slices with no further subdivision are individual files. "
         "It starts on this repository's working copy — pick any other folder "
-        "on disk to size that instead.");
+        "on disk, or a filesystem on the right, to size that instead.");
     subtitle->setObjectName("statusLine");
     subtitle->setWordWrap(true);
 
@@ -3294,8 +3320,79 @@ QWidget *MainWindow::buildSizeMapTab()
 
     auto *chart = new RepoSunburstChart;
     m_sizeMapChart = chart;
-    layout->addWidget(chart, 1);
+
+    auto *body = new QHBoxLayout;
+    body->setContentsMargins(0, 0, 0, 0);
+    body->setSpacing(14);
+    body->addWidget(chart, 1);
+    body->addWidget(buildSizeMapVolumesPanel(), 0);
+    layout->addLayout(body, 1);
+    refreshSizeMapVolumes();
     return page;
+}
+
+// Right-hand column of filesystem shortcuts: one small used/free map per mount
+// point, each a click away from becoming the big map (adhoc #21).
+QWidget *MainWindow::buildSizeMapVolumesPanel()
+{
+    auto *panel = new QWidget;
+    panel->setFixedWidth(268);
+    auto *col = new QVBoxLayout(panel);
+    col->setContentsMargins(0, 0, 0, 0);
+    col->setSpacing(6);
+
+    auto *title = new QLabel("Filesystems");
+    title->setObjectName("sectionTitle");
+    col->addWidget(title);
+
+    auto *hint = new QLabel(
+        "Every mounted filesystem, sized from the mount itself. Click one to "
+        "expand it into the full map — nested mounts are left to their own "
+        "card, so the totals match df.");
+    hint->setObjectName("statusLine");
+    hint->setWordWrap(true);
+    col->addWidget(hint);
+
+    auto *scroll = new QScrollArea;
+    scroll->setObjectName("mainContent");
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    auto *inner = new QWidget;
+    m_sizeMapVolumesBox = inner;
+    auto *innerCol = new QVBoxLayout(inner);
+    innerCol->setContentsMargins(0, 0, 0, 0);
+    innerCol->setSpacing(2);
+    innerCol->addStretch(1);
+    scroll->setWidget(inner);
+    col->addWidget(scroll, 1);
+    return panel;
+}
+
+void MainWindow::refreshSizeMapVolumes()
+{
+    if (!m_sizeMapVolumesBox)
+        return;
+    auto *col = qobject_cast<QVBoxLayout *>(m_sizeMapVolumesBox->layout());
+    if (!col)
+        return;
+    // Mounts come and go (removable disks, containers), so the column is
+    // rebuilt from scratch on every rescan rather than patched in place.
+    while (QLayoutItem *item = col->takeAt(0)) {
+        if (QWidget *widget = item->widget())
+            widget->deleteLater();
+        delete item;
+    }
+    const QString current = QDir::cleanPath(sizeMapRoot());
+    for (const QStorageInfo &volume : sizeMapVolumes()) {
+        auto *card = new StorageMiniMap(volume);
+        const QString mount = card->mountPoint();
+        card->setSelected(!current.isEmpty() && QDir::cleanPath(mount) == current);
+        card->setOnClicked([this, mount] { setSizeMapRootOverride(mount); });
+        col->addWidget(card);
+    }
+    col->addStretch(1);
 }
 
 QString MainWindow::sizeMapRoot() const
@@ -3314,11 +3411,31 @@ void MainWindow::chooseSizeMapFolder()
     QString start = sizeMapRoot();
     if (start.isEmpty() || !QDir(start).exists())
         start = QDir::homePath();
-    const QString chosen = QFileDialog::getExistingDirectory(
-        this, "Choose a folder to size", start);
-    if (chosen.isEmpty())
+    // Qt's own dialog rather than the platform one: the portal/GTK pickers
+    // bury the filesystem root behind "Other Locations" and refuse to hand
+    // back "/" itself, which is exactly the folder people want to size
+    // (adhoc #21). This one returns whatever directory is open when Choose is
+    // pressed, so "/" — and every mount — is selectable.
+    QFileDialog dialog(this, "Choose a folder to size", start);
+    dialog.setFileMode(QFileDialog::Directory);
+    dialog.setOption(QFileDialog::ShowDirsOnly, true);
+    dialog.setOption(QFileDialog::DontUseNativeDialog, true);
+    dialog.setFilter(QDir::AllDirs | QDir::Drives | QDir::NoDotAndDotDot |
+                     QDir::Hidden);
+    QList<QUrl> sidebar{QUrl::fromLocalFile(QDir::rootPath()),
+                        QUrl::fromLocalFile(QDir::homePath())};
+    for (const QStorageInfo &volume : sizeMapVolumes()) {
+        const QUrl url = QUrl::fromLocalFile(volume.rootPath());
+        if (!sidebar.contains(url))
+            sidebar.append(url);
+    }
+    dialog.setSidebarUrls(sidebar);
+    if (dialog.exec() != QDialog::Accepted)
         return;
-    setSizeMapRootOverride(chosen);
+    const QStringList chosen = dialog.selectedFiles();
+    if (chosen.isEmpty() || chosen.first().isEmpty())
+        return;
+    setSizeMapRootOverride(chosen.first());
 }
 
 void MainWindow::setSizeMapRootOverride(const QString &path)
@@ -3339,6 +3456,7 @@ void MainWindow::refreshSizeMapTab(bool force)
         (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()))
         return;
     const QString path = sizeMapRoot();
+    refreshSizeMapVolumes();
     if (m_sizeMapResetRoot)
         m_sizeMapResetRoot->setVisible(overridden);
     if (m_sizeMapRootLabel) {
@@ -3385,6 +3503,18 @@ void MainWindow::refreshSizeMapTab(bool force)
                 ignored.insert(root.absoluteFilePath(rel));
             }
         }
+    }
+    // Stay on one filesystem, like `du -x`: pseudo mounts under the scanned
+    // root report fiction (/proc/kcore alone claims terabytes) and real mounts
+    // would be counted twice, once here and once from their own card. Reading
+    // the mount table needs the GUI thread's QStorageInfo, so it folds into
+    // the same prune set the scan already honours.
+    const QString ownMount = QDir::cleanPath(QStorageInfo(path).rootPath());
+    for (const QStorageInfo &volume : QStorageInfo::mountedVolumes()) {
+        const QString mount = QDir::cleanPath(volume.rootPath());
+        if (mount.isEmpty() || mount == ownMount)
+            continue;
+        ignored.insert(mount); // only matches if it sits inside the scan
     }
     m_sizeMapScanning = true;
     const int epoch = ++m_sizeMapScanEpoch;

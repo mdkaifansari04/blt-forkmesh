@@ -39,7 +39,13 @@ CHECKIN_STATES = frozenset({"going_well", "blocked", "needs_help"})
 DESTINATIONS = frozenset({
     "department", "personal", "repository", "qa", "agent",
 })
-ASSIGNEE_KINDS = frozenset({"user", "unassigned", "claude", "codex"})
+# One general bot replaces the old per-vendor Claude/Codex choice. The legacy
+# kinds still decode from stored rows and are projected as "agent" so an
+# existing task keeps working after the picker was removed.
+AGENT_ASSIGNEE_KINDS = frozenset({"agent", "bot", "claude", "codex"})
+ASSIGNEE_KINDS = (
+    frozenset({"user", "unassigned"}) | AGENT_ASSIGNEE_KINDS
+)
 QA_STATES = frozenset({"unknown", "passed", "failed"})
 DEPARTMENTS = (
     "general", "marketing", "engineering", "product-design", "security",
@@ -171,7 +177,7 @@ def _route(path):
     if len(parts) == 1:
         return ("task", task_id, "")
     if len(parts) == 2 and parts[1] in (
-            "start", "stop", "checkin", "complete", "qa"):
+            "start", "stop", "checkin", "complete", "qa", "return"):
         return ("action", task_id, parts[1])
     return None
 
@@ -275,7 +281,9 @@ async def _project_task(runtime, row, now, checkin=None):
     if started_at:
         elapsed_ms += max(0, int(now) - started_at)
     assignee_kind = str(row.get("assignee_kind") or "user")
-    if assignee_kind not in ASSIGNEE_KINDS:
+    if assignee_kind in AGENT_ASSIGNEE_KINDS:
+        assignee_kind = "agent"
+    elif assignee_kind not in ASSIGNEE_KINDS:
         assignee_kind = "user"
     qa_status = str(row.get("qa_status") or "unknown")
     if qa_status not in QA_STATES:
@@ -306,7 +314,11 @@ async def _project_task(runtime, row, now, checkin=None):
             data.get("completionNote"), MAX_COMPLETION_NOTE),
         "createdBy": _text(data.get("createdBy"), 64).lower(),
         "bountyRequest": bounty_request,
-        "assignee": _text(data.get("assignee"), 64).lower(),
+        "assignee": (
+            "agent"
+            if assignee_kind == "agent"
+            else _text(data.get("assignee"), 64).lower()
+        ),
         "assigneeKind": assignee_kind,
         "department": _text(row.get("department"), 64, "general").lower(),
         "team": _text(row.get("team"), 64).lower(),
@@ -795,8 +807,10 @@ async def _create(
                 runtime, {"error": "assignee_not_team_member"}, status=400)
         assignee = member["name"]
         assignee_bi = member["bi"]
-    elif assignee_kind in ("claude", "codex"):
-        assignee = assignee_kind
+    elif assignee_kind in AGENT_ASSIGNEE_KINDS:
+        # The board carries one general bot; the node picks the runtime.
+        assignee_kind = "agent"
+        assignee = "agent"
         destination = "agent"
     else:
         assignee = ""
@@ -922,7 +936,7 @@ async def _update(
     if set(data).issubset({"agentSessionId", "sessionToken"}):
         session_id = str(data.get("agentSessionId") or "").strip().lower()
         if (
-            str(row.get("assignee_kind") or "") not in ("claude", "codex")
+            str(row.get("assignee_kind") or "") not in AGENT_ASSIGNEE_KINDS
             or not re.fullmatch(r"[a-f0-9-]{16,64}", session_id)
             or (
                 not can_manage
@@ -1319,6 +1333,52 @@ async def _request_qa(
         runtime, await _task(runtime, org_bi, task_id), now)
 
 
+async def _return_to_list(
+        runtime, org_bi, account_bi, actor, task_id, row, can_manage, now):
+    """Pull a bot task back off the node queue and onto the task list."""
+
+    if (
+        not can_manage
+        and str(row.get("created_by_bi") or "") != account_bi
+    ):
+        return _response(
+            runtime, {"error": "task_owner_or_manager_only"}, status=403)
+    if (
+        str(row.get("assignee_kind") or "") not in AGENT_ASSIGNEE_KINDS
+        and str(row.get("destination") or "") != "agent"
+    ):
+        return _response(runtime, {"error": "task_not_queued"}, status=409)
+    if int(row.get("completed_at") or 0) > 0:
+        return _response(runtime, {"error": "task_already_done"}, status=409)
+    try:
+        current = await runtime.open(row.get("data"))
+    except Exception:
+        current = None
+    if not isinstance(current, dict):
+        return _response(runtime, {"error": "task_unavailable"}, status=500)
+    session_id = str(row.get("agent_session_id") or "")
+    # Best effort: a node that already leased the job simply finds it retired.
+    cancel = getattr(runtime, "cancel_agent_session", None)
+    if session_id and callable(cancel):
+        try:
+            await cancel(org_bi, session_id)
+        except Exception:
+            pass
+    current["assignee"] = ""
+    await runtime.d1_run(
+        "UPDATE organization_tasks SET assignee_kind='unassigned',"
+        "assignee_bi='',destination='department',agent_session_id='',"
+        "data=?,updated_at=? WHERE org_bi=? AND task_id=?",
+        await runtime.seal(current), now, org_bi, task_id,
+    )
+    await runtime.audit(
+        actor, "organization.task_returned", "organization_task", task_id,
+        details={"returned": True, "hadSession": bool(session_id)},
+    )
+    return await _task_response(
+        runtime, await _task(runtime, org_bi, task_id), now)
+
+
 async def _delete(runtime, org_bi, actor, task_id, can_manage):
     if not can_manage:
         return _response(runtime, {"error": "forbidden"}, status=403)
@@ -1636,6 +1696,9 @@ async def handle(runtime, path):
         return await _complete(
             runtime, org_bi, account_bi, actor, task_id, row, data,
             can_manage, now)
+    if action == "return":
+        return await _return_to_list(
+            runtime, org_bi, account_bi, actor, task_id, row, can_manage, now)
     if action == "qa":
         return await _request_qa(
             runtime, org_bi, account_bi, actor, task_id, row, data,

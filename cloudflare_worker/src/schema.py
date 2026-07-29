@@ -135,10 +135,13 @@ SCHEMA_STATEMENTS = [
     # Worker; retained until its encrypted keys are exported/reconciled/scrubbed.
     """CREATE TABLE IF NOT EXISTS bounty_wallet (
         wallet_bi TEXT PRIMARY KEY, data TEXT NOT NULL)""",
-    # Server-side 5xx / error log surfaced on the admin dashboard.
+    # Server-side 5xx / error log surfaced on the admin dashboard. `actor` is
+    # the account name the failing request's own session proved (empty for
+    # anonymous traffic), so the admin error view can name the affected user.
     """CREATE TABLE IF NOT EXISTS error_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
-        status INTEGER NOT NULL, method TEXT, path TEXT, message TEXT, ray TEXT)""",
+        status INTEGER NOT NULL, method TEXT, path TEXT, message TEXT, ray TEXT,
+        actor TEXT NOT NULL DEFAULT '')""",
     "CREATE INDEX IF NOT EXISTS idx_error_log_ts ON error_log(ts)",
     # Inbox drain audit log (adhoc #97): one row each time the owner's node acks
     # (drains) queued inbox submissions, so a "my web-filed issue disappeared but
@@ -1715,7 +1718,7 @@ SCHEMA_STATEMENTS = [
                 'department','personal','repository','qa','agent')),
         assignee_kind TEXT NOT NULL DEFAULT 'user'
             CHECK (assignee_kind IN (
-                'user','unassigned','claude','codex')),
+                'user','unassigned','agent')),
         status TEXT NOT NULL DEFAULT 'idle'
             CHECK (status IN ('idle','active')),
         assignee_bi TEXT NOT NULL DEFAULT '',

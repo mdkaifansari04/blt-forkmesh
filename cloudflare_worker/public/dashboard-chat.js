@@ -76,6 +76,11 @@
   const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
   const CLAUDE_SENDER_ID = "claude";
   const CODEX_SENDER_ID = "codex";
+  // The task board addresses one general bot instead of naming a vendor.
+  const ORG_BOT_SENDER_ID = "agent";
+  // "codex"/"claude" survive only so a stored selection still routes to the
+  // general bot after the per-vendor options were removed.
+  const AGENT_ASSIGNEE_VALUES = ["agent", "codex", "claude"];
   const CLAUDE_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@claude\b/i;
   const CODEX_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@codex\b/i;
   // Mainnode base host for the room WebSocket. Defaults to the origin that
@@ -554,7 +559,9 @@
     const names = [sender, senderId].map((value) =>
       String(value || "").trim().toLowerCase());
     return names.some((name) =>
-      name === CLAUDE_SENDER_ID || name === CODEX_SENDER_ID);
+      name === CLAUDE_SENDER_ID ||
+      name === CODEX_SENDER_ID ||
+      name === ORG_BOT_SENDER_ID);
   }
 
   function chatAccountKind() {
@@ -2201,14 +2208,11 @@
         ? "codex"
         : "";
     if (!provider) return false;
-    const session = userSession();
-    if (!session || !orgAgentAccessLoaded || !orgAgentEngineeringAccess) {
-      appendSystem(
-        `Only Engineering team members can use @${provider === "codex" ? "codex" : "claude"}.`,
-      );
+    const botName = provider === "codex" ? CODEX_SENDER_ID : CLAUDE_SENDER_ID;
+    if (!userSession() || !orgAgentAccessLoaded || !orgAgentEngineeringAccess) {
+      appendSystem(`Only Engineering team members can use @${botName}.`);
       return false;
     }
-    const botName = provider === "codex" ? CODEX_SENDER_ID : CLAUDE_SENDER_ID;
     const prompt = String(text || "")
       .replace(provider === "codex" ? CODEX_MENTION_RE : CLAUDE_MENTION_RE, " ")
       .trim();
@@ -2216,6 +2220,24 @@
       appendSystem(`Add a task after @${botName}.`);
       return false;
     }
+    return queueOrgAgent(provider, prompt, botName, selectedScope);
+  }
+
+  // One queue path for every bot request: the mention shortcuts pass a named
+  // provider, the task board passes "agent" and lets the Worker pick whichever
+  // runtime has an eligible mirror online.
+  async function queueOrgAgent(
+    provider,
+    prompt,
+    botName = ORG_BOT_SENDER_ID,
+    selectedScope = null,
+  ) {
+    const session = userSession();
+    if (!session || !orgAgentAccessLoaded || !orgAgentEngineeringAccess) {
+      appendSystem("Only Engineering team members can start an org bot.");
+      return false;
+    }
+    if (!prompt) return false;
     const scope = orgAgentScope(selectedScope);
     const taskKeyMatch = prompt.match(
       /\[(task:[a-z0-9-]{1,48}|issue:[a-z0-9-]{1,40}\/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})\]/i,
@@ -2554,7 +2576,7 @@
       (
         action !== "task" ||
         String(taskDestination?.value || "") === "repository" ||
-        ["codex", "claude"].includes(String(taskAssignee?.value || ""))
+        AGENT_ASSIGNEE_VALUES.includes(String(taskAssignee?.value || ""))
       );
     fullRepository?.classList.toggle("ring-1", repositoryRelevant);
     fullRepository?.classList.toggle("ring-primary/50", repositoryRelevant);
@@ -2722,7 +2744,7 @@
       action === "task" &&
       (
         String(taskDestination?.value || "") === "repository" ||
-        ["codex", "claude"].includes(taskAssigneeValue)
+        AGENT_ASSIGNEE_VALUES.includes(taskAssigneeValue)
       );
     if (!repository && (action !== "task" || taskNeedsRepository)) {
       setComposerStatus("Choose a repository for this action.", "bad");
@@ -2748,13 +2770,11 @@
         const title = String(lines.shift() || "").trim().slice(0, 160);
         const details = lines.join("\n").trim().slice(0, 4000);
         if (!title) throw new Error("Task title is required.");
-        const agentKind = ["codex", "claude"].includes(taskAssigneeValue)
-          ? taskAssigneeValue
-          : "";
+        const botTask = AGENT_ASSIGNEE_VALUES.includes(taskAssigneeValue);
         const userAssignee = taskAssigneeValue.startsWith("user:")
           ? taskAssigneeValue.slice(5)
           : "";
-        const destination = agentKind
+        const destination = botTask
           ? "agent"
           : String(taskDestination?.value || "department");
         const created = await taskApiRequest("POST", "/api/tasks", {
@@ -2763,7 +2783,11 @@
           department: String(taskDepartment?.value || "general"),
           team: String(taskTeam?.value || ""),
           destination,
-          assigneeKind: agentKind || (userAssignee ? "user" : "unassigned"),
+          assigneeKind: botTask
+            ? "agent"
+            : userAssignee
+              ? "user"
+              : "unassigned",
           assignee: userAssignee,
           repository: repository
             ? `${repository.logicalOwner}/${repository.logicalName}`
@@ -2777,15 +2801,18 @@
             : {}),
         });
         const task = created?.task || {};
-        if (agentKind) {
-          const mention = agentKind === "codex" ? "@codex" : "@claude";
-          const queued = await maybeAskOrgAgent(
-            `${mention} [task:${task.id}] ${title}\n\n${details}`.trim(),
+        if (botTask) {
+          // The task is already on the board; queueing it on a node is the
+          // follow-up, and a failure there leaves the task list authoritative.
+          const queued = await queueOrgAgent(
+            "agent",
+            `[task:${task.id}] ${title}\n\n${details}`.trim(),
+            ORG_BOT_SENDER_ID,
             repository,
           );
           if (!queued) {
             throw new Error(
-              "The task was saved, but the agent request was not accepted.",
+              "The task was saved to the task list, but no bot node accepted it yet.",
             );
           }
           const sessionId = String(queued?.session?.id || "");
@@ -2800,7 +2827,7 @@
             destination === "qa"
               ? "the QA board"
               : destination === "agent"
-                ? agentKind === "codex" ? "Codex" : "Claude"
+                ? "the bot queue"
                 : destination === "repository"
                   ? `${repository.owner}/${repository.name}`
                   : `${task.department || "general"}`

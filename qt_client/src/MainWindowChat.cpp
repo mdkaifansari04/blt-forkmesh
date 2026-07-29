@@ -452,7 +452,7 @@ QWidget *MainWindow::buildChatPage()
     // the edge-to-edge header and remains visible beside every app view.
     auto *rail = new QWidget;
     rail->setObjectName(QStringLiteral("appNavigationRailContent"));
-    rail->setMinimumWidth(58);
+    rail->setMinimumWidth(kRailItemWidth);
     m_appNavigationRailLayout = new QVBoxLayout(rail);
     m_appNavigationRailLayout->setContentsMargins(0, 4, 0, 4);
     m_appNavigationRailLayout->setSpacing(1);
@@ -465,7 +465,7 @@ QWidget *MainWindow::buildChatPage()
           m_relaysNavButton, m_networkNavButton}) {
         if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
             railButton->setCompact(false);
-            railButton->setFixedSize(58, 40);
+            railButton->setFixedSize(kRailItemWidth, 40);
         }
         m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
     }
@@ -480,12 +480,12 @@ QWidget *MainWindow::buildChatPage()
     // a tiny icon-over-caption wrapper so every rail destination is named.
     auto addUtility = [this](QPushButton *button, const QString &caption) {
         button->setProperty("railUtility", true);
-        button->setFixedSize(58, 18);
+        button->setFixedSize(kRailItemWidth, 18);
         auto *label = new QLabel(caption);
         label->setObjectName(QStringLiteral("railItemLabel"));
         label->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
         auto *host = new QWidget;
-        host->setFixedSize(58, 28);
+        host->setFixedSize(kRailItemWidth, 28);
         auto *hostLayout = new QVBoxLayout(host);
         hostLayout->setContentsMargins(0, 0, 0, 0);
         hostLayout->setSpacing(0);
@@ -499,7 +499,9 @@ QWidget *MainWindow::buildChatPage()
     addUtility(m_navResizeButton, QStringLiteral("Resize"));
     addUtility(m_notificationButton, QStringLiteral("Alerts"));
 
-    // Pending approvals use the same corner-count language as Chat and Agents.
+    // Pending approvals use the same corner-count language as Chat and Agents:
+    // the count rides the bell's own top-right corner (updateNotificationButton
+    // places it), not the item's right edge, so it stays inside the rail.
     m_notificationRailBadge = new QLabel(m_notificationButton);
     m_notificationRailBadge->setObjectName(QStringLiteral("chatUnreadBadge"));
     m_notificationRailBadge->setAlignment(Qt::AlignCenter);
@@ -511,7 +513,7 @@ QWidget *MainWindow::buildChatPage()
     accountLabel->setObjectName(QStringLiteral("railItemLabel"));
     accountLabel->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
     auto *accountHost = new QWidget;
-    accountHost->setFixedSize(58, 52);
+    accountHost->setFixedSize(kRailItemWidth, 52);
     auto *accountLayout = new QVBoxLayout(accountHost);
     accountLayout->setContentsMargins(0, 0, 0, 0);
     accountLayout->setSpacing(0);
@@ -530,7 +532,7 @@ QWidget *MainWindow::buildChatPage()
     railScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     railScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     railScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
-    railScroll->setFixedWidth(66);
+    railScroll->setFixedWidth(kRailWidth);
     railScroll->setMinimumHeight(0);
     railScroll->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Ignored);
 
@@ -1596,7 +1598,9 @@ void MainWindow::tickBackgroundQueue()
             layout->setSpacing(6);
             spinner = new QLabel(glyph);
             spinner->setObjectName("backgroundTaskSpinner");
-            spinner->setStyleSheet(QStringLiteral("color:#3fb950;font-weight:700;"));
+            spinner->setStyleSheet(
+                QStringLiteral("color:%1;font-weight:700;")
+                    .arg(QString::fromLatin1(Theme::kRunning)));
             spinner->setFixedWidth(14);
             label = new QLabel(word);
             label->setObjectName("backgroundTaskNote");
@@ -4273,7 +4277,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_notificationButton->setObjectName("topNavButton");
     m_notificationButton->setCheckable(true);
     m_notificationButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_notificationButton, "bell", 16);
+    setOcticon(m_notificationButton, "bell", kNotificationBellIconPx);
     m_notificationButton->setToolTip("Notifications");
     m_navGroup->addButton(m_notificationButton, 3); // section 3: Notifications
     connect(m_notificationButton, &QPushButton::clicked, this,
@@ -4432,7 +4436,10 @@ QWidget *MainWindow::buildBreadcrumb()
     m_connectionDot->setObjectName("connectionDot");
     m_connectionDot->setFixedSize(12, 12);
     m_connectionDot->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_connectionDot->move(40 - 12 - 1, 40 - 12 - 1);
+    // Tucked one step further in than a square avatar needed: on the circular
+    // picture the corner is empty, so the dot has to sit on the rim to read as
+    // part of it.
+    m_connectionDot->move(40 - 12 - 3, 40 - 12 - 3);
     m_connectionDot->raise();
 
     // Captions for the top-bar dropdowns.

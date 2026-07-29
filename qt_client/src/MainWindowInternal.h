@@ -75,6 +75,7 @@
 #include <QGroupBox>
 #include <QGuiApplication>
 #include <QStandardPaths>
+#include <QStorageInfo>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -4642,6 +4643,155 @@ private:
     mutable QVector<Segment> m_segments; // rebuilt each paint (geometry-dependent)
 };
 
+// One mounted filesystem beside the big size map (adhoc #21): a small
+// used/free donut plus the mount point, already drawn so the whole set reads
+// as a column of tiny maps. Clicking one re-roots the full scan on that mount,
+// which is how "/" (or any other filesystem) gets expanded without the folder
+// picker. Header-only with a plain callback, like the other Internal.h mini
+// widgets — no Q_OBJECT, so no moc entry is needed.
+class StorageMiniMap final : public QWidget
+{
+public:
+    explicit StorageMiniMap(const QStorageInfo &volume, QWidget *parent = nullptr)
+        : QWidget(parent), m_mountPoint(volume.rootPath()),
+          m_device(QString::fromUtf8(volume.device())),
+          m_type(QString::fromUtf8(volume.fileSystemType())),
+          m_total(qMax<qint64>(0, volume.bytesTotal())),
+          m_used(qMax<qint64>(0, volume.bytesTotal() - volume.bytesAvailable()))
+    {
+        setCursor(Qt::PointingHandCursor);
+        setMouseTracking(true);
+        setMinimumHeight(56);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setToolTip(QStringLiteral("%1\n%2 · %3\n%4 used of %5")
+                       .arg(QDir::toNativeSeparators(m_mountPoint), m_device,
+                            m_type, QLocale().formattedDataSize(m_used),
+                            QLocale().formattedDataSize(m_total)));
+    }
+
+    QString mountPoint() const { return m_mountPoint; }
+
+    void setOnClicked(std::function<void()> callback)
+    {
+        m_onClicked = std::move(callback);
+    }
+
+    // Marks the filesystem the big map is currently showing.
+    void setSelected(bool selected)
+    {
+        if (m_selected == selected)
+            return;
+        m_selected = selected;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        const bool dark = currentThemeIsDark();
+        const QColor text(dark ? "#e6edf3" : "#1f2328");
+        const QColor muted(dark ? "#8b949e" : "#656d76");
+        const QColor track(dark ? "#30363d" : "#d0d7de");
+        const QColor used(dark ? "#3987e5" : "#2a78d6");
+        const QColor accent(dark ? "#58a6ff" : "#0969da");
+
+        if (m_selected || m_hover) {
+            painter.setPen(m_selected ? QPen(accent, 1) : Qt::NoPen);
+            painter.setBrush(QColor(dark ? "#161b22" : "#f6f8fa"));
+            painter.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5),
+                                    6, 6);
+        }
+
+        const qreal ring = 6.0;
+        const qreal diameter = qMin<qreal>(38.0, height() - 12);
+        const QRectF donut(8 + ring / 2, (height() - diameter) / 2.0 + ring / 2,
+                           diameter - ring, diameter - ring);
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(track, ring, Qt::SolidLine, Qt::FlatCap));
+        painter.drawEllipse(donut);
+        const qreal fraction =
+            m_total > 0 ? qBound<qreal>(0.0, double(m_used) / double(m_total), 1.0)
+                        : 0.0;
+        if (fraction > 0) {
+            painter.setPen(QPen(used, ring, Qt::SolidLine, Qt::FlatCap));
+            painter.drawArc(donut, 90 * 16, int(-fraction * 360 * 16));
+        }
+
+        QFont pct = font();
+        pct.setPointSizeF(qMax<qreal>(7.0, font().pointSizeF() - 2.5));
+        painter.setFont(pct);
+        painter.setPen(muted);
+        painter.drawText(donut.adjusted(-ring, -ring, ring, ring), Qt::AlignCenter,
+                         QStringLiteral("%1%").arg(qRound(fraction * 100)));
+
+        const int textLeft = int(8 + diameter + 10);
+        const QRect textArea(textLeft, 6, width() - textLeft - 8, height() - 12);
+        QFont title = font();
+        title.setBold(true);
+        painter.setFont(title);
+        painter.setPen(m_selected ? accent : text);
+        const QRect titleRect(textArea.left(), textArea.top(), textArea.width(),
+                              textArea.height() / 2);
+        painter.drawText(titleRect, Qt::AlignLeft | Qt::AlignVCenter,
+                         painter.fontMetrics().elidedText(
+                             QDir::toNativeSeparators(m_mountPoint),
+                             Qt::ElideMiddle, titleRect.width()));
+        painter.setFont(font());
+        painter.setPen(muted);
+        const QRect subRect(textArea.left(), textArea.center().y(),
+                            textArea.width(), textArea.height() / 2);
+        painter.drawText(subRect, Qt::AlignLeft | Qt::AlignVCenter,
+                         painter.fontMetrics().elidedText(
+                             QStringLiteral("%1 of %2 · %3")
+                                 .arg(QLocale().formattedDataSize(m_used),
+                                      QLocale().formattedDataSize(m_total), m_type),
+                             Qt::ElideRight, subRect.width()));
+    }
+
+    void enterEvent(QEnterEvent *event) override
+    {
+        m_hover = true;
+        update();
+        QWidget::enterEvent(event);
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        m_hover = false;
+        update();
+        QWidget::leaveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() != Qt::LeftButton || !rect().contains(event->pos()) ||
+            !m_onClicked) {
+            QWidget::mouseReleaseEvent(event);
+            return;
+        }
+        // The callback re-roots the map, which rebuilds this whole column and
+        // deleteLater()s this very card — and the rescan behind it pumps the
+        // event loop (runGitCapture), so `this` can already be gone when it
+        // returns. Copy the callback out, accept the event first, and touch
+        // nothing afterwards.
+        const std::function<void()> callback = m_onClicked;
+        event->accept();
+        callback();
+    }
+
+private:
+    QString m_mountPoint;
+    QString m_device;
+    QString m_type;
+    qint64 m_total = 0;
+    qint64 m_used = 0;
+    bool m_hover = false;
+    bool m_selected = false;
+    std::function<void()> m_onClicked;
+};
+
 inline QString formatDuration(qint64 ms)
 {
     const qint64 totalSeconds = std::max<qint64>(0, ms / 1000);
@@ -5228,8 +5378,11 @@ inline QByteArray forkMeshNodeAvatarPng(const QString &seed)
     return png;
 }
 
-// Clip avatar PNG bytes into a rounded-rect pixmap for the nav button.
-inline QPixmap roundedAvatar(const QByteArray &png, int side)
+// Clip avatar PNG bytes into a rounded-rect pixmap for the nav button. The
+// corner radius is a fraction of the side, so 0.5 gives a full circle (what the
+// website shows for an account's picture).
+inline QPixmap roundedAvatar(const QByteArray &png, int side,
+                             qreal radiusRatio = 0.28)
 {
     QPixmap src;
     if (png.isEmpty() || !src.loadFromData(png))
@@ -5239,7 +5392,8 @@ inline QPixmap roundedAvatar(const QByteArray &png, int side)
     QPainter p(&out);
     p.setRenderHint(QPainter::Antialiasing);
     QPainterPath clip;
-    clip.addRoundedRect(0, 0, side, side, side * 0.28, side * 0.28);
+    const qreal radius = side * radiusRatio;
+    clip.addRoundedRect(0, 0, side, side, radius, radius);
     p.setClipPath(clip);
     p.drawPixmap(0, 0, src.scaled(side, side, Qt::KeepAspectRatioByExpanding,
                                   Qt::SmoothTransformation));
@@ -5812,7 +5966,7 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         p.drawPixmap(0, 0,
-                     refreshPixmap(QColor(Theme::kTextTertiary), m_angle, m_size));
+                     refreshPixmap(QColor(Theme::kRunning), m_angle, m_size));
     }
 
 private:
@@ -5931,7 +6085,7 @@ class RingSpinner : public QWidget
 {
 public:
     explicit RingSpinner(QWidget *parent = nullptr,
-                         const QColor &color = QColor("#58a6ff"))
+                         const QColor &color = QColor(Theme::kRunning))
         : QWidget(parent), m_color(color)
     {
         setAttribute(Qt::WA_TranslucentBackground);
@@ -6509,6 +6663,16 @@ inline void setOcticon(QPushButton *button, const QString &name, int size = 16,
     applyStoredOcticon(button);
 }
 
+// Width of one activity-rail entry, and of the rail (scroll area) itself. Every
+// badge in the rail rides its own icon's corner rather than the item's outer
+// edge, so an item only has to be as wide as its icon plus its caption — the
+// rail no longer reserves a column of empty space for a count (adhoc #19).
+constexpr int kRailItemWidth = 46;
+constexpr int kRailWidth = kRailItemWidth + 8; // + room for the scrollbar
+// Size of the bell glyph on the rail's Alerts item — updateNotificationButton
+// needs it to park the pending-approval count on the glyph's corner.
+constexpr int kNotificationBellIconPx = 16;
+
 // One entry in the app-wide activity rail: an octicon over an optional small
 // label, VS-Code style, with the selected state drawn as a 2px accent line along
 // the item's left edge. A blue count badge rides above the icon, where it cannot
@@ -6623,7 +6787,7 @@ protected:
             p.setPen(Qt::NoPen);
             p.setBrush(QColor(dark ? "#0d1117" : "#ffffff"));
             p.drawEllipse(QRect(at, QSize(s, s)).adjusted(-1, -1, 1, 1));
-            p.drawPixmap(at, refreshPixmap(QColor("#58a6ff"), m_spinAngle, s));
+            p.drawPixmap(at, refreshPixmap(QColor(Theme::kRunning), m_spinAngle, s));
         } else if (m_badge > 0) {
             const QString text = m_badge > 99 ? QStringLiteral("99+")
                                               : QString::number(m_badge);
