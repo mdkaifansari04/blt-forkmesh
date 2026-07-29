@@ -3105,7 +3105,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:avatar-hud-launcher", task: "Restore circular avatar HUD launcher", detail: "The account avatar is again a round launcher: hover or focus fans fixed-size tool boxes out without resizing the HUD, notification/error/task counts form a compact actionable row beside it and return to their matching icons when expanded, touch uses a first tap to reveal controls, and player movement or an outside click closes the launcher.", estimate: "ready to deploy · focused QA", done: true },
   { key: "task:fixed-square-hud-shortcuts", task: "Fixed square World HUD shortcuts", detail: "The avatar is clipped into a true circle. Its right rail is one non-expanding column with only Office, Campfire, Share view, Remember, and square saved thumbnails; reward-pool navigation stays in the World. Dashboard uses a globe, Tasks uses a list, Capture uses a crop frame, and Wave now sits beside chat.", estimate: "ready to deploy · focused QA", done: true },
   { key: "task:avatar-selection-runtime", task: "Reliable user HUD selection", detail: "Avatar clicks use a scoped frame timestamp, prefer the visible avatar hit over nearby geometry, and open the privacy-filtered member side panel without throwing.", estimate: "implemented · focused QA", done: true },
-  { key: "task:member-circle-fire", task: "Dirt Members Circle + growing fire", detail: "The complete member seating circle sits on detailed dirt; every member adds one visible log and slightly increases the bounded campfire scale.", estimate: "implemented · focused QA", done: true },
+  { key: "task:member-circle-fire", task: "Dirt Members Circle + growing fire", detail: "The complete member seating circle sits on detailed dirt; every member adds one visible log, the fire steps up a notch on every hundredth account, and the member total hangs large above the flames.", estimate: "implemented · focused QA", done: true },
   { key: "task:aquarium-fixed-controls", task: "Tank-fixed reef controls", detail: "Feed, tap, backdrop, and light controls stay anchored to the aquarium's lower-right control point instead of floating with the player.", estimate: "implemented · focused QA", done: true },
   { key: "task:recent-public-chat-card", task: "Recent public chat on chest", detail: "Each avatar chest includes one sanitized line from that account's latest public-channel message; private and direct messages never enter the card.", estimate: "implemented · focused QA", done: true },
   { key: "task:verification-pin-state", task: "Green verified pin / red unverified X", detail: "Every signed-in avatar shows a green check when email-verified and a red X in the same front pin when unverified; guests remain neutral.", estimate: "implemented · focused QA", done: true },
@@ -11450,8 +11450,8 @@ const SYSTEM_STATUS_COLORS = Object.freeze({
   operational: "#198a43",
   degraded: "#a66f00",
   down: "#d92d3a",
-  unknown: "#d92d3a",
-  future: "#f5f5f7",
+  unknown: "#8c959f",
+  future: "#dedfe4",
 });
 
 function systemStatusColor(status) {
@@ -11540,7 +11540,7 @@ function systemStatusBannerTexture(THREE, payload = null) {
       context.fillText("24h", 1100, top + Math.max(29, 61 * scale));
       context.fillText("30d", 1282, top + Math.max(29, 61 * scale));
       context.fillText(
-        "coverage", 1452, top + Math.max(29, 61 * scale));
+        "24h data", 1452, top + Math.max(29, 61 * scale));
       context.textAlign = "left";
 
       const days = Array.isArray(system.days) ? system.days.slice(-30) : [];
@@ -11625,13 +11625,21 @@ function systemStatusBannerTexture(THREE, payload = null) {
       });
     });
 
-    context.fillStyle = "#686b74";
     context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
-      "● OPERATIONAL   ● DEGRADED   ● DOWN   ● NO DATA",
-      72,
-      1992,
-    );
+    let legendX = 72;
+    [
+      ["operational", "OPERATIONAL"],
+      ["degraded", "DEGRADED"],
+      ["down", "DOWN"],
+      ["unknown", "NO DATA"],
+    ].forEach(([state, label]) => {
+      context.fillStyle = systemStatusColor(state);
+      context.fillText("●", legendX, 1992);
+      legendX += context.measureText("● ").width;
+      context.fillStyle = "#686b74";
+      context.fillText(label, legendX, 1992);
+      legendX += context.measureText(`${label}   `).width;
+    });
     context.strokeStyle = STATUS_BANNER_OPTIONS.accent;
     context.lineWidth = 16;
     context.strokeRect(12, 12, 1512, 2024);
@@ -15808,7 +15816,12 @@ export function createWorldScene({
       opacity: 0.92,
     }),
   );
-  flame.position.y = 0.98;
+  // Both cones are centred on their own geometry, so scaling them up would
+  // sink the base into the ground. The animation re-pins each base to the logs
+  // every frame (see FLAME_BASE_Y); these are just the resting spots.
+  const FLAME_HEIGHT = 1.4;
+  const FLAME_BASE_Y = 0.28;
+  flame.position.y = FLAME_BASE_Y + FLAME_HEIGHT / 2;
   campfire.add(flame);
   const innerFlame = new THREE.Mesh(
     new THREE.ConeGeometry(0.31, 0.95, 8),
@@ -15819,11 +15832,19 @@ export function createWorldScene({
       opacity: 0.94,
     }),
   );
-  innerFlame.position.y = 0.86;
+  const INNER_FLAME_HEIGHT = 0.95;
+  const INNER_FLAME_BASE_Y = 0.38;
+  innerFlame.position.y = INNER_FLAME_BASE_Y + INNER_FLAME_HEIGHT / 2;
   campfire.add(innerFlame);
-  let fireLevel = 1;
+  // The blaze is a milestone marker rather than a per-member trickle: it holds
+  // its size through a hundred accounts and steps up a notch when the next
+  // century lands, bounded so a large community's fire stays welcoming.
+  const CAMPFIRE_BASE_FIRE_LEVEL = 1.45;
+  const CAMPFIRE_FIRE_LEVEL_PER_CENTURY = 0.3;
+  const CAMPFIRE_MAX_FIRE_LEVEL = 3.55;
+  let fireLevel = CAMPFIRE_BASE_FIRE_LEVEL;
   const fireLight = new THREE.PointLight("#ffa14d", 3.2, 14, 1.8);
-  fireLight.position.y = 1.45;
+  fireLight.position.y = FLAME_BASE_Y + FLAME_HEIGHT * CAMPFIRE_BASE_FIRE_LEVEL * 0.5;
   campfire.add(fireLight);
   // The membership total rides in the flames themselves rather than on yet
   // another sign: an ember-lit numeral hovering over the pit, so the fire
@@ -15835,9 +15856,12 @@ export function createWorldScene({
       depthWrite: false,
     }),
   );
-  const MEMBER_COUNT_HOVER_Y = 3.25;
+  // Hangs clear above the (now much taller) flames rather than inside them, at
+  // a size that stays readable from the bench ring — the number is the headline
+  // of the whole clearing, so it is the first thing you can make out.
+  const MEMBER_COUNT_HOVER_Y = 3.9;
   memberCountSprite.position.y = MEMBER_COUNT_HOVER_Y;
-  memberCountSprite.scale.set(4.2, 2.1, 1);
+  memberCountSprite.scale.set(5.2, 2.6, 1);
   memberCountSprite.visible = false;
   campfire.add(memberCountSprite);
   let memberCountShown = "";
@@ -15858,21 +15882,38 @@ export function createWorldScene({
     );
     memberCountSprite.material.needsUpdate = true;
     memberCountSprite.visible = true;
-    // Each member contributes one visible log and a small, bounded amount of
-    // warmth. The cap keeps a mature community's fire welcoming, not blocking.
+    // Each member contributes one visible log; the fire itself only grows on
+    // the hundreds, so passing a century is a visible event around the circle.
     rebuildCampfireMemberLogs(count);
-    fireLevel = clamp(1.28 + count * 0.014, 1.28, 2.2);
-    fireLight.distance = 14 + Math.min(count, 80) * 0.08;
+    const fireCenturies = Math.floor(count / 100);
+    fireLevel = clamp(
+      CAMPFIRE_BASE_FIRE_LEVEL + fireCenturies * CAMPFIRE_FIRE_LEVEL_PER_CENTURY,
+      CAMPFIRE_BASE_FIRE_LEVEL,
+      CAMPFIRE_MAX_FIRE_LEVEL,
+    );
+    fireLight.distance = 16 + Math.min(fireCenturies, 7) * 2.4;
   }
   animated.push((time) => {
     const flicker = 1 + Math.sin(time * 0.011) * 0.12 + Math.sin(time * 0.023) * 0.06;
-    const size = fireLevel * flicker;
-    flame.scale.set(size, fireLevel * (1 + Math.sin(time * 0.017) * 0.16), size);
+    // A milestone fire grows mostly upward: widening it at the same rate would
+    // push the flames out past their own stone ring.
+    const size = (1 + (fireLevel - CAMPFIRE_BASE_FIRE_LEVEL) * 0.32) * flicker;
+    const height = fireLevel * (1 + Math.sin(time * 0.017) * 0.16);
+    flame.scale.set(size, height, size);
     innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
+    // Keep both cones standing on the logs as they grow, instead of letting a
+    // taller flame sink half of its extra height under the pit.
+    flame.position.y = FLAME_BASE_Y + (FLAME_HEIGHT * height) / 2;
+    innerFlame.position.y =
+      INNER_FLAME_BASE_Y + (INNER_FLAME_HEIGHT * size * 0.9) / 2;
     fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
-    // Drift with the flames so the number sits in the fire instead of on it.
+    fireLight.position.y = FLAME_BASE_Y + FLAME_HEIGHT * fireLevel * 0.5;
+    // Rides above the flames, rising with them so a bigger fire never reaches
+    // up into the number.
     memberCountSprite.position.y =
-      MEMBER_COUNT_HOVER_Y + Math.sin(time * 0.0017) * 0.12;
+      MEMBER_COUNT_HOVER_Y +
+      FLAME_HEIGHT * Math.max(0, fireLevel - CAMPFIRE_BASE_FIRE_LEVEL) +
+      Math.sin(time * 0.0017) * 0.12;
   });
   // The real bench count depends on the member roster, which is still an
   // in-flight network request when the scene first renders. Rather than
@@ -19677,6 +19718,7 @@ export function createWorldScene({
   const touchKeys = new Set();
   const touchMovement = new THREE.Vector2();
   const touchPointers = new Map();
+  let pendingTouchResize = false;
   const raycaster = new THREE.Raycaster();
   const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   const pointer = new THREE.Vector2();
@@ -29073,6 +29115,10 @@ export function createWorldScene({
         pinchStartDistance = 0;
       }
       remainingTouch = touchPointers.entries().next().value || null;
+      if (!touchPointers.size && pendingTouchResize) {
+        pendingTouchResize = false;
+        resize();
+      }
     }
     try {
       renderer.domElement.releasePointerCapture(event.pointerId);
@@ -30257,6 +30303,15 @@ export function createWorldScene({
   let resizeFrame = 0;
   const resize = () => {
     if (resizeFrame || disposed) return;
+    // Mobile browser chrome and visualViewport can resize the canvas wrapper
+    // while a finger pans, tilts, or pinches. Reallocating the WebGL drawing
+    // buffer mid-gesture clears it and looks exactly like a full page refresh.
+    // Keep the current frame and apply one settled resize after the final
+    // touch pointer is released.
+    if (touchPointers.size > 0) {
+      pendingTouchResize = true;
+      return;
+    }
     resizeFrame = window.requestAnimationFrame(() => {
       resizeFrame = 0;
       if (disposed) return;

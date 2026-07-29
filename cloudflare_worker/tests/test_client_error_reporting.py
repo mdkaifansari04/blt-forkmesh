@@ -53,6 +53,11 @@ def test_uncaught_errors_and_rejections_use_the_private_collector():
     assert "[redacted-url]" in REPORTER
 
 
+def test_expected_abort_rejections_do_not_pollute_operational_errors():
+    assert 'reason?.name === "AbortError"' in REPORTER
+    assert "signal is aborted|operation was aborted" in REPORTER
+
+
 def test_client_collector_is_bounded_redacted_and_stored_in_error_log():
     assert "async def client_error_handler(env, request):" in ENTRY
     assert "_request_same_origin(request)" in ENTRY

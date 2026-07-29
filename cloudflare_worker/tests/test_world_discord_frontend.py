@@ -23,6 +23,13 @@ def test_world_discord_bridge_is_manual_and_never_handles_provider_secrets():
     assert "state.writing" in source
     assert "window.location.assign" in source
     assert "window.open" not in source
+    assert "consumeOAuthOutcome" in source
+    assert "Discord returned an invalid or expired authorization" in source
+    assert "stage: state lookup" in source
+    assert "stage: record decryption" in source
+    assert "stage: record state binding" in source
+    assert "stage: session context" in source
+    assert "stage: authorization code" in source
     assert "Disconnect Discord" in source
     assert "connector.state === \"configured\"" in source
     assert "world-discord-panel" in styles

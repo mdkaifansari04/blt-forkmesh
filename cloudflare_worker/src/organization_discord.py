@@ -538,9 +538,14 @@ async def _store_oauth_state(runtime, context, guild_id):
 
     state = _new_oauth_secret(runtime)
     verifier = _new_oauth_secret(runtime)
-    transaction = _new_oauth_secret(runtime)
-    if not state or not verifier or not transaction:
+    if not state or not verifier:
         return "", "", ""
+    # Keep the same one-time state in the secure HttpOnly callback cookie.
+    # Discord normally returns `state` in the query, but its advanced bot
+    # installation flow can return a malformed/empty state for some clients.
+    # The cookie provides a same-browser fallback without weakening the D1
+    # one-time claim, PKCE, session, owner, redirect, or guild checks.
+    transaction = state
     session_id = str(await runtime.session_id() or "")
     if not session_id:
         return "", "", ""
@@ -697,7 +702,7 @@ async def _discord_error(runtime, result, context=None):
                 "error": "discord_rate_limited",
                 "retryAfterMs": retry_ms,
             },
-            503,
+            429,
             extra_headers={
                 "retry-after": str(max(1, (retry_ms + 999) // 1000)),
             },
@@ -887,34 +892,59 @@ async def _consume_oauth_state(runtime):
 
     state = str(runtime.query("state") or "").lower()
     if not _OAUTH_STATE_RE.fullmatch(state):
-        return None
+        state = str(runtime.oauth_transaction_cookie() or "").lower()
+    if not _OAUTH_STATE_RE.fullmatch(state):
+        return None, "invalid_state_format"
     state_hash = _oauth_state_hash(state)
-    # Consume atomically before calling Discord. A provider retry can safely
-    # start a new flow; it cannot replay a code or turn a valid callback into a
-    # durable bearer credential.
     row = await runtime.d1_first(
+        "SELECT data,expires_at FROM organization_discord_oauth_states "
+        "WHERE state_hash=?", state_hash)
+    if not row:
+        return None, "invalid_state_missing"
+    if int(row.get("expires_at") or 0) <= runtime.now():
+        await runtime.d1_run(
+            "DELETE FROM organization_discord_oauth_states "
+            "WHERE state_hash=? AND data=?", state_hash, row.get("data"))
+        return None, "invalid_state_expired"
+    encrypted = str(row.get("data") or "")
+    claim = "consumed:" + _new_oauth_secret(runtime)
+    if not encrypted or claim == "consumed:":
+        return None, "invalid_record_storage"
+    # D1's Worker API documents write-operation result sets as empty, so
+    # DELETE ... RETURNING cannot be consumed through PreparedStatement.first.
+    # Claim with a compare-and-swap, then read the marker back: only one
+    # concurrent callback can own this exact encrypted row.
+    await runtime.d1_run(
+        "UPDATE organization_discord_oauth_states SET data=?,expires_at=0 "
+        "WHERE state_hash=? AND data=? AND expires_at=?",
+        claim, state_hash, encrypted, int(row.get("expires_at") or 0))
+    claimed = await runtime.d1_first(
+        "SELECT data FROM organization_discord_oauth_states "
+        "WHERE state_hash=?", state_hash)
+    if not claimed or not hmac.compare_digest(
+            str(claimed.get("data") or ""), claim):
+        return None, "invalid_state_claim"
+    await runtime.d1_run(
         "DELETE FROM organization_discord_oauth_states "
-        "WHERE state_hash=? RETURNING data,expires_at", state_hash)
-    if not row or int(row.get("expires_at") or 0) <= runtime.now():
-        return None
+        "WHERE state_hash=? AND data=?", state_hash, claim)
     try:
-        record = await runtime.open(row.get("data"))
+        record = await runtime.open(encrypted)
     except Exception:
         record = None
     if not isinstance(record, dict):
-        return None
+        return None, "invalid_record_decrypt"
     if not hmac.compare_digest(str(record.get("state") or ""), state):
-        return None
-    transaction = str(runtime.oauth_transaction_cookie() or "").lower()
-    if not _OAUTH_STATE_RE.fullmatch(transaction):
-        return None
-    if not hmac.compare_digest(
-            str(record.get("transaction") or ""), transaction):
-        return None
+        return None, "invalid_record_state"
+    # Do not gate the callback on the optional browser transaction cookie.
+    # Privacy controls can omit it, and a second connection attempt can replace
+    # it while Discord is still returning the first valid authorization. The
+    # 256-bit state remains one-time and encrypted at rest; PKCE, the active
+    # ForkMesh session, owner role, exact redirect URI, requested guild, and
+    # Discord permission proof are all independently mandatory below.
     verifier = str(record.get("verifier") or "")
     if not _OAUTH_STATE_RE.fullmatch(verifier):
-        return None
-    return record
+        return None, "invalid_record_verifier"
+    return record, ""
 
 
 async def _oauth_callback_context(runtime, record):
@@ -982,20 +1012,23 @@ async def handle_oauth_callback(runtime):
     # Consume an otherwise valid state on *every* callback, including a user
     # denial or a just-rotated OAuth client secret, so a stale authorization
     # attempt cannot later be replayed.
-    record = await _consume_oauth_state(runtime)
+    record, invalid_outcome = await _consume_oauth_state(runtime)
     if str(runtime.query("error") or ""):
         return runtime.oauth_callback_response("denied")
     if not runtime.discord_oauth_ready():
         return runtime.oauth_callback_response("setup")
     code = _oauth_code(runtime.query("code"))
-    if not code or not record:
-        return runtime.oauth_callback_response("invalid")
+    if not code:
+        return runtime.oauth_callback_response("invalid_code")
+    if not record:
+        return runtime.oauth_callback_response(
+            invalid_outcome or "invalid_record_storage")
     context = await _oauth_callback_context(runtime, record)
     if not context:
-        return runtime.oauth_callback_response("invalid")
+        return runtime.oauth_callback_response("invalid_context")
     requested_guild_id = _snowflake(record.get("guildId"))
     if not requested_guild_id:
-        return runtime.oauth_callback_response("invalid")
+        return runtime.oauth_callback_response("invalid_record_guild")
     exchanged = await runtime.discord_oauth_exchange(code, record["verifier"])
     access_token = str((exchanged or {}).get("accessToken") or "")
     if int((exchanged or {}).get("status") or 0) != 200 or not access_token:
@@ -1207,7 +1240,7 @@ async def _channel_available(runtime, context, config, channel_id):
     if error:
         return None, error
     available = {
-        item["id"] for item in channels
+        item["id"]: item for item in channels
     }
     if channel_id not in available:
         payload = {
@@ -1218,7 +1251,7 @@ async def _channel_available(runtime, context, config, channel_id):
         }
         return None, _response(
             runtime, await _attach_setup_task(runtime, context, payload), 409)
-    return channel_id, None
+    return available[channel_id], None
 
 
 async def _list_messages(runtime, context):
@@ -1229,10 +1262,11 @@ async def _list_messages(runtime, context):
     channel_id = requested or config["channelIds"][0]
     if channel_id not in config["channelIds"]:
         return _response(runtime, {"error": "channel_not_selected"}, 403)
-    channel_id, error = await _channel_available(
+    channel, error = await _channel_available(
         runtime, context, config, channel_id)
     if error:
         return error
+    channel_id = channel["id"]
     result = await runtime.discord_messages(channel_id, MAX_MESSAGES)
     if int(result.get("status") or 0) != 200:
         return await _discord_error(runtime, result, context)
@@ -1254,6 +1288,10 @@ async def _list_messages(runtime, context):
         "ok": True,
         "organization": context["org"],
         "channelId": channel_id,
+        "channel": {
+            "id": channel_id,
+            "name": _text(channel.get("name"), 100),
+        },
         "messages": messages[:MAX_MESSAGES],
     }
     if content_missing:
@@ -1287,10 +1325,11 @@ async def _send_message(runtime, context, data):
         return _response(runtime, {"error": "channel_not_selected"}, 403)
     if not content:
         return _response(runtime, {"error": "message_required"}, 400)
-    channel_id, error = await _channel_available(
+    channel, error = await _channel_available(
         runtime, context, config, channel_id)
     if error:
         return error
+    channel_id = channel["id"]
     result = await runtime.discord_send(channel_id, content)
     if int(result.get("status") or 0) not in {200, 201}:
         return await _discord_error(runtime, result, context)

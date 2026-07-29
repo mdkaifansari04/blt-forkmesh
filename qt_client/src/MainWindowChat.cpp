@@ -4428,6 +4428,7 @@ QWidget *MainWindow::buildBreadcrumb()
     });
     updateUserSwitcher();
     updateAvatarButton();
+    updateAdminCrownBadge();
 
     // Connection status dot, overlaid on the bottom-right of the (now sole)
     // avatar. It's purely decorative (clicks fall through to the avatar); the
@@ -4441,6 +4442,20 @@ QWidget *MainWindow::buildBreadcrumb()
     // part of it.
     m_connectionDot->move(40 - 12 - 3, 40 - 12 - 3);
     m_connectionDot->raise();
+
+    // Admin crown badge, overlaid on the top-left of the same avatar (mirroring
+    // the connection dot's bottom-right corner). Hidden unless this node is an
+    // admin; updateAdminCrownBadge() keeps it in sync with m_isAdmin.
+    m_adminCrownBadge = new QLabel(QString::fromUtf8("\xF0\x9F\x91\x91"),
+                                   m_userAvatarNavButton);
+    m_adminCrownBadge->setObjectName("adminCrownBadge");
+    m_adminCrownBadge->setFixedSize(14, 14);
+    m_adminCrownBadge->setAlignment(Qt::AlignCenter);
+    m_adminCrownBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_adminCrownBadge->setStyleSheet(QStringLiteral("font-size:11px;"));
+    m_adminCrownBadge->move(-2, -2);
+    m_adminCrownBadge->raise();
+    m_adminCrownBadge->hide();
 
     // Captions for the top-bar dropdowns.
     auto makeCaption = [](const QString &t) {
@@ -4948,6 +4963,14 @@ void MainWindow::updateConnectionStatus()
     // themed via the #connectionDot rule in Theme.h so it works in light mode too.
     m_connectionDot->setStyleSheet(
         QStringLiteral("background:%1; border-radius:6px;").arg(color));
+}
+
+void MainWindow::updateAdminCrownBadge()
+{
+    if (!m_adminCrownBadge)
+        return;
+    m_adminCrownBadge->setVisible(m_isAdmin);
+    m_adminCrownBadge->setToolTip(m_isAdmin ? QStringLiteral("Admin") : QString());
 }
 
 // Flip this node online/offline from the profile toggle. "Offline" keeps the user
@@ -5546,11 +5569,13 @@ void MainWindow::updateNavSolanaBalance()
              user.compare(nodeName, Qt::CaseInsensitive) != 0)
                 ? user + QStringLiteral("/") + nodeName
                 : nodeName;
-        // Admins get a little crown next to their name. U+1F451 (👑).
-        const QString crown = QString::fromUtf8(" \xF0\x9F\x91\x91");
-        m_navNodeName->setText(m_isAdmin && !name.isEmpty() ? name + crown : name);
-        m_navNodeName->setToolTip(m_isAdmin && !name.isEmpty() ? name + " (admin)" : name);
+        m_navNodeName->setText(name);
+        m_navNodeName->setToolTip(name);
         m_navNodeName->setVisible(!name.isEmpty());
+        // Admin status is shown as a crown badge on the avatar button instead
+        // of appended to this text; piggyback on this frequently-called
+        // refresh so the badge stays in sync wherever m_isAdmin changes.
+        updateAdminCrownBadge();
     }
     if (!m_navSolanaBalance)
         return;

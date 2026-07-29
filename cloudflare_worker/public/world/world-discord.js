@@ -16,7 +16,38 @@ const state = {
   messages: [],
   selectedChannel: "",
   notice: "",
+  oauthNotice: "",
 };
+
+const OAUTH_OUTCOMES = {
+  connected: "Discord authorization completed. Choose the public channels ForkMesh may use.",
+  denied: "Discord did not authorize that Server ID. Use an account with Owner, Administrator, or Manage Server permission.",
+  failed: "Discord authorization returned, but its token or account verification failed. Please connect again.",
+  invalid: "Discord returned an invalid or expired authorization. Please connect again in this same browser tab.",
+  invalid_state_format: "Discord returned a malformed authorization state (stage: state format).",
+  invalid_state_missing: "Discord returned an unknown or already-used authorization state (stage: state lookup).",
+  invalid_state_expired: "Discord authorization expired before it returned (stage: state expiry).",
+  invalid_state_claim: "ForkMesh could not exclusively claim the authorization state (stage: state claim).",
+  invalid_record: "ForkMesh could not validate the encrypted authorization record (stage: record validation).",
+  invalid_record_storage: "ForkMesh received an incomplete stored authorization record (stage: record storage).",
+  invalid_record_decrypt: "ForkMesh could not decrypt the authorization record (stage: record decryption).",
+  invalid_record_state: "The callback state did not match its encrypted authorization record (stage: record state binding).",
+  invalid_record_verifier: "The authorization record contained an invalid PKCE verifier (stage: record PKCE validation).",
+  invalid_record_guild: "The authorization record contained an invalid Server ID (stage: record guild validation).",
+  invalid_context: "Your ForkMesh login or organization-owner binding changed during authorization (stage: session context).",
+  invalid_code: "Discord did not return a valid authorization code (stage: authorization code).",
+  setup: "Discord OAuth configuration changed during authorization. Please connect again.",
+};
+
+function consumeOAuthOutcome() {
+  const url = new URL(window.location.href);
+  const outcome = text(url.searchParams.get("discord"), 20);
+  if (!Object.hasOwn(OAUTH_OUTCOMES, outcome)) return;
+  state.oauthNotice = OAUTH_OUTCOMES[outcome];
+  state.open = true;
+  url.searchParams.delete("discord");
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
 
 function sessionToken() {
   try {
@@ -153,6 +184,9 @@ function render() {
     state.reading || state.writing,
   ));
   panel.append(tools);
+  if (state.oauthNotice) {
+    panel.append(node("p", state.oauthNotice, "world-discord-notice"));
+  }
   if (state.notice) panel.append(node("p", state.notice, "world-discord-notice"));
   if (!state.connector) {
     panel.append(node("p", state.reading ? "Loading connector…" : "Choose an organization to begin."));
@@ -182,6 +216,7 @@ function render() {
     form.append(guild);
     form.append(button("Connect Discord server", async () => {
       if (state.writing) return;
+      state.oauthNotice = "";
       const guildId = text(guild.value, 20);
       if (!/^\d{17,20}$/.test(guildId)) {
         state.notice = "Enter a valid Discord Server ID.";
@@ -398,6 +433,7 @@ async function openPanel() {
 }
 
 function boot() {
+  consumeOAuthOutcome();
   const trigger = button("Discord", openPanel, "world-discord-trigger");
   trigger.dataset.worldDiscordOpen = "true";
   trigger.setAttribute("aria-expanded", "false");
@@ -406,6 +442,7 @@ function boot() {
   root.hidden = true;
   document.body.append(trigger, root);
   window.addEventListener("forkmesh:open-discord", showPanel);
+  if (state.open) showPanel();
 }
 
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot, { once: true });

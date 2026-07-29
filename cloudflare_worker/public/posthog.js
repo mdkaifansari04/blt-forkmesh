@@ -165,6 +165,17 @@
   );
   window.addEventListener("unhandledrejection", (event) => {
     const reason = event.reason;
+    // World navigation and mobile gesture reconciliation intentionally abort
+    // stale fetches. Browsers surface those cancellations as unhandled
+    // AbortError rejections even though no request or UI action failed.
+    if (
+      reason?.name === "AbortError" ||
+      /signal is aborted|operation was aborted/i.test(
+        String(reason?.message || ""),
+      )
+    ) {
+      return;
+    }
     reportClientError(
       "unhandledrejection",
       reason instanceof Error ? reason : null,

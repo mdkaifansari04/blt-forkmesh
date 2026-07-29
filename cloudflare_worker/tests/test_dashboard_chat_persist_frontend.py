@@ -61,16 +61,27 @@ def test_dashboard_history_starts_at_five_and_reveals_five_per_scroll():
     assert "function renderHistoryWindow(" in CHAT
     assert "function revealOlderHistory()" in CHAT
     assert "row.dataset.chatHistory" in CHAT
-    assert "row.hidden = true;" in CHAT
+    assert "function materializeFullMessage(record)" in CHAT
+    assert "if (deferHistory && id)" in CHAT
+    assert "historyRowIds.push(id);" in CHAT
+    assert "historyReplayEnvelopes.push(envelope);" in CHAT
+    assert 'envelope?.kind === "forkmesh-history-end"' in CHAT
+    assert "Promise.all(envelopes.map(decryptObject))" in CHAT
+    assert "handlePlain(plain, true)" in CHAT
+    assert 'if (plain.type === "chat") handlePlain(plain, true);' in CHAT
+    assert 'if (plain.type !== "chat") handlePlain(plain, true);' in CHAT
     assert "scroll up to load" in CHAT
     assert "Beginning of conversation" in CHAT
     assert "fullLog.scrollTop += Math.max(" in CHAT
-    assert "if (event.deltaY < 0 && fullLog.scrollTop <= 32)" in CHAT
+    assert "function hasHiddenHistory()" in CHAT
+    assert "function scheduleHistoryWheelReset()" in CHAT
+    assert "!historyWheelLatched" in CHAT
+    assert "!historyTouchRevealed" in CHAT
     history = CHAT[
         CHAT.index('} else if (type === "history")'):
         CHAT.index('} else if (type === "reaction")')
     ]
-    assert "renderHistoryWindow();" in history
+    assert "finishHistoryReplay();" in history
 
 
 def test_durable_type_set_matches_the_node():

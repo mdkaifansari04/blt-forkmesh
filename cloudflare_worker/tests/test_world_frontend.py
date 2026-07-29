@@ -901,6 +901,9 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
     assert "event.preventDefault();" in pull_guard
     assert "[data-world-thumbstick]" in pull_guard
     assert "[data-world-canvas-wrap]" in pull_guard
+    assert "if (touchPointers.size > 0)" in SCENE
+    assert "pendingTouchResize = true;" in SCENE
+    assert "if (!touchPointers.size && pendingTouchResize)" in SCENE
     mobile = CSS[CSS.index("@media (max-width: 720px)"):]
     assert ".world-right-rail {" in mobile
     assert "display: grid;" in mobile
@@ -1013,7 +1016,8 @@ def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
     assert '<option value="agent" selected>Send to bot</option>' in APP
     assert "world-chat-terminal-channel" in APP
     assert "world-chat-terminal-connection" in APP
-    assert 'script.src = "/dashboard-chat.js"' in APP
+    chat_version = hashlib.sha256(DASHBOARD_CHAT.encode()).hexdigest()[:12]
+    assert f'script.src = "/dashboard-chat.js?v={chat_version}"' in APP
     assert "world-chat-terminal" in CSS
     assert "DEBUG owns the lower-left; chat owns the lower-right" in CSS
     diagnostics = CSS[
