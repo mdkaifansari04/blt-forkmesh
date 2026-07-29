@@ -506,6 +506,49 @@ async def test_oauth_callback_is_one_time_cookie_bound_and_requires_guild_permis
 
 
 @run_async_test
+async def test_oauth_callback_accepts_browser_that_omits_transaction_cookie():
+    runtime = FakeRuntime()
+    runtime.oauth_configured = True
+    started = await discord_api.handle(
+        runtime.use("POST", "alice", {"guildId": GUILD}),
+        "forkmesh", "oauth/start")
+    state = parse_qs(
+        urlparse(started["data"]["authorizationUrl"]).query)["state"][0]
+    # The one-time OAuth state, PKCE verifier, live ForkMesh session, owner
+    # role, exact redirect and requested guild remain bound in encrypted D1.
+    # A browser privacy policy may independently omit the strengthening cookie.
+    runtime.oauth_transaction = ""
+    completed = await discord_api.handle_oauth_callback(
+        runtime.use("GET", query={
+            "state": state, "code": "oauth-authorization-code-123456",
+        }))
+    assert completed["data"]["outcome"] == "connected"
+    assert runtime.db.execute(
+        "SELECT COUNT(*) AS n FROM organization_discord_oauth_grants"
+    ).fetchone()["n"] == 1
+
+
+@run_async_test
+async def test_oauth_callback_rejects_mismatched_transaction_cookie():
+    runtime = FakeRuntime()
+    runtime.oauth_configured = True
+    started = await discord_api.handle(
+        runtime.use("POST", "alice", {"guildId": GUILD}),
+        "forkmesh", "oauth/start")
+    state = parse_qs(
+        urlparse(started["data"]["authorizationUrl"]).query)["state"][0]
+    runtime.oauth_transaction = "f" * 64
+    rejected = await discord_api.handle_oauth_callback(
+        runtime.use("GET", query={
+            "state": state, "code": "oauth-authorization-code-123456",
+        }))
+    assert rejected["data"]["outcome"] == "invalid"
+    assert runtime.db.execute(
+        "SELECT COUNT(*) AS n FROM organization_discord_oauth_grants"
+    ).fetchone()["n"] == 0
+
+
+@run_async_test
 async def test_oauth_callback_consumes_state_if_oauth_settings_change_mid_flow():
     runtime = FakeRuntime()
     runtime.oauth_configured = True
