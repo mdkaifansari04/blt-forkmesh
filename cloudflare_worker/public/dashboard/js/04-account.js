@@ -997,18 +997,28 @@
     const rows = teamMembers.map((member) => {
       const memberName = escapeHtml(member.name || "");
       return '<div class="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2">' +
-        '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName + "</span>" +
+        '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName +
+          (member.external
+            ? ' <small class="ml-1 rounded-full border border-border px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">outside collaborator</small>'
+            : "") + "</span>" +
         '<button type="button" data-org-team-member-remove="' + memberName + '" title="Remove from team" ' +
           'class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-red-500 hover:border-red-500/50">' +
           '<i data-lucide="x" class="h-4 w-4"></i></button></div>';
     }).join("") || '<p class="text-sm text-muted-foreground">No members on this team yet.</p>';
-    const addForm = candidates.length
-      ? '<form data-org-team-member-add class="mt-3 flex flex-wrap items-center gap-2">' +
-          '<select data-team-member-name class="' + ORG_INPUT_CLASS + ' flex-1 min-w-[10rem]">' +
-            candidates.map((member) => '<option value="' + escapeHtml(member.name) + '">' + escapeHtml(member.name) + "</option>").join("") +
-          "</select>" +
-          '<button type="submit" class="' + ORG_BTN_SECONDARY + '">Add to team</button></form>'
-      : '<p class="mt-3 text-xs text-muted-foreground">Every org member is already on this team.</p>';
+    const addForm =
+      '<form data-org-team-member-add class="mt-3 grid gap-2 rounded-md border border-border bg-card p-3">' +
+        '<div class="flex flex-wrap items-center gap-2">' +
+          '<input data-team-member-name list="org-team-member-candidates" autocomplete="off" placeholder="ForkMesh account name" class="' + ORG_INPUT_CLASS + ' flex-1 min-w-[10rem]" />' +
+          '<datalist id="org-team-member-candidates">' +
+            candidates.map((member) => '<option value="' + escapeHtml(member.name) + '"></option>').join("") +
+          "</datalist>" +
+          '<button type="submit" class="' + ORG_BTN_SECONDARY + '">Add to team</button>' +
+        "</div>" +
+        '<label class="flex items-start gap-2 text-xs leading-5 text-muted-foreground">' +
+          '<input type="checkbox" data-team-member-external class="mt-1 h-4 w-4" />' +
+          '<span><strong class="text-foreground">Outside collaborator</strong> — team-limited access only. This does not make the account an organization member and does not grant Office entry or repository permissions.</span>' +
+        "</label>" +
+      "</form>";
     root.innerHTML =
       '<button type="button" data-org-team-back class="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">' +
         '<i data-lucide="arrow-left" class="h-4 w-4"></i> ' + escapeHtml(name) + "</button>" +
@@ -1029,9 +1039,10 @@
     root.querySelector("[data-org-team-back]")?.addEventListener("click", () => showOrgDetail(name));
     root.querySelector("[data-org-team-member-add]")?.addEventListener("submit", (event) => {
       event.preventDefault();
-      const member = root.querySelector("[data-team-member-name]")?.value || "";
+      const member = (root.querySelector("[data-team-member-name]")?.value || "").trim().toLowerCase();
+      const external = root.querySelector("[data-team-member-external]")?.checked === true;
       if (!member) return;
-      guard(() => orgApiRequest("POST", "/api/orgs/" + encodeURIComponent(name) + "/teams/" + encodeURIComponent(team) + "/members", { member }));
+      guard(() => orgApiRequest("POST", "/api/orgs/" + encodeURIComponent(name) + "/teams/" + encodeURIComponent(team) + "/members", { member, external }));
     });
     root.querySelectorAll("[data-org-team-member-remove]").forEach((button) => {
       button.addEventListener("click", () => {

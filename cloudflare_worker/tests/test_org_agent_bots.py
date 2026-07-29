@@ -133,9 +133,10 @@ def test_world_explains_stalled_agent_jobs_and_bot_clicks_open_full_status():
     assert '"diagnostic": diagnostic' in ENTRY
     assert "session?.diagnostic" in SCENE
     assert 'diagnostic.level || "").toLowerCase() === "attention"' in SCENE
-    assert "openAgentBotDetail(name)" in WORLD
+    assert "openAgentBotDetail(name, {" in WORLD
     assert "ENGINEERING AGENT / LIVE SESSION STATUS" in WORLD
-    assert "{ provider, allNodes: true }" in WORLD
+    assert "provider," in WORLD
+    assert "allNodes: true" in WORLD
     assert "data-world-agent-open-chat" in WORLD
 
 

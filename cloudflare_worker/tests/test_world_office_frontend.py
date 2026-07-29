@@ -1276,6 +1276,20 @@ def test_rooftop_has_glass_safety_barriers_and_explicit_exit_jump():
     assert "const roofJumpStarted = beginOfficeRoofJump();" in jump
     assert 'officeSceneMode === "town"' in jump
     assert "if (!roofJumpStarted && canJump)" in jump
+    for contract in (
+        "function createRoofParachute()",
+        '"forkmesh-mini-roof-parachute"',
+        '"forkmesh-mini-roof-parachute-canopy"',
+        '"forkmesh-mini-roof-parachute-cords"',
+        "prepareRoofParachute();",
+        "function updateRoofParachute(time)",
+        "ROOF_PARACHUTE_DEPLOY_VELOCITY",
+        "ROOF_PARACHUTE_TERMINAL_VELOCITY",
+        "ROOF_PARACHUTE_GRAVITY",
+        "roofParachute.landedAt = time",
+        "ROOF_PARACHUTE_COLLAPSE_MS",
+    ):
+        assert contract in scene
 
 
 def test_walk_surfaces_and_every_floor_use_real_collision_constraints():

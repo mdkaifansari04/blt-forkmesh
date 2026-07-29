@@ -111,7 +111,7 @@ const DETAIL_WIDTH_MIN = 320;
 const DETAIL_WIDTH_STEP = 48;
 const REFRESH_POSITION_KEY = "forkmesh.world.refresh-position.v1";
 const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1.";
-const SAVED_VIEWS_MAX = 4;
+const SAVED_VIEWS_MAX = 5;
 const RENDERER_RECOVERY_DELAY_MS = 1500;
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 // The Mastodon kiosk refetches the public profile on this cadence; the MM:SS
@@ -130,6 +130,8 @@ const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
 // Placements this browser locked in, kept only long enough to outlive a stale
 // read of the shared layout document. See rememberWorldLayout.
 const WORLD_LAYOUT_ECHO_KEY = "forkmesh.world.layout.echo.v1";
+const ADMIN_ERROR_SEEN_KEY = "forkmesh.world.adminErrorsSeen.v1";
+const ADMIN_ERROR_POLL_MS = 15_000;
 const WORLD_LAYOUT_ECHO_TTL_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
@@ -3562,7 +3564,12 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
     /^[A-Za-z0-9+/=]+$/.test(String(accountSession.avatarPng))
       ? String(accountSession.avatarPng)
       : "";
-  const mapItems = LANDMARKS.map(
+  // Repository portals remain present and interactive in the scene. The
+  // compact map is for travel shortcuts, and Code already owns repository
+  // navigation, so do not duplicate a repository view in this rail.
+  const mapItems = LANDMARKS.filter(
+    (landmark) => landmark.id !== "repositories",
+  ).map(
     (landmark) => `
       <li>
         <button
@@ -3734,7 +3741,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               rel="noreferrer"
               title="Support ForkMesh on Patreon to unlock outfit colors"
             >
-              <span aria-hidden="true">♥</span><span>Upgrade</span>
+              <span aria-hidden="true">♥</span><span class="world-visually-hidden">Upgrade</span>
             </a>`
             }
             <button
@@ -3742,9 +3749,10 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               type="button"
               data-world-camera-toggle
               aria-pressed="false"
+              aria-label="Enter first-person view"
               title="Enter first-person view"
             >
-              <span aria-hidden="true">⌖</span><span data-world-camera-label>First person</span>
+              <span aria-hidden="true">⌖</span><span class="world-visually-hidden" data-world-camera-label>First person</span>
             </button>
             <button
               class="world-top-link world-wave-button"
@@ -3753,24 +3761,26 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               title="Wave to everyone in the world"
               aria-label="Wave your avatar's arm"
             >
-              <span aria-hidden="true">👋</span><span>Wave</span>
+              <span aria-hidden="true">👋</span><span class="world-visually-hidden">Wave</span>
             </button>
             <button
               class="world-top-link"
               type="button"
               data-world-sound-toggle
               aria-pressed="false"
+              aria-label="Enable World sounds"
               title="Enable World sounds"
             >
-              <span aria-hidden="true">♪</span><span data-world-sound-label>Sound</span>
+              <span aria-hidden="true">♪</span><span class="world-visually-hidden" data-world-sound-label>Sound</span>
             </button>
             <button
               class="world-top-link"
               type="button"
               data-world-screenshot
+              aria-label="Capture and annotate a screenshot"
               title="Capture and annotate a screenshot"
             >
-              <span aria-hidden="true">📷</span><span>Capture</span>
+              <span aria-hidden="true">📷</span><span class="world-visually-hidden">Capture</span>
             </button>
             <button
               class="world-top-link world-notification-button"
@@ -3779,8 +3789,20 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               title="Show global and personal notifications"
               aria-label="Open World notifications"
             >
-              <span aria-hidden="true">🔔</span><span>Notifications</span>
+              <span aria-hidden="true">🔔</span><span class="world-visually-hidden">Notifications</span>
               <span data-world-notification-count hidden>0</span>
+            </button>
+            <button
+              class="world-top-link world-admin-errors-button"
+              type="button"
+              data-world-admin-errors
+              title="Open newly logged errors"
+              aria-label="Open newly logged errors"
+              hidden
+            >
+              <span aria-hidden="true">!</span>
+              <span class="world-visually-hidden">New errors</span>
+              <span data-world-admin-error-count hidden>0</span>
             </button>
             <button
               class="world-shirt-badge"
@@ -3844,25 +3866,17 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <span aria-hidden="true">🔗</span>
             <span>Share exact view</span>
           </button>
-          <section class="world-saved-views" data-world-saved-views data-expanded="false" aria-label="Saved World views">
+          <section class="world-saved-views" data-world-saved-views data-expanded="true" aria-label="Five most recent saved World views">
             <div class="world-saved-views-heading">
-              <button
-                class="world-saved-views-toggle"
-                type="button"
-                data-world-saved-views-toggle
-                aria-expanded="false"
-              >
-                <span aria-hidden="true">▸</span>
-                <span>Saved views</span>
-              </button>
+              <span class="world-saved-views-title">Quick views</span>
               <button
                 type="button"
                 data-world-save-view
                 aria-label="Save this location and perspective"
                 title="Save this view"
-              ><span aria-hidden="true">⌖＋</span><span>Map</span></button>
+              ><span aria-hidden="true">＋</span><span class="world-visually-hidden">Save current map view</span></button>
             </div>
-            <div class="world-saved-view-list" data-world-saved-view-list hidden></div>
+            <div class="world-saved-view-list" data-world-saved-view-list></div>
           </section>
           <section
             class="world-community-placement"
@@ -4342,6 +4356,17 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 built-in screenshots hide it.
               </small>
             </fieldset>
+            <fieldset class="world-setting-group">
+              <legend>Organization tasks · private to the organization</legend>
+              <ol class="world-office-task-list" data-world-organization-task-list aria-label="Universal organization task list">
+                <li class="world-office-task-empty">Sign in to load organization tasks.</li>
+              </ol>
+              <small>
+                Department, team, repository, QA, Claude, and Codex routes all
+                use this one encrypted task catalog. QA results include the
+                latest pass, fail, or unknown verdict and its reviewer.
+              </small>
+            </fieldset>
           </div>
 
           <div class="world-settings-pane" data-world-settings-pane="security" hidden>
@@ -4733,6 +4758,7 @@ class ForkMeshWorld extends HTMLElement {
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
+    this.openFeedbackKioskOnLoad = worldQuery.get("feedback") === "1";
     this.requestedSpaceExplicit = WORLD_SPACE_IDS.has(requestedSpace);
     this.currentSpace = WORLD_SPACE_IDS.has(requestedSpace)
       ? requestedSpace
@@ -4817,6 +4843,10 @@ class ForkMeshWorld extends HTMLElement {
     this.mirrorPushRefreshTimer = 0;
     this.eventsTimer = 0;
     this.notificationsTimer = 0;
+    this.adminErrorTimer = 0;
+    this.adminErrorLatestId = 0;
+    this.adminErrorCount = 0;
+    this.adminErrorEffectTimer = 0;
     // GETs from bootstrap, visibility recovery, timers, and socket doorbells
     // share one request. Successful snapshots can be reused briefly and
     // repeated failures cool down exponentially instead of becoming a storm.
@@ -4965,6 +4995,7 @@ class ForkMeshWorld extends HTMLElement {
     this.startUpdateWatch();
     this.startDeployStatusWatch();
     this.startWorldLayoutWatch();
+    this.startAdminErrorPolling();
   }
 
   disconnectedCallback() {
@@ -5157,6 +5188,10 @@ class ForkMeshWorld extends HTMLElement {
     this.recentWorldChatMessages.sort((left, right) => left.ts - right.ts);
     this.recentWorldChatMessages = this.recentWorldChatMessages.slice(-40);
     this.world?.updateWorldGeneralChat?.(this.recentWorldChatMessages);
+    this.world?.setAvatarRecentPublicMessage?.(
+      sender,
+      text || `Shared ${attachmentName}`,
+    );
     if (ts >= this.chatTerminalNewestAt) {
       this.chatTerminalNewestAt = ts;
       this.setChatTerminalLastMessage(
@@ -5680,6 +5715,8 @@ class ForkMeshWorld extends HTMLElement {
         onReferralBoardSelect: () => void this.copyReferralLink(),
         onSiteReferrerOpen: (url) => this.openSiteReferrerLink(url),
         onLobbyLinkKioskSelect: () => void this.openLobbyLinkKiosk(),
+        onLobbyFeedbackKioskSelect: () =>
+          void this.openLobbyFeedbackKiosk(),
         onSystemCapacityTableSelect: (table) =>
           this.openSystemCapacityTables(table),
         onInfrastructureConsoleToggle: ({ enabled }) =>
@@ -5942,6 +5979,10 @@ class ForkMeshWorld extends HTMLElement {
       if (this.requestedLandmark) {
         this.openLandmark(this.requestedLandmark);
       }
+      if (this.openFeedbackKioskOnLoad) {
+        this.officeController?.focusOffice();
+        void this.openLobbyFeedbackKiosk();
+      }
     } catch (error) {
       console.warn("ForkMesh World could not start WebGL", error);
       this.renderWebGLFallback();
@@ -5953,6 +5994,9 @@ class ForkMeshWorld extends HTMLElement {
       this.announceWorldNotifications();
       if (this.requestedLandmark) {
         this.openLandmark(this.requestedLandmark);
+      }
+      if (this.openFeedbackKioskOnLoad) {
+        void this.openLobbyFeedbackKiosk();
       }
     }
   }
@@ -6110,7 +6154,33 @@ class ForkMeshWorld extends HTMLElement {
             }
           : { pass: 0, fail: 0, unsure: 0, total: 0 };
         return key && title && howToTest
-          ? { key, title, howToTest, verdict, global }
+          ? {
+              key,
+              title,
+              howToTest,
+              verdict,
+              global,
+              organizationTask: card?.organizationTask === true,
+              department: sanitizePresenceText(
+                card?.department, "", 64),
+              team: sanitizePresenceText(card?.team, "", 64),
+              taskQaStatus: ["passed", "failed"].includes(
+                String(card?.taskQaStatus || ""))
+                ? String(card.taskQaStatus)
+                : "unknown",
+              lastReviewer: sanitizePresenceText(
+                card?.lastReviewer, "", 64),
+              lastReviewedAt: Math.max(
+                0, Number(card?.lastReviewedAt) || 0),
+              failureReason: sanitizePresenceText(
+                card?.failureReason || reviews?.[key]?.failureReason,
+                "",
+                1000,
+              ),
+              hasFailureScreenshot:
+                card?.hasFailureScreenshot === true ||
+                reviews?.[key]?.hasFailureScreenshot === true,
+            }
           : null;
       })
       .filter(Boolean)
@@ -6121,6 +6191,9 @@ class ForkMeshWorld extends HTMLElement {
     });
     this.qaDeck = {
       authenticated: payload?.authenticated === true,
+      authorized: payload?.authorized === true,
+      requiredTeam: sanitizePresenceText(
+        payload?.requiredTeam, "quality-assurance", 64),
       revision: sanitizePresenceText(payload?.revision, "", 80),
       cards,
       reviews,
@@ -6191,6 +6264,8 @@ class ForkMeshWorld extends HTMLElement {
     }
     this.world?.updateQaBoard?.({
       authenticated: this.qaDeck.authenticated,
+      authorized: this.qaDeck.authorized,
+      requiredTeam: this.qaDeck.requiredTeam,
       current:
         (view === "detail"
           ? this.qaDeck.cards.find(
@@ -6315,6 +6390,157 @@ class ForkMeshWorld extends HTMLElement {
     return this.qaLoad;
   }
 
+  async compactQaFailureScreenshot(file) {
+    if (
+      !file ||
+      !/^image\/(?:png|jpeg|webp)$/i.test(String(file.type || "")) ||
+      Number(file.size) > 8 * 1024 * 1024
+    ) {
+      throw new Error("Choose a PNG, JPEG, or WebP image under 8 MB.");
+    }
+    if (typeof createImageBitmap !== "function") {
+      throw new Error("Screenshot attachments are unavailable in this browser.");
+    }
+    const bitmap = await createImageBitmap(file);
+    try {
+      const encode = (maxWidth, maxHeight, quality) => {
+        const scale = Math.min(
+          1,
+          maxWidth / Math.max(1, bitmap.width),
+          maxHeight / Math.max(1, bitmap.height),
+        );
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        canvas.getContext("2d")?.drawImage(
+          bitmap,
+          0,
+          0,
+          canvas.width,
+          canvas.height,
+        );
+        return canvas.toDataURL("image/webp", quality);
+      };
+      for (const [width, height, quality] of [
+        [1280, 900, 0.7],
+        [1024, 720, 0.58],
+        [800, 600, 0.5],
+      ]) {
+        const encoded = encode(width, height, quality);
+        if (encoded.length <= 480_000) return encoded;
+      }
+      throw new Error("That screenshot could not be compacted below 480 KB.");
+    } finally {
+      bitmap.close?.();
+    }
+  }
+
+  collectQaFailureEvidence(card) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "world-qa-failure-overlay";
+      overlay.setAttribute("role", "dialog");
+      overlay.setAttribute("aria-modal", "true");
+      overlay.setAttribute("aria-labelledby", "world-qa-failure-title");
+      overlay.innerHTML = `
+        <form class="world-qa-failure-dialog">
+          <header>
+            <div>
+              <span>Private organization QA</span>
+              <strong id="world-qa-failure-title">Why did this task fail?</strong>
+            </div>
+            <button type="button" data-qa-failure-cancel aria-label="Cancel failure report">×</button>
+          </header>
+          <p>${escapeHTML(card?.title || "QA task")}</p>
+          <label>
+            Reason
+            <textarea name="reason" maxlength="1000" rows="4" required
+              placeholder="Describe what failed, what you expected, and how to reproduce it."></textarea>
+          </label>
+          <label class="world-qa-failure-file">
+            Screenshot <small>optional · PNG, JPEG, or WebP</small>
+            <input type="file" name="screenshot" accept="image/png,image/jpeg,image/webp" />
+          </label>
+          <div class="world-qa-failure-preview" hidden>
+            <img alt="Failure screenshot preview" />
+            <button type="button" data-qa-failure-clear>Remove screenshot</button>
+          </div>
+          <small data-qa-failure-status>Choose a file or paste a screenshot anywhere in this panel.</small>
+          <footer>
+            <button type="button" data-qa-failure-cancel>Cancel</button>
+            <button type="submit">Save failed result</button>
+          </footer>
+        </form>`;
+      const form = overlay.querySelector("form");
+      const input = form.elements.screenshot;
+      const preview = overlay.querySelector(".world-qa-failure-preview");
+      const previewImage = preview.querySelector("img");
+      const status = overlay.querySelector("[data-qa-failure-status]");
+      let screenshot = "";
+      let closed = false;
+      const finish = (value) => {
+        if (closed) return;
+        closed = true;
+        overlay.remove();
+        resolve(value);
+      };
+      const setScreenshot = async (file) => {
+        if (!file) return;
+        status.textContent = "Preparing screenshot…";
+        try {
+          screenshot = await this.compactQaFailureScreenshot(file);
+          previewImage.src = screenshot;
+          preview.hidden = false;
+          status.textContent =
+            "Screenshot ready. It will be encrypted with this QA review.";
+        } catch (error) {
+          screenshot = "";
+          preview.hidden = true;
+          input.value = "";
+          status.textContent = String(
+            error?.message || "The screenshot could not be attached.",
+          );
+        }
+      };
+      input.addEventListener("change", () => {
+        void setScreenshot(input.files?.[0]);
+      });
+      overlay.addEventListener("paste", (event) => {
+        const file = [...(event.clipboardData?.files || [])].find((entry) =>
+          String(entry.type || "").startsWith("image/"),
+        );
+        if (file) {
+          event.preventDefault();
+          void setScreenshot(file);
+        }
+      });
+      overlay.querySelector("[data-qa-failure-clear]").addEventListener(
+        "click",
+        () => {
+          screenshot = "";
+          input.value = "";
+          preview.hidden = true;
+          status.textContent =
+            "Choose a file or paste a screenshot anywhere in this panel.";
+        },
+      );
+      overlay.querySelectorAll("[data-qa-failure-cancel]").forEach((button) => {
+        button.addEventListener("click", () => finish(null));
+      });
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const failureReason = String(form.elements.reason.value || "").trim();
+        if (!failureReason) {
+          form.elements.reason.reportValidity();
+          return;
+        }
+        finish({ failureReason, screenshot });
+      });
+      this.$("[data-world-root]")?.append(overlay);
+      form.elements.reason.focus();
+    });
+  }
+
   async recordQaVerdict(verdict) {
     if (
       this.qaSaving ||
@@ -6328,11 +6554,21 @@ class ForkMeshWorld extends HTMLElement {
       this.toast("Sign in to save QA results to your account.");
       return false;
     }
+    const evidence =
+      verdict === "fail" && card.organizationTask
+        ? await this.collectQaFailureEvidence(card)
+        : { failureReason: "", screenshot: "" };
+    if (!evidence) return false;
     this.qaSaving = true;
     try {
       const payload = await this.postJSON(
         WORLD_QA_ENDPOINT,
-        { key: card.key, verdict },
+        {
+          key: card.key,
+          verdict,
+          failureReason: evidence.failureReason,
+          screenshot: evidence.screenshot,
+        },
         { timeout: 8000 },
       );
       this.applyQaDeck(payload, { afterKey: card.key });
@@ -8115,12 +8351,6 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-save-view]")) {
         this.saveCurrentWorldView();
-        this.setSavedViewsExpanded(true);
-        return;
-      }
-      if (event.target.closest("[data-world-saved-views-toggle]")) {
-        const section = this.$("[data-world-saved-views]");
-        this.setSavedViewsExpanded(section?.dataset.expanded !== "true");
         return;
       }
       const savedViewEdit = event.target.closest("[data-world-saved-view-edit]");
@@ -8199,6 +8429,10 @@ class ForkMeshWorld extends HTMLElement {
         this.openLandmark("events");
         void this.refreshCommunityEvents(true);
         void this.refreshPersonalNotifications(true);
+        return;
+      }
+      if (event.target.closest("[data-world-admin-errors]")) {
+        this.openAdminErrors();
         return;
       }
       const mapToggle = event.target.closest("[data-world-map-toggle]");
@@ -8916,14 +9150,12 @@ class ForkMeshWorld extends HTMLElement {
   setSavedViewsExpanded(expanded) {
     const section = this.$("[data-world-saved-views]");
     const list = this.$("[data-world-saved-view-list]");
-    const toggle = this.$("[data-world-saved-views-toggle]");
-    if (!section || !list || !toggle) return;
-    const active = expanded === true;
-    section.dataset.expanded = String(active);
-    list.hidden = !active;
-    toggle.setAttribute("aria-expanded", String(active));
-    const icon = toggle.querySelector("span");
-    if (icon) icon.textContent = active ? "▾" : "▸";
+    if (!section || !list) return;
+    // Quick views are intentionally always exposed. Retain this method for
+    // older callers and synchronized preference snapshots without allowing a
+    // stale collapsed preference to hide the five thumbnail shortcuts.
+    section.dataset.expanded = "true";
+    list.hidden = false;
   }
 
   setWorldRightRailExpanded(expanded) {
@@ -9174,6 +9406,9 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     list.innerHTML = this.savedViews
+      .slice()
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, SAVED_VIEWS_MAX)
       .map(
         (view) => `
           <article class="world-saved-view">
@@ -9890,9 +10125,136 @@ class ForkMeshWorld extends HTMLElement {
     // Selection is handle-free and preserves the camera's drag/wheel gestures.
     this.layoutEditorAnnounced = true;
     this.toast(
-      "Layout editing on: click an object to select it, use arrow keys to " +
-        "move it, and R or Shift+R to rotate it.",
+      "Layout editing on: hold Shift and drag an object to move it, or click " +
+        "then use arrow keys. R and Shift+R rotate it.",
     );
+  }
+
+  adminErrorStorageKey() {
+    const account = String(
+      validWorldSession()?.nodeName || this.identity?.name || "",
+    ).trim().toLowerCase();
+    return `${ADMIN_ERROR_SEEN_KEY}:${account || "admin"}`;
+  }
+
+  storedAdminErrorSeenId() {
+    try {
+      const value = Number(
+        window.localStorage.getItem(this.adminErrorStorageKey()),
+      );
+      return Number.isSafeInteger(value) && value >= 0 ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  storeAdminErrorSeenId(value) {
+    try {
+      window.localStorage.setItem(
+        this.adminErrorStorageKey(),
+        String(Math.max(0, Number(value) || 0)),
+      );
+    } catch (_) {}
+  }
+
+  renderAdminErrors(count = 0, animate = false) {
+    const button = this.$("[data-world-admin-errors]");
+    const badge = this.$("[data-world-admin-error-count]");
+    if (!button || !badge) return;
+    const isAdmin = this.identity?.isAdmin === true;
+    const total = isAdmin ? Math.max(0, Number(count) || 0) : 0;
+    button.hidden = !isAdmin;
+    badge.hidden = total <= 0;
+    badge.textContent = total > 99 ? "99+" : String(total);
+    button.classList.toggle("has-new-errors", total > 0);
+    button.setAttribute(
+      "aria-label",
+      total > 0
+        ? `${total} newly logged error${total === 1 ? "" : "s"}`
+        : "No newly logged errors",
+    );
+    if (!animate || total <= 0) return;
+    this.classList.remove("world-admin-error-arrival");
+    // Restart the short HUD flash even when two poll responses arrive close
+    // together; no detail or route is exposed in the public World.
+    void this.offsetWidth;
+    this.classList.add("world-admin-error-arrival");
+    window.clearTimeout(this.adminErrorEffectTimer);
+    this.adminErrorEffectTimer = window.setTimeout(() => {
+      this.classList.remove("world-admin-error-arrival");
+      this.adminErrorEffectTimer = 0;
+    }, 1500);
+  }
+
+  async refreshAdminErrors() {
+    if (
+      this.destroyed ||
+      this.identity?.isAdmin !== true ||
+      !validWorldSession()
+    ) {
+      this.renderAdminErrors(0);
+      return;
+    }
+    const seen = this.storedAdminErrorSeenId();
+    try {
+      const payload = await this.fetchJSON(
+        `/api/world/admin/errors?after=${Math.max(0, seen || 0)}`,
+        { cache: "no-store", timeout: 5000 },
+      );
+      if (this.destroyed || this.identity?.isAdmin !== true) return;
+      this.adminErrorLatestId = Math.max(
+        0,
+        Number(payload?.latestId) || 0,
+      );
+      // The first successful read establishes the baseline. A historic error
+      // backlog must never be presented as a fresh incident.
+      if (seen === null) {
+        this.storeAdminErrorSeenId(this.adminErrorLatestId);
+        this.adminErrorCount = 0;
+        this.renderAdminErrors(0);
+        return;
+      }
+      const nextCount = Math.max(0, Number(payload?.newCount) || 0);
+      const arrived = nextCount > this.adminErrorCount;
+      this.adminErrorCount = nextCount;
+      this.renderAdminErrors(nextCount, arrived);
+    } catch (_) {
+      // This is an operational convenience only. A failed badge poll must not
+      // interfere with movement, rendering, or the existing admin surface.
+    }
+  }
+
+  startAdminErrorPolling() {
+    window.clearInterval(this.adminErrorTimer);
+    this.adminErrorTimer = 0;
+    if (this.identity?.isAdmin !== true) {
+      this.renderAdminErrors(0);
+      return;
+    }
+    void this.refreshAdminErrors();
+    this.adminErrorTimer = window.setInterval(() => {
+      if (!this.destroyed && !document.hidden) {
+        void this.refreshAdminErrors();
+      }
+    }, ADMIN_ERROR_POLL_MS);
+  }
+
+  stopAdminErrorPolling() {
+    window.clearInterval(this.adminErrorTimer);
+    this.adminErrorTimer = 0;
+    this.adminErrorCount = 0;
+    this.renderAdminErrors(0);
+  }
+
+  openAdminErrors() {
+    if (this.identity?.isAdmin !== true) return;
+    this.storeAdminErrorSeenId(this.adminErrorLatestId);
+    this.adminErrorCount = 0;
+    this.renderAdminErrors(0);
+    const configured = String(validWorldSession()?.adminUrl || "").trim();
+    const destination = new URL(configured || "/admin", location.origin);
+    destination.searchParams.set("table", "error_log");
+    window.location.assign(destination.href);
   }
 
   // Read the locked placement document. Every read goes through here so a
@@ -22135,6 +22497,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldTicket = String(ticket.ticket || "");
     this.worldTicketExpires = Number(ticket.expiresAt || 0);
     void this.loadWorldPreferences();
+    this.startAdminErrorPolling();
     return true;
   }
 
@@ -22146,6 +22509,7 @@ class ForkMeshWorld extends HTMLElement {
       this.identity.joinedAt = 0;
       this.identity.nodes = [];
     }
+    this.stopAdminErrorPolling();
     this.worldTicket = "";
     this.worldTicketExpires = 0;
     this.resetWorldActivity();
@@ -23063,6 +23427,74 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  async openLobbyFeedbackKiosk() {
+    document.querySelector("[data-world-feedback-kiosk-dialog]")?.remove();
+    const dialog = document.createElement("dialog");
+    dialog.dataset.worldFeedbackKioskDialog = "true";
+    dialog.style.cssText =
+      "width:min(620px,calc(100vw - 28px));border:1px solid #d0d7de;border-radius:12px;background:#fff;color:#24292f;padding:0;box-shadow:0 24px 80px #1f232833";
+    dialog.innerHTML = `
+      <header style="display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:20px 22px;border-bottom:1px solid #d0d7de;background:#f6f8fa">
+        <div><p style="margin:0 0 5px;color:#1a7f37;font:800 12px ForkMesh Mono,monospace;letter-spacing:.08em">OFFICE LOBBY · FEEDBACK KIOSK</p><h2 style="margin:0;font-size:24px">How are we doing?</h2></div>
+        <button type="button" data-world-feedback-kiosk-close aria-label="Close feedback kiosk" style="border:0;background:transparent;color:#57606a;font-size:28px;cursor:pointer">×</button>
+      </header>
+      <form data-world-feedback-kiosk-form style="display:grid;gap:14px;padding:22px">
+        <p style="margin:0;color:#57606a;line-height:1.55">Tell us what worked, what was confusing, or the one thing you want us to improve next. This feedback is stored for ForkMesh operators and is not published in the World.</p>
+        <label style="display:grid;gap:7px;font-weight:700"><span>Your feedback</span><textarea name="message" required minlength="2" maxlength="2000" rows="7" autofocus placeholder="What should we know?" style="resize:vertical;border:1px solid #8c959f;border-radius:6px;background:#fff;color:#24292f;padding:10px 12px;font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"></textarea></label>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span data-world-feedback-kiosk-status role="status" style="color:#57606a;font-size:13px"></span><button type="submit" style="min-height:40px;border:1px solid #1a7f37;border-radius:6px;background:#1f883d;color:#fff;padding:8px 16px;font-weight:800;cursor:pointer">Send feedback</button></div>
+      </form>`;
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog
+      .querySelector("[data-world-feedback-kiosk-close]")
+      ?.addEventListener("click", () => dialog.close());
+    dialog
+      .querySelector("[data-world-feedback-kiosk-form]")
+      ?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const message = String(new FormData(form).get("message") || "").trim();
+        const status = form.querySelector(
+          "[data-world-feedback-kiosk-status]",
+        );
+        const submit = form.querySelector('button[type="submit"]');
+        if (message.length < 2) return;
+        submit.disabled = true;
+        if (status) status.textContent = "Sending…";
+        try {
+          const response = await fetch("/api/feedback", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              source: "world",
+              vote: "feedback",
+              path: "/world/#lobby-feedback",
+              message,
+            }),
+          });
+          if (!response.ok) throw new Error("feedback was not accepted");
+          form.reset();
+          if (status) status.textContent = "Thank you — feedback sent.";
+          submit.textContent = "Sent";
+          window.setTimeout(() => dialog.open && dialog.close(), 900);
+        } catch (_) {
+          submit.disabled = false;
+          if (status) {
+            status.textContent =
+              "Feedback could not be sent. Please try again.";
+          }
+        }
+      });
+    dialog.showModal();
+    if (this.openFeedbackKioskOnLoad) {
+      this.openFeedbackKioskOnLoad = false;
+      const url = new URL(location.href);
+      url.searchParams.delete("feedback");
+      history.replaceState(history.state, "", url);
+    }
+  }
+
   async openLobbyLinkKiosk() {
     document.querySelector("[data-world-link-kiosk-dialog]")?.remove();
     const dialog = document.createElement("dialog");
@@ -23479,6 +23911,8 @@ class ForkMeshWorld extends HTMLElement {
     window.clearTimeout(this.mirrorPushRefreshTimer);
     window.clearInterval(this.eventsTimer);
     window.clearInterval(this.notificationsTimer);
+    window.clearInterval(this.adminErrorTimer);
+    window.clearTimeout(this.adminErrorEffectTimer);
     window.clearInterval(this.mediaTimer);
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);

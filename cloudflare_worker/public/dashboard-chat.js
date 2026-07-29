@@ -100,6 +100,11 @@
   const fullChannel = document.querySelector("#fullChatChannel");
   const fullRepository = document.querySelector("#fullChatRepo");
   const fullAction = document.querySelector("#fullChatAction");
+  const taskRouting = document.querySelector("[data-dashboard-task-routing]");
+  const taskDepartment = document.querySelector("[data-dashboard-task-department]");
+  const taskTeam = document.querySelector("[data-dashboard-task-team]");
+  const taskDestination = document.querySelector("[data-dashboard-task-destination]");
+  const taskAssignee = document.querySelector("[data-dashboard-task-assignee]");
   const fullSendLabel = document.querySelector(
     "[data-dashboard-chat-send-label]",
   );
@@ -1974,7 +1979,7 @@
         `Queued on ${target}. Claude Haiku is checking the prompt before I start.`,
         botName,
       );
-      return true;
+      return data;
     } catch (error) {
       const reason = error.message === "no_eligible_headless_mirror"
         ? "No eligible headless mirror is online."
@@ -2180,7 +2185,24 @@
     const match = value.match(
       /^([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\/([A-Za-z0-9._-]{1,100})$/,
     );
-    return match ? { owner: match[1], name: match[2], repo: match[2] } : null;
+    if (!match) return null;
+    const selected = fullRepository?.selectedOptions?.[0];
+    const routeOwner = String(selected?.dataset?.routeOwner || match[1]);
+    const routeName = String(selected?.dataset?.routeName || match[2]);
+    if (
+      !/^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(routeOwner) ||
+      !/^[A-Za-z0-9._-]{1,100}$/.test(routeName)
+    ) {
+      return null;
+    }
+    return {
+      owner: routeOwner,
+      name: routeName,
+      repo: routeName,
+      logicalOwner: match[1],
+      logicalName: match[2],
+      logicalKind: String(selected?.dataset?.logicalKind || "user"),
+    };
   }
 
   function setComposerStatus(message = "", tone = "muted") {
@@ -2201,6 +2223,10 @@
       fullChannel,
       fullRepository,
       fullAction,
+      taskDepartment,
+      taskTeam,
+      taskDestination,
+      taskAssignee,
     ]) {
       if (control) control.disabled = Boolean(busy);
     }
@@ -2220,6 +2246,11 @@
         hint: "First line becomes the title · remaining lines become the description",
         placeholder: "Issue title\\nDescribe the expected behavior and context…",
       },
+      task: {
+        label: "Create task",
+        hint: "First line is the title · route by department, team, destination, and assignee",
+        placeholder: "Task title\\nAdd details or QA instructions…",
+      },
       codex: {
         label: "Assign Codex",
         hint: "Starts a secured Engineering task on an eligible mirror",
@@ -2234,9 +2265,86 @@
     if (fullSendLabel) fullSendLabel.textContent = presentation.label || "Send";
     if (fullComposerHint) fullComposerHint.textContent = presentation.hint || "";
     fullInput.placeholder = presentation.placeholder || "Write a message…";
-    fullRepository?.classList.toggle("ring-1", action !== "chat");
-    fullRepository?.classList.toggle("ring-primary/50", action !== "chat");
+    if (taskRouting) taskRouting.hidden = action !== "task";
+    const repositoryRelevant =
+      action !== "chat" &&
+      (
+        action !== "task" ||
+        String(taskDestination?.value || "") === "repository" ||
+        ["codex", "claude"].includes(String(taskAssignee?.value || ""))
+      );
+    fullRepository?.classList.toggle("ring-1", repositoryRelevant);
+    fullRepository?.classList.toggle("ring-primary/50", repositoryRelevant);
     setComposerStatus("");
+  }
+
+  async function taskApiRequest(method, path, body = null) {
+    const token = String(userSession()?.sessionToken || "");
+    const headers = { accept: "application/json" };
+    if (body !== null) headers["content-type"] = "application/json";
+    if (token && token !== "cookie") headers.authorization = `Bearer ${token}`;
+    const response = await fetch(path, {
+      method,
+      cache: "no-store",
+      credentials: "same-origin",
+      headers,
+      ...(body === null
+        ? {}
+        : {
+            body: JSON.stringify({
+              ...body,
+              ...(token && token !== "cookie"
+                ? { sessionToken: token }
+                : {}),
+            }),
+          }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(String(payload?.error || `HTTP ${response.status}`));
+    }
+    return payload;
+  }
+
+  async function loadTaskRouting() {
+    if (!taskAssignee || !taskTeam) return;
+    try {
+      const payload = await taskApiRequest("GET", "/api/tasks");
+      const selfName = String(payload?.actor || displayName()).toLowerCase();
+      for (const value of Array.isArray(payload?.members)
+        ? payload.members
+        : []) {
+        const name = String(value || "").trim().toLowerCase();
+        if (!/^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) continue;
+        const option = document.createElement("option");
+        option.value = `user:${name}`;
+        option.textContent = name === selfName ? `${name} (you)` : name;
+        taskAssignee.append(option);
+      }
+      if (
+        selfName &&
+        Array.from(taskAssignee.options).some(
+          (option) => option.value === `user:${selfName}`,
+        )
+      ) {
+        taskAssignee.value = `user:${selfName}`;
+      }
+      for (const value of Array.isArray(payload?.teams)
+        ? payload.teams
+        : []) {
+        const team = String(value || "").trim().toLowerCase();
+        if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(team)) continue;
+        const option = document.createElement("option");
+        option.value = team;
+        option.textContent = team;
+        taskTeam.append(option);
+      }
+    } catch (_) {
+      setComposerStatus(
+        "Task routing is available only to organization members.",
+        "bad",
+      );
+    }
   }
 
   async function loadComposerRepositories() {
@@ -2253,32 +2361,65 @@
       const repositories = (Array.isArray(payload?.repositories)
         ? payload.repositories
         : [])
-        .map((repository) => {
-          const owner = String(repository?.owner || "");
+        .flatMap((repository) => {
+          const routeOwner = String(repository?.owner || "");
           const name = String(repository?.name || repository?.repo || "");
-          const value = `${owner}/${name}`;
-          if (
-            !/^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?\/[A-Za-z0-9._-]{1,100}$/.test(
+          const logicalOwners = Array.isArray(repository?.logicalOwners)
+            ? repository.logicalOwners
+            : (
+                ["user", "organization"].includes(
+                  String(repository?.ownerKind || ""),
+                ) && repository?.logicalOwner
+                  ? [{
+                      kind: repository.ownerKind,
+                      owner: repository.logicalOwner,
+                    }]
+                  : []
+              );
+          return logicalOwners.map((identity) => {
+            const kind = String(identity?.kind || "").toLowerCase();
+            const logicalOwner = String(identity?.owner || "").toLowerCase();
+            const value = `${logicalOwner}/${name}`;
+            const key = `${kind}:${value}`;
+            if (
+              !["user", "organization"].includes(kind) ||
+              !/^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?\/[A-Za-z0-9._-]{1,100}$/.test(
+                value,
+              ) ||
+              !/^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(routeOwner) ||
+              seenRepositories.has(key)
+            ) {
+              return null;
+            }
+            seenRepositories.add(key);
+            return {
               value,
-            ) ||
-            seenRepositories.has(value)
-          ) {
-            return null;
-          }
-          seenRepositories.add(value);
-          return value;
+              label: `${value} · ${
+                kind === "organization" ? "Organization" : "User"
+              }`,
+              kind,
+              routeOwner:
+                kind === "organization" ? logicalOwner : routeOwner,
+              routeName: name,
+            };
+          });
         })
         .filter(Boolean)
-        .sort((left, right) => left.localeCompare(right));
+        .sort((left, right) => left.label.localeCompare(right.label));
       const previous =
         sessionStorage.getItem("forkmesh.worldChat.repository") || "";
-      for (const value of repositories.slice(0, 250)) {
+      for (const repository of repositories.slice(0, 250)) {
         const option = document.createElement("option");
-        option.value = value;
-        option.textContent = value;
+        option.value = repository.value;
+        option.textContent = repository.label;
+        option.dataset.logicalKind = repository.kind;
+        option.dataset.routeOwner = repository.routeOwner;
+        option.dataset.routeName = repository.routeName;
         fullRepository.append(option);
       }
-      if (repositories.includes(previous)) fullRepository.value = previous;
+      if (repositories.some((repository) => repository.value === previous)) {
+        fullRepository.value = previous;
+      }
     } catch (_) {
       setComposerStatus("Repository catalog unavailable", "bad");
     }
@@ -2293,15 +2434,97 @@
       return;
     }
     const repository = selectedComposerRepository();
-    if (!repository) {
+    const taskAssigneeValue = String(taskAssignee?.value || "unassigned");
+    const taskNeedsRepository =
+      action === "task" &&
+      (
+        String(taskDestination?.value || "") === "repository" ||
+        ["codex", "claude"].includes(taskAssigneeValue)
+      );
+    if (!repository && (action !== "task" || taskNeedsRepository)) {
       setComposerStatus("Choose a repository for this action.", "bad");
       fullRepository?.focus();
       return;
     }
+    if (action === "task" && !String(taskTeam?.value || "")) {
+      setComposerStatus("Choose the team responsible for this task.", "bad");
+      taskTeam?.focus();
+      return;
+    }
     setFullComposerBusy(true);
-    setComposerStatus(action === "issue" ? "Signing issue…" : "Assigning agent…");
+    setComposerStatus(
+      action === "issue"
+        ? "Signing issue…"
+        : action === "task"
+          ? "Saving private task…"
+          : "Assigning agent…",
+    );
     try {
-      if (action === "issue") {
+      if (action === "task") {
+        const lines = text.split(/\r?\n/);
+        const title = String(lines.shift() || "").trim().slice(0, 160);
+        const details = lines.join("\n").trim().slice(0, 4000);
+        if (!title) throw new Error("Task title is required.");
+        const agentKind = ["codex", "claude"].includes(taskAssigneeValue)
+          ? taskAssigneeValue
+          : "";
+        const userAssignee = taskAssigneeValue.startsWith("user:")
+          ? taskAssigneeValue.slice(5)
+          : "";
+        const destination = agentKind
+          ? "agent"
+          : String(taskDestination?.value || "department");
+        const created = await taskApiRequest("POST", "/api/tasks", {
+          title,
+          details,
+          department: String(taskDepartment?.value || "general"),
+          team: String(taskTeam?.value || ""),
+          destination,
+          assigneeKind: agentKind || (userAssignee ? "user" : "unassigned"),
+          assignee: userAssignee,
+          repository: repository
+            ? `${repository.logicalOwner}/${repository.logicalName}`
+            : "",
+          ...(destination === "qa"
+            ? {
+                howToTest:
+                  details ||
+                  "Follow the normal user flow and confirm the requested behavior.",
+              }
+            : {}),
+        });
+        const task = created?.task || {};
+        if (agentKind) {
+          const mention = agentKind === "codex" ? "@codex" : "@claude";
+          const queued = await maybeAskOrgAgent(
+            `${mention} [task:${task.id}] ${title}\n\n${details}`.trim(),
+            repository,
+          );
+          if (!queued) {
+            throw new Error(
+              "The task was saved, but the agent request was not accepted.",
+            );
+          }
+          const sessionId = String(queued?.session?.id || "");
+          if (sessionId) {
+            await taskApiRequest("PATCH", `/api/tasks/${task.id}`, {
+              agentSessionId: sessionId,
+            });
+          }
+        }
+        appendSystem(
+          `Private task “${title}” was sent to ${
+            destination === "qa"
+              ? "the QA board"
+              : destination === "agent"
+                ? agentKind === "codex" ? "Codex" : "Claude"
+                : destination === "repository"
+                  ? `${repository.owner}/${repository.name}`
+                  : `${task.department || "general"}`
+          }.`,
+        );
+        setComposerStatus("Organization task created.", "good");
+      } else if (action === "issue") {
         const lines = text.split(/\r?\n/);
         const title = String(lines.shift() || "").trim().slice(0, 200);
         const body = lines.join("\n").trim();
@@ -2510,8 +2733,11 @@
       } catch (_) {}
     });
     fullAction?.addEventListener("change", syncFullComposerAction);
+    taskDestination?.addEventListener("change", syncFullComposerAction);
+    taskAssignee?.addEventListener("change", syncFullComposerAction);
     syncFullComposerAction();
     void loadComposerRepositories();
+    void loadTaskRouting();
     wireInput(fullInput, fullSend);
     wireInput(sideInput, sideSend);
     // Connect right away so the room's message history (replayed by the relay

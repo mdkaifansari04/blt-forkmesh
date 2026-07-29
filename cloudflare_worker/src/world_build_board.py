@@ -8,6 +8,15 @@ MAX_ITEMS = 64
 BODY_LIMIT = 8 * 1024
 KEY_RE = re.compile(r"^(?:task:[a-z0-9-]{1,48}|issue:[a-z0-9-]{1,40}/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})$")
 BUILTIN_KEYS = frozenset({
+    "task:avatar-selection-runtime",
+    "task:member-circle-fire",
+    "task:aquarium-fixed-controls",
+    "task:recent-public-chat-card",
+    "task:verification-pin-state",
+    "task:office-floor-warps",
+    "task:world-console-cleanup",
+    "task:admin-record-detail",
+    "task:member-verification-admin-link",
     "task:engineering-debug-panel",
     "task:compact-leaderboard",
     "task:leaderboard-grid",
