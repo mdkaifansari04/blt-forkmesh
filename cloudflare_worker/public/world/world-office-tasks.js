@@ -101,6 +101,7 @@ function normalizedTask(task) {
     kind,
     title,
     details: text(task.details, 4000),
+    completionNote: text(task.completionNote, 4000),
     createdBy: text(task.createdBy, 64).toLowerCase(),
     bountyRequest:
       kind === "bid"
@@ -430,7 +431,11 @@ export function createWorldOfficeTasksController({
     return `
       <li class="world-office-task" data-kind="${bid ? "bid" : "task"}" data-status="${doneTask ? "done" : activeTask ? "active" : "idle"}">
         <div class="world-office-task-copy">
-          <span class="world-office-task-state" aria-hidden="true"></span>
+          <span
+            class="world-office-task-state"
+            aria-hidden="true"
+            title="${activeTask ? "In progress" : doneTask ? "Done" : "Ready"}"
+          ></span>
           <div>
             <strong>${
               bid
@@ -464,6 +469,32 @@ export function createWorldOfficeTasksController({
               ${doneTask ? " · done" : ""}
               ${checkinState ? ` · last check-in: ${escapeHTML(checkinState)}` : ""}
             </small>
+            ${
+              activeTask
+                ? '<span class="world-office-task-progress-label">In progress</span>'
+                : ""
+            }
+            ${
+              doneTask && task.completionNote
+                ? `<section class="world-office-task-completion">
+                    <span>What I did to complete this task</span>
+                    <p>${escapeHTML(task.completionNote, 4000)}</p>
+                  </section>`
+                : ""
+            }
+            ${
+              (own || canManage) && !doneTask
+                ? `<label class="world-office-task-completion-editor">
+                    <span>What I did to complete this task</span>
+                    <textarea
+                      maxlength="4000"
+                      rows="3"
+                      data-world-office-task-completion-note="${task.id}"
+                      placeholder="Summarize the changes, decisions, and verification completed…"
+                    >${escapeHTML(task.completionNote, 4000)}</textarea>
+                  </label>`
+                : ""
+            }
           </div>
         </div>
         <div class="world-office-task-controls">
@@ -965,11 +996,21 @@ export function createWorldOfficeTasksController({
     ) {
       return;
     }
+    const completionNote =
+      action === "complete"
+        ? text(
+            actionButton
+              .closest(".world-office-task")
+              ?.querySelector("[data-world-office-task-completion-note]")
+              ?.value,
+            4000,
+          )
+        : "";
     const saved = await mutate(
       action === "delete"
         ? `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}`
         : `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}/${action}`,
-      {},
+      action === "complete" ? { completionNote } : {},
       id,
       action === "delete" ? { method: "DELETE" } : {},
     );
@@ -1070,11 +1111,20 @@ export function createWorldOfficeTasksController({
     ) {
       return false;
     }
+    let completionNote = "";
+    if (action === "complete") {
+      const entered = window.prompt(
+        "What did you do to complete this task? This note will remain with the task for QA.",
+        task.completionNote || "",
+      );
+      if (entered === null) return false;
+      completionNote = text(entered, 4000);
+    }
     const saved = await mutate(
       action === "delete"
         ? `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}`
         : `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}/${action}`,
-      {},
+      action === "complete" ? { completionNote } : {},
       id,
       action === "delete" ? { method: "DELETE" } : {},
     );

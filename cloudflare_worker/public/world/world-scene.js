@@ -64,6 +64,16 @@ const LEADERBOARD_CONNECTION_MIN_X = -103;
 const LEADERBOARD_CONNECTION_MAX_X = -78;
 const MEMBER_ISLAND_CENTER_Z = 130;
 const MEMBER_PATH_END_Z = MEMBER_ISLAND_CENTER_Z - 21;
+// Every town promenade is cut from the same slab. Keeping its width, depth,
+// and center plane in one place prevents adjacent segments from producing the
+// doubled edges and hairline height changes that are especially visible from
+// the zoomed-out camera.
+const WORLD_PATH_WIDTH = OFFICE_BRIDGE_WIDTH;
+const WORLD_PATH_HEIGHT = 0.08;
+const WORLD_PATH_SURFACE_Y = 0.105;
+const WORLD_PATH_CENTER_Y =
+  WORLD_PATH_SURFACE_Y - WORLD_PATH_HEIGHT / 2;
+const DISTRICT_GROUND_RADIUS = 48;
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
 const PLAYER_SPEED = 6.4;
@@ -103,8 +113,14 @@ const CAMERA_ZOOM_MAX = 28;
 const CAMERA_FAR_PLANE = 1800;
 const CAMERA_LOOK_SENSITIVITY = 0.0022;
 const RENDER_STALL_THRESHOLD_MS = 150;
-const RENDER_STALL_LOG_COOLDOWN_MS = 1000;
+// DevTools console work is surprisingly expensive while WebGL is already
+// behind. Aggregate repeated stalls and emit at most one compact warning per
+// window instead of making a slow frame slower once every second.
+const RENDER_STALL_LOG_COOLDOWN_MS = 30_000;
+const MOVEMENT_INPUT_LOG_COOLDOWN_MS = 30_000;
 const MOVEMENT_INPUT_DELAY_THRESHOLD_MS = 50;
+const SCENE_LOD_SAMPLE_MS = 500;
+const AVATAR_HIGHLIGHT_SAMPLE_MS = 100;
 // Dragging upward lowers the orbit eye beneath the target, which is how this
 // camera looks into the sky. Allow the full arc in both directions.
 const CAMERA_PITCH_MIN = -Math.PI / 2 + 0.01;
@@ -3077,6 +3093,13 @@ function officeReclaimedWoodTexture(THREE) {
 // the active implementation queue in a fixed, readable grid. Keep the ordering
 // stable so a repaint never makes cards jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
+  { key: "task:world-stall-flood", task: "Stop World render stalls + warning floods", detail: "Zoom events now run LOD work only when crossing a real near/far boundary, selection bounds are cadence sampled, frame effects share one timestamp, and compact deferred diagnostics aggregate repeated stalls for 30 seconds instead of allocating stacks and flooding DevTools on the hot frame.", estimate: "implemented · performance QA", done: true },
+  { key: "task:qa-full-catalog", task: "Restore the full QA desk backlog", detail: "Removed the 64-card server truncation that hid built-in cards 65–78 and every later database/task card. The bounded catalog now carries all valid sources while the physical desk stays constant-cost at five cards per page.", estimate: "implemented · focused QA", done: true },
+  { key: "task:task-completion-note", task: "Task completion work notes", detail: "Each actionable task row has an editable What I did to complete this task note. Completion encrypts and retains the bounded note with the task, shows it to organization reviewers, and exposes it alongside the QA-ready record.", estimate: "implemented · focused QA", done: true },
+  { key: "task:screenshot-to-hud-composer", task: "Screenshot → chat / prompt composer", detail: "The annotation preview now carries editable alt text and an Add to chat / prompt action. It compacts the image, stages it in the pinned HUD without posting, and leaves chat, issue, task, or agent routing to the user.", estimate: "implemented · focused QA", done: true },
+  { key: "task:readable-live-task-panel", task: "Readable live task panel + private taken notices", detail: "The Work view expands into a full task workspace with complete titles, details, routing, QA, timers, and controls. Active work has a visible spinner, and task starts fan out through encrypted account notifications only to Organization Engineering members.", estimate: "implemented · focused QA", done: true },
+  { key: "task:lobby-community-kiosk-row", task: "Align lobby community kiosks", detail: "Feedback, task bounties, Link Lab, and Link Rewards form one readable row on the Office clock wall immediately to its left, keeping Noah and the lobby route clear.", estimate: "implemented · focused QA", done: true },
+  { key: "task:district-ground-paths", task: "Clean repository + leaderboard districts", detail: "Removed the ground-level VIEW placards, centered repository imports, added efficient textured district circles, and rebuilt every town connector from one solid concrete slab specification with flush endpoints.", estimate: "implemented · focused QA", done: true },
   { key: "task:lobby-task-bounties", task: "Lobby task bounty bidding desk", detail: "Organization members can propose scoped work in the lobby, name an exact SOL compensation request, and publish the encrypted record into the shared task catalog as a clearly labeled bid. The request is non-custodial and records no transfer or reserved funds.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-orb-hud", task: "Compact debug + unified activity orbs", detail: "Replaced the bottom bars with logo-sized status circles. DEBUG summarizes every performance grade as green, yellow, or red dots and expands on hover or focus. CHAT shows the latest speaker and unread count, then opens a translucent channel composer with image attachment, separate chat/task actions, human-or-agent routing, team categorization, and a ten-second unified activity stream.", estimate: "deployed · ready for QA", done: true },
   { key: "task:avatar-selection-runtime", task: "Reliable user HUD selection", detail: "Avatar clicks use a scoped frame timestamp, prefer the visible avatar hit over nearby geometry, and open the privacy-filtered member side panel without throwing.", estimate: "implemented · focused QA", done: true },
@@ -3113,7 +3136,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:world-reactive-reef", task: "Persistent reef controls + reactive fish", detail: "Keep the aquarium controls clickable throughout the lobby and make the school dart gently as a visitor approaches the glass.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:repo-code-landing", task: "Changed files land in repository rings", detail: "Verified changed-file tiles fly into the matching repository with night lightning or daylight shadows, then sizzle and fade for ten seconds.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:repo-agent-live-terminals", task: "Interactive repository agent terminals", detail: "Each robot screen now shows its active task, mirror, status, and latest terminal line; clicking opens that exact engineering session with transcript and secure prompt or re-prompt controls.", estimate: "ready for deploy · in QA", done: true },
-  { key: "task:repo-board-view-pads", task: "Content-height repo boards + view pads", detail: "Each list now fits its page, reads newest at the bottom, carries a lower count footer, and has a height-aware first-person pad.", estimate: "ready for deploy · in QA", done: true },
+  { key: "task:repo-board-view-pads", task: "Content-height repository boards", detail: "Each list fits its page, reads newest at the bottom, and carries a lower count footer. The obsolete ground VIEW placards have been removed from the district.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-continuous-city", task: "One continuous city landscape", detail: "The districts now share one walkable foundation, textured grass, and seamless concrete connections.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-start-here-map", task: "START HERE progress map", detail: "A persistent users-to-nodes checklist now checks bounded milestones as each destination is visited.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-roof-and-seating", task: "Parachute roof jump and universal seating", detail: "Space exits the roof with checkout; a mini parachute deploys on descent, caps fall speed, and collapses after landing, while every marked chair and park bench accepts a sitter.", estimate: "verified · ready for QA", done: true },
@@ -4816,13 +4839,32 @@ const AVATAR_DEFAULT_FACE_EMOJI = "🙂";
 // live colour is read back out of the rendered glyph instead (see
 // edgeEmojiColor) so the sphere is exactly the emoji's own rim colour.
 const AVATAR_EMOJI_SKIN_COLOR = "#ffcc4d";
-// How far the emoji decal is wrapped around the head, centred on the front.
-// Both spans are wider than the glyph itself so the padded canvas carries the
-// emoji's rim colour past where the face ends and no bare sphere is left over.
-const AVATAR_FACE_PHI_START = Math.PI * 0.03;
-const AVATAR_FACE_PHI_LENGTH = Math.PI * 0.94;
-const AVATAR_FACE_THETA_START = Math.PI * 0.117;
-const AVATAR_FACE_THETA_LENGTH = Math.PI * 0.766;
+// The front of the head is cut off flat at this depth in front of the head's
+// centre and the face is a plain disc lying on that cut, so an uploaded avatar
+// photo is shown undistorted instead of being wrapped around a curved shell.
+const AVATAR_HEAD_RADIUS = 0.45;
+const AVATAR_FACE_DEPTH = 0.3;
+// Where the cut plane meets the sphere: the flat circle's exact radius, so the
+// disc covers the whole cut and no bare head shows around the face.
+const AVATAR_FACE_RADIUS = Math.sqrt(
+  AVATAR_HEAD_RADIUS * AVATAR_HEAD_RADIUS - AVATAR_FACE_DEPTH * AVATAR_FACE_DEPTH,
+);
+// Held just off the cut so the disc and the coplanar cap never z-fight.
+const AVATAR_FACE_LIFT = 0.002;
+
+// Slices the front off a head sphere: every vertex further forward than the
+// cut plane is pulled straight back onto it, which leaves the front as one
+// flat circle (avatar fronts face -Z) and the rest of the sphere untouched.
+function flattenSphereFront(geometry, depth) {
+  const position = geometry.attributes?.position;
+  if (!position) return geometry;
+  for (let i = 0; i < position.count; i += 1) {
+    if (position.getZ(i) < -depth) position.setZ(i, -depth);
+  }
+  position.needsUpdate = true;
+  geometry.computeVertexNormals();
+  return geometry;
+}
 
 // Reads back the drawn glyph, or "" when the canvas is tainted.
 function emojiPixels(context, canvas) {
@@ -4982,9 +5024,9 @@ function rotateBoxTopUVs(geometry) {
 
 function avatarFaceTexture(THREE, emoji) {
   let color = "";
-  // The glyph is drawn smaller than the canvas so the decal (which is widened
-  // to match, see AVATAR_FACE_*) keeps the face at the same angular size while
-  // its padding wraps further around the head.
+  // The glyph is drawn smaller than the canvas because the disc inscribes the
+  // square: the padding is what fills the corners the circle cuts away, so the
+  // face reaches the rim without the glyph itself being clipped.
   const texture = canvasTexture(THREE, 128, 128, (context, canvas) => {
     context.clearRect(0, 0, 128, 128);
     context.textAlign = "center";
@@ -5345,33 +5387,34 @@ function createAvatar(THREE, identity, options = {}) {
   torso.position.y = 2.15;
   group.add(torso);
 
-  // Same tessellation as the face shell wrapped over it, so the two silhouettes
-  // agree where the decal reaches around towards the ears.
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.45, 32, 24), skin);
-  head.scale.y = 1.05;
+  // Rounded everywhere except the front, which is cut off flat to carry the
+  // face disc: the two share AVATAR_FACE_DEPTH so the cut and the disc are the
+  // same circle.
+  const head = new THREE.Mesh(
+    flattenSphereFront(
+      new THREE.SphereGeometry(AVATAR_HEAD_RADIUS, 32, 24),
+      AVATAR_FACE_DEPTH,
+    ),
+    skin,
+  );
+  // Left unscaled: an egg-shaped head would stretch the flat cut into an
+  // ellipse and put the avatar photo back out of proportion.
   head.position.y = 3.36;
   group.add(head);
 
   // The face wears the last world-status emoji the visitor set (default
-  // smile). Avatar fronts face -Z; the emoji is mapped onto a thin curved
-  // shell hugging the head sphere so it wraps the whole face, and
-  // syncAvatarFace keeps its texture current.
+  // smile), or the visitor's avatar photo. It is a flat disc filling the cut
+  // front of the head, so the picture is shown square-on and unwarped rather
+  // than wrapped around a curve; syncAvatarFace keeps its texture current.
   const faceMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(
-      0.462,
-      32,
-      24,
-      AVATAR_FACE_PHI_START,
-      AVATAR_FACE_PHI_LENGTH,
-      AVATAR_FACE_THETA_START,
-      AVATAR_FACE_THETA_LENGTH,
-    ),
+    new THREE.CircleGeometry(AVATAR_FACE_RADIUS, 48),
     // The canvas is flooded opaque, so the decal renders in the solid pass and
-    // never sorts against the head sphere it is hugging.
+    // never sorts against the head it is lying on.
     new THREE.MeshBasicMaterial({}),
   );
-  faceMesh.scale.y = 1.05;
   faceMesh.position.y = 3.36;
+  // Avatar fronts face -Z, so the disc is turned to look out of the cut.
+  faceMesh.position.z = -(AVATAR_FACE_DEPTH + AVATAR_FACE_LIFT);
   faceMesh.rotation.y = Math.PI;
   group.add(faceMesh);
 
@@ -7213,13 +7256,13 @@ function createLandscapePath(
   const dz = end[1] - start[1];
   const length = Math.max(0.1, Math.hypot(dx, dz));
   const path = new THREE.Mesh(
-    new THREE.BoxGeometry(width, 0.08, length),
+    new THREE.BoxGeometry(width, WORLD_PATH_HEIGHT, length),
     material,
   );
   path.name = name;
   path.position.set(
     (start[0] + end[0]) / 2,
-    0.065,
+    WORLD_PATH_CENTER_Y,
     (start[1] + end[1]) / 2,
   );
   path.rotation.y = Math.atan2(dx, dz);
@@ -7289,6 +7332,37 @@ function concreteBrickMaterial(THREE) {
     roughness: 0.96,
     metalness: 0.02,
   });
+}
+
+function districtGroundMaterial(THREE, kind) {
+  const repository = kind === "repositories";
+  return new THREE.MeshStandardMaterial({
+    color: repository ? "#8099a0" : "#8a829b",
+    map: projectAssetTexture(
+      THREE,
+      "/world/assets/concrete-brick-path-v1.webp",
+      12,
+      12,
+    ),
+    roughness: 0.97,
+    metalness: 0.01,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+}
+
+function createDistrictGroundCircle(THREE, kind) {
+  const ground = new THREE.Mesh(
+    new THREE.CircleGeometry(DISTRICT_GROUND_RADIUS, 96),
+    districtGroundMaterial(THREE, kind),
+  );
+  ground.name = `forkmesh-${kind}-textured-ground`;
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = 0.012;
+  ground.receiveShadow = true;
+  ground.userData.ground = true;
+  return ground;
 }
 
 const START_HERE_STEPS = Object.freeze([
@@ -7382,11 +7456,15 @@ function createTownLandscape(THREE) {
   const junctionWidth = OFFICE_BRIDGE_WIDTH;
   const junctionHalfWidth = junctionWidth / 2;
   const junction = new THREE.Mesh(
-    new THREE.BoxGeometry(junctionWidth, 0.08, junctionWidth),
+    new THREE.BoxGeometry(
+      junctionWidth,
+      WORLD_PATH_HEIGHT,
+      junctionWidth,
+    ),
     pathMaterial,
   );
   junction.name = "forkmesh-town-path-junction";
-  junction.position.y = 0.065;
+  junction.position.y = WORLD_PATH_CENTER_Y;
   junction.receiveShadow = true;
   junction.userData.ground = true;
   group.add(junction);
@@ -7396,25 +7474,25 @@ function createTownLandscape(THREE) {
       "east-repositories",
       [junctionHalfWidth, 0],
       [REPOSITORY_CONNECTION_MIN_X, 0],
-      8.4,
+      WORLD_PATH_WIDTH,
     ],
     [
       "north-office",
       [0, -junctionHalfWidth],
       [0, OFFICE_BRIDGE_START_Z],
-      OFFICE_BRIDGE_WIDTH,
+      WORLD_PATH_WIDTH,
     ],
     [
       "west-billboards",
       [-junctionHalfWidth, 0],
       [LEADERBOARD_CONNECTION_MAX_X, 0],
-      8.4,
+      WORLD_PATH_WIDTH,
     ],
     [
       "south-members",
       [0, junctionHalfWidth],
       [0, MEMBER_PATH_END_Z],
-      8.4,
+      WORLD_PATH_WIDTH,
     ],
   ].forEach(([id, start, end, width]) => {
     group.add(
@@ -7484,6 +7562,43 @@ function rewardPoolRimTexture(THREE) {
       )}px "ForkMesh Mono", ui-monospace, monospace`;
       context.fillText("◎", centre + slot / 2, height / 2 + 4);
     }
+  });
+}
+
+// The mirror tally that hangs over the reward pool's orb. The cabinets are
+// already arranged in rings around this basin, so the headline number belongs
+// above them rather than on yet another sign: how many mirror nodes the signed
+// catalog currently lists, and how many of those are answering right now.
+function rewardPoolMirrorCountTexture(THREE, total, online) {
+  const count = Math.max(0, Math.min(9999, Math.round(Number(total) || 0)));
+  const live = Math.max(0, Math.min(count, Math.round(Number(online) || 0)));
+  return canvasTexture(THREE, 512, 256, (context) => {
+    context.clearRect(0, 0, 512, 256);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    const glow = context.createLinearGradient(0, 26, 0, 150);
+    glow.addColorStop(0, "#fff4d2");
+    glow.addColorStop(0.55, "#f7c96b");
+    glow.addColorStop(1, "#ffae3f");
+    context.shadowColor = "rgba(255, 174, 63, 0.9)";
+    context.shadowBlur = 34;
+    context.fillStyle = glow;
+    context.font = '700 128px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText(count.toLocaleString("en-US"), 256, 88);
+    context.shadowBlur = 18;
+    context.fillStyle = "#9ef7c6";
+    context.font = '400 40px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(count === 1 ? "MIRROR" : "MIRRORS", 256, 168);
+    // Offline cabinets stay in the ring, so the tally says plainly how many of
+    // them are actually serving instead of implying every one is live.
+    context.shadowBlur = 12;
+    context.fillStyle = live === count ? "#9ef7c6" : "#ffd479";
+    context.font = '400 30px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      live === count ? "ALL ONLINE" : `${live.toLocaleString("en-US")} ONLINE`,
+      256,
+      216,
+    );
   });
 }
 
@@ -7763,6 +7878,23 @@ function createFountain(THREE, position, interactive, animated) {
   sun.position.y = 5.15;
   sun.userData.baseY = sun.position.y;
   group.add(sun);
+
+  // Hidden until the first signed catalog lands, so the pool never flashes a
+  // placeholder "0 MIRRORS" before the node payload arrives.
+  const mirrorCountSprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      transparent: true,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  mirrorCountSprite.name = "reward-pool-mirror-count";
+  mirrorCountSprite.position.y = 7.6;
+  mirrorCountSprite.scale.set(5, 2.5, 1);
+  mirrorCountSprite.renderOrder = 12;
+  mirrorCountSprite.visible = false;
+  group.add(mirrorCountSprite);
+  group.userData.mirrorCountSprite = mirrorCountSprite;
 
   for (const radius of [1.75, 2.65, 3.55]) {
     const ring = new THREE.Mesh(
@@ -9365,6 +9497,7 @@ function repositoryWedgeGeometry(
 
 function createRepositoryDistrict(THREE, position, interactive, animated) {
   const group = new THREE.Group();
+  group.add(createDistrictGroundCircle(THREE, "repositories"));
   const ringMaterial = makeMaterial(THREE, "#77d9ff", {
     metalness: 0.2,
     roughness: 0.28,
@@ -9454,7 +9587,7 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   // same secure import flow with that provider preselected.
   const importKiosk = new THREE.Group();
   importKiosk.name = "repository-import-kiosk";
-  importKiosk.position.set(0, 0, 5.2);
+  importKiosk.position.set(0, 0, 0);
   const kioskBase = new THREE.Mesh(
     new THREE.CylinderGeometry(2.15, 2.35, 0.42, 8),
     makeMaterial(THREE, "#102a32", {
@@ -14741,11 +14874,15 @@ export function createWorldScene({
   const repositoryConnectionLength =
     REPOSITORY_CONNECTION_MAX_X - REPOSITORY_CONNECTION_MIN_X;
   const repositoryPromenade = new THREE.Mesh(
-    new THREE.BoxGeometry(repositoryConnectionLength, 0.08, 7.2),
+    new THREE.BoxGeometry(
+      repositoryConnectionLength,
+      WORLD_PATH_HEIGHT,
+      WORLD_PATH_WIDTH,
+    ),
     concreteBrickMaterial(THREE),
   );
   repositoryPromenade.name = "hosted-repository-promenade";
-  repositoryPromenade.position.y = 0.065;
+  repositoryPromenade.position.y = WORLD_PATH_CENTER_Y;
   repositoryPromenade.receiveShadow = true;
   repositoryPromenade.userData.ground = true;
   repositoryBridge.add(repositoryPromenade);
@@ -14764,46 +14901,26 @@ export function createWorldScene({
   const leaderboardConnectionLength =
     LEADERBOARD_CONNECTION_MAX_X - LEADERBOARD_CONNECTION_MIN_X;
   const leaderboardPromenade = new THREE.Mesh(
-    new THREE.BoxGeometry(leaderboardConnectionLength, 0.08, 7.2),
+    new THREE.BoxGeometry(
+      leaderboardConnectionLength,
+      WORLD_PATH_HEIGHT,
+      WORLD_PATH_WIDTH,
+    ),
     concreteBrickMaterial(THREE),
   );
   leaderboardPromenade.name = "forkmesh-leaderboard-promenade";
-  leaderboardPromenade.position.y = 0.065;
+  leaderboardPromenade.position.y = WORLD_PATH_CENTER_Y;
   leaderboardPromenade.receiveShadow = true;
   leaderboardPromenade.userData.ground = true;
   leaderboardConnection.add(leaderboardPromenade);
-  for (const z of [-4.3, 4.3]) {
-    const guide = new THREE.Mesh(
-      new THREE.BoxGeometry(leaderboardConnectionLength - 1, 0.1, 0.14),
-      makeMaterial(THREE, "#9ef7c6", {
-        emissive: "#38ca8d",
-        emissiveIntensity: 1.7,
-        metalness: 0.25,
-        roughness: 0.25,
-      }),
-    );
-    guide.position.set(0, 0.15, z);
-    leaderboardConnection.add(guide);
-  }
-  for (const x of [-10, -5, 0, 5, 10]) {
-    for (const z of [-5.6, 5.6]) {
-      const beacon = new THREE.Mesh(
-        new THREE.SphereGeometry(0.2, 10, 8),
-        makeMaterial(THREE, "#77d9ff", {
-          emissive: "#42bce2",
-          emissiveIntensity: 2,
-          roughness: 0.2,
-        }),
-      );
-      beacon.position.set(x, 0.72, z);
-      leaderboardConnection.add(beacon);
-    }
-  }
   world.add(leaderboardConnection);
 
   const leaderboardDistrict = new THREE.Group();
   leaderboardDistrict.name = "forkmesh-leaderboard-district";
   leaderboardDistrict.position.set(LEADERBOARD_ISLAND_CENTER_X, 0, 0);
+  leaderboardDistrict.add(
+    createDistrictGroundCircle(THREE, "leaderboards"),
+  );
   const leaderboardBeacon = new THREE.Mesh(
     new THREE.CylinderGeometry(3.1, 4.2, 0.7, 24),
     makeMaterial(THREE, "#173c35", {
@@ -18003,7 +18120,8 @@ export function createWorldScene({
   // stores form values in scene state or multiplayer presence.
   const officeLinkKiosk = new THREE.Group();
   officeLinkKiosk.name = "forkmesh-office-link-kiosk";
-  officeLinkKiosk.position.set(25, 0, -28);
+  officeLinkKiosk.position.set(84, 0, -22);
+  officeLinkKiosk.rotation.y = -Math.PI / 2;
   const officeLinkKioskStand = new THREE.Mesh(
     new THREE.BoxGeometry(8.6, 3.4, 2.8),
     makeMaterial(THREE, "#17352f", {
@@ -18055,7 +18173,8 @@ export function createWorldScene({
   // visitors can leave product feedback without exposing it through presence.
   const officeFeedbackKiosk = new THREE.Group();
   officeFeedbackKiosk.name = "forkmesh-office-feedback-kiosk";
-  officeFeedbackKiosk.position.set(-25, 0, -28);
+  officeFeedbackKiosk.position.set(84, 0, -52);
+  officeFeedbackKiosk.rotation.y = -Math.PI / 2;
   const officeFeedbackKioskStand = new THREE.Mesh(
     new THREE.BoxGeometry(8.6, 3.4, 2.8),
     makeMaterial(THREE, "#24292f", {
@@ -18105,7 +18224,8 @@ export function createWorldScene({
   // task copy and bounty metadata remain in the encrypted task catalog.
   const officeTaskBidKiosk = new THREE.Group();
   officeTaskBidKiosk.name = "forkmesh-office-task-bid-kiosk";
-  officeTaskBidKiosk.position.set(0, 0, -25.5);
+  officeTaskBidKiosk.position.set(84, 0, -37);
+  officeTaskBidKiosk.rotation.y = -Math.PI / 2;
   const officeTaskBidKioskStand = new THREE.Mesh(
     new THREE.BoxGeometry(10.8, 3.4, 2.8),
     makeMaterial(THREE, "#24292f", {
@@ -18155,7 +18275,8 @@ export function createWorldScene({
   // estimate, and payment state visible without first opening a dialog.
   const officeLinkRewards = new THREE.Group();
   officeLinkRewards.name = "forkmesh-office-link-rewards";
-  officeLinkRewards.position.set(39, 0, -28);
+  officeLinkRewards.position.set(84, 0, -6);
+  officeLinkRewards.rotation.y = -Math.PI / 2;
   const officeLinkRewardsStand = new THREE.Mesh(
     new THREE.BoxGeometry(10.5, 3.4, 2.8),
     makeMaterial(THREE, "#16333b", {
@@ -19375,6 +19496,7 @@ export function createWorldScene({
   const nodeInfrastructure = new Map();
   const deletedNodeIdentifiers = new Set();
   let networkNodeSnapshot = [];
+  let mirrorCountShown = "";
   const mirrorAgentTasksByNode = new Map();
   const repositoryAgentTasksByRepository = new Map();
   let mirrorAgentTasksKey = "";
@@ -19406,6 +19528,7 @@ export function createWorldScene({
   const pointer = new THREE.Vector2();
   const pointerStart = new THREE.Vector2();
   const pointerLast = new THREE.Vector2();
+  const pointerCurrent = new THREE.Vector2();
   // Hot-path scratch values. Reusing these avoids producing several short-
   // lived vectors on every movement and label frame, which otherwise turns
   // into intermittent garbage-collection pauses while walking.
@@ -19467,14 +19590,18 @@ export function createWorldScene({
   let diagnosticsRendererTriangles = 0;
   let diagnosticsLongestFrameMs = 0;
   let diagnosticsLongFrames = 0;
-  let lastRenderStallLogAt = 0;
+  let lastRenderStallLogAt = -Infinity;
+  let suppressedRenderStalls = 0;
+  let renderStallWarningTimer = 0;
   let diagnosticsPointerMoves = 0;
   let diagnosticsPointerLastAt = 0;
   let diagnosticsPointerWorstGapMs = 0;
   let diagnosticsLastMovementInputMs = 0;
   let diagnosticsWorstMovementInputMs = 0;
   let movementInputStartedAt = 0;
-  let lastMovementInputDelayLogAt = 0;
+  let lastMovementInputDelayLogAt = -Infinity;
+  let suppressedMovementInputDelays = 0;
+  let movementInputWarningTimer = 0;
   // Rolling 0..1 measure of how much the mouse is actually moving, decayed
   // between samples. It only drives the local avatar's antenna blink rate;
   // nothing about it is sent to other visitors.
@@ -19617,14 +19744,10 @@ export function createWorldScene({
       officeSceneMode === "town" &&
       cameraMode === "third-person" &&
       cameraZoom >= (compactRenderer ? 1.12 : 1.32);
-    if (!force && farSceneDetail === far) {
-      // Dynamic repository and member layers may have been replaced since the
-      // prior sample, so the bounded target pass below must still run.
-    } else {
-      farSceneDetail = far;
-      renderer.shadowMap.enabled = !compactRenderer && !far;
-      renderer.shadowMap.needsUpdate = !compactRenderer && !far;
-    }
+    if (!force && farSceneDetail === far) return;
+    farSceneDetail = far;
+    renderer.shadowMap.enabled = !compactRenderer && !far;
+    renderer.shadowMap.needsUpdate = !compactRenderer && !far;
 
     // The Office is intentionally a transparent cutaway tower. Keep its walls,
     // floor slabs, lighting, and furniture visible from the outdoor World at
@@ -21565,49 +21688,6 @@ export function createWorldScene({
     renderer.domElement.dataset.cameraMode = cameraMode;
     if (changed) onCameraMode({ mode: cameraMode, reason });
     return cameraMode;
-  }
-
-  function focusRepositoryViewingPad(pad = null) {
-    if (officeSceneMode !== "town" || !pad?.isObject3D) return false;
-    const data = pad.userData?.repositoryViewingPad;
-    const target = data?.target;
-    if (!target?.isObject3D) return false;
-    dismountSwing({ relocate: false });
-    dismountBike({ relocate: false });
-    dismountCar({ relocate: false });
-    dismountQuadcopter({ relocate: false });
-    standUpFromBench();
-    cancelDash();
-    const standingPoint = pad.getWorldPosition(new THREE.Vector3());
-    const targetPoint = target.getWorldPosition(new THREE.Vector3());
-    player.position.set(standingPoint.x, currentFloorY, standingPoint.z);
-    lastPosition.copy(player.position);
-    const eye = player.position
-      .clone()
-      .add(new THREE.Vector3(0, FIRST_PERSON_EYE_HEIGHT, 0));
-    const delta = targetPoint.sub(eye);
-    const horizontal = Math.max(0.001, Math.hypot(delta.x, delta.z));
-    cameraYaw = Math.atan2(-delta.x, -delta.z);
-    firstPersonPitch = clamp(
-      -Math.atan2(delta.y, horizontal),
-      FIRST_PERSON_PITCH_MIN,
-      FIRST_PERSON_PITCH_MAX,
-    );
-    player.rotation.y = cameraYaw;
-    firstPersonZoom = 1;
-    cameraFocus = null;
-    selectedLandmark = "repositories";
-    setCameraMode("first-person", `repository-${data.kind || "record"}-pad`);
-    queueMovementEvent({
-      x: Number(player.position.x.toFixed(2)),
-      y: Number(player.position.y.toFixed(2)),
-      z: Number(player.position.z.toFixed(2)),
-      heading: Number(player.rotation.y.toFixed(3)),
-      space: currentSpace,
-      moving: false,
-      activity: `reviewing repository ${data.kind === "issue" ? "issues" : "pull requests"}`,
-    });
-    return true;
   }
 
   function focusRepositoryAgentTerminal(button = null) {
@@ -23742,7 +23822,7 @@ export function createWorldScene({
     activeAvatarSelection = avatar || null;
     const now = performance.now();
     if (now >= nextAvatarHighlightAt) {
-      nextAvatarHighlightAt = now + 80;
+      nextAvatarHighlightAt = now + AVATAR_HIGHLIGHT_SAMPLE_MS;
       refreshAvatarSelectionHighlight();
     }
   }
@@ -25002,6 +25082,15 @@ export function createWorldScene({
       removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
+    // The cabinets standing in the ring are exactly what the tally counts.
+    setRewardPoolMirrorCount(
+      usableNodes.length,
+      usableNodes.filter(
+        ({ node }) =>
+          node?.online === true ||
+          String(node?.status || "").toLowerCase() === "online",
+      ).length,
+    );
   }
 
   function armMirrorPushEffect(
@@ -27061,9 +27150,6 @@ export function createWorldScene({
       const rowPitch = 0.52;
       const boardHeight = 0.74 + rows * rowPitch;
       const boardBottomY = groundY + 2.62;
-      const countBottomY = groundY + 1;
-      const boardTopY = boardBottomY + boardHeight;
-      const visualHeight = boardTopY - countBottomY;
       const boardWidth = 4.05;
       const board = new THREE.Mesh(
         new THREE.BoxGeometry(boardWidth, boardHeight, 0.12),
@@ -27321,65 +27407,8 @@ export function createWorldScene({
       pageReadout.position.set(0, groundY + 0.7, 0.2);
       desk.add(pageReadout);
 
-      const viewingPad = new THREE.Group();
-      viewingPad.name = `repository-${kind}-viewing-pad:${repositoryKey}`;
-      viewingPad.position.set(
-        0,
-        groundY + 0.08,
-        Math.max(4.4, visualHeight * 1.28),
-      );
-      const viewingPadBase = new THREE.Mesh(
-        new THREE.BoxGeometry(2.72, 0.14, 1.28),
-        makeMaterial(THREE, kind === "issue" ? "#10231b" : "#171429", {
-          emissive: accent,
-          emissiveIntensity: 0.24,
-          metalness: 0.28,
-          roughness: 0.56,
-        }),
-      );
-      viewingPadBase.name =
-        `repository-${kind}-viewing-pad-base:${repositoryKey}`;
-      const viewingPadFace = new THREE.Mesh(
-        new THREE.PlaneGeometry(2.5, 1.06),
-        new THREE.MeshBasicMaterial({
-          map: repositoryRecordPagerTexture(
-            THREE,
-            "VIEW",
-            "FIRST PERSON",
-            accent,
-          ),
-          transparent: true,
-          toneMapped: false,
-        }),
-      );
-      viewingPadFace.name =
-        `repository-${kind}-viewing-pad-face:${repositoryKey}`;
-      viewingPadFace.rotation.x = -Math.PI / 2;
-      viewingPadFace.position.y = 0.076;
-      const viewingTarget = new THREE.Object3D();
-      viewingTarget.name =
-        `repository-${kind}-viewing-target:${repositoryKey}`;
-      viewingTarget.position.set(
-        0,
-        (countBottomY + boardTopY) / 2,
-        0.04,
-      );
-      desk.add(viewingTarget);
-      const viewingPadData = {
-        owner,
-        name,
-        kind,
-        target: viewingTarget,
-      };
-      for (const object of [viewingPadBase, viewingPadFace]) {
-        object.userData.landmark = "repositories";
-        object.userData.repositoryViewingPad = viewingPadData;
-        interactive.push(object);
-      }
-      viewingPad.add(viewingPadBase, viewingPadFace);
-      desk.add(viewingPad);
       layer.add(desk);
-      return { desk, board, boardHeight, items, viewingPad };
+      return { desk, board, boardHeight, items };
     };
 
     // Keep review and issue work visually and operationally independent:
@@ -27913,6 +27942,24 @@ export function createWorldScene({
     applyRewardTreasury(THREE, sign, state);
   }
 
+  // Repaints the tally hovering over the pool orb. The catalog refresh runs on
+  // a timer and mirror health reorders the payload without changing these two
+  // numbers, so a memo keeps the canvas from being rebuilt every pass.
+  function setRewardPoolMirrorCount(total, online) {
+    const sprite = landmarkObjects.get("fountain")?.userData?.mirrorCountSprite;
+    if (!sprite) return;
+    const count = Math.max(0, Math.min(9999, Math.round(Number(total) || 0)));
+    const live = Math.max(0, Math.min(count, Math.round(Number(online) || 0)));
+    // No cabinets means no catalog yet: stay hidden rather than claim zero.
+    sprite.visible = count > 0;
+    const key = `${count}|${live}`;
+    if (mirrorCountShown === key) return;
+    mirrorCountShown = key;
+    sprite.material.map?.dispose?.();
+    sprite.material.map = rewardPoolMirrorCountTexture(THREE, count, live);
+    sprite.material.needsUpdate = true;
+  }
+
   // Freshly pushed code announces itself: a tall light column rises from the
   // cabinet and a ground shockwave expands beyond the reward-pool node rings,
   // so the arrival reads from anywhere in the town — not just beside the rack.
@@ -28083,7 +28130,6 @@ export function createWorldScene({
       new THREE.TorusGeometry(2.05, 0.1, 8, 48),
       new THREE.MeshBasicMaterial({
         color: "#79c0ff",
-        emissive: "#58a6ff",
         transparent: true,
         opacity: 0,
         blending: THREE.AdditiveBlending,
@@ -28312,19 +28358,22 @@ export function createWorldScene({
       return firstPersonZoom;
     }
     cameraZoom = clamp(next, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX);
-    // Swap complete districts for their constant-cost aerial markers in the
-    // same input event as the zoom. Waiting for the periodic LOD sample left a
-    // few visibly expensive frames at the exact moment the camera pulled out.
-    updateSceneLevelOfDetail(true);
+    // This is intentionally not forced. Pointer and pinch events can arrive
+    // much faster than display frames; the LOD pass only has work when zoom
+    // crosses its near/far boundary.
+    updateSceneLevelOfDetail();
     return cameraZoom;
   }
 
   function touchDistance() {
-    const points = [...touchPointers.values()];
-    if (points.length < 2) return 0;
+    if (touchPointers.size < 2) return 0;
+    const values = touchPointers.values();
+    const first = values.next().value;
+    const second = values.next().value;
+    if (!first || !second) return 0;
     return Math.hypot(
-      points[0].x - points[1].x,
-      points[0].y - points[1].y,
+      first.x - second.x,
+      first.y - second.y,
     );
   }
 
@@ -28640,8 +28689,8 @@ export function createWorldScene({
       event.preventDefault();
       return;
     }
-    const currentPointer = new THREE.Vector2(event.clientX, event.clientY);
-    const movedDistance = pointerStart.distanceTo(currentPointer);
+    pointerCurrent.set(event.clientX, event.clientY);
+    const movedDistance = pointerStart.distanceTo(pointerCurrent);
     const canRotate =
       event.pointerType === "mouse" ||
       (event.pointerType === "touch" &&
@@ -28651,21 +28700,21 @@ export function createWorldScene({
     if (canRotate && movedDistance > 4) {
       if (pointerGestureMoved) {
         rotateCamera(
-          currentPointer.x - pointerLast.x,
-          currentPointer.y - pointerLast.y,
+          pointerCurrent.x - pointerLast.x,
+          pointerCurrent.y - pointerLast.y,
         );
       } else {
         pointerGestureMoved = true;
         rotateCamera(
-          currentPointer.x - pointerStart.x,
-          currentPointer.y - pointerStart.y,
+          pointerCurrent.x - pointerStart.x,
+          pointerCurrent.y - pointerStart.y,
         );
       }
       event.preventDefault();
     } else if (movedDistance > 9) {
       pointerGestureMoved = true;
     }
-    pointerLast.copy(currentPointer);
+    pointerLast.copy(pointerCurrent);
   }
 
   function officeObjectMatchesCurrentFloor(object) {
@@ -29199,10 +29248,6 @@ export function createWorldScene({
         source: "world",
         nodeCabinet: { ...hit.object.userData.nodeCabinet },
       });
-      return;
-    }
-    if (hit?.object?.userData?.repositoryViewingPad) {
-      focusRepositoryViewingPad(hit.object);
       return;
     }
     if (hit?.object?.userData?.landmark) {
@@ -29920,6 +29965,75 @@ export function createWorldScene({
   window.addEventListener("resize", resize, { passive: true });
   resize();
 
+  function scheduleMovementInputWarning(inputToFrameMs) {
+    if (movementInputWarningTimer || disposed) return;
+    const snapshot = {
+      inputToFrameMs: Math.round(inputToFrameMs),
+      space: currentSpace,
+      scene: officeSceneMode,
+      suppressed: suppressedMovementInputDelays,
+    };
+    suppressedMovementInputDelays = 0;
+    movementInputWarningTimer = window.setTimeout(() => {
+      movementInputWarningTimer = 0;
+      if (disposed) return;
+      console.warn("[ForkMesh World] Movement input delayed", {
+        observedAt: new Date().toISOString(),
+        ...snapshot,
+      });
+    }, 0);
+  }
+
+  function scheduleRenderStallWarning(rawFrameMs) {
+    if (renderStallWarningTimer || disposed) return;
+    const renderCalls = Number(renderer.info?.render?.calls) || 0;
+    const renderedTriangles = Number(renderer.info?.render?.triangles) || 0;
+    let component = `${currentSpace} scene`;
+    let codeArea = "world-scene animate() update/render pipeline";
+    if (pinchActive || primaryPointerId !== null) {
+      component = "camera controls";
+      codeArea = "world-scene pointer/pinch camera update";
+    } else if (renderCalls >= 450 || renderedTriangles >= 750_000) {
+      component = "Three.js renderer workload";
+      codeArea = "renderer.render(scene, camera)";
+    } else if (officeSceneMode !== "town") {
+      component = `office ${officeSceneMode} scene`;
+      codeArea = "world-scene office movement and environment updates";
+    }
+    const snapshot = {
+      frameMs: Math.round(rawFrameMs),
+      estimatedMissedFrames: Math.max(
+        0,
+        Math.round(rawFrameMs / 16.67) - 1,
+      ),
+      likelyCause: { component, codeArea },
+      space: currentSpace,
+      scene: officeSceneMode,
+      renderCalls,
+      renderedTriangles,
+      interactiveObjects: interactive.length,
+      animatedObjects: animated.length,
+      suppressed: suppressedRenderStalls,
+    };
+    suppressedRenderStalls = 0;
+    renderStallWarningTimer = window.setTimeout(() => {
+      renderStallWarningTimer = 0;
+      if (disposed) return;
+      const drawingBuffer = renderer.getDrawingBufferSize(
+        diagnosticsDrawingBuffer,
+      );
+      console.warn(
+        `[ForkMesh World] Render stall detected; we think it was ${component} (${codeArea})`,
+        {
+          observedAt: new Date().toISOString(),
+          ...snapshot,
+          drawingBuffer: [drawingBuffer.x, drawingBuffer.y],
+          pixelRatio: renderer.getPixelRatio(),
+        },
+      );
+    }, 0);
+  }
+
   function animate(time) {
     if (!running || disposed) return;
     if (time >= nextEnvironmentCheckAt) {
@@ -29934,10 +30048,16 @@ export function createWorldScene({
       if (minuteOfDay !== localDaylightMinute) updateWorldEnvironment();
     }
     if (time >= nextSceneLodAt) {
-      nextSceneLodAt = time + 180;
+      nextSceneLodAt = time + SCENE_LOD_SAMPLE_MS;
       updateSceneLevelOfDetail();
     }
-    refreshAvatarSelectionHighlight();
+    if (
+      activeAvatarSelection &&
+      time >= nextAvatarHighlightAt
+    ) {
+      nextAvatarHighlightAt = time + AVATAR_HIGHLIGHT_SAMPLE_MS;
+      refreshAvatarSelectionHighlight();
+    }
     const rawFrameMs = Math.max(0, time - lastFrame);
     const delta = clamp(rawFrameMs / 1000, 0, 0.05);
     lastFrame = time;
@@ -29950,17 +30070,13 @@ export function createWorldScene({
       );
       if (
         inputToFrameMs >= MOVEMENT_INPUT_DELAY_THRESHOLD_MS &&
-        time - lastMovementInputDelayLogAt >= RENDER_STALL_LOG_COOLDOWN_MS
+        time - lastMovementInputDelayLogAt >=
+          MOVEMENT_INPUT_LOG_COOLDOWN_MS
       ) {
         lastMovementInputDelayLogAt = time;
-        console.warn("[ForkMesh World] Movement input delayed", {
-          observedAt: new Date().toISOString(),
-          inputToFrameMs: Math.round(inputToFrameMs),
-          space: currentSpace,
-          officeSceneMode,
-          pressedKeys: [...keys],
-          touchStrength: Number(touchMovement.length().toFixed(3)),
-        });
+        scheduleMovementInputWarning(inputToFrameMs);
+      } else if (inputToFrameMs >= MOVEMENT_INPUT_DELAY_THRESHOLD_MS) {
+        suppressedMovementInputDelays += 1;
       }
       movementInputStartedAt = 0;
     }
@@ -29971,120 +30087,16 @@ export function createWorldScene({
     // does not produce console noise.
     if (
       rawFrameMs >= RENDER_STALL_THRESHOLD_MS &&
-      document.visibilityState === "visible" &&
-      time - lastRenderStallLogAt >= RENDER_STALL_LOG_COOLDOWN_MS
+      document.visibilityState === "visible"
     ) {
-      lastRenderStallLogAt = time;
-      const drawingBuffer = renderer.getDrawingBufferSize(
-        diagnosticsDrawingBuffer,
-      );
-      const memory = performance.memory;
-      const heapPressure = memory
-        ? memory.usedJSHeapSize / Math.max(1, memory.jsHeapSizeLimit)
-        : 0;
-      const renderCalls = Number(renderer.info?.render?.calls) || 0;
-      const renderedTriangles = Number(renderer.info?.render?.triangles) || 0;
-      let stallAttribution = {
-        component: `${currentSpace} scene`,
-        codeArea: "world-scene animate() update/render pipeline",
-        confidence: "low",
-        evidence: "No single dominant signal; attribution uses the active scene.",
-      };
-      if (pinchActive || primaryPointerId !== null) {
-        stallAttribution = {
-          component: "camera controls",
-          codeArea: "world-scene pointer/pinch camera update",
-          confidence: "medium",
-          evidence: pinchActive
-            ? "A pinch gesture was active across the stalled frame."
-            : "A pointer drag was active across the stalled frame.",
-        };
-      } else if (heapPressure >= 0.72) {
-        stallAttribution = {
-          component: "JavaScript memory management",
-          codeArea: "browser garbage collection / world-scene allocations",
-          confidence: "medium",
-          evidence: `Heap was ${Math.round(heapPressure * 100)}% of its reported limit.`,
-        };
-      } else if (renderCalls >= 450 || renderedTriangles >= 750_000) {
-        stallAttribution = {
-          component: "Three.js renderer workload",
-          codeArea: "renderer.render(scene, camera)",
-          confidence: "medium",
-          evidence: `${renderCalls} draw calls and ${renderedTriangles} triangles were reported.`,
-        };
-      } else if (animated.length >= 180) {
-        stallAttribution = {
-          component: "scene animation workload",
-          codeArea: "world-scene animate() animated object updates",
-          confidence: "medium",
-          evidence: `${animated.length} animated objects were active.`,
-        };
-      } else if (officeSceneMode !== "town") {
-        stallAttribution = {
-          component: `office ${officeSceneMode} scene`,
-          codeArea: "world-scene office movement and environment updates",
-          confidence: "low",
-          evidence: `The active Office scene mode was ${officeSceneMode}.`,
-        };
+      if (
+        time - lastRenderStallLogAt >= RENDER_STALL_LOG_COOLDOWN_MS
+      ) {
+        lastRenderStallLogAt = time;
+        scheduleRenderStallWarning(rawFrameMs);
+      } else {
+        suppressedRenderStalls += 1;
       }
-      console.warn(
-        `[ForkMesh World] Render stall detected; we think it was ${stallAttribution.component} (${stallAttribution.codeArea})`,
-        {
-        observedAt: new Date().toISOString(),
-        frameMs: Math.round(rawFrameMs),
-        estimatedMissedFrames: Math.max(0, Math.round(rawFrameMs / 16.67) - 1),
-        likelyCause: stallAttribution,
-        detectionPoint: "world-scene animate()",
-        cameraMode,
-        camera: {
-          zoom: Number(
-            (cameraMode === "first-person" ? firstPersonZoom : cameraZoom).toFixed(3),
-          ),
-          yaw: Number(cameraYaw.toFixed(3)),
-          pitch: Number(
-            (cameraMode === "first-person" ? firstPersonPitch : cameraPitch).toFixed(3),
-          ),
-          position: camera.position.toArray().map((value) => Number(value.toFixed(2))),
-        },
-        player: {
-          position: player.position.toArray().map((value) => Number(value.toFixed(2))),
-          moving: wasWalking,
-        },
-        space: currentSpace,
-        region: currentRegion,
-        officeSceneMode,
-        input: {
-          dragging: primaryPointerId !== null,
-          pinching: pinchActive,
-          pressedKeys: [...keys],
-          touchPointers: touchPointers.size,
-        },
-        renderer: {
-          pixelRatio: renderer.getPixelRatio(),
-          drawingBuffer: [drawingBuffer.x, drawingBuffer.y],
-          calls: renderCalls,
-          triangles: renderedTriangles,
-          geometries: Number(renderer.info?.memory?.geometries) || 0,
-          textures: Number(renderer.info?.memory?.textures) || 0,
-        },
-        viewport: {
-          width: window.innerWidth,
-          height: window.innerHeight,
-          devicePixelRatio: window.devicePixelRatio || 1,
-        },
-        jsHeap: memory
-          ? {
-              usedMB: Math.round(memory.usedJSHeapSize / 1024 / 1024),
-              totalMB: Math.round(memory.totalJSHeapSize / 1024 / 1024),
-              limitMB: Math.round(memory.jsHeapSizeLimit / 1024 / 1024),
-            }
-          : null,
-        interactiveObjects: interactive.length,
-        animatedObjects: animated.length,
-        stack: new Error("Render stall observed").stack,
-        },
-      );
     }
     updateOfficeElevator(time);
     if (officeSceneMode === "town") {
@@ -30176,7 +30188,7 @@ export function createWorldScene({
       const flight = emoteSprites[index];
       const progress = Math.min(
         1,
-        (performance.now() - flight.startedAt) / flight.duration,
+        (time - flight.startedAt) / flight.duration,
       );
       const fadeStart = flight.fadeStart ?? 0.65;
       // Most speakers are direct World children, while Noah is nested inside
@@ -30196,7 +30208,7 @@ export function createWorldScene({
     }
     for (let index = rewardFlights.length - 1; index >= 0; index -= 1) {
       const flight = rewardFlights[index];
-      const elapsed = performance.now() - flight.startedAt;
+      const elapsed = time - flight.startedAt;
       const complete = elapsed / flight.duration;
       flight.particles.forEach((particle, particleIndex) => {
         const stagger = particleIndex * 0.018;
@@ -30223,7 +30235,7 @@ export function createWorldScene({
       index -= 1
     ) {
       const effect = repositoryCodeLandings[index];
-      const elapsed = performance.now() - effect.startedAt;
+      const elapsed = time - effect.startedAt;
       const flightProgress = clamp(
         elapsed / effect.flightDuration,
         0,
@@ -30325,7 +30337,7 @@ export function createWorldScene({
       const surge = pushSurges[index];
       const progress = Math.min(
         1,
-        (performance.now() - surge.startedAt) / surge.duration,
+        (time - surge.startedAt) / surge.duration,
       );
       const fade = 1 - progress;
       // The ring races out to roughly yard scale while the column burns down.
@@ -30345,7 +30357,7 @@ export function createWorldScene({
     }
     for (let index = serveFlights.length - 1; index >= 0; index -= 1) {
       const flight = serveFlights[index];
-      const elapsed = performance.now() - flight.startedAt;
+      const elapsed = time - flight.startedAt;
       // Staggered launches wait on the pad, hidden, until their turn.
       if (elapsed < 0) {
         flight.group.visible = false;
@@ -30577,6 +30589,10 @@ export function createWorldScene({
   function dispose() {
     disposed = true;
     renderer.setAnimationLoop(null);
+    window.clearTimeout(renderStallWarningTimer);
+    window.clearTimeout(movementInputWarningTimer);
+    renderStallWarningTimer = 0;
+    movementInputWarningTimer = 0;
     window.clearTimeout(movementEventTimer);
     window.clearTimeout(officeMovementEventTimer);
     movementEventTimer = 0;

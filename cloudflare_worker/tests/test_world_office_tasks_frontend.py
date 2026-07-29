@@ -147,6 +147,21 @@ def test_top_nav_task_count_and_owner_catalog_include_departments():
     assert "· ${escapeHTML(task.department)}" in tasks
 
 
+def test_work_tab_expands_and_active_tasks_have_readable_spinner_status():
+    tasks = source(TASKS)
+    world = source(WORLD)
+    css = source(CSS)
+    assert "panel.dataset.activeTab = selected" in world
+    assert '.world-settings[data-active-tab="work"]' in css
+    assert "920px" in css
+    assert "world-office-task-progress-label" in tasks
+    assert "In progress" in tasks
+    assert "@keyframes world-office-task-spin" in css
+    assert "animation: world-office-task-spin 720ms linear infinite" in css
+    assert "white-space: normal" in css
+    assert "-webkit-line-clamp: 2" not in css
+
+
 def test_new_agent_tasks_show_one_bounded_world_bot_bubble():
     tasks = source(TASKS)
     scene = source(SCENE)
@@ -289,6 +304,25 @@ def test_task_text_is_bounded_and_html_escaped_before_rendering():
     assert "`@${task.assignee}`" in tasks
     assert "escapeHTML(" in tasks
     assert "safeTaskId" in tasks
+
+
+def test_task_rows_capture_and_retain_a_completion_work_note():
+    tasks = source(TASKS)
+    css = source(CSS)
+    for contract in (
+        "completionNote: text(task.completionNote, 4000)",
+        "What I did to complete this task",
+        "data-world-office-task-completion-note",
+        'action === "complete" ? { completionNote } : {}',
+        "task.completionNote || \"\"",
+    ):
+        assert contract in tasks
+    for selector in (
+        ".world-office-task-completion",
+        ".world-office-task-completion-editor",
+        ".world-office-task-completion-editor textarea",
+    ):
+        assert selector in css
 
 
 def test_lobby_task_bounty_desk_creates_visible_non_custodial_bids():

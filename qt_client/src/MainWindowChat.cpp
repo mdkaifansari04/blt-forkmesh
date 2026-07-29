@@ -877,6 +877,21 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_quickAddVoiceAutoSubmit, &QCheckBox::toggled, this, [](bool on) {
         QSettings().setValue(kVoiceAutoSubmitSetting, on);
     });
+    // YOLO toggle beside it (adhoc #12): when checked, an agent started from the
+    // prompt bar merges its own branch into the default branch as soon as its run
+    // finishes successfully — no PR review, no manual "Merge into main" click.
+    // Persisted across launches like the Auto toggle, and off by default: it
+    // rewrites the default branch without asking.
+    m_quickAddYolo = new QCheckBox("YOLO");
+    m_quickAddYolo->setObjectName("quickAddAutoCheck");
+    m_quickAddYolo->setToolTip(
+        "Auto-merge: when an agent finishes its task, merge its branch straight "
+        "into the default branch (no review), then delete its worktree and "
+        "branch.");
+    m_quickAddYolo->setChecked(QSettings().value(kQuickAddYoloSetting, false).toBool());
+    connect(m_quickAddYolo, &QCheckBox::toggled, this, [](bool on) {
+        QSettings().setValue(kQuickAddYoloSetting, on);
+    });
     m_quickAddCreatePr->setChecked(true);
     m_quickAddCreatePr->setEnabled(true);
     m_quickAddAgentProvider->setEnabled(true);
@@ -1050,6 +1065,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBar->addWidget(m_voiceLevelMeter, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddAttachStrip, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddVoiceAutoSubmit, 0, Qt::AlignBottom);
+    bottomBar->addWidget(m_quickAddYolo, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
     // The "/" actions box sits immediately left of the agent box (adhoc #116),
     // matching where the Claude Code extension keeps its actions menu.
@@ -5265,6 +5281,11 @@ const char *kSolanaRpcEndpoints[] = {
     "https://solana-rpc.publicnode.com",
 };
 
+// How long a fetched balance stays good. Hovering the top-bar label again
+// inside this window re-uses the cached figure instead of spending another
+// public-endpoint getBalance call.
+const qint64 kNavSolanaBalanceTtlMs = 60 * 1000;
+
 bool isLikelySolanaAddress(const QString &address)
 {
     static const QRegularExpression re(
@@ -5489,8 +5510,18 @@ void MainWindow::updateNavSolanaBalance()
         m_webSolanaKnown && m_webSolanaAccount == account
             ? m_webSolanaAddress
             : savedSolanaAddress();
-    if (addr != m_navSolanaBalanceAddress)
-        m_navSolanaLamports = -1; // address changed: cached balance no longer applies
+    if (addr != m_navSolanaBalanceAddress) {
+        // Address changed: the in-memory balance no longer applies. Seed from
+        // the balance we persisted for this address last time so the label can
+        // show a figure straight away — a hover is what refreshes it.
+        m_navSolanaLamports = -1;
+        m_navSolanaFetchedMs = 0;
+        const QVariant saved = QSettings().value(lastSolanaBalanceSetting(addr));
+        bool savedOk = false;
+        const qint64 savedLamports = saved.toString().toLongLong(&savedOk);
+        if (saved.isValid() && savedOk && savedLamports >= 0)
+            m_navSolanaLamports = savedLamports;
+    }
     m_navSolanaBalanceAddress = addr;
     if (addr.isEmpty()) {
         m_navSolanaLamports = -1;
@@ -5510,21 +5541,28 @@ void MainWindow::updateNavSolanaBalance()
         return;
     }
 
-    m_navSolanaBalance->setText(QStringLiteral("SOL ..."));
-    m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
-        QStringLiteral("Checking your public Solana balance.")));
-    queryNavSolanaBalance(addr, 0);
+    // No getBalance here: every caller of this function is a profile/identity
+    // hydration path, and they fire often enough that querying from each one
+    // hammered the public Solana endpoints. Render what we have; the RPC is
+    // issued when the pointer enters the label (refreshNavSolanaBalance).
+    renderNavSolanaBalance();
 }
 
 // Re-render the balance label from the cached lamports + fiat rate, without
-// touching the network. Falls back to a full refresh when we don't have a
-// cached balance yet, and to a single price fetch when the rate is stale.
+// touching Solana. Shows a "hover to load" placeholder when nothing is cached
+// yet, and fetches a single price when the fiat rate is stale.
 void MainWindow::renderNavSolanaBalance()
 {
     if (!m_navSolanaBalance)
         return;
-    if (m_navSolanaLamports < 0 || m_navSolanaBalanceAddress.isEmpty()) {
-        updateNavSolanaBalance(); // nothing cached yet — do the real fetch
+    if (m_navSolanaBalanceAddress.isEmpty())
+        return; // updateNavSolanaBalance() already painted the empty state
+    if (m_navSolanaLamports < 0) {
+        if (m_navSolanaFetchInFlight)
+            return; // a hover-triggered query is already painting "SOL ..."
+        m_navSolanaBalance->setText(QString::fromUtf8("SOL \xE2\x80\x94"));
+        m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
+            QStringLiteral("Hover to check your public Solana balance.")));
         return;
     }
     const QString cur = solanaDisplayCurrency();
@@ -5551,7 +5589,19 @@ void MainWindow::renderNavSolanaBalance()
                     .arg(fiatBalance, solBalance)));
         return;
     }
-    // No fresh rate cached: show the SOL figure with a hint and fetch one rate.
+    // No fresh rate cached. This function now runs on every profile-hydration
+    // pass, so back off after a recent attempt (successful or not) instead of
+    // re-asking the price API each time; show the SOL figure meanwhile.
+    const bool attemptedRecently =
+        it != m_navFiatRates.constEnd() && now - it->second < 60 * 1000;
+    if (attemptedRecently || m_navFiatFetchInFlight) {
+        m_navSolanaBalance->setText(solBalance);
+        m_navSolanaBalance->setToolTip(
+            externalWalletBalanceTooltip(
+                QStringLiteral("SOL/%1 price unavailable. Public balance: %2")
+                    .arg(cur.toUpper(), solBalance)));
+        return;
+    }
     m_navSolanaBalance->setText(QStringLiteral("%1 ...").arg(fiatCurrencySymbol(cur)));
     m_navSolanaBalance->setToolTip(
         externalWalletBalanceTooltip(
@@ -5560,11 +5610,41 @@ void MainWindow::renderNavSolanaBalance()
     queryNavSolanaUsdPrice(m_navSolanaBalanceAddress, m_navSolanaLamports);
 }
 
+// Hovering the top-bar balance is the only thing that spends a Solana RPC
+// call: everything else renders the cached figure. Repeat hovers inside the
+// TTL (and hovers while a query is already out) are no-ops.
+void MainWindow::refreshNavSolanaBalance(bool force)
+{
+    if (!m_navSolanaBalance || !m_networkAccess)
+        return;
+    const QString addr = m_navSolanaBalanceAddress;
+    if (addr.isEmpty() || !isLikelySolanaAddress(addr))
+        return;
+    if (m_navSolanaFetchInFlight)
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (!force && m_navSolanaFetchedMs > 0 &&
+        now - m_navSolanaFetchedMs < kNavSolanaBalanceTtlMs)
+        return;
+    if (m_navSolanaLamports < 0) {
+        m_navSolanaBalance->setText(QStringLiteral("SOL ..."));
+        m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
+            QStringLiteral("Checking your public Solana balance.")));
+    }
+    m_navSolanaFetchInFlight = true;
+    queryNavSolanaBalance(addr, 0);
+}
+
 void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
 {
     const int count = int(sizeof(kSolanaRpcEndpoints) / sizeof(kSolanaRpcEndpoints[0]));
     if (endpointIndex >= count) {
-        if (m_navSolanaBalance && m_navSolanaBalanceAddress == addr) {
+        m_navSolanaFetchInFlight = false;
+        // Back off for a TTL before the next hover retries, so a dead endpoint
+        // can't be re-probed on every pointer pass over the label.
+        m_navSolanaFetchedMs = QDateTime::currentMSecsSinceEpoch();
+        if (m_navSolanaBalance && m_navSolanaBalanceAddress == addr &&
+            m_navSolanaLamports < 0) {
             m_navSolanaBalance->setText(QStringLiteral("SOL unavailable"));
             m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
                 QStringLiteral("Public Solana balance is temporarily unavailable.")));
@@ -5587,15 +5667,19 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
         const QByteArray raw = reply->readAll();
         const QNetworkReply::NetworkError netError = reply->error();
         reply->deleteLater();
-        if (!m_navSolanaBalance || m_navSolanaBalanceAddress != addr)
+        if (!m_navSolanaBalance || m_navSolanaBalanceAddress != addr) {
+            m_navSolanaFetchInFlight = false;
             return;
+        }
 
         const QJsonObject root = QJsonDocument::fromJson(raw).object();
         const QJsonObject result = root.value("result").toObject();
         if (netError != QNetworkReply::NoError || !result.contains("value")) {
-            queryNavSolanaBalance(addr, endpointIndex + 1);
+            queryNavSolanaBalance(addr, endpointIndex + 1); // stays in-flight
             return;
         }
+        m_navSolanaFetchInFlight = false;
+        m_navSolanaFetchedMs = QDateTime::currentMSecsSinceEpoch();
         const qint64 lamports = result.value("value").toVariant().toLongLong();
         m_navSolanaLamports = lamports; // cache so currency switches don't re-query
         QSettings settings;
@@ -5639,6 +5723,9 @@ void MainWindow::queryNavSolanaUsdPrice(const QString &addr, qint64 lamports)
     const QString cur = solanaDisplayCurrency();
     if (cur == QLatin1String("sol"))
         return;
+    if (m_navFiatFetchInFlight)
+        return;
+    m_navFiatFetchInFlight = true;
     QNetworkRequest request(QUrl(
         QStringLiteral("https://api.coingecko.com/api/v3/simple/price"
                        "?ids=solana&vs_currencies=%1").arg(cur)));
@@ -5648,15 +5735,20 @@ void MainWindow::queryNavSolanaUsdPrice(const QString &addr, qint64 lamports)
         const QByteArray raw = reply->readAll();
         const QNetworkReply::NetworkError netError = reply->error();
         reply->deleteLater();
+        m_navFiatFetchInFlight = false;
+        const double rate =
+            QJsonDocument::fromJson(raw).object()
+                .value(QStringLiteral("solana")).toObject()
+                .value(cur).toDouble();
+        // Stamp the attempt either way: a 0 rate marks "tried and failed" so
+        // renderNavSolanaBalance backs off instead of retrying on every pass.
+        if (netError != QNetworkReply::NoError || rate <= 0.0)
+            m_navFiatRates[cur] = {0.0, QDateTime::currentMSecsSinceEpoch()};
         if (!m_navSolanaBalance || m_navSolanaBalanceAddress != addr ||
             solanaDisplayCurrency() != cur)
             return;
 
         const QString solBalance = formatSolanaBalance(lamports);
-        const double rate =
-            QJsonDocument::fromJson(raw).object()
-                .value(QStringLiteral("solana")).toObject()
-                .value(cur).toDouble();
         if (netError != QNetworkReply::NoError || rate <= 0.0) {
             m_navSolanaBalance->setText(solBalance);
             m_navSolanaBalance->setToolTip(
@@ -7623,23 +7715,34 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         const bool isPrivate = repo.value("private").toBool(false) ||
                                repo.value("isPrivate").toBool(false);
         const bool liveHost = repo.value("liveHost").toBool(false);
-        const QString description = repo.value("description").toString().trimmed();
         const QString commit = repo.value("commit").toString().trimmed();
         const QString branch = repo.value("branch").toString().trimmed();
+        // The catalog publishes the HEAD commit date as epoch milliseconds, as
+        // a string on nodes that advertise it (older nodes omit the key).
+        const QJsonValue commitAtValue = repo.value(QStringLiteral("commitAt"));
+        const qint64 commitAtMs =
+            commitAtValue.isDouble()
+                ? qint64(commitAtValue.toDouble())
+                : commitAtValue.toString().trimmed().toLongLong();
 
+        // No "about" blurb on the row: what matters here is where the
+        // repository stands (commit, branch, when it last moved), and the
+        // description only ever pushed that off the end of the line. It still
+        // shows on the repository's own page.
         QStringList details;
         if (!commit.isEmpty()) {
             QString commitLine = QStringLiteral("commit %1").arg(commit.left(12));
             if (!branch.isEmpty())
                 commitLine += QStringLiteral(" on %1").arg(branch);
+            if (commitAtMs > 0)
+                commitLine += QStringLiteral(" \xC2\xB7 %1")
+                                  .arg(formatIssueRelativeTime(commitAtMs));
             details << commitLine;
         }
         if (isPrivate)
             details << QStringLiteral("private");
         if (liveHost)
             details << QStringLiteral("live");
-        if (!description.isEmpty())
-            details << description.left(90);
 
         auto *repoItem = new QTableWidgetItem(
             details.isEmpty() ? key : key + "\n" + details.join(QStringLiteral(" | ")));
@@ -7654,6 +7757,9 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
             repoToolTip << QStringLiteral("Commit: %1").arg(commit);
         if (!branch.isEmpty())
             repoToolTip << QStringLiteral("Branch: %1").arg(branch);
+        if (commitAtMs > 0)
+            repoToolTip << QStringLiteral("Last commit: %1")
+                               .arg(formatRepoDate(commitAtMs));
         if (!cloneUrl.isEmpty())
             repoToolTip << cloneUrl;
         repoItem->setToolTip(repoToolTip.join('\n'));
@@ -7700,6 +7806,8 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         actionRow->setContentsMargins(4, 2, 4, 2);
         actionRow->setSpacing(6);
 
+        // Three groups, left to right: switch to it, get a copy of it
+        // (fork/mirror), then — set apart by a gap — remove this machine's copy.
         auto *openButton = new QPushButton(QStringLiteral("Switch"));
         openButton->setObjectName("primaryButton");
         openButton->setCursor(Qt::PointingHandCursor);
@@ -7755,6 +7863,46 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
                     });
         }
         actionRow->addWidget(mirrorButton);
+
+        // Delete this machine's copy without first opening the repository and
+        // digging into its Settings tab. The row already resolved which record
+        // is local across every owner it groups — mirror first, then fork; with
+        // neither, there is nothing here to delete.
+        const int deleteIndex = mirroredIndex >= 0 ? mirroredIndex : localFork;
+        auto *deleteButton = new QPushButton(QStringLiteral("Delete"));
+        deleteButton->setObjectName("dangerButton");
+        deleteButton->setCursor(Qt::PointingHandCursor);
+        setOcticon(deleteButton, "trash", 13);
+        if (deleteIndex < 0) {
+            deleteButton->setEnabled(false);
+            deleteButton->setToolTip(
+                QStringLiteral("This repository is not on this machine"));
+        } else {
+            const QString targetOwner = m_repositories.at(deleteIndex).owner;
+            const QString targetName = m_repositories.at(deleteIndex).name;
+            deleteButton->setToolTip(
+                QStringLiteral("Delete %1/%2 from this machine")
+                    .arg(targetOwner, targetName));
+            connect(deleteButton, &QPushButton::clicked, this,
+                    [this, targetOwner, targetName] {
+                        // Re-resolve by owner/name rather than capturing the
+                        // index: it is only valid for the m_repositories
+                        // snapshot this row was built from, which a
+                        // fork/mirror/delete elsewhere may since have shifted.
+                        const int index =
+                            findNetworkRepoIndex(targetOwner, targetName, true);
+                        if (index >= 0)
+                            deleteRepositoryAt(index, false);
+                        // Next tick: re-listing the table tears down this very
+                        // button's row, so don't do it from inside its own
+                        // click handler. Runs even when the record had already
+                        // gone, so the row stops offering a stale action.
+                        QTimer::singleShot(0, this,
+                                           [this] { refreshNetworkReposPage(); });
+                    });
+        }
+        actionRow->addSpacing(10);
+        actionRow->addWidget(deleteButton);
         actionRow->addStretch();
         m_networkReposTable->setCellWidget(row, 3, actions);
 

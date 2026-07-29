@@ -20390,6 +20390,8 @@ class ForkMeshWorld extends HTMLElement {
   selectSettingsTab(tab) {
     const selected = ["view", "work", "security"].includes(tab) ? tab : "view";
     this.settingsTab = selected;
+    const panel = this.$("[data-world-settings]");
+    if (panel) panel.dataset.activeTab = selected;
     this.$$("[data-world-settings-tab]").forEach((button) => {
       button.setAttribute(
         "aria-selected",
@@ -20596,7 +20598,7 @@ class ForkMeshWorld extends HTMLElement {
   // hand the composer a starting message so a visitor talking to ForkBot can
   // start typing immediately. Uses postMessage rather than a query param
   // because the terminal iframe is loaded once and kept alive across clicks.
-  openChatTerminal(prefillText = "") {
+  openChatTerminal(prefillText = "", attachment = null) {
     const details = this.$("[data-world-chat-terminal]");
     const frame = this.$("[data-world-chat-terminal-frame]");
     if (!details || !frame) return;
@@ -20609,7 +20611,19 @@ class ForkMeshWorld extends HTMLElement {
     details.open = true;
     const sendPrefill = () => {
       frame.contentWindow?.postMessage(
-        { type: "forkmesh:chat-prefill", text: prefillText },
+        {
+          type: "forkmesh:chat-prefill",
+          text: prefillText,
+          attachment:
+            attachment && typeof attachment === "object"
+              ? {
+                  dataUrl: String(attachment.dataUrl || ""),
+                  fileName: String(attachment.fileName || ""),
+                  fileMime: String(attachment.fileMime || ""),
+                  altText: String(attachment.altText || ""),
+                }
+              : null,
+        },
         location.origin,
       );
     };
@@ -21495,6 +21509,15 @@ class ForkMeshWorld extends HTMLElement {
           <button type="button" class="world-shot-undo" data-shot-undo>Undo</button>
         </div>
         <div class="world-shot-stage"></div>
+        <label class="world-shot-alt">
+          <span>Alt text</span>
+          <input
+            type="text"
+            data-shot-alt
+            maxlength="500"
+            value="Annotated screenshot of the current ForkMesh World view."
+          >
+        </label>
         <footer class="world-shot-footer">
           <button type="button" class="world-shot-ghost" data-shot-close>Discard</button>
           <button type="button" class="world-shot-ghost" data-shot-copy>Copy to Clipboard</button>
@@ -21503,6 +21526,7 @@ class ForkMeshWorld extends HTMLElement {
             <button type="button" data-shot-share="twitter" title="Copy the screenshot, then open X / Twitter to share it">X / Twitter</button>
             <button type="button" data-shot-share="reddit" title="Copy the screenshot, then open Reddit to share it">Reddit</button>
           </div>
+          <button type="button" class="world-shot-primary" data-shot-compose>Add to chat / prompt</button>
           <button type="button" class="world-shot-primary" data-shot-download>Download PNG</button>
         </footer>
       </div>
@@ -21732,6 +21756,50 @@ class ForkMeshWorld extends HTMLElement {
         copyCanvasToClipboard()
           .then(() => this.toast("Annotated screenshot copied to clipboard."))
           .catch((error) => this.toast(error.message));
+        return;
+      }
+      const composeButton = event.target.closest("[data-shot-compose]");
+      if (composeButton) {
+        composeButton.disabled = true;
+        const altText = String(
+          modal.querySelector("[data-shot-alt]")?.value || "",
+        )
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 500);
+        void canvasBlob()
+          .then((blob) =>
+            this.compactQaFailureScreenshot(
+              new File([blob], "forkmesh-world-screenshot.png", {
+                type: "image/png",
+              }),
+            ),
+          )
+          .then((dataUrl) => {
+            const stamp = new Date()
+              .toISOString()
+              .replace(/[:T]/g, "-")
+              .slice(0, 19);
+            this.closeScreenshotUI();
+            this.openChatTerminal(altText, {
+              dataUrl,
+              fileName: `forkmesh-world-${stamp}.webp`,
+              fileMime: "image/webp",
+              altText,
+            });
+            this.toast(
+              "Screenshot attached. Choose chat, issue, task, or agent, then send.",
+            );
+          })
+          .catch((error) => {
+            composeButton.disabled = false;
+            this.toast(
+              String(
+                error?.message ||
+                  "The screenshot could not be added to the composer.",
+              ),
+            );
+          });
         return;
       }
       const shareButton = event.target.closest("[data-shot-share]");

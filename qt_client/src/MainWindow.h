@@ -894,6 +894,11 @@ private:
     // re-hitting the network, so cycling SOL/USD/INR is instant and can't stall
     // on getBalance / price rate-limits.
     void renderNavSolanaBalance();
+    // Hover-gated getBalance. Every other path (profile hydration, currency
+    // cycling, the web-profile poll) renders from cache; only pointing at the
+    // top-bar balance actually spends a Solana RPC call, and even then only
+    // once per kNavSolanaBalanceTtlMs.
+    void refreshNavSolanaBalance(bool force = false);
     void queryNavSolanaBalance(const QString &addr, int endpointIndex);
     void queryNavSolanaUsdPrice(const QString &addr, qint64 lamports);
     void showRepoMenu();           // dropdown to open repos / add a local repo
@@ -2211,9 +2216,6 @@ private:
     void openRepoDetailDeferred(int repoIndex);
     // Blank the repo-detail panel when the selected node has no repositories.
     void clearRepoDetail();
-    // Show/hide the repo header action buttons (Notify/Fork/Mirror/Source/Open)
-    // for the given m_repoDetailStack index; hidden on the Agents tab.
-    void updateRepoActionButtonsVisibility(int stackIndex);
     void openRepositoryWebsite(); // open the current repo's page in the browser
     void forkCurrentRepo();       // clone the open repo into your own node
     void downloadCurrentRepoZip();
@@ -3634,6 +3636,7 @@ private:
     QString catalogPublishKey(const RepositoryRecord &repo) const;
     void updateRepoActionMenus();
     void deleteCurrentMirror();
+    void deleteRepositoryAt(int index, bool reopenRepoDetail);
     void updateRepoDetailStatus();
     void startRepoHosts();
     void stopRepoHosts();
@@ -3755,7 +3758,15 @@ private:
     // already fetched instead of re-querying getBalance / the price API each
     // click (which used to rate-limit and leave the figure stuck).
     qint64 m_navSolanaLamports = -1; // last known balance, -1 = not yet fetched
-    QHash<QString, QPair<double, qint64>> m_navFiatRates; // cur -> {rate, fetchedMs}
+    // getBalance is only issued on hover (see refreshNavSolanaBalance); these
+    // track when the cached figure was fetched and whether a query is already
+    // out, so re-entering the label doesn't queue a second RPC.
+    qint64 m_navSolanaFetchedMs = 0;
+    bool m_navSolanaFetchInFlight = false;
+    // cur -> {rate, attemptedMs}; a 0 rate records a failed attempt so the
+    // price API is backed off rather than re-asked on every render.
+    QHash<QString, QPair<double, qint64>> m_navFiatRates;
+    bool m_navFiatFetchInFlight = false;
     // The web user's public profile is authoritative for the top-bar wallet.
     // A local node setting is used only until that user profile has resolved.
     QString m_webSolanaAccount;
@@ -4330,6 +4341,12 @@ private:
     // is submitted (same as Enter/Send) as soon as a voice dictation finishes its
     // final transcription, so you can dictate-and-go without reaching for the keyboard.
     QCheckBox *m_quickAddVoiceAutoSubmit = nullptr;
+    // "YOLO" toggle beside it (adhoc #12): when checked, every agent started while
+    // it is on merges its own branch into the default branch the moment its run
+    // finishes successfully, instead of waiting for a pull-request review. Read at
+    // launch time and stamped onto the session (AgentSession::yolo), so flipping it
+    // later never changes what an already-running agent will do.
+    QCheckBox *m_quickAddYolo = nullptr;
     // Dictation can target any text box, not just the footer prompt: m_voiceTargetEdit
     // is the box the current capture writes into and m_voiceActiveButton the mic that
     // started it (so its icon swaps to red while recording). m_voiceIdlePlaceholder is
@@ -5677,6 +5694,10 @@ private:
     // the main repo. `git worktree remove` keeps the branch ref itself, so the
     // pull request still resolves. No-op for sessions without a worktree.
     void cleanupStreamWorktree(int sessionId);
+    // "YOLO" auto-merge (adhoc #12): land a finished session's branch in its
+    // repo's default branch without a review step. No-op unless the session was
+    // started with the quick-add YOLO toggle on and finished successfully.
+    void maybeAutoMergeForSession(int sessionId);
 
     // ---- External Claude Code sessions ------------------------------------
     // Claude Code runs started outside ForkMesh (a terminal, another editor) are

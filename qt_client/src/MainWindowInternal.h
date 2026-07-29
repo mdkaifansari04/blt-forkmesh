@@ -2919,6 +2919,10 @@ inline int maxRunningAgents()
 // Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
 // soon as a voice dictation finishes transcribing, without pressing Enter/Send.
 const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit");
+// Footer quick-add "YOLO" toggle (adhoc #12): true => every agent started from
+// here merges its own branch into the default branch the moment its run
+// finishes successfully, skipping the pull-request review step.
+const QString kQuickAddYoloSetting = QStringLiteral("agents/quickAddYolo");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.

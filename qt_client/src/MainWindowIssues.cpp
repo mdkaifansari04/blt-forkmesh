@@ -4800,6 +4800,12 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         if (maybeShowSendToPromptMenu(obj, static_cast<QContextMenuEvent *>(event)))
             return true;
     }
+    // Hovering the top-bar balance is what spends a Solana getBalance call —
+    // every other path renders the cached figure, so the app no longer re-queries
+    // the public RPC endpoints on each profile refresh. Don't consume: the label
+    // still needs the enter event for its tooltip/hover styling.
+    if (obj == m_navSolanaBalance && event->type() == QEvent::Enter)
+        refreshNavSolanaBalance();
     // Click the top-bar balance to cycle its display currency (SOL/USD/INR).
     if (obj == m_navSolanaBalance &&
         event->type() == QEvent::MouseButtonRelease &&

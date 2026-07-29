@@ -22,6 +22,7 @@ MAX_TASKS = 2000
 MAX_CHECKINS_PER_TASK = 50
 MAX_TITLE = 160
 MAX_DETAILS = 4000
+MAX_COMPLETION_NOTE = 4000
 MAX_CHECKIN_NOTE = 500
 MAX_ELAPSED_MS = 10 * 365 * 24 * 60 * 60 * 1000
 MAX_BOUNTY_LAMPORTS = 1_000_000 * 1_000_000_000
@@ -265,6 +266,8 @@ async def _project_task(runtime, row, now, checkin=None):
         "kind": task_kind,
         "title": _text(data.get("title"), MAX_TITLE, "Organization task"),
         "details": _text(data.get("details"), MAX_DETAILS),
+        "completionNote": _text(
+            data.get("completionNote"), MAX_COMPLETION_NOTE),
         "createdBy": _text(data.get("createdBy"), 64).lower(),
         "bountyRequest": bounty_request,
         "assignee": _text(data.get("assignee"), 64).lower(),
@@ -795,6 +798,7 @@ async def _create(
         "kind": task_kind,
         "title": title,
         "details": details,
+        "completionNote": "",
         "assignee": assignee,
         "createdBy": actor,
         "bountyRequest": bounty_request,
@@ -948,6 +952,8 @@ async def _update(
         ),
         "title": title,
         "details": details,
+        "completionNote": _text(
+            current.get("completionNote"), MAX_COMPLETION_NOTE),
         "assignee": member["name"],
         "createdBy": _text(current.get("createdBy"), 64).lower(),
         "bountyRequest": (
@@ -1045,6 +1051,17 @@ async def _start(
         task_id,
         details={"state": "active"},
     )
+    # Starting the timer also yields an encrypted per-account HUD notice for
+    # Organization Engineering. It never enters the selected chat channel or
+    # multiplayer presence, and notification fan-out remains best effort.
+    notifier = getattr(runtime, "notify_engineering_task_started", None)
+    if callable(notifier):
+        try:
+            projected = await _project_task(runtime, changed, now)
+            if projected:
+                await notifier(org_bi, actor, task_id, projected)
+        except Exception:
+            pass
     return await _task_response(runtime, changed, now)
 
 
@@ -1088,7 +1105,8 @@ async def _stop(
 
 
 async def _complete(
-        runtime, org_bi, account_bi, actor, task_id, row, can_manage, now):
+        runtime, org_bi, account_bi, actor, task_id, row, data,
+        can_manage, now):
     """Finish assigned work and place it in the private QA review queue."""
     if (
         not can_manage
@@ -1099,6 +1117,38 @@ async def _complete(
         int(row.get("completed_at") or 0) > 0
         and int(row.get("qa_requested_at") or 0) > 0
     ):
+        # Completion is idempotent, but a retried client may be adding the
+        # human-readable work note after an older client already finished the
+        # task. Preserve the completed/QA state and update only encrypted copy.
+        if "completionNote" in data:
+            try:
+                completed_data = await runtime.open(row.get("data"))
+            except Exception:
+                completed_data = None
+            if not isinstance(completed_data, dict):
+                return _response(
+                    runtime, {"error": "task_unavailable"}, status=500)
+            completed_data["completionNote"] = _text(
+                data.get("completionNote"), MAX_COMPLETION_NOTE)
+            await runtime.d1_run(
+                "UPDATE organization_tasks SET data=?,updated_at=? "
+                "WHERE org_bi=? AND task_id=? AND completed_at>0",
+                await runtime.seal(completed_data),
+                now,
+                org_bi,
+                task_id,
+            )
+            await runtime.audit(
+                actor,
+                "organization.task_completion_note_updated",
+                "organization_task",
+                task_id,
+                details={
+                    "hasCompletionNote": bool(
+                        completed_data["completionNote"]),
+                },
+            )
+            row = await _task(runtime, org_bi, task_id)
         return await _task_response(runtime, row, now)
     try:
         current = await runtime.open(row.get("data"))
@@ -1106,6 +1156,12 @@ async def _complete(
         current = None
     if not isinstance(current, dict):
         return _response(runtime, {"error": "task_unavailable"}, status=500)
+    current["completionNote"] = _text(
+        data.get("completionNote")
+        if "completionNote" in data
+        else current.get("completionNote"),
+        MAX_COMPLETION_NOTE,
+    )
     if not _text(current.get("howToTest"), 720):
         current["howToTest"] = (
             "Open the completed feature and follow its normal user flow. "
@@ -1148,7 +1204,11 @@ async def _complete(
         "office.marketing_task_completed",
         "office_task",
         task_id,
-        details={"state": "done", "qa": "ready"},
+        details={
+            "state": "done",
+            "qa": "ready",
+            "hasCompletionNote": bool(current["completionNote"]),
+        },
     )
     return await _task_response(runtime, changed, now)
 
@@ -1509,7 +1569,8 @@ async def handle(runtime, path):
             runtime, org_bi, account_bi, actor, task_id, row, now)
     if action == "complete":
         return await _complete(
-            runtime, org_bi, account_bi, actor, task_id, row, can_manage, now)
+            runtime, org_bi, account_bi, actor, task_id, row, data,
+            can_manage, now)
     if action == "qa":
         return await _request_qa(
             runtime, org_bi, account_bi, actor, task_id, row, data,

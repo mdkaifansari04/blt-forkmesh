@@ -38,6 +38,10 @@ struct AgentSession {
     // CLI's permission prompts today (see agentModeSkipsPermissions).
     QString mode;
     bool createPr = false;
+    // "YOLO" (adhoc #12): merge this session's branch straight into the repo's
+    // default branch as soon as the run finishes successfully, with no review
+    // step. Captured from the quick-add bar's checkbox when the session starts.
+    bool yolo = false;
     int prNumber = 0;
     QString status = AgentStatus::Queued;
     QString branchName;
