@@ -4564,7 +4564,7 @@ function campfireMemberCountTexture(THREE, total, newest) {
     context.shadowColor = "rgba(255,122,47,0.95)";
     context.shadowBlur = 36;
     context.fillStyle = ember;
-    context.font = '700 132px "ForkMesh Favorit", system-ui, sans-serif';
+    context.font = '700 156px "ForkMesh Favorit", system-ui, sans-serif';
     context.fillText(digits, 256, latest ? 84 : 104);
     context.shadowBlur = 20;
     context.fillStyle = "#ffdcac";
@@ -5835,6 +5835,28 @@ function startAvatarWave(avatar, startedAt = performance.now()) {
   return true;
 }
 
+function startAvatarHudAction(avatar, action, startedAt = performance.now()) {
+  if (!avatar || !action) return false;
+  const previous = avatar.userData.hudAction;
+  if (previous) {
+    avatar.position.y = previous.baseY;
+    avatar.rotation.set(
+      previous.baseRotation.x,
+      previous.baseRotation.y,
+      previous.baseRotation.z,
+    );
+    avatar.scale.copy(previous.baseScale);
+  }
+  avatar.userData.hudAction = {
+    action,
+    startedAt,
+    baseY: avatar.position.y,
+    baseRotation: avatar.rotation.clone(),
+    baseScale: avatar.scale.clone(),
+  };
+  return true;
+}
+
 // Rotating the arm box around its own centre would pull the shoulder end out
 // of the torso, so the mesh is nudged along the arc that keeps the shoulder
 // pinned where it hangs at rest.
@@ -5851,6 +5873,42 @@ function poseWavingArm(arm, rest, angle) {
 
 function animateAvatarActivity(avatar, time, delta, reducedMotion) {
   if (!avatar?.userData) return;
+  const hudAction = avatar.userData.hudAction;
+  if (hudAction) {
+    const duration = reducedMotion ? 360 : 1800;
+    const progress = (time - hudAction.startedAt) / duration;
+    avatar.position.y = hudAction.baseY;
+    avatar.rotation.copy(hudAction.baseRotation);
+    avatar.scale.copy(hudAction.baseScale);
+    if (!(progress >= 0) || progress >= 1) {
+      delete avatar.userData.hudAction;
+    } else if (!reducedMotion) {
+      const cycle = Math.sin(progress * Math.PI);
+      if (hudAction.action === "jump") {
+        avatar.position.y += Math.abs(Math.sin(progress * Math.PI * 4)) * 0.9;
+      } else if (hudAction.action === "spin") {
+        avatar.rotation.y += progress * Math.PI * 4;
+      } else if (hudAction.action === "backflip") {
+        avatar.position.y += cycle * 0.8;
+        avatar.rotation.x -= progress * Math.PI * 2;
+      } else if (hudAction.action === "dance") {
+        avatar.rotation.z = Math.sin(progress * Math.PI * 8) * 0.22 * cycle;
+        avatar.rotation.y += Math.sin(progress * Math.PI * 4) * 0.45;
+      } else if (hudAction.action === "float") {
+        avatar.position.y += cycle * 1.8;
+        avatar.rotation.y += progress * Math.PI;
+      } else if (hudAction.action === "wobble") {
+        avatar.rotation.z = Math.sin(progress * Math.PI * 12) * 0.32 * cycle;
+        avatar.scale.copy(hudAction.baseScale).multiplyScalar(
+          1 + Math.sin(progress * Math.PI * 8) * 0.14 * cycle,
+        );
+      } else if (hudAction.action === "sparkle") {
+        avatar.position.y += Math.abs(Math.sin(progress * Math.PI * 6)) * 0.35;
+        avatar.rotation.y += progress * Math.PI * 6;
+        avatar.scale.copy(hudAction.baseScale).multiplyScalar(1 + cycle * 0.22);
+      }
+    }
+  }
   const waveStartedAt = avatar.userData.waveStartedAt || 0;
   const waveArm = waveStartedAt ? avatar.userData.rightArm : null;
   if (waveArm) {
@@ -14128,6 +14186,7 @@ export function createWorldScene({
   onFediverseProfile = () => {},
   onFediverseFollow = () => {},
   onAvatarSelect = () => {},
+  onUnverifiedAvatarDelete = () => {},
   onAvatarWalletAction = () => {},
   onLayoutObjectMoved = () => {},
   onLayoutObjectSelect = () => {},
@@ -15651,7 +15710,7 @@ export function createWorldScene({
     }
   }
   const flame = new THREE.Mesh(
-    new THREE.ConeGeometry(0.42, 1.05, 8),
+    new THREE.ConeGeometry(0.56, 1.4, 8),
     makeMaterial(THREE, "#ffb547", {
       emissive: "#ff7a2f",
       emissiveIntensity: 1.6,
@@ -15659,10 +15718,10 @@ export function createWorldScene({
       opacity: 0.92,
     }),
   );
-  flame.position.y = 0.82;
+  flame.position.y = 0.98;
   campfire.add(flame);
   const innerFlame = new THREE.Mesh(
-    new THREE.ConeGeometry(0.24, 0.72, 8),
+    new THREE.ConeGeometry(0.31, 0.95, 8),
     makeMaterial(THREE, "#fff0a6", {
       emissive: "#ffb547",
       emissiveIntensity: 2.1,
@@ -15670,11 +15729,11 @@ export function createWorldScene({
       opacity: 0.94,
     }),
   );
-  innerFlame.position.y = 0.72;
+  innerFlame.position.y = 0.86;
   campfire.add(innerFlame);
   let fireLevel = 1;
   const fireLight = new THREE.PointLight("#ffa14d", 3.2, 14, 1.8);
-  fireLight.position.y = 1.1;
+  fireLight.position.y = 1.45;
   campfire.add(fireLight);
   // The membership total rides in the flames themselves rather than on yet
   // another sign: an ember-lit numeral hovering over the pit, so the fire
@@ -15686,9 +15745,9 @@ export function createWorldScene({
       depthWrite: false,
     }),
   );
-  const MEMBER_COUNT_HOVER_Y = 1.95;
+  const MEMBER_COUNT_HOVER_Y = 3.25;
   memberCountSprite.position.y = MEMBER_COUNT_HOVER_Y;
-  memberCountSprite.scale.set(2.8, 1.4, 1);
+  memberCountSprite.scale.set(4.2, 2.1, 1);
   memberCountSprite.visible = false;
   campfire.add(memberCountSprite);
   let memberCountShown = "";
@@ -15712,7 +15771,7 @@ export function createWorldScene({
     // Each member contributes one visible log and a small, bounded amount of
     // warmth. The cap keeps a mature community's fire welcoming, not blocking.
     rebuildCampfireMemberLogs(count);
-    fireLevel = clamp(1.08 + count * 0.012, 1.08, 1.85);
+    fireLevel = clamp(1.28 + count * 0.014, 1.28, 2.2);
     fireLight.distance = 14 + Math.min(count, 80) * 0.08;
   }
   animated.push((time) => {
@@ -15723,7 +15782,7 @@ export function createWorldScene({
     fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
     // Drift with the flames so the number sits in the fire instead of on it.
     memberCountSprite.position.y =
-      MEMBER_COUNT_HOVER_Y + Math.sin(time * 0.0017) * 0.07;
+      MEMBER_COUNT_HOVER_Y + Math.sin(time * 0.0017) * 0.12;
   });
   // The real bench count depends on the member roster, which is still an
   // in-flight network request when the scene first renders. Rather than
@@ -16355,6 +16414,9 @@ export function createWorldScene({
 
   const remotePlayers = new Map();
   const remoteLabels = new Map();
+  // A successful administrative deletion must win over the next stale
+  // presence/directory frame while the edge cache catches up.
+  const administrativelyRemovedAccounts = new Set();
   const moderationActions = new WeakMap();
   const adminGuestCopyActions = new WeakMap();
   const moderationControlKeys = new Map();
@@ -20813,6 +20875,12 @@ export function createWorldScene({
   }
 
   function setOfficeParticipants(participants = []) {
+    participants = (Array.isArray(participants) ? participants : []).filter(
+      (participant) =>
+        !administrativelyRemovedAccounts.has(
+          String(participant?.name || "").trim().toLowerCase(),
+        ),
+    );
     const seenOfficeParticipants = new Set();
     participants.forEach((participant) => {
       const id = String(participant?.id || "");
@@ -23916,6 +23984,106 @@ export function createWorldScene({
     };
   }
 
+  function removeDeletedAvatar(avatar, peerId = "") {
+    if (!avatar) return;
+    const id = String(peerId || "");
+    removeRemoteModerationControls(avatar, id);
+    removeRemoteOrgTeamControl(avatar, id);
+    unregisterAvatarChestControls(avatar);
+    if (remotePlayers.get(id) === avatar) {
+      remotePlayers.delete(id);
+      remoteLabels.get(id)?.remove();
+      remoteLabels.delete(id);
+    }
+    if (loungeMembers.get(id) === avatar) loungeMembers.delete(id);
+    if (officeParticipants.get(id) === avatar) {
+      officeParticipants.delete(id);
+      officeParticipantLabels.get(id)?.remove();
+      officeParticipantLabels.delete(id);
+      officeBubbles.get(id)?.remove();
+      officeBubbles.delete(id);
+    }
+    avatar.parent?.remove(avatar);
+    disposeObject3D(avatar);
+  }
+
+  async function animateUnverifiedAvatarDeletion(member = {}) {
+    const name = String(member?.name || "").trim().toLowerCase();
+    if (!name) return false;
+    administrativelyRemovedAccounts.add(name);
+    const matches = [];
+    const collect = (avatar, peerId) => {
+      const avatarName = String(
+        avatar?.userData?.badgeIdentity?.name || "",
+      ).trim().toLowerCase();
+      if (avatar && avatarName === name) matches.push({ avatar, peerId });
+    };
+    remotePlayers.forEach((avatar, peerId) => collect(avatar, peerId));
+    loungeMembers.forEach((avatar, peerId) => collect(avatar, peerId));
+    officeParticipants.forEach((avatar, peerId) => collect(avatar, peerId));
+    if (!matches.length) return false;
+
+    const duration = reducedMotion ? 120 : 900;
+    await Promise.all(
+      matches.map(({ avatar, peerId }) => new Promise((resolve) => {
+        const parent = avatar.parent;
+        const burst = new THREE.Group();
+        burst.name = "forkmesh-admin-delete-burst";
+        burst.position.copy(avatar.position);
+        const particles = [];
+        const colors = ["#ff4d6d", "#ffcf4a", "#77d9ff", "#b8f2a1"];
+        for (let index = 0; index < 18; index += 1) {
+          const particle = new THREE.Mesh(
+            new THREE.SphereGeometry(0.035 + (index % 3) * 0.012, 8, 6),
+            new THREE.MeshBasicMaterial({
+              color: colors[index % colors.length],
+              transparent: true,
+              depthWrite: false,
+            }),
+          );
+          const angle = (index / 18) * Math.PI * 2;
+          particle.userData.velocity = new THREE.Vector3(
+            Math.cos(angle) * (0.9 + (index % 4) * 0.18),
+            0.8 + (index % 5) * 0.22,
+            Math.sin(angle) * (0.9 + (index % 4) * 0.18),
+          );
+          particles.push(particle);
+          burst.add(particle);
+        }
+        parent?.add(burst);
+        unregisterAvatarChestControls(avatar);
+        const startedAt = performance.now();
+        const initialY = avatar.position.y;
+        const initialScale = avatar.scale.clone();
+        const frame = (now) => {
+          const progress = Math.min(1, (now - startedAt) / duration);
+          const eased = 1 - (1 - progress) ** 3;
+          avatar.rotation.y += reducedMotion ? 0 : 0.22;
+          avatar.position.y = initialY + eased * 1.35;
+          avatar.scale.copy(initialScale).multiplyScalar(
+            Math.max(0.02, 1 - eased),
+          );
+          particles.forEach((particle) => {
+            const velocity = particle.userData.velocity;
+            particle.position.copy(velocity).multiplyScalar(eased);
+            particle.position.y -= eased * eased * 0.45;
+            particle.material.opacity = 1 - progress;
+          });
+          if (progress < 1) {
+            requestAnimationFrame(frame);
+            return;
+          }
+          parent?.remove(burst);
+          disposeObject3D(burst);
+          removeDeletedAvatar(avatar, peerId);
+          resolve();
+        };
+        requestAnimationFrame(frame);
+      })),
+    );
+    return true;
+  }
+
   /** Attach a loaded (or failed) fediverse card to one avatar's chest. */
   function setAvatarFediverseProfile(peerId, profile) {
     const id = String(peerId || "");
@@ -24322,6 +24490,12 @@ export function createWorldScene({
   }
 
   function setRemotePlayers(players = []) {
+    players = (Array.isArray(players) ? players : []).filter(
+      (remote) =>
+        !administrativelyRemovedAccounts.has(
+          String(remote?.name || "").trim().toLowerCase(),
+        ),
+    );
     const seen = new Set();
     players.forEach((remote) => {
       if (!remote?.id || remote.id === identity.id) return;
@@ -24574,7 +24748,26 @@ export function createWorldScene({
     leaderboardMembers = members,
     guests = 0,
   ) {
-    const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
+    const incomingMembers = Array.isArray(members) ? members : [];
+    members = incomingMembers.filter(
+      (member) =>
+        !administrativelyRemovedAccounts.has(
+          String(member?.name || "").trim().toLowerCase(),
+        ),
+    );
+    leaderboardMembers = (
+      Array.isArray(leaderboardMembers) ? leaderboardMembers : []
+    ).filter(
+      (member) =>
+        !administrativelyRemovedAccounts.has(
+          String(member?.name || "").trim().toLowerCase(),
+        ),
+    );
+    const removedCount = incomingMembers.length - members.length;
+    const total = Math.max(
+      0,
+      Math.min(999999, (Number(totalCount) || 0) - removedCount),
+    );
     // The aquarium is the same public account directory expressed as a
     // school: present/recent users swim high, inactive users low. No account
     // names or labels are rendered on the fish themselves.
@@ -27845,7 +28038,24 @@ export function createWorldScene({
     // it plays the same way whether the gesture came from this browser or off
     // the relay.
     if (emote === "wave") startAvatarWave(avatar);
-    const glyphs = { wave: "WAVE", idea: "IDEA ✦", celebrate: "NICE ★" };
+    if (
+      ["jump", "spin", "backflip", "dance", "float", "wobble", "sparkle"]
+        .includes(emote)
+    ) {
+      startAvatarHudAction(avatar, emote);
+    }
+    const glyphs = {
+      wave: "WAVE",
+      idea: "IDEA ✦",
+      celebrate: "NICE ★",
+      jump: "BOING ↑",
+      spin: "WHEE ↻",
+      backflip: "FLIP!",
+      dance: "DANCE ♫",
+      float: "UP WE GO ☁",
+      wobble: "WOBBLE 〰",
+      sparkle: "SPARKLE ✦",
+    };
     const sprite = makeLabelSprite(
       THREE,
       glyphs[emote] || "HELLO",
@@ -29149,6 +29359,17 @@ export function createWorldScene({
       return;
     }
     if (avatarSelection) {
+      const selectedMember = avatarSelectionPayload(avatarSelection);
+      if (
+        hit.object === avatarSelection.avatar?.userData?.verifiedPin &&
+        identity.isAdmin === true &&
+        selectedMember.self !== true &&
+        selectedMember.emailVerified !== true &&
+        selectedMember.accountStatus.toLowerCase() !== "guest"
+      ) {
+        onUnverifiedAvatarDelete(selectedMember);
+        return;
+      }
       onAvatarSelect(avatarSelectionPayload(avatarSelection));
       return;
     }
@@ -30759,6 +30980,7 @@ export function createWorldScene({
       })),
     }),
     setRemotePlayers,
+    animateUnverifiedAvatarDeletion,
     setLocalOrgTeam,
     setAvatarFediverseProfile,
     setAvatarRecentPublicMessage,

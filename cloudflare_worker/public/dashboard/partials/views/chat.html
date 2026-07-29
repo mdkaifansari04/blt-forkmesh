@@ -37,7 +37,7 @@
                   --primary: #238636;
                   --primary-foreground: #ffffff;
                   --border: #30363d;
-                  background: #0d1117 !important;
+                  background: transparent !important;
                   color: #f0f6fc !important;
                   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
                     sans-serif !important;
@@ -70,7 +70,7 @@
                   display: flex;
                   flex-direction: column;
                   position: relative;
-                  background: var(--background);
+                  background: transparent;
                   color: var(--foreground);
                 }
 
@@ -87,10 +87,52 @@
                   overflow-y: auto;
                   overscroll-behavior-y: contain;
                   -webkit-overflow-scrolling: touch;
-                  background: #0d1117 !important;
+                  padding-top: 4.75rem;
+                  padding-right: 4.25rem;
+                  padding-left: 7.25rem;
+                  scrollbar-width: none;
+                  background: transparent !important;
                   color: #f0f6fc !important;
                   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
                     sans-serif !important;
+                }
+
+                html[data-world-embed="1"] #fullChatMessages::-webkit-scrollbar {
+                  display: none;
+                }
+
+                html[data-world-embed="1"] .chat-message-row {
+                  max-width: 92%;
+                  margin-top: 0.5rem !important;
+                  align-self: flex-start;
+                }
+
+                html[data-world-embed="1"] .chat-message-row--self {
+                  flex-direction: row-reverse;
+                  align-self: flex-end;
+                }
+
+                html[data-world-embed="1"] .chat-message-bubble {
+                  padding: 0.65rem 0.8rem;
+                  border: 1px solid rgb(139 148 158 / 0.42);
+                  border-radius: 1rem 1rem 1rem 0.3rem;
+                  background: rgb(22 27 34 / 0.52);
+                  box-shadow: 0 8px 24px rgb(1 4 9 / 0.16);
+                  backdrop-filter: blur(14px) saturate(1.2);
+                }
+
+                html[data-world-embed="1"] .chat-message-row--self .chat-message-bubble {
+                  border-color: rgb(88 166 255 / 0.52);
+                  border-radius: 1rem 1rem 0.3rem 1rem;
+                  background: rgb(31 111 235 / 0.24);
+                }
+
+                html[data-world-embed="1"] .chat-system-bubble {
+                  align-self: center;
+                  max-width: 82%;
+                  border-radius: 999px;
+                  background: rgb(13 17 23 / 0.34) !important;
+                  backdrop-filter: blur(12px);
                 }
 
                 html[data-world-embed="1"] #fullChatMessages p {
@@ -122,7 +164,7 @@
                   padding-right: max(0.75rem, env(safe-area-inset-right, 0px));
                   padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
                   padding-left: max(0.75rem, env(safe-area-inset-left, 0px));
-                  background: #0d1117 !important;
+                  background: transparent !important;
                   color: #f0f6fc !important;
                   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
                     sans-serif !important;
@@ -133,14 +175,14 @@
                 html[data-world-embed="1"] [data-dashboard-chat-composer] select,
                 html[data-world-embed="1"] [data-dashboard-chat-composer] textarea {
                   border-color: #30363d !important;
-                  background: #161b22 !important;
+                  background: rgb(13 17 23 / 0.42) !important;
                   color: #f0f6fc !important;
                   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
                     sans-serif !important;
                 }
 
                 html[data-world-embed="1"] [data-dashboard-chat-composer] textarea {
-                  background: #0d1117 !important;
+                  background: transparent !important;
                 }
 
                 html[data-world-embed="1"] [data-dashboard-chat-composer] textarea::placeholder {
@@ -150,6 +192,112 @@
                 html[data-world-embed="1"] [data-dashboard-chat-composer-toolbar] {
                   display: grid;
                   grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+                }
+
+                html[data-world-embed="1"] [data-dashboard-chat-composer] > div {
+                  border-color: rgb(139 148 158 / 0.58) !important;
+                  border-radius: 1.1rem !important;
+                  box-shadow:
+                    0 18px 48px rgb(1 4 9 / 0.28),
+                    inset 0 1px 0 rgb(255 255 255 / 0.06);
+                  backdrop-filter: blur(20px) saturate(1.3);
+                  animation: world-chat-composer-unfurl 300ms
+                    cubic-bezier(0.16, 1, 0.3, 1);
+                  transform-origin: 100% 100%;
+                }
+
+                html[data-world-embed="1"] [data-dashboard-chat-context-rail] {
+                  position: absolute;
+                  z-index: 3;
+                  top: 0.8rem;
+                  left: 0.7rem;
+                  display: flex;
+                  width: 6.3rem;
+                  flex-direction: column;
+                  align-items: flex-start;
+                  gap: 0.45rem;
+                  pointer-events: none;
+                }
+
+                html[data-world-embed="1"] [data-dashboard-chat-context-rail] button,
+                html[data-world-embed="1"] [data-dashboard-chat-emotes] button {
+                  border: 1px solid rgb(88 166 255 / 0.42);
+                  border-radius: 999px;
+                  background: rgb(13 17 23 / 0.38);
+                  color: #f0f6fc;
+                  box-shadow: 0 6px 18px rgb(1 4 9 / 0.18);
+                  backdrop-filter: blur(14px);
+                }
+
+                html[data-world-embed="1"] [data-dashboard-chat-context-rail] button {
+                  overflow: hidden;
+                  max-width: 100%;
+                  padding: 0.38rem 0.65rem;
+                  font-size: 0.67rem;
+                  font-weight: 650;
+                  text-overflow: ellipsis;
+                  white-space: nowrap;
+                  pointer-events: auto;
+                }
+
+                html[data-world-embed="1"] [data-dashboard-chat-scroll-rail] {
+                  position: absolute;
+                  z-index: 4;
+                  top: 50%;
+                  right: 0.65rem;
+                  display: grid;
+                  gap: 0.5rem;
+                  transform: translateY(-50%);
+                }
+
+                html[data-world-embed="1"] [data-dashboard-chat-scroll-rail] button {
+                  display: grid;
+                  width: 2.35rem;
+                  height: 2.35rem;
+                  place-items: center;
+                  border: 1px solid rgb(139 148 158 / 0.52);
+                  border-radius: 50%;
+                  background: rgb(13 17 23 / 0.38);
+                  color: #f0f6fc;
+                  backdrop-filter: blur(14px);
+                }
+
+                html[data-world-embed="1"] [data-dashboard-chat-emotes] {
+                  position: absolute;
+                  z-index: 4;
+                  top: 0.65rem;
+                  right: 0.65rem;
+                  left: 7.4rem;
+                  display: flex;
+                  gap: 0.35rem;
+                  overflow-x: auto;
+                  padding: 0.15rem;
+                  scrollbar-width: none;
+                }
+
+                html[data-world-embed="1"] [data-dashboard-chat-emotes] button {
+                  display: inline-flex;
+                  min-width: 2.25rem;
+                  height: 2.25rem;
+                  flex: 0 0 auto;
+                  align-items: center;
+                  justify-content: center;
+                  gap: 0.3rem;
+                  padding-inline: 0.6rem;
+                  font-size: 0.68rem;
+                }
+
+                @keyframes world-chat-composer-unfurl {
+                  from {
+                    opacity: 0;
+                    transform: scale(0.8);
+                    clip-path: circle(18px at 100% 100%);
+                  }
+                  to {
+                    opacity: 1;
+                    transform: scale(1);
+                    clip-path: circle(150% at 100% 100%);
+                  }
                 }
 
                 html[data-world-embed="1"] [data-dashboard-chat-action] {
@@ -198,6 +346,26 @@
                 }
 
                 @media (max-width: 767px), (pointer: coarse) {
+                  html[data-world-embed="1"] #fullChatMessages {
+                    padding-right: 3.6rem;
+                    padding-left: 0.65rem;
+                  }
+
+                  html[data-world-embed="1"] [data-dashboard-chat-context-rail] {
+                    top: 3.25rem;
+                    left: 0.65rem;
+                    width: calc(100% - 4.5rem);
+                    flex-direction: row;
+                    overflow-x: auto;
+                  }
+
+                  html[data-world-embed="1"] [data-dashboard-chat-emotes] {
+                    left: 0.55rem;
+                  }
+
+                  html[data-world-embed="1"] [data-dashboard-chat-emotes] button span {
+                    display: none;
+                  }
                   html[data-world-embed="1"] #fullChatInput {
                     min-height: 2.75rem;
                     font-size: 16px;
@@ -290,7 +458,29 @@
               </span>
             </div>
 
+            <nav data-dashboard-chat-context-rail aria-label="Selected chat context">
+              <button type="button" data-dashboard-chat-context-channel title="Change channel"># general</button>
+              <button type="button" data-dashboard-chat-context-source title="Change information source">No repository</button>
+              <button type="button" data-dashboard-chat-context-action title="Change message action">Chat</button>
+            </nav>
+
+            <div data-dashboard-chat-emotes aria-label="Avatar reactions">
+              <button type="button" data-dashboard-chat-emote="wave" title="Wave">👋 <span>Wave</span></button>
+              <button type="button" data-dashboard-chat-emote="jump" title="Jump up and down">↥ <span>Jump</span></button>
+              <button type="button" data-dashboard-chat-emote="spin" title="Spin around">↻ <span>Spin</span></button>
+              <button type="button" data-dashboard-chat-emote="backflip" title="Do a backflip">⤾ <span>Flip</span></button>
+              <button type="button" data-dashboard-chat-emote="dance" title="Dance">♫ <span>Dance</span></button>
+              <button type="button" data-dashboard-chat-emote="float" title="Surprise: float">☁ <span>Float</span></button>
+              <button type="button" data-dashboard-chat-emote="wobble" title="Surprise: wobble">〰 <span>Wobble</span></button>
+              <button type="button" data-dashboard-chat-emote="sparkle" title="Surprise: sparkle">✦ <span>Sparkle</span></button>
+            </div>
+
             <div id="fullChatMessages" class="flex-1 overflow-y-scroll px-4 py-3 flex flex-col gap-1 min-h-0"></div>
+
+            <div data-dashboard-chat-scroll-rail aria-label="Chat scroll controls">
+              <button type="button" data-dashboard-chat-scroll="up" aria-label="Scroll chat up">↑</button>
+              <button type="button" data-dashboard-chat-scroll="down" aria-label="Scroll to newest message">↓</button>
+            </div>
 
             <div data-dashboard-chat-composer class="shrink-0 border-t border-border bg-background px-3 pb-3 pt-2">
               <div class="overflow-hidden rounded-md border border-border bg-card shadow-lg transition focus-within:border-foreground/30 focus-within:ring-1 focus-within:ring-foreground/20">
@@ -315,8 +505,7 @@
                     <option value="chat">Send to chat</option>
                     <option value="task">Create team task</option>
                     <option value="issue">Create repository issue</option>
-                    <option value="codex">Assign Codex</option>
-                    <option value="claude-code">Assign Claude</option>
+                    <option value="agent">Send to bot</option>
                   </select>
                   <div data-dashboard-task-routing hidden class="contents">
                     <label class="sr-only" for="fullTaskDepartment">Task department</label>

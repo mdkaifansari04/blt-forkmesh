@@ -405,8 +405,7 @@ def test_world_chat_has_a_primer_multiline_repository_action_composer():
         '<option value="chat">Send to chat</option>',
         '<option value="task">Create team task</option>',
         '<option value="issue">Create repository issue</option>',
-        '<option value="codex">Assign Codex</option>',
-        '<option value="claude-code">Assign Claude</option>',
+        '<option value="agent">Send to bot</option>',
         'id="fullChatInput"',
         'rows="2"',
         "border-border",
@@ -419,13 +418,36 @@ def test_world_chat_has_a_primer_multiline_repository_action_composer():
         "selectedComposerRepository()",
         "runFullComposerAction(inputEl)",
         "ForkMeshDashboardActions?.submitWebIssue",
-        "const queued = await maybeAskOrgAgent(",
-        "`${mention} ${text}`",
+        "const queued = await queueOrgAgent(",
+        '"agent",',
         'fullAction.value !== "chat"',
         "inputEl.style.height",
         'destination.searchParams.set("worldEmbed", "1")',
     ):
         assert contract in CHAT
+
+
+def test_world_chat_is_a_transparent_bubble_hud_with_context_and_emotes():
+    for marker in (
+        "data-dashboard-chat-context-rail",
+        "data-dashboard-chat-context-channel",
+        "data-dashboard-chat-context-source",
+        "data-dashboard-chat-scroll-rail",
+        "chat-message-bubble",
+        "background: transparent !important",
+        "world-chat-composer-unfurl",
+        'data-dashboard-chat-emote="wave"',
+        'data-dashboard-chat-emote="jump"',
+        'data-dashboard-chat-emote="spin"',
+        'data-dashboard-chat-emote="backflip"',
+        'data-dashboard-chat-emote="dance"',
+        'data-dashboard-chat-emote="float"',
+        'data-dashboard-chat-emote="wobble"',
+        'data-dashboard-chat-emote="sparkle"',
+    ):
+        assert marker in CHAT_VIEW
+    assert 'type: "forkmesh:world-emote"' in CHAT
+    assert "fullLog.scrollTo({" in CHAT
 
 
 def test_world_embed_uses_one_dark_primer_header_and_pinned_grid_composer():

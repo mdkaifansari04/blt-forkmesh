@@ -3977,17 +3977,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
         </details>
 
-        <button
-          class="world-chat-wave-button"
-          type="button"
-          data-world-wave
-          title="Wave to everyone in the world"
-          aria-label="Wave your avatar's arm"
-        >
-          <span class="world-chat-wave-icon" aria-hidden="true">👋</span>
-          <span>Wave</span>
-        </button>
-
         <details class="world-diagnostics world-chat-terminal${settings.debugPanel ? "" : " world-chat-terminal--debug-hidden"}" data-world-chat-terminal>
           <summary aria-label="Open World chat and activity">
             <span class="world-chat-terminal-avatar" data-world-chat-terminal-avatar aria-hidden="true">
@@ -4763,6 +4752,7 @@ class ForkMeshWorld extends HTMLElement {
     this.walletBadges = new Map();
     this.memberDirectory = [];
     this.memberDirectoryFetchedAt = 0;
+    this.deletingUnverifiedAccounts = new Set();
     // Lowercased names a completed directory snapshot did not list, so their
     // next presence frame does not force another fetch (noteDirectoryMembers).
     this.unlistedDirectoryNames = new Set();
@@ -5172,6 +5162,10 @@ class ForkMeshWorld extends HTMLElement {
     if (!chatSources.includes(event.source)) return;
     const data = event.data;
     if (!data) return;
+    if (data.type === "forkmesh:world-emote") {
+      this.sendWorldEmote(data.emote);
+      return;
+    }
     if (data.type === "forkmesh:world-activity") {
       if (this.activityNoticesSettled()) {
         this.activityNotice(data.text, {
@@ -5867,6 +5861,8 @@ class ForkMeshWorld extends HTMLElement {
         onFediverseFollow: (target) =>
           void this.toggleWorldFediverseFollow(target),
         onAvatarSelect: (member) => this.openWorldMemberDetail(member),
+        onUnverifiedAvatarDelete: (member) =>
+          void this.deleteUnverifiedWorldMember(member),
         onAvatarWalletAction: ({ self, address } = {}) => {
           const wallet = String(address || "").trim();
           if (wallet) {
@@ -8509,7 +8505,15 @@ class ForkMeshWorld extends HTMLElement {
     wireHoverOrb(diagnostics, () => {
       chatTerminal?.removeAttribute("open");
     });
-    wireHoverOrb(chatTerminal, () => {
+    if (chatTerminal && hoverCapable) {
+      chatTerminal.addEventListener("pointerenter", () => {
+        chatTerminal.open = true;
+        diagnostics?.removeAttribute("open");
+        this.loadChatTerminalFrame();
+      });
+    }
+    chatTerminal?.addEventListener("focusin", () => {
+      chatTerminal.open = true;
       diagnostics?.removeAttribute("open");
       this.loadChatTerminalFrame();
     });
@@ -8631,10 +8635,6 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-camera-toggle]")) {
         this.toggleWorldCameraMode();
-        return;
-      }
-      if (event.target.closest("[data-world-wave]")) {
-        this.waveToWorld();
         return;
       }
       if (event.target.closest("[data-world-swing-dismount]")) {
@@ -11835,6 +11835,60 @@ class ForkMeshWorld extends HTMLElement {
     this.wireMirrorNodeAdminDelete(node);
   }
 
+  async deleteUnverifiedWorldMember(member = {}) {
+    const name = String(member?.name || "").trim().toLowerCase();
+    const ownName = String(this.identity?.name || "").trim().toLowerCase();
+    if (
+      this.identity?.isAdmin !== true ||
+      !validWorldSession() ||
+      !WORLD_ACCOUNT_NAME_RE.test(name) ||
+      name === ownName ||
+      member?.self === true ||
+      member?.emailVerified === true ||
+      String(member?.accountStatus || "").toLowerCase() === "guest" ||
+      this.deletingUnverifiedAccounts.has(name)
+    ) {
+      return false;
+    }
+    this.deletingUnverifiedAccounts.add(name);
+    try {
+      await this.postJSON(
+        `/api/accounts/admin-unverified/${encodeURIComponent(name)}`,
+        {},
+        { method: "DELETE", timeout: 20_000 },
+      );
+      this.memberDirectory = this.memberDirectory.filter(
+        (record) =>
+          String(record?.name || "").trim().toLowerCase() !== name,
+      );
+      this.remotePlayers.forEach((record, peerId) => {
+        if (String(record?.name || "").trim().toLowerCase() === name) {
+          this.remotePlayers.delete(peerId);
+        }
+      });
+      this.inactivePlayers = this.inactivePlayers.filter(
+        (record) =>
+          String(record?.name || "").trim().toLowerCase() !== name,
+      );
+      this.unlistedDirectoryNames.add(name);
+      this.memberDirectoryFetchedAt = 0;
+      this.responseCache.clear();
+      await this.world?.animateUnverifiedAvatarDeletion?.({ ...member, name });
+      this.syncMemberLounge();
+      this.toast(`${name} was deleted. Poof!`);
+      return true;
+    } catch (error) {
+      this.toast(
+        `Could not delete ${name}: ${String(
+          error?.message || "request failed",
+        ).replaceAll("_", " ")}`,
+      );
+      return false;
+    } finally {
+      this.deletingUnverifiedAccounts.delete(name);
+    }
+  }
+
   openWorldMemberDetail(member = {}, { returnFocus = null } = {}) {
     const detail = this.$("[data-world-detail]");
     const backdrop = this.$("[data-world-detail-backdrop]");
@@ -14764,17 +14818,36 @@ class ForkMeshWorld extends HTMLElement {
   // tiny frame. The cooldown is the length of the pose, so holding the button
   // down cannot turn one gesture into a stream of socket frames.
   waveToWorld() {
-    this.world?.playEmote?.(this.identity?.id || "", "wave", true);
+    this.sendWorldEmote("wave");
+  }
+
+  sendWorldEmote(rawEmote) {
+    const emote = String(rawEmote || "").trim().toLowerCase();
+    if (
+      ![
+        "wave",
+        "jump",
+        "spin",
+        "backflip",
+        "dance",
+        "float",
+        "wobble",
+        "sparkle",
+      ].includes(emote)
+    ) {
+      return;
+    }
+    this.world?.playEmote?.(this.identity?.id || "", emote, true);
     const now = Date.now();
     if (now - (this.lastWaveSentAt || 0) < WORLD_WAVE_COOLDOWN_MS) return;
     this.lastWaveSentAt = now;
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      this.toast("Realtime is offline; your wave stayed on this device.");
+      this.toast("Realtime is offline; your reaction stayed on this device.");
       return;
     }
     try {
       this.socket.send(
-        JSON.stringify({ type: "interaction", kind: "emote", emote: "wave" }),
+        JSON.stringify({ type: "interaction", kind: "emote", emote }),
       );
     } catch (_) {}
   }
@@ -22715,7 +22788,10 @@ class ForkMeshWorld extends HTMLElement {
     // teardown that callback must not overwrite the location captured just
     // before it with the Office doorway.
     if (this.destroyed) return;
-    if (movement?.moving === true) this.setWorldRightRailExpanded(false);
+    if (movement?.moving === true) {
+      this.setWorldRightRailExpanded(false);
+      this.$("[data-world-chat-terminal]")?.removeAttribute("open");
+    }
     this.scheduleActivityArrival();
     const space = WORLD_SPACE_IDS.has(String(movement?.space || ""))
       ? String(movement.space)
@@ -23640,7 +23716,18 @@ class ForkMeshWorld extends HTMLElement {
     } else if (
       message.type === "interaction" &&
       message.kind === "emote" &&
-      ["wave", "idea", "celebrate"].includes(message.emote) &&
+      [
+        "wave",
+        "idea",
+        "celebrate",
+        "jump",
+        "spin",
+        "backflip",
+        "dance",
+        "float",
+        "wobble",
+        "sparkle",
+      ].includes(message.emote) &&
       message.from
     ) {
       this.world?.playEmote?.(String(message.from), message.emote);

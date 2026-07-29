@@ -32,7 +32,10 @@ def test_chat_orb_shows_last_speaker_and_expands_on_hover_or_focus():
     assert "data-world-chat-terminal-avatar" in WORLD
     assert "data-world-chat-terminal-avatar-image" in WORLD
     assert "data-world-chat-terminal-avatar-initial" in WORLD
-    assert "wireHoverOrb(chatTerminal" in WORLD
+    assert 'chatTerminal.addEventListener("pointerenter"' in WORLD
+    assert 'chatTerminal?.addEventListener("focusin"' in WORLD
+    assert '!event.target.closest("[data-world-chat-terminal]")' in WORLD
+    assert 'this.$("[data-world-chat-terminal]")?.removeAttribute("open")' in WORLD
     assert "setChatTerminalLastMessage(sender, text)" in WORLD
     assert ".world-chat-terminal:is([open], :hover, :focus-within)" in CSS
     assert "this.memberDirectory.find(" in WORLD

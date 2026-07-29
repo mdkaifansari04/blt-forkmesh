@@ -14661,6 +14661,29 @@ async def _delete_account_namespace(env, name_bi, rec):
         env, "DELETE FROM account_ssh_keys WHERE account_bi=?", name_bi)
     await d1_run(
         env, "DELETE FROM account_sessions WHERE account_bi=?", name_bi)
+    # Remove every account-keyed auxiliary row as well as the primary identity.
+    # These tables contain no independently owned resource that should survive
+    # a complete account deletion.
+    for table in (
+            "repo_stars",
+            "feedback_email_sends",
+            "role_grants",
+            "owner_encryption_keys",
+            "world_inactive_presence",
+            "world_media_roles",
+            "world_workshop_participants",
+            "world_user_activity",
+            "badge_awards",
+            "world_office_attendance",
+            "world_office_marketing_proofs",
+            "world_qa_reviews",
+            "world_lobby_links",
+            "org_team_collaborators",
+            "world_office_marketing_checkins",
+            "organization_task_checkins",
+    ):
+        await d1_run(
+            env, "DELETE FROM " + table + " WHERE account_bi=?", name_bi)
     await _delete_chat_channel_memberships(env, name_bi)
     await _delete_chat_direct_conversations(env, name_bi)
     if email:
@@ -14668,6 +14691,13 @@ async def _delete_account_namespace(env, name_bi, rec):
         await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
     await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
     await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
+    await asyncio.gather(
+        purge_catalog_related_caches(),
+        edge_cache_delete(ACCOUNT_LOOKUP_CACHE_PREFIX + quote(name)),
+        edge_cache_delete(USERS_DIRECTORY_CACHE_KEY),
+        edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY),
+        return_exceptions=True,
+    )
 
 
 def _owned_nodes(rec):
@@ -22549,6 +22579,63 @@ async def _admin_verify_email(env, request):
     return json_response({"ok": True, "target": target, "emailVerified": True})
 
 
+async def _admin_delete_unverified_account(env, request, raw_target):
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    _, actor_rec = await _account_session_record(env, request, data)
+    actor = clean_string(
+        (actor_rec or {}).get("name", ""), MAX_NODE_NAME).strip().lower()
+    target = clean_string(raw_target, MAX_NODE_NAME).strip().lower()
+    if not actor_rec:
+        return json_response({"error": "unauthorized"}, status=401)
+    if not await _has_role(env, actor, "platform_administrator"):
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "denied", {"reason": "admin_required"})
+        return json_response({"error": "forbidden"}, status=403)
+    if not valid_node_name(target):
+        return json_response({"error": "invalid_account"}, status=400)
+    if target == actor:
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "denied", {"reason": "self_delete_forbidden"})
+        return json_response({"error": "self_delete_forbidden"}, status=409)
+
+    target_bi, target_rec = await _account_row(env, target)
+    if (
+            not target_rec or target_rec.get("status") != "active"
+            or _account_kind(target_rec) != "user"):
+        return json_response({"error": "no_such_user"}, status=404)
+    if target_rec.get("email_verified") is True:
+        return json_response({"error": "email_already_verified"}, status=409)
+    if not clean_string(target_rec.get("email", ""), 254).strip():
+        return json_response({"error": "account_has_no_email"}, status=409)
+    # Never let the convenience gesture erase another administrator. Revoking
+    # an administrator remains an explicit security-control-plane operation.
+    if await _is_admin(env, target):
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "denied", {"reason": "target_is_admin"})
+        return json_response({"error": "target_is_admin"}, status=409)
+
+    try:
+        await _delete_account_namespace(env, target_bi, target_rec)
+    except Exception:
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "failed", {})
+        raise
+    await _audit_sensitive_action(
+        env, actor, "admin.unverified_account_delete", "account",
+        target, "success", {})
+    return json_response(
+        {"ok": True, "target": target, "accountDeleted": True},
+        cache_control="no-store, max-age=0, must-revalidate",
+    )
+
+
 # --- Transactional email (Mailtrap) -----------------------------------------
 # Signup confirmation goes out through Mailtrap's HTTP sending API. The token is
 # a Worker secret (MAILTRAP_API_TOKEN, pushed from .env.production by deploy.sh).
@@ -25090,6 +25177,14 @@ async def accounts_handler(env, request):
         return await _admin_pending(env, request)
     if url.path == "/api/accounts/admin-verify-email" and method == "POST":
         return await _admin_verify_email(env, request)
+    admin_unverified_prefix = "/api/accounts/admin-unverified/"
+    if (
+            url.path.startswith(admin_unverified_prefix)
+            and method == "DELETE"):
+        target = url.path[len(admin_unverified_prefix):].strip("/")
+        if target and "/" not in target:
+            return await _admin_delete_unverified_account(
+                env, request, target)
     if url.path == "/api/accounts/admin-relays" and method == "GET":
         return await _admin_relays(env, request)
     if url.path == "/api/accounts/admin-relay-approve" and method == "POST":
