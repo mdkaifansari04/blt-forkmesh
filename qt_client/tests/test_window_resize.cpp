@@ -417,6 +417,36 @@ int main(int argc, char *argv[])
 
     MainWindow window;
 
+    // Bottom status bar (adhoc #2): a strip exactly one text line tall carrying
+    // the branch switcher, the repo's git identity and the location of the
+    // running executable. The first two used to live in the repo Code overview,
+    // which builds lazily — the strip must be populated from the first frame.
+    {
+        QWidget *statusBar =
+            window.findChild<QWidget *>(QStringLiteral("appStatusBar"));
+        check(statusBar != nullptr,
+              QStringLiteral("bottom status bar exists on the app shell"));
+        if (statusBar) {
+            check(statusBar->minimumHeight() == statusBar->maximumHeight() &&
+                      statusBar->maximumHeight() <=
+                          statusBar->fontMetrics().height() + 8,
+                  QStringLiteral("status bar is pinned to a single text line"));
+            QPushButton *branch =
+                statusBar->findChild<QPushButton *>(QStringLiteral("ghostButton"));
+            check(branch && branch->toolTip() == QStringLiteral("Switch branch"),
+                  QStringLiteral("branch switcher sits in the status bar"));
+            check(statusBar->findChild<QLabel *>(
+                      QStringLiteral("footerGitIdentity")) != nullptr,
+                  QStringLiteral("git identity sits in the status bar"));
+            QLabel *appPath =
+                statusBar->findChild<QLabel *>(QStringLiteral("statusAppPath"));
+            check(appPath && !appPath->text().isEmpty() &&
+                      appPath->toolTip().contains(
+                          QCoreApplication::applicationFilePath()),
+                  QStringLiteral("status bar shows the running app's location"));
+        }
+    }
+
     // Fleet "Install from binary" must install the published release, not
     // upload this test process (or any other locally-built executable). The
     // target verifies the release checksum in install.sh, refuses source

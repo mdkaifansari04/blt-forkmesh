@@ -955,6 +955,8 @@ private:
     void updateNodeOnlineControls();
     // Bottom quick-add issue bar (the network log now lives in its own section).
     QWidget *buildNetworkLogDock();
+    // One-line strip pinned to the very bottom of the window (adhoc #2).
+    QWidget *buildStatusBar();
     // Compact footer queue between the live log and agent prompt. It is always on
     // screen (reading "idle" when nothing is running) and gives each kind of job
     // a spinner plus a one-word tag ("git", "net", "fork" …); past five tags it
@@ -4385,9 +4387,12 @@ private:
     // text, so the textChanged handler doesn't mistake the recall for a manual
     // edit and reset the history position.
     bool m_quickAddHistoryNavigating = false;
-    // Centered in the footer: the git identity (name <email>) configured for the
-    // repo currently open in the detail view. Updated by openRepoDetail.
+    // In the bottom status bar: the git identity (name <email>) configured for
+    // the repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
+    // Right of the status bar: where the running executable lives on disk, so
+    // it is obvious which build/checkout the open window came from.
+    QLabel *m_statusAppPath = nullptr;
     // Footer diagnostics: live CPU/memory readout + UI-stall watchdog state.
     QPushButton *m_footerDiagnostics = nullptr;
     // Live one-per-second moving sparklines for CPU, host memory and disk

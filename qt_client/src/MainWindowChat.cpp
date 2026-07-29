@@ -543,7 +543,65 @@ QWidget *MainWindow::buildChatPage()
     root->setSpacing(0);
     root->addWidget(header);
     root->addWidget(lower, 1);
+    // Thin one-line strip under everything else, spanning the rail as well as
+    // the content shell so it reads as the window's own bottom edge (adhoc #2).
+    root->addWidget(buildStatusBar());
     return page;
+}
+
+// A single text line tall: the branch switcher and the repo's git identity (both
+// of which used to sit inside the repo Code overview) plus the on-disk location
+// of the running executable. The widgets are created here, not in the repo pages
+// they came from, because those pages build lazily on first navigation while the
+// strip has to be populated from the first frame; setRepoBranch /
+// loadBranchesAndTags / updateFooterGitIdentity keep filling them in as before.
+QWidget *MainWindow::buildStatusBar()
+{
+    auto *bar = new QWidget;
+    bar->setObjectName("appStatusBar");
+
+    m_branchButton = new QPushButton("main");
+    m_branchButton->setObjectName("ghostButton");
+    m_branchButton->setCursor(Qt::PointingHandCursor);
+    m_branchButton->setToolTip("Switch branch");
+    setOcticon(m_branchButton, "git-branch", 12);
+
+    m_footerGitIdentity = new QLabel;
+    m_footerGitIdentity->setObjectName("footerGitIdentity");
+    m_footerGitIdentity->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_footerGitIdentity->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_footerGitIdentity->setToolTip(
+        "Git author identity configured for the repository you're viewing");
+
+    // Elided up front rather than on every resize: the path never changes while
+    // the app runs, and a full path left unelided would drag the window's
+    // minimum width out with it. The tooltip keeps the untruncated value.
+    const QString appPath =
+        QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
+    m_statusAppPath = new QLabel;
+    m_statusAppPath->setObjectName("statusAppPath");
+    m_statusAppPath->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_statusAppPath->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_statusAppPath->setText(m_statusAppPath->fontMetrics().elidedText(
+        appPath, Qt::ElideMiddle, 420));
+    m_statusAppPath->setToolTip(
+        QStringLiteral("Running app: %1\nWorking directory: %2")
+            .arg(appPath, QDir::toNativeSeparators(QDir::currentPath())));
+
+    auto *row = new QHBoxLayout(bar);
+    row->setContentsMargins(10, 0, 10, 0);
+    row->setSpacing(10);
+    row->addWidget(m_branchButton);
+    row->addWidget(m_footerGitIdentity);
+    row->addStretch(1);
+    row->addWidget(m_statusAppPath);
+
+    // One line, nothing more: the tallest child (the branch button) is capped to
+    // the strip so the menu indicator can't push the bar taller.
+    const int rowHeight = qMax(20, bar->fontMetrics().height() + 6);
+    bar->setFixedHeight(rowHeight);
+    m_branchButton->setMaximumHeight(rowHeight - 2);
+    return bar;
 }
 
 // kFooterLogSeedLines (MainWindowInternal.h) bounds both the startup seed and
