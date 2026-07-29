@@ -1834,6 +1834,11 @@ QWidget *MainWindow::buildSettingsSection()
     secretsCol->addStretch();
     addTab(secretsTab, "Secrets & Coves");
 
+    // MCP: connector token + the config to paste into an external agent, so
+    // anything speaking MCP can work this node's issues and PRs (adhoc #16).
+    // Built in its own translation unit (MainWindowMcp.cpp).
+    addTab(buildMcpConnectorTab(), "MCP");
+
     // Security: private vulnerability reporting form.
     addTab(buildVulnReportTab(), "Security");
 
