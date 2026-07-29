@@ -3373,6 +3373,9 @@ private:
     void adoptWebAccountAvatar(const QByteArray &png);
     void updateAvatarButton();
     void updateUserAvatarButton();
+    // Shows/hides the admin crown badge overlaid on the user avatar button,
+    // based on the current m_isAdmin.
+    void updateAdminCrownBadge();
     void refreshIssueComposerAvatar();
     // Builds a small "identity" row (self avatar + current username) shown above
     // compose inputs so it's clear who is about to post. When verb is set the
@@ -3833,6 +3836,9 @@ private:
     // online / amber connecting / grey offline), replacing the old text pill.
     QLabel *m_connectionDot = nullptr;
     QString m_connectionStatusColor;      // last dot colour (skip redundant repaints)
+    // Little crown badge painted over the top-left of the same avatar, shown
+    // only while this node is an admin (see updateAdminCrownBadge()).
+    QLabel *m_adminCrownBadge = nullptr;
     QLabel *m_topMessage = nullptr;       // compact centered success/failure toast text
     QFrame *m_topMessageContainer = nullptr; // bordered pill wrapping the text + Expand/Copy/✕
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
