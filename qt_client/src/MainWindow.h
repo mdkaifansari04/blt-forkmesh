@@ -2497,6 +2497,14 @@ private:
     // The branch listed next to `branch` in the Branches table (the row below it,
     // else the row above), used to pick the post-delete selection (adhoc #256).
     QString neighbourBranchInList(const QString &branch) const;
+    // Row `branch` occupies in the Branches table, or -1 when it isn't listed.
+    int branchRowInList(const QString &branch) const;
+    // Leave an animated check in the row `branch` occupied, instead of moving the
+    // selection to another branch, now that "Merge & delete all" has removed it
+    // (adhoc #15). Cleared by clearMergedBranchFlash() — on the next branch the
+    // user selects, or after kBranchMergedFlashMs.
+    void flashMergedBranchRow(const QString &branch);
+    void clearMergedBranchFlash();
     // Delete every branch that is fully merged into the default branch (0 behind
     // and 0 ahead of it), skipping the default and the checked-out branch.
     void deleteMergedBranches();
@@ -3411,8 +3419,8 @@ private:
     bool m_logFilterEmptyNotice = false;
     void loadOlderNetworkLogSegment();
     void onNetworkLogScrolled(int value);
-    // Compact, centered success/failure banner shown in the top bar between the
-    // breadcrumb and the notifications bell. Auto-clears after a few seconds.
+    // Compact success/failure banner pinned to the top of the footer's mini-log
+    // panel, beside the log lines it explains. Auto-clears after a few seconds.
     // `clickHref` makes the whole toast a clickable link routed by the
     // m_topMessage linkActivated handler (e.g. "fm:agent:<id>" to jump to a
     // waiting agent). Empty = a plain, non-clickable toast.
@@ -3423,6 +3431,10 @@ private:
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the toast, elided or expanded in place
     void positionTopMessageOverlay(); // size + anchor the floating expanded-toast panel
+    // False while the footer (and with it the mini-log the toast is docked in) is
+    // hidden — the Git workspace does that. Messages then float in the overlay
+    // instead of vanishing.
+    bool topMessageDockVisible() const;
     MessageRow *addMessageRow(const ChatMessage &message);
     void renderConversationRows(); // rebuilds rows in place; caller handles scrolling
     void rebuildConversationView();
@@ -5822,6 +5834,17 @@ private:
     // Branch switchToBranch asked for that wasn't on screen yet: selected (or
     // reported as missing) once the pending rebuild lands.
     QString m_branchesPanelPendingSelect;
+    // adhoc #15: the branch "Merge & delete all" just removed, the row it held and
+    // the repo it belonged to. While these are set, renderBranchesPanel rebuilds
+    // that row as an animated check instead of sliding the selection onto a
+    // neighbouring branch and rendering a diff the user never asked for.
+    QString m_branchMergedFlashBranch;
+    QString m_branchMergedFlashDir;
+    int m_branchMergedFlashRow = -1;
+    // How long the check outlives the merge. It never moves the selection by
+    // itself: expiring only means the next natural rebuild of the panel drops the
+    // row, so a long-idle Branches tab eventually returns to normal.
+    static constexpr int kBranchMergedFlashMs = 20000;
     // Re-entrancy guard for loadMirrorNodesPanel: its synchronous git reads pump
     // the event loop, so a queued roster/mirror callback could start a second
     // pass that appends its own rows on top of the half-built table — every node
