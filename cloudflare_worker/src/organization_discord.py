@@ -887,21 +887,22 @@ async def _consume_oauth_state(runtime):
 
     state = str(runtime.query("state") or "").lower()
     if not _OAUTH_STATE_RE.fullmatch(state):
-        return None
+        return None, "invalid_state_format"
     state_hash = _oauth_state_hash(state)
     row = await runtime.d1_first(
         "SELECT data,expires_at FROM organization_discord_oauth_states "
         "WHERE state_hash=?", state_hash)
-    if not row or int(row.get("expires_at") or 0) <= runtime.now():
-        if row:
-            await runtime.d1_run(
-                "DELETE FROM organization_discord_oauth_states "
-                "WHERE state_hash=? AND data=?", state_hash, row.get("data"))
-        return None
+    if not row:
+        return None, "invalid_state_missing"
+    if int(row.get("expires_at") or 0) <= runtime.now():
+        await runtime.d1_run(
+            "DELETE FROM organization_discord_oauth_states "
+            "WHERE state_hash=? AND data=?", state_hash, row.get("data"))
+        return None, "invalid_state_expired"
     encrypted = str(row.get("data") or "")
     claim = "consumed:" + _new_oauth_secret(runtime)
     if not encrypted or claim == "consumed:":
-        return None
+        return None, "invalid_record"
     # D1's Worker API documents write-operation result sets as empty, so
     # DELETE ... RETURNING cannot be consumed through PreparedStatement.first.
     # Claim with a compare-and-swap, then read the marker back: only one
@@ -915,7 +916,7 @@ async def _consume_oauth_state(runtime):
         "WHERE state_hash=?", state_hash)
     if not claimed or not hmac.compare_digest(
             str(claimed.get("data") or ""), claim):
-        return None
+        return None, "invalid_state_claim"
     await runtime.d1_run(
         "DELETE FROM organization_discord_oauth_states "
         "WHERE state_hash=? AND data=?", state_hash, claim)
@@ -924,9 +925,9 @@ async def _consume_oauth_state(runtime):
     except Exception:
         record = None
     if not isinstance(record, dict):
-        return None
+        return None, "invalid_record"
     if not hmac.compare_digest(str(record.get("state") or ""), state):
-        return None
+        return None, "invalid_record"
     # Do not gate the callback on the optional browser transaction cookie.
     # Privacy controls can omit it, and a second connection attempt can replace
     # it while Discord is still returning the first valid authorization. The
@@ -935,8 +936,8 @@ async def _consume_oauth_state(runtime):
     # Discord permission proof are all independently mandatory below.
     verifier = str(record.get("verifier") or "")
     if not _OAUTH_STATE_RE.fullmatch(verifier):
-        return None
-    return record
+        return None, "invalid_record"
+    return record, ""
 
 
 async def _oauth_callback_context(runtime, record):
@@ -1004,20 +1005,21 @@ async def handle_oauth_callback(runtime):
     # Consume an otherwise valid state on *every* callback, including a user
     # denial or a just-rotated OAuth client secret, so a stale authorization
     # attempt cannot later be replayed.
-    record = await _consume_oauth_state(runtime)
+    record, invalid_outcome = await _consume_oauth_state(runtime)
     if str(runtime.query("error") or ""):
         return runtime.oauth_callback_response("denied")
     if not runtime.discord_oauth_ready():
         return runtime.oauth_callback_response("setup")
     code = _oauth_code(runtime.query("code"))
     if not code or not record:
-        return runtime.oauth_callback_response("invalid")
+        return runtime.oauth_callback_response(
+            invalid_outcome or "invalid_record")
     context = await _oauth_callback_context(runtime, record)
     if not context:
-        return runtime.oauth_callback_response("invalid")
+        return runtime.oauth_callback_response("invalid_context")
     requested_guild_id = _snowflake(record.get("guildId"))
     if not requested_guild_id:
-        return runtime.oauth_callback_response("invalid")
+        return runtime.oauth_callback_response("invalid_record")
     exchanged = await runtime.discord_oauth_exchange(code, record["verifier"])
     access_token = str((exchanged or {}).get("accessToken") or "")
     if int((exchanged or {}).get("status") or 0) != 200 or not access_token:

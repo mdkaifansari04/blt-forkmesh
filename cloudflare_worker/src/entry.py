@@ -21948,7 +21948,12 @@ class _OrganizationDiscordRuntime:
 
     def oauth_callback_response(self, outcome):
         outcome = str(outcome or "invalid")
-        if outcome not in {"connected", "denied", "failed", "invalid", "setup"}:
+        if outcome not in {
+            "connected", "denied", "failed", "invalid", "setup",
+            "invalid_state_format", "invalid_state_missing",
+            "invalid_state_expired", "invalid_state_claim",
+            "invalid_record", "invalid_context",
+        }:
             outcome = "invalid"
         # Strip OAuth code/state/error from the browser address before any
         # World UI loads. The one-time callback cookie is cleared regardless of

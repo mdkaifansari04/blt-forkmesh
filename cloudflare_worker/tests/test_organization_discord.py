@@ -500,7 +500,7 @@ async def test_oauth_callback_is_one_time_and_requires_guild_permission():
         runtime.use("GET", query={
             "state": state, "code": "oauth-authorization-code-123456",
         }))
-    assert replay["data"]["outcome"] == "invalid"
+    assert replay["data"]["outcome"] == "invalid_state_missing"
     assert runtime.bot_channel_calls == 0
     assert runtime.bot_role_calls == 0
 

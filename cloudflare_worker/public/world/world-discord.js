@@ -24,6 +24,12 @@ const OAUTH_OUTCOMES = {
   denied: "Discord did not authorize that Server ID. Use an account with Owner, Administrator, or Manage Server permission.",
   failed: "Discord authorization returned, but its token or account verification failed. Please connect again.",
   invalid: "Discord returned an invalid or expired authorization. Please connect again in this same browser tab.",
+  invalid_state_format: "Discord returned a malformed authorization state (stage: state format).",
+  invalid_state_missing: "Discord returned an unknown or already-used authorization state (stage: state lookup).",
+  invalid_state_expired: "Discord authorization expired before it returned (stage: state expiry).",
+  invalid_state_claim: "ForkMesh could not exclusively claim the authorization state (stage: state claim).",
+  invalid_record: "ForkMesh could not validate the encrypted authorization record (stage: record validation).",
+  invalid_context: "Your ForkMesh login or organization-owner binding changed during authorization (stage: session context).",
   setup: "Discord OAuth configuration changed during authorization. Please connect again.",
 };
 
