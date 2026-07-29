@@ -37444,8 +37444,11 @@ async def _admin_error_create_bot_task(env, form, requester):
         status or "error", method or "—", path or "—")
     if summary:
         title = title + " — " + summary
+    # source != "forkbot" skips _forkbot_attributed_body's chat footer, so the
+    # attribution the merged issue needs is written here.
+    filed_by = clean_string(requester or "", MAX_NODE_NAME).strip().lower()
     body = (
-        "Filed from the platform administration error log.\n\n"
+        "Filed from the platform administration error log%s.\n\n"
         "- Status: %s\n"
         "- Method: %s\n"
         "- Path: %s\n"
@@ -37453,6 +37456,7 @@ async def _admin_error_create_bot_task(env, form, requester):
         "- Logged occurrences: %d\n\n"
         "Message:\n\n%s\n"
     ) % (
+        (" by @" + filed_by) if filed_by else "",
         status or "—", method or "—", path or "—", users,
         occurrences, str(message or "—"),
     )
