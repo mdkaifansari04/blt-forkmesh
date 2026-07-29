@@ -844,6 +844,12 @@ def test_route_schema_and_worker_adapter_keep_the_secret_server_side():
     assert "_DISCORD_OAUTH_GUILDS_PATH" in entry_source
     assert "DISCORD_OAUTH_CALLBACK_RE" in urls_source
     assert "organization_discord_oauth_callback_handler" in entry_source
+    discord_runtime = entry_source[
+        entry_source.index("class _OrganizationDiscordRuntime"):
+        entry_source.index("async def organization_discord_handler")]
+    assert "parse_qs(" in discord_runtime
+    assert "urlparse(str(self.request.url)).query" in discord_runtime
+    assert "URL(self.request.url).searchParams" not in discord_runtime
     assert "oauth/start" in urls_source
     assert "SameSite=Lax" in entry_source
     assert "code_challenge_method" in entry_source

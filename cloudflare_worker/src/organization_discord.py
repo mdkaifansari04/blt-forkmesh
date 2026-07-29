@@ -1018,7 +1018,9 @@ async def handle_oauth_callback(runtime):
     if not runtime.discord_oauth_ready():
         return runtime.oauth_callback_response("setup")
     code = _oauth_code(runtime.query("code"))
-    if not code or not record:
+    if not code:
+        return runtime.oauth_callback_response("invalid_code")
+    if not record:
         return runtime.oauth_callback_response(
             invalid_outcome or "invalid_record_storage")
     context = await _oauth_callback_context(runtime, record)

@@ -21800,7 +21800,12 @@ class _OrganizationDiscordRuntime:
 
     def query(self, name):
         try:
-            return URL(self.request.url).searchParams.get(str(name)) or ""
+            values = parse_qs(
+                urlparse(str(self.request.url)).query,
+                keep_blank_values=True,
+            )
+            first = values.get(str(name), [""])[0]
+            return str(first or "")
         except Exception:
             return ""
 
@@ -21947,7 +21952,7 @@ class _OrganizationDiscordRuntime:
             "invalid_record", "invalid_record_storage",
             "invalid_record_decrypt", "invalid_record_state",
             "invalid_record_verifier", "invalid_record_guild",
-            "invalid_context",
+            "invalid_context", "invalid_code",
         }:
             outcome = "invalid"
         # Strip OAuth code/state/error from the browser address before any

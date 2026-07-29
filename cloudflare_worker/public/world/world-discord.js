@@ -35,6 +35,7 @@ const OAUTH_OUTCOMES = {
   invalid_record_verifier: "The authorization record contained an invalid PKCE verifier (stage: record PKCE validation).",
   invalid_record_guild: "The authorization record contained an invalid Server ID (stage: record guild validation).",
   invalid_context: "Your ForkMesh login or organization-owner binding changed during authorization (stage: session context).",
+  invalid_code: "Discord did not return a valid authorization code (stage: authorization code).",
   setup: "Discord OAuth configuration changed during authorization. Please connect again.",
 };
 
