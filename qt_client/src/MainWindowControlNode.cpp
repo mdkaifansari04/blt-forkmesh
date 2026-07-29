@@ -560,6 +560,9 @@ QWidget *MainWindow::buildControlNodeSection()
     cloudflareCol->addWidget(m_controlNodeOutput);
     bodyCol->addWidget(cloudflareCard);
 
+    // --- Ship this checkout with cloudflare_worker/deploy.sh ---------------
+    bodyCol->addWidget(buildSiteDeployCard());
+
     // --- Remote hosts ------------------------------------------------------
     QVBoxLayout *hostsCol = nullptr;
     QFrame *hostsCard =
@@ -2508,6 +2511,207 @@ void MainWindow::appendControlNodeOutput(const QString &text)
     m_controlNodeOutput->insertPlainText(safe);
     m_controlNodeOutput->moveCursor(QTextCursor::End);
     m_controlNodeOutput->ensureCursorVisible();
+}
+
+QWidget *MainWindow::buildSiteDeployCard()
+{
+    QVBoxLayout *col = nullptr;
+    QFrame *card =
+        controlCard(QStringLiteral("ForkMesh site deployment"), &col);
+    col->addWidget(controlHint(
+        QStringLiteral(
+            "Runs this checkout's cloudflare_worker/deploy.sh: it builds the "
+            "site, uploads the Worker and static assets, pushes the "
+            ".env.production secrets, and then verifies the live origin is "
+            "serving the new build. Credentials come from the deployment "
+            "machine's own wrangler login and .env.production; nothing is read "
+            "from or written to this page. Output streams below as the script "
+            "runs.")));
+    m_siteDeployStatus = new QLabel;
+    m_siteDeployStatus->setObjectName(QStringLiteral("mutedLabel"));
+    m_siteDeployStatus->setWordWrap(true);
+    const QString deployScript = forkmesh::control::findSiteDeployScript(
+        QStringLiteral(FORKMESH_SOURCE_DIR),
+        QCoreApplication::applicationDirPath());
+    m_siteDeployStatus->setText(
+        deployScript.isEmpty()
+            ? QStringLiteral(
+                  "cloudflare_worker/deploy.sh was not found next to this "
+                  "build's Worker bundle.")
+            : QStringLiteral("Ready: %1").arg(deployScript));
+    col->addWidget(m_siteDeployStatus);
+
+    auto *buttons = new QHBoxLayout;
+    m_siteDeployButton =
+        new QPushButton(QStringLiteral("Deploy to Cloudflare"));
+    m_siteDeployButton->setObjectName(QStringLiteral("siteDeployButton"));
+    m_siteDeployButton->setProperty("buttonSize", "primary");
+    m_siteDeployButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_siteDeployButton, QStringLiteral("rocket"), 14);
+    connect(m_siteDeployButton, &QPushButton::clicked, this,
+            &MainWindow::runSiteDeploy);
+    buttons->addWidget(m_siteDeployButton);
+    m_siteDeployCancelButton = new QPushButton(QStringLiteral("Cancel"));
+    m_siteDeployCancelButton->setObjectName(
+        QStringLiteral("siteDeployCancelButton"));
+    m_siteDeployCancelButton->setCursor(Qt::PointingHandCursor);
+    m_siteDeployCancelButton->setEnabled(false);
+    connect(m_siteDeployCancelButton, &QPushButton::clicked, this,
+            &MainWindow::cancelSiteDeploy);
+    buttons->addWidget(m_siteDeployCancelButton);
+    buttons->addStretch();
+    col->addLayout(buttons);
+
+    m_siteDeployOutput = new QPlainTextEdit;
+    m_siteDeployOutput->setObjectName(QStringLiteral("siteDeployOutput"));
+    m_siteDeployOutput->setReadOnly(true);
+    m_siteDeployOutput->setLineWrapMode(QPlainTextEdit::NoWrap);
+    m_siteDeployOutput->setMinimumHeight(220);
+    m_siteDeployOutput->document()->setMaximumBlockCount(5000);
+    m_siteDeployOutput->setPlaceholderText(
+        QStringLiteral("deploy.sh output appears here live; credentials are "
+                       "redacted."));
+    QFont deployMono(QStringLiteral("monospace"));
+    deployMono.setStyleHint(QFont::Monospace);
+    m_siteDeployOutput->setFont(deployMono);
+    col->addWidget(m_siteDeployOutput);
+    return card;
+}
+
+void MainWindow::runSiteDeploy()
+{
+    if (m_siteDeployProcess &&
+        m_siteDeployProcess->state() != QProcess::NotRunning) {
+        flashMessage(QStringLiteral("A site deployment is already running."),
+                     true);
+        return;
+    }
+    const QString script = forkmesh::control::findSiteDeployScript(
+        QStringLiteral(FORKMESH_SOURCE_DIR),
+        QCoreApplication::applicationDirPath());
+    if (script.isEmpty()) {
+        const QString missing = QStringLiteral(
+            "cloudflare_worker/deploy.sh was not found next to this build's "
+            "Worker bundle.");
+        if (m_siteDeployStatus)
+            m_siteDeployStatus->setText(missing);
+        flashMessage(missing, true);
+        return;
+    }
+    const QString bash = QStandardPaths::findExecutable(QStringLiteral("bash"));
+    if (bash.isEmpty()) {
+        flashMessage(
+            QStringLiteral("bash is required to run cloudflare_worker/deploy.sh."),
+            true);
+        return;
+    }
+    if (QMessageBox::question(
+            this, QStringLiteral("Deploy to Cloudflare"),
+            QStringLiteral(
+                "Run %1 now? This uploads the Worker and static site to the "
+                "production Cloudflare account this machine is logged in to.")
+                .arg(script),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes) {
+        return;
+    }
+
+    if (m_siteDeployOutput)
+        m_siteDeployOutput->clear();
+    appendSiteDeployOutput(
+        QStringLiteral("$ %1\n").arg(script));
+    if (m_siteDeployStatus)
+        m_siteDeployStatus->setText(QStringLiteral("Deploying…"));
+    if (m_siteDeployButton)
+        m_siteDeployButton->setEnabled(false);
+    if (m_siteDeployCancelButton)
+        m_siteDeployCancelButton->setEnabled(true);
+    logSystem(QStringLiteral("Control node: site deployment started."));
+
+    auto *process = new QProcess(this);
+    m_siteDeployProcess = process;
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    process->setWorkingDirectory(QFileInfo(script).absolutePath());
+    QProcessEnvironment environment =
+        QProcessEnvironment::systemEnvironment();
+    // Keep the child's Python/Wrangler chatter arriving line by line so the
+    // page shows progress instead of one block at the end.
+    environment.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
+    process->setProcessEnvironment(environment);
+    connect(process, &QProcess::readyReadStandardOutput, this,
+            [this, process] {
+                appendSiteDeployOutput(
+                    QString::fromUtf8(process->readAllStandardOutput()));
+            });
+    connect(process, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError error) {
+                if (error == QProcess::FailedToStart) {
+                    appendSiteDeployOutput(
+                        QStringLiteral(
+                            "deploy.sh could not start; verify bash and the "
+                            "Worker bundle on this machine.\n"));
+                }
+            });
+    connect(process, &QProcess::finished, this,
+            [this, process](int exitCode, QProcess::ExitStatus status) {
+                appendSiteDeployOutput(
+                    QString::fromUtf8(process->readAllStandardOutput()));
+                const bool ok =
+                    status == QProcess::NormalExit && exitCode == 0;
+                appendSiteDeployOutput(
+                    ok ? QStringLiteral("\nDeployment finished successfully.\n")
+                       : QStringLiteral("\nDeployment failed (exit %1).\n")
+                             .arg(exitCode));
+                if (m_siteDeployStatus)
+                    m_siteDeployStatus->setText(
+                        ok ? QStringLiteral("Last deployment succeeded.")
+                           : QStringLiteral("Last deployment failed (exit %1).")
+                                 .arg(exitCode));
+                if (m_siteDeployButton)
+                    m_siteDeployButton->setEnabled(true);
+                if (m_siteDeployCancelButton)
+                    m_siteDeployCancelButton->setEnabled(false);
+                logSystem(ok
+                              ? QStringLiteral(
+                                    "Control node: site deployment succeeded.")
+                              : QStringLiteral(
+                                    "Control node: site deployment failed "
+                                    "(exit %1).")
+                                    .arg(exitCode));
+                if (m_siteDeployProcess == process)
+                    m_siteDeployProcess = nullptr;
+                process->deleteLater();
+            });
+    process->start(bash, {script});
+}
+
+void MainWindow::cancelSiteDeploy()
+{
+    if (!m_siteDeployProcess ||
+        m_siteDeployProcess->state() == QProcess::NotRunning) {
+        return;
+    }
+    appendSiteDeployOutput(
+        QStringLiteral("Cancellation requested; waiting for deploy.sh to "
+                       "stop.\n"));
+    m_siteDeployProcess->terminate();
+    QPointer<QProcess> process(m_siteDeployProcess);
+    QTimer::singleShot(5000, this, [process] {
+        if (process && process->state() != QProcess::NotRunning)
+            process->kill();
+    });
+}
+
+void MainWindow::appendSiteDeployOutput(const QString &text)
+{
+    if (!m_siteDeployOutput || text.isEmpty())
+        return;
+    const QString safe = forkmesh::control::redactProcessOutput(
+        text, {m_cloudflareActiveSecret});
+    m_siteDeployOutput->moveCursor(QTextCursor::End);
+    m_siteDeployOutput->insertPlainText(safe);
+    m_siteDeployOutput->moveCursor(QTextCursor::End);
+    m_siteDeployOutput->ensureCursorVisible();
 }
 
 void MainWindow::connectToDeployedRelay(const QString &hostname)

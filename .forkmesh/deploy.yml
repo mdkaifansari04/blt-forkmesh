@@ -61,6 +61,9 @@ jobs:
           MAILTRAP_API_TOKEN=${{ vars.MAILTRAP_API_TOKEN }}
           DATA_KEY=${{ vars.DATA_KEY }}
           SENTRY_DSN=${{ vars.SENTRY_DSN }}
+          DISCORD_CLIENT_ID=${{ vars.DISCORD_CLIENT_ID }}
+          DISCORD_CLIENT_SECRET=${{ vars.DISCORD_CLIENT_SECRET }}
+          DISCORD_BOT_TOKEN=${{ vars.DISCORD_BOT_TOKEN }}
           EOF
       - name: Deploy worker
         run: |

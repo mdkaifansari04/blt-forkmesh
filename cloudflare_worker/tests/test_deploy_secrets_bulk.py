@@ -19,6 +19,9 @@ REQUIRED = {
     "TREASURY_SOLANA_ADDRESS": "solana-address",
     "MIRROR_ROUTER_PUBLIC_KEY": "router-public",
     "MIRROR_ROUTER_SIGNING_SEED": "router-seed",
+    "DISCORD_CLIENT_ID": "1531910102578102322",
+    "DISCORD_CLIENT_SECRET": "discord-client-secret",
+    "DISCORD_BOT_TOKEN": "discord-bot-token",
 }
 
 
@@ -125,11 +128,12 @@ def test_secrets_command_uses_one_secure_bulk_update_and_verifies_names(tmp_path
     assert payload == {
         **REQUIRED,
         "OPTIONAL_SECRET": "optional=value with spaces",
+        "WORKERS_OBSERVABILITY_ACCOUNT_ID": "test-account",
     }
     assert "CLOUDFLARE_ACCOUNT_ID" not in payload
     assert "CLOUDFLARE_API_TOKEN" not in payload
     assert "EMPTY_SECRET" not in payload
-    assert "Pushed 7 secret(s) from .env.production in one bulk update." in result.stdout
+    assert "Pushed 11 secret(s) from .env.production in one bulk update." in result.stdout
     combined_output = result.stdout + result.stderr
     for value in (*payload.values(), "cloudflare-token-must-not-be-published"):
         assert value not in combined_output
@@ -188,6 +192,39 @@ def test_missing_required_secret_fails_before_any_bulk_mutation(tmp_path):
     assert not log.exists()
 
 
+def test_invalid_discord_client_id_fails_before_any_bulk_mutation(tmp_path):
+    worker, log, _captured = _sandbox(tmp_path)
+    env_file = worker / ".env.production"
+    env_file.write_text(
+        env_file.read_text(encoding="utf-8").replace(
+            "DISCORD_CLIENT_ID=1531910102578102322",
+            "DISCORD_CLIENT_ID=not-a-snowflake",
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYWRANGLER_VENV": str(tmp_path / "fake-pywrangler"),
+            "FAKE_WRANGLER_LOG": str(log),
+            "FAKE_WRANGLER_CAPTURE": str(tmp_path / "captured.json"),
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", "deploy.sh", "secrets"],
+        cwd=worker,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "DISCORD_CLIENT_ID must be a 17-20 digit" in result.stderr
+    assert not log.exists()
+
+
 def test_push_secrets_contains_bulk_contract_without_put_loop():
     source = DEPLOY.read_text(encoding="utf-8")
     start = source.index("push_secrets() {")
@@ -198,3 +235,39 @@ def test_push_secrets_contains_bulk_contract_without_put_loop():
     assert "pywrangler secret put" not in function
     assert 'chmod 0600 "$secret_bulk_file"' in function
     assert "trap 'rm -f -- \"$secret_bulk_file\"' EXIT" in function
+
+
+def test_production_deploy_preflights_discord_secrets_before_mutation():
+    source = DEPLOY.read_text(encoding="utf-8")
+    deploy_case = source[source.index("    deploy)"):]
+
+    assert deploy_case.index("push_secrets validate") < deploy_case.index(
+        "signal_world_deploy deploying")
+    assert deploy_case.index("push_secrets validate") < deploy_case.index(
+        "./migrate.sh")
+    assert deploy_case.index("push_secrets validate") < deploy_case.index(
+        "pywrangler deploy")
+
+
+def test_production_manifest_sets_canonical_discord_public_urls():
+    wrangler = (ROOT / "wrangler.toml").read_text(encoding="utf-8")
+
+    assert 'PUBLIC_BASE_URL = "https://forkmesh.com"' in wrangler
+    assert (
+        'DISCORD_OAUTH_REDIRECT_URI = '
+        '"https://forkmesh.com/api/integrations/discord/callback"'
+    ) in wrangler
+    assert "DISCORD_BOT_TOKEN" not in wrangler
+    assert "DISCORD_CLIENT_SECRET" not in wrangler
+
+
+def test_forkmesh_deploy_materializes_discord_secrets_from_secure_variables():
+    workflow = (ROOT.parent / ".forkmesh" / "deploy.yml").read_text(
+        encoding="utf-8")
+
+    for name in (
+        "DISCORD_CLIENT_ID",
+        "DISCORD_CLIENT_SECRET",
+        "DISCORD_BOT_TOKEN",
+    ):
+        assert f"{name}=${{{{ vars.{name} }}}}" in workflow
