@@ -23355,7 +23355,11 @@ export function createWorldScene({
 
   function showAgentTaskBubble(botId, title) {
     if (!agentBotAccessAllowed) return false;
-    const state = agentBotStates.get(String(botId || "").toLowerCase());
+    // The task board names one general bot, so an unknown id speaks through
+    // whichever bot avatar is present rather than staying silent.
+    const state =
+      agentBotStates.get(String(botId || "").toLowerCase()) ||
+      agentBotStates.values().next().value;
     const taskTitle = String(title || "")
       .replace(/\s+/g, " ")
       .trim()

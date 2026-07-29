@@ -1715,7 +1715,7 @@ SCHEMA_STATEMENTS = [
                 'department','personal','repository','qa','agent')),
         assignee_kind TEXT NOT NULL DEFAULT 'user'
             CHECK (assignee_kind IN (
-                'user','unassigned','claude','codex')),
+                'user','unassigned','agent')),
         status TEXT NOT NULL DEFAULT 'idle'
             CHECK (status IN ('idle','active')),
         assignee_bi TEXT NOT NULL DEFAULT '',

@@ -8579,6 +8579,28 @@ class _OfficeMarketingTasksRuntime:
     async def d1_run(self, sql, *args):
         return await d1_run(self.env, sql, *args)
 
+    async def cancel_agent_session(self, org_bi, session_id):
+        """Retire the node-queued bot run behind a returned task."""
+
+        session_id = clean_string(session_id, 64).strip().lower()
+        if not re.fullmatch(r"[a-f0-9-]{16,64}", session_id):
+            return False
+        now = int(Date.now())
+        await d1_run(
+            self.env,
+            "UPDATE org_agent_jobs SET status='cancelled',updated_at=? "
+            "WHERE session_id=? AND org_bi=? AND status IN ('queued','leased')",
+            now, session_id, str(org_bi or ""),
+        )
+        await d1_run(
+            self.env,
+            "UPDATE org_agent_sessions SET status='cancelled',updated_at=?,"
+            "completed_at=? WHERE session_id=? AND org_bi=? "
+            "AND status IN ('security_pending','queued','running')",
+            now, now, session_id, str(org_bi or ""),
+        )
+        return True
+
 
 class _ChatChannelsRuntime(_WorldCommunityRuntime):
     async def session(self, data=None):
@@ -32883,6 +32905,9 @@ async def bot_session_handler(env, request):
 # of the organization's Engineering team, and execute only after the selected
 # mirror runs a tool-free Claude Haiku safety preflight.
 ORG_AGENT_PROVIDERS = ("claude-code", "codex")
+# The task board dispatches one general bot. "agent" asks the Worker to pick
+# whichever supported runtime has an eligible mirror online right now.
+ORG_AGENT_GENERAL_PROVIDERS = ("agent", "bot", "auto")
 ORG_AGENT_MODEL_ALIASES = {
     "claude-code": {
         "haiku": "claude-haiku-4-5",
@@ -33258,6 +33283,9 @@ async def org_agent_bots_handler(env, request, org, repo):
 
     provider = clean_string(data.get("provider"), 40).strip().lower()
     prompt = clean_string(data.get("prompt"), ORG_AGENT_MAX_PROMPT).strip()
+    general_bot = provider in ORG_AGENT_GENERAL_PROVIDERS
+    if general_bot:
+        provider = ORG_AGENT_PROVIDERS[0]
     if provider not in ORG_AGENT_PROVIDERS:
         return json_response({"error": "invalid_provider"}, status=400)
     model_alias = clean_string(data.get("model"), 30).strip().lower()
@@ -33272,6 +33300,17 @@ async def org_agent_bots_handler(env, request, org, repo):
         return json_response({"error": "invalid_target_node"}, status=400)
     target_node = await _org_agent_target_mirror(
         env, context, provider, preferred_node)
+    if not target_node and general_bot:
+        # A general bot is runtime-agnostic: take the first supported runtime
+        # with a fresh, capable mirror instead of failing on one vendor.
+        for candidate in ORG_AGENT_PROVIDERS[1:]:
+            target_node = await _org_agent_target_mirror(
+                env, context, candidate, preferred_node)
+            if target_node:
+                provider = candidate
+                model = ORG_AGENT_MODEL_ALIASES.get(
+                    candidate, {}).get(model_alias) or ""
+                break
     if not target_node:
         return json_response(
             {"error": "no_eligible_agent_node"}, status=503,
@@ -33622,7 +33661,7 @@ async def repo_org_agent_job_result_handler(
             env,
             "SELECT data FROM organization_tasks "
             "WHERE org_bi=? AND task_id=? "
-            "AND assignee_kind IN ('claude','codex')",
+            "AND assignee_kind IN ('agent','bot','claude','codex')",
             row["org_bi"], private_task_id,
         )
         private_task_data = (

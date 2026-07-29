@@ -3620,6 +3620,11 @@ forkmesh-world.world-admin-error-arrival::after {
   color: #ffb2a1;
 }
 
+.world-office-task-controls .world-office-task-return {
+  border-color: var(--world-mint);
+  color: var(--world-mint);
+}
+
 .world-office-task-empty {
   border: 1px dashed var(--world-line);
   color: var(--world-muted);
