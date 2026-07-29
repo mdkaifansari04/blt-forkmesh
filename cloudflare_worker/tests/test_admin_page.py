@@ -235,6 +235,24 @@ def test_admin_error_log_has_grouped_24_hour_occurrence_analytics():
         assert contract in ENTRY_TEXT
 
 
+def test_admin_error_log_labels_sources_and_deletes_rows_or_groups():
+    for contract in (
+        "def _admin_error_source(method, path):",
+        'return "JavaScript" if is_javascript else "Worker"',
+        'class="error-source %s"',
+        "<th>Source</th>",
+        'action="delete_error_row"',
+        'action="delete_error_group"',
+        "Delete group</button></form>",
+        'name="error_id"',
+        "DELETE FROM error_log WHERE rowid=?",
+        '"WHERE CAST(status AS TEXT)=? AND UPPER(method)=? "',
+        '"AND path=? AND message=?"',
+        '"delete_error_row", "delete_error_group"',
+    ):
+        assert contract in ENTRY_TEXT
+
+
 def test_admin_timestamps_show_exact_and_live_relative_time():
     for contract in (
         "new Date(ms).toLocaleString()",

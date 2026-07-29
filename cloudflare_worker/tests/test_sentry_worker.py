@@ -575,6 +575,15 @@ def test_expected_degraded_responses_skip_the_generic_5xx_logger():
     assert fund_block.count("EXPECTED_DEGRADED_HEADERS") == 2
 
 
+def test_mirror_gateway_retries_all_5xx_and_marks_unavailability_expected():
+    proxy = ENTRY_TEXT.split(
+        "async def _https_mirror_proxy(", 1)[1].split(
+            "\n\nclass Default(", 1)[0]
+    assert "or 500 <= status <= 599" in proxy
+    assert proxy.count("extra_headers=EXPECTED_DEGRADED_HEADERS") >= 3
+    assert 'status=503' in proxy
+
+
 def test_redacted_repo_routes_keep_identity_free_route_family_tags():
     # /private-or-unpublished-repository collapsed EVERY failing private or
     # unknown repo route into one bucket; recurring failures could not even
