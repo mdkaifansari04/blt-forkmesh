@@ -10751,6 +10751,11 @@ SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
     """ALTER TABLE world_office_attendance
        ADD COLUMN visit_scope TEXT NOT NULL DEFAULT 'legacy'
        CHECK (visit_scope IN ('legacy', 'office'))""",
+    # Organization tasks share one explicit ordering across the World,
+    # dashboard, bot API, and remote MCP surface.
+    """ALTER TABLE organization_tasks
+       ADD COLUMN priority INTEGER NOT NULL DEFAULT 500
+       CHECK (priority BETWEEN 1 AND 999)""",
 ]
 
 # Post-CREATE column additions for tables that predate them. Idempotent: a
