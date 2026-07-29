@@ -1565,6 +1565,23 @@ void MainWindow::updateNotificationButton()
     m_notificationButton->setProperty("alert", pending > 0);
     m_notificationButton->style()->unpolish(m_notificationButton);
     m_notificationButton->style()->polish(m_notificationButton);
+    if (m_notificationRailBadge) {
+        if (pending > 0) {
+            const QString text =
+                pending > 99 ? QStringLiteral("99+") : QString::number(pending);
+            m_notificationRailBadge->setText(text);
+            const int width =
+                qMax(15, m_notificationRailBadge->fontMetrics()
+                             .horizontalAdvance(text) + 10);
+            m_notificationRailBadge->resize(width, 15);
+            m_notificationRailBadge->move(
+                qMax(0, m_notificationButton->width() - width), 0);
+            m_notificationRailBadge->show();
+            m_notificationRailBadge->raise();
+        } else {
+            m_notificationRailBadge->hide();
+        }
+    }
 }
 
 void MainWindow::openActionRunFromNotification(int runId)

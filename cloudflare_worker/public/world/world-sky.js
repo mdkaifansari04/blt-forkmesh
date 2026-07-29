@@ -447,10 +447,14 @@ export function createWorldSky({
     toneMapped: false,
     fog: false,
   });
+  // The sun and moon share the existing planet draw call. They move with
+  // local civil time, but do not add two more meshes to every frame.
+  const sunInstanceIndex = WORLD_SKY_PLANETS.length;
+  const moonInstanceIndex = sunInstanceIndex + 1;
   const planets = new THREE.InstancedMesh(
     planetGeometry,
     planetMaterial,
-    WORLD_SKY_PLANETS.length,
+    WORLD_SKY_PLANETS.length + 2,
   );
   planets.name = "forkmesh-world-planets";
   planets.frustumCulled = false;
@@ -477,6 +481,53 @@ export function createWorldSky({
   planets.instanceMatrix.needsUpdate = true;
   if (planets.instanceColor) planets.instanceColor.needsUpdate = true;
   group.add(planets);
+
+  function setDaylightMinute(value, daylightStrength = null) {
+    const minute = (
+      (finiteNumber(value) ?? 12 * 60) % (24 * 60) +
+      24 * 60
+    ) % (24 * 60);
+    const solarAngle = (minute / (24 * 60)) * TAU - Math.PI / 2;
+    const solarRadius = safeRadius - 105;
+    const horizontalRadius = solarRadius * 0.76;
+    const verticalRadius = solarRadius * 0.62;
+    const depth = solarRadius * 0.38;
+    const setBody = (instanceIndex, angle, scale, bodyColor) => {
+      transform.position.set(
+        Math.cos(angle) * horizontalRadius,
+        Math.sin(angle) * verticalRadius,
+        -Math.cos(angle) * depth,
+      );
+      transform.scale.setScalar(scale);
+      transform.updateMatrix();
+      planets.setMatrixAt(instanceIndex, transform.matrix);
+      color.set(bodyColor);
+      planets.setColorAt(instanceIndex, color);
+    };
+    setBody(
+      sunInstanceIndex,
+      solarAngle,
+      compact ? 12 : 16,
+      "#ffd166",
+    );
+    setBody(
+      moonInstanceIndex,
+      solarAngle + Math.PI,
+      compact ? 8 : 10,
+      "#d9e7ee",
+    );
+    const visibleDaylight = clamp(
+      finiteNumber(daylightStrength) ??
+        Math.max(0, Math.sin(solarAngle)),
+      0,
+      1,
+    );
+    starMaterial.opacity = 0.08 + (1 - visibleDaylight) * 0.86;
+    planets.instanceMatrix.needsUpdate = true;
+    if (planets.instanceColor) planets.instanceColor.needsUpdate = true;
+    return minute;
+  }
+  setDaylightMinute(12 * 60, 1);
 
   const satelliteGeometry = new THREE.OctahedronGeometry(
     compact ? 0.72 : 0.9,
@@ -592,6 +643,7 @@ export function createWorldSky({
       fetchedAt: acceptedAt,
       sourceEpoch,
       disposed,
+      sunAndMoon: 2,
       drawCalls: 3,
     };
   }
@@ -616,6 +668,7 @@ export function createWorldSky({
     stars,
     planets,
     satellites,
+    setDaylightMinute,
     update,
     tick,
     dispose,

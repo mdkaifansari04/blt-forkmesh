@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785279664013,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-543",
+            "sig": "RjzGGxGDYQvTrygYV0yEqwVfPS2_rbxGTxQeNmpG8_NcZXsYoaMTe6era0PeH4zeCklr5Equ80U4x94kOfKsBw",
+            "title": "check security of logs  - install fresh with a new user and see if you can see hidden channels in the logs",
+            "ts": 1785279664013,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "security"
+    ],
+    "milestone": "",
+    "number": 543,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "check security of logs  - install fresh with a new user and see if you can see hidden channels in the logs",
+    "updatedAt": 1785279664013,
+    "votes": 0
+}

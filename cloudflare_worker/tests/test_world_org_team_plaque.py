@@ -194,8 +194,12 @@ def test_team_member_writes_stay_owner_admin_only():
     assert 'if await _org_role(env, org_bi, account) not in ("owner", "admin")' \
         in handler
     assert '{"error": "forbidden"}' in handler
-    # team membership can never smuggle in a non-member
-    assert '{"error": "not_a_member"}' in handler
+    # Ordinary membership still rejects outsiders unless the admin explicitly
+    # selects the limited external-collaborator path.
+    assert '"not_a_member"' in handler
+    assert 'data.get("external") is True' in handler
+    assert "org_team_collaborators" in handler
+    assert '{"error": "active_user_required"}' in handler
 
 
 # --- The plaque on the avatar back -------------------------------------------
@@ -300,6 +304,8 @@ def test_all_org_members_get_team_badges_but_only_admins_get_controls():
     assert "new THREE.PlaneGeometry(0.26, 0.09)" in badges
     assert "badge.rotation.y = -Math.PI / 2" in badges
     assert "badge.position.set(-0.148, 0.36 - index * 0.105, 0)" in badges
+    assert "forkmesh-avatar-organization-level-stars" in badges
+    assert '"★".repeat(organizationLevel)' in badges
     assert "setLocalOrgTeam," in SCENE
 
 

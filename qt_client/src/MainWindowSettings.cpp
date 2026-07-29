@@ -709,7 +709,7 @@ QWidget *MainWindow::buildSettingsSection()
     m_worldSpeechPairCodeEdit->setToolTip(
         "One-use capability. It expires in two minutes and is never saved.");
     m_worldSpeechPairButton =
-        new QPushButton(QStringLiteral("Open World + create code"));
+        new QPushButton(QStringLiteral("Create pairing code"));
     m_worldSpeechPairButton->setObjectName("ghostButton");
     m_worldSpeechPairButton->setCursor(Qt::PointingHandCursor);
     connect(m_worldSpeechPairButton, &QPushButton::clicked, this,
@@ -773,7 +773,7 @@ QWidget *MainWindow::buildSettingsSection()
     rebuildButtonCheck->setChecked(
         QSettings().value(kShowRebuildButtonSetting, false).toBool());
     rebuildButtonCheck->setToolTip(
-        "Adds a small rebuild & restart button beside Leaderboards (under the "
+        "Adds a small rebuild & restart button in the top navigation (under the "
         "avatar) for a fast local rebuild and relaunch. Off by default.");
     connect(rebuildButtonCheck, &QCheckBox::toggled, this, [this](bool enabled) {
         QSettings().setValue(kShowRebuildButtonSetting, enabled);
@@ -3931,6 +3931,9 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
 {
     if (!m_settingsLog)
         return;
+    QScrollBar *scrollBar = m_settingsLog->verticalScrollBar();
+    const int lockedPosition =
+        m_logScrollLocked && scrollBar ? scrollBar->value() : -1;
 
     // The badge accents read on either canvas, but the timestamp, day divider
     // and message body need per-theme greys/text so the log isn't grey text
@@ -3948,6 +3951,8 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
     }
 
     m_settingsLog->append(formatLogLineHtml(time, message, dark, logFaviconTag(message, m_settingsLog)));
+    if (lockedPosition >= 0)
+        scrollBar->setValue(lockedPosition);
 }
 
 // Loads the next older page of matching lines when the user scrolls to the

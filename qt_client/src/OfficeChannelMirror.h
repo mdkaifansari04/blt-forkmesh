@@ -81,6 +81,8 @@ public:
     bool isActive() const;
 
     QStringList conversations() const;
+    QStringList membersForConversation(const QString &conversation) const;
+    bool isPrivateConversation(const QString &conversation) const;
     bool canSend(const QString &conversation) const;
     // Queues a text send without blocking the GUI. Returns false only when the
     // conversation/identity is not currently eligible for office chat.
@@ -88,6 +90,8 @@ public:
 
 signals:
     void conversationsChanged(const QStringList &conversations);
+    void roomMembersChanged(const QString &conversation,
+                            const QStringList &members);
     void messageArrived(const ChatMessage &message);
     void sendActivity(const QString &text);
     void messageSendFailed(const QString &conversation, const QString &text,
@@ -98,6 +102,8 @@ private:
         QString id;
         QString name;
         QString conversation;
+        bool privateRoom = false;
+        QStringList members;
         qint64 lastTs = 0;
         bool fetching = false;
         // Room key material, re-derived whenever the relay rotates the

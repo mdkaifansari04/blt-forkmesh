@@ -536,6 +536,12 @@ def build_repo_mirrors_payload(
             "worktreeCount": _int_field(rec, "worktreeCount"),
             "artifactCount": _int_field(rec, "artifactCount"),
             "platform": str(rec.get("platform") or "").strip(),
+            "runtimeMode": (
+                str(rec.get("runtimeMode") or "").strip().lower()
+                if str(rec.get("runtimeMode") or "").strip().lower()
+                in {"desktop", "headless"}
+                else ""
+            ),
             "version": str(rec.get("version") or "").strip(),
             "agentProviders": agent_providers,
             # Missing and malformed legacy records fail closed to disabled.

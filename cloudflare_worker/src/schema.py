@@ -92,7 +92,11 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_issue_inbox_repo ON issue_inbox(repo_bi)",
     """CREATE TABLE IF NOT EXISTS pull_inbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
-        data TEXT NOT NULL)""",
+        data TEXT NOT NULL, submitter_bi TEXT,
+        claimed_by_bi TEXT NOT NULL DEFAULT '',
+        claim_expires_at INTEGER NOT NULL DEFAULT 0,
+        mirrored_by_bi TEXT NOT NULL DEFAULT '',
+        mirrored_at INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_pull_inbox_repo ON pull_inbox(repo_bi)",
     """CREATE TABLE IF NOT EXISTS commit_inbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
@@ -100,7 +104,11 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_commit_inbox_repo ON commit_inbox(repo_bi)",
     """CREATE TABLE IF NOT EXISTS discussion_inbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
-        data TEXT NOT NULL, submitter_bi TEXT)""",
+        data TEXT NOT NULL, submitter_bi TEXT,
+        claimed_by_bi TEXT NOT NULL DEFAULT '',
+        claim_expires_at INTEGER NOT NULL DEFAULT 0,
+        mirrored_by_bi TEXT NOT NULL DEFAULT '',
+        mirrored_at INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_discussion_inbox_repo ON discussion_inbox(repo_bi)",
     # Agent-session sync (website "Agents" tab, adhoc #182): the desktop app
     # pushes a full-replace snapshot of its running/finished Claude Code agent
@@ -1692,6 +1700,116 @@ SCHEMA_STATEMENTS = [
             SELECT RAISE(
                 ABORT, 'world_office_marketing_checkin_catalog_full');
         END""",
+    # Organization-private universal tasks (migration 0105). Department/team
+    # and bounded routing state remain queryable inside D1; all human-readable
+    # task copy, labels, repository references, and reviewer names stay in
+    # encrypted payloads.
+    """CREATE TABLE IF NOT EXISTS organization_tasks (
+        task_id TEXT PRIMARY KEY,
+        org_bi TEXT NOT NULL,
+        department TEXT NOT NULL DEFAULT 'general'
+            CHECK (length(department) BETWEEN 1 AND 64),
+        team TEXT NOT NULL DEFAULT '' CHECK (length(team) <= 64),
+        destination TEXT NOT NULL DEFAULT 'department'
+            CHECK (destination IN (
+                'department','personal','repository','qa','agent')),
+        assignee_kind TEXT NOT NULL DEFAULT 'user'
+            CHECK (assignee_kind IN (
+                'user','unassigned','claude','codex')),
+        status TEXT NOT NULL DEFAULT 'idle'
+            CHECK (status IN ('idle','active')),
+        assignee_bi TEXT NOT NULL DEFAULT '',
+        active_assignee_bi TEXT NOT NULL DEFAULT '',
+        data TEXT NOT NULL,
+        created_by_bi TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        elapsed_ms INTEGER NOT NULL DEFAULT 0 CHECK (elapsed_ms >= 0),
+        started_at INTEGER NOT NULL DEFAULT 0 CHECK (started_at >= 0),
+        next_checkin_at INTEGER NOT NULL DEFAULT 0
+            CHECK (next_checkin_at >= 0),
+        completed_at INTEGER NOT NULL DEFAULT 0
+            CHECK (completed_at >= 0),
+        qa_status TEXT NOT NULL DEFAULT 'unknown'
+            CHECK (qa_status IN ('unknown','passed','failed')),
+        qa_reviewer_bi TEXT NOT NULL DEFAULT '',
+        qa_reviewed_at INTEGER NOT NULL DEFAULT 0
+            CHECK (qa_reviewed_at >= 0),
+        qa_requested_at INTEGER NOT NULL DEFAULT 0
+            CHECK (qa_requested_at >= 0),
+        agent_session_id TEXT NOT NULL DEFAULT ''
+            CHECK (length(agent_session_id) <= 64))""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_tasks_org_updated "
+    "ON organization_tasks(org_bi, updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_organization_tasks_scope "
+    "ON organization_tasks(org_bi, department, team, updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_organization_tasks_assignee "
+    "ON organization_tasks(org_bi, assignee_bi, updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_organization_tasks_qa "
+    "ON organization_tasks(org_bi, qa_requested_at, qa_reviewed_at DESC)",
+    """CREATE UNIQUE INDEX IF NOT EXISTS
+        idx_organization_tasks_one_active_assignee
+        ON organization_tasks(org_bi, active_assignee_bi)
+        WHERE status='active' AND active_assignee_bi<>''""",
+    """CREATE TRIGGER IF NOT EXISTS trg_organization_task_limit
+        BEFORE INSERT ON organization_tasks
+        WHEN (
+            SELECT COUNT(*) FROM organization_tasks
+            WHERE org_bi=NEW.org_bi
+        ) >= 2000
+        BEGIN
+            SELECT RAISE(ABORT, 'organization_task_catalog_full');
+        END""",
+    """CREATE TABLE IF NOT EXISTS organization_task_checkins (
+        checkin_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        org_bi TEXT NOT NULL,
+        account_bi TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN (
+            'going_well','blocked','needs_help')),
+        data TEXT NOT NULL,
+        created_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_task_checkins_task "
+    "ON organization_task_checkins(org_bi, task_id, created_at DESC)",
+    """CREATE TABLE IF NOT EXISTS organization_task_qa_reviews (
+        task_id TEXT NOT NULL,
+        org_bi TEXT NOT NULL,
+        reviewer_bi TEXT NOT NULL,
+        verdict TEXT NOT NULL CHECK (verdict IN (
+            'passed','failed','unknown')),
+        data TEXT NOT NULL,
+        reviewed_at INTEGER NOT NULL CHECK (reviewed_at >= 0),
+        PRIMARY KEY (task_id, reviewer_bi))""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_task_qa_reviews_task "
+    "ON organization_task_qa_reviews(org_bi, task_id, reviewed_at DESC)",
+    # Outside collaborators can be placed on a bounded team without becoming
+    # organization members. No repository or Office authorization query reads
+    # this table; it is used only by explicitly collaborator-aware features
+    # such as the private QA deck.
+    """CREATE TABLE IF NOT EXISTS org_team_collaborators (
+        org_bi TEXT NOT NULL,
+        team TEXT NOT NULL,
+        account_bi TEXT NOT NULL,
+        name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 64),
+        added_by_bi TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (org_bi,team,account_bi))""",
+    "CREATE INDEX IF NOT EXISTS idx_org_team_collaborators_account "
+    "ON org_team_collaborators(account_bi, org_bi, team)",
+    # Lazy-schema installs also promote legacy Marketing rows. Keeping this
+    # copy idempotent covers local databases that do not run migration files.
+    """INSERT OR IGNORE INTO organization_tasks (
+        task_id,org_bi,department,team,destination,assignee_kind,status,
+        assignee_bi,active_assignee_bi,data,created_by_bi,created_at,updated_at,
+        elapsed_ms,started_at,next_checkin_at,completed_at)
+        SELECT task_id,org_bi,'marketing','marketing','department','user',
+        status,assignee_bi,active_assignee_bi,data,created_by_bi,created_at,
+        updated_at,elapsed_ms,started_at,next_checkin_at,completed_at
+        FROM world_office_marketing_tasks""",
+    """INSERT OR IGNORE INTO organization_task_checkins (
+        checkin_id,task_id,org_bi,account_bi,state,data,created_at)
+        SELECT checkin_id,task_id,org_bi,account_bi,state,data,created_at
+        FROM world_office_marketing_checkins""",
     # Shared Office lobby attendance board (migration 0085). Each visit is one
     # row that is opened by an authenticated IN punch and closed in place by
     # the matching OUT punch. The public account name is the only display
@@ -2251,6 +2369,23 @@ SCHEMA_STATEMENTS = [
         active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)))""",
     "CREATE INDEX IF NOT EXISTS idx_world_qa_items_active_time "
     "ON world_qa_items(active, added_at DESC)",
+    # Organization bot secrets are shown exactly once. Only their keyed blind
+    # index and encrypted metadata remain server-side, making listing and
+    # revocation possible without creating a credential-recovery endpoint.
+    """CREATE TABLE IF NOT EXISTS org_bot_tokens (
+        token_id TEXT PRIMARY KEY,
+        org_bi TEXT NOT NULL,
+        secret_bi TEXT NOT NULL UNIQUE,
+        provider TEXT NOT NULL
+            CHECK (provider IN ('codex','claude-code')),
+        data TEXT NOT NULL,
+        created_by_bi TEXT NOT NULL,
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        last_used_at INTEGER NOT NULL DEFAULT 0 CHECK (last_used_at >= 0),
+        expires_at INTEGER NOT NULL DEFAULT 0 CHECK (expires_at >= 0),
+        revoked_at INTEGER NOT NULL DEFAULT 0 CHECK (revoked_at >= 0))""",
+    "CREATE INDEX IF NOT EXISTS idx_org_bot_tokens_org "
+    "ON org_bot_tokens(org_bi, revoked_at, created_at DESC)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the
