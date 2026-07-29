@@ -24,6 +24,7 @@ MAX_TITLE = 160
 MAX_DETAILS = 4000
 MAX_CHECKIN_NOTE = 500
 MAX_ELAPSED_MS = 10 * 365 * 24 * 60 * 60 * 1000
+MAX_BOUNTY_LAMPORTS = 1_000_000 * 1_000_000_000
 MAX_PROOFS = 5000
 MAX_PROOFS_PER_MEMBER = 100
 MAX_INITIATIVES = 250
@@ -31,6 +32,7 @@ CHECKIN_MIN_MS = 4 * 60 * 1000
 CHECKIN_MAX_MS = 9 * 60 * 1000
 
 TASK_STATES = frozenset({"idle", "active", "done"})
+TASK_KINDS = frozenset({"task", "bid"})
 CHECKIN_STATES = frozenset({"going_well", "blocked", "needs_help"})
 DESTINATIONS = frozenset({
     "department", "personal", "repository", "qa", "agent",
@@ -52,6 +54,7 @@ PERMISSION_RANK = {
 _ID_RE = re.compile(r"^[a-f0-9]{32}$")
 _REPO_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 _SCOPE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+_SOL_AMOUNT_RE = re.compile(r"^(0|[1-9][0-9]{0,6})(?:\.([0-9]{1,9}))?$")
 
 
 def _response(runtime, data, status=200, allow=""):
@@ -81,6 +84,24 @@ def _text(value, maximum, fallback=""):
 
 def valid_id(value):
     return bool(_ID_RE.fullmatch(str(value or "").strip().lower()))
+
+
+def _sol_amount(value):
+    """Return a canonical SOL string backed by an exact lamport integer."""
+
+    match = _SOL_AMOUNT_RE.fullmatch(str(value or "").strip())
+    if not match:
+        return "", 0
+    whole = int(match.group(1))
+    fraction = (match.group(2) or "").ljust(9, "0")
+    lamports = whole * 1_000_000_000 + int(fraction or "0")
+    if lamports <= 0 or lamports > MAX_BOUNTY_LAMPORTS:
+        return "", 0
+    canonical_fraction = f"{lamports % 1_000_000_000:09d}".rstrip("0")
+    canonical = str(lamports // 1_000_000_000)
+    if canonical_fraction:
+        canonical += "." + canonical_fraction
+    return canonical, lamports
 
 
 def _route(path):
@@ -222,10 +243,30 @@ async def _project_task(runtime, row, now, checkin=None):
     qa_status = str(row.get("qa_status") or "unknown")
     if qa_status not in QA_STATES:
         qa_status = "unknown"
+    task_kind = str(data.get("kind") or "task").strip().lower()
+    if task_kind not in TASK_KINDS:
+        task_kind = "task"
+    bounty_request = None
+    if task_kind == "bid":
+        amount_sol, lamports = _sol_amount(
+            (data.get("bountyRequest") or {}).get("amountSol")
+            if isinstance(data.get("bountyRequest"), dict)
+            else ""
+        )
+        if amount_sol and lamports:
+            bounty_request = {
+                "currency": "SOL",
+                "amountSol": amount_sol,
+                "lamports": lamports,
+                "status": "requested",
+            }
     return {
         "id": str(row.get("task_id") or ""),
+        "kind": task_kind,
         "title": _text(data.get("title"), MAX_TITLE, "Organization task"),
         "details": _text(data.get("details"), MAX_DETAILS),
+        "createdBy": _text(data.get("createdBy"), 64).lower(),
+        "bountyRequest": bounty_request,
         "assignee": _text(data.get("assignee"), 64).lower(),
         "assigneeKind": assignee_kind,
         "department": _text(row.get("department"), 64, "general").lower(),
@@ -648,8 +689,14 @@ async def _create(
         if marketing_only
         else str(data.get("assigneeKind") or "user").strip().lower()
     )
+    task_kind = (
+        "task"
+        if marketing_only
+        else str(data.get("kind") or "task").strip().lower()
+    )
     if (
         not title
+        or task_kind not in TASK_KINDS
         or not _SCOPE_RE.fullmatch(department)
         or (team and not _SCOPE_RE.fullmatch(team))
         or destination not in DESTINATIONS
@@ -658,6 +705,25 @@ async def _create(
         return _response(runtime, {"error": "invalid_task_routing"}, status=400)
     if department not in DEPARTMENTS:
         return _response(runtime, {"error": "invalid_department"}, status=400)
+
+    bounty_request = None
+    if task_kind == "bid":
+        amount_sol, lamports = _sol_amount(data.get("bountyAmountSol"))
+        if not amount_sol or not lamports:
+            return _response(
+                runtime, {"error": "invalid_bounty_request"}, status=400)
+        # A lobby bid is always made by and assigned to the authenticated
+        # organization member. Client-supplied assignee fields cannot make a
+        # compensation request appear to come from somebody else.
+        assignee_kind = "user"
+        data = dict(data)
+        data["assignee"] = actor
+        bounty_request = {
+            "currency": "SOL",
+            "amountSol": amount_sol,
+            "lamports": lamports,
+            "status": "requested",
+        }
 
     assignee = _text(data.get("assignee"), 64).lower()
     member = None
@@ -726,10 +792,12 @@ async def _create(
     if not valid_id(task_id):
         return _response(runtime, {"error": "id_generation_failed"}, status=500)
     sealed = await runtime.seal({
+        "kind": task_kind,
         "title": title,
         "details": details,
         "assignee": assignee,
         "createdBy": actor,
+        "bountyRequest": bounty_request,
         "repository": repository,
         "howToTest": how_to_test,
         "qaReviewer": "",
@@ -775,9 +843,13 @@ async def _create(
             {"assigned": True}
             if marketing_only
             else {
+                "kind": task_kind,
                 "department": department,
                 "destination": destination,
                 "assigneeKind": assignee_kind,
+                "bountyAmountSol": (
+                    bounty_request["amountSol"] if bounty_request else ""
+                ),
             }
         ),
     )
@@ -869,10 +941,20 @@ async def _update(
         return _response(
             runtime, {"error": "active_task_cannot_be_updated"}, status=409)
     sealed = await runtime.seal({
+        "kind": (
+            str(current.get("kind") or "task")
+            if str(current.get("kind") or "task") in TASK_KINDS
+            else "task"
+        ),
         "title": title,
         "details": details,
         "assignee": member["name"],
         "createdBy": _text(current.get("createdBy"), 64).lower(),
+        "bountyRequest": (
+            current.get("bountyRequest")
+            if isinstance(current.get("bountyRequest"), dict)
+            else None
+        ),
         "repository": _text(current.get("repository"), 201),
         "howToTest": _text(current.get("howToTest"), 720),
         "qaReviewer": _text(current.get("qaReviewer"), 64).lower(),

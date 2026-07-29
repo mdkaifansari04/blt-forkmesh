@@ -305,6 +305,75 @@ async def test_universal_tasks_are_org_private_routable_and_marketing_compatible
 
 
 @run_async_test
+async def test_member_can_submit_exact_non_custodial_sol_bounty_bid():
+    runtime = FakeRuntime()
+    response = await tasks_api.handle(
+        runtime.use("POST", "bob", {
+            "kind": "bid",
+            "title": "Improve the lobby onboarding",
+            "details": "Add a concise first-visit checklist.",
+            "bountyAmountSol": "0.125000000",
+            "department": "community",
+            "destination": "department",
+            # A bid cannot impersonate this supplied assignee.
+            "assigneeKind": "user",
+            "assignee": "carol",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert response["status"] == 201
+    task = response["data"]["task"]
+    assert task["kind"] == "bid"
+    assert task["createdBy"] == "bob"
+    assert task["assignee"] == "bob"
+    assert task["assigneeKind"] == "user"
+    assert task["bountyRequest"] == {
+        "currency": "SOL",
+        "amountSol": "0.125",
+        "lamports": 125_000_000,
+        "status": "requested",
+    }
+    stored = runtime.db.execute(
+        "SELECT data FROM organization_tasks WHERE task_id=?",
+        (task["id"],),
+    ).fetchone()
+    assert "Improve the lobby onboarding" not in stored["data"]
+    assert runtime.audits[-1]["action"] == "organization.task_created"
+    assert runtime.audits[-1]["details"]["kind"] == "bid"
+    assert runtime.audits[-1]["details"]["bountyAmountSol"] == "0.125"
+
+
+@run_async_test
+async def test_bounty_bid_rejects_invalid_or_imprecise_sol_amounts():
+    for amount in (
+        "",
+        "0",
+        "-1",
+        "1e-3",
+        "0.0000000001",
+        "1000000.000000001",
+        "not-sol",
+    ):
+        runtime = FakeRuntime()
+        response = await tasks_api.handle(
+            runtime.use("POST", "bob", {
+                "kind": "bid",
+                "title": "Invalid bounty",
+                "bountyAmountSol": amount,
+                "department": "general",
+                "destination": "department",
+            }),
+            tasks_api.UNIVERSAL_PREFIX,
+        )
+        assert response["status"] == 400, amount
+        assert response["data"]["error"] == "invalid_bounty_request"
+        count = runtime.db.execute(
+            "SELECT COUNT(*) FROM organization_tasks"
+        ).fetchone()[0]
+        assert count == 0
+
+
+@run_async_test
 async def test_universal_tasks_route_to_agents_and_private_qa():
     runtime = FakeRuntime()
     denied_assignment = await tasks_api.handle(

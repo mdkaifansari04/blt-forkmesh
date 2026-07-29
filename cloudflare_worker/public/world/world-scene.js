@@ -3077,6 +3077,8 @@ function officeReclaimedWoodTexture(THREE) {
 // the active implementation queue in a fixed, readable grid. Keep the ordering
 // stable so a repaint never makes cards jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
+  { key: "task:lobby-task-bounties", task: "Lobby task bounty bidding desk", detail: "Organization members can propose scoped work in the lobby, name an exact SOL compensation request, and publish the encrypted record into the shared task catalog as a clearly labeled bid. The request is non-custodial and records no transfer or reserved funds.", estimate: "implemented · focused QA", done: true },
+  { key: "task:world-orb-hud", task: "Compact debug + unified activity orbs", detail: "Replaced the bottom bars with logo-sized status circles. DEBUG summarizes every performance grade as green, yellow, or red dots and expands on hover or focus. CHAT shows the latest speaker and unread count, then opens a translucent channel composer with image attachment, separate chat/task actions, human-or-agent routing, team categorization, and a ten-second unified activity stream.", estimate: "deployed · ready for QA", done: true },
   { key: "task:avatar-selection-runtime", task: "Reliable user HUD selection", detail: "Avatar clicks use a scoped frame timestamp, prefer the visible avatar hit over nearby geometry, and open the privacy-filtered member side panel without throwing.", estimate: "implemented · focused QA", done: true },
   { key: "task:member-circle-fire", task: "Dirt Members Circle + growing fire", detail: "The complete member seating circle sits on detailed dirt; every member adds one visible log and slightly increases the bounded campfire scale.", estimate: "implemented · focused QA", done: true },
   { key: "task:aquarium-fixed-controls", task: "Tank-fixed reef controls", detail: "Feed, tap, backdrop, and light controls stay anchored to the aquarium's lower-right control point instead of floating with the player.", estimate: "implemented · focused QA", done: true },
@@ -13988,6 +13990,7 @@ export function createWorldScene({
   onSiteReferrerOpen = () => {},
   onLobbyLinkKioskSelect = () => {},
   onLobbyFeedbackKioskSelect = () => {},
+  onLobbyTaskBidKioskSelect = () => {},
   onSystemCapacityTableSelect = () => {},
   onInfrastructureConsoleToggle = () => {},
   onBuildBoardNearby = () => {},
@@ -18115,6 +18118,56 @@ export function createWorldScene({
   officeFeedbackKiosk.add(officeFeedbackKioskFace);
   interactive.push(officeFeedbackKioskFace);
   officeInterior.add(officeFeedbackKiosk);
+
+  // Members can propose scoped work and attach an exact SOL compensation
+  // request at this lobby desk. The mesh only opens the authenticated form;
+  // task copy and bounty metadata remain in the encrypted task catalog.
+  const officeTaskBidKiosk = new THREE.Group();
+  officeTaskBidKiosk.name = "forkmesh-office-task-bid-kiosk";
+  officeTaskBidKiosk.position.set(0, 0, -25.5);
+  const officeTaskBidKioskStand = new THREE.Mesh(
+    new THREE.BoxGeometry(10.8, 3.4, 2.8),
+    makeMaterial(THREE, "#24292f", {
+      metalness: 0.38,
+      roughness: 0.4,
+    }),
+  );
+  officeTaskBidKioskStand.position.y = 1.7;
+  officeTaskBidKiosk.add(officeTaskBidKioskStand);
+  const officeTaskBidKioskFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(12.8, 7.4),
+    new THREE.MeshBasicMaterial({
+      map: canvasTexture(THREE, 1280, 740, (context) => {
+        context.fillStyle = "#0d1117";
+        context.fillRect(0, 0, 1280, 740);
+        context.strokeStyle = "#e3b341";
+        context.lineWidth = 18;
+        context.strokeRect(12, 12, 1256, 716);
+        context.fillStyle = "#e3b341";
+        context.font = '900 64px "ForkMesh Mono", ui-monospace, monospace';
+        context.textAlign = "center";
+        context.fillText("TASK BOUNTY DESK", 640, 130);
+        context.fillStyle = "#f0f6fc";
+        context.font = '800 40px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("PROPOSE THE WORK", 640, 270);
+        context.fillText("NAME YOUR SOL REQUEST", 640, 326);
+        context.fillStyle = "#7ee787";
+        context.font = '900 44px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("CLICK TO SUBMIT A BID", 640, 520);
+        context.fillStyle = "#8c959f";
+        context.font = '650 24px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("REQUEST ONLY · NO FUNDS HELD", 640, 642);
+      }),
+      toneMapped: false,
+    }),
+  );
+  officeTaskBidKioskFace.name = "forkmesh-office-task-bid-kiosk-screen";
+  officeTaskBidKioskFace.position.set(0, 6.7, 0.15);
+  officeTaskBidKioskFace.userData.officeFloorId = "lobby";
+  officeTaskBidKioskFace.userData.interactive = "office-task-bid-kiosk";
+  officeTaskBidKiosk.add(officeTaskBidKioskFace);
+  interactive.push(officeTaskBidKioskFace);
+  officeInterior.add(officeTaskBidKiosk);
 
   // A separate live board beside the submission terminal makes the public
   // links, their submitters, transparent reach inputs, tiny SOL appreciation
@@ -28951,6 +29004,10 @@ export function createWorldScene({
     }
     if (hit?.object?.userData?.interactive === "office-feedback-kiosk") {
       onLobbyFeedbackKioskSelect();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "office-task-bid-kiosk") {
+      onLobbyTaskBidKioskSelect();
       return;
     }
     if (hit?.object?.userData?.interactive === "system-capacity-table") {
