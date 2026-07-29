@@ -3122,6 +3122,14 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:world-frame-hot-loop", task: "Instant movement and lean frame loop", detail: "Keyboard input reaches selected speed on its first frame, camera/movement scratch values are reused, and non-motion DOM/proximity work is cadence bounded while WebGL stays full-rate.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-chat-composer", task: "Primer chat and work composer", detail: "DEBUG occupies the lower-left and dark Primer chat reaches the bottom-right. Channel security and connection state live in the header; its pinned multiline composer selects a channel and repository, then sends chat, signs an issue, or assigns an Engineering agent.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-primer-hud", task: "Primer-styled compact World HUD", detail: "The compact and expanded right-side navigation rail now uses GitHub Primer canvas, border, spacing, button, focus, hover, and selected-state primitives.", estimate: "implemented · focused QA", done: true },
+  { key: "task:discord-human-authorization", task: "P1 · HUMAN · Rotate and authorize Discord", detail: "Regenerate the credential exposed in chat; keep the replacement only in Worker secrets; configure the canonical OAuth callback; install the application with least privilege; authorize as the current organization owner; select intended public channels; verify public read and non-pinging send; never paste the replacement credential into a task, log, repository, dashboard field, or chat.", estimate: "global priority 1 · human action required", done: false },
+  { key: "task:discord-public-chat-connector", task: "P2 · TAKEN · Integrate, deploy, and QA Discord", detail: "Taken by codex-bot using GPT-5 Codex at standard speed. Current-owner OAuth, canonical callback binding, live public-channel checks, non-pinging sends, the production-wide Durable Object rate gate, owner controls, clickable Boards Circle panel, global task priorities, and fail-closed deploy configuration are implemented. Remaining: rotate and install the P1 human-owned credentials, deploy, then record end-to-end production evidence.", estimate: "global priority 2 · active · blocked on P1 secret rotation", done: false },
+  { key: "task:agent-queue-reliability", task: "Durable unlimited agent queue + exact reasons", detail: "Rebase and deploy the arbitrary task-cap removal, durable offline desktop queue for owners, and exact safe rejection reasons without weakening provider authorization or safety preflight.", estimate: "implemented · integration and deployment QA", done: false },
+  { key: "task:task-conversation-reopen", task: "Task replies, full compact context, and mark undone", detail: "Rebase and verify encrypted organization-private task replies, compact ownership/routing/QA context, completion notes, and Mark undone while retaining completion history.", estimate: "implemented · integration QA", done: false },
+  { key: "task:private-task-screenshots", task: "Private screenshot evidence on tasks and agents", detail: "Rebase and deploy encrypted organization task attachments while preserving the distinct issue, chat, and Codex or Claude screenshot routes and bounded payload handling.", estimate: "implemented · integration QA", done: false },
+  { key: "task:member-node-plaza", task: "Compact growing node plaza + bench spawn", detail: "Rebase and verify evenly spaced node cabinets on one concrete-brick plaza that grows with the roster, plus a fresh-visitor Members Circle bench spawn that never overrides saved or shared positions.", estimate: "implemented · World integration QA", done: false },
+  { key: "task:d1-free-tier-visibility", task: "D1 free-tier visibility in admin", detail: "Rebase and verify the documented D1 free-tier thresholds and clearly labeled local estimates; exact account consumption remains external unless Cloudflare analytics is configured.", estimate: "implemented · admin integration QA", done: false },
+  { key: "task:office-floor-visibility-guard", task: "Restore Office floors after every story change", detail: "The deployed visibility guard keeps the tower shell, floor and ceiling slabs, lights, furniture, boards, and repositories visible, then synchronizes the selected story immediately after doorway or elevator travel.", estimate: "deployed · ready for World QA", done: true },
   { key: "task:web-pull-workbench", task: "Full web Issue and PR workbench", detail: "Record clicks now open canonical same-origin web pages. Still open: proactive conflict/check readiness and a signed mirror capability for auditable update-from-main before protected merge.", estimate: "record routing done · lifecycle active", done: false },
   { key: "task:session-audit", task: "Audit today’s requested work", detail: "Reconciled the full request history against code, tests, QA, and the build board; restored missing social-frame, repository-orbit, signage, and exact-view tracking while keeping partial and external work open.", estimate: "audit complete · open work retained", done: true },
   { key: "task:repo-record-tower-scale", task: "Count-scaled PR and Issue towers", detail: "Each repository work tower now rises with its complete bounded record count, so a 61-item Issue tower is visibly taller than a 43-item PR tower; both stand beyond the ActivityPub follower orbit.", estimate: "verified · ready for QA", done: true },
@@ -10398,6 +10406,43 @@ function worldGeneralChatTexture(THREE, messages = []) {
   });
 }
 
+function worldDiscordBoardTexture(THREE) {
+  return canvasTexture(THREE, 1536, 1024, (context) => {
+    context.fillStyle = "#0d1117";
+    context.fillRect(0, 0, 1536, 1024);
+    context.strokeStyle = "#5865f2";
+    context.lineWidth = 14;
+    context.strokeRect(10, 10, 1516, 1004);
+    context.fillStyle = "#f0f6fc";
+    context.font = '900 70px "ForkMesh Mono", ui-monospace, monospace';
+    context.textAlign = "center";
+    context.fillText("DISCORD BRIDGE", 768, 150);
+    context.fillStyle = "#a5b4fc";
+    context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("PUBLIC ORGANIZATION CHANNELS", 768, 245);
+    context.strokeStyle = "rgba(88,101,242,0.52)";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(160, 300);
+    context.lineTo(1376, 300);
+    context.stroke();
+    context.textAlign = "left";
+    context.fillStyle = "#c9d1d9";
+    context.font = '700 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("▸ OWNER-VERIFIED SERVER", 220, 430);
+    context.fillText("▸ SELECTED PUBLIC CHANNELS ONLY", 220, 505);
+    context.fillText("▸ MANUAL REFRESH · NO BACKGROUND RELAY", 220, 580);
+    context.fillText("▸ MENTIONS DISABLED", 220, 655);
+    context.textAlign = "center";
+    context.fillStyle = "#7ee787";
+    context.font = '900 48px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("CLICK TO OPEN CONNECTOR", 768, 810);
+    context.fillStyle = "#8c959f";
+    context.font = '650 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("CREDENTIALS STAY IN THE WORKER SECRET STORE", 768, 900);
+  });
+}
+
 // Three posts at a time on a board twice as tall as the old one, so each card
 // holds the full text, a deep image strip, and the post's engagement counts.
 // The board is repainted from the same snapshot the mini-app renders.
@@ -14157,6 +14202,7 @@ export function createWorldScene({
   onOfficeRooftopLaptopSelect = () => {},
   onWorldBulletinSelect = () => {},
   onWorldGeneralChatSelect = () => {},
+  onWorldDiscordBoardSelect = () => {},
   onMastodonBoardSelect = () => {},
   onMastodonOpenLink = () => {},
   onReferralBoardSelect = () => {},
@@ -14496,6 +14542,49 @@ export function createWorldScene({
   interactive.push(worldGeneralChatFrame, worldGeneralChatFace);
   world.add(worldGeneralChatBoard);
   registerMovableObject("world-general-chat-board", worldGeneralChatBoard);
+
+  const worldDiscordBoard = new THREE.Group();
+  worldDiscordBoard.name = "forkmesh-world-discord-board";
+  const discordBoardBase = new THREE.Mesh(
+    new THREE.BoxGeometry(7.9, 0.26, 1.5),
+    makeMaterial(THREE, "#161b22", { roughness: 0.8 }),
+  );
+  discordBoardBase.position.y = 0.13;
+  worldDiscordBoard.add(discordBoardBase);
+  for (const x of [-3.35, 3.35]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.18, 6.5, 0.18),
+      makeMaterial(THREE, "#5865f2", {
+        metalness: 0.28,
+        roughness: 0.48,
+      }),
+    );
+    post.position.set(x, 3.25, 0);
+    worldDiscordBoard.add(post);
+  }
+  const worldDiscordFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(7.55, 5.1, 0.24),
+    makeMaterial(THREE, "#202252", {
+      metalness: 0.32,
+      roughness: 0.46,
+    }),
+  );
+  worldDiscordFrame.position.y = BULLETIN_FACE_CENTER_Y;
+  worldDiscordFrame.userData.interactive = "world-discord-board";
+  const worldDiscordFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(7.2, 4.8),
+    new THREE.MeshBasicMaterial({
+      map: worldDiscordBoardTexture(THREE),
+      toneMapped: false,
+    }),
+  );
+  worldDiscordFace.name = "forkmesh-world-discord-board-face";
+  worldDiscordFace.position.set(0, BULLETIN_FACE_CENTER_Y, 0.14);
+  worldDiscordFace.userData.interactive = "world-discord-board";
+  worldDiscordBoard.add(worldDiscordFrame, worldDiscordFace);
+  interactive.push(worldDiscordFrame, worldDiscordFace);
+  world.add(worldDiscordBoard);
+  registerMovableObject("world-discord-board", worldDiscordBoard);
 
   // One uninterrupted city park slab sits under every district, path, and
   // building. Satellite circles remain semantic layout regions only; they no
@@ -15053,6 +15142,7 @@ export function createWorldScene({
     worldGeneralChatBoard,
     "world-general-chat-board",
   );
+  placeBillboardOnIsland(worldDiscordBoard, "world-discord-board");
 
   // Registered members and their named campfire benches have a dedicated
   // southern garden. It is the fourth cardinal district, leaving the live
@@ -29220,6 +29310,10 @@ export function createWorldScene({
     }
     if (hit?.object?.userData?.interactive === "world-general-chat-board") {
       onWorldGeneralChatSelect();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "world-discord-board") {
+      onWorldDiscordBoardSelect();
       return;
     }
     const recordPage = hit?.object?.userData?.repositoryRecordPage;

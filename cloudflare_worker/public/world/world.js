@@ -5819,6 +5819,9 @@ class ForkMeshWorld extends HTMLElement {
         onWorldGeneralChatSelect: () => {
           this.openWorldChat("/dashboard/chat");
         },
+        onWorldDiscordBoardSelect: () => {
+          window.dispatchEvent(new CustomEvent("forkmesh:open-discord"));
+        },
         onMastodonBoardSelect: () => this.openMastodonBoard(),
         onMastodonOpenLink: (url) => {
           if (url) window.open(url, "_blank", "noopener,noreferrer");

@@ -1154,7 +1154,7 @@ install_prebuilt_release() {
     FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE="$tmp/release-publisher.pem"
     printf '%s\n' \
       '-----BEGIN PUBLIC KEY-----' \
-      'MCowBQYDK2VwAyEAzpP+ej8bF0ArtCPV6DwSbhqqTeMJ5A0UtHlWE4lnTkc=' \
+      'MCowBQYDK2VwAyEAHBYOCW4qnyZkYAnEoqUrYxPiDRszjfJa+xJUeyQPUS0=' \
       '-----END PUBLIC KEY-----' \
       >"$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" || return 1
     chmod 0600 "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" 2>/dev/null || true

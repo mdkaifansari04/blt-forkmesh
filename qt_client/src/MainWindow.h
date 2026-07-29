@@ -1185,6 +1185,12 @@ private:
     void registerDirectMirrorEndpoint();
     void checkDirectMirrorGatewayHealth();
     void appendControlNodeOutput(const QString &text);
+    // Ship this checkout's site + relay Worker with cloudflare_worker/deploy.sh
+    // and stream the script's output into the page while it runs.
+    QWidget *buildSiteDeployCard();
+    void runSiteDeploy();
+    void cancelSiteDeploy();
+    void appendSiteDeployOutput(const QString &text);
     void connectToDeployedRelay(const QString &hostname);
     void deploySavedHostsFromControl();
     // First-instance-owner community reward-pool signer. The Solana private key
@@ -1365,6 +1371,16 @@ private:
     // opened and nothing is changed on the remote host itself. Use Uninstall
     // instead to actually remove ForkMesh from the host.
     void forgetHostAtRow(int row);
+    // Destroy the VPS behind a saved host on the user's Vultr account (adhoc
+    // #24): the server itself is deleted and billing stops, which Uninstall
+    // (wipes ForkMesh, keeps the server) and Remove (forgets it here) do not do.
+    // The instance is addressed by the id recorded at provision time, or looked
+    // up by address for hosts saved before that; the row is dropped from the
+    // saved list only once Vultr confirms the delete.
+    void destroyVultrHostAtRow(int row);
+    void sendVultrInstanceDestroy(const QString &apiKey,
+                                  const QString &instanceId,
+                                  const QString &name);
     // --- One-click Vultr mirror (adhoc #315) ---------------------------------
     // Create a brand-new mirror VPS on the user's Vultr account: pick the
     // cheapest plan and newest Debian via the Vultr v2 API, create/reuse the
@@ -4017,6 +4033,12 @@ private:
     QPushButton *m_cloudflareDeployButton = nullptr;
     QPushButton *m_cloudflareCancelButton = nullptr;
     QPlainTextEdit *m_controlNodeOutput = nullptr;
+    // cloudflare_worker/deploy.sh: one button, live merged output, cancel.
+    QPushButton *m_siteDeployButton = nullptr;
+    QPushButton *m_siteDeployCancelButton = nullptr;
+    QLabel *m_siteDeployStatus = nullptr;
+    QPlainTextEdit *m_siteDeployOutput = nullptr;
+    QProcess *m_siteDeployProcess = nullptr;
     QProcess *m_cloudflareBootstrapProcess = nullptr;
     QProcess *m_cloudflareTunnelBootstrapProcess = nullptr;
     QProcess *m_cloudflaredInstallProcess = nullptr;
