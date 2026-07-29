@@ -639,6 +639,10 @@ forkmesh-world {
   .world-connection-ring[data-state="connecting"] {
     animation: none;
   }
+
+  .world-office-task[data-status="active"] .world-office-task-state {
+    animation: none;
+  }
 }
 
 .world-top-actions {
@@ -3390,7 +3394,7 @@ forkmesh-world.world-admin-error-arrival::after {
 .world-office-task {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: start;
   gap: 14px;
   min-width: 0;
   border: 1px solid var(--world-line);
@@ -3434,14 +3438,11 @@ forkmesh-world.world-admin-error-arrival::after {
 }
 
 .world-office-task-details {
-  display: -webkit-box;
-  overflow: hidden;
   margin: 0;
   color: var(--world-copy);
-  font-size: 0.72rem;
-  line-height: 1.45;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .world-office-task-copy {
@@ -3459,15 +3460,19 @@ forkmesh-world.world-admin-error-arrival::after {
 }
 
 .world-office-task-copy strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--world-copy);
+  font-size: 0.9rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .world-office-task-copy small {
   color: var(--world-muted);
   font-family: "ForkMesh Mono", monospace;
-  font-size: 0.6rem;
+  font-size: 0.64rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .world-office-task-state {
@@ -3480,8 +3485,11 @@ forkmesh-world.world-admin-error-arrival::after {
 
 .world-office-task[data-status="active"] .world-office-task-state {
   border-color: var(--world-mint);
-  background: var(--world-mint);
+  border-width: 2px;
+  border-top-color: transparent;
+  background: transparent;
   box-shadow: 0 0 12px rgb(158 247 198 / 0.72);
+  animation: world-office-task-spin 720ms linear infinite;
 }
 
 .world-office-task[data-status="done"] .world-office-task-state {
@@ -3491,8 +3499,72 @@ forkmesh-world.world-admin-error-arrival::after {
 
 .world-office-task-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+}
+
+.world-office-task-progress-label {
+  width: fit-content;
+  border: 1px solid rgb(158 247 198 / 0.32);
+  border-radius: 999px;
+  background: rgb(158 247 198 / 0.08);
+  color: var(--world-mint);
+  padding: 3px 7px;
+  font: 700 0.58rem/1 "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-office-task-completion,
+.world-office-task-completion-editor {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  border-left: 2px solid rgb(119 217 255 / 0.52);
+  background: rgb(119 217 255 / 0.055);
+  padding: 9px 10px;
+}
+
+.world-office-task-completion > span,
+.world-office-task-completion-editor > span {
+  color: #77d9ff;
+  font: 700 0.58rem/1.3 "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-office-task-completion p {
+  margin: 0;
+  color: var(--world-copy);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.world-office-task-completion-editor textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid var(--world-line-strong);
+  border-radius: 6px;
+  background: #07120f;
+  color: var(--world-copy);
+  padding: 8px 9px;
+  font: 0.74rem/1.45 "ForkMesh Favorit", sans-serif;
+}
+
+.world-office-task-completion-editor textarea:focus-visible {
+  border-color: #77d9ff;
+  box-shadow: 0 0 0 3px rgb(119 217 255 / 0.14);
+  outline: none;
+}
+
+@keyframes world-office-task-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .world-office-task-qa-actions {
@@ -6010,6 +6082,13 @@ forkmesh-world.world-office-active .world-quick-dock {
   visibility: visible;
 }
 
+.world-settings[data-active-tab="work"] {
+  width: min(
+    920px,
+    calc(100vw - var(--safe-left) - var(--safe-right) - 28px)
+  );
+}
+
 .world-settings-heading {
   display: flex;
   align-items: start;
@@ -7674,6 +7753,29 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   outline: none;
 }
 
+.world-shot-alt {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr);
+  align-items: center;
+  gap: 10px;
+  color: var(--world-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.world-shot-alt input {
+  min-height: 38px;
+  border: 1px solid var(--world-line);
+  background: #0d1117;
+  color: var(--world-copy);
+  padding: 7px 10px;
+}
+
+.world-shot-alt input:focus-visible {
+  border-color: var(--world-mint);
+  outline: 2px solid rgb(158 247 198 / 0.18);
+}
+
 .world-shot-footer {
   display: flex;
   flex-wrap: wrap;
@@ -7735,6 +7837,11 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-shot-primary:focus-visible {
   background: var(--world-mint-deep);
   outline: none;
+}
+
+.world-shot-primary:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 .world-agent-prompt-form {
   display: grid;

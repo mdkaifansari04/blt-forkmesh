@@ -272,6 +272,7 @@ NOTIFICATION_KINDS = frozenset({
     "pending_reward",
     "org_succession",
     "repository_hosted",
+    "organization_task_started",
 })
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
@@ -8389,6 +8390,52 @@ class _OfficeMarketingTasksRuntime:
         )
         return bool(row)
 
+    async def notify_engineering_task_started(
+            self, org_bi, actor, task_id, task):
+        """Send one private HUD notification to each Engineering member."""
+        rows = await d1_all(
+            self.env,
+            "SELECT DISTINCT tm.name AS name "
+            "FROM org_team_members tm "
+            "INNER JOIN org_members om "
+            "ON om.org_bi=tm.org_bi AND om.member_bi=tm.member_bi "
+            "WHERE tm.org_bi=? AND tm.team='engineering' "
+            "AND om.role IN ('owner','admin','member') "
+            "ORDER BY tm.name COLLATE NOCASE LIMIT 1000",
+            str(org_bi or ""),
+        )
+        safe_actor = clean_string(
+            actor or "a team member", MAX_NODE_NAME
+        ).strip().lower()
+        title = clean_string(
+            (task or {}).get("title") or "Organization task", 160
+        ).strip()
+        for row in rows or []:
+            recipient = clean_string(
+                row.get("name") or "", MAX_NODE_NAME
+            ).strip().lower()
+            if not valid_node_name(recipient):
+                continue
+            await enqueue_notification(
+                self.env,
+                recipient,
+                "organization_task_started",
+                "Engineering task taken",
+                body="@%s started %s" % (safe_actor, title),
+                actor="",
+                source=str(task_id or ""),
+                dedupe="organization-task-started:" + str(task_id or ""),
+                meta={
+                    "taskId": str(task_id or ""),
+                    "department": clean_string(
+                        (task or {}).get("department") or "", 64
+                    ).strip().lower(),
+                    "team": clean_string(
+                        (task or {}).get("team") or "", 64
+                    ).strip().lower(),
+                },
+            )
+
     async def marketing_members(self, org_bi):
         """Return active users on an authoritative Marketing floor team."""
         rows = await d1_all(
@@ -8774,7 +8821,13 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-25"
+WORLD_QA_DECK_REVISION = "2026-07-29-full-catalog-28"
+# The physical desk paints only five cards per page, but its catalog must
+# include every bounded source: built-ins, dynamically routed QA items, and
+# the organization's encrypted QA-ready tasks. Organization tasks are capped
+# at 2,000 and the routed board is independently bounded, so 4,096 is a hard
+# response ceiling rather than an arbitrary visible-card truncation.
+WORLD_QA_MAX_CARDS = 4096
 WORLD_QA_CARDS = (
     ("world-compact-debug-chat-orbs",
      "Compact debug and unified activity orbs",
@@ -9218,7 +9271,8 @@ async def world_qa_handler(env, request):
     dynamic_rows = await d1_all(
         env,
         "SELECT item_key,title,how_to_test,added_at FROM world_qa_items "
-        "WHERE active=1 ORDER BY added_at DESC,item_key LIMIT 64",
+        "WHERE active=1 ORDER BY added_at DESC,item_key LIMIT ?",
+        WORLD_QA_MAX_CARDS,
     )
     deck_cards = list(WORLD_QA_CARDS)
     deck_keys = set(WORLD_QA_CARD_KEYS)
@@ -9230,7 +9284,7 @@ async def world_qa_handler(env, request):
             continue
         deck_cards.append((key, title, how_to_test))
         deck_keys.add(key)
-    deck_cards = deck_cards[:64]
+    deck_cards = deck_cards[:WORLD_QA_MAX_CARDS]
     deck_keys = {item[0] for item in deck_cards}
 
     async def global_qa_snapshot():
@@ -9337,8 +9391,8 @@ async def world_qa_handler(env, request):
             "SELECT task_id,department,team,qa_status,qa_reviewed_at,data "
             "FROM organization_tasks "
             "WHERE org_bi=? AND qa_requested_at>0 "
-            "ORDER BY qa_requested_at DESC,task_id DESC LIMIT 64",
-            qa_org_bi,
+            "ORDER BY qa_requested_at DESC,task_id DESC LIMIT ?",
+            qa_org_bi, WORLD_QA_MAX_CARDS,
         )
         for task_row in task_rows or []:
             task_id = str(task_row.get("task_id") or "").lower()
@@ -9370,7 +9424,7 @@ async def world_qa_handler(env, request):
             if key not in deck_keys:
                 deck_cards.append((key, title, how_to_test))
                 deck_keys.add(key)
-    deck_cards = deck_cards[:128]
+    deck_cards = deck_cards[:WORLD_QA_MAX_CARDS]
     deck_keys = {item[0] for item in deck_cards}
     if method == "POST":
         item_key = clean_string(data.get("key"), 80)
@@ -9555,8 +9609,8 @@ async def world_qa_handler(env, request):
     rows = await d1_all(
         env,
         "SELECT item_key,verdict,reviewed_at FROM world_qa_reviews "
-        "WHERE account_bi=? ORDER BY reviewed_at DESC LIMIT 128",
-        account_bi,
+        "WHERE account_bi=? ORDER BY reviewed_at DESC LIMIT ?",
+        account_bi, WORLD_QA_MAX_CARDS,
     )
     reviews = {}
     for row in rows:
@@ -9573,8 +9627,8 @@ async def world_qa_handler(env, request):
             "SELECT task_id,verdict,data,reviewed_at "
             "FROM organization_task_qa_reviews "
             "WHERE org_bi=? AND reviewer_bi=? "
-            "ORDER BY reviewed_at DESC LIMIT 128",
-            qa_org_bi, account_bi,
+            "ORDER BY reviewed_at DESC LIMIT ?",
+            qa_org_bi, account_bi, WORLD_QA_MAX_CARDS,
         )
         for row in private_rows or []:
             key = "task:" + str(row.get("task_id") or "")

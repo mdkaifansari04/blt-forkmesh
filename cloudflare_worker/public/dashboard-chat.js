@@ -119,6 +119,56 @@
 
   if (!fullLog && !sideLog) return;
 
+  let pendingWorldComposerPrefill = null;
+
+  function fileFromWorldComposerAttachment(value) {
+    if (!value || typeof value !== "object") return null;
+    const dataUrl = String(value.dataUrl || "");
+    const match = dataUrl.match(
+      /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/,
+    );
+    if (!match || dataUrl.length > 700_000) return null;
+    let bytes;
+    try {
+      const decoded = atob(match[2]);
+      bytes = new Uint8Array(decoded.length);
+      for (let index = 0; index < decoded.length; index += 1) {
+        bytes[index] = decoded.charCodeAt(index);
+      }
+    } catch (_) {
+      return null;
+    }
+    const suppliedName = safeAttachmentName(value.fileName || "world-screenshot.webp");
+    return new File([bytes], suppliedName, {
+      type: safeAttachmentMime(value.fileMime || match[1]),
+    });
+  }
+
+  function applyWorldComposerPrefill() {
+    const data = pendingWorldComposerPrefill;
+    if (!data) return false;
+    const input = fullInput || sideInput;
+    const control = attachmentControls.find(
+      (candidate) => candidate.inputEl === input,
+    );
+    if (!input || (data.attachment && !control)) return false;
+    const altText = String(data.attachment?.altText || "").slice(0, 500);
+    input.value = String(data.text || altText || "");
+    const file = fileFromWorldComposerAttachment(data.attachment);
+    if (file && control) {
+      stageDashboardAttachments(control, [file]);
+      showAttachmentFeedback(
+        control,
+        "World screenshot attached. Choose a destination, then send.",
+      );
+    }
+    pendingWorldComposerPrefill = null;
+    input.focus();
+    const caret = input.value.length;
+    input.setSelectionRange?.(caret, caret);
+    return true;
+  }
+
   // The World's ForkBot avatar and CHAT bar ask this embed (parent frame,
   // same-origin) to drop starting text into the composer — e.g. "@forkbot "
   // so a visitor can start typing straight away. See world.js openChatTerminal.
@@ -126,12 +176,14 @@
     if (event.origin !== location.origin) return;
     const data = event.data;
     if (!data || data.type !== "forkmesh:chat-prefill") return;
-    const input = fullInput || sideInput;
-    if (!input) return;
-    input.value = String(data.text || "");
-    input.focus();
-    const caret = input.value.length;
-    input.setSelectionRange?.(caret, caret);
+    pendingWorldComposerPrefill = {
+      text: String(data.text || "").slice(0, MAX_TEXT),
+      attachment:
+        data.attachment && typeof data.attachment === "object"
+          ? { ...data.attachment }
+          : null,
+    };
+    applyWorldComposerPrefill();
   });
 
   const enc = new TextEncoder();
@@ -2379,7 +2431,14 @@
     queue.dataset.dashboardChatAttachments = "";
     queue.setAttribute("aria-live", "polite");
     queue.setAttribute("aria-label", "Staged attachments");
-    const control = { button, input: fileInput, feedback, queue, draft: [] };
+    const control = {
+      button,
+      input: fileInput,
+      inputEl,
+      feedback,
+      queue,
+      draft: [],
+    };
     bar.parentElement?.insertBefore(queue, bar);
     const sendButton = inputEl === fullInput ? fullSend : sideSend;
     bar.insertBefore(fileInput, sendButton || null);
@@ -2397,6 +2456,7 @@
     control.button.disabled = !canJoinChat();
     control.input.disabled = !canJoinChat();
     attachmentControls.push(control);
+    applyWorldComposerPrefill();
     return control;
   }
 
