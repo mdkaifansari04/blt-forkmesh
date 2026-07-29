@@ -700,6 +700,22 @@ def test_office_uses_solid_floor_finishes_and_batched_ceiling_light_grids():
     assert "const solidColors = [" in finish
     assert "canvasTexture(" not in finish
     assert "map:" not in finish
+    ceiling_finish = function_body(scene, "officeCeilingFinishMaterial")
+    assert "const solidColors = [" in ceiling_finish
+    assert "transparent: false" in ceiling_finish
+    assert "opacity: 1" in ceiling_finish
+    assert "canvasTexture(" not in ceiling_finish
+    ceiling_surface = function_body(scene, "addOfficeCeilingSurface")
+    assert "forkmesh-office-ceiling-slab-" in ceiling_surface
+    assert (
+        "OFFICE_FLOOR_HEIGHT - OFFICE_LOBBY_SURFACE_Y / 2"
+        in ceiling_surface
+    )
+    assert "elevatorCutMinX" in ceiling_surface
+    assert "elevatorCutMaxX" in ceiling_surface
+    assert "elevatorCutMinZ" in ceiling_surface
+    assert "addOfficeCeilingSurface(" in scene
+    assert 'if (floor.id !== "rooftop")' in scene
     atmosphere_start = scene.index("function addOfficeFloorAtmosphere(")
     atmosphere_end = scene.index(
         'addOfficeFloorAtmosphere(officeInterior, "lobby", 0)',

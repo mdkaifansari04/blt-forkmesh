@@ -850,6 +850,42 @@ int main(int argc, char **argv)
               forkmesh::control::formatDiskSize(3LL * 1024 * 1024 * 1024) ==
                   QStringLiteral("3.0 GB"),
           "size-map byte formatting is human readable");
+    const QString mountCommand =
+        forkmesh::control::buildHostMountUsageCommand();
+    check(mountCommand.startsWith(QStringLiteral("sh -lc '")) &&
+              mountCommand.contains(QStringLiteral("df -P -k -l")) &&
+              mountCommand.contains(QStringLiteral("FORKMESH-MOUNT1")) &&
+              !mountCommand.contains(QStringLiteral("rm ")) &&
+              !mountCommand.contains(QStringLiteral("chmod")),
+          "the mount overview command is read-only and sentinel framed");
+    const QByteArray mountOutput =
+        QByteArray("login banner\n") +
+        "FORKMESH-MOUNT1 102400 25600 76800 " +
+        QByteArray("/").toBase64() + "\n" +
+        "FORKMESH-MOUNT1 204800 153600 51200 " +
+        QByteArray("/mnt/project data").toBase64() + "\n" +
+        // Duplicate paths are ignored rather than producing duplicate cards.
+        "FORKMESH-MOUNT1 102400 25600 76800 " +
+        QByteArray("/").toBase64() + "\n" +
+        "FORKMESH-MOUNT1-END\n";
+    const auto mounts =
+        forkmesh::control::parseHostMountUsage(mountOutput);
+    check(mounts.complete && mounts.error.isEmpty() &&
+              mounts.mounts.size() == 2 &&
+              mounts.mounts.at(0).path == QStringLiteral("/") &&
+              mounts.mounts.at(0).usedBytes == 25600LL * 1024 &&
+              mounts.mounts.at(1).path ==
+                  QStringLiteral("/mnt/project data") &&
+              mounts.mounts.at(1).availableBytes == 51200LL * 1024,
+          "mount overview parsing is banner-safe, deduplicated and root-first");
+    const auto mountFailure = forkmesh::control::parseHostMountUsage(
+        QByteArray("FORKMESH-MOUNT1-ERROR ") +
+        QByteArray("df unavailable").toBase64() +
+        "\nFORKMESH-MOUNT1-END\n");
+    check(mountFailure.complete &&
+              mountFailure.error == QStringLiteral("df unavailable") &&
+              mountFailure.mounts.isEmpty(),
+          "a host-side mount overview failure remains actionable");
 
     // One-click Vultr provisioning helpers (adhoc #315).
     check(forkmesh::control::validateVultrMirrorRequest(
