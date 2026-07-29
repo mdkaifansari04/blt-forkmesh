@@ -20,10 +20,11 @@ def test_chat_embed_forwards_bounded_history_and_thumbnail_metadata():
         "attachmentMime:",
         "reactionCount:",
         "attachmentPreview",
-        "emitWorldChatHistory({",
+        "emitNewestWorldChatHistory()",
     ):
         assert contract in CHAT
     assert "if (ts < newestHistoryTs) return" not in CHAT
+    assert "if (meta?.attachment && !history)" in CHAT
 
 
 def test_world_accepts_chat_only_from_its_native_same_window_controller():

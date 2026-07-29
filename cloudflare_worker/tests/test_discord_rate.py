@@ -1,12 +1,45 @@
 """Focused tests for the shared Discord rate-limit/catalog coordinator."""
 
+import ast
 from pathlib import Path
 import sys
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 
 from discord_rate import DiscordRateCoordinator  # noqa: E402
+
+
+def test_worker_entry_imports_discord_dependencies_before_using_them():
+    source = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    module_imports = {
+        alias.name
+        for node in tree.body if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    imports = [
+        node for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "discord_rate"
+    ]
+
+    assert "organization_discord" in module_imports
+    assert len(imports) == 1
+    assert any(
+        alias.name == "DiscordRateCoordinator"
+        for alias in imports[0].names
+    )
+    assignment = next(
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "_discord_rate_coordinator"
+            for target in node.targets
+        )
+    )
+    assert imports[0].lineno < assignment.lineno
 
 
 def test_bucket_reset_and_429_block_only_the_matching_provider_bucket():

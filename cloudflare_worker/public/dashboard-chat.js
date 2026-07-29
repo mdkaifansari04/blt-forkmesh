@@ -291,6 +291,22 @@ function mountForkMeshDashboardChat() {
   let revealingHistory = false;
   let lastFullLogScrollTop = 0;
   let historyTouchStartY = null;
+  let historyTouchRevealed = false;
+  let historyWheelLatched = false;
+  let historyWheelResetTimer = 0;
+  let historyReplayTimer = 0;
+  let historyReplayEnvelopes = [];
+  let inboundFrameQueue = Promise.resolve();
+  const DISCORD_REFRESH_MS = 60_000;
+  const DISCORD_REFRESH_JITTER_MS = 15_000;
+  const DISCORD_MAX_ORGANIZATIONS = 3;
+  const DISCORD_MAX_CHANNELS = 5;
+  const DISCORD_MAX_INITIAL_MESSAGES = 40;
+  let discordRefreshTimer = 0;
+  let discordRefreshRunning = false;
+  let discordInitialMessagesLoaded = false;
+  let discordSources = null;
+  let discordBackoffUntil = 0;
   // messageId -> Map(emoji -> Map(reactorId -> reactorName)); identical to
   // the full web/Qt protocol shape so reactions converge across every client.
   const reactions = new Map();
@@ -599,6 +615,160 @@ function mountForkMeshDashboardChat() {
     const session = readSession();
     return isUserLikeSession(session) ? session : null;
   }
+
+  function discordRequestHeaders() {
+    const headers = new Headers({ accept: "application/json" });
+    const token = String(userSession()?.sessionToken || "").trim();
+    if (token && token !== "cookie") {
+      headers.set("authorization", `Bearer ${token}`);
+    }
+    return headers;
+  }
+
+  async function discordJson(path) {
+    const response = await fetch(path, {
+      headers: discordRequestHeaders(),
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const error = new Error(`Discord source unavailable (${response.status})`);
+      const retrySeconds = Math.max(
+        0,
+        Number(response.headers.get("retry-after")) || 0,
+      );
+      error.retryAfterMs = Math.min(3_600_000, retrySeconds * 1000);
+      if (error.retryAfterMs) {
+        discordBackoffUntil = Math.max(
+          discordBackoffUntil,
+          Date.now() + error.retryAfterMs,
+        );
+      }
+      throw error;
+    }
+    return response.json();
+  }
+
+  async function discoverDiscordSources() {
+    if (Array.isArray(discordSources)) return discordSources;
+    const catalog = await discordJson("/api/orgs");
+    const organizations = (Array.isArray(catalog?.orgs) ? catalog.orgs : [])
+      .slice(0, DISCORD_MAX_ORGANIZATIONS);
+    const statuses = await Promise.allSettled(organizations.map(async (record) => {
+      const organization = String(record?.name || "").trim();
+      if (!organization) return [];
+      const status = await discordJson(
+        `/api/orgs/${encodeURIComponent(organization)}/discord`,
+      );
+      if (!status?.configured || status?.state !== "configured") return [];
+      const channelIds = Array.isArray(status?.connector?.channelIds)
+        ? status.connector.channelIds
+        : [];
+      const channelNames = new Map(
+        (Array.isArray(status?.channels) ? status.channels : []).map((channel) => [
+          String(channel?.id || ""),
+          String(channel?.name || ""),
+        ]),
+      );
+      return channelIds.slice(0, DISCORD_MAX_CHANNELS).map((channelId) => ({
+        organization,
+        channelId: String(channelId || ""),
+        channelName: channelNames.get(String(channelId || "")) || "",
+      })).filter((source) => source.channelId);
+    }));
+    discordSources = statuses.flatMap((result) =>
+      result.status === "fulfilled" ? result.value : []);
+    return discordSources;
+  }
+
+  async function refreshDiscordMessages() {
+    if (
+      discordRefreshRunning ||
+      document.visibilityState === "hidden" ||
+      Date.now() < discordBackoffUntil ||
+      !userSession()
+    ) return;
+    discordRefreshRunning = true;
+    try {
+      const sources = await discoverDiscordSources();
+      const results = await Promise.allSettled(sources.map(async (source) => {
+        const path =
+          `/api/orgs/${encodeURIComponent(source.organization)}` +
+          `/discord/messages?channelId=${encodeURIComponent(source.channelId)}`;
+        const payload = await discordJson(path);
+        const channelName = String(
+          payload?.channel?.name || source.channelName || source.channelId,
+        ).trim();
+        return (Array.isArray(payload?.messages) ? payload.messages : []).map(
+          (message) => ({
+            ...message,
+            organization: source.organization,
+            channelName,
+          }),
+        );
+      }));
+      const messages = results
+        .flatMap((result) => result.status === "fulfilled" ? result.value : [])
+        .filter((message) => message?.id && String(message?.content || "").trim())
+        .sort((left, right) =>
+          Date.parse(left?.createdAt || "") - Date.parse(right?.createdAt || ""));
+      const visibleMessages = discordInitialMessagesLoaded
+        ? messages
+        : messages.slice(-DISCORD_MAX_INITIAL_MESSAGES);
+      let appended = 0;
+      for (const message of visibleMessages) {
+        if (appendDiscordMessage(message)) appended += 1;
+      }
+      discordInitialMessagesLoaded = true;
+      if (appended) {
+        console.info("[ForkMesh chat] Discord messages refreshed", {
+          sources: sources.length,
+          appended,
+        });
+      }
+    } catch (error) {
+      // Discord is optional. Keep the encrypted room usable and retry later.
+      console.info("[ForkMesh chat] Discord refresh deferred", {
+        reason: String(error?.message || "unavailable").slice(0, 160),
+      });
+      discordSources = null;
+    } finally {
+      discordRefreshRunning = false;
+    }
+  }
+
+  function stopDiscordMessageRefresh() {
+    if (!discordRefreshTimer) return;
+    clearTimeout(discordRefreshTimer);
+    discordRefreshTimer = 0;
+  }
+
+  function scheduleDiscordMessageRefresh() {
+    stopDiscordMessageRefresh();
+    if (document.visibilityState === "hidden" || !userSession()) return;
+    const backoff = Math.max(0, discordBackoffUntil - Date.now());
+    const jitter = Math.floor(Math.random() * DISCORD_REFRESH_JITTER_MS);
+    discordRefreshTimer = window.setTimeout(async () => {
+      discordRefreshTimer = 0;
+      await refreshDiscordMessages();
+      scheduleDiscordMessageRefresh();
+    }, Math.max(DISCORD_REFRESH_MS + jitter, backoff));
+  }
+
+  function startDiscordMessageRefresh() {
+    stopDiscordMessageRefresh();
+    if (document.visibilityState === "hidden" || !userSession()) return;
+    void refreshDiscordMessages();
+    scheduleDiscordMessageRefresh();
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      stopDiscordMessageRefresh();
+      return;
+    }
+    startDiscordMessageRefresh();
+  });
 
   function canJoinChat() {
     return PUBLIC_WORLD_GENERAL || Boolean(userSession());
@@ -1182,8 +1352,8 @@ function mountForkMeshDashboardChat() {
     if (!imagePreviewDialog) {
       imagePreviewDialog = document.createElement("dialog");
       imagePreviewDialog.id = "dashboard-chat-image-preview-dialog";
-      imagePreviewDialog.className = "max-h-[calc(100vh-1.5rem)] max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-background p-3 shadow-2xl";
-      imagePreviewDialog.innerHTML = '<button type="button" class="absolute right-0 top-0 inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-xl leading-none text-foreground" aria-label="Close image preview">×</button><img class="max-h-[calc(100vh-1.5rem)] max-w-full object-contain" />';
+      imagePreviewDialog.className = "chat-image-preview-dialog max-h-[calc(100vh-1.5rem)] max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-background p-3 shadow-2xl";
+      imagePreviewDialog.innerHTML = '<button type="button" class="absolute right-0 top-0 inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-xl leading-none text-foreground" aria-label="Close image preview">×</button><img class="chat-image-preview-full max-h-[calc(100vh-1.5rem)] max-w-full object-contain" />';
       imagePreviewDialog.querySelector("button").addEventListener("click", () => imagePreviewDialog.close());
       imagePreviewDialog.addEventListener("click", (event) => {
         if (event.target === imagePreviewDialog) imagePreviewDialog.close();
@@ -1200,10 +1370,13 @@ function mountForkMeshDashboardChat() {
     if (!attachment) return null;
     const objectUrl = attachmentObjectUrl(attachment);
     const wrapper = document.createElement("div");
-    wrapper.className = compact ? "mt-1 grid gap-1.5" : "mt-2 grid max-w-md gap-2";
+    wrapper.className = "chat-attachment-wrapper";
+    wrapper.className += compact
+      ? " chat-attachment-wrapper--compact mt-1 grid gap-1.5"
+      : " mt-2 grid max-w-md gap-2";
     if (attachment.fileMime.startsWith("image/")) {
       const preview = document.createElement("div");
-      preview.className = "relative w-fit max-w-full";
+      preview.className = "chat-attachment-preview relative w-fit max-w-full";
       const image = document.createElement("img");
       image.className = "chat-attachment-image";
       image.className += compact
@@ -1212,7 +1385,9 @@ function mountForkMeshDashboardChat() {
       image.src = objectUrl;
       image.alt = attachment.fileName;
       image.loading = "lazy";
-      image.style.minWidth = compact ? "72px" : "96px";
+      image.style.minWidth = compact
+        ? "min(72px, 100%)"
+        : "min(96px, 100%)";
       image.style.minHeight = compact ? "54px" : "72px";
       image.tabIndex = 0;
       image.setAttribute("role", "button");
@@ -1229,7 +1404,7 @@ function mountForkMeshDashboardChat() {
       download.download = attachment.fileName;
       download.setAttribute("aria-label", `Download ${attachment.fileName}`);
       download.title = `Download ${attachment.fileName}`;
-      download.className = "absolute bottom-2 right-2 inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-background/90 text-muted-foreground shadow-sm hover:text-foreground";
+      download.className = "chat-attachment-download absolute bottom-2 right-2 inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-background/90 text-muted-foreground shadow-sm hover:text-foreground";
       download.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"></path></svg>';
       preview.append(image, download);
       wrapper.append(preview);
@@ -1276,18 +1451,102 @@ function mountForkMeshDashboardChat() {
   function currentHistoryRows() {
     return historyRowIds
       .map((id) => rows.get(id))
-      .filter((record) => record?.el?.isConnected);
+      .filter(Boolean);
+  }
+
+  function insertHistoryRow(record) {
+    if (!fullLog || !record?.el) return;
+    const index = historyRowIds.indexOf(record.id);
+    for (let offset = index + 1; offset < historyRowIds.length; offset += 1) {
+      const next = rows.get(historyRowIds[offset]);
+      if (next?.el?.isConnected) {
+        fullLog.insertBefore(record.el, next.el);
+        return;
+      }
+    }
+    const firstLive = fullLog.querySelector(
+      ".chat-message-row:not([data-chat-history])",
+    );
+    if (firstLive) fullLog.insertBefore(record.el, firstLive);
+    else fullLog.append(record.el);
+  }
+
+  function materializeFullMessage(record) {
+    if (!fullLog || !record || record.el?.isConnected) return record?.el || null;
+    clearEmptyState();
+    const row = document.createElement("div");
+    row.className =
+      `chat-message-row chat-message-row--${record.self ? "self" : "peer"} ` +
+      "flex items-start gap-3 group px-2 py-1 transition-colors mt-3";
+    if (record.history) row.dataset.chatHistory = "";
+    row.innerHTML = `
+      <span class="chat-message-avatar avatar flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full border text-base ${record.self ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-secondary text-foreground"}"></span>
+      <div class="chat-message-bubble min-w-0 flex-1">
+        <div class="mb-0.5 flex items-baseline gap-2">
+          <span class="text-xs font-semibold ${record.self ? "text-primary" : "text-foreground"}">${escapeHtml(record.who)}</span>
+          <span class="text-[10px] text-muted-foreground/50 font-mono">${escapeHtml(fmtChatTime(record.tsMs))}</span>
+        </div>
+        <p class="text-sm text-muted-foreground leading-relaxed break-words"></p>
+      </div>`;
+    const avatarEl = row.querySelector(".chat-message-avatar");
+    if (record.external) {
+      avatarEl.textContent = "D";
+      avatarEl.setAttribute("aria-label", "Discord");
+    } else {
+      hydrateChatAvatar(avatarEl, record.who);
+    }
+    if (record.sourceLabel) {
+      const source = document.createElement("span");
+      source.className =
+        "chat-message-source rounded-full border border-border px-1.5 py-0.5 " +
+        "text-[9px] font-semibold text-muted-foreground";
+      source.textContent = record.sourceLabel;
+      row.querySelector(".items-baseline")?.append(source);
+    }
+    const textEl = row.querySelector("p");
+    if (textEl) {
+      if (record.text) appendMentionText(textEl, record.text);
+      else textEl.remove();
+    }
+    const content = row.querySelector(".min-w-0.flex-1");
+    const renderedAttachment = renderAttachment(record.attachment);
+    if (content && renderedAttachment) content.append(renderedAttachment);
+    const reactionsEl = document.createElement("div");
+    reactionsEl.className = "chat-reactions";
+    content?.append(reactionsEl);
+    record.el = row;
+    record.avatarEl = avatarEl;
+    record.textEl = textEl?.parentNode ? textEl : null;
+    record.contentEl = content;
+    record.reactionsEl = reactionsEl;
+    if (record.history) insertHistoryRow(record);
+    else fullLog.append(row);
+    if (record.id && !record.external) {
+      content?.append(buildMessageActions(record));
+      renderReactions(record.id);
+      if (record.editedAt) markEdited(record, record.editedAt);
+    }
+    return row;
   }
 
   function renderHistoryWindow({ preserveScroll = false } = {}) {
     if (!fullLog) return;
     const records = currentHistoryRows();
-    if (!records.length) return;
+    if (!records.length) {
+      historyIndicator?.remove();
+      historyIndicator = null;
+      ensureEmptyState();
+      syncChatScrollThumb();
+      return;
+    }
+    clearEmptyState();
     const previousHeight = fullLog.scrollHeight;
     const visibleCount = Math.min(historyVisibleCount, records.length);
     const hiddenCount = Math.max(0, records.length - visibleCount);
+    ensureHistoryIndicator();
     records.forEach((record, index) => {
-      record.el.hidden = index < hiddenCount;
+      if (index >= hiddenCount) materializeFullMessage(record);
+      if (record.el) record.el.hidden = index < hiddenCount;
     });
     const indicator = ensureHistoryIndicator();
     indicator.dataset.complete = hiddenCount ? "false" : "true";
@@ -1319,6 +1578,18 @@ function mountForkMeshDashboardChat() {
     });
   }
 
+  function hasHiddenHistory() {
+    return historyVisibleCount < currentHistoryRows().length;
+  }
+
+  function scheduleHistoryWheelReset() {
+    if (historyWheelResetTimer) clearTimeout(historyWheelResetTimer);
+    historyWheelResetTimer = window.setTimeout(() => {
+      historyWheelResetTimer = 0;
+      historyWheelLatched = false;
+    }, 180);
+  }
+
   function appendFullMessage(
     kind,
     who,
@@ -1328,57 +1599,30 @@ function mountForkMeshDashboardChat() {
     tsMs,
     attachment = null,
     deferHistory = false,
+    metadata = null,
   ) {
     if (!fullLog) return;
-    clearEmptyState();
     const self = kind === "self";
-    const row = document.createElement("div");
-    row.className =
-      `chat-message-row chat-message-row--${self ? "self" : "peer"} ` +
-      "flex items-start gap-3 group px-2 py-1 transition-colors mt-3";
-    row.innerHTML = `
-      <span class="chat-message-avatar avatar flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full border text-base ${self ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-secondary text-foreground"}"></span>
-      <div class="chat-message-bubble min-w-0 flex-1">
-        <div class="mb-0.5 flex items-baseline gap-2">
-          <span class="text-xs font-semibold ${self ? "text-primary" : "text-foreground"}">${escapeHtml(who)}</span>
-          <span class="text-[10px] text-muted-foreground/50 font-mono">${escapeHtml(fmtChatTime(tsMs))}</span>
-        </div>
-        <p class="text-sm text-muted-foreground leading-relaxed break-words"></p>
-      </div>`;
-    hydrateChatAvatar(row.querySelector(".chat-message-avatar"), who);
-    const textEl = row.querySelector("p");
-    if (textEl) {
-      if (text) appendMentionText(textEl, text);
-      else textEl.remove();
-    }
-    const content = row.querySelector(".min-w-0.flex-1");
-    const renderedAttachment = renderAttachment(attachment);
-    if (content && renderedAttachment) content.append(renderedAttachment);
-    const reactionsEl = document.createElement("div");
-    reactionsEl.className = "chat-reactions";
-    content?.append(reactionsEl);
-    if (deferHistory) {
-      row.hidden = true;
-      row.dataset.chatHistory = "";
-    }
-    fullLog.append(row);
-    if (!deferHistory) fullLog.scrollTop = fullLog.scrollHeight;
-    if (!id) return;
     const record = {
       id,
-      el: row,
+      el: null,
+      who,
+      tsMs: Number(tsMs) || Date.now(),
       senderId: senderId || "",
-      textEl,
-      contentEl: content,
-      reactionsEl,
       attachment,
       text: text || "",
       self,
+      history: Boolean(deferHistory),
+      external: Boolean(metadata?.external),
+      sourceLabel: String(metadata?.sourceLabel || ""),
     };
-    rows.set(id, record);
-    if (deferHistory) historyRowIds.push(id);
-    content?.append(buildMessageActions(record));
-    renderReactions(id);
+    if (id) rows.set(id, record);
+    if (deferHistory && id) {
+      historyRowIds.push(id);
+      return;
+    }
+    materializeFullMessage(record);
+    fullLog.scrollTop = fullLog.scrollHeight;
   }
 
   // ---- edit / delete own messages ----------------------------------------
@@ -1692,7 +1936,13 @@ function mountForkMeshDashboardChat() {
           </div>
           <p class="text-xs text-muted-foreground leading-relaxed break-words"></p>
         </div>`;
-      hydrateChatAvatar(row.querySelector(".chat-message-avatar"), message.who);
+      const avatar = row.querySelector(".chat-message-avatar");
+      if (message.external) {
+        avatar.textContent = "D";
+        avatar.setAttribute("aria-label", "Discord");
+      } else {
+        hydrateChatAvatar(row.querySelector(".chat-message-avatar"), message.who);
+      }
       const textEl = row.querySelector("p");
       if (textEl) {
         if (message.text) appendMentionText(textEl, message.text);
@@ -1709,7 +1959,17 @@ function mountForkMeshDashboardChat() {
     bottom.scrollIntoView({ behavior: "smooth" });
   }
 
-  function appendSideMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
+  function appendSideMessage(
+    kind,
+    who,
+    text,
+    id,
+    senderId,
+    tsMs,
+    attachment = null,
+    deferRender = false,
+    metadata = null,
+  ) {
     // Insert in timestamp order (append is the common case) so the newest
     // message is always the bottom row even when retained history replays
     // after live messages have already landed.
@@ -1721,11 +1981,13 @@ function mountForkMeshDashboardChat() {
       senderId,
       tsMs: Number(tsMs) || Date.now(),
       attachment,
+      external: Boolean(metadata?.external),
+      sourceLabel: String(metadata?.sourceLabel || ""),
     };
     let index = sideEntries.length;
     while (index > 0 && Number(sideEntries[index - 1].tsMs) > entry.tsMs) index -= 1;
     sideEntries.splice(index, 0, entry);
-    renderSideMessages();
+    if (!deferRender) renderSideMessages();
   }
 
   function appendMessage(
@@ -1749,8 +2011,46 @@ function mountForkMeshDashboardChat() {
       attachment,
       deferHistory,
     );
-    appendSideMessage(kind, who, text, id, senderId, tsMs, attachment);
+    appendSideMessage(
+      kind,
+      who,
+      text,
+      id,
+      senderId,
+      tsMs,
+      attachment,
+      deferHistory,
+    );
     rememberContext(who, text);
+  }
+
+  function appendDiscordMessage(message) {
+    const organization = String(message?.organization || "").trim();
+    const channelId = String(message?.channelId || "").trim();
+    const channelName = String(message?.channelName || message?.channelId || "")
+      .trim();
+    const providerId = String(message?.id || "").trim();
+    if (!organization || !channelId || !channelName || !providerId) return false;
+    const id = `discord:${organization}:${channelId}:${providerId}`;
+    if (rows.has(id)) return false;
+    const who = String(message?.author?.name || "Discord user").trim();
+    const text = String(message?.content || "").trim();
+    if (!text) return false;
+    const parsedTime = Date.parse(String(message?.createdAt || ""));
+    const tsMs = Number.isFinite(parsedTime) ? parsedTime : Date.now();
+    const metadata = {
+      external: true,
+      sourceLabel: `Discord · ${organization} · #${channelName}`,
+    };
+    appendFullMessage(
+      "peer", who, text, id, `discord:${providerId}`, tsMs, null, false, metadata,
+    );
+    appendSideMessage(
+      "peer", who, text, id, `discord:${providerId}`, tsMs, null, false, metadata,
+    );
+    // Provider text is display-only. It never enters ForkBot's prompt context
+    // unless a person explicitly quotes it into a ForkMesh message.
+    return true;
   }
 
   function appendSystem(text, emit = true) {
@@ -1765,7 +2065,7 @@ function mountForkMeshDashboardChat() {
     if (emit) emitWorldActivity(text, "status");
   }
 
-  function removeMessage(id) {
+  function removeMessage(id, { deferRender = false } = {}) {
     const rec = rows.get(id);
     if (activeReactionPicker?.element && rec?.el?.contains(
         activeReactionPicker.element)) {
@@ -1782,7 +2082,12 @@ function mountForkMeshDashboardChat() {
     const historyIndex = historyRowIds.indexOf(id);
     if (historyIndex >= 0) historyRowIds.splice(historyIndex, 1);
     reactions.delete(id);
-    renderSideMessages();
+    if (!deferRender) {
+      renderSideMessages();
+      if (historyIndex >= 0) {
+        renderHistoryWindow({ preserveScroll: true });
+      }
+    }
   }
 
   function makePlain(type, extra) {
@@ -1936,16 +2241,16 @@ function mountForkMeshDashboardChat() {
       } catch (_) {}
     };
     post();
-    if (meta?.attachment) {
+    if (meta?.attachment && !history) {
       void worldAttachmentPreview(meta.attachment).then((preview) => {
         if (preview) post(preview);
       });
     }
   }
 
-  // Replayed entries can arrive out of order. Forward each bounded record so
-  // the physical World board can sort the recent backlog; the parent updates
-  // its collapsed CHAT label only when the timestamp is newer.
+  // Replayed entries can arrive out of order. Keep their newest surviving
+  // record for the physical World board; mutations are applied before this is
+  // emitted, so an edited/deleted latest line never leaks as stale activity.
   let newestHistoryTs = 0;
   function emitWorldChatHistory(entry) {
     if (!WORLD_EMBED_BUBBLES) return;
@@ -1958,6 +2263,27 @@ function mountForkMeshDashboardChat() {
       true,
       entry,
     );
+  }
+
+  function emitNewestWorldChatHistory() {
+    const record = currentHistoryRows().reduce((newest, candidate) => {
+      if (!newest || Number(candidate.tsMs) >= Number(newest.tsMs)) {
+        return candidate;
+      }
+      return newest;
+    }, null);
+    if (!record) return;
+    const reactionCount = [...(reactions.get(record.id)?.values() || [])]
+      .reduce((count, reactors) => count + reactors.size, 0);
+    emitWorldChatHistory({
+      id: record.id,
+      sender: record.who,
+      senderId: record.senderId,
+      text: record.text,
+      ts: record.tsMs,
+      attachment: record.attachment,
+      reactionCount,
+    });
   }
 
   function allowedChatAccountKind(value) {
@@ -2013,16 +2339,6 @@ function mountForkMeshDashboardChat() {
         attachment,
         reactionCount: entry.reactionCount,
       });
-    } else {
-      emitWorldChatHistory({
-        id: entry.id,
-        sender: who,
-        senderId: entry.senderId,
-        text,
-        ts: entry.ts,
-        attachment,
-        reactionCount: entry.reactionCount,
-      });
     }
   }
 
@@ -2052,7 +2368,13 @@ function mountForkMeshDashboardChat() {
     }
   }
 
-  function handlePlain(plain) {
+  function finishHistoryReplay() {
+    renderHistoryWindow();
+    renderSideMessages();
+    emitNewestWorldChatHistory();
+  }
+
+  function handlePlain(plain, historyReplay = false) {
     const type = plain.type;
     // Mirror-mesh signals ride the same encrypted room as chat: a source node
     // broadcasts "mirror-update" the instant its repo advances from the source
@@ -2080,41 +2402,56 @@ function mountForkMeshDashboardChat() {
     const sender = String(plain.sender || "peer").slice(0, MAX_NAME);
     // "hello"/"presence" frames are the only sign of someone who is here but
     // has not typed yet; keep them in the mention list too.
-    if (plain.senderId !== selfId) rememberMentionPerson(sender, Date.now());
+    if (plain.senderId !== selfId) {
+      rememberMentionPerson(
+        sender,
+        historyReplay ? Number(plain.ts) || 0 : Date.now(),
+      );
+    }
     if (type === "chat") {
-      if (plain.channel === CHANNEL) renderChatEntry(plain, "peer", true);
+      if (plain.channel === CHANNEL) {
+        renderChatEntry(plain, "peer", !historyReplay);
+      }
     } else if (type === "history") {
-      for (const entry of plain.entries || []) {
-        if (entry?.type && entry.type !== "chat") {
-          handlePlain(entry);
-          continue;
-        }
+      const entries = Array.isArray(plain.entries) ? plain.entries : [];
+      for (const entry of entries) {
         if (
           entry &&
+          (!entry.type || entry.type === "chat") &&
           entry.channel === CHANNEL &&
           (entry.channel || entry.text || entry.fileName)
         ) {
           renderChatEntry(entry, "peer");
         }
       }
-      renderHistoryWindow();
+      for (const entry of entries) {
+        if (entry?.type && entry.type !== "chat") {
+          handlePlain(entry, true);
+        }
+      }
+      if (!historyReplay) finishHistoryReplay();
     } else if (type === "reaction") {
       if (once(plain.id)) applyReaction(plain);
     } else if (type === "edit") {
       const rec = rows.get(plain.target);
-      if (rec && rec.senderId === plain.senderId && rec.textEl) {
+      if (rec && rec.senderId === plain.senderId) {
         rec.text = plain.text || "";
-        renderMessageText(rec.textEl, rec.text);
-        markEdited(rec, plain.editedAt || plain.ts);
+        rec.editedAt = plain.editedAt || plain.ts;
+        if (rec.textEl) {
+          renderMessageText(rec.textEl, rec.text);
+          markEdited(rec, rec.editedAt);
+        }
         const sideEntry = sideEntries.find((entry) => entry.id === plain.target);
         if (sideEntry) {
           sideEntry.text = plain.text || "";
-          renderSideMessages();
+          if (!historyReplay) renderSideMessages();
         }
       }
     } else if (type === "delete") {
       const rec = rows.get(plain.target);
-      if (rec && rec.senderId === plain.senderId) removeMessage(plain.target);
+      if (rec && rec.senderId === plain.senderId) {
+        removeMessage(plain.target, { deferRender: historyReplay });
+      }
     } else if (type === "admin-delete") {
       verifyAdminDelete(plain).then((ok) => {
         if (!ok) return;
@@ -2129,17 +2466,68 @@ function mountForkMeshDashboardChat() {
     }
   }
 
-  async function onFrame(event) {
-    if (typeof event.data !== "string") return;
+  async function flushHistoryReplay() {
+    if (historyReplayTimer) {
+      clearTimeout(historyReplayTimer);
+      historyReplayTimer = 0;
+    }
+    const envelopes = historyReplayEnvelopes;
+    historyReplayEnvelopes = [];
+    if (!envelopes.length) {
+      finishHistoryReplay();
+      return;
+    }
+    const frames = await Promise.all(envelopes.map(decryptObject));
+    const decoded = frames.filter(Boolean);
+    // D1 ties frames stored in the same millisecond by opaque cipher hash, so
+    // an edit/delete can replay before its original chat. Register every chat
+    // record first, then apply mutations in the received order.
+    for (const plain of decoded) {
+      if (plain.type === "chat") handlePlain(plain, true);
+    }
+    for (const plain of decoded) {
+      if (plain.type !== "chat") handlePlain(plain, true);
+    }
+    finishHistoryReplay();
+  }
+
+  function scheduleHistoryReplayFallback() {
+    if (historyReplayTimer) clearTimeout(historyReplayTimer);
+    historyReplayTimer = window.setTimeout(() => {
+      historyReplayTimer = 0;
+      inboundFrameQueue = inboundFrameQueue
+        .then(() => flushHistoryReplay())
+        .catch(() => {});
+    }, 180);
+  }
+
+  async function processFrameData(data) {
+    if (typeof data !== "string") return;
     let envelope;
     try {
-      envelope = JSON.parse(event.data);
+      envelope = JSON.parse(data);
     } catch (_) {
+      return;
+    }
+    if (envelope?.kind === "forkmesh-history-end") {
+      await flushHistoryReplay();
+      return;
+    }
+    if (envelope?.historyReplay === true) {
+      historyReplayEnvelopes.push(envelope);
+      scheduleHistoryReplayFallback();
       return;
     }
     const plain = await decryptObject(envelope);
     if (!plain) return;
     handlePlain(plain);
+  }
+
+  async function onFrame(event) {
+    const data = event.data;
+    const queued = inboundFrameQueue.then(() => processFrameData(data));
+    inboundFrameQueue = queued.catch(() => {});
+    await queued;
   }
 
   // Durable message types the relay should retain (still encrypted) and replay
@@ -3331,6 +3719,14 @@ function mountForkMeshDashboardChat() {
         button.addEventListener("click", () => {
           if (!fullLog) return;
           const direction = button.dataset.dashboardChatScroll;
+          if (
+            direction === "up" &&
+            fullLog.scrollTop <= 32 &&
+            hasHiddenHistory()
+          ) {
+            revealOlderHistory();
+            return;
+          }
           fullLog.scrollTo({
             top:
               direction === "up"
@@ -3344,9 +3740,13 @@ function mountForkMeshDashboardChat() {
       syncChatScrollThumb();
       const currentTop = fullLog.scrollTop;
       if (
+        hasHiddenHistory() &&
         currentTop <= 32 &&
-        currentTop < lastFullLogScrollTop - 1
+        currentTop < lastFullLogScrollTop - 1 &&
+        !historyWheelLatched
       ) {
+        historyWheelLatched = true;
+        scheduleHistoryWheelReset();
         revealOlderHistory();
       }
       lastFullLogScrollTop = currentTop;
@@ -3354,9 +3754,20 @@ function mountForkMeshDashboardChat() {
       passive: true,
     });
     fullLog?.addEventListener("wheel", (event) => {
-      if (event.deltaY < 0 && fullLog.scrollTop <= 32) revealOlderHistory();
+      scheduleHistoryWheelReset();
+      if (event.deltaY > 0) historyWheelLatched = false;
+      if (
+        event.deltaY < 0 &&
+        hasHiddenHistory() &&
+        fullLog.scrollTop <= 32 &&
+        !historyWheelLatched
+      ) {
+        historyWheelLatched = true;
+        revealOlderHistory();
+      }
     }, { passive: true });
     fullLog?.addEventListener("touchstart", (event) => {
+      historyTouchRevealed = false;
       historyTouchStartY =
         fullLog.scrollTop <= 32
           ? Number(event.touches?.[0]?.clientY)
@@ -3367,14 +3778,17 @@ function mountForkMeshDashboardChat() {
       if (
         Number.isFinite(historyTouchStartY) &&
         Number.isFinite(currentY) &&
-        currentY - historyTouchStartY >= 28
+        currentY - historyTouchStartY >= 28 &&
+        !historyTouchRevealed &&
+        hasHiddenHistory()
       ) {
-        historyTouchStartY = currentY;
+        historyTouchRevealed = true;
         revealOlderHistory();
       }
     }, { passive: true });
     fullLog?.addEventListener("touchend", () => {
       historyTouchStartY = null;
+      historyTouchRevealed = false;
     }, { passive: true });
     if (fullLog && "ResizeObserver" in window) {
       new ResizeObserver(syncChatScrollThumb).observe(fullLog);
@@ -3410,6 +3824,7 @@ function mountForkMeshDashboardChat() {
       setStatus("Not connected");
       connect();
     }
+    startDiscordMessageRefresh();
   }
 
   initChat();

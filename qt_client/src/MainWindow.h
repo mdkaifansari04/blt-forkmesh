@@ -1156,6 +1156,12 @@ private:
     void registerDirectMirrorEndpoint();
     void checkDirectMirrorGatewayHealth();
     void appendControlNodeOutput(const QString &text);
+    // Ship this checkout's site + relay Worker with cloudflare_worker/deploy.sh
+    // and stream the script's output into the page while it runs.
+    QWidget *buildSiteDeployCard();
+    void runSiteDeploy();
+    void cancelSiteDeploy();
+    void appendSiteDeployOutput(const QString &text);
     void connectToDeployedRelay(const QString &hostname);
     void deploySavedHostsFromControl();
     // First-instance-owner community reward-pool signer. The Solana private key
@@ -1336,6 +1342,16 @@ private:
     // opened and nothing is changed on the remote host itself. Use Uninstall
     // instead to actually remove ForkMesh from the host.
     void forgetHostAtRow(int row);
+    // Destroy the VPS behind a saved host on the user's Vultr account (adhoc
+    // #24): the server itself is deleted and billing stops, which Uninstall
+    // (wipes ForkMesh, keeps the server) and Remove (forgets it here) do not do.
+    // The instance is addressed by the id recorded at provision time, or looked
+    // up by address for hosts saved before that; the row is dropped from the
+    // saved list only once Vultr confirms the delete.
+    void destroyVultrHostAtRow(int row);
+    void sendVultrInstanceDestroy(const QString &apiKey,
+                                  const QString &instanceId,
+                                  const QString &name);
     // --- One-click Vultr mirror (adhoc #315) ---------------------------------
     // Create a brand-new mirror VPS on the user's Vultr account: pick the
     // cheapest plan and newest Debian via the Vultr v2 API, create/reuse the
@@ -3385,6 +3401,9 @@ private:
     void adoptWebAccountAvatar(const QByteArray &png);
     void updateAvatarButton();
     void updateUserAvatarButton();
+    // Shows/hides the admin crown badge overlaid on the user avatar button,
+    // based on the current m_isAdmin.
+    void updateAdminCrownBadge();
     void refreshIssueComposerAvatar();
     // Builds a small "identity" row (self avatar + current username) shown above
     // compose inputs so it's clear who is about to post. When verb is set the
@@ -3845,6 +3864,9 @@ private:
     // online / amber connecting / grey offline), replacing the old text pill.
     QLabel *m_connectionDot = nullptr;
     QString m_connectionStatusColor;      // last dot colour (skip redundant repaints)
+    // Little crown badge painted over the top-left of the same avatar, shown
+    // only while this node is an admin (see updateAdminCrownBadge()).
+    QLabel *m_adminCrownBadge = nullptr;
     QLabel *m_topMessage = nullptr;       // compact centered success/failure toast text
     QFrame *m_topMessageContainer = nullptr; // bordered pill wrapping the text + Expand/Copy/✕
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
@@ -4010,6 +4032,12 @@ private:
     QPushButton *m_cloudflareDeployButton = nullptr;
     QPushButton *m_cloudflareCancelButton = nullptr;
     QPlainTextEdit *m_controlNodeOutput = nullptr;
+    // cloudflare_worker/deploy.sh: one button, live merged output, cancel.
+    QPushButton *m_siteDeployButton = nullptr;
+    QPushButton *m_siteDeployCancelButton = nullptr;
+    QLabel *m_siteDeployStatus = nullptr;
+    QPlainTextEdit *m_siteDeployOutput = nullptr;
+    QProcess *m_siteDeployProcess = nullptr;
     QProcess *m_cloudflareBootstrapProcess = nullptr;
     QProcess *m_cloudflareTunnelBootstrapProcess = nullptr;
     QProcess *m_cloudflaredInstallProcess = nullptr;
@@ -5806,7 +5834,14 @@ private:
     // POST /api/tasks/<id>/complete once the run reaches a terminal status,
     // stamping the finishing bot. No-op without an org task, while the run is
     // still going, or once finishedByBot is already set.
-    void completeOrgTaskForSession(int sessionId);
+    //
+    // followUp names a later event that changed the story after the run itself
+    // ended — the branch landing, or the session being deleted (adhoc #30).
+    // Passing one re-posts the completion (the relay's /complete is idempotent
+    // and refreshes the note) and skips the terminal-status guard, so the task
+    // ends up complete with a summary even when the run never finished cleanly.
+    void completeOrgTaskForSession(int sessionId,
+                                   const QString &followUp = QString());
     // Apply an org-task field update to the live session and persist it. The
     // network callbacks run after event-loop turns that can rebuild
     // m_agentSessions, so they re-look-up by id rather than hold a pointer.

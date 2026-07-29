@@ -288,6 +288,23 @@ export function createWorldOfficeTasksController({
   const workActive = root.querySelector("[data-world-work-active]");
   const workTracked = root.querySelector("[data-world-work-tracked]");
   const workIssueList = root.querySelector("[data-world-work-issue-list]");
+  const quickForm = root.querySelector("[data-world-work-task-form]");
+  const quickTitle = root.querySelector("[data-world-work-task-title]");
+  const quickAssignee = root.querySelector("[data-world-work-task-assignee]");
+  const quickDepartment = root.querySelector(
+    "[data-world-work-task-department]",
+  );
+  const quickRepository = root.querySelector(
+    "[data-world-work-task-repository]",
+  );
+  const quickPriority = root.querySelector("[data-world-work-task-priority]");
+  const quickPriorityWrap = root.querySelector(
+    "[data-world-work-task-priority-wrap]",
+  );
+  const quickSubmit = root.querySelector("[data-world-work-task-submit]");
+  const quickStatus = root.querySelector(
+    "[data-world-work-task-form-status]",
+  );
   const checkinCopy = root.querySelector(
     "[data-world-office-task-checkin-copy]",
   );
@@ -304,6 +321,8 @@ export function createWorldOfficeTasksController({
   let recentIssues = [];
   let assignable = [];
   let marketingMembers = [];
+  let organizationMembers = [];
+  let departments = ["general"];
   let attendanceDays = [];
   let proofs = [];
   let initiatives = [];
@@ -764,6 +783,58 @@ export function createWorldOfficeTasksController({
         ? recentIssues.map(issueHTML).join("")
         : `<li class="world-office-task-empty">No recent issue assignments.</li>`;
     }
+    renderQuickEntry();
+  }
+
+  function renderQuickEntry() {
+    if (!quickForm) return;
+    quickForm.hidden = !authorized;
+    if (!authorized) return;
+    const selectedAssignee = quickAssignee?.value || "self";
+    const assignees = [
+      { value: "self", label: actor ? `You (@${actor})` : "You" },
+      {
+        value: "agent",
+        label: "Codex / Claude agent on linked desktop",
+      },
+      { value: "unassigned", label: "Unassigned" },
+    ];
+    if (canManage) {
+      organizationMembers
+        .filter((name) => name && name !== actor)
+        .forEach((name) => {
+          assignees.push({ value: `user:${name}`, label: `@${name}` });
+        });
+    }
+    if (quickAssignee) {
+      quickAssignee.innerHTML = assignees
+        .map(
+          (item) =>
+            `<option value="${escapeHTML(item.value)}">${escapeHTML(item.label)}</option>`,
+        )
+        .join("");
+      quickAssignee.value = assignees.some(
+        (item) => item.value === selectedAssignee,
+      )
+        ? selectedAssignee
+        : "self";
+    }
+    const selectedDepartment = quickDepartment?.value || "general";
+    if (quickDepartment) {
+      quickDepartment.innerHTML = departments
+        .map(
+          (name) =>
+            `<option value="${escapeHTML(name)}">${escapeHTML(
+              name.replaceAll("-", " "),
+            )}</option>`,
+        )
+        .join("");
+      quickDepartment.value = departments.includes(selectedDepartment)
+        ? selectedDepartment
+        : "general";
+    }
+    if (quickPriorityWrap) quickPriorityWrap.hidden = !canManage;
+    if (quickSubmit) quickSubmit.disabled = loading;
   }
 
   function updateElapsedLabels() {
@@ -914,6 +985,17 @@ export function createWorldOfficeTasksController({
         actor = text(payload?.actor, 64).toLowerCase();
         canManage = payload?.canManage === true;
         authorized = payload?.authorized !== false;
+        organizationMembers = Array.isArray(payload?.members)
+          ? payload.members
+              .map((name) => text(name, 64).toLowerCase())
+              .filter(Boolean)
+              .slice(0, 1000)
+          : [];
+        departments = Array.isArray(payload?.departments)
+          ? payload.departments
+              .map((name) => text(name, 64).toLowerCase())
+              .filter(Boolean)
+          : ["general"];
         assignable = Array.isArray(marketingPayload?.members)
           ? marketingPayload.members
               .map((name) => text(name, 64).toLowerCase())
@@ -964,6 +1046,8 @@ export function createWorldOfficeTasksController({
         attendanceDays = [];
         proofs = [];
         initiatives = [];
+        organizationMembers = [];
+        departments = ["general"];
         loading = false;
         render();
         setStatus(
@@ -1022,6 +1106,60 @@ export function createWorldOfficeTasksController({
   }
 
   async function onSubmit(event) {
+    if (event.target === quickForm) {
+      event.preventDefault();
+      const title = text(quickTitle?.value);
+      const assignment = text(quickAssignee?.value, 80).toLowerCase();
+      const department = text(
+        quickDepartment?.value || "general",
+        64,
+      ).toLowerCase();
+      const repository = text(quickRepository?.value, 201);
+      if (!title) return;
+      if (assignment === "agent" && !repository) {
+        if (quickStatus) {
+          quickStatus.textContent =
+            "Choose an owner/repository before assigning agent work.";
+        }
+        quickRepository?.focus();
+        return;
+      }
+      const body = {
+        title,
+        department,
+        destination: assignment === "agent" ? "agent" : "department",
+        assigneeKind:
+          assignment === "agent"
+            ? "agent"
+            : assignment === "unassigned"
+              ? "unassigned"
+              : "user",
+      };
+      if (assignment.startsWith("user:")) {
+        body.assignee = assignment.slice(5);
+      } else if (assignment === "self") {
+        body.assignee = actor;
+      }
+      if (repository) body.repository = repository;
+      if (canManage && quickPriority?.value) {
+        body.priority = Number(quickPriority.value);
+      }
+      if (quickStatus) quickStatus.textContent = "Creating task…";
+      const saved = await mutate(OFFICE_TASKS_PATH, body);
+      if (saved) {
+        quickForm.reset();
+        renderQuickEntry();
+        if (quickStatus) quickStatus.textContent = "Task created.";
+        toast(
+          assignment === "agent"
+            ? "Agent task created and queued for a linked desktop."
+            : "Organization task created.",
+        );
+      } else if (quickStatus) {
+        quickStatus.textContent = "Task could not be created.";
+      }
+      return;
+    }
     if (event.target === form) {
       event.preventDefault();
       const title = text(titleInput?.value);

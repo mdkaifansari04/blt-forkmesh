@@ -17,6 +17,8 @@ def test_worker_suite_uses_runner_packages_without_network_install():
     assert "python3 -m pytest -q cloudflare_worker/tests" in worker_suite
     assert '("pytest", "cryptography")' in worker_suite
     assert "FORKMESH_CI_KNOWN_FAILURES=1" in worker_suite
+    assert 'export TMPDIR="$ci_tmp"' in source
+    assert 'ci_tmp="$PWD/.forkmesh-ci-tmp"' in source
     assert " -m pip install" not in worker_suite
     assert "python3 -m venv" not in worker_suite
 

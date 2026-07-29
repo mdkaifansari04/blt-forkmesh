@@ -127,14 +127,21 @@ def test_native_chat_starts_closed_and_floats_without_open_launcher_shell():
     assert "content?.append(buildMessageActions(record));" in CHAT
 
 
-def test_open_native_chat_fills_safe_height_and_keeps_composer_at_bottom():
-    assert "top: max(12px, env(safe-area-inset-top));" in CSS
+def test_open_native_chat_uses_lower_viewport_and_keeps_composer_at_bottom():
+    assert "top: auto;" in CSS
     assert "bottom: max(12px, env(safe-area-inset-bottom));" in CSS
+    assert "height: min(58dvh, 680px);" in CSS
+    assert "var(--world-viewport-height, 100dvh)" in CSS
     assert 'grid-template-areas:\n    "transcript"' in CSS
     assert "grid-template-rows: minmax(0, 1fr) auto auto auto;" in CSS
     assert CSS.count("grid-area: transcript;") == 2
     assert "bottom: 260px;" not in CSS
     assert "display: grid !important;" in CSS
+    assert "position: absolute;\n  inset: 0;" in CSS
+    assert "contain: layout paint;" in CSS
+    assert "max-height: min(18rem, 35vh);" in CSS
+    assert "min-width: 0 !important;" in CSS
+    assert "align-self: end;" in CSS
     assert "world-chat-composer-rise 360ms" in CSS
     assert ".world-chat-terminal:not([open])" in CSS
     assert "@media (prefers-reduced-motion: reduce)" in CSS
