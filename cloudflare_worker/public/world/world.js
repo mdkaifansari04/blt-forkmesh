@@ -183,7 +183,12 @@ const WORLD_NOTIFICATION_POLL_MS = 60 * 1000;
 const MIRROR_STATUS_POLL_MS = 5 * 60 * 1000;
 const MIRROR_ACTIONS_POLL_MS = 20 * 1000;
 const WORLD_EVENT_POLL_MS = 3 * 60 * 1000;
-const WORLD_REWARD_POLL_MS = 5 * 60 * 1000;
+// The treasury balance is a public Solana RPC round trip per view, so it is
+// not on a timer at all: the bootstrap seeds the board and hovering the SOL
+// sign refreshes it. Everything in between is answered from the cached copy
+// the board is already showing, and repeated hovers are throttled.
+const WORLD_REWARD_CACHE_MS = 30 * 60 * 1000;
+const WORLD_REWARD_HOVER_MS = 60 * 1000;
 const WORLD_MEDIA_PLAYBACK_POLL_MS = 15 * 1000;
 const WORLD_SOCKET_PING_MS = 40 * 1000;
 // One broadcast wave per pose; the local arm still replays on every click.
@@ -4876,7 +4881,8 @@ class ForkMeshWorld extends HTMLElement {
     // treating every reconnect like a new arrival used to snap signed-in
     // visitors back to the entrance and looked exactly like a page refresh.
     this.initialPresenceWelcomePending = true;
-    this.rewardTimer = 0;
+    this.statusBoardTimer = 0;
+    this.rewardHoverRefreshedAt = 0;
     this.mirrorTimer = 0;
     this.repositoryImportTimer = 0;
     this.mirrorPushRefreshTimer = 0;
@@ -5816,6 +5822,9 @@ class ForkMeshWorld extends HTMLElement {
           window.open("/desktop", "_blank", "noopener,noreferrer");
           this.toast("Opening the ForkMesh node download page.");
         },
+        onRewardBoardHover: () => {
+          void this.refreshRewardStateOnHover();
+        },
         onSwingRide: (state) => this.handleSwingRide(state),
         onCameraMode: (state) => this.handleWorldCameraMode(state),
         onStartHereSelect: ({ completed = 0, total = 0 } = {}) => {
@@ -6016,7 +6025,7 @@ class ForkMeshWorld extends HTMLElement {
       this.updateMetrics();
       this.updateDistances();
       this.startActivityTicker();
-      this.startRewardPolling();
+      this.startStatusBoardPolling();
       this.startMirrorPolling();
       this.startMirrorActionsPolling();
       this.startRepositoryImportPolling();
@@ -10622,14 +10631,14 @@ class ForkMeshWorld extends HTMLElement {
       this.fetchJSON("/api/accounts/central-fund", {
         auth: false,
         timeout: 5000,
-        maxAge: force ? 0 : WORLD_REWARD_POLL_MS,
+        maxAge: force ? 0 : WORLD_REWARD_CACHE_MS,
         backoff: true,
         staleIfError: true,
       }),
       hasSession
         ? this.fetchJSON("/api/rewards/pending", {
             timeout: 5000,
-            maxAge: force ? 0 : WORLD_REWARD_POLL_MS,
+            maxAge: force ? 0 : WORLD_REWARD_CACHE_MS,
             backoff: true,
             staleIfError: true,
           })
@@ -10741,23 +10750,37 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  startRewardPolling() {
-    window.clearInterval(this.rewardTimer);
-    this.rewardTimer = window.setInterval(async () => {
+  // Hovering the SOL treasury board is the refresh gesture for the reward
+  // pool: the scene reports the pointer resting on the sign, and only then is
+  // a fresh balance fetched. Repeated hovers inside WORLD_REWARD_HOVER_MS keep
+  // the cached copy that is already painted on the board.
+  async refreshRewardStateOnHover() {
+    if (this.destroyed) return;
+    const now = Date.now();
+    if (now - this.rewardHoverRefreshedAt < WORLD_REWARD_HOVER_MS) return;
+    this.rewardHoverRefreshedAt = now;
+    try {
+      await this.refreshRewardState({ force: true });
+      if (
+        this.$("[data-world-detail]")?.dataset.open === "true" &&
+        this.$("#world-detail-title")?.textContent?.includes("reward")
+      ) {
+        this.openLandmark("fountain");
+      }
+    } catch (_) {}
+  }
+
+  // The system status board reads the Worker's own cached status view rather
+  // than a chain RPC, so it keeps its timer; the treasury balance beside it
+  // does not (see refreshRewardStateOnHover).
+  startStatusBoardPolling() {
+    window.clearInterval(this.statusBoardTimer);
+    this.statusBoardTimer = window.setInterval(async () => {
       if (this.destroyed || document.hidden) return;
       try {
-        await Promise.all([
-          this.refreshRewardState(),
-          this.refreshSystemStatusBoard(),
-        ]);
-        if (
-          this.$("[data-world-detail]")?.dataset.open === "true" &&
-          this.$("#world-detail-title")?.textContent?.includes("reward")
-        ) {
-          this.openLandmark("fountain");
-        }
+        await this.refreshSystemStatusBoard();
       } catch (_) {}
-    }, WORLD_REWARD_POLL_MS);
+    }, WORLD_STATUS_POLL_MS);
   }
 
   async refreshSystemStatusBoard() {
@@ -24391,7 +24414,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.clockTimer);
     window.clearInterval(this.distanceTimer);
     window.clearInterval(this.pingTimer);
-    window.clearInterval(this.rewardTimer);
+    window.clearInterval(this.statusBoardTimer);
     window.clearInterval(this.mirrorTimer);
     window.clearInterval(this.mirrorActionsTimer);
     window.clearInterval(this.repositoryImportTimer);

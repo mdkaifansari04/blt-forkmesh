@@ -706,7 +706,7 @@ def test_world_has_consent_aware_activity_events_and_media():
     assert "this.inactivePlayers" in APP
     assert "SPACE_CHANNELS" in DASHBOARD_CHAT
     assert "entry.channel === CHANNEL" in DASHBOARD_CHAT
-    assert "startRewardPolling" in APP
+    assert "startStatusBoardPolling" in APP
     assert "confirmed community reward event" in APP
     assert "60000" in APP
     assert "function updateNeighborhoodHomes" in SCENE
