@@ -4452,13 +4452,32 @@ const AVATAR_DEFAULT_FACE_EMOJI = "🙂";
 // live colour is read back out of the rendered glyph instead (see
 // edgeEmojiColor) so the sphere is exactly the emoji's own rim colour.
 const AVATAR_EMOJI_SKIN_COLOR = "#ffcc4d";
-// How far the emoji decal is wrapped around the head, centred on the front.
-// Both spans are wider than the glyph itself so the padded canvas carries the
-// emoji's rim colour past where the face ends and no bare sphere is left over.
-const AVATAR_FACE_PHI_START = Math.PI * 0.03;
-const AVATAR_FACE_PHI_LENGTH = Math.PI * 0.94;
-const AVATAR_FACE_THETA_START = Math.PI * 0.117;
-const AVATAR_FACE_THETA_LENGTH = Math.PI * 0.766;
+// The front of the head is cut off flat at this depth in front of the head's
+// centre and the face is a plain disc lying on that cut, so an uploaded avatar
+// photo is shown undistorted instead of being wrapped around a curved shell.
+const AVATAR_HEAD_RADIUS = 0.45;
+const AVATAR_FACE_DEPTH = 0.3;
+// Where the cut plane meets the sphere: the flat circle's exact radius, so the
+// disc covers the whole cut and no bare head shows around the face.
+const AVATAR_FACE_RADIUS = Math.sqrt(
+  AVATAR_HEAD_RADIUS * AVATAR_HEAD_RADIUS - AVATAR_FACE_DEPTH * AVATAR_FACE_DEPTH,
+);
+// Held just off the cut so the disc and the coplanar cap never z-fight.
+const AVATAR_FACE_LIFT = 0.002;
+
+// Slices the front off a head sphere: every vertex further forward than the
+// cut plane is pulled straight back onto it, which leaves the front as one
+// flat circle (avatar fronts face -Z) and the rest of the sphere untouched.
+function flattenSphereFront(geometry, depth) {
+  const position = geometry.attributes?.position;
+  if (!position) return geometry;
+  for (let i = 0; i < position.count; i += 1) {
+    if (position.getZ(i) < -depth) position.setZ(i, -depth);
+  }
+  position.needsUpdate = true;
+  geometry.computeVertexNormals();
+  return geometry;
+}
 
 // Reads back the drawn glyph, or "" when the canvas is tainted.
 function emojiPixels(context, canvas) {
@@ -4618,9 +4637,9 @@ function rotateBoxTopUVs(geometry) {
 
 function avatarFaceTexture(THREE, emoji) {
   let color = "";
-  // The glyph is drawn smaller than the canvas so the decal (which is widened
-  // to match, see AVATAR_FACE_*) keeps the face at the same angular size while
-  // its padding wraps further around the head.
+  // The glyph is drawn smaller than the canvas because the disc inscribes the
+  // square: the padding is what fills the corners the circle cuts away, so the
+  // face reaches the rim without the glyph itself being clipped.
   const texture = canvasTexture(THREE, 128, 128, (context, canvas) => {
     context.clearRect(0, 0, 128, 128);
     context.textAlign = "center";
@@ -4948,10 +4967,18 @@ function createAvatar(THREE, identity, options = {}) {
   torso.position.y = 2.15;
   group.add(torso);
 
-  // Same tessellation as the face shell wrapped over it, so the two silhouettes
-  // agree where the decal reaches around towards the ears.
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.45, 32, 24), skin);
-  head.scale.y = 1.05;
+  // Rounded everywhere except the front, which is cut off flat to carry the
+  // face disc: the two share AVATAR_FACE_DEPTH so the cut and the disc are the
+  // same circle.
+  const head = new THREE.Mesh(
+    flattenSphereFront(
+      new THREE.SphereGeometry(AVATAR_HEAD_RADIUS, 32, 24),
+      AVATAR_FACE_DEPTH,
+    ),
+    skin,
+  );
+  // Left unscaled: an egg-shaped head would stretch the flat cut into an
+  // ellipse and put the avatar photo back out of proportion.
   head.position.y = 3.36;
   group.add(head);
 
@@ -4960,31 +4987,24 @@ function createAvatar(THREE, identity, options = {}) {
     dark,
   );
   hair.position.set(0, 3.46, 0.07);
-  // Tilted back so the cap clears the forehead and the wrapped emoji face
-  // has the whole front of the head to itself.
+  // Tilted back so the cap clears the forehead and the flat face disc has the
+  // whole front of the head to itself.
   hair.rotation.x = 0.42;
   group.add(hair);
 
   // The face wears the last world-status emoji the visitor set (default
-  // smile). Avatar fronts face -Z; the emoji is mapped onto a thin curved
-  // shell hugging the head sphere so it wraps the whole face, and
-  // syncAvatarFace keeps its texture current.
+  // smile), or the visitor's avatar photo. It is a flat disc filling the cut
+  // front of the head, so the picture is shown square-on and unwarped rather
+  // than wrapped around a curve; syncAvatarFace keeps its texture current.
   const faceMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(
-      0.462,
-      32,
-      24,
-      AVATAR_FACE_PHI_START,
-      AVATAR_FACE_PHI_LENGTH,
-      AVATAR_FACE_THETA_START,
-      AVATAR_FACE_THETA_LENGTH,
-    ),
+    new THREE.CircleGeometry(AVATAR_FACE_RADIUS, 48),
     // The canvas is flooded opaque, so the decal renders in the solid pass and
-    // never sorts against the head sphere it is hugging.
+    // never sorts against the head it is lying on.
     new THREE.MeshBasicMaterial({}),
   );
-  faceMesh.scale.y = 1.05;
   faceMesh.position.y = 3.36;
+  // Avatar fronts face -Z, so the disc is turned to look out of the cut.
+  faceMesh.position.z = -(AVATAR_FACE_DEPTH + AVATAR_FACE_LIFT);
   faceMesh.rotation.y = Math.PI;
   group.add(faceMesh);
 
