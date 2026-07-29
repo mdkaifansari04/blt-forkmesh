@@ -889,16 +889,38 @@ async def _consume_oauth_state(runtime):
     if not _OAUTH_STATE_RE.fullmatch(state):
         return None
     state_hash = _oauth_state_hash(state)
-    # Consume atomically before calling Discord. A provider retry can safely
-    # start a new flow; it cannot replay a code or turn a valid callback into a
-    # durable bearer credential.
     row = await runtime.d1_first(
-        "DELETE FROM organization_discord_oauth_states "
-        "WHERE state_hash=? RETURNING data,expires_at", state_hash)
+        "SELECT data,expires_at FROM organization_discord_oauth_states "
+        "WHERE state_hash=?", state_hash)
     if not row or int(row.get("expires_at") or 0) <= runtime.now():
+        if row:
+            await runtime.d1_run(
+                "DELETE FROM organization_discord_oauth_states "
+                "WHERE state_hash=? AND data=?", state_hash, row.get("data"))
         return None
+    encrypted = str(row.get("data") or "")
+    claim = "consumed:" + _new_oauth_secret(runtime)
+    if not encrypted or claim == "consumed:":
+        return None
+    # D1's Worker API documents write-operation result sets as empty, so
+    # DELETE ... RETURNING cannot be consumed through PreparedStatement.first.
+    # Claim with a compare-and-swap, then read the marker back: only one
+    # concurrent callback can own this exact encrypted row.
+    await runtime.d1_run(
+        "UPDATE organization_discord_oauth_states SET data=?,expires_at=0 "
+        "WHERE state_hash=? AND data=? AND expires_at=?",
+        claim, state_hash, encrypted, int(row.get("expires_at") or 0))
+    claimed = await runtime.d1_first(
+        "SELECT data FROM organization_discord_oauth_states "
+        "WHERE state_hash=?", state_hash)
+    if not claimed or not hmac.compare_digest(
+            str(claimed.get("data") or ""), claim):
+        return None
+    await runtime.d1_run(
+        "DELETE FROM organization_discord_oauth_states "
+        "WHERE state_hash=? AND data=?", state_hash, claim)
     try:
-        record = await runtime.open(row.get("data"))
+        record = await runtime.open(encrypted)
     except Exception:
         record = None
     if not isinstance(record, dict):

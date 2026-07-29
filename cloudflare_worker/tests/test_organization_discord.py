@@ -846,6 +846,10 @@ def test_route_schema_and_worker_adapter_keep_the_secret_server_side():
     assert "DELETE FROM organization_discord_oauth_grants WHERE org_bi=?" in entry_source
     assert "DELETE FROM organization_discord_oauth_states WHERE org_bi=?" in entry_source
     assert "DISCORD_BOT_TOKEN=" not in entry_source
+    assert "DELETE FROM organization_discord_oauth_states " in (
+        SRC / "organization_discord.py").read_text(encoding="utf-8")
+    assert "RETURNING data,expires_at" not in (
+        SRC / "organization_discord.py").read_text(encoding="utf-8")
 
 
 def test_discord_oauth_redirect_is_bound_to_the_canonical_public_origin():
