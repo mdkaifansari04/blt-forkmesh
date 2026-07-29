@@ -23,6 +23,10 @@ def test_avatar_is_the_compact_hud_launcher_with_visible_count_badges():
         ".world-shirt-badge:hover", 1
     )[0]
     assert "border-radius: 50%;" in badge_css
+    final_launcher_css = CSS.rsplit("/* Fixed launcher geometry.", 1)[1]
+    assert ".fm-world .world-shirt-badge" in final_launcher_css
+    assert "border-radius: 50%;" in final_launcher_css
+    assert "clip-path: circle(50%);" in final_launcher_css
     assert ".world-shirt-avatar" in CSS
     assert ".world-shirt-count--alerts" in CSS
 

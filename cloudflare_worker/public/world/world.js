@@ -3575,11 +3575,10 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
     /^[A-Za-z0-9+/=]+$/.test(String(accountSession.avatarPng))
       ? String(accountSession.avatarPng)
       : "";
-  // Repository portals remain present and interactive in the scene. The
-  // compact map is for travel shortcuts, and Code already owns repository
-  // navigation, so do not duplicate a repository view in this rail.
-  const mapItems = LANDMARKS.filter(
-    (landmark) => landmark.id !== "repositories",
+  // The compact rail only needs the two spatial shortcuts people use while
+  // walking. Repository and reward-pool navigation remain in the scene.
+  const mapItems = LANDMARKS.filter((landmark) =>
+    new Set(["office", "campfire"]).has(landmark.id),
   ).map(
     (landmark) => `
       <li>
@@ -3589,17 +3588,10 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           data-world-landmark="${escapeHTML(landmark.id)}"
           style="--map-color:${escapeHTML(landmark.color)}"
           aria-current="${landmark.id === LANDMARKS[0]?.id ? "true" : "false"}"
+          title="Go to ${escapeHTML(landmark.shortLabel)}"
         >
           <span class="world-map-icon" aria-hidden="true">${escapeHTML(landmark.icon)}</span>
-          <span class="world-map-label-copy">
-            <span>${escapeHTML(landmark.shortLabel)}</span>
-            ${constructionMarkerHTML(
-              landmark.id,
-              landmarkCapabilities?.[landmark.id],
-              "world-construction-mark-map",
-            )}
-          </span>
-          <span class="world-map-distance" data-world-distance="${escapeHTML(landmark.id)}">—</span>
+          <span class="world-map-label-copy">${escapeHTML(landmark.shortLabel)}</span>
         </button>
       </li>`,
   ).join("");
@@ -3766,15 +3758,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span aria-hidden="true">⌖</span><span class="world-top-link-label" data-world-camera-label>First person</span>
             </button>
             <button
-              class="world-top-link world-wave-button"
-              type="button"
-              data-world-wave
-              title="Wave to everyone in the world"
-              aria-label="Wave your avatar's arm"
-            >
-              <span aria-hidden="true">👋</span><span class="world-top-link-label">Wave</span>
-            </button>
-            <button
               class="world-top-link"
               type="button"
               data-world-sound-toggle
@@ -3791,7 +3774,11 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               aria-label="Capture and annotate a screenshot"
               title="Capture and annotate a screenshot"
             >
-              <span aria-hidden="true">📷</span><span class="world-top-link-label">Capture</span>
+              <span class="world-hud-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M8 3H4a1 1 0 0 0-1 1v4M16 3h4a1 1 0 0 1 1 1v4M8 21H4a1 1 0 0 1-1-1v-4M16 21h4a1 1 0 0 0 1-1v-4M8 8h8v8H8z"></path>
+                </svg>
+              </span><span class="world-top-link-label">Capture</span>
             </button>
             <button
               class="world-top-link world-notification-button"
@@ -3825,7 +3812,12 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               aria-label="Open Dashboard in a new tab"
               title="Open Dashboard in a new tab"
             >
-              <span aria-hidden="true">▦</span>
+              <span class="world-hud-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <circle cx="12" cy="12" r="9"></circle>
+                  <path d="M3 12h18M12 3c2.4 2.5 3.6 5.5 3.6 9S14.4 18.5 12 21M12 3C9.6 5.5 8.4 8.5 8.4 12s1.2 6.5 3.6 9"></path>
+                </svg>
+              </span>
               <span class="world-top-link-label">Dashboard</span>
             </a>
             <button
@@ -3836,7 +3828,11 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               aria-label="Open organization tasks"
               title="Open organization tasks"
             >
-              <span aria-hidden="true">✓</span>
+              <span class="world-hud-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M9 6h11M9 12h11M9 18h11M4 6l1.3 1.3L7.6 5M4 12l1.3 1.3L7.6 11M4 18l1.3 1.3L7.6 17"></path>
+                </svg>
+              </span>
               <span class="world-top-link-label">Tasks</span>
               <span class="world-tool-count" data-world-task-count hidden>0</span>
             </button>
@@ -3882,17 +3878,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           aria-label="World navigation and activity"
         >
           <section class="world-map" data-world-map>
-            <div class="world-panel-heading">
-              <h2>World map</h2>
-              <span data-world-location-code>TS-01</span>
-              <button
-                class="world-map-toggle"
-                type="button"
-                data-world-map-toggle
-                aria-expanded="false"
-                aria-label="Expand World controls"
-              >☰</button>
-            </div>
             <ul class="world-map-list">${mapItems}</ul>
           </section>
           <button
@@ -3902,18 +3887,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             title="Share a link to this exact location and camera view"
           >
             <span aria-hidden="true">🔗</span>
-            <span>Share exact view</span>
+            <span>Share view</span>
           </button>
           <section class="world-saved-views" data-world-saved-views data-expanded="true" aria-label="Five most recent saved World views">
-            <div class="world-saved-views-heading">
-              <span class="world-saved-views-title">Quick views</span>
-              <button
-                type="button"
-                data-world-save-view
-                aria-label="Save this location and perspective"
-                title="Save this view"
-              ><span aria-hidden="true">＋</span><span class="world-visually-hidden">Save current map view</span></button>
-            </div>
+            <button
+              class="world-remember-view"
+              type="button"
+              data-world-save-view
+              aria-label="Remember this location and perspective"
+              title="Remember this view"
+            ><span aria-hidden="true">＋</span><span>Remember</span></button>
             <div class="world-saved-view-list" data-world-saved-view-list></div>
           </section>
           <section
@@ -3993,6 +3976,17 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </dl>
           </div>
         </details>
+
+        <button
+          class="world-chat-wave-button"
+          type="button"
+          data-world-wave
+          title="Wave to everyone in the world"
+          aria-label="Wave your avatar's arm"
+        >
+          <span class="world-chat-wave-icon" aria-hidden="true">👋</span>
+          <span>Wave</span>
+        </button>
 
         <details class="world-diagnostics world-chat-terminal${settings.debugPanel ? "" : " world-chat-terminal--debug-hidden"}" data-world-chat-terminal>
           <summary aria-label="Open World chat and activity">
@@ -8661,12 +8655,6 @@ class ForkMeshWorld extends HTMLElement {
         this.openAdminErrors();
         return;
       }
-      const mapToggle = event.target.closest("[data-world-map-toggle]");
-      if (mapToggle) {
-        const rail = this.$("[data-world-right-rail]");
-        this.setWorldRightRailExpanded(rail?.dataset.expanded !== "true");
-        return;
-      }
       const landmarkButton = event.target.closest("[data-world-landmark]");
       if (landmarkButton) {
         const id = landmarkButton.dataset.worldLandmark;
@@ -9382,7 +9370,7 @@ class ForkMeshWorld extends HTMLElement {
     const section = this.$("[data-world-saved-views]");
     const list = this.$("[data-world-saved-view-list]");
     if (!section || !list) return;
-    // Quick views are intentionally always exposed. Retain this method for
+    // Saved shortcuts are intentionally always exposed. Retain this method for
     // older callers and synchronized preference snapshots without allowing a
     // stale collapsed preference to hide the five thumbnail shortcuts.
     section.dataset.expanded = "true";
@@ -9391,23 +9379,13 @@ class ForkMeshWorld extends HTMLElement {
 
   setWorldRightRailExpanded(expanded) {
     const rail = this.$("[data-world-right-rail]");
-    const map = this.$("[data-world-map]");
-    const toggle = this.$("[data-world-map-toggle]");
     const hud = this.$("[data-world-hud]");
     const avatarLauncher = this.$("[data-world-shirt-badge]");
-    if (!rail || !map) return false;
+    if (!rail) return false;
     const active = expanded === true;
     rail.dataset.expanded = String(active);
     if (hud) hud.dataset.hudExpanded = String(active);
     if (avatarLauncher) avatarLauncher.setAttribute("aria-expanded", String(active));
-    map.classList.toggle("is-expanded", active);
-    if (toggle) {
-      toggle.setAttribute("aria-expanded", String(active));
-      toggle.setAttribute(
-        "aria-label",
-        active ? "Collapse World controls" : "Expand World controls",
-      );
-    }
     return active;
   }
 
@@ -9638,8 +9616,7 @@ class ForkMeshWorld extends HTMLElement {
     const list = this.$("[data-world-saved-view-list]");
     if (!list) return;
     if (!this.savedViews.length) {
-      list.innerHTML =
-        '<span class="world-saved-view-empty">Tap ＋ to save this spot</span>';
+      list.replaceChildren();
       return;
     }
     list.innerHTML = this.savedViews
