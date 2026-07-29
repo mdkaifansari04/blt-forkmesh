@@ -5803,7 +5803,7 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         p.drawPixmap(0, 0,
-                     refreshPixmap(QColor(Theme::kTextTertiary), m_angle, m_size));
+                     refreshPixmap(QColor(Theme::kRunning), m_angle, m_size));
     }
 
 private:
@@ -5922,7 +5922,7 @@ class RingSpinner : public QWidget
 {
 public:
     explicit RingSpinner(QWidget *parent = nullptr,
-                         const QColor &color = QColor("#58a6ff"))
+                         const QColor &color = QColor(Theme::kRunning))
         : QWidget(parent), m_color(color)
     {
         setAttribute(Qt::WA_TranslucentBackground);
@@ -6624,7 +6624,7 @@ protected:
             p.setPen(Qt::NoPen);
             p.setBrush(QColor(dark ? "#0d1117" : "#ffffff"));
             p.drawEllipse(QRect(at, QSize(s, s)).adjusted(-1, -1, 1, 1));
-            p.drawPixmap(at, refreshPixmap(QColor("#58a6ff"), m_spinAngle, s));
+            p.drawPixmap(at, refreshPixmap(QColor(Theme::kRunning), m_spinAngle, s));
         } else if (m_badge > 0) {
             const QString text = m_badge > 99 ? QStringLiteral("99+")
                                               : QString::number(m_badge);
