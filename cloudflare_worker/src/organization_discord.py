@@ -877,7 +877,7 @@ async def _oauth_start(runtime, context, data):
         "ok": True,
         "organization": context["org"],
         "authorizationUrl": runtime.discord_oauth_authorization_url(
-            state, challenge),
+            state, challenge, guild_id),
         "expiresAt": runtime.now() + OAUTH_STATE_TTL_MS,
     }, transaction)
 

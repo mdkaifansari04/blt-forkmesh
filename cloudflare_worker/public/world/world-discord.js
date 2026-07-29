@@ -16,7 +16,26 @@ const state = {
   messages: [],
   selectedChannel: "",
   notice: "",
+  oauthNotice: "",
 };
+
+const OAUTH_OUTCOMES = {
+  connected: "Discord authorization completed. Choose the public channels ForkMesh may use.",
+  denied: "Discord did not authorize that Server ID. Use an account with Owner, Administrator, or Manage Server permission.",
+  failed: "Discord authorization returned, but its token or account verification failed. Please connect again.",
+  invalid: "Discord returned an invalid or expired authorization. Please connect again in this same browser tab.",
+  setup: "Discord OAuth configuration changed during authorization. Please connect again.",
+};
+
+function consumeOAuthOutcome() {
+  const url = new URL(window.location.href);
+  const outcome = text(url.searchParams.get("discord"), 20);
+  if (!Object.hasOwn(OAUTH_OUTCOMES, outcome)) return;
+  state.oauthNotice = OAUTH_OUTCOMES[outcome];
+  state.open = true;
+  url.searchParams.delete("discord");
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
 
 function sessionToken() {
   try {
@@ -153,6 +172,9 @@ function render() {
     state.reading || state.writing,
   ));
   panel.append(tools);
+  if (state.oauthNotice) {
+    panel.append(node("p", state.oauthNotice, "world-discord-notice"));
+  }
   if (state.notice) panel.append(node("p", state.notice, "world-discord-notice"));
   if (!state.connector) {
     panel.append(node("p", state.reading ? "Loading connector…" : "Choose an organization to begin."));
@@ -182,6 +204,7 @@ function render() {
     form.append(guild);
     form.append(button("Connect Discord server", async () => {
       if (state.writing) return;
+      state.oauthNotice = "";
       const guildId = text(guild.value, 20);
       if (!/^\d{17,20}$/.test(guildId)) {
         state.notice = "Enter a valid Discord Server ID.";
@@ -398,6 +421,7 @@ async function openPanel() {
 }
 
 function boot() {
+  consumeOAuthOutcome();
   const trigger = button("Discord", openPanel, "world-discord-trigger");
   trigger.dataset.worldDiscordOpen = "true";
   trigger.setAttribute("aria-expanded", "false");
@@ -406,6 +430,7 @@ function boot() {
   root.hidden = true;
   document.body.append(trigger, root);
   window.addEventListener("forkmesh:open-discord", showPanel);
+  if (state.open) showPanel();
 }
 
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot, { once: true });
