@@ -655,7 +655,10 @@ def test_aerial_lod_never_removes_the_office_landmark_and_sol_sign_is_attached()
         scene.index("    ];", scene.index("    const detailTargets = ["))
     ]
     assert 'landmarkObjects.get("office")' not in detail_targets
-    assert "officeInterior.visible = showOfficeInterior" in scene
+    assert "officeInterior.visible = true" in scene
+    assert 'officeSceneMode === "town" || floorId === officeCurrentFloorId' in scene
+    assert "const showOfficeInterior" not in scene
+    assert "floorGroup.visible = true;" in scene
     assert "group.add(treasurySign);" in scene
     assert "treasurySign.position.set(0, 0, 10.8);" in scene
     assert '["MEMBERS", 0, MEMBER_ISLAND_CENTER_Z, "#f7c96b"]' in scene
