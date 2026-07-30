@@ -512,21 +512,10 @@ constexpr int kCommitRefsRole = Qt::UserRole + 30;     // branch/tag badges (QSt
 constexpr int kCommitBodyRole = Qt::UserRole + 31;     // full message body (fed to the hover box)
 constexpr int kGraphIsMergeRole = Qt::UserRole + 32;   // graph cell: commit has >1 parent
 
-// URL scheme for the clickable worktree-location link in the agent session
-// header; the percent-encoded branch name follows. Clicking it opens that
-// branch's row in the Worktrees tab (issue #265). Shared by the link builder
-// and its handler.
-const QLatin1String kWorktreeLinkScheme("forkmesh-worktree:");
-
-// URL scheme for the clickable branch-name link in the agent session header; the
-// percent-encoded branch name follows. Clicking it opens that branch's row in
-// the Branches tab (adhoc #123). Shared by the link builder and its handler.
+// URL scheme for a clickable branch-name link; the percent-encoded branch name
+// follows. Clicking it opens that branch's row in the Branches tab (adhoc #123).
+// Shared by the link builder and its handler.
 const QLatin1String kBranchLinkScheme("forkmesh-branch:");
-
-// "forkmesh-copy-branch:<branch>" link next to the branch chip in the agent-detail
-// header (adhoc #259): clicking it copies the branch name to the clipboard
-// instead of navigating anywhere.
-const QLatin1String kCopyBranchLinkScheme("forkmesh-copy-branch:");
 
 // "forkmesh-pull:<number>" link in the agent-detail meta line: when a session
 // has a pull request, its "PR #N" reference links to that PR's tab. Shared by

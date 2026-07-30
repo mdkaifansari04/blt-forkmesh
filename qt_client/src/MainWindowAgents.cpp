@@ -4933,8 +4933,9 @@ static QString agentDetailTableHtml(const QStringList &headers, const QStringLis
 }
 
 // Rebuild only the detail header's key/value meta lines for a session — the
-// identity block, the issue/branch/worktree/PR button chips, Speed/Diff/Updated
-// (adhoc #35) and the run Stats (turns/time/cost/tokens). Split out of
+// identity block, the issue/PR chips, Speed/Diff/Updated (adhoc #35) and the run
+// Stats (turns/time/cost/tokens) — plus the toolbar's Branch/Worktree buttons,
+// which read from the same session (adhoc #51). Split out of
 // showAgentSession (adhoc #42) so the live-update paths (token/cost/run-summary
 // events, the running-row ticker) can keep the header current without triggering
 // a full transcript rebuild.

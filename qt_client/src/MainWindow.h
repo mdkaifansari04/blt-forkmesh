@@ -1908,15 +1908,11 @@ private:
     void noteAgentActivity(int sessionId, int bytes = 0);
     void onScannerTick();
     void showAgentSession(int sessionId);
-    // Rebuild only the detail header's meta lines (identity + issue/branch/worktree
-    // /PR chips + run Stats), without a transcript rebuild — used by the live
-    // token/cost/run-summary update paths and the running-row ticker (adhoc #42).
+    // Rebuild only the detail header's meta lines (identity + issue/PR chips +
+    // run Stats) and the toolbar's Branch/Worktree buttons, without a transcript
+    // rebuild — used by the live token/cost/run-summary update paths and the
+    // running-row ticker (adhoc #42).
     void refreshAgentDetailMeta(int sessionId);
-    // Detail-header permission-mode selector (adhoc #26): sync the combo to the
-    // shown session (and hide it for providers without a mode), and apply a live
-    // change back onto the selected session.
-    void syncAgentModeSelector(const AgentSession &session);
-    void applySelectedAgentMode();
     // Populate the raw-log QPlainTextEdit (m_agentLog) only when the content
     // actually changed. setPlainText()+moveCursor(End) forces a full document
     // layout, which for a large transcript blocks the GUI thread for seconds
@@ -2042,13 +2038,13 @@ private:
     // still stopping, or no host write access to clear the issue. External
     // (watch-only) sessions aren't handled here.
     bool deleteStoredAgentSession(int sessionId, bool cleanupWorktree = true);
-    // Agent-detail "Delete all": remove the session from the UI/store first,
+    // Agent-detail "Delete": remove the session from the UI/store first,
     // then clean its worktree, branch, and linked issues asynchronously.
     void deleteWorktreeBranchAndAgentInBackground(
         const QString &worktreePath, const QString &branch);
     // Delete everything an agent left behind in one action: its worktree folder,
     // its branch, and the stored agent session(s) that ran on it. Used by the
-    // Worktrees-tab "Delete" buttons and the agent detail's "Delete all".
+    // Worktrees-tab "Delete" buttons and the agent detail's "Delete".
     // confirm=false skips the per-item dialog (the batch "Delete all merged" asks
     // once up front); async=false removes the worktree synchronously so a batch of
     // deletes runs one git worktree-remove at a time rather than racing.
@@ -2058,9 +2054,9 @@ private:
     void deleteWorktreeBranchAndAgent(const QString &worktreePath,
                                       const QString &branch, bool confirm = true,
                                       bool async = true, bool deferRefresh = false);
-    // Batch counterpart to "Delete all": wipe the worktree, branch and session of
-    // every merged agent session in the open repo after one confirmation (adhoc
-    // #235).
+    // Batch counterpart to the detail "Delete": wipe the worktree, branch and
+    // session of every merged agent session in the open repo after one
+    // confirmation (adhoc #235).
     void deleteAllMergedAgentSessions();
     void testOpenAiAgentKey();
     void refreshClaudeSpend();
