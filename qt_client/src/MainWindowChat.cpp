@@ -559,7 +559,8 @@ QWidget *MainWindow::buildChatPage()
 // of the running executable. The widgets are created here, not in the repo pages
 // they came from, because those pages build lazily on first navigation while the
 // strip has to be populated from the first frame; setRepoBranch /
-// loadBranchesAndTags / updateFooterGitIdentity keep filling them in as before.
+// loadBranchesAndTags / updateFooterGitIdentity keep filling them in as before,
+// and updateFooterCommitInfo adds the commit that branch is on.
 QWidget *MainWindow::buildStatusBar()
 {
     auto *bar = new QWidget;
@@ -577,6 +578,12 @@ QWidget *MainWindow::buildStatusBar()
     m_footerGitIdentity->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_footerGitIdentity->setToolTip(
         "Git author identity configured for the repository you're viewing");
+
+    m_footerCommitInfo = new QLabel;
+    m_footerCommitInfo->setObjectName("footerCommitInfo");
+    m_footerCommitInfo->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_footerCommitInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_footerCommitInfo->setToolTip("Commit the browsed branch points at");
 
     // Elided up front rather than on every resize: the path never changes while
     // the app runs, and a full path left unelided would drag the window's
@@ -598,6 +605,7 @@ QWidget *MainWindow::buildStatusBar()
     row->setSpacing(10);
     row->addWidget(m_branchButton);
     row->addWidget(m_footerGitIdentity);
+    row->addWidget(m_footerCommitInfo);
     row->addStretch(1);
     row->addWidget(m_statusAppPath);
 
@@ -2953,6 +2961,61 @@ void MainWindow::updateFooterGitIdentity()
             else
                 text = QStringLiteral("git identity not set");
             m_footerGitIdentity->setText(text);
+        });
+}
+
+// The tip of the branch named by the footer's branch button: date, subject and
+// author, so the strip says where that branch actually sits (adhoc #55). Read
+// detached for the same reason the identity above is — this runs from
+// openRepoDetail, where a synchronous git call blocks the GUI thread.
+void MainWindow::updateFooterCommitInfo()
+{
+    if (!m_footerCommitInfo)
+        return;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty()) {
+        m_footerCommitInfo->clear();
+        return;
+    }
+    const QString ref = currentRef();
+    runGitDetached(
+        dir,
+        {QStringLiteral("log"), QStringLiteral("-1"),
+         QStringLiteral("--date=format:%Y-%m-%d %H:%M"),
+         QStringLiteral("--pretty=%H\x1f%h\x1f%ad\x1f%s\x1f%an\x1f%ct"), ref,
+         QStringLiteral("--")},
+        [this, dir, ref](bool ok, const QByteArray &out) {
+            if (!m_footerCommitInfo)
+                return;
+            // Repo or branch switched (or closed) while the read was in flight.
+            if (repoGitDir() != dir || currentRef() != ref)
+                return;
+            const QStringList f = QString::fromUtf8(out)
+                                      .split(QLatin1Char('\n'))
+                                      .value(0)
+                                      .split(QLatin1Char('\x1f'));
+            // No commits yet (fresh repo), or the ref doesn't resolve.
+            if (!ok || f.size() < 5) {
+                m_footerCommitInfo->clear();
+                m_footerCommitInfo->setToolTip(
+                    QStringLiteral("Commit the browsed branch points at"));
+                return;
+            }
+            const QString date = f.at(2), subject = f.at(3), author = f.at(4);
+            const QString rel =
+                formatShortRelativeTime(f.value(5).toLongLong());
+            // Long subjects are elided rather than allowed to push the app-path
+            // label off the strip; the tooltip keeps the full text.
+            const QString shortSubject = m_footerCommitInfo->fontMetrics().elidedText(
+                subject, Qt::ElideRight, 360);
+            m_footerCommitInfo->setText(
+                QString::fromUtf8("\xC2\xB7 %1 \xC2\xB7 %2 \xC2\xB7 %3 \xC2\xB7 %4")
+                    .arg(f.at(1), date, shortSubject, author));
+            QString tip = QStringLiteral("%1\n%2\n%3 committed %4")
+                              .arg(f.at(0), subject, author, date);
+            if (!rel.isEmpty())
+                tip += QString::fromUtf8(" (%1 ago)").arg(rel);
+            m_footerCommitInfo->setToolTip(tip);
         });
 }
 
@@ -16995,6 +17058,7 @@ void MainWindow::clearRepoDetail()
     updateRepoCodeSize();
     updateRepoDetailStatus();
     updateFooterGitIdentity();
+    updateFooterCommitInfo();
     reloadIssues();
     reloadAgents();
     updateRepoIssueCount();
