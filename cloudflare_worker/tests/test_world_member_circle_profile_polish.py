@@ -174,15 +174,14 @@ def test_mirror_lights_are_colored_and_warning_states_blink():
     assert "mirrorByName" in APP
 
 
-def test_directory_members_explore_landmarks_across_the_world():
-    assert "figure.userData.ambientInteraction" in SCENE
-    assert "const memberWorldDestinations = [" in SCENE
-    assert "{ x: 438, z: -72 }" in SCENE
-    assert "const ambientRoutePosition = (from, to, progress)" in SCENE
-    assert "animatedMembers >= 18" in SCENE
-    assert "cycleMs: 54_000 + (ambientSeed % 31_000)" in SCENE
-    assert 'ambient.kind === "chat"' in SCENE
-    assert "startAvatarWave(figure, time)" in SCENE
+def test_directory_members_stay_seated_at_the_campfire():
+    assert 'status: "sitting around the campfire"' in SCENE
+    assert "figure.position.add(seat)" in SCENE
+    assert "applySeatedLegPose(figure)" in SCENE
+    assert "figure.userData.ambientInteraction = null" in SCENE
+    assert "const memberWorldDestinations" not in SCENE
+    assert "const memberNpcStations" not in SCENE
+    assert "ambientRoutePosition" not in SCENE
 
 
 def test_camera_pan_and_tilt_turn_the_avatar_body_and_head():
