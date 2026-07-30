@@ -3125,12 +3125,12 @@ void MainWindow::updateFooterDiagnostics()
     }
 #ifndef FORKMESH_WINDOW_TESTS
     // Open once on the upward crossing. It rearms only after memory has fallen
-    // comfortably below the threshold, so dismissing the panel at 91% does not
+    // comfortably below the threshold, so dismissing the panel at 86% does not
     // make it reopen every second.
-    if (hostMemoryPct >= 90.0 && m_highMemoryAlertArmed) {
+    if (hostMemoryPct >= 85.0 && m_highMemoryAlertArmed) {
         m_highMemoryAlertArmed = false;
         QTimer::singleShot(0, this, &MainWindow::showHighMemoryProcessPanel);
-    } else if (hostMemoryPct >= 0.0 && hostMemoryPct < 88.0) {
+    } else if (hostMemoryPct >= 0.0 && hostMemoryPct < 83.0) {
         m_highMemoryAlertArmed = true;
     }
 #endif
@@ -3417,9 +3417,10 @@ void MainWindow::showHighMemoryProcessPanel()
     auto *layout = new QVBoxLayout(dialog);
 
     auto *heading = new QLabel(QStringLiteral(
-        "<b>Host memory is above 90%</b><br>"
+        "<b>Host memory is above 85%</b><br>"
         "Processes are sorted by resident memory. “Kill” requests a normal "
-        "termination; ForkMesh and PID 1 are protected."));
+        "termination and “Kill all” does the same for every listed process "
+        "sharing that name; ForkMesh and PID 1 are protected."));
     heading->setTextFormat(Qt::RichText);
     heading->setWordWrap(true);
     layout->addWidget(heading);
@@ -3450,7 +3451,7 @@ void MainWindow::showHighMemoryProcessPanel()
     m_highMemoryProcessTable->setColumnWidth(2, 110);
     m_highMemoryProcessTable->setColumnWidth(3, 105);
     m_highMemoryProcessTable->setColumnWidth(4, 72);
-    m_highMemoryProcessTable->setColumnWidth(5, 76);
+    m_highMemoryProcessTable->setColumnWidth(5, 160); // Kill + Kill all
     layout->addWidget(m_highMemoryProcessTable, 1);
 
     auto *refresh = new QPushButton(QStringLiteral("Refresh"));
@@ -3551,6 +3552,13 @@ void MainWindow::refreshHighMemoryProcessTable()
                         rows.append({pid, owner, rssKb, percent.toDouble(), name});
                 }
 
+                // Which listed PIDs share each command name, so a row's "Kill
+                // all" can act on the whole family (the `killall` shape) without
+                // shelling out.
+                QHash<QString, QList<qint64>> pidsByName;
+                for (const ProcessRow &process : rows)
+                    pidsByName[process.name].append(process.pid);
+
                 m_highMemoryProcessTable->setUpdatesEnabled(false);
                 m_highMemoryProcessTable->clearContents();
                 m_highMemoryProcessTable->setRowCount(rows.size());
@@ -3598,7 +3606,43 @@ void MainWindow::refreshHighMemoryProcessTable()
                             [this, pid = process.pid, name = process.name] {
                                 killHighMemoryProcess(pid, name);
                             });
-                    m_highMemoryProcessTable->setCellWidget(row, 5, kill);
+
+                    // "Kill all" beside it, for the common case where the memory
+                    // is spread across many same-named workers (adhoc #46). It
+                    // only offers itself when the list holds more than one
+                    // killable PID under that name.
+                    const QList<qint64> family = pidsByName.value(process.name);
+                    QList<qint64> killable;
+                    for (qint64 candidate : family) {
+                        if (candidate <= 1 ||
+                            candidate == QCoreApplication::applicationPid())
+                            continue;
+                        killable.append(candidate);
+                    }
+                    auto *killAll = new QPushButton(QStringLiteral("Kill all"));
+                    killAll->setProperty("buttonSize", "sm");
+                    killAll->setEnabled(killable.size() > 1);
+                    killAll->setToolTip(
+                        killable.size() > 1
+                            ? QStringLiteral("Request that all %1 listed “%2” "
+                                             "processes terminate")
+                                  .arg(killable.size())
+                                  .arg(process.name)
+                            : QStringLiteral("Only one killable “%1” process is "
+                                             "listed")
+                                  .arg(process.name));
+                    connect(killAll, &QPushButton::clicked, this,
+                            [this, name = process.name, killable] {
+                                killAllHighMemoryProcesses(name, killable);
+                            });
+
+                    auto *actions = new QWidget;
+                    auto *actionRow = new QHBoxLayout(actions);
+                    actionRow->setContentsMargins(0, 0, 0, 0);
+                    actionRow->setSpacing(4);
+                    actionRow->addWidget(kill);
+                    actionRow->addWidget(killAll);
+                    m_highMemoryProcessTable->setCellWidget(row, 5, actions);
                 }
                 m_highMemoryProcessTable->setUpdatesEnabled(true);
                 m_highMemoryProcessTable->viewport()->update();
@@ -3677,6 +3721,66 @@ void MainWindow::killHighMemoryProcess(qint64 pid, const QString &name)
         m_highMemoryDialog ? static_cast<QWidget *>(m_highMemoryDialog.data())
                            : this,
         QStringLiteral("Kill process"),
+        QStringLiteral("Per-process termination is not supported on this "
+                       "platform yet."));
+#endif
+}
+
+void MainWindow::killAllHighMemoryProcesses(const QString &name,
+                                            const QList<qint64> &pids)
+{
+    QList<qint64> targets;
+    for (qint64 pid : pids) {
+        if (pid <= 1 || pid == QCoreApplication::applicationPid())
+            continue;
+        targets.append(pid);
+    }
+    if (targets.isEmpty())
+        return;
+    auto *parent = m_highMemoryDialog
+                       ? static_cast<QWidget *>(m_highMemoryDialog.data())
+                       : this;
+    const auto answer = QMessageBox::warning(
+        parent, QStringLiteral("Kill all processes"),
+        QStringLiteral("Request that all %1 listed “%2” processes terminate?\n\n"
+                       "Unsaved work in those processes may be lost.")
+            .arg(targets.size())
+            .arg(name),
+        QMessageBox::Cancel | QMessageBox::Yes, QMessageBox::Cancel);
+    if (answer != QMessageBox::Yes)
+        return;
+
+#if defined(Q_OS_UNIX)
+    int sent = 0;
+    QStringList failures;
+    for (qint64 pid : targets) {
+        if (::kill(static_cast<pid_t>(pid), SIGTERM) == 0) {
+            ++sent;
+            continue;
+        }
+        // A process that exited between the listing and the click is not a
+        // failure worth reporting as one.
+        if (errno == ESRCH)
+            continue;
+        failures.append(QStringLiteral("PID %1: %2")
+                            .arg(pid)
+                            .arg(QString::fromLocal8Bit(std::strerror(errno))));
+    }
+    if (!failures.isEmpty())
+        QMessageBox::warning(parent,
+                             QStringLiteral("Could not kill every process"),
+                             QStringLiteral("%1\n%2")
+                                 .arg(name, failures.join(QLatin1Char('\n'))));
+    if (m_highMemoryProcessStatus)
+        m_highMemoryProcessStatus->setText(
+            QStringLiteral("Termination requested for %1 “%2” process%3.")
+                .arg(sent)
+                .arg(name)
+                .arg(sent == 1 ? QString() : QStringLiteral("es")));
+    QTimer::singleShot(750, this, &MainWindow::refreshHighMemoryProcessTable);
+#else
+    QMessageBox::information(
+        parent, QStringLiteral("Kill all processes"),
         QStringLiteral("Per-process termination is not supported on this "
                        "platform yet."));
 #endif
@@ -4718,13 +4822,17 @@ QWidget *MainWindow::buildBreadcrumb()
 
     // Three little button-sized squares on the window-chrome line, each plotting
     // one resource — this app's CPU, the host's memory and its disk — as a moving
-    // sparkline fed one sample a second by updateFooterDiagnostics. Clicking one
-    // opens the same diagnostics dialog as the glyph.
+    // sparkline fed one sample a second by updateFooterDiagnostics. Clicking the
+    // CPU or DISK square opens the same diagnostics dialog as the glyph; MEM
+    // opens the high-memory process panel.
     auto *cpuChart = new ResourceSparkline(QStringLiteral("CPU"));
     auto *memChart = new ResourceSparkline(QStringLiteral("MEM"));
     auto *diskChart = new ResourceSparkline(QStringLiteral("DISK"));
-    for (ResourceSparkline *chart : {cpuChart, memChart, diskChart})
+    for (ResourceSparkline *chart : {cpuChart, diskChart})
         chart->onClicked = [this] { showDiagnosticsDialog(); };
+    // The memory square goes straight to the culprit list instead: that panel is
+    // what you want when the MEM curve spikes (adhoc #46).
+    memChart->onClicked = [this] { showHighMemoryProcessPanel(); };
     m_cpuChart = cpuChart;
     m_memChart = memChart;
     m_diskChart = diskChart;
