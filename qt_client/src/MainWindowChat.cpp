@@ -1039,10 +1039,11 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddGenieButton->setSizePolicy(QSizePolicy::Fixed,
                                          QSizePolicy::Expanding);
     m_quickAddGenieButton->setToolTip(
-        QString::fromUtf8("Genie \xE2\x80\x94 start an agent on the website's "
-                          "remote MCP server so it works the organization's "
-                          "shared task list on its own. Configure the "
-                          "credential in Settings \xE2\x86\x92 MCP."));
+        QString::fromUtf8("Genie \xE2\x80\x94 start a running agent session that "
+                          "picks its own work off the organization's shared task "
+                          "list. No setup: the first press mints this node's own "
+                          "task credential from the account you are signed in "
+                          "as."));
     connect(m_quickAddGenieButton, &QPushButton::clicked, this,
             &MainWindow::startGenieAgent);
 
