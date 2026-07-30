@@ -535,7 +535,6 @@ import activitypub as ap  # noqa: E402
 import activitypub_threads as ap_threads  # noqa: E402
 import edge_routing as https_routing  # noqa: E402
 import fediverse_digest as fedi_digest  # noqa: E402
-import repository_imports as repository_import  # noqa: E402
 import reward_policy  # noqa: E402
 # Objective evidence, one-account-one-vote governance, and contextual-only
 # community placement policy live outside the route spine.
@@ -603,6 +602,14 @@ import blog_feed  # noqa: E402
 # validation are pure data/logic, so they live in their own js-free sibling
 # module; the D1-backed award/list/grant handlers stay below (adhoc #370).
 import badges as badge_catalog  # noqa: E402
+
+
+def _repository_import_module():
+    # Provider-import policy is large and used only by import/logo routes.
+    # Loading it on first use keeps ordinary World/API isolates behaviorally
+    # identical while avoiding its module globals during Worker startup.
+    import repository_imports
+    return repository_imports
 
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
@@ -13385,7 +13392,7 @@ async def native_repository_logo_handler(
                     "cache-control": "public, max-age=300",
                 })
             logo = await service._official_logo(env, repository_id)
-            logo = logo or repository_import.deterministic_logo(record)
+            logo = logo or _repository_import_module().deterministic_logo(record)
             return _repository_logo_image_response(
                 logo, public=not bool(record.get("isPrivate")))
         if committed_logo_url:
@@ -13507,10 +13514,11 @@ async def _repo_about_public(env, request, owner, repo):
     resolved_logo = {}
     logo_record_builder = globals().get("_native_repository_logo_record")
     logo_service_factory = globals().get("_repository_import_service")
-    repository_import_module = globals().get("repository_import")
+    repository_import_loader = globals().get("_repository_import_module")
     if (callable(logo_record_builder)
             and callable(logo_service_factory)
-            and repository_import_module is not None):
+            and callable(repository_import_loader)):
+        repository_import_module = repository_import_loader()
         logo_record = logo_record_builder(rec, owner, repo)
         logo_service = logo_service_factory()
         approved_logo = await logo_service._official_logo(
@@ -23816,6 +23824,7 @@ def _account_email_activity(rec):
 
 async def _repository_provider_fetch(env, provider, path, token=""):
     from js import fetch as js_fetch
+    repository_import = _repository_import_module()
     if provider not in repository_import.PROVIDERS:
         return {"status": 400, "data": {}, "headers": {}}
     if (not isinstance(path, str) or not path.startswith("/")
@@ -24016,6 +24025,7 @@ async def _repository_import_audit(
 
 
 def _repository_import_service():
+    repository_import = _repository_import_module()
     return repository_import.RepositoryImportService({
         "json_response": json_response,
         "ensure_schema": ensure_schema,
@@ -29676,6 +29686,7 @@ async def enqueue_notification(env, recipient, kind, title, body="", repo="",
 
 async def _promote_hosted_repository_import(env, catalog_record):
     """Link one verified mirror catalog to its public provider import."""
+    repository_import = _repository_import_module()
     mirror_owner = clean_string(
         catalog_record.get("owner"), MAX_NODE_NAME).lower()
     repository_name = safe_segment(clean_string(
@@ -40308,6 +40319,7 @@ async def _https_mirror_private_proxy(env, request, private_record):
 
 async def _hosted_repository_import_route(env, owner, repo):
     """Resolve one public logical import name to its physical mirror catalog."""
+    repository_import = _repository_import_module()
     owner_l = clean_string(owner, MAX_NODE_NAME).strip().lower()
     repo_l = clean_string(repo, MAX_REPO_SEGMENT).strip().lower()
     if not valid_node_name(owner_l) or not safe_segment(repo_l):
