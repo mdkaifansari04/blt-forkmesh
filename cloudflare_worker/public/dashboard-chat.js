@@ -167,6 +167,44 @@ function mountForkMeshDashboardChat() {
     });
   }
 
+  async function taskAttachmentMetadata(file) {
+    const attachment = {
+      name: safeAttachmentName(file?.name),
+      mime: safeAttachmentMime(file?.type),
+      size: Math.max(0, Number(file?.size) || 0),
+    };
+    if (
+      !["image/png", "image/jpeg", "image/webp"].includes(attachment.mime) ||
+      !file ||
+      attachment.size > 1024 * 1024 ||
+      typeof createImageBitmap !== "function"
+    ) {
+      return attachment;
+    }
+    try {
+      const bitmap = await createImageBitmap(file);
+      const side = 48;
+      const canvas = document.createElement("canvas");
+      canvas.width = side;
+      canvas.height = side;
+      const context = canvas.getContext("2d");
+      const scale = Math.max(side / bitmap.width, side / bitmap.height);
+      const width = bitmap.width * scale;
+      const height = bitmap.height * scale;
+      context.drawImage(
+        bitmap,
+        (side - width) / 2,
+        (side - height) / 2,
+        width,
+        height,
+      );
+      bitmap.close?.();
+      const thumbnail = canvas.toDataURL("image/webp", 0.72);
+      if (thumbnail.length <= 10_000) attachment.thumbnail = thumbnail;
+    } catch (_) {}
+    return attachment;
+  }
+
   function applyWorldComposerPrefill() {
     const data = pendingWorldComposerPrefill;
     if (!data) return false;
@@ -3535,12 +3573,10 @@ function mountForkMeshDashboardChat() {
         const destination = botTask
           ? "agent"
           : String(taskDestination?.value || "department");
-        const taskAttachments = (attachmentControl?.draft || []).map(
-          ({ file }) => ({
-            name: safeAttachmentName(file?.name),
-            mime: safeAttachmentMime(file?.type),
-            size: Math.max(0, Number(file?.size) || 0),
-          }),
+        const taskAttachments = await Promise.all(
+          (attachmentControl?.draft || []).map(({ file }) =>
+            taskAttachmentMetadata(file),
+          ),
         );
         const created = await taskApiRequest("POST", "/api/tasks", {
           title,
@@ -3620,12 +3656,10 @@ function mountForkMeshDashboardChat() {
         const lines = text.split(/\r?\n/);
         const title = String(lines.shift() || "").trim().slice(0, 160);
         const details = lines.join("\n").trim().slice(0, 4000);
-        const taskAttachments = (attachmentControl?.draft || []).map(
-          ({ file }) => ({
-            name: safeAttachmentName(file?.name),
-            mime: safeAttachmentMime(file?.type),
-            size: Math.max(0, Number(file?.size) || 0),
-          }),
+        const taskAttachments = await Promise.all(
+          (attachmentControl?.draft || []).map(({ file }) =>
+            taskAttachmentMetadata(file),
+          ),
         );
         const created = await taskApiRequest("POST", "/api/tasks", {
           title,

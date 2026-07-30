@@ -399,7 +399,7 @@ QWidget *MainWindow::buildChatPage()
     for (int index = 3; index <= 8; ++index)
         addDeferredSection();
     m_sectionStack->addWidget(new QWidget);              // 9 retired Firewall redirect
-    for (int index = 10; index <= 14; ++index)
+    for (int index = 10; index <= 15; ++index)
         addDeferredSection();
     logStartup(QStringLiteral("  buildChatPage: secondary sections deferred"));
 
@@ -461,7 +461,7 @@ QWidget *MainWindow::buildChatPage()
     // beside its live fleet matrix (see buildBreadcrumb). Listing it would
     // re-parent the button into the rail and silently undo that placement.
     for (QPushButton *button :
-         {m_reposNavButton, m_chatButton,
+         {m_reposNavButton, m_tasksNavButton, m_chatButton,
           m_controlNodeNavButton, m_logNavButton, m_hostsNavButton, m_nodesNavButton,
           m_relaysNavButton, m_networkNavButton}) {
         if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
@@ -4381,6 +4381,19 @@ QWidget *MainWindow::buildBreadcrumb()
         showSection(kNetworkReposSectionIndex);
     });
 
+    m_tasksNavButton = new ActivityRailButton(QStringLiteral("list-unordered"),
+                                              QStringLiteral("Tasks"));
+    m_tasksNavButton->setObjectName("organizationTasksNavButton");
+    m_tasksNavButton->setCheckable(true);
+    m_tasksNavButton->setCursor(Qt::PointingHandCursor);
+    m_tasksNavButton->setToolTip(QStringLiteral("Organization tasks"));
+    setOcticon(m_tasksNavButton, "list-unordered", 16);
+    m_navGroup->addButton(
+        m_tasksNavButton, kOrganizationTasksSectionIndex);
+    connect(m_tasksNavButton, &QPushButton::clicked, this, [this] {
+        showSection(kOrganizationTasksSectionIndex);
+    });
+
     m_breadcrumb = new QLabel;
     m_breadcrumb->setObjectName("breadcrumb");
     m_breadcrumb->setTextFormat(Qt::RichText);
@@ -7366,6 +7379,7 @@ void MainWindow::ensureSectionBuilt(int index)
     case 12: section = buildNetworkDiagnosticsSection(); break;
     case 13: section = buildNodesSection(); break;
     case 14: section = buildControlNodeSection(); break;
+    case 15: section = buildOrganizationTasksSection(); break;
     default: break;
     }
     if (!section)
@@ -7439,6 +7453,8 @@ void MainWindow::showSection(int index)
         refreshNetworkDiagnostics();
     } else if (index == kControlNodeSectionIndex) {
         refreshControlNode();
+    } else if (index == kOrganizationTasksSectionIndex) {
+        refreshOrganizationTasks();
     }
 }
 

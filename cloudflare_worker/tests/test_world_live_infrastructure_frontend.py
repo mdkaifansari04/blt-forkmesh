@@ -62,7 +62,7 @@ def test_treasury_balance_refreshes_on_hover_instead_of_on_a_timer():
     # until somebody points at it. No timer may fetch it.
     assert "WORLD_REWARD_POLL_MS" not in APP
     board = _between("  startStatusBoardPolling() {", "\n  }")
-    assert "this.refreshSystemStatusBoard()" in board
+    assert "this.syncSystemStatusBoardTimer()" in board
     assert "refreshRewardState" not in board
     hover = _between("  async refreshRewardStateOnHover() {", "\n  }")
     assert "now - this.rewardHoverRefreshedAt < WORLD_REWARD_HOVER_MS" in hover
@@ -73,3 +73,28 @@ def test_treasury_balance_refreshes_on_hover_instead_of_on_a_timer():
     assert "function updateRewardBoardHover(event, now) {" in SCENE
     assert 'landmarkObjects.get("fountain")?.userData?.treasurySign' in SCENE
     assert "if (hovered) onRewardBoardHover();" in SCENE
+
+
+def test_status_board_counts_down_each_second_and_fetches_once_per_minute():
+    assert "const WORLD_STATUS_POLL_MS = 60 * 1000;" in APP
+    start = _between("  startStatusBoardPolling() {", "\n  }")
+    assert "}, 1000);" in start
+    timer = _between("  syncSystemStatusBoardTimer() {", "\n  }")
+    assert "this.statusBoardRefreshRemaining()" in timer
+    assert "this.world?.updateSocialBannerTimers?.({" in timer
+    assert "status:" in timer
+    assert "if (!loading && remaining <= 0)" in timer
+    assert (
+        "const socialBannerTimerRecords = [...socialBanners, statusBannerRecord];"
+        in SCENE
+    )
+    assert "for (const record of socialBannerTimerRecords)" in SCENE
+    refresh = _between("  async refreshSystemStatusBoard() {", "\n  }")
+    assert "if (this.statusBoardLoad) return this.statusBoardLoad;" in refresh
+    assert 'this.fetchJSON("/api/status?view=world"' in refresh
+    assert "maxAge: WORLD_STATUS_POLL_MS" in refresh
+    assert "this.applySystemStatusBoard(payload);" in refresh
+    assert "dial.userData.countdownSeconds = Math.ceil(remaining / 1000);" in SCENE
+    snapshot = SCENE.split("function updateSystemStatusBoard(payload)", 1)[1]
+    snapshot = snapshot.split("function updateSocialBannerTimers", 1)[0]
+    assert "Date.now() % 60_000" not in snapshot

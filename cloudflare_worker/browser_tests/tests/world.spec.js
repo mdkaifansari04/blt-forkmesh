@@ -5846,6 +5846,63 @@ test("thumbstick motion is continuous, proportional, and recenters on release", 
   await context.close();
 });
 
+test("thumbstick walking defers renderer resize until release", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  const page = await context.newPage();
+  await prepareWorldPage(page, "thumbstick-resize");
+  await waitForWorld(page);
+
+  const thumbstick = page.locator("[data-world-thumbstick]");
+  const box = await thumbstick.boundingBox();
+  expect(box).not.toBeNull();
+  const centre = {
+    x: Math.round(box.x + box.width / 2),
+    y: Math.round(box.y + box.height / 2),
+    id: 1,
+  };
+  const client = await page.context().newCDPSession(page);
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [centre],
+  });
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: [{ ...centre, y: centre.y - box.height * 0.3 }],
+  });
+
+  const bufferBeforeResize = await page
+    .locator(".world-canvas")
+    .evaluate((canvas) => ({ width: canvas.width, height: canvas.height }));
+  await page.locator("[data-world-canvas-wrap]").evaluate((wrap) => {
+    wrap.style.height = `${Math.max(
+      240,
+      Math.round(wrap.getBoundingClientRect().height - 120),
+    )}px`;
+  });
+  await page.waitForTimeout(150);
+  expect(
+    await page
+      .locator(".world-canvas")
+      .evaluate((canvas) => ({ width: canvas.width, height: canvas.height })),
+  ).toEqual(bufferBeforeResize);
+
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchEnd",
+    touchPoints: [],
+  });
+  await expect.poll(() =>
+    page.locator(".world-canvas").evaluate((canvas) => canvas.height),
+  ).not.toBe(bufferBeforeResize.height);
+  await client.detach();
+  await context.close();
+});
+
 test("one-finger look and two-finger pinch use distinct bounded gestures", async ({
   browser,
 }) => {
@@ -7578,6 +7635,157 @@ test("the authenticated member appears immediately and active time advances loca
   expect(paused.running).toBe(false);
   expect(paused.continuation).toBe("");
   expect(stillPaused).toBeCloseTo(paused.totalActiveMs, 3);
+});
+
+test("a fresh member spawns seated in the open Members Circle", async ({
+  page,
+}) => {
+  const session = {
+    nodeName: "newcomer",
+    sessionToken: "fresh-member-circle-session",
+  };
+  await prepareWorldPage(page, "fresh-member-circle", {
+    session,
+    directoryUsers: [
+      {
+        name: "newcomer",
+        nodes: [],
+        createdAt: FIXED_NOW - 1_000,
+      },
+    ],
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.world?.scene?.getObjectByName(
+      "campfire-newest-member-name-sparkles",
+    )?.visible === true;
+  });
+
+  const arrival = await page.locator("forkmesh-world").evaluate((shell) => {
+    const player = shell.world.player;
+    const count = shell.world.scene.getObjectByName("campfire-member-count");
+    const sparkle = shell.world.scene.getObjectByName(
+      "campfire-newest-member-name-sparkles",
+    );
+    const fireSparksLeft = shell.world.scene.getObjectByName(
+      "campfire-newest-member-fire-sparks-left",
+    );
+    const fireSparksRight = shell.world.scene.getObjectByName(
+      "campfire-newest-member-fire-sparks-right",
+    );
+    const flame = shell.world.scene.getObjectByName("campfire-primary-flame");
+    const dirt = shell.world.scene.getObjectByName(
+      "campfire-member-circle-dirt",
+    );
+    const startHere = shell.world.scene.getObjectByName(
+      "forkmesh-start-here-map",
+    );
+    return {
+      seated: shell.freshArrivalCampfireSeated,
+      activity: shell.lastMovement.activity,
+      x: player.position.x,
+      y: player.position.y,
+      z: player.position.z,
+      leftKnee: player.userData.leftKnee.rotation.x,
+      countScale: count.scale.toArray(),
+      countY: count.position.y,
+      sparkleVisible: sparkle.visible,
+      fireSparksVisible: fireSparksLeft.visible && fireSparksRight.visible,
+      fireSparksSpan:
+        fireSparksRight.geometry.attributes.position.getX(15) -
+        fireSparksLeft.geometry.attributes.position.getX(15),
+      fireHeight: flame.scale.y,
+      fireWidth: flame.scale.x,
+      dirtY: dirt.position.y,
+      signPresent: Boolean(
+        shell.world.scene.getObjectByName(
+          "forkmesh-members-circle-path-sign",
+        ),
+      ),
+      startHere: {
+        x: startHere.position.x,
+        z: startHere.position.z,
+        rotation: startHere.rotation.y,
+      },
+    };
+  });
+
+  expect(arrival.seated).toBe(true);
+  expect(arrival.activity).toBe("sitting beside the campfire");
+  expect(Math.hypot(arrival.x, arrival.z - 130)).toBeGreaterThan(5);
+  expect(Math.hypot(arrival.x, arrival.z - 130)).toBeLessThan(10);
+  expect(arrival.y).toBeLessThan(0.38);
+  expect(Math.abs(arrival.leftKnee)).toBeGreaterThan(0.5);
+  expect(arrival.countScale).toEqual([9.5, 4.75, 1]);
+  expect(arrival.countY).toBeGreaterThan(14);
+  expect(arrival.sparkleVisible).toBe(true);
+  expect(arrival.fireSparksVisible).toBe(true);
+  expect(Math.abs(arrival.fireSparksSpan)).toBeGreaterThan(8);
+  expect(arrival.fireHeight).toBeGreaterThan(2.5);
+  expect(arrival.fireWidth).toBeGreaterThan(2.5);
+  expect(arrival.dirtY).toBeGreaterThan(0.105);
+  expect(arrival.signPresent).toBe(false);
+  expect(arrival.startHere.x).toBe(0);
+  expect(arrival.startHere.z).toBe(168);
+  expect(arrival.startHere.rotation).toBeCloseTo(Math.PI, 5);
+
+  // Position storage contains coordinates but deliberately no activity label.
+  // A clean reload must recognize the bench ring and rebuild the seated pose.
+  await page.reload();
+  await waitForWorld(page);
+  const reloaded = await page.locator("forkmesh-world").evaluate((shell) => ({
+    activity: shell.lastMovement.activity,
+    y: shell.world.player.position.y,
+    leftKnee: shell.world.player.userData.leftKnee.rotation.x,
+    radius: Math.hypot(
+      shell.world.player.position.x,
+      shell.world.player.position.z - 130,
+    ),
+  }));
+  expect(reloaded.activity).toBe("sitting beside the campfire");
+  expect(reloaded.y).toBeLessThan(0.38);
+  expect(Math.abs(reloaded.leftKnee)).toBeGreaterThan(0.5);
+  expect(reloaded.radius).toBeGreaterThan(5);
+  expect(reloaded.radius).toBeLessThan(10);
+});
+
+test("the System Status board countdown advances between minute syncs", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "status-board-countdown");
+  await waitForWorld(page);
+
+  const countdown = await page.locator("forkmesh-world").evaluate(
+    (shell, fixedNow) => {
+      let now = fixedNow + 5_000;
+      Date.now = () => now;
+      shell.statusBoardLoad = null;
+      shell.statusBoardRequestedAt = fixedNow;
+      shell.statusBoardLastCheckAt = fixedNow - 25_000;
+      shell.syncSystemStatusBoardTimer();
+      const dial = shell.world.scene.getObjectByName(
+        "forkmesh-status-banner-countdown",
+      );
+      const first = {
+        seconds: dial.userData.countdownSeconds,
+        loading: dial.userData.countdownLoading,
+      };
+      now += 11_000;
+      shell.syncSystemStatusBoardTimer();
+      return {
+        first,
+        second: {
+          seconds: dial.userData.countdownSeconds,
+          loading: dial.userData.countdownLoading,
+        },
+      };
+    },
+    FIXED_NOW,
+  );
+
+  expect(countdown.first).toEqual({ seconds: 55, loading: false });
+  expect(countdown.second).toEqual({ seconds: 44, loading: false });
 });
 
 test("Town Square placement is contextual, tracking-free, and collapses safely", async ({
