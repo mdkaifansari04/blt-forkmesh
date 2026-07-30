@@ -168,7 +168,11 @@ QStringList localProviderCredentialValues()
     values << settings.value(kClaudeApiKeySetting).toString()
            << settings.value(kClaudeAdminKeySetting).toString()
            << settings.value(kCodexApiKeySetting).toString()
-           << settings.value(kOpenAiAdminKeySetting).toString();
+           << settings.value(kOpenAiAdminKeySetting).toString()
+           // Genie's remote-MCP bearer credential (adhoc #42) rides inside the
+           // opening prompt, so it would otherwise land in the transcript, the
+           // run log and the sealed snapshot pushed to the relay.
+           << settings.value(kGenieTokenSetting).toString();
     values << qEnvironmentVariable("ANTHROPIC_API_KEY")
            << qEnvironmentVariable("ANTHROPIC_AUTH_TOKEN")
            << qEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN")
@@ -8612,6 +8616,10 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
         }
         if (!assistantText.trimmed().isEmpty())
             m_lastAssistantText[sessionId] = assistantText.trimmed();
+        // Genie (adhoc #42): a run working the organization's shared task list
+        // announces the task it just picked up; retitle the session with it so
+        // the list says what the agent is actually doing, live.
+        applyGenieTaskTitle(sessionId, assistantText);
         // Some clarifying questions never call the AskUserQuestion tool at all —
         // the CLI just lays out a numbered list of options in plain prose (e.g.
         // "do you want me to: 1. ... or 2. ...?"). Detect that the same way the

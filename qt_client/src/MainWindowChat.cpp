@@ -25,6 +25,7 @@
 #include <QBrush>
 #include <QCryptographicHash>
 #include <QDialog>
+#include <QGraphicsDropShadowEffect>
 #include <QInputDialog>
 #include <QNetworkInformation>
 #include <QPlainTextEdit>
@@ -1024,6 +1025,27 @@ QWidget *MainWindow::buildNetworkLogDock()
         sendPromptToSelectedAgent(prompt);
     });
 
+    // Third button, stacked above "add" and "new" (adhoc #42): "genie" doesn't
+    // send the typed prompt at all — it starts an agent wired to the remote MCP
+    // server configured on the website, so the agent picks its own work off the
+    // organization's shared task list and reports back through the same tools.
+    // Anything typed in the box rides along as extra guidance for that run.
+    m_quickAddGenieButton = new QPushButton(QStringLiteral("genie"));
+    m_quickAddGenieButton->setObjectName("quickAddGenieButton");
+    m_quickAddGenieButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_quickAddGenieButton, "star", 15);
+    m_quickAddGenieButton->setFixedWidth(58);
+    m_quickAddGenieButton->setMinimumHeight(24);
+    m_quickAddGenieButton->setSizePolicy(QSizePolicy::Fixed,
+                                         QSizePolicy::Expanding);
+    m_quickAddGenieButton->setToolTip(
+        QString::fromUtf8("Genie \xE2\x80\x94 start an agent on the website's "
+                          "remote MCP server so it works the organization's "
+                          "shared task list on its own. Configure the "
+                          "credential in Settings \xE2\x86\x92 MCP."));
+    connect(m_quickAddGenieButton, &QPushButton::clicked, this,
+            &MainWindow::startGenieAgent);
+
     // Vertically Expanding (not Fixed) so the text area absorbs any spare height
     // in the prompt frame. With the fixed-height bottom bar below it, that keeps
     // the toolbar pinned flush to the foot of the frame instead of floating up
@@ -1032,13 +1054,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     // the text).
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // Two send icons stacked in a full-height column down the prompt's right edge
-    // (adhoc #115): each button stretches to take half the frame height, so the
+    // Three buttons stacked in a full-height column down the prompt's right edge
+    // (adhoc #115): each stretches to take its share of the frame height, so the
     // text area to their left ends flush against them and the whole prompt box is
-    // just as tall as the two add/new buttons.
+    // just as tall as the genie/add/new stack. "genie" sits on top (adhoc #42).
     auto *sendColumn = new QVBoxLayout;
     sendColumn->setContentsMargins(0, 0, 0, 0);
     sendColumn->setSpacing(2);
+    sendColumn->addWidget(m_quickAddGenieButton, 1);
     sendColumn->addWidget(m_quickAddSendToAgentButton, 1);
     sendColumn->addWidget(m_quickAddSendButton, 1);
     // Enter targets "new" until an agent session is opened above.
@@ -1136,9 +1159,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     auto *promptWrapper = new QFrame;
     promptWrapper->setObjectName("promptWrapper");
     // Horizontal split (adhoc #115): the text area + its bottom toolbar stack in
-    // a left column, and the add/new send buttons form a full-height column down
+    // a left column, and the genie/add/new buttons form a full-height column down
     // the right edge. The text entry therefore ends flush against the buttons and
-    // the whole box is exactly as tall as the two stacked buttons.
+    // the whole box is exactly as tall as the stacked buttons.
     auto *promptLayout = new QHBoxLayout(promptWrapper);
     promptLayout->setContentsMargins(0, 0, 0, 0);
     promptLayout->setSpacing(0);
@@ -4130,12 +4153,9 @@ QWidget *MainWindow::buildBreadcrumb()
     m_nodeMenuButton->setToolTip("Pick a node to view its repositories");
     connect(m_nodeMenuButton, &QPushButton::clicked, this, &MainWindow::showNodeMenu);
 
-    // Compact "user/node" identity followed by its public wallet balance on
-    // the same top-chrome line.
-    m_navNodeName = new QLabel;
-    m_navNodeName->setObjectName("navNodeName");
-    m_navNodeName->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-
+    // The public wallet balance heads the top-chrome line right after the relay
+    // switcher. The "user/node" caption that used to precede it was dropped
+    // (adhoc #42) — the avatar already says who is signed in.
     m_navSolanaBalance = new QLabel(QStringLiteral("0.000000000 SOL"));
     m_navSolanaBalance->setObjectName("navSolanaBalance");
     m_navSolanaBalance->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -4428,6 +4448,7 @@ QWidget *MainWindow::buildBreadcrumb()
     });
     updateUserSwitcher();
     updateAvatarButton();
+    updateAdminCrownBadge();
 
     // Connection status dot, overlaid on the bottom-right of the (now sole)
     // avatar. It's purely decorative (clicks fall through to the avatar); the
@@ -4441,6 +4462,20 @@ QWidget *MainWindow::buildBreadcrumb()
     // part of it.
     m_connectionDot->move(40 - 12 - 3, 40 - 12 - 3);
     m_connectionDot->raise();
+
+    // Admin crown badge, overlaid on the top-left of the same avatar (mirroring
+    // the connection dot's bottom-right corner). Hidden unless this node is an
+    // admin; updateAdminCrownBadge() keeps it in sync with m_isAdmin.
+    m_adminCrownBadge = new QLabel(QString::fromUtf8("\xF0\x9F\x91\x91"),
+                                   m_userAvatarNavButton);
+    m_adminCrownBadge->setObjectName("adminCrownBadge");
+    m_adminCrownBadge->setFixedSize(14, 14);
+    m_adminCrownBadge->setAlignment(Qt::AlignCenter);
+    m_adminCrownBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_adminCrownBadge->setStyleSheet(QStringLiteral("font-size:11px;"));
+    m_adminCrownBadge->move(-2, -2);
+    m_adminCrownBadge->raise();
+    m_adminCrownBadge->hide();
 
     // Captions for the top-bar dropdowns.
     auto makeCaption = [](const QString &t) {
@@ -4459,11 +4494,23 @@ QWidget *MainWindow::buildBreadcrumb()
     // line's search cluster, immediately left of Back/Forward, so the live agent
     // matrix can ride beside it along the horizontal top bar.
     m_agentsNavButton = new QPushButton(QStringLiteral("Agents"));
-    m_agentsNavButton->setObjectName("topNavButton");
+    // Not a plain #topNavButton any more (adhoc #42): the fleet gets a
+    // "magical" violet-to-cyan gradient pill with a soft glow, so the one
+    // control that opens the running agents stands out from the rest of the
+    // chrome. The glow is a real drop shadow rather than a QSS trick, which
+    // Qt's stylesheets can't render.
+    m_agentsNavButton->setObjectName("agentsMagicButton");
     m_agentsNavButton->setCheckable(true);
     m_agentsNavButton->setCursor(Qt::PointingHandCursor);
     m_agentsNavButton->setToolTip(QStringLiteral("Agents"));
-    setOcticon(m_agentsNavButton, "terminal", 16);
+    setOcticon(m_agentsNavButton, "star", 16);
+    {
+        auto *glow = new QGraphicsDropShadowEffect(m_agentsNavButton);
+        glow->setBlurRadius(18);
+        glow->setOffset(0, 0);
+        glow->setColor(QColor(167, 110, 255, 170));
+        m_agentsNavButton->setGraphicsEffect(glow);
+    }
     connect(m_agentsNavButton, &QPushButton::clicked, this,
             &MainWindow::openAgentsOverview);
 
@@ -4694,14 +4741,18 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *chromeRow = new QHBoxLayout(chrome);
     chromeRow->setContentsMargins(14, 0, 8, 0);
     chromeRow->setSpacing(8);
-    // The instance/relay switcher heads the edge-to-edge chrome. The compact
-    // user/node identity and public SOL balance sit immediately to its right.
+    // The instance/relay switcher heads the edge-to-edge chrome, with the public
+    // SOL balance immediately to its right. The Agents button and its live fleet
+    // matrix moved out of the centred search cluster to sit in this same
+    // left-hand group (adhoc #42), so the fleet reads on the same left edge as
+    // the balance instead of drifting with the search box.
     chromeRow->addWidget(m_relayMenuButton);
     auto *identityBalanceRow = new QHBoxLayout;
     identityBalanceRow->setContentsMargins(0, 0, 0, 0);
     identityBalanceRow->setSpacing(8);
-    identityBalanceRow->addWidget(m_navNodeName);
     identityBalanceRow->addWidget(m_navSolanaBalance);
+    identityBalanceRow->addWidget(m_agentsNavButton);
+    identityBalanceRow->addWidget(m_agentDotMatrix);
     chromeRow->addLayout(identityBalanceRow);
     chromeRow->addStretch();
 
@@ -4709,11 +4760,6 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *searchClusterRow = new QHBoxLayout(searchCluster);
     searchClusterRow->setContentsMargins(0, 0, 0, 0);
     searchClusterRow->setSpacing(8);
-    // Agents + its live status matrix lead the cluster, so the fleet is visible
-    // from every section without leaving room for the search box to shift.
-    searchClusterRow->addWidget(m_agentsNavButton);
-    searchClusterRow->addWidget(m_agentDotMatrix);
-    searchClusterRow->addSpacing(4);
     searchClusterRow->addWidget(createNavHistoryButtons());
     searchClusterRow->addWidget(createGlobalSearchBox());
     chromeRow->addWidget(searchCluster, 0, Qt::AlignCenter);
@@ -4948,6 +4994,14 @@ void MainWindow::updateConnectionStatus()
     // themed via the #connectionDot rule in Theme.h so it works in light mode too.
     m_connectionDot->setStyleSheet(
         QStringLiteral("background:%1; border-radius:6px;").arg(color));
+}
+
+void MainWindow::updateAdminCrownBadge()
+{
+    if (!m_adminCrownBadge)
+        return;
+    m_adminCrownBadge->setVisible(m_isAdmin);
+    m_adminCrownBadge->setToolTip(m_isAdmin ? QStringLiteral("Admin") : QString());
 }
 
 // Flip this node online/offline from the profile toggle. "Offline" keeps the user
@@ -5534,24 +5588,11 @@ void MainWindow::cycleNavSolanaCurrency()
 
 void MainWindow::updateNavSolanaBalance()
 {
-    if (m_navNodeName) {
-        // "user/node" (e.g. "jett/forkmesh") — the user account paired with THIS
-        // machine's node name when they differ; just the one name for a
-        // solo/unclaimed node, where topBarUserName() falls back to the node
-        // name itself. The node half is machineNodeName(), never the username.
-        const QString nodeName = machineNodeName();
-        const QString user = topBarUserName().trimmed();
-        const QString name =
-            (!user.isEmpty() && !nodeName.isEmpty() &&
-             user.compare(nodeName, Qt::CaseInsensitive) != 0)
-                ? user + QStringLiteral("/") + nodeName
-                : nodeName;
-        // Admins get a little crown next to their name. U+1F451 (👑).
-        const QString crown = QString::fromUtf8(" \xF0\x9F\x91\x91");
-        m_navNodeName->setText(m_isAdmin && !name.isEmpty() ? name + crown : name);
-        m_navNodeName->setToolTip(m_isAdmin && !name.isEmpty() ? name + " (admin)" : name);
-        m_navNodeName->setVisible(!name.isEmpty());
-    }
+    // The top bar no longer prints "user/node" beside the balance (adhoc #42),
+    // but admin status is still a crown badge on the avatar — piggyback on this
+    // frequently-called refresh so the badge stays in sync wherever m_isAdmin
+    // changes.
+    updateAdminCrownBadge();
     if (!m_navSolanaBalance)
         return;
 
@@ -6853,7 +6894,41 @@ void MainWindow::showChatView()
 {
     // Chat is its own top-level section now; switching to it clears the unread
     // marker for the open conversation (handled in showSection).
+    // Opening chat while something else is unread lands on that conversation
+    // instead of whatever was last open — the badge is what the click was
+    // aiming at, so jump straight to the messages behind it.
+    const QString unread = mostRecentUnreadConversation();
     showSection(2);
+    if (!unread.isEmpty())
+        switchConversation(unread);
+}
+
+QString MainWindow::mostRecentUnreadConversation() const
+{
+    if (m_unread.isEmpty() || m_unread.contains(m_currentConversation))
+        return QString();
+    // Sidebar order (channels, then DMs) is the tie-breaker, so an unread with
+    // no local history still resolves to a stable pick.
+    QStringList ordered = m_channels;
+    ordered.reserve(m_channels.size() + m_openDms.size());
+    for (const QString &peerId : std::as_const(m_openDms))
+        ordered.append(dmKey(peerId));
+
+    QString best;
+    qint64 bestStamp = -1;
+    for (const QString &conversation : std::as_const(ordered)) {
+        if (!m_unread.contains(conversation))
+            continue;
+        qint64 stamp = 0;
+        const auto it = m_history.constFind(conversation);
+        if (it != m_history.constEnd() && !it->isEmpty())
+            stamp = it->last().timestampMs;
+        if (stamp > bestStamp) {
+            bestStamp = stamp;
+            best = conversation;
+        }
+    }
+    return best;
 }
 
 void MainWindow::updateChatButton()

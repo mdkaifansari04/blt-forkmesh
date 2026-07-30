@@ -417,6 +417,40 @@ int main(int argc, char *argv[])
 
     MainWindow window;
 
+    // Opening Chat from its unread badge should land directly on the unread
+    // conversation carrying the newest message, while preserving the already
+    // open conversation when that conversation itself is unread.
+    {
+        check(window.testMostRecentUnreadConversation(
+                  QStringLiteral("#general"),
+                  {QStringLiteral("#general"), QStringLiteral("#engineering"),
+                   QStringLiteral("#product")},
+                  {QStringLiteral("#engineering"), QStringLiteral("#product")},
+                  {{QStringLiteral("#engineering"), 100},
+                   {QStringLiteral("#product"), 200}}) ==
+                  QStringLiteral("#product"),
+              QStringLiteral("chat badge selects the newest unread channel"));
+
+        check(window.testMostRecentUnreadConversation(
+                  QStringLiteral("#general"),
+                  {QStringLiteral("#general"), QStringLiteral("#engineering")},
+                  {QStringLiteral("#general"), QStringLiteral("#engineering")},
+                  {{QStringLiteral("#general"), 300},
+                   {QStringLiteral("#engineering"), 200}})
+                  .isEmpty(),
+              QStringLiteral("chat badge preserves an already-open unread channel"));
+
+        check(window.testMostRecentUnreadConversation(
+                  QStringLiteral("#general"),
+                  {QStringLiteral("#general"), QStringLiteral("#engineering"),
+                   QStringLiteral("#product")},
+                  {QStringLiteral("#engineering"), QStringLiteral("#product")},
+                  {}) ==
+                  QStringLiteral("#engineering"),
+              QStringLiteral("chat badge uses sidebar order when unread history "
+                             "is not cached"));
+    }
+
     // Bottom status bar (adhoc #2): a strip exactly one text line tall carrying
     // the branch switcher, the repo's git identity and the location of the
     // running executable. The first two used to live in the repo Code overview,

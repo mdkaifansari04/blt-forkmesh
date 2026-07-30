@@ -434,15 +434,33 @@ async function openPanel() {
 
 function boot() {
   consumeOAuthOutcome();
-  const trigger = button("Discord", openPanel, "world-discord-trigger");
-  trigger.dataset.worldDiscordOpen = "true";
-  trigger.setAttribute("aria-expanded", "false");
   const root = document.createElement("div");
   root.dataset.worldDiscordRoot = "true";
   root.hidden = true;
-  document.body.append(trigger, root);
+  document.body.append(root);
   window.addEventListener("forkmesh:open-discord", showPanel);
-  if (state.open) showPanel();
+
+  const bindSettingsTrigger = () => {
+    const trigger = document.querySelector("[data-world-discord-open]");
+    if (!trigger || trigger.dataset.worldDiscordBound === "true") return false;
+    trigger.dataset.worldDiscordBound = "true";
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.addEventListener("click", () => {
+      document.querySelector("forkmesh-world")?.toggleSettings?.(false);
+      void openPanel();
+    });
+    render();
+    if (state.open) void showPanel();
+    return true;
+  };
+
+  if (!bindSettingsTrigger()) {
+    const observer = new MutationObserver(() => {
+      if (!bindSettingsTrigger()) return;
+      observer.disconnect();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
 }
 
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot, { once: true });

@@ -72,6 +72,7 @@ WORLD_EMOTE_VALUES = frozenset({
     "float",
     "idea",
     "jump",
+    "superjump",
     "sparkle",
     "spin",
     "wave",

@@ -7053,6 +7053,10 @@ forkmesh-world.world-office-active .world-quick-dock {
   white-space: nowrap;
 }
 
+.world-player-label[hidden] {
+  display: none;
+}
+
 .world-player-label-status {
   color: var(--world-mint);
   font-size: 0.58rem;
@@ -10387,5 +10391,176 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   [data-world-discord-root] {
     top: max(50px, env(safe-area-inset-top));
     max-height: 70dvh;
+  }
+}
+
+/* Persistent, centered World controls. Avatar actions are gameplay controls,
+   not chat controls, so they remain reachable even when the chat transcript is
+   closed. The three activity totals similarly have one home at the top center
+   instead of duplicating badges inside the avatar launcher. */
+.world-avatar-actions {
+  position: fixed;
+  z-index: 58;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  left: 50%;
+  display: flex;
+  max-width: calc(100vw - 160px);
+  gap: 7px;
+  overflow-x: auto;
+  padding: 4px;
+  scrollbar-width: none;
+  transform: translateX(-50%);
+}
+
+.world-avatar-actions::-webkit-scrollbar {
+  display: none;
+}
+
+.world-avatar-actions button {
+  display: grid;
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid rgb(139 148 158 / 0.55);
+  border-radius: 50%;
+  background: rgb(13 17 23 / 0.72);
+  color: #f0f6fc;
+  font-size: 1.05rem;
+  box-shadow: 0 8px 24px rgb(1 4 9 / 0.35);
+  cursor: pointer;
+  backdrop-filter: blur(16px) saturate(1.2);
+}
+
+.world-avatar-actions button:hover,
+.world-avatar-actions button:focus-visible {
+  border-color: #58a6ff;
+  background: rgb(31 111 235 / 0.4);
+  outline: none;
+}
+
+.world-status-actions {
+  position: fixed;
+  z-index: 59;
+  top: max(10px, env(safe-area-inset-top));
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  transform: translateX(-50%);
+}
+
+.world-status-actions button {
+  display: inline-flex;
+  min-width: 44px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid rgb(139 148 158 / 0.55);
+  border-radius: 999px;
+  background: rgb(13 17 23 / 0.78);
+  padding: 0 7px;
+  color: #f0f6fc;
+  box-shadow: 0 6px 18px rgb(1 4 9 / 0.32);
+  cursor: pointer;
+  backdrop-filter: blur(14px);
+}
+
+.world-status-actions button[hidden] {
+  display: none;
+}
+
+.world-status-action-icon {
+  font-size: 0.64rem;
+  line-height: 1;
+}
+
+.world-hud .world-status-actions .world-tool-count {
+  position: static;
+  display: inline !important;
+  min-width: 0;
+  height: auto;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: 700 0.68rem/1 "ForkMesh Mono", ui-monospace, monospace;
+  box-shadow: none;
+}
+
+.world-hud .world-status-actions .world-tool-count[hidden] {
+  display: none !important;
+}
+
+/* Hovering the chat orb opens only the composer. Clicking it still opens the
+   independent newest-first transcript. */
+.world-chat-terminal:not([open]):is(:hover, :focus-within) {
+  overflow: visible;
+}
+
+.world-chat-terminal:not([open]):is(:hover, :focus-within)
+  .world-chat-terminal-body {
+  position: fixed;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(max(12px, env(safe-area-inset-bottom)) + 62px);
+  display: block !important;
+  width: min(480px, calc(100vw - 24px));
+  height: auto;
+  overflow: visible;
+}
+
+.world-chat-terminal:not([open]):is(:hover, :focus-within)
+  :is(
+    #fullChatMessages,
+    [data-dashboard-chat-scroll-rail],
+    [data-dashboard-chat-context-rail]
+  ) {
+  display: none !important;
+}
+
+.world-chat-terminal:not([open]):is(:hover, :focus-within)
+  [data-dashboard-chat-composer] {
+  display: block;
+}
+
+/* Newest messages are inserted first by the controller. */
+.world-native-chat #fullChatMessages {
+  align-content: start;
+}
+
+.world-native-chat .chat-attachment-wrapper,
+.world-native-chat .chat-attachment-preview,
+.world-native-chat .chat-attachment-card {
+  width: min(180px, 100%);
+}
+
+.world-native-chat .chat-attachment-image {
+  width: auto;
+  max-width: min(180px, 100%);
+  max-height: 120px;
+}
+
+/* The chat launcher no longer carries a second online/live dot, and the debug
+   glyph is just the nine health pixels without an inner circular ring. */
+.world-chat-terminal-avatar::after {
+  display: none;
+  content: none;
+}
+
+.world-diagnostics-orb {
+  border: 0;
+  background: transparent;
+}
+
+@media (max-width: 680px) {
+  .world-avatar-actions {
+    max-width: calc(100vw - 24px);
+  }
+
+  .world-avatar-actions button {
+    width: 38px;
+    min-width: 38px;
+    height: 38px;
   }
 }

@@ -29,6 +29,29 @@ def run_async_test(function):
     return wrapped
 
 
+def test_message_projection_uses_discord_username_and_safe_avatar_url():
+    projected = discord_api._message_projection({
+        "id": "300000000000000001",
+        "content": "Hello",
+        "timestamp": "2026-07-29T18:00:00Z",
+        "author": {
+            "id": "200000000000000001",
+            "username": "account-name",
+            "global_name": "Display Name",
+            "avatar": "a_avatarHash_123",
+            "bot": False,
+        },
+    }, PUBLIC)
+    assert projected["author"] == {
+        "name": "Display Name",
+        "bot": False,
+        "avatarUrl": (
+            "https://cdn.discordapp.com/avatars/200000000000000001/"
+            "a_avatarHash_123.webp?size=64"
+        ),
+    }
+
+
 GUILD = "100000000000000001"
 PUBLIC = "200000000000000001"
 ANNOUNCEMENT = "200000000000000002"
