@@ -1180,6 +1180,11 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTitle = new QLabel("Select a session");
     m_agentTitle->setObjectName("channelTitle");
     m_agentTitle->setWordWrap(true);
+    // The session's field list (Agent/Model/Repo/Status/Issue/PR/… plus Branch
+    // and Worktree) no longer sits open across the top of the detail pane: it
+    // filled a full-width band above the transcript for information that is only
+    // occasionally read (adhoc #61). It moved into a popup behind the "Info"
+    // button beside the status pill, rendered as a vertical label/value list.
     m_agentMeta = new QLabel;
     m_agentMeta->setObjectName("statusLine");
     // Selectable text plus clickable links: the issue and PR values link to their
@@ -1205,7 +1210,38 @@ QWidget *MainWindow::buildAgentsTab()
                 openNotificationLink(link);
             }
         }
+        if (m_agentMetaPopup)
+            m_agentMetaPopup->hide(); // the click navigated away from this pane
     });
+
+    // The popup the meta list lives in, and the little "Info" button that opens
+    // it (adhoc #61). A Qt::Popup closes on the next click outside itself, so
+    // the list behaves like a menu without having to wrap the rich-text label
+    // in a QWidgetAction.
+    m_agentMetaPopup = new QFrame(this, Qt::Popup);
+    m_agentMetaPopup->setObjectName("agentMetaPopup"); // themed like #reactionPicker
+    auto *metaPopupLayout = new QVBoxLayout(m_agentMetaPopup);
+    metaPopupLayout->setContentsMargins(12, 10, 12, 10);
+    metaPopupLayout->addWidget(m_agentMeta);
+    m_agentInfoButton = new QPushButton(QStringLiteral("Info"));
+    m_agentInfoButton->setCursor(Qt::PointingHandCursor);
+    m_agentInfoButton->setToolTip(
+        "Show this session's details: agent, model, mode, repo, status, issue, "
+        "PR, branch and worktree");
+    setOcticon(m_agentInfoButton, "info", 16);
+    connect(m_agentInfoButton, &QPushButton::clicked, this, [this] {
+        if (!m_agentMetaPopup)
+            return;
+        if (m_agentMetaPopup->isVisible()) {
+            m_agentMetaPopup->hide();
+            return;
+        }
+        m_agentMetaPopup->adjustSize();
+        m_agentMetaPopup->move(
+            m_agentInfoButton->mapToGlobal(QPoint(0, m_agentInfoButton->height() + 4)));
+        m_agentMetaPopup->show();
+    });
+
     m_agentStopButton = new QPushButton("Stop");
     m_agentStopButton->setObjectName("dangerButton");
     m_agentStopButton->setCursor(Qt::PointingHandCursor);
