@@ -11459,7 +11459,10 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
     outer->addWidget(summary);
 
     auto *tabs = new QTabWidget;
-    tabs->setObjectName(QStringLiteral("settingsTabs"));
+    // Its own object name, styled alongside #settingsTabs: sharing that name
+    // made this the tab widget a findChild<QTabWidget *>("settingsTabs") walked
+    // into once the Network section had been built (Theme.h styles both).
+    tabs->setObjectName(QStringLiteral("networkTabs"));
     tabs->setDocumentMode(true);
     tabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     outer->addWidget(tabs, 1);
