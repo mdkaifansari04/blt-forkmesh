@@ -488,13 +488,19 @@ async function prepareWorldPage(
             : url.pathname === "/api/repositories"
               ? { repositories: [] }
               : {};
+    const officeTaskBasePath = url.pathname.startsWith("/api/tasks")
+      ? "/api/tasks"
+      : "/api/world/office/marketing-tasks";
     if (
       officeTaskFixture &&
-      url.pathname.startsWith("/api/world/office/marketing-tasks")
+      (
+        url.pathname.startsWith("/api/tasks") ||
+        url.pathname.startsWith("/api/world/office/marketing-tasks")
+      )
     ) {
       const method = route.request().method();
       const suffix = url.pathname
-        .slice("/api/world/office/marketing-tasks".length)
+        .slice(officeTaskBasePath.length)
         .split("/")
         .filter(Boolean);
       let requestBody = {};
@@ -4835,7 +4841,10 @@ test("Local controls carry Work and Security tabs instead of a session card", as
   await page.locator('[data-world-settings-tab="work"]').click();
   await expect(page.locator("[data-world-work-total]")).toHaveText("1");
   await expect(page.locator("[data-world-work-active]")).toHaveText("0");
-  const workTask = page.locator("[data-world-work-list] > li").first();
+  const workTask = page
+    .locator("[data-world-organization-task-list] .world-task-row")
+    .filter({ hasText: "Write the launch digest" })
+    .first();
   await expect(workTask).toContainText("Write the launch digest");
   await workTask.locator('[data-world-office-task-action="start"]').click();
   await expect
@@ -4843,13 +4852,15 @@ test("Local controls carry Work and Security tabs instead of a session card", as
       officeTaskFixture.requests.filter(
         (request) =>
           request.path ===
-          `/api/world/office/marketing-tasks/${taskId}/start`,
+          `/api/tasks/${taskId}/start`,
       ).length,
     )
     .toBeGreaterThan(0);
   // The row flips to Stop once the server-timed start lands.
   await expect(
-    page.locator('[data-world-work-list] [data-world-office-task-action="stop"]'),
+    page.locator(
+      '[data-world-organization-task-list] [data-world-office-task-action="stop"]',
+    ),
   ).toBeVisible();
   await expect(page.locator("[data-world-work-active]")).toHaveText("1");
 

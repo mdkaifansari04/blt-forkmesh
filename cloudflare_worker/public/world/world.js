@@ -22229,7 +22229,15 @@ class ForkMeshWorld extends HTMLElement {
       // re-read on entry rather than polled while the panel sits open.
       void this.loadWorldSessions();
     }
-    if (selected === "work") void this.officeTasks?.refresh?.({ quiet: true });
+    if (selected === "work") {
+      void this.ensureOfficeRuntime({ userInitiated: true }).then(() => {
+        if (this.destroyed || this.settingsTab !== "work") return;
+        const currentPanel = this.$("[data-world-settings]");
+        if (currentPanel?.dataset.open !== "true") return;
+        this.officeTasks?.setPersonalView?.(true);
+        void this.officeTasks?.refresh?.({ quiet: true });
+      });
+    }
   }
 
   renderWorldSessions(message = "", tone = "") {
