@@ -150,7 +150,7 @@ def test_landmarks_use_stable_positions_inside_the_world_and_office_campus():
     positions = {
         "fountain": (0, 0),
         "campfire": (0, 130),
-        "repositories": (35, 38),
+        "repositories": (130, 0),
         "office": (0, -215),
     }
     for landmark, (x, z) in positions.items():
@@ -365,7 +365,7 @@ def test_unified_chest_card_uses_public_profile_wallet_and_explicit_follow():
         "setAvatarFediverseProfile,",
         "queueMicrotask(() => onFediverseProfile(target))",
         '"FEDIVERSE · UNAVAILABLE"',
-        "const activityBorder =",
+        'activityRing.name = "avatar-activity-ring"',
         "new THREE.PlaneGeometry(0.88, 0.88)",
     ):
         assert contract in SCENE
@@ -901,9 +901,12 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
     assert "event.preventDefault();" in pull_guard
     assert "[data-world-thumbstick]" in pull_guard
     assert "[data-world-canvas-wrap]" in pull_guard
-    assert "if (touchPointers.size > 0)" in SCENE
     assert "pendingTouchResize = true;" in SCENE
-    assert "if (!touchPointers.size && pendingTouchResize)" in SCENE
+    assert "externalTouchInteractionActive" in SCENE
+    assert "setTouchInteractionActive" in SCENE
+    assert "touchPointers.size > 0 || externalTouchInteractionActive" in SCENE
+    assert "this.world?.setTouchInteractionActive?.(true);" in APP
+    assert "this.world?.setTouchInteractionActive?.(false);" in APP
     mobile = CSS[CSS.index("@media (max-width: 720px)"):]
     assert ".world-right-rail {" in mobile
     assert "display: grid;" in mobile
@@ -925,7 +928,7 @@ def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
         "saveCurrentWorldView()",
         "editSavedWorldView(id)",
         "restoreSavedWorldView(id)",
-        "this.officeController?.restoreSavedView?.(view)",
+        "officeController?.restoreSavedView?.(view)",
     ):
         assert contract in APP
     for contract in (
@@ -1016,7 +1019,7 @@ def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
     assert 'id="fullChatAction" type="hidden" value="chat"' in APP
     assert "Send to bot</option>" not in APP
     assert '<span data-dashboard-chat-send-label>Chat</span>' in APP
-    assert 'title="Send this task to the bot">Task</button>' in APP
+    assert 'title="Enter will send this task to the bot"' in APP
     assert "world-chat-terminal-channel" in APP
     assert "world-chat-terminal-connection" in APP
     chat_version = hashlib.sha256(DASHBOARD_CHAT.encode()).hexdigest()[:12]
@@ -1406,15 +1409,17 @@ def test_top_toolbar_opens_dashboard_in_a_safe_new_tab():
     )
 
 
-def test_admin_error_button_opens_the_error_table_in_a_safe_new_tab():
-    start = APP.index("  openAdminErrors() {")
+def test_admin_error_button_opens_a_sortable_in_world_error_table():
+    start = APP.index("  async openAdminErrors(")
     method = APP[start:APP.index("\n  // Read the locked placement", start)]
-    assert 'destination.searchParams.set("table", "error_log")' in method
-    assert "window.open(" in method
-    assert '"_blank"' in method
-    assert '"noopener,noreferrer"' in method
-    assert "opened.opener = null" in method
-    assert "window.location.assign" not in method
+    assert 'detail.dataset.openLandmark = "admin-errors"' in method
+    assert "this.adminErrorsPanelHTML()" in method
+    assert "this.showDetailOverlay(" in method
+    assert "await this.refreshAdminErrorRows()" in method
+    assert "window.open(" not in method
+    assert 'data-world-activity-search="errors"' in APP
+    assert 'data-world-activity-filter="errors"' in APP
+    assert 'data-world-activity-sort="errors"' in APP
 
 
 def test_world_task_button_and_inactive_avatar_visibility_contracts():
@@ -1436,6 +1441,18 @@ def test_render_stalls_include_bounded_likely_component_attribution():
     assert 'component = "Three.js renderer workload";' in SCENE
     assert 'component = `office ${officeSceneMode} scene`;' in SCENE
     assert 'codeArea = "renderer.render(scene, camera)";' in SCENE
+    assert "const frameWorkStartedAt = performance.now();" in SCENE
+    assert "performance.now() - frameWorkStartedAt" in SCENE
+    assert "scheduleRenderStallWarning(frameWorkMs, refreshedShadowMap);" in SCENE
+    assert "scheduleRenderStallWarning(rawFrameMs);" not in SCENE
+    assert "renderer.shadowMap.autoUpdate = false;" in SCENE
+    assert "sun.shadow.mapSize.set(512, 512);" in SCENE
+    assert "nextShadowMapUpdateAt = time + SHADOW_MAP_UPDATE_MS;" in SCENE
+    assert "time + SHADOW_MAP_STALL_COOLDOWN_MS" in SCENE
+    assert 'component = "shadow map refresh";' in SCENE
+    assert "function canvasReadableImageURL(value)" in SCENE
+    assert "url.origin !== window.location.origin" in SCENE
+    assert "const key = canvasReadableImageURL(url);" in SCENE
 
 
 def test_world_first_person_zoom_out_falls_back_to_third_person():
@@ -2266,6 +2283,24 @@ def test_world_member_directory_seats_registered_users_from_roster():
     assert "this.memberDirectory.length" in APP
 
 
+def test_world_settings_moves_focus_before_hiding_the_panel():
+    assert (
+        'data-world-settings aria-labelledby="world-settings-title" '
+        'aria-hidden="true" inert'
+    ) in APP
+    toggle = APP.split("  toggleSettings(open) {", 1)[1].split(
+        "\n  selectSettingsTab(", 1
+    )[0]
+    assert "panel.inert = false;" in toggle
+    assert "panel.contains(active)" in toggle
+    assert "target?.focus?.();" in toggle
+    assert "active.blur();" in toggle
+    assert toggle.index("target?.focus?.();") < toggle.index(
+        'panel.setAttribute("aria-hidden", "true");'
+    )
+    assert "panel.inert = true;" in toggle
+
+
 def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
     # adhoc #287: one bench per registered account rings the campfire. Away
     # members appear as seated figures facing the fire, members walking the
@@ -2287,11 +2322,10 @@ def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
     assert '"OUT AND ABOUT"' in SCENE
     assert "campfire.userData.seatByName" in SCENE
     assert "noteDirectoryMembers" in APP
-    # The ring's arc carries the seats plus the walk-in gap (adhoc #430).
-    assert (
-        "(count * CAMPFIRE_SEAT_SPACING + CAMPFIRE_ENTRANCE_WIDTH) / (2 * Math.PI)"
-        in SCENE
-    )
+    # Concentric rows hold 25 people each and preserve one aligned walk-in gap.
+    assert "const CAMPFIRE_MEMBERS_PER_ROW = 25;" in SCENE
+    assert "const rowCount = Math.ceil(count / CAMPFIRE_MEMBERS_PER_ROW);" in SCENE
+    assert "CAMPFIRE_ENTRANCE_WIDTH / radius" in SCENE
     assert '"sitting around the campfire"' in SCENE
     # Figures and idle live avatars both face the pit at the circle's centre.
     # Avatar fronts face local -Z, so the inward heading is atan2(x, z) — the
@@ -2555,14 +2589,18 @@ def test_approved_federated_instances_render_without_private_relay_material():
 
 
 def test_cloudflare_setup_deep_link_carries_no_cloudflare_secret():
-    exact = "forkmesh://control/cloudflare"
-    assert exact in QT_MAIN
-    assert "target == QLatin1String" in QT_MAIN
+    assert 'url.scheme() != QLatin1String("forkmesh")' in QT_MAIN
+    assert 'url.host() != QLatin1String("control")' in QT_MAIN
+    assert 'url.path() != QLatin1String("/cloudflare")' in QT_MAIN
+    assert "isCloudflareSetupLink" in QT_MAIN
+    assert "prohibited.match(item.first)" in QT_MAIN
     assert "openCloudflareSetupFromSystemLink" in QT_CONTROL
     assert "m_cloudflareTokenEdit->setFocus" in QT_CONTROL
+    assert 'query.queryItemValue(name, QUrl::FullyDecoded)' in QT_CONTROL
     assert "activationTarget.toUtf8()" in QT_SINGLE_INSTANCE
     assert '<h2 id="cloudflare">Cloudflare setup stays local</h2>' in QT_DOCS
-    assert "carries no token or other secret in its URL" in QT_DOCS
+    assert "bounded public topology only" in QT_DOCS
+    assert "token-, password-, key-, and" in QT_DOCS
     assert 'Exec="$BIN" %u' in LINUX_DESKTOP_INSTALLER
     assert "MimeType=x-scheme-handler/forkmesh;" in LINUX_DESKTOP_INSTALLER
     assert "Exec=forkmesh %u" in APPIMAGE_PACKAGER

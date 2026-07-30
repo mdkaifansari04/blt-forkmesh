@@ -2174,13 +2174,11 @@ void MainWindow::updateAgentsTabIndicator()
     }
     if (!m_agentsSpinTimer) {
         m_agentsSpinTimer = new QTimer(this);
-        connect(m_agentsSpinTimer, &QTimer::timeout, this, [this] {
-            m_agentsSpinFrame = (m_agentsSpinFrame + 1) % 10;
-            animateRunningAgentIcons(); // spin the running rows' Status glyph
-        });
+        connect(m_agentsSpinTimer, &QTimer::timeout, this,
+                &MainWindow::animateRunningAgentIcons); // spin running rows' glyph
     }
     if (!m_agentsSpinTimer->isActive())
-        m_agentsSpinTimer->start(120);
+        m_agentsSpinTimer->start(kAgentSpinTickMs);
 }
 
 // The mirror-activity dot strip (adhoc #197) and the current-release pill

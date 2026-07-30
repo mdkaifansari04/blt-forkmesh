@@ -295,10 +295,10 @@ def test_admin_error_log_copies_messages_and_files_bot_tasks():
         "navigator.clipboard.writeText(text)",
         "document.execCommand('copy')",
         'action="create_bot_task"',
-        "Create bot task</button>",
+        "Send to task</button>",
         "async def _admin_error_create_bot_task(env, form, requester):",
-        'source="admin-error-log", labels=["bug", "error-log"],',
-        "_forkbot_enqueue_agent_request(\n        env, owner, repo, number, requester)",
+        '"INSERT INTO organization_tasks "',
+        '"assignee": "agent"',
         '"delete_error_group", "create_bot_task"',
         "<th>Bot task</th>",
     ):

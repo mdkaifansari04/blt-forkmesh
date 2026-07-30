@@ -167,6 +167,44 @@ function mountForkMeshDashboardChat() {
     });
   }
 
+  async function taskAttachmentMetadata(file) {
+    const attachment = {
+      name: safeAttachmentName(file?.name),
+      mime: safeAttachmentMime(file?.type),
+      size: Math.max(0, Number(file?.size) || 0),
+    };
+    if (
+      !["image/png", "image/jpeg", "image/webp"].includes(attachment.mime) ||
+      !file ||
+      attachment.size > 1024 * 1024 ||
+      typeof createImageBitmap !== "function"
+    ) {
+      return attachment;
+    }
+    try {
+      const bitmap = await createImageBitmap(file);
+      const side = 48;
+      const canvas = document.createElement("canvas");
+      canvas.width = side;
+      canvas.height = side;
+      const context = canvas.getContext("2d");
+      const scale = Math.max(side / bitmap.width, side / bitmap.height);
+      const width = bitmap.width * scale;
+      const height = bitmap.height * scale;
+      context.drawImage(
+        bitmap,
+        (side - width) / 2,
+        (side - height) / 2,
+        width,
+        height,
+      );
+      bitmap.close?.();
+      const thumbnail = canvas.toDataURL("image/webp", 0.72);
+      if (thumbnail.length <= 10_000) attachment.thumbnail = thumbnail;
+    } catch (_) {}
+    return attachment;
+  }
+
   function applyWorldComposerPrefill() {
     const data = pendingWorldComposerPrefill;
     if (!data) return false;
@@ -310,6 +348,7 @@ function mountForkMeshDashboardChat() {
   let discordInitialMessagesLoaded = false;
   let discordSources = null;
   let discordBackoffUntil = 0;
+  let discordBackoffAttempts = 0;
   // messageId -> Map(emoji -> Map(reactorId -> reactorName)); identical to
   // the full web/Qt protocol shape so reactions converge across every client.
   const reactions = new Map();
@@ -636,11 +675,37 @@ function mountForkMeshDashboardChat() {
     });
     if (!response.ok) {
       const error = new Error(`Discord source unavailable (${response.status})`);
-      const retrySeconds = Math.max(
-        0,
-        Number(response.headers.get("retry-after")) || 0,
+      error.status = response.status;
+      const retryHeader = String(response.headers.get("retry-after") || "");
+      const retrySeconds = Number(retryHeader);
+      const retryDate = Date.parse(retryHeader);
+      const requestedDelay = Number.isFinite(retrySeconds)
+        ? Math.max(0, retrySeconds * 1000)
+        : Number.isFinite(retryDate)
+          ? Math.max(0, retryDate - Date.now())
+          : 0;
+      // Some edge/provider 429 and 503 responses omit Retry-After. Waiting
+      // only for the ordinary one-minute poll in that case repeatedly fans
+      // out across every organization and extends the rate limit.
+      if (response.status === 429 || response.status === 503) {
+        discordBackoffAttempts = Math.min(6, discordBackoffAttempts + 1);
+      }
+      const fallbackDelay =
+        response.status === 429
+          ? Math.min(
+              30 * 60_000,
+              5 * 60_000 * (2 ** (discordBackoffAttempts - 1)),
+            )
+          : response.status === 503
+            ? Math.min(
+                10 * 60_000,
+                60_000 * (2 ** (discordBackoffAttempts - 1)),
+              )
+            : 0;
+      error.retryAfterMs = Math.min(
+        3_600_000,
+        Math.max(requestedDelay, fallbackDelay),
       );
-      error.retryAfterMs = Math.min(3_600_000, retrySeconds * 1000);
       if (error.retryAfterMs) {
         discordBackoffUntil = Math.max(
           discordBackoffUntil,
@@ -657,30 +722,44 @@ function mountForkMeshDashboardChat() {
     const catalog = await discordJson("/api/orgs");
     const organizations = (Array.isArray(catalog?.orgs) ? catalog.orgs : [])
       .slice(0, DISCORD_MAX_ORGANIZATIONS);
-    const statuses = await Promise.allSettled(organizations.map(async (record) => {
+    const sources = [];
+    // Connector discovery is deliberately sequential. A rate-limit response
+    // from the first organization must prevent more doomed requests from being
+    // launched at the same provider in the same tick.
+    for (const record of organizations) {
       const organization = String(record?.name || "").trim();
-      if (!organization) return [];
-      const status = await discordJson(
-        `/api/orgs/${encodeURIComponent(organization)}/discord`,
-      );
-      if (!status?.configured || status?.state !== "configured") return [];
-      const channelIds = Array.isArray(status?.connector?.channelIds)
-        ? status.connector.channelIds
-        : [];
-      const channelNames = new Map(
-        (Array.isArray(status?.channels) ? status.channels : []).map((channel) => [
-          String(channel?.id || ""),
-          String(channel?.name || ""),
-        ]),
-      );
-      return channelIds.slice(0, DISCORD_MAX_CHANNELS).map((channelId) => ({
-        organization,
-        channelId: String(channelId || ""),
-        channelName: channelNames.get(String(channelId || "")) || "",
-      })).filter((source) => source.channelId);
-    }));
-    discordSources = statuses.flatMap((result) =>
-      result.status === "fulfilled" ? result.value : []);
+      if (!organization) continue;
+      try {
+        const status = await discordJson(
+          `/api/orgs/${encodeURIComponent(organization)}/discord`,
+        );
+        if (!status?.configured || status?.state !== "configured") continue;
+        const channelIds = Array.isArray(status?.connector?.channelIds)
+          ? status.connector.channelIds
+          : [];
+        const channelNames = new Map(
+          (Array.isArray(status?.channels) ? status.channels : []).map((channel) => [
+            String(channel?.id || ""),
+            String(channel?.name || ""),
+          ]),
+        );
+        sources.push(
+          ...channelIds
+            .slice(0, DISCORD_MAX_CHANNELS)
+            .map((channelId) => ({
+              organization,
+              channelId: String(channelId || ""),
+              channelName: channelNames.get(String(channelId || "")) || "",
+            }))
+            .filter((source) => source.channelId),
+        );
+      } catch (error) {
+        if (error?.status === 429 || error?.status === 503) throw error;
+        // One unavailable optional connector must not hide healthy connectors
+        // belonging to the same account.
+      }
+    }
+    discordSources = sources;
     return discordSources;
   }
 
@@ -694,34 +773,47 @@ function mountForkMeshDashboardChat() {
     discordRefreshRunning = true;
     try {
       const sources = await discoverDiscordSources();
-      const results = await Promise.allSettled(sources.map(async (source) => {
+      const messages = [];
+      // Discord applies rate limits across related connector routes. Fetching
+      // every channel concurrently turns one provider-wide 429 into a burst
+      // of identical failures, so read channels serially and stop immediately
+      // when the connector asks us to cool down.
+      for (const source of sources) {
         const path =
           `/api/orgs/${encodeURIComponent(source.organization)}` +
           `/discord/messages?channelId=${encodeURIComponent(source.channelId)}`;
-        const payload = await discordJson(path);
-        const channelName = String(
-          payload?.channel?.name || source.channelName || source.channelId,
-        ).trim();
-        return (Array.isArray(payload?.messages) ? payload.messages : []).map(
-          (message) => ({
-            ...message,
-            organization: source.organization,
-            channelName,
-          }),
-        );
-      }));
-      const messages = results
-        .flatMap((result) => result.status === "fulfilled" ? result.value : [])
+        try {
+          const payload = await discordJson(path);
+          const channelName = String(
+            payload?.channel?.name || source.channelName || source.channelId,
+          ).trim();
+          messages.push(
+            ...(Array.isArray(payload?.messages) ? payload.messages : []).map(
+              (message) => ({
+                ...message,
+                organization: source.organization,
+                channelName,
+              }),
+            ),
+          );
+        } catch (error) {
+          if (error?.status === 429 || error?.status === 503) throw error;
+          // A missing channel is isolated; continue with the remaining
+          // configured channels without putting the whole connector on ice.
+        }
+      }
+      const orderedMessages = messages
         .filter((message) => message?.id && String(message?.content || "").trim())
         .sort((left, right) =>
           Date.parse(left?.createdAt || "") - Date.parse(right?.createdAt || ""));
       const visibleMessages = discordInitialMessagesLoaded
-        ? messages
-        : messages.slice(-DISCORD_MAX_INITIAL_MESSAGES);
+        ? orderedMessages
+        : orderedMessages.slice(-DISCORD_MAX_INITIAL_MESSAGES);
       let appended = 0;
       for (const message of visibleMessages) {
         if (appendDiscordMessage(message)) appended += 1;
       }
+      discordBackoffAttempts = 0;
       discordInitialMessagesLoaded = true;
       if (appended) {
         console.info("[ForkMesh chat] Discord messages refreshed", {
@@ -734,7 +826,9 @@ function mountForkMeshDashboardChat() {
       console.info("[ForkMesh chat] Discord refresh deferred", {
         reason: String(error?.message || "unavailable").slice(0, 160),
       });
-      discordSources = null;
+      if (!Array.isArray(discordSources) || !discordSources.length) {
+        discordSources = null;
+      }
     } finally {
       discordRefreshRunning = false;
     }
@@ -2029,6 +2123,9 @@ function mountForkMeshDashboardChat() {
     deferHistory = false,
   ) {
     if (orgAgentIdentity(who, senderId) && !orgAgentEngineeringAccess) return;
+    const channelMetadata = {
+      sourceLabel: CHANNEL.startsWith("#") ? CHANNEL : `#${CHANNEL}`,
+    };
     appendFullMessage(
       kind,
       who,
@@ -2038,6 +2135,7 @@ function mountForkMeshDashboardChat() {
       tsMs,
       attachment,
       deferHistory,
+      channelMetadata,
     );
     appendSideMessage(
       kind,
@@ -2048,6 +2146,7 @@ function mountForkMeshDashboardChat() {
       tsMs,
       attachment,
       deferHistory,
+      channelMetadata,
     );
     rememberContext(who, text);
   }
@@ -3125,9 +3224,17 @@ function mountForkMeshDashboardChat() {
     };
     bar.parentElement?.insertBefore(queue, bar);
     const sendButton = inputEl === fullInput ? fullSend : sideSend;
-    bar.insertBefore(fileInput, sendButton || null);
-    bar.insertBefore(button, sendButton || null);
-    bar.append(feedback);
+    const quickSlot =
+      simpleWorldComposer && inputEl === fullInput
+        ? bar.querySelector("[data-world-quick-attachment]")
+        : null;
+    if (quickSlot) {
+      quickSlot.append(fileInput, button, feedback);
+    } else {
+      bar.insertBefore(fileInput, sendButton || null);
+      bar.insertBefore(button, sendButton || null);
+      bar.append(feedback);
+    }
     button.addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", () => {
       const files = Array.from(fileInput.files || []);
@@ -3182,7 +3289,33 @@ function mountForkMeshDashboardChat() {
           : "text-muted-foreground";
   }
 
+  function pulseWorldQuickComposer(action = "chat") {
+    const composer = fullInput?.closest("[data-dashboard-chat-composer]");
+    if (!composer) return;
+    composer.removeAttribute("data-just-sent");
+    composer.setAttribute("data-submitting", action);
+    window.setTimeout(() => {
+      composer.removeAttribute("data-submitting");
+      composer.setAttribute("data-just-sent", action);
+      window.setTimeout(
+        () => composer.removeAttribute("data-just-sent"),
+        720,
+      );
+    }, 180);
+  }
+
   function setFullComposerBusy(busy) {
+    const composer = fullInput?.closest("[data-dashboard-chat-composer]");
+    if (composer) {
+      composer.toggleAttribute("data-submitting", Boolean(busy));
+      if (!busy) {
+        composer.setAttribute("data-just-sent", fullAction?.value || "chat");
+        window.setTimeout(
+          () => composer.removeAttribute("data-just-sent"),
+          720,
+        );
+      }
+    }
     for (const control of [
       fullInput,
       fullSend,
@@ -3210,6 +3343,14 @@ function mountForkMeshDashboardChat() {
       }
       fullInput.placeholder = "Message #general…";
       if (taskRouting) taskRouting.hidden = true;
+      fullSend?.setAttribute(
+        "aria-pressed",
+        String(fullAction.value === "chat"),
+      );
+      fullTaskSend?.setAttribute(
+        "aria-pressed",
+        String(fullAction.value !== "chat"),
+      );
       syncChatContextBubbles();
       return;
     }
@@ -3322,6 +3463,10 @@ function mountForkMeshDashboardChat() {
 
   async function loadTaskRouting() {
     if (!taskAssignee || !taskTeam) return;
+    // Task routing is account-scoped: a guest has no session token, so the
+    // request can only ever come back 401. Skip it rather than logging an
+    // unauthorized fetch (and flashing a status) on every public World load.
+    if (!userSession()) return;
     try {
       const payload = await taskApiRequest("GET", "/api/tasks");
       const selfName = String(payload?.actor || displayName()).toLowerCase();
@@ -3493,12 +3638,10 @@ function mountForkMeshDashboardChat() {
         const destination = botTask
           ? "agent"
           : String(taskDestination?.value || "department");
-        const taskAttachments = (attachmentControl?.draft || []).map(
-          ({ file }) => ({
-            name: safeAttachmentName(file?.name),
-            mime: safeAttachmentMime(file?.type),
-            size: Math.max(0, Number(file?.size) || 0),
-          }),
+        const taskAttachments = await Promise.all(
+          (attachmentControl?.draft || []).map(({ file }) =>
+            taskAttachmentMetadata(file),
+          ),
         );
         const created = await taskApiRequest("POST", "/api/tasks", {
           title,
@@ -3578,12 +3721,10 @@ function mountForkMeshDashboardChat() {
         const lines = text.split(/\r?\n/);
         const title = String(lines.shift() || "").trim().slice(0, 160);
         const details = lines.join("\n").trim().slice(0, 4000);
-        const taskAttachments = (attachmentControl?.draft || []).map(
-          ({ file }) => ({
-            name: safeAttachmentName(file?.name),
-            mime: safeAttachmentMime(file?.type),
-            size: Math.max(0, Number(file?.size) || 0),
-          }),
+        const taskAttachments = await Promise.all(
+          (attachmentControl?.draft || []).map(({ file }) =>
+            taskAttachmentMetadata(file),
+          ),
         );
         const created = await taskApiRequest("POST", "/api/tasks", {
           title,
@@ -3700,6 +3841,10 @@ function mountForkMeshDashboardChat() {
     sendEl.addEventListener("click", () => {
       if (simpleWorldComposer && inputEl === fullInput && fullAction) {
         fullAction.value = "chat";
+        syncFullComposerAction();
+      }
+      if (simpleWorldComposer && inputEl === fullInput) {
+        pulseWorldQuickComposer("chat");
       }
       sendFrom(inputEl, attachmentControl);
     });
@@ -3747,8 +3892,8 @@ function mountForkMeshDashboardChat() {
       }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        if (simpleWorldComposer && inputEl === fullInput && fullAction) {
-          fullAction.value = "chat";
+        if (simpleWorldComposer && inputEl === fullInput) {
+          pulseWorldQuickComposer(fullAction?.value || "chat");
         }
         sendFrom(inputEl, attachmentControl);
       }
@@ -3776,7 +3921,12 @@ function mountForkMeshDashboardChat() {
       if (simpleWorldComposer) {
         fullAction.value = "agent";
         if (taskAssignee) taskAssignee.value = "agent";
-        void runFullComposerAction(fullInput);
+        syncFullComposerAction();
+        setComposerStatus("Dispatching task instantly…", "good");
+        const attachmentControl = attachmentControls.find(
+          (control) => control.inputEl === fullInput,
+        );
+        void runFullComposerAction(fullInput, attachmentControl);
         return;
       }
       if (fullAction.value !== "task") {

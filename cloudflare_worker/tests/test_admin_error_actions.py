@@ -89,8 +89,7 @@ def test_bot_task_controls_post_to_the_audited_action():
     assert "formaction=" in button
 
 
-def _bot_task_namespace(row=None, count=3, queued=(True, {"number": 42}),
-                        agent=(True, {})):
+def _bot_task_namespace(row=None, count=3):
     calls = {}
 
     async def d1_first(_env, sql, *args):
@@ -99,17 +98,26 @@ def _bot_task_namespace(row=None, count=3, queued=(True, {"number": 42}),
             return {"n": count}
         return row
 
-    async def enqueue_issue(_env, owner, repo, title, body, requester,
-                            source="", labels=None):
-        calls["issue"] = {
-            "owner": owner, "repo": repo, "title": title, "body": body,
-            "requester": requester, "source": source, "labels": labels,
-        }
-        return queued
+    async def d1_run(_env, sql, *args):
+        calls["insert"] = (sql, args)
 
-    async def enqueue_agent(_env, owner, repo, number, requester):
-        calls["agent"] = (owner, repo, number, requester)
-        return agent
+    async def org_row(_env, _org):
+        return "org-bi", {"name": "forkmesh"}
+
+    async def org_role(_env, _org_bi, _requester):
+        return "admin"
+
+    async def blind(_env, value):
+        return "bi:" + value
+
+    async def encrypt(_env, value):
+        calls["payload"] = value
+        return "sealed"
+
+    class Date:
+        @staticmethod
+        def now():
+            return 123456
 
     ns = _load(
         {"_admin_error_create_bot_task"},
@@ -118,14 +126,19 @@ def _bot_task_namespace(row=None, count=3, queued=(True, {"number": 42}),
             "MAX_NODE_NAME": 64,
             "clean_string": lambda value, limit: str(value or "")[:limit],
             "d1_first": d1_first,
-            "_forkbot_enqueue_issue": enqueue_issue,
-            "_forkbot_enqueue_agent_request": enqueue_agent,
+            "d1_run": d1_run,
+            "_org_row": org_row,
+            "_org_role": org_role,
+            "blind_index": blind,
+            "encrypt_row": encrypt,
+            "_ap_uuid": lambda: "a" * 32,
+            "Date": Date,
         },
     )
     return ns["_admin_error_create_bot_task"], calls
 
 
-def test_bot_task_from_one_row_files_an_issue_and_requests_an_agent():
+def test_bot_task_from_one_row_creates_an_org_task_assigned_to_bot():
     create, calls = _bot_task_namespace(
         row={
             "status": 500, "method": "get", "path": "/api/x",
@@ -135,21 +148,21 @@ def test_bot_task_from_one_row_files_an_issue_and_requests_an_agent():
     banner, details = asyncio.run(
         create(object(), {"error_id": ["17"]}, "root"))
 
-    issue = calls["issue"]
-    assert issue["owner"] == "forkmesh" and issue["repo"] == "forkmesh"
-    assert "kaboom" in issue["title"]
-    assert "Related user(s): alice" in issue["body"]
-    assert "by @root" in issue["body"]
-    assert issue["labels"] == ["bug", "error-log"]
-    assert calls["agent"] == ("forkmesh", "forkmesh", 42, "root")
-    assert "#42" in banner
-    assert details["issueNumber"] == 42 and details["agentRequested"] is True
+    payload = calls["payload"]
+    assert "kaboom" in payload["title"]
+    assert "Related user(s): alice" in payload["details"]
+    assert "by @root" in payload["details"]
+    assert payload["assignee"] == "agent"
+    assert payload["repository"] == "forkmesh/forkmesh"
+    assert "organization_tasks" in calls["insert"][0]
+    assert "assigned to Bot" in banner
+    assert details["taskId"] == "a" * 32
     # The audit trail keeps a digest, never the error text.
     assert "kaboom" not in str(details)
 
 
-def test_bot_task_from_a_group_counts_occurrences_and_survives_a_full_inbox():
-    create, calls = _bot_task_namespace(count=9, queued=(False, "inbox_full"))
+def test_bot_task_from_a_group_counts_occurrences():
+    create, calls = _bot_task_namespace(count=9)
     banner, details = asyncio.run(create(
         object(),
         {
@@ -159,10 +172,9 @@ def test_bot_task_from_a_group_counts_occurrences_and_survives_a_full_inbox():
         },
         "root",
     ))
-    assert "Logged occurrences: 9" in calls["issue"]["body"]
-    assert "alice (2), anonymous (7)" in calls["issue"]["body"]
-    assert "failed" in banner.lower() and "inbox_full" in banner
-    assert "agent" not in calls
+    assert "Logged occurrences: 9" in calls["payload"]["details"]
+    assert "alice (2), anonymous (7)" in calls["payload"]["details"]
+    assert "assigned to Bot" in banner
     assert details["occurrences"] == 9
 
 
@@ -171,4 +183,4 @@ def test_bot_task_reports_a_vanished_row_instead_of_filing_an_empty_issue():
     banner, details = asyncio.run(
         create(object(), {"error_id": ["17"]}, "root"))
     assert "failed" in banner.lower()
-    assert "issue" not in calls and details == {}
+    assert "insert" not in calls and details == {}

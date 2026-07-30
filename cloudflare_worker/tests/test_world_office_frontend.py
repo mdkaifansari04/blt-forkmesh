@@ -660,7 +660,8 @@ def test_aerial_lod_never_removes_world_sections_and_sol_sign_is_attached():
     assert "const showOfficeInterior" not in scene
     assert "floorGroup.visible = true;" in scene
     assert "group.add(treasurySign);" in scene
-    assert "treasurySign.position.set(0, 0, 0);" in scene
+    assert "treasurySign.position.set(0, 1, 0);" in scene
+    assert '["TOWN", 0, 0, "#9ef7c6"]' not in scene
     assert '["MEMBERS", 0, MEMBER_ISLAND_CENTER_Z, "#f7c96b"]' in scene
     assert "MEMBER_CIRCLE_CENTER_Z" not in scene
     assert "let aerialLandmarkMarkersUnavailable = false;" in scene

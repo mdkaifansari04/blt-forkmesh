@@ -28,17 +28,58 @@ def test_debug_bar_is_a_logo_sized_orb_with_graded_metric_dots():
     assert "const dotLevels = {" in WORLD
 
 
-def test_chat_orb_shows_last_speaker_and_expands_on_hover_or_focus():
+def test_chat_orb_becomes_an_idle_prompt_and_expands_on_hover_or_focus():
     assert "data-world-chat-terminal-avatar" in WORLD
     assert "data-world-chat-terminal-avatar-image" in WORLD
     assert "data-world-chat-terminal-avatar-initial" in WORLD
+    assert "world-chat-terminal-prompt-icon" in WORLD
+    assert "scheduleQuickComposerIdle()" in WORLD
+    assert "5 * 60 * 1000" in WORLD
     assert 'chatTerminal.addEventListener("pointerenter"' in WORLD
     assert 'chatTerminal?.addEventListener("focusin"' in WORLD
     assert '!event.target.closest("[data-world-chat-terminal]")' in WORLD
     assert 'this.$("[data-world-chat-terminal]")?.removeAttribute("open")' in WORLD
     assert "setChatTerminalLastMessage(sender, text)" in WORLD
-    assert ".world-chat-terminal:is([open], :hover, :focus-within)" in CSS
+    assert ".world-chat-terminal--idle .world-chat-terminal-prompt-icon" in CSS
+    assert ".world-chat-terminal:not([open])" in CSS
     assert "this.memberDirectory.find(" in WORLD
+
+
+def test_quick_composer_keeps_feed_channels_and_enter_action_independent():
+    for channel in (
+        "general",
+        "private",
+        "direct",
+        "errors",
+        "tasks",
+        "notifications",
+    ):
+        assert f'data-world-quick-channel="{channel}"' in WORLD
+    assert 'data-world-quick-composer-avatar' in WORLD
+    assert 'data-world-quick-attachment' in WORLD
+    assert 'class="world-quick-actions"' in WORLD
+    assert 'terminal.dataset.showFeed = String(selected === "general")' in WORLD
+    assert 'const selected = "general";' in WORLD
+    assert "forkmesh.worldComposer.selectedChannel" in WORLD
+    terminal = WORLD[
+        WORLD.index('<details class="world-diagnostics world-chat-terminal'):
+        WORLD.index("</details>", WORLD.index("data-world-chat-terminal"))
+    ]
+    assert terminal.index("data-world-quick-channels") < terminal.index(
+        "data-world-quick-chat-feed",
+    )
+    assert "justify-content: flex-start;" in CSS
+    assert "justify-self: start;" in CSS
+    assert "text-align: left;" in CSS
+    assert "Hovering the chat orb opens only the composer" not in CSS
+    assert 'fullAction.value = "chat";' in CHAT
+    keydown = CHAT.split('inputEl.addEventListener("keydown"', 1)[1].split(
+        'inputEl.addEventListener("input"', 1
+    )[0]
+    assert 'fullAction.value = "chat"' not in keydown
+    assert "pulseWorldQuickComposer(fullAction?.value || \"chat\")" in CHAT
+    assert 'sourceLabel:' in CHAT
+    assert '[data-just-sent="task"]' in CSS
 
 
 def test_hud_popouts_keep_close_controls_sticky_and_dismiss_outside():

@@ -333,6 +333,26 @@ bool detectHeadless(const QStringList &args)
     return false;
 }
 
+bool isCloudflareSetupLink(const QString &value)
+{
+    const QUrl url(value);
+    if (!url.isValid() || url.scheme() != QLatin1String("forkmesh") ||
+        url.host() != QLatin1String("control") ||
+        url.path() != QLatin1String("/cloudflare") ||
+        !url.userInfo().isEmpty() || !url.fragment().isEmpty())
+        return false;
+    const QUrlQuery query(url);
+    static const QRegularExpression prohibited(
+        QStringLiteral(
+            "(?:token|secret|password|private|credential|api[_-]?key)"),
+        QRegularExpression::CaseInsensitiveOption);
+    for (const auto &item : query.queryItems(QUrl::FullyDecoded)) {
+        if (prohibited.match(item.first).hasMatch())
+            return false;
+    }
+    return value.size() <= 4096;
+}
+
 QString earlyMainLogPath()
 {
 #if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
@@ -372,7 +392,7 @@ public:
         if (event && event->type() == QEvent::FileOpen) {
             const auto *open = static_cast<QFileOpenEvent *>(event);
             const QString link = open->url().toString(QUrl::FullyEncoded);
-            if (link == QLatin1String("forkmesh://control/cloudflare")) {
+            if (isCloudflareSetupLink(link)) {
                 if (m_localLinkHandler)
                     m_localLinkHandler(link);
                 else
@@ -501,10 +521,13 @@ int main(int argc, char *argv[])
     rawArgs.reserve(argc);
     for (int i = 0; i < argc; ++i)
         rawArgs << QString::fromLocal8Bit(argv[i]);
-    const QString localSetupLink =
-        rawArgs.contains(QStringLiteral("forkmesh://control/cloudflare"))
-            ? QStringLiteral("forkmesh://control/cloudflare")
-            : QString();
+    QString localSetupLink;
+    for (const QString &argument : std::as_const(rawArgs)) {
+        if (isCloudflareSetupLink(argument)) {
+            localSetupLink = argument;
+            break;
+        }
+    }
 
     // `forkmesh --version` prints and exits before the Qt platform, root-gate
     // and single-instance setup. The auto-updater runs a candidate binary with
@@ -731,8 +754,8 @@ int main(int argc, char *argv[])
                              .arg(startup.elapsed(), 5);
     auto *window = new MainWindow;
     const auto openLocalSetup = [window](const QString &target) {
-        if (target == QLatin1String("forkmesh://control/cloudflare"))
-            window->openCloudflareSetupFromSystemLink();
+        if (isCloudflareSetupLink(target))
+            window->openCloudflareSetupFromSystemLink(target);
     };
     app.setLocalLinkHandler(openLocalSetup);
     // Tell the window it's running without a GUI so its auto-start path can

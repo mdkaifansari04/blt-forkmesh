@@ -12,10 +12,11 @@ namespace Theme {
 inline const char *kPrimary = "#2ea043";
 inline const char *kTextTertiary = "#8b949e";
 
-// "Something is working right now" orange (adhoc #23): every busy spinner and
-// every running-agent dot/glyph paints in this one colour, so in-flight work
-// reads as its own state instead of borrowing success-green or link-blue.
-inline const char *kRunning = "#f0883e";
+// "Something is working right now" blue (adhoc #23, recoloured from orange by
+// adhoc #50): every busy spinner and every running-agent dot/glyph paints in
+// this one colour, so in-flight work reads as its own state instead of
+// borrowing success-green or the amber used for queued/waiting.
+inline const char *kRunning = "#58a6ff";
 
 // "Genie" (adhoc #38): a long-running run launched with the ForkMesh MCP
 // connector attached. Its own violet so a genie run's sparkle glyph never reads
@@ -240,14 +241,14 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 #fileTabs QTabBar::tab:selected {
     background: #161b22; color: #e6edf3; border-color: #30363d; border-bottom-color: #161b22;
 }
-#settingsTabs::pane { border: 1px solid #30363d; border-radius: 6px; top: -1px; }
-#settingsTabs QTabBar::tab {
+#settingsTabs::pane, #networkTabs::pane { border: 1px solid #30363d; border-radius: 6px; top: -1px; }
+#settingsTabs QTabBar::tab, #networkTabs QTabBar::tab {
     background: #0d1117; color: #8b949e; padding: 7px 16px;
     border: 1px solid transparent; border-top-left-radius: 6px;
     border-top-right-radius: 6px;
 }
-#settingsTabs QTabBar::tab:hover { color: #e6edf3; }
-#settingsTabs QTabBar::tab:selected {
+#settingsTabs QTabBar::tab:hover, #networkTabs QTabBar::tab:hover { color: #e6edf3; }
+#settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected {
     background: #161b22; color: #e6edf3; border-color: #30363d; border-bottom-color: #161b22;
 }
 #codeEditor {
@@ -421,7 +422,7 @@ QPushButton#windowChromeCloseButton:hover {
 }
 /* Top-row switchers (relay / node / repo): dropdown (relay's shows its
    favicon inline) + open-in-browser */
-QPushButton#relayOpenButton {
+QPushButton#relayOpenButton, QPushButton#navHistoryButton {
     background: transparent; border: none; border-radius: 8px; color: #8b949e;
 }
 QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
@@ -434,7 +435,7 @@ QPushButton#relayMenuButton {
     background: transparent; border: none; border-radius: 8px;
     color: #e6edf3; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
-QPushButton#relayOpenButton:hover,
+QPushButton#relayOpenButton:hover, QPushButton#navHistoryButton:hover,
 QPushButton#relayMenuButton:hover,
 QPushButton#nodeMenuButton:hover,
 QPushButton#repoMenuButton:hover {
@@ -1493,14 +1494,14 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #fileTabs QTabBar::tab:selected {
     background: #f6f8fa; color: #1f2328; border-color: #d0d7de; border-bottom-color: #f6f8fa;
 }
-#settingsTabs::pane { border: 1px solid #d0d7de; border-radius: 6px; top: -1px; }
-#settingsTabs QTabBar::tab {
+#settingsTabs::pane, #networkTabs::pane { border: 1px solid #d0d7de; border-radius: 6px; top: -1px; }
+#settingsTabs QTabBar::tab, #networkTabs QTabBar::tab {
     background: #ffffff; color: #656d76; padding: 7px 16px;
     border: 1px solid transparent; border-top-left-radius: 6px;
     border-top-right-radius: 6px;
 }
-#settingsTabs QTabBar::tab:hover { color: #1f2328; }
-#settingsTabs QTabBar::tab:selected {
+#settingsTabs QTabBar::tab:hover, #networkTabs QTabBar::tab:hover { color: #1f2328; }
+#settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected {
     background: #f6f8fa; color: #1f2328; border-color: #d0d7de; border-bottom-color: #f6f8fa;
 }
 #codeEditor {
@@ -1688,7 +1689,7 @@ QPushButton#floatingLogButton {
 QPushButton#floatingLogButton:hover { background-color: #f3f4f6; color: #1f2328; }
 /* Top-row switchers (relay / node / repo): dropdown (relay's shows its
    favicon inline) + open-in-browser */
-QPushButton#relayOpenButton {
+QPushButton#relayOpenButton, QPushButton#navHistoryButton {
     background: transparent; border: none; border-radius: 8px; color: #656d76;
 }
 QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
@@ -1701,7 +1702,7 @@ QPushButton#relayMenuButton {
     background: transparent; border: none; border-radius: 8px;
     color: #1f2328; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
-QPushButton#relayOpenButton:hover,
+QPushButton#relayOpenButton:hover, QPushButton#navHistoryButton:hover,
 QPushButton#relayMenuButton:hover,
 QPushButton#nodeMenuButton:hover,
 QPushButton#repoMenuButton:hover {
