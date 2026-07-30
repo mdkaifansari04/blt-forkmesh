@@ -523,12 +523,7 @@ export function createWorldOfficeTasksController({
   ) {
     const waiting = busyTaskId === task.id;
     return `
-      <div class="world-office-task-controls world-task-row-controls">
-        <time
-          data-world-office-task-elapsed="${task.id}"
-          datetime="PT${Math.floor(currentElapsed(task) / 1000)}S"
-          title="Tracked time"
-        >${formatOfficeTaskElapsed(currentElapsed(task))}</time>
+      <span class="world-office-task-controls world-task-row-controls" role="group" aria-label="Task actions">
         ${
           canManage || own || task.createdBy === actor
             ? `<button
@@ -545,8 +540,10 @@ export function createWorldOfficeTasksController({
                 type="button"
                 data-world-office-task-action="${activeTask ? "stop" : "start"}"
                 data-world-office-task-id="${task.id}"
+                aria-label="${activeTask ? "Stop" : "Start"} ${escapeHTML(task.title)}"
+                title="${activeTask ? "Stop timer" : "Start timer"}"
                 ${waiting ? "disabled" : ""}
-              >${waiting ? '<span class="world-task-button-spinner" aria-hidden="true"></span>' : ""}${activeTask ? "Stop" : "Start"}</button>`
+              >${waiting ? '<span class="world-task-button-spinner" aria-hidden="true"></span>' : activeTask ? "■" : "▶"}</button>`
             : ""
         }
         ${
@@ -556,8 +553,10 @@ export function createWorldOfficeTasksController({
                 class="world-task-done-button"
                 data-world-office-task-action="complete"
                 data-world-office-task-id="${task.id}"
+                aria-label="Mark ${escapeHTML(task.title)} done"
+                title="Mark done"
                 ${waiting ? "disabled" : ""}
-              >${waiting ? '<span class="world-task-button-spinner" aria-hidden="true"></span>' : "✓"} Done</button>`
+              >${waiting ? '<span class="world-task-button-spinner" aria-hidden="true"></span>' : "✓"}</button>`
             : ""
         }
         ${
@@ -571,6 +570,8 @@ export function createWorldOfficeTasksController({
                       data-world-office-task-action="qa-${verdict}"
                       data-world-office-task-id="${task.id}"
                       aria-pressed="${qaVerdict === verdict}"
+                      aria-label="QA ${verdict}"
+                      title="QA ${verdict}"
                       ${waiting ? "disabled" : ""}
                     >${verdict === "pass" ? "✓" : verdict === "fail" ? "×" : "?"}</button>`,
                   )
@@ -585,8 +586,10 @@ export function createWorldOfficeTasksController({
                 class="world-office-task-return"
                 data-world-office-task-action="return"
                 data-world-office-task-id="${task.id}"
+                aria-label="Return ${escapeHTML(task.title)} to tasks"
+                title="Return to tasks"
                 ${waiting ? "disabled" : ""}
-              >Return</button>`
+              >↩</button>`
             : ""
         }
         ${
@@ -598,10 +601,36 @@ export function createWorldOfficeTasksController({
                 data-world-office-task-id="${task.id}"
                 ${waiting ? "disabled" : ""}
                 aria-label="Delete ${escapeHTML(task.title)}"
+                title="Delete task"
               >×</button>`
             : ""
         }
-      </div>`;
+      </span>`;
+  }
+
+  function taskSortHeaderHTML(label, sort, column) {
+    const active = workSort === sort;
+    return `<button
+      type="button"
+      class="${column}"
+      data-world-task-column-sort="${sort}"
+      aria-label="Sort by ${label}"
+      aria-pressed="${active}"
+    >${label}${active ? `<span aria-hidden="true">${workSortAscending ? "↑" : "↓"}</span>` : ""}</button>`;
+  }
+
+  function taskTableHeaderHTML() {
+    return `<div class="world-task-table-header" role="row">
+      ${taskSortHeaderHTML("Task", "title", "world-task-cell-title")}
+      ${taskSortHeaderHTML("Status", "status", "world-task-cell-status")}
+      ${taskSortHeaderHTML("P", "priority", "world-task-cell-priority")}
+      ${taskSortHeaderHTML("Owner", "assignee", "world-task-cell-owner")}
+      ${taskSortHeaderHTML("Routing", "department", "world-task-cell-route")}
+      ${taskSortHeaderHTML("Updated", "updated", "world-task-cell-updated")}
+      ${taskSortHeaderHTML("Time", "tracked", "world-task-cell-time")}
+      ${taskSortHeaderHTML("QA", "qa", "world-task-cell-qa")}
+      <span class="world-task-cell-actions" role="columnheader">Actions</span>
+    </div>`;
   }
 
   function taskBoardHTML(task) {
@@ -640,6 +669,21 @@ export function createWorldOfficeTasksController({
           ? "Bot"
           : "Unassigned";
     const checkinState = checkinLabel(task.lastCheckin?.state);
+    const qaLabel =
+      qaVerdict === "pass"
+        ? "Passed"
+        : qaVerdict === "fail"
+          ? "Failed"
+          : qaVerdict === "unsure"
+            ? "Unsure"
+            : doneTask || task.qa.requestedAt
+              ? "Ready"
+              : "—";
+    const routeLabel = [
+      task.department,
+      task.team,
+      task.repository,
+    ].filter(Boolean).join(" · ");
     const metadata = [
       ["Priority", `P${task.priority}`],
       ["Status", statusLabel],
@@ -677,54 +721,85 @@ export function createWorldOfficeTasksController({
       ["Task ID", task.id],
     ];
     return `
-      <li
+      <details
         class="world-office-task world-task-row${own ? " world-task-row--mine" : ""}"
         data-kind="${task.kind}"
         data-status="${task.status}"
         data-priority="${task.priority}"
+        role="row"
       >
-        <header class="world-task-row-heading">
-          ${taskAvatarHTML(task)}
-          <div class="world-task-row-title">
+        <summary class="world-task-row-summary">
+          <span class="world-task-cell-title" role="cell" title="${escapeHTML(task.title, 500)} · ${escapeHTML(task.details || "No description", 1000)}">
+            ${taskAvatarHTML(task)}
             <strong>${escapeHTML(task.title)}</strong>
-            <div class="world-task-row-badges">
-              ${
-                canManage && !doneTask && !activeTask
-                  ? `<label class="world-task-inline-editor" title="Edit priority">
-                      <span class="world-visually-hidden">Priority for ${escapeHTML(task.title)}</span>
-                      P<input type="number" min="1" max="99" value="${task.priority}"
-                        data-world-task-priority="${task.id}" aria-label="Priority for ${escapeHTML(task.title)}" />
-                    </label>`
-                  : `<span data-tone="priority">P${task.priority}</span>`
-              }
+            ${task.attachments.length ? `<i aria-label="${task.attachments.length} attachment(s)" title="${task.attachments.length} attachment(s)">📎</i>` : ""}
+          </span>
+          <span class="world-task-cell-status" role="cell" data-tone="${activeTask ? "active" : doneTask ? "done" : "ready"}">
+            ${statusIcon}${statusLabel}
+          </span>
+          <span class="world-task-cell-priority" role="cell">
+            ${
+              canManage && !doneTask && !activeTask
+                ? `<label class="world-task-inline-editor" title="Edit priority">
+                    <span class="world-visually-hidden">Priority for ${escapeHTML(task.title)}</span>
+                    P<input type="number" min="1" max="99" value="${task.priority}"
+                      data-world-task-priority="${task.id}" aria-label="Priority for ${escapeHTML(task.title)}" />
+                  </label>`
+                : `P${task.priority}`
+            }
+          </span>
+          <span class="world-task-cell-owner" role="cell" title="${escapeHTML(assigneeLabel)}">
+            ${
+              canManage && !doneTask && !activeTask
+                ? `<label class="world-task-inline-editor" title="Change assignee">
+                    <span class="world-visually-hidden">Assignee for ${escapeHTML(task.title)}</span>
+                    <select data-world-task-assignee="${task.id}" aria-label="Assignee for ${escapeHTML(task.title)}">
+                      <option value="agent" ${task.assigneeKind === "agent" ? "selected" : ""}>Bot</option>
+                      <option value="unassigned" ${task.assigneeKind === "unassigned" ? "selected" : ""}>Unassigned</option>
+                      ${organizationMembers.map((name) => `<option value="user:${escapeHTML(name)}" ${task.assigneeKind === "user" && task.assignee === name ? "selected" : ""}>@${escapeHTML(name)}</option>`).join("")}
+                    </select>
+                  </label>`
+                : escapeHTML(assigneeLabel)
+            }
+          </span>
+          <span class="world-task-cell-route" role="cell" title="${escapeHTML(routeLabel || "—", 500)}">${escapeHTML(routeLabel || "—")}</span>
+          <time class="world-task-cell-updated" role="cell" datetime="${new Date(task.updatedAt || task.createdAt || 0).toISOString()}">${escapeHTML(taskDateLabel(task.updatedAt || task.createdAt))}</time>
+          <time
+            class="world-task-cell-time"
+            role="cell"
+            data-world-office-task-elapsed="${task.id}"
+            datetime="PT${Math.floor(currentElapsed(task) / 1000)}S"
+            title="Tracked time"
+          >${formatOfficeTaskElapsed(currentElapsed(task))}</time>
+          <span class="world-task-cell-qa" role="cell" data-verdict="${qaVerdict || (qaLabel === "Ready" ? "ready" : "")}">${qaLabel}</span>
+          <span class="world-task-cell-actions" role="cell">
+            ${taskBoardControlsHTML(task, {
+              own,
+              activeTask,
+              doneTask,
+              qaVerdict,
+              canReturn,
+            })}
+            <span class="world-task-detail-chevron" aria-hidden="true">›</span>
+          </span>
+        </summary>
+        <section class="world-task-chat-bubble">
+          <header class="world-task-row-heading">
+            ${taskAvatarHTML(task)}
+            <div class="world-task-row-title">
+              <strong>${escapeHTML(task.title)}</strong>
+              <div class="world-task-row-badges">
+              <span data-tone="priority">P${task.priority}</span>
               <span data-tone="${activeTask ? "active" : doneTask ? "done" : "ready"}">
                 ${statusIcon}${statusLabel}
               </span>
-              ${
-                canManage && !doneTask && !activeTask
-                  ? `<label class="world-task-inline-editor" title="Change assignee">
-                      <span class="world-visually-hidden">Assignee for ${escapeHTML(task.title)}</span>
-                      <select data-world-task-assignee="${task.id}" aria-label="Assignee for ${escapeHTML(task.title)}">
-                        <option value="agent" ${task.assigneeKind === "agent" ? "selected" : ""}>Bot</option>
-                        <option value="unassigned" ${task.assigneeKind === "unassigned" ? "selected" : ""}>Unassigned</option>
-                        ${organizationMembers.map((name) => `<option value="user:${escapeHTML(name)}" ${task.assigneeKind === "user" && task.assignee === name ? "selected" : ""}>@${escapeHTML(name)}</option>`).join("")}
-                      </select>
-                    </label>`
-                  : `<span>${escapeHTML(assigneeLabel)}</span>`
-              }
+              <span>${escapeHTML(assigneeLabel)}</span>
               <span data-tone="department">${escapeHTML(task.department)}</span>
               ${task.team ? `<span>${escapeHTML(task.team)}</span>` : ""}
               ${task.kind === "bid" ? '<span data-tone="bid">SOL bid</span>' : ""}
             </div>
           </div>
-          ${taskBoardControlsHTML(task, {
-            own,
-            activeTask,
-            doneTask,
-            qaVerdict,
-            canReturn,
-          })}
-        </header>
+          </header>
         ${
           task.details
             ? `<p class="world-task-row-description">${escapeHTML(task.details, 4000)}</p>`
@@ -780,7 +855,8 @@ export function createWorldOfficeTasksController({
               </details>`
             : ""
         }
-      </li>`;
+        </section>
+      </details>`;
   }
 
   function visibleWorkTasks() {
@@ -817,6 +893,9 @@ export function createWorldOfficeTasksController({
           : task.assignee || "zz-unassigned";
       }
       if (workSort === "department") return task.department;
+      if (workSort === "repository") return task.repository || "";
+      if (workSort === "tracked") return currentElapsed(task);
+      if (workSort === "qa") return task.qa.status || "unknown";
       if (workSort === "title") return task.title.toLowerCase();
       return task.priority;
     };
@@ -1163,16 +1242,16 @@ export function createWorldOfficeTasksController({
     }
     if (organizationList) {
       organizationList.innerHTML = loading
-        ? `<li class="world-task-loading" role="status"><span class="world-task-loading-spinner" aria-hidden="true"></span><strong>Syncing organization tasks</strong><small>Reading private task state, timers, QA, and routing…</small></li>`
+        ? `<div class="world-task-loading" role="status"><span class="world-task-loading-spinner" aria-hidden="true"></span><strong>Syncing organization tasks</strong><small>Reading private task state, timers, QA, and routing…</small></div>`
         : visibleTasks.length
-          ? visibleTasks.map(taskBoardHTML).join("")
-          : `<li class="world-office-task-empty">${
+          ? taskTableHeaderHTML() + visibleTasks.map(taskBoardHTML).join("")
+          : `<div class="world-office-task-empty">${
               authorized && tasks.length
                 ? "No tasks match this search and filter."
                 : authorized
                   ? "No organization tasks have been created yet."
-                : "Organization membership is required."
-            }</li>`;
+                  : "Organization membership is required."
+            }</div>`;
     }
     if (workStatus && !loading) {
       workStatus.textContent = own.length
@@ -1612,6 +1691,18 @@ export function createWorldOfficeTasksController({
       renderWorkPane();
       return;
     }
+    const columnSort = event.target.closest("[data-world-task-column-sort]");
+    if (columnSort) {
+      const nextSort = columnSort.dataset.worldTaskColumnSort;
+      if (workSort === nextSort) {
+        workSortAscending = !workSortAscending;
+      } else {
+        workSort = nextSort;
+        workSortAscending = true;
+      }
+      renderWorkPane();
+      return;
+    }
     if (event.target.closest("[data-world-office-task-close]")) {
       close();
       return;
@@ -1645,6 +1736,8 @@ export function createWorldOfficeTasksController({
       "[data-world-office-task-action]",
     );
     if (!actionButton) return;
+    event.preventDefault();
+    event.stopPropagation();
     const action = actionButton.dataset.worldOfficeTaskAction;
     const id = safeTaskId(actionButton.dataset.worldOfficeTaskId);
     if (

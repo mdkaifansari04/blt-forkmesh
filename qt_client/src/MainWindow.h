@@ -260,10 +260,10 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
-    // Safe target for the website's secret-free setup link. This only opens the
-    // local Control Node page and focuses its session-only Cloudflare token
-    // field; link parameters are never accepted.
-    void openCloudflareSetupFromSystemLink();
+    // Safe target for the website's secret-free setup link. Only bounded
+    // public deployment topology may be prefilled; credentials are rejected
+    // by the URL parser and entered in the focused session-only local field.
+    void openCloudflareSetupFromSystemLink(const QString &target = {});
 
     // Apply the saved theme (system/dark/light) to the whole application.
     static void applyTheme();
@@ -1227,6 +1227,7 @@ private:
     void saveControlWalletAddress();
     void runCloudflareBootstrap(bool dryRun);
     void cancelCloudflareBootstrap();
+    void installCloudflareFirstMirror();
     void provisionDirectMirrorEndpoint(bool dryRun);
     bool rebuildDirectMirrorGatewayConfiguration(
         QString *error = nullptr, bool restartRunningGateway = false);
@@ -4129,6 +4130,10 @@ private:
     QLineEdit *m_cloudflareRelayLabelEdit = nullptr;
     QLineEdit *m_cloudflareMainRelayEdit = nullptr;
     QLineEdit *m_cloudflareTokenEdit = nullptr;
+    QLineEdit *m_cloudflareVpsHostEdit = nullptr;
+    QLineEdit *m_cloudflareVpsUserEdit = nullptr;
+    QLineEdit *m_cloudflareVpsPasswordEdit = nullptr;
+    QCheckBox *m_cloudflareInstallVpsCheck = nullptr;
     QCheckBox *m_cloudflareConnectCheck = nullptr;
     QPushButton *m_cloudflareDryRunButton = nullptr;
     QPushButton *m_cloudflareDeployButton = nullptr;
@@ -4153,6 +4158,7 @@ private:
     bool m_directMirrorEndpointRegistered = false;
     bool m_managedCloudflaredVerified = false;
     bool m_cloudflareConnectAfterDeploy = false;
+    bool m_cloudflareInstallVpsAfterDeploy = false;
     QTimer *m_controlNodeRefreshTimer = nullptr;
     QTimer *m_directMirrorRegistrationTimer = nullptr;
     // Full encrypted-archive authentication hashes hundreds of megabytes for a

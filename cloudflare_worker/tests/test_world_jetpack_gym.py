@@ -54,6 +54,23 @@ def test_gym_has_multiple_clickable_exercise_stations():
         assert contract in SCENE
 
 
+def test_gym_wayfinding_uses_nearby_physical_plaques_not_floating_labels():
+    gym_source = SCENE[
+        SCENE.index('gym.name = "forkmesh-world-gym"'):
+        SCENE.index("\n  const gymState = {")
+    ]
+    for contract in (
+        'gymSign.name = "world-gym-entrance-plaque"',
+        "const gymSign = makeGroundPlaque(",
+        "const plaque = makeGroundPlaque(",
+        "world-gym-station-plaque:",
+        "plaque.position.set(x, y, z)",
+    ):
+        assert contract in gym_source
+    assert "makeLabelSprite(" not in gym_source
+    assert "label.scale.set(5.1, 1.7, 1)" not in gym_source
+
+
 def test_bench_press_supports_weight_manual_reps_auto_and_heavy_bar_flex():
     for contract in (
         "data-world-gym-weight-range",

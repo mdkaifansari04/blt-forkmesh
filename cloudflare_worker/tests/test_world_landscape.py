@@ -75,17 +75,24 @@ def test_repository_and_leaderboard_districts_share_textured_flush_paths():
         "const WORLD_PATH_WIDTH = OFFICE_BRIDGE_WIDTH;",
         "const WORLD_PATH_HEIGHT = 0.08;",
         "const WORLD_PATH_SURFACE_Y = 0.105;",
-        "function createDistrictGroundCircle(THREE, kind)",
+        (
+            "const REPOSITORY_GROUND_RADIUS = "
+            "REPOSITORY_ISLAND_RING_RADIUS + 7;"
+        ),
+        "function createDistrictGroundCircle(",
+        "radius = DISTRICT_GROUND_RADIUS,",
         "`forkmesh-${kind}-textured-ground`",
-        'createDistrictGroundCircle(THREE, "repositories")',
+        '"repositories",\n      REPOSITORY_GROUND_RADIUS,',
         'createDistrictGroundCircle(THREE, "leaderboards")',
         "repositoryConnectionLength,\n      WORLD_PATH_HEIGHT,\n      WORLD_PATH_WIDTH,",
         "leaderboardConnectionLength,\n      WORLD_PATH_HEIGHT,\n      WORLD_PATH_WIDTH,",
         "repositoryPromenade.position.y = WORLD_PATH_CENTER_Y;",
         "leaderboardPromenade.position.y = WORLD_PATH_CENTER_Y;",
         'importKiosk.position.set(0, 0, 0);',
+        'color: repository ? "#c1bbb0" : "#8a829b"',
     ):
         assert contract in scene
+    assert 'registerMovableObject("landmark-" + landmark.id, object)' not in scene
     assert "new THREE.BoxGeometry(repositoryConnectionLength, 0.08, 7.2)" not in scene
     assert "new THREE.BoxGeometry(leaderboardConnectionLength, 0.08, 7.2)" not in scene
     assert "guide.position.set(0, 0.15, z)" not in scene
