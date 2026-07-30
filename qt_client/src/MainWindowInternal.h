@@ -2959,6 +2959,10 @@ const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
 const QString kOrgTaskOpenProof = QStringLiteral("forkmesh-org-task-open-v1");
 const QString kOrgTaskCompleteProof =
     QStringLiteral("forkmesh-org-task-complete-v1");
+// Same key, reading the board. Without it the Tasks tab was empty for every
+// operator who launched normally instead of typing a password (adhoc #52).
+// Must stay byte-identical to ORG_TASK_LIST_PROOF in entry.py.
+const QString kOrgTaskListProof = QStringLiteral("forkmesh-org-task-list-v1");
 // Same signing key, for the one credential the "genie" button needs (adhoc
 // #49): the relay mints this desktop's task-only remote-MCP bearer instead of
 // its operator copying one out of the website. Must stay byte-identical to
