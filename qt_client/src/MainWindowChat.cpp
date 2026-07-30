@@ -8114,6 +8114,24 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         }
         actionRow->addWidget(mirrorButton);
 
+        // Same repository on the public website — useful for sharing a link or
+        // browsing it without a local copy. Routed by the repo's own owner, so
+        // mirrored rows still open the hosting node's page.
+        auto *webButton = new QPushButton(QStringLiteral("Web"));
+        webButton->setObjectName("ghostButton");
+        webButton->setCursor(Qt::PointingHandCursor);
+        webButton->setToolTip(
+            QStringLiteral("View %1/%2 on the website")
+                .arg(routeOwner, routeName));
+        setOcticon(webButton, "link", 13);
+        connect(webButton, &QPushButton::clicked, this,
+                [this, routeOwner, routeName] {
+                    const QUrl url(repositoryWebUrl(routeOwner, routeName));
+                    if (url.isValid() && !url.host().isEmpty())
+                        QDesktopServices::openUrl(url);
+                });
+        actionRow->addWidget(webButton);
+
         // Delete this machine's copy without first opening the repository and
         // digging into its Settings tab. The row already resolved which record
         // is local across every owner it groups — mirror first, then fork; with
