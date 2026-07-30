@@ -1365,6 +1365,7 @@ void MainWindow::openRepoDetail(int repoIndex)
     refreshRepoSettings();
     updateRepoCodeSize();
     updateFooterGitIdentity();
+    updateFooterCommitInfo();
 
     // Point the embedded issues UI at this repo (its combo is hidden).
     refreshIssuesRepoCombo();
@@ -7515,6 +7516,7 @@ void MainWindow::setRepoBranch(const QString &branch)
     m_repoBranch = branch;
     if (m_branchButton)
         m_branchButton->setText(branch);
+    updateFooterCommitInfo(); // the strip's commit line follows the browsed branch
     loadRepoOverview(QString());
     loadCommits(); // also refreshes the Insights counts when that tab is on screen
 }
