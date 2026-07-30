@@ -3463,6 +3463,10 @@ function mountForkMeshDashboardChat() {
 
   async function loadTaskRouting() {
     if (!taskAssignee || !taskTeam) return;
+    // Task routing is account-scoped: a guest has no session token, so the
+    // request can only ever come back 401. Skip it rather than logging an
+    // unauthorized fetch (and flashing a status) on every public World load.
+    if (!userSession()) return;
     try {
       const payload = await taskApiRequest("GET", "/api/tasks");
       const selfName = String(payload?.actor || displayName()).toLowerCase();

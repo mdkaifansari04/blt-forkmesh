@@ -102,7 +102,7 @@ never leaves the desktop process.
 
 ## Connected hosts
 
-The Control page links to the existing **Hosts** page, where operators can add a
+The Control page links to the **Network → Hosts** tab, where operators can add a
 remote machine, install/update ForkMesh, and view host logs. It also offers a
 confirmed fleet action to upload the current binary to saved hosts.
 
