@@ -3834,12 +3834,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 alt=""
                 ${accountAvatarPng ? "" : "hidden"}
               />
-              <span
-                class="world-shirt-initial"
-                data-world-shirt-initial
-                aria-hidden="true"
-                ${accountAvatarPng ? "hidden" : ""}
-              ></span>
             </button>
           </nav>
         </header>
@@ -4785,12 +4779,13 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </fieldset>
 
           <fieldset class="world-setting-group">
-            <legend>Outfit &amp; face</legend>
+            <legend>Avatar &amp; outfit</legend>
             <p class="world-setting-note">
               Every person gets a stable, unique generated face and outfit
-              from their public identity. Signed-in members may replace the
-              generated face with a compact account avatar. Supporting members
-              can also pin their favourite outfit cut and colourway.
+              from their public identity. Signed-in members can choose or
+              replace an avatar that is saved to their account and applied
+              across devices. Supporting members can also pin their favourite
+              outfit cut and colourway.
             </p>
             <div class="world-outfit-grid">${outfitStyleSwatches}</div>
             <div class="world-outfit-grid">${outfitSwatches}</div>
@@ -4804,7 +4799,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               />
             </label>
             <label class="world-avatar-upload">
-              <span>Upload a small face photo</span>
+              <span>Change and save avatar</span>
               <input
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
@@ -4815,8 +4810,8 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <small data-world-avatar-upload-status>
               ${
                 signedInName
-                  ? "Images are center-cropped and compressed in your browser to a small 128px-or-less PNG before upload."
-                  : "Sign in to upload an account avatar. Your generated face stays available."
+                  ? "Choose a PNG, JPEG, or WebP. It is center-cropped, compacted locally, saved to your account, and applied immediately."
+                  : "Sign in to choose and save an account avatar. Your generated face stays available."
               }
             </small>
             ${
@@ -10753,7 +10748,6 @@ class ForkMeshWorld extends HTMLElement {
     if (!this.identity || !this.settings) return;
     const visible = publicIdentity(this.identity, this.settings);
     const avatar = this.$("[data-world-shirt-avatar]");
-    const initial = this.$("[data-world-shirt-initial]");
     const badge = this.$("[data-world-shirt-badge]");
     const session = readSession();
     const avatarPng =
@@ -10764,14 +10758,6 @@ class ForkMeshWorld extends HTMLElement {
     if (avatar) {
       avatar.src = avatarPng ? `data:image/png;base64,${avatarPng}` : "";
       avatar.hidden = !avatarPng;
-    }
-    if (initial) {
-      // The compact launcher deliberately uses the same faceless round
-      // silhouette for accounts without an uploaded portrait.  Names remain
-      // in the accessible launcher label instead of leaking a lone initial
-      // into the avatar circle.
-      initial.textContent = "";
-      initial.hidden = Boolean(avatarPng);
     }
     if (badge) {
       // The badge is the settings entry point; keep the name/status copy that
