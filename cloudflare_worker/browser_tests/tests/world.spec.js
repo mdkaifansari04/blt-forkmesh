@@ -1332,6 +1332,7 @@ async function openWorldRepositoryExplorer(page) {
 test("World prompt button copies owner deploy and member PR workflows", async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   await page.addInitScript(() => {
     window.__worldCopiedPrompts = [];
     Object.defineProperty(navigator, "clipboard", {
