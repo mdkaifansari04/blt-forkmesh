@@ -2961,7 +2961,8 @@ void MainWindow::deploySavedHostsFromControl()
             .array();
     if (hosts.isEmpty()) {
         flashMessage(
-            QStringLiteral("Add a host in Hosts before starting a fleet deployment."),
+            QStringLiteral(
+                "Add a host in Network > Hosts before starting a fleet deployment."),
             true);
         showSection(7);
         return;

@@ -98,8 +98,9 @@ starts syncing the ForkMesh project. The main areas are:
   worktrees, and create a PR from a branch.
 - **Issues / Pulls / Agents / Actions** — signed collaboration records,
   reviews, isolated agent worktrees, and workflow runs.
-- **Network diagnostics** — live HTTP/WebSocket state and recent request
-  metadata.
+- **Network** — the relays, nodes, and hosts this client knows about, each as a
+  tab with its own count, alongside live HTTP/WebSocket state and recent request
+  metadata. The rail's Network badge shows the three counts added together.
 - **Settings** — account, node, agent, notification, network, storage, and
   backup controls.
 
