@@ -15607,6 +15607,9 @@ export function createWorldScene({
     { group: redditBanner, options: REDDIT_BANNER_OPTIONS },
     { group: blogBanner, options: BLOG_BANNER_OPTIONS },
   ];
+  // Status has its own snapshot endpoint, so it must not participate in the
+  // social-feed repaint loop. It does share the lightweight stand timers.
+  const socialBannerTimerRecords = [...socialBanners, statusBannerRecord];
 
   // Post artwork (the blog feed's item images) is a same-origin /assets URL:
   // it only reaches the board texture once it decodes CORS-clean, and its
@@ -15705,15 +15708,9 @@ export function createWorldScene({
       );
       plate.material.needsUpdate = true;
     }
-    const dial = statusBanner.getObjectByName(
-      "forkmesh-status-banner-countdown");
-    if (dial?.material) {
-      const remaining = 60_000 - (Date.now() % 60_000);
-      dial.material.map?.dispose?.();
-      dial.material.map = mastodonCountdownTexture(
-        THREE, remaining, 60_000, false);
-      dial.material.needsUpdate = true;
-    }
+    // The shell's one-second status tick owns the countdown plate. Keeping it
+    // out of this snapshot-only repaint prevents the MM:SS clock from freezing
+    // at whichever second the minute-level HTTP response happened to arrive.
   }
 
   // The stand plates under each banner: a per-second countdown to the next
@@ -15722,7 +15719,7 @@ export function createWorldScene({
   // never rebuilds a texture.
   function updateSocialBannerTimers(payload) {
     let repainted = false;
-    for (const record of socialBanners) {
+    for (const record of socialBannerTimerRecords) {
       const timers = payload?.[record.options.id];
       if (!timers || typeof timers !== "object") continue;
       const total = Math.max(
@@ -15741,6 +15738,8 @@ export function createWorldScene({
           dial.material.map = mastodonCountdownTexture(
             THREE, remaining, total, loading);
           dial.material.needsUpdate = true;
+          dial.userData.countdownSeconds = Math.ceil(remaining / 1000);
+          dial.userData.countdownLoading = loading;
           repainted = true;
         }
       }

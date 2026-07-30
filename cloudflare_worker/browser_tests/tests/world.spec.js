@@ -7655,6 +7655,12 @@ test("a fresh member spawns seated in the open Members Circle", async ({
     ],
   });
   await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.world?.scene?.getObjectByName(
+      "campfire-newest-member-name-sparkles",
+    )?.visible === true;
+  });
 
   const arrival = await page.locator("forkmesh-world").evaluate((shell) => {
     const player = shell.world.player;
@@ -7709,6 +7715,44 @@ test("a fresh member spawns seated in the open Members Circle", async ({
   expect(arrival.startHere.x).toBe(0);
   expect(arrival.startHere.z).toBe(168);
   expect(arrival.startHere.rotation).toBeCloseTo(Math.PI, 5);
+});
+
+test("the System Status board countdown advances between minute syncs", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "status-board-countdown");
+  await waitForWorld(page);
+
+  const countdown = await page.locator("forkmesh-world").evaluate(
+    (shell, fixedNow) => {
+      let now = fixedNow + 5_000;
+      Date.now = () => now;
+      shell.statusBoardLoad = null;
+      shell.statusBoardRequestedAt = fixedNow;
+      shell.statusBoardLastCheckAt = fixedNow - 25_000;
+      shell.syncSystemStatusBoardTimer();
+      const dial = shell.world.scene.getObjectByName(
+        "forkmesh-status-banner-countdown",
+      );
+      const first = {
+        seconds: dial.userData.countdownSeconds,
+        loading: dial.userData.countdownLoading,
+      };
+      now += 11_000;
+      shell.syncSystemStatusBoardTimer();
+      return {
+        first,
+        second: {
+          seconds: dial.userData.countdownSeconds,
+          loading: dial.userData.countdownLoading,
+        },
+      };
+    },
+    FIXED_NOW,
+  );
+
+  expect(countdown.first).toEqual({ seconds: 55, loading: false });
+  expect(countdown.second).toEqual({ seconds: 44, loading: false });
 });
 
 test("Town Square placement is contextual, tracking-free, and collapses safely", async ({
