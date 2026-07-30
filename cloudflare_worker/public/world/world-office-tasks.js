@@ -309,7 +309,9 @@ export function createWorldOfficeTasksController({
   const organizationHeading = root.querySelector(
     "[data-world-organization-task-heading]",
   );
-  const taskCount = root.querySelector("[data-world-task-count]");
+  const taskCounts = Array.from(
+    root.querySelectorAll("[data-world-task-count]"),
+  );
   const workStatus = root.querySelector("[data-world-work-status]");
   const workTotal = root.querySelector("[data-world-work-total]");
   const workActive = root.querySelector("[data-world-work-active]");
@@ -1261,10 +1263,10 @@ export function createWorldOfficeTasksController({
   function renderWorkPane() {
     const own = updateWorkStats();
     const visibleTasks = visibleWorkTasks();
-    if (taskCount) {
+    taskCounts.forEach((taskCount) => {
       taskCount.textContent = String(tasks.length);
       taskCount.hidden = !authorized || tasks.length < 1;
-    }
+    });
     if (organizationHeading) {
       organizationHeading.textContent =
         `Tasks · ${visibleTasks.length} of ${tasks.length}`;
