@@ -99,6 +99,10 @@ const QUADCOPTER_RIDING_ACTIVITY = "flying the World quadcopter";
 // without teleporting the avatar out from under the camera.
 const PLAYER_DASH_SPEED = 48;
 const PLAYER_DASH_ARRIVE_DISTANCE = 0.3;
+// Clears the complete eleven-storey Office tower (176 units) and gives normal
+// walking input enough air time to cross its 170-unit width.
+const PLAYER_SUPER_JUMP_VELOCITY = 82;
+const PLAYER_SUPER_JUMP_MOVE_MULTIPLIER = 3.5;
 const ROOF_PARACHUTE_DEPLOY_VELOCITY = -0.35;
 const ROOF_PARACHUTE_TERMINAL_VELOCITY = -4.2;
 const ROOF_PARACHUTE_GRAVITY = 4.8;
@@ -5894,6 +5898,8 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
       const cycle = Math.sin(progress * Math.PI);
       if (hudAction.action === "jump") {
         avatar.position.y += Math.abs(Math.sin(progress * Math.PI * 4)) * 0.9;
+      } else if (hudAction.action === "superjump") {
+        avatar.position.y += Math.sin(progress * Math.PI) * 8;
       } else if (hudAction.action === "spin") {
         avatar.rotation.y += progress * Math.PI * 4;
       } else if (hudAction.action === "backflip") {
@@ -14050,6 +14056,11 @@ function updatePlayerLabel(element, identity) {
     identity?.statusNote,
   );
   const name = String(identity?.name || "visitor").slice(0, 32);
+  const guestLabel =
+    String(identity?.accountStatus || "Guest") === "Guest" ||
+    /^World Guest\b|^Guest(?:\s|$)/i.test(name);
+  element.hidden = guestLabel;
+  element.setAttribute("aria-hidden", String(guestLabel));
   const nameCopy = document.createElement("span");
   nameCopy.className = "world-player-label-name";
   nameCopy.textContent = name;
@@ -19823,6 +19834,7 @@ export function createWorldScene({
   let firstPersonPitch = 0;
   let cameraMode = "third-person";
   let jumpVelocity = 0;
+  let superJumping = false;
   let jumpQueued = false;
   let officeRoofJumping = false;
   let roofParachute = null;
@@ -23114,6 +23126,7 @@ export function createWorldScene({
     if (player.position.y <= currentFloorY) {
       player.position.y = currentFloorY;
       jumpVelocity = 0;
+      superJumping = false;
       if (roofParachute?.deployedAt && !roofParachute.landedAt) {
         roofParachute.landedAt = time;
       }
@@ -23179,7 +23192,9 @@ export function createWorldScene({
       );
       player.position.addScaledVector(
         movement,
-        keyboardMovementSpeed * delta,
+        keyboardMovementSpeed *
+          (superJumping ? PLAYER_SUPER_JUMP_MOVE_MULTIPLIER : 1) *
+          delta,
       );
       player.rotation.y = Math.atan2(-movement.x, -movement.z);
       walking = true;
@@ -23220,14 +23235,18 @@ export function createWorldScene({
       player.position.z = previousHorizontalPosition.z;
       cancelDash();
     }
-    constrainTownOfficeWalls(previousHorizontalPosition);
+    if (!superJumping) {
+      constrainTownOfficeWalls(previousHorizontalPosition);
+    }
     if (carRide) {
       jumpQueued = false;
       jumpVelocity = 0;
+      superJumping = false;
       applyCarRidePose(walking, delta);
     } else if (bikeRide) {
       jumpQueued = false;
       jumpVelocity = 0;
+      superJumping = false;
       applyBikeRidePose(walking, delta);
     } else {
       const gait = walking ? Math.sin(time * 0.012) * 0.52 : 0;
@@ -28170,9 +28189,25 @@ export function createWorldScene({
     // it plays the same way whether the gesture came from this browser or off
     // the relay.
     if (emote === "wave") startAvatarWave(avatar);
-    if (
-      ["jump", "spin", "backflip", "dance", "float", "wobble", "sparkle"]
-        .includes(emote)
+    if (emote === "superjump" && local && officeSceneMode === "town") {
+      standUpFromBench();
+      dismountSwing({ relocate: false });
+      cancelDash();
+      removeRoofParachute();
+      jumpQueued = false;
+      jumpVelocity = PLAYER_SUPER_JUMP_VELOCITY;
+      superJumping = true;
+    } else if (
+      [
+        "jump",
+        "superjump",
+        "spin",
+        "backflip",
+        "dance",
+        "float",
+        "wobble",
+        "sparkle",
+      ].includes(emote)
     ) {
       startAvatarHudAction(avatar, emote);
     }
@@ -28181,6 +28216,7 @@ export function createWorldScene({
       idea: "IDEA ✦",
       celebrate: "NICE ★",
       jump: "BOING ↑",
+      superjump: "SUPER JUMP ⇈",
       spin: "WHEE ↻",
       backflip: "FLIP!",
       dance: "DANCE ♫",
