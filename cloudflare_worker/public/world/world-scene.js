@@ -6154,7 +6154,10 @@ function createAvatar(THREE, identity, options = {}) {
 function applyAvatarLookDirection(avatar, yaw, pitch, turnBody = true) {
   if (!avatar?.userData) return;
   if (turnBody && Number.isFinite(yaw)) avatar.rotation.y = yaw;
-  const lookPitch = clamp(Number(pitch) || 0, -0.62, 0.62);
+  // Three.js camera pitch and the avatar's front-facing rig use opposite X
+  // rotation signs. Invert at this boundary so looking up raises the avatar's
+  // face and looking down lowers it.
+  const lookPitch = clamp(-(Number(pitch) || 0), -0.62, 0.62);
   if (avatar.userData.headRig) {
     avatar.userData.headRig.rotation.order = "YXZ";
     avatar.userData.headRig.rotation.x = lookPitch;
