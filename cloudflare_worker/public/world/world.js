@@ -1031,6 +1031,9 @@ function accountIdentity(session) {
     solana: sessionSolanaAddress(session),
     walletSol: null,
     walletTxBucket: "",
+    lastEmailAt: 0,
+    lastEmailStatus: "",
+    lastEmailPrivate: true,
   };
 }
 
@@ -1234,6 +1237,16 @@ function publicIdentity(identity, settings) {
     // A visitor at this keyboard is by definition active within the hour;
     // the light itself stays dark until the account is authenticated.
     activityBucket: "hour",
+    // Authenticated account-mail activity is shown only on this local scene
+    // identity. Presence sanitization has no fields for it, so it never leaves
+    // the owner's browser.
+    lastEmailAt: Math.max(0, Number(identity.lastEmailAt) || 0),
+    lastEmailStatus: ["delivered", "failed"].includes(
+      String(identity.lastEmailStatus || ""),
+    )
+      ? String(identity.lastEmailStatus)
+      : "",
+    lastEmailPrivate: identity.lastEmailPrivate !== false,
   };
 }
 
@@ -6233,6 +6246,7 @@ class ForkMeshWorld extends HTMLElement {
       await Promise.allSettled([contextPromise, dataPromise]);
       this.setLoadingProgress(86, "Adding mirrors, members, and boards…");
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
+      void this.loadWorldEmailActivity();
       this.world.setLocalOrgTeam?.(
         this.orgTeamAssignmentFor(this.identity?.name),
       );
@@ -8007,6 +8021,7 @@ class ForkMeshWorld extends HTMLElement {
       this.mirrorCatalogs,
       this.mirrorActionRunsByNode,
     );
+    this.liveMirrorNodes = liveMirrors;
     const rewardAddress = String(this.rewardState?.address || "").trim();
     this.landmarkCapabilities.fountain = {
       live:
@@ -10965,6 +10980,17 @@ class ForkMeshWorld extends HTMLElement {
       this.world?.setAvatarFediverseProfile?.(peerId, {
         ...card,
         posts: worldFediverseFeedLines(feed.recentActivity),
+        typeTotals:
+          feed.typeTotals && typeof feed.typeTotals === "object"
+            ? {
+                pulls: Math.max(0, Number(feed.typeTotals.pulls) || 0),
+                issues: Math.max(0, Number(feed.typeTotals.issues) || 0),
+                discussions: Math.max(
+                  0,
+                  Number(feed.typeTotals.discussions) || 0,
+                ),
+              }
+            : {},
       });
     } catch (_) {
       if (this.destroyed) return;
@@ -12938,6 +12964,15 @@ class ForkMeshWorld extends HTMLElement {
         ? record.fediverse
         : {};
     const fediverseReady = fediverse.state === "ready";
+    const contributionTotals =
+      fediverse.typeTotals && typeof fediverse.typeTotals === "object"
+        ? fediverse.typeTotals
+        : {};
+    const activityProfileUrl = WORLD_ACCOUNT_NAME_RE.test(
+      name.trim().toLowerCase(),
+    )
+      ? `/@${encodeURIComponent(name.trim().toLowerCase())}#contributions`
+      : "";
     const posts = (Array.isArray(fediverse.posts) ? fediverse.posts : [])
       .filter((post) => String(post?.label || "").trim())
       .slice(0, 5);
@@ -13031,6 +13066,26 @@ class ForkMeshWorld extends HTMLElement {
             }
           </section>
         </div>
+        <section class="world-detail-section">
+          <h3>Opened by this user</h3>
+          <p><strong>${Math.max(
+            0,
+            Number(contributionTotals.pulls) || 0,
+          ).toLocaleString()}</strong> pull requests · <strong>${Math.max(
+            0,
+            Number(contributionTotals.issues) || 0,
+          ).toLocaleString()}</strong> issues · <strong>${Math.max(
+            0,
+            Number(contributionTotals.discussions) || 0,
+          ).toLocaleString()}</strong> discussions</p>
+          ${
+            activityProfileUrl
+              ? `<div class="world-detail-actions"><a class="world-primary-action" href="${escapeHTML(
+                  activityProfileUrl,
+                )}">Open ${escapeHTML(name)}’s filtered activity</a></div>`
+              : ""
+          }
+        </section>
         <section class="world-detail-section">
           <h3>Fediverse</h3>
           ${
@@ -21701,6 +21756,31 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  async loadWorldEmailActivity() {
+    if (!readSession()?.sessionToken || !this.world?.updateIdentity) return false;
+    try {
+      const payload = await this.fetchJSON("/api/accounts/sessions", {
+        cache: "no-store",
+        timeout: 8000,
+      });
+      const account = payload?.account || {};
+      this.identity.lastEmailAt = Math.max(
+        0,
+        Number(account.lastEmailAt) || 0,
+      );
+      this.identity.lastEmailStatus = ["delivered", "failed"].includes(
+        String(account.lastEmailStatus || ""),
+      )
+        ? String(account.lastEmailStatus)
+        : "";
+      this.identity.lastEmailPrivate = false;
+      this.world.updateIdentity(publicIdentity(this.identity, this.settings));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   async revokeWorldSession(target) {
     const scope = String(target || "").trim();
     if (!/^[A-Za-z0-9_-]{2,64}$/.test(scope)) return false;
@@ -26007,9 +26087,40 @@ class ForkMeshWorld extends HTMLElement {
       note(player?.name, player?.accountStatus),
     );
     this.noteDirectoryMembers(registered);
+    const mirrorByName = new Map();
+    (Array.isArray(this.liveMirrorNodes) ? this.liveMirrorNodes : []).forEach(
+      (node) => {
+        [
+          node?.name,
+          node?.machineName,
+          node?.node,
+          node?.owner,
+        ].forEach((value) => {
+          const key = String(value || "").trim().toLowerCase();
+          if (key && !mirrorByName.has(key)) mirrorByName.set(key, node);
+        });
+      },
+    );
     this.world.updateMemberLounge(
       this.memberDirectory.map((member) => ({
         ...member,
+        nodes: (Array.isArray(member.nodes) ? member.nodes : []).map((node) => {
+          const name = String(
+            node && typeof node === "object"
+              ? node.name || node.node || ""
+              : node || "",
+          ).slice(0, 80);
+          const live = mirrorByName.get(name.toLowerCase());
+          return live
+            ? {
+                name,
+                status:
+                  live.online === true || live.healthy === true
+                    ? "online"
+                    : String(live.status || live.health || "offline"),
+              }
+            : { name, status: "unknown" };
+        }),
         // This assignment was derived from the authenticated viewer's
         // owner/admin organization roster. Hand it to the directory figure
         // too, so an administrator can manage a member who is offline just as
