@@ -34,6 +34,7 @@ import {
   officeInteriorPointIsWalkable,
 } from "./world-office-tower.js";
 import { createWorldSky } from "./world-sky.js";
+import { WORKER_FOOTPRINT } from "./worker-footprint.js";
 // Side-effect import: ForkMesh's own QR generator publishes globalThis.ForkMeshQR,
 // used for the reward-pool treasury address board.
 import "../qr.js";
@@ -353,6 +354,7 @@ const SPRINT_KEYS = new Set(["ShiftLeft", "ShiftRight"]);
 // never pull an interior observatory fixture back out of the building.
 const SYSTEM_CAPACITY_INFRASTRUCTURE_POSITION = Object.freeze([-24, 0, 7]);
 const INFRASTRUCTURE_CONSOLE_POSITION = Object.freeze([18, 0, -44.2]);
+const INFRASTRUCTURE_FOOTPRINT_POSITION = Object.freeze([-18, 0, -44.2]);
 const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0]);
 const ARRIVAL_GRID_BOUNDS = Object.freeze({
   minX: -10.8,
@@ -7785,6 +7787,134 @@ function createInfrastructureConsoleDisplay(THREE, interactive) {
   display.add(switchLabel);
   display.userData.face = face;
   display.userData.switchHandle = switchHandle;
+  setShadows(display);
+  face.castShadow = false;
+  return display;
+}
+
+function workerFootprintTexture(THREE, footprint = {}) {
+  const modules = Array.isArray(footprint.modules)
+    ? footprint.modules.slice(0, 14)
+    : [];
+  const attached = Math.max(1, Number(footprint.attachedPythonBytes) || 1);
+  const peak = Math.max(1, ...modules.map((module) => Number(module.bytes) || 0));
+  return canvasTexture(THREE, 1800, 1100, (context) => {
+    context.fillStyle = "#041211";
+    context.fillRect(0, 0, 1800, 1100);
+    context.strokeStyle = "#80e8ff";
+    context.lineWidth = 16;
+    context.strokeRect(10, 10, 1780, 1080);
+    context.fillStyle = "#e8fff8";
+    context.font = '800 58px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("WORKER STARTUP FOOTPRINT", 48, 72);
+    context.fillStyle = "#7eb5a7";
+    context.font = '600 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "MEASURED UNCOMPRESSED SOURCE · EXACT BY MODULE · BUILD GENERATED",
+      50,
+      112,
+    );
+
+    const totals = [
+      ["ATTACHED PYTHON", formatCapacityBytes(attached)],
+      [
+        "STARTUP-LOADED EST.",
+        formatCapacityBytes(footprint.estimatedStartupSourceBytes),
+      ],
+      ["ON DEMAND", formatCapacityBytes(footprint.onDemandSourceBytes)],
+      [
+        "EDGE STATIC (NOT HEAP)",
+        formatCapacityBytes(footprint.staticAssetBytes),
+      ],
+    ];
+    totals.forEach(([label, value], index) => {
+      const x = 50 + index * 425;
+      context.fillStyle = index === 2 ? "#9ef7c6" : "#80e8ff";
+      context.font = '800 29px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(value, x, 160);
+      context.fillStyle = "#75988e";
+      context.font = '650 16px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(label, x, 187);
+    });
+    context.strokeStyle = "#21443a";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(50, 212);
+    context.lineTo(1750, 212);
+    context.stroke();
+
+    modules.forEach((module, index) => {
+      const y = 250 + index * 54;
+      const bytes = Math.max(0, Number(module.bytes) || 0);
+      const width = Math.max(4, (bytes / peak) * 820);
+      const onDemand = module.phase === "on-demand";
+      context.fillStyle = index % 2
+        ? "rgba(10,35,31,0.74)"
+        : "rgba(18,48,42,0.74)";
+      context.fillRect(40, y - 30, 1710, 46);
+      context.fillStyle = "#b7d5cc";
+      context.font = '650 20px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(String(module.name || "").slice(0, 29), 54, y);
+      context.fillStyle = onDemand ? "#9ef7c6" : "#399eb5";
+      context.fillRect(440, y - 21, width, 27);
+      context.fillStyle = onDemand ? "#9ef7c6" : "#d4f3ec";
+      context.textAlign = "right";
+      context.font = '750 20px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(formatCapacityBytes(bytes), 1480, y);
+      context.fillStyle = "#789c91";
+      context.fillText(`${((bytes / attached) * 100).toFixed(1)}%`, 1585, y);
+      context.fillStyle = onDemand ? "#9ef7c6" : "#80a99a";
+      context.fillText(onDemand ? "ON DEMAND" : "STARTUP", 1730, y);
+      context.textAlign = "left";
+    });
+
+    context.strokeStyle = "#21443a";
+    context.beginPath();
+    context.moveTo(50, 1020);
+    context.lineTo(1750, 1020);
+    context.stroke();
+    context.fillStyle = "#73968c";
+    context.font = '600 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      `${Number(footprint.moduleCount) || 0} PYTHON FILES · ${Number(footprint.staticAssetCount) || 0} STATIC ASSETS`,
+      50,
+      1055,
+    );
+    context.textAlign = "right";
+    context.fillText(
+      "SOURCE BYTES ≠ HEAP · PER-MODULE HEAP IS NOT EXPOSED",
+      1750,
+      1055,
+    );
+    context.textAlign = "left";
+  });
+}
+
+function createWorkerFootprintDisplay(THREE) {
+  const display = new THREE.Group();
+  display.name = "forkmesh-infrastructure-worker-footprint";
+  display.userData.officeFloorId = "infrastructure";
+  const frame = new THREE.Mesh(
+    new THREE.BoxGeometry(25.8, 15.8, 0.45),
+    makeMaterial(THREE, "#153d3f", {
+      emissive: "#155367",
+      emissiveIntensity: 0.42,
+      metalness: 0.58,
+      roughness: 0.32,
+    }),
+  );
+  frame.position.y = 8.2;
+  display.add(frame);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(25.1, 15.1),
+    new THREE.MeshBasicMaterial({
+      map: workerFootprintTexture(THREE, WORKER_FOOTPRINT),
+      toneMapped: false,
+    }),
+  );
+  face.name = "forkmesh-infrastructure-worker-footprint-face";
+  face.position.set(0, 8.2, 0.24);
+  display.add(face);
   setShadows(display);
   face.castShadow = false;
   return display;
@@ -18284,6 +18414,11 @@ export function createWorldScene({
     ...INFRASTRUCTURE_CONSOLE_POSITION,
   );
   infrastructureFloor.add(infrastructureConsoleDisplay);
+  const workerFootprintDisplay = createWorkerFootprintDisplay(THREE);
+  workerFootprintDisplay.position.set(
+    ...INFRASTRUCTURE_FOOTPRINT_POSITION,
+  );
+  infrastructureFloor.add(workerFootprintDisplay);
   const engineeringDebugPanel = createEngineeringDebugPanel(THREE);
   engineeringDebugPanel.position.set(
     31,
