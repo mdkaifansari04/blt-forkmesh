@@ -3793,8 +3793,7 @@ forkmesh-world.world-admin-error-arrival::after {
 }
 
 .world-office-task[data-status="done"] strong {
-  text-decoration: line-through;
-  text-decoration-thickness: 1px;
+  text-decoration: none;
 }
 
 .world-office-task[data-kind="bid"] {
@@ -10829,9 +10828,29 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
    energetic, information-dense card language while keeping every row readable. */
 .world-settings[data-active-tab="work"] {
   width: min(
-    1180px,
+    var(--world-settings-user-width, 1180px),
     calc(100vw - var(--safe-left) - var(--safe-right) - 28px)
   );
+}
+
+.world-settings-resize {
+  position: absolute;
+  z-index: 5;
+  inset: 0 auto 0 -7px;
+  width: 14px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.world-settings-resize::after {
+  position: absolute;
+  top: 44%;
+  left: 5px;
+  width: 3px;
+  height: 52px;
+  border-radius: 3px;
+  background: rgb(88 166 255 / 0.45);
+  content: "";
 }
 
 .world-work-quick-entry {
@@ -11405,6 +11424,60 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   height: 9px;
   flex-basis: 9px;
   border-width: 1.5px;
+}
+
+.world-task-status-icon {
+  display: inline-grid;
+  width: 13px;
+  height: 13px;
+  place-items: center;
+  margin-right: 3px;
+  border-radius: 50%;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.world-task-status-icon[data-icon="done"] {
+  background: #238636;
+  color: white;
+}
+
+.world-task-status-icon[data-icon="queued"] {
+  color: #d2a8ff;
+}
+
+.world-task-status-icon[data-icon="ready"] {
+  color: #79c0ff;
+}
+
+.world-task-inline-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid #34404d;
+  border-radius: 999px;
+  background: #121a24;
+  padding: 1px 6px;
+  color: #c9d1d9;
+}
+
+.world-task-inline-editor :is(input, select) {
+  width: auto;
+  max-width: 130px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.world-task-inline-editor input {
+  width: 2.6em;
+}
+
+@media (max-width: 680px) {
+  .world-settings-resize {
+    display: none;
+  }
 }
 
 @keyframes world-activity-spin {

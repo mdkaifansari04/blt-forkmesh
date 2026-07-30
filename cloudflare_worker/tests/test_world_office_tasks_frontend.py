@@ -62,7 +62,7 @@ def test_work_tab_has_a_compact_universal_task_creator_with_agent_routing():
         "data-world-work-task-priority",
     ):
         assert contract in world
-    assert "Codex / Claude agent on linked desktop" in tasks
+    assert 'label: "Bot"' in tasks
     assert 'assignment === "agent" ? "agent"' in tasks
     assert 'mutate(OFFICE_TASKS_PATH, body)' in tasks
     assert "repository before assigning agent work" in tasks
@@ -253,7 +253,7 @@ def test_assignment_control_has_explicit_contrast_and_tasks_can_finish_or_delete
     assert 'data-world-office-task-action="complete"' in tasks
     assert 'data-world-office-task-action="delete"' in tasks
     assert '{ method: "DELETE", removeOnSuccess: true }' in tasks
-    assert 'window.confirm("Delete this task' in tasks
+    assert 'window.confirm("Delete this task' not in tasks
     assert ".world-office-task-manager select option" in css
     assert "background: #071713" in css
     assert '.world-office-task[data-status="done"]' in css

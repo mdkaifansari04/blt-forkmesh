@@ -26,8 +26,8 @@ MAX_COMPLETION_NOTE = 4000
 MAX_CHECKIN_NOTE = 500
 MAX_AGENT_FIELD = 64
 MIN_PRIORITY = 1
-MAX_PRIORITY = 999
-DEFAULT_PRIORITY = 500
+MAX_PRIORITY = 99
+DEFAULT_PRIORITY = 50
 MAX_ELAPSED_MS = 10 * 365 * 24 * 60 * 60 * 1000
 MAX_BOUNTY_LAMPORTS = 1_000_000 * 1_000_000_000
 MAX_PROOFS = 5000
@@ -344,6 +344,10 @@ async def _project_task(runtime, row, now, checkin=None):
         "completionNote": _text(
             data.get("completionNote"), MAX_COMPLETION_NOTE),
         "createdBy": _text(data.get("createdBy"), 64).lower(),
+        "parentTaskId": (
+            str(data.get("parentTaskId") or "").lower()
+            if valid_id(data.get("parentTaskId")) else ""
+        ),
         "bountyRequest": bounty_request,
         "assignee": (
             "agent"
@@ -801,6 +805,41 @@ async def _create(
         else str(data.get("assigneeKind") or "user").strip().lower()
     )
     assignee_kind = requested_assignee_kind
+    parent_task_id = str(data.get("parentTaskId") or "").strip().lower()
+    parent_data = None
+    parent_row = None
+    if parent_task_id:
+        if marketing_only or not valid_id(parent_task_id):
+            return _response(
+                runtime, {"error": "invalid_parent_task"}, status=400)
+        parent_row = await _task(runtime, org_bi, parent_task_id)
+        if not parent_row:
+            return _response(
+                runtime, {"error": "parent_task_not_found"}, status=404)
+        try:
+            parent_data = await runtime.open(parent_row.get("data"))
+        except Exception:
+            parent_data = None
+        if not isinstance(parent_data, dict):
+            return _response(
+                runtime, {"error": "parent_task_unavailable"}, status=500)
+        if (
+            not can_manage
+            and str(parent_row.get("created_by_bi") or "") != account_bi
+            and str(parent_row.get("assignee_bi") or "") != account_bi
+        ):
+            return _response(runtime, {"error": "forbidden"}, status=403)
+        # A follow-up is a continuation of the routed work. The server, rather
+        # than the client, inherits its assignee and routing from the parent.
+        assignee_kind = str(
+            parent_row.get("assignee_kind") or "unassigned").lower()
+        requested_assignee_kind = assignee_kind
+        department = str(parent_row.get("department") or "general")
+        team = str(parent_row.get("team") or "")
+        destination = str(parent_row.get("destination") or "department")
+        data = dict(data)
+        data["assignee"] = parent_data.get("assignee")
+        data["repository"] = parent_data.get("repository")
     task_kind = (
         "task"
         if marketing_only
@@ -925,6 +964,7 @@ async def _create(
         "completionNote": "",
         "assignee": assignee,
         "createdBy": actor,
+        "parentTaskId": parent_task_id,
         "bountyRequest": bounty_request,
         "repository": repository,
         "howToTest": how_to_test,
@@ -984,6 +1024,7 @@ async def _create(
                 ),
                 "agentRun": bool(agent_run),
                 "priority": requested_priority,
+                "followUp": bool(parent_task_id),
             }
         ),
     )
@@ -1044,9 +1085,15 @@ async def _update(
         )
         return await _task_response(
             runtime, await _task(runtime, org_bi, task_id), now)
-    allowed = {"title", "details", "assignee", "priority", "sessionToken"}
+    allowed = {
+        "title", "details", "assignee", "assigneeKind", "priority",
+        "repository", "sessionToken",
+    }
     changed = [
-        field for field in ("title", "details", "assignee", "priority")
+        field for field in (
+            "title", "details", "assignee", "assigneeKind", "priority",
+            "repository",
+        )
         if field in data
     ]
     if not changed or any(field not in allowed for field in data):
@@ -1061,41 +1108,94 @@ async def _update(
         if "details" in data
         else _text(current.get("details"), MAX_DETAILS)
     )
+    assignee_kind = str(
+        data.get("assigneeKind")
+        if "assigneeKind" in data
+        else row.get("assignee_kind") or "user"
+    ).strip().lower()
+    if assignee_kind in AGENT_ASSIGNEE_KINDS:
+        assignee_kind = "agent"
+    if assignee_kind not in ("user", "agent", "unassigned"):
+        return _response(
+            runtime, {"error": "invalid_assignee_kind"}, status=400)
     assignee = (
         _text(data.get("assignee"), 64).lower()
         if "assignee" in data
         else _text(current.get("assignee"), 64).lower()
     )
+    repository = (
+        _text(data.get("repository"), 201)
+        if "repository" in data
+        else _text(current.get("repository"), 201)
+    )
+    if repository:
+        parts = repository.split("/", 1)
+        if (
+            len(parts) != 2
+            or not _REPO_SEGMENT_RE.fullmatch(parts[0])
+            or not _REPO_SEGMENT_RE.fullmatch(parts[1])
+        ):
+            return _response(
+                runtime, {"error": "invalid_repository"}, status=400)
     priority = _priority(
         data.get("priority")
         if "priority" in data
         else row.get("priority"),
     )
-    if not title or not assignee:
+    if not title:
         return _response(
-            runtime, {"error": "title_and_assignee_required"}, status=400)
-    member = (
-        await runtime.marketing_member(org_bi, assignee)
-        if marketing_only
-        else await runtime.organization_member(org_bi, assignee)
-    )
-    if not member:
-        return _response(
-            runtime,
-            {
-                "error": (
-                    "assignee_not_marketing_member"
-                    if marketing_only else "assignee_not_org_member"
-                )
-            },
-            status=400,
-        )
+            runtime, {"error": "title_required"}, status=400)
     if int(row.get("completed_at") or 0) > 0:
         return _response(
             runtime, {"error": "completed_task_cannot_be_updated"}, status=409)
     if str(row.get("status") or "") == "active":
         return _response(
             runtime, {"error": "active_task_cannot_be_updated"}, status=409)
+    member = None
+    assignee_bi = ""
+    destination = str(row.get("destination") or "department")
+    if assignee_kind == "user":
+        if not assignee:
+            return _response(
+                runtime, {"error": "assignee_required"}, status=400)
+        member = (
+            await runtime.marketing_member(org_bi, assignee)
+            if marketing_only
+            else await runtime.organization_member(org_bi, assignee)
+        )
+        if not member:
+            return _response(
+                runtime,
+                {
+                    "error": (
+                        "assignee_not_marketing_member"
+                        if marketing_only else "assignee_not_org_member"
+                    )
+                },
+                status=400,
+            )
+        assignee = member["name"]
+        assignee_bi = member["bi"]
+        if destination == "agent":
+            destination = "department"
+    elif assignee_kind == "agent":
+        if marketing_only:
+            return _response(runtime, {"error": "invalid_update"}, status=400)
+        if not repository:
+            return _response(
+                runtime, {"error": "repository_required"}, status=400)
+        assignee = "agent"
+        destination = "agent"
+    else:
+        assignee = ""
+        destination = (
+            "department" if destination == "agent" else destination
+        )
+    agent_session_id = (
+        ""
+        if "assigneeKind" in data
+        else str(row.get("agent_session_id") or "")
+    )
     sealed = await runtime.seal({
         "kind": (
             str(current.get("kind") or "task")
@@ -1104,16 +1204,21 @@ async def _update(
         ),
         "title": title,
         "details": details,
+        "attachments": _attachments(current.get("attachments")),
         "completionNote": _text(
             current.get("completionNote"), MAX_COMPLETION_NOTE),
-        "assignee": member["name"],
+        "assignee": assignee,
         "createdBy": _text(current.get("createdBy"), 64).lower(),
+        "parentTaskId": (
+            str(current.get("parentTaskId") or "").lower()
+            if valid_id(current.get("parentTaskId")) else ""
+        ),
         "bountyRequest": (
             current.get("bountyRequest")
             if isinstance(current.get("bountyRequest"), dict)
             else None
         ),
-        "repository": _text(current.get("repository"), 201),
+        "repository": repository,
         "howToTest": _text(current.get("howToTest"), 720),
         "qaReviewer": _text(current.get("qaReviewer"), 64).lower(),
         # Editing the copy never rewrites who ran the task or how.
@@ -1121,9 +1226,13 @@ async def _update(
     })
     await runtime.d1_run(
         "UPDATE organization_tasks "
-        "SET assignee_bi=?,priority=?,data=?,updated_at=? "
+        "SET assignee_kind=?,assignee_bi=?,destination=?,agent_session_id=?,"
+        "priority=?,data=?,updated_at=? "
         "WHERE org_bi=? AND task_id=? AND status='idle'",
-        member["bi"],
+        assignee_kind,
+        assignee_bi,
+        destination,
+        agent_session_id,
         priority,
         sealed,
         now,
@@ -1134,7 +1243,8 @@ async def _update(
     if (
         not changed_row
         or str(changed_row.get("status") or "") != "idle"
-        or str(changed_row.get("assignee_bi") or "") != str(member["bi"])
+        or str(changed_row.get("assignee_kind") or "") != assignee_kind
+        or str(changed_row.get("assignee_bi") or "") != assignee_bi
         or str(changed_row.get("data") or "") != str(sealed)
     ):
         return _response(runtime, {"error": "task_state_conflict"}, status=409)
