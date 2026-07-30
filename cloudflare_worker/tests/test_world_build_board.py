@@ -94,6 +94,10 @@ def test_build_board_refreshes_on_approach_with_a_scene_native_spinner():
     ]
     assert "this.world?.setBuildBoardLoading?.(true);" in refresh
     assert "this.world?.setBuildBoardLoading?.(false);" in refresh
+    assert "maxAge: WORLD_BUILD_BOARD_POLL_MS" in refresh
+    assert "backoff: true" in refresh
+    assert "staleIfError: true" in refresh
+    assert "Repository issue enrichment is optional" in refresh
     assert "location.reload()" not in refresh
 
 

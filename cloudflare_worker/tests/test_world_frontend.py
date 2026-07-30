@@ -1441,6 +1441,15 @@ def test_render_stalls_include_bounded_likely_component_attribution():
     assert 'component = "Three.js renderer workload";' in SCENE
     assert 'component = `office ${officeSceneMode} scene`;' in SCENE
     assert 'codeArea = "renderer.render(scene, camera)";' in SCENE
+    assert "const frameWorkStartedAt = performance.now();" in SCENE
+    assert "performance.now() - frameWorkStartedAt" in SCENE
+    assert "scheduleRenderStallWarning(frameWorkMs);" in SCENE
+    assert "scheduleRenderStallWarning(rawFrameMs);" not in SCENE
+    assert "renderer.shadowMap.autoUpdate = false;" in SCENE
+    assert "nextShadowMapUpdateAt = time + 500;" in SCENE
+    assert "function canvasReadableImageURL(value)" in SCENE
+    assert "url.origin !== window.location.origin" in SCENE
+    assert "const key = canvasReadableImageURL(url);" in SCENE
 
 
 def test_world_first_person_zoom_out_falls_back_to_third_person():

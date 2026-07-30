@@ -348,6 +348,7 @@ function mountForkMeshDashboardChat() {
   let discordInitialMessagesLoaded = false;
   let discordSources = null;
   let discordBackoffUntil = 0;
+  let discordBackoffAttempts = 0;
   // messageId -> Map(emoji -> Map(reactorId -> reactorName)); identical to
   // the full web/Qt protocol shape so reactions converge across every client.
   const reactions = new Map();
@@ -674,11 +675,37 @@ function mountForkMeshDashboardChat() {
     });
     if (!response.ok) {
       const error = new Error(`Discord source unavailable (${response.status})`);
-      const retrySeconds = Math.max(
-        0,
-        Number(response.headers.get("retry-after")) || 0,
+      error.status = response.status;
+      const retryHeader = String(response.headers.get("retry-after") || "");
+      const retrySeconds = Number(retryHeader);
+      const retryDate = Date.parse(retryHeader);
+      const requestedDelay = Number.isFinite(retrySeconds)
+        ? Math.max(0, retrySeconds * 1000)
+        : Number.isFinite(retryDate)
+          ? Math.max(0, retryDate - Date.now())
+          : 0;
+      // Some edge/provider 429 and 503 responses omit Retry-After. Waiting
+      // only for the ordinary one-minute poll in that case repeatedly fans
+      // out across every organization and extends the rate limit.
+      if (response.status === 429 || response.status === 503) {
+        discordBackoffAttempts = Math.min(6, discordBackoffAttempts + 1);
+      }
+      const fallbackDelay =
+        response.status === 429
+          ? Math.min(
+              30 * 60_000,
+              5 * 60_000 * (2 ** (discordBackoffAttempts - 1)),
+            )
+          : response.status === 503
+            ? Math.min(
+                10 * 60_000,
+                60_000 * (2 ** (discordBackoffAttempts - 1)),
+              )
+            : 0;
+      error.retryAfterMs = Math.min(
+        3_600_000,
+        Math.max(requestedDelay, fallbackDelay),
       );
-      error.retryAfterMs = Math.min(3_600_000, retrySeconds * 1000);
       if (error.retryAfterMs) {
         discordBackoffUntil = Math.max(
           discordBackoffUntil,
@@ -695,30 +722,44 @@ function mountForkMeshDashboardChat() {
     const catalog = await discordJson("/api/orgs");
     const organizations = (Array.isArray(catalog?.orgs) ? catalog.orgs : [])
       .slice(0, DISCORD_MAX_ORGANIZATIONS);
-    const statuses = await Promise.allSettled(organizations.map(async (record) => {
+    const sources = [];
+    // Connector discovery is deliberately sequential. A rate-limit response
+    // from the first organization must prevent more doomed requests from being
+    // launched at the same provider in the same tick.
+    for (const record of organizations) {
       const organization = String(record?.name || "").trim();
-      if (!organization) return [];
-      const status = await discordJson(
-        `/api/orgs/${encodeURIComponent(organization)}/discord`,
-      );
-      if (!status?.configured || status?.state !== "configured") return [];
-      const channelIds = Array.isArray(status?.connector?.channelIds)
-        ? status.connector.channelIds
-        : [];
-      const channelNames = new Map(
-        (Array.isArray(status?.channels) ? status.channels : []).map((channel) => [
-          String(channel?.id || ""),
-          String(channel?.name || ""),
-        ]),
-      );
-      return channelIds.slice(0, DISCORD_MAX_CHANNELS).map((channelId) => ({
-        organization,
-        channelId: String(channelId || ""),
-        channelName: channelNames.get(String(channelId || "")) || "",
-      })).filter((source) => source.channelId);
-    }));
-    discordSources = statuses.flatMap((result) =>
-      result.status === "fulfilled" ? result.value : []);
+      if (!organization) continue;
+      try {
+        const status = await discordJson(
+          `/api/orgs/${encodeURIComponent(organization)}/discord`,
+        );
+        if (!status?.configured || status?.state !== "configured") continue;
+        const channelIds = Array.isArray(status?.connector?.channelIds)
+          ? status.connector.channelIds
+          : [];
+        const channelNames = new Map(
+          (Array.isArray(status?.channels) ? status.channels : []).map((channel) => [
+            String(channel?.id || ""),
+            String(channel?.name || ""),
+          ]),
+        );
+        sources.push(
+          ...channelIds
+            .slice(0, DISCORD_MAX_CHANNELS)
+            .map((channelId) => ({
+              organization,
+              channelId: String(channelId || ""),
+              channelName: channelNames.get(String(channelId || "")) || "",
+            }))
+            .filter((source) => source.channelId),
+        );
+      } catch (error) {
+        if (error?.status === 429 || error?.status === 503) throw error;
+        // One unavailable optional connector must not hide healthy connectors
+        // belonging to the same account.
+      }
+    }
+    discordSources = sources;
     return discordSources;
   }
 
@@ -760,6 +801,7 @@ function mountForkMeshDashboardChat() {
       for (const message of visibleMessages) {
         if (appendDiscordMessage(message)) appended += 1;
       }
+      discordBackoffAttempts = 0;
       discordInitialMessagesLoaded = true;
       if (appended) {
         console.info("[ForkMesh chat] Discord messages refreshed", {
