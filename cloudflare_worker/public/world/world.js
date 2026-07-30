@@ -7490,6 +7490,10 @@ class ForkMeshWorld extends HTMLElement {
         ? this.lastStableViewportHeight
         : 0;
     const layoutHeight = Math.max(
+      // The renderer deliberately keeps a 240px minimum layout surface. Chat
+      // is positioned inside that surface, so account for the covered slice
+      // even when the page first loads into a shorter landscape viewport.
+      240,
       visualHeight,
       stableLayoutHeight,
       Math.round(window.innerHeight || document.documentElement.clientHeight || 0),

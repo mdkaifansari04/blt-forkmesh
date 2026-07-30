@@ -6,13 +6,13 @@ export const WORKER_FOOTPRINT = Object.freeze({
   "onDemandSourceBytes": 124114,
   "vendoredBytes": 91974,
   "moduleCount": 74,
-  "staticAssetBytes": 103044459,
+  "staticAssetBytes": 103044700,
   "staticAssetCount": 382,
   "largestStaticAsset": {
     "name": "assets/video/forkmesh-forever.mp4",
     "bytes": 23562112
   },
-  "initialWorldModuleBytes": 2384464,
+  "initialWorldModuleBytes": 2384705,
   "initialWorldModuleCount": 13,
   "initialWorldModules": [
     "qr.js",

@@ -2218,6 +2218,56 @@ test("World chat follows the visual viewport when a software keyboard opens", as
   expect(metrics.sendRight).toBeLessThanOrEqual(metrics.terminalRight + 1);
 });
 
+test("World chat prompt fits on a direct micro-height load", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 180 });
+  await prepareWorldPage(page, "mobile-world-chat-direct-micro", {
+    chatPassphrase: "playwright-public-world-general-passphrase",
+  });
+  await waitForWorld(page);
+
+  const shell = page.locator("forkmesh-world");
+  const terminal = page.locator("[data-world-chat-terminal]");
+  await terminal.evaluate((element) => {
+    element.open = true;
+  });
+  await expect(shell).toHaveAttribute("data-world-chat-micro", "true");
+  await expect(page.locator("#fullChatInput")).toBeVisible();
+
+  const metrics = await terminal.evaluate((element) => {
+    const terminalRect = element.getBoundingClientRect();
+    const inputRect = element
+      .querySelector("#fullChatInput")
+      ?.getBoundingClientRect();
+    const sendRect = element
+      .querySelector("#fullChatSend")
+      ?.getBoundingClientRect();
+    const feedRect = element
+      .querySelector("[data-world-quick-chat-feed]")
+      ?.getBoundingClientRect();
+    return {
+      innerHeight: window.innerHeight,
+      coveredBottom: getComputedStyle(
+        element.closest("forkmesh-world"),
+      ).getPropertyValue("--world-chat-covered-bottom"),
+      terminalTop: terminalRect.top,
+      terminalBottom: terminalRect.bottom,
+      inputBottom: inputRect?.bottom || Infinity,
+      sendBottom: sendRect?.bottom || Infinity,
+      feedHeight: feedRect?.height || 0,
+    };
+  });
+
+  expect(metrics).toMatchObject({
+    innerHeight: 180,
+    coveredBottom: "60px",
+  });
+  expect(metrics.terminalTop).toBeGreaterThanOrEqual(7);
+  expect(metrics.terminalBottom).toBeLessThanOrEqual(173);
+  expect(metrics.inputBottom).toBeLessThanOrEqual(metrics.terminalBottom);
+  expect(metrics.sendBottom).toBeLessThanOrEqual(metrics.terminalBottom);
+  expect(metrics.feedHeight).toBeGreaterThanOrEqual(32);
+});
+
 test("World chat keeps five replayed messages lazy and its prompt in view", async ({
   page,
 }) => {
