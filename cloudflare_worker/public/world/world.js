@@ -201,7 +201,9 @@ const WORLD_MEDIA_PLAYBACK_POLL_MS = 15 * 1000;
 const WORLD_SOCKET_PING_MS = 40 * 1000;
 // One broadcast wave per pose; the local arm still replays on every click.
 const WORLD_WAVE_COOLDOWN_MS = 2000;
-const WORLD_STATUS_POLL_MS = 5 * 60 * 1000;
+// The status Worker records one sample per minute. Poll on that same cadence;
+// the board's lightweight stand texture counts down every second in between.
+const WORLD_STATUS_POLL_MS = 60 * 1000;
 const WORLD_BUILD_BOARD_POLL_MS = 60 * 1000;
 const WORLD_AGENT_BOT_POLL_MS = 8 * 1000;
 // The member directory is refreshed by arrivals rather than by a timer, so
@@ -5072,12 +5074,16 @@ class ForkMeshWorld extends HTMLElement {
     this.positionKey = "";
     this.restoredPosition = null;
     this.spawnSelected = false;
+    this.freshArrivalCampfireSeated = false;
     // A server arrival cell may resolve a collision only during the first
     // welcome. Mobile radios routinely reconnect while somebody is walking;
     // treating every reconnect like a new arrival used to snap signed-in
     // visitors back to the entrance and looked exactly like a page refresh.
     this.initialPresenceWelcomePending = true;
     this.statusBoardTimer = 0;
+    this.statusBoardRequestedAt = 0;
+    this.statusBoardLastCheckAt = 0;
+    this.statusBoardLoad = null;
     this.rewardHoverRefreshedAt = 0;
     this.mirrorTimer = 0;
     this.repositoryImportTimer = 0;
@@ -6049,6 +6055,12 @@ class ForkMeshWorld extends HTMLElement {
           this.setInfrastructureConsoleEnabled(enabled),
         onBuildBoardNearby: () =>
           void this.refreshBuildBoard({ quiet: true }),
+        onBuildVideoSelect: () =>
+          window.open(
+            "/assets/video/forkmesh-forever.mp4",
+            "_blank",
+            "noopener,noreferrer",
+          ),
         onBuildBoardReorder: ({ order }) =>
           void this.reorderBuildBoard(order),
         onBuildIssueAssign: ({ key, title }) =>
@@ -6249,6 +6261,7 @@ class ForkMeshWorld extends HTMLElement {
       this.syncSocialBanners();
       this.startSocialBannersRefresh();
       this.syncMemberLounge();
+      this.seatFreshArrivalAtCampfire();
       void this.loadReferralLeaderboard();
       void this.loadLobbyLinkBoard();
       this.syncRepositoryScene();
@@ -7965,7 +7978,7 @@ class ForkMeshWorld extends HTMLElement {
       this.world?.updateArrivalStats?.(this.visitorStats);
     }
     if (statusResult.status === "fulfilled") {
-      this.world?.updateSystemStatusBoard?.(statusResult.value);
+      this.applySystemStatusBoard(statusResult.value);
     }
     const liveMirrors = liveNodeRecordsWithActions(
       this.network,
@@ -9812,6 +9825,7 @@ class ForkMeshWorld extends HTMLElement {
         thumbstickHandle.style.setProperty("--thumb-x", "0px");
         thumbstickHandle.style.setProperty("--thumb-y", "0px");
         this.world?.setTouchMovement?.(0, 0);
+        this.world?.setTouchInteractionActive?.(false);
         this.syncViewportHeight();
       };
       const updateThumbstick = (event) => {
@@ -9853,6 +9867,7 @@ class ForkMeshWorld extends HTMLElement {
         event.preventDefault();
         activePointerId = event.pointerId;
         this.mobileMovementActive = true;
+        this.world?.setTouchInteractionActive?.(true);
         thumbstick.setPointerCapture?.(event.pointerId);
         updateThumbstick(event);
       });
@@ -11742,27 +11757,73 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   // The system status board reads the Worker's own cached status view rather
-  // than a chain RPC, so it keeps its timer; the treasury balance beside it
-  // does not (see refreshRewardStateOnHover).
+  // than a chain RPC. A one-second local tick updates its small countdown and
+  // staleness plates; only the minute boundary performs an HTTP read.
   startStatusBoardPolling() {
     window.clearInterval(this.statusBoardTimer);
-    this.statusBoardTimer = window.setInterval(async () => {
-      if (this.destroyed || document.hidden) return;
-      try {
-        await this.refreshSystemStatusBoard();
-      } catch (_) {}
-    }, WORLD_STATUS_POLL_MS);
+    this.statusBoardTimer = window.setInterval(() => {
+      this.syncSystemStatusBoardTimer();
+    }, 1000);
+    this.syncSystemStatusBoardTimer();
+  }
+
+  statusBoardRefreshRemaining() {
+    if (!this.statusBoardRequestedAt) return 0;
+    return Math.max(
+      0,
+      this.statusBoardRequestedAt + WORLD_STATUS_POLL_MS - Date.now(),
+    );
+  }
+
+  syncSystemStatusBoardTimer() {
+    if (this.destroyed || document.hidden) return;
+    const loading = Boolean(this.statusBoardLoad);
+    const remaining = this.statusBoardRefreshRemaining();
+    const since =
+      this.statusBoardLastCheckAt > 0
+        ? Math.max(0, Date.now() - this.statusBoardLastCheckAt)
+        : null;
+    this.world?.updateSocialBannerTimers?.({
+      status: {
+        remainingMs: remaining,
+        totalMs: WORLD_STATUS_POLL_MS,
+        loading,
+        sinceMs: since,
+      },
+    });
+    if (!loading && remaining <= 0) {
+      void this.refreshSystemStatusBoard().catch(() => {});
+    }
+  }
+
+  applySystemStatusBoard(payload) {
+    this.statusBoardRequestedAt = Date.now();
+    this.statusBoardLastCheckAt =
+      Math.max(0, Number(payload?.current?.lastCronSampleTs) || 0);
+    this.world?.updateSystemStatusBoard?.(payload);
+    this.syncSystemStatusBoardTimer();
   }
 
   async refreshSystemStatusBoard() {
-    const payload = await this.fetchJSON("/api/status?view=world", {
+    if (this.statusBoardLoad) return this.statusBoardLoad;
+    this.statusBoardRequestedAt = Date.now();
+    this.statusBoardLoad = this.fetchJSON("/api/status?view=world", {
       auth: false,
       timeout: 8000,
       maxAge: WORLD_STATUS_POLL_MS,
       backoff: true,
       staleIfError: true,
-    });
-    this.world?.updateSystemStatusBoard?.(payload);
+    })
+      .then((payload) => {
+        this.applySystemStatusBoard(payload);
+        return payload;
+      })
+      .finally(() => {
+        this.statusBoardLoad = null;
+        this.syncSystemStatusBoardTimer();
+      });
+    this.syncSystemStatusBoardTimer();
+    return this.statusBoardLoad;
   }
 
   async refreshMirrorCatalogs({ force = false } = {}) {
@@ -15880,6 +15941,23 @@ class ForkMeshWorld extends HTMLElement {
   // The Campfire map spot seats you on the bench that carries your own name;
   // guests, and members the roster has not seated yet, land on one of the
   // benches the circle keeps open.
+  seatFreshArrivalAtCampfire() {
+    // A saved pose, shared view, or explicit regional destination always wins.
+    // Only a truly unplaced Town Square arrival starts at the social circle.
+    if (
+      this.restoredPosition ||
+      this.sharedView ||
+      this.spawnSelected ||
+      this.currentSpace !== "town-square"
+    ) {
+      return false;
+    }
+    const seated =
+      this.world?.returnToCampfireBench?.(this.identity?.name || "") === true;
+    if (seated) this.freshArrivalCampfireSeated = true;
+    return seated;
+  }
+
   returnToCampfireBench() {
     if (!this.world?.returnToCampfireBench?.(this.identity?.name || "")) {
       this.toast(
@@ -24659,6 +24737,9 @@ class ForkMeshWorld extends HTMLElement {
     if (!message || typeof message !== "object") return;
     let peersChanged = false;
     if (message.type === "welcome" && Array.isArray(message.peers)) {
+      const reseatFreshArrival =
+        this.initialPresenceWelcomePending &&
+        this.freshArrivalCampfireSeated;
       this.serverPeerId = String(message.id || "");
       const ownPresence = remotePlayer(message.self);
       // A restored spot may have been handed out as an arrival cell while
@@ -24720,6 +24801,14 @@ class ForkMeshWorld extends HTMLElement {
           this.remotePlayers.set(player.id, player);
         }
       });
+      // The welcome may have replaced a newly seated guest with a collision-
+      // free arrival cell. Rebuild the spare seats with the authoritative peer
+      // list, then put that first-time visitor back down before publishing the
+      // initial movement frame. Reconnects never repeat this.
+      if (reseatFreshArrival) {
+        this.syncMemberLounge();
+        this.world?.returnToCampfireBench?.(this.identity?.name || "");
+      }
       // Publishing starts only after the server has assigned this connection's
       // unique row/column arrival slot.
       window.clearTimeout(this.movementSendTimer);

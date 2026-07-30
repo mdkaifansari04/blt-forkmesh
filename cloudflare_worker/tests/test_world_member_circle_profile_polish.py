@@ -19,9 +19,9 @@ def test_member_circle_uses_dirt_and_tracks_firewood_per_member():
     assert "log.userData.memberLogIndex = index" in SCENE
     # adhoc #427: the blaze is a milestone marker — it holds its size through a
     # hundred accounts and steps up only when the next century lands.
-    assert "const CAMPFIRE_BASE_FIRE_LEVEL = 1.45;" in SCENE
-    assert "const CAMPFIRE_FIRE_LEVEL_PER_CENTURY = 0.3;" in SCENE
-    assert "const CAMPFIRE_MAX_FIRE_LEVEL = 3.55;" in SCENE
+    assert "const CAMPFIRE_BASE_FIRE_LEVEL = 3;" in SCENE
+    assert "const CAMPFIRE_FIRE_LEVEL_PER_CENTURY = 0.35;" in SCENE
+    assert "const CAMPFIRE_MAX_FIRE_LEVEL = 5.4;" in SCENE
     assert "const fireCenturies = Math.floor(count / 100);" in SCENE
     assert (
         "CAMPFIRE_BASE_FIRE_LEVEL + fireCenturies * CAMPFIRE_FIRE_LEVEL_PER_CENTURY"
@@ -34,11 +34,47 @@ def test_member_circle_uses_dirt_and_tracks_firewood_per_member():
 def test_member_total_hangs_high_and_large_above_the_fire():
     # adhoc #427: the count reads as the clearing's headline, so it sits well
     # clear of the flames and rises further as the fire grows.
-    assert "const MEMBER_COUNT_HOVER_Y = 3.9;" in SCENE
-    assert "memberCountSprite.scale.set(5.2, 2.6, 1);" in SCENE
+    assert "const MEMBER_COUNT_HOVER_Y = 10.5;" in SCENE
+    assert "memberCountSprite.scale.set(8, 4, 1);" in SCENE
     assert (
         "FLAME_HEIGHT * Math.max(0, fireLevel - CAMPFIRE_BASE_FIRE_LEVEL)" in SCENE
     )
+
+
+def test_newest_member_name_has_an_animated_sparkle_effect():
+    assert 'newestMemberSparkles.name = "campfire-newest-member-name-sparkles"' in SCENE
+    assert "newestMemberSparkles.visible = Boolean(latest);" in SCENE
+    assert "newestMemberSparkles.rotation.z = time * 0.0008;" in SCENE
+    assert "newestMemberSparkles.position.y = memberCountSprite.position.y - 1.55;" in SCENE
+
+
+def test_fresh_arrivals_spawn_seated_without_overriding_saved_views():
+    bootstrap = APP.split("async bootstrap() {", 1)[1].split(
+        "\n  setupControls()", 1
+    )[0]
+    assert bootstrap.index("this.syncMemberLounge();") < bootstrap.index(
+        "this.seatFreshArrivalAtCampfire();"
+    )
+    assert bootstrap.index("this.seatFreshArrivalAtCampfire();") < bootstrap.index(
+        "if (this.restoredPosition) {"
+    )
+    arrival = APP.split("seatFreshArrivalAtCampfire() {", 1)[1].split(
+        "\n  returnToCampfireBench()", 1
+    )[0]
+    assert "this.restoredPosition ||" in arrival
+    assert "this.sharedView ||" in arrival
+    assert "this.spawnSelected ||" in arrival
+    assert 'this.currentSpace !== "town-square"' in arrival
+    assert 'this.world?.returnToCampfireBench?.(this.identity?.name || "")' in arrival
+    assert "this.freshArrivalCampfireSeated = true;" in arrival
+    welcome = APP.split(
+        'if (message.type === "welcome" && Array.isArray(message.peers)) {', 1
+    )[1].split(
+        '} else if (["presence", "join"].includes(message.type)', 1
+    )[0]
+    assert "this.initialPresenceWelcomePending &&" in welcome
+    assert "this.syncMemberLounge();" in welcome
+    assert 'this.world?.returnToCampfireBench?.(this.identity?.name || "");' in welcome
 
 
 def test_email_pin_switches_between_verified_check_and_unverified_x():
