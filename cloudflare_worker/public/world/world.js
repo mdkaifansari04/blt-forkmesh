@@ -12944,6 +12944,7 @@ class ForkMeshWorld extends HTMLElement {
           ? "Less than one minute"
           : `${Math.floor(syncAge / 60_000)} minutes`;
     const cpu = known(node?.cpuPercent, 100);
+    const ping = known(node?.latencyMs, 60_000);
     const commit = /^[0-9a-f]{40,64}$/.test(String(node?.commit || ""))
       ? String(node.commit)
       : "Not reported";
@@ -12973,7 +12974,7 @@ class ForkMeshWorld extends HTMLElement {
             node?.machineName || node?.name || "Not reported",
           )}</dd></div>
           <div><dt>Operator account</dt><dd>${escapeHTML(
-            node?.name || "Not reported",
+            node?.ownerUser || "Not reported",
           )}</dd></div>
           <div><dt>Node id</dt><dd class="world-break">${escapeHTML(
             node?.nodeId || "Not reported",
@@ -12983,6 +12984,40 @@ class ForkMeshWorld extends HTMLElement {
               .filter(Boolean)
               .join(" · ") || "Not reported",
           )}</dd></div>
+          <div><dt>Reachability</dt><dd>${escapeHTML(
+            node?.endpointFresh === true && node?.endpointHealthy === true
+              ? "Online · fresh HTTPS health proof"
+              : node?.endpointHealthy === true
+                ? "Responding · health proof is stale"
+                : "Not currently reachable",
+          )}</dd></div>
+          <div><dt>Relay HTTPS ping</dt><dd>${escapeHTML(
+            ping === null
+              ? "Not reported"
+              : `${Math.round(ping)} ms${
+                  node?.endpointFresh === true ? " · fresh" : " · stale"
+                }`,
+          )}</dd></div>
+          <div><dt>Health checked</dt><dd>${escapeHTML(
+            date(node?.checkedAt),
+          )}</dd></div>
+          <div><dt>Endpoint region</dt><dd>${escapeHTML(
+            node?.region || "Not reported",
+          )}</dd></div>
+          <div><dt>HTTPS endpoint</dt><dd class="world-break">${escapeHTML(
+            node?.endpoint || "Not reported",
+          )}</dd></div>
+          <div><dt>Endpoint integrity</dt><dd>${escapeHTML(
+            node?.endpointIntegrity || "unknown",
+          )}${node?.abuseBlocked === true ? " · abuse blocked" : ""}</dd></div>
+          <div><dt>Supported operations</dt><dd class="world-break">${escapeHTML(
+            Array.isArray(node?.operations) && node.operations.length
+              ? node.operations.join(" · ")
+              : "Not reported",
+          )}</dd></div>
+          <div><dt>Node activity</dt><dd>${escapeHTML(
+            node?.activity || "Not reported",
+          )}</dd></div>
           <div><dt>Git HEAD</dt><dd class="world-break"><code>${escapeHTML(
             commit,
           )}</code></dd></div>
@@ -12991,6 +13026,9 @@ class ForkMeshWorld extends HTMLElement {
             node?.integrity || "unknown",
           )}${node?.behind === true ? " · behind current state" : ""}</dd></div>
           <div><dt>Last seen</dt><dd>${escapeHTML(date(node?.lastSeen))}</dd></div>
+          <div><dt>Hosted since</dt><dd>${escapeHTML(
+            date(node?.hostedSince),
+          )}</dd></div>
           <div><dt>Last sync</dt><dd>${escapeHTML(
             date(node?.lastSync),
           )}${
@@ -13009,6 +13047,15 @@ class ForkMeshWorld extends HTMLElement {
           )}</dd></div>
           <div><dt>Repository bytes</dt><dd>${escapeHTML(
             bytes(node?.sizeBytes),
+          )}</dd></div>
+          <div><dt>Latest commit message</dt><dd class="world-break">${escapeHTML(
+            node?.lastCommitMessage || "Not reported",
+          )}</dd></div>
+          <div><dt>Latest commit author</dt><dd>${escapeHTML(
+            node?.lastCommitAuthorName || "Not reported",
+          )}</dd></div>
+          <div><dt>Latest commit time</dt><dd>${escapeHTML(
+            date(node?.lastCommitAt),
           )}</dd></div>
           <div><dt>Commits</dt><dd>${escapeHTML(count(node?.commitCount))}</dd></div>
           <div><dt>Branches</dt><dd>${escapeHTML(count(node?.branchCount))}</dd></div>

@@ -6071,7 +6071,8 @@ void MainWindow::updateIssueLooperButton()
 // worktree/branch and opens a pull request on finish, like every transcript run.
 int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
                                        const QString &provider, bool createPr,
-                                       const QString &model)
+                                       const QString &model,
+                                       const QString &titleOverride)
 {
     if (!m_agentStore || task.isEmpty())
         return 0;
@@ -6108,8 +6109,11 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         session.mode = m_quickAddModeSelector->currentText();
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
-    // A short title from the prompt's first line, for the list row and the PR.
-    QString title = task.section(QLatin1Char('\n'), 0, 0).simplified();
+    // A short title from the prompt's first line, for the list row and the PR —
+    // or the caller's own title when the prompt does not describe the work.
+    QString title = titleOverride.trimmed().isEmpty()
+                        ? task.section(QLatin1Char('\n'), 0, 0).simplified()
+                        : titleOverride.trimmed();
     if (title.size() > 80)
         title = title.left(77) + QString::fromUtf8("\xE2\x80\xA6");
     session.issueTitle =

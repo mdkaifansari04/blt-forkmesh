@@ -535,7 +535,6 @@ import activitypub as ap  # noqa: E402
 import activitypub_threads as ap_threads  # noqa: E402
 import edge_routing as https_routing  # noqa: E402
 import fediverse_digest as fedi_digest  # noqa: E402
-import repository_imports as repository_import  # noqa: E402
 import reward_policy  # noqa: E402
 # Objective evidence, one-account-one-vote governance, and contextual-only
 # community placement policy live outside the route spine.
@@ -603,6 +602,14 @@ import blog_feed  # noqa: E402
 # validation are pure data/logic, so they live in their own js-free sibling
 # module; the D1-backed award/list/grant handlers stay below (adhoc #370).
 import badges as badge_catalog  # noqa: E402
+
+
+def _repository_import_module():
+    # Provider-import policy is large and used only by import/logo routes.
+    # Loading it on first use keeps ordinary World/API isolates behaviorally
+    # identical while avoiding its module globals during Worker startup.
+    import repository_imports
+    return repository_imports
 
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
@@ -11219,6 +11226,11 @@ async def _chat_channel_signed_session(env, request):
 # Agents composer's Task toggle could never reach the board (adhoc #18).
 ORG_TASK_OPEN_PROOF = "forkmesh-org-task-open-v1"
 ORG_TASK_COMPLETE_PROOF = "forkmesh-org-task-complete-v1"
+# The same key, signing for the one credential a desktop's "genie" button needs
+# (adhoc #49): a task-only remote-MCP bearer for the task board. An install that
+# can already open and close tasks with its key should not have to send its
+# operator to the website to copy a token by hand.
+GENIE_CREDENTIAL_PROOF = "forkmesh-genie-credential-v1"
 ORG_TASK_COMPLETE_RE = re.compile(
     r"^/api/tasks/([a-f0-9]{32})/complete/?$")
 ORG_TASK_COLLECTION_RE = re.compile(r"^/api/tasks/?$")
@@ -11258,6 +11270,39 @@ async def _org_task_signed_session(env, request):
         ).encode()
     else:
         return "", None
+    pubkey = await _owner_pubkey(env, node)
+    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+        return "", None
+    account_bi, record = await _account_row(env, node)
+    if (
+        not account_bi
+        or not record
+        or record.get("status") != "active"
+        or _account_kind(record) != "user"
+    ):
+        return "", None
+    return account_bi, record
+
+
+async def _genie_credential_signed_session(env, request):
+    """Resolve the account behind a key-signed genie-credential request.
+
+    Narrower than _org_task_signed_session: one proof, one path, POST only, and
+    the signature covers nothing but the account and timestamp, so it can only
+    ever mint that account's own task-scoped credential inside the skew window.
+    """
+    if method_name(request) != "POST":
+        return "", None
+    url = urlparse(request.url)
+    params = parse_qs(url.query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return "", None
+    canonical = (
+        GENIE_CREDENTIAL_PROOF + "\n" + node + "\n" + str(ts)
+    ).encode()
     pubkey = await _owner_pubkey(env, node)
     if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
         return "", None
@@ -13347,7 +13392,7 @@ async def native_repository_logo_handler(
                     "cache-control": "public, max-age=300",
                 })
             logo = await service._official_logo(env, repository_id)
-            logo = logo or repository_import.deterministic_logo(record)
+            logo = logo or _repository_import_module().deterministic_logo(record)
             return _repository_logo_image_response(
                 logo, public=not bool(record.get("isPrivate")))
         if committed_logo_url:
@@ -13469,10 +13514,11 @@ async def _repo_about_public(env, request, owner, repo):
     resolved_logo = {}
     logo_record_builder = globals().get("_native_repository_logo_record")
     logo_service_factory = globals().get("_repository_import_service")
-    repository_import_module = globals().get("repository_import")
+    repository_import_loader = globals().get("_repository_import_module")
     if (callable(logo_record_builder)
             and callable(logo_service_factory)
-            and repository_import_module is not None):
+            and callable(repository_import_loader)):
+        repository_import_module = repository_import_loader()
         logo_record = logo_record_builder(rec, owner, repo)
         logo_service = logo_service_factory()
         approved_logo = await logo_service._official_logo(
@@ -23778,6 +23824,7 @@ def _account_email_activity(rec):
 
 async def _repository_provider_fetch(env, provider, path, token=""):
     from js import fetch as js_fetch
+    repository_import = _repository_import_module()
     if provider not in repository_import.PROVIDERS:
         return {"status": 400, "data": {}, "headers": {}}
     if (not isinstance(path, str) or not path.startswith("/")
@@ -23978,6 +24025,7 @@ async def _repository_import_audit(
 
 
 def _repository_import_service():
+    repository_import = _repository_import_module()
     return repository_import.RepositoryImportService({
         "json_response": json_response,
         "ensure_schema": ensure_schema,
@@ -29638,6 +29686,7 @@ async def enqueue_notification(env, recipient, kind, title, body="", repo="",
 
 async def _promote_hosted_repository_import(env, catalog_record):
     """Link one verified mirror catalog to its public provider import."""
+    repository_import = _repository_import_module()
     mirror_owner = clean_string(
         catalog_record.get("owner"), MAX_NODE_NAME).lower()
     repository_name = safe_segment(clean_string(
@@ -34085,6 +34134,133 @@ async def org_bot_tokens_handler(env, request, org):
         "label": label,
         "scopes": scopes,
         "expiresAt": expires_at,
+        "shownOnce": True,
+    }, status=201, cache_control="no-store")
+
+
+GENIE_CREDENTIAL_SCOPES = ("organization.tasks.read", "organization.tasks.write")
+GENIE_CREDENTIAL_LABEL = "Genie"
+GENIE_CREDENTIAL_DAYS = 90
+
+
+async def genie_credential_handler(env, request):
+    """Mint the desktop's own task-only remote-MCP credential (adhoc #49).
+
+    Pressing "genie" used to require a trip to Organization Admin to generate a
+    bearer token and paste it into Settings first. A desktop that authenticated
+    silently already proves it owns its account's Ed25519 key for every task it
+    opens on the board, so the same signature mints the same revocable,
+    task-scoped credential the website hands out — nothing else changes about
+    it: same store, same scopes, same expiry, same revoke button.
+    """
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    if not isinstance(data, dict):
+        data = {}
+    # A key-signed desktop is the point of this endpoint; an explicit account
+    # session (bearer or body token) is accepted too. Ambient cookie authority
+    # is not: _account_session_record refuses a cookie on a cross-origin write,
+    # so a cross-site POST can neither borrow a browser session nor pass off a
+    # junk signature as one.
+    account_bi, account = await _genie_credential_signed_session(env, request)
+    if not account_bi:
+        account_bi, account = await _account_session_record(env, request, data)
+    actor = clean_string(
+        (account or {}).get("name"), MAX_NODE_NAME).strip().lower()
+    if not account_bi or not actor:
+        return json_response({"error": "invalid_session"}, status=401)
+
+    configured = str(
+        getattr(env, "OFFICE_MARKETING_ORG", "") or "forkmesh"
+    ).strip().lower()
+    if not valid_node_name(configured):
+        return json_response({"error": "task_board_unavailable"}, status=503)
+    org_bi, org_row = await _org_row(env, configured)
+    if not org_row:
+        return json_response({"error": "task_board_unavailable"}, status=503)
+    org_name = str(org_row.get("name") or configured)
+    if await _org_role(env, org_bi, actor) not in ("owner", "admin"):
+        await _audit_sensitive_action(
+            env, actor, "organization.bot_token_create",
+            "organization_bot_token", org_name, "denied",
+            {"source": "desktop-genie"})
+        return json_response(
+            {"error": "forbidden", "organization": org_name}, status=403)
+
+    device = clean_string(data.get("deviceName"), 80).strip()
+    label = GENIE_CREDENTIAL_LABEL + ((" (" + device + ")") if device else "")
+    now = int(Date.now())
+    # One live credential per device: the desktop stores what it is given, so a
+    # re-mint (settings cleared, credential rotated) must retire its own
+    # predecessor instead of walking the org toward ORG_BOT_TOKEN_MAX_ACTIVE.
+    rows = await d1_all(
+        env,
+        "SELECT token_id,data FROM org_bot_tokens "
+        "WHERE org_bi=? AND revoked_at=0 ORDER BY created_at DESC LIMIT 64",
+        org_bi,
+    )
+    for row in rows or []:
+        record = await decrypt_row(env, row.get("data"))
+        if not isinstance(record, dict):
+            continue
+        if clean_string(record.get("label"), 80).strip() != label:
+            continue
+        if clean_string(record.get("createdBy"), MAX_NODE_NAME).strip().lower() \
+                != actor:
+            continue
+        await d1_run(
+            env,
+            "UPDATE org_bot_tokens SET revoked_at=? "
+            "WHERE token_id=? AND org_bi=? AND revoked_at=0",
+            now, str(row.get("token_id") or ""), org_bi,
+        )
+
+    count = await d1_first(
+        env,
+        "SELECT COUNT(*) AS n FROM org_bot_tokens "
+        "WHERE org_bi=? AND revoked_at=0 AND (expires_at=0 OR expires_at>?)",
+        org_bi, now,
+    )
+    if int((count or {}).get("n") or 0) >= ORG_BOT_TOKEN_MAX_ACTIVE:
+        return json_response({"error": "too_many_bot_tokens"}, status=429)
+    scopes = list(GENIE_CREDENTIAL_SCOPES)
+    expires_at = now + GENIE_CREDENTIAL_DAYS * 24 * 60 * 60 * 1000
+    token_id, token = _new_org_bot_token()
+    await d1_run(
+        env,
+        "INSERT INTO org_bot_tokens "
+        "(token_id,org_bi,secret_bi,provider,data,created_by_bi,created_at,"
+        "last_used_at,expires_at,revoked_at) VALUES (?,?,?,?,?,?,?,0,?,0)",
+        token_id, org_bi,
+        await blind_index(env, "org-bot-token:" + token),
+        "claude-code",
+        await encrypt_row(env, {
+            "label": label,
+            "scopes": scopes,
+            "createdBy": actor,
+            "deviceName": device,
+            "linkedAt": 0,
+        }),
+        str(account_bi), now, expires_at,
+    )
+    await _audit_sensitive_action(
+        env, actor, "organization.bot_token_create",
+        "organization_bot_token", org_name + "/" + token_id, "success",
+        {"provider": "claude-code", "scopes": scopes, "expiresAt": expires_at,
+         "source": "desktop-genie"})
+    return json_response({
+        "ok": True,
+        "token": token,
+        "tokenId": token_id,
+        "organization": org_name,
+        "scopes": scopes,
+        "expiresAt": expires_at,
+        "mcpUrl": _public_base_url(env, request).rstrip("/") + "/mcp",
         "shownOnce": True,
     }, status=201, cache_control="no-store")
 
@@ -40143,6 +40319,7 @@ async def _https_mirror_private_proxy(env, request, private_record):
 
 async def _hosted_repository_import_route(env, owner, repo):
     """Resolve one public logical import name to its physical mirror catalog."""
+    repository_import = _repository_import_module()
     owner_l = clean_string(owner, MAX_NODE_NAME).strip().lower()
     repo_l = clean_string(repo, MAX_REPO_SEGMENT).strip().lower()
     if not valid_node_name(owner_l) or not safe_segment(repo_l):
@@ -42477,6 +42654,9 @@ class Default(WorkerEntrypoint):
                 "/api/world/admin/nodes/delete",
                 "/api/world/admin/nodes/delete/"):
             return await world_admin_delete_node_handler(self.env, request)
+
+        if url.path in ("/api/genie/credential", "/api/genie/credential/"):
+            return await genie_credential_handler(self.env, request)
 
         if (
             url.path == "/api/tasks"

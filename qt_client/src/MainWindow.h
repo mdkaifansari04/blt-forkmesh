@@ -1168,10 +1168,21 @@ private:
     // watches the transcript for the task the agent announced and retitles the
     // live session with it.
     void startGenieAgent();
+    // launchGenieRun() is the part that actually starts the tracked session, so
+    // the credential mint below can call it once the relay answers.
+    // requestGenieCredential() is the "we're already logged in" path (adhoc
+    // #49): this install signs for its own task-only remote-MCP bearer with the
+    // account key it already holds, saves it like the pasted one, and then
+    // launches — no website round trip, no Settings detour.
+    void launchGenieRun(int repoIndex, const QString &typedGuidance);
+    void requestGenieCredential(int repoIndex, const QString &typedGuidance);
     QString genieSetupPrompt(const QString &extraInstruction) const;
     QUrl genieMcpUrl() const;
     void applyGenieTaskTitle(int sessionId, const QString &assistantText);
     void saveGenieSettings();
+    // True while a credential mint is in flight, so a second press of "genie"
+    // waits for the first instead of minting a second credential.
+    bool m_genieCredentialPending = false;
     // Settings -> Quick Setup tab: provision a fresh instance in one pass —
     // identity, workflow credentials and world appearance applied together.
     QWidget *buildQuickSetupTab();
@@ -6018,10 +6029,14 @@ private:
     QJsonArray m_liveClaudeModels;
     // Start an issue-less coding agent from the quick-add bar (issue #299) in
     // repoIndex's checkout with `task` as its prompt. Returns the new session id
-    // (>0) or 0 if it could not start.
+    // (>0) or 0 if it could not start. titleOverride names the run in the
+    // session list and its branch when the prompt's first line would be
+    // meaningless there — a genie run's opening line is MCP setup, not a task
+    // (adhoc #49).
     int startAdHocAgentForRepo(int repoIndex, const QString &task,
                                const QString &provider, bool createPr,
-                               const QString &model = QString());
+                               const QString &model = QString(),
+                               const QString &titleOverride = QString());
     // Save a clipboard image to a stable temp file so a launched agent can read it
     // by path. Used by the quick-add image paste/attach path (issue #79).
     QString saveNewAgentPromptImage(const QImage &image);

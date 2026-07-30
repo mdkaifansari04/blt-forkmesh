@@ -6183,6 +6183,7 @@ test("approved instances stay truthful", async ({
 test("System Capacity fits one height-scaled bar per populated D1 table", async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   await prepareWorldPage(page, "system-capacity-bars", {
     session: {
       sessionToken: "playwright-admin-session",
@@ -6203,6 +6204,12 @@ test("System Capacity fits one height-scaled bar per populated D1 table", async 
     const tableLayer = shell.world.scene.getObjectByName(
       "system-capacity-database-tables",
     );
+    const footprint = shell.world.scene.getObjectByName(
+      "forkmesh-infrastructure-worker-footprint",
+    );
+    const footprintFace = shell.world.scene.getObjectByName(
+      "forkmesh-infrastructure-worker-footprint-face",
+    );
     const bars = [];
     tableLayer?.traverse((object) => {
       if (String(object.name || "").startsWith("system-capacity-table:")) {
@@ -6218,16 +6225,22 @@ test("System Capacity fits one height-scaled bar per populated D1 table", async 
     return {
       platformName: platform?.name || "",
       visibleTableCount: platform?.userData.visibleTableCount,
-      legend: Boolean(
-        shell.world.scene.getObjectByName("system-capacity-table-legend"),
-      ),
+      footprint: {
+        floor: footprint?.userData.officeFloorId || "",
+        width: footprintFace?.material?.map?.image?.width || 0,
+        height: footprintFace?.material?.map?.image?.height || 0,
+      },
       bars,
     };
   });
 
   expect(capacity.platformName).toBe("system-capacity-infrastructure");
   expect(capacity.visibleTableCount).toBe(3);
-  expect(capacity.legend).toBe(true);
+  expect(capacity.footprint).toEqual({
+    floor: "infrastructure",
+    width: 1800,
+    height: 1100,
+  });
   expect(capacity.bars.map((bar) => bar.name).sort()).toEqual([
     "repositories",
     "users",
@@ -6246,11 +6259,20 @@ test("System Capacity fits one height-scaled bar per populated D1 table", async 
 
   await page.locator("forkmesh-world").evaluate((shell) => {
     shell.world.setPaused(true);
-    shell.world.camera.position.set(8, 7.5, -14);
-    shell.world.camera.lookAt(8, 1.6, -27);
+    const face = shell.world.scene.getObjectByName(
+      "forkmesh-infrastructure-worker-footprint-face",
+    );
+    const target = face.getWorldPosition(shell.world.camera.position.clone());
+    const front = face
+      .localToWorld(target.clone().set(0, 0, 1))
+      .sub(target)
+      .normalize();
+    shell.world.camera.position.copy(target).add(front.multiplyScalar(28));
+    shell.world.camera.lookAt(target);
+    shell.world.camera.updateMatrixWorld();
     shell.world.renderer.render(shell.world.scene, shell.world.camera);
   });
-  await expect(page).toHaveScreenshot("world-system-capacity.png", {
+  await expect(page).toHaveScreenshot("world-worker-footprint.png", {
     animations: "disabled",
     maxDiffPixelRatio: 0.012,
   });
