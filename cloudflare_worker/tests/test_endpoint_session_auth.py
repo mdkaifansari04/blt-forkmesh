@@ -31,6 +31,7 @@ ENTRY_TEXT = (
 
 FUNCS = {
     "notifications_handler", "poll_handler", "repo_about_handler",
+    "_alert_inbox_account_name",
     "valid_node_name", "clean_string",
     "_owner_pubkey", "_catalog_record_matches_identity",
     "_repo_identity_from_clone_url", "safe_segment", "method_name",
@@ -150,6 +151,13 @@ def _harness(accounts, notifications=None, repositories=None):
         _, rec = await _account_session_record(_env, request, data)
         return str((rec or {}).get("name") or "").strip().lower()
 
+    async def _account_alert_signed_session(_env, _request):
+        # None of these requests carry the desktop's account-key signature, so
+        # the alert inbox's signed fallback resolves to nobody and the session
+        # gate below is what decides. The proof itself is pinned separately, in
+        # test_account_alert_signed_inbox.py.
+        return ""
+
     async def decrypt_row(_env, stored, key=None):
         return dict(stored) if isinstance(stored, dict) else None
 
@@ -222,6 +230,7 @@ def _harness(accounts, notifications=None, repositories=None):
         "_account_session_token": _account_session_token,
         "_account_session_record": _account_session_record,
         "_authed_account_name": _authed_account_name,
+        "_account_alert_signed_session": _account_alert_signed_session,
         "_is_admin": _is_admin,
         "decrypt_row": decrypt_row,
         "encrypt_row": encrypt_row,

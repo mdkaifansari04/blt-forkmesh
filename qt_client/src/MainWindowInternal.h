@@ -2958,6 +2958,14 @@ const QString kOrgTaskListProof = QStringLiteral("forkmesh-org-task-list-v1");
 // GENIE_CREDENTIAL_PROOF in entry.py.
 const QString kGenieCredentialProof =
     QStringLiteral("forkmesh-genie-credential-v1");
+// Same signing key, for this account's own website alert inbox: the Alerts page
+// shows what the site's bell shows, and clears it from here (adhoc #59). Must
+// stay byte-identical to ACCOUNT_ALERT_LIST_PROOF / ACCOUNT_ALERT_READ_PROOF in
+// entry.py.
+const QString kAccountAlertListProof =
+    QStringLiteral("forkmesh-account-alert-list-v1");
+const QString kAccountAlertReadProof =
+    QStringLiteral("forkmesh-account-alert-read-v1");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.

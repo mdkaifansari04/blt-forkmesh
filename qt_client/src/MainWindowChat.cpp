@@ -7387,6 +7387,9 @@ void MainWindow::showSection(int index)
         // Entering Chat clears the unread marker for the open conversation.
         clearActiveConversationUnread();
     } else if (index == 3) {
+        // Opening Alerts is the moment the website inbox has to be current
+        // (adhoc #59); refreshWebAlerts() repaints the table when it lands.
+        refreshWebAlerts();
         refreshNotificationsTable();
     } else if (index == 4 && m_settingsLog) {
         // First visit renders the persisted history that buildLogSection()

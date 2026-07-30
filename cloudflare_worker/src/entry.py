@@ -11255,6 +11255,64 @@ async def _genie_credential_signed_session(env, request):
     return account_bi, record
 
 
+# The same account key, reading and clearing its own alert inbox. The desktop's
+# Alerts page mirrors the website's bell, and an install that authenticated
+# silently holds keys and no session token — so without these the linked inbox
+# would answer "unauthorized" to the very operator who owns it (adhoc #59, the
+# notification twin of ORG_TASK_LIST_PROOF).
+ACCOUNT_ALERT_LIST_PROOF = "forkmesh-account-alert-list-v1"
+ACCOUNT_ALERT_READ_PROOF = "forkmesh-account-alert-read-v1"
+ACCOUNT_ALERT_COLLECTION_RE = re.compile(r"^/api/notifications/?$")
+
+
+async def _account_alert_signed_session(env, request):
+    """Resolve the account behind a key-signed alert-inbox request.
+
+    Deliberately narrow: reading the account's own notifications and marking
+    them read, the two things the desktop Alerts page does. Deleting one still
+    requires a real session, and the read proof is distinct from the list proof
+    so a signed GET can never be replayed as a mutation. Returns the account
+    name, or "" when nothing valid signed the request.
+    """
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return ""
+    url = urlparse(request.url)
+    if not ACCOUNT_ALERT_COLLECTION_RE.match(url.path):
+        return ""
+    params = parse_qs(url.query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return ""
+    proof = (ACCOUNT_ALERT_LIST_PROOF if method == "GET"
+             else ACCOUNT_ALERT_READ_PROOF)
+    canonical = (proof + "\n" + node + "\n" + str(ts)).encode()
+    pubkey = await _owner_pubkey(env, node)
+    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+        return ""
+    account_bi, record = await _account_row(env, node)
+    if (
+        not account_bi
+        or not record
+        or record.get("status") != "active"
+        or _account_kind(record) != "user"
+    ):
+        return ""
+    return clean_string(record.get("name", ""), MAX_NODE_NAME).lower()
+
+
+async def _alert_inbox_account_name(env, request, data=None):
+    """The account whose alert inbox this request is entitled to touch.
+
+    A browser proves it with a session token; the desktop, which normally holds
+    none, proves it by signing the request with the account key.
+    """
+    name = await _authed_account_name(env, request, data)
+    return name or await _account_alert_signed_session(env, request)
+
+
 async def _room_key_authorized(env, request):
     # Compatibility wrapper retained for isolated callers/tests. Authorization
     # for the endpoint itself is repository-scoped in chat_room_key_handler.
@@ -29909,8 +29967,9 @@ async def notifications_handler(env, request):
         if not valid_node_name(node):
             return json_response({"error": "node_required"}, status=400)
         # A notification inbox is private to its owner: only the account itself,
-        # proven by its session token (bearer header on this GET), may read it.
-        if await _authed_account_name(env, request) != node:
+        # proven by its session token (bearer header on this GET) or by an
+        # account-key signature on the URL (the desktop Alerts page), may read it.
+        if await _alert_inbox_account_name(env, request) != node:
             return json_response({"error": "unauthorized"}, status=401)
         try:
             limit = int(params.get("limit", ["40"])[0])
@@ -29952,9 +30011,10 @@ async def notifications_handler(env, request):
         node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
         if not valid_node_name(node):
             return json_response({"error": "node_required"}, status=400)
-        # Marking notifications read mutates the owner's inbox: same session gate
-        # as the GET (token from the POST body or an Authorization: Bearer header).
-        if await _authed_account_name(env, request, data) != node:
+        # Marking notifications read mutates the owner's inbox: same gate as the
+        # GET (token from the POST body or an Authorization: Bearer header, or
+        # the account-key read proof signed onto the URL).
+        if await _alert_inbox_account_name(env, request, data) != node:
             return json_response({"error": "unauthorized"}, status=401)
         recipient_bi = await blind_index(env, node)
         now = int(Date.now())

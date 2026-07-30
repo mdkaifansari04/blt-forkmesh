@@ -2337,6 +2337,12 @@ private:
     // (buildNotificationsSection is declared with the other section builders).
     void refreshNotificationsTable();
     void updateNotificationButton();
+    // Mirror the website's alert inbox (/api/notifications) onto that page, so
+    // an alert raised on the site is readable — and openable — in the desktop
+    // (adhoc #59). Throttled unless `force`, because it rides the heartbeat.
+    void refreshWebAlerts(bool force = false);
+    // Mark every mirrored website alert read, on the site and here.
+    void markWebAlertsRead();
     // Show/hide the small top-bar rebuild+restart button per the opt-in setting.
     void updateNavRebuildButton();
     // Reposition the floating "Log" button to the live-log strip's corner.
@@ -5470,6 +5476,11 @@ private:
     QPushButton *m_notificationButton = nullptr;
     QLabel *m_notificationRailBadge = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page
+    // The website's alert inbox, mirrored onto that page (adhoc #59).
+    QJsonArray m_webAlerts;
+    int m_webAlertsUnread = 0;
+    bool m_webAlertsLoading = false;
+    qint64 m_webAlertsFetchedAtMs = 0;
     int m_selectedRunId = -1;
     QListWidget *m_actionWorkflowList = nullptr; // available actions (left column)
     QComboBox *m_actionNodeCombo = nullptr;      // node the selected action runs on
