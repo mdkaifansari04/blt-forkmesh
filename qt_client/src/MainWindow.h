@@ -1046,6 +1046,8 @@ private:
     static QString backgroundTaskWord(const QString &kind);
     // Refresh the footer's centered git-identity label for the open repo.
     void updateFooterGitIdentity();
+    // Refresh the footer's "commit the branch is on" label for the open repo.
+    void updateFooterCommitInfo();
     // Live CPU/memory readout + UI-stall watchdog (footer diagnostics).
     void startDiagnostics();
     void updateFooterDiagnostics();
@@ -1531,9 +1533,22 @@ private:
     bool authorizeFirewallConnection(const QString &method, const QUrl &url);
     void recordFirewallRequest(const QString &method, const QUrl &url,
                                const QString &rule, bool allowed);
-    // Network diagnostics: live websocket / Durable Object details.
+    // Network diagnostics: live websocket / Durable Object details, plus the
+    // Relays / Nodes / Hosts pages as its first tabs (adhoc #54).
     QWidget *buildNetworkDiagnosticsSection();
     void refreshNetworkDiagnostics();
+    // Re-label the Relays / Nodes / Hosts tabs with their counts and re-stamp
+    // the rail's Network badge with the total. Pass -1 for a count that is not
+    // being refreshed; it keeps its last known value.
+    void updateNetworkCounts(int relays, int nodes, int hosts);
+    // Open the Network section with one of its tabs selected (used by the
+    // retired Hosts/Nodes/Relays section indexes, which still exist for saved
+    // navigation state and the command palette).
+    void showNetworkTab(int tabIndex);
+    // Re-read whatever the given Network tab shows. Called whenever the tab
+    // becomes the current one, so each page is as fresh as its own section used
+    // to be on navigation.
+    void refreshNetworkTab(int tabIndex);
     void showEndpointRequestDetails(int row, int column);
 
     // Repo detail view (files + issues tabs), opened by clicking a repository.
@@ -4109,9 +4124,9 @@ private:
     QPushButton *m_logNavButton = nullptr; // full Log destination in the left rail
     QPushButton *m_floatingLogButton = nullptr; // retired; retained for safe resize no-op
     QPushButton *m_controlNodeNavButton = nullptr; // local control-node operations
-    QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
-    QPushButton *m_nodesNavButton = nullptr;  // "Nodes" top-nav button (adhoc #9)
-    QPushButton *m_relaysNavButton = nullptr; // "Relays" top-nav button
+    // Hosts, Nodes and Relays no longer have their own rail buttons (adhoc #54):
+    // they are tabs of the Network section, and their counts add up on the
+    // Network button's badge.
     QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
     QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
@@ -4354,6 +4369,16 @@ private:
     QPushButton *m_networkDiagnosticsRefreshButton = nullptr;
     bool m_networkEndpointFadeScheduled = false;
     bool m_networkEndpointsUserSorted = false;
+    // The Network section's tab bar. Its first three tabs are the Relays, Nodes
+    // and Hosts pages (adhoc #54); their counts ride the tab labels and total on
+    // the rail's Network badge.
+    QTabWidget *m_networkTabs = nullptr;
+    static constexpr int kNetworkRelaysTab = 0;
+    static constexpr int kNetworkNodesTab = 1;
+    static constexpr int kNetworkHostsTab = 2;
+    int m_networkRelayCount = 0;
+    int m_networkNodeCount = 0;
+    int m_networkHostCount = 0;
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
     int m_repoPinCheckIndex = -1;            // repo index an in-flight pin check belongs to
     // One row per repo of the selected node, shown in the repo dropdown.
@@ -4668,6 +4693,10 @@ private:
     // In the bottom status bar: the git identity (name <email>) configured for
     // the repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
+    // Next to it: the commit the browsed branch currently points at (date,
+    // subject and author), so the strip says where the branch sits, not just
+    // which branch is open.
+    QLabel *m_footerCommitInfo = nullptr;
     // Right of the status bar: where the running executable lives on disk, so
     // it is obvious which build/checkout the open window came from.
     QLabel *m_statusAppPath = nullptr;
