@@ -1550,11 +1550,11 @@ private:
 // whole fleet reads at a glance: green running/done, red failed, amber queued,
 // purple merged, grey cleared.
 //
-// Running sessions get the night-rider treatment the agents list uses on its
-// Activity column: a Larson highlight travels along the matrix and each running
-// square pulses at a speed and brightness driven by that session's live output
-// meter, so a busy agent visibly races while a quiet one just breathes. The
-// animation timer only runs while something is actually running.
+// Running sessions get the night-rider treatment the agents list used to give its
+// (now dropped) Activity column: a Larson highlight travels along the matrix and
+// each running square pulses at a speed and brightness driven by how hard that
+// session is working, so a busy agent visibly races while a quiet one just
+// breathes. The animation timer only runs while something is actually running.
 class AgentDotMatrix : public QWidget
 {
 public:
@@ -1562,7 +1562,12 @@ public:
         int sessionId = 0;
         QColor color;
         bool running = false;
-        double intensity = 0.0; // 0..1 live-output meter for running sessions
+        double intensity = 0.0; // 0..1 live-output (bytes) meter
+        // 0..1 token-throughput meter: the session's tok/s scaled against a
+        // flat-out run (adhoc #35). Volume of raw output alone made a session
+        // chewing through a big file look as busy as one actually generating, so
+        // the blink now takes the token rate into account as well.
+        double throughput = 0.0;
     };
 
     explicit AgentDotMatrix(QWidget *parent = nullptr) : QWidget(parent)
@@ -1634,15 +1639,19 @@ protected:
             double scale = 1.0;
             if (dot.running) {
                 // The highlight travels along the matrix (each square is offset
-                // a little further through the cycle), and the session's own
-                // output meter both speeds up its cycle and deepens the pulse —
-                // that's the "live activity" part: idle running agents breathe
-                // slowly and dimly, streaming ones strobe.
-                const double speed = 0.6 + 1.9 * qBound(0.0, dot.intensity, 1.0);
+                // a little further through the cycle), and how hard the session is
+                // working both speeds up its cycle and deepens the pulse — that's
+                // the "live activity" part: idle running agents breathe slowly and
+                // dimly, streaming ones strobe. "Working" is the stronger of the
+                // raw-output meter and the token throughput (adhoc #35), so an
+                // agent producing fast still races while it thinks between chunks.
+                const double meter = qMax(qBound(0.0, dot.intensity, 1.0),
+                                          qBound(0.0, dot.throughput, 1.0));
+                const double speed = 0.6 + 1.9 * meter;
                 double t = m_phase * speed + i * kSweepStep;
                 t -= std::floor(t);
                 const double tri = 1.0 - std::abs(2.0 * t - 1.0);
-                const double depth = 0.45 + 0.35 * qBound(0.0, dot.intensity, 1.0);
+                const double depth = 0.45 + 0.35 * meter;
                 const double glow = (1.0 - depth) + depth * tri;
                 color.setAlphaF(qBound(0.18, glow, 1.0));
                 scale = 0.82 + 0.18 * tri; // the crest swells a touch
@@ -1992,9 +2001,11 @@ private:
 // ResizeToContents and Stretch/stretch-last columns alike are sized to their content
 // (a Stretch column would otherwise keep only the width it was stretched to fill,
 // which can be narrower than its content and elide the text), and stretch-last is
-// turned off. Fixed button columns are left exactly as the caller set them. Call
+// turned off. Fixed button columns are left exactly as the caller set them, and
+// so is `keepFlexibleColumn` when the caller has one column that must go on
+// absorbing the spare width (the agents list's Issue title, adhoc #35). Call
 // once after the header has been configured.
-inline void makeColumnsResizable(QTableWidget *table)
+inline void makeColumnsResizable(QTableWidget *table, int keepFlexibleColumn = -1)
 {
     if (!table || !table->model())
         return;
@@ -2002,19 +2013,21 @@ inline void makeColumnsResizable(QTableWidget *table)
     auto done = std::make_shared<bool>(false);
     QObject::connect(
         table->model(), &QAbstractItemModel::rowsInserted, table,
-        [table, header, done]() {
+        [table, header, done, keepFlexibleColumn]() {
             if (*done)
                 return;
             *done = true;
             // Defer to the next event-loop turn so the fit reflects the
             // freshly-set cell contents rather than the just-inserted empty rows.
-            QTimer::singleShot(0, table, [table, header]() {
+            QTimer::singleShot(0, table, [table, header, keepFlexibleColumn]() {
                 // The last column may auto-fill via stretchLastSection rather than
                 // a per-section Stretch mode; capture that before turning it off.
                 const bool stretchLast = header->stretchLastSection();
                 const int last = header->count() - 1;
                 header->setStretchLastSection(false);
                 for (int i = 0; i < header->count(); ++i) {
+                    if (i == keepFlexibleColumn)
+                        continue; // stays Stretch, absorbing the spare width
                     const QHeaderView::ResizeMode mode = header->sectionResizeMode(i);
                     const bool autosized =
                         mode == QHeaderView::ResizeToContents ||

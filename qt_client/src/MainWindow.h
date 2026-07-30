@@ -21,15 +21,14 @@
 
 struct CommitComment; // CommitCommentStore.h
 
-// Per-session "night rider" scanner-light state, animated in the agents list
-// while raw output is streaming. phase is the Larson-sweep parameter advanced on
-// a timer; lastActivityMs is bumped on every raw-output chunk so the sweep keeps
-// running while the agent is actively producing output. intensity is a smoothed
+// Per-session live-output state behind the top bar's blinking fleet lights.
+// lastActivityMs is bumped on every raw-output chunk so the light keeps blinking
+// while the agent is actively producing output. intensity is a smoothed
 // live-output meter (decays every frame, re-bumped per chunk by how much just
-// streamed) that the sweep's speed, brightness, trail and colour ride in real
-// time — so a quiet agent crawls dim red and a busy one races hot and bright.
+// streamed) that the blink's speed and brightness ride in real time — so a quiet
+// agent breathes dimly and a busy one strobes. The agents list used to paint a
+// per-row Larson sweep from this too, until adhoc #35 dropped that column.
 struct AgentScannerState {
-    double phase = 0.0;        // 0..1 sweep parameter (bounced into a triangle)
     qint64 lastActivityMs = 0; // wall-clock of the last raw-output chunk
     double intensity = 0.0;    // 0..1 live-output rate the effect reacts to
 };
@@ -5506,6 +5505,10 @@ private:
     QPushButton *m_terminalModeButton = nullptr;
     QComboBox *m_agentDiffModeCombo = nullptr; // unified vs split diff selector
     QWidget *m_agentOutputToggle = nullptr;
+    // The transcript-only half of that toolbar (search box, match steppers, diff
+    // style): hidden for log/terminal sessions while the toolbar's session action
+    // buttons stay put (adhoc #35).
+    QWidget *m_agentTranscriptTools = nullptr;
     // adhoc #201: search-the-transcript box in the output toggle row, with a
     // "3/12" match counter and prev/next steppers over the highlighted hits.
     QLineEdit *m_transcriptSearch = nullptr;
