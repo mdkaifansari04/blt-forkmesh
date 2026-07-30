@@ -1989,6 +1989,39 @@ test("ForkMesh Office walk-in opens chat only through the explicit fallback", as
   expect(context.pages()).toHaveLength(pageCount);
 });
 
+test("Office runtime stays off the initial World graph and loads on demand", async ({
+  page,
+}) => {
+  const officeModules = new Set([
+    "/world/world-office.js",
+    "/world/world-office-meeting.js",
+    "/world/world-office-tasks.js",
+  ]);
+  const requestedOfficeModules = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (officeModules.has(path)) requestedOfficeModules.push(path);
+  });
+  await prepareWorldPage(page, "office-lazy-runtime");
+  await waitForWorld(page);
+  expect(requestedOfficeModules).toEqual([]);
+
+  const runtime = await page.locator("forkmesh-world").evaluate(async (shell) => {
+    const controller = await shell.ensureOfficeRuntime();
+    return {
+      controller: Boolean(controller),
+      meeting: Boolean(shell.officeMeeting),
+      tasks: Boolean(shell.officeTasks),
+    };
+  });
+  expect(runtime).toEqual({
+    controller: true,
+    meeting: true,
+    tasks: true,
+  });
+  expect(new Set(requestedOfficeModules)).toEqual(officeModules);
+});
+
 test("a signed-in member walks into the continuous ten-story Office without a gate", async ({
   page,
 }) => {

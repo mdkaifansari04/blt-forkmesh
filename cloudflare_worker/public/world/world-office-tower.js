@@ -16,6 +16,18 @@ export const OFFICE_TOWER_HEIGHT = OFFICE_FLOOR_HEIGHT * OFFICE_FLOOR_COUNT;
 export const OFFICE_FRONT_Z = OFFICE_DEPTH / 2;
 export const OFFICE_DOOR_WIDTH = 10;
 export const OFFICE_AVATAR_RADIUS = 0.46;
+export const OFFICE_ENTER_DISTANCE = 6.5;
+export const OFFICE_EXIT_DISTANCE = 7.5;
+
+export function nextOfficeZoneState(currentState, distance) {
+  const threshold =
+    currentState === "nearby"
+      ? OFFICE_EXIT_DISTANCE
+      : OFFICE_ENTER_DISTANCE;
+  return Number.isFinite(distance) && distance <= threshold
+    ? "nearby"
+    : "distant";
+}
 // The panoramic lift straddles the first front curtain-wall bay immediately
 // right of the centered Office entrance. Keeping the complete shaft close to
 // the door makes every floor reachable without a long lobby crossing.

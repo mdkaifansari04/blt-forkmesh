@@ -7,7 +7,6 @@ import {
   landmarkById,
   normalizeWorldStatus,
 } from "./world-data.js";
-import { nextOfficeZoneState } from "./world-office.js";
 import {
   OFFICE_AVATAR_RADIUS,
   OFFICE_BRIDGE_END_Z,
@@ -32,6 +31,7 @@ import {
   officeFloorById,
   officeFloorY,
   officeInteriorPointIsWalkable,
+  nextOfficeZoneState,
 } from "./world-office-tower.js";
 import { createWorldSky } from "./world-sky.js";
 import { WORKER_FOOTPRINT } from "./worker-footprint.js";
@@ -143,6 +143,12 @@ const SHADOW_MAP_UPDATE_MS = 2_000;
 const SHADOW_MAP_STALL_COOLDOWN_MS = 10_000;
 const SCENE_LOD_SAMPLE_MS = 500;
 const AVATAR_HIGHLIGHT_SAMPLE_MS = 100;
+// Movement, camera controls, and rendering retain display cadence. Decorative
+// callbacks have their own budget: compact GPUs update them at 30 Hz and a
+// zoomed-out overview at 20 Hz, where sub-pixel fire/foliage changes cannot
+// justify running every shader-adjacent CPU update on every frame.
+const VISUAL_ANIMATION_COMPACT_MS = 1000 / 30;
+const VISUAL_ANIMATION_FAR_MS = 1000 / 20;
 // Dragging upward lowers the orbit eye beneath the target, which is how this
 // camera looks into the sky. Allow the full arc in both directions.
 const CAMERA_PITCH_MIN = -Math.PI / 2 + 0.01;
@@ -7952,6 +7958,10 @@ function workerComponentTexture(THREE, footprint = {}) {
     footprint.workerLimits && typeof footprint.workerLimits === "object"
       ? footprint.workerLimits
       : {};
+  const staticLimits =
+    footprint.staticLimits && typeof footprint.staticLimits === "object"
+      ? footprint.staticLimits
+      : {};
   const total = Math.max(
     1,
     components.reduce(
@@ -7971,7 +7981,7 @@ function workerComponentTexture(THREE, footprint = {}) {
     context.strokeRect(10, 10, 1780, 1080);
     context.fillStyle = "#eafff5";
     context.font = '800 58px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("WORKER COMPONENT MAP", 48, 72);
+    context.fillText("WORKER COMPONENT + FREE PLAN MAP", 48, 72);
     context.fillStyle = "#7eb5a7";
     context.font = '600 22px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
@@ -7979,9 +7989,21 @@ function workerComponentTexture(THREE, footprint = {}) {
       50,
       112,
     );
+    const largestAsset =
+      footprint.largestStaticAsset &&
+      typeof footprint.largestStaticAsset === "object"
+        ? footprint.largestStaticAsset
+        : {};
+    context.fillStyle = "#f7c96b";
+    context.font = '650 19px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      `STATIC ${Math.max(0, Number(footprint.staticAssetCount) || 0).toLocaleString()}/${Math.max(0, Number(staticLimits.assetCount) || 0).toLocaleString()} · LARGEST ${formatCapacityBytes(largestAsset.bytes)}/${formatPlatformLimitBytes(staticLimits.maxAssetBytes)} · INITIAL WORLD ${formatCapacityBytes(footprint.initialWorldModuleBytes)}/${formatPlatformLimitBytes(staticLimits.initialWorldModuleBytesSoft)} SOFT`,
+      50,
+      145,
+    );
 
     components.forEach((component, index) => {
-      const y = 180 + index * 75;
+      const y = 195 + index * 73;
       const bytes = Math.max(0, Number(component.bytes) || 0);
       const width = Math.max(5, (bytes / peak) * 750);
       context.fillStyle =
@@ -8018,6 +8040,10 @@ function workerComponentTexture(THREE, footprint = {}) {
         limits.uncompressedBundleBytes,
       )}`,
       `STARTUP ${Math.max(0, Number(limits.startupTimeMs) || 0)} MS`,
+      `DYNAMIC REQUESTS ${Math.max(
+        0,
+        Number(limits.dynamicRequestsFreeDaily) || 0,
+      ).toLocaleString()}/DAY FREE`,
     ];
     constraints.forEach((line, index) => {
       context.fillStyle = index === 1 ? "#f7c96b" : "#9ef7c6";
@@ -8025,7 +8051,7 @@ function workerComponentTexture(THREE, footprint = {}) {
       context.fillText(
         line,
         55 + (index % 2) * 860,
-        constraintY + Math.floor(index / 2) * 55,
+        constraintY + Math.floor(index / 2) * 44,
       );
     });
     context.fillStyle = "#73968c";
@@ -8033,7 +8059,7 @@ function workerComponentTexture(THREE, footprint = {}) {
     context.fillText(
       "SOURCE BARS ARE UNCOMPRESSED · BUNDLE CAPS APPLY AFTER GZIP",
       55,
-      1055,
+      1062,
     );
   });
 }
@@ -15373,6 +15399,8 @@ export function createWorldScene({
     resize();
     running = true;
     lastFrame = performance.now();
+    lastVisualAnimationAt = lastFrame;
+    nextVisualAnimationAt = 0;
     renderer.setAnimationLoop(animate);
     onRendererStateChange("restored");
   };
@@ -21551,6 +21579,8 @@ export function createWorldScene({
   let running = true;
   let disposed = false;
   let lastFrame = performance.now();
+  let lastVisualAnimationAt = lastFrame;
+  let nextVisualAnimationAt = 0;
   let diagnosticsSampleAt = lastFrame;
   let diagnosticsFrameCount = 0;
   let diagnosticsRendererCalls = 0;
@@ -33132,10 +33162,22 @@ export function createWorldScene({
     }
     updateOfficeSlidingDoors(time, delta);
     updateOfficeLogoReflection(time);
-    if (!reducedMotion) {
-      animated.forEach((callback) => callback(time, delta));
-      animateWeather(weather.rain, time, delta, "rain");
-      animateWeather(weather.snow, time, delta, "snow");
+    if (!reducedMotion && time >= nextVisualAnimationAt) {
+      const visualFrameMs = farSceneDetail
+        ? VISUAL_ANIMATION_FAR_MS
+        : compactRenderer
+          ? VISUAL_ANIMATION_COMPACT_MS
+          : 0;
+      const visualDelta = clamp(
+        (time - lastVisualAnimationAt) / 1000,
+        0,
+        0.05,
+      );
+      lastVisualAnimationAt = time;
+      nextVisualAnimationAt = time + visualFrameMs;
+      animated.forEach((callback) => callback(time, visualDelta));
+      animateWeather(weather.rain, time, visualDelta, "rain");
+      animateWeather(weather.snow, time, visualDelta, "snow");
     }
     // resize() owns the only layout read. Reading the canvas bounds here,
     // after label style writes from the preceding frame, forced a synchronous
@@ -33288,6 +33330,8 @@ export function createWorldScene({
     running = !paused;
     if (running) {
       lastFrame = performance.now();
+      lastVisualAnimationAt = lastFrame;
+      nextVisualAnimationAt = 0;
       renderer.setAnimationLoop(animate);
     } else {
       renderer.setAnimationLoop(null);

@@ -24,6 +24,18 @@ def test_worker_footprint_asset_matches_current_source_tree():
     assert data["attachedPythonBytes"] > data["estimatedStartupSourceBytes"]
     assert data["onDemandSourceBytes"] > 100_000
     assert data["staticAssetBytes"] > data["attachedPythonBytes"]
+    assert data["staticAssetCount"] < data["staticLimits"]["assetCount"]
+    assert (
+        data["largestStaticAsset"]["bytes"]
+        < data["staticLimits"]["maxAssetBytes"]
+    )
+    assert (
+        data["initialWorldModuleBytes"]
+        < data["staticLimits"]["initialWorldModuleBytesSoft"]
+    )
+    assert "world/world-office.js" not in data["initialWorldModules"]
+    assert "world/world-office-meeting.js" not in data["initialWorldModules"]
+    assert "world/world-office-tasks.js" not in data["initialWorldModules"]
     assert any(
         item["name"] == "repository_imports.py"
         and item["phase"] == "on-demand"
@@ -43,6 +55,12 @@ def test_worker_footprint_asset_matches_current_source_tree():
         "compressedBundlePaidBytes": 10_000_000,
         "uncompressedBundleBytes": 64_000_000,
         "startupTimeMs": 1000,
+        "dynamicRequestsFreeDaily": 100_000,
+    }
+    assert data["staticLimits"] == {
+        "assetCount": 20_000,
+        "maxAssetBytes": 25 * 1024 * 1024,
+        "initialWorldModuleBytesSoft": 2_500_000,
     }
 
 
@@ -62,8 +80,30 @@ def test_infrastructure_room_renders_detailed_honest_footprint_chart():
     assert "SOURCE BYTES ≠ HEAP" in SCENE
     assert 'display.name = "forkmesh-infrastructure-worker-footprint"' in SCENE
     assert "INFRASTRUCTURE_FOOTPRINT_POSITION" in SCENE
-    assert "WORKER COMPONENT MAP" in SCENE
+    assert "WORKER COMPONENT + FREE PLAN MAP" in SCENE
     assert "COMPRESSED BUNDLE" in SCENE
     assert "MEMORY" in SCENE
+    assert "DYNAMIC REQUESTS" in SCENE
+    assert "initialWorldModuleBytes" in SCENE
     assert 'display.name = "forkmesh-infrastructure-worker-components"' in SCENE
     assert "INFRASTRUCTURE_COMPONENTS_POSITION" in SCENE
+
+
+def test_office_runtime_is_outside_the_initial_world_module_graph():
+    world = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
+    assert 'import("./world-office.js")' in world
+    assert 'import("./world-office-meeting.js")' in world
+    assert 'import("./world-office-tasks.js")' in world
+    assert 'from "./world-office.js"' not in world
+    assert 'from "./world-office-meeting.js"' not in world
+    assert 'from "./world-office-tasks.js"' not in world
+    assert 'from "./world-office.js"' not in SCENE
+
+
+def test_idle_deploy_watch_does_not_burn_the_free_request_budget():
+    world = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
+    assert "const WORLD_DEPLOY_STATUS_IDLE_MS = 60 * 1000;" in world
+    assert 'state === "deploying"' in world
+    assert "? WORLD_DEPLOY_STATUS_POLL_MS" in world
+    assert ": WORLD_DEPLOY_STATUS_IDLE_MS" in world
+    assert "this.deployStatusTimer = window.setTimeout(" in world

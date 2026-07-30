@@ -23,7 +23,7 @@ def test_marketing_task_controller_is_wired_to_the_office_and_scene():
     world = source(WORLD)
     office = source(OFFICE)
     for contract in (
-        'from "./world-office-tasks.js"',
+        'import("./world-office-tasks.js")',
         "createWorldOfficeTasksController",
         "onOfficeTaskBoardSelect",
         "this.officeTasks",

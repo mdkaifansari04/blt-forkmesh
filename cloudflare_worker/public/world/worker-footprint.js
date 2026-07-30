@@ -6,8 +6,29 @@ export const WORKER_FOOTPRINT = Object.freeze({
   "onDemandSourceBytes": 124114,
   "vendoredBytes": 91974,
   "moduleCount": 74,
-  "staticAssetBytes": 103026561,
+  "staticAssetBytes": 103031536,
   "staticAssetCount": 382,
+  "largestStaticAsset": {
+    "name": "assets/video/forkmesh-forever.mp4",
+    "bytes": 23562112
+  },
+  "initialWorldModuleBytes": 2380077,
+  "initialWorldModuleCount": 13,
+  "initialWorldModules": [
+    "qr.js",
+    "world/worker-footprint.js",
+    "world/world-data.js",
+    "world/world-discord.js",
+    "world/world-mastodon.js",
+    "world/world-mirror-nodes.js",
+    "world/world-office-tower.js",
+    "world/world-pull-review.js",
+    "world/world-repository-graph.js",
+    "world/world-scene.js",
+    "world/world-sky.js",
+    "world/world-socket-recovery.js",
+    "world/world.js"
+  ],
   "modules": [
     {
       "name": "entry.py",
@@ -293,7 +314,13 @@ export const WORKER_FOOTPRINT = Object.freeze({
     "compressedBundleFreeBytes": 3000000,
     "compressedBundlePaidBytes": 10000000,
     "uncompressedBundleBytes": 64000000,
-    "startupTimeMs": 1000
+    "startupTimeMs": 1000,
+    "dynamicRequestsFreeDaily": 100000
+  },
+  "staticLimits": {
+    "assetCount": 20000,
+    "maxAssetBytes": 26214400,
+    "initialWorldModuleBytesSoft": 2500000
   },
   "note": "Source bytes are a reproducible startup-footprint proxy, not heap. Cloudflare does not expose per-module Python heap measurements. Bundle limits apply after compression, so source-byte bars are not presented as bundle-limit utilization."
 });

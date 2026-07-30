@@ -39,9 +39,6 @@ import {
   safePullNumber,
 } from "./world-pull-review.js";
 import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
-import { createWorldOfficeController } from "./world-office.js";
-import { createWorldOfficeMeeting } from "./world-office-meeting.js";
-import { createWorldOfficeTasksController } from "./world-office-tasks.js";
 import { officeFloorsForTeam } from "./world-office-tower.js";
 import { createWorldSocketRecoveryTimers } from "./world-socket-recovery.js";
 import {
@@ -189,6 +186,7 @@ const WORLD_ACTIVITY_CONTINUATION_HEADER = "x-forkmesh-world-activity";
 // placements are data-only updates and are applied to the running scene.
 const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const WORLD_DEPLOY_STATUS_POLL_MS = 2500;
+const WORLD_DEPLOY_STATUS_IDLE_MS = 60 * 1000;
 const WORLD_LAYOUT_LIVE_REFRESH_MS = 60 * 1000;
 const REPOSITORY_IMPORT_POLL_MS = 2 * 60 * 1000;
 // forkmesh/forkmesh opens by default, but its commit pin needs the repository
@@ -5116,6 +5114,8 @@ class ForkMeshWorld extends HTMLElement {
     this.officeMeeting = null;
     this.officeController = null;
     this.officeTasks = null;
+    this.officeRuntimePromise = null;
+    this.officeProximityState = "distant";
     this.mastodonProfile = null;
     this.mastodonStatuses = [];
     this.mastodonReplies = [];
@@ -6022,6 +6022,82 @@ class ForkMeshWorld extends HTMLElement {
     dialog.showModal();
   }
 
+  async ensureOfficeRuntime({ userInitiated = false } = {}) {
+    if (this.destroyed || !this.world) return null;
+    if (this.officeController) return this.officeController;
+    if (this.officeRuntimePromise) return this.officeRuntimePromise;
+
+    const world = this.world;
+    this.officeRuntimePromise = Promise.all([
+      import("./world-office.js"),
+      import("./world-office-meeting.js"),
+      import("./world-office-tasks.js"),
+    ])
+      .then(([officeModule, meetingModule, tasksModule]) => {
+        if (this.destroyed || this.world !== world) return null;
+        const meeting = meetingModule.createWorldOfficeMeeting({
+          root: this,
+          scene: world,
+          getSession: readSession,
+          onActivity: (category) => {
+            if (!ACTIVITY_OPTIONS.some((option) => option.id === category)) {
+              return;
+            }
+            this.currentActivityCategory = category;
+            this.sendPresence({ type: "presence" });
+            this.broadcastLocalPresence();
+          },
+        });
+        const tasks = tasksModule.createWorldOfficeTasksController({
+          root: this,
+          world,
+          fetchJSON: (path, options) => this.fetchJSON(path, options),
+          postJSON: (path, body, options) =>
+            this.postJSON(path, body, options),
+          getSession: readSession,
+          toast: (message) => this.toast(message),
+          onQaVerdict: ({ task, verdict }) =>
+            this.recordTaskQaVerdict(task, verdict),
+        });
+        let controller;
+        try {
+          controller = officeModule.createWorldOfficeController({
+            root: this,
+            world,
+            meeting,
+            tasks,
+            getSession: readSession,
+          });
+        } catch (error) {
+          meeting.destroy?.();
+          tasks.destroy?.();
+          throw error;
+        }
+        this.officeMeeting = meeting;
+        this.officeTasks = tasks;
+        this.officeController = controller;
+        meeting.setEntryTicketProvider?.(
+          () => this.officeController?.authorizeMeeting?.() || false,
+        );
+        controller.setProximity(this.officeProximityState);
+        this.syncRecentIssueAssignments();
+        return controller;
+      })
+      .catch((error) => {
+        console.warn("[ForkMesh World] Office runtime unavailable", {
+          message: String(error?.message || error || "unknown"),
+        });
+        if (userInitiated && !this.destroyed) {
+          this.toast("The Office controls could not be loaded. Try again.");
+        }
+        return null;
+      })
+      .finally(() => {
+        this.officeRuntimePromise = null;
+      });
+    return this.officeRuntimePromise;
+  }
+
   async bootstrap() {
     try {
       this.setLoadingProgress(12, "Reading your saved view…");
@@ -6069,7 +6145,9 @@ class ForkMeshWorld extends HTMLElement {
         onLandmarkSelect: (id, meta = {}) => {
           if (id === "office") {
             this.closeLandmark();
-            this.officeController?.focusOffice();
+            void this.ensureOfficeRuntime({ userInitiated: true }).then(
+              (controller) => controller?.focusOffice(),
+            );
             return;
           }
           if (meta.nodeCabinet) {
@@ -6129,19 +6207,33 @@ class ForkMeshWorld extends HTMLElement {
           this.openLandmark(id);
         },
         onOfficeProximity: (state) => {
-          this.officeController?.setProximity(state);
+          this.officeProximityState =
+            state === "nearby" ? "nearby" : "distant";
+          if (this.officeController) {
+            this.officeController.setProximity(this.officeProximityState);
+          } else if (this.officeProximityState === "nearby") {
+            void this.ensureOfficeRuntime().then((controller) =>
+              controller?.setProximity(this.officeProximityState),
+            );
+          }
         },
         onOfficeEnter: (entry = {}) => {
-          this.officeController?.enterOffice?.(entry);
+          void this.ensureOfficeRuntime({ userInitiated: true }).then(
+            (controller) => controller?.enterOffice?.(entry),
+          );
         },
         // The physical wall is now the complete Marketing task view. Selecting
         // it no longer covers the room with the legacy task drawer.
         onOfficeTaskBoardSelect: () => {},
         onOfficeTaskWallAction: (action) => {
-          void this.officeTasks?.physicalAction?.(action);
+          void this.ensureOfficeRuntime({ userInitiated: true }).then(() =>
+            this.officeTasks?.physicalAction?.(action),
+          );
         },
         onOfficeMeetingBoardSelect: () => {
-          void this.officeMeeting?.joinRoom?.("general");
+          void this.ensureOfficeRuntime({ userInitiated: true }).then(() =>
+            this.officeMeeting?.joinRoom?.("general"),
+          );
         },
         onOfficeRooftopLaptopSelect: () => {
           // ForkMesh does not expose a browser-side arbitrary source writer.
@@ -6259,7 +6351,9 @@ class ForkMeshWorld extends HTMLElement {
           );
         },
         onOfficeChairSelect: (chairId) => {
-          this.officeMeeting?.requestSeat(chairId);
+          void this.ensureOfficeRuntime({ userInitiated: true }).then(() =>
+            this.officeMeeting?.requestSeat(chairId),
+          );
         },
         onOfficeMovement: (movement) => {
           this.officeMeeting?.move(movement);
@@ -6322,39 +6416,6 @@ class ForkMeshWorld extends HTMLElement {
         20_000,
       );
       this.syncConstructionMarkers();
-      this.officeMeeting = createWorldOfficeMeeting({
-        root: this,
-        scene: this.world,
-        getSession: readSession,
-        onActivity: (category) => {
-          if (!ACTIVITY_OPTIONS.some((option) => option.id === category)) return;
-          this.currentActivityCategory = category;
-          this.sendPresence({ type: "presence" });
-          this.broadcastLocalPresence();
-        },
-      });
-      this.officeTasks = createWorldOfficeTasksController({
-        root: this,
-        world: this.world,
-        fetchJSON: (path, options) => this.fetchJSON(path, options),
-        postJSON: (path, body, options) =>
-          this.postJSON(path, body, options),
-        getSession: readSession,
-        toast: (message) => this.toast(message),
-        onQaVerdict: ({ task, verdict }) =>
-          this.recordTaskQaVerdict(task, verdict),
-      });
-      this.syncRecentIssueAssignments();
-      this.officeController = createWorldOfficeController({
-        root: this,
-        world: this.world,
-        meeting: this.officeMeeting,
-        tasks: this.officeTasks,
-        getSession: readSession,
-      });
-      this.officeMeeting.setEntryTicketProvider?.(
-        () => this.officeController?.authorizeMeeting?.() || false,
-      );
       this.world.setTheme(this.settings.theme);
       this.world.setDaylightMode?.(this.settings.daylightMode);
       this.world.setLightLevel(this.settings.lightLevel);
@@ -6371,7 +6432,6 @@ class ForkMeshWorld extends HTMLElement {
         this.orgTeamAssignmentFor(this.identity?.name),
       );
       this.syncRecentIssueAssignments();
-      this.officeTasks?.prime?.();
       this.applyWorldLayoutEditor();
       this.world.updateNetworkNodes(
         liveNodeRecordsWithActions(
@@ -6489,7 +6549,9 @@ class ForkMeshWorld extends HTMLElement {
         this.openLandmark(this.requestedLandmark);
       }
       if (this.openFeedbackKioskOnLoad) {
-        this.officeController?.focusOffice();
+        void this.ensureOfficeRuntime({ userInitiated: true }).then(
+          (controller) => controller?.focusOffice(),
+        );
         void this.openLobbyFeedbackKiosk();
       }
     } catch (error) {
@@ -7369,6 +7431,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     void this.validateActiveWorldSession();
     void this.checkForWorldUpdate();
+    this.startDeployStatusWatch();
     // Nothing refreshes the directory while a tab is hidden — its presence
     // socket is closed, so no arrival can force it — and accounts signed up
     // meanwhile are missing from the fire's total. Coming back is the cue.
@@ -9443,7 +9506,9 @@ class ForkMeshWorld extends HTMLElement {
         const id = landmarkButton.dataset.worldLandmark;
         if (id === "office") {
           this.closeLandmark();
-          this.officeController?.focusOffice(landmarkButton);
+          void this.ensureOfficeRuntime({ userInitiated: true }).then(
+            (controller) => controller?.focusOffice(landmarkButton),
+          );
           return;
         }
         // The campfire spot is a destination rather than a reading panel:
@@ -10648,8 +10713,11 @@ class ForkMeshWorld extends HTMLElement {
   async restoreSavedWorldView(id) {
     const view = this.savedViews.find((item) => item.id === String(id || ""));
     if (!view) return false;
+    const officeController = view.office
+      ? await this.ensureOfficeRuntime({ userInitiated: true })
+      : this.officeController;
     const restored =
-      (await this.officeController?.restoreSavedView?.(view)) ??
+      (await officeController?.restoreSavedView?.(view)) ??
       this.world?.restoreSavedViewState?.(view);
     if (!restored) {
       this.toast(
@@ -21668,7 +21736,9 @@ class ForkMeshWorld extends HTMLElement {
     }
     if (action === "office") {
       this.closeLandmark();
-      this.officeController?.focusOffice();
+      void this.ensureOfficeRuntime({ userInitiated: true }).then(
+        (controller) => controller?.focusOffice(),
+      );
       return;
     }
     if (action === "campfire") {
@@ -23938,12 +24008,19 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   startDeployStatusWatch() {
-    window.clearInterval(this.deployStatusTimer);
-    void this.checkDeployStatus();
-    this.deployStatusTimer = window.setInterval(
-      () => void this.checkDeployStatus(),
-      WORLD_DEPLOY_STATUS_POLL_MS,
-    );
+    window.clearTimeout(this.deployStatusTimer);
+    this.deployStatusTimer = 0;
+    const poll = async () => {
+      const state = await this.checkDeployStatus();
+      if (this.destroyed) return;
+      this.deployStatusTimer = window.setTimeout(
+        poll,
+        state === "deploying"
+          ? WORLD_DEPLOY_STATUS_POLL_MS
+          : WORLD_DEPLOY_STATUS_IDLE_MS,
+      );
+    };
+    void poll();
   }
 
   renderDeployStatus(state) {
@@ -23978,7 +24055,7 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async checkDeployStatus() {
-    if (this.destroyed || document.hidden) return;
+    if (this.destroyed || document.hidden) return "hidden";
     let status;
     try {
       status = await this.fetchJSON("/api/world/deploy-status", {
@@ -23987,7 +24064,7 @@ class ForkMeshWorld extends HTMLElement {
         cache: "no-store",
       });
     } catch (_) {
-      return;
+      return "unavailable";
     }
     const state = String(status?.state || "idle");
     const revision = String(status?.revision || "");
@@ -23995,7 +24072,7 @@ class ForkMeshWorld extends HTMLElement {
     if (state === "deploying") {
       this.deployObservedRevision = revision;
       this.renderDeployStatus("deploying");
-      return;
+      return "deploying";
     }
     if (
       state === "ready" &&
@@ -24012,7 +24089,7 @@ class ForkMeshWorld extends HTMLElement {
           "✨ The new World build is ready. Refresh when you are ready.",
         );
       }
-      return;
+      return "ready";
     }
     if (
       state === "failed" &&
@@ -24020,9 +24097,10 @@ class ForkMeshWorld extends HTMLElement {
       revision === this.deployObservedRevision
     ) {
       this.renderDeployStatus("failed");
-      return;
+      return "failed";
     }
     this.renderDeployStatus("idle");
+    return "idle";
   }
 
   async checkForWorldUpdate() {
@@ -26662,7 +26740,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.worldTicketTimer);
     window.clearInterval(this.diagnosticsTimer);
     window.clearInterval(this.updateCheckTimer);
-    window.clearInterval(this.deployStatusTimer);
+    window.clearTimeout(this.deployStatusTimer);
     window.clearInterval(this.layoutRefreshTimer);
     window.clearInterval(this.mastodonRefreshTimer);
     window.clearInterval(this.socialFeedsTimer);

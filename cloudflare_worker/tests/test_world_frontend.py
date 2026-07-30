@@ -928,7 +928,7 @@ def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
         "saveCurrentWorldView()",
         "editSavedWorldView(id)",
         "restoreSavedWorldView(id)",
-        "this.officeController?.restoreSavedView?.(view)",
+        "officeController?.restoreSavedView?.(view)",
     ):
         assert contract in APP
     for contract in (
