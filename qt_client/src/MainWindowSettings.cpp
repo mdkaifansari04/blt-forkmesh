@@ -1571,6 +1571,12 @@ QWidget *MainWindow::buildSettingsSection()
     auto *leaveButton = new QPushButton("Leave node");
     leaveButton->setObjectName("dangerButton");
     leaveButton->setCursor(Qt::PointingHandCursor);
+    // Same action as the profile panel's "Disconnect": mesh only, the account
+    // stays signed in. Spelled out so it is never confused with the account
+    // logout sitting two buttons along (adhoc #63).
+    leaveButton->setToolTip(
+        "Disconnect this machine from the mesh and return to the setup "
+        "screen. Your ForkMesh account stays signed in on this machine.");
     setOcticon(leaveButton, "sign-out", 16);
     connect(leaveButton, &QPushButton::clicked, this, [this] { leaveSession(); });
 
@@ -1598,10 +1604,16 @@ QWidget *MainWindow::buildSettingsSection()
             [this] { loginToUserAccount(); });
 
     // Log out clears the signed-in account so you can log back in (as the same
-    // or a different account).
-    auto *logoutButton = new QPushButton("Log out");
+    // or a different account). "of account" is part of the label: this is the
+    // only one of the app's three sign-out-ish buttons that drops the account
+    // rather than just the mesh session (adhoc #63).
+    auto *logoutButton = new QPushButton("Log out of account");
     logoutButton->setObjectName("ghostButton");
     logoutButton->setCursor(Qt::PointingHandCursor);
+    logoutButton->setToolTip(
+        "Sign this machine out of its ForkMesh user account: revokes the "
+        "website session, forgets the account here, and returns to the login "
+        "screen. Repositories and settings on this computer are kept.");
     setOcticon(logoutButton, "sign-out", 16);
     connect(logoutButton, &QPushButton::clicked, this, [this] { logout(); });
 
