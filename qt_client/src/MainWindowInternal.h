@@ -6630,8 +6630,8 @@ inline QIcon themedOcticon(const QString &name, const QColor &color, int size)
     return icon;
 }
 
-// Tick rate for the running-agent spinners (the Agents table's "#" cells and the
-// footer "Agents:" strip). Fast enough that a flat-out session reads as a smooth
+// Tick rate for the running-agent spinners (the Agents table's "#" cells).
+// Fast enough that a flat-out session reads as a smooth
 // spin; how far each session turns per tick comes from its own tok/s (see
 // agentSpinStepDegrees in MainWindowAgents.cpp).
 inline constexpr int kAgentSpinTickMs = 60;
