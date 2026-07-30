@@ -146,8 +146,10 @@ def test_avatar_profile_signals_moved_to_head_and_back():
     assert "MOOD · ${frontMood}" in SCENE
     assert 'backName.name = "avatar-back-username"' in SCENE
     assert "const firstCounts = `PRS ${pulls} · ISSUES ${issues}`;" in SCENE
-    assert "const secondCounts = `DISCUSSIONS ${discussions} · ACTIVITY ↗`;" in SCENE
+    assert "const discussionCounts = `DISCUSSIONS ${discussions}`;" in SCENE
+    assert 'context.fillText("OPEN FILTERED ACTIVITY ↗", 320, 181);' in SCENE
     assert "`TASKS ${taskTotal} · RUNNING ${taskActive}`" in SCENE
+    assert '"SELECT USER FOR FULL PROFILE"' in SCENE
     assert "typeTotals:" in APP
     assert "#contributions" in APP
 
@@ -185,6 +187,7 @@ def test_directory_members_stay_seated_at_the_campfire():
 def test_camera_pan_and_tilt_turn_the_avatar_body_and_head():
     assert "function applyAvatarLookDirection(avatar, yaw, pitch, turnBody = true)" in SCENE
     assert 'headRig.name = "avatar-head-look-rig"' in SCENE
+    assert "const lookPitch = clamp(-(Number(pitch) || 0), -0.62, 0.62);" in SCENE
     assert "avatar.userData.headRig.rotation.x = lookPitch;" in SCENE
     assert "avatar.userData.torso.rotation.x = lookPitch * 0.12;" in SCENE
     rotate = SCENE.split("function rotateCamera(deltaX, deltaY)", 1)[1].split(
