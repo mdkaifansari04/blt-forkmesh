@@ -7066,7 +7066,12 @@ function createSystemCapacityPlatform(THREE) {
   return district;
 }
 
-function infrastructureConsoleTexture(THREE, enabled, entries = []) {
+function infrastructureConsoleTexture(
+  THREE,
+  enabled,
+  entries = [],
+  diagnostics = null,
+) {
   const safeEntries = Array.isArray(entries)
     ? entries
         .slice(-14)
@@ -7094,7 +7099,7 @@ function infrastructureConsoleTexture(THREE, enabled, entries = []) {
     context.fillStyle = enabled ? "#79f7b7" : "#9ab0a8";
     context.font = '800 58px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
-      `LOCAL CONSOLE · ${enabled ? "STREAMING" : "OFF"}`,
+      enabled ? "LOCAL CONSOLE · STREAMING" : "GLOBAL CACHE · LIVE DIAGNOSTICS",
       58,
       84,
     );
@@ -7103,7 +7108,7 @@ function infrastructureConsoleTexture(THREE, enabled, entries = []) {
     context.fillText(
       enabled
         ? "THIS SCREEN ONLY · BOUNDED + REDACTED · NOT SENT OR SAVED"
-        : "FLIP THE SWITCH TO SHOW THIS BROWSER'S LOGS",
+        : "CACHE API PAYLOADS · SPARSE KV HEALTH SNAPSHOT · NO PRIVATE DATA",
       58,
       132,
     );
@@ -7114,14 +7119,56 @@ function infrastructureConsoleTexture(THREE, enabled, entries = []) {
     context.lineTo(1542, 158);
     context.stroke();
     if (!enabled) {
+      const live = diagnostics?.cacheApi?.live || {};
+      const kv = diagnostics?.kv || {};
+      const global = kv.lastGlobalSample || {};
+      const number = (value) =>
+        Math.max(0, Number(value) || 0).toLocaleString("en-US");
+      const percent = (value) =>
+        `${(Math.max(0, Math.min(1, Number(value) || 0)) * 100).toFixed(1)}%`;
+      const age = (value) => {
+        const timestamp = Number(value) || 0;
+        if (!timestamp) return "WAITING FOR FIRST CRON SAMPLE";
+        const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+        return seconds < 60
+          ? `${seconds} SEC AGO`
+          : `${Math.round(seconds / 60)} MIN AGO`;
+      };
+      const lines = [
+        ["CACHE API", diagnostics?.cacheApi?.enabled ? "ENABLED" : "UNAVAILABLE"],
+        ["ISOLATE LOOKUPS", number(live.lookups)],
+        ["HITS / MISSES", `${number(live.hits)} / ${number(live.misses)}`],
+        ["LOCAL HIT RATE", percent(live.hitRate)],
+        ["PUTS / DELETES", `${number(live.puts)} / ${number(live.deletes)}`],
+        ["CACHE ERRORS", number(live.errors)],
+        ["KV BINDING", kv.enabled ? String(kv.binding || "ENABLED") : "DISABLED"],
+        ["KV KEYS USED", number(kv.keyCountUsed)],
+        ["KV WRITE CEILING", `${number(kv.maximumScheduledWritesPerDay)} / DAY`],
+        ["KV RETENTION", `${number(kv.retentionHours)} HOURS`],
+        ["GLOBAL SAMPLE", age(global.sampledAt)],
+        ["GLOBAL HIT RATE", global.sampledAt ? percent(global.hitRate) : "PENDING"],
+      ];
+      lines.forEach(([label, value], index) => {
+        const column = index < 6 ? 0 : 1;
+        const row = index % 6;
+        const x = 58 + column * 770;
+        const y = 218 + row * 102;
+        context.fillStyle = "#6f9185";
+        context.font = '650 24px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(label, x, y);
+        context.fillStyle =
+          String(value).includes("ERROR") && value !== "0"
+            ? "#ff8898"
+            : "#d8fff0";
+        context.font = '800 37px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(String(value), x, y + 43, 700);
+      });
       context.fillStyle = "#5e776f";
-      context.font = '700 48px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("CAPTURE DISABLED", 58, 260);
-      context.font = '500 31px "ForkMesh Mono", ui-monospace, monospace';
+      context.font = '600 22px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
-        "Turning capture off restores console methods and clears memory.",
+        "NAMESPACE IDS, KEYS, IDENTITIES, RESPONSE BODIES, AND SECRETS ARE NEVER EXPOSED",
         58,
-        320,
+        850,
       );
       return;
     }
@@ -7217,6 +7264,7 @@ function createInfrastructureConsoleDisplay(THREE, interactive) {
   display.add(switchLabel);
   display.userData.face = face;
   display.userData.switchHandle = switchHandle;
+  display.userData.diagnostics = null;
   setShadows(display);
   face.castShadow = false;
   return display;
@@ -17759,6 +17807,7 @@ export function createWorldScene({
       THREE,
       active,
       entries,
+      infrastructureConsoleDisplay.userData.diagnostics,
     );
     face.material.needsUpdate = true;
     previous?.dispose?.();
@@ -17769,6 +17818,21 @@ export function createWorldScene({
     switchHandle.material.emissiveIntensity = active ? 0.92 : 0.26;
     switchHandle.material.needsUpdate = true;
     return active;
+  }
+
+  function setInfrastructureCacheDiagnostics(diagnostics = null) {
+    infrastructureConsoleDisplay.userData.diagnostics = diagnostics;
+    if (infrastructureConsoleDisplay.userData.enabled) return;
+    const face = infrastructureConsoleDisplay.userData.face;
+    const previous = face.material.map;
+    face.material.map = infrastructureConsoleTexture(
+      THREE,
+      false,
+      [],
+      diagnostics,
+    );
+    face.material.needsUpdate = true;
+    previous?.dispose?.();
   }
 
   function addOfficeFunFloorProps() {
@@ -17845,23 +17909,6 @@ export function createWorldScene({
       shield.rotation.y = time * 0.00024;
       shield.rotation.x = Math.sin(time * 0.0003) * 0.18;
     });
-
-    const infrastructure = officeFloorGroups.get("infrastructure");
-    for (const side of [-1, 1]) {
-      for (let z = -27; z <= 27; z += 9) {
-        const rack = new THREE.Mesh(
-          new THREE.BoxGeometry(10, 5.8, 5.2),
-          makeMaterial(THREE, "#17272f", {
-            emissive: side > 0 ? "#164c71" : "#176143",
-            emissiveIntensity: 0.35,
-            metalness: 0.7,
-            roughness: 0.3,
-          }),
-        );
-        rack.position.set(side * 50, 3.3, z);
-        infrastructure.add(rack);
-      }
-    }
 
     const community = officeFloorGroups.get("community");
     const gameTable = new THREE.Mesh(
@@ -32099,6 +32146,7 @@ export function createWorldScene({
     updateMirrorAgentTasks,
     updateSystemCapacity,
     setInfrastructureConsoleLogs,
+    setInfrastructureCacheDiagnostics,
     setBuildBoardLoading,
     updateBuildBoard,
     updateQaBoard,

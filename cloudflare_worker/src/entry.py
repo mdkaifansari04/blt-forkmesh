@@ -939,11 +939,67 @@ def _legacy_custody_not_ready_response():
 # read-heavy aggregate endpoints explicitly so a burst of visitors collapses to
 # one origin computation per colo per TTL. Keys are synthetic absolute URLs.
 
+EDGE_CACHE_DIAGNOSTICS_VERSION = 1
+EDGE_CACHE_KV_SNAPSHOT_KEY = "edge-cache-diagnostics-v1"
+EDGE_CACHE_KV_SNAPSHOT_MINUTES = 10
+_EDGE_CACHE_STARTED_AT = int(Date.now())
+_EDGE_CACHE_STATS = {
+    "hits": 0,
+    "misses": 0,
+    "puts": 0,
+    "deletes": 0,
+    "errors": 0,
+    "routes": {},
+    "lastOperationAt": 0,
+}
+_EDGE_CACHE_KV_READ_CACHE = {"readAt": 0, "value": None}
+
+
+def _edge_cache_scope(cache_key):
+    """Return a bounded, content-free route family for diagnostics."""
+    try:
+        path = str(urlparse(str(cache_key or "")).path or "/").lower()
+    except Exception:
+        path = "/"
+    if "repository-metadata" in path:
+        return "repository-metadata"
+    if "git-advert" in path or "info/refs" in path:
+        return "git-advertisement"
+    if path.startswith("/api/world/"):
+        return "world"
+    if path.startswith("/api/network/"):
+        return "network"
+    if path.startswith("/api/accounts/"):
+        return "accounts-public"
+    if path.startswith("/api/repo") or path.startswith("/api/repositories"):
+        return "repositories-public"
+    return "other-public"
+
+
+def _edge_cache_record(operation, cache_key="", failed=False):
+    now = int(Date.now())
+    if failed:
+        _EDGE_CACHE_STATS["errors"] += 1
+    elif operation in _EDGE_CACHE_STATS:
+        _EDGE_CACHE_STATS[operation] += 1
+    scope = _edge_cache_scope(cache_key)
+    routes = _EDGE_CACHE_STATS["routes"]
+    route = routes.setdefault(
+        scope, {"hits": 0, "misses": 0, "puts": 0, "deletes": 0, "errors": 0})
+    field = "errors" if failed else operation
+    if field in route:
+        route[field] += 1
+    _EDGE_CACHE_STATS["lastOperationAt"] = now
+
+
 async def edge_cache_match(cache_key):
     try:
         hit = await js_caches.default.match(cache_key)
     except Exception:
+        _edge_cache_record("misses", cache_key, failed=True)
         hit = None
+    else:
+        _edge_cache_record("hits" if hit is not None else "misses", cache_key)
     return Response(hit) if hit is not None else None
 
 
@@ -956,7 +1012,9 @@ async def edge_cache_put(cache_key, response):
         js_resp = getattr(response, "js_object", None) or response
         await js_caches.default.put(cache_key, js_resp.clone())
     except Exception:
-        pass
+        _edge_cache_record("puts", cache_key, failed=True)
+    else:
+        _edge_cache_record("puts", cache_key)
 
 
 async def edge_cache_match_media(cache_key, fallback_type):
@@ -966,7 +1024,10 @@ async def edge_cache_match_media(cache_key, fallback_type):
     try:
         hit = await js_caches.default.match(cache_key)
     except Exception:
+        _edge_cache_record("misses", cache_key, failed=True)
         hit = None
+    else:
+        _edge_cache_record("hits" if hit is not None else "misses", cache_key)
     if hit is None:
         return None
     try:
@@ -987,7 +1048,9 @@ async def edge_cache_delete(cache_key):
     try:
         await js_caches.default.delete(cache_key)
     except Exception:
-        pass
+        _edge_cache_record("deletes", cache_key, failed=True)
+    else:
+        _edge_cache_record("deletes", cache_key)
 
 
 # Seconds a clone ref-advertisement (info/refs) is held in the colo edge cache.
@@ -1014,7 +1077,10 @@ async def git_advert_cache_get(cache_key):
     try:
         hit = await js_caches.default.match(cache_key)
     except Exception:
+        _edge_cache_record("misses", cache_key, failed=True)
         hit = None
+    else:
+        _edge_cache_record("hits" if hit is not None else "misses", cache_key)
     if hit is None:
         return None
     try:
@@ -1053,7 +1119,9 @@ async def git_advert_cache_put(cache_key, response, ttl=GIT_ADVERT_CACHE_TTL):
         }))
         await js_caches.default.put(cache_key, cacheable)
     except Exception:
-        pass
+        _edge_cache_record("puts", cache_key, failed=True)
+    else:
+        _edge_cache_record("puts", cache_key)
 
 
 def repository_metadata_cache_key(context, operation, query):
@@ -1129,7 +1197,10 @@ async def repository_metadata_cache_get(cache_key):
     try:
         hit = await js_caches.default.match(cache_key)
     except Exception:
+        _edge_cache_record("misses", cache_key, failed=True)
         hit = None
+    else:
+        _edge_cache_record("hits" if hit is not None else "misses", cache_key)
     if hit is None:
         return None
     try:
@@ -1174,7 +1245,122 @@ async def repository_metadata_cache_put(cache_key, response, status):
         }))
         await js_caches.default.put(cache_key, cacheable)
     except Exception:
-        pass
+        _edge_cache_record("puts", cache_key, failed=True)
+    else:
+        _edge_cache_record("puts", cache_key)
+
+
+def _edge_cache_local_snapshot(env, sampled_at=None):
+    sampled_at = int(sampled_at or Date.now())
+    hits = int(_EDGE_CACHE_STATS["hits"])
+    misses = int(_EDGE_CACHE_STATS["misses"])
+    lookups = hits + misses
+    return {
+        "version": EDGE_CACHE_DIAGNOSTICS_VERSION,
+        "sampledAt": sampled_at,
+        "buildRev": _build_rev(env),
+        "isolateStartedAt": _EDGE_CACHE_STARTED_AT,
+        "uptimeMs": max(0, sampled_at - _EDGE_CACHE_STARTED_AT),
+        "lookups": lookups,
+        "hits": hits,
+        "misses": misses,
+        "hitRate": round(hits / lookups, 4) if lookups else 0,
+        "puts": int(_EDGE_CACHE_STATS["puts"]),
+        "deletes": int(_EDGE_CACHE_STATS["deletes"]),
+        "errors": int(_EDGE_CACHE_STATS["errors"]),
+        "lastOperationAt": int(_EDGE_CACHE_STATS["lastOperationAt"]),
+        "routes": {
+            name: dict(values)
+            for name, values in sorted(_EDGE_CACHE_STATS["routes"].items())
+        },
+    }
+
+
+async def _edge_cache_kv_snapshot(env, sampled_at=None):
+    """Persist one content-free health sample every ten minutes.
+
+    Response bodies and cache keys stay in the Cache API. KV receives only this
+    bounded operational aggregate, so global visibility costs at most 144
+    scheduled writes per day instead of one write per request or cache event.
+    """
+    namespace = getattr(env, "WORLD_CACHE_META", None)
+    if namespace is None:
+        return False
+    payload = _edge_cache_local_snapshot(env, sampled_at)
+    try:
+        await namespace.put(
+            EDGE_CACHE_KV_SNAPSHOT_KEY,
+            json.dumps(payload, separators=(",", ":")),
+            to_js({"expirationTtl": 24 * 60 * 60}),
+        )
+    except Exception:
+        _edge_cache_record("puts", "https://forkmesh.internal/kv", failed=True)
+        return False
+    return True
+
+
+async def _edge_cache_kv_read(env):
+    namespace = getattr(env, "WORLD_CACHE_META", None)
+    if namespace is None:
+        return None
+    now = int(Date.now())
+    if now - int(_EDGE_CACHE_KV_READ_CACHE["readAt"]) < 60 * 1000:
+        return _EDGE_CACHE_KV_READ_CACHE["value"]
+    try:
+        raw = await namespace.get(EDGE_CACHE_KV_SNAPSHOT_KEY)
+        if raw is None:
+            _EDGE_CACHE_KV_READ_CACHE.update({"readAt": now, "value": None})
+            return None
+        payload = json.loads(str(raw))
+    except Exception:
+        return None
+    value = payload if isinstance(payload, dict) else None
+    _EDGE_CACHE_KV_READ_CACHE.update({"readAt": now, "value": value})
+    return value
+
+
+async def world_cache_diagnostics_handler(env, request):
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "GET"},
+        )
+    namespace = getattr(env, "WORLD_CACHE_META", None)
+    global_sample = await _edge_cache_kv_read(env)
+    return json_response(
+        {
+            "ok": True,
+            "strategy": {
+                "payloadLayer": "Cloudflare Cache API",
+                "payloadScope": "public read-heavy responses only",
+                "invalidation": "event deletes and state-addressed keys",
+                "privateResponsesCached": False,
+                "kvRole": "content-free global diagnostics snapshot only",
+            },
+            "cacheApi": {
+                "enabled": True,
+                "scope": "current edge isolate",
+                "live": _edge_cache_local_snapshot(env),
+            },
+            "kv": {
+                "binding": "WORLD_CACHE_META",
+                "enabled": namespace is not None,
+                "namespaceIdExposed": False,
+                "keyCountUsed": 1 if namespace is not None else 0,
+                "snapshotCadenceMinutes": EDGE_CACHE_KV_SNAPSHOT_MINUTES,
+                "maximumScheduledWritesPerDay": (
+                    24 * 60 // EDGE_CACHE_KV_SNAPSHOT_MINUTES
+                    if namespace is not None else 0
+                ),
+                "retentionHours": 24,
+                "lastGlobalSample": global_sample,
+            },
+        },
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
 
 
 async def purge_catalog_related_caches():
@@ -5208,6 +5394,8 @@ WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS = 32
 WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS = 9_007_199_254_740_991
 WORLD_SYSTEM_CAPACITY_TABLE_RE = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]{0,127}")
+WORLD_SYSTEM_CAPACITY_CACHE_MS = 60 * 1000
+_WORLD_SYSTEM_CAPACITY_CACHE = {"sampledAt": 0, "tables": None}
 
 
 def _world_ticket_signature(env, payload):
@@ -5449,6 +5637,14 @@ async def _world_account_claim(env, request, data=None):
 
 async def _world_system_capacity(env):
     """Return bounded, content-free D1 table counts for platform admins."""
+    now = int(Date.now())
+    cached = _WORLD_SYSTEM_CAPACITY_CACHE.get("tables")
+    if (
+        isinstance(cached, list)
+        and now - int(_WORLD_SYSTEM_CAPACITY_CACHE["sampledAt"])
+        < WORLD_SYSTEM_CAPACITY_CACHE_MS
+    ):
+        return [dict(table) for table in cached]
     rows = await d1_all(
         env,
         "SELECT name FROM sqlite_master WHERE type='table' "
@@ -5489,6 +5685,10 @@ async def _world_system_capacity(env):
         # hiding it made the inventory look far smaller than the database is.
         if 0 <= row_count <= WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS:
             capacity.append({"name": name, "rowCount": row_count})
+    _WORLD_SYSTEM_CAPACITY_CACHE.update({
+        "sampledAt": now,
+        "tables": [dict(table) for table in capacity],
+    })
     return capacity
 
 
@@ -24843,6 +25043,11 @@ def _world_relay_public_origin(value):
     return "https://" + authority
 
 
+WORLD_RELAY_INSTANCES_CACHE_KEY = (
+    "https://forkmesh.internal/api/world/instances")
+WORLD_RELAY_INSTANCES_CACHE_TTL = 60
+
+
 async def world_relay_instances_handler(env, request):
     """Expose approved relay instances and generalized signed-health state.
 
@@ -24854,6 +25059,9 @@ async def world_relay_instances_handler(env, request):
         return json_response(
             {"error": "method_not_allowed"}, status=405,
             cache_control="no-store", extra_headers={"allow": "GET"})
+    cached = await edge_cache_match(WORLD_RELAY_INSTANCES_CACHE_KEY)
+    if cached is not None:
+        return cached
     await ensure_schema(env)
     now = int(Date.now())
     cutoff = now - WORLD_RELAY_HEALTH_FRESH_MS
@@ -24904,7 +25112,7 @@ async def world_relay_instances_handler(env, request):
                 else "no-fresh-verified-node-health"
             ),
         })
-    return json_response({
+    response = json_response({
         "ok": True,
         "instances": instances,
         "count": len(instances),
@@ -24914,8 +25122,10 @@ async def world_relay_instances_handler(env, request):
             "No federation keys, signatures, tokens, wallets, node identities, "
             "IP addresses, private repositories, or exact activity are exposed."
         ),
-    }, cache_control="public, max-age=30",
+    }, cache_seconds=WORLD_RELAY_INSTANCES_CACHE_TTL,
        extra_headers={"x-content-type-options": "nosniff"})
+    await edge_cache_put(WORLD_RELAY_INSTANCES_CACHE_KEY, response)
+    return response
 
 
 # --- Main-relay federation endpoints ----------------------------------------
@@ -41392,6 +41602,19 @@ class Default(WorkerEntrypoint):
         cron_started_ms = int(Date.now())
         cron_failures = []
         minute = int(cron_started_ms // 60000)
+        # KV is deliberately not in the request path. One content-free sample
+        # every ten minutes provides a global last-known view for the
+        # Infrastructure floor while capping this feature at 144 writes/day.
+        if minute % EDGE_CACHE_KV_SNAPSHOT_MINUTES == 0:
+            try:
+                await _edge_cache_kv_snapshot(
+                    self.env, sampled_at=cron_started_ms)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/edge-cache-diagnostics",
+                    "edge cache diagnostics snapshot failed: "
+                    + _safe_error_text(error),
+                    error=error, failures=cron_failures)
         # Sentry cron monitor disabled for now (commented out on request).
         # The opening "in_progress" check-in and the closing ok/error check-in
         # below are left in place, commented, so the monitor can be re-enabled
@@ -42275,6 +42498,11 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/world/context", "/api/world/context/"):
             return world_context_handler(request)
+
+        if url.path in (
+                "/api/world/cache-diagnostics",
+                "/api/world/cache-diagnostics/"):
+            return await world_cache_diagnostics_handler(self.env, request)
 
         if url.path in ("/api/world/ticket", "/api/world/ticket/"):
             return await world_ticket_handler(self.env, request)

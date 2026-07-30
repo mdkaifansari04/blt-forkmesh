@@ -4900,6 +4900,7 @@ class ForkMeshWorld extends HTMLElement {
     };
     this.infrastructureConsoleCapture = null;
     this.infrastructureConsoleEntries = [];
+    this.infrastructureCacheTimer = 0;
     this.detailReturnFocus = null;
     this.activeAudio = null;
     this.focusMusicState = "stopped";
@@ -6287,6 +6288,7 @@ class ForkMeshWorld extends HTMLElement {
       this.startRepositoryImportPolling();
       this.startInstanceDirectoryPolling();
       this.startEventPolling();
+      this.startInfrastructureCachePolling();
       this.startNotificationPolling();
       this.startMediaPlaybackPolling();
       // Start the selected long-form track as the World opens. Browsers that
@@ -6364,6 +6366,31 @@ class ForkMeshWorld extends HTMLElement {
       this.toast("Local console display off. Captured entries were cleared.");
     }
     return Boolean(this.infrastructureConsoleCapture);
+  }
+
+  async refreshInfrastructureCacheDiagnostics() {
+    try {
+      const payload = await this.fetchJSON(
+        "/api/world/cache-diagnostics",
+        {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+          backoff: true,
+          staleIfError: true,
+        },
+      );
+      this.world?.setInfrastructureCacheDiagnostics?.(payload);
+    } catch (_) {}
+  }
+
+  startInfrastructureCachePolling() {
+    window.clearInterval(this.infrastructureCacheTimer);
+    void this.refreshInfrastructureCacheDiagnostics();
+    this.infrastructureCacheTimer = window.setInterval(() => {
+      if (document.hidden) return;
+      void this.refreshInfrastructureCacheDiagnostics();
+    }, 15_000);
   }
 
   async refreshBuildBoard({ quiet = false } = {}) {
@@ -7608,12 +7635,17 @@ class ForkMeshWorld extends HTMLElement {
       statusResult,
     ] =
       await Promise.allSettled([
-        this.fetchJSON("/api/network/overview", { auth: false }),
+        this.fetchJSON("/api/network/overview", {
+          auth: false,
+          maxAge: 60_000,
+          staleIfError: true,
+        }),
         this.fetchMirrorCatalog({ force: forceMirrors }),
         this.fetchJSON("/api/world/instances", {
           auth: false,
           timeout: 5000,
-          cache: "no-store",
+          maxAge: 60_000,
+          staleIfError: true,
         }),
         this.fetchJSON("/api/repositories", { auth: hasSession }),
         this.fetchJSON("/api/repository-imports", {
@@ -7621,7 +7653,12 @@ class ForkMeshWorld extends HTMLElement {
           timeout: 12000,
           cache: "no-store",
         }),
-        this.fetchJSON("/api/version", { auth: false, timeout: 5000 }),
+        this.fetchJSON("/api/version", {
+          auth: false,
+          timeout: 5000,
+          maxAge: 5 * 60_000,
+          staleIfError: true,
+        }),
         this.fetchJSON("/api/accounts/central-fund", {
           auth: false,
           timeout: 5000,
@@ -7640,7 +7677,8 @@ class ForkMeshWorld extends HTMLElement {
         this.fetchJSON("/api/world/fediverse", {
           auth: false,
           timeout: 4000,
-          cache: "no-store",
+          maxAge: 5 * 60_000,
+          staleIfError: true,
         }),
         hasSession
           ? this.fetchJSON("/api/world/media/spaces", {
@@ -7672,29 +7710,35 @@ class ForkMeshWorld extends HTMLElement {
         this.fetchJSON("/api/world/inactive", {
           auth: false,
           timeout: 5000,
-          cache: "no-store",
+          maxAge: 60_000,
+          staleIfError: true,
         }),
         this.fetchJSON("/api/world/events", {
           auth: false,
           timeout: 5000,
-          cache: "no-store",
+          maxAge: 60_000,
+          staleIfError: true,
         }),
         this.fetchJSON(
           "/api/world/community-ads/placements?context=town-square",
           {
             auth: false,
             timeout: 4000,
-            cache: "no-store",
+            maxAge: 60_000,
+            staleIfError: true,
           },
         ),
         this.fetchJSON("/api/world/fediverse-mentions", {
           auth: false,
           timeout: 5000,
-          cache: "no-store",
+          maxAge: 60_000,
+          staleIfError: true,
         }),
         this.fetchJSON("/api/accounts/users", {
           auth: false,
           timeout: 5000,
+          maxAge: 60_000,
+          staleIfError: true,
         }),
         // Edge-cached for a minute server-side; no per-visitor variance, so
         // the browser cache may reuse it too.
@@ -7983,6 +8027,7 @@ class ForkMeshWorld extends HTMLElement {
 
   startInstanceDirectoryPolling() {
     window.clearInterval(this.instanceDirectoryTimer);
+    window.clearInterval(this.infrastructureCacheTimer);
     this.instanceDirectoryTimer = window.setInterval(() => {
       if (!document.hidden) void this.refreshInstanceDirectory();
     }, 30_000);
@@ -13735,6 +13780,7 @@ class ForkMeshWorld extends HTMLElement {
                 <th scope="col" class="is-numeric" aria-sort="${sortState("rowCount")}">
                   <button type="button" data-world-capacity-sort="rowCount">Rows <span aria-hidden="true">${sortArrow("rowCount")}</span></button>
                 </th>
+                <th scope="col" class="world-capacity-share">Share of rows</th>
               </tr>
             </thead>
             <tbody>
@@ -13747,6 +13793,16 @@ class ForkMeshWorld extends HTMLElement {
                     <td class="is-numeric">${escapeHTML(
                       entry.rowCount.toLocaleString("en-US"),
                     )}</td>
+                    <td class="world-capacity-share">
+                      <span class="world-capacity-share-bar" style="--row-share: ${
+                        totalRows ? Math.max(0.004, entry.rowCount / totalRows) : 0
+                      }" aria-hidden="true"></span>
+                      <span>${totalRows
+                        ? `${((entry.rowCount / totalRows) * 100).toFixed(
+                            entry.rowCount / totalRows < 0.001 ? 2 : 1,
+                          )}%`
+                        : "0%"}</span>
+                    </td>
                   </tr>`,
                 )
                 .join("")}
