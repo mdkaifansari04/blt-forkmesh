@@ -2835,18 +2835,25 @@ const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
 // Exact composer mode shared by CLI-backed agents. The older bool above remains
 // for settings migration and code paths that only distinguish unattended runs.
 const QString kAgentModeSetting = QStringLiteral("agents/cliPermissionMode");
-// The composer mode-selector label that runs the agent unattended. Only this
-// one skips the CLI's permission prompts today; the other labels ("Ask before
-// edits" / "Edit automatically" / "Plan mode") all mean "don't skip" until the
-// app can drive per-tool approval headlessly (see MainWindowChat's selector).
-const QString kClaudeAutoModeLabel = QStringLiteral("Auto mode");
+// The composer mode-selector labels. One word each (adhoc #38) so the whole
+// composer row stays compact — "Auto mode" was the only one carrying the word
+// "mode" and the dropdown itself already says what it is. Only "Auto" skips the
+// CLI's permission prompts today; "Ask" / "Edit" / "Plan" all mean "don't skip"
+// until the app can drive per-tool approval headlessly (see MainWindowChat's
+// selector). Codex maps each label to an approval policy/sandbox by substring
+// ("ask", "edit", "plan", "auto"), so these names are what it keys off too.
+const QString kClaudeAutoModeLabel = QStringLiteral("Auto");
+const QString kAgentAskModeLabel = QStringLiteral("Ask");
 
 // Does a session's stored permission-mode label (AgentSession::mode) run the
 // agent unattended? An empty label means the session predates per-session mode
-// capture, so callers fall back to the global kClaudeAutoModeSetting.
+// capture, so callers fall back to the global kClaudeAutoModeSetting. Sessions
+// (and the saved kAgentModeSetting) written before the labels were shortened
+// still say "Auto mode", and must keep running unattended.
 inline bool agentModeSkipsPermissions(const QString &modeLabel)
 {
-    return modeLabel.trimmed() == kClaudeAutoModeLabel;
+    const QString label = modeLabel.trimmed().toLower();
+    return label == QLatin1String("auto") || label == QLatin1String("auto mode");
 }
 // Slash-actions menu (adhoc #116), mirroring the Claude Code extension's "/"
 // actions popup. Effort level for Claude Code runs ("low"/"medium"/"high"/
@@ -3360,6 +3367,23 @@ inline void selectModelComboValue(QComboBox *combo, const QString &model)
 // Friendly label for a session's `model` field, so the agent header can show
 // which LLM actually did the work alongside its worktree location. Known short
 // aliases and full IDs are mapped to display names; anything else is shown as-is.
+// Model names in the pickers drop the vendor prefix (adhoc #38): the provider
+// dropdown sitting right beside them already says which CLI is running, so the
+// live "Claude Opus 5" reads as "Opus 5" and the composer row stays compact.
+inline QString compactModelName(const QString &name)
+{
+    QString label = name.trimmed();
+    static const QLatin1String prefixes[] = {QLatin1String("Claude "),
+                                             QLatin1String("Anthropic ")};
+    for (const QLatin1String &prefix : prefixes) {
+        if (label.startsWith(prefix, Qt::CaseInsensitive)) {
+            label = label.mid(prefix.size()).trimmed();
+            break;
+        }
+    }
+    return label.isEmpty() ? name.trimmed() : label;
+}
+
 inline QString agentModelLabel(const QString &model)
 {
     if (model.trimmed().isEmpty())
@@ -3452,7 +3476,9 @@ inline void mergeLiveClaudeModels(QComboBox *combo, const QJsonArray &models)
         const QString id = m.value(QStringLiteral("id")).toString();
         if (id.isEmpty())
             continue;
-        combo->addItem(m.value(QStringLiteral("display_name")).toString(id), id);
+        combo->addItem(
+            compactModelName(m.value(QStringLiteral("display_name")).toString(id)),
+            id);
     }
     const int idx = combo->findData(picked);
     // No restorable pick: land on the first live model, not the synthetic

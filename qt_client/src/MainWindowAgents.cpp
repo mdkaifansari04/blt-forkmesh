@@ -17,11 +17,12 @@ using namespace forkmesh::ui;
 
 QString MainWindow::agentProviderName(const QString &provider) const
 {
-    // "Claude Code" runs the real `claude` CLI; "Codex" runs the local `codex`
-    // CLI; legacy "claude" sessions map to Claude API and legacy "openai"
-    // sessions keep their old OpenAI API label.
+    // "CC" is Claude Code — the real `claude` CLI — abbreviated (adhoc #38) so
+    // the provider fits the composer row and the agents list's narrow columns.
+    // "Codex" runs the local `codex` CLI; legacy "claude" sessions map to Claude
+    // API and legacy "openai" sessions keep their old OpenAI API label.
     if (provider == QLatin1String("claude-code"))
-        return QStringLiteral("Claude Code");
+        return QStringLiteral("CC");
     if (agentIsCodexProvider(provider))
         return QStringLiteral("Codex");
     if (provider.startsWith(QLatin1String("claude")))
@@ -1397,9 +1398,9 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentModeSelector->setMinimumContentsLength(10);
     m_agentModeSelector->setSizeAdjustPolicy(
         QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    m_agentModeSelector->addItem(QStringLiteral("Ask before edits"), false);
-    m_agentModeSelector->addItem(QStringLiteral("Edit automatically"), false);
-    m_agentModeSelector->addItem(QStringLiteral("Plan mode"), false);
+    m_agentModeSelector->addItem(kAgentAskModeLabel, false);
+    m_agentModeSelector->addItem(QStringLiteral("Edit"), false);
+    m_agentModeSelector->addItem(QStringLiteral("Plan"), false);
     m_agentModeSelector->addItem(kClaudeAutoModeLabel, true);
     m_agentModeSelector->setMaxVisibleItems(30);
     m_agentModeSelector->setToolTip(
@@ -5134,7 +5135,7 @@ void MainWindow::syncAgentModeSelector(const AgentSession &session)
                   .value(kAgentModeSetting,
                          QSettings().value(kClaudeAutoModeSetting, true).toBool()
                              ? kClaudeAutoModeLabel
-                             : QStringLiteral("Ask before edits"))
+                             : kAgentAskModeLabel)
                   .toString()
             : session.mode;
     int idx = m_agentModeSelector->findText(modeLabel);
@@ -5300,7 +5301,7 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
                       .value(kAgentModeSetting,
                              QSettings().value(kClaudeAutoModeSetting, true).toBool()
                                  ? kClaudeAutoModeLabel
-                                 : QStringLiteral("Ask before edits"))
+                                 : kAgentAskModeLabel)
                       .toString()
                 : session->mode;
         headers << QStringLiteral("Mode");
@@ -7819,7 +7820,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             const QString mode =
                 sessionMode.isEmpty()
                     ? (autoMode ? kClaudeAutoModeLabel
-                                : QStringLiteral("Ask before edits"))
+                                : kAgentAskModeLabel)
                     : sessionMode;
             const QString effort =
                 QSettings().value(kClaudeEffortSetting, QStringLiteral("high"))

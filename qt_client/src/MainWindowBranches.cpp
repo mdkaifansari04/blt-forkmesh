@@ -2160,7 +2160,7 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchFixAgentCombo->setToolTip("Which agent resolves the conflicts");
     m_branchFixAgentCombo->addItem(QStringLiteral("Claude"), QStringLiteral("claude"));
     m_branchFixAgentCombo->addItem(QStringLiteral("OpenAI"), QStringLiteral("openai"));
-    m_branchFixAgentCombo->addItem(QStringLiteral("Claude Code"),
+    m_branchFixAgentCombo->addItem(QStringLiteral("CC"),
                                    QStringLiteral("claude-code"));
     m_branchFixAgentCombo->hide();
     // Start on the user's configured default agent (Settings -> Agents). That
