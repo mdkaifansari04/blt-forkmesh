@@ -903,6 +903,12 @@ function badgeTexture(
       lastEmailStatus === "failed" ? "#ff6b72" : "#f7c96b";
     context.font = '800 16px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(emailLabel.slice(0, 43), 34, 410);
+    const frontMood = badgeStatusLabel(identity);
+    if (frontMood) {
+      context.fillStyle = "#eafff2";
+      context.font = '800 17px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(`MOOD · ${frontMood}`.slice(0, 27), 34, 435);
+    }
 
     context.textAlign = "left";
     context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
@@ -4938,6 +4944,24 @@ function newestMemberName(members) {
   return newest;
 }
 
+function campfireMemberCountTexture(THREE, total) {
+  const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
+  return canvasTexture(THREE, 1024, 256, (context) => {
+    context.clearRect(0, 0, 1024, 256);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.shadowColor = "rgba(255,91,20,0.92)";
+    context.shadowBlur = 28;
+    context.font = '900 132px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#fff7d6";
+    context.fillText(count.toLocaleString(), 512, 102);
+    context.shadowBlur = 14;
+    context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#ffcb72";
+    context.fillText(count === 1 ? "MEMBER" : "MEMBERS", 512, 211);
+  });
+}
+
 // Carves rather than paints: a dark shadow above and a warm highlight below
 // read as a groove branded into the wood instead of ink sitting on top of it.
 function embossPlankText(context, text, x, y, font, glow) {
@@ -5597,27 +5621,6 @@ function syncAvatarVerifiedPin(THREE, avatar, identity) {
   previous?.dispose?.();
 }
 
-function avatarMoodTexture(THREE, emoji, note) {
-  const moodEmoji = String(emoji || AVATAR_DEFAULT_FACE_EMOJI).slice(0, 8);
-  const moodWord = String(note || "exploring")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 18);
-  return canvasTexture(THREE, 512, 160, (context) => {
-    context.clearRect(0, 0, 512, 160);
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.font = '76px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
-    context.fillText(moodEmoji, 256, 48);
-    context.font = '900 32px "ForkMesh Mono", ui-monospace, monospace';
-    context.lineWidth = 9;
-    context.strokeStyle = "rgba(5,18,14,0.94)";
-    context.strokeText(moodWord.toUpperCase(), 256, 125);
-    context.fillStyle = "#eafff2";
-    context.fillText(moodWord.toUpperCase(), 256, 125);
-  });
-}
-
 function syncAvatarStatus(THREE, avatar, identity) {
   if (!avatar?.userData) return;
   const status = normalizeWorldStatus(
@@ -5635,49 +5638,46 @@ function syncAvatarStatus(THREE, avatar, identity) {
   avatar.userData.emojiStatusKey = key;
   avatar.userData.statusEmoji = status.emoji;
   avatar.userData.statusNote = status.note;
-  const mood = new THREE.Sprite(
-    new THREE.SpriteMaterial({
-      map: avatarMoodTexture(THREE, status.emoji, status.note),
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
-    }),
-  );
-  mood.name = "avatar-mood-icon-word";
-  mood.position.set(0, 4.22, 0);
-  mood.scale.set(2.45, 0.76, 1);
-  mood.renderOrder = 11;
-  avatar.add(mood);
-  avatar.userData.emojiStatusSprite = mood;
+  // Mood is worn on the face and written on the front card. Nothing floats
+  // over the head, so a row of people keeps a clean silhouette.
+  avatar.userData.emojiStatusSprite = null;
   syncAvatarFace(THREE, avatar);
 }
 
-function avatarBackNameTexture(THREE, name, activity = {}) {
+function avatarBackNameTexture(THREE, name, activity = {}, work = {}) {
   const label = String(name || "visitor").replace(/\s+/g, " ").trim().slice(0, 24);
   const pulls = Math.max(0, Number(activity.pulls) || 0);
   const issues = Math.max(0, Number(activity.issues) || 0);
   const discussions = Math.max(0, Number(activity.discussions) || 0);
-  return canvasTexture(THREE, 512, 200, (context) => {
-    context.clearRect(0, 0, 512, 200);
+  const taskTotal = Math.max(0, Number(work.total) || 0);
+  const taskActive = Math.max(0, Number(work.active) || 0);
+  return canvasTexture(THREE, 512, 240, (context) => {
+    context.clearRect(0, 0, 512, 240);
     context.textAlign = "center";
     context.textBaseline = "middle";
     const size = label.length > 16 ? 42 : label.length > 10 ? 52 : 64;
     context.font = `950 ${size}px "ForkMesh Mono", ui-monospace, monospace`;
     context.lineWidth = 12;
     context.strokeStyle = "rgba(4,16,12,0.96)";
-    context.strokeText(label.toUpperCase(), 256, 57);
+    context.strokeText(label.toUpperCase(), 256, 48);
     context.fillStyle = "#ffffff";
-    context.fillText(label.toUpperCase(), 256, 57);
-    context.font = '850 26px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(label.toUpperCase(), 256, 48);
+    context.font = '850 24px "ForkMesh Mono", ui-monospace, monospace';
     context.lineWidth = 8;
-    const counts = `PRS ${pulls} · ISSUES ${issues} · DISCUSSIONS ${discussions}`;
-    context.strokeText(counts, 256, 124);
+    const firstCounts = `PRS ${pulls} · ISSUES ${issues}`;
+    const secondCounts = `DISCUSSIONS ${discussions} · ACTIVITY ↗`;
+    context.strokeText(firstCounts, 256, 105);
     context.fillStyle = "#9ef7c6";
-    context.fillText(counts, 256, 124);
-    context.font = '800 21px "ForkMesh Mono", ui-monospace, monospace';
-    context.strokeText("OPEN FILTERED ACTIVITY ↗", 256, 169);
+    context.fillText(firstCounts, 256, 105);
+    context.strokeText(secondCounts, 256, 145);
+    context.fillText(secondCounts, 256, 145);
+    context.font = '850 23px "ForkMesh Mono", ui-monospace, monospace';
+    const taskLine = work.state === "ready"
+      ? `TASKS ${taskTotal} · RUNNING ${taskActive}`
+      : "TASKS · OPEN WORK PANEL";
+    context.strokeText(taskLine, 256, 198);
     context.fillStyle = "#77d9ff";
-    context.fillText("OPEN FILTERED ACTIVITY ↗", 256, 169);
+    context.fillText(taskLine, 256, 198);
   });
 }
 
@@ -5689,11 +5689,15 @@ function syncAvatarBackName(THREE, avatar, identity) {
     typeof avatar.userData.fediverseProfile.typeTotals === "object"
       ? avatar.userData.fediverseProfile.typeTotals
       : identity?.contributionTotals || {};
+  const work = avatar.userData.selfWorkBoard || {};
   const key = JSON.stringify({
     name: String(identity?.name || "visitor"),
     pulls: Math.max(0, Number(activity.pulls) || 0),
     issues: Math.max(0, Number(activity.issues) || 0),
     discussions: Math.max(0, Number(activity.discussions) || 0),
+    taskState: String(work.state || ""),
+    taskTotal: Math.max(0, Number(work.total) || 0),
+    taskActive: Math.max(0, Number(work.active) || 0),
   });
   if (backName.userData.nameKey === key) return;
   backName.userData.nameKey = key;
@@ -5702,6 +5706,7 @@ function syncAvatarBackName(THREE, avatar, identity) {
     THREE,
     identity?.name,
     activity,
+    work,
   );
   backName.material.needsUpdate = true;
   previous?.dispose?.();
@@ -5925,6 +5930,10 @@ function createAvatar(THREE, identity, options = {}) {
   // Rounded everywhere except the front, which is cut off flat to carry the
   // face disc: the two share AVATAR_FACE_DEPTH so the cut and the disc are the
   // same circle.
+  const headRig = new THREE.Group();
+  headRig.name = "avatar-head-look-rig";
+  headRig.position.y = 3.36;
+  group.add(headRig);
   const head = new THREE.Mesh(
     flattenSphereFront(
       new THREE.SphereGeometry(AVATAR_HEAD_RADIUS, 32, 24),
@@ -5934,8 +5943,7 @@ function createAvatar(THREE, identity, options = {}) {
   );
   // Left unscaled: an egg-shaped head would stretch the flat cut into an
   // ellipse and put the avatar photo back out of proportion.
-  head.position.y = 3.36;
-  group.add(head);
+  headRig.add(head);
 
   // The face wears the last world-status emoji the visitor set (default
   // smile), or the visitor's avatar photo. It is a flat disc filling the cut
@@ -5947,14 +5955,17 @@ function createAvatar(THREE, identity, options = {}) {
     // never sorts against the head it is lying on.
     new THREE.MeshBasicMaterial({}),
   );
-  faceMesh.position.y = 3.36;
   // Avatar fronts face -Z, so the disc is turned to look out of the cut.
   faceMesh.position.z = -(AVATAR_FACE_DEPTH + AVATAR_FACE_LIFT);
   faceMesh.rotation.y = Math.PI;
-  group.add(faceMesh);
+  headRig.add(faceMesh);
 
   const activityRing = new THREE.Mesh(
-    new THREE.RingGeometry(AVATAR_FACE_RADIUS + 0.012, AVATAR_FACE_RADIUS + 0.055, 64),
+    new THREE.RingGeometry(
+      AVATAR_FACE_RADIUS - 0.05,
+      AVATAR_FACE_RADIUS - 0.012,
+      64,
+    ),
     new THREE.MeshBasicMaterial({
       color: "#8da09a",
       transparent: true,
@@ -5965,10 +5976,10 @@ function createAvatar(THREE, identity, options = {}) {
     }),
   );
   activityRing.name = "avatar-activity-ring";
-  activityRing.position.set(0, 3.36, -(AVATAR_FACE_DEPTH + AVATAR_FACE_LIFT * 2));
+  activityRing.position.z = -(AVATAR_FACE_DEPTH + AVATAR_FACE_LIFT * 2);
   activityRing.rotation.y = Math.PI;
   activityRing.renderOrder = 6;
-  group.add(activityRing);
+  headRig.add(activityRing);
 
   const limbGeometry = rotateBoxTopUVs(new THREE.BoxGeometry(0.29, 1.25, 0.32));
   const leftArm = new THREE.Mesh(limbGeometry, shirt);
@@ -6055,7 +6066,7 @@ function createAvatar(THREE, identity, options = {}) {
   group.add(badge);
 
   const backName = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.72, 0.67),
+    new THREE.PlaneGeometry(1.3, 0.61),
     new THREE.MeshBasicMaterial({
       transparent: true,
       depthWrite: false,
@@ -6063,7 +6074,7 @@ function createAvatar(THREE, identity, options = {}) {
     }),
   );
   backName.name = "avatar-back-username";
-  backName.position.set(0, 2.54, 0.324);
+  backName.position.set(0, 2.94, 0.68);
   backName.renderOrder = 5;
   group.add(backName);
 
@@ -6120,6 +6131,8 @@ function createAvatar(THREE, identity, options = {}) {
     emojiStatusKey: "",
     emojiStatusSprite: null,
     faceMesh,
+    headRig,
+    torso,
     faceEmojiShown: "",
     faceIdentityKey: identity.id || identity.name || "",
     backName,
@@ -6134,6 +6147,19 @@ function createAvatar(THREE, identity, options = {}) {
   syncAvatarVerifiedPin(THREE, group, identity);
   setShadows(group, true, true);
   return group;
+}
+
+function applyAvatarLookDirection(avatar, yaw, pitch, turnBody = true) {
+  if (!avatar?.userData) return;
+  if (turnBody && Number.isFinite(yaw)) avatar.rotation.y = yaw;
+  const lookPitch = clamp(Number(pitch) || 0, -0.62, 0.62);
+  if (avatar.userData.headRig) {
+    avatar.userData.headRig.rotation.order = "YXZ";
+    avatar.userData.headRig.rotation.x = lookPitch;
+  }
+  if (avatar.userData.torso) {
+    avatar.userData.torso.rotation.x = lookPitch * 0.12;
+  }
 }
 
 const WORK_BADGE_ROWS = 6;
@@ -6287,6 +6313,12 @@ function avatarWorkBadgeTexture(THREE, board = {}) {
 function setAvatarWorkBadge(THREE, avatar, board, visible = true) {
   if (!avatar?.userData) return null;
   const snapshot = normalizeSelfWorkBoard(board);
+  avatar.userData.selfWorkBoard = snapshot;
+  syncAvatarBackName(
+    THREE,
+    avatar,
+    avatar.userData.badgeIdentity || {},
+  );
   let badge = avatar.userData.selfWorkBadge;
   if (snapshot.state === "locked" && !snapshot.items.length) {
     if (badge) badge.visible = false;
@@ -6299,7 +6331,9 @@ function setAvatarWorkBadge(THREE, avatar, board, visible = true) {
     );
     badge.name = "forkmesh-self-work-back-badge";
     // Avatar fronts face -Z, so the owner-only work board sits on +Z.
-    badge.position.set(0, 2.22, 0.318);
+    // Sits below the identity/activity strip instead of occupying the same
+    // pixels. Both panels clear the jetpack on one shared rear reading plane.
+    badge.position.set(0, 1.92, 0.68);
     badge.renderOrder = 4;
     avatar.add(badge);
     avatar.userData.selfWorkBadge = badge;
@@ -16541,15 +16575,34 @@ export function createWorldScene({
   fireLight.position.y = FLAME_BASE_Y + FLAME_HEIGHT * CAMPFIRE_BASE_FIRE_LEVEL * 0.5;
   fireLight.castShadow = false;
   campfire.add(fireLight);
+  const memberCountSprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  memberCountSprite.name = "campfire-member-count-high";
+  memberCountSprite.position.y = 13.5;
+  memberCountSprite.scale.set(10.8, 2.7, 1);
+  memberCountSprite.renderOrder = 12;
+  memberCountSprite.visible = false;
+  campfire.add(memberCountSprite);
   let memberCountShown = "";
-  // The count still controls the physical logs and milestone-sized blaze, but
-  // no label, plate, sparkle ring, or other object floats in the open centre.
+  // The count is a clean, transparent landmark high above the flames: it
+  // remains legible across the square without putting a plate or label in the
+  // entrance or the open centre of the member rings.
   function setCampfireMemberCount(total, newest = "") {
     const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
     const latest = String(newest || "").trim().slice(0, 18);
     const key = `${count}|${latest}`;
     if (memberCountShown === key) return;
     memberCountShown = key;
+    memberCountSprite.material.map?.dispose?.();
+    memberCountSprite.material.map = campfireMemberCountTexture(THREE, count);
+    memberCountSprite.material.needsUpdate = true;
+    memberCountSprite.visible = true;
     // Each member contributes one visible log; the fire itself only grows on
     // the hundreds, so passing a century is a visible event around the circle.
     rebuildCampfireMemberLogs(count);
@@ -16624,6 +16677,8 @@ export function createWorldScene({
       FLAME_BASE_Y + FLAME_HEIGHT * fireLevel * 0.5 + slowFlicker * 0.09,
       Math.sin(time * 0.0033 + slowFlicker * 1.4) * 0.11,
     );
+    memberCountSprite.position.y =
+      13.5 + (reducedMotion ? 0 : Math.sin(time * 0.0015) * 0.18);
   });
   // The real bench count depends on the member roster, which is still an
   // in-flight network request when the scene first renders. Rather than
@@ -21073,46 +21128,104 @@ export function createWorldScene({
   let mirrorAgentTasksKey = "";
   const botAgents = new Map();
   const loungeMembers = new Map();
-  // A stable random-looking subset of directory figures periodically waves,
-  // chats with a neighbour, or takes a short walk. The choices come from each
-  // account id, so a roster refresh does not make everybody twitch at once.
+  // Directory members do not remain trapped around the fire. A deterministic
+  // subset takes long, staggered trips to landmarks throughout the public
+  // world, pauses there, then walks home. Stable account-based routing avoids
+  // synchronized crowds and preserves the same rhythm across roster refreshes.
+  const memberWorldDestinations = [
+    { x: -215, z: -45 },
+    { x: -132, z: -45 },
+    { x: -72, z: 38 },
+    { x: 0, z: -142 },
+    { x: 0, z: -12 },
+    { x: 0, z: 168 },
+    { x: 72, z: 38 },
+    { x: 132, z: -45 },
+    { x: 215, z: -45 },
+    { x: 438, z: -72 },
+  ];
+  const ambientRoutePosition = (from, to, progress) => {
+    const t = clamp(progress, 0, 1);
+    const eased = t * t * (3 - 2 * t);
+    const inverse = 1 - eased;
+    // Bow every route through the open square so members travel along the
+    // public concourse instead of cutting a straight line through the fire.
+    const controlX = 0;
+    const controlZ = 18;
+    return {
+      x:
+        inverse * inverse * from.x +
+        2 * inverse * eased * controlX +
+        eased * eased * to.x,
+      z:
+        inverse * inverse * from.z +
+        2 * inverse * eased * controlZ +
+        eased * eased * to.z,
+    };
+  };
   animated.push((time, delta) => {
     let animatedMembers = 0;
     loungeMembers.forEach((figure) => {
       const ambient = figure.userData.ambientInteraction;
-      if (!ambient || animatedMembers >= 10) return;
+      if (!ambient || animatedMembers >= 18) return;
       animatedMembers += 1;
       const cycleNumber = Math.floor(
         (time + ambient.phase) / ambient.cycleMs,
       );
       const progress =
         ((time + ambient.phase) % ambient.cycleMs) / ambient.cycleMs;
-      const active = progress >= 0.12 && progress <= 0.43;
-      figure.position.copy(ambient.seatPosition);
-      figure.rotation.y = ambient.seatHeading;
-      if (!active) {
+      const priorX = figure.position.x;
+      const priorZ = figure.position.z;
+      const outbound = progress >= 0.08 && progress < 0.39;
+      const visiting = progress >= 0.39 && progress < 0.68;
+      const inbound = progress >= 0.68 && progress < 0.95;
+      const travelling = outbound || inbound;
+      if (!outbound && !visiting && !inbound) {
+        figure.position.copy(ambient.seatPosition);
+        figure.rotation.y = ambient.seatHeading;
+        figure.userData.leftArm.rotation.z = 0;
+        figure.userData.rightArm.rotation.z = 0;
         applySeatedLegPose(figure);
-      } else if (ambient.kind === "wander") {
-        const walkProgress = (progress - 0.12) / 0.31;
-        const distance = Math.sin(walkProgress * Math.PI) * 1.6;
-        figure.position.x += ambient.tangentX * distance;
-        figure.position.z += ambient.tangentZ * distance;
+      } else if (travelling) {
+        const routeProgress = outbound
+          ? (progress - 0.08) / 0.31
+          : 1 - (progress - 0.68) / 0.27;
+        const routePosition = ambientRoutePosition(
+          ambient.seatPosition,
+          ambient.destination,
+          routeProgress,
+        );
+        figure.position.x = routePosition.x;
+        figure.position.z = routePosition.z;
         figure.position.y = WORLD_WALKING_PLANE_Y;
-        figure.rotation.y =
-          Math.atan2(ambient.tangentX, ambient.tangentZ) +
-          (walkProgress > 0.5 ? Math.PI : 0);
+        const dx = figure.position.x - priorX;
+        const dz = figure.position.z - priorZ;
+        if (Math.hypot(dx, dz) > 0.001) {
+          figure.rotation.y = Math.atan2(-dx, -dz);
+        }
+        figure.userData.leftArm.rotation.z = 0;
+        figure.userData.rightArm.rotation.z = 0;
         const gait = Math.sin(time * 0.011) * 0.58;
         applyLegPitch(figure, -gait, gait);
-      } else if (ambient.kind === "chat") {
-        applySeatedLegPose(figure);
-        figure.rotation.y += Math.sin(time * 0.002 + ambient.phase) * 0.34;
+      } else {
+        const visitProgress = (progress - 0.39) / 0.29;
+        const orbit = visitProgress * Math.PI * 2 + ambient.destinationAngle;
+        figure.position.set(
+          ambient.destination.x + Math.cos(orbit) * ambient.exploreRadius,
+          WORLD_WALKING_PLANE_Y,
+          ambient.destination.z + Math.sin(orbit) * ambient.exploreRadius,
+        );
+        figure.rotation.y = -orbit + Math.PI / 2;
+        applyLegPitch(figure, 0, 0);
+        if (ambient.kind === "chat") {
         figure.userData.leftArm.rotation.z =
           Math.sin(time * 0.006 + ambient.phase) * 0.34;
-      } else {
-        applySeatedLegPose(figure);
-        if (ambient.waveCycle !== cycleNumber) {
-          ambient.waveCycle = cycleNumber;
-          startAvatarWave(figure, time);
+        } else {
+          figure.userData.leftArm.rotation.z = 0;
+          if (ambient.waveCycle !== cycleNumber) {
+            ambient.waveCycle = cycleNumber;
+            startAvatarWave(figure, time);
+          }
         }
       }
       animateAvatarActivity(figure, time, delta, reducedMotion);
@@ -26931,16 +27044,21 @@ export function createWorldScene({
         figure.rotation.y = seat ? Math.atan2(seat.x, seat.z) : 0;
         applySeatedLegPose(figure);
         const ambientSeed = hashNumber(id);
-        if (ambientSeed % 5 === 0) {
+        if (ambientSeed % 3 === 0) {
           const seatHeading = figure.rotation.y;
+          const destination =
+            memberWorldDestinations[
+              (ambientSeed >>> 5) % memberWorldDestinations.length
+            ];
           figure.userData.ambientInteraction = {
-            kind: ["wave", "chat", "wander"][(ambientSeed >>> 4) % 3],
-            phase: ambientSeed % 14_000,
-            cycleMs: 14_000 + (ambientSeed % 7_000),
+            kind: ["wave", "chat"][(ambientSeed >>> 4) % 2],
+            phase: ambientSeed % 54_000,
+            cycleMs: 54_000 + (ambientSeed % 31_000),
             seatPosition: figure.position.clone(),
             seatHeading,
-            tangentX: Math.cos(seatHeading),
-            tangentZ: -Math.sin(seatHeading),
+            destination,
+            destinationAngle: (ambientSeed % 628) / 100,
+            exploreRadius: 2.2 + ((ambientSeed >>> 9) % 30) / 10,
             waveCycle: -1,
           };
         } else {
@@ -30660,6 +30778,19 @@ export function createWorldScene({
         CAMERA_PITCH_MAX,
       );
     }
+    const seatedOrMounted =
+      Boolean(benchSeat) ||
+      Boolean(swingRide) ||
+      Boolean(bikeRide) ||
+      Boolean(carRide) ||
+      Boolean(quadcopterRide) ||
+      Boolean(officeElevatorRide);
+    applyAvatarLookDirection(
+      player,
+      cameraYaw,
+      cameraMode === "first-person" ? firstPersonPitch : cameraPitch,
+      !seatedOrMounted,
+    );
   }
 
   function handlePointerDown(event) {

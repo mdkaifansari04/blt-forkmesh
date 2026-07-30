@@ -316,9 +316,10 @@ def test_bench_height_is_derived_from_the_seated_pose():
     assert "leg.position.set(end, CAMPFIRE_BENCH_LEG_HEIGHT / 2, 0);" in ring
 
 
-def test_member_total_changes_fire_without_a_floating_center_label():
-    assert "campfireMemberCountTexture" not in SCENE
-    assert "memberCountSprite" not in SCENE
+def test_member_total_changes_fire_and_the_high_member_count():
+    assert "function campfireMemberCountTexture(THREE, total)" in SCENE
+    assert 'memberCountSprite.name = "campfire-member-count-high"' in SCENE
+    assert "memberCountSprite.material.map = campfireMemberCountTexture(THREE, count);" in SCENE
     lounge = SCENE.split("function updateMemberLounge", 1)[1]
     assert "setCampfireMemberCount(total, newestMemberName(members));" in lounge
     assert "rebuildCampfireMemberLogs(count)" in SCENE

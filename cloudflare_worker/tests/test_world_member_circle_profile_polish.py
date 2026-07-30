@@ -49,9 +49,11 @@ def test_campfire_uses_layered_procedural_flames_and_atmosphere():
     assert "fireLight.position.set(" in SCENE
 
 
-def test_fire_center_has_no_floating_member_label():
-    assert "MEMBER_COUNT_HOVER_Y" not in SCENE
-    assert "memberCountSprite" not in SCENE
+def test_member_count_floats_high_above_the_fire_without_a_plate():
+    assert "function campfireMemberCountTexture(THREE, total)" in SCENE
+    assert 'memberCountSprite.name = "campfire-member-count-high"' in SCENE
+    assert "memberCountSprite.position.y = 13.5;" in SCENE
+    assert "memberCountSprite.scale.set(10.8, 2.7, 1);" in SCENE
 
 
 def test_fire_center_has_no_newest_member_sparkle_label():
@@ -140,10 +142,12 @@ def test_avatar_profile_signals_moved_to_head_and_back():
     assert "const AVATAR_FACE_DEPTH = 0.08;" in SCENE
     assert "shirtMeshes: [torso, leftArm, rightArm, head]" in SCENE
     assert 'activityRing.name = "avatar-activity-ring"' in SCENE
-    assert 'mood.name = "avatar-mood-icon-word"' in SCENE
+    assert '"avatar-mood-icon-word"' not in SCENE
+    assert "MOOD · ${frontMood}" in SCENE
     assert 'backName.name = "avatar-back-username"' in SCENE
-    assert '"OPEN FILTERED ACTIVITY ↗"' in SCENE
-    assert "PRS ${pulls} · ISSUES ${issues} · DISCUSSIONS ${discussions}" in SCENE
+    assert "const firstCounts = `PRS ${pulls} · ISSUES ${issues}`;" in SCENE
+    assert "const secondCounts = `DISCUSSIONS ${discussions} · ACTIVITY ↗`;" in SCENE
+    assert "`TASKS ${taskTotal} · RUNNING ${taskActive}`" in SCENE
     assert "typeTotals:" in APP
     assert "#contributions" in APP
 
@@ -168,12 +172,27 @@ def test_mirror_lights_are_colored_and_warning_states_blink():
     assert "mirrorByName" in APP
 
 
-def test_some_directory_members_perform_ambient_actions():
+def test_directory_members_explore_landmarks_across_the_world():
     assert "figure.userData.ambientInteraction" in SCENE
-    assert 'kind: ["wave", "chat", "wander"]' in SCENE
-    assert 'ambient.kind === "wander"' in SCENE
+    assert "const memberWorldDestinations = [" in SCENE
+    assert "{ x: 438, z: -72 }" in SCENE
+    assert "const ambientRoutePosition = (from, to, progress)" in SCENE
+    assert "animatedMembers >= 18" in SCENE
+    assert "cycleMs: 54_000 + (ambientSeed % 31_000)" in SCENE
     assert 'ambient.kind === "chat"' in SCENE
     assert "startAvatarWave(figure, time)" in SCENE
+
+
+def test_camera_pan_and_tilt_turn_the_avatar_body_and_head():
+    assert "function applyAvatarLookDirection(avatar, yaw, pitch, turnBody = true)" in SCENE
+    assert 'headRig.name = "avatar-head-look-rig"' in SCENE
+    assert "avatar.userData.headRig.rotation.x = lookPitch;" in SCENE
+    assert "avatar.userData.torso.rotation.x = lookPitch * 0.12;" in SCENE
+    rotate = SCENE.split("function rotateCamera(deltaX, deltaY)", 1)[1].split(
+        "\n  function ", 1
+    )[0]
+    assert "applyAvatarLookDirection(" in rotate
+    assert "cameraYaw," in rotate
 
 
 def test_user_selection_has_a_scoped_clock_and_prefers_avatar_hit():
