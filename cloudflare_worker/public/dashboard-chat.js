@@ -130,6 +130,9 @@ function mountForkMeshDashboardChat() {
   const contextAction = document.querySelector(
     "[data-dashboard-chat-context-action]",
   );
+  const simpleWorldComposer = Boolean(
+    document.querySelector("[data-world-simple-composer]"),
+  );
   const chatScrollRail = document.querySelector(
     "[data-dashboard-chat-scroll-rail]",
   );
@@ -1444,14 +1447,18 @@ function mountForkMeshDashboardChat() {
     historyIndicator.className = "chat-history-indicator";
     historyIndicator.setAttribute("aria-live", "polite");
     historyIndicator.addEventListener("click", () => revealOlderHistory());
-    fullLog.prepend(historyIndicator);
+    if (simpleWorldComposer) fullLog.append(historyIndicator);
+    else fullLog.prepend(historyIndicator);
     return historyIndicator;
   }
 
   function currentHistoryRows() {
-    return historyRowIds
+    const records = historyRowIds
       .map((id) => rows.get(id))
       .filter(Boolean);
+    return simpleWorldComposer
+      ? records.sort((left, right) => right.tsMs - left.tsMs)
+      : records;
   }
 
   function insertHistoryRow(record) {
@@ -1489,9 +1496,17 @@ function mountForkMeshDashboardChat() {
         <p class="text-sm text-muted-foreground leading-relaxed break-words"></p>
       </div>`;
     const avatarEl = row.querySelector(".chat-message-avatar");
-    if (record.external) {
+    if (record.external && record.avatarUrl) {
+      const image = document.createElement("img");
+      image.src = record.avatarUrl;
+      image.alt = "";
+      image.referrerPolicy = "no-referrer";
+      image.className = "h-full w-full rounded-full object-cover";
+      avatarEl.replaceChildren(image);
+      avatarEl.setAttribute("aria-label", `${record.who} Discord avatar`);
+    } else if (record.external) {
       avatarEl.textContent = "D";
-      avatarEl.setAttribute("aria-label", "Discord");
+      avatarEl.setAttribute("aria-label", `${record.who} Discord avatar`);
     } else {
       hydrateChatAvatar(avatarEl, record.who);
     }
@@ -1519,8 +1534,17 @@ function mountForkMeshDashboardChat() {
     record.textEl = textEl?.parentNode ? textEl : null;
     record.contentEl = content;
     record.reactionsEl = reactionsEl;
-    if (record.history) insertHistoryRow(record);
-    else fullLog.append(row);
+    if (record.history && !simpleWorldComposer) {
+      insertHistoryRow(record);
+    } else if (simpleWorldComposer) {
+      const next = Array.from(fullLog.querySelectorAll(".chat-message-row"))
+        .find((candidate) =>
+          Number(candidate.dataset.chatTimestamp || 0) <= record.tsMs);
+      row.dataset.chatTimestamp = String(record.tsMs);
+      fullLog.insertBefore(row, next || historyIndicator || null);
+    } else {
+      fullLog.append(row);
+    }
     if (record.id && !record.external) {
       content?.append(buildMessageActions(record));
       renderReactions(record.id);
@@ -1545,19 +1569,22 @@ function mountForkMeshDashboardChat() {
     const hiddenCount = Math.max(0, records.length - visibleCount);
     ensureHistoryIndicator();
     records.forEach((record, index) => {
-      if (index >= hiddenCount) materializeFullMessage(record);
-      if (record.el) record.el.hidden = index < hiddenCount;
+      const visible = simpleWorldComposer
+        ? index < visibleCount
+        : index >= hiddenCount;
+      if (visible) materializeFullMessage(record);
+      if (record.el) record.el.hidden = !visible;
     });
     const indicator = ensureHistoryIndicator();
     indicator.dataset.complete = hiddenCount ? "false" : "true";
     indicator.disabled = hiddenCount <= 0;
     indicator.textContent = hiddenCount
-      ? `↑ ${hiddenCount} earlier message${hiddenCount === 1 ? "" : "s"} · scroll up to load ${Math.min(HISTORY_BATCH_MESSAGES, hiddenCount)}`
+      ? `${simpleWorldComposer ? "↓" : "↑"} ${hiddenCount} earlier message${hiddenCount === 1 ? "" : "s"} · ${simpleWorldComposer ? "open" : "scroll up"} to load ${Math.min(HISTORY_BATCH_MESSAGES, hiddenCount)}`
       : "Beginning of conversation";
     if (preserveScroll) {
       fullLog.scrollTop += Math.max(0, fullLog.scrollHeight - previousHeight);
     } else {
-      fullLog.scrollTop = fullLog.scrollHeight;
+      fullLog.scrollTop = simpleWorldComposer ? 0 : fullLog.scrollHeight;
     }
     lastFullLogScrollTop = fullLog.scrollTop;
     syncChatScrollThumb();
@@ -1615,6 +1642,7 @@ function mountForkMeshDashboardChat() {
       history: Boolean(deferHistory),
       external: Boolean(metadata?.external),
       sourceLabel: String(metadata?.sourceLabel || ""),
+      avatarUrl: String(metadata?.avatarUrl || ""),
     };
     if (id) rows.set(id, record);
     if (deferHistory && id) {
@@ -1622,7 +1650,7 @@ function mountForkMeshDashboardChat() {
       return;
     }
     materializeFullMessage(record);
-    fullLog.scrollTop = fullLog.scrollHeight;
+    fullLog.scrollTop = simpleWorldComposer ? 0 : fullLog.scrollHeight;
   }
 
   // ---- edit / delete own messages ----------------------------------------
@@ -2033,7 +2061,10 @@ function mountForkMeshDashboardChat() {
     if (!organization || !channelId || !channelName || !providerId) return false;
     const id = `discord:${organization}:${channelId}:${providerId}`;
     if (rows.has(id)) return false;
-    const who = String(message?.author?.name || "Discord user").trim();
+    const projectedName = String(message?.author?.name || "").trim();
+    const who = projectedName && !/^\d{5,}$/.test(projectedName)
+      ? projectedName
+      : "Discord member";
     const text = String(message?.content || "").trim();
     if (!text) return false;
     const parsedTime = Date.parse(String(message?.createdAt || ""));
@@ -2041,6 +2072,11 @@ function mountForkMeshDashboardChat() {
     const metadata = {
       external: true,
       sourceLabel: `Discord · ${organization} · #${channelName}`,
+      avatarUrl: /^https:\/\/cdn\.discordapp\.com\/(?:avatars\/\d{17,20}\/[A-Za-z0-9_-]{2,128}\.(?:png|webp)(?:\?size=64)?|embed\/avatars\/[0-5]\.png)$/.test(
+        String(message?.author?.avatarUrl || ""),
+      )
+        ? String(message.author.avatarUrl)
+        : "",
     };
     appendFullMessage(
       "peer", who, text, id, `discord:${providerId}`, tsMs, null, false, metadata,
@@ -2059,8 +2095,13 @@ function mountForkMeshDashboardChat() {
       const row = document.createElement("div");
       row.className = "chat-system-bubble my-2 rounded-md border border-border px-3 py-2 text-xs text-muted-foreground";
       row.textContent = text;
-      fullLog.append(row);
-      fullLog.scrollTop = fullLog.scrollHeight;
+      if (simpleWorldComposer) {
+        fullLog.prepend(row);
+        fullLog.scrollTop = 0;
+      } else {
+        fullLog.append(row);
+        fullLog.scrollTop = fullLog.scrollHeight;
+      }
     }
     if (emit) emitWorldActivity(text, "status");
   }
@@ -2890,14 +2931,86 @@ function mountForkMeshDashboardChat() {
     }
   }
 
-  function stageDashboardAttachments(control, files) {
+  function canvasBlob(canvas, type, quality) {
+    return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+  }
+
+  async function fitDashboardImage(file) {
+    if (
+      file.size <= MAX_ATTACHMENT_BYTES ||
+      !String(file.type || "").startsWith("image/")
+    ) {
+      return file;
+    }
+    if (file.size > 24 * 1024 * 1024) return null;
+    let bitmap;
+    let objectUrl = "";
+    try {
+      if (typeof createImageBitmap === "function") {
+        bitmap = await createImageBitmap(file);
+      } else {
+        objectUrl = URL.createObjectURL(file);
+        bitmap = await new Promise((resolve, reject) => {
+          const image = new Image();
+          image.onload = () => resolve(image);
+          image.onerror = () => reject(new Error("image_decode_failed"));
+          image.src = objectUrl;
+        });
+      }
+      const sourceWidth = Math.max(
+        1,
+        Number(bitmap.width || bitmap.naturalWidth) || 1,
+      );
+      const sourceHeight = Math.max(
+        1,
+        Number(bitmap.height || bitmap.naturalHeight) || 1,
+      );
+      for (const edge of [1600, 1280, 1024, 800, 640, 480]) {
+        const scale = Math.min(1, edge / Math.max(sourceWidth, sourceHeight));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+        canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+        const context = canvas.getContext("2d", { alpha: false });
+        if (!context) return null;
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        for (const quality of [0.86, 0.76, 0.66, 0.54]) {
+          const blob = await canvasBlob(canvas, "image/webp", quality);
+          if (blob && blob.size <= MAX_ATTACHMENT_BYTES) {
+            const stem = safeAttachmentName(file.name)
+              .replace(/\.[^.]+$/, "")
+              .slice(0, 170) || "image";
+            return new File([blob], `${stem}.webp`, {
+              type: "image/webp",
+              lastModified: Date.now(),
+            });
+          }
+        }
+      }
+    } catch (_) {
+      return null;
+    } finally {
+      bitmap?.close?.();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    }
+    return null;
+  }
+
+  async function stageDashboardAttachments(control, files) {
     if (!control) return;
     const candidates = Array.from(files || []).filter((file) => file instanceof File);
     const remaining = Math.max(0, 4 - control.draft.length);
     if (candidates.length > remaining) showAttachmentFeedback(control, "Share up to 4 files in a message.");
-    for (const file of candidates.slice(0, remaining)) {
-      if (file.size > MAX_ATTACHMENT_BYTES) {
-        showAttachmentFeedback(control, "Attachments must be 1 MiB or smaller.");
+    for (const source of candidates.slice(0, remaining)) {
+      const file = await fitDashboardImage(source);
+      if (!file || file.size > MAX_ATTACHMENT_BYTES) {
+        showAttachmentFeedback(
+          control,
+          String(source.type || "").startsWith("image/")
+            ? "That image could not be resized to fit the 1 MiB limit."
+            : "Attachments must be 1 MiB or smaller.",
+        );
         continue;
       }
       if (!file.size) {
@@ -3089,6 +3202,17 @@ function mountForkMeshDashboardChat() {
   function syncFullComposerAction() {
     if (!fullAction || !fullInput) return;
     const action = fullAction.value;
+    if (simpleWorldComposer) {
+      if (fullSendLabel) fullSendLabel.textContent = "Chat";
+      if (fullComposerHint) {
+        fullComposerHint.textContent =
+          "Chat posts to #general · Task sends private work to the bot";
+      }
+      fullInput.placeholder = "Message #general…";
+      if (taskRouting) taskRouting.hidden = true;
+      syncChatContextBubbles();
+      return;
+    }
     const presentation = {
       chat: {
         label: "Send",
@@ -3212,6 +3336,7 @@ function mountForkMeshDashboardChat() {
         taskAssignee.append(option);
       }
       if (
+        !simpleWorldComposer &&
         selfName &&
         Array.from(taskAssignee.options).some(
           (option) => option.value === `user:${selfName}`,
@@ -3572,9 +3697,12 @@ function mountForkMeshDashboardChat() {
   function wireInput(inputEl, sendEl) {
     if (!inputEl || !sendEl) return;
     const attachmentControl = mountAttachmentControl(inputEl);
-    sendEl.addEventListener("click", () =>
-      sendFrom(inputEl, attachmentControl),
-    );
+    sendEl.addEventListener("click", () => {
+      if (simpleWorldComposer && inputEl === fullInput && fullAction) {
+        fullAction.value = "chat";
+      }
+      sendFrom(inputEl, attachmentControl);
+    });
     inputEl.addEventListener("paste", (event) => {
       const items = Array.from(event.clipboardData?.items || []);
       const item = items.find((candidate) =>
@@ -3582,13 +3710,15 @@ function mountForkMeshDashboardChat() {
       const file = item ? item.getAsFile() : null;
       if (!file) return;
       event.preventDefault();
-      stageDashboardAttachments(attachmentControl, [file]);
-      if (
-        inputEl !== fullInput ||
-        String(fullAction?.value || "chat") === "chat"
-      ) {
-        void sendDashboardDraft(attachmentControl);
-      }
+      void stageDashboardAttachments(attachmentControl, [file]).then(() => {
+        if (
+          inputEl !== fullInput ||
+          String(fullAction?.value || "chat") === "chat"
+        ) {
+          return sendDashboardDraft(attachmentControl);
+        }
+        return null;
+      });
     });
     inputEl.addEventListener("keydown", (event) => {
       // While the mention list is open it owns Enter/Tab/arrows, so accepting a
@@ -3617,6 +3747,9 @@ function mountForkMeshDashboardChat() {
       }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
+        if (simpleWorldComposer && inputEl === fullInput && fullAction) {
+          fullAction.value = "chat";
+        }
         sendFrom(inputEl, attachmentControl);
       }
     });
@@ -3640,6 +3773,12 @@ function mountForkMeshDashboardChat() {
   function wireTaskSend() {
     if (!fullTaskSend || !fullAction || !fullInput) return;
     fullTaskSend.addEventListener("click", () => {
+      if (simpleWorldComposer) {
+        fullAction.value = "agent";
+        if (taskAssignee) taskAssignee.value = "agent";
+        void runFullComposerAction(fullInput);
+        return;
+      }
       if (fullAction.value !== "task") {
         fullAction.value = "task";
         syncFullComposerAction();

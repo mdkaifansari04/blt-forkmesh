@@ -812,8 +812,8 @@ QColor agentStatusColor(const QString &status)
 QColor agentStatusIconColor(const AgentSession &s)
 {
     if (s.merged) return QColor("#a371f7");
-    // Genie runs (adhoc #38) keep their own violet while they are in flight, so a
-    // long-running MCP-backed task never reads as an ordinary agent turn.
+    // Genie runs (adhoc #38) keep their own violet while they are working, so a
+    // run off the website's shared task list never reads as an ordinary turn.
     if (s.genieInFlight()) return QColor(Theme::kGenie);
     if (s.status == AgentStatus::Running) return QColor(Theme::kRunning);
     if (s.status == AgentStatus::Success) return QColor("#3fb950");

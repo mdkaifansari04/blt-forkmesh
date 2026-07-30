@@ -43,12 +43,11 @@ struct AgentSession {
     // default branch as soon as the run finishes successfully, with no review
     // step. Captured from the quick-add bar's checkbox when the session starts.
     bool yolo = false;
-    // "Genie" (adhoc #38): launched from the composer's genie button, which hands
-    // the run the ForkMesh MCP connector (the same one Settings -> MCP mints for
-    // the site) and tells it to work the task to completion as a long-running
-    // job. Captured at launch so a resume re-attaches the connector, and drawn
-    // with its own sparkle status glyph so a genie run is recognisable in every
-    // list it appears in.
+    // "Genie" (adhoc #42/#38): launched from the composer's genie button, which
+    // starts a long-running run against the website's remote MCP server so the
+    // agent works the organization's shared task list on its own. Stamped at
+    // launch so a resumed genie is still one, and so every list can draw it with
+    // its own sparkle status glyph instead of the ordinary run spinner.
     bool genie = false;
     // Reasoning strength ("low"/"medium"/"high"/"xhigh"/"max") the run was
     // launched with, snapshotted from kClaudeEffortSetting alongside the model
@@ -99,7 +98,7 @@ struct AgentSession {
     QString lastError;
 
     // Whether this run should be drawn with the genie sparkle (adhoc #38): a
-    // genie that is still in flight. Merged and finished sessions keep the
+    // genie that is still working. Merged and finished sessions keep the
     // ordinary status glyphs, so their outcome reads like every other run's.
     bool genieInFlight() const
     {

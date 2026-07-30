@@ -222,6 +222,12 @@ struct RepositoryRecord {
     // push and can't be triggered manually, but stay listed so past runs remain
     // visible and the switch can be flipped back on.
     QStringList disabledWorkflows;
+    // Node each workflow is pinned to from the Actions tab's "Run on" dropdown,
+    // as "<workflow path>\t<node label>" entries. A pin overrides the workflow's
+    // own `runs-on:` line for this node's copy of the repo, so the owner can say
+    // "build the iOS app on the Mac" without editing the YAML. No entry means
+    // the file decides (and an undedicated workflow runs wherever it lands).
+    QStringList workflowNodes;
     // Block pushes when the diff introduces a high-confidence secret (API key,
     // private key, etc.). Enabled by default; the user can bypass per-push or
     // turn it off entirely here.
@@ -284,6 +290,37 @@ public:
 #ifdef FORKMESH_WINDOW_TESTS
     using TestIssueHistoryDeleteRunner =
         std::function<bool(int number, QString *error)>;
+    QString testMostRecentUnreadConversation(
+        const QString &currentConversation, const QStringList &channels,
+        const QSet<QString> &unread,
+        const QHash<QString, qint64> &lastMessageMs)
+    {
+        const QString savedCurrent = m_currentConversation;
+        const QStringList savedChannels = m_channels;
+        const QStringList savedOpenDms = m_openDms;
+        const QSet<QString> savedUnread = m_unread;
+        const auto savedHistory = m_history;
+
+        m_currentConversation = currentConversation;
+        m_channels = channels;
+        m_openDms.clear();
+        m_unread = unread;
+        m_history.clear();
+        for (auto it = lastMessageMs.constBegin(); it != lastMessageMs.constEnd();
+             ++it) {
+            ChatMessage message;
+            message.timestampMs = it.value();
+            m_history[it.key()].append(message);
+        }
+        const QString result = mostRecentUnreadConversation();
+
+        m_currentConversation = savedCurrent;
+        m_channels = savedChannels;
+        m_openDms = savedOpenDms;
+        m_unread = savedUnread;
+        m_history = savedHistory;
+        return result;
+    }
     void testSetRoster(const QList<MemberInfo> &members) { setRoster(members); }
     void testResetRosterForAlerts()
     {
@@ -950,6 +987,10 @@ private:
     // actually visible (chat section shown, or window regains focus while
     // already on it) — called from showSection() and changeEvent().
     void clearActiveConversationUnread();
+    // Conversation carrying unread messages that opening chat should land on:
+    // the one with the newest unread message. Empty when nothing is unread (or
+    // only the open conversation is), so the caller leaves the view alone.
+    QString mostRecentUnreadConversation() const;
     // Show/hide the in-transcript unread banner and update its count text.
     void updateChatUnreadBanner();
     // Mark every conversation read at once (from the unread banner's arrow) and
@@ -1082,14 +1123,18 @@ private:
     void revokeMcpConnector();
     void testMcpConnector();
     QString mcpServerScriptPath() const;
-    // Genie mode (adhoc #38): the CLI flags that attach this node's MCP
-    // connector — the one Settings -> MCP mints for the site — to one agent
-    // launch. Claude Code gets `--mcp-config <file>` (written owner-only under
-    // the app data dir, since it embeds the connector token); Codex gets the
-    // equivalent `-c mcp_servers.forkmesh.*` overrides. Empty when the server
-    // script cannot be found, in which case the run still starts — just without
-    // mesh tools.
-    QStringList genieMcpCliArgs(const QString &provider, int sessionId) const;
+    // Genie (adhoc #42): start an agent wired to the website's remote MCP
+    // server so it works the organization's shared task list on its own.
+    // startGenieAgent() launches the run from the quick-add bar's "genie"
+    // button; genieSetupPrompt() builds the paste block the website generates
+    // (MCP config + the workflow the agent must follow); applyGenieTaskTitle()
+    // watches the transcript for the task the agent announced and retitles the
+    // live session with it.
+    void startGenieAgent();
+    QString genieSetupPrompt(const QString &extraInstruction) const;
+    QUrl genieMcpUrl() const;
+    void applyGenieTaskTitle(int sessionId, const QString &assistantText);
+    void saveGenieSettings();
     // Settings -> Quick Setup tab: provision a fresh instance in one pass —
     // identity, workflow credentials and world appearance applied together.
     QWidget *buildQuickSetupTab();
@@ -2164,8 +2209,30 @@ private:
     // another node is never queued here, so a mesh can pin tests to one machine,
     // Cloudflare deploys to a mirror and iOS builds to a Mac.
     QStringList actionNodeLabels() const;
+    // The node pinned to `path` from the Actions tab's "Run on" dropdown, or an
+    // empty string when the workflow's own `runs-on:` decides.
+    QString workflowNodePin(const RepositoryRecord &repo,
+                            const QString &path) const;
+    // The labels that decide where a workflow may run: the dropdown's pin when
+    // one is set, otherwise the `runs-on:` labels parsed out of the file.
+    QStringList workflowRunsOnLabels(const RepositoryRecord &repo,
+                                     const ActionWorkflow &workflow) const;
+    // True when this node may execute the workflow, pin included.
+    bool workflowRunsOnThisNode(const RepositoryRecord &repo,
+                                const ActionWorkflow &workflow) const;
     // Human-readable "this workflow belongs to <node>" text for logs and the UI.
-    QString workflowDedicationLabel(const ActionWorkflow &workflow) const;
+    QString workflowDedicationLabel(const RepositoryRecord &repo,
+                                    const ActionWorkflow &workflow) const;
+    // Nodes offered by the "Run on" dropdown: this machine, every node in the
+    // roster, and any label the repo's workflows already name in `runs-on:`.
+    QStringList actionNodeCandidates() const;
+    // Pin the selected workflow (or every workflow while "All workflows" is
+    // selected) to `node`; an empty node clears the pin.
+    void setWorkflowNode(const QString &node);
+    void refreshWorkflowNodeCombo();
+    void updateWorkflowListItem(QListWidgetItem *item,
+                                const ActionWorkflow &workflow,
+                                const RepositoryRecord &repo);
     void processActionQueue();
     // An encrypted repository is served out of a temporary materialization whose
     // directory is recreated by every sealing pass and deleted as soon as the
@@ -3026,12 +3093,6 @@ private:
     void cancelIssueTitleEdit();
     void promptNewIssue();
     void quickAddIssue();
-    // "genie" send button (adhoc #38), stacked above "add"/"new" in the
-    // composer: start a long-running agent on the typed prompt with the ForkMesh
-    // MCP connector attached, so the run can work the mesh itself (progress
-    // comments, follow-up issues, the pull request) instead of handing
-    // everything back after one turn.
-    void quickAddGenieAgent();
     // Quick-add image attachment (issue #79): pick or paste an image in the footer
     // quick-add bar. In "No issue" mode the path is sent to the agent in its
     // prompt; otherwise the image is attached to the created issue.
@@ -3808,7 +3869,9 @@ private:
     // switcher shows its favicon in the dropdown itself instead of a caption).
     QLabel *m_nodeLabel = nullptr;
     QLabel *m_repoLabel = nullptr;
-    QLabel *m_navNodeName = nullptr;     // "user/node" beside the balance
+    // The "user/node" caption ("jett/forkmesh") that used to sit between the
+    // relay switcher and the balance is gone (adhoc #42): the top bar names the
+    // relay and the wallet, not who you are — that's the avatar's job.
     QLabel *m_navSolanaBalance = nullptr;
     // Super-tiny Claude Code and Codex usage charts in the top-right cluster
     // (issue #266): two horizontal bars (5-hour + weekly) sitting beside the
@@ -4375,15 +4438,15 @@ private:
     // sends the typed prompt as a follow-up message to the currently-selected
     // agent session instead of the quick-add issue/new-agent flow.
     QPushButton *m_quickAddSendToAgentButton = nullptr;
+    // "genie" (adhoc #42), stacked above "add" and "new": starts an agent wired
+    // to the website's remote MCP server so it picks its own work off the
+    // organization's shared task list instead of running a typed prompt.
+    QPushButton *m_quickAddGenieButton = nullptr;
     // Plain "start a new agent" send button next to it (adhoc #89): tracked as a
     // member (rather than a local in setupQuickAdd) so updateQuickAddEnterTarget
     // can restyle it as the two selected/deselected agent detail changes which of
     // the two buttons Enter actually triggers.
     QPushButton *m_quickAddSendButton = nullptr;
-    // "genie" button stacked above the two send buttons (adhoc #38): starts a
-    // long-running run with the ForkMesh MCP connector attached instead of an
-    // ordinary one-turn agent.
-    QPushButton *m_quickAddGenieButton = nullptr;
     // Small green "Enter" badge (adhoc #89), shown on the "new" send button
     // when Enter currently activates it. The "add" (follow-up) button has no
     // such badge — it's only ever the Enter target while the Agents tab
@@ -4812,6 +4875,12 @@ private:
     // The probe subprocess for "Test connection". Owned so a second click (or
     // closing the app) never leaves a stray python3 behind.
     QProcess *m_mcpTestProcess = nullptr;
+    // Genie (adhoc #42): the website's remote-MCP credentials, edited in the
+    // same Settings → MCP page and used by the quick-add bar's "genie" button.
+    QLineEdit *m_genieTokenEdit = nullptr;
+    QLineEdit *m_genieOrgEdit = nullptr;
+    QComboBox *m_genieWorkflowCombo = nullptr;
+    QLabel *m_genieStatusLabel = nullptr;
     QTableWidget *m_commitsTable = nullptr;
     // What the commit table currently shows, so a repeat tab click (or the
     // redundant load when a repo first opens) can skip the full rebuild — 4 git
@@ -5314,6 +5383,8 @@ private:
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page
     int m_selectedRunId = -1;
     QListWidget *m_actionWorkflowList = nullptr; // available actions (left column)
+    QComboBox *m_actionNodeCombo = nullptr;      // node the selected action runs on
+    QLabel *m_actionNodeLabel = nullptr;         // caption above that dropdown
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
     // Coalesces push-driven refreshOpenRepoDetail() calls: a burst of pushes

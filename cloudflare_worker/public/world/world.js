@@ -3780,30 +3780,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 </svg>
               </span><span class="world-top-link-label">Capture</span>
             </button>
-            <button
-              class="world-top-link world-notification-button"
-              type="button"
-              data-world-notifications-open
-              data-world-tooltip="Notifications"
-              title="Show global and personal notifications"
-              aria-label="Open World notifications"
-            >
-              <span aria-hidden="true">🔔</span><span class="world-top-link-label">Alerts</span>
-              <span class="world-tool-count" data-world-notification-count hidden>0</span>
-            </button>
-            <button
-              class="world-top-link world-admin-errors-button"
-              type="button"
-              data-world-admin-errors
-              data-world-tooltip="Errors"
-              title="Open newly logged errors"
-              aria-label="Open newly logged errors"
-              hidden
-            >
-              <span aria-hidden="true">!</span>
-              <span class="world-top-link-label">Errors</span>
-              <span class="world-tool-count" data-world-admin-error-count hidden>0</span>
-            </button>
             <a
               class="world-top-link world-dashboard-link"
               href="/dashboard"
@@ -3820,22 +3796,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               </span>
               <span class="world-top-link-label">Dashboard</span>
             </a>
-            <button
-              class="world-top-link world-tasks-button"
-              type="button"
-              data-world-tasks-open
-              data-world-tooltip="Tasks"
-              aria-label="Open organization tasks"
-              title="Open organization tasks"
-            >
-              <span class="world-hud-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" focusable="false">
-                  <path d="M9 6h11M9 12h11M9 18h11M4 6l1.3 1.3L7.6 5M4 12l1.3 1.3L7.6 11M4 18l1.3 1.3L7.6 17"></path>
-                </svg>
-              </span>
-              <span class="world-top-link-label">Tasks</span>
-              <span class="world-tool-count" data-world-task-count hidden>0</span>
-            </button>
             <button
               class="world-shirt-badge"
               type="button"
@@ -3865,6 +3825,21 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </button>
           </nav>
         </header>
+
+        <nav class="world-status-actions" aria-label="Notifications, errors, and tasks">
+          <button class="world-notification-button" type="button" data-world-notifications-open aria-label="Open notifications" title="Show global and personal notifications">
+            <span class="world-status-action-icon" aria-hidden="true">🔔</span>
+            <span class="world-tool-count" data-world-notification-count>0</span>
+          </button>
+          <button class="world-admin-errors-button" type="button" data-world-admin-errors aria-label="Open logged errors" title="Errors" hidden>
+            <span class="world-status-action-icon" aria-hidden="true">!</span>
+            <span class="world-tool-count" data-world-admin-error-count>0</span>
+          </button>
+          <button class="world-tasks-button" type="button" data-world-tasks-open aria-label="Open organization tasks" title="Tasks">
+            <span class="world-status-action-icon" aria-hidden="true">☑</span>
+            <span class="world-tool-count" data-world-task-count>0</span>
+          </button>
+        </nav>
 
         <aside
           class="world-right-rail"
@@ -3923,6 +3898,18 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           >
             <span class="world-touch-thumbstick-handle" data-world-thumbstick-handle aria-hidden="true"></span>
           </button>
+        </div>
+
+        <div class="world-avatar-actions" data-dashboard-chat-emotes aria-label="Avatar actions">
+          <button type="button" data-dashboard-chat-emote="wave" title="Wave" aria-label="Wave">👋</button>
+          <button type="button" data-dashboard-chat-emote="jump" title="Jump" aria-label="Jump">↥</button>
+          <button type="button" data-dashboard-chat-emote="superjump" title="Super jump over buildings" aria-label="Super jump">⇈</button>
+          <button type="button" data-dashboard-chat-emote="spin" title="Spin" aria-label="Spin">↻</button>
+          <button type="button" data-dashboard-chat-emote="backflip" title="Backflip" aria-label="Backflip">⤾</button>
+          <button type="button" data-dashboard-chat-emote="dance" title="Dance" aria-label="Dance">♫</button>
+          <button type="button" data-dashboard-chat-emote="float" title="Float" aria-label="Float">☁</button>
+          <button type="button" data-dashboard-chat-emote="wobble" title="Wobble" aria-label="Wobble">〰</button>
+          <button type="button" data-dashboard-chat-emote="sparkle" title="Sparkle" aria-label="Sparkle">✦</button>
         </div>
 
         <details class="world-diagnostics" data-world-diagnostics ${settings.debugPanel ? "" : "hidden"}>
@@ -4005,19 +3992,8 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <nav data-dashboard-chat-context-rail aria-label="Selected chat context">
               <button type="button" data-dashboard-chat-context-channel># general</button>
               <button type="button" data-dashboard-chat-context-source>forkmesh/forkmesh</button>
-              <button type="button" data-dashboard-chat-context-action>Send to bot</button>
             </nav>
-            <div data-dashboard-chat-emotes aria-label="Avatar reactions">
-              <button type="button" data-dashboard-chat-emote="wave" title="Wave">👋</button>
-              <button type="button" data-dashboard-chat-emote="jump" title="Jump up and down">↥</button>
-              <button type="button" data-dashboard-chat-emote="spin" title="Spin">↻</button>
-              <button type="button" data-dashboard-chat-emote="backflip" title="Backflip">⤾</button>
-              <button type="button" data-dashboard-chat-emote="dance" title="Dance">♫</button>
-              <button type="button" data-dashboard-chat-emote="float" title="Float">☁</button>
-              <button type="button" data-dashboard-chat-emote="wobble" title="Wobble">〰</button>
-              <button type="button" data-dashboard-chat-emote="sparkle" title="Sparkle">✦</button>
-            </div>
-            <div data-dashboard-chat-composer>
+            <div data-dashboard-chat-composer data-world-simple-composer>
               <div>
                 <div data-dashboard-chat-composer-toolbar>
                   <label class="world-visually-hidden" for="fullChatChannel">Channel</label>
@@ -4032,13 +4008,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                       selected
                     >forkmesh/forkmesh · Organization</option>
                   </select>
-                  <label class="world-visually-hidden" for="fullChatAction">Action</label>
-                  <select id="fullChatAction">
-                    <option value="agent" selected>Send to bot</option>
-                    <option value="chat">Send to chat</option>
-                    <option value="task">Create team task</option>
-                    <option value="issue">Create repository issue</option>
-                  </select>
+                  <input id="fullChatAction" type="hidden" value="chat" />
                   <div data-dashboard-task-routing hidden>
                     <select data-dashboard-task-department aria-label="Task department"><option value="general">General</option><option value="engineering">Engineering</option><option value="product-design">Product + design</option><option value="quality-assurance">Quality assurance</option></select>
                     <select data-dashboard-task-team aria-label="Task team"><option value="">Choose a team</option></select>
@@ -4047,12 +4017,12 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                   </div>
                 </div>
                 <div data-dashboard-chat-compose-row>
-                  <textarea id="fullChatInput" rows="2" maxlength="16000" enterkeyhint="send" aria-label="Message #general" placeholder="Describe what you want the bot to do…"></textarea>
-                  <button id="fullChatSend" type="button"><span data-dashboard-chat-send-label>Send to bot</span></button>
-                  <button id="fullChatTaskSend" type="button" title="Create and route a task">Task</button>
+                  <textarea id="fullChatInput" rows="2" maxlength="16000" enterkeyhint="send" aria-label="Message #general" placeholder="Message #general…"></textarea>
+                  <button id="fullChatSend" type="button" title="Send to #general"><span data-dashboard-chat-send-label>Chat</span></button>
+                  <button id="fullChatTaskSend" type="button" title="Send this task to the bot">Task</button>
                 </div>
                 <footer>
-                  <span data-dashboard-chat-composer-hint>Starts a secured Engineering task</span>
+                  <span data-dashboard-chat-composer-hint>Chat posts to #general · Task sends private work to the bot</span>
                   <span data-dashboard-chat-composer-status role="status" aria-live="polite"></span>
                 </footer>
               </div>
@@ -4381,6 +4351,13 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span>Log in, create an account, or manage this device's session.</span>
             </div>
             <button type="button" data-world-account-open>Account</button>
+          </section>
+          <section class="world-account-access" aria-label="Discord integration">
+            <div>
+              <strong>Discord bridge</strong>
+              <span>Connect and manage organization Discord channels.</span>
+            </div>
+            <button type="button" data-world-discord-open aria-expanded="false">Discord</button>
           </section>
 
           <div class="world-settings-tabs" role="tablist" aria-label="Local controls section">
@@ -14927,6 +14904,7 @@ class ForkMeshWorld extends HTMLElement {
       ![
         "wave",
         "jump",
+        "superjump",
         "spin",
         "backflip",
         "dance",
@@ -20807,7 +20785,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     host.dataset.worldChatLoading = "true";
     const script = document.createElement("script");
-    script.src = "/dashboard-chat.js?v=6cb50c59f5cf";
+    script.src = "/dashboard-chat.js?v=1c0fd1536811";
     script.defer = true;
     script.addEventListener("load", mount, { once: true });
     script.addEventListener("error", () => {

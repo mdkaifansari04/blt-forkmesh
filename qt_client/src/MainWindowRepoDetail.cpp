@@ -1127,6 +1127,7 @@ void MainWindow::forkCurrentRepo()
     fork.publishToNetwork = true;
     fork.actionsEnabled = src.actionsEnabled;
     fork.disabledWorkflows = src.disabledWorkflows;
+    fork.workflowNodes = src.workflowNodes;
     fork.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
     fork.mirrorPath = repositoryMirrorRoot() + "/" +
                       repoSegment(owner, QStringLiteral("owner")) + "-" +

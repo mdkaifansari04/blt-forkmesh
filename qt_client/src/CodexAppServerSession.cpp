@@ -10,8 +10,6 @@
 #include <QRegularExpression>
 #include <QTimer>
 
-#include <utility>
-
 namespace {
 
 QString compactJson(const QJsonValue &value)
@@ -115,8 +113,7 @@ void CodexAppServerSession::start(const QString &cwd,
                                   const QString &initialPrompt,
                                   const QString &resumeThreadId,
                                   const QString &model, const QString &mode,
-                                  const QString &effort, int memoryLimitMb,
-                                  const QStringList &extraCliArgs)
+                                  const QString &effort, int memoryLimitMb)
 {
     stop();
     resetProtocolState();
@@ -171,28 +168,14 @@ void CodexAppServerSession::start(const QString &cwd,
         proc->start(m_program, m_arguments);
         return;
     }
-    // Extra launch flags from the caller (genie mode's MCP overrides, adhoc
-    // #38). Windows starts the program directly, so they go through as plain
-    // arguments; the bash launch below single-quotes each one.
-    QStringList extras;
-    for (const QString &arg : extraCliArgs) {
-        if (!arg.trimmed().isEmpty())
-            extras << arg;
-    }
 #ifdef Q_OS_WIN
-    proc->start(QStringLiteral("codex"),
-                QStringList{QStringLiteral("app-server")} + extras);
+    proc->start(QStringLiteral("codex"), {QStringLiteral("app-server")});
 #else
     // A login shell gives GUI launches the same PATH as an interactive terminal.
-    QString launch = QStringLiteral("exec codex app-server");
-    for (const QString &arg : std::as_const(extras)) {
-        QString quoted = arg;
-        quoted.replace(QLatin1String("'"), QLatin1String("'\\''"));
-        launch += QStringLiteral(" '%1'").arg(quoted);
-    }
     proc->start(QStringLiteral("bash"),
                 {QStringLiteral("-lc"),
-                 AgentJail::wrapCommand(launch, memoryLimitMb)});
+                 AgentJail::wrapCommand(QStringLiteral("exec codex app-server"),
+                                        memoryLimitMb)});
 #endif
 }
 

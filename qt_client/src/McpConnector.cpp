@@ -169,38 +169,6 @@ QString cliCommand(const QString &python, const QString &serverScript,
     return parts.join(QLatin1Char(' '));
 }
 
-QStringList codexConfigArgs(const QString &python, const QString &serverScript,
-                            const QString &reposDir, const QString &token)
-{
-    // `codex app-server` has no --mcp-config equivalent; MCP servers come from
-    // config.toml, and -c applies one override per key. Values are parsed as
-    // TOML-ish literals, so every string is JSON-quoted (the args list is a JSON
-    // array). Shell quoting is deliberately left to the launcher, which knows
-    // whether the command goes through a shell at all.
-    auto jsonValue = [](const QJsonArray &array) {
-        return QString::fromUtf8(
-            QJsonDocument(array).toJson(QJsonDocument::Compact).trimmed());
-    };
-    auto jsonString = [&jsonValue](const QString &value) {
-        return jsonValue(QJsonArray{value}).mid(1).chopped(1); // ["x"] -> "x"
-    };
-    QStringList args;
-    auto add = [&args](const QString &key, const QString &value) {
-        args << QStringLiteral("-c") << (key + QLatin1Char('=') + value);
-    };
-    add(QStringLiteral("mcp_servers.forkmesh.command"),
-        jsonString(python.isEmpty() ? QStringLiteral("python3") : python));
-    add(QStringLiteral("mcp_servers.forkmesh.args"),
-        jsonValue(QJsonArray{serverScript}));
-    if (!reposDir.isEmpty())
-        add(QStringLiteral("mcp_servers.forkmesh.env.FORKMESH_REPOS_DIR"),
-            jsonString(reposDir));
-    if (!token.isEmpty())
-        add(QStringLiteral("mcp_servers.forkmesh.env.FORKMESH_MCP_TOKEN"),
-            jsonString(token));
-    return args;
-}
-
 QString maskToken(const QString &token)
 {
     if (token.isEmpty())

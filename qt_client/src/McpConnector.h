@@ -1,7 +1,6 @@
 #pragma once
 
 #include <QString>
-#include <QStringList>
 
 // MCP connector (adhoc #16). tools/forkmesh_mcp_server.py exposes the mesh —
 // repos, issues, projects, PRs — to any MCP-capable agent over stdio. Anything
@@ -59,15 +58,6 @@ QString configJson(const QString &python, const QString &serverScript,
 // The equivalent one-liner for `claude mcp add`, shell-quoted.
 QString cliCommand(const QString &python, const QString &serverScript,
                    const QString &reposDir, const QString &token);
-
-// `codex app-server` config overrides that register the same server for one
-// launch: -c mcp_servers.forkmesh.<key>=<value> pairs (adhoc #38, genie mode).
-// Codex reads MCP servers from config.toml and has no --mcp-config flag, so the
-// connector rides in as per-run overrides instead of being written into the
-// user's config. Values are TOML/JSON literals; shell quoting is the launcher's
-// job.
-QStringList codexConfigArgs(const QString &python, const QString &serverScript,
-                            const QString &reposDir, const QString &token);
 
 // Show a token as fmcp_abcd…wxyz so screenshots and screen shares do not leak
 // the whole thing.

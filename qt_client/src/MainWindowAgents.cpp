@@ -169,7 +169,11 @@ QStringList localProviderCredentialValues()
     values << settings.value(kClaudeApiKeySetting).toString()
            << settings.value(kClaudeAdminKeySetting).toString()
            << settings.value(kCodexApiKeySetting).toString()
-           << settings.value(kOpenAiAdminKeySetting).toString();
+           << settings.value(kOpenAiAdminKeySetting).toString()
+           // Genie's remote-MCP bearer credential (adhoc #42) rides inside the
+           // opening prompt, so it would otherwise land in the transcript, the
+           // run log and the sealed snapshot pushed to the relay.
+           << settings.value(kGenieTokenSetting).toString();
     values << qEnvironmentVariable("ANTHROPIC_API_KEY")
            << qEnvironmentVariable("ANTHROPIC_AUTH_TOKEN")
            << qEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN")
@@ -377,9 +381,9 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     // no icon.
     if (s.merged)
         cell->setIcon(themedOcticon("git-merge", QColor("#a371f7"), 14));
-    // Genie runs in flight (adhoc #38): a violet sparkle rather than the shared
-    // spinner/clock, so a long-running MCP-backed task is recognisable in the
-    // list. animateRunningAgentIcons() spins this one too.
+    // Genie runs still working (adhoc #38): a violet sparkle rather than the
+    // shared spinner/clock, so a run off the website's shared task list is
+    // recognisable in the list. animateRunningAgentIcons() spins this one too.
     else if (s.genieInFlight())
         cell->setIcon(themedOcticon("sparkle", QColor(Theme::kGenie), 14));
     else if (s.status == AgentStatus::Running)
@@ -409,8 +413,8 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     // state, so the tooltip has to name it outright.
     QStringList tip{agentStatusLabel(s)};
     if (s.genie)
-        tip << QStringLiteral("Genie \xE2\x80\x94 long-running run with this "
-                              "node's ForkMesh MCP connector attached");
+        tip << QStringLiteral("Genie \xE2\x80\x94 working the organization's "
+                              "shared task list from the website's remote MCP");
     if (!s.merged && s.status == AgentStatus::Queued)
         tip << QStringLiteral("Queued \xE2\x80\x94 starts when one of the %1 running "
                               "agent slots frees up (Settings \xE2\x86\x92 Agents)")
@@ -6166,9 +6170,9 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     session.orgTask = !m_quickAddTask || m_quickAddTask->isChecked();
     session.startedByBot = agentBotLabel(provider);
     session.strength = composerAgentStrength();
-    // Genie (adhoc #38): stamped at launch like YOLO and Task, so the run keeps
-    // its MCP connector and sparkle glyph across a restart/resume even though the
-    // button that started it is long since forgotten.
+    // Genie (adhoc #38): stamped at launch like YOLO and Task, so a resumed run
+    // still reads as a genie even though the button that started it is long
+    // since forgotten.
     session.genie = genie;
     session.model = model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
@@ -6207,8 +6211,8 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     if (genie)
         m_agentStore->appendLog(
             session,
-            QStringLiteral("==> Genie mode: long-running task with this node's "
-                           "ForkMesh MCP connector attached.\n"));
+            QStringLiteral("==> Genie: long-running run against the website's "
+                           "remote MCP task list.\n"));
     openOrgTaskForSession(session); // adhoc #18: mirror the run as an org task
 
     // This path launches directly instead of going through processAgentQueue, so
@@ -7668,9 +7672,6 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     const int issueNumber = session.issueNumber;
     const QString model = session.model;
     const QString sessionMode = session.mode;
-    // Genie (adhoc #38): snapshot like the rest — `session` dangles once
-    // reloadAgents() below rebuilds m_agentSessions.
-    const bool genie = session.genie;
 
     session.status = AgentStatus::Running;
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
@@ -7736,17 +7737,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // prompt — `lead` carries the user's ask (or the issue + its comments).
     const QString routeTask = lead;
     auto launch = [this, sid, prompt, autoMode, branchName, resumeId,
-                   selectedModel, routeTask, codex, genie,
+                   selectedModel, routeTask, codex,
                    sessionMode](const QString &workdir) {
-        // Genie mode: the launch flags that attach this node's MCP connector so
-        // the run can work the mesh itself (adhoc #38). Empty for an ordinary
-        // run, and empty — with the run still going ahead — when the server
-        // script is missing.
-        const QStringList mcpArgs =
-            genie ? genieMcpCliArgs(codex ? kCodexProvider
-                                          : QStringLiteral("claude-code"),
-                                    sid)
-                  : QStringList();
         if (codex) {
             CodexAppServerSession *live = m_codexStreams.value(sid);
             if (!live)
@@ -7779,7 +7771,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 codexEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
             }
             live->start(workdir, codexEnv, prompt, resumeId, selectedModel, mode,
-                        effort, jailMb, mcpArgs);
+                        effort, jailMb);
             return;
         }
 
@@ -7804,8 +7796,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         // runs the router (adhoc #91), which is asynchronous — so `begin`
         // re-checks that this stream is still the session's live one (the user
         // may have stopped or restarted it while the triage ran).
-        auto begin = [this, sid, live, workdir, env, prompt, autoMode, resumeId,
-                      mcpArgs](const QString &chosenModel) {
+        auto begin = [this, sid, live, workdir, env, prompt, autoMode,
+                      resumeId](const QString &chosenModel) {
             if (m_streamSessions.value(sid) != live)
                 return;
             // Footer slash-actions menu (adhoc #116): effort and model-fallback
@@ -7828,7 +7820,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 launchEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
             }
             live->start(workdir, launchEnv, prompt, /*skipPermissions=*/autoMode,
-                        resumeId, chosenModel, effort, fallback, jailMb, mcpArgs);
+                        resumeId, chosenModel, effort, fallback, jailMb);
         };
         if (selectedModel == kClaudeAutoModelId)
             resolveAutoClaudeModel(sid, routeTask, workdir, live, std::move(begin));
@@ -8612,6 +8604,10 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
         }
         if (!assistantText.trimmed().isEmpty())
             m_lastAssistantText[sessionId] = assistantText.trimmed();
+        // Genie (adhoc #42): a run working the organization's shared task list
+        // announces the task it just picked up; retitle the session with it so
+        // the list says what the agent is actually doing, live.
+        applyGenieTaskTitle(sessionId, assistantText);
         // Some clarifying questions never call the AskUserQuestion tool at all —
         // the CLI just lays out a numbered list of options in plain prose (e.g.
         // "do you want me to: 1. ... or 2. ...?"). Detect that the same way the
