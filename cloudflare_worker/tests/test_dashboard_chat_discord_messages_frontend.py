@@ -55,6 +55,20 @@ def test_discord_refresh_is_foreground_only_and_rate_bounded():
     assert "scheduleDiscordMessageRefresh()" in refresh
     assert 'document.addEventListener("visibilitychange"' in refresh
     assert "stopDiscordMessageRefresh()" in refresh
+    assert "discordBackoffAttempts" in CHAT
+    assert "response.status === 429" in CHAT
+    assert "response.status === 503" in CHAT
+    assert "5 * 60_000" in CHAT
+
+
+def test_discord_discovery_stops_fanout_after_provider_throttling():
+    discovery = _region(
+        "async function discoverDiscordSources()",
+        "async function refreshDiscordMessages()",
+    )
+    assert "for (const record of organizations)" in discovery
+    assert "Promise.allSettled(organizations.map" not in discovery
+    assert "error?.status === 429 || error?.status === 503" in discovery
 
 
 def test_provider_bodies_remain_out_of_d1_and_channel_label_is_projected():

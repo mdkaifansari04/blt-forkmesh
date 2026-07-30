@@ -9118,11 +9118,31 @@ function repositoryFollowerFollowedLabel(followedAt) {
   return `FOLLOWING SINCE ${date.toISOString().slice(0, 10)}`;
 }
 
+function canvasReadableImageURL(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.length > 120_000) return "";
+  try {
+    const url = new URL(raw, window.location.href);
+    // Canvas/WebGL may only sample same-origin or embedded images unless the
+    // remote response explicitly opts into CORS. Mastodon media commonly does
+    // not, and browsers provide no preflight-free way to discover that without
+    // logging a CORS failure. Keep the generated fallback for those URLs.
+    if (
+      url.origin !== window.location.origin &&
+      url.protocol !== "data:" &&
+      url.protocol !== "blob:"
+    ) {
+      return "";
+    }
+    return url.href;
+  } catch (_) {
+    return "";
+  }
+}
+
 function loadRepositoryFollowerAvatar(url, onLoad) {
-  // The follower's published avatar, fetched anonymously (no cookies, no
-  // referrer) and only used once it decodes. A server without CORS headers
-  // simply fails here and the card keeps its generated initials plate.
-  if (!url) return;
+  const readableURL = canvasReadableImageURL(url);
+  if (!readableURL) return;
   const image = new Image();
   image.crossOrigin = "anonymous";
   image.referrerPolicy = "no-referrer";
@@ -9131,7 +9151,7 @@ function loadRepositoryFollowerAvatar(url, onLoad) {
     if (image.naturalWidth > 0 && image.naturalHeight > 0) onLoad(image);
   };
   image.onerror = () => {};
-  image.src = url;
+  image.src = readableURL;
 }
 
 function drawRepositoryFollowerAvatar(
@@ -14395,6 +14415,11 @@ export function createWorldScene({
   renderer.toneMappingExposure = 1.08;
   renderer.shadowMap.enabled = !compactRenderer;
   renderer.shadowMap.type = THREE.PCFShadowMap;
+  // The sun and almost all shadow casters are static. Rebuilding the complete
+  // atlas on every display frame nearly doubles town-square draw calls, so
+  // refresh it at a bounded cadence while retaining live shadows.
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.needsUpdate = !compactRenderer;
   renderer.domElement.className = "world-canvas";
   renderer.domElement.setAttribute("aria-hidden", "true");
   // The canvas is purely visual; leaving a tabindex (even -1) lets a pointer
@@ -20385,6 +20410,7 @@ export function createWorldScene({
   let localDaylightMinute = -1;
   let nextEnvironmentCheckAt = 0;
   let nextSceneLodAt = 0;
+  let nextShadowMapUpdateAt = 0;
   let farSceneDetail = null;
   let nextAvatarHighlightAt = 0;
   let nextProximityUpdateAt = 0;
@@ -21915,7 +21941,7 @@ export function createWorldScene({
   // reach the board texture when they load CORS-clean; otherwise the board
   // keeps its text-only rendering (a tainted canvas cannot feed WebGL).
   function mastodonKioskImage(url) {
-    const key = String(url || "");
+    const key = canvasReadableImageURL(url);
     if (!key) return null;
     const cached = mastodonKioskImages.get(key);
     if (cached) return cached.image;
@@ -31349,6 +31375,7 @@ export function createWorldScene({
 
   function animate(time) {
     if (!running || disposed) return;
+    const frameWorkStartedAt = performance.now();
     if (time >= nextEnvironmentCheckAt) {
       nextEnvironmentCheckAt = time + 15_000;
       const localNow = new Date();
@@ -31395,22 +31422,9 @@ export function createWorldScene({
     }
     diagnosticsLongestFrameMs = Math.max(diagnosticsLongestFrameMs, rawFrameMs);
     if (rawFrameMs > 34) diagnosticsLongFrames += 1;
-    // Report genuine visible-tab stalls without flooding DevTools during a
-    // prolonged hitch. Ordinary 30–60fps variance remains in diagnostics but
-    // does not produce console noise.
-    if (
-      rawFrameMs >= RENDER_STALL_THRESHOLD_MS &&
-      document.visibilityState === "visible"
-    ) {
-      if (
-        time - lastRenderStallLogAt >= RENDER_STALL_LOG_COOLDOWN_MS
-      ) {
-        lastRenderStallLogAt = time;
-        scheduleRenderStallWarning(rawFrameMs);
-      } else {
-        suppressedRenderStalls += 1;
-      }
-    }
+    // rawFrameMs includes time spent waiting for requestAnimationFrame and is
+    // useful for FPS diagnostics, but it cannot identify renderer work. Stall
+    // attribution is performed after render from actual main-thread work time.
     updateOfficeElevator(time);
     if (officeSceneMode === "town") {
       walkPlayer(delta, time);
@@ -31840,7 +31854,23 @@ export function createWorldScene({
         });
       }
     }
+    if (renderer.shadowMap.enabled && time >= nextShadowMapUpdateAt) {
+      nextShadowMapUpdateAt = time + 500;
+      renderer.shadowMap.needsUpdate = true;
+    }
     renderer.render(scene, camera);
+    const frameWorkMs = Math.max(0, performance.now() - frameWorkStartedAt);
+    if (
+      frameWorkMs >= RENDER_STALL_THRESHOLD_MS &&
+      document.visibilityState === "visible"
+    ) {
+      if (time - lastRenderStallLogAt >= RENDER_STALL_LOG_COOLDOWN_MS) {
+        lastRenderStallLogAt = time;
+        scheduleRenderStallWarning(frameWorkMs);
+      } else {
+        suppressedRenderStalls += 1;
+      }
+    }
     diagnosticsFrameCount = Math.min(
       1_000_000,
       diagnosticsFrameCount + 1,

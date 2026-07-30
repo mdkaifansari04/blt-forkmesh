@@ -6369,10 +6369,26 @@ class ForkMeshWorld extends HTMLElement {
         timeout: 12_000,
         cache: "no-store",
       });
-      const tree = await this.fetchJSON(
-        "/api/repo/forkmesh/forkmesh/tree?path=.forkmesh%2Fissues%2Fopen",
-        { auth: false, timeout: 12_000, cache: "no-store" },
-      );
+      // Repository issue enrichment is optional: the shared board payload is
+      // still useful when a mirror is temporarily unavailable. Cache the last
+      // good tree and cool down 429/503 responses instead of probing the same
+      // failing mirror on every board poll.
+      let tree = null;
+      try {
+        tree = await this.fetchJSON(
+          "/api/repo/forkmesh/forkmesh/tree?path=.forkmesh%2Fissues%2Fopen",
+          {
+            auth: false,
+            timeout: 12_000,
+            cache: "no-store",
+            maxAge: WORLD_BUILD_BOARD_POLL_MS,
+            backoff: true,
+            staleIfError: true,
+          },
+        );
+      } catch (_) {
+        tree = null;
+      }
       const numbers = (Array.isArray(tree?.entries) ? tree.entries : [])
         .filter(
           (entry) =>
@@ -6392,7 +6408,14 @@ class ForkMeshWorld extends HTMLElement {
           .join("&");
         const blobs = await this.fetchJSON(
           `/api/repo/forkmesh/forkmesh/blobs?${query}`,
-          { auth: false, timeout: 12_000, cache: "no-store" },
+          {
+            auth: false,
+            timeout: 12_000,
+            cache: "no-store",
+            maxAge: WORLD_BUILD_BOARD_POLL_MS,
+            backoff: true,
+            staleIfError: true,
+          },
         );
         const assigned = new Set(
           (Array.isArray(payload?.assignedIssues)
@@ -7346,7 +7369,19 @@ class ForkMeshWorld extends HTMLElement {
           signal: controller.signal,
           credentials: "same-origin",
         });
-        if (!response.ok) throw new Error(`${path} returned ${response.status}`);
+        if (!response.ok) {
+          const error = new Error(`${path} returned ${response.status}`);
+          error.status = response.status;
+          const retryHeader = String(response.headers.get("retry-after") || "");
+          const retrySeconds = Number(retryHeader);
+          const retryDate = Date.parse(retryHeader);
+          error.retryAfterMs = Number.isFinite(retrySeconds)
+            ? Math.max(0, retrySeconds * 1000)
+            : Number.isFinite(retryDate)
+              ? Math.max(0, retryDate - Date.now())
+              : 0;
+          throw error;
+        }
         const value = await response.json();
         if (method === "GET" && (maxAge > 0 || staleIfError)) {
           if (
@@ -7366,7 +7401,12 @@ class ForkMeshWorld extends HTMLElement {
           const attempts = Math.min(8, Number(failure?.attempts || 0) + 1);
           const delay = Math.min(
             5 * 60 * 1000,
-            5000 * (2 ** (attempts - 1)),
+            Math.max(
+              5000 * (2 ** (attempts - 1)),
+              Number(error?.retryAfterMs) || 0,
+              error?.status === 429 ? 60_000 : 0,
+              error?.status === 503 ? 30_000 : 0,
+            ),
           );
           this.requestFailures.set(requestKey, {
             attempts,
@@ -21429,7 +21469,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     host.dataset.worldChatLoading = "true";
     const script = document.createElement("script");
-    script.src = "/dashboard-chat.js?v=1c0fd1536811";
+    script.src = "/dashboard-chat.js?v=486b859b29f5";
     script.defer = true;
     script.addEventListener("load", mount, { once: true });
     script.addEventListener("error", () => {
