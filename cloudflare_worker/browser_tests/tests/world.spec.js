@@ -1648,6 +1648,46 @@ test("collapsed CHAT bar counts unread remote lines but never your own", async (
   await expect(badge).toBeHidden();
 });
 
+test("quick composer opens without chat history and reveals a selected channel", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-quick-composer", {
+    chatPassphrase: "playwright-public-world-general-passphrase",
+  });
+  await waitForWorld(page);
+
+  const terminal = page.locator("[data-world-chat-terminal]");
+  const summary = terminal.locator("summary");
+  const collapsed = await summary.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const marker = getComputedStyle(
+      element.querySelector(".world-chat-terminal-avatar"),
+      "::after",
+    );
+    return {
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      marker: marker.display,
+    };
+  });
+  expect(collapsed).toEqual({ width: 56, height: 56, marker: "none" });
+
+  await summary.click();
+  await expect(terminal).toHaveAttribute("open", "");
+  await expect(page.locator("[data-world-quick-composer-avatar]")).toBeVisible();
+  await expect(page.locator("[data-world-quick-chat-feed]")).toBeHidden();
+
+  await page.locator('[data-world-quick-channel="general"]').click();
+  await expect(terminal).toHaveAttribute("data-show-feed", "true");
+  await expect(page.locator("[data-world-quick-chat-feed]")).toBeVisible();
+
+  await terminal.evaluate((element) => {
+    element.removeAttribute("open");
+    element.classList.add("world-chat-terminal--idle");
+  });
+  await expect(page.locator(".world-chat-terminal-prompt-icon")).toBeVisible();
+});
+
 test("mobile World chat keeps its composer above the terminal bars", async ({
   page,
 }) => {
@@ -1770,6 +1810,7 @@ test("World chat keeps five replayed messages lazy and its prompt in view", asyn
   await terminal.evaluate((element) => {
     element.open = true;
   });
+  await page.locator('[data-world-quick-channel="general"]').click();
   const messages = page.locator("#fullChatMessages .chat-message-row");
   await expect(messages).toHaveCount(5);
   await expect(page.locator(".chat-history-indicator")).toContainText(

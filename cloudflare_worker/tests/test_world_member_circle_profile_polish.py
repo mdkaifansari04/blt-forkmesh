@@ -13,7 +13,7 @@ ENTRY = (ROOT / "cloudflare_worker/src/entry.py").read_text()
 def test_member_circle_uses_dirt_and_tracks_firewood_per_member():
     assert "function campfireDirtTexture(THREE)" in SCENE
     assert 'campfireGround.name = "campfire-member-circle-dirt"' in SCENE
-    assert "campfireGround.scale.setScalar(radius + 1.45)" in SCENE
+    assert "campfireGround.scale.setScalar(outerRadius + 1.45)" in SCENE
     assert "function rebuildCampfireMemberLogs(total)" in SCENE
     assert "rebuildCampfireMemberLogs(count)" in SCENE
     assert "log.userData.memberLogIndex = index" in SCENE
@@ -27,38 +27,49 @@ def test_member_circle_uses_dirt_and_tracks_firewood_per_member():
         "CAMPFIRE_BASE_FIRE_LEVEL + fireCenturies * CAMPFIRE_FIRE_LEVEL_PER_CENTURY"
         in SCENE
     )
-    # Growing cones are re-pinned to the logs so the fire never sinks into the pit.
-    assert "flame.position.y = FLAME_BASE_Y + (FLAME_HEIGHT * height) / 2;" in SCENE
+    # The procedural fire stays rooted at the logs while milestone growth is
+    # applied to the effect itself, so it cannot sink into the pit.
+    assert "proceduralFire.position.y = FLAME_BASE_Y;" in SCENE
+    assert "const fireGrowth = fireLevel / CAMPFIRE_BASE_FIRE_LEVEL;" in SCENE
+    assert "proceduralFire.scale.set(" in SCENE
 
 
-def test_member_total_hangs_high_and_large_above_the_fire():
-    # adhoc #427: the count reads as the clearing's headline, so it sits well
-    # clear of the flames and rises further as the fire grows.
-    assert "const MEMBER_COUNT_HOVER_Y = 15;" in SCENE
-    assert "memberCountSprite.scale.set(9.5, 4.75, 1);" in SCENE
-    assert (
-        "FLAME_HEIGHT * Math.max(0, fireLevel - CAMPFIRE_BASE_FIRE_LEVEL)" in SCENE
-    )
+def test_campfire_uses_layered_procedural_flames_and_atmosphere():
+    effect = SCENE.split("function createProceduralCampfireEffect(THREE)", 1)[1]
+    effect = effect.split("\n// Who joined last", 1)[0]
+    assert "new THREE.ConeGeometry" not in effect
+    assert "const flameLayers = [" in effect
+    assert "fragmentShader: flameFragmentShader" in effect
+    assert "blending: THREE.AdditiveBlending" in effect
+    assert "if (alpha < 0.008) discard;" in effect
+    assert '"campfire-rising-embers"' in effect
+    assert '"campfire-ground-glow"' in effect
+    assert "campfire-smoke-puff-" in effect
+    assert '"campfire-charred-burning-logs"' in SCENE
+    assert "fireLight.position.set(" in SCENE
 
 
-def test_newest_member_name_has_an_animated_sparkle_effect():
-    assert 'newestMemberSparkles.name = "campfire-newest-member-name-sparkles"' in SCENE
-    assert "newestMemberSparkles.visible = Boolean(latest);" in SCENE
-    assert "newestMemberSparkles.rotation.z = time * 0.0008;" in SCENE
-    assert "newestMemberSparkles.position.y = memberCountSprite.position.y - 1.55;" in SCENE
-    assert '"campfire-newest-member-fire-sparks-left"' in SCENE
-    assert '"campfire-newest-member-fire-sparks-right"' in SCENE
-    assert "newestMemberFireSparks.forEach" in SCENE
+def test_fire_center_has_no_floating_member_label():
+    assert "MEMBER_COUNT_HOVER_Y" not in SCENE
+    assert "memberCountSprite" not in SCENE
+
+
+def test_fire_center_has_no_newest_member_sparkle_label():
+    assert "newestMemberSparkles" not in SCENE
+    assert "newestMemberFireSparks" not in SCENE
 
 
 def test_campfire_is_three_times_large_not_only_three_times_tall():
     assert (
-        "flame.scale.set(\n"
-        "    CAMPFIRE_BASE_FIRE_LEVEL,\n"
+        "proceduralFire.scale.set(\n"
         "    CAMPFIRE_BASE_FIRE_LEVEL,\n"
         "    CAMPFIRE_BASE_FIRE_LEVEL,"
     ) in SCENE
-    assert "const size = fireLevel * flicker;" in SCENE
+    assert (
+        "CAMPFIRE_BASE_FIRE_LEVEL * (1 + (fireGrowth - 1) * 0.32)"
+        in SCENE
+    )
+    assert "fireLevel * (1 + slowFlicker * 0.055" in SCENE
     assert "new THREE.CylinderGeometry(1.45, 1.65, 0.22, 16)" in SCENE
     assert "Math.cos(stoneAngle) * 1.85" in SCENE
 
@@ -110,7 +121,7 @@ def test_email_pin_switches_between_verified_check_and_unverified_x():
 
 
 def test_public_chat_line_repaints_matching_avatar_chest_only():
-    assert 'context.fillText("RECENT PUBLIC CHAT", 34, 352)' in SCENE
+    assert 'context.fillText("RECENT PUBLIC CHAT", 34, 356)' in SCENE
     assert "identity.recentPublicMessage" in SCENE
     assert "function setAvatarRecentPublicMessage(sender, text)" in SCENE
     assert "setAvatarRecentPublicMessage," in SCENE
@@ -123,6 +134,46 @@ def test_world_users_do_not_have_a_separate_top_hair_cap():
     )[1].split("\nconst WORK_BADGE_ROWS", 1)[0]
     assert "const hair = new THREE.Mesh(" not in avatar
     assert "group.add(hair)" not in avatar
+
+
+def test_avatar_profile_signals_moved_to_head_and_back():
+    assert "const AVATAR_FACE_DEPTH = 0.08;" in SCENE
+    assert "shirtMeshes: [torso, leftArm, rightArm, head]" in SCENE
+    assert 'activityRing.name = "avatar-activity-ring"' in SCENE
+    assert 'mood.name = "avatar-mood-icon-word"' in SCENE
+    assert 'backName.name = "avatar-back-username"' in SCENE
+    assert '"OPEN FILTERED ACTIVITY ↗"' in SCENE
+    assert "PRS ${pulls} · ISSUES ${issues} · DISCUSSIONS ${discussions}" in SCENE
+    assert "typeTotals:" in APP
+    assert "#contributions" in APP
+
+
+def test_badge_has_large_qr_email_and_social_icons_without_activity_border():
+    assert "context.strokeRect(376, 12, 124, 124);" in SCENE
+    assert "drawQrModules(context, walletAddress, 384, 20, 108);" in SCENE
+    assert '"LAST EMAIL · NOT SHARED"' in SCENE
+    assert "loadWorldEmailActivity" in APP
+    assert "[270, 294].forEach" in SCENE
+    assert "[326, 350, 374].forEach" in SCENE
+    assert "const activityBorder =" not in SCENE
+    assert "verifiedPin.position.set(-0.66, 2.92, -0.22);" in SCENE
+
+
+def test_mirror_lights_are_colored_and_warning_states_blink():
+    assert "function mirrorNodeVisualState(node)" in SCENE
+    assert 'return { color: "#22e06a", blink: false };' in SCENE
+    assert 'return { color: "#ffd23f", blink: true };' in SCENE
+    assert 'return { color: "#ff4d57", blink: true };' in SCENE
+    assert "child.userData?.mirrorStatusLight" in SCENE
+    assert "mirrorByName" in APP
+
+
+def test_some_directory_members_perform_ambient_actions():
+    assert "figure.userData.ambientInteraction" in SCENE
+    assert 'kind: ["wave", "chat", "wander"]' in SCENE
+    assert 'ambient.kind === "wander"' in SCENE
+    assert 'ambient.kind === "chat"' in SCENE
+    assert "startAvatarWave(figure, time)" in SCENE
 
 
 def test_user_selection_has_a_scoped_clock_and_prefers_avatar_hit():

@@ -102,7 +102,11 @@ const JETPACK_HORIZONTAL_SPEED = 30;
 const JETPACK_VERTICAL_SPEED = 22;
 const JETPACK_MAX_ALTITUDE = 480;
 const JETPACK_FLYING_ACTIVITY = "flying with a jetpack";
-const GYM_POSITION = Object.freeze([42, 0.14, 17]);
+// Recreation now belongs to the Office campus garden instead of occupying the
+// Town Square lawn. Both fixtures remain on the same continuous walk surface.
+const GYM_POSITION = Object.freeze([66, 0.14, -137]);
+const SWING_SET_POSITION = Object.freeze([43, 0, -137]);
+const INSTANCE_GARDEN_POSITION = Object.freeze([-52, 0, -140]);
 const GYM_HEAVY_WEIGHT_LB = 315;
 const GYM_MAX_WEIGHT_LB = 1200;
 // Double-clicking the ground sends the avatar to that spot at a dash speed far
@@ -700,32 +704,28 @@ function badgeTexture(
   return canvasTexture(THREE, 512, 512, (context) => {
     context.fillStyle = "#0c2019";
     context.fillRect(0, 0, 512, 512);
-    // The card border itself is the account-activity indicator. This keeps
-    // the signal inside the box and replaces the detached shirt lamp.
-    const activityBorder =
-      String(identity.accountStatus || "Guest") !== "Guest" &&
-      ACTIVITY_LIGHT_COLORS[identity.activityBucket]
-        ? ACTIVITY_LIGHT_COLORS[identity.activityBucket]
-        : accent;
-    context.strokeStyle = activityBorder;
-    context.lineWidth = 12;
+    // Activity belongs around the avatar portrait, not around this information
+    // panel. Keep a quiet structural edge here so the two signals cannot be
+    // confused.
+    context.strokeStyle = "rgba(158,247,198,0.5)";
+    context.lineWidth = 5;
     context.strokeRect(8, 8, 496, 496);
 
     context.textAlign = "center";
     context.textBaseline = "middle";
     context.font = '62px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
     context.fillStyle = "#ffffff";
-    context.fillText(identity.flag || "◌", 70, 62);
+    context.fillText(identity.flag || "◌", 54, 62);
 
     context.textAlign = "left";
     context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#ffffff";
-    context.fillText(String(identity.name || "guest").slice(0, 14), 112, 54);
+    context.fillText(String(identity.name || "guest").slice(0, 13), 94, 54);
     context.font = '700 18px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#a9b8ff";
     context.fillText(
       String(profile.handle || `@${identity.name || "guest"}`).slice(0, 27),
-      112,
+      94,
       82,
     );
     context.fillStyle = "#9ef7c6";
@@ -737,7 +737,7 @@ function badgeTexture(
         : profile.state === "unavailable"
           ? "FEDIVERSE · UNAVAILABLE"
           : "FEDIVERSE · LOADING",
-      112,
+      94,
       106,
     );
 
@@ -749,20 +749,20 @@ function badgeTexture(
     context.setLineDash(walletAddress ? [] : [7, 6]);
     context.strokeStyle = walletAddress ? "#f7c96b" : "#708078";
     context.lineWidth = 4;
-    context.strokeRect(400, 20, 88, 88);
+    context.strokeRect(376, 12, 124, 124);
     context.setLineDash([]);
     if (walletAddress) {
-      drawQrModules(context, walletAddress, 406, 26, 76);
+      drawQrModules(context, walletAddress, 384, 20, 108);
     } else {
       context.textAlign = "center";
       context.fillStyle = "#708078";
       context.font = '900 28px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("+", 444, 57);
+      context.fillText("+", 438, 57);
       context.font = '700 11px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
         identity.walletEditable ? "ADD WALLET" : "NO WALLET",
-        444,
-        84,
+        438,
+        96,
       );
     }
     context.textAlign = "center";
@@ -775,14 +775,51 @@ function badgeTexture(
             maximumFractionDigits: 4,
           })} SOL`
         : "",
-      444,
-      124,
+      438,
+      148,
     );
+    const nodes = Array.isArray(identity.nodes) ? identity.nodes.slice(0, 6) : [];
+    nodes.forEach((node, index) => {
+      const status = String(
+        typeof node === "object"
+          ? node?.health || node?.status || ""
+          : "",
+      ).toLowerCase();
+      const color = ["online", "healthy", "available"].includes(status)
+        ? "#22e06a"
+        : ["warning", "degraded", "stale"].includes(status)
+          ? "#ffd23f"
+          : ["offline", "failed", "error"].includes(status)
+            ? "#ff4d57"
+            : "#8da09a";
+      context.beginPath();
+      context.fillStyle = color;
+      context.arc(112 + index * 25, 132, 8, 0, Math.PI * 2);
+      context.fill();
+      context.strokeStyle = "#dffff1";
+      context.lineWidth = 2;
+      context.stroke();
+    });
+    const socialDot = (x, color, glyph) => {
+      context.beginPath();
+      context.fillStyle = color;
+      context.arc(x, 132, 9, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = "#082018";
+      context.font = '900 10px "ForkMesh Mono", ui-monospace, monospace';
+      context.textAlign = "center";
+      context.fillText(glyph, x, 132);
+    };
+    // A compact handful of follower/following people makes the relationship
+    // counts visual without turning the chest into another text-only table.
+    [270, 294].forEach((x) => socialDot(x, "#77d9ff", "←"));
+    [326, 350, 374].forEach((x) => socialDot(x, "#9ef7c6", "→"));
+    context.textAlign = "left";
     context.strokeStyle = "rgba(158,247,198,0.28)";
     context.lineWidth = 2;
     context.beginPath();
-    context.moveTo(30, 142);
-    context.lineTo(482, 142);
+    context.moveTo(30, 154);
+    context.lineTo(482, 154);
     context.stroke();
 
     const joined = joinedAgoLabel(identity.joinedAt);
@@ -827,48 +864,45 @@ function badgeTexture(
     context.font = '700 17px "ForkMesh Mono", ui-monospace, monospace';
     rows.forEach(([text, color], index) => {
       context.fillStyle = color;
-      context.fillText(text, 34, 172 + index * step);
+      context.fillText(text, 34, 181 + index * step);
     });
 
     const posts = Array.isArray(profile.posts) ? profile.posts.slice(0, 1) : [];
     context.fillStyle = "#a9b8ff";
     context.font = '800 15px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("RECENT FEDIVERSE", 34, 300);
+    context.fillText("RECENT FEDIVERSE", 34, 309);
     context.font = '600 14px "ForkMesh Mono", ui-monospace, monospace';
     posts.forEach((post, index) => {
       context.fillStyle = index ? "#93a4c8" : "#dfe8ff";
-      context.fillText(String(post).slice(0, 48), 34, 324 + index * 23);
+      context.fillText(String(post).slice(0, 48), 34, 330 + index * 23);
     });
     const recentPublicMessage = String(
       identity.recentPublicMessage || "",
     ).replace(/\s+/g, " ").trim().slice(0, 56);
     context.fillStyle = "#77d9ff";
     context.font = '800 15px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("RECENT PUBLIC CHAT", 34, 352);
+    context.fillText("RECENT PUBLIC CHAT", 34, 356);
     context.fillStyle = recentPublicMessage ? "#d9f7ff" : "#708078";
     context.font = '600 14px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
       recentPublicMessage || "NO RECENT PUBLIC MESSAGE",
       34,
-      376,
+      378,
     );
 
-    // The world status the visitor set for themselves, on the chest rather
-    // than only floating over the head.
-    const status = badgeStatusLabel(identity);
-    if (status) {
-      context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
-      const width = Math.min(452, context.measureText(status).width + 44);
-      roundedRect(context, 28, 398, width, 34, 17);
-      context.fillStyle = "rgba(158,247,198,0.14)";
-      context.fill();
-      context.strokeStyle = "rgba(158,247,198,0.5)";
-      context.lineWidth = 2;
-      context.stroke();
-      context.fillStyle = "#eafff2";
-      context.textAlign = "left";
-      context.fillText(status, 48, 415);
-    }
+    const lastEmailAt = Math.max(0, Number(identity.lastEmailAt) || 0);
+    const lastEmailStatus = String(identity.lastEmailStatus || "").toLowerCase();
+    const emailLabel = lastEmailAt
+      ? `LAST EMAIL ${joinedAgoLabel(lastEmailAt).replace(/^JOINED /, "")} · ${
+          lastEmailStatus === "delivered" ? "DELIVERED" : "FAILED"
+        }`
+      : identity.lastEmailPrivate === false
+        ? "LAST EMAIL NEVER · NO DELIVERY"
+        : "LAST EMAIL · NOT SHARED";
+    context.fillStyle =
+      lastEmailStatus === "failed" ? "#ff6b72" : "#f7c96b";
+    context.font = '800 16px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(emailLabel.slice(0, 43), 34, 410);
 
     context.textAlign = "left";
     context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
@@ -882,7 +916,7 @@ function badgeTexture(
         identity.localTime,
       ].filter(Boolean).join(" · "),
       52,
-      466,
+      468,
     );
 
     const followLabel = fediverseFollowLabel(profile);
@@ -910,10 +944,10 @@ const BADGE_FOLLOW_PILL = Object.freeze({
   maxV: 1 - 438 / 512,
 });
 const BADGE_WALLET_SQUARE = Object.freeze({
-  minU: 394 / 512,
-  maxU: 494 / 512,
-  minV: 1 - 132 / 512,
-  maxV: 1 - 14 / 512,
+  minU: 370 / 512,
+  maxU: 506 / 512,
+  minV: 1 - 154 / 512,
+  maxV: 1 - 8 / 512,
 });
 
 function badgeFollowPillHit(uv) {
@@ -4552,6 +4586,342 @@ function campfireDirtTexture(THREE) {
   return texture;
 }
 
+function createProceduralCampfireEffect(THREE) {
+  const effect = new THREE.Group();
+  effect.name = "campfire-procedural-fire";
+
+  const flameVertexShader = `
+    uniform float uTime;
+    uniform float uSpeed;
+    uniform float uPhase;
+    uniform float uCurl;
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      vec3 transformed = position;
+      float lift = pow(uv.y, 1.45);
+      float broadSway = sin(uTime * uSpeed + uPhase) * uCurl;
+      float curling = sin(uTime * uSpeed * 1.73 + uv.y * 8.0 + uPhase * 2.1)
+        * uCurl * 0.42;
+      transformed.x += (broadSway + curling) * lift;
+      transformed.y += sin(uTime * uSpeed * 1.31 + uPhase + uv.y * 5.0)
+        * 0.035 * lift;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
+    }
+  `;
+  const flameFragmentShader = `
+    uniform float uTime;
+    uniform float uSpeed;
+    uniform float uPhase;
+    uniform float uOpacity;
+    varying vec2 vUv;
+
+    float hash(vec2 p) {
+      p = fract(p * vec2(123.34, 456.21));
+      p += dot(p, p + 45.32);
+      return fract(p.x * p.y);
+    }
+    float noise(vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      f = f * f * (3.0 - 2.0 * f);
+      return mix(
+        mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
+        mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0)), f.x),
+        f.y
+      );
+    }
+    float fbm(vec2 p) {
+      float value = 0.0;
+      float amplitude = 0.55;
+      for (int octave = 0; octave < 4; octave++) {
+        value += amplitude * noise(p);
+        p = p * 2.03 + 17.17;
+        amplitude *= 0.5;
+      }
+      return value;
+    }
+    void main() {
+      float t = uTime * uSpeed;
+      float y = vUv.y;
+      float x = vUv.x * 2.0 - 1.0;
+      float turbulence = fbm(vec2(y * 3.35 - t * 0.72, uPhase));
+      float fineNoise = fbm(vec2(x * 2.8 + uPhase, y * 5.4 - t * 1.18));
+      float center = (turbulence - 0.5) * (0.25 + y * 0.44)
+        + sin(y * 9.0 - t * 1.45 + uPhase) * 0.075 * y;
+      float width = mix(0.72, 0.035, pow(y, 0.72));
+      width *= 0.82 + turbulence * 0.42;
+      width += (fineNoise - 0.5) * (0.10 + y * 0.19);
+
+      // A moving notch near the tip makes tall tongues fork before they close.
+      float fork = smoothstep(0.57, 0.9, y)
+        * (1.0 - smoothstep(0.0, 0.18, abs(x - center)))
+        * (0.35 + 0.65 * noise(vec2(floor(t * 2.0), uPhase)));
+      float edgeDistance = abs(x - center) / max(width, 0.025);
+      float body = 1.0 - smoothstep(0.67, 1.0, edgeDistance);
+      body *= 1.0 - fork * smoothstep(0.68, 0.98, y);
+
+      float raggedTop = 0.9
+        + (fbm(vec2(x * 2.1 + uPhase, -t * 1.3)) - 0.5) * 0.24;
+      float topFade = 1.0 - smoothstep(raggedTop - 0.12, raggedTop, y);
+      float alpha = body * topFade * smoothstep(0.0, 0.1, y);
+      alpha *= 0.74 + fineNoise * 0.32;
+      alpha *= uOpacity;
+      if (alpha < 0.008) discard;
+
+      float heat = clamp(edgeDistance, 0.0, 1.0);
+      vec3 whiteCore = mix(vec3(1.0, 0.72, 0.16), vec3(1.0, 0.98, 0.72),
+        (1.0 - heat) * (1.0 - y * 0.38));
+      vec3 orangeMiddle = vec3(1.0, 0.23, 0.012);
+      vec3 redEdge = vec3(0.48, 0.018, 0.002);
+      vec3 color = mix(whiteCore, orangeMiddle, smoothstep(0.16, 0.62, heat));
+      color = mix(color, redEdge, smoothstep(0.62, 1.0, heat));
+      color *= 0.88 + fineNoise * 0.3;
+      gl_FragColor = vec4(color, alpha);
+    }
+  `;
+
+  const flameGeometry = new THREE.PlaneGeometry(1, 1, 18, 28);
+  flameGeometry.translate(0, 0.5, 0);
+  const flameLayers = [
+    {
+      width: 1.35,
+      height: 2.25,
+      angle: 0.1,
+      speed: 1.72,
+      phase: 0.7,
+      opacity: 0.72,
+    },
+    {
+      width: 1.2,
+      height: 2,
+      angle: Math.PI / 2,
+      speed: 2.13,
+      phase: 2.8,
+      opacity: 0.68,
+    },
+    {
+      width: 1,
+      height: 1.72,
+      angle: Math.PI / 4,
+      speed: 2.58,
+      phase: 4.4,
+      opacity: 0.78,
+    },
+    {
+      width: 0.82,
+      height: 1.48,
+      angle: -Math.PI / 4,
+      speed: 3.04,
+      phase: 6.1,
+      opacity: 0.84,
+    },
+    {
+      width: 0.58,
+      height: 1.17,
+      angle: 1.16,
+      speed: 3.47,
+      phase: 8.3,
+      opacity: 0.9,
+    },
+  ];
+  const flameMaterials = [];
+  flameLayers.forEach((layer, index) => {
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uSpeed: { value: layer.speed },
+        uPhase: { value: layer.phase },
+        uCurl: { value: 0.13 + index * 0.018 },
+        uOpacity: { value: layer.opacity },
+      },
+      vertexShader: flameVertexShader,
+      fragmentShader: flameFragmentShader,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
+    });
+    const tongue = new THREE.Mesh(flameGeometry, material);
+    tongue.name = `campfire-flame-layer-${index + 1}`;
+    tongue.scale.set(layer.width, layer.height, 1);
+    tongue.rotation.y = layer.angle;
+    tongue.position.set(
+      Math.sin(layer.phase) * 0.09,
+      0,
+      Math.cos(layer.phase) * 0.09,
+    );
+    tongue.renderOrder = 4 + index;
+    effect.add(tongue);
+    flameMaterials.push(material);
+  });
+
+  const emberCount = 34;
+  const emberPositions = new Float32Array(emberCount * 3);
+  const emberSeeds = new Float32Array(emberCount);
+  const emberSizes = new Float32Array(emberCount);
+  let emberRandomState = 0x46_49_52_45;
+  const emberRandom = () => {
+    emberRandomState =
+      (Math.imul(emberRandomState, 1_664_525) + 1_013_904_223) >>> 0;
+    return emberRandomState / 0x1_0000_0000;
+  };
+  for (let index = 0; index < emberCount; index += 1) {
+    const offset = index * 3;
+    emberPositions[offset] = (emberRandom() - 0.5) * 0.65;
+    emberPositions[offset + 1] = emberRandom() * 0.3;
+    emberPositions[offset + 2] = (emberRandom() - 0.5) * 0.65;
+    emberSeeds[index] = emberRandom();
+    emberSizes[index] = 1.5 + emberRandom() * 3.3;
+  }
+  const emberGeometry = new THREE.BufferGeometry();
+  emberGeometry.setAttribute(
+    "position",
+    new THREE.BufferAttribute(emberPositions, 3),
+  );
+  emberGeometry.setAttribute(
+    "aSeed",
+    new THREE.BufferAttribute(emberSeeds, 1),
+  );
+  emberGeometry.setAttribute(
+    "aSize",
+    new THREE.BufferAttribute(emberSizes, 1),
+  );
+  const emberMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uHeight: { value: 1 },
+    },
+    vertexShader: `
+      uniform float uTime;
+      uniform float uHeight;
+      attribute float aSeed;
+      attribute float aSize;
+      varying float vAlpha;
+      void main() {
+        float age = fract(uTime * (0.12 + aSeed * 0.09) + aSeed * 7.31);
+        vec3 ember = position;
+        float rise = age * (1.65 + aSeed * 1.75) * uHeight;
+        ember.y += rise;
+        ember.x += sin(age * 8.0 + aSeed * 31.0) * (0.08 + age * 0.36);
+        ember.z += cos(age * 6.7 + aSeed * 27.0) * (0.07 + age * 0.28);
+        vec4 viewPosition = modelViewMatrix * vec4(ember, 1.0);
+        gl_Position = projectionMatrix * viewPosition;
+        float life = smoothstep(0.0, 0.08, age) * (1.0 - smoothstep(0.58, 1.0, age));
+        gl_PointSize = aSize * life * (95.0 / max(1.0, -viewPosition.z));
+        vAlpha = life;
+      }
+    `,
+    fragmentShader: `
+      varying float vAlpha;
+      void main() {
+        float radius = length(gl_PointCoord - 0.5) * 2.0;
+        float alpha = (1.0 - smoothstep(0.18, 1.0, radius)) * vAlpha;
+        if (alpha < 0.01) discard;
+        vec3 color = mix(vec3(1.0, 0.16, 0.01), vec3(1.0, 0.88, 0.38),
+          1.0 - radius);
+        gl_FragColor = vec4(color, alpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  const embers = new THREE.Points(emberGeometry, emberMaterial);
+  embers.name = "campfire-rising-embers";
+  embers.position.y = 0.12;
+  embers.renderOrder = 10;
+  effect.add(embers);
+
+  const smokeGeometry = new THREE.PlaneGeometry(1, 1);
+  const smokePuffs = [];
+  for (let index = 0; index < 7; index += 1) {
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        uPhase: { value: index * 2.37 },
+        uOpacity: { value: 0 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uPhase;
+        uniform float uOpacity;
+        varying vec2 vUv;
+        float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7)) + uPhase) * 43758.5453);
+        }
+        void main() {
+          vec2 p = (vUv - 0.5) * 2.0;
+          float angle = atan(p.y, p.x);
+          float uneven = 0.78 + hash(vec2(floor(angle * 5.0), uPhase)) * 0.22;
+          float alpha = (1.0 - smoothstep(0.2, uneven, length(p))) * uOpacity;
+          if (alpha < 0.006) discard;
+          gl_FragColor = vec4(vec3(0.24, 0.22, 0.2), alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.NormalBlending,
+      toneMapped: false,
+    });
+    const puff = new THREE.Mesh(smokeGeometry, material);
+    puff.name = `campfire-smoke-puff-${index + 1}`;
+    puff.rotation.y = (index * Math.PI) / 3.5;
+    puff.userData.smokeSeed = index / 7;
+    puff.userData.smokePhase = index * 1.91;
+    effect.add(puff);
+    smokePuffs.push(puff);
+  }
+
+  const groundGlow = new THREE.Mesh(
+    new THREE.CircleGeometry(3.5, 64),
+    new THREE.ShaderMaterial({
+      uniforms: { uOpacity: { value: 0.34 } },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uOpacity;
+        varying vec2 vUv;
+        void main() {
+          float radius = length(vUv - 0.5) * 2.0;
+          float alpha = (1.0 - smoothstep(0.05, 1.0, radius));
+          alpha *= alpha * uOpacity;
+          if (alpha < 0.004) discard;
+          gl_FragColor = vec4(1.0, 0.19, 0.015, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
+    }),
+  );
+  groundGlow.name = "campfire-ground-glow";
+  groundGlow.rotation.x = -Math.PI / 2;
+  groundGlow.position.y = -0.245;
+  groundGlow.renderOrder = 2;
+  effect.add(groundGlow);
+
+  effect.userData.flameMaterials = flameMaterials;
+  effect.userData.emberMaterial = emberMaterial;
+  effect.userData.smokePuffs = smokePuffs;
+  effect.userData.groundGlow = groundGlow;
+  return effect;
+}
+
 // Who joined last, by the public directory's joined timestamp. An account
 // seated straight from a presence frame carries no joined date yet (0), so it
 // is skipped rather than ranked as the oldest member in the circle.
@@ -4566,43 +4936,6 @@ function newestMemberName(members) {
     newest = name.slice(0, 32);
   });
   return newest;
-}
-
-// The headline membership number, drawn as glowing embers on transparency so
-// it can hang inside the campfire's flames without a plate behind it. The
-// account that joined most recently is credited on a line underneath, so the
-// fire says who the latest arrival is and not just how many there are.
-function campfireMemberCountTexture(THREE, total, newest) {
-  const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
-  const digits = count.toLocaleString("en-US");
-  const latest = String(newest || "").trim().slice(0, 18);
-  return canvasTexture(THREE, 512, 256, (context) => {
-    context.clearRect(0, 0, 512, 256);
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    const ember = context.createLinearGradient(0, 20, 0, 150);
-    ember.addColorStop(0, "#fff6cf");
-    ember.addColorStop(0.55, "#ffc457");
-    ember.addColorStop(1, "#ff7a2f");
-    context.shadowColor = "rgba(255,122,47,0.95)";
-    context.shadowBlur = 36;
-    context.fillStyle = ember;
-    context.font = '700 148px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText(digits, 256, latest ? 76 : 104);
-    context.shadowBlur = 20;
-    context.fillStyle = "#ffdcac";
-    context.font = '400 38px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(count === 1 ? "MEMBER" : "MEMBERS", 256, latest ? 158 : 198);
-    if (!latest) return;
-    context.shadowBlur = 14;
-    context.fillStyle = "#ffbd7a";
-    context.font = '400 22px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("NEWEST", 256, 190);
-    context.fillStyle = "#fff1d2";
-    const newestSize = latest.length > 13 ? 40 : latest.length > 9 ? 48 : 58;
-    context.font = `700 ${newestSize}px "ForkMesh Favorit", system-ui, sans-serif`;
-    context.fillText(latest, 256, 232);
-  });
 }
 
 // Carves rather than paints: a dark shadow above and a warm highlight below
@@ -4869,7 +5202,7 @@ const AVATAR_EMOJI_SKIN_COLOR = "#ffcc4d";
 // centre and the face is a plain disc lying on that cut, so an uploaded avatar
 // photo is shown undistorted instead of being wrapped around a curved shell.
 const AVATAR_HEAD_RADIUS = 0.45;
-const AVATAR_FACE_DEPTH = 0.3;
+const AVATAR_FACE_DEPTH = 0.08;
 // Where the cut plane meets the sphere: the flat circle's exact radius, so the
 // disc covers the whole cut and no bare head shows around the face.
 const AVATAR_FACE_RADIUS = Math.sqrt(
@@ -5264,6 +5597,27 @@ function syncAvatarVerifiedPin(THREE, avatar, identity) {
   previous?.dispose?.();
 }
 
+function avatarMoodTexture(THREE, emoji, note) {
+  const moodEmoji = String(emoji || AVATAR_DEFAULT_FACE_EMOJI).slice(0, 8);
+  const moodWord = String(note || "exploring")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 18);
+  return canvasTexture(THREE, 512, 160, (context) => {
+    context.clearRect(0, 0, 512, 160);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '76px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
+    context.fillText(moodEmoji, 256, 48);
+    context.font = '900 32px "ForkMesh Mono", ui-monospace, monospace';
+    context.lineWidth = 9;
+    context.strokeStyle = "rgba(5,18,14,0.94)";
+    context.strokeText(moodWord.toUpperCase(), 256, 125);
+    context.fillStyle = "#eafff2";
+    context.fillText(moodWord.toUpperCase(), 256, 125);
+  });
+}
+
 function syncAvatarStatus(THREE, avatar, identity) {
   if (!avatar?.userData) return;
   const status = normalizeWorldStatus(
@@ -5281,11 +5635,76 @@ function syncAvatarStatus(THREE, avatar, identity) {
   avatar.userData.emojiStatusKey = key;
   avatar.userData.statusEmoji = status.emoji;
   avatar.userData.statusNote = status.note;
-  avatar.userData.emojiStatusSprite = null;
-  // Status remains available to the accessible player label and presence
-  // payload, but the large duplicate overhead banner is intentionally not
-  // rendered in-world. The last-used emoji is worn on the face instead.
+  const mood = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: avatarMoodTexture(THREE, status.emoji, status.note),
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  mood.name = "avatar-mood-icon-word";
+  mood.position.set(0, 4.22, 0);
+  mood.scale.set(2.45, 0.76, 1);
+  mood.renderOrder = 11;
+  avatar.add(mood);
+  avatar.userData.emojiStatusSprite = mood;
   syncAvatarFace(THREE, avatar);
+}
+
+function avatarBackNameTexture(THREE, name, activity = {}) {
+  const label = String(name || "visitor").replace(/\s+/g, " ").trim().slice(0, 24);
+  const pulls = Math.max(0, Number(activity.pulls) || 0);
+  const issues = Math.max(0, Number(activity.issues) || 0);
+  const discussions = Math.max(0, Number(activity.discussions) || 0);
+  return canvasTexture(THREE, 512, 200, (context) => {
+    context.clearRect(0, 0, 512, 200);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    const size = label.length > 16 ? 42 : label.length > 10 ? 52 : 64;
+    context.font = `950 ${size}px "ForkMesh Mono", ui-monospace, monospace`;
+    context.lineWidth = 12;
+    context.strokeStyle = "rgba(4,16,12,0.96)";
+    context.strokeText(label.toUpperCase(), 256, 57);
+    context.fillStyle = "#ffffff";
+    context.fillText(label.toUpperCase(), 256, 57);
+    context.font = '850 26px "ForkMesh Mono", ui-monospace, monospace';
+    context.lineWidth = 8;
+    const counts = `PRS ${pulls} · ISSUES ${issues} · DISCUSSIONS ${discussions}`;
+    context.strokeText(counts, 256, 124);
+    context.fillStyle = "#9ef7c6";
+    context.fillText(counts, 256, 124);
+    context.font = '800 21px "ForkMesh Mono", ui-monospace, monospace';
+    context.strokeText("OPEN FILTERED ACTIVITY ↗", 256, 169);
+    context.fillStyle = "#77d9ff";
+    context.fillText("OPEN FILTERED ACTIVITY ↗", 256, 169);
+  });
+}
+
+function syncAvatarBackName(THREE, avatar, identity) {
+  const backName = avatar?.userData?.backName;
+  if (!backName?.material) return;
+  const activity =
+    avatar.userData.fediverseProfile?.typeTotals &&
+    typeof avatar.userData.fediverseProfile.typeTotals === "object"
+      ? avatar.userData.fediverseProfile.typeTotals
+      : identity?.contributionTotals || {};
+  const key = JSON.stringify({
+    name: String(identity?.name || "visitor"),
+    pulls: Math.max(0, Number(activity.pulls) || 0),
+    issues: Math.max(0, Number(activity.issues) || 0),
+    discussions: Math.max(0, Number(activity.discussions) || 0),
+  });
+  if (backName.userData.nameKey === key) return;
+  backName.userData.nameKey = key;
+  const previous = backName.material.map;
+  backName.material.map = avatarBackNameTexture(
+    THREE,
+    identity?.name,
+    activity,
+  );
+  backName.material.needsUpdate = true;
+  previous?.dispose?.();
 }
 
 function makeConsentedProfileFace(THREE, follower) {
@@ -5346,7 +5765,23 @@ function makeConsentedProfileFace(THREE, follower) {
   return face;
 }
 
-function syncOperatorBelt(THREE, avatar, nodeCount) {
+function mirrorNodeVisualState(node) {
+  const status = String(
+    typeof node === "object" ? node?.health || node?.status || "" : "",
+  ).toLowerCase();
+  if (["online", "healthy", "available"].includes(status)) {
+    return { color: "#22e06a", blink: false };
+  }
+  if (["warning", "degraded", "stale"].includes(status)) {
+    return { color: "#ffd23f", blink: true };
+  }
+  if (["offline", "failed", "error"].includes(status)) {
+    return { color: "#ff4d57", blink: true };
+  }
+  return { color: "#a9b8b2", blink: false };
+}
+
+function syncOperatorBelt(THREE, avatar, nodesOrCount) {
   const previous = avatar.getObjectByName("forkmesh-operator-belt");
   if (previous) {
     avatar.remove(previous);
@@ -5355,7 +5790,12 @@ function syncOperatorBelt(THREE, avatar, nodeCount) {
       child.material?.dispose?.();
     });
   }
-  const count = Math.max(0, Math.min(6, Number(nodeCount) || 0));
+  const nodes = Array.isArray(nodesOrCount)
+    ? nodesOrCount.slice(0, 6)
+    : Array.from({
+        length: Math.max(0, Math.min(6, Number(nodesOrCount) || 0)),
+      }, () => "node");
+  const count = nodes.length;
   if (!count) {
     if (avatar.userData) avatar.userData.nodeCount = 0;
     return;
@@ -5372,13 +5812,19 @@ function syncOperatorBelt(THREE, avatar, nodeCount) {
   belt.position.y = 1.43;
   beltGroup.add(belt);
   for (let index = 0; index < count; index += 1) {
+    const visual = mirrorNodeVisualState(nodes[index]);
     const light = new THREE.Mesh(
       new THREE.SphereGeometry(0.055, 10, 8),
-      makeMaterial(THREE, "#9ef7c6", {
-        emissive: "#9ef7c6",
+      makeMaterial(THREE, visual.color, {
+        emissive: visual.color,
         emissiveIntensity: 1.2,
       }),
     );
+    light.name = `forkmesh-mirror-node-${index}`;
+    light.userData.mirrorStatusLight = true;
+    light.userData.blink = visual.blink;
+    light.userData.baseColor = visual.color;
+    light.userData.phase = index * 0.91;
     light.position.set(-0.4 + index * 0.16, 1.43, -0.35);
     beltGroup.add(light);
   }
@@ -5484,7 +5930,7 @@ function createAvatar(THREE, identity, options = {}) {
       new THREE.SphereGeometry(AVATAR_HEAD_RADIUS, 32, 24),
       AVATAR_FACE_DEPTH,
     ),
-    skin,
+    shirt,
   );
   // Left unscaled: an egg-shaped head would stretch the flat cut into an
   // ellipse and put the avatar photo back out of proportion.
@@ -5506,6 +5952,23 @@ function createAvatar(THREE, identity, options = {}) {
   faceMesh.position.z = -(AVATAR_FACE_DEPTH + AVATAR_FACE_LIFT);
   faceMesh.rotation.y = Math.PI;
   group.add(faceMesh);
+
+  const activityRing = new THREE.Mesh(
+    new THREE.RingGeometry(AVATAR_FACE_RADIUS + 0.012, AVATAR_FACE_RADIUS + 0.055, 64),
+    new THREE.MeshBasicMaterial({
+      color: "#8da09a",
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      toneMapped: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  activityRing.name = "avatar-activity-ring";
+  activityRing.position.set(0, 3.36, -(AVATAR_FACE_DEPTH + AVATAR_FACE_LIFT * 2));
+  activityRing.rotation.y = Math.PI;
+  activityRing.renderOrder = 6;
+  group.add(activityRing);
 
   const limbGeometry = rotateBoxTopUVs(new THREE.BoxGeometry(0.29, 1.25, 0.32));
   const leftArm = new THREE.Mesh(limbGeometry, shirt);
@@ -5591,6 +6054,19 @@ function createAvatar(THREE, identity, options = {}) {
   badge.userData.chestBadge = true;
   group.add(badge);
 
+  const backName = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.72, 0.67),
+    new THREE.MeshBasicMaterial({
+      transparent: true,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  backName.name = "avatar-back-username";
+  backName.position.set(0, 2.54, 0.324);
+  backName.renderOrder = 5;
+  group.add(backName);
+
   const verifiedPin = new THREE.Mesh(
     new THREE.CircleGeometry(0.105, 24),
     new THREE.MeshBasicMaterial({
@@ -5600,7 +6076,7 @@ function createAvatar(THREE, identity, options = {}) {
     }),
   );
   verifiedPin.name = "forkmesh-verified-email-pin";
-  verifiedPin.position.set(0.43, 2.72, -0.328);
+  verifiedPin.position.set(-0.66, 2.92, -0.22);
   verifiedPin.rotation.y = Math.PI;
   verifiedPin.renderOrder = 5;
   verifiedPin.userData.verified = identity.emailVerified === true;
@@ -5622,11 +6098,12 @@ function createAvatar(THREE, identity, options = {}) {
     chestTabs: null,
     fediverseProfile: null,
     shirt,
-    shirtMeshes: [torso, leftArm, rightArm],
+    shirtMeshes: [torso, leftArm, rightArm, head],
     skin,
     antenna,
     antennaBulb,
     activityLight: null,
+    activityRing,
     activityBucket: "",
     walletChip: null,
     walletKey: "",
@@ -5645,10 +6122,12 @@ function createAvatar(THREE, identity, options = {}) {
     faceMesh,
     faceEmojiShown: "",
     faceIdentityKey: identity.id || identity.name || "",
+    backName,
     verifiedPin,
     jetpack,
   };
-  syncOperatorBelt(THREE, group, identity.nodes?.length || 0);
+  syncOperatorBelt(THREE, group, identity.nodes || []);
+  syncAvatarBackName(THREE, group, identity);
   syncAvatarStatus(THREE, group, identity);
   syncAvatarActivity(group, identity);
   syncAvatarWallet(THREE, group, identity);
@@ -5871,6 +6350,15 @@ function syncAvatarActivity(avatar, identity) {
   ]
     ? String(identity.activityBucket)
     : "";
+  const ring = avatar.userData.activityRing;
+  if (ring?.material) {
+    const color =
+      String(identity.accountStatus || "Guest") !== "Guest" &&
+      ACTIVITY_LIGHT_COLORS[identity.activityBucket]
+        ? ACTIVITY_LIGHT_COLORS[identity.activityBucket]
+        : "#8da09a";
+    ring.material.color.set(color);
+  }
 }
 
 function renderAvatarBadge(THREE, avatar, remote = false) {
@@ -5898,6 +6386,7 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
   avatar.userData.badgeRemote = remote === true;
   renderAvatarBadge(THREE, avatar, remote);
   avatar.userData.name = identity.name;
+  syncAvatarBackName(THREE, avatar, identity);
   const faceIdentityKey = identity.id || identity.name || "";
   if (avatar.userData.faceIdentityKey !== faceIdentityKey) {
     avatar.userData.faceIdentityKey = faceIdentityKey;
@@ -5915,6 +6404,7 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
   syncAvatarWallet(THREE, avatar, identity);
   syncAvatarStatus(THREE, avatar, identity);
   syncAvatarVerifiedPin(THREE, avatar, identity);
+  syncOperatorBelt(THREE, avatar, identity.nodes || []);
 }
 
 // Starts (or restarts) the wave on one avatar. The pose itself is played by
@@ -5964,6 +6454,24 @@ function poseWavingArm(arm, rest, angle) {
 
 function animateAvatarActivity(avatar, time, delta, reducedMotion) {
   if (!avatar?.userData) return;
+  const activityRing = avatar.userData.activityRing;
+  if (activityRing?.material) {
+    const activeRing = Boolean(avatar.userData.activityBucket);
+    activityRing.material.opacity = activeRing
+      ? reducedMotion
+        ? 0.95
+        : 0.72 + Math.sin(time * 0.004 + avatar.userData.phase) * 0.23
+      : 0.58;
+  }
+  avatar.getObjectByName("forkmesh-operator-belt")?.traverse((child) => {
+    if (!child.userData?.mirrorStatusLight || !child.userData.blink) return;
+    const lit =
+      reducedMotion ||
+      Math.sin(time * 0.008 + child.userData.phase) >= 0;
+    child.material.opacity = lit ? 1 : 0.18;
+    child.material.transparent = true;
+    child.material.emissiveIntensity = lit ? 1.8 : 0.12;
+  });
   const hudAction = avatar.userData.hudAction;
   if (hudAction) {
     const duration = reducedMotion ? 360 : 1800;
@@ -7956,7 +8464,7 @@ function createRewardTreasurySign(THREE) {
     }),
   );
   nodeButton.name = "reward-treasury-start-node-button";
-  nodeButton.position.set(1.68, 2.18, 0);
+  nodeButton.position.set(1.68, 1.66, 0);
   nodeButton.userData.interactive = "start-node-download";
   sign.add(nodeButton);
   for (const facing of [1, -1]) {
@@ -7976,6 +8484,37 @@ function createRewardTreasurySign(THREE) {
     face.rotation.y = facing > 0 ? 0 : Math.PI;
     face.userData.interactive = "start-node-download";
     nodeButton.add(face);
+  }
+  const mirrorButton = new THREE.Mesh(
+    new THREE.BoxGeometry(1.82, 0.92, 0.2),
+    makeMaterial(THREE, "#7849d6", {
+      emissive: "#4b22a3",
+      emissiveIntensity: 0.62,
+      metalness: 0.18,
+      roughness: 0.36,
+    }),
+  );
+  mirrorButton.name = "reward-treasury-launch-mirror-button";
+  mirrorButton.position.set(1.86, 2.82, 0);
+  mirrorButton.userData.interactive = "launch-vultr-mirror";
+  sign.add(mirrorButton);
+  for (const facing of [1, -1]) {
+    const face = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.68, 0.78),
+      new THREE.MeshBasicMaterial({
+        map: wordTexture(
+          THREE,
+          "LAUNCH MIRROR",
+          "VULTR  ↗",
+          "#d8c7ff",
+        ),
+        toneMapped: false,
+      }),
+    );
+    face.position.set(0, 0, facing * 0.105);
+    face.rotation.y = facing > 0 ? 0 : Math.PI;
+    face.userData.interactive = "launch-vultr-mirror";
+    mirrorButton.add(face);
   }
   sign.userData.treasurySignature = "";
   return sign;
@@ -7997,6 +8536,16 @@ function applyRewardTreasury(THREE, sign, state) {
 
 function createFountain(THREE, position, interactive, animated) {
   const group = new THREE.Group();
+  const nodeYardConcrete = new THREE.Mesh(
+    new THREE.CylinderGeometry(1, 1, 0.14, 72),
+    makeMaterial(THREE, "#b9b9b0", { roughness: 0.91 }),
+  );
+  nodeYardConcrete.name = "reward-node-concrete-plaza";
+  nodeYardConcrete.position.y = 0.07;
+  nodeYardConcrete.scale.set(14, 1, 14);
+  nodeYardConcrete.receiveShadow = true;
+  group.add(nodeYardConcrete);
+  group.userData.nodeYardConcrete = nodeYardConcrete;
   const darkStone = makeMaterial(THREE, "#1d3b31", { roughness: 0.74 });
   const water = makeMaterial(THREE, "#48d9b1", {
     roughness: 0.2,
@@ -8030,13 +8579,25 @@ function createFountain(THREE, position, interactive, animated) {
   const island = new THREE.Mesh(new THREE.CylinderGeometry(1.25, 1.65, 1.1, 28), darkStone);
   island.position.y = 1.05;
   group.add(island);
-  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.34, 3.4, 16), sunMat);
-  stem.position.y = 3.05;
-  group.add(stem);
   const sun = new THREE.Mesh(new THREE.IcosahedronGeometry(1.15, 2), sunMat);
-  sun.position.y = 5.15;
+  sun.name = "reward-pool-fireball-sun";
+  sun.position.y = 6.7;
   sun.userData.baseY = sun.position.y;
   group.add(sun);
+  const fireShell = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(1.58, 2),
+    new THREE.MeshBasicMaterial({
+      color: "#ff7a1a",
+      transparent: true,
+      opacity: 0.22,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  fireShell.name = "reward-pool-fireball-corona";
+  fireShell.position.copy(sun.position);
+  group.add(fireShell);
 
   // Hidden until the first signed catalog lands, so the pool never flashes a
   // placeholder "0 MIRRORS" before the node payload arrives.
@@ -8048,7 +8609,7 @@ function createFountain(THREE, position, interactive, animated) {
     }),
   );
   mirrorCountSprite.name = "reward-pool-mirror-count";
-  mirrorCountSprite.position.y = 7.6;
+  mirrorCountSprite.position.y = 9.4;
   mirrorCountSprite.scale.set(5, 2.5, 1);
   mirrorCountSprite.renderOrder = 12;
   mirrorCountSprite.visible = false;
@@ -8068,13 +8629,13 @@ function createFountain(THREE, position, interactive, animated) {
     group.add(ring);
   }
 
-  const particleCount = 190;
+  const particleCount = 230;
   const particlePositions = new Float32Array(particleCount * 3);
   const particleSeeds = [];
   for (let index = 0; index < particleCount; index += 1) {
     const angle = Math.random() * Math.PI * 2;
-    const radius = 0.35 + Math.random() * 3.7;
-    const height = 0.65 + Math.random() * 4.4;
+    const radius = 0.24 + Math.random() * 1.95;
+    const height = 4.8 + Math.random() * 3.6;
     particlePositions[index * 3] = Math.cos(angle) * radius;
     particlePositions[index * 3 + 1] = height;
     particlePositions[index * 3 + 2] = Math.sin(angle) * radius;
@@ -8095,14 +8656,14 @@ function createFountain(THREE, position, interactive, animated) {
   group.add(particles);
 
   const light = new THREE.PointLight("#ffd66e", 5.5, 24, 1.7);
-  light.position.y = 5.3;
+  light.position.y = 6.8;
   group.add(light);
 
   const treasurySign = createRewardTreasurySign(THREE);
   // The SOL board is the fixed centre of the service yard. Live node cabinets
   // form complete, evenly spaced rings around this point and are reflowed
   // whenever membership changes.
-  treasurySign.position.set(0, 0, 0);
+  treasurySign.position.set(0, 0, 5.2);
   treasurySign.rotation.y = 0;
   group.add(treasurySign);
   group.userData.treasurySign = treasurySign;
@@ -8120,6 +8681,11 @@ function createFountain(THREE, position, interactive, animated) {
     sun.rotation.y = time * 0.00045;
     sun.rotation.x = Math.sin(time * 0.0004) * 0.12;
     sun.position.y = sun.userData.baseY + Math.sin(time * 0.0012) * 0.16;
+    fireShell.position.copy(sun.position);
+    fireShell.rotation.y = -time * 0.00075;
+    fireShell.rotation.z = time * 0.00052;
+    const coronaPulse = 0.94 + Math.sin(time * 0.006) * 0.12;
+    fireShell.scale.setScalar(coronaPulse);
     const positions = particles.geometry.attributes.position.array;
     for (let index = 0; index < particleCount; index += 1) {
       const seed = particleSeeds[index];
@@ -8127,7 +8693,7 @@ function createFountain(THREE, position, interactive, animated) {
       const pulse = 0.78 + Math.sin(phase * 2.3 + index) * 0.18;
       positions[index * 3] = Math.cos(seed.angle + phase) * seed.radius * pulse;
       positions[index * 3 + 1] =
-        0.75 + ((seed.height + time * 0.00065 * seed.speed) % 4.5);
+        4.75 + ((seed.height + time * 0.00082 * seed.speed) % 3.8);
       positions[index * 3 + 2] = Math.sin(seed.angle + phase) * seed.radius * pulse;
     }
     particles.geometry.attributes.position.needsUpdate = true;
@@ -14340,6 +14906,8 @@ export function createWorldScene({
   onReferralBoardSelect = () => {},
   onSiteReferrerOpen = () => {},
   onInstanceBoothSelect = () => {},
+  onLaunchMirrorSelect = () => {},
+  onDrinkWater = () => {},
   onFederatedWorldTravel = () => {},
   onLobbyLinkKioskSelect = () => {},
   onLobbyFeedbackKioskSelect = () => {},
@@ -14998,15 +15566,17 @@ export function createWorldScene({
   }
   addWorldBench({
     name: "forkmesh-swing-park-bench-west",
-    x: -27,
-    z: 13,
-    heading: Math.PI * 0.72,
+    x: 46,
+    z: -129,
+    heading: Math.PI,
+    activity: "resting beside the recreation garden",
   });
   addWorldBench({
     name: "forkmesh-swing-park-bench-east",
-    x: -11,
-    z: 16,
-    heading: -Math.PI * 0.72,
+    x: 46,
+    z: -145,
+    heading: 0,
+    activity: "resting beside the recreation garden",
   });
   addWorldBench({
     name: "forkmesh-beach-bench",
@@ -15849,15 +16419,42 @@ export function createWorldScene({
     );
     campfire.add(stone);
   }
+  const burningLogs = new THREE.Group();
+  burningLogs.name = "campfire-charred-burning-logs";
+  campfire.add(burningLogs);
   for (let index = 0; index < 3; index += 1) {
     const log = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.09, 0.09, 1.15, 8),
-      makeMaterial(THREE, "#5a3b24", { roughness: 0.9 }),
+      new THREE.CylinderGeometry(0.105, 0.12, 1.18, 10),
+      makeMaterial(THREE, index === 1 ? "#21140e" : "#2b1810", {
+        roughness: 1,
+      }),
     );
     log.rotation.z = Math.PI / 2;
-    log.rotation.y = (index / 3) * Math.PI;
-    log.position.y = 0.3;
-    campfire.add(log);
+    log.rotation.y = (index / 3) * Math.PI + 0.08;
+    log.rotation.x = (index - 1) * 0.08;
+    log.position.y = 0.31 + (index % 2) * 0.07;
+    log.castShadow = true;
+    burningLogs.add(log);
+    for (let coalIndex = 0; coalIndex < 3; coalIndex += 1) {
+      const coal = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(0.075 + coalIndex * 0.012, 1),
+        makeMaterial(THREE, coalIndex === 1 ? "#ff6a17" : "#b62d0b", {
+          emissive: coalIndex === 1 ? "#ff4d0a" : "#8e1605",
+          emissiveIntensity: 2.5,
+          roughness: 0.78,
+        }),
+      );
+      const along = (coalIndex - 1) * 0.31;
+      const logAngle = log.rotation.y;
+      coal.position.set(
+        Math.cos(logAngle) * along,
+        log.position.y + 0.09 + (coalIndex % 2) * 0.025,
+        -Math.sin(logAngle) * along,
+      );
+      coal.scale.set(1.35, 0.52, 0.75);
+      coal.userData.glowingCoalPhase = index * 2.4 + coalIndex;
+      burningLogs.add(coal);
+    }
   }
   const logPile = new THREE.Group();
   logPile.name = "campfire-log-pile";
@@ -15900,37 +16497,11 @@ export function createWorldScene({
       interactive.push(log);
     }
   }
-  const flame = new THREE.Mesh(
-    new THREE.ConeGeometry(0.56, 1.4, 8),
-    makeMaterial(THREE, "#ffb547", {
-      emissive: "#ff7a2f",
-      emissiveIntensity: 1.6,
-      transparent: true,
-      opacity: 0.92,
-    }),
-  );
-  flame.name = "campfire-primary-flame";
-  // Both cones are centred on their own geometry, so scaling them up would
-  // sink the base into the ground. The animation re-pins each base to the logs
-  // every frame (see FLAME_BASE_Y); these are just the resting spots.
+  const proceduralFire = createProceduralCampfireEffect(THREE);
   const FLAME_HEIGHT = 1.4;
   const FLAME_BASE_Y = 0.28;
-  flame.position.y = FLAME_BASE_Y + FLAME_HEIGHT / 2;
-  campfire.add(flame);
-  const innerFlame = new THREE.Mesh(
-    new THREE.ConeGeometry(0.31, 0.95, 8),
-    makeMaterial(THREE, "#fff0a6", {
-      emissive: "#ffb547",
-      emissiveIntensity: 2.1,
-      transparent: true,
-      opacity: 0.94,
-    }),
-  );
-  innerFlame.name = "campfire-inner-flame";
-  const INNER_FLAME_HEIGHT = 0.95;
-  const INNER_FLAME_BASE_Y = 0.38;
-  innerFlame.position.y = INNER_FLAME_BASE_Y + INNER_FLAME_HEIGHT / 2;
-  campfire.add(innerFlame);
+  proceduralFire.position.y = FLAME_BASE_Y;
+  campfire.add(proceduralFire);
   // The blaze is a milestone marker rather than a per-member trickle: it holds
   // its size through a hundred accounts and steps up a notch when the next
   // century lands, bounded so a large community's fire stays welcoming.
@@ -15938,127 +16509,26 @@ export function createWorldScene({
   const CAMPFIRE_FIRE_LEVEL_PER_CENTURY = 0.35;
   const CAMPFIRE_MAX_FIRE_LEVEL = 5.4;
   let fireLevel = CAMPFIRE_BASE_FIRE_LEVEL;
-  // Reduced-motion visitors skip animated callbacks entirely, so establish
-  // the full three-times-larger baseline here as well as in the flicker loop.
-  // The earlier height-only cone read like a candle; the restored blaze is
-  // broad as well as tall.
-  flame.scale.set(
+  // Reduced-motion visitors skip animated callbacks, so establish a complete
+  // static procedural blaze before the first roster update.
+  proceduralFire.scale.set(
     CAMPFIRE_BASE_FIRE_LEVEL,
     CAMPFIRE_BASE_FIRE_LEVEL,
     CAMPFIRE_BASE_FIRE_LEVEL,
   );
-  flame.position.y =
-    FLAME_BASE_Y + (FLAME_HEIGHT * CAMPFIRE_BASE_FIRE_LEVEL) / 2;
-  innerFlame.scale.set(
-    CAMPFIRE_BASE_FIRE_LEVEL * 0.82,
-    CAMPFIRE_BASE_FIRE_LEVEL * 0.9,
-    CAMPFIRE_BASE_FIRE_LEVEL * 0.82,
-  );
-  innerFlame.position.y =
-    INNER_FLAME_BASE_Y +
-    (INNER_FLAME_HEIGHT * CAMPFIRE_BASE_FIRE_LEVEL * 0.9) / 2;
   const fireLight = new THREE.PointLight("#ffa14d", 3.2, 14, 1.8);
   fireLight.position.y = FLAME_BASE_Y + FLAME_HEIGHT * CAMPFIRE_BASE_FIRE_LEVEL * 0.5;
+  fireLight.castShadow = false;
   campfire.add(fireLight);
-  // The membership total rides in the flames themselves rather than on yet
-  // another sign: an ember-lit numeral hovering over the pit, so the fire
-  // reads as "this many accounts sit here" at a glance. Hidden until the
-  // roster lands so it never flashes a placeholder zero.
-  const memberCountSprite = new THREE.Sprite(
-    new THREE.SpriteMaterial({
-      transparent: true,
-      depthWrite: false,
-    }),
-  );
-  memberCountSprite.name = "campfire-member-count";
-  // Hangs clear above the (now much taller) flames rather than inside them, at
-  // a size that stays readable from the bench ring — the number is the headline
-  // of the whole clearing, so it is the first thing you can make out.
-  const MEMBER_COUNT_HOVER_Y = 15;
-  memberCountSprite.position.y = MEMBER_COUNT_HOVER_Y;
-  memberCountSprite.scale.set(9.5, 4.75, 1);
-  memberCountSprite.visible = false;
-  campfire.add(memberCountSprite);
-  const newestMemberSparkles = new THREE.Points(
-    new THREE.BufferGeometry().setFromPoints(
-      Array.from({ length: 18 }, (_, index) => {
-        const angle = (index / 18) * Math.PI * 2;
-        const radius = index % 2 ? 2.85 : 3.35;
-        return new THREE.Vector3(
-          Math.cos(angle) * radius,
-          Math.sin(angle) * 0.52,
-          0,
-        );
-      }),
-    ),
-    new THREE.PointsMaterial({
-      color: "#fff4b8",
-      size: 0.2,
-      transparent: true,
-      opacity: 0.95,
-      depthWrite: false,
-      toneMapped: false,
-    }),
-  );
-  newestMemberSparkles.name = "campfire-newest-member-name-sparkles";
-  newestMemberSparkles.position.y = MEMBER_COUNT_HOVER_Y - 1.55;
-  newestMemberSparkles.visible = false;
-  campfire.add(newestMemberSparkles);
-  function newestMemberFireSpark(side) {
-    const points = Array.from({ length: 16 }, (_, index) => {
-      const progress = index / 15;
-      return new THREE.Vector3(
-        side * (3.25 + progress * 2.15),
-        (index % 4) * 0.18 + progress * 1.35,
-        0,
-      );
-    });
-    const sparks = new THREE.Points(
-      new THREE.BufferGeometry().setFromPoints(points),
-      new THREE.PointsMaterial({
-        color: side < 0 ? "#ff8a32" : "#ffd15c",
-        size: 0.28,
-        transparent: true,
-        opacity: 0.96,
-        depthWrite: false,
-        toneMapped: false,
-      }),
-    );
-    sparks.name =
-      side < 0
-        ? "campfire-newest-member-fire-sparks-left"
-        : "campfire-newest-member-fire-sparks-right";
-    sparks.position.y = MEMBER_COUNT_HOVER_Y - 1.55;
-    sparks.visible = false;
-    campfire.add(sparks);
-    return sparks;
-  }
-  const newestMemberFireSparks = [
-    newestMemberFireSpark(-1),
-    newestMemberFireSpark(1),
-  ];
   let memberCountShown = "";
-  // Repaints only when the count or the newest member actually moved: the
-  // roster refresh runs on a timer and would otherwise rebuild the canvas
-  // every pass.
+  // The count still controls the physical logs and milestone-sized blaze, but
+  // no label, plate, sparkle ring, or other object floats in the open centre.
   function setCampfireMemberCount(total, newest = "") {
     const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
     const latest = String(newest || "").trim().slice(0, 18);
     const key = `${count}|${latest}`;
     if (memberCountShown === key) return;
     memberCountShown = key;
-    memberCountSprite.material.map?.dispose?.();
-    memberCountSprite.material.map = campfireMemberCountTexture(
-      THREE,
-      count,
-      latest,
-    );
-    memberCountSprite.material.needsUpdate = true;
-    memberCountSprite.visible = true;
-    newestMemberSparkles.visible = Boolean(latest);
-    newestMemberFireSparks.forEach((sparks) => {
-      sparks.visible = Boolean(latest);
-    });
     // Each member contributes one visible log; the fire itself only grows on
     // the hundreds, so passing a century is a visible event around the circle.
     rebuildCampfireMemberLogs(count);
@@ -16070,61 +16540,69 @@ export function createWorldScene({
     );
     fireLight.distance = 16 + Math.min(fireCenturies, 7) * 2.4;
     if (reducedMotion) {
-      const staticSize = fireLevel;
-      flame.scale.set(staticSize, fireLevel, staticSize);
-      innerFlame.scale.set(
-        staticSize * 0.82,
-        fireLevel * 0.9,
-        staticSize * 0.82,
-      );
-      flame.position.y = FLAME_BASE_Y + (FLAME_HEIGHT * fireLevel) / 2;
-      innerFlame.position.y =
-        INNER_FLAME_BASE_Y + (INNER_FLAME_HEIGHT * fireLevel * 0.9) / 2;
-      memberCountSprite.position.y =
-        MEMBER_COUNT_HOVER_Y +
-        FLAME_HEIGHT * Math.max(0, fireLevel - CAMPFIRE_BASE_FIRE_LEVEL);
-      newestMemberSparkles.position.y = memberCountSprite.position.y - 1.55;
-      newestMemberFireSparks.forEach((sparks) => {
-        sparks.position.y = memberCountSprite.position.y - 1.55;
-      });
+      const fireGrowth = fireLevel / CAMPFIRE_BASE_FIRE_LEVEL;
+      const fireWidthScale =
+        CAMPFIRE_BASE_FIRE_LEVEL * (1 + (fireGrowth - 1) * 0.32);
+      proceduralFire.scale.set(fireWidthScale, fireLevel, fireWidthScale);
     }
   }
   animated.push((time) => {
-    const flicker = 1 + Math.sin(time * 0.011) * 0.12 + Math.sin(time * 0.023) * 0.06;
-    // Keep the restored fire broad and full; every axis begins at the same
-    // three-times baseline, then the two cones flicker independently.
-    const size = fireLevel * flicker;
-    const height = fireLevel * (1 + Math.sin(time * 0.017) * 0.16);
-    flame.scale.set(size, height, size);
-    innerFlame.scale.set(size * 0.82, height * 0.9, size * 0.82);
-    // Keep both cones standing on the logs as they grow, instead of letting a
-    // taller flame sink half of its extra height under the pit.
-    flame.position.y = FLAME_BASE_Y + (FLAME_HEIGHT * height) / 2;
-    innerFlame.position.y =
-      INNER_FLAME_BASE_Y + (INNER_FLAME_HEIGHT * height * 0.9) / 2;
-    fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
-    fireLight.position.y = FLAME_BASE_Y + FLAME_HEIGHT * fireLevel * 0.5;
-    // Rides above the flames, rising with them so a bigger fire never reaches
-    // up into the number.
-    memberCountSprite.position.y =
-      MEMBER_COUNT_HOVER_Y +
-      FLAME_HEIGHT * Math.max(0, fireLevel - CAMPFIRE_BASE_FIRE_LEVEL) +
-      Math.sin(time * 0.0017) * 0.12;
-    // Orbit and shimmer around the newest-name line at the bottom of the
-    // count sprite. Reduced-motion keeps the sparkle visible but still.
-    newestMemberSparkles.position.y = memberCountSprite.position.y - 1.55;
-    newestMemberFireSparks.forEach((sparks, index) => {
-      sparks.position.y = memberCountSprite.position.y - 1.55;
-      sparks.position.x =
-        Math.sin(time * 0.004 + index * Math.PI) * 0.16;
-      sparks.material.opacity = reducedMotion
-        ? 0.92
-        : 0.7 + Math.sin(time * 0.014 + index) * 0.28;
+    const seconds = time * 0.001;
+    const slowFlicker = Math.sin(time * 0.0073 + Math.sin(time * 0.0011) * 1.7);
+    const fastFlicker = Math.sin(time * 0.0197 + Math.sin(time * 0.0043) * 2.2);
+    const sparkFlicker = Math.sin(time * 0.0431 + Math.sin(time * 0.0127));
+    const flicker = 1 + slowFlicker * 0.075 + fastFlicker * 0.04;
+    // A milestone fire grows mostly upward: widening it at the same rate would
+    // push the flames out past their own stone ring.
+    const fireGrowth = fireLevel / CAMPFIRE_BASE_FIRE_LEVEL;
+    const fireWidthScale =
+      CAMPFIRE_BASE_FIRE_LEVEL * (1 + (fireGrowth - 1) * 0.32);
+    proceduralFire.scale.set(
+      fireWidthScale * flicker,
+      fireLevel * (1 + slowFlicker * 0.055 + fastFlicker * 0.025),
+      fireWidthScale * flicker,
+    );
+    proceduralFire.userData.flameMaterials.forEach((material, index) => {
+      material.uniforms.uTime.value = seconds + index * 0.17;
     });
-    if (!reducedMotion) newestMemberSparkles.rotation.z = time * 0.0008;
-    newestMemberSparkles.material.opacity = reducedMotion
-      ? 0.9
-      : 0.72 + Math.sin(time * 0.009) * 0.24;
+    proceduralFire.userData.emberMaterial.uniforms.uTime.value = seconds;
+    proceduralFire.userData.emberMaterial.uniforms.uHeight.value =
+      Math.min(1.7, fireGrowth);
+    proceduralFire.userData.smokePuffs.forEach((puff, index) => {
+      const seed = puff.userData.smokeSeed;
+      const phase = puff.userData.smokePhase;
+      const age = (seconds * (0.09 + seed * 0.025) + seed) % 1;
+      const smokeScale = 0.42 + age * (1.15 + seed * 0.55);
+      puff.position.set(
+        Math.sin(seconds * 0.54 + phase) * age * 0.48,
+        1.55 + age * (2.15 + fireGrowth * 0.45),
+        Math.cos(seconds * 0.39 + phase * 1.4) * age * 0.32,
+      );
+      puff.scale.set(smokeScale, smokeScale * 1.18, 1);
+      const smokeFadeIn = clamp(age / 0.18, 0, 1);
+      const smokeFadeOut = 1 - clamp((age - 0.48) / 0.52, 0, 1);
+      puff.material.uniforms.uOpacity.value =
+        0.105 * smokeFadeIn * smokeFadeIn * smokeFadeOut * smokeFadeOut;
+      puff.rotation.z = Math.sin(seconds * 0.21 + phase) * 0.3;
+    });
+    proceduralFire.userData.groundGlow.material.uniforms.uOpacity.value =
+      0.28 + slowFlicker * 0.035 + fastFlicker * 0.018;
+    burningLogs.children.forEach((child) => {
+      const phase = child.userData.glowingCoalPhase;
+      if (phase === undefined || !child.material?.emissive) return;
+      child.material.emissiveIntensity =
+        2.15 + Math.sin(time * 0.009 + phase) * 0.55 + sparkFlicker * 0.18;
+    });
+    fireLight.intensity =
+      3.2 * fireLevel +
+      slowFlicker * 0.65 +
+      fastFlicker * 0.36 +
+      sparkFlicker * 0.16;
+    fireLight.position.set(
+      Math.sin(time * 0.0041 + fastFlicker) * 0.13,
+      FLAME_BASE_Y + FLAME_HEIGHT * fireLevel * 0.5 + slowFlicker * 0.09,
+      Math.sin(time * 0.0033 + slowFlicker * 1.4) * 0.11,
+    );
   });
   // The real bench count depends on the member roster, which is still an
   // in-flight network request when the scene first renders. Rather than
@@ -16156,7 +16634,7 @@ export function createWorldScene({
   // sittable) while they walk the world as a live avatar — plus one bench
   // that always stays open so an arriving guest has a spot by the fire, and
   // widens whenever a new account joins so everyone still fits.
-  const CAMPFIRE_BENCH_RADIUS = 6.2;
+  const CAMPFIRE_BENCH_RADIUS = 9;
   // Bench height is set by the sitters, not the other way round: the plank top
   // lands SEATED_SEAT_TO_SOLE above the walking plane so a seated avatar's
   // shins reach the ground instead of dangling (or folding through it).
@@ -16165,7 +16643,9 @@ export function createWorldScene({
   const CAMPFIRE_SEAT_Y = CAMPFIRE_SEAT_TOP_Y - CAMPFIRE_SEAT_HALF_THICKNESS;
   const CAMPFIRE_BENCH_LEG_HEIGHT = CAMPFIRE_SEAT_Y - CAMPFIRE_SEAT_HALF_THICKNESS;
   const CAMPFIRE_CIRCLE_MIN_SEATS = 6;
-  const CAMPFIRE_CIRCLE_MAX_SEATS = 96;
+  const CAMPFIRE_CIRCLE_MAX_SEATS = 500;
+  const CAMPFIRE_MEMBERS_PER_ROW = 25;
+  const CAMPFIRE_ROW_SPACING = 2.8;
   const CAMPFIRE_SEAT_SPACING = 2.1;
   // The ring never closes all the way round: a doorway-wide span of it is kept
   // bench-free so visitors can walk straight in to the fire and back out again
@@ -16205,24 +16685,33 @@ export function createWorldScene({
     }
     const ring = new THREE.Group();
     ring.name = "campfire-member-circle";
-    const radius = Math.max(
-      CAMPFIRE_BENCH_RADIUS,
-      (count * CAMPFIRE_SEAT_SPACING + CAMPFIRE_ENTRANCE_WIDTH) / (2 * Math.PI),
-    );
-    campfireGround.scale.setScalar(radius + 1.45);
-    // Benches spread over everything but the entrance arc, with half a bench
-    // gap of padding on each side of it, so the walkway stays clear and the
-    // always-open bench at the end of the ring sits right beside the opening.
-    const entranceAngle = Math.min(
-      CAMPFIRE_ENTRANCE_MAX_ANGLE,
-      CAMPFIRE_ENTRANCE_WIDTH / radius,
-    );
-    const seatStep = (Math.PI * 2 - entranceAngle) / count;
+    const rowCount = Math.ceil(count / CAMPFIRE_MEMBERS_PER_ROW);
+    const outerRadius =
+      CAMPFIRE_BENCH_RADIUS + Math.max(0, rowCount - 1) * CAMPFIRE_ROW_SPACING;
+    campfireGround.scale.setScalar(outerRadius + 1.45);
     const seatOffsets = [];
     const benches = [];
     for (let index = 0; index < count; index += 1) {
+      const row = Math.floor(index / CAMPFIRE_MEMBERS_PER_ROW);
+      const rowStart = row * CAMPFIRE_MEMBERS_PER_ROW;
+      const seatsInRow = Math.min(
+        CAMPFIRE_MEMBERS_PER_ROW,
+        count - rowStart,
+      );
+      const positionInRow = index - rowStart;
+      const radius = CAMPFIRE_BENCH_RADIUS + row * CAMPFIRE_ROW_SPACING;
+      // Every row reserves the same doorway toward town. The usable arc is
+      // evenly spaced, while rows stop at 25 so avatars never collapse into
+      // one ever-expanding crowded ring.
+      const entranceAngle = Math.min(
+        CAMPFIRE_ENTRANCE_MAX_ANGLE,
+        CAMPFIRE_ENTRANCE_WIDTH / radius,
+      );
+      const seatStep = (Math.PI * 2 - entranceAngle) / seatsInRow;
       const angle =
-        CAMPFIRE_ENTRANCE_ANGLE + entranceAngle / 2 + (index + 0.5) * seatStep;
+        CAMPFIRE_ENTRANCE_ANGLE +
+        entranceAngle / 2 +
+        (positionInRow + 0.5) * seatStep;
       const bench = new THREE.Group();
       bench.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
       // Long axis tangent to the ring so every bench fronts the flames.
@@ -16274,7 +16763,11 @@ export function createWorldScene({
     campfire.add(ring);
     campfire.userData.seatRing = ring;
     campfire.userData.seatCount = count;
-    campfire.userData.seatRadius = radius;
+    campfire.userData.seatRadius = outerRadius;
+    campfire.userData.seatRadii = Array.from(
+      { length: rowCount },
+      (_, row) => CAMPFIRE_BENCH_RADIUS + row * CAMPFIRE_ROW_SPACING,
+    );
     campfire.userData.seatOffsets = seatOffsets;
     campfire.userData.seatBenches = benches;
     return seatOffsets;
@@ -16303,12 +16796,12 @@ export function createWorldScene({
   movableWorldObjects.delete("campfire");
   registerMovableObject("south-members:campfire", campfire);
 
-  // A wooden swing set west of the fountain: three swings hang from one beam,
-  // so up to three visitors can ride at once. Clicking a seat starts the ride
-  // and clicking it again hops off; the shell's swing-speed slider scales the
-  // pumping, and the regular camera toggle watches the ride in first or third
-  // person because both camera modes follow the player's position.
-  const SWING_SET_POSITION = Object.freeze([-20, 0, 9]);
+  // A wooden swing set beside the Office garden gym: three swings hang from
+  // one beam, so up to three visitors can ride at once. Clicking a seat starts
+  // the ride and clicking it again hops off; the shell's swing-speed slider
+  // scales the pumping, and the regular camera toggle watches the ride in
+  // first or third person because both camera modes follow the player's
+  // position.
   const SWING_SEAT_COUNT = 3;
   const SWING_SEAT_SPACING = 2.3;
   const SWING_BEAM_HEIGHT = 4.6;
@@ -16323,9 +16816,9 @@ export function createWorldScene({
   const swingSet = new THREE.Group();
   swingSet.name = "swing-set";
   swingSet.position.set(...SWING_SET_POSITION);
-  // Local -Z (the way avatars face) points at the fountain so riders swing
-  // looking across the Town Square.
-  swingSet.rotation.y = Math.atan2(SWING_SET_POSITION[0], SWING_SET_POSITION[2]);
+  // Face the nearby gym so the swings and workout equipment read as one
+  // compact recreation garden.
+  swingSet.rotation.y = -Math.PI / 2;
   const swingFrameMaterial = makeMaterial(THREE, "#6f5136", { roughness: 0.82 });
   const swingFrameWidth = SWING_SEAT_COUNT * SWING_SEAT_SPACING + 1.6;
   const swingLegSpread = 1.7;
@@ -18838,63 +19331,152 @@ export function createWorldScene({
   });
   officeInterior.add(officeFloorWarpHub);
 
-  // Enclosed walk-in deployment booth. Three opaque walls and a roof shield
-  // the operator's screen from casual sight lines inside the lobby; the form
-  // itself remains device-local and never enters scene state or presence.
+  // An open-sided garden tent makes instance creation feel like a welcoming
+  // fair booth. Credentials remain in the device-local UI.
   const instanceBooth = new THREE.Group();
   instanceBooth.name = "forkmesh-instance-launch-booth";
-  instanceBooth.position.set(-62, 0, 39);
-  const instanceBoothDark = makeMaterial(THREE, "#111923", {
-    metalness: 0.42,
-    roughness: 0.48,
-  });
-  const instanceBoothBlue = makeMaterial(THREE, "#1f6feb", {
-    emissive: "#123c72",
-    emissiveIntensity: 0.42,
-    metalness: 0.35,
-    roughness: 0.38,
+  instanceBooth.position.set(...INSTANCE_GARDEN_POSITION);
+  const instanceBoothDark = makeMaterial(THREE, "#5537a8", {
+    metalness: 0.22,
+    roughness: 0.42,
   });
   const boothFloor = new THREE.Mesh(
-    new THREE.BoxGeometry(21, 0.16, 18),
-    makeMaterial(THREE, "#182431", { roughness: 0.76 }),
+    new THREE.CylinderGeometry(10.8, 11.4, 0.38, 48),
+    makeMaterial(THREE, "#f2c94c", { roughness: 0.66 }),
   );
-  boothFloor.position.set(0, 0.08, 0);
+  boothFloor.position.set(0, 0.19, 0);
   instanceBooth.add(boothFloor);
-  for (const [name, width, height, depth, x, y, z] of [
-    ["back", 21, 9.6, 0.42, 0, 4.8, 8.8],
-    ["left", 0.42, 9.6, 18, -10.3, 4.8, 0],
-    ["right", 0.42, 9.6, 18, 10.3, 4.8, 0],
-    ["roof", 21, 0.34, 18, 0, 9.6, 0],
-    ["entry-left", 4.2, 9.6, 0.42, -8.35, 4.8, -8.8],
-    ["entry-right", 4.2, 9.6, 0.42, 8.35, 4.8, -8.8],
+  const boothPoleMaterials = [
+    makeMaterial(THREE, "#6840c6", {
+      emissive: "#2d1766",
+      emissiveIntensity: 0.34,
+      roughness: 0.36,
+    }),
+    makeMaterial(THREE, "#31d7c4", {
+      emissive: "#0b7169",
+      emissiveIntensity: 0.38,
+      roughness: 0.34,
+    }),
+  ];
+  for (const [index, x, z] of [
+    [0, -8.5, -2.4],
+    [1, 8.5, -2.4],
+    [1, -8.5, 3.6],
+    [0, 8.5, 3.6],
   ]) {
-    const wall = new THREE.Mesh(
-      new THREE.BoxGeometry(width, height, depth),
-      instanceBoothDark,
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.34, 0.44, 9.2, 14),
+      boothPoleMaterials[index],
     );
-    wall.name = `forkmesh-instance-booth-${name}`;
-    wall.position.set(x, y, z);
-    instanceBooth.add(wall);
+    pole.name = "forkmesh-instance-booth-tent-pole";
+    pole.position.set(x, 4.75, z);
+    instanceBooth.add(pole);
   }
-  for (const x of [-5.75, 5.75]) {
-    const entryLight = new THREE.Mesh(
-      new THREE.BoxGeometry(0.24, 8.4, 0.2),
-      instanceBoothBlue,
+  const tentFabricPink = makeMaterial(THREE, "#ff77a8", {
+    emissive: "#8b2647",
+    emissiveIntensity: 0.34,
+    roughness: 0.48,
+    side: THREE.DoubleSide,
+  });
+  const roofSlope = Math.atan2(1.75, 9.5);
+  for (const side of [-1, 1]) {
+    const roofPanel = new THREE.Mesh(
+      new THREE.BoxGeometry(9.75, 0.34, 8.4),
+      side < 0 ? tentFabricPink : makeMaterial(THREE, "#ffd45f", {
+        emissive: "#8c6416",
+        emissiveIntensity: 0.28,
+        roughness: 0.5,
+      }),
     );
-    entryLight.position.set(x, 4.8, -9.05);
-    instanceBooth.add(entryLight);
+    roofPanel.name = "forkmesh-instance-booth-tent-canopy";
+    roofPanel.position.set(side * 4.72, 10.35, 0.6);
+    roofPanel.rotation.z = side * -roofSlope;
+    instanceBooth.add(roofPanel);
   }
+  const boothValance = new THREE.Mesh(
+    new THREE.BoxGeometry(19.4, 0.72, 0.34),
+    makeMaterial(THREE, "#ff77a8", {
+      emissive: "#8b2647",
+      emissiveIntensity: 0.42,
+      roughness: 0.44,
+    }),
+  );
+  boothValance.name = "forkmesh-instance-booth-front-valance";
+  boothValance.position.set(0, 9.55, 4.48);
+  instanceBooth.add(boothValance);
+
+  const globeTexture = canvasTexture(THREE, 1024, 512, (context) => {
+    const ocean = context.createLinearGradient(0, 0, 0, 512);
+    ocean.addColorStop(0, "#72dcff");
+    ocean.addColorStop(0.5, "#1976d2");
+    ocean.addColorStop(1, "#083d86");
+    context.fillStyle = ocean;
+    context.fillRect(0, 0, 1024, 512);
+    context.strokeStyle = "rgba(210, 249, 255, 0.22)";
+    context.lineWidth = 3;
+    for (let x = 0; x <= 1024; x += 128) {
+      context.beginPath();
+      context.moveTo(x, 0);
+      context.lineTo(x, 512);
+      context.stroke();
+    }
+    for (let y = 64; y < 512; y += 96) {
+      context.beginPath();
+      context.moveTo(0, y);
+      context.lineTo(1024, y);
+      context.stroke();
+    }
+    context.fillStyle = "#65d06f";
+    for (const [x, y, width, height, rotation] of [
+      [170, 145, 180, 95, -0.35],
+      [275, 300, 105, 155, 0.24],
+      [535, 150, 220, 105, 0.18],
+      [650, 305, 160, 125, -0.16],
+      [865, 335, 105, 65, 0.22],
+    ]) {
+      context.save();
+      context.translate(x, y);
+      context.rotate(rotation);
+      context.beginPath();
+      context.ellipse(0, 0, width / 2, height / 2, 0, 0, Math.PI * 2);
+      context.ellipse(width * 0.2, -height * 0.24, width * 0.3, height * 0.34, 0, 0, Math.PI * 2);
+      context.fill();
+      context.restore();
+    }
+  });
+  const boothGlobe = new THREE.Mesh(
+    new THREE.SphereGeometry(2.05, 40, 28),
+    new THREE.MeshStandardMaterial({
+      map: globeTexture,
+      roughness: 0.38,
+      metalness: 0.08,
+      emissive: "#0a4d7a",
+      emissiveIntensity: 0.22,
+    }),
+  );
+  boothGlobe.name = "forkmesh-instance-booth-rotating-globe";
+  boothGlobe.position.set(0, 13.25, 0.55);
+  boothGlobe.rotation.z = -0.18;
+  boothGlobe.userData.interactive = "instance-launch-booth";
+  instanceBooth.add(boothGlobe);
+  interactive.push(boothGlobe);
+  const globeLight = new THREE.PointLight("#7de8ff", 2.1, 15, 1.8);
+  globeLight.position.set(-1.8, 14.5, 3);
+  instanceBooth.add(globeLight);
+  animated.push((time) => {
+    boothGlobe.rotation.y = time * 0.00034;
+    boothGlobe.position.y = 13.25 + Math.sin(time * 0.0011) * 0.08;
+  });
   const boothPrivacySign = makeOfficeWallPlacard(
     THREE,
-    "NEW INSTANCE",
-    "WALK IN · PRIVATE SETUP",
-    "#58a6ff",
-    11.1,
-    1.65,
+    "LAUNCH INSTANCE",
+    "CREATE A NEW WORLD",
+    "#ffd85a",
+    13.4,
+    2.1,
   );
-  boothPrivacySign.name = "forkmesh-instance-booth-entry-sign";
-  boothPrivacySign.position.set(0, 8.35, -9.08);
-  boothPrivacySign.userData.officeFloorId = "lobby";
+  boothPrivacySign.name = "forkmesh-instance-booth-roof-sign";
+  boothPrivacySign.position.set(0, 8, 4.7);
   boothPrivacySign.userData.interactive = "instance-launch-booth";
   instanceBooth.add(boothPrivacySign);
   interactive.push(boothPrivacySign);
@@ -18927,15 +19509,143 @@ export function createWorldScene({
     }),
   );
   instanceBoothScreen.name = "forkmesh-instance-launch-booth-screen";
-  instanceBoothScreen.position.set(0, 5.1, 8.55);
-  instanceBoothScreen.rotation.y = Math.PI;
-  instanceBoothScreen.userData.officeFloorId = "lobby";
+  instanceBoothScreen.position.set(0, 3.65, 3.95);
   instanceBoothScreen.userData.interactive = "instance-launch-booth";
   instanceBooth.add(instanceBoothScreen);
   interactive.push(instanceBoothScreen);
-  officeInterior.add(instanceBooth);
-  const instanceBoothLocalPosition = new THREE.Vector3();
+  setShadows(instanceBooth);
+  world.add(instanceBooth);
   let instanceBoothOccupied = false;
+
+  // Landscaped arrival garden between the bridge and glass office.
+  const officeFrontGarden = new THREE.Group();
+  officeFrontGarden.name = "forkmesh-office-front-garden";
+  const gardenPathMaterial = makeMaterial(THREE, "#d8d3c5", { roughness: 0.96 });
+  for (const [x, z, width, depth] of [
+    [0, -137, 9, 62],
+    [-31, -140, 49, 5],
+    [40, -140, 58, 5],
+  ]) {
+    const path = new THREE.Mesh(
+      new THREE.BoxGeometry(width, 0.14, depth),
+      gardenPathMaterial,
+    );
+    path.position.set(x, 0.07, z);
+    path.receiveShadow = true;
+    officeFrontGarden.add(path);
+  }
+  const gardenFlowerColors = ["#ff668d", "#ffd65a", "#8c6cff", "#64e88d"];
+  for (let index = 0; index < 34; index += 1) {
+    const side = index % 2 ? -1 : 1;
+    const x = side * (13 + (index % 6) * 5.1);
+    const z = -120 - Math.floor(index / 6) * 7.2;
+    const shrub = new THREE.Mesh(
+      new THREE.SphereGeometry(0.8 + (index % 3) * 0.12, 12, 8),
+      makeMaterial(
+        THREE,
+        index % 5 ? "#3d9b59" : gardenFlowerColors[index % 4],
+        {
+          roughness: 0.86,
+        },
+      ),
+    );
+    shrub.name = "office-garden-plant";
+    shrub.position.set(x, 0.72, z);
+    officeFrontGarden.add(shrub);
+  }
+
+  // A rock waterfall with translucent, animated water and a splash response.
+  const waterfall = new THREE.Group();
+  waterfall.name = "forkmesh-interactive-waterfall";
+  waterfall.position.set(73, 0, -157);
+  const rockMaterial = makeMaterial(THREE, "#5f655e", { roughness: 0.94 });
+  for (const [x, y, z, scale] of [
+    [0, 3.2, 0, 4.8],
+    [-3.2, 2.15, 0.6, 3.4],
+    [3.25, 1.75, 0.4, 3.1],
+  ]) {
+    const rock = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(1, 1),
+      rockMaterial,
+    );
+    rock.position.set(x, y, z);
+    rock.scale.set(scale, scale * 0.78, scale * 0.62);
+    waterfall.add(rock);
+  }
+  const cascadeMaterial = new THREE.MeshPhysicalMaterial({
+    color: "#72dfff",
+    roughness: 0.08,
+    metalness: 0,
+    transmission: 0.55,
+    thickness: 0.3,
+    transparent: true,
+    opacity: 0.78,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const cascades = [];
+  for (const x of [-1.65, 0, 1.65]) {
+    const cascade = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.85, 6.2, 8, 24),
+      cascadeMaterial.clone(),
+    );
+    cascade.name = "garden-waterfall-cascade";
+    cascade.position.set(x, 3.75, 3.15);
+    cascade.userData.interactive = "garden-waterfall";
+    waterfall.add(cascade);
+    interactive.push(cascade);
+    cascades.push(cascade);
+  }
+  const waterfallPool = new THREE.Mesh(
+    new THREE.CylinderGeometry(6.5, 6.8, 0.3, 48),
+    cascadeMaterial.clone(),
+  );
+  waterfallPool.name = "garden-waterfall-pool";
+  waterfallPool.position.set(0, 0.2, 4);
+  waterfallPool.scale.z = 0.58;
+  waterfallPool.userData.interactive = "garden-waterfall";
+  waterfall.add(waterfallPool);
+  interactive.push(waterfallPool);
+  let waterfallSplashUntil = 0;
+  animated.push((time) => {
+    const energized = time < waterfallSplashUntil;
+    cascades.forEach((cascade, index) => {
+      cascade.position.y = 3.75 - ((time * 0.0018 + index * 0.7) % 0.42);
+      cascade.material.opacity = (energized ? 0.92 : 0.72) +
+        Math.sin(time * 0.005 + index) * 0.06;
+    });
+    waterfallPool.scale.x = (energized ? 1.05 : 1) + Math.sin(time * 0.003) * 0.02;
+  });
+  officeFrontGarden.add(waterfall);
+
+  const drinkingFountain = new THREE.Group();
+  drinkingFountain.name = "forkmesh-drinking-fountain";
+  drinkingFountain.position.set(25, 0, -145);
+  const fountainBody = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.75, 0.92, 2.5, 16),
+    makeMaterial(THREE, "#9da8aa", { metalness: 0.72, roughness: 0.3 }),
+  );
+  fountainBody.position.y = 1.25;
+  fountainBody.userData.interactive = "drinking-fountain";
+  drinkingFountain.add(fountainBody);
+  interactive.push(fountainBody);
+  const drinkingStream = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.045, 0.045, 1.15, 10),
+    cascadeMaterial.clone(),
+  );
+  drinkingStream.name = "drinking-fountain-water-stream";
+  drinkingStream.position.set(0.42, 3.12, 0);
+  drinkingStream.rotation.z = -0.7;
+  drinkingStream.visible = false;
+  drinkingFountain.add(drinkingStream);
+  let drinkingUntil = 0;
+  animated.push((time) => {
+    drinkingStream.visible = time < drinkingUntil;
+    drinkingStream.scale.y = 0.94 + Math.sin(time * 0.02) * 0.06;
+  });
+  officeFrontGarden.add(drinkingFountain);
+  setShadows(officeFrontGarden);
+  world.add(officeFrontGarden);
 
   // Public lobby Link Lab: a physical, accessible entry point for members to
   // submit public campaign/community links and inspect the transparent reach
@@ -20342,6 +21052,51 @@ export function createWorldScene({
   let mirrorAgentTasksKey = "";
   const botAgents = new Map();
   const loungeMembers = new Map();
+  // A stable random-looking subset of directory figures periodically waves,
+  // chats with a neighbour, or takes a short walk. The choices come from each
+  // account id, so a roster refresh does not make everybody twitch at once.
+  animated.push((time, delta) => {
+    let animatedMembers = 0;
+    loungeMembers.forEach((figure) => {
+      const ambient = figure.userData.ambientInteraction;
+      if (!ambient || animatedMembers >= 10) return;
+      animatedMembers += 1;
+      const cycleNumber = Math.floor(
+        (time + ambient.phase) / ambient.cycleMs,
+      );
+      const progress =
+        ((time + ambient.phase) % ambient.cycleMs) / ambient.cycleMs;
+      const active = progress >= 0.12 && progress <= 0.43;
+      figure.position.copy(ambient.seatPosition);
+      figure.rotation.y = ambient.seatHeading;
+      if (!active) {
+        applySeatedLegPose(figure);
+      } else if (ambient.kind === "wander") {
+        const walkProgress = (progress - 0.12) / 0.31;
+        const distance = Math.sin(walkProgress * Math.PI) * 1.6;
+        figure.position.x += ambient.tangentX * distance;
+        figure.position.z += ambient.tangentZ * distance;
+        figure.position.y = WORLD_WALKING_PLANE_Y;
+        figure.rotation.y =
+          Math.atan2(ambient.tangentX, ambient.tangentZ) +
+          (walkProgress > 0.5 ? Math.PI : 0);
+        const gait = Math.sin(time * 0.011) * 0.58;
+        applyLegPitch(figure, -gait, gait);
+      } else if (ambient.kind === "chat") {
+        applySeatedLegPose(figure);
+        figure.rotation.y += Math.sin(time * 0.002 + ambient.phase) * 0.34;
+        figure.userData.leftArm.rotation.z =
+          Math.sin(time * 0.006 + ambient.phase) * 0.34;
+      } else {
+        applySeatedLegPose(figure);
+        if (ambient.waveCycle !== cycleNumber) {
+          ambient.waveCycle = cycleNumber;
+          startAvatarWave(figure, time);
+        }
+      }
+      animateAvatarActivity(figure, time, delta, reducedMotion);
+    });
+  });
   // Public account facts the member directory publishes but a live presence
   // frame never carries — joined date and total active time — keyed by
   // lowercased display name and refreshed by updateMemberLounge. Every avatar
@@ -23996,12 +24751,17 @@ export function createWorldScene({
     ) {
       return false;
     }
-    const radius = Number(campfire.userData.seatRadius) || 0;
-    if (!radius) return false;
+    const radii = Array.isArray(campfire.userData.seatRadii)
+      ? campfire.userData.seatRadii
+      : [Number(campfire.userData.seatRadius) || 0];
+    if (!radii.some(Boolean)) return false;
     const dx = Number(spawn?.x) - campfire.position.x;
     const dz = Number(spawn?.z) - campfire.position.z;
     if (!Number.isFinite(dx) || !Number.isFinite(dz)) return false;
-    if (Math.abs(Math.hypot(dx, dz) - radius) > 1.25) return false;
+    const distance = Math.hypot(dx, dz);
+    if (!radii.some((radius) => Math.abs(distance - radius) <= 1.25)) {
+      return false;
+    }
     return returnToCampfireBench(name);
   }
 
@@ -25034,7 +25794,10 @@ export function createWorldScene({
     avatar.userData.avatarSelectionMeshes = meshes;
     avatar.userData.chestRegistered = true;
     if (!avatar.userData.fediverseProfile) {
-      avatar.userData.fediverseProfile = { state: "loading" };
+      const directoryFigure = String(peerId || "").startsWith("member:");
+      avatar.userData.fediverseProfile = {
+        state: directoryFigure ? "idle" : "loading",
+      };
       const target = {
         peerId: String(peerId || ""),
         name: String(avatar.userData.badgeIdentity?.name || ""),
@@ -25043,10 +25806,12 @@ export function createWorldScene({
         ),
         self: String(peerId || "") === identity.id,
       };
-      // The local player registers while createWorldScene is still returning.
-      // Defer one microtask so world.js has stored the scene handle before a
-      // fast cached profile response tries to paint this card.
-      queueMicrotask(() => onFediverseProfile(target));
+      // Do not fan one profile + contribution request out for every seat as
+      // the directory arrives. Directory figures hydrate on first selection;
+      // local and live peer avatars remain eager.
+      if (!directoryFigure) {
+        queueMicrotask(() => onFediverseProfile(target));
+      }
     }
   }
 
@@ -25108,7 +25873,13 @@ export function createWorldScene({
       visitCount: Math.max(0, Number(member.visitCount) || 0),
       totalActiveMs: Math.max(0, Number(member.totalActiveMs) || 0),
       nodes: (Array.isArray(member.nodes) ? member.nodes : [])
-        .map((node) => String(node || "").slice(0, 48))
+        .map((node) =>
+          String(
+            node && typeof node === "object"
+              ? node.name || node.node || ""
+              : node || "",
+          ).slice(0, 48),
+        )
         .slice(0, 6),
       teams: (Array.isArray(assignment.teams) ? assignment.teams : [])
         .map((team) => String(team || "").slice(0, 40))
@@ -25122,6 +25893,17 @@ export function createWorldScene({
               bio: String(profile.bio || "").slice(0, 160),
               followers: Math.max(0, Number(profile.followers) || 0),
               following: Math.max(0, Number(profile.following) || 0),
+              typeTotals:
+                profile.typeTotals && typeof profile.typeTotals === "object"
+                  ? {
+                      pulls: Math.max(0, Number(profile.typeTotals.pulls) || 0),
+                      issues: Math.max(0, Number(profile.typeTotals.issues) || 0),
+                      discussions: Math.max(
+                        0,
+                        Number(profile.typeTotals.discussions) || 0,
+                      ),
+                    }
+                  : {},
               posts: (Array.isArray(profile.posts) ? profile.posts : [])
                 .slice(0, 5)
                 .map((post) => ({
@@ -25254,6 +26036,11 @@ export function createWorldScene({
     if (!avatar?.userData?.badge) return;
     avatar.userData.fediverseProfile =
       profile && typeof profile === "object" ? profile : { state: "unavailable" };
+    syncAvatarBackName(
+      THREE,
+      avatar,
+      avatar.userData.badgeIdentity || {},
+    );
     const profileCountry = /^[A-Z]{2}$/.test(
       String(profile?.countryCode || "").toUpperCase(),
     )
@@ -25785,7 +26572,7 @@ export function createWorldScene({
       avatar.userData.status = remote.activity || "exploring";
       if (avatar.userData.badgeKey !== badgeKey) {
         updateAvatarBadge(THREE, avatar, badgeIdentity, true);
-        syncOperatorBelt(THREE, avatar, badgeIdentity.nodes.length);
+        syncOperatorBelt(THREE, avatar, badgeIdentity.nodes);
         avatar.userData.badgeKey = badgeKey;
         updatePlayerLabel(remoteLabels.get(remote.id), badgeIdentity);
       }
@@ -25976,7 +26763,7 @@ export function createWorldScene({
       const badgeKey = JSON.stringify(enriched);
       if (avatar.userData.badgeKey === badgeKey) return;
       updateAvatarBadge(THREE, avatar, enriched, true);
-      syncOperatorBelt(THREE, avatar, enriched.nodes?.length || 0);
+      syncOperatorBelt(THREE, avatar, enriched.nodes || []);
       avatar.userData.badgeKey = badgeKey;
     });
     leaderboardGridState.members = leaderboardMembers;
@@ -26088,7 +26875,7 @@ export function createWorldScene({
             syncOperatorBelt(
               THREE,
               figure,
-              memberIdentity.nodes.length,
+              memberIdentity.nodes,
             );
             figure.userData.badgeKey = badgeKey;
           }
@@ -26123,6 +26910,22 @@ export function createWorldScene({
         // sitOnCampfireBench.
         figure.rotation.y = seat ? Math.atan2(seat.x, seat.z) : 0;
         applySeatedLegPose(figure);
+        const ambientSeed = hashNumber(id);
+        if (ambientSeed % 5 === 0) {
+          const seatHeading = figure.rotation.y;
+          figure.userData.ambientInteraction = {
+            kind: ["wave", "chat", "wander"][(ambientSeed >>> 4) % 3],
+            phase: ambientSeed % 14_000,
+            cycleMs: 14_000 + (ambientSeed % 7_000),
+            seatPosition: figure.position.clone(),
+            seatHeading,
+            tangentX: Math.cos(seatHeading),
+            tangentZ: -Math.sin(seatHeading),
+            waveCycle: -1,
+          };
+        } else {
+          figure.userData.ambientInteraction = null;
+        }
       });
     // Benches past the roster are the open guest seats.
     for (let index = roster.length; index < seats.length; index += 1) {
@@ -26178,12 +26981,12 @@ export function createWorldScene({
   // ring distributes its current members at equal angular intervals; a join
   // or deletion deliberately reflows that ring so gaps never accumulate.
   function rewardCircleSlots(centreX, centreZ, count) {
-    const minimumSpacing = 4.4;
-    const ringGap = 5.4;
+    const minimumSpacing = 3.65;
+    const ringGap = 4.25;
     const requested = Math.max(0, Math.min(64, Math.round(Number(count) || 0)));
     const slots = [];
     let remaining = requested;
-    let radius = 20.5;
+    let radius = 11.75;
     let ringIndex = 0;
     while (remaining > 0 && radius < Math.min(68, WORLD_RADIUS - 6)) {
       const capacity = Math.max(
@@ -26355,6 +27158,16 @@ export function createWorldScene({
       routingZ,
       usableNodes.length,
     );
+    const nodeYardConcrete = fountain?.userData?.nodeYardConcrete;
+    if (nodeYardConcrete) {
+      const farthestRadius = circleSlots.reduce(
+        (largest, slot) =>
+          Math.max(largest, Math.hypot(slot.x - routingX, slot.z - routingZ)),
+        0,
+      );
+      const plazaRadius = Math.max(14, farthestRadius + 4.2);
+      nodeYardConcrete.scale.set(plazaRadius, 1, plazaRadius);
+    }
     usableNodes.forEach(({ node, name: nodeName }, nodeIndex) => {
       const id = `node:${nodeName.toLowerCase()}`;
       const dataKey = nodeDataKey({ ...node, name: nodeName });
@@ -27279,12 +28092,12 @@ export function createWorldScene({
     // activity ticket wins, and the directory record fills the rest in.
     const badgeIdentity = withMemberFacts(identity);
     updateAvatarBadge(THREE, player, badgeIdentity, false);
-    syncOperatorBelt(THREE, player, identity.nodes?.length || 0);
+    syncOperatorBelt(THREE, player, identity.nodes || []);
     updateAvatarBadge(THREE, officeLobbyPlayer, badgeIdentity, false);
     syncOperatorBelt(
       THREE,
       officeLobbyPlayer,
-      identity.nodes?.length || 0,
+      identity.nodes || [],
     );
     updatePlayerLabel(playerLabel, identity);
     const nextName = String(identity.name || "").trim().toLowerCase();
@@ -30490,6 +31303,19 @@ export function createWorldScene({
       onInstanceBoothSelect();
       return;
     }
+    if (hit?.object?.userData?.interactive === "launch-vultr-mirror") {
+      onLaunchMirrorSelect();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "garden-waterfall") {
+      waterfallSplashUntil = performance.now() + 2600;
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "drinking-fountain") {
+      drinkingUntil = performance.now() + 2200;
+      onDrinkWater();
+      return;
+    }
     if (hit?.object?.userData?.interactive === "federated-world-portal") {
       onFederatedWorldTravel({
         origin: String(hit.object.userData.origin || ""),
@@ -30578,6 +31404,19 @@ export function createWorldScene({
     }
     if (avatarSelection) {
       const selectedMember = avatarSelectionPayload(avatarSelection);
+      if (
+        avatarSelection.avatar?.userData?.fediverseProfile?.state === "idle"
+      ) {
+        avatarSelection.avatar.userData.fediverseProfile = {
+          state: "loading",
+        };
+        onFediverseProfile({
+          peerId: String(avatarSelection.peerId || ""),
+          name: selectedMember.name,
+          accountStatus: selectedMember.accountStatus,
+          self: selectedMember.self,
+        });
+      }
       if (
         hit.object === avatarSelection.avatar?.userData?.verifiedPin &&
         identity.isAdmin === true &&
@@ -31579,14 +32418,10 @@ export function createWorldScene({
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
     }
-    if (
-      officeSceneMode === "lobby" &&
-      officeCurrentFloorId === "lobby"
-    ) {
-      officeAvatarLocalPosition(player, instanceBoothLocalPosition);
+    if (officeSceneMode === "town") {
       const insideInstanceBooth =
-        Math.abs(instanceBoothLocalPosition.x - instanceBooth.position.x) < 9.7 &&
-        Math.abs(instanceBoothLocalPosition.z - instanceBooth.position.z) < 8.3;
+        Math.abs(player.position.x - instanceBooth.position.x) < 9.7 &&
+        Math.abs(player.position.z - instanceBooth.position.z) < 8.3;
       if (insideInstanceBooth && !instanceBoothOccupied) {
         onInstanceBoothSelect();
       }

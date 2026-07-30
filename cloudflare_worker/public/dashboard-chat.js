@@ -2109,6 +2109,9 @@ function mountForkMeshDashboardChat() {
     deferHistory = false,
   ) {
     if (orgAgentIdentity(who, senderId) && !orgAgentEngineeringAccess) return;
+    const channelMetadata = {
+      sourceLabel: CHANNEL.startsWith("#") ? CHANNEL : `#${CHANNEL}`,
+    };
     appendFullMessage(
       kind,
       who,
@@ -2118,6 +2121,7 @@ function mountForkMeshDashboardChat() {
       tsMs,
       attachment,
       deferHistory,
+      channelMetadata,
     );
     appendSideMessage(
       kind,
@@ -2128,6 +2132,7 @@ function mountForkMeshDashboardChat() {
       tsMs,
       attachment,
       deferHistory,
+      channelMetadata,
     );
     rememberContext(who, text);
   }
@@ -3205,9 +3210,17 @@ function mountForkMeshDashboardChat() {
     };
     bar.parentElement?.insertBefore(queue, bar);
     const sendButton = inputEl === fullInput ? fullSend : sideSend;
-    bar.insertBefore(fileInput, sendButton || null);
-    bar.insertBefore(button, sendButton || null);
-    bar.append(feedback);
+    const quickSlot =
+      simpleWorldComposer && inputEl === fullInput
+        ? bar.querySelector("[data-world-quick-attachment]")
+        : null;
+    if (quickSlot) {
+      quickSlot.append(fileInput, button, feedback);
+    } else {
+      bar.insertBefore(fileInput, sendButton || null);
+      bar.insertBefore(button, sendButton || null);
+      bar.append(feedback);
+    }
     button.addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", () => {
       const files = Array.from(fileInput.files || []);
@@ -3262,7 +3275,33 @@ function mountForkMeshDashboardChat() {
           : "text-muted-foreground";
   }
 
+  function pulseWorldQuickComposer(action = "chat") {
+    const composer = fullInput?.closest("[data-dashboard-chat-composer]");
+    if (!composer) return;
+    composer.removeAttribute("data-just-sent");
+    composer.setAttribute("data-submitting", action);
+    window.setTimeout(() => {
+      composer.removeAttribute("data-submitting");
+      composer.setAttribute("data-just-sent", action);
+      window.setTimeout(
+        () => composer.removeAttribute("data-just-sent"),
+        720,
+      );
+    }, 180);
+  }
+
   function setFullComposerBusy(busy) {
+    const composer = fullInput?.closest("[data-dashboard-chat-composer]");
+    if (composer) {
+      composer.toggleAttribute("data-submitting", Boolean(busy));
+      if (!busy) {
+        composer.setAttribute("data-just-sent", fullAction?.value || "chat");
+        window.setTimeout(
+          () => composer.removeAttribute("data-just-sent"),
+          720,
+        );
+      }
+    }
     for (const control of [
       fullInput,
       fullSend,
@@ -3290,6 +3329,14 @@ function mountForkMeshDashboardChat() {
       }
       fullInput.placeholder = "Message #general…";
       if (taskRouting) taskRouting.hidden = true;
+      fullSend?.setAttribute(
+        "aria-pressed",
+        String(fullAction.value === "chat"),
+      );
+      fullTaskSend?.setAttribute(
+        "aria-pressed",
+        String(fullAction.value !== "chat"),
+      );
       syncChatContextBubbles();
       return;
     }
@@ -3776,6 +3823,10 @@ function mountForkMeshDashboardChat() {
     sendEl.addEventListener("click", () => {
       if (simpleWorldComposer && inputEl === fullInput && fullAction) {
         fullAction.value = "chat";
+        syncFullComposerAction();
+      }
+      if (simpleWorldComposer && inputEl === fullInput) {
+        pulseWorldQuickComposer("chat");
       }
       sendFrom(inputEl, attachmentControl);
     });
@@ -3823,8 +3874,8 @@ function mountForkMeshDashboardChat() {
       }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        if (simpleWorldComposer && inputEl === fullInput && fullAction) {
-          fullAction.value = "chat";
+        if (simpleWorldComposer && inputEl === fullInput) {
+          pulseWorldQuickComposer(fullAction?.value || "chat");
         }
         sendFrom(inputEl, attachmentControl);
       }
@@ -3852,7 +3903,12 @@ function mountForkMeshDashboardChat() {
       if (simpleWorldComposer) {
         fullAction.value = "agent";
         if (taskAssignee) taskAssignee.value = "agent";
-        void runFullComposerAction(fullInput);
+        syncFullComposerAction();
+        setComposerStatus("Dispatching task instantly…", "good");
+        const attachmentControl = attachmentControls.find(
+          (control) => control.inputEl === fullInput,
+        );
+        void runFullComposerAction(fullInput, attachmentControl);
         return;
       }
       if (fullAction.value !== "task") {
