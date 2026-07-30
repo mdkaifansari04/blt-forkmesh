@@ -11034,6 +11034,44 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   animation: world-activity-spin 700ms linear infinite;
 }
 
+.world-task-quick-filters {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.world-task-board-tools .world-task-quick-filters button {
+  width: auto;
+  min-width: 62px;
+  color: #aeb8c4;
+  font-size: 0.68rem;
+}
+
+.world-task-board-tools .world-task-quick-filters button[aria-pressed="true"] {
+  border-color: #58a6ff;
+  background: rgb(88 166 255 / 0.15);
+  color: #c8e1ff;
+}
+
+.world-task-board-tools .world-task-batch-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #8b98a7;
+  font-size: 0.65rem;
+  white-space: nowrap;
+}
+
+.world-task-board-tools .world-task-batch-size input {
+  width: 58px;
+}
+
+.world-task-board-tools [data-world-task-batch-send] {
+  width: auto;
+  min-width: 92px;
+  color: #d2a8ff;
+  font-size: 0.68rem;
+}
+
 .world-task-board-tools :is(input, select, button):focus-visible,
 .world-activity-tools :is(input, select, button):focus-visible {
   border-color: #58a6ff;
@@ -11173,6 +11211,206 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
 .world-task-row[data-kind="bid"] {
   border-left-color: #e3b341 !important;
+}
+
+.world-activity-board--notifications,
+.world-activity-board--errors {
+  overflow-x: auto;
+}
+
+.world-notification-table-header,
+.world-notification-row {
+  display: grid !important;
+  min-width: 1480px;
+  grid-template-columns:
+    120px minmax(190px, 1.25fr) minmax(260px, 1.8fr) 82px
+    minmax(150px, 1fr) minmax(150px, 1fr) 150px 150px 120px;
+  align-items: center;
+}
+
+.world-notification-table-header,
+.world-error-table-header,
+.world-error-group-header {
+  min-height: 36px;
+  border: 1px solid #324152;
+  background: #111923;
+  color: #8593a2;
+  font: 800 0.62rem/36px "ForkMesh Mono", ui-monospace, monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.world-notification-table-header > *,
+.world-notification-row > *,
+.world-error-table-header > *,
+.world-error-row > *,
+.world-error-group-header > *,
+.world-error-group-row > * {
+  overflow: hidden;
+  min-width: 0;
+  padding: 0 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-notification-table {
+  display: block;
+  min-width: 1480px;
+}
+
+.world-notification-table .world-notification-row {
+  min-height: 42px;
+  border: 0 !important;
+  border-bottom: 1px solid rgb(139 148 158 / 0.16) !important;
+  border-left: 3px solid #58a6ff !important;
+  border-radius: 0 !important;
+  background: #0e151d !important;
+  padding: 0 !important;
+  color: #b8c2cc;
+  font: 650 0.68rem/1 "ForkMesh Mono", ui-monospace, monospace;
+  box-shadow: none;
+}
+
+.world-notification-table .world-notification-row:hover {
+  transform: none;
+  background: #14202b !important;
+  box-shadow: none;
+}
+
+.world-notification-kind {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.world-notification-kind i {
+  display: inline-grid;
+  width: 27px;
+  height: 27px;
+  flex: 0 0 27px;
+  place-items: center;
+  border-radius: 7px;
+  background: #182638;
+  font-size: 0.7rem;
+  font-style: normal;
+}
+
+.world-activity-row-actions {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.world-activity-row-actions :is(a, button),
+.world-error-row button {
+  min-height: 27px;
+  border: 1px solid #3b4a5a;
+  border-radius: 6px;
+  background: #141d27;
+  color: #c8e1ff;
+  padding: 0 8px;
+  font: 700 0.62rem/1 system-ui, sans-serif;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.world-error-groups {
+  margin: 14px 0 18px;
+}
+
+.world-error-groups h4,
+.world-error-raw-title {
+  margin: 0 0 8px;
+  color: #dbe8f5;
+  font-size: 0.76rem;
+}
+
+.world-error-group-table {
+  min-width: 1480px;
+}
+
+.world-error-group-header,
+.world-error-group-row {
+  display: grid;
+  grid-template-columns:
+    62px 70px 82px minmax(220px, 1.2fr) minmax(300px, 1.8fr)
+    170px 150px 150px;
+  align-items: center;
+}
+
+.world-error-group-row {
+  min-height: 42px;
+  border-right: 1px solid #273444;
+  border-bottom: 1px solid #273444;
+  border-left: 3px solid #d29922;
+  background: #0e151d;
+  color: #b8c2cc;
+  font: 650 0.67rem/1 "ForkMesh Mono", ui-monospace, monospace;
+}
+
+.world-error-actor-stack {
+  display: flex;
+  align-items: center;
+  padding-left: 12px;
+}
+
+.world-error-actor-stack i,
+.world-error-single-actor {
+  display: inline-grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  margin-left: -6px;
+  border: 2px solid #0e151d;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #57606a, #30363d);
+  color: #fff;
+  font: 800 0.62rem/1 system-ui, sans-serif;
+  font-style: normal;
+}
+
+.world-error-actor-stack i:first-child {
+  margin-left: 0;
+}
+
+.world-error-table-header,
+.world-error-row {
+  display: grid !important;
+  min-width: 1640px;
+  grid-template-columns:
+    65px 160px 72px 82px minmax(260px, 1.35fr) minmax(330px, 1.8fr)
+    70px minmax(170px, 0.9fr) 132px;
+  align-items: center;
+}
+
+.world-error-table {
+  display: block;
+  min-width: 1640px;
+}
+
+.world-error-table .world-error-row {
+  min-height: 40px;
+  border: 0 !important;
+  border-bottom: 1px solid rgb(139 148 158 / 0.16) !important;
+  border-left: 3px solid #ff7b8a !important;
+  border-radius: 0 !important;
+  background: #0e151d !important;
+  padding: 0 !important;
+  color: #b8c2cc;
+  font: 650 0.67rem/1 "ForkMesh Mono", ui-monospace, monospace;
+  box-shadow: none;
+}
+
+.world-error-table .world-error-row:hover {
+  transform: none;
+  background: #14202b !important;
+  box-shadow: none;
+}
+
+.world-error-row-actions {
+  display: flex;
+  gap: 5px;
+  align-items: center;
 }
 
 .world-task-row--mine::after {
@@ -11414,15 +11652,18 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
    one reveals the rich task record as a private chat-style bubble underneath. */
 .world-task-table {
   --world-task-columns:
-    minmax(250px, 2.4fr)
-    minmax(72px, 0.62fr)
-    48px
-    minmax(82px, 0.75fr)
-    minmax(145px, 1.25fr)
-    minmax(92px, 0.78fr)
-    62px
-    64px
-    minmax(118px, auto);
+    minmax(280px, 2.4fr)
+    minmax(84px, 0.62fr)
+    52px
+    minmax(100px, 0.75fr)
+    minmax(90px, 0.65fr)
+    minmax(118px, 0.9fr)
+    minmax(72px, 0.55fr)
+    minmax(170px, 1.25fr)
+    minmax(100px, 0.78fr)
+    68px
+    68px
+    minmax(310px, auto);
   display: block;
   overflow-x: auto;
   overflow-y: visible;
@@ -11437,7 +11678,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   display: grid;
   grid-template-columns: var(--world-task-columns);
   align-items: center;
-  min-width: 1080px;
+  min-width: 1580px;
 }
 
 /* Walk-in instance booth. This is deliberately a flat, non-modal work surface:
@@ -11849,7 +12090,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   position: sticky;
   top: 0;
   z-index: 3;
-  min-height: 29px;
+  min-height: 36px;
   border-bottom: 1px solid #324152;
   background: #111923;
   box-shadow: 0 2px 7px rgb(0 0 0 / 0.22);
@@ -11858,14 +12099,14 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-task-table-header > :is(button, span) {
   overflow: hidden;
   min-width: 0;
-  height: 29px;
+  height: 36px;
   border: 0;
   border-right: 1px solid rgb(139 148 158 / 0.12);
   border-radius: 0;
   background: transparent;
   color: #7f8c9a;
   padding: 0 7px;
-  font: 800 0.52rem/29px "ForkMesh Mono", ui-monospace, monospace;
+  font: 800 0.62rem/36px "ForkMesh Mono", ui-monospace, monospace;
   letter-spacing: 0.055em;
   text-align: left;
   text-overflow: ellipsis;
@@ -11892,7 +12133,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   position: relative;
   display: block;
   overflow: visible;
-  min-width: 1080px;
+  min-width: 1580px;
   border: 0 !important;
   border-bottom: 1px solid rgb(139 148 158 / 0.13) !important;
   border-left: 3px solid #58a6ff !important;
@@ -11936,7 +12177,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 .world-task-row-summary {
-  min-height: 34px;
+  min-height: 42px;
   cursor: pointer;
   list-style: none;
 }
@@ -11948,13 +12189,13 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-task-row-summary > :is(span, time) {
   display: flex;
   min-width: 0;
-  height: 34px;
+  height: 42px;
   align-items: center;
   overflow: hidden;
   border-right: 1px solid rgb(139 148 158 / 0.085);
   color: #aeb8c4;
   padding: 0 7px;
-  font: 650 0.6rem/1 "ForkMesh Mono", ui-monospace, monospace;
+  font: 650 0.68rem/1 "ForkMesh Mono", ui-monospace, monospace;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -11982,12 +12223,12 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 .world-task-row-summary .world-task-avatar {
-  width: 23px;
-  height: 23px;
-  flex: 0 0 23px;
+  width: 27px;
+  height: 27px;
+  flex: 0 0 27px;
   border-width: 1px;
   border-radius: 7px;
-  font-size: 0.58rem;
+  font-size: 0.65rem;
   box-shadow: none;
 }
 
@@ -12042,23 +12283,33 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
 .world-task-table .world-task-row-controls :is(button, time) {
   display: inline-grid;
-  width: 23px;
-  min-width: 23px;
-  min-height: 23px;
-  height: 23px;
+  width: auto;
+  min-width: 46px;
+  min-height: 27px;
+  height: 27px;
   place-items: center;
   border: 1px solid #344252;
   border-radius: 6px;
   background: #131c26;
-  padding: 0;
+  padding: 0 7px;
   color: #b8c2cc;
-  font-size: 0.58rem;
+  font-size: 0.62rem;
   line-height: 1;
 }
 
 .world-task-table .world-office-task-qa-actions {
   display: inline-flex;
   gap: 2px;
+}
+
+.world-task-attachment-thumbnail {
+  width: 27px;
+  height: 27px;
+  flex: 0 0 27px;
+  border: 1px solid #45586d;
+  border-radius: 6px;
+  background: #081018;
+  object-fit: cover;
 }
 
 .world-task-table .world-task-detail-chevron {

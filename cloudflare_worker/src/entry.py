@@ -30201,7 +30201,36 @@ async def notifications_handler(env, request):
                     now, recipient_bi, item_id)
         return json_response({"ok": True})
 
-    return json_response({"error": "method_not_allowed"}, status=405)
+    if method == "DELETE":
+        try:
+            data = await bounded_json_request(request)
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
+        item_id = clean_string(data.get("id", ""), 160).lower()
+        if not valid_node_name(node) or not re.fullmatch(
+                r"[a-f0-9]{64}", item_id):
+            return json_response({"error": "bad_request"}, status=400)
+        # A notification can only be removed from the authenticated owner's
+        # own encrypted inbox. The opaque id is still scoped by recipient_bi,
+        # so an id copied from another account cannot delete anything.
+        if await _authed_account_name(env, request, data) != node:
+            return json_response({"error": "unauthorized"}, status=401)
+        recipient_bi = await blind_index(env, node)
+        await d1_run(
+            env,
+            "DELETE FROM notifications "
+            "WHERE recipient_bi=? AND dedupe_bi=?",
+            recipient_bi,
+            item_id,
+        )
+        return json_response({"ok": True})
+
+    return json_response(
+        {"error": "method_not_allowed"},
+        status=405,
+        extra_headers={"allow": "GET, POST, DELETE"},
+    )
 
 
 async def mirror_requests_handler(env, request):
@@ -35765,12 +35794,13 @@ async def client_error_handler(env, request):
 
 async def world_admin_errors_handler(env, request):
     """Return the admin HUD cursor and, on demand, a bounded error table."""
-    if method_name(request) != "GET":
+    method = method_name(request)
+    if method not in ("GET", "POST", "DELETE"):
         return json_response(
             {"error": "method_not_allowed"},
             status=405,
             cache_control="no-store",
-            extra_headers={"allow": "GET"},
+            extra_headers={"allow": "GET, POST, DELETE"},
         )
     _, rec = await _account_session_record(env, request)
     actor = clean_string(
@@ -35783,6 +35813,35 @@ async def world_admin_errors_handler(env, request):
         return json_response(
             {"error": "forbidden"}, status=403,
             cache_control="no-store")
+    if method in ("POST", "DELETE"):
+        try:
+            data = await bounded_json_request(request)
+            row_id = int(data.get("id") or 0)
+        except (AttributeError, TypeError, ValueError):
+            row_id = 0
+        if row_id <= 0:
+            return json_response(
+                {"error": "invalid_error_id"},
+                status=400,
+                cache_control="no-store",
+            )
+        if method == "POST":
+            message, details = await _admin_error_create_bot_task(
+                env, {"error_id": [str(row_id)]}, actor)
+            if details.get("taskId"):
+                return json_response(
+                    {"ok": True, "message": message, **details},
+                    status=201,
+                    cache_control="no-store",
+                )
+            return json_response(
+                {"error": "task_create_failed", "message": message},
+                status=403,
+                cache_control="no-store",
+            )
+        await ensure_schema(env)
+        await d1_run(env, "DELETE FROM error_log WHERE id=?", row_id)
+        return json_response({"ok": True}, cache_control="no-store")
     try:
         query = parse_qs(urlparse(request.url).query)
         raw_after = query.get("after", ["0"])[0]
@@ -35807,6 +35866,64 @@ async def world_admin_errors_handler(env, request):
             "FROM error_log ORDER BY id DESC LIMIT 100",
         )
         payload["errors"] = rows or []
+        grouped_rows = await d1_all(
+            env,
+            "SELECT id,ts,status,method,path,message,ray,actor "
+            "FROM error_log WHERE ts>=? ORDER BY id DESC LIMIT 1000",
+            int(Date.now()) - 24 * 60 * 60 * 1000,
+        )
+        groups = {}
+        for row in grouped_rows or []:
+            signature = (
+                str(row.get("status") or ""),
+                str(row.get("method") or "").upper(),
+                str(row.get("path") or ""),
+                str(row.get("message") or ""),
+            )
+            group = groups.setdefault(signature, {
+                "count": 0,
+                "firstSeen": int(row.get("ts") or 0),
+                "lastSeen": 0,
+                "actors": {},
+                "anonymous": 0,
+            })
+            timestamp = max(0, int(row.get("ts") or 0))
+            group["count"] += 1
+            group["firstSeen"] = min(group["firstSeen"] or timestamp, timestamp)
+            group["lastSeen"] = max(group["lastSeen"], timestamp)
+            related_actor = clean_string(
+                row.get("actor") or "", MAX_NODE_NAME).strip().lower()
+            if related_actor:
+                group["actors"][related_actor] = (
+                    group["actors"].get(related_actor, 0) + 1)
+            else:
+                group["anonymous"] += 1
+        payload["groups"] = [
+            {
+                "status": signature[0],
+                "method": signature[1],
+                "path": signature[2],
+                "message": signature[3],
+                "count": group["count"],
+                "firstSeen": group["firstSeen"],
+                "lastSeen": group["lastSeen"],
+                "actors": [
+                    {"name": name, "count": count}
+                    for name, count in sorted(
+                        group["actors"].items(),
+                        key=lambda item: (-item[1], item[0]),
+                    )[:16]
+                ],
+                "anonymous": group["anonymous"],
+            }
+            for signature, group in sorted(
+                groups.items(),
+                key=lambda item: (
+                    -item[1]["count"],
+                    -item[1]["lastSeen"],
+                ),
+            )[:25]
+        ]
     return json_response(
         payload,
         cache_control="no-store",

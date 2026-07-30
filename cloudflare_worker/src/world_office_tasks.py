@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 PREFIX = "/api/world/office/marketing-tasks"
 UNIVERSAL_PREFIX = "/api/tasks"
 LEGACY_MARKETING_PREFIX = PREFIX
-BODY_MAX_BYTES = 12 * 1024
+BODY_MAX_BYTES = 64 * 1024
 MAX_TASKS = 2000
 MAX_CHECKINS_PER_TASK = 50
 MAX_TITLE = 160
@@ -95,7 +95,7 @@ def _text(value, maximum, fallback=""):
 
 
 def _attachments(value):
-    """Keep bounded file metadata with a task; bytes remain in encrypted chat."""
+    """Keep bounded metadata plus a tiny encrypted image preview with a task."""
     if not isinstance(value, list):
         return []
     result = []
@@ -109,7 +109,18 @@ def _attachments(value):
         except (TypeError, ValueError):
             size = 0
         if name and size:
-            result.append({"name": name, "mime": mime, "size": size})
+            attachment = {"name": name, "mime": mime, "size": size}
+            thumbnail = str(item.get("thumbnail") or "")
+            if (
+                mime in ("image/png", "image/jpeg", "image/webp")
+                and len(thumbnail) <= 10_000
+                and re.fullmatch(
+                    r"data:image/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+",
+                    thumbnail,
+                )
+            ):
+                attachment["thumbnail"] = thumbnail
+            result.append(attachment)
     return result
 
 

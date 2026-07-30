@@ -159,6 +159,12 @@ function normalizedTask(task) {
         name: text(attachment?.name, 180),
         mime: text(attachment?.mime, 100),
         size: Math.max(0, Math.min(1024 * 1024, Number(attachment?.size) || 0)),
+        thumbnail:
+          /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(
+            String(attachment?.thumbnail || ""),
+          ) && String(attachment.thumbnail).length <= 10_000
+            ? String(attachment.thumbnail)
+            : "",
       }))
       .filter((attachment) => attachment.name && attachment.size),
     completionNote: text(task.completionNote, 4000),
@@ -333,6 +339,8 @@ export function createWorldOfficeTasksController({
     "[data-world-task-sort-direction]",
   );
   const taskRefresh = root.querySelector("[data-world-task-refresh]");
+  const taskBatchSize = root.querySelector("[data-world-task-batch-size]");
+  const taskBatchSend = root.querySelector("[data-world-task-batch-send]");
   const checkinCopy = root.querySelector(
     "[data-world-office-task-checkin-copy]",
   );
@@ -531,7 +539,7 @@ export function createWorldOfficeTasksController({
                 data-world-office-task-action="follow-up"
                 data-world-office-task-id="${task.id}"
                 ${waiting ? "disabled" : ""}
-              >Follow up</button>`
+              >Follow-up</button>`
             : ""
         }
         ${
@@ -543,7 +551,7 @@ export function createWorldOfficeTasksController({
                 aria-label="${activeTask ? "Stop" : "Start"} ${escapeHTML(task.title)}"
                 title="${activeTask ? "Stop timer" : "Start timer"}"
                 ${waiting ? "disabled" : ""}
-              >${waiting ? '<span class="world-task-button-spinner" aria-hidden="true"></span>' : activeTask ? "■" : "▶"}</button>`
+              >${waiting ? '<span class="world-task-button-spinner" aria-hidden="true"></span>' : activeTask ? "Stop" : "Start"}</button>`
             : ""
         }
         ${
@@ -556,7 +564,7 @@ export function createWorldOfficeTasksController({
                 aria-label="Mark ${escapeHTML(task.title)} done"
                 title="Mark done"
                 ${waiting ? "disabled" : ""}
-              >${waiting ? '<span class="world-task-button-spinner" aria-hidden="true"></span>' : "✓"}</button>`
+              >${waiting ? '<span class="world-task-button-spinner" aria-hidden="true"></span>' : "Done"}</button>`
             : ""
         }
         ${
@@ -573,7 +581,7 @@ export function createWorldOfficeTasksController({
                       aria-label="QA ${verdict}"
                       title="QA ${verdict}"
                       ${waiting ? "disabled" : ""}
-                    >${verdict === "pass" ? "✓" : verdict === "fail" ? "×" : "?"}</button>`,
+                    >${verdict === "pass" ? "Pass" : verdict === "fail" ? "Fail" : "Unsure"}</button>`,
                   )
                   .join("")}
               </span>`
@@ -589,7 +597,7 @@ export function createWorldOfficeTasksController({
                 aria-label="Return ${escapeHTML(task.title)} to tasks"
                 title="Return to tasks"
                 ${waiting ? "disabled" : ""}
-              >↩</button>`
+              >Return</button>`
             : ""
         }
         ${
@@ -602,7 +610,7 @@ export function createWorldOfficeTasksController({
                 ${waiting ? "disabled" : ""}
                 aria-label="Delete ${escapeHTML(task.title)}"
                 title="Delete task"
-              >×</button>`
+              >Delete</button>`
             : ""
         }
       </span>`;
@@ -625,6 +633,9 @@ export function createWorldOfficeTasksController({
       ${taskSortHeaderHTML("Status", "status", "world-task-cell-status")}
       ${taskSortHeaderHTML("P", "priority", "world-task-cell-priority")}
       ${taskSortHeaderHTML("Owner", "assignee", "world-task-cell-owner")}
+      <span class="world-task-cell-agent" role="columnheader">Agent</span>
+      <span class="world-task-cell-model" role="columnheader">Model</span>
+      <span class="world-task-cell-speed" role="columnheader">Speed</span>
       ${taskSortHeaderHTML("Routing", "department", "world-task-cell-route")}
       ${taskSortHeaderHTML("Updated", "updated", "world-task-cell-updated")}
       ${taskSortHeaderHTML("Time", "tracked", "world-task-cell-time")}
@@ -684,6 +695,10 @@ export function createWorldOfficeTasksController({
       task.team,
       task.repository,
     ].filter(Boolean).join(" · ");
+    const agentLabel =
+      task.agent?.provider || task.agent?.startedBy || (botTask ? "Bot" : "—");
+    const modelLabel = task.agent?.model || "—";
+    const speedLabel = task.agent?.strength || task.agent?.mode || "—";
     const metadata = [
       ["Priority", `P${task.priority}`],
       ["Status", statusLabel],
@@ -731,6 +746,14 @@ export function createWorldOfficeTasksController({
         <summary class="world-task-row-summary">
           <span class="world-task-cell-title" role="cell" title="${escapeHTML(task.title, 500)} · ${escapeHTML(task.details || "No description", 1000)}">
             ${taskAvatarHTML(task)}
+            ${task.attachments
+              .filter((attachment) => attachment.thumbnail)
+              .slice(0, 3)
+              .map(
+                (attachment) =>
+                  `<img class="world-task-attachment-thumbnail" src="${attachment.thumbnail}" alt="" title="${escapeHTML(attachment.name, 180)}" />`,
+              )
+              .join("")}
             <strong>${escapeHTML(task.title)}</strong>
             ${task.attachments.length ? `<i aria-label="${task.attachments.length} attachment(s)" title="${task.attachments.length} attachment(s)">📎</i>` : ""}
           </span>
@@ -762,6 +785,9 @@ export function createWorldOfficeTasksController({
                 : escapeHTML(assigneeLabel)
             }
           </span>
+          <span class="world-task-cell-agent" role="cell" title="${escapeHTML(agentLabel)}">${escapeHTML(agentLabel)}</span>
+          <span class="world-task-cell-model" role="cell" title="${escapeHTML(modelLabel)}">${escapeHTML(modelLabel)}</span>
+          <span class="world-task-cell-speed" role="cell" title="${escapeHTML(speedLabel)}">${escapeHTML(speedLabel)}</span>
           <span class="world-task-cell-route" role="cell" title="${escapeHTML(routeLabel || "—", 500)}">${escapeHTML(routeLabel || "—")}</span>
           <time class="world-task-cell-updated" role="cell" datetime="${new Date(task.updatedAt || task.createdAt || 0).toISOString()}">${escapeHTML(taskDateLabel(task.updatedAt || task.createdAt))}</time>
           <time
@@ -866,6 +892,16 @@ export function createWorldOfficeTasksController({
       if (workFilter === "mine" && task.assignee !== actor) return false;
       if (workFilter === "agent" && task.assigneeKind !== "agent") return false;
       if (
+        workFilter === "queued" &&
+        !(
+          task.status === "idle" &&
+          task.assigneeKind === "agent" &&
+          task.agentSessionId
+        )
+      ) {
+        return false;
+      }
+      if (
         ["active", "idle", "done"].includes(workFilter) &&
         task.status !== workFilter
       ) {
@@ -881,6 +917,10 @@ export function createWorldOfficeTasksController({
         task.team,
         task.destination,
         task.repository,
+        task.agent?.provider,
+        task.agent?.model,
+        task.agent?.mode,
+        task.agent?.strength,
         task.id,
       ].some((value) => String(value || "").toLowerCase().includes(query));
     });
@@ -1270,6 +1310,12 @@ export function createWorldOfficeTasksController({
       taskSearch.value = workSearch;
     }
     if (taskFilter) taskFilter.value = workFilter;
+    root.querySelectorAll("[data-world-task-quick-filter]").forEach((button) => {
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.worldTaskQuickFilter === workFilter),
+      );
+    });
     if (taskSort) taskSort.value = workSort;
     if (taskSortDirection) {
       taskSortDirection.value = workSortAscending ? "asc" : "desc";
@@ -1282,6 +1328,20 @@ export function createWorldOfficeTasksController({
     if (taskRefresh) {
       taskRefresh.disabled = loading;
       taskRefresh.classList.toggle("is-loading", loading);
+    }
+    if (taskBatchSize && !taskBatchSize.value) taskBatchSize.value = "10";
+    if (taskBatchSend) {
+      taskBatchSend.disabled =
+        loading ||
+        !canManage ||
+        !tasks.some(
+          (task) =>
+            task.status === "idle" &&
+            task.assigneeKind === "unassigned" &&
+            Boolean(task.repository),
+        );
+      taskBatchSend.hidden = !canManage;
+      if (taskBatchSize) taskBatchSize.closest("label").hidden = !canManage;
     }
     hydrateTaskAvatars();
   }
@@ -1686,6 +1746,61 @@ export function createWorldOfficeTasksController({
       void refresh({ quiet: false, force: true });
       return;
     }
+    const quickFilter = event.target.closest("[data-world-task-quick-filter]");
+    if (quickFilter) {
+      workFilter = [
+        "all",
+        "active",
+        "queued",
+        "idle",
+      ].includes(quickFilter.dataset.worldTaskQuickFilter)
+        ? quickFilter.dataset.worldTaskQuickFilter
+        : "all";
+      renderWorkPane();
+      return;
+    }
+    if (event.target.closest("[data-world-task-batch-send]")) {
+      if (!canManage || typeof postJSON !== "function") return;
+      const limit = Math.max(
+        1,
+        Math.min(50, Math.round(Number(taskBatchSize?.value) || 10)),
+      );
+      const candidates = visibleWorkTasks()
+        .filter(
+          (task) =>
+            task.status === "idle" &&
+            task.assigneeKind === "unassigned" &&
+            Boolean(task.repository),
+        )
+        .slice(0, limit);
+      if (!candidates.length) {
+        toast("No ready unassigned repository tasks match this view.");
+        return;
+      }
+      taskBatchSend.disabled = true;
+      let moved = 0;
+      try {
+        for (const task of candidates) {
+          await postJSON(
+            `${OFFICE_TASKS_PATH}/${encodeURIComponent(task.id)}`,
+            { assigneeKind: "agent" },
+            { method: "PATCH", timeout: 10_000 },
+          );
+          moved += 1;
+        }
+        await refresh({ quiet: true, force: true });
+      } catch (error) {
+        toast(
+          `${moved} task${moved === 1 ? "" : "s"} queued before the batch stopped: ${
+            text(error?.message, 120) || "request failed"
+          }.`,
+        );
+        await refresh({ quiet: true, force: true });
+        return;
+      }
+      toast(`${moved} task${moved === 1 ? "" : "s"} sent to the Bot queue.`);
+      return;
+    }
     if (event.target.closest("[data-world-task-sort-direction]")) {
       workSortAscending = !workSortAscending;
       renderWorkPane();
@@ -1830,6 +1945,7 @@ export function createWorldOfficeTasksController({
         "done",
         "mine",
         "agent",
+        "queued",
       ].includes(taskFilter.value)
         ? taskFilter.value
         : "all";

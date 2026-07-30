@@ -22,6 +22,33 @@ spec.loader.exec_module(tasks_api)
 NOW = 2_100_000_000_000
 
 
+def test_task_image_thumbnails_are_tiny_and_image_only():
+    valid = "data:image/webp;base64,aGVsbG8="
+    result = tasks_api._attachments([
+        {
+            "name": "shot.webp",
+            "mime": "image/webp",
+            "size": 2048,
+            "thumbnail": valid,
+        },
+        {
+            "name": "notes.txt",
+            "mime": "text/plain",
+            "size": 50,
+            "thumbnail": valid,
+        },
+        {
+            "name": "bad.png",
+            "mime": "image/png",
+            "size": 50,
+            "thumbnail": "data:text/html;base64,PHNjcmlwdD4=",
+        },
+    ])
+    assert result[0]["thumbnail"] == valid
+    assert "thumbnail" not in result[1]
+    assert "thumbnail" not in result[2]
+
+
 def run_async_test(function):
     def wrapped(*args, **kwargs):
         return asyncio.run(function(*args, **kwargs))
@@ -576,7 +603,12 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
             "howToTest": "Open the World and verify the result.",
             "attachments": [
                 {"name": "hud-notes.md", "mime": "text/markdown", "size": 842},
-                {"name": "world.png", "mime": "image/png", "size": 4096},
+                {
+                    "name": "world.png",
+                    "mime": "image/png",
+                    "size": 4096,
+                    "thumbnail": "data:image/png;base64,aGVsbG8=",
+                },
             ],
         }),
         tasks_api.UNIVERSAL_PREFIX,
@@ -590,7 +622,12 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
     assert task["repository"] == "forkmesh/forkmesh"
     assert task["attachments"] == [
         {"name": "hud-notes.md", "mime": "text/markdown", "size": 842},
-        {"name": "world.png", "mime": "image/png", "size": 4096},
+        {
+            "name": "world.png",
+            "mime": "image/png",
+            "size": 4096,
+            "thumbnail": "data:image/png;base64,aGVsbG8=",
+        },
     ]
     stored = runtime.db.execute(
         "SELECT data FROM organization_tasks WHERE task_id=?",
