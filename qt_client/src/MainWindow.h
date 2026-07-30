@@ -3834,6 +3834,7 @@ private:
     QString repositoryPreviewRoot() const;
     QString repositoryPreviewPath(const QString &owner, const QString &name) const;
     QString repositoryNetworkCloneUrl(const QString &owner, const QString &name) const;
+    QString repositoryWebUrl(const QString &owner, const QString &name) const;
     QString repositoryWebUrl(const RepositoryRecord &repo) const;
     QUrl catalogApiUrl() const;
     void deleteCatalogRepository(const QString &owner, const QString &name);

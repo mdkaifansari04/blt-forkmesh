@@ -2078,7 +2078,8 @@ void MainWindow::importRemoteRepository()
     process->start();
 }
 
-QString MainWindow::repositoryWebUrl(const RepositoryRecord &repo) const
+QString MainWindow::repositoryWebUrl(const QString &owner,
+                                     const QString &name) const
 {
     // Clean repository route on the public website, derived from the same host
     // that serves the catalog API. Static Assets routes this to the catalog SPA.
@@ -2087,10 +2088,15 @@ QString MainWindow::repositoryWebUrl(const RepositoryRecord &repo) const
     // Using catalogOwner here would point every repo at the local account and
     // open the wrong node's page for repos mirrored from other nodes.
     QUrl url = catalogApiUrl();
-    url.setPath("/" + repoSegment(repo.owner, QStringLiteral("owner")) +
-                "/" + repoSegment(repo.name, QStringLiteral("repository")));
+    url.setPath("/" + repoSegment(owner, QStringLiteral("owner")) + "/" +
+                repoSegment(name, QStringLiteral("repository")));
     url.setFragment(QString());
     return url.toString();
+}
+
+QString MainWindow::repositoryWebUrl(const RepositoryRecord &repo) const
+{
+    return repositoryWebUrl(repo.owner, repo.name);
 }
 
 void MainWindow::updateRepoActionMenus()
