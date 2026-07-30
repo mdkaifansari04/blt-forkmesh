@@ -3152,6 +3152,53 @@ protected:
     }
 };
 
+// Two-line toolbar button (adhoc #51): a normal caption ("Branch", "Worktree")
+// with the value it opens rendered tiny and muted underneath. Used by the agent
+// detail toolbar, where the branch name and worktree path used to sit as columns
+// in the meta table. Qt buttons can't mix font sizes in their own text, so the
+// two lines are child labels laid out inside the button; they're transparent to
+// mouse events so clicks still reach the button itself.
+class StackedCaptionButton : public QPushButton {
+public:
+    explicit StackedCaptionButton(const QString &caption, QWidget *parent = nullptr)
+        : QPushButton(parent)
+    {
+        setCursor(Qt::PointingHandCursor);
+        // The theme's generous single-line button padding would make a two-line
+        // button tower over its neighbours; trim it here (the rest of the button
+        // styling still cascades from the app stylesheet).
+        setStyleSheet(QStringLiteral("padding: 2px 10px;"));
+        auto *box = new QVBoxLayout(this);
+        box->setContentsMargins(0, 0, 0, 0);
+        box->setSpacing(0);
+        m_caption = new QLabel(caption, this);
+        m_value = new QLabel(this);
+        QFont tiny = m_value->font();
+        tiny.setPointSizeF(qMax(6.0, tiny.pointSizeF() - 2.0));
+        m_value->setFont(tiny);
+        m_value->setStyleSheet(QStringLiteral("color:#8b949e;"));
+        for (QLabel *l : {m_caption, m_value}) {
+            l->setAttribute(Qt::WA_TransparentForMouseEvents);
+            l->setAlignment(Qt::AlignCenter);
+            box->addWidget(l);
+        }
+    }
+
+    // Sets the tiny second line, elided in the middle so a long worktree path
+    // can't stretch the toolbar. The full value stays reachable as the tooltip.
+    void setValue(const QString &value)
+    {
+        m_value->setText(QFontMetrics(m_value->font())
+                             .elidedText(value, Qt::ElideMiddle, kValueWidth));
+        setToolTip(value);
+    }
+
+private:
+    static constexpr int kValueWidth = 150;
+    QLabel *m_caption = nullptr;
+    QLabel *m_value = nullptr;
+};
+
 // "Auto" model sentinel (adhoc #91). Instead of a fixed model, the transcript
 // launcher routes each task: a free local heuristic pass first, then a triage
 // ladder that asks Haiku whether it can handle the task and escalates through

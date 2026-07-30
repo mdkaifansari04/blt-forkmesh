@@ -91,9 +91,11 @@ class PullBadgeWidget;
 namespace forkmesh::ui {
 class ActivityRailButton;
 class AgentDotMatrix;
+class StackedCaptionButton;
 }
 using forkmesh::ui::ActivityRailButton;
 using forkmesh::ui::AgentDotMatrix;
+using forkmesh::ui::StackedCaptionButton;
 class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
@@ -5648,12 +5650,6 @@ private:
     QLabel *m_agentStatusPill = nullptr; // connected/working/done status
     QLabel *m_agentMeta = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
-    // Permission-mode selector in the detail header (adhoc #26): change the
-    // selected agent's mode in place ("Ask before edits" / "Edit automatically"
-    // / "Plan mode" / "Auto mode"). Persists onto the session and, for a live
-    // Codex session, retargets the next turn so the switch takes effect without
-    // needing to retype the mode in the composer.
-    QComboBox *m_agentModeSelector = nullptr;
     QPushButton *m_agentViewPrButton = nullptr;
     // "Create linked issue" — shown for ad-hoc sessions with no issue yet, so the
     // run can be promoted to a tracked issue from the detail header (adhoc #189).
@@ -5676,18 +5672,16 @@ private:
     ClaudeTranscriptView *m_agentTranscript = nullptr;
     QPushButton *m_transcriptModeButton = nullptr;
     QPushButton *m_terminalModeButton = nullptr;
-    QComboBox *m_agentDiffModeCombo = nullptr; // unified vs split diff selector
     QWidget *m_agentOutputToggle = nullptr;
-    // The transcript-only half of that toolbar (search box, match steppers, diff
-    // style): hidden for log/terminal sessions while the toolbar's session action
-    // buttons stay put (adhoc #35).
+    // The transcript-only half of that toolbar (the search box): hidden for
+    // log/terminal sessions while the toolbar's session action buttons stay put
+    // (adhoc #35).
     QWidget *m_agentTranscriptTools = nullptr;
     // adhoc #201: search-the-transcript box in the output toggle row, with a
-    // "3/12" match counter and prev/next steppers over the highlighted hits.
+    // "3/12" match counter; Enter walks the highlighted hits (adhoc #51 dropped
+    // the prev/next steppers).
     QLineEdit *m_transcriptSearch = nullptr;
     QLabel *m_transcriptSearchCount = nullptr;
-    QPushButton *m_transcriptSearchPrev = nullptr;
-    QPushButton *m_transcriptSearchNext = nullptr;
     QListWidget *m_agentFilesList = nullptr;     // files edited in this session
     QWidget *m_agentFilesPanel = nullptr;        // wraps the list + heading
     // Issue #131: the output area is split into two tabs — "Agent" (the
@@ -6044,8 +6038,12 @@ private:
     // Above the session list: stop every running agent and cancel the queue
     // (adhoc #433).
     QPushButton *m_agentStopAllButton = nullptr;
-    QPushButton *m_agentDeleteButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
+    // Caption-over-value buttons in the detail toolbar (adhoc #51): "Branch" and
+    // "Worktree" with the name/path they open rendered tiny underneath, replacing
+    // the Branch/Worktree columns that used to sit in the meta table.
+    StackedCaptionButton *m_agentBranchButton = nullptr;
+    StackedCaptionButton *m_agentWorktreeButton = nullptr;
     // Above the session list: wipe every merged session's worktree, branch and
     // agent in one batch (adhoc #235).
     QPushButton *m_agentDeleteMergedButton = nullptr;
