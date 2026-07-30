@@ -4077,7 +4077,7 @@ void MainWindow::initAgents()
     }
     m_agentSessions = m_agentStore->loadAllSessions();
     seedSessionTokens();
-    refreshAgentStatusRow(); // footer "Agents:" strip reflects sessions from the start
+    refreshAgentDotMatrix(); // the top-bar fleet matrix reflects sessions from the start
     // The re-queued sessions are NOT started here: initAgents() runs inside the
     // MainWindow constructor, and draining the queue starts Claude transcripts
     // whose assign-time UI jump (switchToAgentsTab → openRepoDetail) fired a
@@ -4107,7 +4107,7 @@ void MainWindow::reloadAgents()
     if (m_selectedAgentSessionId > 0)
         showAgentSession(m_selectedAgentSessionId);
     updateAgentsTabIndicator();
-    refreshAgentStatusRow();
+    refreshAgentDotMatrix();
     updateAgentsNavBadge();
     // Every agent-completion path reaches this reload (adhoc #111: the process-exit
     // handler for stream/codex sessions, and the embedded-terminal path, both call
@@ -6344,117 +6344,10 @@ void MainWindow::switchToAgentsTab(int sessionId)
     showAgentSession(sessionId);
 }
 
-// Rebuild the footer "Agents:" status strip (adhoc #111) from m_agentSessions:
-// one small status glyph per known session (adhoc #114 swapped the plain
-// colored dots for the same icon set the Agents table's Status column uses —
-// a blue spinner while running, purple merge mark once landed, orange hand
-// while waiting, etc — via agentStatusOcticon), click-through to that
-// session's Agents tab. Called after every reloadAgents() so the strip tracks
-// the same data as the Agents table.
-void MainWindow::refreshAgentStatusRow()
-{
-    // The top-bar matrix shows the same per-session state, so keep it in step
-    // with every path that touches this strip — including bare status flips,
-    // which never reach updateAgentsNavBadge().
-    refreshAgentDotMatrix();
-    if (!m_agentStatusIconsLayout || !m_agentStatusRow)
-        return;
-    QLayoutItem *item;
-    while ((item = m_agentStatusIconsLayout->takeAt(0)) != nullptr) {
-        delete item->widget();
-        delete item;
-    }
-    m_agentStatusRow->setVisible(!m_agentSessions.isEmpty());
-    // Cap how many dots the strip packs in (adhoc #115): the row no longer
-    // scrolls, so the overflow collapses into the "N more" button on the right
-    // instead of running off the edge behind a horizontal scrollbar.
-    constexpr int kMaxStatusDots = 12;
-    const int totalSessions = m_agentSessions.size();
-    const int shownDots = qMin(totalSessions, kMaxStatusDots);
-    bool anyRunning = false;
-    int drawn = 0;
-    for (const AgentSession &session : std::as_const(m_agentSessions)) {
-        if (drawn >= shownDots)
-            break;
-        ++drawn;
-        auto *dot = new QPushButton;
-        dot->setObjectName("agentStatusDot");
-        dot->setFlat(true);
-        dot->setCursor(Qt::PointingHandCursor);
-        dot->setFixedSize(18, 18);
-        dot->setIconSize(QSize(14, 14));
-        const bool running = !session.merged && session.status == AgentStatus::Running;
-        // Running sessions are seeded at frame 0 here; animateAgentStatusIcons()
-        // spins them the same way animateRunningAgentIcons() spins the table.
-        dot->setIcon(agentStatusOcticon(session, 14));
-        dot->setProperty("agentStatusSpin", running);
-        // animateAgentStatusIcons() needs the session back to read its tok/s.
-        dot->setProperty("agentSessionId", session.id);
-        anyRunning = anyRunning || running;
-        const QString label = session.issueNumber > 0
-            ? QStringLiteral("#%1 %2").arg(session.issueNumber).arg(session.issueTitle)
-            : session.prompt.left(80);
-        dot->setToolTip(QStringLiteral("%1/%2 \xE2\x80\x94 %3\n%4")
-                             .arg(session.owner, session.name,
-                                  session.merged ? QStringLiteral("merged")
-                                                 : agentStatusText(session.status),
-                                  label));
-        const int sessionId = session.id;
-        connect(dot, &QPushButton::clicked, this,
-                [this, sessionId] { switchToAgentsTab(sessionId); });
-        m_agentStatusIconsLayout->addWidget(dot);
-    }
-
-    // Surface the hidden sessions as a "N more" button on the right; clicking it
-    // opens the Agents tab (adhoc #115).
-    if (m_agentStatusMoreButton) {
-        const int hidden = totalSessions - shownDots;
-        m_agentStatusMoreButton->setVisible(hidden > 0);
-        if (hidden > 0)
-            m_agentStatusMoreButton->setText(QStringLiteral("%1 more").arg(hidden));
-    }
-
-    if (anyRunning) {
-        if (!m_agentStatusSpinTimer) {
-            m_agentStatusSpinTimer = new QTimer(this);
-            connect(m_agentStatusSpinTimer, &QTimer::timeout, this,
-                    &MainWindow::animateAgentStatusIcons);
-        }
-        if (!m_agentStatusSpinTimer->isActive())
-            m_agentStatusSpinTimer->start(kAgentSpinTickMs);
-    } else if (m_agentStatusSpinTimer) {
-        m_agentStatusSpinTimer->stop();
-    }
-}
-
-// Spin the blue "sync" glyph on every running icon in the footer "Agents:"
-// strip (adhoc #114), mirroring animateRunningAgentIcons()'s treatment of the
-// Agents table — each dot at its own session's tok/s (adhoc #50). Driven by
-// m_agentStatusSpinTimer, which only ticks while at least one session in the
-// strip is running (see refreshAgentStatusRow).
-void MainWindow::animateAgentStatusIcons()
-{
-    if (!m_agentStatusIconsLayout)
-        return;
-    for (int i = 0; i < m_agentStatusIconsLayout->count(); ++i) {
-        QWidget *w = m_agentStatusIconsLayout->itemAt(i)->widget();
-        if (!w || !w->property("agentStatusSpin").toBool())
-            continue;
-        const int sessionId = w->property("agentSessionId").toInt();
-        const AgentSession *s = findAgentSession(sessionId);
-        if (!s)
-            continue;
-        double &angle = m_agentStatusSpinAngles[sessionId];
-        angle = std::fmod(angle + agentSpinStepDegrees(*s, sessionTokenTotal(*s)),
-                          360.0);
-        static_cast<QPushButton *>(w)->setIcon(QIcon(rotatedTintedOcticonPixmap(
-            "sync", QColor(Theme::kRunning), 14, angle)));
-    }
-}
-
-// Clicking the "Agents:" label (as opposed to one of its dots): jump to the
-// most relevant session's Agents tab, or just the open repo's Agents tab if
-// no session exists yet.
+// Jumping to the Agents view from the nav button (the footer "Agents:" strip
+// that used to offer the same shortcut was dropped in adhoc #60): open the most
+// relevant session's Agents tab, or just the open repo's Agents tab if no
+// session exists yet.
 void MainWindow::openAgentsOverview()
 {
     if (m_selectedAgentSessionId > 0 && findAgentSession(m_selectedAgentSessionId)) {
@@ -8785,10 +8678,10 @@ void MainWindow::updateAgentStatusCell(int sessionId)
         applyAgentStatusCell(idItem, *s, m_agentDiffStats.value(sessionId));
         break;
     }
-    // Keep the footer "Agents:" strip's per-session dot (the ones above the
-    // prompt) in step with every status flip, not just a full reloadAgents() —
-    // otherwise it only catches up once the user opens the Agents tab.
-    refreshAgentStatusRow();
+    // Keep the top-bar fleet matrix's per-session square in step with every
+    // status flip, not just a full reloadAgents() — otherwise it only catches up
+    // once the user opens the Agents tab.
+    refreshAgentDotMatrix();
     // A status flip back to Running (a follow-up prompt steering a still-live
     // process, an answered question, a resumed CLI's system/init) doesn't always
     // route through reloadAgents() — the only other caller of
