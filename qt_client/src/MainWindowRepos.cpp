@@ -6761,10 +6761,15 @@ void MainWindow::logout()
 {
     // Drop the signed-in account (admin/heartbeat state) so the user can log
     // back in, then tear the session down to the setup screen.
+    const QString previousAccount = m_accountName;
     if (m_heartbeatTimer)
         m_heartbeatTimer->stop();
     if (m_adminPollTimer)
         m_adminPollTimer->stop();
+    // Revoke the website session first — it is what the browser and the
+    // account-scoped worker APIs see, so leaving it alive would keep this
+    // machine "signed in" on the site after a desktop logout.
+    revokeAccountSession();
     setDesktopCapability(m_accountName, false);
     m_accountAuthenticated = false;
     m_accountTier = QStringLiteral("free");
@@ -6776,6 +6781,58 @@ void MainWindow::logout()
     QSettings().remove(kAccountNameSetting);
     refreshSettingsEmailVerifiedBadge();
     leaveSession();
+    // Come straight back with a password login. The setup screen's silent auth
+    // only checks this node's key locally, so the website never learned about
+    // the device; runLoginFlow() posts pubkey/deviceTs/deviceSig, which makes
+    // the relay register this desktop key against the account and hand back a
+    // real website session.
+    promptRelogin(previousAccount);
+}
+
+void MainWindow::revokeAccountSession()
+{
+    const QString token = m_accountSessionToken.trimmed();
+    m_accountSessionToken.clear();
+    if (token.isEmpty() || !m_networkAccess)
+        return;
+    int status = 0;
+    postAccountSync(QStringLiteral("logout"),
+                    QJsonObject{{QStringLiteral("sessionToken"), token}},
+                    &status);
+}
+
+bool MainWindow::promptRelogin(const QString &previousAccount)
+{
+    // A headless node has no one at the keyboard: it re-authenticates with its
+    // key on the next start, so never block the service on a dialog.
+    if (m_headless)
+        return false;
+    QString accountName = AccountCapability::normalizedAccount(previousAccount);
+    if (!isValidNodeName(accountName)) {
+        bool ok = false;
+        accountName = QInputDialog::getText(this, "Log back in",
+                                            "ForkMesh username:",
+                                            QLineEdit::Normal, QString(), &ok)
+                          .trimmed()
+                          .toLower();
+        if (!ok || !isValidNodeName(accountName))
+            return false;
+    }
+    if (!runLoginFlow(accountName))
+        return false;
+
+    QSettings().setValue(kAccountNameSetting, m_accountName);
+    if (m_settingsNameEdit)
+        m_settingsNameEdit->setText(m_accountName);
+    if (m_settingsMachineNodeEdit)
+        m_settingsMachineNodeEdit->setText(machineNodeName());
+    refreshSettingsEmailVerifiedBadge();
+    // logout() left us on the setup screen; rejoin with the freshly signed-in
+    // account so the user lands back in the app instead of clicking "Join".
+    if (m_nameEdit)
+        m_nameEdit->setText(m_accountName);
+    startSession();
+    return true;
 }
 
 void MainWindow::loginToUserAccount()

@@ -12,6 +12,7 @@
 #include <QMessageBox>
 #include <QNetworkReply>
 #include <QPlainTextEdit>
+#include <QRegularExpression>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTextBrowser>
@@ -32,6 +33,32 @@ QString taskErrorText(const QJsonObject &payload, const QString &fallback)
         return fallback;
     error.replace(QLatin1Char('_'), QLatin1Char(' '));
     return error;
+}
+
+// The canonical prefix this desktop signs with its account key for one task
+// request when it holds no account session token. Empty when the relay accepts
+// no key-signed form of the request: editing, deleting, timers, and QA verdicts
+// deliberately still require a real session. `resource` receives the task id
+// for a proof that names one. Must stay in lockstep with
+// _org_task_signed_session in the worker's entry.py.
+QString organizationTaskProof(const QByteArray &method, const QString &path,
+                              QString *resource)
+{
+    static const QRegularExpression completeRe(
+        QStringLiteral("^/api/tasks/([a-f0-9]{32})/complete/?$"));
+    const bool collection = path == QLatin1String("/api/tasks") ||
+                            path == QLatin1String("/api/tasks/");
+    if (method == QByteArrayLiteral("GET"))
+        return collection ? kOrgTaskListProof : QString();
+    if (method != QByteArrayLiteral("POST"))
+        return QString();
+    if (collection)
+        return kOrgTaskOpenProof;
+    const QRegularExpressionMatch complete = completeRe.match(path);
+    if (!complete.hasMatch())
+        return QString();
+    *resource = complete.captured(1);
+    return kOrgTaskCompleteProof;
 }
 
 QString taskTimestamp(qint64 milliseconds)
@@ -378,7 +405,7 @@ void MainWindow::requestOrganizationTasks(
     const QByteArray &method, const QString &path, const QJsonObject &body,
     OrganizationTaskReplyHandler handler)
 {
-    if (!m_networkAccess || m_accountSessionToken.trimmed().isEmpty()) {
+    if (!m_networkAccess) {
         handler(false, {}, QStringLiteral(
             "Sign in to an organization account to use private tasks."));
         return;
@@ -392,9 +419,28 @@ void MainWindow::requestOrganizationTasks(
     request.setTransferTimeout(15000);
     request.setRawHeader(QByteArrayLiteral("Accept"),
                          QByteArrayLiteral("application/json"));
-    request.setRawHeader(
-        QByteArrayLiteral("Authorization"),
-        QByteArrayLiteral("Bearer ") + m_accountSessionToken.toUtf8());
+    if (!m_accountSessionToken.trimmed().isEmpty()) {
+        request.setRawHeader(
+            QByteArrayLiteral("Authorization"),
+            QByteArrayLiteral("Bearer ") + m_accountSessionToken.toUtf8());
+    } else {
+        // Only a desktop that signed in with a password holds a session token.
+        // The ordinary launch is authenticateSilently(), which proves this
+        // install owns the account's key and mints no token at all — so
+        // without the signed fallback the whole tab reported "Sign in to an
+        // organization account" to an operator who was already signed in
+        // (adhoc #52). The relay accepts the signature for reading the board
+        // and for the two writes a desktop makes for its own run; anything
+        // else still needs a real session.
+        QString resource;
+        const QString proof = organizationTaskProof(method, path, &resource);
+        if (proof.isEmpty() ||
+            !authenticateOrgTaskRequest(url, request, proof, resource)) {
+            handler(false, {}, QStringLiteral(
+                "Sign in to an organization account to use private tasks."));
+            return;
+        }
+    }
     const QByteArray payload =
         body.isEmpty() ? QByteArray() : QJsonDocument(body).toJson(
                                              QJsonDocument::Compact);

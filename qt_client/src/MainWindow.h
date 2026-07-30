@@ -91,9 +91,11 @@ class PullBadgeWidget;
 namespace forkmesh::ui {
 class ActivityRailButton;
 class AgentDotMatrix;
+class StackedCaptionButton;
 }
 using forkmesh::ui::ActivityRailButton;
 using forkmesh::ui::AgentDotMatrix;
+using forkmesh::ui::StackedCaptionButton;
 class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
@@ -1919,15 +1921,11 @@ private:
     void noteAgentActivity(int sessionId, int bytes = 0);
     void onScannerTick();
     void showAgentSession(int sessionId);
-    // Rebuild only the detail header's meta lines (identity + issue/branch/worktree
-    // /PR chips + run Stats), without a transcript rebuild — used by the live
-    // token/cost/run-summary update paths and the running-row ticker (adhoc #42).
+    // Rebuild only the detail header's meta lines (identity + issue/PR chips +
+    // run Stats) and the toolbar's Branch/Worktree buttons, without a transcript
+    // rebuild — used by the live token/cost/run-summary update paths and the
+    // running-row ticker (adhoc #42).
     void refreshAgentDetailMeta(int sessionId);
-    // Detail-header permission-mode selector (adhoc #26): sync the combo to the
-    // shown session (and hide it for providers without a mode), and apply a live
-    // change back onto the selected session.
-    void syncAgentModeSelector(const AgentSession &session);
-    void applySelectedAgentMode();
     // Populate the raw-log QPlainTextEdit (m_agentLog) only when the content
     // actually changed. setPlainText()+moveCursor(End) forces a full document
     // layout, which for a large transcript blocks the GUI thread for seconds
@@ -2053,13 +2051,13 @@ private:
     // still stopping, or no host write access to clear the issue. External
     // (watch-only) sessions aren't handled here.
     bool deleteStoredAgentSession(int sessionId, bool cleanupWorktree = true);
-    // Agent-detail "Delete all": remove the session from the UI/store first,
+    // Agent-detail "Delete": remove the session from the UI/store first,
     // then clean its worktree, branch, and linked issues asynchronously.
     void deleteWorktreeBranchAndAgentInBackground(
         const QString &worktreePath, const QString &branch);
     // Delete everything an agent left behind in one action: its worktree folder,
     // its branch, and the stored agent session(s) that ran on it. Used by the
-    // Worktrees-tab "Delete" buttons and the agent detail's "Delete all".
+    // Worktrees-tab "Delete" buttons and the agent detail's "Delete".
     // confirm=false skips the per-item dialog (the batch "Delete all merged" asks
     // once up front); async=false removes the worktree synchronously so a batch of
     // deletes runs one git worktree-remove at a time rather than racing.
@@ -2069,9 +2067,9 @@ private:
     void deleteWorktreeBranchAndAgent(const QString &worktreePath,
                                       const QString &branch, bool confirm = true,
                                       bool async = true, bool deferRefresh = false);
-    // Batch counterpart to "Delete all": wipe the worktree, branch and session of
-    // every merged agent session in the open repo after one confirmation (adhoc
-    // #235).
+    // Batch counterpart to the detail "Delete": wipe the worktree, branch and
+    // session of every merged agent session in the open repo after one
+    // confirmation (adhoc #235).
     void deleteAllMergedAgentSessions();
     void testOpenAiAgentKey();
     void refreshClaudeSpend();
@@ -3520,6 +3518,15 @@ private:
     QWidget *makeComposerIdentity(QLabel **outAvatar = nullptr,
                                   const QString &verb = QString());
     void logout();
+    // Tell the relay to drop the browser-visible account session minted by the
+    // last email/password login, so logging out here also logs out on the
+    // website. No-op when this desktop only ever authenticated with its key.
+    void revokeAccountSession();
+    // Immediately after a logout, ask for the account password and sign back in
+    // against the website. Password login (unlike the silent key-based auth) both
+    // mints a website session and re-registers this desktop's public key with the
+    // relay, so the site knows this device. Returns true once signed back in.
+    bool promptRelogin(const QString &previousAccount);
     // Sign in to an existing ForkMesh user account (email + password) from
     // Settings, without leaving the app. Prompts for the username, then runs the
     // email/password login flow. A user account can own many nodes.
@@ -5483,9 +5490,13 @@ private:
     // serially blocking the UI. The timer collapses a burst into one refresh.
     QTimer *m_openRepoRefreshTimer = nullptr;
     QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
-    int m_agentsSpinFrame = 0;
     QTimer *m_agentStatusSpinTimer = nullptr;    // animates the footer "Agents:" strip
-    int m_agentStatusSpinFrame = 0;
+    // Spinner angle in degrees, per session id, for each of the two strips
+    // (adhoc #50). Each running session advances at its own tok/s-derived rate,
+    // so the two surfaces can't share one frame counter any more.
+    QHash<int, double> m_agentRowSpinAngles;
+    QHash<int, double> m_agentStatusSpinAngles;
+    int m_agentSpinTicks = 0; // paces the detail header's run-stat refresh
     QTableWidget *m_actionsTable = nullptr;
     QLabel *m_actionRunTitle = nullptr;
     QLabel *m_actionRunMeta = nullptr;
@@ -5672,12 +5683,6 @@ private:
     QLabel *m_agentStatusPill = nullptr; // connected/working/done status
     QLabel *m_agentMeta = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
-    // Permission-mode selector in the detail header (adhoc #26): change the
-    // selected agent's mode in place ("Ask before edits" / "Edit automatically"
-    // / "Plan mode" / "Auto mode"). Persists onto the session and, for a live
-    // Codex session, retargets the next turn so the switch takes effect without
-    // needing to retype the mode in the composer.
-    QComboBox *m_agentModeSelector = nullptr;
     QPushButton *m_agentViewPrButton = nullptr;
     // "Create linked issue" — shown for ad-hoc sessions with no issue yet, so the
     // run can be promoted to a tracked issue from the detail header (adhoc #189).
@@ -5700,18 +5705,16 @@ private:
     ClaudeTranscriptView *m_agentTranscript = nullptr;
     QPushButton *m_transcriptModeButton = nullptr;
     QPushButton *m_terminalModeButton = nullptr;
-    QComboBox *m_agentDiffModeCombo = nullptr; // unified vs split diff selector
     QWidget *m_agentOutputToggle = nullptr;
-    // The transcript-only half of that toolbar (search box, match steppers, diff
-    // style): hidden for log/terminal sessions while the toolbar's session action
-    // buttons stay put (adhoc #35).
+    // The transcript-only half of that toolbar (the search box): hidden for
+    // log/terminal sessions while the toolbar's session action buttons stay put
+    // (adhoc #35).
     QWidget *m_agentTranscriptTools = nullptr;
     // adhoc #201: search-the-transcript box in the output toggle row, with a
-    // "3/12" match counter and prev/next steppers over the highlighted hits.
+    // "3/12" match counter; Enter walks the highlighted hits (adhoc #51 dropped
+    // the prev/next steppers).
     QLineEdit *m_transcriptSearch = nullptr;
     QLabel *m_transcriptSearchCount = nullptr;
-    QPushButton *m_transcriptSearchPrev = nullptr;
-    QPushButton *m_transcriptSearchNext = nullptr;
     QListWidget *m_agentFilesList = nullptr;     // files edited in this session
     QWidget *m_agentFilesPanel = nullptr;        // wraps the list + heading
     // Issue #131: the output area is split into two tabs — "Agent" (the
@@ -6068,8 +6071,12 @@ private:
     // Above the session list: stop every running agent and cancel the queue
     // (adhoc #433).
     QPushButton *m_agentStopAllButton = nullptr;
-    QPushButton *m_agentDeleteButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
+    // Caption-over-value buttons in the detail toolbar (adhoc #51): "Branch" and
+    // "Worktree" with the name/path they open rendered tiny underneath, replacing
+    // the Branch/Worktree columns that used to sit in the meta table.
+    StackedCaptionButton *m_agentBranchButton = nullptr;
+    StackedCaptionButton *m_agentWorktreeButton = nullptr;
     // Above the session list: wipe every merged session's worktree, branch and
     // agent in one batch (adhoc #235).
     QPushButton *m_agentDeleteMergedButton = nullptr;

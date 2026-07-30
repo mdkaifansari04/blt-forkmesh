@@ -512,21 +512,10 @@ constexpr int kCommitRefsRole = Qt::UserRole + 30;     // branch/tag badges (QSt
 constexpr int kCommitBodyRole = Qt::UserRole + 31;     // full message body (fed to the hover box)
 constexpr int kGraphIsMergeRole = Qt::UserRole + 32;   // graph cell: commit has >1 parent
 
-// URL scheme for the clickable worktree-location link in the agent session
-// header; the percent-encoded branch name follows. Clicking it opens that
-// branch's row in the Worktrees tab (issue #265). Shared by the link builder
-// and its handler.
-const QLatin1String kWorktreeLinkScheme("forkmesh-worktree:");
-
-// URL scheme for the clickable branch-name link in the agent session header; the
-// percent-encoded branch name follows. Clicking it opens that branch's row in
-// the Branches tab (adhoc #123). Shared by the link builder and its handler.
+// URL scheme for a clickable branch-name link; the percent-encoded branch name
+// follows. Clicking it opens that branch's row in the Branches tab (adhoc #123).
+// Shared by the link builder and its handler.
 const QLatin1String kBranchLinkScheme("forkmesh-branch:");
-
-// "forkmesh-copy-branch:<branch>" link next to the branch chip in the agent-detail
-// header (adhoc #259): clicking it copies the branch name to the clipboard
-// instead of navigating anywhere.
-const QLatin1String kCopyBranchLinkScheme("forkmesh-copy-branch:");
 
 // "forkmesh-pull:<number>" link in the agent-detail meta line: when a session
 // has a pull request, its "PR #N" reference links to that PR's tab. Shared by
@@ -2959,6 +2948,10 @@ const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
 const QString kOrgTaskOpenProof = QStringLiteral("forkmesh-org-task-open-v1");
 const QString kOrgTaskCompleteProof =
     QStringLiteral("forkmesh-org-task-complete-v1");
+// Same key, reading the board. Without it the Tasks tab was empty for every
+// operator who launched normally instead of typing a password (adhoc #52).
+// Must stay byte-identical to ORG_TASK_LIST_PROOF in entry.py.
+const QString kOrgTaskListProof = QStringLiteral("forkmesh-org-task-list-v1");
 // Same signing key, for the one credential the "genie" button needs (adhoc
 // #49): the relay mints this desktop's task-only remote-MCP bearer instead of
 // its operator copying one out of the website. Must stay byte-identical to
@@ -3150,6 +3143,53 @@ protected:
             geo.moveTop(avail.top());
         popup->setGeometry(geo);
     }
+};
+
+// Two-line toolbar button (adhoc #51): a normal caption ("Branch", "Worktree")
+// with the value it opens rendered tiny and muted underneath. Used by the agent
+// detail toolbar, where the branch name and worktree path used to sit as columns
+// in the meta table. Qt buttons can't mix font sizes in their own text, so the
+// two lines are child labels laid out inside the button; they're transparent to
+// mouse events so clicks still reach the button itself.
+class StackedCaptionButton : public QPushButton {
+public:
+    explicit StackedCaptionButton(const QString &caption, QWidget *parent = nullptr)
+        : QPushButton(parent)
+    {
+        setCursor(Qt::PointingHandCursor);
+        // The theme's generous single-line button padding would make a two-line
+        // button tower over its neighbours; trim it here (the rest of the button
+        // styling still cascades from the app stylesheet).
+        setStyleSheet(QStringLiteral("padding: 2px 10px;"));
+        auto *box = new QVBoxLayout(this);
+        box->setContentsMargins(0, 0, 0, 0);
+        box->setSpacing(0);
+        m_caption = new QLabel(caption, this);
+        m_value = new QLabel(this);
+        QFont tiny = m_value->font();
+        tiny.setPointSizeF(qMax(6.0, tiny.pointSizeF() - 2.0));
+        m_value->setFont(tiny);
+        m_value->setStyleSheet(QStringLiteral("color:#8b949e;"));
+        for (QLabel *l : {m_caption, m_value}) {
+            l->setAttribute(Qt::WA_TransparentForMouseEvents);
+            l->setAlignment(Qt::AlignCenter);
+            box->addWidget(l);
+        }
+    }
+
+    // Sets the tiny second line, elided in the middle so a long worktree path
+    // can't stretch the toolbar. The full value stays reachable as the tooltip.
+    void setValue(const QString &value)
+    {
+        m_value->setText(QFontMetrics(m_value->font())
+                             .elidedText(value, Qt::ElideMiddle, kValueWidth));
+        setToolTip(value);
+    }
+
+private:
+    static constexpr int kValueWidth = 150;
+    QLabel *m_caption = nullptr;
+    QLabel *m_value = nullptr;
 };
 
 // "Auto" model sentinel (adhoc #91). Instead of a fixed model, the transcript
@@ -6590,7 +6630,13 @@ inline QIcon themedOcticon(const QString &name, const QColor &color, int size)
     return icon;
 }
 
-// A tinted octicon rotated `angleDeg` about its centre — used to spin the green
+// Tick rate for the running-agent spinners (the Agents table's "#" cells and the
+// footer "Agents:" strip). Fast enough that a flat-out session reads as a smooth
+// spin; how far each session turns per tick comes from its own tok/s (see
+// agentSpinStepDegrees in MainWindowAgents.cpp).
+inline constexpr int kAgentSpinTickMs = 60;
+
+// A tinted octicon rotated `angleDeg` about its centre — used to spin the blue
 // "running" glyph in the agents list (issue #108). Not cached, since the angle
 // changes every animation frame; callers keep it to the handful of running rows.
 inline QPixmap rotatedTintedOcticonPixmap(const QString &name, const QColor &color,
