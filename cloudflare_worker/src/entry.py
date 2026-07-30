@@ -33932,7 +33932,10 @@ async def org_bot_tokens_handler(env, request, org):
         (account or {}).get("name"), MAX_NODE_NAME).strip().lower()
     if not account_bi or not actor:
         return json_response({"error": "invalid_session"}, status=401)
-    if await _org_role(env, org_bi, actor) not in ("owner", "admin"):
+    actor_role = await _org_role(env, org_bi, actor)
+    if actor_role not in ("owner", "admin", "member"):
+        return json_response({"error": "forbidden"}, status=403)
+    if method in ("GET", "DELETE") and actor_role not in ("owner", "admin"):
         return json_response({"error": "forbidden"}, status=403)
     org_name = str(org_row.get("name") or org)
 
@@ -34035,6 +34038,9 @@ async def org_bot_tokens_handler(env, request, org):
     scopes = _org_bot_scopes(data.get("scopes"), default=True)
     if scopes is None or not scopes:
         return json_response({"error": "invalid_bot_permissions"}, status=400)
+    if actor_role == "member" and not set(scopes).issubset({
+            "organization.tasks.read", "organization.tasks.write"}):
+        return json_response({"error": "forbidden"}, status=403)
     count = await d1_first(
         env,
         "SELECT COUNT(*) AS n FROM org_bot_tokens "

@@ -814,6 +814,70 @@ function validWorldSession() {
     : null;
 }
 
+async function copyWorldText(value) {
+  const text = String(value || "");
+  if (!text) return false;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (_) {}
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.append(textarea);
+  textarea.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch (_) {}
+  textarea.remove();
+  return copied;
+}
+
+function worldRemoteMcpPrompt(name, mode, token) {
+  const deploy = mode === "deploy";
+  const configuration = {
+    mcpServers: {
+      forkmesh: {
+        type: "http",
+        url: window.location.origin + "/mcp",
+        headers: {
+          Authorization: "Bearer " + token,
+        },
+      },
+    },
+  };
+  const finish = deploy
+    ? [
+        "Fetch the latest main again and integrate it into the task branch without force-pushing.",
+        "Push the branch, merge only when the merge and required checks are clean, then deploy using the repository's documented deploy command.",
+        "Verify the live revision and production behavior. Only then call complete_org_task with the commit, deployed revision, tests, and exact QA steps.",
+      ]
+    : [
+        "Push the task branch and open a focused pull request against main using the repository's normal ForkMesh tooling.",
+        "Do not merge or deploy. After the pull request exists, call complete_org_task with its number, branch, tests, and exact QA steps.",
+      ];
+  return [
+    "Configure the following remote Streamable HTTP MCP server named forkmesh, then immediately use it for this assignment:",
+    "",
+    JSON.stringify(configuration, null, 2),
+    "",
+    `Work the shared task list for the ${name} organization.`,
+    "1. Call list_org_tasks. Select the highest-priority unfinished task routed to an agent or explicitly unassigned with a linked repository. Never take a task assigned to a person.",
+    "2. Call get_org_task for the selected id. Read its repository instructions and inspect the latest main branch before planning.",
+    "3. Keep the base checkout untouched. Fetch main and create a dedicated worktree and task branch. Never stash, reset, clean, commit, or edit the base checkout.",
+    "4. Work only in that task worktree. Preserve unrelated changes, implement the smallest complete fix, and run focused tests plus repository-required checks.",
+    "5. Commit only the task files with a clear message. Never force-push or bypass failing checks or conflicts.",
+    ...finish.map((line, index) => `${index + 6}. ${line}`),
+    "",
+    "If credentials, authorization, infrastructure, tests, or conflict resolution block safe completion, report the blocker and do not mark the task complete. Treat the bearer credential above as a secret; never print it in logs, commits, pull requests, task notes, or chat. It can be revoked from Organization Admin.",
+  ].join("\n");
+}
+
 function createPullMergeRequestId() {
   try {
     if (typeof crypto.randomUUID === "function") {
@@ -3838,7 +3902,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </nav>
         </header>
 
-        <nav class="world-status-actions" aria-label="Notifications, errors, and tasks">
+        <nav class="world-status-actions" aria-label="MCP prompt, notifications, errors, and tasks">
+          <button class="world-prompt-button" type="button" data-world-mcp-prompt aria-label="Copy MCP task prompt" title="Copy a task-scoped MCP prompt">
+            <span class="world-prompt-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <rect x="7" y="6" width="11" height="14" rx="2"></rect>
+                <path d="M9 6V4h7v2M5 17H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h2"></path>
+              </svg>
+            </span>
+            <span class="world-prompt-label">Prompt</span>
+          </button>
           <button class="world-notification-button" type="button" data-world-notifications-open aria-label="Open notifications" title="Show global and personal notifications">
             <span class="world-status-action-icon" aria-hidden="true">🔔</span>
             <span class="world-tool-count" data-world-notification-count>0</span>
@@ -8664,6 +8737,93 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
+  mcpPromptOrganization() {
+    const memberships = this.organizations.filter((organization) =>
+      ["owner", "admin", "member"].includes(
+        String(
+          organization?.viewerRole || organization?.role || "",
+        ).toLowerCase(),
+      ),
+    );
+    return (
+      memberships.find(
+        (organization) =>
+          String(organization?.name || organization?.org || "")
+            .trim()
+            .toLowerCase() === "forkmesh",
+      ) ||
+      memberships.find(
+        (organization) =>
+          String(
+            organization?.viewerRole || organization?.role || "",
+          ).toLowerCase() === "owner",
+      ) ||
+      memberships[0] ||
+      null
+    );
+  }
+
+  async copyMcpTaskPrompt(button) {
+    const session = validWorldSession();
+    if (!this.sessionAuthenticated || !session) {
+      this.toast("Sign in to copy an organization MCP task prompt.");
+      return;
+    }
+    const organization = this.mcpPromptOrganization();
+    const name = String(
+      organization?.name || organization?.org || "",
+    ).trim().toLowerCase();
+    const role = String(
+      organization?.viewerRole || organization?.role || "",
+    ).toLowerCase();
+    if (!name || !["owner", "admin", "member"].includes(role)) {
+      this.toast("Join an organization before copying its MCP task prompt.");
+      return;
+    }
+    if (button?.dataset.worldMcpPromptBusy === "true") return;
+    if (button) {
+      button.dataset.worldMcpPromptBusy = "true";
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+    }
+    try {
+      const result = await this.postJSON(
+        `/api/orgs/${encodeURIComponent(name)}/bot-tokens`,
+        {
+          provider: "codex",
+          label: `World Prompt · @${session.nodeName}`,
+          scopes: [
+            "organization.tasks.read",
+            "organization.tasks.write",
+          ],
+          expiresDays: 1,
+        },
+      );
+      const token = String(result?.token || "");
+      if (!token) throw new Error("credential_not_returned");
+      const mode = role === "owner" ? "deploy" : "pr";
+      if (!(await copyWorldText(worldRemoteMcpPrompt(name, mode, token)))) {
+        throw new Error("clipboard_denied");
+      }
+      this.toast(
+        `${mode === "deploy" ? "Direct-deploy" : "Pull-request"} MCP prompt copied for ${name}. The task-only credential expires in 24 hours.`,
+      );
+    } catch (error) {
+      const reason = String(error?.message || "");
+      this.toast(
+        reason === "clipboard_denied"
+          ? "Clipboard access was denied by this browser."
+          : `MCP prompt could not be copied: ${reason || "request_failed"}`,
+      );
+    } finally {
+      if (button) {
+        delete button.dataset.worldMcpPromptBusy;
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+      }
+    }
+  }
+
   // Server-authoritative team marks are visible to every organization member
   // allowed to read the roster. The separate canManage bit controls whether
   // the owner/admin assignment plaque is interactive.
@@ -9147,6 +9307,11 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-instance-snapshot]")) {
         this.downloadInstanceSetupCard();
+        return;
+      }
+      const mcpPromptButton = event.target.closest("[data-world-mcp-prompt]");
+      if (mcpPromptButton) {
+        void this.copyMcpTaskPrompt(mcpPromptButton);
         return;
       }
       if (event.target.closest("[data-world-notifications-open]")) {

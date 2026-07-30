@@ -1329,6 +1329,80 @@ async function openWorldRepositoryExplorer(page) {
   );
 }
 
+test("World prompt button copies owner deploy and member PR workflows", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.__worldCopiedPrompts = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text) => {
+          window.__worldCopiedPrompts.push(text);
+        },
+      },
+    });
+  });
+  await prepareWorldPage(page, "world-mcp-prompt", {
+    session: {
+      nodeName: "jett",
+      sessionToken: "playwright-jett-session",
+    },
+  });
+  await waitForWorld(page);
+
+  const promptButton = page.getByRole("button", {
+    name: "Copy MCP task prompt",
+  });
+  await expect(promptButton).toContainText("Prompt");
+  await page.locator("forkmesh-world").evaluate(async (shell) => {
+    shell.sessionAuthenticated = true;
+    shell.organizations = [{ name: "forkmesh", role: "owner" }];
+    shell.postJSON = async (path, body) => {
+      window.__worldPromptRequest = { path, body };
+      return { token: "fmbot_owner_test" };
+    };
+    await shell.copyMcpTaskPrompt(
+      shell.querySelector("[data-world-mcp-prompt]"),
+    );
+  });
+  await expect.poll(() =>
+    page.evaluate(() => window.__worldCopiedPrompts.length)
+  ).toBe(1);
+  await expect(promptButton).toBeEnabled();
+
+  const owner = await page.evaluate(() => ({
+    prompt: window.__worldCopiedPrompts[0],
+    request: window.__worldPromptRequest,
+  }));
+  expect(owner.request.path).toBe("/api/orgs/forkmesh/bot-tokens");
+  expect(owner.request.body.scopes).toEqual([
+    "organization.tasks.read",
+    "organization.tasks.write",
+  ]);
+  expect(owner.request.body.expiresDays).toBe(1);
+  expect(owner.prompt).toContain("merge only when the merge");
+  expect(owner.prompt).toContain("then deploy");
+  expect(owner.prompt).not.toContain("Do not merge or deploy");
+
+  await page.locator("forkmesh-world").evaluate(async (shell) => {
+    shell.organizations = [{ name: "forkmesh", role: "member" }];
+    shell.postJSON = async () => ({ token: "fmbot_member_test" });
+    await shell.copyMcpTaskPrompt(
+      shell.querySelector("[data-world-mcp-prompt]"),
+    );
+  });
+  await expect.poll(() =>
+    page.evaluate(() => window.__worldCopiedPrompts.length)
+  ).toBe(2);
+  const memberPrompt = await page.evaluate(
+    () => window.__worldCopiedPrompts[1],
+  );
+  expect(memberPrompt).toContain("open a focused pull request");
+  expect(memberPrompt).toContain("Do not merge or deploy");
+  expect(memberPrompt).not.toContain("then deploy");
+});
+
 test("signed-in World receives private and global notifications", async ({
   page,
 }) => {

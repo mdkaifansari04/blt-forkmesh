@@ -10694,6 +10694,37 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   display: none;
 }
 
+.world-status-actions .world-prompt-button {
+  min-width: 72px;
+  padding-inline: 9px;
+}
+
+.world-prompt-icon {
+  display: inline-flex;
+  width: 13px;
+  height: 13px;
+}
+
+.world-prompt-icon svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.world-prompt-label {
+  font: 700 0.66rem/1 "ForkMesh Mono", ui-monospace, monospace;
+  letter-spacing: 0.01em;
+}
+
+.world-status-actions button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
 .world-status-action-icon {
   font-size: 0.64rem;
   line-height: 1;
