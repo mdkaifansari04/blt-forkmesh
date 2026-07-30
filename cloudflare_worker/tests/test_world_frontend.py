@@ -1019,7 +1019,7 @@ def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
     assert 'id="fullChatAction" type="hidden" value="chat"' in APP
     assert "Send to bot</option>" not in APP
     assert '<span data-dashboard-chat-send-label>Chat</span>' in APP
-    assert 'title="Send this task to the bot">Task</button>' in APP
+    assert 'title="Enter will send this task to the bot"' in APP
     assert "world-chat-terminal-channel" in APP
     assert "world-chat-terminal-connection" in APP
     chat_version = hashlib.sha256(DASHBOARD_CHAT.encode()).hexdigest()[:12]
