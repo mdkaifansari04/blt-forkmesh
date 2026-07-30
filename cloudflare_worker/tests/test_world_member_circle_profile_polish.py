@@ -50,15 +50,16 @@ def test_campfire_uses_layered_procedural_flames_and_atmosphere():
 
 
 def test_member_count_floats_high_above_the_fire_without_a_plate():
-    assert "function campfireMemberCountTexture(THREE, total)" in SCENE
+    assert "function campfireMemberCountTexture(THREE, total, newest = \"\")" in SCENE
     assert 'memberCountSprite.name = "campfire-member-count-high"' in SCENE
     assert "memberCountSprite.position.y = 13.5;" in SCENE
-    assert "memberCountSprite.scale.set(10.8, 2.7, 1);" in SCENE
+    assert "memberCountSprite.scale.set(10.8, 4.05, 1);" in SCENE
 
 
-def test_fire_center_has_no_newest_member_sparkle_label():
-    assert "newestMemberSparkles" not in SCENE
-    assert "newestMemberFireSparks" not in SCENE
+def test_newest_member_is_named_with_sparkles_high_above_the_fire():
+    assert '"✦ NEWEST MEMBER ✦"' in SCENE
+    assert 'newestMemberSparkles.name = "campfire-newest-member-name-sparkles"' in SCENE
+    assert "newestMemberSparkles.visible = Boolean(latest);" in SCENE
 
 
 def test_campfire_is_three_times_large_not_only_three_times_tall():

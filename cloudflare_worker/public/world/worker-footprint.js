@@ -6,7 +6,7 @@ export const WORKER_FOOTPRINT = Object.freeze({
   "onDemandSourceBytes": 124114,
   "vendoredBytes": 91974,
   "moduleCount": 74,
-  "staticAssetBytes": 103024799,
+  "staticAssetBytes": 103026561,
   "staticAssetCount": 382,
   "modules": [
     {

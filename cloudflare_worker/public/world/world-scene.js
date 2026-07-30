@@ -4949,21 +4949,32 @@ function newestMemberName(members) {
   return newest;
 }
 
-function campfireMemberCountTexture(THREE, total) {
+function campfireMemberCountTexture(THREE, total, newest = "") {
   const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
-  return canvasTexture(THREE, 1024, 256, (context) => {
-    context.clearRect(0, 0, 1024, 256);
+  const latest = String(newest || "").trim().slice(0, 18);
+  return canvasTexture(THREE, 1024, 384, (context) => {
+    context.clearRect(0, 0, 1024, 384);
     context.textAlign = "center";
     context.textBaseline = "middle";
     context.shadowColor = "rgba(255,91,20,0.92)";
     context.shadowBlur = 28;
     context.font = '900 132px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#fff7d6";
-    context.fillText(count.toLocaleString(), 512, 102);
+    context.fillText(count.toLocaleString(), 512, 88);
     context.shadowBlur = 14;
     context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#ffcb72";
-    context.fillText(count === 1 ? "MEMBER" : "MEMBERS", 512, 211);
+    context.fillText(count === 1 ? "MEMBER" : "MEMBERS", 512, 181);
+    if (!latest) return;
+    context.font = '800 28px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#ffbd7a";
+    context.fillText("✦ NEWEST MEMBER ✦", 512, 257);
+    context.shadowColor = "rgba(255,196,87,0.96)";
+    context.shadowBlur = 22;
+    const newestSize = latest.length > 13 ? 54 : latest.length > 9 ? 62 : 72;
+    context.font = `900 ${newestSize}px "ForkMesh Mono", ui-monospace, monospace`;
+    context.fillStyle = "#fff5d9";
+    context.fillText(latest.toUpperCase(), 512, 329);
   });
 }
 
@@ -16865,10 +16876,37 @@ export function createWorldScene({
   );
   memberCountSprite.name = "campfire-member-count-high";
   memberCountSprite.position.y = 13.5;
-  memberCountSprite.scale.set(10.8, 2.7, 1);
+  memberCountSprite.scale.set(10.8, 4.05, 1);
   memberCountSprite.renderOrder = 12;
   memberCountSprite.visible = false;
   campfire.add(memberCountSprite);
+  const newestMemberSparkles = new THREE.Points(
+    new THREE.BufferGeometry().setFromPoints(
+      Array.from({ length: 20 }, (_, index) => {
+        const angle = (index / 20) * Math.PI * 2;
+        const radius = index % 2 ? 3.1 : 3.7;
+        return new THREE.Vector3(
+          Math.cos(angle) * radius,
+          Math.sin(angle) * 0.62,
+          0,
+        );
+      }),
+    ),
+    new THREE.PointsMaterial({
+      color: "#fff4b8",
+      size: 0.23,
+      transparent: true,
+      opacity: 0.95,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  newestMemberSparkles.name = "campfire-newest-member-name-sparkles";
+  newestMemberSparkles.position.y = 12.35;
+  newestMemberSparkles.renderOrder = 13;
+  newestMemberSparkles.visible = false;
+  campfire.add(newestMemberSparkles);
   let memberCountShown = "";
   // The count is a clean, transparent landmark high above the flames: it
   // remains legible across the square without putting a plate or label in the
@@ -16880,9 +16918,14 @@ export function createWorldScene({
     if (memberCountShown === key) return;
     memberCountShown = key;
     memberCountSprite.material.map?.dispose?.();
-    memberCountSprite.material.map = campfireMemberCountTexture(THREE, count);
+    memberCountSprite.material.map = campfireMemberCountTexture(
+      THREE,
+      count,
+      latest,
+    );
     memberCountSprite.material.needsUpdate = true;
     memberCountSprite.visible = true;
+    newestMemberSparkles.visible = Boolean(latest);
     // Each member contributes one visible log; the fire itself only grows on
     // the hundreds, so passing a century is a visible event around the circle.
     rebuildCampfireMemberLogs(count);
@@ -16959,6 +17002,11 @@ export function createWorldScene({
     );
     memberCountSprite.position.y =
       13.5 + (reducedMotion ? 0 : Math.sin(time * 0.0015) * 0.18);
+    newestMemberSparkles.position.y = memberCountSprite.position.y - 1.15;
+    if (!reducedMotion) newestMemberSparkles.rotation.z = time * 0.0008;
+    newestMemberSparkles.material.opacity = reducedMotion
+      ? 0.9
+      : 0.7 + Math.sin(time * 0.009) * 0.25;
   });
   // The real bench count depends on the member roster, which is still an
   // in-flight network request when the scene first renders. Rather than
