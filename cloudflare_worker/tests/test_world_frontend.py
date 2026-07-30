@@ -1406,15 +1406,17 @@ def test_top_toolbar_opens_dashboard_in_a_safe_new_tab():
     )
 
 
-def test_admin_error_button_opens_the_error_table_in_a_safe_new_tab():
-    start = APP.index("  openAdminErrors() {")
+def test_admin_error_button_opens_a_sortable_in_world_error_table():
+    start = APP.index("  async openAdminErrors(")
     method = APP[start:APP.index("\n  // Read the locked placement", start)]
-    assert 'destination.searchParams.set("table", "error_log")' in method
-    assert "window.open(" in method
-    assert '"_blank"' in method
-    assert '"noopener,noreferrer"' in method
-    assert "opened.opener = null" in method
-    assert "window.location.assign" not in method
+    assert 'detail.dataset.openLandmark = "admin-errors"' in method
+    assert "this.adminErrorsPanelHTML()" in method
+    assert "this.showDetailOverlay(" in method
+    assert "await this.refreshAdminErrorRows()" in method
+    assert "window.open(" not in method
+    assert 'data-world-activity-search="errors"' in APP
+    assert 'data-world-activity-filter="errors"' in APP
+    assert 'data-world-activity-sort="errors"' in APP
 
 
 def test_world_task_button_and_inactive_avatar_visibility_contracts():

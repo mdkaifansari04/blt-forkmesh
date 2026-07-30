@@ -154,7 +154,7 @@ def test_task_access_is_session_gated_and_wall_payload_is_explicitly_authorized(
     assert "physicalState(\"locked\"" in tasks
 
 
-def test_top_nav_task_count_and_owner_catalog_include_departments():
+def test_top_nav_task_count_and_sortable_catalog_include_departments():
     tasks = source(TASKS)
     world = source(WORLD)
     assert "data-world-tasks-open" in world
@@ -162,9 +162,13 @@ def test_top_nav_task_count_and_owner_catalog_include_departments():
     assert "data-world-organization-task-heading" in world
     assert "taskCount.textContent = String(tasks.length)" in tasks
     assert "taskCount.hidden = !authorized || tasks.length < 1" in tasks
-    assert "All organization tasks" in tasks
-    assert "grouped by department" in tasks
-    assert "· ${escapeHTML(task.department)}" in tasks
+    assert "function visibleWorkTasks()" in tasks
+    assert "data-world-task-avatar" in tasks
+    assert "data-tone=\"department\"" in tasks
+    assert "data-world-task-search" in world
+    assert "data-world-task-filter" in world
+    assert "data-world-task-sort" in world
+    assert "world-task-row-metadata" in tasks
 
 
 def test_work_tab_expands_and_active_tasks_have_readable_spinner_status():

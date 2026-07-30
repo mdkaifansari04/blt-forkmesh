@@ -103,6 +103,8 @@ def test_admin_hud_counts_only_rows_after_the_local_seen_cursor():
     assert "async def world_admin_errors_handler(env, request):" in ENTRY
     assert '"platform_administrator"' in ENTRY
     assert '"SELECT COUNT(*) AS n FROM error_log WHERE id>?"' in ENTRY
+    assert '"FROM error_log ORDER BY id DESC LIMIT 100"' in ENTRY
+    assert 'query.get("include", ["0"])[0] == "1"' in ENTRY
     assert '"/api/world/admin/errors"' in ENTRY
     assert "ADMIN_ERROR_SEEN_KEY" in WORLD
     assert "seen === null" in WORLD

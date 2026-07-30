@@ -60,7 +60,7 @@ def test_security_tab_lists_sessions_with_addresses_and_logout_controls():
 
 def test_work_tab_shows_assigned_task_stats_with_start_stop():
     for contract in (
-        "data-world-work-list",
+        "data-world-organization-task-list",
         "data-world-work-total",
         "data-world-work-active",
         "data-world-work-tracked",
@@ -81,6 +81,8 @@ def test_work_tab_shows_assigned_task_stats_with_start_stop():
         "setRecentIssues,",
         "ownTasks()",
         'data-world-office-task-action="${activeTask ? "stop" : "start"}"',
+        "function visibleWorkTasks()",
+        "function taskBoardHTML(task)",
     ):
         assert contract in TASKS
     # Issue assignment data reuses the already-loaded private notification

@@ -35548,7 +35548,7 @@ async def client_error_handler(env, request):
 
 
 async def world_admin_errors_handler(env, request):
-    """Return only the aggregate new-error cursor used by the admin HUD."""
+    """Return the admin HUD cursor and, on demand, a bounded error table."""
     if method_name(request) != "GET":
         return json_response(
             {"error": "method_not_allowed"},
@@ -35568,8 +35568,8 @@ async def world_admin_errors_handler(env, request):
             {"error": "forbidden"}, status=403,
             cache_control="no-store")
     try:
-        raw_after = parse_qs(urlparse(request.url).query).get(
-            "after", ["0"])[0]
+        query = parse_qs(urlparse(request.url).query)
+        raw_after = query.get("after", ["0"])[0]
         after = max(0, int(raw_after or 0))
     except (TypeError, ValueError):
         after = 0
@@ -35578,13 +35578,21 @@ async def world_admin_errors_handler(env, request):
         env, "SELECT id,ts FROM error_log ORDER BY id DESC LIMIT 1")
     count = await d1_first(
         env, "SELECT COUNT(*) AS n FROM error_log WHERE id>?", after)
+    payload = {
+        "ok": True,
+        "latestId": max(0, int((latest or {}).get("id") or 0)),
+        "latestAt": max(0, int((latest or {}).get("ts") or 0)),
+        "newCount": min(9999, max(0, int((count or {}).get("n") or 0))),
+    }
+    if query.get("include", ["0"])[0] == "1":
+        rows = await d1_all(
+            env,
+            "SELECT id,ts,status,method,path,message,ray,actor "
+            "FROM error_log ORDER BY id DESC LIMIT 100",
+        )
+        payload["errors"] = rows or []
     return json_response(
-        {
-            "ok": True,
-            "latestId": max(0, int((latest or {}).get("id") or 0)),
-            "latestAt": max(0, int((latest or {}).get("ts") or 0)),
-            "newCount": min(9999, max(0, int((count or {}).get("n") or 0))),
-        },
+        payload,
         cache_control="no-store",
     )
 

@@ -3910,7 +3910,45 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <button type="button" data-dashboard-chat-emote="float" title="Float" aria-label="Float">☁</button>
           <button type="button" data-dashboard-chat-emote="wobble" title="Wobble" aria-label="Wobble">〰</button>
           <button type="button" data-dashboard-chat-emote="sparkle" title="Sparkle" aria-label="Sparkle">✦</button>
+          <button type="button" data-world-jetpack-toggle title="Put on jetpack" aria-label="Put on jetpack" aria-pressed="false">🚀</button>
         </div>
+
+        <div class="world-jetpack-controls" data-world-jetpack-controls hidden aria-label="Jetpack altitude controls">
+          <button type="button" data-world-jetpack-direction="up" aria-label="Jetpack up" title="Ascend · Space">▲</button>
+          <span data-world-jetpack-altitude>0</span>
+          <button type="button" data-world-jetpack-direction="down" aria-label="Jetpack down" title="Descend · C or Control">▼</button>
+        </div>
+
+        <aside class="world-gym-console" data-world-gym-console hidden aria-labelledby="world-gym-console-title">
+          <header>
+            <div>
+              <p class="world-eyebrow">WORLD GYM · BENCH PRESS</p>
+              <h2 id="world-gym-console-title">Load the bar.</h2>
+            </div>
+            <button type="button" data-world-gym-close aria-label="Close bench press controls">×</button>
+          </header>
+          <div class="world-gym-weight">
+            <label>
+              <span>Weight</span>
+              <input type="range" min="45" max="1200" step="5" value="135" data-world-gym-weight-range />
+            </label>
+            <label>
+              <input type="number" min="45" max="1200" step="5" value="135" data-world-gym-weight-number />
+              <span>lb</span>
+            </label>
+          </div>
+          <div class="world-gym-lift-stats">
+            <div><strong data-world-gym-weight-label>135 lb</strong><span>Loaded</span></div>
+            <div><strong data-world-gym-reps>0</strong><span>Reps</span></div>
+            <div><strong data-world-gym-mode>Manual</strong><span>Mode</span></div>
+          </div>
+          <p data-world-gym-heavy-note>At 315 lb and above, the loaded bar visibly flexes and rebounds.</p>
+          <div class="world-gym-actions">
+            <button type="button" data-world-gym-rep>Do one rep</button>
+            <button type="button" data-world-gym-auto aria-pressed="false" disabled>Auto reps · unlocks at 315 lb</button>
+          </div>
+          <footer>Click for each manual rep. Auto mode repeats the lift until switched off. Move with WASD to leave the bench.</footer>
+        </aside>
 
         <details class="world-diagnostics" data-world-diagnostics ${settings.debugPanel ? "" : "hidden"}>
           <summary aria-label="Open local World performance and connection details" title="World performance">
@@ -4368,66 +4406,91 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
 
           <div class="world-settings-pane" data-world-settings-pane="work" hidden>
             <form class="world-work-quick-entry" data-world-work-task-form>
+              <span class="world-work-quick-icon" aria-hidden="true">＋</span>
               <label class="world-work-quick-title">
-                <span>Create organization task</span>
-                <input type="text" maxlength="160" required placeholder="What needs to be done?" data-world-work-task-title />
+                <span class="world-visually-hidden">Task title</span>
+                <input type="text" maxlength="160" required placeholder="Quick add a task…" aria-label="Task title" data-world-work-task-title />
               </label>
               <label>
-                <span>Assign</span>
+                <span class="world-visually-hidden">Assign</span>
                 <select data-world-work-task-assignee aria-label="Task assignee"></select>
               </label>
               <label>
-                <span>Department</span>
+                <span class="world-visually-hidden">Department</span>
                 <select data-world-work-task-department aria-label="Task department"></select>
               </label>
               <label class="world-work-quick-repository">
-                <span>Repository <small>required for agent work</small></span>
-                <input type="text" maxlength="201" placeholder="owner/repository" data-world-work-task-repository />
+                <span class="world-visually-hidden">Repository</span>
+                <input type="text" maxlength="201" placeholder="owner/repository" aria-label="Repository, required for agent work" data-world-work-task-repository />
               </label>
               <label data-world-work-task-priority-wrap hidden>
-                <span>Priority</span>
+                <span class="world-visually-hidden">Priority</span>
                 <select data-world-work-task-priority aria-label="Global task priority">
                   <option value="100">P100 · urgent</option>
                   <option value="500" selected>P500 · normal</option>
                   <option value="900">P900 · later</option>
                 </select>
               </label>
-              <button type="submit" data-world-work-task-submit>Create task</button>
+              <button type="submit" data-world-work-task-submit><span aria-hidden="true">＋</span> Add</button>
               <p data-world-work-task-form-status role="status" aria-live="polite"></p>
             </form>
-            <fieldset class="world-setting-group">
-              <legend>Assigned work · only visible to you</legend>
+            <section class="world-task-board" aria-labelledby="world-task-board-title">
+              <header class="world-task-board-heading">
+                <div>
+                  <p class="world-eyebrow">ORGANIZATION WORK</p>
+                  <h3 id="world-task-board-title" data-world-organization-task-heading>Tasks</h3>
+                </div>
+                <div class="world-task-board-tools">
+                  <label>
+                    <span class="world-visually-hidden">Search tasks</span>
+                    <input type="search" placeholder="Search tasks…" aria-label="Search tasks" data-world-task-search />
+                  </label>
+                  <label>
+                    <span class="world-visually-hidden">Filter tasks</span>
+                    <select aria-label="Filter tasks" data-world-task-filter>
+                      <option value="all">All statuses</option>
+                      <option value="active">Running</option>
+                      <option value="idle">Ready</option>
+                      <option value="done">Done</option>
+                      <option value="mine">Assigned to me</option>
+                      <option value="agent">Bot tasks</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span class="world-visually-hidden">Sort tasks</span>
+                    <select aria-label="Sort tasks" data-world-task-sort>
+                      <option value="priority">Priority</option>
+                      <option value="status">Status</option>
+                      <option value="updated">Recently updated</option>
+                      <option value="assignee">Assignee</option>
+                      <option value="department">Department</option>
+                      <option value="title">Title</option>
+                    </select>
+                  </label>
+                  <button type="button" data-world-task-sort-direction value="asc" aria-label="Sort ascending" title="Reverse sort">↑</button>
+                  <button type="button" data-world-task-refresh aria-label="Refresh tasks" title="Refresh tasks">↻</button>
+                </div>
+              </header>
               <div class="world-work-stats" data-world-work-stats>
                 <div><strong data-world-work-total>0</strong><span>Assigned</span></div>
                 <div><strong data-world-work-active>0</strong><span>Running</span></div>
                 <div><strong data-world-work-tracked>0:00</strong><span>Tracked</span></div>
               </div>
-              <ol class="world-office-task-list" data-world-work-list aria-label="Work assigned to you">
-                <li class="world-office-task-empty">Sign in to load the work assigned to you.</li>
-              </ol>
               <p class="world-office-panel-status" data-world-work-status role="status" aria-live="polite"></p>
-              <p class="world-work-issue-heading">Recent issue assignments</p>
-              <ol class="world-office-task-list" data-world-work-issue-list aria-label="Issues recently assigned to you">
-                <li class="world-office-task-empty">No recent issue assignments.</li>
-              </ol>
-              <small>
-                Starting or stopping a task is timed on the server. The same
-                tasks and recent issue assignments ride the private board on
-                the back of your own avatar; nobody else can read it and
-                built-in screenshots hide it.
-              </small>
-            </fieldset>
-            <fieldset class="world-setting-group">
-              <legend data-world-organization-task-heading>Organization tasks · private to the organization</legend>
-              <ol class="world-office-task-list" data-world-organization-task-list aria-label="Universal organization task list">
+              <ol class="world-office-task-list world-task-table" data-world-organization-task-list aria-label="Sortable organization task table">
                 <li class="world-office-task-empty">Sign in to load organization tasks.</li>
               </ol>
-              <small>
-                Department, team, repository, QA, Claude, and Codex routes all
-                use this one encrypted task catalog. QA results include the
-                latest pass, fail, or unknown verdict and its reviewer.
-              </small>
-            </fieldset>
+              <details class="world-task-board-issues">
+                <summary>Recent issue assignments</summary>
+                <ol class="world-office-task-list" data-world-work-issue-list aria-label="Issues recently assigned to you">
+                  <li class="world-office-task-empty">No recent issue assignments.</li>
+                </ol>
+              </details>
+              <footer>
+                Timers use server time. Task details, completion notes, QA,
+                routing, and activity remain private to the organization.
+              </footer>
+            </section>
           </div>
 
           <div class="world-settings-pane" data-world-settings-pane="security" hidden>
@@ -4709,6 +4772,9 @@ class ForkMeshWorld extends HTMLElement {
     this.notificationUnread = 0;
     this.notificationAccount = "";
     this.notificationToken = "";
+    this.notificationBoardSearch = "";
+    this.notificationBoardFilter = "all";
+    this.notificationBoardSort = "newest";
     this.rewardState = {};
     this.pendingRewards = [];
     this.pendingContribution = null;
@@ -4915,6 +4981,24 @@ class ForkMeshWorld extends HTMLElement {
     this.adminErrorLatestId = 0;
     this.adminErrorCount = 0;
     this.adminErrorEffectTimer = 0;
+    this.adminErrors = [];
+    this.adminErrorsState = "idle";
+    this.adminErrorBoardSearch = "";
+    this.adminErrorBoardFilter = "all";
+    this.adminErrorBoardSort = "newest";
+    this.jetpackState = {
+      equipped: false,
+      altitude: 0,
+      maxAltitude: 480,
+    };
+    this.gymState = {
+      active: "",
+      auto: false,
+      weightLb: 135,
+      reps: 0,
+      heavy: false,
+      open: false,
+    };
     // GETs from bootstrap, visibility recovery, timers, and socket doorbells
     // share one request. Successful snapshots can be reused briefly and
     // repeated failures cool down exponentially instead of becoming a storm.
@@ -5888,9 +5972,11 @@ class ForkMeshWorld extends HTMLElement {
         },
         onSwingRide: (state) => this.handleSwingRide(state),
         onCameraMode: (state) => this.handleWorldCameraMode(state),
+        onJetpackChange: (state) => this.renderJetpackState(state),
+        onGymState: (state) => this.renderGymState(state),
         onStartHereSelect: ({ completed = 0, total = 0 } = {}) => {
           this.toast(
-            `${completed}/${total} World stops complete · WASD or arrows move · Shift runs · Space jumps · click seats and vehicles to use them.`,
+            `${completed}/${total} World stops complete · WASD or arrows move · Shift runs · Space jumps · click seats, gym equipment, and vehicles to use them.`,
             { priority: 1, lockMs: 3200 },
           );
         },
@@ -8527,6 +8613,25 @@ class ForkMeshWorld extends HTMLElement {
   bindUI() {
     const chatTerminal = this.$("[data-world-chat-terminal]");
     const diagnostics = this.$("[data-world-diagnostics]");
+    this.$$("[data-world-jetpack-direction]").forEach((button) => {
+      const direction = button.dataset.worldJetpackDirection;
+      const stop = (event) => {
+        this.world?.setJetpackVertical?.(direction, false);
+        if (event?.pointerId !== undefined) {
+          button.releasePointerCapture?.(event.pointerId);
+        }
+      };
+      button.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        button.setPointerCapture?.(event.pointerId);
+        this.world?.setJetpackVertical?.(direction, true);
+      });
+      button.addEventListener("pointerup", stop);
+      button.addEventListener("pointercancel", stop);
+      button.addEventListener("lostpointercapture", () =>
+        this.world?.setJetpackVertical?.(direction, false),
+      );
+    });
     const hoverCapable = window.matchMedia?.(
       "(hover: hover) and (pointer: fine)",
     )?.matches;
@@ -8719,6 +8824,24 @@ class ForkMeshWorld extends HTMLElement {
         this.toggleWorldCameraMode();
         return;
       }
+      if (event.target.closest("[data-world-jetpack-toggle]")) {
+        this.toggleJetpack();
+        return;
+      }
+      if (event.target.closest("[data-world-gym-close]")) {
+        this.world?.setGymAuto?.(false);
+        this.world?.stopGymExercise?.();
+        this.renderGymState({ ...this.gymState, open: false, auto: false });
+        return;
+      }
+      if (event.target.closest("[data-world-gym-rep]")) {
+        this.world?.performGymRep?.();
+        return;
+      }
+      if (event.target.closest("[data-world-gym-auto]")) {
+        this.world?.setGymAuto?.(!this.gymState.auto);
+        return;
+      }
       if (event.target.closest("[data-world-swing-dismount]")) {
         this.world?.dismountSwing?.();
         return;
@@ -8728,13 +8851,16 @@ class ForkMeshWorld extends HTMLElement {
         return;
       }
       if (event.target.closest("[data-world-notifications-open]")) {
+        this.toggleSettings(false);
         this.openLandmark("events");
         void this.refreshCommunityEvents(true);
         void this.refreshPersonalNotifications(true);
         return;
       }
       if (event.target.closest("[data-world-admin-errors]")) {
-        this.openAdminErrors();
+        void this.openAdminErrors(
+          event.target.closest("[data-world-admin-errors]"),
+        );
         return;
       }
       const landmarkButton = event.target.closest("[data-world-landmark]");
@@ -8783,6 +8909,7 @@ class ForkMeshWorld extends HTMLElement {
         return;
       }
       if (event.target.closest("[data-world-tasks-open]")) {
+        this.closeLandmark();
         this.toggleSettings(true);
         this.selectSettingsTab("work");
         return;
@@ -9042,6 +9169,10 @@ class ForkMeshWorld extends HTMLElement {
         this.markWorldNotificationsRead();
         return;
       }
+      if (event.target.closest("[data-world-admin-errors-refresh]")) {
+        void this.refreshAdminErrorRows();
+        return;
+      }
       if (event.target.closest("[data-world-focus-play]")) {
         void this.playFocusMusic();
         return;
@@ -9165,6 +9296,35 @@ class ForkMeshWorld extends HTMLElement {
     });
 
     this.addEventListener("change", (event) => {
+      const gymWeight = event.target.closest(
+        "[data-world-gym-weight-number], [data-world-gym-weight-range]",
+      );
+      if (gymWeight) {
+        this.world?.setGymWeight?.(gymWeight.value);
+        return;
+      }
+      const activityFilter = event.target.closest("[data-world-activity-filter]");
+      if (activityFilter) {
+        if (activityFilter.dataset.worldActivityFilter === "notifications") {
+          this.notificationBoardFilter = activityFilter.value;
+          this.refreshOpenEventsPanel();
+        } else {
+          this.adminErrorBoardFilter = activityFilter.value;
+          this.renderAdminErrorsOverlay();
+        }
+        return;
+      }
+      const activitySort = event.target.closest("[data-world-activity-sort]");
+      if (activitySort) {
+        if (activitySort.dataset.worldActivitySort === "notifications") {
+          this.notificationBoardSort = activitySort.value;
+          this.refreshOpenEventsPanel();
+        } else {
+          this.adminErrorBoardSort = activitySort.value;
+          this.renderAdminErrorsOverlay();
+        }
+        return;
+      }
       const focusTrack = event.target.closest("[data-world-focus-track]");
       if (focusTrack) {
         this.selectFocusMusic(focusTrack.dataset.worldFocusTrack);
@@ -9264,6 +9424,36 @@ class ForkMeshWorld extends HTMLElement {
     });
 
     this.addEventListener("input", (event) => {
+      const gymWeight = event.target.closest("[data-world-gym-weight-range]");
+      if (gymWeight) {
+        this.world?.setGymWeight?.(gymWeight.value);
+        return;
+      }
+      const activitySearch = event.target.closest("[data-world-activity-search]");
+      if (activitySearch) {
+        if (activitySearch.dataset.worldActivitySearch === "notifications") {
+          this.notificationBoardSearch = activitySearch.value;
+          this.refreshOpenEventsPanel();
+          const replacement = this.$(
+            "[data-world-activity-search='notifications']",
+          );
+          replacement?.focus({ preventScroll: true });
+          replacement?.setSelectionRange(
+            replacement.value.length,
+            replacement.value.length,
+          );
+        } else {
+          this.adminErrorBoardSearch = activitySearch.value;
+          this.renderAdminErrorsOverlay();
+          const replacement = this.$("[data-world-activity-search='errors']");
+          replacement?.focus({ preventScroll: true });
+          replacement?.setSelectionRange(
+            replacement.value.length,
+            replacement.value.length,
+          );
+        }
+        return;
+      }
       const focusVolume = event.target.closest("[data-world-focus-volume]");
       if (focusVolume) {
         this.setFocusMusicVolume(focusVolume.value);
@@ -10541,20 +10731,203 @@ class ForkMeshWorld extends HTMLElement {
     this.renderAdminErrors(0);
   }
 
-  openAdminErrors() {
+  adminErrorsPanelHTML() {
+    const query = this.adminErrorBoardSearch.trim().toLowerCase();
+    const filter = this.adminErrorBoardFilter;
+    const rows = this.adminErrors
+      .filter((item) => {
+        const status = Number(item.status) || 0;
+        if (filter === "server" && status < 500) return false;
+        if (filter === "client" && (status < 400 || status >= 500)) return false;
+        if (filter === "browser" && item.method !== "BROWSER") return false;
+        if (
+          query &&
+          ![
+            item.status,
+            item.method,
+            item.path,
+            item.message,
+            item.actor,
+            item.ray,
+            item.id,
+          ]
+            .join(" ")
+            .toLowerCase()
+            .includes(query)
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .sort((left, right) => {
+        if (this.adminErrorBoardSort === "oldest") return left.ts - right.ts;
+        if (this.adminErrorBoardSort === "status") {
+          return Number(right.status) - Number(left.status) || right.ts - left.ts;
+        }
+        if (this.adminErrorBoardSort === "path") {
+          return left.path.localeCompare(right.path) || right.ts - left.ts;
+        }
+        if (this.adminErrorBoardSort === "actor") {
+          return left.actor.localeCompare(right.actor) || right.ts - left.ts;
+        }
+        return right.ts - left.ts;
+      });
+    const total5xx = this.adminErrors.filter(
+      (item) => Number(item.status) >= 500,
+    ).length;
+    const total4xx = this.adminErrors.filter((item) => {
+      const status = Number(item.status);
+      return status >= 400 && status < 500;
+    }).length;
+    return `
+      <section class="world-activity-board world-activity-board--errors" aria-label="Error log">
+        <header class="world-activity-board-heading">
+          <div>
+            <p class="world-eyebrow">OPERATIONAL ACTIVITY</p>
+            <h3>Errors</h3>
+            <span>${this.adminErrors.length} recent records · administrator only</span>
+          </div>
+          <div class="world-activity-tools">
+            <label><span class="world-visually-hidden">Search errors</span><input type="search" value="${escapeHTML(
+              this.adminErrorBoardSearch,
+            )}" placeholder="Search errors…" data-world-activity-search="errors" /></label>
+            <label><span class="world-visually-hidden">Filter errors</span><select data-world-activity-filter="errors" aria-label="Filter errors">
+              <option value="all"${filter === "all" ? " selected" : ""}>All errors</option>
+              <option value="server"${filter === "server" ? " selected" : ""}>5xx server</option>
+              <option value="client"${filter === "client" ? " selected" : ""}>4xx client</option>
+              <option value="browser"${filter === "browser" ? " selected" : ""}>Browser</option>
+            </select></label>
+            <label><span class="world-visually-hidden">Sort errors</span><select data-world-activity-sort="errors" aria-label="Sort errors">
+              <option value="newest"${this.adminErrorBoardSort === "newest" ? " selected" : ""}>Newest</option>
+              <option value="oldest"${this.adminErrorBoardSort === "oldest" ? " selected" : ""}>Oldest</option>
+              <option value="status"${this.adminErrorBoardSort === "status" ? " selected" : ""}>Status</option>
+              <option value="path"${this.adminErrorBoardSort === "path" ? " selected" : ""}>Path</option>
+              <option value="actor"${this.adminErrorBoardSort === "actor" ? " selected" : ""}>User</option>
+            </select></label>
+            <button type="button" data-world-admin-errors-refresh aria-label="Refresh errors" title="Refresh errors">↻</button>
+          </div>
+        </header>
+        <div class="world-activity-stats">
+          <div data-tone="danger"><strong>${total5xx}</strong><span>Server</span></div>
+          <div data-tone="warning"><strong>${total4xx}</strong><span>Client</span></div>
+          <div data-tone="cool"><strong>${rows.length}</strong><span>Showing</span></div>
+        </div>
+        <ol class="world-activity-table" aria-label="Sortable error table">
+          ${
+            this.adminErrorsState === "loading"
+              ? '<li class="world-activity-loading"><i aria-hidden="true"></i><strong>Loading error activity…</strong></li>'
+              : rows.length
+                ? rows
+                    .map((item) => {
+                      const status = Number(item.status) || 0;
+                      const tone =
+                        status >= 500
+                          ? "danger"
+                          : status >= 400
+                            ? "warning"
+                            : "cool";
+                      const actor = item.actor || "system";
+                      const instant = new Date(item.ts);
+                      return `<li class="world-activity-row" data-tone="${tone}">
+                        <span class="world-activity-avatar" data-tone="${tone}" aria-label="${escapeHTML(actor)}">${escapeHTML(
+                          actor.slice(0, 1).toUpperCase(),
+                        )}</span>
+                        <div class="world-activity-copy">
+                          <header>
+                            <div><strong>${escapeHTML(item.message || "Logged error")}</strong>
+                              <span class="world-activity-badges">
+                                <em data-tone="${tone}">${escapeHTML(item.status || "ERR")}</em>
+                                <em>${escapeHTML(item.method || "—")}</em>
+                                <em>${escapeHTML(actor)}</em>
+                              </span>
+                            </div>
+                            <time datetime="${escapeHTML(
+                              Number.isNaN(instant.getTime()) ? "" : instant.toISOString(),
+                            )}">${escapeHTML(
+                              Number.isNaN(instant.getTime())
+                                ? "Unknown time"
+                                : instant.toLocaleString(),
+                            )}</time>
+                          </header>
+                          <p><code>${escapeHTML(item.path || "—")}</code></p>
+                          <dl>
+                            <div><dt>Record</dt><dd>${escapeHTML(item.id)}</dd></div>
+                            <div><dt>User</dt><dd>${escapeHTML(actor)}</dd></div>
+                            <div><dt>Ray</dt><dd title="${escapeHTML(item.ray || "—")}">${escapeHTML(item.ray || "—")}</dd></div>
+                            <div><dt>Source</dt><dd>${escapeHTML(item.method || "—")} ${escapeHTML(item.path || "—")}</dd></div>
+                          </dl>
+                        </div>
+                      </li>`;
+                    })
+                    .join("")
+                : `<li class="world-activity-empty"><span aria-hidden="true">✓</span><strong>${
+                    this.adminErrorsState === "unavailable"
+                      ? "Error activity is temporarily unavailable."
+                      : query || filter !== "all"
+                        ? "No errors match these controls."
+                        : "No recent errors. Everything is quiet."
+                  }</strong></li>`
+          }
+        </ol>
+        <footer>Messages and paths are shown only to platform administrators. Privacy-redacted routes remain redacted.</footer>
+      </section>`;
+  }
+
+  renderAdminErrorsOverlay() {
+    const panel = this.$("[data-world-admin-errors-panel]");
+    if (panel) panel.outerHTML = `<div data-world-admin-errors-panel>${this.adminErrorsPanelHTML()}</div>`;
+  }
+
+  async refreshAdminErrorRows() {
+    if (this.identity?.isAdmin !== true || !validWorldSession()) return;
+    this.adminErrorsState = "loading";
+    this.renderAdminErrorsOverlay();
+    try {
+      const payload = await this.fetchJSON(
+        "/api/world/admin/errors?after=0&include=1",
+        { cache: "no-store", timeout: 7000 },
+      );
+      this.adminErrors = (Array.isArray(payload?.errors) ? payload.errors : [])
+        .slice(0, 100)
+        .map((item) => ({
+          id: String(item?.id || ""),
+          ts: Math.max(0, Number(item?.ts) || 0),
+          status: String(item?.status || ""),
+          method: sanitizePresenceText(item?.method, "", 16).toUpperCase(),
+          path: sanitizeNotificationText(item?.path, "", 500),
+          message: sanitizeNotificationText(item?.message, "Logged error", 2000),
+          actor: sanitizePresenceText(item?.actor, "", 64).toLowerCase(),
+          ray: sanitizePresenceText(item?.ray, "", 128),
+        }));
+      this.adminErrorsState = this.adminErrors.length ? "ready" : "empty";
+    } catch (_) {
+      this.adminErrorsState = "unavailable";
+    }
+    this.renderAdminErrorsOverlay();
+  }
+
+  async openAdminErrors(returnFocus = null) {
     if (this.identity?.isAdmin !== true) return;
+    this.toggleSettings(false);
     this.storeAdminErrorSeenId(this.adminErrorLatestId);
     this.adminErrorCount = 0;
     this.renderAdminErrors(0);
-    const configured = String(validWorldSession()?.adminUrl || "").trim();
-    const destination = new URL(configured || "/admin", location.origin);
-    destination.searchParams.set("table", "error_log");
-    const opened = window.open(
-      destination.href,
-      "_blank",
-      "noopener,noreferrer",
-    );
-    if (opened) opened.opener = null;
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop) return;
+    this.adminErrorsState = "loading";
+    detail.dataset.openLandmark = "admin-errors";
+    detail.style.setProperty("--detail-color", "#ff6b7a");
+    detail.innerHTML = `
+      <header class="world-detail-header">
+        <div><p class="world-eyebrow">SYSTEM HEALTH</p><h2 id="world-detail-title">Errors</h2></div>
+        <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close errors">×</button>
+      </header>
+      <div class="world-detail-scroll">
+        <div data-world-admin-errors-panel>${this.adminErrorsPanelHTML()}</div>
+      </div>`;
+    this.showDetailOverlay(detail, backdrop, { returnFocus });
+    await this.refreshAdminErrorRows();
   }
 
   // Read the locked placement document. Every read goes through here so a
@@ -14371,138 +14744,187 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   eventsPanelHTML() {
-    const events = this.events.slice(0, 12);
-    const notifications = this.notifications.slice(0, 20);
     const session = readSession();
-    const formatter = new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-    });
+    const query = this.notificationBoardSearch.trim().toLowerCase();
+    const filter = this.notificationBoardFilter;
+    const rows = [
+      ...this.notifications.map((item) => ({
+        ...item,
+        source: "personal",
+        unread: !item.readAt,
+        when: item.ts,
+        destination: item.repo
+          ? `${item.repo}${item.number ? ` #${item.number}` : ""}`
+          : "Private inbox",
+      })),
+      ...this.events.map((item) => ({
+        ...item,
+        id: `event-${item.id}`,
+        source: "global",
+        kind: item.type || "Announcement",
+        body: item.description,
+        when: Date.parse(item.startsAt) || 0,
+        unread: false,
+        destination: item.destination || "Town Square",
+        href: "",
+      })),
+    ]
+      .filter((item) => {
+        if (filter === "unread" && !item.unread) return false;
+        if (filter === "personal" && item.source !== "personal") return false;
+        if (filter === "global" && item.source !== "global") return false;
+        if (
+          query &&
+          ![
+            item.title,
+            item.body,
+            item.kind,
+            item.destination,
+            item.repo,
+            item.number,
+          ]
+            .join(" ")
+            .toLowerCase()
+            .includes(query)
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .sort((left, right) => {
+        if (this.notificationBoardSort === "oldest") {
+          return left.when - right.when;
+        }
+        if (this.notificationBoardSort === "title") {
+          return left.title.localeCompare(right.title) || right.when - left.when;
+        }
+        if (this.notificationBoardSort === "kind") {
+          return left.kind.localeCompare(right.kind) || right.when - left.when;
+        }
+        return right.when - left.when;
+      });
+    const globalCount = this.events.length;
+    const unreadCount = this.notifications.filter((item) => !item.readAt).length;
     return `
       <div data-world-events-panel-content>
-      <section class="world-feature-card" aria-label="Account notifications">
-        <div class="world-panel-heading">
-          <h3>Your notifications</h3>
-          <span>${escapeHTML(
-            session?.sessionToken
-              ? `${this.notificationUnread} unread`
-              : "Sign in to receive",
-          )}</span>
+      <section class="world-activity-board world-activity-board--notifications" aria-label="Notifications and announcements">
+        <header class="world-activity-board-heading">
+          <div>
+            <p class="world-eyebrow">YOUR SIGNAL</p>
+            <h3>Notifications</h3>
+            <span>${session?.sessionToken ? `${unreadCount} unread` : "Sign in for private updates"} · ${globalCount} global</span>
+          </div>
+          <div class="world-activity-tools">
+            <label><span class="world-visually-hidden">Search notifications</span><input type="search" value="${escapeHTML(
+              this.notificationBoardSearch,
+            )}" placeholder="Search notifications…" data-world-activity-search="notifications" /></label>
+            <label><span class="world-visually-hidden">Filter notifications</span><select data-world-activity-filter="notifications" aria-label="Filter notifications">
+              <option value="all"${filter === "all" ? " selected" : ""}>All activity</option>
+              <option value="unread"${filter === "unread" ? " selected" : ""}>Unread</option>
+              <option value="personal"${filter === "personal" ? " selected" : ""}>Personal</option>
+              <option value="global"${filter === "global" ? " selected" : ""}>Global</option>
+            </select></label>
+            <label><span class="world-visually-hidden">Sort notifications</span><select data-world-activity-sort="notifications" aria-label="Sort notifications">
+              <option value="newest"${this.notificationBoardSort === "newest" ? " selected" : ""}>Newest</option>
+              <option value="oldest"${this.notificationBoardSort === "oldest" ? " selected" : ""}>Oldest</option>
+              <option value="title"${this.notificationBoardSort === "title" ? " selected" : ""}>Title</option>
+              <option value="kind"${this.notificationBoardSort === "kind" ? " selected" : ""}>Type</option>
+            </select></label>
+            <button type="button" data-world-notifications-refresh aria-label="Refresh notifications" title="Refresh notifications">↻</button>
+          </div>
+        </header>
+        <div class="world-activity-stats">
+          <div data-tone="accent"><strong>${unreadCount}</strong><span>Unread</span></div>
+          <div data-tone="cool"><strong>${this.notifications.length}</strong><span>Personal</span></div>
+          <div data-tone="success"><strong>${globalCount}</strong><span>Global</span></div>
         </div>
-        <div class="world-event-list world-notification-list">
+        <ol class="world-activity-table" aria-label="Sortable notification table">
           ${
-            notifications.length
-              ? notifications
-                  .map((item) => {
-                    const instant = new Date(item.ts);
-                    return `
-                      <article data-world-notification-id="${escapeHTML(
-                        item.id,
-                      )}" data-unread="${String(!item.readAt)}">
-                        <span>${escapeHTML(item.kind || "Update")}</span>
-                        ${
-                          item.readAt
-                            ? ""
-                            : '<em class="world-notification-unread">Unread</em>'
-                        }
-                        <strong>${escapeHTML(item.title)}</strong>
-                        ${
-                          item.body
-                            ? `<p>${escapeHTML(item.body)}</p>`
-                            : ""
-                        }
-                        <time datetime="${escapeHTML(
-                          Number.isNaN(instant.getTime())
-                            ? ""
-                            : instant.toISOString(),
-                        )}">${escapeHTML(
-                          Number.isNaN(instant.getTime())
-                            ? "Recently"
-                            : formatter.format(instant),
-                        )}</time>
-                        ${
-                          item.href
-                            ? `<a href="${escapeHTML(
-                                item.href,
-                              )}" rel="noopener noreferrer">Open context</a>`
-                            : ""
-                        }
-                      </article>`;
-                  })
-                  .join("")
-              : `<p class="world-empty-state" data-world-notifications-state="${escapeHTML(
-                  this.notificationsState,
-                )}">${
-                  this.notificationsState === "signed-out"
-                    ? "Sign in to receive your private ForkMesh notification inbox inside the World."
-                    : this.notificationsState === "unavailable"
-                      ? "Your notification inbox is temporarily unavailable."
-                      : this.notificationsState === "loading"
-                        ? "Loading your notification inbox…"
-                        : "No account notifications yet."
-                }</p>`
+            ["loading"].includes(this.notificationsState) &&
+            this.eventsState === "loading"
+              ? '<li class="world-activity-loading"><i aria-hidden="true"></i><strong>Loading your activity…</strong></li>'
+              : rows.length
+                ? rows
+                    .map((item) => {
+                      const instant = new Date(item.when);
+                      const tone =
+                        item.source === "global"
+                          ? "success"
+                          : item.unread
+                            ? "accent"
+                            : "cool";
+                      const icon =
+                        item.source === "global"
+                          ? "📣"
+                          : String(item.kind).toLowerCase().includes("issue")
+                            ? "◉"
+                            : "✦";
+                      return `<li class="world-activity-row" data-tone="${tone}" data-unread="${String(
+                        item.unread,
+                      )}">
+                        <span class="world-activity-avatar" data-tone="${tone}" aria-hidden="true">${icon}</span>
+                        <div class="world-activity-copy">
+                          <header>
+                            <div><strong>${escapeHTML(item.title)}</strong>
+                              <span class="world-activity-badges">
+                                <em data-tone="${tone}">${escapeHTML(item.kind || "Update")}</em>
+                                <em>${item.source === "global" ? "Global" : "Personal"}</em>
+                                ${item.unread ? '<em data-tone="accent">Unread</em>' : ""}
+                              </span>
+                            </div>
+                            <time datetime="${escapeHTML(
+                              Number.isNaN(instant.getTime()) ? "" : instant.toISOString(),
+                            )}">${escapeHTML(
+                              Number.isNaN(instant.getTime())
+                                ? "Recently"
+                                : instant.toLocaleString(),
+                            )}</time>
+                          </header>
+                          ${item.body ? `<p>${escapeHTML(item.body)}</p>` : ""}
+                          <dl>
+                            <div><dt>Source</dt><dd>${item.source === "global" ? "World announcement" : "Private account inbox"}</dd></div>
+                            <div><dt>Destination</dt><dd>${escapeHTML(item.destination || "—")}</dd></div>
+                            <div><dt>Reference</dt><dd>${escapeHTML(item.repo ? `${item.repo}${item.number ? ` #${item.number}` : ""}` : item.id)}</dd></div>
+                            ${
+                              item.source === "global"
+                                ? `<div><dt>Ends</dt><dd>${escapeHTML(
+                                    item.endsAt
+                                      ? new Date(item.endsAt).toLocaleString()
+                                      : "—",
+                                  )}</dd></div>`
+                                : `<div><dt>Read</dt><dd>${item.readAt ? new Date(item.readAt).toLocaleString() : "Not yet"}</dd></div>`
+                            }
+                          </dl>
+                          ${
+                            item.href
+                              ? `<a class="world-activity-open" href="${escapeHTML(item.href)}" rel="noopener noreferrer">Open context →</a>`
+                              : ""
+                          }
+                        </div>
+                      </li>`;
+                    })
+                    .join("")
+                : `<li class="world-activity-empty"><span aria-hidden="true">✦</span><strong>${
+                    query || filter !== "all"
+                      ? "No notifications match these controls."
+                      : this.eventsState === "unavailable" &&
+                          this.notificationsState === "unavailable"
+                        ? "Activity is temporarily unavailable. No seeded or demo announcement is being presented as scheduled."
+                      : this.notificationsState === "signed-out" && !globalCount
+                        ? "Sign in to receive private notifications."
+                        : "No notification activity yet."
+                  }</strong></li>`
           }
-        </div>
-        <div class="world-detail-actions">
-          <button type="button" data-world-notifications-refresh>Refresh notifications</button>
+        </ol>
+        <div class="world-activity-actions">
+          <button type="button" data-world-events-refresh>Refresh announcements</button>
           ${
             session?.sessionToken && this.notificationUnread
-              ? `<button type="button" data-world-notifications-read>Mark all read</button>`
+              ? '<button type="button" data-world-notifications-read>✓ Mark all read</button>'
               : ""
           }
         </div>
-        <p class="world-panel-footnote">This private inbox is fetched only with your signed-in account session. It is never included in multiplayer presence.</p>
-      </section>
-      <section class="world-feature-card" aria-label="UTC community events">
-        <div class="world-panel-heading">
-          <h3>Global World announcements</h3>
-          <span>${
-            this.eventsState === "unavailable"
-              ? "PUBLIC · LAST KNOWN · UTC"
-              : "PUBLIC · UTC"
-          }</span>
-        </div>
-        <div class="world-event-list">
-          ${
-            events.length
-              ? events.map((item) => {
-              const instant = new Date(item.startsAt);
-              const ends = new Date(item.endsAt);
-              return `
-                <article>
-                  <span>${escapeHTML(item.type || "Event")}</span>
-                  <strong>${escapeHTML(item.title)}</strong>
-                  ${
-                    item.description
-                      ? `<p>${escapeHTML(item.description)}</p>`
-                      : ""
-                  }
-                  <time datetime="${escapeHTML(item.startsAt)}">${escapeHTML(
-                    Number.isNaN(instant.getTime())
-                      ? item.startsAt
-                      : formatter.format(instant),
-                  )}</time>
-                  <em>${escapeHTML(item.destination || "Town Square")}</em>
-                  <small>Ends ${escapeHTML(
-                    Number.isNaN(ends.getTime())
-                      ? item.endsAt
-                      : formatter.format(ends),
-                  )}</small>
-                </article>`;
-                }).join("")
-              : `<p class="world-empty-state" data-world-events-state="${escapeHTML(
-                  this.eventsState,
-                )}">${
-                  this.eventsState === "unavailable"
-                    ? "The live event service is unavailable. No seeded or demo announcement is being presented as scheduled."
-                    : this.eventsState === "loading"
-                      ? "Loading live UTC event announcements…"
-                      : "No unexpired community events are currently scheduled."
-                }</p>`
-          }
-        </div>
-        <button type="button" data-world-events-refresh>Refresh live events</button>
-        <p class="world-panel-footnote">Event instants are stored as UTC ISO-8601 values; the dates above are formatted in this device’s selected time zone.</p>
+        <footer>This private inbox uses only your signed-in session. It is never included in multiplayer presence. Global event times are stored in UTC and displayed in your local time.</footer>
       </section>
       </div>`;
   }
@@ -21239,6 +21661,116 @@ class ForkMeshWorld extends HTMLElement {
       this.toast(
         "Swinging! Drag the swing-speed slider to pump harder, click the swing again to hop off, and try the camera button for a first-person ride.",
       );
+    }
+  }
+
+  renderJetpackState(state = {}) {
+    this.jetpackState = {
+      equipped: state.equipped === true,
+      altitude: Math.max(0, Number(state.altitude) || 0),
+      maxAltitude: Math.max(1, Number(state.maxAltitude) || 480),
+    };
+    const button = this.$("[data-world-jetpack-toggle]");
+    const controls = this.$("[data-world-jetpack-controls]");
+    const altitude = this.$("[data-world-jetpack-altitude]");
+    if (button) {
+      button.setAttribute(
+        "aria-pressed",
+        String(this.jetpackState.equipped),
+      );
+      button.dataset.active = String(this.jetpackState.equipped);
+      button.title = this.jetpackState.equipped
+        ? "Take off jetpack"
+        : "Put on jetpack";
+      button.setAttribute(
+        "aria-label",
+        this.jetpackState.equipped
+          ? "Take off jetpack"
+          : "Put on jetpack",
+      );
+    }
+    if (controls) controls.hidden = !this.jetpackState.equipped;
+    if (altitude) {
+      altitude.textContent = `${Math.round(this.jetpackState.altitude)}m`;
+      altitude.title = `${Math.round(
+        this.jetpackState.altitude,
+      )} of ${Math.round(this.jetpackState.maxAltitude)} metres`;
+    }
+  }
+
+  toggleJetpack() {
+    if (!this.world?.toggleJetpack) {
+      this.toast("The jetpack is still being assembled.");
+      return;
+    }
+    const wasEquipped = this.jetpackState.equipped;
+    const equipped = this.world.toggleJetpack();
+    if (equipped === false && !wasEquipped) {
+      this.toast("Step outside the Office before putting on the jetpack.");
+      return;
+    }
+    this.toast(
+      equipped
+        ? "Jetpack on — WASD flies, Space rises, C or Control descends, and Shift boosts."
+        : "Jetpack off. The parachute will catch a high-altitude dismount.",
+      { priority: 1, lockMs: 2800 },
+    );
+  }
+
+  renderGymState(state = {}) {
+    const previousActive = this.gymState.active;
+    this.gymState = {
+      active: String(state.active || ""),
+      auto: state.auto === true,
+      weightLb: Math.max(45, Math.min(1200, Number(state.weightLb) || 135)),
+      reps: Math.max(0, Number(state.reps) || 0),
+      heavy: state.heavy === true,
+      open: state.open === true,
+    };
+    if (
+      this.gymState.active &&
+      this.gymState.active !== "bench" &&
+      this.gymState.active !== previousActive
+    ) {
+      const labels = {
+        treadmill: "Treadmill running",
+        bike: "Exercise bike started",
+        rower: "Rowing machine started",
+        punch: "Punching-bag workout started",
+      };
+      this.toast(
+        `${labels[this.gymState.active] || "Workout started"} — press WASD to step away.`,
+        { priority: 1, lockMs: 2200 },
+      );
+    }
+    const panel = this.$("[data-world-gym-console]");
+    const range = this.$("[data-world-gym-weight-range]");
+    const number = this.$("[data-world-gym-weight-number]");
+    const loaded = this.$("[data-world-gym-weight-label]");
+    const reps = this.$("[data-world-gym-reps]");
+    const mode = this.$("[data-world-gym-mode]");
+    const auto = this.$("[data-world-gym-auto]");
+    const note = this.$("[data-world-gym-heavy-note]");
+    if (panel) panel.hidden = !this.gymState.open;
+    if (range) range.value = String(this.gymState.weightLb);
+    if (number) number.value = String(this.gymState.weightLb);
+    if (loaded) loaded.textContent = `${this.gymState.weightLb} lb`;
+    if (reps) reps.textContent = String(this.gymState.reps);
+    if (mode) mode.textContent = this.gymState.auto ? "Auto" : "Manual";
+    if (auto) {
+      auto.disabled = !this.gymState.heavy;
+      auto.setAttribute("aria-pressed", String(this.gymState.auto));
+      auto.textContent = this.gymState.heavy
+        ? this.gymState.auto
+          ? "Stop auto reps"
+          : "Start auto reps"
+        : "Auto reps · unlocks at 315 lb";
+    }
+    if (note) {
+      note.dataset.heavy = String(this.gymState.heavy);
+      note.textContent = this.gymState.heavy
+        ? "Heavy load active — the sleeves flex and the bar rebounds on every rep."
+        : "At 315 lb and above, the loaded bar visibly flexes and rebounds.";
     }
   }
 
