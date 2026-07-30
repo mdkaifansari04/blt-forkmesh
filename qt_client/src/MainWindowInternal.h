@@ -2959,6 +2959,12 @@ const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
 const QString kOrgTaskOpenProof = QStringLiteral("forkmesh-org-task-open-v1");
 const QString kOrgTaskCompleteProof =
     QStringLiteral("forkmesh-org-task-complete-v1");
+// Same signing key, for the one credential the "genie" button needs (adhoc
+// #49): the relay mints this desktop's task-only remote-MCP bearer instead of
+// its operator copying one out of the website. Must stay byte-identical to
+// GENIE_CREDENTIAL_PROOF in entry.py.
+const QString kGenieCredentialProof =
+    QStringLiteral("forkmesh-genie-credential-v1");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.
