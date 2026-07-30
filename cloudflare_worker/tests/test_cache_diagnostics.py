@@ -30,6 +30,7 @@ def test_cache_diagnostics_are_bounded_redacted_and_live():
     assert '"keyCountUsed": 1 if namespace is not None else 0' in ENTRY
     assert '"routes": {' in ENTRY
     assert "_edge_cache_record(" in ENTRY
+    assert 'if int(_EDGE_CACHE_STATS["startedAt"]) <= 0:' in ENTRY
     assert "cache_control=\"no-store, max-age=0, must-revalidate\"" in ENTRY
 
 
