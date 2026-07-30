@@ -10747,37 +10747,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   display: none !important;
 }
 
-/* Hovering the chat orb opens only the composer. Clicking it still opens the
-   independent newest-first transcript. */
-.world-chat-terminal:not([open]):is(:hover, :focus-within) {
-  overflow: visible;
-}
-
-.world-chat-terminal:not([open]):is(:hover, :focus-within)
-  .world-chat-terminal-body {
-  position: fixed;
-  right: max(12px, env(safe-area-inset-right));
-  bottom: calc(max(12px, env(safe-area-inset-bottom)) + 62px);
-  display: block !important;
-  width: min(480px, calc(100vw - 24px));
-  height: auto;
-  overflow: visible;
-}
-
-.world-chat-terminal:not([open]):is(:hover, :focus-within)
-  :is(
-    #fullChatMessages,
-    [data-dashboard-chat-scroll-rail],
-    [data-dashboard-chat-context-rail]
-  ) {
-  display: none !important;
-}
-
-.world-chat-terminal:not([open]):is(:hover, :focus-within)
-  [data-dashboard-chat-composer] {
-  display: block;
-}
-
 /* Newest messages are inserted first by the controller. */
 .world-native-chat #fullChatMessages {
   align-content: start;
@@ -12823,13 +12792,13 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 .world-chat-terminal[open][data-show-feed="true"] {
-  height: min(70dvh, 700px);
+  height: min(55dvh, 620px);
 }
 
 .world-chat-terminal[open] .world-chat-terminal-body {
   position: relative;
   inset: auto;
-  display: block !important;
+  display: grid !important;
   height: auto;
   min-height: 174px;
   max-height: min(72dvh, 720px);
@@ -12839,7 +12808,12 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
 .world-chat-terminal[open][data-show-feed="true"]
   .world-chat-terminal-body {
-  height: 100%;
+  position: absolute;
+  inset: 0;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  overflow: hidden;
 }
 
 .world-native-chat {
@@ -12877,11 +12851,17 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
 .world-quick-channels {
   display: flex;
+  width: max-content;
+  max-width: 100%;
   min-width: 0;
+  flex-wrap: nowrap;
   grid-area: channels;
+  justify-content: flex-start;
+  justify-self: start;
   gap: 7px;
   overflow-x: auto;
   padding: 3px 4px 1px;
+  text-align: left;
   scrollbar-width: none;
 }
 
@@ -13158,6 +13138,10 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   .world-chat-terminal[open] {
     bottom: max(8px, env(safe-area-inset-bottom));
     width: calc(100vw - 16px);
+  }
+
+  .world-chat-terminal[open][data-show-feed="true"] {
+    height: min(70dvh, 700px);
   }
 
   .world-native-chat [data-dashboard-chat-context-rail] {

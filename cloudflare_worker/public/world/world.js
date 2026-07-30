@@ -4140,14 +4140,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             data-world-native-chat
             data-world-default-repository="forkmesh/forkmesh"
           >
-            <div class="world-quick-chat-feed" data-world-quick-chat-feed>
-              <div id="fullChatMessages" role="log" aria-live="polite" aria-label="Live World activity"></div>
-              <div data-dashboard-chat-scroll-rail aria-label="Chat scroll controls">
-                <button type="button" data-dashboard-chat-scroll="up" aria-label="Scroll chat up">↑</button>
-                <span data-dashboard-chat-scroll-track aria-hidden="true"><span data-dashboard-chat-scroll-thumb></span></span>
-                <button type="button" data-dashboard-chat-scroll="down" aria-label="Scroll to newest message">↓</button>
-              </div>
-            </div>
             <nav class="world-quick-channels" data-world-quick-channels aria-label="Composer channels">
               <button type="button" data-world-quick-channel="general" aria-pressed="true"><span>#</span> general</button>
               <button type="button" data-world-quick-channel="private"><span>▣</span> Private</button>
@@ -4156,6 +4148,14 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <button type="button" data-world-quick-channel="tasks"><span>✓</span> Tasks <output data-world-task-count hidden>0</output></button>
               <button type="button" data-world-quick-channel="notifications"><span>◇</span> Notifications <output data-world-notification-count hidden>0</output></button>
             </nav>
+            <div class="world-quick-chat-feed" data-world-quick-chat-feed>
+              <div id="fullChatMessages" role="log" aria-live="polite" aria-label="Live World activity"></div>
+              <div data-dashboard-chat-scroll-rail aria-label="Chat scroll controls">
+                <button type="button" data-dashboard-chat-scroll="up" aria-label="Scroll chat up">↑</button>
+                <span data-dashboard-chat-scroll-track aria-hidden="true"><span data-dashboard-chat-scroll-thumb></span></span>
+                <button type="button" data-dashboard-chat-scroll="down" aria-label="Scroll to newest message">↓</button>
+              </div>
+            </div>
             <nav data-dashboard-chat-context-rail aria-label="Selected chat context">
               <button type="button" data-dashboard-chat-context-channel># general</button>
               <button type="button" data-dashboard-chat-context-source>forkmesh/forkmesh · Organization</button>
@@ -9210,6 +9210,18 @@ class ForkMeshWorld extends HTMLElement {
     diagnostics?.addEventListener("focusin", () => {
       diagnostics.open = true;
       chatTerminal?.removeAttribute("open");
+    });
+    if (chatTerminal && hoverCapable) {
+      chatTerminal.addEventListener("pointerenter", () => {
+        chatTerminal.open = true;
+        diagnostics?.removeAttribute("open");
+        this.loadNativeWorldChat();
+      });
+    }
+    chatTerminal?.addEventListener("focusin", () => {
+      chatTerminal.open = true;
+      diagnostics?.removeAttribute("open");
+      this.loadNativeWorldChat();
     });
     // The account portrait is the World HUD launcher.  It keeps the World
     // quiet while walking, then fans the fixed-size controls out on hover,
@@ -22255,10 +22267,15 @@ class ForkMeshWorld extends HTMLElement {
   restoreQuickComposerChannel() {
     const terminal = this.$("[data-world-chat-terminal]");
     if (!terminal) return;
-    let selected = "";
+    const selected = "general";
     try {
-      selected =
-        localStorage.getItem("forkmesh.worldComposer.selectedChannel") || "";
+      // The World launcher always opens on its in-place chat stream. Other
+      // entries in the channel rail navigate to their dedicated surfaces, so
+      // do not let an older saved shortcut reopen this panel without chats.
+      localStorage.setItem(
+        "forkmesh.worldComposer.selectedChannel",
+        selected,
+      );
     } catch (_) {}
     terminal.dataset.showFeed = String(selected === "general");
     this.$$("[data-world-quick-channel]").forEach((button) => {
