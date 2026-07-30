@@ -971,10 +971,6 @@ QWidget *MainWindow::buildNetworkLogDock()
             // the provider — not just whether the picker is shown.
             refreshQuickAddSpeedSelector();
         }
-        // Only the two CLI providers can run a genie (adhoc #38): the API
-        // runners have no MCP transport to hand the connector to.
-        if (m_quickAddGenieButton)
-            m_quickAddGenieButton->setEnabled(claudeCode || codex);
     };
     connect(m_quickAddAgentProvider, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this, syncQuickAddAgentControls, refreshQuickAddModelPicker](int) {
