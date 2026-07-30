@@ -177,7 +177,8 @@ function normalizedTask(task) {
     department: text(task.department, 64).toLowerCase() || "general",
     team: text(task.team, 64).toLowerCase(),
     destination: text(task.destination, 32).toLowerCase() || "department",
-    priority: Math.max(1, Math.min(999, Number(task.priority) || 500)),
+    priority: Math.max(1, Math.min(99, Number(task.priority) || 50)),
+    parentTaskId: safeTaskId(task.parentTaskId),
     repository: text(task.repository, 201),
     agent: normalizedAgentRun(task.agent),
     qa:
@@ -524,6 +525,16 @@ export function createWorldOfficeTasksController({
     return `
       <span class="world-office-task-controls world-task-row-controls" role="group" aria-label="Task actions">
         ${
+          canManage || own || task.createdBy === actor
+            ? `<button
+                type="button"
+                data-world-office-task-action="follow-up"
+                data-world-office-task-id="${task.id}"
+                ${waiting ? "disabled" : ""}
+              >Follow up</button>`
+            : ""
+        }
+        ${
           own && !doneTask
             ? `<button
                 type="button"
@@ -644,6 +655,13 @@ export function createWorldOfficeTasksController({
         : botTask && task.agentSessionId
           ? "Queued"
           : "Ready";
+    const statusIcon = activeTask
+      ? '<i class="world-task-inline-spinner" aria-hidden="true"></i>'
+      : doneTask
+        ? '<i class="world-task-status-icon" data-icon="done" aria-hidden="true">✓</i>'
+        : botTask && task.agentSessionId
+          ? '<i class="world-task-status-icon" data-icon="queued" aria-hidden="true">≡</i>'
+          : '<i class="world-task-status-icon" data-icon="ready" aria-hidden="true">◆</i>';
     const assigneeLabel =
       task.assigneeKind === "user"
         ? `@${task.assignee}`
@@ -692,6 +710,7 @@ export function createWorldOfficeTasksController({
           : "—",
       ],
       ["Agent session", task.agentSessionId || "—"],
+      ["Follows task", task.parentTaskId || "—"],
       ["Agent provider", task.agent?.provider || "—"],
       ["Agent model", task.agent?.model || "—"],
       ["Agent mode", task.agent?.mode || "—"],
@@ -716,11 +735,33 @@ export function createWorldOfficeTasksController({
             ${task.attachments.length ? `<i aria-label="${task.attachments.length} attachment(s)" title="${task.attachments.length} attachment(s)">📎</i>` : ""}
           </span>
           <span class="world-task-cell-status" role="cell" data-tone="${activeTask ? "active" : doneTask ? "done" : "ready"}">
-            ${activeTask ? '<i class="world-task-inline-spinner" aria-hidden="true"></i>' : ""}
-            ${statusLabel}
+            ${statusIcon}${statusLabel}
           </span>
-          <span class="world-task-cell-priority" role="cell">P${task.priority}</span>
-          <span class="world-task-cell-owner" role="cell" title="${escapeHTML(assigneeLabel)}">${escapeHTML(assigneeLabel)}</span>
+          <span class="world-task-cell-priority" role="cell">
+            ${
+              canManage && !doneTask && !activeTask
+                ? `<label class="world-task-inline-editor" title="Edit priority">
+                    <span class="world-visually-hidden">Priority for ${escapeHTML(task.title)}</span>
+                    P<input type="number" min="1" max="99" value="${task.priority}"
+                      data-world-task-priority="${task.id}" aria-label="Priority for ${escapeHTML(task.title)}" />
+                  </label>`
+                : `P${task.priority}`
+            }
+          </span>
+          <span class="world-task-cell-owner" role="cell" title="${escapeHTML(assigneeLabel)}">
+            ${
+              canManage && !doneTask && !activeTask
+                ? `<label class="world-task-inline-editor" title="Change assignee">
+                    <span class="world-visually-hidden">Assignee for ${escapeHTML(task.title)}</span>
+                    <select data-world-task-assignee="${task.id}" aria-label="Assignee for ${escapeHTML(task.title)}">
+                      <option value="agent" ${task.assigneeKind === "agent" ? "selected" : ""}>Bot</option>
+                      <option value="unassigned" ${task.assigneeKind === "unassigned" ? "selected" : ""}>Unassigned</option>
+                      ${organizationMembers.map((name) => `<option value="user:${escapeHTML(name)}" ${task.assigneeKind === "user" && task.assignee === name ? "selected" : ""}>@${escapeHTML(name)}</option>`).join("")}
+                    </select>
+                  </label>`
+                : escapeHTML(assigneeLabel)
+            }
+          </span>
           <span class="world-task-cell-route" role="cell" title="${escapeHTML(routeLabel || "—", 500)}">${escapeHTML(routeLabel || "—")}</span>
           <time class="world-task-cell-updated" role="cell" datetime="${new Date(task.updatedAt || task.createdAt || 0).toISOString()}">${escapeHTML(taskDateLabel(task.updatedAt || task.createdAt))}</time>
           <time
@@ -750,9 +791,9 @@ export function createWorldOfficeTasksController({
               <div class="world-task-row-badges">
               <span data-tone="priority">P${task.priority}</span>
               <span data-tone="${activeTask ? "active" : doneTask ? "done" : "ready"}">
-                ${activeTask ? '<i class="world-task-inline-spinner" aria-hidden="true"></i>' : ""}
-                ${statusLabel}
+                ${statusIcon}${statusLabel}
               </span>
+              <span>${escapeHTML(assigneeLabel)}</span>
               <span data-tone="department">${escapeHTML(task.department)}</span>
               ${task.team ? `<span>${escapeHTML(task.team)}</span>` : ""}
               ${task.kind === "bid" ? '<span data-tone="bid">SOL bid</span>' : ""}
@@ -1254,7 +1295,7 @@ export function createWorldOfficeTasksController({
       { value: "self", label: actor ? `You (@${actor})` : "You" },
       {
         value: "agent",
-        label: "Codex / Claude agent on linked desktop",
+        label: "Bot",
       },
       { value: "unassigned", label: "Unassigned" },
     ];
@@ -1702,7 +1743,7 @@ export function createWorldOfficeTasksController({
     if (
       !id ||
       ![
-        "start", "stop", "complete", "delete", "return",
+        "start", "stop", "complete", "delete", "return", "follow-up",
         "qa-pass", "qa-fail", "qa-unsure",
       ].includes(action)
     ) {
@@ -1725,10 +1766,18 @@ export function createWorldOfficeTasksController({
       if (saved) toast(`QA verdict saved: ${verdict}.`);
       return;
     }
-    if (
-      action === "delete" &&
-      !window.confirm("Delete this task and its private check-in history?")
-    ) {
+    if (action === "follow-up") {
+      const parent = tasks.find((task) => task.id === id);
+      if (!parent) return;
+      const entered = window.prompt(`Follow-up to “${parent.title}”:`, "");
+      const title = text(entered, 160);
+      if (!title) return;
+      const saved = await mutate(
+        OFFICE_TASKS_PATH,
+        { title, parentTaskId: parent.id },
+        parent.id,
+      );
+      if (saved) toast("Follow-up task created with the same assignee.");
       return;
     }
     const completionNote =
@@ -1800,6 +1849,36 @@ export function createWorldOfficeTasksController({
         : "priority";
       workSortAscending = workSort !== "updated";
       renderWorkPane();
+      return;
+    }
+    const priorityInput = event.target.closest("[data-world-task-priority]");
+    if (priorityInput && event.type === "change") {
+      const id = safeTaskId(priorityInput.dataset.worldTaskPriority);
+      const priority = Math.max(
+        1,
+        Math.min(99, Math.round(Number(priorityInput.value) || 50)),
+      );
+      void mutate(
+        `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}`,
+        { priority },
+        id,
+        { method: "PATCH" },
+      );
+      return;
+    }
+    const assigneeSelect = event.target.closest("[data-world-task-assignee]");
+    if (assigneeSelect && event.type === "change") {
+      const id = safeTaskId(assigneeSelect.dataset.worldTaskAssignee);
+      const value = text(assigneeSelect.value, 80).toLowerCase();
+      const body = value.startsWith("user:")
+        ? { assigneeKind: "user", assignee: value.slice(5) }
+        : { assigneeKind: value };
+      void mutate(
+        `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}`,
+        body,
+        id,
+        { method: "PATCH" },
+      );
     }
   }
 
@@ -1881,12 +1960,6 @@ export function createWorldOfficeTasksController({
       return false;
     }
     if (action === "delete" && !canManage) return false;
-    if (
-      action === "delete" &&
-      !window.confirm("Delete this task and its private check-in history?")
-    ) {
-      return false;
-    }
     let completionNote = "";
     if (action === "complete") {
       const entered = window.prompt(

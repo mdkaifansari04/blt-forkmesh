@@ -109,6 +109,8 @@ const POSITION_KEY_PREFIX = "forkmesh.world.position.v1.";
 const DETAIL_WIDTH_KEY = "forkmesh.world.detailWidth.v1";
 const DETAIL_WIDTH_MIN = 320;
 const DETAIL_WIDTH_STEP = 48;
+const SETTINGS_WIDTH_KEY = "forkmesh.world.settingsWidth.v1";
+const SETTINGS_WIDTH_MIN = 360;
 const REFRESH_POSITION_KEY = "forkmesh.world.refresh-position.v1";
 const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1.";
 const SAVED_VIEWS_MAX = 5;
@@ -4464,6 +4466,8 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </section>
 
         <section class="world-settings" data-world-settings aria-labelledby="world-settings-title" aria-hidden="true">
+          <div class="world-settings-resize" data-world-settings-resize role="separator"
+            tabindex="0" aria-label="Resize Work panel" aria-orientation="vertical"></div>
           <div class="world-settings-heading">
             <div>
               <p class="world-eyebrow">YOUR WORLD PREFERENCES</p>
@@ -4514,11 +4518,8 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               </label>
               <label data-world-work-task-priority-wrap hidden>
                 <span class="world-visually-hidden">Priority</span>
-                <select data-world-work-task-priority aria-label="Global task priority">
-                  <option value="100">P100 · urgent</option>
-                  <option value="500" selected>P500 · normal</option>
-                  <option value="900">P900 · later</option>
-                </select>
+                <input type="number" min="1" max="99" value="50"
+                  data-world-work-task-priority aria-label="Global task priority, 1 highest and 99 lowest" />
               </label>
               <button type="submit" data-world-work-task-submit><span aria-hidden="true">＋</span> Add</button>
               <p data-world-work-task-form-status role="status" aria-live="polite"></p>
@@ -9798,6 +9799,7 @@ class ForkMeshWorld extends HTMLElement {
     }
 
     this.bindDetailResize();
+    this.bindSettingsResize();
 
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
@@ -10388,6 +10390,66 @@ class ForkMeshWorld extends HTMLElement {
       }
       event.preventDefault();
       event.stopPropagation();
+    });
+  }
+
+  bindSettingsResize() {
+    const grip = this.$("[data-world-settings-resize]");
+    const panel = this.$("[data-world-settings]");
+    const root = this.$("[data-world-root]");
+    if (!grip || !panel || !root) return;
+    const limit = () => Math.max(
+      SETTINGS_WIDTH_MIN,
+      Math.round(root.clientWidth - 28),
+    );
+    const setWidth = (value, persist = true) => {
+      const width = Math.min(
+        Math.max(Math.round(Number(value) || 0), SETTINGS_WIDTH_MIN),
+        limit(),
+      );
+      root.style.setProperty("--world-settings-user-width", `${width}px`);
+      grip.setAttribute("aria-valuemin", String(SETTINGS_WIDTH_MIN));
+      grip.setAttribute("aria-valuemax", String(limit()));
+      grip.setAttribute("aria-valuenow", String(width));
+      if (persist) {
+        try {
+          localStorage.setItem(SETTINGS_WIDTH_KEY, String(width));
+        } catch (_) {}
+      }
+    };
+    try {
+      const stored = Number(localStorage.getItem(SETTINGS_WIDTH_KEY) || 0);
+      if (stored >= SETTINGS_WIDTH_MIN) setWidth(stored, false);
+    } catch (_) {}
+    let pointerId = null;
+    let right = 0;
+    grip.addEventListener("pointerdown", (event) => {
+      if (pointerId !== null || event.button > 0) return;
+      event.preventDefault();
+      pointerId = event.pointerId;
+      right = panel.getBoundingClientRect().right;
+      grip.setPointerCapture?.(pointerId);
+    });
+    grip.addEventListener("pointermove", (event) => {
+      if (event.pointerId !== pointerId) return;
+      event.preventDefault();
+      setWidth(right - event.clientX);
+    });
+    const stop = (event) => {
+      if (event.pointerId !== pointerId) return;
+      pointerId = null;
+      try {
+        grip.releasePointerCapture?.(event.pointerId);
+      } catch (_) {}
+    };
+    grip.addEventListener("pointerup", stop);
+    grip.addEventListener("pointercancel", stop);
+    grip.addEventListener("keydown", (event) => {
+      const width = panel.getBoundingClientRect().width;
+      if (event.key === "ArrowLeft") setWidth(width + DETAIL_WIDTH_STEP);
+      else if (event.key === "ArrowRight") setWidth(width - DETAIL_WIDTH_STEP);
+      else return;
+      event.preventDefault();
     });
   }
 

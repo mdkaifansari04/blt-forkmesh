@@ -243,6 +243,7 @@ set(FORKMESH_APP_SOURCES
     src/MainWindowShared.cpp
     src/MainWindowSetup.cpp
     src/MainWindowChat.cpp
+    src/MainWindowTasks.cpp
     src/MainWindowIssues.cpp
     src/MainWindowSourceControl.cpp
     src/MainWindowDiscussions.cpp

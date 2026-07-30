@@ -10782,8 +10782,8 @@ SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
     # Organization tasks share one explicit ordering across the World,
     # dashboard, bot API, and remote MCP surface.
     """ALTER TABLE organization_tasks
-       ADD COLUMN priority INTEGER NOT NULL DEFAULT 500
-       CHECK (priority BETWEEN 1 AND 999)""",
+       ADD COLUMN priority INTEGER NOT NULL DEFAULT 50
+       CHECK (priority BETWEEN 1 AND 99)""",
 ]
 
 # Post-CREATE column additions for tables that predate them. Idempotent: a
@@ -37636,18 +37636,11 @@ def _admin_error_bot_task_fields(status, method, path, message, users=""):
 def _admin_error_bot_task_form(
         status, method, path, message, users="",
         csrf_field="", admin_query=""):
-    """Hand one error (or one equivalent-error group) to ForkBot as a task.
-
-    Files a relay-authored issue on the flagship repository through the same
-    audited ForkBot inbox path chat and the QA deck use, so the queued work is
-    ordinary tracked work a desktop node drains — not a new side channel.
-    """
+    """Send one error (or equivalent-error group) to the organization tasks."""
     return (
         '<form class="error-bot-task" method="post" action="%s" '
-        'onsubmit="return confirm('
-        "'File a ForkBot task for this error on forkmesh/forkmesh?')\">"
-        "%s%s<button class=\"error-bot\" type=\"submit\">"
-        "Create bot task</button></form>"
+        '>%s%s<button class="error-bot" type="submit">'
+        "Send to task</button></form>"
         % (
             _admin_href(
                 admin_query, table="error_log", action="create_bot_task"),
@@ -37679,9 +37672,7 @@ def _admin_error_row_bot_task_button(rowid, admin_query=""):
     return (
         '<button class="error-bot" type="submit" name="error_id" '
         'value="%s" formaction="%s" '
-        'onclick="event.stopPropagation();return confirm('
-        "'File a ForkBot task for this error on forkmesh/forkmesh?')\">"
-        "Create bot task</button>"
+        'onclick="event.stopPropagation()">Send to task</button>'
         % (
             _html_escape(rowid),
             _admin_href(
@@ -38649,14 +38640,7 @@ async def _admin_console_request_ownership(env, target, owner):
 
 
 async def _admin_error_create_bot_task(env, form, requester):
-    """File a ForkBot task for one error row, or one equivalent-error group.
-
-    Goes through the same audited ForkBot inbox path chat and the QA deck use:
-    a relay-authored issue on the flagship repository, plus the wantsAgent
-    request that makes the owner's node start a coding agent on it. The relay
-    still runs nothing itself. Returns (banner, audit_details).
-    """
-    owner, repo = FLAGSHIP_MONITOR_ID.split("/", 1)
+    """Create an organization task assigned to Bot from an error-log entry."""
     raw_id = form.get("error_id", [""])[0]
     rowid = int(raw_id) if str(raw_id).isdigit() else 0
     if rowid > 0:
@@ -38720,44 +38704,59 @@ async def _admin_error_create_bot_task(env, form, requester):
             .encode("utf-8")
         ).hexdigest(),
     }
-    queued, result = await _forkbot_enqueue_issue(
-        env, owner, repo, title[:240], body, requester,
-        source="admin-error-log", labels=["bug", "error-log"],
+    org_name = clean_string(
+        getattr(env, "OFFICE_MARKETING_ORG", "") or "forkmesh",
+        MAX_NODE_NAME,
+    ).strip().lower()
+    org_bi, org_row = await _org_row(env, org_name)
+    role = await _org_role(env, org_bi, requester)
+    if not org_row or role not in ("owner", "admin"):
+        return (
+            "Send to task failed: the administrator is not an organization "
+            "owner or admin.",
+            details,
+        )
+    task_id = _ap_uuid()
+    now = int(Date.now())
+    requester_bi = await blind_index(env, requester)
+    try:
+        status_number = int(status)
+    except (TypeError, ValueError):
+        status_number = 0
+    priority = 5 if status_number >= 500 else 15 if status_number >= 400 else 25
+    sealed = await encrypt_row(env, {
+        "kind": "task",
+        "title": title[:160],
+        "details": body[:4000],
+        "attachments": [],
+        "completionNote": "",
+        "assignee": "agent",
+        "createdBy": clean_string(requester, MAX_NODE_NAME).strip().lower(),
+        "parentTaskId": "",
+        "bountyRequest": None,
+        "repository": FLAGSHIP_MONITOR_ID,
+        "howToTest": (
+            "Reproduce %s %s and verify the error no longer appears in the "
+            "administration error list." % (method or "request", path or "path")
+        )[:720],
+        "qaReviewer": "",
+        "agent": None,
+    })
+    await d1_run(
+        env,
+        "INSERT INTO organization_tasks "
+        "(task_id,org_bi,department,team,destination,assignee_kind,status,"
+        "assignee_bi,data,created_by_bi,created_at,updated_at,elapsed_ms,"
+        "started_at,next_checkin_at,qa_requested_at,agent_session_id,priority) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        task_id, org_bi, "engineering", "", "agent", "agent", "idle", "",
+        sealed, requester_bi, now, now, 0, 0, 0, 0, "", priority,
     )
-    if not queued:
-        return (
-            "Create bot task failed: " + str(result or "issue_failed") + ".",
-            details,
-        )
-    number = int(
-        (result or {}).get("number")
-        or (result or {}).get("issueNumber")
-        or 0
-    )
-    details["issueNumber"] = number
-    if number <= 0:
-        # The desktop will assign the number when it drains the inbox, so
-        # there is nothing to attach an agent request to yet.
-        return (
-            "Bot task filed on %s/%s; %s's node numbers it on the next sync."
-            % (owner, repo, owner),
-            details,
-        )
-    # The admin page's own auth already proved _is_admin, which is exactly the
-    # privilege gate _forkbot_action_start_agent applies to wantsAgent.
-    agent_ok, agent_result = await _forkbot_enqueue_agent_request(
-        env, owner, repo, number, requester)
-    details["agentRequested"] = bool(agent_ok)
-    if not agent_ok:
-        return (
-            "Bot task filed as %s/%s issue #%d, but the coding-agent request "
-            "was not queued: %s." % (owner, repo, number, agent_result),
-            details,
-        )
+    details["taskId"] = task_id
+    details["priority"] = priority
     return (
-        "Bot task filed as %s/%s issue #%d and a coding agent was queued for "
-        "it; the owner's node starts it on the next inbox sync."
-        % (owner, repo, number),
+        "Task %s added to the organization task list and assigned to Bot."
+        % task_id,
         details,
     )
 
