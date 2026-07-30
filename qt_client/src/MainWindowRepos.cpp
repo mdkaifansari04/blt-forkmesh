@@ -6357,10 +6357,11 @@ void MainWindow::pushToSshMirrorRemotes(int index)
         // Push from the served bare mirror, but never let an unattended desktop
         // rewind or delete a branch that advanced on the gateway while this
         // checkout was offline. Automatic propagation therefore uses ordinary
-        // fast-forward refspecs and does not prune. An intentional rewrite or
-        // branch deletion must go through an explicit, reviewed Git operation;
-        // otherwise one stale three-minute sync can undo a clean main merge on
-        // every headless mirror.
+        // fast-forward refspecs and explicitly disables force and prune, even
+        // when a machine carries old push configuration. An intentional rewrite
+        // or branch deletion must go through an explicit, reviewed Git
+        // operation; otherwise one stale three-minute sync can undo a clean main
+        // merge on every headless mirror.
         trackProcessActivity(process, QStringLiteral("push"),
                              QStringLiteral("Pushing %1/%2 to %3")
                                  .arg(repo.owner, repo.name, url));
@@ -6368,6 +6369,8 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                        {QStringLiteral("-C"), repo.mirrorPath,
                         QStringLiteral("push"), QStringLiteral("--porcelain"),
                         QStringLiteral("--atomic"),
+                        QStringLiteral("--no-force"),
+                        QStringLiteral("--no-prune"),
                         url, QStringLiteral("refs/heads/*:refs/heads/*"),
                         QStringLiteral("refs/tags/*:refs/tags/*")});
     }
