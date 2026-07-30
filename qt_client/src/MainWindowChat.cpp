@@ -462,8 +462,7 @@ QWidget *MainWindow::buildChatPage()
     // re-parent the button into the rail and silently undo that placement.
     for (QPushButton *button :
          {m_reposNavButton, m_tasksNavButton, m_chatButton,
-          m_controlNodeNavButton, m_logNavButton, m_hostsNavButton, m_nodesNavButton,
-          m_relaysNavButton, m_networkNavButton}) {
+          m_controlNodeNavButton, m_logNavButton, m_networkNavButton}) {
         if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
             railButton->setCompact(false);
             railButton->setFixedSize(kRailItemWidth, 40);
@@ -560,7 +559,8 @@ QWidget *MainWindow::buildChatPage()
 // of the running executable. The widgets are created here, not in the repo pages
 // they came from, because those pages build lazily on first navigation while the
 // strip has to be populated from the first frame; setRepoBranch /
-// loadBranchesAndTags / updateFooterGitIdentity keep filling them in as before.
+// loadBranchesAndTags / updateFooterGitIdentity keep filling them in as before,
+// and updateFooterCommitInfo adds the commit that branch is on.
 QWidget *MainWindow::buildStatusBar()
 {
     auto *bar = new QWidget;
@@ -578,6 +578,12 @@ QWidget *MainWindow::buildStatusBar()
     m_footerGitIdentity->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_footerGitIdentity->setToolTip(
         "Git author identity configured for the repository you're viewing");
+
+    m_footerCommitInfo = new QLabel;
+    m_footerCommitInfo->setObjectName("footerCommitInfo");
+    m_footerCommitInfo->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_footerCommitInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_footerCommitInfo->setToolTip("Commit the browsed branch points at");
 
     // Elided up front rather than on every resize: the path never changes while
     // the app runs, and a full path left unelided would drag the window's
@@ -599,6 +605,7 @@ QWidget *MainWindow::buildStatusBar()
     row->setSpacing(10);
     row->addWidget(m_branchButton);
     row->addWidget(m_footerGitIdentity);
+    row->addWidget(m_footerCommitInfo);
     row->addStretch(1);
     row->addWidget(m_statusAppPath);
 
@@ -3015,6 +3022,61 @@ void MainWindow::updateFooterGitIdentity()
         });
 }
 
+// The tip of the branch named by the footer's branch button: date, subject and
+// author, so the strip says where that branch actually sits (adhoc #55). Read
+// detached for the same reason the identity above is — this runs from
+// openRepoDetail, where a synchronous git call blocks the GUI thread.
+void MainWindow::updateFooterCommitInfo()
+{
+    if (!m_footerCommitInfo)
+        return;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty()) {
+        m_footerCommitInfo->clear();
+        return;
+    }
+    const QString ref = currentRef();
+    runGitDetached(
+        dir,
+        {QStringLiteral("log"), QStringLiteral("-1"),
+         QStringLiteral("--date=format:%Y-%m-%d %H:%M"),
+         QStringLiteral("--pretty=%H\x1f%h\x1f%ad\x1f%s\x1f%an\x1f%ct"), ref,
+         QStringLiteral("--")},
+        [this, dir, ref](bool ok, const QByteArray &out) {
+            if (!m_footerCommitInfo)
+                return;
+            // Repo or branch switched (or closed) while the read was in flight.
+            if (repoGitDir() != dir || currentRef() != ref)
+                return;
+            const QStringList f = QString::fromUtf8(out)
+                                      .split(QLatin1Char('\n'))
+                                      .value(0)
+                                      .split(QLatin1Char('\x1f'));
+            // No commits yet (fresh repo), or the ref doesn't resolve.
+            if (!ok || f.size() < 5) {
+                m_footerCommitInfo->clear();
+                m_footerCommitInfo->setToolTip(
+                    QStringLiteral("Commit the browsed branch points at"));
+                return;
+            }
+            const QString date = f.at(2), subject = f.at(3), author = f.at(4);
+            const QString rel =
+                formatShortRelativeTime(f.value(5).toLongLong());
+            // Long subjects are elided rather than allowed to push the app-path
+            // label off the strip; the tooltip keeps the full text.
+            const QString shortSubject = m_footerCommitInfo->fontMetrics().elidedText(
+                subject, Qt::ElideRight, 360);
+            m_footerCommitInfo->setText(
+                QString::fromUtf8("\xC2\xB7 %1 \xC2\xB7 %2 \xC2\xB7 %3 \xC2\xB7 %4")
+                    .arg(f.at(1), date, shortSubject, author));
+            QString tip = QStringLiteral("%1\n%2\n%3 committed %4")
+                              .arg(f.at(0), subject, author, date);
+            if (!rel.isEmpty())
+                tip += QString::fromUtf8(" (%1 ago)").arg(rel);
+            m_footerCommitInfo->setToolTip(tip);
+        });
+}
+
 // Start the UI-stall watchdog + the live CPU/memory readout. Called once the
 // window is up so the heartbeat reflects a real, interactive event loop.
 void MainWindow::startDiagnostics()
@@ -4703,58 +4765,18 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_controlNodeNavButton, &QPushButton::clicked, this,
             [this] { showSection(kControlNodeSectionIndex); });
 
-    // Hosts (adhoc #263): provision a remote machine by SSHing in and running the
-    // ForkMesh installer over ansible, section 7.
-    m_hostsNavButton = new ActivityRailButton(QStringLiteral("server"),
-                                              QStringLiteral("Hosts"));
-    m_hostsNavButton->setObjectName("topNavButton");
-    m_hostsNavButton->setCheckable(true);
-    m_hostsNavButton->setCursor(Qt::PointingHandCursor);
-    m_hostsNavButton->setToolTip(
-        QString::fromUtf8("Hosts \xE2\x80\x94 install ForkMesh on a remote machine"));
-    setOcticon(m_hostsNavButton, "server", 16);
-    m_navGroup->addButton(m_hostsNavButton, 7); // section 7: Hosts
-    connect(m_hostsNavButton, &QPushButton::clicked, this,
-            [this] { showSection(7); });
-
-    // Nodes (adhoc #9): a sortable directory of every node this client knows
-    // about (the same nodes in the top-bar node dropdown). Sits between Hosts
-    // and Relays, section 13.
-    m_nodesNavButton = new ActivityRailButton(QStringLiteral("server"),
-                                              QStringLiteral("Nodes"));
-    m_nodesNavButton->setObjectName("topNavButton");
-    m_nodesNavButton->setCheckable(true);
-    m_nodesNavButton->setCursor(Qt::PointingHandCursor);
-    m_nodesNavButton->setToolTip(
-        QString::fromUtf8("Nodes \xE2\x80\x94 platform, status, version and repo count"));
-    setOcticon(m_nodesNavButton, "server", 16);
-    m_navGroup->addButton(m_nodesNavButton, kNodesSectionIndex); // section 13: Nodes
-    connect(m_nodesNavButton, &QPushButton::clicked, this,
-            [this] { showSection(kNodesSectionIndex); });
-
-    // Relays: a live list of the configured mainnode relays with their online
-    // status, round-trip response time and running version. Sits next to Hosts,
-    // section 8.
-    m_relaysNavButton = new ActivityRailButton(QStringLiteral("broadcast"),
-                                               QStringLiteral("Relays"));
-    m_relaysNavButton->setObjectName("topNavButton");
-    m_relaysNavButton->setCheckable(true);
-    m_relaysNavButton->setCursor(Qt::PointingHandCursor);
-    m_relaysNavButton->setToolTip(
-        QString::fromUtf8("Relays \xE2\x80\x94 online status, response time and version"));
-    setOcticon(m_relaysNavButton, "broadcast", 16);
-    m_navGroup->addButton(m_relaysNavButton, 8); // section 8: Relays
-    connect(m_relaysNavButton, &QPushButton::clicked, this,
-            [this] { showSection(8); });
-
-    // Network: websocket / Durable Object diagnostics plus outbound firewall.
+    // Network: Relays, Nodes and Hosts as tabs (adhoc #54) alongside the
+    // websocket / Durable Object diagnostics and the outbound firewall. The
+    // three used to be rail buttons of their own (sections 7, 8 and 13); those
+    // section indexes still resolve, they just land on the matching tab.
     m_networkNavButton = new ActivityRailButton(QStringLiteral("workflow"),
                                                 QStringLiteral("Network"));
     m_networkNavButton->setObjectName("topNavButton");
     m_networkNavButton->setCheckable(true);
     m_networkNavButton->setCursor(Qt::PointingHandCursor);
     m_networkNavButton->setToolTip(
-        QStringLiteral("Network - websocket and Durable Object diagnostics"));
+        QString::fromUtf8("Network \xE2\x80\x94 relays, nodes, hosts, websocket "
+                          "and Durable Object diagnostics"));
     setOcticon(m_networkNavButton, "workflow", 16);
     m_navGroup->addButton(m_networkNavButton, kNetworkDiagnosticsSectionIndex);
     connect(m_networkNavButton, &QPushButton::clicked, this,
@@ -5246,9 +5268,7 @@ void MainWindow::updateRelaySwitcher()
 {
     if (!m_relayMenuButton)
         return;
-    if (auto *railButton =
-            dynamic_cast<ActivityRailButton *>(m_relaysNavButton))
-        railButton->setBadgeCount(m_servers.size());
+    updateNetworkCounts(m_servers.size(), -1, -1);
     QString host;
     if (m_activeServer >= 0 && m_activeServer < m_servers.size())
         host = serverHost(m_servers.at(m_activeServer).url);
@@ -7373,12 +7393,12 @@ void MainWindow::ensureSectionBuilt(int index)
     case 3: section = buildNotificationsSection(); break;
     case 4: section = buildLogSection(); break;
     case 6: section = buildSearchResultsSection(); break;
-    case 7: section = buildHostsSection(); break;
-    case 8: section = buildRelaysSection(); break;
+    // 7 (Hosts), 8 (Relays) and 13 (Nodes) are tabs of the Network section now
+    // (adhoc #54); showSection() redirects them there, so their placeholders
+    // stay unbuilt and the fixed stack indexes below keep their meaning.
     case 10: section = buildNodeProfileSection(); break;
     case 11: section = buildNetworkReposSection(); break;
     case 12: section = buildNetworkDiagnosticsSection(); break;
-    case 13: section = buildNodesSection(); break;
     case 14: section = buildControlNodeSection(); break;
     case 15: section = buildOrganizationTasksSection(); break;
     default: break;
@@ -7394,6 +7414,16 @@ void MainWindow::showSection(int index)
 {
     if (index == 9)
         index = kNetworkDiagnosticsSectionIndex;
+    // Hosts (7), Relays (8) and Nodes (13) are tabs of the Network section now
+    // (adhoc #54). Their section indexes still work — saved navigation state,
+    // the command palette and the control node all still ask for them — they
+    // just open Network with the matching tab in front.
+    if (index == 7)
+        return showNetworkTab(kNetworkHostsTab);
+    if (index == 8)
+        return showNetworkTab(kNetworkRelaysTab);
+    if (index == kNodesSectionIndex)
+        return showNetworkTab(kNetworkNodesTab);
     // Section 5 was a retired desktop rankings page. Preserve fixed stack
     // indexes for saved navigation state, but land stale history safely at Home.
     if (index == 5)
@@ -7437,19 +7467,10 @@ void MainWindow::showSection(int index)
         }
         // Jump to the newest log line whenever the Log section opens.
         m_settingsLog->moveCursor(QTextCursor::End);
-    } else if (index == 7) {
-        // Re-read the saved host list whenever the Hosts section opens.
-        refreshHostsTable();
-    } else if (index == 8) {
-        // Re-list and re-probe the relays each time the Relays section opens.
-        refreshRelaysTable();
     } else if (index == 10) {
         // Back/Forward can land here directly while the panel is on loan to the
         // Settings > Profile tab; bring it home so the page isn't blank.
         hostNodeProfilePanel(false);
-    } else if (index == kNodesSectionIndex) {
-        // Re-list the known nodes each time the Nodes section opens.
-        refreshNodesTable();
     } else if (index == kNetworkReposSectionIndex) {
         refreshNetworkReposPage();
     } else if (index == kNetworkDiagnosticsSectionIndex) {
@@ -7459,6 +7480,42 @@ void MainWindow::showSection(int index)
         refreshControlNode();
     } else if (index == kOrganizationTasksSectionIndex) {
         refreshOrganizationTasks();
+    }
+}
+
+void MainWindow::showNetworkTab(int tabIndex)
+{
+    showSection(kNetworkDiagnosticsSectionIndex);
+    if (!m_networkTabs || tabIndex < 0 || tabIndex >= m_networkTabs->count())
+        return;
+    const bool alreadyOpen = m_networkTabs->currentIndex() == tabIndex;
+    m_networkTabs->setCurrentIndex(tabIndex);
+    // A real tab change refreshes through currentChanged; re-opening the tab
+    // that is already in front does not, so do it here instead of twice.
+    if (alreadyOpen)
+        refreshNetworkTab(tabIndex);
+}
+
+void MainWindow::refreshNetworkTab(int tabIndex)
+{
+    switch (tabIndex) {
+    case kNetworkRelaysTab:
+        // Re-list and re-probe the relays each time the Relays tab opens.
+        refreshRelaysTable();
+        break;
+    case kNetworkNodesTab:
+        refreshNodesTable();
+        break;
+    case kNetworkHostsTab:
+        // Re-read the saved host list whenever the Hosts tab opens.
+        refreshHostsTable();
+        break;
+    default:
+        // The diagnostics/firewall tabs all read the same two refreshes, which
+        // showSection() already runs when the section itself opens.
+        refreshFirewallTables();
+        refreshNetworkDiagnostics();
+        break;
     }
 }
 
@@ -8412,19 +8469,14 @@ QWidget *MainWindow::buildHostsSection()
     auto *outer = new QVBoxLayout(page);
     // Compact page chrome (adhoc #315): tighter margins/spacing everywhere so
     // all areas — install form, Vultr provisioning, live output and the host
-    // list — fit on screen together, while every hint keeps its full text.
-    outer->setContentsMargins(16, 12, 16, 14);
+    // list — fit on screen together, while every hint keeps its full text. It is
+    // a tab of the Network section now (adhoc #54), so the page title is gone
+    // and the horizontal margins belong to the section, not the page.
+    outer->setContentsMargins(0, 8, 0, 0);
     outer->setSpacing(8);
 
     auto *titleRow = new QHBoxLayout;
     titleRow->setContentsMargins(0, 0, 0, 0);
-    auto *title = new QLabel(QStringLiteral("Hosts"));
-    title->setObjectName("sectionTitle");
-    QFont titleFont = title->font();
-    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
-    titleFont.setBold(true);
-    title->setFont(titleFont);
-    titleRow->addWidget(title);
     titleRow->addStretch(1);
     // Bulk one-click install: make every saved host install the current
     // published, checksum-verified release in parallel. This deliberately does
@@ -9046,13 +9098,7 @@ void MainWindow::refreshHostsTable()
         });
     }
 
-    if (m_hostsNavButton)
-        m_hostsNavButton->setText(hosts.isEmpty()
-            ? QStringLiteral("Hosts")
-            : QStringLiteral("Hosts (%1)").arg(hosts.size()));
-    if (auto *railButton =
-            dynamic_cast<ActivityRailButton *>(m_hostsNavButton))
-        railButton->setBadgeCount(hosts.size());
+    updateNetworkCounts(-1, -1, hosts.size());
 }
 
 forkmesh::control::AgentCliCredentials MainWindow::localAgentCliCredentials()
@@ -10067,18 +10113,12 @@ enum NodeCol {
 
 QWidget *MainWindow::buildNodesSection()
 {
+    // A tab of the Network section (adhoc #54) — see buildRelaysSection() on the
+    // missing page title.
     auto *page = new QWidget;
     auto *outer = new QVBoxLayout(page);
-    outer->setContentsMargins(24, 20, 24, 24);
+    outer->setContentsMargins(0, 8, 0, 0);
     outer->setSpacing(12);
-
-    auto *title = new QLabel(QStringLiteral("Nodes"));
-    title->setObjectName("sectionTitle");
-    QFont titleFont = title->font();
-    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
-    titleFont.setBold(true);
-    title->setFont(titleFont);
-    outer->addWidget(title);
 
     auto *subtitle = new QLabel(QString::fromUtf8(
         "All registered nodes from the relay directory, including offline "
@@ -10367,16 +10407,14 @@ void MainWindow::refreshNodesTable()
         visibleNames.insert(key);
     }
 
-    // The rail badge counts the rows this page would show — real serving nodes —
+    // The Nodes count is the rows this page would show — real serving nodes —
     // and nothing else. It used to be re-stamped with m_nodeMenuEntries.size()
     // right after this function ran (updateNodeSwitcher), which is the *unfiltered*
     // switcher list: every chat user account, world-chat guest and repo owner in
     // it was counted as a node, so a mesh of four nodes badged "21" (adhoc #26).
-    if (auto *railButton =
-            dynamic_cast<ActivityRailButton *>(m_nodesNavButton))
-        railButton->setBadgeCount(visible.size());
+    updateNetworkCounts(-1, visible.size(), -1);
     if (!m_nodesTable)
-        return; // page not built yet — the badge above is all that's on screen
+        return; // page not built yet — the count above is all that's on screen
 
     // Which node the detail panel is currently showing, so a rebuild can keep it.
     const QString shown = m_nodesTable->property("shownNode").toString();
@@ -10492,11 +10530,6 @@ void MainWindow::refreshNodesTable()
                   .arg(visible.size() == 1 ? "" : "s")
                   .arg(online));
     }
-    if (m_nodesNavButton)
-        m_nodesNavButton->setText(visible.isEmpty()
-            ? QStringLiteral("Nodes")
-            : QStringLiteral("Nodes (%1)").arg(visible.size()));
-
     // Re-open the previously shown node's detail (find it by name post-sort), or
     // default to the first row.
     if (m_nodesTable->rowCount() > 0) {
@@ -10787,18 +10820,12 @@ void MainWindow::showNodeDetailForRow(int row)
 
 QWidget *MainWindow::buildRelaysSection()
 {
+    // A tab of the Network section (adhoc #54), so no page title of its own —
+    // the section header above the tab bar already says "Network".
     auto *page = new QWidget;
     auto *outer = new QVBoxLayout(page);
-    outer->setContentsMargins(24, 20, 24, 24);
+    outer->setContentsMargins(0, 8, 0, 0);
     outer->setSpacing(12);
-
-    auto *title = new QLabel(QStringLiteral("Relays"));
-    title->setObjectName("sectionTitle");
-    QFont titleFont = title->font();
-    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
-    titleFont.setBold(true);
-    title->setFont(titleFont);
-    outer->addWidget(title);
 
     auto *subtitle = new QLabel(QString::fromUtf8(
         "The mainnode relays this node knows about. Each one is probed live for "
@@ -10881,13 +10908,7 @@ void MainWindow::refreshRelaysTable()
             ? QStringLiteral("No relays configured.")
             : QString::fromUtf8("Probing %1 relay(s)\xE2\x80\xA6")
                   .arg(m_servers.size()));
-    if (m_relaysNavButton)
-        m_relaysNavButton->setText(m_servers.isEmpty()
-            ? QStringLiteral("Relays")
-            : QStringLiteral("Relays (%1)").arg(m_servers.size()));
-    if (auto *railButton =
-            dynamic_cast<ActivityRailButton *>(m_relaysNavButton))
-        railButton->setBadgeCount(m_servers.size());
+    updateNetworkCounts(m_servers.size(), -1, -1);
     for (int i = 0; i < m_servers.size(); ++i)
         probeRelayRow(i);
 }
@@ -11422,6 +11443,44 @@ QWidget *networkTabPage()
 
 } // namespace
 
+void MainWindow::updateNetworkCounts(int relays, int nodes, int hosts)
+{
+    if (relays >= 0)
+        m_networkRelayCount = relays;
+    if (nodes >= 0)
+        m_networkNodeCount = nodes;
+    if (hosts >= 0)
+        m_networkHostCount = hosts;
+
+    // The tabs only exist once the Network section has been built; the rail
+    // badge below is live from launch either way.
+    if (m_networkTabs) {
+        const auto label = [](const QString &name, int count) {
+            return count > 0 ? QStringLiteral("%1 (%2)").arg(name).arg(count)
+                             : name;
+        };
+        if (m_networkTabs->count() > kNetworkRelaysTab)
+            m_networkTabs->setTabText(
+                kNetworkRelaysTab,
+                label(QStringLiteral("Relays"), m_networkRelayCount));
+        if (m_networkTabs->count() > kNetworkNodesTab)
+            m_networkTabs->setTabText(
+                kNetworkNodesTab,
+                label(QStringLiteral("Nodes"), m_networkNodeCount));
+        if (m_networkTabs->count() > kNetworkHostsTab)
+            m_networkTabs->setTabText(
+                kNetworkHostsTab,
+                label(QStringLiteral("Hosts"), m_networkHostCount));
+    }
+
+    // One badge for the whole mesh: relays + nodes + hosts, the sum of what the
+    // three separate rail buttons used to badge on their own (adhoc #54).
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_networkNavButton))
+        railButton->setBadgeCount(m_networkRelayCount + m_networkNodeCount +
+                                  m_networkHostCount);
+}
+
 QWidget *MainWindow::buildNetworkDiagnosticsSection()
 {
     auto *page = new QWidget;
@@ -11458,17 +11517,32 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
     outer->addLayout(header);
 
     auto *summary = new QLabel(QStringLiteral(
-        "Live endpoint usage, websocket Durable Object details and the outbound "
-        "request firewall in one place."));
+        "The relays, nodes and hosts this client talks to, plus live endpoint "
+        "usage, websocket Durable Object details and the outbound request "
+        "firewall in one place."));
     summary->setObjectName("mutedLabel");
     summary->setWordWrap(true);
     outer->addWidget(summary);
 
     auto *tabs = new QTabWidget;
-    tabs->setObjectName(QStringLiteral("settingsTabs"));
+    // Its own object name, styled alongside #settingsTabs: sharing that name
+    // made this the tab widget a findChild<QTabWidget *>("settingsTabs") walked
+    // into once the Network section had been built (Theme.h styles both).
+    tabs->setObjectName(QStringLiteral("networkTabs"));
     tabs->setDocumentMode(true);
     tabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     outer->addWidget(tabs, 1);
+    m_networkTabs = tabs;
+
+    // The mesh itself comes first (adhoc #54): relays, then the nodes on them,
+    // then the machines this client installs on. Each tab carries its own count;
+    // the total is what the rail's Network badge shows. Their tab order has to
+    // match kNetworkRelaysTab / kNetworkNodesTab / kNetworkHostsTab.
+    tabs->addTab(buildRelaysSection(), QStringLiteral("Relays"));
+    tabs->addTab(buildNodesSection(), QStringLiteral("Nodes"));
+    tabs->addTab(buildHostsSection(), QStringLiteral("Hosts"));
+    connect(tabs, &QTabWidget::currentChanged, this,
+            [this](int index) { refreshNetworkTab(index); });
 
     auto *endpointsPage = networkTabPage();
     auto *endpointsLayout = qobject_cast<QVBoxLayout *>(endpointsPage->layout());
@@ -11683,6 +11757,13 @@ void MainWindow::refreshNetworkDiagnostics()
                 .arg(networkDiagBytes(rxBytes))
                 .arg(rxFrames));
     }
+
+    // The summary line above sits in the section header and is cheap, so it
+    // stays live. The two tables below are the expensive part, and the Relays /
+    // Nodes / Hosts tabs (adhoc #54) do not show them — same reasoning as the
+    // section-visibility guard, one level down.
+    if (m_networkTabs && m_networkTabs->currentIndex() <= kNetworkHostsTab)
+        return;
 
     if (m_networkEndpointsTable) {
         TableRepaintGuard repaintGuard(m_networkEndpointsTable);
@@ -17038,6 +17119,7 @@ void MainWindow::clearRepoDetail()
     updateRepoCodeSize();
     updateRepoDetailStatus();
     updateFooterGitIdentity();
+    updateFooterCommitInfo();
     reloadIssues();
     reloadAgents();
     updateRepoIssueCount();
