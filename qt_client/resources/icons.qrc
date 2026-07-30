@@ -33,6 +33,7 @@
         <file alias="hand.svg">icons/octicons/hand.svg</file>
         <file alias="history.svg">icons/octicons/history.svg</file>
         <file alias="home.svg">icons/octicons/home.svg</file>
+        <file alias="info.svg">icons/octicons/info.svg</file>
         <file alias="issue-opened.svg">icons/octicons/issue-opened.svg</file>
         <file alias="issue-reopened.svg">icons/octicons/issue-reopened.svg</file>
         <file alias="key.svg">icons/octicons/key.svg</file>
