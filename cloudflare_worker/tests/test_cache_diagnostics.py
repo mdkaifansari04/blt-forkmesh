@@ -4,9 +4,6 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
-DIAGNOSTICS = (ROOT / "src" / "edge_cache_diagnostics.py").read_text(
-    encoding="utf-8"
-)
 WRANGLER = tomllib.loads(
     (ROOT / "wrangler.toml").read_text(encoding="utf-8")
 )
@@ -19,22 +16,22 @@ def test_cache_payloads_stay_in_cache_api_and_kv_is_sparse_metadata_only():
     }
     assert namespaces["WORLD_CACHE_META"]
     assert "EDGE_CACHE_KV_SNAPSHOT_MINUTES = 10" in ENTRY
-    assert '"maximumScheduledWritesPerDay"' in DIAGNOSTICS
-    assert '"privateResponsesCached": False' in DIAGNOSTICS
-    assert '"kvRole": "content-free global diagnostics snapshot only"' in DIAGNOSTICS
+    assert '"maximumScheduledWritesPerDay"' in ENTRY
+    assert '"privateResponsesCached": False' in ENTRY
+    assert '"kvRole": "content-free global diagnostics snapshot only"' in ENTRY
     assert "if minute % EDGE_CACHE_KV_SNAPSHOT_MINUTES == 0:" in ENTRY
-    assert "expirationTtl" in DIAGNOSTICS
+    assert "expirationTtl" in ENTRY
 
 
 def test_cache_diagnostics_are_bounded_redacted_and_live():
     assert '"/api/world/cache-diagnostics"' in ENTRY
     assert "world_cache_diagnostics_handler" in ENTRY
-    assert '"namespaceIdExposed": False' in DIAGNOSTICS
-    assert '"keyCountUsed": 1 if namespace is not None else 0' in DIAGNOSTICS
-    assert '"routes": {' in DIAGNOSTICS
+    assert '"namespaceIdExposed": False' in ENTRY
+    assert '"keyCountUsed": 1 if namespace is not None else 0' in ENTRY
+    assert '"routes": {' in ENTRY
     assert "_edge_cache_record(" in ENTRY
-    assert 'if int(_STATS["startedAt"]) <= 0:' in DIAGNOSTICS
-    assert "cache_control=\"no-store, max-age=0, must-revalidate\"" in DIAGNOSTICS
+    assert 'if int(_EDGE_CACHE_STATS["startedAt"]) <= 0:' in ENTRY
+    assert "cache_control=\"no-store, max-age=0, must-revalidate\"" in ENTRY
 
 
 def test_world_hot_reads_reuse_edge_and_isolate_results():

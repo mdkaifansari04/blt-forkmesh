@@ -942,14 +942,56 @@ def _legacy_custody_not_ready_response():
 EDGE_CACHE_DIAGNOSTICS_VERSION = 1
 EDGE_CACHE_KV_SNAPSHOT_KEY = "edge-cache-diagnostics-v1"
 EDGE_CACHE_KV_SNAPSHOT_MINUTES = 10
+_EDGE_CACHE_STATS = {
+    "hits": 0,
+    "misses": 0,
+    "puts": 0,
+    "deletes": 0,
+    "errors": 0,
+    "routes": {},
+    "lastOperationAt": 0,
+    "startedAt": 0,
+}
+_EDGE_CACHE_KV_READ_CACHE = {"readAt": 0, "value": None}
+
+
+def _edge_cache_scope(cache_key):
+    """Return a bounded, content-free route family for diagnostics."""
+    try:
+        path = str(urlparse(str(cache_key or "")).path or "/").lower()
+    except Exception:
+        path = "/"
+    if "repository-metadata" in path:
+        return "repository-metadata"
+    if "git-advert" in path or "info/refs" in path:
+        return "git-advertisement"
+    if path.startswith("/api/world/"):
+        return "world"
+    if path.startswith("/api/network/"):
+        return "network"
+    if path.startswith("/api/accounts/"):
+        return "accounts-public"
+    if path.startswith("/api/repo") or path.startswith("/api/repositories"):
+        return "repositories-public"
+    return "other-public"
 
 
 def _edge_cache_record(operation, cache_key="", failed=False):
-    # Import only when a request actually touches the edge cache. Keeping this
-    # instrumentation off the Worker startup path avoids compiling its
-    # diagnostics payload before the first request.
-    from edge_cache_diagnostics import record
-    record(operation, cache_key, failed)
+    now = int(Date.now())
+    if int(_EDGE_CACHE_STATS["startedAt"]) <= 0:
+        _EDGE_CACHE_STATS["startedAt"] = now
+    if failed:
+        _EDGE_CACHE_STATS["errors"] += 1
+    elif operation in _EDGE_CACHE_STATS:
+        _EDGE_CACHE_STATS[operation] += 1
+    scope = _edge_cache_scope(cache_key)
+    routes = _EDGE_CACHE_STATS["routes"]
+    route = routes.setdefault(
+        scope, {"hits": 0, "misses": 0, "puts": 0, "deletes": 0, "errors": 0})
+    field = "errors" if failed else operation
+    if field in route:
+        route[field] += 1
+    _EDGE_CACHE_STATS["lastOperationAt"] = now
 
 
 async def edge_cache_match(cache_key):
@@ -1211,8 +1253,32 @@ async def repository_metadata_cache_put(cache_key, response, status):
 
 
 def _edge_cache_local_snapshot(env, sampled_at=None):
-    from edge_cache_diagnostics import local_snapshot
-    return local_snapshot(_build_rev(env), sampled_at)
+    sampled_at = int(sampled_at or Date.now())
+    if int(_EDGE_CACHE_STATS["startedAt"]) <= 0:
+        _EDGE_CACHE_STATS["startedAt"] = sampled_at
+    started_at = int(_EDGE_CACHE_STATS["startedAt"])
+    hits = int(_EDGE_CACHE_STATS["hits"])
+    misses = int(_EDGE_CACHE_STATS["misses"])
+    lookups = hits + misses
+    return {
+        "version": EDGE_CACHE_DIAGNOSTICS_VERSION,
+        "sampledAt": sampled_at,
+        "buildRev": _build_rev(env),
+        "isolateStartedAt": started_at,
+        "uptimeMs": max(0, sampled_at - started_at),
+        "lookups": lookups,
+        "hits": hits,
+        "misses": misses,
+        "hitRate": round(hits / lookups, 4) if lookups else 0,
+        "puts": int(_EDGE_CACHE_STATS["puts"]),
+        "deletes": int(_EDGE_CACHE_STATS["deletes"]),
+        "errors": int(_EDGE_CACHE_STATS["errors"]),
+        "lastOperationAt": int(_EDGE_CACHE_STATS["lastOperationAt"]),
+        "routes": {
+            name: dict(values)
+            for name, values in sorted(_EDGE_CACHE_STATS["routes"].items())
+        },
+    }
 
 
 async def _edge_cache_kv_snapshot(env, sampled_at=None):
@@ -1222,14 +1288,84 @@ async def _edge_cache_kv_snapshot(env, sampled_at=None):
     bounded operational aggregate, so global visibility costs at most 144
     scheduled writes per day instead of one write per request or cache event.
     """
-    from edge_cache_diagnostics import kv_snapshot
-    return await kv_snapshot(env, _build_rev(env), to_js, sampled_at)
+    namespace = getattr(env, "WORLD_CACHE_META", None)
+    if namespace is None:
+        return False
+    payload = _edge_cache_local_snapshot(env, sampled_at)
+    try:
+        await namespace.put(
+            EDGE_CACHE_KV_SNAPSHOT_KEY,
+            json.dumps(payload, separators=(",", ":")),
+            to_js({"expirationTtl": 24 * 60 * 60}),
+        )
+    except Exception:
+        _edge_cache_record("puts", "https://forkmesh.internal/kv", failed=True)
+        return False
+    return True
+
+
+async def _edge_cache_kv_read(env):
+    namespace = getattr(env, "WORLD_CACHE_META", None)
+    if namespace is None:
+        return None
+    now = int(Date.now())
+    if now - int(_EDGE_CACHE_KV_READ_CACHE["readAt"]) < 60 * 1000:
+        return _EDGE_CACHE_KV_READ_CACHE["value"]
+    try:
+        raw = await namespace.get(EDGE_CACHE_KV_SNAPSHOT_KEY)
+        if raw is None:
+            _EDGE_CACHE_KV_READ_CACHE.update({"readAt": now, "value": None})
+            return None
+        payload = json.loads(str(raw))
+    except Exception:
+        return None
+    value = payload if isinstance(payload, dict) else None
+    _EDGE_CACHE_KV_READ_CACHE.update({"readAt": now, "value": value})
+    return value
 
 
 async def world_cache_diagnostics_handler(env, request):
-    from edge_cache_diagnostics import handler
-    return await handler(
-        env, request, method_name, json_response, _build_rev(env))
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "GET"},
+        )
+    namespace = getattr(env, "WORLD_CACHE_META", None)
+    global_sample = await _edge_cache_kv_read(env)
+    return json_response(
+        {
+            "ok": True,
+            "strategy": {
+                "payloadLayer": "Cloudflare Cache API",
+                "payloadScope": "public read-heavy responses only",
+                "invalidation": "event deletes and state-addressed keys",
+                "privateResponsesCached": False,
+                "kvRole": "content-free global diagnostics snapshot only",
+            },
+            "cacheApi": {
+                "enabled": True,
+                "scope": "current edge isolate",
+                "live": _edge_cache_local_snapshot(env),
+            },
+            "kv": {
+                "binding": "WORLD_CACHE_META",
+                "enabled": namespace is not None,
+                "namespaceIdExposed": False,
+                "keyCountUsed": 1 if namespace is not None else 0,
+                "snapshotCadenceMinutes": EDGE_CACHE_KV_SNAPSHOT_MINUTES,
+                "maximumScheduledWritesPerDay": (
+                    24 * 60 // EDGE_CACHE_KV_SNAPSHOT_MINUTES
+                    if namespace is not None else 0
+                ),
+                "retentionHours": 24,
+                "lastGlobalSample": global_sample,
+            },
+        },
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
 
 
 async def purge_catalog_related_caches():
