@@ -5653,33 +5653,40 @@ function avatarBackNameTexture(THREE, name, activity = {}, work = {}) {
   const discussions = Math.max(0, Number(activity.discussions) || 0);
   const taskTotal = Math.max(0, Number(work.total) || 0);
   const taskActive = Math.max(0, Number(work.active) || 0);
-  return canvasTexture(THREE, 512, 240, (context) => {
-    context.clearRect(0, 0, 512, 240);
+  return canvasTexture(THREE, 640, 300, (context) => {
+    context.clearRect(0, 0, 640, 300);
     context.textAlign = "center";
     context.textBaseline = "middle";
-    const size = label.length > 16 ? 42 : label.length > 10 ? 52 : 64;
+    const size = label.length > 16 ? 40 : label.length > 10 ? 50 : 62;
     context.font = `950 ${size}px "ForkMesh Mono", ui-monospace, monospace`;
     context.lineWidth = 12;
     context.strokeStyle = "rgba(4,16,12,0.96)";
-    context.strokeText(label.toUpperCase(), 256, 48);
+    context.strokeText(label.toUpperCase(), 320, 43);
     context.fillStyle = "#ffffff";
-    context.fillText(label.toUpperCase(), 256, 48);
-    context.font = '850 24px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(label.toUpperCase(), 320, 43);
+    context.font = '850 25px "ForkMesh Mono", ui-monospace, monospace';
     context.lineWidth = 8;
     const firstCounts = `PRS ${pulls} · ISSUES ${issues}`;
-    const secondCounts = `DISCUSSIONS ${discussions} · ACTIVITY ↗`;
-    context.strokeText(firstCounts, 256, 105);
+    const discussionCounts = `DISCUSSIONS ${discussions}`;
+    context.strokeText(firstCounts, 320, 96);
     context.fillStyle = "#9ef7c6";
-    context.fillText(firstCounts, 256, 105);
-    context.strokeText(secondCounts, 256, 145);
-    context.fillText(secondCounts, 256, 145);
-    context.font = '850 23px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(firstCounts, 320, 96);
+    context.strokeText(discussionCounts, 320, 136);
+    context.fillText(discussionCounts, 320, 136);
+    context.font = '850 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.strokeText("OPEN FILTERED ACTIVITY ↗", 320, 181);
+    context.fillStyle = "#f7c96b";
+    context.fillText("OPEN FILTERED ACTIVITY ↗", 320, 181);
     const taskLine = work.state === "ready"
       ? `TASKS ${taskTotal} · RUNNING ${taskActive}`
       : "TASKS · OPEN WORK PANEL";
-    context.strokeText(taskLine, 256, 198);
+    context.strokeText(taskLine, 320, 239);
     context.fillStyle = "#77d9ff";
-    context.fillText(taskLine, 256, 198);
+    context.fillText(taskLine, 320, 239);
+    context.font = '750 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.strokeText("SELECT USER FOR FULL PROFILE", 320, 278);
+    context.fillStyle = "#d9f7ff";
+    context.fillText("SELECT USER FOR FULL PROFILE", 320, 278);
   });
 }
 
@@ -6068,7 +6075,7 @@ function createAvatar(THREE, identity, options = {}) {
   group.add(badge);
 
   const backName = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.3, 0.61),
+    new THREE.PlaneGeometry(1.72, 0.806),
     new THREE.MeshBasicMaterial({
       transparent: true,
       depthWrite: false,

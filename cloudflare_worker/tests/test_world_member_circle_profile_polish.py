@@ -146,8 +146,10 @@ def test_avatar_profile_signals_moved_to_head_and_back():
     assert "MOOD · ${frontMood}" in SCENE
     assert 'backName.name = "avatar-back-username"' in SCENE
     assert "const firstCounts = `PRS ${pulls} · ISSUES ${issues}`;" in SCENE
-    assert "const secondCounts = `DISCUSSIONS ${discussions} · ACTIVITY ↗`;" in SCENE
+    assert "const discussionCounts = `DISCUSSIONS ${discussions}`;" in SCENE
+    assert 'context.fillText("OPEN FILTERED ACTIVITY ↗", 320, 181);' in SCENE
     assert "`TASKS ${taskTotal} · RUNNING ${taskActive}`" in SCENE
+    assert '"SELECT USER FOR FULL PROFILE"' in SCENE
     assert "typeTotals:" in APP
     assert "#contributions" in APP
 
