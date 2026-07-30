@@ -5800,26 +5800,19 @@ function makeConsentedProfileFace(THREE, follower) {
 }
 
 function mirrorNodeVisualState(node) {
-  if (!node || typeof node !== "object") {
-    return { color: "#71837a", blink: false, state: "unknown" };
+  const status = String(
+    typeof node === "object" ? node?.health || node?.status || "" : "",
+  ).toLowerCase();
+  if (["online", "healthy", "available"].includes(status)) {
+    return { color: "#22e06a", blink: false };
   }
-  const online = mirrorNodeIsOnline(node);
-  const integrity = String(node.integrity || "unknown").toLowerCase();
-  const activity = String(node.activity || "unknown").toLowerCase();
-  if (online) {
-    return { color: "#00cc44", blink: false, state: "online" };
+  if (["warning", "degraded", "stale"].includes(status)) {
+    return { color: "#ffd23f", blink: true };
   }
-  if (integrity === "rejected" || integrity === "degraded") {
-    return { color: "#ff0000", blink: true, state: "error" };
+  if (["offline", "failed", "error"].includes(status)) {
+    return { color: "#ff4d57", blink: true };
   }
-  if (
-    integrity === "healing" ||
-    activity === "syncing" ||
-    activity === "awaiting-verification"
-  ) {
-    return { color: "#ffcc00", blink: true, state: "warning" };
-  }
-  return { color: "#71837a", blink: false, state: "offline" };
+  return { color: "#a9b8b2", blink: false };
 }
 
 function syncOperatorBelt(THREE, avatar, nodesOrCount) {
@@ -5844,18 +5837,18 @@ function syncOperatorBelt(THREE, avatar, nodesOrCount) {
   const beltGroup = new THREE.Group();
   beltGroup.name = "forkmesh-operator-belt";
   const belt = new THREE.Mesh(
-    new THREE.BoxGeometry(1.64, 0.22, 0.72),
+    new THREE.BoxGeometry(1.12, 0.18, 0.66),
     makeMaterial(THREE, "#d6a44d", {
       metalness: 0.42,
       roughness: 0.4,
     }),
   );
-  belt.position.y = 1.39;
+  belt.position.y = 1.43;
   beltGroup.add(belt);
   for (let index = 0; index < count; index += 1) {
     const visual = mirrorNodeVisualState(nodes[index]);
     const light = new THREE.Mesh(
-      new THREE.SphereGeometry(0.075, 12, 10),
+      new THREE.SphereGeometry(0.055, 10, 8),
       makeMaterial(THREE, visual.color, {
         emissive: visual.color,
         emissiveIntensity: 1.2,
@@ -5865,18 +5858,8 @@ function syncOperatorBelt(THREE, avatar, nodesOrCount) {
     light.userData.mirrorStatusLight = true;
     light.userData.blink = visual.blink;
     light.userData.baseColor = visual.color;
-    light.userData.nodeState = visual.state;
-    light.userData.nodeName = String(
-      typeof nodes[index] === "object"
-        ? nodes[index]?.name || nodes[index]?.machineName || ""
-        : "",
-    );
     light.userData.phase = index * 0.91;
-    light.position.set(
-      (index - (count - 1) / 2) * 0.22,
-      1.39,
-      -0.52,
-    );
+    light.position.set(-0.4 + index * 0.16, 1.43, -0.35);
     beltGroup.add(light);
   }
   avatar.add(beltGroup);
@@ -6094,10 +6077,7 @@ function createAvatar(THREE, identity, options = {}) {
   const rightLeg = rightLegRig.hip;
 
   const badge = new THREE.Mesh(
-    // The profile is the avatar's whole front above the operator belt. Keeping
-    // one uninterrupted square gives every row in the 512² texture its full
-    // reading area instead of squeezing it into the old chest patch.
-    new THREE.PlaneGeometry(1.64, 1.64),
+    new THREE.PlaneGeometry(0.88, 0.88),
     new THREE.MeshBasicMaterial({
       map: badgeTexture(
         THREE,
@@ -6108,7 +6088,8 @@ function createAvatar(THREE, identity, options = {}) {
       transparent: false,
     }),
   );
-  badge.position.set(0, 2.35, -0.39);
+  badge.scale.set(1, 1.12, 1);
+  badge.position.set(0, 2.3, -0.316);
   badge.rotation.y = Math.PI;
   badge.userData.chestBadge = true;
   group.add(badge);
@@ -6135,9 +6116,7 @@ function createAvatar(THREE, identity, options = {}) {
     }),
   );
   verifiedPin.name = "forkmesh-verified-email-pin";
-  // Hang just outside the expanded surface so neither the wallet square nor
-  // any profile row is sacrificed to a second status indicator.
-  verifiedPin.position.set(-0.96, 3.04, -0.405);
+  verifiedPin.position.set(-0.66, 2.92, -0.22);
   verifiedPin.rotation.y = Math.PI;
   verifiedPin.renderOrder = 5;
   verifiedPin.userData.verified = identity.emailVerified === true;
@@ -7483,17 +7462,24 @@ function createMirrorServerCabinet(THREE, node, id) {
     group.add(agentTaskPanel);
   }
 
+  const integrity = String(node?.integrity || "unknown").toLowerCase();
+  const activity = String(node?.activity || "unknown").toLowerCase();
   // The roof beacon answers one simple physical question: is this node alive?
   // Clone eligibility and refs integrity remain explicit on its front/detail
   // displays. Mixing those two states made a reachable worker look dead or
   // yellow whenever it intentionally exposed no public clone endpoint.
-  // The avatar belt consumes this exact reading too, so a member carries a
-  // pocket view of the cabinets they operate rather than a second opinion.
-  const nodeVisual = mirrorNodeVisualState(node);
-  const statusColor = nodeVisual.color;
+  const statusColor =
+    online
+      ? "#00cc44"
+      : integrity === "rejected" || integrity === "degraded"
+        ? "#ff0000"
+        : integrity === "healing" || activity === "syncing" ||
+            activity === "awaiting-verification"
+          ? "#ffcc00"
+          : "#71837a";
   // Yellow and red are the two statuses that want attention, so their lamps
   // sweep like a rotating warning beacon; green and offline stay steady.
-  const alerting = nodeVisual.blink;
+  const alerting = statusColor === "#ff0000" || statusColor === "#ffcc00";
   // A single beacon lamp sits on the cabinet roof; its color is the status.
   // The lens is an unlit cylinder so the status reads as one flat, solid
   // colour from every camera angle instead of shading into a gradient. The
