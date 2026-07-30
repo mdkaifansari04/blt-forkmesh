@@ -1199,9 +1199,11 @@ int main(int argc, char *argv[])
         QStringList labels;
         for (QAction *action : fixButton->menu()->actions())
             labels << action->text();
+        // "CC" is Claude Code, shortened with the rest of the provider labels
+        // (adhoc #38).
         if (labels == QStringList({QStringLiteral("Claude API"),
                                    QStringLiteral("OpenAI API"),
-                                   QStringLiteral("Claude Code")})) {
+                                   QStringLiteral("CC")})) {
             prFixMenuFound = true;
             break;
         }
@@ -1740,11 +1742,12 @@ int main(int argc, char *argv[])
             for (int i = 0; i < quickProvider->count(); ++i)
                 providerLabels << quickProvider->itemText(i);
         }
-        check(providerLabels == QStringList({QStringLiteral("Manual (create issue)"),
+        // Short labels (adhoc #38) so all four composer dropdowns fit one row.
+        check(providerLabels == QStringList({QStringLiteral("Manual"),
                                              QStringLiteral("Codex"),
-                                             QStringLiteral("OpenAI API"),
+                                             QStringLiteral("OpenAI"),
                                              QStringLiteral("Claude API"),
-                                             QStringLiteral("Claude Code")}),
+                                             QStringLiteral("CC")}),
               QStringLiteral("quick-add agent dropdown offers Manual plus the agent providers"));
         check(quickProvider && quickProvider->maxVisibleItems() >= quickProvider->count() &&
                   quickProvider->view() &&
@@ -1753,6 +1756,49 @@ int main(int argc, char *argv[])
               QStringLiteral("quick-add agent dropdown is configured as a full non-scrolling list"));
         check(seeded.testQuickAddModelVisible() && !seeded.testQuickAddModelEditable(),
               QStringLiteral("Claude Code prompt picker shows the Claude model dropdown"));
+
+        // adhoc #38: the composer's speed (reasoning-effort) picker sits next to
+        // the mode selector, offers the CLI's ladder with "Ultra" for xhigh, and
+        // writes the same setting the "/" popup's effort dots do — so a pick here
+        // is what the next run is actually launched with.
+        QComboBox *quickSpeed =
+            seeded.findChild<QComboBox *>(QStringLiteral("quickAddSpeedSelector"));
+        QStringList speedLabels;
+        if (quickSpeed) {
+            for (int i = 0; i < quickSpeed->count(); ++i)
+                speedLabels << quickSpeed->itemText(i);
+        }
+        check(quickSpeed && quickSpeed->isVisible() &&
+                  speedLabels == QStringList({QStringLiteral("Low"),
+                                              QStringLiteral("Medium"),
+                                              QStringLiteral("High"),
+                                              QStringLiteral("Ultra"),
+                                              QStringLiteral("Max")}),
+              QString("composer speed picker offers the effort ladder (%1)")
+                  .arg(speedLabels.join(QStringLiteral(", "))));
+        if (quickSpeed) {
+            const int ultra = quickSpeed->findData(QStringLiteral("xhigh"));
+            quickSpeed->setCurrentIndex(ultra);
+            QApplication::processEvents();
+            check(ultra >= 0 &&
+                      QSettings()
+                              .value(QStringLiteral("agents/claudeEffort"))
+                              .toString() == QStringLiteral("xhigh"),
+                  QStringLiteral("picking a speed persists the effort the next run "
+                                 "is launched with"));
+        }
+        // The genie button is the top of the send column, above "add" and "new"
+        // (adhoc #42/#38), and the strip of session dots that used to sit above
+        // the prompt is gone (adhoc #38) — its state lives in the top bar now.
+        auto *genieButton =
+            seeded.findChild<QPushButton *>(QStringLiteral("quickAddGenieButton"));
+        check(genieButton && genieButton->isVisible(),
+              QStringLiteral("the composer offers the genie button"));
+        check(seeded.findChild<QWidget *>(QStringLiteral("agentStatusRow")) == nullptr &&
+                  seeded.findChild<QPushButton *>(
+                      QStringLiteral("agentStatusMore")) == nullptr,
+              QStringLiteral("the agent dot strip and its More button are gone from "
+                             "above the composer"));
 
         seeded.testSetQuickAddAgentProvider(QStringLiteral("codex"));
         QApplication::processEvents();
