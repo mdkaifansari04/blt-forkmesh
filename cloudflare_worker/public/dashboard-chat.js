@@ -3281,12 +3281,18 @@ function mountForkMeshDashboardChat() {
   function setComposerStatus(message = "", tone = "muted") {
     if (!fullComposerStatus) return;
     fullComposerStatus.textContent = message;
-    fullComposerStatus.className =
+    fullComposerStatus.classList.remove(
+      "text-destructive",
+      "text-primary",
+      "text-muted-foreground",
+    );
+    fullComposerStatus.classList.add(
       tone === "bad"
         ? "text-destructive"
         : tone === "good"
           ? "text-primary"
-          : "text-muted-foreground";
+          : "text-muted-foreground",
+    );
   }
 
   function pulseWorldQuickComposer(action = "chat") {
