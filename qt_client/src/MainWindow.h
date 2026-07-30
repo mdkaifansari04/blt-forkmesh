@@ -91,11 +91,9 @@ class PullBadgeWidget;
 namespace forkmesh::ui {
 class ActivityRailButton;
 class AgentDotMatrix;
-class StackedCaptionButton;
 }
 using forkmesh::ui::ActivityRailButton;
 using forkmesh::ui::AgentDotMatrix;
-using forkmesh::ui::StackedCaptionButton;
 class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
@@ -5673,7 +5671,12 @@ private:
     bool m_agentDetailHidden = false;
     QLabel *m_agentTitle = nullptr;
     QLabel *m_agentStatusPill = nullptr; // connected/working/done status
+    // The session's field list (agent/model/mode/repo/status/issue/PR/branch/
+    // worktree/stats) and the popup it lives in — opened from the header's
+    // "Info" button instead of sitting open above the transcript (adhoc #61).
     QLabel *m_agentMeta = nullptr;
+    QFrame *m_agentMetaPopup = nullptr;
+    QPushButton *m_agentInfoButton = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
     // "Create linked issue" — shown for ad-hoc sessions with no issue yet, so the
@@ -6064,11 +6067,12 @@ private:
     // (adhoc #433).
     QPushButton *m_agentStopAllButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
-    // Caption-over-value buttons in the detail toolbar (adhoc #51): "Branch" and
-    // "Worktree" with the name/path they open rendered tiny underneath, replacing
-    // the Branch/Worktree columns that used to sit in the meta table.
-    StackedCaptionButton *m_agentBranchButton = nullptr;
-    StackedCaptionButton *m_agentWorktreeButton = nullptr;
+    // Detail-toolbar buttons (adhoc #51) opening this session's branch in the
+    // Branches tab and its worktree in the Worktrees tab. Full-size buttons like
+    // their neighbours since adhoc #61; the names they open are rows in the Info
+    // popup's list and tooltips here.
+    QPushButton *m_agentBranchButton = nullptr;
+    QPushButton *m_agentWorktreeButton = nullptr;
     // Above the session list: wipe every merged session's worktree, branch and
     // agent in one batch (adhoc #235).
     QPushButton *m_agentDeleteMergedButton = nullptr;

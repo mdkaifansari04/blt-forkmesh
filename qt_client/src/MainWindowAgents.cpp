@@ -1180,6 +1180,11 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTitle = new QLabel("Select a session");
     m_agentTitle->setObjectName("channelTitle");
     m_agentTitle->setWordWrap(true);
+    // The session's field list (Agent/Model/Repo/Status/Issue/PR/… plus Branch
+    // and Worktree) no longer sits open across the top of the detail pane: it
+    // filled a full-width band above the transcript for information that is only
+    // occasionally read (adhoc #61). It moved into a popup behind the "Info"
+    // button beside the status pill, rendered as a vertical label/value list.
     m_agentMeta = new QLabel;
     m_agentMeta->setObjectName("statusLine");
     // Selectable text plus clickable links: the issue and PR values link to their
@@ -1205,7 +1210,38 @@ QWidget *MainWindow::buildAgentsTab()
                 openNotificationLink(link);
             }
         }
+        if (m_agentMetaPopup)
+            m_agentMetaPopup->hide(); // the click navigated away from this pane
     });
+
+    // The popup the meta list lives in, and the little "Info" button that opens
+    // it (adhoc #61). A Qt::Popup closes on the next click outside itself, so
+    // the list behaves like a menu without having to wrap the rich-text label
+    // in a QWidgetAction.
+    m_agentMetaPopup = new QFrame(this, Qt::Popup);
+    m_agentMetaPopup->setObjectName("agentMetaPopup"); // themed like #reactionPicker
+    auto *metaPopupLayout = new QVBoxLayout(m_agentMetaPopup);
+    metaPopupLayout->setContentsMargins(12, 10, 12, 10);
+    metaPopupLayout->addWidget(m_agentMeta);
+    m_agentInfoButton = new QPushButton(QStringLiteral("Info"));
+    m_agentInfoButton->setCursor(Qt::PointingHandCursor);
+    m_agentInfoButton->setToolTip(
+        "Show this session's details: agent, model, mode, repo, status, issue, "
+        "PR, branch and worktree");
+    setOcticon(m_agentInfoButton, "info", 16);
+    connect(m_agentInfoButton, &QPushButton::clicked, this, [this] {
+        if (!m_agentMetaPopup)
+            return;
+        if (m_agentMetaPopup->isVisible()) {
+            m_agentMetaPopup->hide();
+            return;
+        }
+        m_agentMetaPopup->adjustSize();
+        m_agentMetaPopup->move(
+            m_agentInfoButton->mapToGlobal(QPoint(0, m_agentInfoButton->height() + 4)));
+        m_agentMetaPopup->show();
+    });
+
     m_agentStopButton = new QPushButton("Stop");
     m_agentStopButton->setObjectName("dangerButton");
     m_agentStopButton->setCursor(Qt::PointingHandCursor);
@@ -1299,19 +1335,25 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentStatusPill->setTextFormat(Qt::RichText);
     m_agentStatusPill->setAlignment(Qt::AlignCenter);
 
-    // Branch / Worktree, as caption-over-value buttons in the output toolbar
-    // (adhoc #51): the branch name and worktree path read tiny under the caption
-    // and a click opens that branch's row in the Branches tab / that worktree's
-    // row in the Worktrees tab — the same targets the meta table's chips carried
-    // before those two columns moved here.
-    m_agentBranchButton = new StackedCaptionButton(QStringLiteral("Branch"));
+    // Branch / Worktree in the output toolbar (adhoc #51): a click opens that
+    // branch's row in the Branches tab / that worktree's row in the Worktrees
+    // tab — the same targets the meta table's chips carried before those two
+    // columns moved here. adhoc #61 dropped the tiny caption-over-value styling
+    // that made them half-height oddities beside the other actions: they are
+    // plain full-size buttons now, and the names they open moved into the Info
+    // popup's list (they stay on the tooltip too).
+    m_agentBranchButton = new QPushButton(QStringLiteral("Branch"));
+    m_agentBranchButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_agentBranchButton, "git-branch", 16);
     m_agentBranchButton->hide(); // shown per-session in refreshAgentDetailMeta
     connect(m_agentBranchButton, &QPushButton::clicked, this, [this] {
         if (const AgentSession *s = findAgentSession(m_selectedAgentSessionId);
             s && !s->branchName.isEmpty())
             switchToBranch(s->branchName);
     });
-    m_agentWorktreeButton = new StackedCaptionButton(QStringLiteral("Worktree"));
+    m_agentWorktreeButton = new QPushButton(QStringLiteral("Worktree"));
+    m_agentWorktreeButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_agentWorktreeButton, "file-directory", 16);
     m_agentWorktreeButton->hide();
     connect(m_agentWorktreeButton, &QPushButton::clicked, this, [this] {
         if (const AgentSession *s = findAgentSession(m_selectedAgentSessionId);
@@ -1328,7 +1370,13 @@ QWidget *MainWindow::buildAgentsTab()
     topRow->setContentsMargins(0, 0, 0, 0);
     topRow->setSpacing(4);
     topRow->addWidget(m_agentTitle);
-    topRow->addWidget(m_agentStatusPill, 0, Qt::AlignLeft);
+    auto *statusRow = new QHBoxLayout;
+    statusRow->setContentsMargins(0, 0, 0, 0);
+    statusRow->setSpacing(8);
+    statusRow->addWidget(m_agentStatusPill, 0, Qt::AlignLeft);
+    statusRow->addWidget(m_agentInfoButton, 0, Qt::AlignLeft);
+    statusRow->addStretch(1);
+    topRow->addLayout(statusRow);
 
     m_agentLog = new QPlainTextEdit;
     m_agentLog->setReadOnly(true);
@@ -1471,10 +1519,12 @@ QWidget *MainWindow::buildAgentsTab()
     // Enter walks the hits (adhoc #51 dropped the prev/next steppers).
     m_transcriptSearch = new QLineEdit;
     m_transcriptSearch->setObjectName("issueSearch"); // reuse the styled search look
-    m_transcriptSearch->setPlaceholderText(
-        QString::fromUtf8("Search transcript\xE2\x80\xA6"));
+    // Placeholder trimmed to just "Search" so the box can be short (adhoc #61) —
+    // it sits inside the transcript toolbar, where what it searches is obvious.
+    m_transcriptSearch->setPlaceholderText(QStringLiteral("Search"));
     m_transcriptSearch->setClearButtonEnabled(true);
-    m_transcriptSearch->setFixedWidth(190);
+    m_transcriptSearch->setFixedWidth(120);
+    m_transcriptSearch->setToolTip(QStringLiteral("Search the transcript"));
     m_transcriptSearchCount = new QLabel;
     m_transcriptSearchCount->setObjectName("agentFilesHeading"); // small muted text
     connect(m_transcriptSearch, &QLineEdit::textChanged, this,
@@ -1785,7 +1835,8 @@ QWidget *MainWindow::buildAgentsTab()
     detailLayout->setContentsMargins(12, 12, 22, 14);
     detailLayout->setSpacing(8);
     detailLayout->addLayout(topRow);
-    detailLayout->addWidget(m_agentMeta);
+    // m_agentMeta is not laid out here any more — it lives in the Info popup
+    // opened from the header's "Info" button (adhoc #61).
     detailLayout->addWidget(m_agentNetPanel);
     detailLayout->addWidget(outputContainer, 1); // the Agent transcript + Raw toggle
 
@@ -4924,28 +4975,25 @@ static QString issueLinkHtml(int issueNumber, const QString &title)
     return chipLinkHtml(href, label);
 }
 
-// Renders the agent-detail meta fields as a mini table — one header row of
-// muted field labels, one data row of values below it — instead of a single
-// "Label: value | Label: value | ..." line that ran long and was hard to scan
-// (adhoc #90). Values are pre-built HTML (links/spans already escaped by the
-// caller); labels are escaped here.
+// Renders the agent-detail meta fields as a label/value list — one row per
+// field, muted label on the left, value on the right. It used to be a wide
+// two-row table spread across the top of the detail pane (adhoc #90); adhoc #61
+// moved it into the header's "Info" popup, where a vertical list reads far
+// better than a dozen side-by-side columns. Values are pre-built HTML
+// (links/spans already escaped by the caller); labels are escaped here.
 static QString agentDetailTableHtml(const QStringList &headers, const QStringList &values)
 {
     Q_ASSERT(headers.size() == values.size());
     QString html = QStringLiteral(
-        "<table style='border-collapse:collapse;' cellspacing='0' cellpadding='0'><tr>");
-    for (const QString &header : headers) {
+        "<table style='border-collapse:collapse;' cellspacing='0' cellpadding='0'>");
+    for (int i = 0; i < headers.size(); ++i) {
         html += QStringLiteral(
-                    "<th style='text-align:left; font-weight:normal; color:#8b949e; "
-                    "padding:0 16px 2px 0;'>%1</th>")
-                    .arg(header.toHtmlEscaped());
+                    "<tr><th style='text-align:left; font-weight:normal; "
+                    "color:#8b949e; padding:0 16px 3px 0;'>%1</th>"
+                    "<td style='text-align:left; padding:0 0 3px 0;'>%2</td></tr>")
+                    .arg(headers.at(i).toHtmlEscaped(), values.at(i));
     }
-    html += QStringLiteral("</tr><tr>");
-    for (const QString &value : values) {
-        html += QStringLiteral("<td style='text-align:left; padding:0 16px 0 0;'>%1</td>")
-                    .arg(value);
-    }
-    html += QStringLiteral("</tr></table>");
+    html += QStringLiteral("</table>");
     return html;
 }
 
@@ -5022,16 +5070,23 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
                 sessionId, m_repositories.at(repoIdx).localPath,
                 session->branchName);
     }
-    // Branch and worktree left the meta table for two caption-over-value buttons
-    // in the output toolbar (adhoc #51), so point those at this session; each
-    // hides when the session has nothing to open.
+    // Branch and worktree open from two buttons in the output toolbar (adhoc
+    // #51), so point those at this session; each hides when the session has
+    // nothing to open. The names themselves are rows in the info list below
+    // (adhoc #61) and stay on the buttons as tooltips.
     if (m_agentBranchButton) {
         m_agentBranchButton->setVisible(!session->branchName.isEmpty());
-        m_agentBranchButton->setValue(session->branchName);
+        m_agentBranchButton->setToolTip(
+            session->branchName.isEmpty()
+                ? QString()
+                : QStringLiteral("Open branch %1").arg(session->branchName));
     }
     if (m_agentWorktreeButton) {
         m_agentWorktreeButton->setVisible(!worktreePath.isEmpty());
-        m_agentWorktreeButton->setValue(worktreePath);
+        m_agentWorktreeButton->setToolTip(
+            worktreePath.isEmpty()
+                ? QString()
+                : QStringLiteral("Open worktree %1").arg(worktreePath));
     }
     if (isExternalSession(sessionId)) {
         // Rendered as a mini table — header labels on top, values below (adhoc
@@ -5052,6 +5107,8 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
         if (!mergedMeta.isEmpty())
             meta += QStringLiteral("<br>") + mergedMeta;
         m_agentMeta->setText(meta);
+        if (m_agentMetaPopup && m_agentMetaPopup->isVisible())
+            m_agentMetaPopup->adjustSize();
         return;
     }
     // PR status, spelled out so it's always visible. When a PR exists it
@@ -5115,6 +5172,16 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
     headers << QStringLiteral("Repo");
     lines << QStringLiteral("%1/%2").arg(session->owner.toHtmlEscaped(),
                                          session->name.toHtmlEscaped());
+    // Branch and worktree read here rather than under the toolbar buttons that
+    // open them (adhoc #61) — the list has the room to show them in full.
+    if (!session->branchName.isEmpty()) {
+        headers << QStringLiteral("Branch");
+        lines << session->branchName.toHtmlEscaped();
+    }
+    if (!worktreePath.isEmpty()) {
+        headers << QStringLiteral("Worktree");
+        lines << worktreePath.toHtmlEscaped();
+    }
     headers << QStringLiteral("Status");
     lines << agentStatusText(session->status).toHtmlEscaped();
     headers << QStringLiteral("Issue");
@@ -5166,6 +5233,10 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
     if (!mergedMeta.isEmpty())
         meta += QStringLiteral("<br>") + mergedMeta;
     m_agentMeta->setText(meta);
+    // Live updates (token/cost events, the running ticker) can land while the
+    // popup is open; keep it fitted to the list rather than clipping the new row.
+    if (m_agentMetaPopup && m_agentMetaPopup->isVisible())
+        m_agentMetaPopup->adjustSize();
 }
 
 void MainWindow::showAgentSession(int sessionId)
@@ -5179,6 +5250,8 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentStatusPill->clear();
         if (m_agentMeta)
             m_agentMeta->clear();
+        if (m_agentMetaPopup)
+            m_agentMetaPopup->hide(); // nothing left to describe (adhoc #61)
         // Drop the per-session token line from the top-bar chart's hover tooltip.
         if (m_navTokenUsage)
             static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setStats(QString());

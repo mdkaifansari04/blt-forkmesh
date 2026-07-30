@@ -754,6 +754,10 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
 #reactionPicker {
     background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
 }
+/* Agent detail "Info" popup: the session's field list (adhoc #61). */
+#agentMetaPopup {
+    background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
+}
 #reactionPickerButton { background: transparent; border: none; border-radius: 8px; }
 #reactionPickerButton:hover { background-color: #21262d; }
 #messageAction {
@@ -1998,6 +2002,10 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 }
 #reactionAdd:hover { border-color: #d0d7de; background-color: #f6f8fa; }
 #reactionPicker {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 10px;
+}
+/* Agent detail "Info" popup: the session's field list (adhoc #61). */
+#agentMetaPopup {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 10px;
 }
 #reactionPickerButton { background: transparent; border: none; border-radius: 8px; }
