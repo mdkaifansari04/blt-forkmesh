@@ -942,6 +942,7 @@ def _legacy_custody_not_ready_response():
 EDGE_CACHE_DIAGNOSTICS_VERSION = 1
 EDGE_CACHE_KV_SNAPSHOT_KEY = "edge-cache-diagnostics-v1"
 EDGE_CACHE_KV_SNAPSHOT_MINUTES = 10
+_EDGE_CACHE_STARTED_AT = int(Date.now())
 _EDGE_CACHE_STATS = {
     "hits": 0,
     "misses": 0,
@@ -950,7 +951,6 @@ _EDGE_CACHE_STATS = {
     "errors": 0,
     "routes": {},
     "lastOperationAt": 0,
-    "startedAt": 0,
 }
 _EDGE_CACHE_KV_READ_CACHE = {"readAt": 0, "value": None}
 
@@ -978,8 +978,6 @@ def _edge_cache_scope(cache_key):
 
 def _edge_cache_record(operation, cache_key="", failed=False):
     now = int(Date.now())
-    if int(_EDGE_CACHE_STATS["startedAt"]) <= 0:
-        _EDGE_CACHE_STATS["startedAt"] = now
     if failed:
         _EDGE_CACHE_STATS["errors"] += 1
     elif operation in _EDGE_CACHE_STATS:
@@ -1254,9 +1252,6 @@ async def repository_metadata_cache_put(cache_key, response, status):
 
 def _edge_cache_local_snapshot(env, sampled_at=None):
     sampled_at = int(sampled_at or Date.now())
-    if int(_EDGE_CACHE_STATS["startedAt"]) <= 0:
-        _EDGE_CACHE_STATS["startedAt"] = sampled_at
-    started_at = int(_EDGE_CACHE_STATS["startedAt"])
     hits = int(_EDGE_CACHE_STATS["hits"])
     misses = int(_EDGE_CACHE_STATS["misses"])
     lookups = hits + misses
@@ -1264,8 +1259,8 @@ def _edge_cache_local_snapshot(env, sampled_at=None):
         "version": EDGE_CACHE_DIAGNOSTICS_VERSION,
         "sampledAt": sampled_at,
         "buildRev": _build_rev(env),
-        "isolateStartedAt": started_at,
-        "uptimeMs": max(0, sampled_at - started_at),
+        "isolateStartedAt": _EDGE_CACHE_STARTED_AT,
+        "uptimeMs": max(0, sampled_at - _EDGE_CACHE_STARTED_AT),
         "lookups": lookups,
         "hits": hits,
         "misses": misses,
