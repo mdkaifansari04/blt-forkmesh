@@ -681,6 +681,26 @@ bool MainWindow::testAgentColumnsMovable() const
     return m_agentTable && m_agentTable->horizontalHeader()->sectionsMovable();
 }
 
+// adhoc #35: read back the agents list's column labels plus how far the last
+// column reaches, so a test can prove the trimmed layout is what ships — the
+// title column absorbing the spare width, with Updated and Diff pushed against
+// the list's right edge rather than leaving a dead gap after them.
+QString MainWindow::testAgentColumnLayout() const
+{
+    if (!m_agentTable)
+        return QString();
+    QHeaderView *header = m_agentTable->horizontalHeader();
+    QStringList labels;
+    for (int c = 0; c < m_agentTable->columnCount(); ++c)
+        labels << m_agentTable->horizontalHeaderItem(c)->text();
+    // The header's used width vs the width it has to fill: equal means the
+    // columns span the list with nothing left over on the right.
+    return QStringLiteral("%1|%2/%3")
+        .arg(labels.join(QLatin1Char(',')))
+        .arg(header->length())
+        .arg(m_agentTable->viewport()->width());
+}
+
 QString MainWindow::testQuickAddAgentProvider() const
 {
     return m_quickAddAgentProvider ? m_quickAddAgentProvider->currentData().toString()
