@@ -105,7 +105,7 @@ const JETPACK_FLYING_ACTIVITY = "flying with a jetpack";
 // Recreation now belongs to the Office campus garden instead of occupying the
 // Town Square lawn. Both fixtures remain on the same continuous walk surface.
 const GYM_POSITION = Object.freeze([66, 0.14, -137]);
-const SWING_SET_POSITION = Object.freeze([38, 0, -139]);
+const SWING_SET_POSITION = Object.freeze([43, 0, -137]);
 const INSTANCE_GARDEN_POSITION = Object.freeze([-52, 0, -140]);
 const GYM_HEAVY_WEIGHT_LB = 315;
 const GYM_MAX_WEIGHT_LB = 1200;
@@ -15398,15 +15398,17 @@ export function createWorldScene({
   }
   addWorldBench({
     name: "forkmesh-swing-park-bench-west",
-    x: -27,
-    z: 13,
-    heading: Math.PI * 0.72,
+    x: 46,
+    z: -129,
+    heading: Math.PI,
+    activity: "resting beside the recreation garden",
   });
   addWorldBench({
     name: "forkmesh-swing-park-bench-east",
-    x: -11,
-    z: 16,
-    heading: -Math.PI * 0.72,
+    x: 46,
+    z: -145,
+    heading: 0,
+    activity: "resting beside the recreation garden",
   });
   addWorldBench({
     name: "forkmesh-beach-bench",
@@ -16729,11 +16731,12 @@ export function createWorldScene({
   movableWorldObjects.delete("campfire");
   registerMovableObject("south-members:campfire", campfire);
 
-  // A wooden swing set west of the fountain: three swings hang from one beam,
-  // so up to three visitors can ride at once. Clicking a seat starts the ride
-  // and clicking it again hops off; the shell's swing-speed slider scales the
-  // pumping, and the regular camera toggle watches the ride in first or third
-  // person because both camera modes follow the player's position.
+  // A wooden swing set beside the Office garden gym: three swings hang from
+  // one beam, so up to three visitors can ride at once. Clicking a seat starts
+  // the ride and clicking it again hops off; the shell's swing-speed slider
+  // scales the pumping, and the regular camera toggle watches the ride in
+  // first or third person because both camera modes follow the player's
+  // position.
   const SWING_SEAT_COUNT = 3;
   const SWING_SEAT_SPACING = 2.3;
   const SWING_BEAM_HEIGHT = 4.6;
@@ -16748,9 +16751,9 @@ export function createWorldScene({
   const swingSet = new THREE.Group();
   swingSet.name = "swing-set";
   swingSet.position.set(...SWING_SET_POSITION);
-  // Local -Z (the way avatars face) points at the fountain so riders swing
-  // looking across the Town Square.
-  swingSet.rotation.y = Math.atan2(SWING_SET_POSITION[0], SWING_SET_POSITION[2]);
+  // Face the nearby gym so the swings and workout equipment read as one
+  // compact recreation garden.
+  swingSet.rotation.y = -Math.PI / 2;
   const swingFrameMaterial = makeMaterial(THREE, "#6f5136", { roughness: 0.82 });
   const swingFrameWidth = SWING_SEAT_COUNT * SWING_SEAT_SPACING + 1.6;
   const swingLegSpread = 1.7;
@@ -19263,8 +19266,8 @@ export function createWorldScene({
   });
   officeInterior.add(officeFloorWarpHub);
 
-  // The instance launcher is an outdoor garden portal: creating a world
-  // should feel celebratory, while credentials remain in the device-local UI.
+  // An open-sided garden tent makes instance creation feel like a welcoming
+  // fair booth. Credentials remain in the device-local UI.
   const instanceBooth = new THREE.Group();
   instanceBooth.name = "forkmesh-instance-launch-booth";
   instanceBooth.position.set(...INSTANCE_GARDEN_POSITION);
@@ -19272,76 +19275,132 @@ export function createWorldScene({
     metalness: 0.22,
     roughness: 0.42,
   });
-  const instanceBoothBlue = makeMaterial(THREE, "#27d9c4", {
-    emissive: "#0b827b",
-    emissiveIntensity: 0.75,
-    metalness: 0.18,
-    roughness: 0.3,
-  });
   const boothFloor = new THREE.Mesh(
     new THREE.CylinderGeometry(10.8, 11.4, 0.38, 48),
     makeMaterial(THREE, "#f2c94c", { roughness: 0.66 }),
   );
   boothFloor.position.set(0, 0.19, 0);
   instanceBooth.add(boothFloor);
-  for (const x of [-8.4, 8.4]) {
-    const tower = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.72, 0.92, 9.4, 16),
-      x < 0 ? instanceBoothDark : instanceBoothBlue,
+  const boothPoleMaterials = [
+    makeMaterial(THREE, "#6840c6", {
+      emissive: "#2d1766",
+      emissiveIntensity: 0.34,
+      roughness: 0.36,
+    }),
+    makeMaterial(THREE, "#31d7c4", {
+      emissive: "#0b7169",
+      emissiveIntensity: 0.38,
+      roughness: 0.34,
+    }),
+  ];
+  for (const [index, x, z] of [
+    [0, -8.5, -2.4],
+    [1, 8.5, -2.4],
+    [1, -8.5, 3.6],
+    [0, 8.5, 3.6],
+  ]) {
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.34, 0.44, 9.2, 14),
+      boothPoleMaterials[index],
     );
-    tower.position.set(x, 4.9, 1.2);
-    instanceBooth.add(tower);
-    const planet = new THREE.Mesh(
-      new THREE.SphereGeometry(1.15, 20, 14),
-      makeMaterial(THREE, x < 0 ? "#ff5f8f" : "#65e572", {
-        emissive: x < 0 ? "#812747" : "#257d38",
-        emissiveIntensity: 0.55,
+    pole.name = "forkmesh-instance-booth-tent-pole";
+    pole.position.set(x, 4.75, z);
+    instanceBooth.add(pole);
+  }
+  const tentFabricPink = makeMaterial(THREE, "#ff77a8", {
+    emissive: "#8b2647",
+    emissiveIntensity: 0.34,
+    roughness: 0.48,
+    side: THREE.DoubleSide,
+  });
+  const roofSlope = Math.atan2(1.75, 9.5);
+  for (const side of [-1, 1]) {
+    const roofPanel = new THREE.Mesh(
+      new THREE.BoxGeometry(9.75, 0.34, 8.4),
+      side < 0 ? tentFabricPink : makeMaterial(THREE, "#ffd45f", {
+        emissive: "#8c6416",
+        emissiveIntensity: 0.28,
+        roughness: 0.5,
       }),
     );
-    planet.position.set(x, 9.9, 1.2);
-    instanceBooth.add(planet);
+    roofPanel.name = "forkmesh-instance-booth-tent-canopy";
+    roofPanel.position.set(side * 4.72, 10.35, 0.6);
+    roofPanel.rotation.z = side * -roofSlope;
+    instanceBooth.add(roofPanel);
   }
-  const boothRoof = new THREE.Mesh(
-    new THREE.BoxGeometry(19.2, 0.55, 6.4),
-    makeMaterial(THREE, "#ff5f8f", {
+  const boothValance = new THREE.Mesh(
+    new THREE.BoxGeometry(19.4, 0.72, 0.34),
+    makeMaterial(THREE, "#ff77a8", {
       emissive: "#8b2647",
       emissiveIntensity: 0.42,
+      roughness: 0.44,
+    }),
+  );
+  boothValance.name = "forkmesh-instance-booth-front-valance";
+  boothValance.position.set(0, 9.55, 4.48);
+  instanceBooth.add(boothValance);
+
+  const globeTexture = canvasTexture(THREE, 1024, 512, (context) => {
+    const ocean = context.createLinearGradient(0, 0, 0, 512);
+    ocean.addColorStop(0, "#72dcff");
+    ocean.addColorStop(0.5, "#1976d2");
+    ocean.addColorStop(1, "#083d86");
+    context.fillStyle = ocean;
+    context.fillRect(0, 0, 1024, 512);
+    context.strokeStyle = "rgba(210, 249, 255, 0.22)";
+    context.lineWidth = 3;
+    for (let x = 0; x <= 1024; x += 128) {
+      context.beginPath();
+      context.moveTo(x, 0);
+      context.lineTo(x, 512);
+      context.stroke();
+    }
+    for (let y = 64; y < 512; y += 96) {
+      context.beginPath();
+      context.moveTo(0, y);
+      context.lineTo(1024, y);
+      context.stroke();
+    }
+    context.fillStyle = "#65d06f";
+    for (const [x, y, width, height, rotation] of [
+      [170, 145, 180, 95, -0.35],
+      [275, 300, 105, 155, 0.24],
+      [535, 150, 220, 105, 0.18],
+      [650, 305, 160, 125, -0.16],
+      [865, 335, 105, 65, 0.22],
+    ]) {
+      context.save();
+      context.translate(x, y);
+      context.rotate(rotation);
+      context.beginPath();
+      context.ellipse(0, 0, width / 2, height / 2, 0, 0, Math.PI * 2);
+      context.ellipse(width * 0.2, -height * 0.24, width * 0.3, height * 0.34, 0, 0, Math.PI * 2);
+      context.fill();
+      context.restore();
+    }
+  });
+  const boothGlobe = new THREE.Mesh(
+    new THREE.SphereGeometry(2.05, 40, 28),
+    new THREE.MeshStandardMaterial({
+      map: globeTexture,
       roughness: 0.38,
+      metalness: 0.08,
+      emissive: "#0a4d7a",
+      emissiveIntensity: 0.22,
     }),
   );
-  boothRoof.name = "forkmesh-instance-booth-colorful-roof";
-  boothRoof.position.set(0, 10.05, 1.2);
-  instanceBooth.add(boothRoof);
-  const portal = new THREE.Mesh(
-    new THREE.TorusGeometry(5.25, 0.52, 16, 64),
-    instanceBoothBlue,
-  );
-  portal.name = "forkmesh-instance-world-portal";
-  portal.position.set(0, 5.4, 3.6);
-  portal.userData.interactive = "instance-launch-booth";
-  instanceBooth.add(portal);
-  interactive.push(portal);
-  const portalCore = new THREE.Mesh(
-    new THREE.CircleGeometry(4.7, 64),
-    new THREE.MeshBasicMaterial({
-      color: "#7c5cff",
-      transparent: true,
-      opacity: 0.3,
-      side: THREE.DoubleSide,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    }),
-  );
-  portalCore.position.copy(portal.position);
-  portalCore.position.z += 0.04;
-  portalCore.userData.interactive = "instance-launch-booth";
-  instanceBooth.add(portalCore);
-  interactive.push(portalCore);
+  boothGlobe.name = "forkmesh-instance-booth-rotating-globe";
+  boothGlobe.position.set(0, 13.25, 0.55);
+  boothGlobe.rotation.z = -0.18;
+  boothGlobe.userData.interactive = "instance-launch-booth";
+  instanceBooth.add(boothGlobe);
+  interactive.push(boothGlobe);
+  const globeLight = new THREE.PointLight("#7de8ff", 2.1, 15, 1.8);
+  globeLight.position.set(-1.8, 14.5, 3);
+  instanceBooth.add(globeLight);
   animated.push((time) => {
-    portal.rotation.z = time * 0.00022;
-    const portalPulse = 0.97 + Math.sin(time * 0.0035) * 0.045;
-    portalCore.scale.setScalar(portalPulse);
-    portalCore.material.opacity = 0.26 + Math.sin(time * 0.0042) * 0.08;
+    boothGlobe.rotation.y = time * 0.00034;
+    boothGlobe.position.y = 13.25 + Math.sin(time * 0.0011) * 0.08;
   });
   const boothPrivacySign = makeOfficeWallPlacard(
     THREE,
@@ -19352,7 +19411,7 @@ export function createWorldScene({
     2.1,
   );
   boothPrivacySign.name = "forkmesh-instance-booth-roof-sign";
-  boothPrivacySign.position.set(0, 11.2, 1.2);
+  boothPrivacySign.position.set(0, 8, 4.7);
   boothPrivacySign.userData.interactive = "instance-launch-booth";
   instanceBooth.add(boothPrivacySign);
   interactive.push(boothPrivacySign);
@@ -19385,7 +19444,7 @@ export function createWorldScene({
     }),
   );
   instanceBoothScreen.name = "forkmesh-instance-launch-booth-screen";
-  instanceBoothScreen.position.set(0, 3.35, 3.5);
+  instanceBoothScreen.position.set(0, 3.65, 3.95);
   instanceBoothScreen.userData.interactive = "instance-launch-booth";
   instanceBooth.add(instanceBoothScreen);
   interactive.push(instanceBoothScreen);

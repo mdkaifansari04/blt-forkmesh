@@ -16,10 +16,15 @@ QT_CONTROL = (
 ).read_text(encoding="utf-8")
 
 
-def test_outdoor_world_portal_uses_a_flat_non_modal_device_local_form():
+def test_outdoor_world_tent_uses_a_flat_non_modal_device_local_form():
     assert 'instanceBooth.name = "forkmesh-instance-launch-booth"' in SCENE
     assert 'userData.interactive = "instance-launch-booth"' in SCENE
     assert "INSTANCE_GARDEN_POSITION" in SCENE
+    assert 'pole.name = "forkmesh-instance-booth-tent-pole"' in SCENE
+    assert 'roofPanel.name = "forkmesh-instance-booth-tent-canopy"' in SCENE
+    assert 'boothGlobe.name = "forkmesh-instance-booth-rotating-globe"' in SCENE
+    assert "boothGlobe.rotation.y = time * 0.00034" in SCENE
+    assert "forkmesh-instance-world-portal" not in SCENE
     assert "LAUNCH INSTANCE" in SCENE
     assert "CREATE A NEW WORLD" in SCENE
     assert "world.add(instanceBooth)" in SCENE
@@ -43,7 +48,12 @@ def test_front_garden_water_and_recreation_are_interactive():
     assert 'userData.interactive = "drinking-fountain"' in SCENE
     assert "onDrinkWater();" in SCENE
     assert "const GYM_POSITION = Object.freeze([66, 0.14, -137])" in SCENE
-    assert "const SWING_SET_POSITION = Object.freeze([38, 0, -139])" in SCENE
+    assert "const SWING_SET_POSITION = Object.freeze([43, 0, -137])" in SCENE
+    assert 'name: "forkmesh-swing-park-bench-west"' in SCENE
+    assert 'name: "forkmesh-swing-park-bench-east"' in SCENE
+    assert "x: 46" in SCENE
+    assert "z: -129" in SCENE
+    assert "z: -145" in SCENE
 
 
 def test_node_plaza_grows_and_sol_is_a_floating_fireball():
