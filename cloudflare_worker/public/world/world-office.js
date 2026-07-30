@@ -14,6 +14,24 @@ const OFFICE_FLOORS_PATH = "/api/world/office/floors";
 const OFFICE_ATTENDANCE_PATH = "/api/world/office/attendance";
 const OFFICE_ATTENDANCE_HEARTBEAT_MS = 30_000;
 
+function newOfficeAttendanceVisitId() {
+  const randomUUID = globalThis.crypto?.randomUUID;
+  if (typeof randomUUID === "function") {
+    return randomUUID.call(globalThis.crypto).replaceAll("-", "");
+  }
+  const bytes = new Uint8Array(16);
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  return [...bytes]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 export function nextOfficeZoneState(currentState, distance) {
   const threshold =
     currentState === "nearby"
@@ -55,6 +73,7 @@ export function createWorldOfficeController({
   let attendanceAccount = "";
   let attendanceWrite = Promise.resolve();
   let attendanceFloorId = "lobby";
+  let attendanceVisitId = "";
   let attendanceHeartbeat = null;
 
   const resolvedChatURL = new URL(chatPath, window.location.origin);
@@ -237,6 +256,7 @@ export function createWorldOfficeController({
     } = {},
   ) {
     const account = String(attendanceAccount || "");
+    const visitId = String(attendanceVisitId || "");
     if (!account || typeof root.postJSON !== "function") {
       return attendanceWrite;
     }
@@ -253,7 +273,7 @@ export function createWorldOfficeController({
       .then(async () => {
         const payload = await root.postJSON(
           OFFICE_ATTENDANCE_PATH,
-          { action, floor: attendanceFloorId },
+          { action, floor: attendanceFloorId, visitId },
           { timeout: 6000 },
         );
         applyAttendance(payload);
@@ -313,6 +333,7 @@ export function createWorldOfficeController({
     officeAccess = initialOfficeAccess();
     attendanceAccount = "";
     attendanceFloorId = "lobby";
+    attendanceVisitId = newOfficeAttendanceVisitId();
     stopAttendanceHeartbeat();
     world.setOfficeAccess?.(officeAccess);
     officeEntryTicket = "";
@@ -558,6 +579,7 @@ export function createWorldOfficeController({
     officeAccess = normalizeOfficeFloorAccess({});
     attendanceAccount = "";
     attendanceFloorId = "lobby";
+    attendanceVisitId = "";
     world.setOfficeAccess?.(officeAccess);
     world.setOfficeDoorStatus?.("open");
     authorizationGeneration += 1;

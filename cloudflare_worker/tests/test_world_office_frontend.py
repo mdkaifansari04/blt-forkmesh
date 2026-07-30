@@ -252,7 +252,8 @@ def test_attendance_has_member_leaderboard_and_individual_punch_clock():
     for contract in (
         "OFFICE_ATTENDANCE_HEARTBEAT_MS = 30_000",
         'direction === "heartbeat"',
-        "{ action, floor: attendanceFloorId }",
+        "{ action, floor: attendanceFloorId, visitId }",
+        "attendanceVisitId = newOfficeAttendanceVisitId()",
         "startAttendanceHeartbeat()",
         "stopAttendanceHeartbeat()",
     ):
