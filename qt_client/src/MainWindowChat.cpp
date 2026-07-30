@@ -8575,8 +8575,9 @@ QWidget *MainWindow::buildHostsSection()
 
     auto *vultrHint = new QLabel(QString::fromUtf8(
         "One click deploys a brand-new cloud mirror on your Vultr account: "
-        "ForkMesh picks the cheapest available IPv4 plan with at least 1 GB "
-        "RAM (smaller plans cannot hold the encrypted mirror's temporary "
+        "ForkMesh picks the cheapest available US IPv4 plan with at least 1 GB "
+        "RAM, preferring New Jersey/New York metro and then Atlanta (smaller "
+        "plans cannot hold the encrypted mirror's temporary "
         "working set; Vultr's IPv6-only tiers are also unreachable for the "
         "mesh) running the latest Debian, "
         "creates and manages the SSH key for it automatically, boots the "
@@ -13103,7 +13104,7 @@ QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip
 // --- One-click Vultr mirror provisioning (adhoc #315) -----------------------
 //
 // createVultrMirrorFromForm drives an async chain over the Vultr v2 API:
-// managed keypair → SSH-key registration → cheapest plan → newest Debian →
+// managed keypair → SSH-key registration → cheapest US plan → newest Debian →
 // instance create → boot poll → the normal runHostInstall handoff, which
 // installs ForkMesh over SSH and auto-links the fresh node to this account so
 // it starts mirroring and syncing on its own. Every step streams into the
@@ -13655,7 +13656,7 @@ void MainWindow::createVultrMirrorFromForm()
         m_hostInstallLogBold = false;
     }
     appendHostInstallLog(QString::fromUtf8(
-        "Creating Vultr mirror \"%1\" \xE2\x80\x94 cheapest supported plan, latest "
+        "Creating Vultr mirror \"%1\" \xE2\x80\x94 cheapest supported US plan, latest "
         "Debian, managed SSH key\xE2\x80\xA6\n").arg(node));
     if (storedKey)
         appendHostInstallLog(QStringLiteral(
@@ -13702,7 +13703,7 @@ void MainWindow::createVultrMirrorFromForm()
             }
             if (m_vultrStatus)
                 m_vultrStatus->setText(QString::fromUtf8(
-                    "Choosing the cheapest supported plan\xE2\x80\xA6"));
+                    "Choosing the cheapest supported US plan\xE2\x80\xA6"));
             vultrApiCall(
                 apiKey, QStringLiteral("/v2/plans?per_page=500"),
                 QByteArrayLiteral("GET"), {},
@@ -13720,8 +13721,9 @@ void MainWindow::createVultrMirrorFromForm()
                         forkmesh::control::vultrPlanRegion(plan);
                     if (plan.isEmpty() || region.isEmpty()) {
                         finishVultrProvision(false, QStringLiteral(
-                            "No deployable plan is available on this Vultr "
-                            "account."));
+                            "No deployable US plan is available on this Vultr "
+                            "account (New Jersey, Atlanta, or another supported "
+                            "US region)."));
                         return;
                     }
                     m_vultrHostMetadata.insert(
