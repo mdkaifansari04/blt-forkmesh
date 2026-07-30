@@ -27,8 +27,26 @@ def test_member_circle_uses_dirt_and_tracks_firewood_per_member():
         "CAMPFIRE_BASE_FIRE_LEVEL + fireCenturies * CAMPFIRE_FIRE_LEVEL_PER_CENTURY"
         in SCENE
     )
-    # Growing cones are re-pinned to the logs so the fire never sinks into the pit.
-    assert "flame.position.y = FLAME_BASE_Y + (FLAME_HEIGHT * height) / 2;" in SCENE
+    # The procedural fire stays rooted at the logs while milestone growth is
+    # applied to the effect itself, so it cannot sink into the pit.
+    assert "proceduralFire.position.y = FLAME_BASE_Y;" in SCENE
+    assert "const fireGrowth = fireLevel / CAMPFIRE_BASE_FIRE_LEVEL;" in SCENE
+    assert "proceduralFire.scale.set(" in SCENE
+
+
+def test_campfire_uses_layered_procedural_flames_and_atmosphere():
+    effect = SCENE.split("function createProceduralCampfireEffect(THREE)", 1)[1]
+    effect = effect.split("\n// Who joined last", 1)[0]
+    assert "new THREE.ConeGeometry" not in effect
+    assert "const flameLayers = [" in effect
+    assert "fragmentShader: flameFragmentShader" in effect
+    assert "blending: THREE.AdditiveBlending" in effect
+    assert "if (alpha < 0.008) discard;" in effect
+    assert '"campfire-rising-embers"' in effect
+    assert '"campfire-ground-glow"' in effect
+    assert "campfire-smoke-puff-" in effect
+    assert '"campfire-charred-burning-logs"' in SCENE
+    assert "fireLight.position.set(" in SCENE
 
 
 def test_member_total_hangs_high_and_large_above_the_fire():
@@ -53,12 +71,15 @@ def test_newest_member_name_has_an_animated_sparkle_effect():
 
 def test_campfire_is_three_times_large_not_only_three_times_tall():
     assert (
-        "flame.scale.set(\n"
-        "    CAMPFIRE_BASE_FIRE_LEVEL,\n"
+        "proceduralFire.scale.set(\n"
         "    CAMPFIRE_BASE_FIRE_LEVEL,\n"
         "    CAMPFIRE_BASE_FIRE_LEVEL,"
     ) in SCENE
-    assert "const size = fireLevel * flicker;" in SCENE
+    assert (
+        "CAMPFIRE_BASE_FIRE_LEVEL * (1 + (fireGrowth - 1) * 0.32)"
+        in SCENE
+    )
+    assert "fireLevel * (1 + slowFlicker * 0.055" in SCENE
     assert "new THREE.CylinderGeometry(1.45, 1.65, 0.22, 16)" in SCENE
     assert "Math.cos(stoneAngle) * 1.85" in SCENE
 

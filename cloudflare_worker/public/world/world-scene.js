@@ -4556,6 +4556,342 @@ function campfireDirtTexture(THREE) {
   return texture;
 }
 
+function createProceduralCampfireEffect(THREE) {
+  const effect = new THREE.Group();
+  effect.name = "campfire-procedural-fire";
+
+  const flameVertexShader = `
+    uniform float uTime;
+    uniform float uSpeed;
+    uniform float uPhase;
+    uniform float uCurl;
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      vec3 transformed = position;
+      float lift = pow(uv.y, 1.45);
+      float broadSway = sin(uTime * uSpeed + uPhase) * uCurl;
+      float curling = sin(uTime * uSpeed * 1.73 + uv.y * 8.0 + uPhase * 2.1)
+        * uCurl * 0.42;
+      transformed.x += (broadSway + curling) * lift;
+      transformed.y += sin(uTime * uSpeed * 1.31 + uPhase + uv.y * 5.0)
+        * 0.035 * lift;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
+    }
+  `;
+  const flameFragmentShader = `
+    uniform float uTime;
+    uniform float uSpeed;
+    uniform float uPhase;
+    uniform float uOpacity;
+    varying vec2 vUv;
+
+    float hash(vec2 p) {
+      p = fract(p * vec2(123.34, 456.21));
+      p += dot(p, p + 45.32);
+      return fract(p.x * p.y);
+    }
+    float noise(vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      f = f * f * (3.0 - 2.0 * f);
+      return mix(
+        mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
+        mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0)), f.x),
+        f.y
+      );
+    }
+    float fbm(vec2 p) {
+      float value = 0.0;
+      float amplitude = 0.55;
+      for (int octave = 0; octave < 4; octave++) {
+        value += amplitude * noise(p);
+        p = p * 2.03 + 17.17;
+        amplitude *= 0.5;
+      }
+      return value;
+    }
+    void main() {
+      float t = uTime * uSpeed;
+      float y = vUv.y;
+      float x = vUv.x * 2.0 - 1.0;
+      float turbulence = fbm(vec2(y * 3.35 - t * 0.72, uPhase));
+      float fineNoise = fbm(vec2(x * 2.8 + uPhase, y * 5.4 - t * 1.18));
+      float center = (turbulence - 0.5) * (0.25 + y * 0.44)
+        + sin(y * 9.0 - t * 1.45 + uPhase) * 0.075 * y;
+      float width = mix(0.72, 0.035, pow(y, 0.72));
+      width *= 0.82 + turbulence * 0.42;
+      width += (fineNoise - 0.5) * (0.10 + y * 0.19);
+
+      // A moving notch near the tip makes tall tongues fork before they close.
+      float fork = smoothstep(0.57, 0.9, y)
+        * (1.0 - smoothstep(0.0, 0.18, abs(x - center)))
+        * (0.35 + 0.65 * noise(vec2(floor(t * 2.0), uPhase)));
+      float edgeDistance = abs(x - center) / max(width, 0.025);
+      float body = 1.0 - smoothstep(0.67, 1.0, edgeDistance);
+      body *= 1.0 - fork * smoothstep(0.68, 0.98, y);
+
+      float raggedTop = 0.9
+        + (fbm(vec2(x * 2.1 + uPhase, -t * 1.3)) - 0.5) * 0.24;
+      float topFade = 1.0 - smoothstep(raggedTop - 0.12, raggedTop, y);
+      float alpha = body * topFade * smoothstep(0.0, 0.1, y);
+      alpha *= 0.74 + fineNoise * 0.32;
+      alpha *= uOpacity;
+      if (alpha < 0.008) discard;
+
+      float heat = clamp(edgeDistance, 0.0, 1.0);
+      vec3 whiteCore = mix(vec3(1.0, 0.72, 0.16), vec3(1.0, 0.98, 0.72),
+        (1.0 - heat) * (1.0 - y * 0.38));
+      vec3 orangeMiddle = vec3(1.0, 0.23, 0.012);
+      vec3 redEdge = vec3(0.48, 0.018, 0.002);
+      vec3 color = mix(whiteCore, orangeMiddle, smoothstep(0.16, 0.62, heat));
+      color = mix(color, redEdge, smoothstep(0.62, 1.0, heat));
+      color *= 0.88 + fineNoise * 0.3;
+      gl_FragColor = vec4(color, alpha);
+    }
+  `;
+
+  const flameGeometry = new THREE.PlaneGeometry(1, 1, 18, 28);
+  flameGeometry.translate(0, 0.5, 0);
+  const flameLayers = [
+    {
+      width: 1.35,
+      height: 2.25,
+      angle: 0.1,
+      speed: 1.72,
+      phase: 0.7,
+      opacity: 0.72,
+    },
+    {
+      width: 1.2,
+      height: 2,
+      angle: Math.PI / 2,
+      speed: 2.13,
+      phase: 2.8,
+      opacity: 0.68,
+    },
+    {
+      width: 1,
+      height: 1.72,
+      angle: Math.PI / 4,
+      speed: 2.58,
+      phase: 4.4,
+      opacity: 0.78,
+    },
+    {
+      width: 0.82,
+      height: 1.48,
+      angle: -Math.PI / 4,
+      speed: 3.04,
+      phase: 6.1,
+      opacity: 0.84,
+    },
+    {
+      width: 0.58,
+      height: 1.17,
+      angle: 1.16,
+      speed: 3.47,
+      phase: 8.3,
+      opacity: 0.9,
+    },
+  ];
+  const flameMaterials = [];
+  flameLayers.forEach((layer, index) => {
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uSpeed: { value: layer.speed },
+        uPhase: { value: layer.phase },
+        uCurl: { value: 0.13 + index * 0.018 },
+        uOpacity: { value: layer.opacity },
+      },
+      vertexShader: flameVertexShader,
+      fragmentShader: flameFragmentShader,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
+    });
+    const tongue = new THREE.Mesh(flameGeometry, material);
+    tongue.name = `campfire-flame-layer-${index + 1}`;
+    tongue.scale.set(layer.width, layer.height, 1);
+    tongue.rotation.y = layer.angle;
+    tongue.position.set(
+      Math.sin(layer.phase) * 0.09,
+      0,
+      Math.cos(layer.phase) * 0.09,
+    );
+    tongue.renderOrder = 4 + index;
+    effect.add(tongue);
+    flameMaterials.push(material);
+  });
+
+  const emberCount = 34;
+  const emberPositions = new Float32Array(emberCount * 3);
+  const emberSeeds = new Float32Array(emberCount);
+  const emberSizes = new Float32Array(emberCount);
+  let emberRandomState = 0x46_49_52_45;
+  const emberRandom = () => {
+    emberRandomState =
+      (Math.imul(emberRandomState, 1_664_525) + 1_013_904_223) >>> 0;
+    return emberRandomState / 0x1_0000_0000;
+  };
+  for (let index = 0; index < emberCount; index += 1) {
+    const offset = index * 3;
+    emberPositions[offset] = (emberRandom() - 0.5) * 0.65;
+    emberPositions[offset + 1] = emberRandom() * 0.3;
+    emberPositions[offset + 2] = (emberRandom() - 0.5) * 0.65;
+    emberSeeds[index] = emberRandom();
+    emberSizes[index] = 1.5 + emberRandom() * 3.3;
+  }
+  const emberGeometry = new THREE.BufferGeometry();
+  emberGeometry.setAttribute(
+    "position",
+    new THREE.BufferAttribute(emberPositions, 3),
+  );
+  emberGeometry.setAttribute(
+    "aSeed",
+    new THREE.BufferAttribute(emberSeeds, 1),
+  );
+  emberGeometry.setAttribute(
+    "aSize",
+    new THREE.BufferAttribute(emberSizes, 1),
+  );
+  const emberMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uHeight: { value: 1 },
+    },
+    vertexShader: `
+      uniform float uTime;
+      uniform float uHeight;
+      attribute float aSeed;
+      attribute float aSize;
+      varying float vAlpha;
+      void main() {
+        float age = fract(uTime * (0.12 + aSeed * 0.09) + aSeed * 7.31);
+        vec3 ember = position;
+        float rise = age * (1.65 + aSeed * 1.75) * uHeight;
+        ember.y += rise;
+        ember.x += sin(age * 8.0 + aSeed * 31.0) * (0.08 + age * 0.36);
+        ember.z += cos(age * 6.7 + aSeed * 27.0) * (0.07 + age * 0.28);
+        vec4 viewPosition = modelViewMatrix * vec4(ember, 1.0);
+        gl_Position = projectionMatrix * viewPosition;
+        float life = smoothstep(0.0, 0.08, age) * (1.0 - smoothstep(0.58, 1.0, age));
+        gl_PointSize = aSize * life * (95.0 / max(1.0, -viewPosition.z));
+        vAlpha = life;
+      }
+    `,
+    fragmentShader: `
+      varying float vAlpha;
+      void main() {
+        float radius = length(gl_PointCoord - 0.5) * 2.0;
+        float alpha = (1.0 - smoothstep(0.18, 1.0, radius)) * vAlpha;
+        if (alpha < 0.01) discard;
+        vec3 color = mix(vec3(1.0, 0.16, 0.01), vec3(1.0, 0.88, 0.38),
+          1.0 - radius);
+        gl_FragColor = vec4(color, alpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  const embers = new THREE.Points(emberGeometry, emberMaterial);
+  embers.name = "campfire-rising-embers";
+  embers.position.y = 0.12;
+  embers.renderOrder = 10;
+  effect.add(embers);
+
+  const smokeGeometry = new THREE.PlaneGeometry(1, 1);
+  const smokePuffs = [];
+  for (let index = 0; index < 7; index += 1) {
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        uPhase: { value: index * 2.37 },
+        uOpacity: { value: 0 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uPhase;
+        uniform float uOpacity;
+        varying vec2 vUv;
+        float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7)) + uPhase) * 43758.5453);
+        }
+        void main() {
+          vec2 p = (vUv - 0.5) * 2.0;
+          float angle = atan(p.y, p.x);
+          float uneven = 0.78 + hash(vec2(floor(angle * 5.0), uPhase)) * 0.22;
+          float alpha = (1.0 - smoothstep(0.2, uneven, length(p))) * uOpacity;
+          if (alpha < 0.006) discard;
+          gl_FragColor = vec4(vec3(0.24, 0.22, 0.2), alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.NormalBlending,
+      toneMapped: false,
+    });
+    const puff = new THREE.Mesh(smokeGeometry, material);
+    puff.name = `campfire-smoke-puff-${index + 1}`;
+    puff.rotation.y = (index * Math.PI) / 3.5;
+    puff.userData.smokeSeed = index / 7;
+    puff.userData.smokePhase = index * 1.91;
+    effect.add(puff);
+    smokePuffs.push(puff);
+  }
+
+  const groundGlow = new THREE.Mesh(
+    new THREE.CircleGeometry(3.5, 64),
+    new THREE.ShaderMaterial({
+      uniforms: { uOpacity: { value: 0.34 } },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uOpacity;
+        varying vec2 vUv;
+        void main() {
+          float radius = length(vUv - 0.5) * 2.0;
+          float alpha = (1.0 - smoothstep(0.05, 1.0, radius));
+          alpha *= alpha * uOpacity;
+          if (alpha < 0.004) discard;
+          gl_FragColor = vec4(1.0, 0.19, 0.015, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
+    }),
+  );
+  groundGlow.name = "campfire-ground-glow";
+  groundGlow.rotation.x = -Math.PI / 2;
+  groundGlow.position.y = -0.245;
+  groundGlow.renderOrder = 2;
+  effect.add(groundGlow);
+
+  effect.userData.flameMaterials = flameMaterials;
+  effect.userData.emberMaterial = emberMaterial;
+  effect.userData.smokePuffs = smokePuffs;
+  effect.userData.groundGlow = groundGlow;
+  return effect;
+}
+
 // Who joined last, by the public directory's joined timestamp. An account
 // seated straight from a presence frame carries no joined date yet (0), so it
 // is skipped rather than ranked as the oldest member in the circle.
@@ -15913,15 +16249,42 @@ export function createWorldScene({
     );
     campfire.add(stone);
   }
+  const burningLogs = new THREE.Group();
+  burningLogs.name = "campfire-charred-burning-logs";
+  campfire.add(burningLogs);
   for (let index = 0; index < 3; index += 1) {
     const log = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.09, 0.09, 1.15, 8),
-      makeMaterial(THREE, "#5a3b24", { roughness: 0.9 }),
+      new THREE.CylinderGeometry(0.105, 0.12, 1.18, 10),
+      makeMaterial(THREE, index === 1 ? "#21140e" : "#2b1810", {
+        roughness: 1,
+      }),
     );
     log.rotation.z = Math.PI / 2;
-    log.rotation.y = (index / 3) * Math.PI;
-    log.position.y = 0.3;
-    campfire.add(log);
+    log.rotation.y = (index / 3) * Math.PI + 0.08;
+    log.rotation.x = (index - 1) * 0.08;
+    log.position.y = 0.31 + (index % 2) * 0.07;
+    log.castShadow = true;
+    burningLogs.add(log);
+    for (let coalIndex = 0; coalIndex < 3; coalIndex += 1) {
+      const coal = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(0.075 + coalIndex * 0.012, 1),
+        makeMaterial(THREE, coalIndex === 1 ? "#ff6a17" : "#b62d0b", {
+          emissive: coalIndex === 1 ? "#ff4d0a" : "#8e1605",
+          emissiveIntensity: 2.5,
+          roughness: 0.78,
+        }),
+      );
+      const along = (coalIndex - 1) * 0.31;
+      const logAngle = log.rotation.y;
+      coal.position.set(
+        Math.cos(logAngle) * along,
+        log.position.y + 0.09 + (coalIndex % 2) * 0.025,
+        -Math.sin(logAngle) * along,
+      );
+      coal.scale.set(1.35, 0.52, 0.75);
+      coal.userData.glowingCoalPhase = index * 2.4 + coalIndex;
+      burningLogs.add(coal);
+    }
   }
   const logPile = new THREE.Group();
   logPile.name = "campfire-log-pile";
@@ -15964,37 +16327,11 @@ export function createWorldScene({
       interactive.push(log);
     }
   }
-  const flame = new THREE.Mesh(
-    new THREE.ConeGeometry(0.56, 1.4, 8),
-    makeMaterial(THREE, "#ffb547", {
-      emissive: "#ff7a2f",
-      emissiveIntensity: 1.6,
-      transparent: true,
-      opacity: 0.92,
-    }),
-  );
-  flame.name = "campfire-primary-flame";
-  // Both cones are centred on their own geometry, so scaling them up would
-  // sink the base into the ground. The animation re-pins each base to the logs
-  // every frame (see FLAME_BASE_Y); these are just the resting spots.
+  const proceduralFire = createProceduralCampfireEffect(THREE);
   const FLAME_HEIGHT = 1.4;
   const FLAME_BASE_Y = 0.28;
-  flame.position.y = FLAME_BASE_Y + FLAME_HEIGHT / 2;
-  campfire.add(flame);
-  const innerFlame = new THREE.Mesh(
-    new THREE.ConeGeometry(0.31, 0.95, 8),
-    makeMaterial(THREE, "#fff0a6", {
-      emissive: "#ffb547",
-      emissiveIntensity: 2.1,
-      transparent: true,
-      opacity: 0.94,
-    }),
-  );
-  innerFlame.name = "campfire-inner-flame";
-  const INNER_FLAME_HEIGHT = 0.95;
-  const INNER_FLAME_BASE_Y = 0.38;
-  innerFlame.position.y = INNER_FLAME_BASE_Y + INNER_FLAME_HEIGHT / 2;
-  campfire.add(innerFlame);
+  proceduralFire.position.y = FLAME_BASE_Y;
+  campfire.add(proceduralFire);
   // The blaze is a milestone marker rather than a per-member trickle: it holds
   // its size through a hundred accounts and steps up a notch when the next
   // century lands, bounded so a large community's fire stays welcoming.
@@ -16002,27 +16339,16 @@ export function createWorldScene({
   const CAMPFIRE_FIRE_LEVEL_PER_CENTURY = 0.35;
   const CAMPFIRE_MAX_FIRE_LEVEL = 5.4;
   let fireLevel = CAMPFIRE_BASE_FIRE_LEVEL;
-  // Reduced-motion visitors skip animated callbacks entirely, so establish
-  // the full three-times-larger baseline here as well as in the flicker loop.
-  // The earlier height-only cone read like a candle; the restored blaze is
-  // broad as well as tall.
-  flame.scale.set(
+  // Reduced-motion visitors skip animated callbacks, so establish a complete
+  // static procedural blaze before the first roster update.
+  proceduralFire.scale.set(
     CAMPFIRE_BASE_FIRE_LEVEL,
     CAMPFIRE_BASE_FIRE_LEVEL,
     CAMPFIRE_BASE_FIRE_LEVEL,
   );
-  flame.position.y =
-    FLAME_BASE_Y + (FLAME_HEIGHT * CAMPFIRE_BASE_FIRE_LEVEL) / 2;
-  innerFlame.scale.set(
-    CAMPFIRE_BASE_FIRE_LEVEL * 0.82,
-    CAMPFIRE_BASE_FIRE_LEVEL * 0.9,
-    CAMPFIRE_BASE_FIRE_LEVEL * 0.82,
-  );
-  innerFlame.position.y =
-    INNER_FLAME_BASE_Y +
-    (INNER_FLAME_HEIGHT * CAMPFIRE_BASE_FIRE_LEVEL * 0.9) / 2;
   const fireLight = new THREE.PointLight("#ffa14d", 3.2, 14, 1.8);
   fireLight.position.y = FLAME_BASE_Y + FLAME_HEIGHT * CAMPFIRE_BASE_FIRE_LEVEL * 0.5;
+  fireLight.castShadow = false;
   campfire.add(fireLight);
   // The membership total rides in the flames themselves rather than on yet
   // another sign: an ember-lit numeral hovering over the pit, so the fire
@@ -16134,16 +16460,10 @@ export function createWorldScene({
     );
     fireLight.distance = 16 + Math.min(fireCenturies, 7) * 2.4;
     if (reducedMotion) {
-      const staticSize = fireLevel;
-      flame.scale.set(staticSize, fireLevel, staticSize);
-      innerFlame.scale.set(
-        staticSize * 0.82,
-        fireLevel * 0.9,
-        staticSize * 0.82,
-      );
-      flame.position.y = FLAME_BASE_Y + (FLAME_HEIGHT * fireLevel) / 2;
-      innerFlame.position.y =
-        INNER_FLAME_BASE_Y + (INNER_FLAME_HEIGHT * fireLevel * 0.9) / 2;
+      const fireGrowth = fireLevel / CAMPFIRE_BASE_FIRE_LEVEL;
+      const fireWidthScale =
+        CAMPFIRE_BASE_FIRE_LEVEL * (1 + (fireGrowth - 1) * 0.32);
+      proceduralFire.scale.set(fireWidthScale, fireLevel, fireWidthScale);
       memberCountSprite.position.y =
         MEMBER_COUNT_HOVER_Y +
         FLAME_HEIGHT * Math.max(0, fireLevel - CAMPFIRE_BASE_FIRE_LEVEL);
@@ -16154,20 +16474,62 @@ export function createWorldScene({
     }
   }
   animated.push((time) => {
-    const flicker = 1 + Math.sin(time * 0.011) * 0.12 + Math.sin(time * 0.023) * 0.06;
-    // Keep the restored fire broad and full; every axis begins at the same
-    // three-times baseline, then the two cones flicker independently.
-    const size = fireLevel * flicker;
-    const height = fireLevel * (1 + Math.sin(time * 0.017) * 0.16);
-    flame.scale.set(size, height, size);
-    innerFlame.scale.set(size * 0.82, height * 0.9, size * 0.82);
-    // Keep both cones standing on the logs as they grow, instead of letting a
-    // taller flame sink half of its extra height under the pit.
-    flame.position.y = FLAME_BASE_Y + (FLAME_HEIGHT * height) / 2;
-    innerFlame.position.y =
-      INNER_FLAME_BASE_Y + (INNER_FLAME_HEIGHT * height * 0.9) / 2;
-    fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
-    fireLight.position.y = FLAME_BASE_Y + FLAME_HEIGHT * fireLevel * 0.5;
+    const seconds = time * 0.001;
+    const slowFlicker = Math.sin(time * 0.0073 + Math.sin(time * 0.0011) * 1.7);
+    const fastFlicker = Math.sin(time * 0.0197 + Math.sin(time * 0.0043) * 2.2);
+    const sparkFlicker = Math.sin(time * 0.0431 + Math.sin(time * 0.0127));
+    const flicker = 1 + slowFlicker * 0.075 + fastFlicker * 0.04;
+    // A milestone fire grows mostly upward: widening it at the same rate would
+    // push the flames out past their own stone ring.
+    const fireGrowth = fireLevel / CAMPFIRE_BASE_FIRE_LEVEL;
+    const fireWidthScale =
+      CAMPFIRE_BASE_FIRE_LEVEL * (1 + (fireGrowth - 1) * 0.32);
+    proceduralFire.scale.set(
+      fireWidthScale * flicker,
+      fireLevel * (1 + slowFlicker * 0.055 + fastFlicker * 0.025),
+      fireWidthScale * flicker,
+    );
+    proceduralFire.userData.flameMaterials.forEach((material, index) => {
+      material.uniforms.uTime.value = seconds + index * 0.17;
+    });
+    proceduralFire.userData.emberMaterial.uniforms.uTime.value = seconds;
+    proceduralFire.userData.emberMaterial.uniforms.uHeight.value =
+      Math.min(1.7, fireGrowth);
+    proceduralFire.userData.smokePuffs.forEach((puff, index) => {
+      const seed = puff.userData.smokeSeed;
+      const phase = puff.userData.smokePhase;
+      const age = (seconds * (0.09 + seed * 0.025) + seed) % 1;
+      const smokeScale = 0.42 + age * (1.15 + seed * 0.55);
+      puff.position.set(
+        Math.sin(seconds * 0.54 + phase) * age * 0.48,
+        1.55 + age * (2.15 + fireGrowth * 0.45),
+        Math.cos(seconds * 0.39 + phase * 1.4) * age * 0.32,
+      );
+      puff.scale.set(smokeScale, smokeScale * 1.18, 1);
+      const smokeFadeIn = clamp(age / 0.18, 0, 1);
+      const smokeFadeOut = 1 - clamp((age - 0.48) / 0.52, 0, 1);
+      puff.material.uniforms.uOpacity.value =
+        0.105 * smokeFadeIn * smokeFadeIn * smokeFadeOut * smokeFadeOut;
+      puff.rotation.z = Math.sin(seconds * 0.21 + phase) * 0.3;
+    });
+    proceduralFire.userData.groundGlow.material.uniforms.uOpacity.value =
+      0.28 + slowFlicker * 0.035 + fastFlicker * 0.018;
+    burningLogs.children.forEach((child) => {
+      const phase = child.userData.glowingCoalPhase;
+      if (phase === undefined || !child.material?.emissive) return;
+      child.material.emissiveIntensity =
+        2.15 + Math.sin(time * 0.009 + phase) * 0.55 + sparkFlicker * 0.18;
+    });
+    fireLight.intensity =
+      3.2 * fireLevel +
+      slowFlicker * 0.65 +
+      fastFlicker * 0.36 +
+      sparkFlicker * 0.16;
+    fireLight.position.set(
+      Math.sin(time * 0.0041 + fastFlicker) * 0.13,
+      FLAME_BASE_Y + FLAME_HEIGHT * fireLevel * 0.5 + slowFlicker * 0.09,
+      Math.sin(time * 0.0033 + slowFlicker * 1.4) * 0.11,
+    );
     // Rides above the flames, rising with them so a bigger fire never reaches
     // up into the number.
     memberCountSprite.position.y =
