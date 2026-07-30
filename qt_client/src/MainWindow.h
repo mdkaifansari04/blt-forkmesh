@@ -1123,6 +1123,18 @@ private:
     void revokeMcpConnector();
     void testMcpConnector();
     QString mcpServerScriptPath() const;
+    // Genie (adhoc #42): start an agent wired to the website's remote MCP
+    // server so it works the organization's shared task list on its own.
+    // startGenieAgent() launches the run from the quick-add bar's "genie"
+    // button; genieSetupPrompt() builds the paste block the website generates
+    // (MCP config + the workflow the agent must follow); applyGenieTaskTitle()
+    // watches the transcript for the task the agent announced and retitles the
+    // live session with it.
+    void startGenieAgent();
+    QString genieSetupPrompt(const QString &extraInstruction) const;
+    QUrl genieMcpUrl() const;
+    void applyGenieTaskTitle(int sessionId, const QString &assistantText);
+    void saveGenieSettings();
     // Settings -> Quick Setup tab: provision a fresh instance in one pass —
     // identity, workflow credentials and world appearance applied together.
     QWidget *buildQuickSetupTab();
@@ -3843,7 +3855,9 @@ private:
     // switcher shows its favicon in the dropdown itself instead of a caption).
     QLabel *m_nodeLabel = nullptr;
     QLabel *m_repoLabel = nullptr;
-    QLabel *m_navNodeName = nullptr;     // "user/node" beside the balance
+    // The "user/node" caption ("jett/forkmesh") that used to sit between the
+    // relay switcher and the balance is gone (adhoc #42): the top bar names the
+    // relay and the wallet, not who you are — that's the avatar's job.
     QLabel *m_navSolanaBalance = nullptr;
     // Super-tiny Claude Code and Codex usage charts in the top-right cluster
     // (issue #266): two horizontal bars (5-hour + weekly) sitting beside the
@@ -4405,6 +4419,10 @@ private:
     // sends the typed prompt as a follow-up message to the currently-selected
     // agent session instead of the quick-add issue/new-agent flow.
     QPushButton *m_quickAddSendToAgentButton = nullptr;
+    // "genie" (adhoc #42), stacked above "add" and "new": starts an agent wired
+    // to the website's remote MCP server so it picks its own work off the
+    // organization's shared task list instead of running a typed prompt.
+    QPushButton *m_quickAddGenieButton = nullptr;
     // Plain "start a new agent" send button next to it (adhoc #89): tracked as a
     // member (rather than a local in setupQuickAdd) so updateQuickAddEnterTarget
     // can restyle it as the two selected/deselected agent detail changes which of
@@ -4846,6 +4864,12 @@ private:
     // The probe subprocess for "Test connection". Owned so a second click (or
     // closing the app) never leaves a stray python3 behind.
     QProcess *m_mcpTestProcess = nullptr;
+    // Genie (adhoc #42): the website's remote-MCP credentials, edited in the
+    // same Settings → MCP page and used by the quick-add bar's "genie" button.
+    QLineEdit *m_genieTokenEdit = nullptr;
+    QLineEdit *m_genieOrgEdit = nullptr;
+    QComboBox *m_genieWorkflowCombo = nullptr;
+    QLabel *m_genieStatusLabel = nullptr;
     QTableWidget *m_commitsTable = nullptr;
     // What the commit table currently shows, so a repeat tab click (or the
     // redundant load when a repo first opens) can skip the full rebuild — 4 git
