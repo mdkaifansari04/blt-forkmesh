@@ -33891,8 +33891,6 @@ async def _org_bot_token_context(env, request, touch=False):
     method = method_name(request)
     if method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
         method = "GET"
-    # Append one metadata-only use record after successful credential
-    # validation. Never store the secret, query, body, address, or user agent.
     await d1_run(
         env,
         "INSERT INTO org_bot_token_usage "
@@ -34140,16 +34138,7 @@ async def bot_session_handler(env, request):
     }, cache_control="no-store")
 
 
-# --- Organization-scoped Claude/Codex bots ---------------------------------
-#
-# This is intentionally NOT an authorization shortcut into repo_agents. Those
-# rows remain owner-device E2EE. Organization bots have their own encrypted-at-
-# rest session/job tables, are visible and controllable only by current members
-# of the organization's Engineering team, and execute only after the selected
-# mirror runs a tool-free Claude Haiku safety preflight.
 ORG_AGENT_PROVIDERS = ("claude-code", "codex")
-# The task board dispatches one general bot. "agent" asks the Worker to pick
-# whichever supported runtime has an eligible mirror online right now.
 ORG_AGENT_GENERAL_PROVIDERS = ("agent", "bot", "auto")
 ORG_AGENT_MODEL_ALIASES = {
     "claude-code": {
