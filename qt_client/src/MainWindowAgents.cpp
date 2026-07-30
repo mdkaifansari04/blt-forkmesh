@@ -369,8 +369,8 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
 {
     cell->setData(Qt::DisplayRole, s.id);
     cell->setData(Qt::UserRole, s.id);
-    // Status glyph (issue #108): an orange spinner while running
-    // (adhoc #23), a purple merge mark once it lands, a green check on success, a
+    // Status glyph (issue #108): a blue spinner while running
+    // (adhoc #23/#50), a purple merge mark once it lands, a green check on success, a
     // red stop sign when halted, an orange hand while it waits on the user, and a
     // red X circle on failure (issue #322). The running glyph is seeded at frame 0
     // here;
@@ -485,6 +485,23 @@ QString agentSpeedText(const AgentSession &s, qint64 tokens)
 // time, so thinking and tool calls drag the average down), which is the point:
 // the lights should still visibly differentiate an ordinary run from a fast one.
 constexpr double kAgentFastTokensPerSecond = 30.0;
+
+// How far a running session's "sync" spinner turns per animation tick (adhoc
+// #50): the glyph spins at the speed the model is actually producing, from a
+// slow turn on a barely-emitting run up to a fast one at
+// kAgentFastTokensPerSecond, on the same 0..1 throughput scale the fleet
+// matrix's activity lights use. A session with no rate yet still creeps, so a
+// just-started run never reads as frozen. Degrees are per kAgentSpinTickMs tick.
+constexpr double kAgentSpinSlowDegrees = 12.0;  // ~0.55 rev/s
+constexpr double kAgentSpinFastDegrees = 66.0;  // ~3.0 rev/s
+
+double agentSpinStepDegrees(const AgentSession &s, qint64 tokens)
+{
+    const double throughput = qBound(
+        0.0, agentTokensPerSecond(s, tokens) / kAgentFastTokensPerSecond, 1.0);
+    return kAgentSpinSlowDegrees +
+           throughput * (kAgentSpinFastDegrees - kAgentSpinSlowDegrees);
+}
 
 // Compact at-a-glance summary of what an agent changed (issue #170): the number
 // of files its captured patch touched, plus how far its branch sits ahead of /
@@ -6508,7 +6525,7 @@ void MainWindow::switchToAgentsTab(int sessionId)
 // Rebuild the footer "Agents:" status strip (adhoc #111) from m_agentSessions:
 // one small status glyph per known session (adhoc #114 swapped the plain
 // colored dots for the same icon set the Agents table's Status column uses —
-// an orange spinner while running, purple merge mark once landed, orange hand
+// a blue spinner while running, purple merge mark once landed, orange hand
 // while waiting, etc — via agentStatusOcticon), click-through to that
 // session's Agents tab. Called after every reloadAgents() so the strip tracks
 // the same data as the Agents table.
@@ -6549,6 +6566,8 @@ void MainWindow::refreshAgentStatusRow()
         // spins them the same way animateRunningAgentIcons() spins the table.
         dot->setIcon(agentStatusOcticon(session, 14));
         dot->setProperty("agentStatusSpin", running);
+        // animateAgentStatusIcons() needs the session back to read its tok/s.
+        dot->setProperty("agentSessionId", session.id);
         anyRunning = anyRunning || running;
         const QString label = session.issueNumber > 0
             ? QStringLiteral("#%1 %2").arg(session.issueNumber).arg(session.issueTitle)
@@ -6580,27 +6599,34 @@ void MainWindow::refreshAgentStatusRow()
                     &MainWindow::animateAgentStatusIcons);
         }
         if (!m_agentStatusSpinTimer->isActive())
-            m_agentStatusSpinTimer->start(120);
+            m_agentStatusSpinTimer->start(kAgentSpinTickMs);
     } else if (m_agentStatusSpinTimer) {
         m_agentStatusSpinTimer->stop();
     }
 }
 
-// Spin the orange "sync" glyph on every running icon in the footer "Agents:"
+// Spin the blue "sync" glyph on every running icon in the footer "Agents:"
 // strip (adhoc #114), mirroring animateRunningAgentIcons()'s treatment of the
-// Agents table. Driven by m_agentStatusSpinTimer, which only ticks while at
-// least one session in the strip is running (see refreshAgentStatusRow).
+// Agents table — each dot at its own session's tok/s (adhoc #50). Driven by
+// m_agentStatusSpinTimer, which only ticks while at least one session in the
+// strip is running (see refreshAgentStatusRow).
 void MainWindow::animateAgentStatusIcons()
 {
     if (!m_agentStatusIconsLayout)
         return;
-    m_agentStatusSpinFrame = (m_agentStatusSpinFrame + 1) % 10;
-    const QIcon icon(rotatedTintedOcticonPixmap(
-        "sync", QColor(Theme::kRunning), 14, m_agentStatusSpinFrame * 36.0));
     for (int i = 0; i < m_agentStatusIconsLayout->count(); ++i) {
         QWidget *w = m_agentStatusIconsLayout->itemAt(i)->widget();
-        if (w && w->property("agentStatusSpin").toBool())
-            static_cast<QPushButton *>(w)->setIcon(icon);
+        if (!w || !w->property("agentStatusSpin").toBool())
+            continue;
+        const int sessionId = w->property("agentSessionId").toInt();
+        const AgentSession *s = findAgentSession(sessionId);
+        if (!s)
+            continue;
+        double &angle = m_agentStatusSpinAngles[sessionId];
+        angle = std::fmod(angle + agentSpinStepDegrees(*s, sessionTokenTotal(*s)),
+                          360.0);
+        static_cast<QPushButton *>(w)->setIcon(QIcon(rotatedTintedOcticonPixmap(
+            "sync", QColor(Theme::kRunning), 14, angle)));
     }
 }
 
@@ -9008,15 +9034,19 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
     m_agentStatusPill->setText(pill);
 }
 
-// Spin the orange "sync" glyph on every running row's "#" cell so the agents
+// Spin the blue "sync" glyph on every running row's "#" cell so the agents
 // list shows a live spinner (issue #108). Driven by m_agentsSpinTimer, which only
 // ticks while a session is running, so finished rows keep their static icon.
+// Each row spins at its own session's tok/s (adhoc #50), so a fast run visibly
+// outruns a slow one instead of every row turning in lockstep.
 void MainWindow::animateRunningAgentIcons()
 {
     if (!m_agentTable)
         return;
-    const QIcon icon(rotatedTintedOcticonPixmap(
-        "sync", QColor(Theme::kRunning), 14, m_agentsSpinFrame * 36.0));
+    // The spinner ticks faster than the header's run stats need to, so the meta
+    // refresh below keeps its old ~120ms cadence instead of riding every frame.
+    ++m_agentSpinTicks;
+    const bool refreshMeta = m_agentSpinTicks % 2 == 0;
     QSignalBlocker block(m_agentTable);
     for (int r = 0; r < m_agentTable->rowCount(); ++r) {
         QTableWidgetItem *idItem = m_agentTable->item(r, kAgentIdColumn);
@@ -9027,12 +9057,16 @@ void MainWindow::animateRunningAgentIcons()
             continue;
         // The spinner sits on the "#" cell (adhoc #29 — see applyAgentRowCells for
         // the column layout).
-        idItem->setIcon(icon);
+        double &angle = m_agentRowSpinAngles[s->id];
+        angle = std::fmod(angle + agentSpinStepDegrees(*s, sessionTokenTotal(*s)),
+                          360.0);
+        idItem->setIcon(QIcon(rotatedTintedOcticonPixmap(
+            "sync", QColor(Theme::kRunning), 14, angle)));
         // Tick the detail header's run stats (elapsed time, and the live tok/s
         // figure whose run duration grows against the wall clock — issue #245,
         // moved here from the table by adhoc #35) for the open session — meta
         // only, so the live transcript isn't rebuilt every second.
-        if (s->id == m_selectedAgentSessionId)
+        if (refreshMeta && s->id == m_selectedAgentSessionId)
             refreshAgentDetailMeta(s->id);
     }
 }
