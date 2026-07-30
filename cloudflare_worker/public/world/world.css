@@ -2629,34 +2629,6 @@ forkmesh-world.world-admin-error-arrival::after {
   font-family: "ForkMesh Mono", ui-monospace, monospace;
 }
 
-.world-capacity-table .world-capacity-share {
-  width: 42%;
-  min-width: 140px;
-  font-family: "ForkMesh Mono", ui-monospace, monospace;
-  white-space: nowrap;
-}
-
-.world-capacity-share-bar {
-  display: inline-block;
-  width: min(150px, 68%);
-  height: 7px;
-  margin-right: 8px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--detail-color) 14%, transparent);
-  vertical-align: middle;
-}
-
-.world-capacity-share-bar::before {
-  display: block;
-  width: calc(var(--row-share) * 100%);
-  min-width: 2px;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--detail-color);
-  content: "";
-}
-
 .world-capacity-table thead th {
   position: sticky;
   top: 0;

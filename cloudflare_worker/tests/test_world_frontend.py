@@ -2354,12 +2354,7 @@ def test_system_capacity_scene_combines_service_limits_and_database_rows():
 def test_infrastructure_floor_has_opt_in_local_redacted_console_display():
     assert '"forkmesh-infrastructure-local-console"' in SCENE
     assert '"infrastructure-console-switch"' in SCENE
-    assert '"LOCAL CONSOLE · STREAMING"' in SCENE
-    assert '"GLOBAL CACHE · LIVE DIAGNOSTICS"' in SCENE
-    assert '"CACHE API PAYLOADS · SPARSE KV HEALTH SNAPSHOT · NO PRIVATE DATA"' in SCENE
-    assert "setInfrastructureCacheDiagnostics" in SCENE
-    assert "refreshInfrastructureCacheDiagnostics()" in APP
-    assert '"/api/world/cache-diagnostics"' in APP
+    assert '`LOCAL CONSOLE · ${enabled ? "STREAMING" : "OFF"}`' in SCENE
     assert "THIS SCREEN ONLY · BOUNDED + REDACTED · NOT SENT OR SAVED" in SCENE
     assert "setInfrastructureConsoleLogs" in SCENE
     assert "setInfrastructureConsoleEnabled(enabled)" in APP
@@ -2375,27 +2370,6 @@ def test_infrastructure_floor_has_opt_in_local_redacted_console_display():
     assert "metricsSignature" in SCENE
     assert "metricsSignature === signature" in SCENE
     assert "updateSystemCapacity," in SCENE
-    # The old rows of oversized decorative server-rack boxes blocked the
-    # database and diagnostics exhibits without conveying live information.
-    assert "side * 50" not in SCENE
-    assert "new THREE.BoxGeometry(10, 5.8, 5.2)" not in SCENE
-
-
-def test_world_public_hot_reads_reuse_bounded_in_memory_snapshots():
-    for path in (
-        "/api/network/overview",
-        "/api/world/instances",
-        "/api/version",
-        "/api/world/fediverse",
-        "/api/world/inactive",
-        "/api/world/events",
-        "/api/world/fediverse-mentions",
-        "/api/accounts/users",
-    ):
-        offset = APP.index(f'"{path}"')
-        request = APP[offset : offset + 240]
-        assert "maxAge:" in request
-        assert "staleIfError: true" in request
 
 
 def test_system_capacity_tables_open_a_sortable_scrollable_panel():

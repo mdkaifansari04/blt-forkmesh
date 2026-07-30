@@ -170,13 +170,6 @@ FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 [ai]
 binding = "AI"
 
-# Public payloads stay in the Cache API. This namespace stores one bounded,
-# content-free cache-health snapshot every ten minutes for the Infrastructure
-# floor; it never stores response bodies, identities, cache keys, or secrets.
-[[kv_namespaces]]
-binding = "WORLD_CACHE_META"
-id = "3fbdd29f5d8b43ef9ae6754225ac651c"
-
 [[durable_objects.bindings]]
 name = "FORKMESH_MAINNODE_ROOM"
 class_name = "ForkMeshRoom"
