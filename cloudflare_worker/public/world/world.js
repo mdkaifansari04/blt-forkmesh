@@ -2110,6 +2110,19 @@ function formatBytes(value) {
   return `${scaled >= 10 ? scaled.toFixed(0) : scaled.toFixed(1)} ${units[index]}`;
 }
 
+function formatPlatformLimitBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1000) return `${Math.round(bytes)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let scaled = bytes / 1000;
+  let index = 0;
+  while (scaled >= 1000 && index < units.length - 1) {
+    scaled /= 1000;
+    index += 1;
+  }
+  return `${scaled >= 10 ? scaled.toFixed(0) : scaled.toFixed(1)} ${units[index]}`;
+}
+
 function safeRepositoryTreePath(value) {
   const path = String(value || "");
   if (!path || path.length > 1000 || /[\u0000-\u001f\u007f]/u.test(path)) {
@@ -5021,6 +5034,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldLimits = null;
     this.systemCapacityTables = [];
     this.systemCapacityDurableObjects = [];
+    this.systemCapacityDatabase = {};
     this.systemCapacityFocus = "";
     this.systemCapacitySort = { key: "rowCount", direction: "desc" };
     this.buildBoardTimer = 0;
@@ -7747,6 +7761,25 @@ class ForkMeshWorld extends HTMLElement {
           .filter(Boolean)
           .slice(0, 256)
       : [];
+    const d1Storage = ticket?.systemCapacity?.d1Storage;
+    this.systemCapacityDatabase =
+      d1Storage && typeof d1Storage === "object"
+        ? {
+            bytes: Math.max(0, Number(d1Storage.bytes) || 0),
+            freeDatabaseLimitBytes: Math.max(
+              0,
+              Number(d1Storage.freeDatabaseLimitBytes) || 0,
+            ),
+            paidDatabaseLimitBytes: Math.max(
+              0,
+              Number(d1Storage.paidDatabaseLimitBytes) || 0,
+            ),
+            includedAccountStorageBytes: Math.max(
+              0,
+              Number(d1Storage.includedAccountStorageBytes) || 0,
+            ),
+          }
+        : {};
     // Bindings are discovered by the Worker from its own environment, so a
     // newly bound Durable Object class appears here without a client change.
     this.systemCapacityDurableObjects = Array.isArray(
@@ -11032,7 +11065,13 @@ class ForkMeshWorld extends HTMLElement {
     if (!this.world?.updateSystemCapacity) return;
     const limits = this.worldLimits;
     const detected = this.systemCapacityDurableObjects;
-    if (!limits && !this.systemCapacityTables.length && !detected.length) {
+    const databaseBytes = Number(this.systemCapacityDatabase?.bytes) || 0;
+    if (
+      !limits &&
+      !this.systemCapacityTables.length &&
+      !detected.length &&
+      databaseBytes <= 0
+    ) {
       this.world.updateSystemCapacity([]);
       return;
     }
@@ -11054,6 +11093,7 @@ class ForkMeshWorld extends HTMLElement {
     this.world.updateSystemCapacity({
       objects,
       tables: this.systemCapacityTables,
+      database: this.systemCapacityDatabase,
     });
   }
 
@@ -14299,6 +14339,31 @@ class ForkMeshWorld extends HTMLElement {
           left.name.localeCompare(right.name),
     );
     const totalRows = tables.reduce((sum, entry) => sum + entry.rowCount, 0);
+    const databaseBytes = Math.max(
+      0,
+      Number(this.systemCapacityDatabase?.bytes) || 0,
+    );
+    const freeDatabaseLimitBytes = Math.max(
+      0,
+      Number(this.systemCapacityDatabase?.freeDatabaseLimitBytes) || 0,
+    );
+    const paidDatabaseLimitBytes = Math.max(
+      0,
+      Number(this.systemCapacityDatabase?.paidDatabaseLimitBytes) || 0,
+    );
+    const storageSummary = freeDatabaseLimitBytes
+      ? `${formatBytes(databaseBytes)} stored · ${(
+          (databaseBytes / freeDatabaseLimitBytes) *
+          100
+        ).toFixed(2)}% of ${formatPlatformLimitBytes(
+          freeDatabaseLimitBytes,
+        )} Free per-database limit · ${(
+          (databaseBytes / Math.max(1, paidDatabaseLimitBytes)) *
+          100
+        ).toFixed(3)}% of ${formatPlatformLimitBytes(
+          paidDatabaseLimitBytes,
+        )} Paid per-database limit.`
+      : "";
     const focus = this.systemCapacityFocus;
     const sortState = (column) =>
       key === column
@@ -14326,6 +14391,11 @@ class ForkMeshWorld extends HTMLElement {
               )} rows counted live from D1.`
             : "No table counts are available in this session."
         }</p>
+        ${
+          storageSummary
+            ? `<p class="world-capacity-summary">${escapeHTML(storageSummary)}</p>`
+            : ""
+        }
         <div class="world-capacity-scroll">
           <table class="world-capacity-table">
             <thead>

@@ -33,11 +33,23 @@ def test_system_capacity_uses_current_service_limits_and_admin_table_counts():
     assert "limits.worldConnections" in metrics
     assert "limits.chatConnections" in metrics
     assert "this.systemCapacityTables" in metrics
+    assert "this.systemCapacityDatabase" in metrics
     assert "this.world.updateSystemCapacity({" in metrics
     assert "tables: this.systemCapacityTables" in metrics
+    assert "database: this.systemCapacityDatabase" in metrics
     assert "Math.random" not in metrics
     assert "fetch(" not in metrics
     assert "fetchJSON" not in metrics
+
+
+def test_d1_table_display_shows_storage_against_free_and_paid_limits():
+    assert "ticket?.systemCapacity?.d1Storage" in APP
+    assert "freeDatabaseLimitBytes" in APP
+    assert "paidDatabaseLimitBytes" in APP
+    assert "Free per-database limit" in APP
+    assert "Paid per-database limit" in APP
+    assert 'storageLabel.name = "system-capacity-d1-storage"' in SCENE
+    assert "`D1 STORAGE ${formatCapacityBytes(databaseBytes)}`" in SCENE
 
 
 def test_infrastructure_display_adds_no_durable_object_polling():

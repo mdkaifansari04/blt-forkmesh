@@ -357,6 +357,7 @@ const SPRINT_KEYS = new Set(["ShiftLeft", "ShiftRight"]);
 const SYSTEM_CAPACITY_INFRASTRUCTURE_POSITION = Object.freeze([-24, 0, 7]);
 const INFRASTRUCTURE_CONSOLE_POSITION = Object.freeze([18, 0, -44.2]);
 const INFRASTRUCTURE_FOOTPRINT_POSITION = Object.freeze([-18, 0, -44.2]);
+const INFRASTRUCTURE_COMPONENTS_POSITION = Object.freeze([44.2, 0, -12]);
 const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0]);
 const ARRIVAL_GRID_BOUNDS = Object.freeze({
   minX: -10.8,
@@ -7932,6 +7933,130 @@ function createWorkerFootprintDisplay(THREE) {
   return display;
 }
 
+function workerComponentTexture(THREE, footprint = {}) {
+  const components = Array.isArray(footprint.components)
+    ? footprint.components.slice(0, 10)
+    : [];
+  const limits =
+    footprint.workerLimits && typeof footprint.workerLimits === "object"
+      ? footprint.workerLimits
+      : {};
+  const total = Math.max(
+    1,
+    components.reduce(
+      (sum, component) => sum + Math.max(0, Number(component.bytes) || 0),
+      0,
+    ),
+  );
+  const peak = Math.max(
+    1,
+    ...components.map((component) => Number(component.bytes) || 0),
+  );
+  return canvasTexture(THREE, 1800, 1100, (context) => {
+    context.fillStyle = "#07100e";
+    context.fillRect(0, 0, 1800, 1100);
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 16;
+    context.strokeRect(10, 10, 1780, 1080);
+    context.fillStyle = "#eafff5";
+    context.font = '800 58px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("WORKER COMPONENT MAP", 48, 72);
+    context.fillStyle = "#7eb5a7";
+    context.font = '600 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "BUILD-GENERATED SOURCE OWNERSHIP · CONCEPT GROUPS · EXACT BYTES",
+      50,
+      112,
+    );
+
+    components.forEach((component, index) => {
+      const y = 180 + index * 75;
+      const bytes = Math.max(0, Number(component.bytes) || 0);
+      const width = Math.max(5, (bytes / peak) * 750);
+      context.fillStyle =
+        index % 2 ? "rgba(10,35,31,0.78)" : "rgba(18,48,42,0.78)";
+      context.fillRect(40, y - 38, 1710, 62);
+      context.fillStyle = "#d4f3ec";
+      context.font = '700 23px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(String(component.name || "").slice(0, 32), 55, y);
+      context.fillStyle = index === 0 ? "#f7c96b" : "#4fcfa0";
+      context.fillRect(535, y - 27, width, 35);
+      context.textAlign = "right";
+      context.fillStyle = "#d4f3ec";
+      context.fillText(formatCapacityBytes(bytes), 1480, y);
+      context.fillStyle = "#8db5a8";
+      context.fillText(`${((bytes / total) * 100).toFixed(1)}%`, 1695, y);
+      context.textAlign = "left";
+    });
+
+    const constraintY = 910;
+    context.strokeStyle = "#21443a";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(50, constraintY - 35);
+    context.lineTo(1750, constraintY - 35);
+    context.stroke();
+    const constraints = [
+      `MEMORY ${formatPlatformLimitBytes(limits.memoryBytes)} (FREE + PAID)`,
+      `COMPRESSED BUNDLE ${formatPlatformLimitBytes(
+        limits.compressedBundleFreeBytes,
+      )} FREE / ${formatPlatformLimitBytes(
+        limits.compressedBundlePaidBytes,
+      )} PAID`,
+      `UNCOMPRESSED BUNDLE ${formatPlatformLimitBytes(
+        limits.uncompressedBundleBytes,
+      )}`,
+      `STARTUP ${Math.max(0, Number(limits.startupTimeMs) || 0)} MS`,
+    ];
+    constraints.forEach((line, index) => {
+      context.fillStyle = index === 1 ? "#f7c96b" : "#9ef7c6";
+      context.font = '750 22px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        line,
+        55 + (index % 2) * 860,
+        constraintY + Math.floor(index / 2) * 55,
+      );
+    });
+    context.fillStyle = "#73968c";
+    context.font = '600 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "SOURCE BARS ARE UNCOMPRESSED · BUNDLE CAPS APPLY AFTER GZIP",
+      55,
+      1055,
+    );
+  });
+}
+
+function createWorkerComponentDisplay(THREE) {
+  const display = new THREE.Group();
+  display.name = "forkmesh-infrastructure-worker-components";
+  display.userData.officeFloorId = "infrastructure";
+  const frame = new THREE.Mesh(
+    new THREE.BoxGeometry(25.8, 15.8, 0.45),
+    makeMaterial(THREE, "#173b32", {
+      emissive: "#25654d",
+      emissiveIntensity: 0.4,
+      metalness: 0.58,
+      roughness: 0.32,
+    }),
+  );
+  frame.position.y = 8.2;
+  display.add(frame);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(25.1, 15.1),
+    new THREE.MeshBasicMaterial({
+      map: workerComponentTexture(THREE, WORKER_FOOTPRINT),
+      toneMapped: false,
+    }),
+  );
+  face.name = "forkmesh-infrastructure-worker-components-face";
+  face.position.set(0, 8.2, 0.24);
+  display.add(face);
+  setShadows(display);
+  face.castShadow = false;
+  return display;
+}
+
 function engineeringDebugTexture(THREE, snapshot = {}) {
   const metrics = Array.isArray(snapshot.metrics) ? snapshot.metrics : [];
   const colorFor = (status) =>
@@ -8054,6 +8179,19 @@ function formatCapacityBytes(bytes) {
   const shown =
     scaled >= 100 || step === 0 ? Math.round(scaled) : scaled.toFixed(1);
   return `${shown} ${units[step]}`;
+}
+
+function formatPlatformLimitBytes(bytes) {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value < 1000) return `${Math.round(value)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let scaled = value / 1000;
+  let index = 0;
+  while (scaled >= 1000 && index < units.length - 1) {
+    scaled /= 1000;
+    index += 1;
+  }
+  return `${scaled >= 10 ? scaled.toFixed(0) : scaled.toFixed(1)} ${units[index]}`;
 }
 
 function systemCapacityMetricPairs(record) {
@@ -18431,6 +18569,12 @@ export function createWorldScene({
     ...INFRASTRUCTURE_FOOTPRINT_POSITION,
   );
   infrastructureFloor.add(workerFootprintDisplay);
+  const workerComponentDisplay = createWorkerComponentDisplay(THREE);
+  workerComponentDisplay.position.set(
+    ...INFRASTRUCTURE_COMPONENTS_POSITION,
+  );
+  workerComponentDisplay.rotation.y = -Math.PI / 2;
+  infrastructureFloor.add(workerComponentDisplay);
   const engineeringDebugPanel = createEngineeringDebugPanel(THREE);
   engineeringDebugPanel.position.set(
     31,
@@ -27706,6 +27850,19 @@ export function createWorldScene({
       .filter(Boolean)
       .slice(0, 32);
     const tables = Array.isArray(metrics?.tables) ? metrics.tables : [];
+    const database =
+      metrics?.database && typeof metrics.database === "object"
+        ? metrics.database
+        : {};
+    const databaseBytes = Math.max(0, Number(database.bytes) || 0);
+    const freeDatabaseLimitBytes = Math.max(
+      0,
+      Number(database.freeDatabaseLimitBytes) || 0,
+    );
+    const paidDatabaseLimitBytes = Math.max(
+      0,
+      Number(database.paidDatabaseLimitBytes) || 0,
+    );
     const safeTables = [
       ...new Map(
         tables
@@ -27732,6 +27889,11 @@ export function createWorldScene({
     const signature = JSON.stringify({
       objects: safeRecords,
       tables: safeTables,
+      database: {
+        bytes: databaseBytes,
+        freeDatabaseLimitBytes,
+        paidDatabaseLimitBytes,
+      },
     });
     if (
       systemCapacityPlatform.userData.metricsSignature === signature
@@ -27865,6 +28027,28 @@ export function createWorldScene({
         topLabel.rotation.x = -Math.PI / 2;
         tableLayer.add(topLabel);
       });
+      if (databaseBytes || freeDatabaseLimitBytes || paidDatabaseLimitBytes) {
+        const freeRatio = freeDatabaseLimitBytes
+          ? (databaseBytes / freeDatabaseLimitBytes) * 100
+          : 0;
+        const paidRatio = paidDatabaseLimitBytes
+          ? (databaseBytes / paidDatabaseLimitBytes) * 100
+          : 0;
+        const storageLabel = makeLabelSprite(
+          THREE,
+          `D1 STORAGE ${formatCapacityBytes(databaseBytes)}`,
+          `${freeRatio.toFixed(2)}% OF ${formatPlatformLimitBytes(
+            freeDatabaseLimitBytes,
+          )} FREE · ${paidRatio.toFixed(3)}% OF ${formatPlatformLimitBytes(
+            paidDatabaseLimitBytes,
+          )} PAID`,
+          freeRatio >= 85 ? "#ff9ca4" : "#9ef7c6",
+        );
+        storageLabel.name = "system-capacity-d1-storage";
+        storageLabel.scale.set(6.9, 1.15, 1);
+        storageLabel.position.set(0, 4.65, -3.15);
+        tableLayer.add(storageLabel);
+      }
       layer.add(tableLayer);
     }
 

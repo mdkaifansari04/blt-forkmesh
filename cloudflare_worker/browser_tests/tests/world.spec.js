@@ -82,6 +82,7 @@ async function prepareWorldPage(
     ticketActivity = null,
     directoryUsers = [],
     systemCapacityTables = [],
+    systemCapacityD1Storage = null,
     officeEntryRequests = [],
     officeFloorRequests = [],
     officeAttendanceRequests = [],
@@ -314,7 +315,9 @@ async function prepareWorldPage(
                     authenticated: true,
                     accountStatus: "Registered",
                     name: session.nodeName,
-                    isAdmin: systemCapacityTables.length > 0,
+                    isAdmin:
+                      systemCapacityTables.length > 0 ||
+                      Boolean(systemCapacityD1Storage),
                     ticket: "playwright-world-ticket",
                     expiresAt: FIXED_NOW + 300_000,
                     totalActiveMs: Math.max(
@@ -323,10 +326,13 @@ async function prepareWorldPage(
                     ),
                     activityObservedAt:
                       Number(ticketActivity?.activityObservedAt) || FIXED_NOW,
-                    ...(systemCapacityTables.length
+                    ...(systemCapacityTables.length || systemCapacityD1Storage
                       ? {
                           systemCapacity: {
                             tables: systemCapacityTables,
+                            ...(systemCapacityD1Storage
+                              ? { d1Storage: systemCapacityD1Storage }
+                              : {}),
                           },
                         }
                       : {}),
@@ -6194,6 +6200,12 @@ test("System Capacity fits one height-scaled bar per populated D1 table", async 
       { name: "repositories", rowCount: 27 },
       { name: "world_events", rowCount: 4096 },
     ],
+    systemCapacityD1Storage: {
+      bytes: 14_811_136,
+      freeDatabaseLimitBytes: 500_000_000,
+      paidDatabaseLimitBytes: 10_000_000_000,
+      includedAccountStorageBytes: 5_000_000_000,
+    },
   });
   await waitForWorld(page);
 
@@ -6209,6 +6221,15 @@ test("System Capacity fits one height-scaled bar per populated D1 table", async 
     );
     const footprintFace = shell.world.scene.getObjectByName(
       "forkmesh-infrastructure-worker-footprint-face",
+    );
+    const components = shell.world.scene.getObjectByName(
+      "forkmesh-infrastructure-worker-components",
+    );
+    const componentsFace = shell.world.scene.getObjectByName(
+      "forkmesh-infrastructure-worker-components-face",
+    );
+    const d1Storage = shell.world.scene.getObjectByName(
+      "system-capacity-d1-storage",
     );
     const bars = [];
     tableLayer?.traverse((object) => {
@@ -6230,6 +6251,12 @@ test("System Capacity fits one height-scaled bar per populated D1 table", async 
         width: footprintFace?.material?.map?.image?.width || 0,
         height: footprintFace?.material?.map?.image?.height || 0,
       },
+      components: {
+        floor: components?.userData.officeFloorId || "",
+        width: componentsFace?.material?.map?.image?.width || 0,
+        height: componentsFace?.material?.map?.image?.height || 0,
+      },
+      d1StorageVisible: Boolean(d1Storage),
       bars,
     };
   });
@@ -6241,6 +6268,12 @@ test("System Capacity fits one height-scaled bar per populated D1 table", async 
     width: 1800,
     height: 1100,
   });
+  expect(capacity.components).toEqual({
+    floor: "infrastructure",
+    width: 1800,
+    height: 1100,
+  });
+  expect(capacity.d1StorageVisible).toBe(true);
   expect(capacity.bars.map((bar) => bar.name).sort()).toEqual([
     "repositories",
     "users",

@@ -611,6 +611,14 @@ def _repository_import_module():
     import repository_imports
     return repository_imports
 
+
+def _world_infrastructure_module():
+    # Capacity inventory is administrator-only. Keep its grouping/measurement
+    # policy out of ordinary request startup and load it with the first admin
+    # World ticket.
+    import world_infrastructure
+    return world_infrastructure
+
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
 # the relay's ~1 MiB message cap.
@@ -5204,19 +5212,6 @@ WORLD_MANUAL_TOKEN_DAY_MS = 24 * 60 * 60 * 1000
 # somebody who selected "Away" while still walking around the world. A fresh
 # authenticated world visit resets this quiet-period clock.
 WORLD_INACTIVE_DELAY_MS = 15 * 60 * 1000
-# The platform-admin capacity card is deliberately metadata-only. Keep both the
-# number of sqlite_master rows and the resulting COUNT queries hard-bounded so a
-# ticket refresh cannot turn into an unbounded database-inspection endpoint.
-WORLD_SYSTEM_CAPACITY_MAX_TABLES = 256
-# Durable Object bindings are discovered from the runtime environment rather
-# than listed here, so the card stays truthful as classes are added; the cap
-# keeps an unexpectedly large environment from inflating the ticket.
-WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS = 32
-WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS = 9_007_199_254_740_991
-WORLD_SYSTEM_CAPACITY_TABLE_RE = re.compile(
-    r"[A-Za-z_][A-Za-z0-9_]{0,127}")
-
-
 def _world_ticket_signature(env, payload):
     return hmac.new(
         _account_session_secret(env),
@@ -5455,102 +5450,25 @@ async def _world_account_claim(env, request, data=None):
 
 
 async def _world_system_capacity(env):
-    """Return bounded, content-free D1 table counts for platform admins."""
-    rows = await d1_all(
-        env,
-        "SELECT name FROM sqlite_master WHERE type='table' "
-        "AND substr(lower(name),1,7)!='sqlite_' "
-        "AND substr(lower(name),1,4)!='_cf_' "
-        "ORDER BY name LIMIT ?",
-        WORLD_SYSTEM_CAPACITY_MAX_TABLES,
-    )
-    capacity = []
-    for row in rows or []:
-        raw_name = row.get("name") if isinstance(row, dict) else None
-        if not isinstance(raw_name, str):
-            continue
-        name = raw_name.strip()
-        lowered = name.lower()
-        # Names originate in sqlite_master and are then restricted to the
-        # application's conventional identifier grammar before interpolation.
-        # Quotes, whitespace, SQL punctuation, and D1 internal tables therefore
-        # never reach the COUNT statement.
-        if (
-            name != raw_name
-            or lowered.startswith(("sqlite_", "_cf_"))
-            or not WORLD_SYSTEM_CAPACITY_TABLE_RE.fullmatch(name)
-        ):
-            continue
-        try:
-            count_row = await d1_first(
-                env,
-                'SELECT COUNT(*) AS row_count FROM "' + name + '"',
-            )
-            row_count = int((count_row or {}).get("row_count", 0) or 0)
-        except Exception:
-            # A table can disappear during a rolling migration. Skip that
-            # table rather than breaking the short-lived world ticket.
-            continue
-        # Every table is reported, including the empty and single-row ones:
-        # a table that holds nothing yet is part of the platform's shape, and
-        # hiding it made the inventory look far smaller than the database is.
-        if 0 <= row_count <= WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS:
-            capacity.append({"name": name, "rowCount": row_count})
-    return capacity
+    """Delegate the bounded table inventory to its infrastructure module."""
+    return await _world_infrastructure_module().d1_table_inventory(
+        env, d1_all, d1_first)
+
+
+async def _world_d1_storage(env):
+    """Return current D1 bytes alongside documented Free/Paid limits."""
+    return await _world_infrastructure_module().d1_storage_usage(env)
 
 
 async def _world_durable_objects(env):
-    """Auto-detected Durable Object bindings with their relayed byte totals.
-
-    The binding list comes from the runtime environment, so a newly bound
-    class shows up on the System Capacity platform without a code change here.
-    Totals are content-free: bytes and frame counts relayed per class, with no
-    room key, account, peer id, or payload.
-    """
-    bindings = durable_object_bindings(env)
-    if not bindings:
-        return []
-    totals = {}
-    try:
-        rows = await d1_all(
-            env,
-            "SELECT binding, bytes_in, bytes_out, messages, updated_at "
-            "FROM durable_object_traffic ORDER BY binding LIMIT ?",
-            WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS,
-        )
-    except Exception:
-        # The counter table is optional (a rolling migration may not have
-        # created it yet). Bindings are still discovered and reported at zero.
-        rows = []
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        totals[str(row.get("binding") or "")] = row
-
-    def _count(row, field):
-        try:
-            value = int(row.get(field) or 0)
-        except (TypeError, ValueError):
-            return 0
-        return max(0, min(value, DURABLE_OBJECT_TRAFFIC_MAX))
-
-    objects = []
-    for binding in bindings[:WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS]:
-        row = totals.get(binding) or {}
-        bytes_in = _count(row, "bytes_in")
-        bytes_out = _count(row, "bytes_out")
-        objects.append({
-            "id": binding,
-            "binding": binding,
-            "name": durable_object_label(binding),
-            "bytesIn": bytes_in,
-            "bytesOut": bytes_out,
-            "bytesTotal": min(
-                bytes_in + bytes_out, DURABLE_OBJECT_TRAFFIC_MAX),
-            "messages": _count(row, "messages"),
-            "updatedAt": _count(row, "updated_at"),
-        })
-    return objects
+    """Delegate the Durable Object projection to the infrastructure module."""
+    return await _world_infrastructure_module().durable_object_inventory(
+        env,
+        d1_all,
+        durable_object_bindings,
+        durable_object_label,
+        DURABLE_OBJECT_TRAFFIC_MAX,
+    )
 
 
 async def world_ticket_handler(env, request):
@@ -5647,12 +5565,16 @@ async def world_ticket_handler(env, request):
             response_data["systemCapacity"] = {
                 "tables": await _world_system_capacity(env),
                 "durableObjects": await _world_durable_objects(env),
+                "d1Storage": await _world_d1_storage(env),
             }
         except Exception:
             # Capacity telemetry is optional; authentication and multiplayer
             # entry continue to work while D1 is unavailable or migrating.
             response_data["systemCapacity"] = {
-                "tables": [], "durableObjects": []}
+                "tables": [],
+                "durableObjects": [],
+                "d1Storage": {},
+            }
     return json_response(
         response_data,
         cache_control="no-store, max-age=0, must-revalidate",

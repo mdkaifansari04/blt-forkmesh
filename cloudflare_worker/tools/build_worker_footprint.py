@@ -10,7 +10,52 @@ SRC = ROOT / "src"
 PUBLIC = ROOT / "public"
 VENDORED = ROOT / "python_modules"
 OUTPUT = PUBLIC / "world" / "worker-footprint.js"
-LAZY_MODULES = {"repository_imports.py"}
+LAZY_MODULES = {"repository_imports.py", "world_infrastructure.py"}
+WORKER_LIMITS = {
+    "memoryBytes": 128_000_000,
+    "compressedBundleFreeBytes": 3_000_000,
+    "compressedBundlePaidBytes": 10_000_000,
+    "uncompressedBundleBytes": 64_000_000,
+    "startupTimeMs": 1000,
+}
+
+
+def _component_for(name):
+    """Group source modules into stable architectural concepts."""
+    if name == "entry.py":
+        return "Worker routing + runtime"
+    if name.startswith("world"):
+        return "World + Office"
+    if name.startswith(("activitypub", "fediverse")):
+        return "Fediverse"
+    if name.startswith(("organization", "chat_")):
+        return "Organizations + chat"
+    if name in {
+        "catalog.py",
+        "edge_routing.py",
+        "git_http.py",
+        "mirrors.py",
+        "pull_badge.py",
+        "releases.py",
+        "repository_imports.py",
+    }:
+        return "Repositories + mirrors"
+    if name in {
+        "badges.py",
+        "reward_policy.py",
+        "security_controls.py",
+        "security_scan_ingest.py",
+        "solana.py",
+        "ssh_keys.py",
+    }:
+        return "Identity + security"
+    if name.startswith("community_") or name in {
+        "blog_feed.py",
+        "contributions.py",
+        "og_card.py",
+    }:
+        return "Community + publishing"
+    return "Platform + build"
 
 
 def _files(root, pattern="*"):
@@ -38,6 +83,18 @@ def footprint():
         item["bytes"] for item in modules if item["phase"] == "on-demand"
     )
     vendored_bytes = sum(path.stat().st_size for path in vendored_files)
+    component_totals = {}
+    for item in modules:
+        component = _component_for(item["name"])
+        component_totals[component] = (
+            component_totals.get(component, 0) + item["bytes"]
+        )
+    components = [
+        {"name": name, "bytes": size}
+        for name, size in component_totals.items()
+    ]
+    components.append({"name": "Vendored Python runtime", "bytes": vendored_bytes})
+    components.sort(key=lambda item: (-item["bytes"], item["name"]))
     return {
         "measurement": "uncompressed source bytes on disk",
         "attachedPythonBytes": source_bytes + vendored_bytes,
@@ -47,10 +104,17 @@ def footprint():
         "moduleCount": len(modules) + len(vendored_files),
         "staticAssetBytes": sum(path.stat().st_size for path in public_files),
         "staticAssetCount": len(public_files),
-        "modules": modules[:16],
+        # Keep the complete generated inventory in the asset; the Three.js
+        # chart chooses its largest visible rows, while tests and future views
+        # can still inspect every clearly named Python module.
+        "modules": modules,
+        "components": components,
+        "workerLimits": WORKER_LIMITS,
         "note": (
             "Source bytes are a reproducible startup-footprint proxy, not heap. "
-            "Cloudflare does not expose per-module Python heap measurements."
+            "Cloudflare does not expose per-module Python heap measurements. "
+            "Bundle limits apply after compression, so source-byte bars are "
+            "not presented as bundle-limit utilization."
         ),
     }
 

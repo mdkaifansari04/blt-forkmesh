@@ -29,6 +29,21 @@ def test_worker_footprint_asset_matches_current_source_tree():
         and item["phase"] == "on-demand"
         for item in data["modules"]
     )
+    assert any(
+        item["name"] == "world_infrastructure.py"
+        and item["phase"] == "on-demand"
+        for item in data["modules"]
+    )
+    assert sum(item["bytes"] for item in data["components"]) == (
+        data["attachedPythonBytes"]
+    )
+    assert data["workerLimits"] == {
+        "memoryBytes": 128_000_000,
+        "compressedBundleFreeBytes": 3_000_000,
+        "compressedBundlePaidBytes": 10_000_000,
+        "uncompressedBundleBytes": 64_000_000,
+        "startupTimeMs": 1000,
+    }
 
 
 def test_provider_import_module_is_loaded_only_when_its_routes_need_it():
@@ -36,6 +51,8 @@ def test_provider_import_module_is_loaded_only_when_its_routes_need_it():
     assert "import repository_imports" not in eager_imports
     assert "def _repository_import_module():" in ENTRY
     assert "repository_import = _repository_import_module()" in ENTRY
+    assert "import world_infrastructure" not in eager_imports
+    assert "def _world_infrastructure_module():" in ENTRY
 
 
 def test_infrastructure_room_renders_detailed_honest_footprint_chart():
@@ -45,3 +62,8 @@ def test_infrastructure_room_renders_detailed_honest_footprint_chart():
     assert "SOURCE BYTES ≠ HEAP" in SCENE
     assert 'display.name = "forkmesh-infrastructure-worker-footprint"' in SCENE
     assert "INFRASTRUCTURE_FOOTPRINT_POSITION" in SCENE
+    assert "WORKER COMPONENT MAP" in SCENE
+    assert "COMPRESSED BUNDLE" in SCENE
+    assert "MEMORY" in SCENE
+    assert 'display.name = "forkmesh-infrastructure-worker-components"' in SCENE
+    assert "INFRASTRUCTURE_COMPONENTS_POSITION" in SCENE
