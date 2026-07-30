@@ -1054,6 +1054,9 @@ private:
     void showHighMemoryProcessPanel();
     void refreshHighMemoryProcessTable();
     void killHighMemoryProcess(qint64 pid, const QString &name);
+    // Terminate every process sharing `name` (the `killall` shape), skipping
+    // ForkMesh itself and PID 1. `pids` is the set listed in the panel.
+    void killAllHighMemoryProcesses(const QString &name, const QList<qint64> &pids);
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
     void showCloudflareWorkerLogs();
