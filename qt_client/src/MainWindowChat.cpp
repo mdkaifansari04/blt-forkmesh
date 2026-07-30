@@ -3741,15 +3741,8 @@ void MainWindow::killAllHighMemoryProcesses(const QString &name,
     auto *parent = m_highMemoryDialog
                        ? static_cast<QWidget *>(m_highMemoryDialog.data())
                        : this;
-    const auto answer = QMessageBox::warning(
-        parent, QStringLiteral("Kill all processes"),
-        QStringLiteral("Request that all %1 listed “%2” processes terminate?\n\n"
-                       "Unsaved work in those processes may be lost.")
-            .arg(targets.size())
-            .arg(name),
-        QMessageBox::Cancel | QMessageBox::Yes, QMessageBox::Cancel);
-    if (answer != QMessageBox::Yes)
-        return;
+    // No confirmation here (adhoc #58): "Kill all" is an explicit, already
+    // deliberate click, and the tooltip spells out how many processes it hits.
 
 #if defined(Q_OS_UNIX)
     int sent = 0;
