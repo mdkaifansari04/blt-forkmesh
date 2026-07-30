@@ -2948,6 +2948,10 @@ const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
 const QString kOrgTaskOpenProof = QStringLiteral("forkmesh-org-task-open-v1");
 const QString kOrgTaskCompleteProof =
     QStringLiteral("forkmesh-org-task-complete-v1");
+// Same key, reading the board. Without it the Tasks tab was empty for every
+// operator who launched normally instead of typing a password (adhoc #52).
+// Must stay byte-identical to ORG_TASK_LIST_PROOF in entry.py.
+const QString kOrgTaskListProof = QStringLiteral("forkmesh-org-task-list-v1");
 // Same signing key, for the one credential the "genie" button needs (adhoc
 // #49): the relay mints this desktop's task-only remote-MCP bearer instead of
 // its operator copying one out of the website. Must stay byte-identical to
@@ -6626,7 +6630,13 @@ inline QIcon themedOcticon(const QString &name, const QColor &color, int size)
     return icon;
 }
 
-// A tinted octicon rotated `angleDeg` about its centre — used to spin the green
+// Tick rate for the running-agent spinners (the Agents table's "#" cells and the
+// footer "Agents:" strip). Fast enough that a flat-out session reads as a smooth
+// spin; how far each session turns per tick comes from its own tok/s (see
+// agentSpinStepDegrees in MainWindowAgents.cpp).
+inline constexpr int kAgentSpinTickMs = 60;
+
+// A tinted octicon rotated `angleDeg` about its centre — used to spin the blue
 // "running" glyph in the agents list (issue #108). Not cached, since the angle
 // changes every animation frame; callers keep it to the handful of running rows.
 inline QPixmap rotatedTintedOcticonPixmap(const QString &name, const QColor &color,

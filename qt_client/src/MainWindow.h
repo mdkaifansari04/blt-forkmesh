@@ -5458,9 +5458,13 @@ private:
     // serially blocking the UI. The timer collapses a burst into one refresh.
     QTimer *m_openRepoRefreshTimer = nullptr;
     QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
-    int m_agentsSpinFrame = 0;
     QTimer *m_agentStatusSpinTimer = nullptr;    // animates the footer "Agents:" strip
-    int m_agentStatusSpinFrame = 0;
+    // Spinner angle in degrees, per session id, for each of the two strips
+    // (adhoc #50). Each running session advances at its own tok/s-derived rate,
+    // so the two surfaces can't share one frame counter any more.
+    QHash<int, double> m_agentRowSpinAngles;
+    QHash<int, double> m_agentStatusSpinAngles;
+    int m_agentSpinTicks = 0; // paces the detail header's run-stat refresh
     QTableWidget *m_actionsTable = nullptr;
     QLabel *m_actionRunTitle = nullptr;
     QLabel *m_actionRunMeta = nullptr;
