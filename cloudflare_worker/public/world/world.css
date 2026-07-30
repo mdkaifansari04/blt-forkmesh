@@ -11363,6 +11363,712 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   font-size: 0.65rem;
 }
 
+/* Dense organization task catalog. Closed rows are spreadsheet-thin; opening
+   one reveals the rich task record as a private chat-style bubble underneath. */
+.world-task-table {
+  --world-task-columns:
+    minmax(250px, 2.4fr)
+    minmax(72px, 0.62fr)
+    48px
+    minmax(82px, 0.75fr)
+    minmax(145px, 1.25fr)
+    minmax(92px, 0.78fr)
+    62px
+    64px
+    minmax(118px, auto);
+  display: block;
+  overflow-x: auto;
+  overflow-y: visible;
+  border: 1px solid #273444;
+  border-radius: 11px;
+  background: #0a1118;
+  scrollbar-color: #34465a #0a1118;
+}
+
+.world-task-table-header,
+.world-task-table .world-task-row-summary {
+  display: grid;
+  grid-template-columns: var(--world-task-columns);
+  align-items: center;
+  min-width: 1080px;
+}
+
+/* Walk-in instance booth. This is deliberately a flat, non-modal work surface:
+   walking and the rest of the World remain available behind it. */
+.world-instance-launcher {
+  position: absolute;
+  z-index: 62;
+  top: max(72px, calc(var(--safe-top) + 58px));
+  right: max(14px, var(--safe-right));
+  bottom: max(18px, calc(var(--safe-bottom) + 14px));
+  display: grid;
+  width: min(760px, calc(100vw - var(--safe-left) - var(--safe-right) - 28px));
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid #3d566d;
+  border-radius: 0;
+  background: #0b1118;
+  box-shadow: 0 22px 64px rgb(0 0 0 / 0.48);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(24px);
+  transition: opacity 160ms ease, transform 200ms ease, visibility 200ms ease;
+  pointer-events: none;
+}
+
+.world-instance-launcher[data-open="true"] {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.world-instance-launcher__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid #2d3e50;
+  background: #101923;
+  padding: 15px 17px;
+}
+
+.world-instance-launcher__header h2 {
+  margin: 2px 0 3px;
+  color: #f0f6fc;
+  font: 760 clamp(1.25rem, 2.4vw, 1.75rem)/1.05 "ForkMesh Favorit", sans-serif;
+  letter-spacing: -0.035em;
+}
+
+.world-instance-launcher__header p:last-child {
+  max-width: 620px;
+  margin: 0;
+  color: #8b9aaa;
+  font-size: 0.66rem;
+  line-height: 1.45;
+}
+
+.world-instance-launcher__header > button {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border: 1px solid #3d566d;
+  border-radius: 0;
+  background: #0b1118;
+  color: #c9d1d9;
+  cursor: pointer;
+  font-size: 1.25rem;
+}
+
+.world-instance-launcher__form {
+  overflow: auto;
+  scrollbar-color: #3d566d #0b1118;
+}
+
+.world-instance-launcher__section {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  gap: 13px;
+  border-bottom: 1px solid #273747;
+  padding: 13px 16px;
+}
+
+.world-instance-launcher__section-title {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  align-content: start;
+  gap: 8px;
+}
+
+.world-instance-launcher__section-title > span {
+  color: #58a6ff;
+  font: 800 0.62rem/1.3 "ForkMesh Mono", monospace;
+}
+
+.world-instance-launcher__section-title h3 {
+  margin: 0 0 3px;
+  color: #e6edf3;
+  font-size: 0.76rem;
+}
+
+.world-instance-launcher__section-title p {
+  margin: 0;
+  color: #768594;
+  font-size: 0.58rem;
+  line-height: 1.4;
+}
+
+.world-instance-launcher__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px 10px;
+}
+
+.world-instance-launcher__grid--mirror {
+  grid-template-columns: minmax(0, 1.35fr) minmax(110px, 0.8fr) 80px minmax(130px, 1fr);
+}
+
+.world-instance-launcher label {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 4px;
+  color: #b8c4d0;
+  font: 720 0.59rem/1.25 "ForkMesh Mono", monospace;
+}
+
+.world-instance-launcher label span i {
+  color: #667789;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.world-instance-launcher :is(input, select) {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  border: 1px solid #34495d;
+  border-radius: 0;
+  background: #080d13;
+  color: #e6edf3;
+  padding: 0 8px;
+  font: 620 0.65rem/1 "ForkMesh Mono", monospace;
+}
+
+.world-instance-launcher input[readonly] {
+  color: #91a0af;
+  background: #0e151e;
+}
+
+.world-instance-launcher :is(input, select):focus-visible {
+  border-color: #58a6ff;
+  outline: 1px solid #58a6ff;
+  outline-offset: 1px;
+}
+
+.world-instance-launcher label small {
+  color: #657687;
+  font: 500 0.54rem/1.35 system-ui, sans-serif;
+}
+
+.world-instance-launcher__secret,
+.world-instance-launcher__scopes {
+  grid-column: 2;
+}
+
+.world-instance-launcher__secret {
+  margin-top: 9px;
+  border-left: 2px solid #d29922;
+  background: #17140b;
+  padding: 8px 9px;
+}
+
+.world-instance-launcher__secret[hidden] {
+  display: none;
+}
+
+.world-instance-launcher__scopes {
+  margin-top: 9px;
+  border: 1px solid #34495d;
+  background: #0e151e;
+  color: #91a0af;
+  padding: 8px 10px;
+  font-size: 0.58rem;
+}
+
+.world-instance-launcher__scopes summary {
+  color: #79c0ff;
+  cursor: pointer;
+  font: 750 0.6rem "ForkMesh Mono", monospace;
+}
+
+.world-instance-launcher__scopes ul {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 18px;
+  margin: 8px 0;
+  padding-left: 18px;
+}
+
+.world-instance-launcher__scopes p {
+  margin: 7px 0;
+  line-height: 1.45;
+}
+
+.world-instance-launcher__scopes a {
+  color: #79c0ff;
+}
+
+.world-instance-launcher__actions {
+  position: sticky;
+  z-index: 2;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid #3d566d;
+  background: #101923;
+  padding: 11px 16px;
+}
+
+.world-instance-launcher__actions p {
+  max-width: 430px;
+  margin: 0;
+  color: #8b9aaa;
+  font-size: 0.6rem;
+  line-height: 1.4;
+}
+
+.world-instance-launcher__actions p[data-state="error"] {
+  color: #ff7b8a;
+}
+
+.world-instance-launcher__actions p[data-state="ready"] {
+  color: #7ee787;
+}
+
+.world-instance-launcher__actions > div {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 7px;
+}
+
+.world-instance-launcher__actions button {
+  min-height: 34px;
+  border: 1px solid #3d566d;
+  border-radius: 0;
+  background: #182431;
+  color: #c9d1d9;
+  padding: 0 10px;
+  cursor: pointer;
+  font: 720 0.58rem "ForkMesh Mono", monospace;
+}
+
+.world-instance-launcher__actions [data-world-instance-launch] {
+  border-color: #2f81f7;
+  background: #1f6feb;
+  color: #fff;
+}
+
+@media (max-width: 760px) {
+  .world-instance-launcher {
+    top: max(62px, calc(var(--safe-top) + 54px));
+    right: max(8px, var(--safe-right));
+    bottom: max(8px, var(--safe-bottom));
+    width: calc(100vw - var(--safe-left) - var(--safe-right) - 16px);
+  }
+
+  .world-instance-launcher__section {
+    grid-template-columns: 1fr;
+  }
+
+  .world-instance-launcher__secret,
+  .world-instance-launcher__scopes {
+    grid-column: 1;
+  }
+
+  .world-instance-launcher__grid,
+  .world-instance-launcher__grid--mirror {
+    grid-template-columns: 1fr;
+  }
+
+  .world-instance-launcher__scopes ul {
+    grid-template-columns: 1fr;
+  }
+
+  .world-instance-launcher__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .world-instance-launcher__actions > div {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+}
+
+.world-instance-celebration {
+  position: absolute;
+  z-index: 75;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.world-instance-fireworks {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.world-instance-fireworks i {
+  position: absolute;
+  top: var(--y);
+  left: var(--x);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: hsl(var(--hue) 100% 68%);
+  box-shadow:
+    0 -34px 0 hsl(var(--hue) 100% 68%),
+    24px -24px 0 hsl(calc(var(--hue) + 22) 100% 68%),
+    34px 0 0 hsl(calc(var(--hue) + 44) 100% 68%),
+    24px 24px 0 hsl(calc(var(--hue) + 66) 100% 68%),
+    0 34px 0 hsl(calc(var(--hue) + 88) 100% 68%),
+    -24px 24px 0 hsl(calc(var(--hue) + 110) 100% 68%),
+    -34px 0 0 hsl(calc(var(--hue) + 132) 100% 68%),
+    -24px -24px 0 hsl(calc(var(--hue) + 154) 100% 68%);
+  opacity: 0;
+  animation: world-instance-firework var(--duration) var(--delay) ease-out infinite;
+}
+
+@keyframes world-instance-firework {
+  0%,
+  68% {
+    opacity: 0;
+    transform: scale(0.05);
+  }
+
+  72% {
+    opacity: 1;
+  }
+
+  92% {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(1.25) translateY(14px);
+  }
+}
+
+.world-instance-announcement {
+  position: absolute;
+  top: max(76px, calc(var(--safe-top) + 62px));
+  left: 50%;
+  display: grid;
+  width: min(720px, calc(100vw - var(--safe-left) - var(--safe-right) - 30px));
+  border: 2px solid #79c0ff;
+  background: rgb(8 13 19 / 0.96);
+  box-shadow:
+    0 0 0 5px rgb(31 111 235 / 0.22),
+    0 20px 70px rgb(0 0 0 / 0.62);
+  padding: 14px 18px;
+  transform: translateX(-50%);
+  text-align: center;
+  pointer-events: auto;
+}
+
+.world-instance-announcement p {
+  margin: 0 0 4px;
+  color: #79c0ff;
+  font: 850 0.6rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.1em;
+}
+
+.world-instance-announcement strong {
+  overflow: hidden;
+  color: #f0f6fc;
+  font-size: clamp(1.25rem, 3vw, 2rem);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-instance-announcement span {
+  margin-top: 4px;
+  color: #9baab9;
+  font-size: 0.68rem;
+}
+
+.world-instance-announcement a {
+  width: fit-content;
+  margin: 9px auto 0;
+  border-bottom: 1px solid #58a6ff;
+  color: #79c0ff;
+  font: 750 0.66rem "ForkMesh Mono", monospace;
+  text-decoration: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-instance-fireworks {
+    display: none;
+  }
+}
+
+.world-task-table-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  min-height: 29px;
+  border-bottom: 1px solid #324152;
+  background: #111923;
+  box-shadow: 0 2px 7px rgb(0 0 0 / 0.22);
+}
+
+.world-task-table-header > :is(button, span) {
+  overflow: hidden;
+  min-width: 0;
+  height: 29px;
+  border: 0;
+  border-right: 1px solid rgb(139 148 158 / 0.12);
+  border-radius: 0;
+  background: transparent;
+  color: #7f8c9a;
+  padding: 0 7px;
+  font: 800 0.52rem/29px "ForkMesh Mono", ui-monospace, monospace;
+  letter-spacing: 0.055em;
+  text-align: left;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.world-task-table-header > button {
+  cursor: pointer;
+}
+
+.world-task-table-header > button:hover,
+.world-task-table-header > button[aria-pressed="true"] {
+  background: rgb(88 166 255 / 0.09);
+  color: #79c0ff;
+}
+
+.world-task-table-header > button span {
+  margin-left: 4px;
+  color: #58a6ff;
+}
+
+.world-task-table .world-task-row {
+  position: relative;
+  display: block;
+  overflow: visible;
+  min-width: 1080px;
+  border: 0 !important;
+  border-bottom: 1px solid rgb(139 148 158 / 0.13) !important;
+  border-left: 3px solid #58a6ff !important;
+  border-radius: 0 !important;
+  background: #0e151d !important;
+  padding: 0 !important;
+  box-shadow: none;
+  transition: background 120ms ease;
+}
+
+.world-task-table .world-task-row:nth-of-type(odd) {
+  background: #101821 !important;
+}
+
+.world-task-table .world-task-row:last-child {
+  border-bottom: 0 !important;
+}
+
+.world-task-table .world-task-row:hover,
+.world-task-table .world-task-row[open] {
+  transform: none;
+  border-color: #58a6ff !important;
+  background: #14202b !important;
+  box-shadow: none;
+}
+
+.world-task-table .world-task-row[data-status="active"] {
+  border-left-color: #d2a8ff !important;
+}
+
+.world-task-table .world-task-row[data-status="done"] {
+  border-left-color: #56d364 !important;
+}
+
+.world-task-table .world-task-row[data-kind="bid"] {
+  border-left-color: #e3b341 !important;
+}
+
+.world-task-table .world-task-row--mine::after {
+  content: none;
+}
+
+.world-task-row-summary {
+  min-height: 34px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.world-task-row-summary::-webkit-details-marker {
+  display: none;
+}
+
+.world-task-row-summary > :is(span, time) {
+  display: flex;
+  min-width: 0;
+  height: 34px;
+  align-items: center;
+  overflow: hidden;
+  border-right: 1px solid rgb(139 148 158 / 0.085);
+  color: #aeb8c4;
+  padding: 0 7px;
+  font: 650 0.6rem/1 "ForkMesh Mono", ui-monospace, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-task-row-summary .world-task-cell-title {
+  gap: 7px;
+  color: #e6edf3;
+  font-family: system-ui, sans-serif;
+}
+
+.world-task-cell-title > strong,
+.world-task-cell-route,
+.world-task-cell-owner {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-task-cell-title > i {
+  flex: 0 0 auto;
+  color: #8b98a7;
+  font-size: 0.62rem;
+  font-style: normal;
+}
+
+.world-task-row-summary .world-task-avatar {
+  width: 23px;
+  height: 23px;
+  flex: 0 0 23px;
+  border-width: 1px;
+  border-radius: 7px;
+  font-size: 0.58rem;
+  box-shadow: none;
+}
+
+.world-task-row-summary .world-task-cell-status,
+.world-task-row-summary .world-task-cell-priority,
+.world-task-row-summary .world-task-cell-time,
+.world-task-row-summary .world-task-cell-qa {
+  justify-content: center;
+  text-align: center;
+}
+
+.world-task-cell-status[data-tone="active"] {
+  color: #d2a8ff;
+}
+
+.world-task-cell-status[data-tone="done"],
+.world-task-cell-qa[data-verdict="pass"] {
+  color: #56d364;
+}
+
+.world-task-cell-status[data-tone="ready"],
+.world-task-cell-qa[data-verdict="ready"] {
+  color: #79c0ff;
+}
+
+.world-task-cell-priority {
+  color: #e3b341 !important;
+}
+
+.world-task-cell-qa[data-verdict="fail"] {
+  color: #ff7b8a;
+}
+
+.world-task-cell-qa[data-verdict="unsure"] {
+  color: #e3b341;
+}
+
+.world-task-row-summary .world-task-cell-actions {
+  gap: 3px;
+  justify-content: flex-end;
+  overflow: visible;
+  padding: 0 5px;
+}
+
+.world-task-table .world-task-row-controls {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 3px;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+}
+
+.world-task-table .world-task-row-controls :is(button, time) {
+  display: inline-grid;
+  width: 23px;
+  min-width: 23px;
+  min-height: 23px;
+  height: 23px;
+  place-items: center;
+  border: 1px solid #344252;
+  border-radius: 6px;
+  background: #131c26;
+  padding: 0;
+  color: #b8c2cc;
+  font-size: 0.58rem;
+  line-height: 1;
+}
+
+.world-task-table .world-office-task-qa-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.world-task-table .world-task-detail-chevron {
+  display: inline-grid;
+  width: 17px;
+  flex: 0 0 17px;
+  place-items: center;
+  color: #6e7b89;
+  font-size: 1rem;
+  transition: transform 120ms ease;
+}
+
+.world-task-table .world-task-row[open] .world-task-detail-chevron {
+  transform: rotate(90deg);
+  color: #79c0ff;
+}
+
+.world-task-chat-bubble {
+  position: relative;
+  margin: 9px 12px 12px 38px;
+  border: 1px solid #34495e;
+  border-radius: 5px 14px 14px;
+  background:
+    linear-gradient(125deg, rgb(88 166 255 / 0.075), transparent 26%),
+    #111a24;
+  padding: 12px;
+  box-shadow: 0 10px 26px rgb(0 0 0 / 0.24);
+}
+
+.world-task-chat-bubble::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: -12px;
+  border-width: 0 12px 12px 0;
+  border-style: solid;
+  border-color: transparent #34495e transparent transparent;
+}
+
+.world-task-chat-bubble::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -9px;
+  border-width: 0 10px 10px 0;
+  border-style: solid;
+  border-color: transparent #14202b transparent transparent;
+}
+
+.world-task-chat-bubble .world-task-row-heading {
+  grid-template-columns: 40px minmax(180px, 1fr);
+}
+
+.world-task-chat-bubble .world-task-row-description {
+  margin-top: 10px;
+}
+
 .world-task-board-issues {
   margin-top: 12px;
   border-top: 1px solid #263240;

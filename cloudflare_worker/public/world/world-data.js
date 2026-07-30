@@ -55,7 +55,9 @@ export const LANDMARKS = [
     eyebrow: "CODE DISTRICT / 03",
     icon: "{ }",
     color: "#77d9ff",
-    position: [35, 0, 38],
+    // The repository landmark, import kiosk, concrete apron, and live portal
+    // ring share one east-district origin.
+    position: [130, 0, 0],
     summary: "Authorized repositories form distinct perimeter portals with size-weighted file rings.",
     metaphor: "Each repository opens as its own three-dimensional sunburst around the city perimeter.",
     reality:

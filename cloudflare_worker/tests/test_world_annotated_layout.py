@@ -30,6 +30,7 @@ def test_town_has_four_solid_cardinal_paved_routes():
 
 
 def test_all_repositories_live_expanded_on_the_east_island():
+    assert "position: [130, 0, 0]" in DATA
     assert "const coreRecords = [];" in SCENE
     assert "const hostedRecords = records;" in SCENE
     assert "const islandRecord = true;" in SCENE
