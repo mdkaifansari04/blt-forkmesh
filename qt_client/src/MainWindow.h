@@ -3581,6 +3581,9 @@ private:
     QString logBadgeFor(const QString &storedLine) const; // category of a line
     QString logAccentFor(const QString &storedLine) const; // badge colour of a line
     void rebuildLogFilterButtons(); // (re)build the category chip row
+    // "GIT 42" — chip text for a category, count included once it has one.
+    QString logFilterChipLabel(const QString &name, const QString &category) const;
+    void updateLogFilterChipCounts(); // refresh the counts without rebuilding
     void rebuildNetworkLogView();   // re-render the log honoring m_logFilter
     QString networkLogPath() const; // on-disk path for the persisted log
     void loadNetworkLog();          // restore log history at startup
@@ -6534,7 +6537,9 @@ private:
     QHash<QString, QString> m_dmNames;          // peerId -> display name
     QHash<QString, QHash<QString, QString>> m_typing; // conversation -> peerId -> name
     QStringList m_networkLog;
-    QSet<QString> m_logFilterCategories;        // badges that currently have a chip
+    // Badges that currently have a chip -> how many buffered lines carry them,
+    // so each chip can show its own count (adhoc #64).
+    QHash<QString, int> m_logFilterCounts;
     int m_networkLogDiskLines = 0;              // lines written to the on-disk log
     QStringList m_openDms;                      // peerIds in sidebar order
     QSet<QString> m_unread;

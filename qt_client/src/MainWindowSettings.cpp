@@ -4066,8 +4066,12 @@ void MainWindow::rebuildLogFilterButtons()
 
     auto addChip = [this](const QString &label, const QString &category,
                           const QString &tip = QString()) {
-        auto *chip = new QPushButton(label);
+        auto *chip = new QPushButton(logFilterChipLabel(label, category));
         chip->setObjectName("logFilterChip");
+        // Remembered so updateLogFilterChipCounts() can refresh just the number
+        // on each chip instead of tearing the whole row down per log line.
+        chip->setProperty("logChipName", label);
+        chip->setProperty("logChipCategory", category);
         chip->setCheckable(true);
         chip->setChecked(m_logFilter == category);
         chip->setCursor(Qt::PointingHandCursor);
@@ -4116,10 +4120,39 @@ void MainWindow::rebuildLogFilterButtons()
     };
     for (const char *b : order) {
         const QString badge = QString::fromLatin1(b);
-        if (m_logFilterCategories.contains(badge))
+        if (m_logFilterCounts.value(badge) > 0)
             addChip(badge, badge);
     }
     m_logFilterRow->addStretch();
+}
+
+// How many buffered events a chip covers, appended to its name (adhoc #64) so
+// the row doubles as a tally of what the log actually contains. A count of zero
+// — the pinned STALL chip on a healthy session — shows the bare name rather
+// than a "0", which would read as a broken counter.
+QString MainWindow::logFilterChipLabel(const QString &name,
+                                       const QString &category) const
+{
+    const int count = category.isEmpty() ? m_networkLog.size()
+                                         : m_logFilterCounts.value(category);
+    return count > 0 ? QStringLiteral("%1 %2").arg(name).arg(count) : name;
+}
+
+// Repaint the counts in place. logSystem() runs on every network event, so a
+// full rebuildLogFilterButtons() per line (two dozen buttons destroyed and
+// recreated) would be wasteful — and would drop the chip the user is hovering.
+void MainWindow::updateLogFilterChipCounts()
+{
+    if (!m_logFilterRow)
+        return;
+    for (int i = 0; i < m_logFilterRow->count(); ++i) {
+        QLayoutItem *item = m_logFilterRow->itemAt(i);
+        auto *chip = item ? qobject_cast<QPushButton *>(item->widget()) : nullptr;
+        if (!chip)
+            continue;
+        chip->setText(logFilterChipLabel(chip->property("logChipName").toString(),
+                                         chip->property("logChipCategory").toString()));
+    }
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
@@ -4138,8 +4171,10 @@ QStringList MainWindow::testLogFilterChipLabels() const
 void MainWindow::testResetNetworkLog()
 {
     m_networkLog.clear();
+    m_logFilterCounts.clear(); // the chip counts describe the buffer we just emptied
     m_networkLogDiskLines = 0;
     QFile::remove(networkLogPath());
+    rebuildLogFilterButtons();
     rebuildNetworkLogView();
 }
 #endif
@@ -4276,7 +4311,16 @@ void MainWindow::logSystem(const QString &text)
     plain.replace(QChar(0x2026), QStringLiteral("..."));
     const QString line = time + "  " + plain;
     m_networkLog.append(line);
+    bool chipsChanged = false;
     while (m_networkLog.size() > kNetworkLogLimit) {
+        // The counts describe the buffered history, so a line ageing out of it
+        // gives its category's chip back a tally point (and retires the chip
+        // entirely once it was the last line of its kind).
+        const QString dropped = logBadgeFor(m_networkLog.first());
+        if (--m_logFilterCounts[dropped] <= 0) {
+            m_logFilterCounts.remove(dropped);
+            chipsChanged = true;
+        }
         m_networkLog.removeFirst();
         // m_logRenderFrom indexes into m_networkLog; trimming the front shifts
         // every index down by one, so keep it pointed at the same line.
@@ -4286,10 +4330,12 @@ void MainWindow::logSystem(const QString &text)
 
     // A category we haven't seen yet earns its own quick-filter chip.
     const QString badge = networkLogStyleFor(plain).badge;
-    if (!m_logFilterCategories.contains(badge)) {
-        m_logFilterCategories.insert(badge);
+    if (++m_logFilterCounts[badge] == 1)
+        chipsChanged = true;
+    if (chipsChanged)
         rebuildLogFilterButtons(); // no-ops until the log section is built
-    }
+    else
+        updateLogFilterChipCounts(); // just repaint the numbers
     // Only render the line if it passes the active filter. The first line to
     // pass while the "No X events recorded." notice is up rebuilds the view so
     // the notice goes away instead of sitting above the entry.
