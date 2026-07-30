@@ -17,6 +17,11 @@ inline const char *kTextTertiary = "#8b949e";
 // reads as its own state instead of borrowing success-green or link-blue.
 inline const char *kRunning = "#f0883e";
 
+// "Genie" (adhoc #38): a long-running run launched with the ForkMesh MCP
+// connector attached. Its own violet so a genie run's sparkle glyph never reads
+// as the orange "ordinary agent working" or the purple "merged" state.
+inline const char *kGenie = "#bc8cff";
+
 // Sender name colors, hashed per user (GitHub label-ish accents).
 inline const char *kSenderPalette[] = {"#f85149", "#e3b341", "#3fb950",
                                        "#58a6ff", "#bc8cff", "#db61a2",
@@ -35,6 +40,10 @@ inline const char *iconColorForButton(const QString &objectName, bool dark)
         return dark ? "#8b949e" : "#656d76";
     if (objectName == QStringLiteral("quickAddSendIcon"))
         return dark ? "#3fb950" : "#1a7f37";
+    // Genie mode's violet (adhoc #38), matching Theme::kGenie and the sparkle
+    // status glyph a genie session carries in the agent lists.
+    if (objectName == QStringLiteral("quickAddGenieIcon"))
+        return dark ? "#bc8cff" : "#8250df";
     return dark ? "#e6edf3" : "#1f2328";
 }
 
@@ -96,20 +105,20 @@ QComboBox QAbstractItemView {
     selection-background-color: #1f6feb; selection-color: #0d1117; color: #e6edf3;
 }
 QComboBox QAbstractItemView::item:selected { color: #0d1117; }
-QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector {
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
     border: none;
     background-color: transparent;
     padding: 0px 4px 0px 8px;
 }
-QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus {
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus, QComboBox#quickAddSpeedSelector:focus {
     border: none;
     background-color: rgba(88, 166, 255, 0.08);
 }
-QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down {
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
     border: none;
     width: 20px;
 }
-QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow {
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow, QComboBox#quickAddSpeedSelector::down-arrow {
     image: url(:/icons/octicons/chevron-down.svg);
     width: 16px;
     height: 16px;
@@ -553,6 +562,15 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #56d364; background: rgba(63,185,80,0.15); }
+/* "genie" send button (adhoc #38): the same ghost treatment as the two send
+   icons below it, in the violet its sparkle status glyph uses. Disabled while the
+   composer sits on a provider that cannot run a genie task. */
+QPushButton#quickAddGenieIcon {
+    background: transparent; border: none; color: #bc8cff;
+    padding: 4px; border-radius: 4px;
+}
+QPushButton#quickAddGenieIcon:hover { color: #d2a8ff; background: rgba(188,140,255,0.15); }
+QPushButton#quickAddGenieIcon:disabled { color: #6e7681; }
 /* Green outline on whichever send button Enter currently activates (adhoc #89),
    toggled by MainWindow::updateQuickAddEnterTarget(). */
 QPushButton#quickAddSendIcon[enterTarget="true"] {
@@ -912,6 +930,15 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #56d364; background: rgba(63,185,80,0.15); }
+/* "genie" send button (adhoc #38): the same ghost treatment as the two send
+   icons below it, in the violet its sparkle status glyph uses. Disabled while the
+   composer sits on a provider that cannot run a genie task. */
+QPushButton#quickAddGenieIcon {
+    background: transparent; border: none; color: #bc8cff;
+    padding: 4px; border-radius: 4px;
+}
+QPushButton#quickAddGenieIcon:hover { color: #d2a8ff; background: rgba(188,140,255,0.15); }
+QPushButton#quickAddGenieIcon:disabled { color: #6e7681; }
 /* Green outline on whichever send button Enter currently activates (adhoc #89),
    toggled by MainWindow::updateQuickAddEnterTarget(). */
 QPushButton#quickAddSendIcon[enterTarget="true"] {
@@ -973,22 +1000,6 @@ QCheckBox#slashToggle::indicator {
     width: 28px; height: 16px; border-radius: 8px; border: none; background: #30363d;
 }
 QCheckBox#slashToggle::indicator:checked { background: #2ea043; }
-/* "Agents:" status strip above the footer prompt (adhoc #111): a plain
-   ghost-button label plus small borderless dot buttons, one per session. */
-QPushButton#agentStatusLabel {
-    background: transparent; border: none; color: #8b949e;
-    font-weight: 600; font-size: 12px; padding: 2px 0;
-}
-QPushButton#agentStatusLabel:hover { color: #e6edf3; }
-QPushButton#agentStatusDot {
-    background: transparent; border: none; padding: 0; border-radius: 3px;
-}
-QPushButton#agentStatusDot:hover { background: rgba(139,148,158,0.2); }
-QPushButton#agentStatusMore {
-    background: transparent; border: none; color: #8b949e;
-    font-weight: 600; font-size: 12px; padding: 2px 4px; border-radius: 4px;
-}
-QPushButton#agentStatusMore:hover { color: #e6edf3; background: rgba(139,148,158,0.2); }
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;
@@ -1363,20 +1374,20 @@ QComboBox QAbstractItemView {
     selection-background-color: #0969da; selection-color: #1f2328; color: #1f2328;
 }
 QComboBox QAbstractItemView::item:selected { color: #1f2328; }
-QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector {
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
     border: none;
     background-color: transparent;
     padding: 0px 4px 0px 8px;
 }
-QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus {
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus, QComboBox#quickAddSpeedSelector:focus {
     border: none;
     background-color: rgba(9, 105, 218, 0.08);
 }
-QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down {
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
     border: none;
     width: 20px;
 }
-QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow {
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow, QComboBox#quickAddSpeedSelector::down-arrow {
     image: url(:/icons/octicons/chevron-down.svg);
     width: 16px;
     height: 16px;
@@ -1798,6 +1809,15 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #1a7f37; background: rgba(26,127,55,0.12); }
+/* "genie" send button (adhoc #38): the same ghost treatment as the two send
+   icons below it, in the violet its sparkle status glyph uses. Disabled while the
+   composer sits on a provider that cannot run a genie task. */
+QPushButton#quickAddGenieIcon {
+    background: transparent; border: none; color: #8250df;
+    padding: 4px; border-radius: 4px;
+}
+QPushButton#quickAddGenieIcon:hover { color: #6639ba; background: rgba(130,80,223,0.12); }
+QPushButton#quickAddGenieIcon:disabled { color: #8c959f; }
 /* Green outline on whichever send button Enter currently activates (adhoc #89),
    toggled by MainWindow::updateQuickAddEnterTarget(). */
 QPushButton#quickAddSendIcon[enterTarget="true"] {
@@ -2150,6 +2170,15 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #1a7f37; background: rgba(26,127,55,0.12); }
+/* "genie" send button (adhoc #38): the same ghost treatment as the two send
+   icons below it, in the violet its sparkle status glyph uses. Disabled while the
+   composer sits on a provider that cannot run a genie task. */
+QPushButton#quickAddGenieIcon {
+    background: transparent; border: none; color: #8250df;
+    padding: 4px; border-radius: 4px;
+}
+QPushButton#quickAddGenieIcon:hover { color: #6639ba; background: rgba(130,80,223,0.12); }
+QPushButton#quickAddGenieIcon:disabled { color: #8c959f; }
 /* Green outline on whichever send button Enter currently activates (adhoc #89),
    toggled by MainWindow::updateQuickAddEnterTarget(). */
 QPushButton#quickAddSendIcon[enterTarget="true"] {
@@ -2209,22 +2238,6 @@ QCheckBox#slashToggle::indicator {
     width: 28px; height: 16px; border-radius: 8px; border: none; background: #d0d7de;
 }
 QCheckBox#slashToggle::indicator:checked { background: #1a7f37; }
-/* "Agents:" status strip above the footer prompt (adhoc #111): a plain
-   ghost-button label plus small borderless dot buttons, one per session. */
-QPushButton#agentStatusLabel {
-    background: transparent; border: none; color: #6e7781;
-    font-weight: 600; font-size: 12px; padding: 2px 0;
-}
-QPushButton#agentStatusLabel:hover { color: #1f2328; }
-QPushButton#agentStatusDot {
-    background: transparent; border: none; padding: 0; border-radius: 3px;
-}
-QPushButton#agentStatusDot:hover { background: rgba(110,119,129,0.2); }
-QPushButton#agentStatusMore {
-    background: transparent; border: none; color: #6e7781;
-    font-weight: 600; font-size: 12px; padding: 2px 4px; border-radius: 4px;
-}
-QPushButton#agentStatusMore:hover { color: #1f2328; background: rgba(110,119,129,0.2); }
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;

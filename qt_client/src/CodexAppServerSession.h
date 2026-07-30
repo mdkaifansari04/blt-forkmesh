@@ -26,13 +26,17 @@ public:
     // process tree's data memory at that many MB before exec'ing codex. Only
     // applies to the default bash launch — an injected setAppServerCommand
     // program (tests) runs as-is.
+    // extraCliArgs are appended to that same default launch: genie runs (adhoc
+    // #38) pass the `-c mcp_servers.forkmesh.*` overrides that attach the
+    // ForkMesh MCP connector for this run only.
     void start(const QString &cwd, const QStringList &extraEnv,
                const QString &initialPrompt,
                const QString &resumeThreadId = QString(),
                const QString &model = QString(),
                const QString &mode = QString(),
                const QString &effort = QString(),
-               int memoryLimitMb = 0);
+               int memoryLimitMb = 0,
+               const QStringList &extraCliArgs = QStringList());
     void sendUserText(const QString &text);
     void respondToRequest(const QString &token, const QString &answer);
     void setTurnOptions(const QString &model, const QString &mode,

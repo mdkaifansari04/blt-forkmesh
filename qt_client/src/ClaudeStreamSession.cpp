@@ -16,7 +16,7 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
                                 const QString &initialPrompt, bool skipPermissions,
                                 const QString &resumeSessionId, const QString &model,
                                 const QString &effort, const QString &fallbackModels,
-                                int memoryLimitMb)
+                                int memoryLimitMb, const QStringList &extraCliArgs)
 {
     stop();
     m_buf.clear();
@@ -67,6 +67,15 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
     // from the CLI's own stream, but single-quote it defensively all the same.
     if (!resumeSessionId.isEmpty())
         cmd += QStringLiteral(" --resume '%1'").arg(resumeSessionId);
+    // Extra flags from the caller (genie mode's --mcp-config, adhoc #38),
+    // appended last and single-quoted for the shell like everything above.
+    for (const QString &arg : extraCliArgs) {
+        if (arg.trimmed().isEmpty())
+            continue;
+        QString quoted = arg;
+        quoted.replace(QLatin1String("'"), QLatin1String("'\\''"));
+        cmd += QStringLiteral(" '%1'").arg(quoted);
+    }
     // Jail (adhoc #236): cap the agent's memory before handing the shell to
     // claude. The rlimit survives the exec and is inherited by subprocesses.
     cmd = AgentJail::wrapCommand(cmd, memoryLimitMb);

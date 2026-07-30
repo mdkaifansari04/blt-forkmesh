@@ -35,13 +35,17 @@ public:
     // process tree's data memory at that many MB before exec'ing claude; the
     // caller pairs it with AgentJail::envEntries in extraEnv for a private
     // scratch environment. 0 launches unjailed.
+    // extraCliArgs are appended to the launch command, single-quoted for the
+    // shell like every other flag. Genie runs (adhoc #38) use it to hand the CLI
+    // `--mcp-config <file>` for the ForkMesh MCP connector.
     void start(const QString &cwd, const QStringList &extraEnv,
                const QString &initialPrompt, bool skipPermissions = true,
                const QString &resumeSessionId = QString(),
                const QString &model = QString(),
                const QString &effort = QString(),
                const QString &fallbackModels = QString(),
-               int memoryLimitMb = 0);
+               int memoryLimitMb = 0,
+               const QStringList &extraCliArgs = QStringList());
     // Send another user turn to a running session (steering).
     void sendUserText(const QString &text);
     // Answer a pending tool call (e.g. the AskUserQuestion clarifying-question

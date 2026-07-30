@@ -11,6 +11,7 @@
 #include "MainWindowInternal.h"
 #include "FederatedThreadView.h"
 #include "KebabHeaderView.h"
+#include "McpConnector.h"
 #include "MirrorCrypto.h"
 
 #include <QDateEdit>
@@ -18,6 +19,7 @@
 #include <QPair>
 #include <QPixmap>
 #include <QStackedLayout>
+#include <QStandardPaths>
 
 using namespace forkmesh::ui;
 
@@ -3961,6 +3963,66 @@ void MainWindow::quickAddIssue()
     // showIssue() explicitly so the detail opens regardless of the active list
     // view (board, cards, a filtered table). Issue #203.
     showIssue(number);
+}
+
+// "genie" (adhoc #38): the third composer send button. Same starting point as
+// "new" — the typed prompt becomes an agent's task in the open repository — with
+// three differences: the prompt is wrapped in the genie framing (a long-running
+// task, told it holds the mesh tools), the launch attaches this node's MCP
+// connector, and the session is stamped genie so every list draws it with the
+// sparkle glyph. Only the two CLI-backed providers can run one; anything else in
+// the dropdown (Manual, the API-key runners) has no MCP transport, so the button
+// says so rather than silently starting an ordinary run.
+void MainWindow::quickAddGenieAgent()
+{
+    if (!m_issueQuickAdd)
+        return;
+    const QString typed = m_issueQuickAdd->toPlainText().trimmed();
+    if (typed.isEmpty() && m_quickAddImages.isEmpty()) {
+        setIssueInlineNotice("Type the task for the genie first.", true);
+        m_issueQuickAdd->setFocus();
+        return;
+    }
+    const QString provider =
+        m_quickAddAgentProvider
+            ? m_quickAddAgentProvider->currentData().toString()
+            : QStringLiteral("claude-code");
+    if (provider != QLatin1String("claude-code") && !agentIsCodexProvider(provider)) {
+        setIssueInlineNotice(
+            "Genie needs CC or Codex \xe2\x80\x94 pick one in the agent dropdown.",
+            true);
+        return;
+    }
+    if (!typed.isEmpty())
+        recordQuickAddHistory(typed);
+    // Attached images ride along exactly as they do for "new"/"add" (issue #79).
+    QString task = typed;
+    for (const QString &img : m_quickAddImages) {
+        if (!task.isEmpty() && !task.endsWith(QLatin1Char('\n')))
+            task += QLatin1Char('\n');
+        task += QStringLiteral("Attached image: %1").arg(img);
+    }
+    const QString model = selectedModelComboValue(m_quickAddClaudeModel);
+    const bool createPr = m_quickAddCreatePr && m_quickAddCreatePr->isChecked();
+    if (startAdHocAgentForRepo(issuesRepoIndex(), genieTaskPrompt(task), provider,
+                               createPr, model, /*genie=*/true) <= 0)
+        return;
+    m_issueQuickAdd->clear();
+    clearQuickAddImages();
+    // Say whether the run actually got write access to the mesh: without a
+    // connector token the MCP server starts read-only, so the genie can read the
+    // mesh but cannot comment, file follow-ups, or open the pull request.
+    const bool canWrite =
+        !forkmesh::mcp::loadConnector(
+             QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+             .token.isEmpty();
+    setIssueInlineNotice(
+        canWrite
+            ? QStringLiteral("Genie started on your task with the ForkMesh MCP "
+                             "connector attached.")
+            : QStringLiteral("Genie started \xe2\x80\x94 its mesh tools are "
+                             "read-only until you generate a connector token in "
+                             "Settings \xe2\x86\x92 MCP."));
 }
 
 #ifdef FORKMESH_WINDOW_TESTS

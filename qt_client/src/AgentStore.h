@@ -30,18 +30,26 @@ struct AgentSession {
     // this is a CLI alias: opus | sonnet | haiku. Applied on the next launch or
     // continuation, and shown in the agent header.
     QString model;
-    // Permission mode this session runs under, as the human-readable label from
-    // the composer's mode selector ("Ask before edits" / "Edit automatically" /
-    // "Plan mode" / "Auto mode"). Captured when a follow-up prompt is sent so the
-    // next resume honors the live selection, and shown in the agent header. Empty
-    // falls back to the global kClaudeAutoModeSetting. Only "Auto mode" skips the
-    // CLI's permission prompts today (see agentModeSkipsPermissions).
+    // Permission mode this session runs under, as the label from the composer's
+    // mode selector ("Ask" / "Edit" / "Plan" / "Auto"; sessions written before
+    // adhoc #38 shortened them say "Ask before edits" / "Auto mode" / …).
+    // Captured when a follow-up prompt is sent so the next resume honors the live
+    // selection, and shown in the agent header. Empty falls back to the global
+    // kClaudeAutoModeSetting. Only "Auto" skips the CLI's permission prompts
+    // today (see agentModeSkipsPermissions).
     QString mode;
     bool createPr = false;
     // "YOLO" (adhoc #12): merge this session's branch straight into the repo's
     // default branch as soon as the run finishes successfully, with no review
     // step. Captured from the quick-add bar's checkbox when the session starts.
     bool yolo = false;
+    // "Genie" (adhoc #38): launched from the composer's genie button, which hands
+    // the run the ForkMesh MCP connector (the same one Settings -> MCP mints for
+    // the site) and tells it to work the task to completion as a long-running
+    // job. Captured at launch so a resume re-attaches the connector, and drawn
+    // with its own sparkle status glyph so a genie run is recognisable in every
+    // list it appears in.
+    bool genie = false;
     // Reasoning strength ("low"/"medium"/"high"/"xhigh"/"max") the run was
     // launched with, snapshotted from kClaudeEffortSetting alongside the model
     // and mode so the organization task records what this run actually used.
@@ -89,6 +97,16 @@ struct AgentSession {
     int numTurns = 0;
     qint64 durationMs = 0;
     QString lastError;
+
+    // Whether this run should be drawn with the genie sparkle (adhoc #38): a
+    // genie that is still in flight. Merged and finished sessions keep the
+    // ordinary status glyphs, so their outcome reads like every other run's.
+    bool genieInFlight() const
+    {
+        return genie && !merged &&
+               (status == AgentStatus::Running || status == AgentStatus::Queued ||
+                status == AgentStatus::Waiting);
+    }
 
     QString repoKey() const;
     QJsonObject toJson() const;

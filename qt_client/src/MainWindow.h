@@ -1082,6 +1082,14 @@ private:
     void revokeMcpConnector();
     void testMcpConnector();
     QString mcpServerScriptPath() const;
+    // Genie mode (adhoc #38): the CLI flags that attach this node's MCP
+    // connector — the one Settings -> MCP mints for the site — to one agent
+    // launch. Claude Code gets `--mcp-config <file>` (written owner-only under
+    // the app data dir, since it embeds the connector token); Codex gets the
+    // equivalent `-c mcp_servers.forkmesh.*` overrides. Empty when the server
+    // script cannot be found, in which case the run still starts — just without
+    // mesh tools.
+    QStringList genieMcpCliArgs(const QString &provider, int sessionId) const;
     // Settings -> Quick Setup tab: provision a fresh instance in one pass —
     // identity, workflow credentials and world appearance applied together.
     QWidget *buildQuickSetupTab();
@@ -2007,13 +2015,12 @@ private:
     void refreshAgentLimitLabel();
     void openAgentSessionFromIssue();
     void switchToAgentsTab(int sessionId);
-    // Footer "Agents:" status strip (adhoc #111): one small status glyph per
-    // known agent session, rebuilt from m_agentSessions whenever it changes.
+    // Was the footer "Agents:" status strip (adhoc #111); the strip above the
+    // composer is gone (adhoc #38) and this now only refreshes the top-bar agent
+    // matrix, which carries the same per-session state.
     void refreshAgentStatusRow();
-    void animateAgentStatusIcons(); // spins the strip's running icons (adhoc #114)
-    // Clicking the "Agents:" label itself (as opposed to one of the dots):
-    // jumps to the most relevant session's Agents tab, falling back to the
-    // open repo's Agents tab if no session exists yet.
+    // Jumps to the most relevant session's Agents tab, falling back to the open
+    // repo's Agents tab if no session exists yet.
     void openAgentsOverview();
     // Refreshes the count badge on the top-bar Agents nav button from
     // m_agentSessions.size().
@@ -3019,6 +3026,12 @@ private:
     void cancelIssueTitleEdit();
     void promptNewIssue();
     void quickAddIssue();
+    // "genie" send button (adhoc #38), stacked above "add"/"new" in the
+    // composer: start a long-running agent on the typed prompt with the ForkMesh
+    // MCP connector attached, so the run can work the mesh itself (progress
+    // comments, follow-up issues, the pull request) instead of handing
+    // everything back after one turn.
+    void quickAddGenieAgent();
     // Quick-add image attachment (issue #79): pick or paste an image in the footer
     // quick-add bar. In "No issue" mode the path is sent to the agent in its
     // prompt; otherwise the image is attached to the created issue.
@@ -3104,6 +3117,21 @@ private:
     void moveSlashActionsSelection(int delta);
     void activateSlashActionRow(QWidget *row);
     void refreshClaudeSlashCommands();
+    // Composer speed picker (adhoc #38): the reasoning-effort dropdown next to
+    // the mode selector, so Low/High/Ultra is a visible choice in the composer
+    // instead of being buried in the "/" popup. Both write the same
+    // kClaudeEffortSetting, so the two surfaces stay in step.
+    //
+    // agentEffortLevels() answers what the *current* composer provider accepts:
+    // Codex's live supportedReasoningEfforts for the selected model, the probed
+    // `claude --help` list for Claude Code, and defaultAgentEffortLevels() when
+    // neither is known yet.
+    QStringList agentEffortLevels() const;
+    void refreshQuickAddSpeedSelector();
+    // Probe the installed `claude` CLI for the effort levels it accepts and
+    // cache them (kClaudeEffortLevelsCacheSetting). Cheap (`claude --help`),
+    // once per app run, and a no-op while a probe is already in flight.
+    void refreshClaudeEffortLevels();
     void mentionProjectFileInQuickAdd();
     // Show the transparent public community reward pool. The pool key is not
     // available to the Worker and user wallets always remain self-custodial.
@@ -4337,6 +4365,11 @@ private:
     // Plan mode/Auto mode, styled like the provider/model combos beside it and
     // backed by the same kClaudeAutoModeSetting as the agent composer's toggle.
     QComboBox *m_quickAddModeSelector = nullptr;
+    // Speed (reasoning effort) chooser beside it (adhoc #38): Low/Medium/High/
+    // Ultra/Max for Claude Code, or whatever the Codex app-server says the
+    // selected model supports. Backed by the same kClaudeEffortSetting the "/"
+    // popup's effort dots write, so both surfaces show one setting.
+    QComboBox *m_quickAddSpeedSelector = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
     // Up-pointing paper-airplane stacked above the normal send icon (adhoc #99):
     // sends the typed prompt as a follow-up message to the currently-selected
@@ -4347,6 +4380,10 @@ private:
     // can restyle it as the two selected/deselected agent detail changes which of
     // the two buttons Enter actually triggers.
     QPushButton *m_quickAddSendButton = nullptr;
+    // "genie" button stacked above the two send buttons (adhoc #38): starts a
+    // long-running run with the ForkMesh MCP connector attached instead of an
+    // ordinary one-turn agent.
+    QPushButton *m_quickAddGenieButton = nullptr;
     // Small green "Enter" badge (adhoc #89), shown on the "new" send button
     // when Enter currently activates it. The "add" (follow-up) button has no
     // such badge — it's only ever the Enter target while the Agents tab
@@ -4376,17 +4413,9 @@ private:
     bool m_claudeSlashCommandsLoaded = false;
     QProcess *m_claudeSlashProbe = nullptr;
     QByteArray m_claudeSlashProbeBuf;
-    // "Agents:" status strip above the footer prompt (adhoc #111): a clickable
-    // label plus one small colored dot per known agent session. The label opens
-    // the Agents tab; each dot opens that session directly.
-    QWidget *m_agentStatusRow = nullptr;
-    QPushButton *m_agentStatusLabel = nullptr;
-    QWidget *m_agentStatusIconsHost = nullptr;
-    QHBoxLayout *m_agentStatusIconsLayout = nullptr;
-    // "N more" button on the right of the strip (adhoc #115): replaces the old
-    // horizontal scrollbar. Shown only when there are more sessions than fit in
-    // the capped icon row; clicking it jumps to the Agents tab.
-    QPushButton *m_agentStatusMoreButton = nullptr;
+    // `claude --help` probe for the CLI's supported --effort levels (adhoc #38).
+    QProcess *m_claudeEffortProbe = nullptr;
+    QByteArray m_claudeEffortProbeBuf;
     // Voice input (whisper.cpp): the mic button is hidden until whisper.cpp is
     // installed. While recording, m_voiceRecordProc captures a temp WAV which
     // m_voiceTranscribeProc transcribes — once when recording stops, and live on
@@ -5294,8 +5323,6 @@ private:
     QTimer *m_openRepoRefreshTimer = nullptr;
     QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
     int m_agentsSpinFrame = 0;
-    QTimer *m_agentStatusSpinTimer = nullptr;    // animates the footer "Agents:" strip
-    int m_agentStatusSpinFrame = 0;
     QTableWidget *m_actionsTable = nullptr;
     QLabel *m_actionRunTitle = nullptr;
     QLabel *m_actionRunMeta = nullptr;
@@ -5859,10 +5886,13 @@ private:
     QJsonArray m_liveClaudeModels;
     // Start an issue-less coding agent from the quick-add bar (issue #299) in
     // repoIndex's checkout with `task` as its prompt. Returns the new session id
-    // (>0) or 0 if it could not start.
+    // (>0) or 0 if it could not start. genie marks the run as a genie task
+    // (adhoc #38): the MCP connector is attached at launch and the session keeps
+    // its own sparkle status glyph.
     int startAdHocAgentForRepo(int repoIndex, const QString &task,
                                const QString &provider, bool createPr,
-                               const QString &model = QString());
+                               const QString &model = QString(),
+                               bool genie = false);
     // Save a clipboard image to a stable temp file so a launched agent can read it
     // by path. Used by the quick-add image paste/attach path (issue #79).
     QString saveNewAgentPromptImage(const QImage &image);

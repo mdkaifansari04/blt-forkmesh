@@ -2859,6 +2859,56 @@ inline bool agentModeSkipsPermissions(const QString &modeLabel)
 // actions popup. Effort level for Claude Code runs ("low"/"medium"/"high"/
 // "xhigh"/"max"), passed to the CLI as `--effort`.
 const QString kClaudeEffortSetting = QStringLiteral("agents/claudeEffort");
+// Effort levels the installed `claude` CLI actually accepts, probed from its own
+// `--help` output (adhoc #38) and cached so the composer's speed picker offers
+// the real list rather than a hard-coded guess that drifts with the CLI. Empty /
+// unset falls back to defaultAgentEffortLevels() below.
+const QString kClaudeEffortLevelsCacheSetting =
+    QStringLiteral("agents/claudeEffortLevels");
+// The fallback ladder for the composer's speed picker: what the CLI has shipped
+// for a while, used until a probe (Claude Code) or the app-server model catalog
+// (Codex) says otherwise.
+inline QStringList defaultAgentEffortLevels()
+{
+    return {QStringLiteral("low"), QStringLiteral("medium"),
+            QStringLiteral("high"), QStringLiteral("xhigh"),
+            QStringLiteral("max")};
+}
+// One short label per effort id, for the composer's speed picker. Unknown ids (a
+// CLI probe can surface levels this app has never heard of) just get their first
+// letter capitalised, so a new level still reads as a real choice.
+inline QString agentEffortLabel(const QString &level)
+{
+    const QString id = level.trimmed().toLower();
+    if (id.isEmpty())
+        return QString();
+    if (id == QLatin1String("xhigh"))
+        return QStringLiteral("Ultra");
+    QString label = id;
+    label[0] = label[0].toUpper();
+    return label;
+}
+// Genie mode (adhoc #38): the composer's genie button wraps the typed task in
+// this preamble, so the run knows it holds the ForkMesh MCP connector (the same
+// one Settings -> MCP mints for the site) and that it is expected to keep going
+// until the whole task is done rather than stopping at the first checkpoint.
+// Stored on the session as its prompt, so a resume replays the same framing.
+inline QString genieTaskPrompt(const QString &task)
+{
+    return QStringLiteral(
+               "You are running as a ForkMesh genie: a long-running task, not a "
+               "quick question. The ForkMesh MCP server is connected as "
+               "`forkmesh` \xE2\x80\x94 use its tools to work the mesh: "
+               "list_repos / search_issues / read_file to find and read work, "
+               "comment_on_issue to report progress as you go, create_issue for "
+               "follow-ups you find but should not do now, and "
+               "open_pr_from_branch when the work is ready for review. Keep "
+               "working until the task is genuinely finished: plan it, do it, "
+               "verify it (build and tests), and only then report back. If you "
+               "hit something you cannot resolve, say so explicitly instead of "
+               "stopping quietly.\n\nTask:\n%1")
+        .arg(task);
+}
 // "Thinking" toggle: false => launch the CLI with MAX_THINKING_TOKENS=0 so the
 // model skips extended thinking. Default on (the CLI's own behavior).
 const QString kClaudeThinkingSetting = QStringLiteral("agents/claudeThinking");

@@ -20,6 +20,7 @@
 #include <QClipboard>
 #include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -242,6 +243,43 @@ QWidget *MainWindow::buildMcpConnectorTab()
 
     refreshMcpConnectorTab();
     return body;
+}
+
+// Genie mode (adhoc #38): the launch flags that give one agent run this node's
+// MCP connector. Claude Code takes a config file, so the same JSON the Settings
+// page shows is written per session under the app data dir — owner-only, because
+// it embeds the connector token — and handed over as `--mcp-config`. Codex has no
+// such flag, so the equivalent `-c mcp_servers.forkmesh.*` overrides go instead.
+// Empty when forkmesh_mcp_server.py cannot be found: the run still goes ahead,
+// just without mesh tools.
+QStringList MainWindow::genieMcpCliArgs(const QString &provider, int sessionId) const
+{
+    const QString script = mcpServerScriptPath();
+    if (script.isEmpty())
+        return {};
+    const QString token = forkmesh::mcp::loadConnector(mcpAppDataDir()).token;
+    const QString repos = repositoryMirrorRoot();
+    if (agentIsCodexProvider(provider))
+        return forkmesh::mcp::codexConfigArgs(pythonCommand(), script, repos, token);
+    if (provider != QLatin1String("claude-code"))
+        return {};
+
+    const QString dir = QDir(mcpAppDataDir()).absoluteFilePath(QStringLiteral("mcp"));
+    if (!QDir().mkpath(dir))
+        return {};
+    const QString path =
+        QDir(dir).absoluteFilePath(QStringLiteral("genie-%1.json").arg(sessionId));
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return {};
+    // Owner-only before the token is written, like connector.json itself.
+    file.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
+    const QByteArray payload =
+        forkmesh::mcp::configJson(pythonCommand(), script, repos, token).toUtf8();
+    if (file.write(payload) != payload.size())
+        return {};
+    file.close();
+    return {QStringLiteral("--mcp-config"), path};
 }
 
 void MainWindow::refreshMcpConnectorTab()

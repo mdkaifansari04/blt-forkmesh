@@ -5822,6 +5822,36 @@ int main(int argc, char *argv[])
         legacy.remove("yolo");
         check(!AgentSession::fromJson(legacy).yolo,
               "a session JSON without the yolo key never auto-merges");
+
+        // Genie (adhoc #38) is stamped the same way: the launch attaches the MCP
+        // connector because the run was started as a genie, so the flag has to
+        // survive a restart (a resumed genie must get its tools back) and an
+        // older session file must not read as one.
+        check(!AgentSession::fromJson(legacy).genie,
+              "a session JSON without the genie key is not a genie run");
+        session.genie = true;
+        check(store.saveSession(session), "saving a genie session succeeds");
+        AgentStore genieReopened(tmp.path());
+        const QList<AgentSession> genieSessions = genieReopened.loadAllSessions();
+        check(genieSessions.size() == 1 && genieSessions.first().genie,
+              "the genie flag reloads intact after a restart");
+        // The sparkle glyph marks a genie only while it is still in flight; a
+        // finished or merged one reads exactly like every other run.
+        AgentSession live = genieSessions.first();
+        live.status = AgentStatus::Running;
+        check(live.genieInFlight(), "a running genie is drawn with the genie glyph");
+        live.status = AgentStatus::Success;
+        check(!live.genieInFlight(),
+              "a finished genie falls back to the ordinary status glyph");
+        live.status = AgentStatus::Running;
+        live.merged = true;
+        check(!live.genieInFlight(),
+              "a merged genie shows the merge glyph, not the genie one");
+        AgentSession ordinary = live;
+        ordinary.genie = false;
+        ordinary.merged = false;
+        check(!ordinary.genieInFlight(),
+              "an ordinary run never shows the genie glyph");
     }
 
     {
@@ -6750,6 +6780,38 @@ int main(int argc, char *argv[])
                   !maskToken(token).contains(token.mid(12, 8)) &&
                   maskToken(QString()).isEmpty(),
               "masking hides the middle of the token");
+
+        // Genie mode (adhoc #38) attaches the same connector to a Codex run, but
+        // `codex app-server` has no --mcp-config flag: it takes one -c override
+        // per config key, parsed as a TOML/JSON literal. Strings therefore have to
+        // arrive quoted and the args list as a real array, or Codex rejects the
+        // override and the genie silently loses its mesh tools.
+        const QStringList codexArgs =
+            codexConfigArgs(QStringLiteral("/usr/bin/python3"),
+                            QStringLiteral("/home/a b/mcp.py"),
+                            QStringLiteral("/home/u/mirrors"), token);
+        check(codexArgs.size() == 8 && codexArgs.at(0) == QStringLiteral("-c") &&
+                  codexArgs.count(QStringLiteral("-c")) == 4,
+              "each Codex MCP override is passed as its own -c argument");
+        check(codexArgs.at(1) ==
+                  QStringLiteral("mcp_servers.forkmesh.command=\"/usr/bin/python3\""),
+              "the Codex command override is a quoted TOML string");
+        check(codexArgs.at(3) ==
+                  QStringLiteral("mcp_servers.forkmesh.args=[\"/home/a b/mcp.py\"]"),
+              "the Codex args override is a JSON array, spaces and all");
+        check(codexArgs.contains(QStringLiteral(
+                  "mcp_servers.forkmesh.env.FORKMESH_REPOS_DIR=\"/home/u/mirrors\"")) &&
+                  codexArgs.contains(
+                      QStringLiteral("mcp_servers.forkmesh.env.FORKMESH_MCP_TOKEN=\"") +
+                      token + QStringLiteral("\"")),
+              "the Codex overrides carry the repo root and the connector token");
+        const QStringList bare = codexConfigArgs(
+            QString(), QStringLiteral("/opt/fm/mcp.py"), QString(), QString());
+        check(bare.size() == 4 &&
+                  bare.at(1) ==
+                      QStringLiteral("mcp_servers.forkmesh.command=\"python3\"") &&
+                  !bare.join(QLatin1Char(' ')).contains(QStringLiteral("env.")),
+              "with no token and no repo root only command and args are overridden");
     }
 
     if (failures) {

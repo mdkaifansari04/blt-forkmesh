@@ -59,6 +59,7 @@
         <file alias="sign-in.svg">icons/octicons/sign-in.svg</file>
         <file alias="sign-out.svg">icons/octicons/sign-out.svg</file>
         <file alias="sort-desc.svg">icons/octicons/sort-desc.svg</file>
+        <file alias="sparkle.svg">icons/octicons/sparkle.svg</file>
         <file alias="star.svg">icons/octicons/star.svg</file>
         <file alias="stop.svg">icons/octicons/stop.svg</file>
         <file alias="sun.svg">icons/octicons/sun.svg</file>

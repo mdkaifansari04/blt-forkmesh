@@ -377,6 +377,11 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     // no icon.
     if (s.merged)
         cell->setIcon(themedOcticon("git-merge", QColor("#a371f7"), 14));
+    // Genie runs in flight (adhoc #38): a violet sparkle rather than the shared
+    // spinner/clock, so a long-running MCP-backed task is recognisable in the
+    // list. animateRunningAgentIcons() spins this one too.
+    else if (s.genieInFlight())
+        cell->setIcon(themedOcticon("sparkle", QColor(Theme::kGenie), 14));
     else if (s.status == AgentStatus::Running)
         cell->setIcon(themedOcticon("sync", QColor(Theme::kRunning), 14));
     else if (s.status == AgentStatus::Success)
@@ -403,6 +408,9 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     // With the Status column gone the glyph is the only thing showing the run
     // state, so the tooltip has to name it outright.
     QStringList tip{agentStatusLabel(s)};
+    if (s.genie)
+        tip << QStringLiteral("Genie \xE2\x80\x94 long-running run with this "
+                              "node's ForkMesh MCP connector attached");
     if (!s.merged && s.status == AgentStatus::Queued)
         tip << QStringLiteral("Queued \xE2\x80\x94 starts when one of the %1 running "
                               "agent slots frees up (Settings \xE2\x86\x92 Agents)")
@@ -6127,7 +6135,7 @@ void MainWindow::updateIssueLooperButton()
 // worktree/branch and opens a pull request on finish, like every transcript run.
 int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
                                        const QString &provider, bool createPr,
-                                       const QString &model)
+                                       const QString &model, bool genie)
 {
     if (!m_agentStore || task.isEmpty())
         return 0;
@@ -6158,6 +6166,10 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     session.orgTask = !m_quickAddTask || m_quickAddTask->isChecked();
     session.startedByBot = agentBotLabel(provider);
     session.strength = composerAgentStrength();
+    // Genie (adhoc #38): stamped at launch like YOLO and Task, so the run keeps
+    // its MCP connector and sparkle glyph across a restart/resume even though the
+    // button that started it is long since forgotten.
+    session.genie = genie;
     session.model = model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
@@ -6192,6 +6204,11 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         session,
         QStringLiteral("==> Started from a prompt (%1).\n")
             .arg(agentProviderName(provider)));
+    if (genie)
+        m_agentStore->appendLog(
+            session,
+            QStringLiteral("==> Genie mode: long-running task with this node's "
+                           "ForkMesh MCP connector attached.\n"));
     openOrgTaskForSession(session); // adhoc #18: mirror the run as an org task
 
     // This path launches directly instead of going through processAgentQueue, so
@@ -6557,103 +6574,14 @@ void MainWindow::switchToAgentsTab(int sessionId)
     showAgentSession(sessionId);
 }
 
-// Rebuild the footer "Agents:" status strip (adhoc #111) from m_agentSessions:
-// one small status glyph per known session (adhoc #114 swapped the plain
-// colored dots for the same icon set the Agents table's Status column uses —
-// an orange spinner while running, purple merge mark once landed, orange hand
-// while waiting, etc — via agentStatusOcticon), click-through to that
-// session's Agents tab. Called after every reloadAgents() so the strip tracks
-// the same data as the Agents table.
+// The footer "Agents:" status strip (adhoc #111/#114/#115) is gone (adhoc #38) —
+// its dots and "N more" button no longer sit above the composer. What is left of
+// this call is the top-bar agent matrix, which shows the same per-session state:
+// keep calling it from every path that touches session status, including bare
+// status flips that never reach updateAgentsNavBadge().
 void MainWindow::refreshAgentStatusRow()
 {
-    // The top-bar matrix shows the same per-session state, so keep it in step
-    // with every path that touches this strip — including bare status flips,
-    // which never reach updateAgentsNavBadge().
     refreshAgentDotMatrix();
-    if (!m_agentStatusIconsLayout || !m_agentStatusRow)
-        return;
-    QLayoutItem *item;
-    while ((item = m_agentStatusIconsLayout->takeAt(0)) != nullptr) {
-        delete item->widget();
-        delete item;
-    }
-    m_agentStatusRow->setVisible(!m_agentSessions.isEmpty());
-    // Cap how many dots the strip packs in (adhoc #115): the row no longer
-    // scrolls, so the overflow collapses into the "N more" button on the right
-    // instead of running off the edge behind a horizontal scrollbar.
-    constexpr int kMaxStatusDots = 12;
-    const int totalSessions = m_agentSessions.size();
-    const int shownDots = qMin(totalSessions, kMaxStatusDots);
-    bool anyRunning = false;
-    int drawn = 0;
-    for (const AgentSession &session : std::as_const(m_agentSessions)) {
-        if (drawn >= shownDots)
-            break;
-        ++drawn;
-        auto *dot = new QPushButton;
-        dot->setObjectName("agentStatusDot");
-        dot->setFlat(true);
-        dot->setCursor(Qt::PointingHandCursor);
-        dot->setFixedSize(18, 18);
-        dot->setIconSize(QSize(14, 14));
-        const bool running = !session.merged && session.status == AgentStatus::Running;
-        // Running sessions are seeded at frame 0 here; animateAgentStatusIcons()
-        // spins them the same way animateRunningAgentIcons() spins the table.
-        dot->setIcon(agentStatusOcticon(session, 14));
-        dot->setProperty("agentStatusSpin", running);
-        anyRunning = anyRunning || running;
-        const QString label = session.issueNumber > 0
-            ? QStringLiteral("#%1 %2").arg(session.issueNumber).arg(session.issueTitle)
-            : session.prompt.left(80);
-        dot->setToolTip(QStringLiteral("%1/%2 \xE2\x80\x94 %3\n%4")
-                             .arg(session.owner, session.name,
-                                  session.merged ? QStringLiteral("merged")
-                                                 : agentStatusText(session.status),
-                                  label));
-        const int sessionId = session.id;
-        connect(dot, &QPushButton::clicked, this,
-                [this, sessionId] { switchToAgentsTab(sessionId); });
-        m_agentStatusIconsLayout->addWidget(dot);
-    }
-
-    // Surface the hidden sessions as a "N more" button on the right; clicking it
-    // opens the Agents tab (adhoc #115).
-    if (m_agentStatusMoreButton) {
-        const int hidden = totalSessions - shownDots;
-        m_agentStatusMoreButton->setVisible(hidden > 0);
-        if (hidden > 0)
-            m_agentStatusMoreButton->setText(QStringLiteral("%1 more").arg(hidden));
-    }
-
-    if (anyRunning) {
-        if (!m_agentStatusSpinTimer) {
-            m_agentStatusSpinTimer = new QTimer(this);
-            connect(m_agentStatusSpinTimer, &QTimer::timeout, this,
-                    &MainWindow::animateAgentStatusIcons);
-        }
-        if (!m_agentStatusSpinTimer->isActive())
-            m_agentStatusSpinTimer->start(120);
-    } else if (m_agentStatusSpinTimer) {
-        m_agentStatusSpinTimer->stop();
-    }
-}
-
-// Spin the orange "sync" glyph on every running icon in the footer "Agents:"
-// strip (adhoc #114), mirroring animateRunningAgentIcons()'s treatment of the
-// Agents table. Driven by m_agentStatusSpinTimer, which only ticks while at
-// least one session in the strip is running (see refreshAgentStatusRow).
-void MainWindow::animateAgentStatusIcons()
-{
-    if (!m_agentStatusIconsLayout)
-        return;
-    m_agentStatusSpinFrame = (m_agentStatusSpinFrame + 1) % 10;
-    const QIcon icon(rotatedTintedOcticonPixmap(
-        "sync", QColor(Theme::kRunning), 14, m_agentStatusSpinFrame * 36.0));
-    for (int i = 0; i < m_agentStatusIconsLayout->count(); ++i) {
-        QWidget *w = m_agentStatusIconsLayout->itemAt(i)->widget();
-        if (w && w->property("agentStatusSpin").toBool())
-            static_cast<QPushButton *>(w)->setIcon(icon);
-    }
 }
 
 // Clicking the "Agents:" label (as opposed to one of its dots): jump to the
@@ -7740,6 +7668,9 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     const int issueNumber = session.issueNumber;
     const QString model = session.model;
     const QString sessionMode = session.mode;
+    // Genie (adhoc #38): snapshot like the rest — `session` dangles once
+    // reloadAgents() below rebuilds m_agentSessions.
+    const bool genie = session.genie;
 
     session.status = AgentStatus::Running;
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
@@ -7805,8 +7736,17 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // prompt — `lead` carries the user's ask (or the issue + its comments).
     const QString routeTask = lead;
     auto launch = [this, sid, prompt, autoMode, branchName, resumeId,
-                   selectedModel, routeTask, codex,
+                   selectedModel, routeTask, codex, genie,
                    sessionMode](const QString &workdir) {
+        // Genie mode: the launch flags that attach this node's MCP connector so
+        // the run can work the mesh itself (adhoc #38). Empty for an ordinary
+        // run, and empty — with the run still going ahead — when the server
+        // script is missing.
+        const QStringList mcpArgs =
+            genie ? genieMcpCliArgs(codex ? kCodexProvider
+                                          : QStringLiteral("claude-code"),
+                                    sid)
+                  : QStringList();
         if (codex) {
             CodexAppServerSession *live = m_codexStreams.value(sid);
             if (!live)
@@ -7839,7 +7779,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 codexEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
             }
             live->start(workdir, codexEnv, prompt, resumeId, selectedModel, mode,
-                        effort, jailMb);
+                        effort, jailMb, mcpArgs);
             return;
         }
 
@@ -7864,8 +7804,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         // runs the router (adhoc #91), which is asynchronous — so `begin`
         // re-checks that this stream is still the session's live one (the user
         // may have stopped or restarted it while the triage ran).
-        auto begin = [this, sid, live, workdir, env, prompt, autoMode,
-                      resumeId](const QString &chosenModel) {
+        auto begin = [this, sid, live, workdir, env, prompt, autoMode, resumeId,
+                      mcpArgs](const QString &chosenModel) {
             if (m_streamSessions.value(sid) != live)
                 return;
             // Footer slash-actions menu (adhoc #116): effort and model-fallback
@@ -7888,7 +7828,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 launchEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
             }
             live->start(workdir, launchEnv, prompt, /*skipPermissions=*/autoMode,
-                        resumeId, chosenModel, effort, fallback, jailMb);
+                        resumeId, chosenModel, effort, fallback, jailMb, mcpArgs);
         };
         if (selectedModel == kClaudeAutoModelId)
             resolveAutoClaudeModel(sid, routeTask, workdir, live, std::move(begin));
@@ -9065,6 +9005,11 @@ void MainWindow::animateRunningAgentIcons()
         return;
     const QIcon icon(rotatedTintedOcticonPixmap(
         "sync", QColor(Theme::kRunning), 14, m_agentsSpinFrame * 36.0));
+    // A genie's sparkle turns instead of the sync arrows (adhoc #38) so its own
+    // glyph survives the animation rather than being overwritten by the shared
+    // running spinner.
+    const QIcon genieIcon(rotatedTintedOcticonPixmap(
+        "sparkle", QColor(Theme::kGenie), 14, m_agentsSpinFrame * 36.0));
     QSignalBlocker block(m_agentTable);
     for (int r = 0; r < m_agentTable->rowCount(); ++r) {
         QTableWidgetItem *idItem = m_agentTable->item(r, kAgentIdColumn);
@@ -9075,7 +9020,7 @@ void MainWindow::animateRunningAgentIcons()
             continue;
         // The spinner sits on the "#" cell (adhoc #29 — see applyAgentRowCells for
         // the column layout).
-        idItem->setIcon(icon);
+        idItem->setIcon(s->genie ? genieIcon : icon);
         // Keep the Speed column's live tok/s figure ticking for running rows
         // (issue #245): its run duration grows against the wall clock, so recompute
         // it here rather than spinning up a second timer. The elapsed-time figure
