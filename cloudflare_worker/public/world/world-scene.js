@@ -6615,11 +6615,21 @@ function nodeDataKey(node) {
   return JSON.stringify({
     name: node?.name,
     machineName: node?.machineName,
+    ownerUser: node?.ownerUser,
     online: mirrorNodeIsOnline(node),
     healthy: node?.healthy,
     integrity: node?.integrity,
     activity: node?.activity,
     activityUpdatedAt: node?.activityUpdatedAt,
+    endpoint: node?.endpoint,
+    checkedAt: node?.checkedAt,
+    latencyMs: node?.latencyMs,
+    region: node?.region,
+    endpointHealthy: node?.endpointHealthy,
+    endpointIntegrity: node?.endpointIntegrity,
+    endpointFresh: node?.endpointFresh,
+    abuseBlocked: node?.abuseBlocked,
+    operations: node?.operations,
     cloneAvailable: node?.cloneAvailable,
     commit: node?.commit,
     branch: node?.branch,
@@ -6743,11 +6753,6 @@ function mirrorCommitSnapshot(node, repo) {
 function serverPanelTexture(THREE, node) {
   const online = mirrorNodeIsOnline(node);
   const integrity = String(node?.integrity || "unknown").toLowerCase();
-  const activity = String(node?.activity || "unknown")
-    .replace(/[^a-z0-9-]/gi, "")
-    .replace(/-/g, " ")
-    .toUpperCase()
-    .slice(0, 24);
   const repo = Array.isArray(node?.repositories) ? node.repositories[0] : null;
   const repositoryLabel =
     repo?.owner && repo?.name
@@ -6762,6 +6767,13 @@ function serverPanelTexture(THREE, node) {
   const cpu = mirrorMetric(node?.cpuPercent, 100);
   const memory = mirrorRatio(node?.memoryUsedBytes, node?.memoryTotalBytes);
   const disk = mirrorRatio(node?.diskUsedBytes, node?.diskTotalBytes);
+  const pingLatency = mirrorMetric(node?.latencyMs, 60_000);
+  const pingLabel =
+    pingLatency === null
+      ? "PING NOT REPORTED"
+      : `PING ${Math.round(pingLatency)} MS · ${
+          node?.endpointFresh === true ? "FRESH" : "STALE"
+        }`;
   const statusColor =
     online && integrity === "ok"
       ? "#73f0ad"
@@ -6811,7 +6823,7 @@ function serverPanelTexture(THREE, node) {
     context.font = '600 21px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#8ca99a";
     context.textAlign = "right";
-    context.fillText(activity || `SYNCED ${syncAgo}`, 966, 124);
+    context.fillText(pingLabel, 966, 124);
     context.textAlign = "left";
 
     context.strokeStyle = "#294339";
@@ -6897,6 +6909,16 @@ function serverPanelTexture(THREE, node) {
       }`,
       62,
       522,
+    );
+    context.font = '600 16px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#8ca99a";
+    context.fillText(
+      `OWNER ${String(node?.ownerUser || "NOT REPORTED").slice(
+        0,
+        18,
+      )} · ID ${String(node?.nodeId || "NOT REPORTED").slice(0, 16)}`,
+      62,
+      548,
     );
 
     context.strokeStyle = "#294339";
@@ -8380,19 +8402,17 @@ function rewardPoolMirrorCountTexture(THREE, total, online) {
     context.shadowColor = "rgba(255, 174, 63, 0.9)";
     context.shadowBlur = 34;
     context.fillStyle = glow;
-    context.font = '700 128px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText(count.toLocaleString("en-US"), 256, 88);
+    context.font = '700 142px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText(live.toLocaleString("en-US"), 256, 92);
     context.shadowBlur = 18;
     context.fillStyle = "#9ef7c6";
-    context.font = '400 40px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(count === 1 ? "MIRROR" : "MIRRORS", 256, 168);
-    // Offline cabinets stay in the ring, so the tally says plainly how many of
-    // them are actually serving instead of implying every one is live.
+    context.font = '700 36px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("ONLINE", 256, 168);
     context.shadowBlur = 12;
-    context.fillStyle = live === count ? "#9ef7c6" : "#ffd479";
-    context.font = '400 30px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#ffd479";
+    context.font = '500 30px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
-      live === count ? "ALL ONLINE" : `${live.toLocaleString("en-US")} ONLINE`,
+      `${count.toLocaleString("en-US")} TOTAL`,
       256,
       216,
     );
@@ -8734,13 +8754,14 @@ function createFountain(THREE, position, interactive, animated) {
   const mirrorCountSprite = new THREE.Sprite(
     new THREE.SpriteMaterial({
       transparent: true,
+      depthTest: false,
       depthWrite: false,
       toneMapped: false,
     }),
   );
   mirrorCountSprite.name = "reward-pool-mirror-count";
-  mirrorCountSprite.position.y = 9.4;
-  mirrorCountSprite.scale.set(5, 2.5, 1);
+  mirrorCountSprite.position.y = 6.7;
+  mirrorCountSprite.scale.set(3.6, 1.8, 1);
   mirrorCountSprite.renderOrder = 12;
   mirrorCountSprite.visible = false;
   group.add(mirrorCountSprite);
@@ -8790,10 +8811,10 @@ function createFountain(THREE, position, interactive, animated) {
   group.add(light);
 
   const treasurySign = createRewardTreasurySign(THREE);
-  // The SOL board is the fixed centre of the service yard. Live node cabinets
-  // form complete, evenly spaced rings around this point and are reflowed
-  // whenever membership changes.
-  treasurySign.position.set(0, 0, 5.2);
+  // The SOL board now rises from the exact centre of the global reward-pool
+  // pedestal. Its raised base clears the pedestal rim while leaving a visible
+  // gap beneath the fireball and its live online/total readout.
+  treasurySign.position.set(0, 1, 0);
   treasurySign.rotation.y = 0;
   group.add(treasurySign);
   group.userData.treasurySign = treasurySign;
@@ -21452,7 +21473,6 @@ export function createWorldScene({
       depthWrite: false,
     });
     [
-      ["TOWN", 0, 0, "#9ef7c6"],
       ["REPOSITORIES", REPOSITORY_ISLAND_CENTER_X, 0, "#77d9ff"],
       ["LEADERBOARDS", LEADERBOARD_ISLAND_CENTER_X, 0, "#d5b6ff"],
       ["MEMBERS", 0, MEMBER_ISLAND_CENTER_Z, "#f7c96b"],
