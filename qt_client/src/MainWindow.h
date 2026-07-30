@@ -1131,6 +1131,8 @@ private:
     void updateOrganizationTaskActions();
     void createOrganizationTask();
     void createOrganizationTaskFollowUp();
+    void refreshOrganizationTaskQueue();
+    void moveQueuedAgentItemToTasks();
     void editOrganizationTask();
     void assignOrganizationTaskToAgent();
     void queueOrganizationTaskAgent(const QJsonObject &task);
@@ -3936,12 +3938,14 @@ private:
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
     QPushButton *m_tasksNavButton = nullptr;
     QTableWidget *m_organizationTasksTable = nullptr;
+    QTableWidget *m_organizationTaskQueueTable = nullptr;
     QLineEdit *m_organizationTasksSearch = nullptr;
     QTextBrowser *m_organizationTaskDetail = nullptr;
     QLabel *m_organizationTasksStatus = nullptr;
     QLabel *m_organizationTasksSummary = nullptr;
     QPushButton *m_organizationTaskNewButton = nullptr;
     QPushButton *m_organizationTaskFollowUpButton = nullptr;
+    QPushButton *m_organizationTaskQueueMoveButton = nullptr;
     QPushButton *m_organizationTaskEditButton = nullptr;
     QPushButton *m_organizationTaskAgentButton = nullptr;
     QPushButton *m_organizationTaskStartButton = nullptr;

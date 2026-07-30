@@ -319,8 +319,58 @@ QWidget *MainWindow::buildOrganizationTasksSection()
     splitter->setStretchFactor(1, 2);
     outer->addWidget(splitter, 1);
 
+    auto *queueHeading = new QHBoxLayout;
+    auto *queueTitle = new QLabel(QStringLiteral("Claude / Codex queue"));
+    queueTitle->setObjectName(QStringLiteral("sectionTitle"));
+    queueHeading->addWidget(queueTitle);
+    auto *queueHelp = new QLabel(
+        QStringLiteral("Local queued items not yet linked to Tasks"));
+    queueHelp->setObjectName(QStringLiteral("mutedLabel"));
+    queueHeading->addWidget(queueHelp);
+    queueHeading->addStretch();
+    m_organizationTaskQueueMoveButton =
+        new QPushButton(QStringLiteral("Move into Tasks"));
+    m_organizationTaskQueueMoveButton->setObjectName(
+        QStringLiteral("primaryButton"));
+    setOcticon(m_organizationTaskQueueMoveButton, "plus", 14);
+    m_organizationTaskQueueMoveButton->setEnabled(false);
+    connect(m_organizationTaskQueueMoveButton, &QPushButton::clicked, this,
+            &MainWindow::moveQueuedAgentItemToTasks);
+    queueHeading->addWidget(m_organizationTaskQueueMoveButton);
+    outer->addLayout(queueHeading);
+
+    m_organizationTaskQueueTable = new QTableWidget(0, 5);
+    m_organizationTaskQueueTable->setObjectName(
+        QStringLiteral("organizationTaskQueueTable"));
+    m_organizationTaskQueueTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Provider"), QStringLiteral("Item"),
+         QStringLiteral("Status"), QStringLiteral("Repository"),
+         QStringLiteral("Queued")});
+    m_organizationTaskQueueTable->verticalHeader()->hide();
+    m_organizationTaskQueueTable->setSelectionBehavior(
+        QAbstractItemView::SelectRows);
+    m_organizationTaskQueueTable->setSelectionMode(
+        QAbstractItemView::SingleSelection);
+    m_organizationTaskQueueTable->setEditTriggers(
+        QAbstractItemView::NoEditTriggers);
+    m_organizationTaskQueueTable->setMaximumHeight(190);
+    auto *queueHeader = m_organizationTaskQueueTable->horizontalHeader();
+    queueHeader->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    queueHeader->setSectionResizeMode(1, QHeaderView::Stretch);
+    for (int column = 2; column < 5; ++column)
+        queueHeader->setSectionResizeMode(column,
+                                          QHeaderView::ResizeToContents);
+    connect(m_organizationTaskQueueTable,
+            &QTableWidget::itemSelectionChanged, this, [this] {
+                m_organizationTaskQueueMoveButton->setEnabled(
+                    m_organizationTaskQueueTable->currentRow() >= 0 &&
+                    m_organizationTasksCanManage);
+            });
+    outer->addWidget(m_organizationTaskQueueTable);
+
     renderOrganizationTaskDetail();
     updateOrganizationTaskActions();
+    refreshOrganizationTaskQueue();
     return page;
 }
 
@@ -574,6 +624,133 @@ void MainWindow::applyOrganizationTasks(const QJsonObject &payload)
             m_organizationTasksSearch->text());
     renderOrganizationTaskDetail();
     updateOrganizationTaskActions();
+    refreshOrganizationTaskQueue();
+}
+
+void MainWindow::refreshOrganizationTaskQueue()
+{
+    if (!m_organizationTaskQueueTable)
+        return;
+    const int selectedId =
+        m_organizationTaskQueueTable->currentRow() >= 0 &&
+                m_organizationTaskQueueTable->item(
+                    m_organizationTaskQueueTable->currentRow(), 0)
+            ? m_organizationTaskQueueTable
+                  ->item(m_organizationTaskQueueTable->currentRow(), 0)
+                  ->data(Qt::UserRole)
+                  .toInt()
+            : 0;
+    m_organizationTaskQueueTable->setRowCount(0);
+    int selectedRow = -1;
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        const bool supported =
+            session.provider == QLatin1String("codex") ||
+            session.provider.startsWith(QLatin1String("claude"));
+        if (!supported || !session.orgTaskId.trimmed().isEmpty())
+            continue;
+        const int row = m_organizationTaskQueueTable->rowCount();
+        m_organizationTaskQueueTable->insertRow(row);
+        QString title = session.issueTitle.trimmed();
+        if (title.isEmpty())
+            title = session.prompt.simplified().left(160);
+        if (title.isEmpty())
+            title = QStringLiteral("Queued agent item #%1").arg(session.id);
+        const QString provider =
+            session.provider == QLatin1String("codex")
+                ? QStringLiteral("Codex")
+                : QStringLiteral("Claude");
+        const QStringList values{
+            provider,
+            title,
+            session.status,
+            session.owner + QLatin1Char('/') + session.name,
+            taskTimestamp(session.createdAtMs),
+        };
+        for (int column = 0; column < values.size(); ++column) {
+            auto *item = new QTableWidgetItem(values.at(column));
+            item->setToolTip(values.at(column));
+            if (column == 0)
+                item->setData(Qt::UserRole, session.id);
+            m_organizationTaskQueueTable->setItem(row, column, item);
+        }
+        if (session.id == selectedId)
+            selectedRow = row;
+    }
+    if (selectedRow >= 0)
+        m_organizationTaskQueueTable->selectRow(selectedRow);
+    m_organizationTaskQueueMoveButton->setEnabled(
+        selectedRow >= 0 && m_organizationTasksCanManage);
+}
+
+void MainWindow::moveQueuedAgentItemToTasks()
+{
+    const int row = m_organizationTaskQueueTable
+                        ? m_organizationTaskQueueTable->currentRow()
+                        : -1;
+    QTableWidgetItem *item =
+        row >= 0 ? m_organizationTaskQueueTable->item(row, 0) : nullptr;
+    const int sessionId = item ? item->data(Qt::UserRole).toInt() : 0;
+    auto it = std::find_if(
+        m_agentSessions.begin(), m_agentSessions.end(),
+        [sessionId](const AgentSession &session) {
+            return session.id == sessionId;
+        });
+    if (it == m_agentSessions.end() || !m_organizationTasksCanManage)
+        return;
+    QString title = it->issueTitle.trimmed();
+    if (title.isEmpty())
+        title = it->prompt.simplified().left(160);
+    if (title.isEmpty())
+        title = QStringLiteral("Queued agent item #%1").arg(it->id);
+    const QString details = it->prompt.trimmed().left(4000);
+    const QJsonObject body{
+        {QStringLiteral("title"), title},
+        {QStringLiteral("details"), details},
+        {QStringLiteral("department"), QStringLiteral("engineering")},
+        {QStringLiteral("destination"), QStringLiteral("agent")},
+        {QStringLiteral("assigneeKind"), QStringLiteral("agent")},
+        {QStringLiteral("repository"),
+         it->owner + QLatin1Char('/') + it->name},
+        {QStringLiteral("priority"), 50},
+        {QStringLiteral("agent"),
+         QJsonObject{
+             {QStringLiteral("provider"), it->provider},
+             {QStringLiteral("model"), it->model},
+             {QStringLiteral("mode"), it->mode},
+             {QStringLiteral("strength"), it->strength},
+             {QStringLiteral("sessionId"), QString::number(it->id)},
+         }},
+    };
+    requestOrganizationTasks(
+        QByteArrayLiteral("POST"), QStringLiteral("/api/tasks"), body,
+        [this, sessionId](bool ok, const QJsonObject &payload,
+                          const QString &error) {
+            if (!ok) {
+                m_organizationTasksStatus->setText(
+                    QStringLiteral("Queue import failed: %1").arg(error));
+                return;
+            }
+            const QString taskId =
+                payload.value(QStringLiteral("task"))
+                    .toObject()
+                    .value(QStringLiteral("id"))
+                    .toString();
+            auto session = std::find_if(
+                m_agentSessions.begin(), m_agentSessions.end(),
+                [sessionId](const AgentSession &candidate) {
+                    return candidate.id == sessionId;
+                });
+            if (session != m_agentSessions.end()) {
+                session->orgTask = true;
+                session->orgTaskId = taskId;
+                if (m_agentStore)
+                    m_agentStore->saveSession(*session);
+            }
+            m_organizationTasksStatus->setText(
+                QStringLiteral("Queued item moved into Tasks."));
+            refreshOrganizationTaskQueue();
+            refreshOrganizationTasks();
+        });
 }
 
 void MainWindow::renderOrganizationTaskDetail()
