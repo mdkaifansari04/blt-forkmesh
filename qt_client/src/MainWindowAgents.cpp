@@ -8,6 +8,7 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "AgentJail.h"
+#include "AgentPromptImages.h"
 #include "KebabHeaderView.h"
 #include "CodexAppServerSession.h"
 
@@ -6098,28 +6099,12 @@ void MainWindow::startAgentFromComposer()
         m_agentComposePrompt->clear();
 }
 
-// Save a pasted image to a stable temp file (not auto-removed: it must outlive
-// this call and be readable once the agent starts). Returns the path, or empty.
+// Save a pasted image to a stable file (not auto-removed: it must outlive this
+// call, be readable once the agent starts, and still be there when the
+// transcript re-renders the prompt after a restart). Returns the path, or empty.
 QString MainWindow::saveNewAgentPromptImage(const QImage &image)
 {
-    if (image.isNull())
-        return QString();
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
-        QStringLiteral("/forkmesh-agent-images");
-    QDir().mkpath(dir);
-    QTemporaryFile file(dir + QStringLiteral("/paste-XXXXXX.png"));
-    file.setAutoRemove(false);
-    if (!file.open())
-        return QString();
-    const QString path = file.fileName();
-    const bool ok = image.save(&file, "PNG");
-    file.close();
-    if (!ok) {
-        QFile::remove(path);
-        return QString();
-    }
-    return path;
+    return AgentPromptImages::save(image);
 }
 
 void MainWindow::continueSelectedAgentSession()
