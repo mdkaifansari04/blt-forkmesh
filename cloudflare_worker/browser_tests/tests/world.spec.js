@@ -8377,12 +8377,19 @@ test("focus music selection and controls persist without autoplaying on reload",
 test("portrait coarse-pointer thumbstick and visual viewport remain usable", async ({
   browser,
 }) => {
+  test.setTimeout(60_000);
   const context = await browser.newContext({
     viewport: { width: 390, height: 844 },
     hasTouch: true,
     isMobile: true,
   });
   const page = await context.newPage();
+  const hiddenFocusWarnings = [];
+  page.on("console", (message) => {
+    if (message.text().includes("Blocked aria-hidden on an element")) {
+      hiddenFocusWarnings.push(message.text());
+    }
+  });
   await prepareWorldPage(page, "portrait-touch");
   await waitForWorld(page);
 
@@ -8392,8 +8399,8 @@ test("portrait coarse-pointer thumbstick and visual viewport remain usable", asy
     "data-open",
     "true",
   );
-  const nameInput = page.locator("[data-world-display-name]");
-  await nameInput.focus();
+  const statusNoteInput = page.locator("[data-world-status-note]");
+  await statusNoteInput.focus();
   const before = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.world.getPosition(),
   );
@@ -8424,6 +8431,7 @@ test("portrait coarse-pointer thumbstick and visual viewport remain usable", asy
     "data-open",
     "false",
   );
+  expect(hiddenFocusWarnings).toEqual([]);
 
   const control = page.locator("[data-world-thumbstick]");
   // Leave enough time for more than one animation frame even when the release

@@ -216,6 +216,9 @@ const WORLD_WAVE_COOLDOWN_MS = 2000;
 // the board's lightweight stand texture counts down every second in between.
 const WORLD_STATUS_POLL_MS = 60 * 1000;
 const WORLD_BUILD_BOARD_POLL_MS = 60 * 1000;
+const WORLD_BUILD_BOARD_REPOSITORY_CACHE_MS = 15 * 60 * 1000;
+const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_BASE_MS = 5 * 60 * 1000;
+const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_MAX_MS = 30 * 60 * 1000;
 const WORLD_AGENT_BOT_POLL_MS = 8 * 1000;
 // The member directory is refreshed by arrivals rather than by a timer, so
 // the idle throttle is long; a new face at the fire forces it through, no
@@ -4584,7 +4587,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <p class="world-account-privacy">ForkMesh sends these forms only over same-origin HTTPS. Credentials are never placed in URLs, public activity, World sockets, analytics events, or repository logs.</p>
         </section>
 
-        <section class="world-settings" data-world-settings aria-labelledby="world-settings-title" aria-hidden="true">
+        <section class="world-settings" data-world-settings aria-labelledby="world-settings-title" aria-hidden="true" inert>
           <div class="world-settings-resize" data-world-settings-resize role="separator"
             tabindex="0" aria-label="Resize Work panel" aria-orientation="vertical"></div>
           <div class="world-settings-heading">
@@ -5095,6 +5098,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldActivityRenderedSecond = -1;
     this.worldActivityRenderedMinute = -1;
     this.accountReturnFocus = null;
+    this.settingsReturnFocus = null;
     this.officeMeeting = null;
     this.officeController = null;
     this.officeTasks = null;
@@ -5238,6 +5242,9 @@ class ForkMeshWorld extends HTMLElement {
     this.inflightRequests = new Map();
     this.responseCache = new Map();
     this.requestFailures = new Map();
+    this.buildBoardRepositoryIssues = [];
+    this.buildBoardRepositoryRetryAt = 0;
+    this.buildBoardRepositoryFailures = 0;
     this.mediaTimer = 0;
     this.seenRewardEvents = new Set();
     this.seenWorldEvents = new Set();
@@ -6532,35 +6539,25 @@ class ForkMeshWorld extends HTMLElement {
     return Boolean(this.infrastructureConsoleCapture);
   }
 
-  async refreshBuildBoard({ quiet = false } = {}) {
-    if (this.buildBoardLoad) return this.buildBoardLoad;
-    this.world?.setBuildBoardLoading?.(true);
-    this.buildBoardLoad = (async () => {
-      try {
-      const payload = await this.fetchJSON("/api/world/build-board", {
-        timeout: 12_000,
-        cache: "no-store",
-      });
-      // Repository issue enrichment is optional: the shared board payload is
-      // still useful when a mirror is temporarily unavailable. Cache the last
-      // good tree and cool down 429/503 responses instead of probing the same
-      // failing mirror on every board poll.
-      let tree = null;
-      try {
-        tree = await this.fetchJSON(
-          "/api/repo/forkmesh/forkmesh/tree?path=.forkmesh%2Fissues%2Fopen",
-          {
-            auth: false,
-            timeout: 12_000,
-            cache: "no-store",
-            maxAge: WORLD_BUILD_BOARD_POLL_MS,
-            backoff: true,
-            staleIfError: true,
-          },
-        );
-      } catch (_) {
-        tree = null;
-      }
+  async refreshBuildBoardRepositoryIssues() {
+    if (
+      document.visibilityState === "hidden" ||
+      Date.now() < this.buildBoardRepositoryRetryAt
+    ) {
+      return this.buildBoardRepositoryIssues;
+    }
+    try {
+      const tree = await this.fetchJSON(
+        "/api/repo/forkmesh/forkmesh/tree?path=.forkmesh%2Fissues%2Fopen",
+        {
+          auth: false,
+          timeout: 12_000,
+          cache: "no-store",
+          maxAge: WORLD_BUILD_BOARD_REPOSITORY_CACHE_MS,
+          backoff: true,
+          staleIfError: false,
+        },
+      );
       const numbers = (Array.isArray(tree?.entries) ? tree.entries : [])
         .filter(
           (entry) =>
@@ -6570,58 +6567,99 @@ class ForkMeshWorld extends HTMLElement {
         .filter((number) => Number.isSafeInteger(number) && number > 0)
         .sort((left, right) => right - left)
         .slice(0, 12);
-      if (numbers.length) {
-        const paths = numbers.map(
-          (number) =>
-            `.forkmesh/issues/open/${number}/issue-${number}.json`,
-        );
-        const query = paths
-          .map((path) => `path=${encodeURIComponent(path)}`)
-          .join("&");
-        const blobs = await this.fetchJSON(
-          `/api/repo/forkmesh/forkmesh/blobs?${query}`,
-          {
-            auth: false,
-            timeout: 12_000,
-            cache: "no-store",
-            maxAge: WORLD_BUILD_BOARD_POLL_MS,
-            backoff: true,
-            staleIfError: true,
-          },
-        );
-        const assigned = new Set(
-          (Array.isArray(payload?.assignedIssues)
-            ? payload.assignedIssues
-            : []
-          ).map((issue) => String(issue?.key || "")),
-        );
-        payload.issues = paths
-          .map((path, index) => {
-            try {
-              const record = JSON.parse(
-                repositoryBlobText(blobs?.blobs?.[path]),
-              );
-              const number = numbers[index];
-              const key = `issue:forkmesh/forkmesh#${number}`;
-              return {
-                key,
-                owner: "forkmesh",
-                repo: "forkmesh",
-                number,
-                title: sanitizePresenceText(
-                  record?.title || `Issue #${number}`,
-                  `Issue #${number}`,
-                  160,
-                ),
-                status: "open",
-                assigned: assigned.has(key),
-              };
-            } catch (_) {
-              return null;
-            }
-          })
-          .filter(Boolean);
+      if (!numbers.length) {
+        this.buildBoardRepositoryIssues = [];
+        this.buildBoardRepositoryFailures = 0;
+        this.buildBoardRepositoryRetryAt = 0;
+        return this.buildBoardRepositoryIssues;
       }
+      const paths = numbers.map(
+        (number) =>
+          `.forkmesh/issues/open/${number}/issue-${number}.json`,
+      );
+      const query = paths
+        .map((path) => `path=${encodeURIComponent(path)}`)
+        .join("&");
+      const blobs = await this.fetchJSON(
+        `/api/repo/forkmesh/forkmesh/blobs?${query}`,
+        {
+          auth: false,
+          timeout: 12_000,
+          cache: "no-store",
+          maxAge: WORLD_BUILD_BOARD_REPOSITORY_CACHE_MS,
+          backoff: true,
+          staleIfError: false,
+        },
+      );
+      this.buildBoardRepositoryIssues = paths
+        .map((path, index) => {
+          try {
+            const record = JSON.parse(
+              repositoryBlobText(blobs?.blobs?.[path]),
+            );
+            const number = numbers[index];
+            return {
+              key: `issue:forkmesh/forkmesh#${number}`,
+              owner: "forkmesh",
+              repo: "forkmesh",
+              number,
+              title: sanitizePresenceText(
+                record?.title || `Issue #${number}`,
+                `Issue #${number}`,
+                160,
+              ),
+              status: "open",
+            };
+          } catch (_) {
+            return null;
+          }
+        })
+        .filter(Boolean);
+      this.buildBoardRepositoryFailures = 0;
+      this.buildBoardRepositoryRetryAt = 0;
+      return this.buildBoardRepositoryIssues;
+    } catch (error) {
+      this.buildBoardRepositoryFailures = Math.min(
+        6,
+        this.buildBoardRepositoryFailures + 1,
+      );
+      const exponential =
+        WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_BASE_MS *
+        (2 ** (this.buildBoardRepositoryFailures - 1));
+      this.buildBoardRepositoryRetryAt =
+        Date.now() +
+        Math.min(
+          WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_MAX_MS,
+          Math.max(exponential, Number(error?.retryAfterMs) || 0),
+        );
+      return this.buildBoardRepositoryIssues;
+    }
+  }
+
+  async refreshBuildBoard({ quiet = false } = {}) {
+    if (this.buildBoardLoad) return this.buildBoardLoad;
+    this.world?.setBuildBoardLoading?.(true);
+    this.buildBoardLoad = (async () => {
+      try {
+      const payload = await this.fetchJSON("/api/world/build-board", {
+        timeout: 12_000,
+        cache: "no-store",
+      });
+      // Repository issue enrichment is optional. Its mirror cache and
+      // cooldown outlive this one-minute board poll so a 429/503 cannot turn
+      // proximity checks and the timer into repeated failing requests.
+      const repositoryIssues =
+        await this.refreshBuildBoardRepositoryIssues();
+      const assigned = new Set(
+        (Array.isArray(payload?.assignedIssues)
+          ? payload.assignedIssues
+          : []
+        ).map((issue) => String(issue?.key || "")),
+      );
+      payload.issues = repositoryIssues.map((issue) => ({
+        ...issue,
+        assigned: assigned.has(issue.key),
+      }));
       this.world?.updateBuildBoard?.(payload);
       return payload;
       } catch (_) {
@@ -21837,13 +21875,44 @@ class ForkMeshWorld extends HTMLElement {
   toggleSettings(open) {
     const panel = this.$("[data-world-settings]");
     if (!panel) return;
-    panel.dataset.open = String(open);
-    panel.setAttribute("aria-hidden", String(!open));
-    this.officeTasks?.setPersonalView?.(open === true);
     if (open) {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && !panel.contains(active)) {
+        this.settingsReturnFocus = active;
+      }
+      panel.inert = false;
+      panel.dataset.open = "true";
+      panel.setAttribute("aria-hidden", "false");
+      this.officeTasks?.setPersonalView?.(true);
       this.selectSettingsTab(this.settingsTab || "view");
-      window.setTimeout(() => panel.querySelector("button")?.focus(), 80);
+      window.setTimeout(() => {
+        if (panel.dataset.open === "true") {
+          panel.querySelector("button")?.focus();
+        }
+      }, 80);
+      return;
     }
+
+    // Move focus before making the panel inaccessible. Chromium rejects
+    // aria-hidden when a focused close button remains inside the subtree.
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && panel.contains(active)) {
+      const preferred = this.settingsReturnFocus;
+      const fallback = this.$("[data-world-settings-open]");
+      const target =
+        preferred instanceof HTMLElement &&
+        preferred.isConnected &&
+        !panel.contains(preferred)
+          ? preferred
+          : fallback;
+      target?.focus?.();
+      if (panel.contains(document.activeElement)) active.blur();
+    }
+    this.settingsReturnFocus = null;
+    panel.inert = true;
+    panel.dataset.open = String(open);
+    panel.setAttribute("aria-hidden", "true");
+    this.officeTasks?.setPersonalView?.(false);
   }
 
   selectSettingsTab(tab) {
@@ -22141,7 +22210,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     host.dataset.worldChatLoading = "true";
     const script = document.createElement("script");
-    script.src = "/dashboard-chat.js?v=e5cad37ea6e5";
+    script.src = "/dashboard-chat.js?v=f74c4cdd723e";
     script.defer = true;
     script.addEventListener("load", mount, { once: true });
     script.addEventListener("error", () => {

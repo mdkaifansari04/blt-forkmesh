@@ -131,13 +131,15 @@ const CAMERA_ZOOM_MIN = 0.06;
 const CAMERA_ZOOM_MAX = 28;
 const CAMERA_FAR_PLANE = 1800;
 const CAMERA_LOOK_SENSITIVITY = 0.0022;
-const RENDER_STALL_THRESHOLD_MS = 150;
+const RENDER_STALL_THRESHOLD_MS = 500;
 // DevTools console work is surprisingly expensive while WebGL is already
 // behind. Aggregate repeated stalls and emit at most one compact warning per
 // window instead of making a slow frame slower once every second.
-const RENDER_STALL_LOG_COOLDOWN_MS = 30_000;
-const MOVEMENT_INPUT_LOG_COOLDOWN_MS = 30_000;
-const MOVEMENT_INPUT_DELAY_THRESHOLD_MS = 50;
+const RENDER_STALL_LOG_COOLDOWN_MS = 5 * 60_000;
+const MOVEMENT_INPUT_LOG_COOLDOWN_MS = 5 * 60_000;
+const MOVEMENT_INPUT_DELAY_THRESHOLD_MS = 150;
+const SHADOW_MAP_UPDATE_MS = 2_000;
+const SHADOW_MAP_STALL_COOLDOWN_MS = 10_000;
 const SCENE_LOD_SAMPLE_MS = 500;
 const AVATAR_HIGHLIGHT_SAMPLE_MS = 100;
 // Dragging upward lowers the orbit eye beneath the target, which is how this
@@ -15044,10 +15046,10 @@ export function createWorldScene({
   const sun = new THREE.DirectionalLight("#fff1c4", 3.4);
   sun.position.set(-24, 35, 18);
   sun.castShadow = !compactRenderer;
-  // A 2k shadow map is disproportionately costly while the player is moving.
-  // 1k keeps the soft, low-poly look while leaving far more frame budget for
-  // input and world animation.
-  sun.shadow.mapSize.set(1024, 1024);
+  // The World contains hundreds of casters. A 1024px atlas rebuilt twice per
+  // second created the periodic 150–600ms renderer stalls seen on integrated
+  // GPUs; a soft 512px map is enough for this wide outdoor light.
+  sun.shadow.mapSize.set(512, 512);
   sun.shadow.camera.left = -90;
   sun.shadow.camera.right = 90;
   sun.shadow.camera.top = 90;
@@ -32308,13 +32310,16 @@ export function createWorldScene({
     }, 0);
   }
 
-  function scheduleRenderStallWarning(rawFrameMs) {
+  function scheduleRenderStallWarning(rawFrameMs, refreshedShadowMap = false) {
     if (renderStallWarningTimer || disposed) return;
     const renderCalls = Number(renderer.info?.render?.calls) || 0;
     const renderedTriangles = Number(renderer.info?.render?.triangles) || 0;
     let component = `${currentSpace} scene`;
     let codeArea = "world-scene animate() update/render pipeline";
-    if (pinchActive || primaryPointerId !== null) {
+    if (refreshedShadowMap) {
+      component = "shadow map refresh";
+      codeArea = "renderer.render(scene, camera) shadow pass";
+    } else if (pinchActive || primaryPointerId !== null) {
       component = "camera controls";
       codeArea = "world-scene pointer/pinch camera update";
     } else if (renderCalls >= 450 || renderedTriangles >= 750_000) {
@@ -32835,9 +32840,11 @@ export function createWorldScene({
         });
       }
     }
+    let refreshedShadowMap = false;
     if (renderer.shadowMap.enabled && time >= nextShadowMapUpdateAt) {
-      nextShadowMapUpdateAt = time + 500;
+      nextShadowMapUpdateAt = time + SHADOW_MAP_UPDATE_MS;
       renderer.shadowMap.needsUpdate = true;
+      refreshedShadowMap = true;
     }
     renderer.render(scene, camera);
     const frameWorkMs = Math.max(0, performance.now() - frameWorkStartedAt);
@@ -32845,9 +32852,15 @@ export function createWorldScene({
       frameWorkMs >= RENDER_STALL_THRESHOLD_MS &&
       document.visibilityState === "visible"
     ) {
+      if (refreshedShadowMap) {
+        nextShadowMapUpdateAt = Math.max(
+          nextShadowMapUpdateAt,
+          time + SHADOW_MAP_STALL_COOLDOWN_MS,
+        );
+      }
       if (time - lastRenderStallLogAt >= RENDER_STALL_LOG_COOLDOWN_MS) {
         lastRenderStallLogAt = time;
-        scheduleRenderStallWarning(frameWorkMs);
+        scheduleRenderStallWarning(frameWorkMs, refreshedShadowMap);
       } else {
         suppressedRenderStalls += 1;
       }

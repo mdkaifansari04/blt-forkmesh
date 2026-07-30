@@ -1443,10 +1443,13 @@ def test_render_stalls_include_bounded_likely_component_attribution():
     assert 'codeArea = "renderer.render(scene, camera)";' in SCENE
     assert "const frameWorkStartedAt = performance.now();" in SCENE
     assert "performance.now() - frameWorkStartedAt" in SCENE
-    assert "scheduleRenderStallWarning(frameWorkMs);" in SCENE
+    assert "scheduleRenderStallWarning(frameWorkMs, refreshedShadowMap);" in SCENE
     assert "scheduleRenderStallWarning(rawFrameMs);" not in SCENE
     assert "renderer.shadowMap.autoUpdate = false;" in SCENE
-    assert "nextShadowMapUpdateAt = time + 500;" in SCENE
+    assert "sun.shadow.mapSize.set(512, 512);" in SCENE
+    assert "nextShadowMapUpdateAt = time + SHADOW_MAP_UPDATE_MS;" in SCENE
+    assert "time + SHADOW_MAP_STALL_COOLDOWN_MS" in SCENE
+    assert 'component = "shadow map refresh";' in SCENE
     assert "function canvasReadableImageURL(value)" in SCENE
     assert "url.origin !== window.location.origin" in SCENE
     assert "const key = canvasReadableImageURL(url);" in SCENE
@@ -2278,6 +2281,24 @@ def test_world_member_directory_seats_registered_users_from_roster():
     assert '"/api/accounts/users"' in APP
     assert "syncMemberLounge" in APP
     assert "this.memberDirectory.length" in APP
+
+
+def test_world_settings_moves_focus_before_hiding_the_panel():
+    assert (
+        'data-world-settings aria-labelledby="world-settings-title" '
+        'aria-hidden="true" inert'
+    ) in APP
+    toggle = APP.split("  toggleSettings(open) {", 1)[1].split(
+        "\n  selectSettingsTab(", 1
+    )[0]
+    assert "panel.inert = false;" in toggle
+    assert "panel.contains(active)" in toggle
+    assert "target?.focus?.();" in toggle
+    assert "active.blur();" in toggle
+    assert toggle.index("target?.focus?.();") < toggle.index(
+        'panel.setAttribute("aria-hidden", "true");'
+    )
+    assert "panel.inert = true;" in toggle
 
 
 def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
