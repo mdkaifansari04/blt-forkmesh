@@ -94,6 +94,13 @@ const QUADCOPTER_VERTICAL_SPEED = 28;
 const QUADCOPTER_MAX_ALTITUDE = 480;
 const QUADCOPTER_MOUNT_DISTANCE = 7;
 const QUADCOPTER_RIDING_ACTIVITY = "flying the World quadcopter";
+const JETPACK_HORIZONTAL_SPEED = 30;
+const JETPACK_VERTICAL_SPEED = 22;
+const JETPACK_MAX_ALTITUDE = 480;
+const JETPACK_FLYING_ACTIVITY = "flying with a jetpack";
+const GYM_POSITION = Object.freeze([42, 0.14, 17]);
+const GYM_HEAVY_WEIGHT_LB = 315;
+const GYM_MAX_WEIGHT_LB = 1200;
 // Double-clicking the ground sends the avatar to that spot at a dash speed far
 // above the walking cap, so crossing the whole square takes a couple of seconds
 // without teleporting the avatar out from under the camera.
@@ -5374,6 +5381,69 @@ function syncOperatorBelt(THREE, avatar, nodeCount) {
   if (avatar.userData) avatar.userData.nodeCount = count;
 }
 
+function createAvatarJetpack(THREE) {
+  const group = new THREE.Group();
+  group.name = "forkmesh-avatar-jetpack";
+  // Avatar fronts face -Z, so positive Z is the centre of the back.
+  group.position.set(0, 2.18, 0.43);
+  const shell = makeMaterial(THREE, "#293748", {
+    metalness: 0.78,
+    roughness: 0.24,
+  });
+  const trim = makeMaterial(THREE, "#79c0ff", {
+    metalness: 0.5,
+    roughness: 0.2,
+    emissive: "#1f6feb",
+    emissiveIntensity: 0.45,
+  });
+  const tanks = [];
+  const flames = [];
+  [-0.34, 0.34].forEach((x) => {
+    const tank = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.2, 0.24, 1.24, 18),
+      shell,
+    );
+    tank.position.set(x, 0, 0);
+    group.add(tank);
+    tanks.push(tank);
+    const cap = new THREE.Mesh(
+      new THREE.SphereGeometry(0.2, 16, 10),
+      trim,
+    );
+    cap.scale.y = 0.55;
+    cap.position.set(x, 0.61, 0);
+    group.add(cap);
+    const nozzle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.11, 0.16, 0.24, 14),
+      shell,
+    );
+    nozzle.position.set(x, -0.73, 0);
+    group.add(nozzle);
+    const flame = new THREE.Mesh(
+      new THREE.ConeGeometry(0.13, 0.9, 14),
+      makeMaterial(THREE, "#ffcf70", {
+        emissive: "#ff6a2a",
+        emissiveIntensity: 2.2,
+        transparent: true,
+        opacity: 0.9,
+      }),
+    );
+    flame.rotation.z = Math.PI;
+    flame.position.set(x, -1.27, 0);
+    group.add(flame);
+    flames.push(flame);
+  });
+  const spine = new THREE.Mesh(
+    new THREE.BoxGeometry(0.34, 1.02, 0.2),
+    trim,
+  );
+  group.add(spine);
+  group.visible = false;
+  group.userData.tanks = tanks;
+  group.userData.flames = flames;
+  return group;
+}
+
 function createAvatar(THREE, identity, options = {}) {
   const seed = hashNumber(identity.id || identity.name);
   const group = new THREE.Group();
@@ -5439,6 +5509,9 @@ function createAvatar(THREE, identity, options = {}) {
   const rightArm = leftArm.clone();
   rightArm.position.x = 0.73;
   group.add(rightArm);
+
+  const jetpack = createAvatarJetpack(THREE);
+  group.add(jetpack);
 
   // Mouse activity reads as a small antenna riding on the visitor's shoulder
   // that blinks solid green, faster the more their mouse is moving.
@@ -5568,6 +5641,7 @@ function createAvatar(THREE, identity, options = {}) {
     faceEmojiShown: "",
     faceIdentityKey: identity.id || identity.name || "",
     verifiedPin,
+    jetpack,
   };
   syncOperatorBelt(THREE, group, identity.nodes?.length || 0);
   syncAvatarStatus(THREE, group, identity);
@@ -14263,6 +14337,8 @@ export function createWorldScene({
   onRewardBoardHover = () => {},
   onSwingRide = () => {},
   onCameraMode = () => {},
+  onJetpackChange = () => {},
+  onGymState = () => {},
   onStartHereSelect = () => {},
 }) {
   // Phones frequently expose a high-density screen to a comparatively small
@@ -16223,6 +16299,320 @@ export function createWorldScene({
   setShadows(swingSet);
   world.add(swingSet);
   registerMovableObject("swing-set", swingSet);
+
+  // An open-air gym beside the Town Square. Every station is a real click
+  // target; the bench press also opens the shell's weight/rep console.
+  const gym = new THREE.Group();
+  gym.name = "forkmesh-world-gym";
+  gym.position.set(...GYM_POSITION);
+  const gymFloor = new THREE.Mesh(
+    new THREE.BoxGeometry(28, 0.22, 18),
+    makeMaterial(THREE, "#17202a", { roughness: 0.86 }),
+  );
+  gymFloor.position.y = 0;
+  gymFloor.receiveShadow = true;
+  gym.add(gymFloor);
+  const gymInset = new THREE.Mesh(
+    new THREE.BoxGeometry(26.8, 0.035, 16.8),
+    makeMaterial(THREE, "#253240", { roughness: 0.96 }),
+  );
+  gymInset.position.y = 0.13;
+  gym.add(gymInset);
+  const gymSign = makeLabelSprite(
+    THREE,
+    "WORLD GYM",
+    "CLICK A STATION TO TRAIN",
+    "#ff9b54",
+  );
+  gymSign.position.set(0, 5.4, -8.15);
+  gymSign.scale.set(9.8, 3.25, 1);
+  gym.add(gymSign);
+  const gymSteel = makeMaterial(THREE, "#a8b3bf", {
+    metalness: 0.82,
+    roughness: 0.23,
+  });
+  const gymDark = makeMaterial(THREE, "#1b2632", {
+    metalness: 0.42,
+    roughness: 0.46,
+  });
+  const gymAccent = makeMaterial(THREE, "#ff7b54", {
+    metalness: 0.36,
+    roughness: 0.34,
+    emissive: "#8b2e1d",
+    emissiveIntensity: 0.28,
+  });
+  const gymEquipment = new Map();
+  const markGymInteractive = (object, kind) => {
+    object.userData.gymEquipment = kind;
+    interactive.push(object);
+    gymEquipment.set(kind, gymEquipment.get(kind) || object);
+    return object;
+  };
+
+  // Bench press: the shaft is split into a centre and two hinged sleeves so
+  // genuinely heavy selections can visibly flex instead of only translating.
+  const benchPress = new THREE.Group();
+  benchPress.name = "gym-bench-press";
+  benchPress.position.set(-7.6, 0.18, -1.4);
+  const benchPad = markGymInteractive(
+    new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.32, 5.1), gymAccent),
+    "bench",
+  );
+  benchPad.position.set(0, 1.02, 0.55);
+  benchPress.add(benchPad);
+  [-0.82, 0.82].forEach((x) => {
+    const leg = new THREE.Mesh(
+      new THREE.BoxGeometry(0.22, 1.02, 0.22),
+      gymSteel,
+    );
+    leg.position.set(x, 0.52, 0.55);
+    benchPress.add(leg);
+  });
+  [-1.25, 1.25].forEach((x) => {
+    const upright = new THREE.Mesh(
+      new THREE.BoxGeometry(0.24, 3.15, 0.32),
+      gymSteel,
+    );
+    upright.position.set(x, 1.68, -1.25);
+    benchPress.add(upright);
+    const hook = new THREE.Mesh(
+      new THREE.BoxGeometry(0.45, 0.18, 0.55),
+      gymDark,
+    );
+    hook.position.set(x, 2.94, -1.08);
+    benchPress.add(hook);
+  });
+  const benchBarRig = new THREE.Group();
+  benchBarRig.position.set(0, 2.9, -0.78);
+  benchPress.add(benchBarRig);
+  const benchBarCenter = markGymInteractive(
+    new THREE.Mesh(
+      new THREE.CylinderGeometry(0.075, 0.075, 2.5, 16),
+      gymSteel,
+    ),
+    "bench",
+  );
+  benchBarCenter.rotation.z = Math.PI / 2;
+  benchBarRig.add(benchBarCenter);
+  const benchBarSleeves = [];
+  const benchPlates = [];
+  [-1, 1].forEach((side) => {
+    const pivot = new THREE.Group();
+    pivot.position.x = side * 1.25;
+    benchBarRig.add(pivot);
+    const sleeve = markGymInteractive(
+      new THREE.Mesh(
+        new THREE.CylinderGeometry(0.09, 0.09, 1.55, 16),
+        gymSteel,
+      ),
+      "bench",
+    );
+    sleeve.rotation.z = Math.PI / 2;
+    sleeve.position.x = side * 0.775;
+    pivot.add(sleeve);
+    benchBarSleeves.push({ pivot, side });
+    for (let plateIndex = 0; plateIndex < 3; plateIndex += 1) {
+      const plate = markGymInteractive(
+        new THREE.Mesh(
+          new THREE.CylinderGeometry(0.56, 0.56, 0.14, 24),
+          plateIndex === 0 ? gymAccent : gymDark,
+        ),
+        "bench",
+      );
+      plate.rotation.z = Math.PI / 2;
+      plate.position.x = side * (0.42 + plateIndex * 0.18);
+      pivot.add(plate);
+      benchPlates.push(plate);
+    }
+  });
+  gym.add(benchPress);
+
+  const treadmill = new THREE.Group();
+  treadmill.name = "gym-treadmill";
+  treadmill.position.set(0, 0.18, -3.7);
+  const treadmillBelt = markGymInteractive(
+    new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.3, 5.5), gymDark),
+    "treadmill",
+  );
+  treadmillBelt.position.y = 0.34;
+  treadmill.add(treadmillBelt);
+  const treadmillConsole = markGymInteractive(
+    new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.05, 0.3), gymAccent),
+    "treadmill",
+  );
+  treadmillConsole.position.set(0, 2.3, -2.05);
+  treadmill.add(treadmillConsole);
+  [-1.05, 1.05].forEach((x) => {
+    const rail = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.07, 0.07, 2.35, 10),
+      gymSteel,
+    );
+    rail.position.set(x, 1.25, -1.85);
+    treadmill.add(rail);
+  });
+  gym.add(treadmill);
+
+  const exerciseBike = new THREE.Group();
+  exerciseBike.name = "gym-exercise-bike";
+  exerciseBike.position.set(6.9, 0.18, -3.4);
+  const bikeWheel = markGymInteractive(
+    new THREE.Mesh(
+      new THREE.TorusGeometry(1.15, 0.13, 12, 30),
+      gymAccent,
+    ),
+    "bike",
+  );
+  bikeWheel.position.set(0, 1.25, 0.25);
+  bikeWheel.rotation.y = Math.PI / 2;
+  exerciseBike.add(bikeWheel);
+  const bikeFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(0.22, 2.2, 0.22),
+    gymSteel,
+  );
+  bikeFrame.position.set(0, 1.22, 0);
+  bikeFrame.rotation.x = -0.35;
+  exerciseBike.add(bikeFrame);
+  const bikeSeat = markGymInteractive(
+    new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.2, 0.55), gymDark),
+    "bike",
+  );
+  bikeSeat.position.set(0, 2.35, 0.34);
+  exerciseBike.add(bikeSeat);
+  gym.add(exerciseBike);
+
+  const rower = new THREE.Group();
+  rower.name = "gym-rower";
+  rower.position.set(6.6, 0.18, 3.7);
+  const rowerRail = markGymInteractive(
+    new THREE.Mesh(new THREE.BoxGeometry(1.25, 0.24, 5.6), gymSteel),
+    "rower",
+  );
+  rowerRail.position.y = 0.55;
+  rower.add(rowerRail);
+  const rowerSeat = markGymInteractive(
+    new THREE.Mesh(new THREE.BoxGeometry(1.45, 0.22, 0.85), gymAccent),
+    "rower",
+  );
+  rowerSeat.position.set(0, 0.86, 1.05);
+  rower.add(rowerSeat);
+  const rowerHandle = markGymInteractive(
+    new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.14, 0.14), gymDark),
+    "rower",
+  );
+  rowerHandle.position.set(0, 1.45, -1.65);
+  rower.add(rowerHandle);
+  gym.add(rower);
+
+  const punchingStation = new THREE.Group();
+  punchingStation.name = "gym-punching-bag";
+  punchingStation.position.set(-0.4, 0.18, 4.8);
+  const bagArm = new THREE.Mesh(
+    new THREE.BoxGeometry(3.1, 0.2, 0.2),
+    gymSteel,
+  );
+  bagArm.position.set(0, 4.4, 0);
+  punchingStation.add(bagArm);
+  const bag = markGymInteractive(
+    new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.72, 2.15, 8, 18),
+      gymAccent,
+    ),
+    "punch",
+  );
+  bag.position.set(0.8, 2.55, 0);
+  punchingStation.add(bag);
+  gym.add(punchingStation);
+
+  [
+    ["BENCH PRESS", "WEIGHT + REPS", -7.6, 4.15, -1.4],
+    ["TREADMILL", "CLICK TO RUN", 0, 3.45, -3.7],
+    ["EXERCISE BIKE", "CLICK TO RIDE", 6.9, 3.75, -3.4],
+    ["ROWER", "CLICK TO ROW", 6.6, 2.65, 3.7],
+    ["PUNCHING BAG", "CLICK TO TRAIN", -0.4, 5.15, 4.8],
+  ].forEach(([title, subtitle, x, y, z]) => {
+    const label = makeLabelSprite(THREE, title, subtitle, "#ffad8f");
+    label.position.set(x, y, z);
+    label.scale.set(5.1, 1.7, 1);
+    gym.add(label);
+  });
+
+  const gymState = {
+    active: "",
+    auto: false,
+    weightLb: 135,
+    reps: 0,
+    repStartedAt: 0,
+    activityStartedAt: 0,
+    benchBarRig,
+    benchBarSleeves,
+    benchPlates,
+    treadmillBelt,
+    bikeWheel,
+    rowerSeat,
+    rowerHandle,
+    bag,
+  };
+  const gymPublicState = (open = gymState.active === "bench") => ({
+    active: gymState.active,
+    auto: gymState.auto,
+    weightLb: gymState.weightLb,
+    reps: gymState.reps,
+    heavy: gymState.weightLb >= GYM_HEAVY_WEIGHT_LB,
+    open,
+  });
+  animated.push((time) => {
+    const repElapsed = gymState.repStartedAt
+      ? time - gymState.repStartedAt
+      : Infinity;
+    const repProgress = clamp(repElapsed / 900, 0, 1);
+    const lift =
+      repProgress < 1 ? Math.sin(repProgress * Math.PI) : 0;
+    const heaviness = clamp(
+      (gymState.weightLb - GYM_HEAVY_WEIGHT_LB) /
+        (GYM_MAX_WEIGHT_LB - GYM_HEAVY_WEIGHT_LB),
+      0,
+      1,
+    );
+    const bend = lift * (0.055 + heaviness * 0.15);
+    gymState.benchBarRig.position.y = 2.9 + lift * 0.82;
+    gymState.benchBarRig.position.x =
+      !reducedMotion && heaviness && repProgress < 1
+        ? Math.sin(repProgress * Math.PI * 7) * heaviness * 0.045
+        : 0;
+    gymState.benchBarSleeves.forEach(({ pivot, side }) => {
+      pivot.rotation.z = side * bend;
+    });
+    const plateScale = 0.72 + clamp(gymState.weightLb / 700, 0, 0.72);
+    gymState.benchPlates.forEach((plate) => {
+      plate.scale.set(plateScale, 1, plateScale);
+    });
+    if (
+      gymState.auto &&
+      gymState.active === "bench" &&
+      repElapsed >= 1220
+    ) {
+      gymState.repStartedAt = time;
+      gymState.reps += 1;
+      onGymState(gymPublicState(true));
+    }
+    const exerciseTime = Math.max(0, time - gymState.activityStartedAt);
+    if (gymState.active === "bike") {
+      gymState.bikeWheel.rotation.z = exerciseTime * 0.008;
+    }
+    if (gymState.active === "rower") {
+      const stroke = (Math.sin(exerciseTime * 0.006) + 1) / 2;
+      gymState.rowerSeat.position.z = 0.45 + stroke * 1.3;
+      gymState.rowerHandle.position.z = -1.75 + stroke * 1.15;
+    }
+    if (gymState.active === "punch") {
+      gymState.bag.rotation.z = Math.sin(exerciseTime * 0.011) * 0.16;
+    } else {
+      gymState.bag.rotation.z *= 0.9;
+    }
+  });
+  setShadows(gym);
+  world.add(gym);
+  registerMovableObject("world-gym", gym);
 
   // One square 5×5 wall preserves the whole leaderboard catalog without
   // duplicate physical boards. Lift the complete assembly above the terrain.
@@ -19859,6 +20249,11 @@ export function createWorldScene({
   // remains local scene state; the ordinary bounded presence frame carries
   // only the rider position and activity, just like the bike and car.
   let quadcopterRide = null;
+  // The jetpack is wearable rather than a mount. It leaves the avatar visible,
+  // follows the normal camera, and unlocks camera-relative horizontal flight
+  // plus explicit ascent/descent controls.
+  let jetpackEquipped = false;
+  let jetpackVerticalControl = 0;
   // 0..1 from the shell's swing-speed slider; maps onto the pendulum amplitude.
   let swingSpeedLevel = 0.55;
   let primaryPointerId = null;
@@ -20857,6 +21252,10 @@ export function createWorldScene({
       dismountCar({ relocate: false });
     if (enteringFromTown)
       dismountQuadcopter({ relocate: false });
+    if (enteringFromTown && jetpackEquipped)
+      setJetpackEquipped(false);
+    if (enteringFromTown)
+      stopGymExercise();
     standUpFromOfficeChair();
     const meetingAvatar = leavingMeeting
       ? officeParticipants.get(officeLocalParticipantId)
@@ -23006,6 +23405,305 @@ export function createWorldScene({
     return true;
   }
 
+  function setJetpackEquipped(equipped) {
+    const next = equipped === true;
+    if (next === jetpackEquipped) return jetpackEquipped;
+    if (next && officeSceneMode !== "town") return false;
+    if (next) {
+      dismountSwing({ relocate: false });
+      dismountBike({ relocate: false });
+      dismountCar({ relocate: false });
+      dismountQuadcopter({ relocate: false });
+      standUpFromBench();
+      stopGymExercise();
+      cancelDash();
+      removeRoofParachute();
+      jumpVelocity = 0;
+      jumpQueued = false;
+      superJumping = false;
+    } else {
+      // Flight may cross water or scenery that is intentionally not walkable.
+      // A mid-air unequip keeps its altitude but nudges the parachute column
+      // toward the nearest point on the continuous city instead of eventually
+      // marooning the player on a non-walkable landing coordinate.
+      if (
+        !worldWalkSurfaceContains(
+          player.position.x,
+          player.position.z,
+          OFFICE_AVATAR_RADIUS,
+        )
+      ) {
+        const startX = player.position.x;
+        const startZ = player.position.z;
+        for (let step = 1; step <= 80; step += 1) {
+          const progress = step / 80;
+          const x = startX + (0 - startX) * progress;
+          const z =
+            startZ +
+            (CONTINUOUS_CITY_CENTER_Z - startZ) * progress;
+          if (
+            worldWalkSurfaceContains(x, z, OFFICE_AVATAR_RADIUS)
+          ) {
+            player.position.x = x;
+            player.position.z = z;
+            break;
+          }
+        }
+      }
+      if (player.position.y > currentFloorY + 1.5) {
+        prepareRoofParachute();
+        jumpVelocity = -0.4;
+      }
+    }
+    jetpackEquipped = next;
+    jetpackVerticalControl = 0;
+    if (player.userData.jetpack) {
+      player.userData.jetpack.visible = next;
+    }
+    if (!next) {
+      player.rotation.z = 0;
+      player.userData.leftArm.rotation.x = 0;
+      player.userData.rightArm.rotation.x = 0;
+      applyLegPitch(player, 0, 0);
+    }
+    onJetpackChange({
+      equipped: next,
+      altitude: Math.max(0, player.position.y - currentFloorY),
+      maxAltitude: JETPACK_MAX_ALTITUDE,
+    });
+    return jetpackEquipped;
+  }
+
+  function toggleJetpack() {
+    return setJetpackEquipped(!jetpackEquipped);
+  }
+
+  function setJetpackVertical(direction, pressed = true) {
+    const normalized =
+      direction === "up" ? 1 : direction === "down" ? -1 : 0;
+    if (!pressed && jetpackVerticalControl === normalized) {
+      jetpackVerticalControl = 0;
+    } else if (pressed) {
+      jetpackVerticalControl = normalized;
+    }
+    return jetpackVerticalControl;
+  }
+
+  function updateJetpackFlight(input, delta, time) {
+    if (!jetpackEquipped) return false;
+    cameraFocus = null;
+    cancelDash();
+    focusedRepositoryKey = "";
+    jumpQueued = false;
+    jumpVelocity = 0;
+    const horizontal = movementVector.copy(input.movement);
+    const keyboardVertical =
+      Number(keys.has("Space")) -
+      Number(
+        keys.has("KeyC") ||
+          keys.has("ControlLeft") ||
+          keys.has("ControlRight"),
+      );
+    const vertical = keyboardVertical || jetpackVerticalControl;
+    const speedMultiplier = input.sprinting ? 1.55 : 1;
+    if (horizontal.lengthSq()) {
+      player.position.addScaledVector(
+        horizontal,
+        JETPACK_HORIZONTAL_SPEED * speedMultiplier * delta,
+      );
+      player.rotation.y = Math.atan2(-horizontal.x, -horizontal.z);
+    }
+    const worldDistance = Math.hypot(player.position.x, player.position.z);
+    const boundary = WORLD_RADIUS - 6;
+    if (worldDistance > boundary) {
+      const scale = boundary / Math.max(1, worldDistance);
+      player.position.x *= scale;
+      player.position.z *= scale;
+    }
+    player.position.y = clamp(
+      player.position.y +
+        vertical * JETPACK_VERTICAL_SPEED * speedMultiplier * delta,
+      currentFloorY + 0.05,
+      JETPACK_MAX_ALTITUDE,
+    );
+    const moving = horizontal.lengthSq() > 0 || vertical !== 0;
+    const thrust =
+      0.38 +
+      (vertical > 0 ? 0.75 : 0) +
+      (horizontal.lengthSq() ? 0.34 : 0);
+    const jetpack = player.userData.jetpack;
+    jetpack?.userData?.flames?.forEach((flame, index) => {
+      const flicker = reducedMotion
+        ? 1
+        : 0.86 + Math.sin(time * 0.025 + index * 2.1) * 0.14;
+      flame.scale.set(
+        0.8 + thrust * 0.22,
+        Math.max(0.2, thrust * flicker),
+        0.8 + thrust * 0.22,
+      );
+      flame.visible = true;
+    });
+    player.userData.leftArm.rotation.x = -0.34;
+    player.userData.rightArm.rotation.x = -0.34;
+    applyLegPitch(
+      player,
+      0.12 + Math.sin(time * 0.004) * 0.05,
+      0.12 - Math.sin(time * 0.004) * 0.05,
+    );
+    player.rotation.z =
+      horizontal.lengthSq() && !reducedMotion
+        ? Math.sin(time * 0.003) * 0.025
+        : 0;
+    player.userData.inputEnergy = decayedPointerEnergy(performance.now());
+    animateAvatarActivity(player, time, delta, reducedMotion);
+    if (
+      performance.now() - lastMovementEmit > 250 &&
+      player.position.distanceToSquared(lastPosition) > 0.025
+    ) {
+      lastMovementEmit = performance.now();
+      lastPosition.copy(player.position);
+      queueMovementEvent({
+        x: Number(player.position.x.toFixed(2)),
+        y: Number(player.position.y.toFixed(2)),
+        z: Number(player.position.z.toFixed(2)),
+        heading: Number(player.rotation.y.toFixed(3)),
+        space: currentSpace,
+        moving,
+        activity: JETPACK_FLYING_ACTIVITY,
+      });
+      onJetpackChange({
+        equipped: true,
+        altitude: Math.max(0, player.position.y - currentFloorY),
+        maxAltitude: JETPACK_MAX_ALTITUDE,
+      });
+    }
+    wasWalking = moving;
+    return true;
+  }
+
+  function stopGymExercise({ notify = true } = {}) {
+    if (!gymState.active) return false;
+    gymState.active = "";
+    gymState.auto = false;
+    gymState.repStartedAt = 0;
+    player.rotation.x = 0;
+    player.rotation.z = 0;
+    player.userData.leftArm.rotation.set(0, 0, 0);
+    player.userData.rightArm.rotation.set(0, 0, 0);
+    applyLegPitch(player, 0, 0);
+    if (notify) onGymState(gymPublicState(false));
+    return true;
+  }
+
+  function beginGymExercise(kind) {
+    if (
+      !["bench", "treadmill", "bike", "rower", "punch"].includes(kind) ||
+      officeSceneMode !== "town"
+    ) {
+      return false;
+    }
+    if (jetpackEquipped) setJetpackEquipped(false);
+    dismountSwing({ relocate: false });
+    dismountBike({ relocate: false });
+    dismountCar({ relocate: false });
+    dismountQuadcopter({ relocate: false });
+    standUpFromBench();
+    cancelDash();
+    gymState.active = kind;
+    gymState.auto = false;
+    gymState.activityStartedAt = performance.now();
+    const localPositions = {
+      bench: [-7.6, 1.2, -0.15],
+      treadmill: [0, 0.35, -3.3],
+      bike: [6.9, 2.3, -3.05],
+      rower: [6.6, 0.95, 4.65],
+      punch: [-1.5, 0.18, 4.8],
+    };
+    const point = gym.localToWorld(
+      new THREE.Vector3(...localPositions[kind]),
+    );
+    player.position.copy(point);
+    player.rotation.set(0, kind === "punch" ? -Math.PI / 2 : 0, 0);
+    lastPosition.copy(player.position);
+    onGymState(gymPublicState(kind === "bench"));
+    return true;
+  }
+
+  function setGymWeight(value) {
+    const weight = clamp(
+      Math.round((Number(value) || 45) / 5) * 5,
+      45,
+      GYM_MAX_WEIGHT_LB,
+    );
+    gymState.weightLb = weight;
+    if (weight < GYM_HEAVY_WEIGHT_LB) gymState.auto = false;
+    onGymState(gymPublicState(true));
+    return weight;
+  }
+
+  function performGymRep() {
+    if (gymState.active !== "bench") beginGymExercise("bench");
+    const now = performance.now();
+    if (now - gymState.repStartedAt < 720) return false;
+    gymState.repStartedAt = now;
+    gymState.reps += 1;
+    onGymState(gymPublicState(true));
+    return true;
+  }
+
+  function setGymAuto(enabled) {
+    if (gymState.active !== "bench") beginGymExercise("bench");
+    gymState.auto =
+      enabled === true && gymState.weightLb >= GYM_HEAVY_WEIGHT_LB;
+    if (gymState.auto && performance.now() - gymState.repStartedAt >= 720) {
+      performGymRep();
+    }
+    onGymState(gymPublicState(true));
+    return gymState.auto;
+  }
+
+  function updateGymExercise(input, delta, time) {
+    if (!gymState.active) return false;
+    if (input.movement.lengthSq() || jumpQueued || dashTarget) {
+      stopGymExercise();
+      return false;
+    }
+    const elapsed = Math.max(0, time - gymState.activityStartedAt);
+    if (gymState.active === "bench") {
+      player.rotation.x = -Math.PI / 2;
+      player.userData.leftArm.rotation.x =
+        -1.2 + Math.sin(clamp((time - gymState.repStartedAt) / 900, 0, 1) * Math.PI) * 0.75;
+      player.userData.rightArm.rotation.x =
+        player.userData.leftArm.rotation.x;
+      applyLegPitch(player, 0.28, 0.28);
+    } else if (gymState.active === "treadmill") {
+      const gait = Math.sin(elapsed * 0.014) * 0.72;
+      player.userData.leftArm.rotation.x = gait;
+      player.userData.rightArm.rotation.x = -gait;
+      applyLegPitch(player, -gait * GAIT_LEG_SWING, gait * GAIT_LEG_SWING);
+    } else if (gymState.active === "bike") {
+      player.userData.leftArm.rotation.x = -0.72;
+      player.userData.rightArm.rotation.x = -0.72;
+      const pedal = Math.sin(elapsed * 0.012) * 0.7;
+      applyLegPitch(player, pedal, -pedal);
+    } else if (gymState.active === "rower") {
+      const stroke = Math.sin(elapsed * 0.006);
+      player.userData.leftArm.rotation.x = -0.9 + stroke * 0.48;
+      player.userData.rightArm.rotation.x =
+        player.userData.leftArm.rotation.x;
+      applyLegPitch(player, 0.45 - stroke * 0.2, 0.45 - stroke * 0.2);
+    } else if (gymState.active === "punch") {
+      const punch = Math.sin(elapsed * 0.011);
+      player.userData.leftArm.rotation.x = punch > 0 ? -1.55 : -0.35;
+      player.userData.rightArm.rotation.x = punch < 0 ? -1.55 : -0.35;
+      applyLegPitch(player, 0.1, -0.1);
+    }
+    player.userData.inputEnergy = decayedPointerEnergy(performance.now());
+    animateAvatarActivity(player, time, delta, reducedMotion);
+    wasWalking = false;
+    return true;
+  }
+
   // The world map's Campfire spot is a trip home: it puts the avatar on the
   // bench that carries this member's name and holds the same seated pose
   // clicking the plank gives. Guests — and members the directory has not
@@ -23058,6 +23756,21 @@ export function createWorldScene({
       inputStrength,
       movement,
     } = movementInput();
+    if (
+      updateJetpackFlight(
+        {
+          keyboardActive,
+          sprinting,
+          touchStrength,
+          inputStrength,
+          movement,
+        },
+        delta,
+        time,
+      )
+    ) {
+      return;
+    }
     if (quadcopterRide) {
       updateQuadcopterRide(
         {
@@ -23070,6 +23783,21 @@ export function createWorldScene({
         delta,
         time,
       );
+      return;
+    }
+    if (
+      updateGymExercise(
+        {
+          keyboardActive,
+          sprinting,
+          touchStrength,
+          inputStrength,
+          movement,
+        },
+        delta,
+        time,
+      )
+    ) {
       return;
     }
     if (swingRide) {
@@ -29618,6 +30346,10 @@ export function createWorldScene({
       rideQuadcopter(hit.object.userData.quadcopterIndex);
       return;
     }
+    if (hit?.object?.userData?.gymEquipment) {
+      beginGymExercise(String(hit.object.userData.gymEquipment));
+      return;
+    }
     if (hit?.object?.userData?.forkbotChat) {
       onForkbotChat();
       return;
@@ -30138,6 +30870,18 @@ export function createWorldScene({
       rideQuadcopter(quadcopterHit.object.userData.quadcopterIndex);
       return;
     }
+    const gymHit = raycaster
+      .intersectObjects(interactive, false)
+      .find(
+        ({ object }) =>
+          Boolean(object.userData?.gymEquipment) &&
+          objectIsEffectivelyVisible(object),
+      );
+    if (gymHit) {
+      event.preventDefault();
+      beginGymExercise(String(gymHit.object.userData.gymEquipment));
+      return;
+    }
     const point = groundPointAt(event.clientX, event.clientY);
     if (!point) return;
     event.preventDefault();
@@ -30246,7 +30990,7 @@ export function createWorldScene({
       event.preventDefault();
     }
     if (
-      quadcopterRide &&
+      (quadcopterRide || jetpackEquipped) &&
       ["Space", "KeyC", "ControlLeft", "ControlRight"].includes(event.code)
     ) {
       keys.add(event.code);
@@ -31144,6 +31888,20 @@ export function createWorldScene({
     dismountSwing,
     rideQuadcopter,
     dismountQuadcopter,
+    toggleJetpack,
+    setJetpackEquipped,
+    setJetpackVertical,
+    getJetpackState: () => ({
+      equipped: jetpackEquipped,
+      altitude: Math.max(0, player.position.y - currentFloorY),
+      maxAltitude: JETPACK_MAX_ALTITUDE,
+    }),
+    beginGymExercise,
+    stopGymExercise,
+    setGymWeight,
+    performGymRep,
+    setGymAuto,
+    getGymState: () => gymPublicState(gymState.active === "bench"),
     getQuadcopterState: () => ({
       riding: Boolean(quadcopterRide),
       altitude: quadcopterRide
