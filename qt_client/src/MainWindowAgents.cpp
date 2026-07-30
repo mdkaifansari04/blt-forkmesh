@@ -5106,9 +5106,9 @@ void MainWindow::applySelectedAgentMode()
 // Rebuild only the detail header's key/value meta lines for a session — the
 // identity block, the issue/branch/worktree/PR button chips, Speed/Diff/Updated
 // (adhoc #35) and the run Stats (turns/time/cost/tokens). Split out of
-// showAgentSession (adhoc #42) so the
-// live-update paths (token/cost/run-summary events, the running-row ticker) can
-// keep the header current without triggering a full transcript rebuild.
+// showAgentSession (adhoc #42) so the live-update paths (token/cost/run-summary
+// events, the running-row ticker) can keep the header current without triggering
+// a full transcript rebuild.
 void MainWindow::refreshAgentDetailMeta(int sessionId)
 {
     if (!m_agentMeta)

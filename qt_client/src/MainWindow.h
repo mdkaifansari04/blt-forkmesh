@@ -438,6 +438,9 @@ public:
     // Verifies the agents list lets the user drag its column headers into a new
     // order (in addition to resizing them).
     Q_INVOKABLE bool testAgentColumnsMovable() const;
+    // "<labels>|<usedWidth>/<viewportWidth>" for the agents list, so a test can
+    // pin the trimmed column set and the title column's flex behaviour (adhoc #35).
+    Q_INVOKABLE QString testAgentColumnLayout() const;
     Q_INVOKABLE int testAddLocalRepository(const QString &owner, const QString &name,
                                            const QString &localPath);
     Q_INVOKABLE bool testOpenRepository(int index);
