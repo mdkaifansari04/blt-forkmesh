@@ -317,9 +317,10 @@ def test_bench_height_is_derived_from_the_seated_pose():
 
 
 def test_member_total_changes_fire_and_the_high_member_count():
-    assert "function campfireMemberCountTexture(THREE, total)" in SCENE
+    assert "function campfireMemberCountTexture(THREE, total, newest = \"\")" in SCENE
     assert 'memberCountSprite.name = "campfire-member-count-high"' in SCENE
-    assert "memberCountSprite.material.map = campfireMemberCountTexture(THREE, count);" in SCENE
+    assert "memberCountSprite.material.map = campfireMemberCountTexture(" in SCENE
+    assert "      latest," in SCENE
     lounge = SCENE.split("function updateMemberLounge", 1)[1]
     assert "setCampfireMemberCount(total, newestMemberName(members));" in lounge
     assert "rebuildCampfireMemberLogs(count)" in SCENE
