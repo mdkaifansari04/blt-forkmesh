@@ -9731,6 +9731,7 @@ class ForkMeshWorld extends HTMLElement {
         thumbstickHandle.style.setProperty("--thumb-x", "0px");
         thumbstickHandle.style.setProperty("--thumb-y", "0px");
         this.world?.setTouchMovement?.(0, 0);
+        this.world?.setTouchInteractionActive?.(false);
         this.syncViewportHeight();
       };
       const updateThumbstick = (event) => {
@@ -9772,6 +9773,7 @@ class ForkMeshWorld extends HTMLElement {
         event.preventDefault();
         activePointerId = event.pointerId;
         this.mobileMovementActive = true;
+        this.world?.setTouchInteractionActive?.(true);
         thumbstick.setPointerCapture?.(event.pointerId);
         updateThumbstick(event);
       });

@@ -20236,6 +20236,7 @@ export function createWorldScene({
   const touchKeys = new Set();
   const touchMovement = new THREE.Vector2();
   const touchPointers = new Map();
+  let externalTouchInteractionActive = false;
   let pendingTouchResize = false;
   const raycaster = new THREE.Raycaster();
   const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -22676,6 +22677,18 @@ export function createWorldScene({
       y: touchMovement.y,
       strength: touchMovement.length(),
     };
+  }
+
+  function setTouchInteractionActive(active) {
+    externalTouchInteractionActive = Boolean(active);
+    if (
+      !externalTouchInteractionActive &&
+      !touchPointers.size &&
+      pendingTouchResize
+    ) {
+      pendingTouchResize = false;
+      resize();
+    }
   }
 
   function movementInput() {
@@ -30010,7 +30023,11 @@ export function createWorldScene({
         pinchStartDistance = 0;
       }
       remainingTouch = touchPointers.entries().next().value || null;
-      if (!touchPointers.size && pendingTouchResize) {
+      if (
+        !touchPointers.size &&
+        !externalTouchInteractionActive &&
+        pendingTouchResize
+      ) {
         pendingTouchResize = false;
         resize();
       }
@@ -31230,7 +31247,7 @@ export function createWorldScene({
     // buffer mid-gesture clears it and looks exactly like a full page refresh.
     // Keep the current frame and apply one settled resize after the final
     // touch pointer is released.
-    if (touchPointers.size > 0) {
+    if (touchPointers.size > 0 || externalTouchInteractionActive) {
       pendingTouchResize = true;
       return;
     }
@@ -31958,6 +31975,7 @@ export function createWorldScene({
     );
     aquariumLightAction.removeEventListener("click", handleAquariumLight);
     touchPointers.clear();
+    externalTouchInteractionActive = false;
     keys.clear();
     touchKeys.clear();
     touchMovement.set(0, 0);
@@ -32036,6 +32054,7 @@ export function createWorldScene({
     setMovementTuning,
     setControl,
     setTouchMovement,
+    setTouchInteractionActive,
     setSpawn,
     travelToRegion,
     visitNeighborhoodHome,

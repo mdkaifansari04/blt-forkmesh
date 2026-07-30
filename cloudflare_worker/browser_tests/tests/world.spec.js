@@ -5846,6 +5846,63 @@ test("thumbstick motion is continuous, proportional, and recenters on release", 
   await context.close();
 });
 
+test("thumbstick walking defers renderer resize until release", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  const page = await context.newPage();
+  await prepareWorldPage(page, "thumbstick-resize");
+  await waitForWorld(page);
+
+  const thumbstick = page.locator("[data-world-thumbstick]");
+  const box = await thumbstick.boundingBox();
+  expect(box).not.toBeNull();
+  const centre = {
+    x: Math.round(box.x + box.width / 2),
+    y: Math.round(box.y + box.height / 2),
+    id: 1,
+  };
+  const client = await page.context().newCDPSession(page);
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [centre],
+  });
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: [{ ...centre, y: centre.y - box.height * 0.3 }],
+  });
+
+  const bufferBeforeResize = await page
+    .locator(".world-canvas")
+    .evaluate((canvas) => ({ width: canvas.width, height: canvas.height }));
+  await page.locator("[data-world-canvas-wrap]").evaluate((wrap) => {
+    wrap.style.height = `${Math.max(
+      240,
+      Math.round(wrap.getBoundingClientRect().height - 120),
+    )}px`;
+  });
+  await page.waitForTimeout(150);
+  expect(
+    await page
+      .locator(".world-canvas")
+      .evaluate((canvas) => ({ width: canvas.width, height: canvas.height })),
+  ).toEqual(bufferBeforeResize);
+
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchEnd",
+    touchPoints: [],
+  });
+  await expect.poll(() =>
+    page.locator(".world-canvas").evaluate((canvas) => canvas.height),
+  ).not.toBe(bufferBeforeResize.height);
+  await client.detach();
+  await context.close();
+});
+
 test("one-finger look and two-finger pinch use distinct bounded gestures", async ({
   browser,
 }) => {
