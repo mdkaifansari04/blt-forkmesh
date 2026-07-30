@@ -2973,6 +2973,11 @@ bool MainWindow::verifyTotpLogin(const QString &email,
             loginRequest.insert(QStringLiteral("pubkey"), publicKey);
             loginRequest.insert(QStringLiteral("deviceTs"), deviceTs);
             loginRequest.insert(QStringLiteral("deviceSig"), deviceSig);
+            // Name the device the relay is about to register, so the account's
+            // device list on the website identifies this machine instead of
+            // showing an unlabelled key.
+            loginRequest.insert(QStringLiteral("deviceLabel"),
+                                machineNodeName());
         }
     }
     int status = 0;
