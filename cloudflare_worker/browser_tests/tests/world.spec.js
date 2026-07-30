@@ -1732,9 +1732,12 @@ test("chat launcher opens on hover with messages and left-aligned channels", asy
       const second = element
         .querySelector("button:nth-of-type(2)")
         ?.getBoundingClientRect();
-      const feed = element
-        .parentElement
+      const surface = element.closest("[data-world-native-chat]");
+      const feed = surface
         ?.querySelector("[data-world-quick-chat-feed]")
+        ?.getBoundingClientRect();
+      const close = surface
+        ?.querySelector("[data-world-chat-terminal-close]")
         ?.getBoundingClientRect();
       return {
         display: style.display,
@@ -1746,6 +1749,8 @@ test("chat launcher opens on hover with messages and left-aligned channels", asy
         secondTop: Math.round(second?.top || 0),
         feedLeft: Math.round(feed?.left || 0),
         feedTop: Math.round(feed?.top || 0),
+        closeLeft: Math.round(close?.left || 0),
+        channelRight: Math.round(rect.right),
       };
     });
   expect(channelLayout).toMatchObject({
@@ -1761,18 +1766,56 @@ test("chat launcher opens on hover with messages and left-aligned channels", asy
   expect(channelLayout.secondLeft).toBeGreaterThan(channelLayout.firstLeft);
   expect(channelLayout.secondTop).toBe(channelLayout.firstTop);
   expect(channelLayout.feedTop).toBeGreaterThan(channelLayout.firstTop);
+  expect(channelLayout.channelRight).toBeLessThanOrEqual(
+    channelLayout.closeLeft - 4,
+  );
 
+  await page.keyboard.press("Escape");
+  await expect(terminal).not.toHaveAttribute("open", "");
+  await expect(summary).toBeFocused();
   await page.mouse.move(0, 0);
   await terminal.evaluate((element) => {
-    element.removeAttribute("open");
     element.classList.add("world-chat-terminal--idle");
   });
   await expect(page.locator(".world-chat-terminal-prompt-icon")).toBeVisible();
 });
 
-test("mobile World chat keeps its composer above the terminal bars", async ({
+test("World chat opens intentionally and restores keyboard focus on close", async ({
   page,
 }) => {
+  test.slow();
+  await prepareWorldPage(page, "world-chat-keyboard", {
+    chatPassphrase: "playwright-public-world-general-passphrase",
+  });
+  await waitForWorld(page);
+
+  const terminal = page.locator("[data-world-chat-terminal]");
+  const summary = terminal.locator(":scope > summary");
+  await summary.focus();
+  await expect(terminal).not.toHaveAttribute("open", "");
+
+  await page.keyboard.press("Enter");
+  await expect(terminal).toHaveAttribute("open", "");
+  await expect(page.locator("#fullChatInput")).toBeFocused();
+  await expect(
+    page.locator("[data-dashboard-chat-composer-toolbar]"),
+  ).toBeHidden();
+
+  await page.keyboard.press("Escape");
+  await expect(terminal).not.toHaveAttribute("open", "");
+  await expect(summary).toBeFocused();
+
+  await page.keyboard.press("Enter");
+  await expect(terminal).toHaveAttribute("open", "");
+  await page.locator("[data-world-chat-terminal-close]").click();
+  await expect(terminal).not.toHaveAttribute("open", "");
+  await expect(summary).toBeFocused();
+});
+
+test("mobile World chat contains its rail, transcript, and prompt", async ({
+  page,
+}) => {
+  test.slow();
   await page.setViewportSize({ width: 390, height: 667 });
   await prepareWorldPage(page, "mobile-world-chat", {
     chatPassphrase: "playwright-public-world-general-passphrase",
@@ -1792,33 +1835,437 @@ test("mobile World chat keeps its composer above the terminal bars", async ({
   await expect(input).toBeVisible();
   await input.focus();
 
-  // Approximate the visual viewport after a mobile keyboard opens.
+  const channels = page.locator("[data-world-quick-channels]");
+  const lastChannel = page.locator(
+    '[data-world-quick-channel="notifications"]',
+  );
+  const channelScrollBefore = await channels.evaluate(
+    (element) => element.scrollLeft,
+  );
+  await lastChannel.focus();
+  await expect
+    .poll(() => channels.evaluate((element) => element.scrollLeft))
+    .toBeGreaterThan(channelScrollBefore);
+  const focusedChannel = await channels.evaluate((element) => {
+    const rail = element.getBoundingClientRect();
+    const last = element.querySelector(
+      '[data-world-quick-channel="notifications"]',
+    )?.getBoundingClientRect();
+    return {
+      scrollable: element.scrollWidth > element.clientWidth,
+      lastLeft: last?.left || 0,
+      lastRight: last?.right || 0,
+      railLeft: rail.left,
+      railRight: rail.right,
+    };
+  });
+  expect(focusedChannel.scrollable).toBe(true);
+  expect(focusedChannel.lastLeft).toBeGreaterThanOrEqual(
+    focusedChannel.railLeft - 1,
+  );
+  expect(focusedChannel.lastRight).toBeLessThanOrEqual(
+    focusedChannel.railRight + 1,
+  );
+  const normalDockGap = await terminal.evaluate((element) => {
+    const terminalRect = element.getBoundingClientRect();
+    const dock = document.querySelector(".world-avatar-actions");
+    const dockRect = dock?.getBoundingClientRect();
+    return (dockRect?.top || window.innerHeight) - terminalRect.bottom;
+  });
+  expect(normalDockGap).toBeGreaterThanOrEqual(4);
+  const stagedAttachments = page.locator(
+    "[data-dashboard-chat-attachments]",
+  );
+  await stagedAttachments.evaluate((element) => {
+    const preview = document.createElement("button");
+    preview.type = "button";
+    preview.textContent = "release-preview.png ×";
+    preview.setAttribute("aria-label", "Remove release-preview.png");
+    element.append(preview);
+  });
+  await expect(stagedAttachments).toBeVisible();
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.coarsePointerViewport = true;
+    shell.lastStableViewportWidth = 390;
+    shell.lastStableViewportHeight = 667;
+  });
+
+  await input.fill(
+    "A longer prompt must remain readable when the mobile keyboard is open. ".repeat(
+      8,
+    ),
+  );
   await page.setViewportSize({ width: 390, height: 320 });
-  await page.waitForTimeout(100);
+  await expect(page.locator("forkmesh-world")).toHaveAttribute(
+    "data-world-chat-compact",
+    "true",
+  );
 
   const metrics = await input.evaluate((element) => {
+    const body = element.closest("[data-world-native-chat]");
+    const header = body?.querySelector(".world-quick-chat-header");
+    const feed = body?.querySelector("[data-world-quick-chat-feed]");
+    const transcript = body?.querySelector("#fullChatMessages");
     const composer = element.closest("[data-dashboard-chat-composer]");
     const terminal = element.closest("[data-world-chat-terminal]");
     const send = terminal?.querySelector("#fullChatSend");
+    const close = terminal?.querySelector("[data-world-chat-terminal-close]");
+    const attachments = terminal?.querySelector(
+      "[data-dashboard-chat-attachments]",
+    );
+    const dock = document.querySelector(".world-avatar-actions");
+    const bodyRect = body?.getBoundingClientRect();
+    const headerRect = header?.getBoundingClientRect();
+    const feedRect = feed?.getBoundingClientRect();
+    const transcriptRect = transcript?.getBoundingClientRect();
     const inputRect = element.getBoundingClientRect();
     const composerRect = composer?.getBoundingClientRect();
     const terminalRect = terminal?.getBoundingClientRect();
     const sendRect = send?.getBoundingClientRect();
+    const closeRect = close?.getBoundingClientRect();
+    const attachmentsRect = attachments?.getBoundingClientRect();
+    const dockRect = dock?.getBoundingClientRect();
+    const contained = (rect) =>
+      Boolean(
+        rect &&
+          terminalRect &&
+          rect.left >= terminalRect.left - 1 &&
+          rect.right <= terminalRect.right + 1 &&
+          rect.top >= terminalRect.top - 1 &&
+          rect.bottom <= terminalRect.bottom + 1,
+      );
     return {
       innerHeight: window.innerHeight,
-      inputBottom: inputRect.bottom,
-      sendBottom: sendRect?.bottom || 0,
-      composerBottom: composerRect?.bottom || 0,
+      documentScrollWidth: document.documentElement.scrollWidth,
+      bodyFits:
+        Boolean(bodyRect && terminalRect) &&
+        bodyRect.right <= terminalRect.right + 1 &&
+        bodyRect.bottom <= terminalRect.bottom + 1 &&
+        body.scrollWidth <= body.clientWidth + 1 &&
+        body.scrollHeight <= body.clientHeight + 1,
+      ordered:
+        Boolean(headerRect && feedRect && composerRect) &&
+        headerRect.bottom <= feedRect.top + 1 &&
+        feedRect.bottom <= composerRect.top + 1,
+      transcriptContained:
+        Boolean(feedRect && transcriptRect) &&
+        transcriptRect.left >= feedRect.left - 1 &&
+        transcriptRect.right <= feedRect.right + 1 &&
+        transcriptRect.top >= feedRect.top - 1 &&
+        transcriptRect.bottom <= feedRect.bottom + 1,
+      feedHeight: feedRect?.height || 0,
+      inputHeight: inputRect.height,
+      inputContained: contained(inputRect),
+      sendContained: contained(sendRect),
+      closeContained: contained(closeRect),
+      attachmentsContained: contained(attachmentsRect),
+      attachmentsClearInput:
+        Boolean(attachmentsRect) &&
+        attachmentsRect.bottom <= inputRect.top + 1,
+      sendWidth: sendRect?.width || 0,
+      sendHeight: sendRect?.height || 0,
+      dockTop: dockRect?.top || window.innerHeight,
+      terminalZ: Number.parseInt(getComputedStyle(terminal).zIndex, 10) || 0,
+      dockZ: dock
+        ? Number.parseInt(getComputedStyle(dock).zIndex, 10) || 0
+        : 0,
       terminalBottom: terminalRect?.bottom || 0,
-      fits:
-        Boolean(terminalRect && composerRect && sendRect) &&
-        composerRect.bottom <= terminalRect.bottom + 1 &&
-        inputRect.bottom <= terminalRect.bottom + 1 &&
-        sendRect.bottom <= terminalRect.bottom + 1,
     };
   });
-  expect(metrics).toMatchObject({ innerHeight: 320, fits: true });
-  expect(metrics.terminalBottom).toBeLessThanOrEqual(metrics.innerHeight + 1);
+  expect(metrics).toMatchObject({
+    innerHeight: 320,
+    documentScrollWidth: 390,
+    bodyFits: true,
+    ordered: true,
+    transcriptContained: true,
+    inputContained: true,
+    sendContained: true,
+    closeContained: true,
+    attachmentsContained: true,
+    attachmentsClearInput: true,
+  });
+  expect(metrics.feedHeight).toBeGreaterThanOrEqual(80);
+  expect(metrics.inputHeight).toBeGreaterThanOrEqual(52);
+  expect(metrics.sendWidth).toBeGreaterThanOrEqual(48);
+  expect(metrics.sendHeight).toBeGreaterThanOrEqual(48);
+  expect(metrics.terminalBottom).toBeLessThanOrEqual(metrics.innerHeight - 7);
+  expect(
+    metrics.terminalBottom <= metrics.dockTop - 4 ||
+      metrics.terminalZ > metrics.dockZ,
+  ).toBe(true);
+
+  await page.setViewportSize({ width: 390, height: 240 });
+  const shortest = await terminal.evaluate((element) => {
+    const terminalRect = element.getBoundingClientRect();
+    const body = element.querySelector("[data-world-native-chat]");
+    const feed = element.querySelector("[data-world-quick-chat-feed]");
+    const composer = element.querySelector("[data-dashboard-chat-composer]");
+    const input = element.querySelector("#fullChatInput");
+    const send = element.querySelector("#fullChatSend");
+    const attachments = element.querySelector(
+      "[data-dashboard-chat-attachments]",
+    );
+    const bodyRect = body?.getBoundingClientRect();
+    const feedRect = feed?.getBoundingClientRect();
+    const composerRect = composer?.getBoundingClientRect();
+    const inputRect = input?.getBoundingClientRect();
+    const sendRect = send?.getBoundingClientRect();
+    const attachmentsRect = attachments?.getBoundingClientRect();
+    const contained = (rect) =>
+      Boolean(
+        rect &&
+          rect.left >= terminalRect.left - 1 &&
+          rect.right <= terminalRect.right + 1 &&
+          rect.top >= terminalRect.top - 1 &&
+          rect.bottom <= terminalRect.bottom + 1,
+      );
+    return {
+      innerHeight: window.innerHeight,
+      terminalTop: terminalRect.top,
+      terminalBottom: terminalRect.bottom,
+      feedHeight: feedRect?.height || 0,
+      bodyFits:
+        Boolean(body && bodyRect) &&
+        contained(bodyRect) &&
+        body.scrollWidth <= body.clientWidth + 1 &&
+        body.scrollHeight <= body.clientHeight + 1,
+      ordered:
+        Boolean(feedRect && composerRect) &&
+        feedRect.bottom <= composerRect.top + 1,
+      inputContained: contained(inputRect),
+      sendContained: contained(sendRect),
+      attachmentsContained: contained(attachmentsRect),
+      attachmentsClearInput:
+        Boolean(attachmentsRect && inputRect) &&
+        attachmentsRect.bottom <= inputRect.top + 1,
+    };
+  });
+  expect(shortest).toMatchObject({
+    innerHeight: 240,
+    bodyFits: true,
+    ordered: true,
+    inputContained: true,
+    sendContained: true,
+    attachmentsContained: true,
+    attachmentsClearInput: true,
+  });
+  expect(shortest.terminalTop).toBeGreaterThanOrEqual(7);
+  expect(shortest.terminalBottom).toBeLessThanOrEqual(233);
+  expect(shortest.feedHeight).toBeGreaterThanOrEqual(56);
+
+  await page.setViewportSize({ width: 390, height: 180 });
+  await expect(page.locator("forkmesh-world")).toHaveAttribute(
+    "data-world-chat-micro",
+    "true",
+  );
+  const micro = await terminal.evaluate((element) => {
+    const terminalRect = element.getBoundingClientRect();
+    const body = element.querySelector("[data-world-native-chat]");
+    const feedRect = element
+      .querySelector("[data-world-quick-chat-feed]")
+      ?.getBoundingClientRect();
+    const inputRect = element
+      .querySelector("#fullChatInput")
+      ?.getBoundingClientRect();
+    const sendRect = element
+      .querySelector("#fullChatSend")
+      ?.getBoundingClientRect();
+    const attachmentsRect = element
+      .querySelector("[data-dashboard-chat-attachments]")
+      ?.getBoundingClientRect();
+    const contained = (rect) =>
+      Boolean(
+        rect &&
+          rect.left >= terminalRect.left - 1 &&
+          rect.right <= terminalRect.right + 1 &&
+          rect.top >= terminalRect.top - 1 &&
+          rect.bottom <= terminalRect.bottom + 1,
+      );
+    return {
+      innerHeight: window.innerHeight,
+      terminalTop: terminalRect.top,
+      terminalBottom: terminalRect.bottom,
+      feedHeight: feedRect?.height || 0,
+      bodyFits:
+        Boolean(body) &&
+        body.scrollWidth <= body.clientWidth + 1 &&
+        body.scrollHeight <= body.clientHeight + 1,
+      inputContained: contained(inputRect),
+      sendContained: contained(sendRect),
+      attachmentsContained: contained(attachmentsRect),
+      attachmentsClearInput:
+        Boolean(attachmentsRect && inputRect) &&
+        attachmentsRect.bottom <= inputRect.top + 1,
+    };
+  });
+  expect(micro).toMatchObject({
+    innerHeight: 180,
+    bodyFits: true,
+    inputContained: true,
+    sendContained: true,
+    attachmentsContained: true,
+    attachmentsClearInput: true,
+  });
+  expect(micro.terminalTop).toBeGreaterThanOrEqual(7);
+  expect(micro.terminalBottom).toBeLessThanOrEqual(173);
+  expect(micro.feedHeight).toBeGreaterThanOrEqual(32);
+});
+
+test("World chat follows the visual viewport when a software keyboard opens", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 667 });
+  await prepareWorldPage(page, "mobile-world-chat-keyboard", {
+    chatPassphrase: "playwright-public-world-general-passphrase",
+  });
+  await waitForWorld(page);
+
+  const terminal = page.locator("[data-world-chat-terminal]");
+  await terminal.evaluate((element) => {
+    element.open = true;
+  });
+  const applied = await page.locator("forkmesh-world").evaluate((shell) => {
+    const viewport = window.visualViewport;
+    if (!viewport) return false;
+    try {
+      Object.defineProperty(viewport, "height", {
+        configurable: true,
+        value: 320,
+      });
+      Object.defineProperty(viewport, "offsetTop", {
+        configurable: true,
+        value: 0,
+      });
+    } catch (_) {
+      return false;
+    }
+    shell.coarsePointerViewport = true;
+    shell.lastStableViewportWidth = 390;
+    viewport.dispatchEvent(new Event("resize"));
+    return true;
+  });
+  expect(applied).toBe(true);
+  await expect(page.locator("forkmesh-world")).toHaveAttribute(
+    "data-world-chat-compact",
+    "true",
+  );
+
+  const metrics = await terminal.evaluate((element) => {
+    const shell = element.closest("forkmesh-world");
+    const terminalRect = element.getBoundingClientRect();
+    const feedRect = element
+      .querySelector("[data-world-quick-chat-feed]")
+      ?.getBoundingClientRect();
+    const transcriptRect = element
+      .querySelector("#fullChatMessages")
+      ?.getBoundingClientRect();
+    const composerRect = element
+      .querySelector("[data-dashboard-chat-composer]")
+      ?.getBoundingClientRect();
+    const inputRect = element
+      .querySelector("#fullChatInput")
+      ?.getBoundingClientRect();
+    const sendRect = element
+      .querySelector("#fullChatSend")
+      ?.getBoundingClientRect();
+    const dock = document.querySelector(".world-avatar-actions");
+    const dockRect = dock?.getBoundingClientRect();
+    return {
+      layoutHeight: window.innerHeight,
+      chatHeight: shell.style.getPropertyValue(
+        "--world-chat-viewport-height",
+      ),
+      coveredBottom: shell.style.getPropertyValue(
+        "--world-chat-covered-bottom",
+      ),
+      terminalTop: terminalRect.top,
+      terminalBottom: terminalRect.bottom,
+      feedHeight: feedRect?.height || 0,
+      transcriptContained:
+        Boolean(feedRect && transcriptRect) &&
+        transcriptRect.left >= feedRect.left - 1 &&
+        transcriptRect.right <= feedRect.right + 1 &&
+        transcriptRect.top >= feedRect.top - 1 &&
+        transcriptRect.bottom <= feedRect.bottom + 1,
+      composerBottom: composerRect?.bottom || 0,
+      inputRight: inputRect?.right || 0,
+      sendRight: sendRect?.right || 0,
+      terminalRight: terminalRect.right,
+      dockTop: dockRect?.top || window.innerHeight,
+      terminalZ: Number.parseInt(getComputedStyle(element).zIndex, 10) || 0,
+      dockZ: dock
+        ? Number.parseInt(getComputedStyle(dock).zIndex, 10) || 0
+        : 0,
+    };
+  });
+  expect(metrics).toMatchObject({
+    layoutHeight: 667,
+    chatHeight: "320px",
+    coveredBottom: "347px",
+  });
+  expect(metrics.terminalTop).toBeGreaterThanOrEqual(7);
+  expect(metrics.terminalBottom).toBeLessThanOrEqual(313);
+  expect(
+    metrics.terminalBottom <= metrics.dockTop - 4 ||
+      metrics.terminalZ > metrics.dockZ,
+  ).toBe(true);
+  expect(metrics.feedHeight).toBeGreaterThanOrEqual(80);
+  expect(metrics.transcriptContained).toBe(true);
+  expect(metrics.composerBottom).toBeLessThanOrEqual(
+    metrics.terminalBottom + 1,
+  );
+  expect(metrics.inputRight).toBeLessThanOrEqual(metrics.terminalRight + 1);
+  expect(metrics.sendRight).toBeLessThanOrEqual(metrics.terminalRight + 1);
+});
+
+test("World chat prompt fits on a direct micro-height load", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 180 });
+  await prepareWorldPage(page, "mobile-world-chat-direct-micro", {
+    chatPassphrase: "playwright-public-world-general-passphrase",
+  });
+  await waitForWorld(page);
+
+  const shell = page.locator("forkmesh-world");
+  const terminal = page.locator("[data-world-chat-terminal]");
+  await terminal.evaluate((element) => {
+    element.open = true;
+  });
+  await expect(shell).toHaveAttribute("data-world-chat-micro", "true");
+  await expect(page.locator("#fullChatInput")).toBeVisible();
+
+  const metrics = await terminal.evaluate((element) => {
+    const terminalRect = element.getBoundingClientRect();
+    const inputRect = element
+      .querySelector("#fullChatInput")
+      ?.getBoundingClientRect();
+    const sendRect = element
+      .querySelector("#fullChatSend")
+      ?.getBoundingClientRect();
+    const feedRect = element
+      .querySelector("[data-world-quick-chat-feed]")
+      ?.getBoundingClientRect();
+    return {
+      innerHeight: window.innerHeight,
+      coveredBottom: getComputedStyle(
+        element.closest("forkmesh-world"),
+      ).getPropertyValue("--world-chat-covered-bottom"),
+      terminalTop: terminalRect.top,
+      terminalBottom: terminalRect.bottom,
+      inputBottom: inputRect?.bottom || Infinity,
+      sendBottom: sendRect?.bottom || Infinity,
+      feedHeight: feedRect?.height || 0,
+    };
+  });
+
+  expect(metrics).toMatchObject({
+    innerHeight: 180,
+    coveredBottom: "60px",
+  });
+  expect(metrics.terminalTop).toBeGreaterThanOrEqual(7);
+  expect(metrics.terminalBottom).toBeLessThanOrEqual(173);
+  expect(metrics.inputBottom).toBeLessThanOrEqual(metrics.terminalBottom);
+  expect(metrics.sendBottom).toBeLessThanOrEqual(metrics.terminalBottom);
+  expect(metrics.feedHeight).toBeGreaterThanOrEqual(32);
 });
 
 test("World chat keeps five replayed messages lazy and its prompt in view", async ({
