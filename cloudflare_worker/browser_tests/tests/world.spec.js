@@ -1655,11 +1655,41 @@ test("collapsed CHAT bar counts unread remote lines but never your own", async (
   await expect(badge).toBeHidden();
 });
 
-test("quick composer opens without chat history and reveals a selected channel", async ({
+test("chat launcher opens on hover with messages and left-aligned channels", async ({
   page,
 }) => {
+  test.slow();
+  const passphrase = "playwright-world-hover-chat-passphrase";
+  const key = worldChatKey(passphrase);
+  await page.routeWebSocket(
+    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
+    (socket) => {
+      socket.send(
+        JSON.stringify(
+          encryptWorldChatEnvelope(
+            {
+              type: "chat",
+              id: "hover-history-1",
+              senderId: "hover-guest",
+              sender: "Hover Guest",
+              accountKind: "guest",
+              channel: "#general",
+              text: "The latest chats open with the launcher.",
+              ts: FIXED_NOW - 1_000,
+            },
+            key,
+            1,
+          ),
+        ),
+      );
+      socket.send(JSON.stringify({
+        kind: "forkmesh-history-end",
+        v: 1,
+      }));
+    },
+  );
   await prepareWorldPage(page, "world-quick-composer", {
-    chatPassphrase: "playwright-public-world-general-passphrase",
+    chatPassphrase: passphrase,
   });
   await waitForWorld(page);
 
@@ -1679,15 +1709,60 @@ test("quick composer opens without chat history and reveals a selected channel",
   });
   expect(collapsed).toEqual({ width: 56, height: 56, marker: "none" });
 
-  await summary.click();
+  const summaryBox = await summary.boundingBox();
+  expect(summaryBox).not.toBeNull();
+  await page.mouse.move(
+    summaryBox.x + summaryBox.width / 2,
+    summaryBox.y + summaryBox.height / 2,
+  );
   await expect(terminal).toHaveAttribute("open", "");
   await expect(page.locator("[data-world-quick-composer-avatar]")).toBeVisible();
-  await expect(page.locator("[data-world-quick-chat-feed]")).toBeHidden();
-
-  await page.locator('[data-world-quick-channel="general"]').click();
   await expect(terminal).toHaveAttribute("data-show-feed", "true");
   await expect(page.locator("[data-world-quick-chat-feed]")).toBeVisible();
+  await expect(
+    page.locator("#fullChatMessages .chat-message-row"),
+  ).toContainText("The latest chats open with the launcher.");
 
+  const channelLayout = await page
+    .locator("[data-world-quick-channels]")
+    .evaluate((element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      const first = element.querySelector("button")?.getBoundingClientRect();
+      const second = element
+        .querySelector("button:nth-of-type(2)")
+        ?.getBoundingClientRect();
+      const feed = element
+        .parentElement
+        ?.querySelector("[data-world-quick-chat-feed]")
+        ?.getBoundingClientRect();
+      return {
+        display: style.display,
+        flexDirection: style.flexDirection,
+        channelLeft: Math.round(rect.left),
+        firstLeft: Math.round(first?.left || 0),
+        firstTop: Math.round(first?.top || 0),
+        secondLeft: Math.round(second?.left || 0),
+        secondTop: Math.round(second?.top || 0),
+        feedLeft: Math.round(feed?.left || 0),
+        feedTop: Math.round(feed?.top || 0),
+      };
+    });
+  expect(channelLayout).toMatchObject({
+    display: "flex",
+    flexDirection: "row",
+  });
+  expect(channelLayout.firstLeft).toBeLessThanOrEqual(
+    channelLayout.channelLeft + 8,
+  );
+  expect(channelLayout.firstLeft).toBeLessThanOrEqual(
+    channelLayout.feedLeft + 8,
+  );
+  expect(channelLayout.secondLeft).toBeGreaterThan(channelLayout.firstLeft);
+  expect(channelLayout.secondTop).toBe(channelLayout.firstTop);
+  expect(channelLayout.feedTop).toBeGreaterThan(channelLayout.firstTop);
+
+  await page.mouse.move(0, 0);
   await terminal.evaluate((element) => {
     element.removeAttribute("open");
     element.classList.add("world-chat-terminal--idle");
