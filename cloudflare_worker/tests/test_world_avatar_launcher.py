@@ -43,6 +43,8 @@ def test_avatar_launcher_keeps_actionable_counts_on_their_related_tools():
     assert "border-radius: 50%;" in final_launcher_css
     assert "clip-path: circle(50%);" in final_launcher_css
     assert ".world-shirt-avatar" in CSS
+    assert "world-shirt-initial" not in WORLD
+    assert ".world-shirt-initial" not in CSS
     assert ".world-tool-count:not([hidden])" in CSS
     assert 'content: attr(data-world-tooltip);' in CSS
 
