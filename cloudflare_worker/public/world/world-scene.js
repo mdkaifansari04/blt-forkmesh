@@ -14315,6 +14315,8 @@ export function createWorldScene({
   onMastodonOpenLink = () => {},
   onReferralBoardSelect = () => {},
   onSiteReferrerOpen = () => {},
+  onInstanceBoothSelect = () => {},
+  onFederatedWorldTravel = () => {},
   onLobbyLinkKioskSelect = () => {},
   onLobbyFeedbackKioskSelect = () => {},
   onLobbyTaskBidKioskSelect = () => {},
@@ -18725,6 +18727,105 @@ export function createWorldScene({
     officeFloorWarpHub.add(doorway);
   });
   officeInterior.add(officeFloorWarpHub);
+
+  // Enclosed walk-in deployment booth. Three opaque walls and a roof shield
+  // the operator's screen from casual sight lines inside the lobby; the form
+  // itself remains device-local and never enters scene state or presence.
+  const instanceBooth = new THREE.Group();
+  instanceBooth.name = "forkmesh-instance-launch-booth";
+  instanceBooth.position.set(-62, 0, 39);
+  const instanceBoothDark = makeMaterial(THREE, "#111923", {
+    metalness: 0.42,
+    roughness: 0.48,
+  });
+  const instanceBoothBlue = makeMaterial(THREE, "#1f6feb", {
+    emissive: "#123c72",
+    emissiveIntensity: 0.42,
+    metalness: 0.35,
+    roughness: 0.38,
+  });
+  const boothFloor = new THREE.Mesh(
+    new THREE.BoxGeometry(21, 0.16, 18),
+    makeMaterial(THREE, "#182431", { roughness: 0.76 }),
+  );
+  boothFloor.position.set(0, 0.08, 0);
+  instanceBooth.add(boothFloor);
+  for (const [name, width, height, depth, x, y, z] of [
+    ["back", 21, 9.6, 0.42, 0, 4.8, 8.8],
+    ["left", 0.42, 9.6, 18, -10.3, 4.8, 0],
+    ["right", 0.42, 9.6, 18, 10.3, 4.8, 0],
+    ["roof", 21, 0.34, 18, 0, 9.6, 0],
+    ["entry-left", 4.2, 9.6, 0.42, -8.35, 4.8, -8.8],
+    ["entry-right", 4.2, 9.6, 0.42, 8.35, 4.8, -8.8],
+  ]) {
+    const wall = new THREE.Mesh(
+      new THREE.BoxGeometry(width, height, depth),
+      instanceBoothDark,
+    );
+    wall.name = `forkmesh-instance-booth-${name}`;
+    wall.position.set(x, y, z);
+    instanceBooth.add(wall);
+  }
+  for (const x of [-5.75, 5.75]) {
+    const entryLight = new THREE.Mesh(
+      new THREE.BoxGeometry(0.24, 8.4, 0.2),
+      instanceBoothBlue,
+    );
+    entryLight.position.set(x, 4.8, -9.05);
+    instanceBooth.add(entryLight);
+  }
+  const boothPrivacySign = makeOfficeWallPlacard(
+    THREE,
+    "NEW INSTANCE",
+    "WALK IN · PRIVATE SETUP",
+    "#58a6ff",
+    11.1,
+    1.65,
+  );
+  boothPrivacySign.name = "forkmesh-instance-booth-entry-sign";
+  boothPrivacySign.position.set(0, 8.35, -9.08);
+  boothPrivacySign.userData.officeFloorId = "lobby";
+  boothPrivacySign.userData.interactive = "instance-launch-booth";
+  instanceBooth.add(boothPrivacySign);
+  interactive.push(boothPrivacySign);
+  const instanceBoothScreen = new THREE.Mesh(
+    new THREE.PlaneGeometry(15.8, 6.5),
+    new THREE.MeshBasicMaterial({
+      map: canvasTexture(THREE, 1580, 650, (context) => {
+        context.fillStyle = "#080d13";
+        context.fillRect(0, 0, 1580, 650);
+        context.strokeStyle = "#58a6ff";
+        context.lineWidth = 18;
+        context.strokeRect(12, 12, 1556, 626);
+        context.fillStyle = "#79c0ff";
+        context.font = '900 58px "ForkMesh Mono", ui-monospace, monospace';
+        context.textAlign = "left";
+        context.fillText("LAUNCH A FORKMESH WORLD", 74, 112);
+        context.fillStyle = "#e6edf3";
+        context.font = '760 34px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("WORKER + D1 + DNS + TUNNEL", 74, 212);
+        context.fillText("FIRST MIRROR + FEDERATION BRIDGE", 74, 268);
+        context.fillStyle = "#8b9aaa";
+        context.font = '620 27px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("CREDENTIALS STAY ON YOUR DEVICE", 74, 366);
+        context.fillText("SETUP CARD EXCLUDES ALL SECRETS", 74, 410);
+        context.fillStyle = "#7ee787";
+        context.font = '900 42px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("CLICK TO CONFIGURE", 74, 540);
+      }),
+      toneMapped: false,
+    }),
+  );
+  instanceBoothScreen.name = "forkmesh-instance-launch-booth-screen";
+  instanceBoothScreen.position.set(0, 5.1, 8.55);
+  instanceBoothScreen.rotation.y = Math.PI;
+  instanceBoothScreen.userData.officeFloorId = "lobby";
+  instanceBoothScreen.userData.interactive = "instance-launch-booth";
+  instanceBooth.add(instanceBoothScreen);
+  interactive.push(instanceBoothScreen);
+  officeInterior.add(instanceBooth);
+  const instanceBoothLocalPosition = new THREE.Vector3();
+  let instanceBoothOccupied = false;
 
   // Public lobby Link Lab: a physical, accessible entry point for members to
   // submit public campaign/community links and inspect the transparent reach
@@ -26339,6 +26440,8 @@ export function createWorldScene({
     if (existing) {
       district.remove(existing);
       existing.traverse((child) => {
+        const interactiveIndex = interactive.indexOf(child);
+        if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
         child.geometry?.dispose?.();
         child.material?.map?.dispose?.();
         child.material?.dispose?.();
@@ -26364,7 +26467,13 @@ export function createWorldScene({
           online ? 0.75 : 0.5,
           Math.sin(angle) * 4.3,
         );
+        tower.userData.interactive = "federated-world-portal";
+        tower.userData.origin = String(instance?.origin || "");
+        tower.userData.label = String(
+          instance?.label || "ForkMesh instance",
+        ).slice(0, 80);
         layer.add(tower);
+        interactive.push(tower);
         const label = makeLabelSprite(
           THREE,
           String(instance?.label || "ForkMesh instance").slice(0, 22),
@@ -26375,7 +26484,13 @@ export function createWorldScene({
         label.position.copy(tower.position).add(
           new THREE.Vector3(0, online ? 1.05 : 0.78, 0),
         );
+        label.userData.interactive = "federated-world-portal";
+        label.userData.origin = String(instance?.origin || "");
+        label.userData.label = String(
+          instance?.label || "ForkMesh instance",
+        ).slice(0, 80);
         layer.add(label);
+        interactive.push(label);
       });
     district.add(layer);
     district.userData.federatedInstanceLayer = layer;
@@ -30203,6 +30318,17 @@ export function createWorldScene({
       onStartNodeDownload();
       return;
     }
+    if (hit?.object?.userData?.interactive === "instance-launch-booth") {
+      onInstanceBoothSelect();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "federated-world-portal") {
+      onFederatedWorldTravel({
+        origin: String(hit.object.userData.origin || ""),
+        label: String(hit.object.userData.label || "ForkMesh instance"),
+      });
+      return;
+    }
     if (hit?.object?.userData?.interactive === "office-link-kiosk") {
       onLobbyLinkKioskSelect();
       return;
@@ -31292,6 +31418,21 @@ export function createWorldScene({
       walkOfficeLobbyPlayer(delta, time);
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
+    }
+    if (
+      officeSceneMode === "lobby" &&
+      officeCurrentFloorId === "lobby"
+    ) {
+      officeAvatarLocalPosition(player, instanceBoothLocalPosition);
+      const insideInstanceBooth =
+        Math.abs(instanceBoothLocalPosition.x - instanceBooth.position.x) < 9.7 &&
+        Math.abs(instanceBoothLocalPosition.z - instanceBooth.position.z) < 8.3;
+      if (insideInstanceBooth && !instanceBoothOccupied) {
+        onInstanceBoothSelect();
+      }
+      instanceBoothOccupied = insideInstanceBooth;
+    } else {
+      instanceBoothOccupied = false;
     }
     updateOfficeReceptionGuide(time);
     updateOfficeAttendanceClock(time);

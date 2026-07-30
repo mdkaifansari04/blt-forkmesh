@@ -18,9 +18,10 @@ failover infrastructure rather than permanent repository storage.
 
 Create a scoped Cloudflare API token with only:
 
-- Account read
+- Account Settings read
 - Workers Scripts edit
 - D1 edit
+- Cloudflare Tunnel edit
 - Zone read
 - DNS edit for the selected zone
 - Workers Routes edit for the selected zone

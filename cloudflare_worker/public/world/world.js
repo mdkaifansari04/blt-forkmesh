@@ -1954,6 +1954,9 @@ function normalizeFederatedInstances(value) {
       label: sanitizePresenceText(item?.label, "ForkMesh instance", 80),
       origin: safeHTTPURL(item?.origin),
       approved: item?.approved === true,
+      joinedAt: Number.isFinite(Number(item?.joinedAt))
+        ? Math.max(0, Number(item.joinedAt))
+        : 0,
       health: ["online", "offline", "awaiting_verified_health"].includes(
         item?.health,
       )
@@ -4188,6 +4191,92 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </section>
 
         <section
+          class="world-instance-launcher"
+          data-world-instance-launcher
+          data-open="false"
+          role="region"
+          aria-labelledby="world-instance-launcher-title"
+          aria-hidden="true"
+        >
+          <header class="world-instance-launcher__header">
+            <div>
+              <p class="world-eyebrow">PRIVATE INSTANCE BOOTH</p>
+              <h2 id="world-instance-launcher-title" tabindex="-1">Launch a ForkMesh world</h2>
+              <p>Public topology is prepared here. Credentials stay on this device and are never sent through ForkMesh World.</p>
+            </div>
+            <button type="button" data-world-instance-launcher-close aria-label="Close instance launcher">×</button>
+          </header>
+          <form class="world-instance-launcher__form" data-world-instance-launcher-form autocomplete="off">
+            <section class="world-instance-launcher__section" aria-labelledby="world-instance-identity-title">
+              <div class="world-instance-launcher__section-title">
+                <span>01</span>
+                <div><h3 id="world-instance-identity-title">World identity</h3><p>Names shown in the federation directory and travel portal.</p></div>
+              </div>
+              <div class="world-instance-launcher__grid">
+                <label><span>Instance name</span><input name="instanceName" maxlength="80" required placeholder="Acme Commons"><small>Human-readable public label.</small></label>
+                <label><span>Node name</span><input name="nodeName" maxlength="63" pattern="[a-z][a-z0-9-]{0,62}" placeholder="auto-generated"><small>Stable lowercase machine identity.</small></label>
+              </div>
+            </section>
+            <section class="world-instance-launcher__section" aria-labelledby="world-instance-cloudflare-title">
+              <div class="world-instance-launcher__section-title">
+                <span>02</span>
+                <div><h3 id="world-instance-cloudflare-title">Cloudflare edge</h3><p>ForkMesh creates or reuses Worker, D1, proxied DNS, route, and Tunnel resources.</p></div>
+              </div>
+              <div class="world-instance-launcher__grid">
+                <label><span>Cloudflare zone</span><input name="zoneName" inputmode="url" maxlength="253" placeholder="example.com"><small>The DNS zone already active in your account.</small></label>
+                <label><span>World hostname</span><input name="hostname" inputmode="url" maxlength="253" placeholder="forkmesh.example.com"><small>Public URL for the new instance and World.</small></label>
+                <label><span>Mirror hostname</span><input name="mirrorHostname" inputmode="url" maxlength="253" placeholder="mirror.example.com"><small>Direct HTTPS endpoint for repository bytes.</small></label>
+                <label><span>Account ID <i>optional</i></span><input name="accountId" maxlength="128" placeholder="auto-detect"><small>Only needed when the token spans multiple accounts.</small></label>
+              </div>
+              <details class="world-instance-launcher__scopes">
+                <summary>Required token scopes</summary>
+                <ul>
+                  <li>Account · Account Settings · Read</li>
+                  <li>Account · Workers Scripts · Edit</li>
+                  <li>Account · D1 · Edit</li>
+                  <li>Account · Cloudflare Tunnel · Edit</li>
+                  <li>Zone · Zone · Read</li>
+                  <li>Zone · DNS · Edit</li>
+                  <li>Zone · Workers Routes · Edit</li>
+                </ul>
+                <p>Restrict Account Resources to the target account and Zone Resources to the selected zone. Do not use a Global API Key.</p>
+                <a href="https://developers.cloudflare.com/fundamentals/api/get-started/create-token/" target="_blank" rel="noopener noreferrer">Create a custom token at Cloudflare ↗</a>
+              </details>
+              <label class="world-instance-launcher__secret"><span>Cloudflare API token</span><input name="cloudflareToken" type="password" spellcheck="false" data-world-instance-secret placeholder="Session-only; never uploaded"><small>This value remains only in this tab. Continue copies it once for pasting into the local native launcher.</small></label>
+            </section>
+            <section class="world-instance-launcher__section" aria-labelledby="world-instance-mirror-title">
+              <div class="world-instance-launcher__section-title">
+                <span>03</span>
+                <div><h3 id="world-instance-mirror-title">First mirror node</h3><p>The native client installs ForkMesh over SSH and mirrors the flagship repository.</p></div>
+              </div>
+              <div class="world-instance-launcher__grid world-instance-launcher__grid--mirror">
+                <label><span>VPS hostname</span><input name="vpsHostname" inputmode="url" maxlength="253" placeholder="node.example.com"><small>Public DNS name or address reachable from your desktop.</small></label>
+                <label><span>SSH user</span><input name="vpsUser" maxlength="64" placeholder="forkmesh"><small>Use a dedicated non-root account with sudo only when needed.</small></label>
+                <label><span>SSH port</span><input name="vpsPort" type="number" min="22" max="22" value="22" readonly><small>Use port 22, or map another port through local SSH config.</small></label>
+                <label><span>Authentication</span><select name="vpsAuth"><option value="key">Local SSH key / agent</option><option value="password">Password entered in desktop</option></select><small>Keys are preferred. Secret material is completed only in the native launcher.</small></label>
+              </div>
+            </section>
+            <section class="world-instance-launcher__section" aria-labelledby="world-instance-link-title">
+              <div class="world-instance-launcher__section-title">
+                <span>04</span>
+                <div><h3 id="world-instance-link-title">Federation bridge</h3><p>The new relay points back here, registers its signed identity, publishes ActivityPub actors, and becomes a travel portal after approval.</p></div>
+              </div>
+              <div class="world-instance-launcher__grid">
+                <label><span>Upstream instance</span><input name="upstream" type="url" maxlength="300" readonly><small>Main relay used for signed health, directory, and federation registration.</small></label>
+                <label><span>Flagship repository</span><input name="repository" value="mainnode/forkmesh" maxlength="160"><small>Mirrored onto the first node after health verification.</small></label>
+              </div>
+            </section>
+            <footer class="world-instance-launcher__actions">
+              <p data-world-instance-launcher-status role="status" aria-live="polite">Fill the public topology, then continue in the local ForkMesh launcher.</p>
+              <div>
+                <button type="button" data-world-instance-snapshot>Save setup card PNG</button>
+                <button type="submit" data-world-instance-launch>Continue to secure launch</button>
+              </div>
+            </footer>
+          </form>
+        </section>
+
+        <section
           class="world-office-task-checkin"
           data-world-office-task-checkin
           data-open="false"
@@ -4979,6 +5068,8 @@ class ForkMeshWorld extends HTMLElement {
     this.repositoryImportTimer = 0;
     this.mirrorPushRefreshTimer = 0;
     this.eventsTimer = 0;
+    this.instanceDirectoryTimer = 0;
+    this.instanceCelebrationTimer = 0;
     this.notificationsTimer = 0;
     this.adminErrorTimer = 0;
     this.adminErrorLatestId = 0;
@@ -5920,6 +6011,17 @@ class ForkMeshWorld extends HTMLElement {
         },
         onReferralBoardSelect: () => void this.copyReferralLink(),
         onSiteReferrerOpen: (url) => this.openSiteReferrerLink(url),
+        onInstanceBoothSelect: () => this.toggleInstanceLauncher(true),
+        onFederatedWorldTravel: ({ origin, label }) => {
+          const destination = safeHTTPURL(origin);
+          if (!destination?.startsWith("https://")) return;
+          this.toast(`Opening ${label || "federated ForkMesh world"}…`);
+          window.open(
+            `${destination.replace(/\/$/, "")}/world/`,
+            "_blank",
+            "noopener,noreferrer",
+          );
+        },
         onLobbyLinkKioskSelect: () => void this.openLobbyLinkKiosk(),
         onLobbyFeedbackKioskSelect: () =>
           void this.openLobbyFeedbackKiosk(),
@@ -6105,6 +6207,7 @@ class ForkMeshWorld extends HTMLElement {
         ),
       );
       this.world.updateFederatedInstances?.(this.federatedInstances);
+      this.celebrateRecentInstance(this.federatedInstances);
       if (this.visitorStats) {
         this.world.updateArrivalStats?.(this.visitorStats);
       }
@@ -6181,6 +6284,7 @@ class ForkMeshWorld extends HTMLElement {
       this.startMirrorPolling();
       this.startMirrorActionsPolling();
       this.startRepositoryImportPolling();
+      this.startInstanceDirectoryPolling();
       this.startEventPolling();
       this.startNotificationPolling();
       this.startMediaPlaybackPolling();
@@ -7859,6 +7963,99 @@ class ForkMeshWorld extends HTMLElement {
     this.updateMetrics();
   }
 
+  async refreshInstanceDirectory() {
+    try {
+      const payload = await this.fetchJSON(
+        `/api/world/instances?refresh=${Math.floor(Date.now() / 30_000)}`,
+        {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        },
+      );
+      const instances = normalizeFederatedInstances(payload);
+      this.federatedInstances = instances;
+      this.world?.updateFederatedInstances?.(instances);
+      this.celebrateRecentInstance(instances);
+    } catch (_) {}
+  }
+
+  startInstanceDirectoryPolling() {
+    window.clearInterval(this.instanceDirectoryTimer);
+    this.instanceDirectoryTimer = window.setInterval(() => {
+      if (!document.hidden) void this.refreshInstanceDirectory();
+    }, 30_000);
+  }
+
+  celebrateRecentInstance(instances = []) {
+    const now = Date.now();
+    const celebrationMs = 10 * 60 * 1000;
+    const newest = [...(Array.isArray(instances) ? instances : [])]
+      .filter(
+        (instance) =>
+          instance?.approved === true &&
+          instance?.joinedAt > 0 &&
+          now >= instance.joinedAt &&
+          now - instance.joinedAt < celebrationMs,
+      )
+      .sort((left, right) => right.joinedAt - left.joinedAt)[0];
+    if (!newest) return;
+    const existing = this.$("[data-world-instance-celebration]");
+    if (existing?.dataset.instanceId === newest.id) return;
+    existing?.remove();
+    window.clearTimeout(this.instanceCelebrationTimer);
+    const remaining = Math.max(
+      1000,
+      celebrationMs - (now - Number(newest.joinedAt)),
+    );
+    const layer = document.createElement("section");
+    layer.className = "world-instance-celebration";
+    layer.dataset.worldInstanceCelebration = "true";
+    layer.dataset.instanceId = newest.id;
+    layer.setAttribute("aria-label", "New ForkMesh instance celebration");
+    const fireworks = document.createElement("div");
+    fireworks.className = "world-instance-fireworks";
+    fireworks.setAttribute("aria-hidden", "true");
+    if (
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      for (let index = 0; index < 54; index += 1) {
+        const particle = document.createElement("i");
+        particle.style.setProperty("--x", `${5 + Math.random() * 90}%`);
+        particle.style.setProperty("--y", `${5 + Math.random() * 62}%`);
+        particle.style.setProperty("--delay", `${Math.random() * -4}s`);
+        particle.style.setProperty("--duration", `${1.8 + Math.random() * 2.7}s`);
+        particle.style.setProperty("--hue", `${Math.floor(Math.random() * 360)}`);
+        fireworks.append(particle);
+      }
+    }
+    const announcement = document.createElement("div");
+    announcement.className = "world-instance-announcement";
+    const eyebrow = document.createElement("p");
+    eyebrow.textContent = "NEW FORKMESH INSTANCE · PORTAL ONLINE";
+    const title = document.createElement("strong");
+    title.textContent = newest.label;
+    const copy = document.createElement("span");
+    copy.textContent =
+      "A new independent World joined the federation. Fireworks run across active Worlds for ten minutes.";
+    const link = document.createElement("a");
+    link.href = `${newest.origin.replace(/\/$/, "")}/world/`;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = "Travel to the new World →";
+    announcement.append(eyebrow, title, copy, link);
+    layer.append(fireworks, announcement);
+    this.append(layer);
+    this.toast(`🎆 ${newest.label} joined the ForkMesh federation.`, {
+      priority: 2,
+      lockMs: 8000,
+    });
+    this.instanceCelebrationTimer = window.setTimeout(() => {
+      layer.remove();
+      this.instanceCelebrationTimer = 0;
+    }, remaining);
+  }
+
   renderCommunityPlacement() {
     const container = this.$("[data-world-community-placement]");
     if (!container) return;
@@ -8853,6 +9050,14 @@ class ForkMeshWorld extends HTMLElement {
         this.startScreenshotCapture();
         return;
       }
+      if (event.target.closest("[data-world-instance-launcher-close]")) {
+        this.toggleInstanceLauncher(false);
+        return;
+      }
+      if (event.target.closest("[data-world-instance-snapshot]")) {
+        this.downloadInstanceSetupCard();
+        return;
+      }
       if (event.target.closest("[data-world-notifications-open]")) {
         this.toggleSettings(false);
         this.openLandmark("events");
@@ -9477,6 +9682,22 @@ class ForkMeshWorld extends HTMLElement {
         this.setSwingSpeed(swingSpeed.value);
         return;
       }
+      const instanceAuth = event.target.closest(
+        "[data-world-instance-launcher-form] [name='vpsAuth']",
+      );
+      if (instanceAuth) {
+        const passwordRow = this.$(
+          "[data-world-instance-vps-password-row]",
+        );
+        if (passwordRow) {
+          passwordRow.hidden = instanceAuth.value !== "password";
+          if (passwordRow.hidden) {
+            const password = passwordRow.querySelector("input");
+            if (password) password.value = "";
+          }
+        }
+        return;
+      }
       if (event.target.closest("[data-world-repo-filter='directory']")) {
         this.applyRepositoryFilters();
       }
@@ -9489,6 +9710,14 @@ class ForkMeshWorld extends HTMLElement {
     this.$("[data-world-signup-form]")?.addEventListener("submit", (event) => {
       event.preventDefault();
       void this.submitWorldSignup(event.currentTarget);
+    });
+    const instanceForm = this.$("[data-world-instance-launcher-form]");
+    instanceForm?.addEventListener("input", (event) => {
+      this.autofillInstanceLauncher(event.target?.name || "");
+    });
+    instanceForm?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void this.continueInstanceLaunch(event.currentTarget);
     });
 
     const thumbstick = this.$("[data-world-thumbstick]");
@@ -9570,7 +9799,11 @@ class ForkMeshWorld extends HTMLElement {
 
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
-      if (this.$("[data-world-chat]")?.dataset.open === "true") {
+      if (
+        this.$("[data-world-instance-launcher]")?.dataset.open === "true"
+      ) {
+        this.toggleInstanceLauncher(false);
+      } else if (this.$("[data-world-chat]")?.dataset.open === "true") {
         this.closeWorldChat();
       } else if (this.$("[data-world-account]")?.dataset.open === "true") {
         this.toggleWorldAccount(false);
@@ -24731,6 +24964,291 @@ class ForkMeshWorld extends HTMLElement {
     dialog.showModal();
   }
 
+  instanceLauncherValues(form = this.$("[data-world-instance-launcher-form]")) {
+    const values = form ? new FormData(form) : new FormData();
+    const text = (name, limit = 300) =>
+      String(values.get(name) || "").trim().slice(0, limit);
+    return {
+      instanceName: text("instanceName", 80),
+      nodeName: text("nodeName", 63).toLowerCase(),
+      zoneName: text("zoneName", 253).toLowerCase().replace(/\.$/, ""),
+      hostname: text("hostname", 253).toLowerCase().replace(/\.$/, ""),
+      mirrorHostname: text("mirrorHostname", 253)
+        .toLowerCase()
+        .replace(/\.$/, ""),
+      accountId: text("accountId", 128),
+      cloudflareToken: text("cloudflareToken", 4096),
+      vpsHostname: text("vpsHostname", 253),
+      vpsUser: text("vpsUser", 64),
+      vpsPort: Math.max(1, Math.min(65535, Number(values.get("vpsPort")) || 22)),
+      vpsAuth: values.get("vpsAuth") === "password" ? "password" : "key",
+      vpsPassword: text("vpsPassword", 4096),
+      upstream: text("upstream", 300),
+      repository: text("repository", 160) || "mainnode/forkmesh",
+    };
+  }
+
+  autofillInstanceLauncher(changedName = "") {
+    const form = this.$("[data-world-instance-launcher-form]");
+    if (!form) return;
+    const field = (name) => form.elements.namedItem(name);
+    const domain = (value) => {
+      const host = String(value || "").trim().toLowerCase().replace(/\.$/, "");
+      return /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
+        host,
+      )
+        ? host
+        : "";
+    };
+    const zone = domain(field("zoneName")?.value);
+    const fillHost = (name, prefix) => {
+      const input = field(name);
+      if (
+        !input ||
+        !zone ||
+        (input.value && input.dataset.instanceAutofilled !== "true")
+      ) {
+        return;
+      }
+      input.value = `${prefix}.${zone}`;
+      input.dataset.instanceAutofilled = "true";
+    };
+    if (changedName === "hostname" || changedName === "mirrorHostname") {
+      const changed = field(changedName);
+      if (changed) changed.dataset.instanceAutofilled = "false";
+    }
+    if (changedName === "zoneName" || !changedName) {
+      fillHost("hostname", "forkmesh");
+      fillHost("mirrorHostname", "mirror");
+    }
+    const instanceName = String(field("instanceName")?.value || "").trim();
+    const nodeName = field("nodeName");
+    if (
+      nodeName &&
+      instanceName &&
+      (!nodeName.value || nodeName.dataset.instanceAutofilled === "true")
+    ) {
+      const slug = instanceName
+        .toLowerCase()
+        .normalize("NFKD")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 63)
+        .replace(/-+$/g, "");
+      nodeName.value = /^[a-z]/.test(slug) ? slug : `world-${slug}`.slice(0, 63);
+      nodeName.dataset.instanceAutofilled = "true";
+    } else if (changedName === "nodeName" && nodeName) {
+      nodeName.dataset.instanceAutofilled = "false";
+    }
+  }
+
+  toggleInstanceLauncher(open = true) {
+    const panel = this.$("[data-world-instance-launcher]");
+    const form = this.$("[data-world-instance-launcher-form]");
+    if (!panel || !form) return;
+    panel.dataset.open = String(Boolean(open));
+    panel.setAttribute("aria-hidden", String(!open));
+    if (!open) {
+      form
+        .querySelectorAll("[data-world-instance-secret]")
+        .forEach((input) => {
+          input.value = "";
+        });
+      this.world?.setPaused?.(false);
+      return;
+    }
+    const upstream = form.elements.namedItem("upstream");
+    if (upstream) upstream.value = location.origin;
+    const instanceName = form.elements.namedItem("instanceName");
+    if (instanceName && !instanceName.value) {
+      const zone = String(
+        form.elements.namedItem("zoneName")?.value || "",
+      ).trim();
+      instanceName.value = zone
+        ? `${zone.split(".")[0]} World`
+        : "My ForkMesh World";
+    }
+    this.autofillInstanceLauncher();
+    this.world?.setPaused?.(true);
+    queueMicrotask(() => {
+      panel
+        .querySelector("#world-instance-launcher-title")
+        ?.focus({ preventScroll: true });
+    });
+  }
+
+  validateInstanceLauncher(values) {
+    const hostPattern =
+      /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+    if (!values.instanceName) return "Name this ForkMesh instance.";
+    if (!/^[a-z][a-z0-9-]{0,62}$/.test(values.nodeName)) {
+      return "Node name must start with a letter and use lowercase letters, digits, or hyphens.";
+    }
+    if (
+      !hostPattern.test(values.zoneName) ||
+      !hostPattern.test(values.hostname) ||
+      !hostPattern.test(values.mirrorHostname)
+    ) {
+      return "Enter a valid Cloudflare zone, World hostname, and mirror hostname.";
+    }
+    if (
+      (values.hostname !== values.zoneName &&
+        !values.hostname.endsWith(`.${values.zoneName}`)) ||
+      (values.mirrorHostname !== values.zoneName &&
+        !values.mirrorHostname.endsWith(`.${values.zoneName}`))
+    ) {
+      return "Both public hostnames must be inside the selected Cloudflare zone.";
+    }
+    if (values.hostname === values.mirrorHostname) {
+      return "World and mirror hostnames must be different.";
+    }
+    if (
+      !values.cloudflareToken ||
+      values.cloudflareToken.length < 20 ||
+      /\s/.test(values.cloudflareToken)
+    ) {
+      return "Paste the scoped Cloudflare API token. It stays in this tab until handoff.";
+    }
+    if (values.vpsPort !== 22) {
+      return "The native installer uses SSH port 22. Map another port in local SSH config first.";
+    }
+    return "";
+  }
+
+  async continueInstanceLaunch(form) {
+    const values = this.instanceLauncherValues(form);
+    const status = this.$("[data-world-instance-launcher-status]");
+    const submit = form?.querySelector("[data-world-instance-launch]");
+    const error = this.validateInstanceLauncher(values);
+    if (error) {
+      if (status) {
+        status.dataset.state = "error";
+        status.textContent = error;
+      }
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      if (status) {
+        status.dataset.state = "error";
+        status.textContent =
+          "Clipboard access is required for the secret-safe native handoff. Use the desktop Control Node directly.";
+      }
+      return;
+    }
+    if (submit) submit.disabled = true;
+    try {
+      // The native URL intentionally contains public topology only. Putting a
+      // token or SSH password in a custom-scheme URL would expose it through
+      // browser history, process arguments, desktop activation logs, and OS
+      // protocol dispatch.
+      await navigator.clipboard.writeText(values.cloudflareToken);
+      const tokenToClear = values.cloudflareToken;
+      const url = new URL("forkmesh://control/cloudflare");
+      for (const [key, value] of Object.entries({
+        hostname: values.hostname,
+        mirror: values.mirrorHostname,
+        zone: values.zoneName,
+        account: values.accountId,
+        node: values.nodeName,
+        label: values.instanceName,
+        upstream: values.upstream,
+        vpsHost: values.vpsHostname,
+        vpsUser: values.vpsUser,
+        vpsPort: String(values.vpsPort),
+        vpsAuth: values.vpsAuth,
+        repository: values.repository,
+      })) {
+        if (value) url.searchParams.set(key, value);
+      }
+      form
+        .querySelectorAll("[data-world-instance-secret]")
+        .forEach((input) => {
+          input.value = "";
+        });
+      if (status) {
+        status.dataset.state = "ready";
+        status.textContent =
+          "Topology sent locally. Paste the one-time Cloudflare token, add the VPS password there if needed, review the dry run, then deploy.";
+      }
+      window.setTimeout(async () => {
+        try {
+          if ((await navigator.clipboard.readText()) === tokenToClear) {
+            await navigator.clipboard.writeText("");
+          }
+        } catch (_) {}
+      }, 60_000);
+      window.location.href = url.href;
+    } catch (_) {
+      if (status) {
+        status.dataset.state = "error";
+        status.textContent =
+          "The browser denied clipboard or native-app access. Open ForkMesh Desktop → Control Node → Cloudflare relay deployment.";
+      }
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+  }
+
+  downloadInstanceSetupCard() {
+    const values = this.instanceLauncherValues();
+    const canvas = document.createElement("canvas");
+    canvas.width = 1440;
+    canvas.height = 900;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.fillStyle = "#0b1118";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = "#101923";
+    context.fillRect(0, 0, canvas.width, 168);
+    context.fillStyle = "#58a6ff";
+    context.fillRect(0, 0, 18, canvas.height);
+    context.fillStyle = "#79c0ff";
+    context.font = '800 25px "ForkMesh Mono", monospace';
+    context.fillText("FORKMESH · INSTANCE SETUP CARD", 70, 62);
+    context.fillStyle = "#f0f6fc";
+    context.font = '800 54px system-ui, sans-serif';
+    context.fillText(values.instanceName || "Unnamed ForkMesh World", 70, 127);
+    const rows = [
+      ["WORLD HOST", values.hostname || "not set"],
+      ["MIRROR HOST", values.mirrorHostname || "not set"],
+      ["CLOUDFLARE ZONE", values.zoneName || "not set"],
+      ["NODE", values.nodeName || "not set"],
+      ["FIRST MIRROR VPS", values.vpsHostname || "not set"],
+      ["SSH", values.vpsHostname ? `${values.vpsUser || "user"} @ port ${values.vpsPort} · ${values.vpsAuth}` : "not set"],
+      ["UPSTREAM", values.upstream || location.origin],
+      ["FLAGSHIP", values.repository],
+      ["CREDENTIALS", "OMITTED · SESSION-ONLY"],
+      ["NEXT", "Open ForkMesh Desktop → validate → deploy → approve federation"],
+    ];
+    rows.forEach(([label, value], index) => {
+      const y = 230 + index * 59;
+      context.fillStyle = index % 2 ? "#0e151e" : "#101923";
+      context.fillRect(54, y - 35, 1332, 50);
+      context.fillStyle = "#718497";
+      context.font = '750 20px "ForkMesh Mono", monospace';
+      context.fillText(label, 76, y);
+      context.fillStyle = "#d8e2ec";
+      context.font = '650 23px "ForkMesh Mono", monospace';
+      context.fillText(String(value).slice(0, 78), 390, y);
+    });
+    context.fillStyle = "#6e7e8e";
+    context.font = '550 18px system-ui, sans-serif';
+    context.fillText(
+      `Generated ${new Date().toISOString()} · API tokens, passwords, keys, and account secrets are never included.`,
+      70,
+      848,
+    );
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const link = document.createElement("a");
+      link.download = `${(values.nodeName || "forkmesh-instance").replace(/[^a-z0-9-]/g, "-")}-setup-card.png`;
+      link.href = URL.createObjectURL(blob);
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      this.toast("Non-secret instance setup card downloaded.");
+    }, "image/png");
+  }
+
   async openLobbyLinkKiosk() {
     document.querySelector("[data-world-link-kiosk-dialog]")?.remove();
     const dialog = document.createElement("dialog");
@@ -25161,6 +25679,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.notificationsTimer);
     window.clearInterval(this.adminErrorTimer);
     window.clearTimeout(this.adminErrorEffectTimer);
+    window.clearTimeout(this.instanceCelebrationTimer);
     window.clearInterval(this.mediaTimer);
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);
@@ -25171,6 +25690,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.mastodonRefreshTimer);
     window.clearInterval(this.socialFeedsTimer);
     window.clearInterval(this.sessionWatchTimer);
+    window.clearInterval(this.instanceDirectoryTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
     window.clearTimeout(this.viewportSyncTimer);
     this.rendererRecoveryTimer = 0;
@@ -25178,6 +25698,7 @@ class ForkMeshWorld extends HTMLElement {
     this.inflightRequests.clear();
     this.responseCache.clear();
     this.requestFailures.clear();
+    this.$("[data-world-instance-celebration]")?.remove();
     this.peerGraceTimer = 0;
     this.profilePresenceTimer = 0;
     this.movementSendTimer = 0;
