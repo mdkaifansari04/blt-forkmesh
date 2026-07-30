@@ -21275,109 +21275,6 @@ export function createWorldScene({
   let mirrorAgentTasksKey = "";
   const botAgents = new Map();
   const loungeMembers = new Map();
-  // Directory members do not remain trapped around the fire. A deterministic
-  // subset takes long, staggered trips to landmarks throughout the public
-  // world, pauses there, then walks home. Stable account-based routing avoids
-  // synchronized crowds and preserves the same rhythm across roster refreshes.
-  const memberWorldDestinations = [
-    { x: -215, z: -45 },
-    { x: -132, z: -45 },
-    { x: -72, z: 38 },
-    { x: 0, z: -142 },
-    { x: 0, z: -12 },
-    { x: 0, z: 168 },
-    { x: 72, z: 38 },
-    { x: 132, z: -45 },
-    { x: 215, z: -45 },
-    { x: 438, z: -72 },
-  ];
-  const ambientRoutePosition = (from, to, progress) => {
-    const t = clamp(progress, 0, 1);
-    const eased = t * t * (3 - 2 * t);
-    const inverse = 1 - eased;
-    // Bow every route through the open square so members travel along the
-    // public concourse instead of cutting a straight line through the fire.
-    const controlX = 0;
-    const controlZ = 18;
-    return {
-      x:
-        inverse * inverse * from.x +
-        2 * inverse * eased * controlX +
-        eased * eased * to.x,
-      z:
-        inverse * inverse * from.z +
-        2 * inverse * eased * controlZ +
-        eased * eased * to.z,
-    };
-  };
-  animated.push((time, delta) => {
-    let animatedMembers = 0;
-    loungeMembers.forEach((figure) => {
-      const ambient = figure.userData.ambientInteraction;
-      if (!ambient || animatedMembers >= 18) return;
-      animatedMembers += 1;
-      const cycleNumber = Math.floor(
-        (time + ambient.phase) / ambient.cycleMs,
-      );
-      const progress =
-        ((time + ambient.phase) % ambient.cycleMs) / ambient.cycleMs;
-      const priorX = figure.position.x;
-      const priorZ = figure.position.z;
-      const outbound = progress >= 0.08 && progress < 0.39;
-      const visiting = progress >= 0.39 && progress < 0.68;
-      const inbound = progress >= 0.68 && progress < 0.95;
-      const travelling = outbound || inbound;
-      if (!outbound && !visiting && !inbound) {
-        figure.position.copy(ambient.seatPosition);
-        figure.rotation.y = ambient.seatHeading;
-        figure.userData.leftArm.rotation.z = 0;
-        figure.userData.rightArm.rotation.z = 0;
-        applySeatedLegPose(figure);
-      } else if (travelling) {
-        const routeProgress = outbound
-          ? (progress - 0.08) / 0.31
-          : 1 - (progress - 0.68) / 0.27;
-        const routePosition = ambientRoutePosition(
-          ambient.seatPosition,
-          ambient.destination,
-          routeProgress,
-        );
-        figure.position.x = routePosition.x;
-        figure.position.z = routePosition.z;
-        figure.position.y = WORLD_WALKING_PLANE_Y;
-        const dx = figure.position.x - priorX;
-        const dz = figure.position.z - priorZ;
-        if (Math.hypot(dx, dz) > 0.001) {
-          figure.rotation.y = Math.atan2(-dx, -dz);
-        }
-        figure.userData.leftArm.rotation.z = 0;
-        figure.userData.rightArm.rotation.z = 0;
-        const gait = Math.sin(time * 0.011) * 0.58;
-        applyLegPitch(figure, -gait, gait);
-      } else {
-        const visitProgress = (progress - 0.39) / 0.29;
-        const orbit = visitProgress * Math.PI * 2 + ambient.destinationAngle;
-        figure.position.set(
-          ambient.destination.x + Math.cos(orbit) * ambient.exploreRadius,
-          WORLD_WALKING_PLANE_Y,
-          ambient.destination.z + Math.sin(orbit) * ambient.exploreRadius,
-        );
-        figure.rotation.y = -orbit + Math.PI / 2;
-        applyLegPitch(figure, 0, 0);
-        if (ambient.kind === "chat") {
-        figure.userData.leftArm.rotation.z =
-          Math.sin(time * 0.006 + ambient.phase) * 0.34;
-        } else {
-          figure.userData.leftArm.rotation.z = 0;
-          if (ambient.waveCycle !== cycleNumber) {
-            ambient.waveCycle = cycleNumber;
-            startAvatarWave(figure, time);
-          }
-        }
-      }
-      animateAvatarActivity(figure, time, delta, reducedMotion);
-    });
-  });
   // Public account facts the member directory publishes but a live presence
   // frame never carries — joined date and total active time — keyed by
   // lowercased display name and refreshed by updateMemberLounge. Every avatar
@@ -27190,27 +27087,7 @@ export function createWorldScene({
         // sitOnCampfireBench.
         figure.rotation.y = seat ? Math.atan2(seat.x, seat.z) : 0;
         applySeatedLegPose(figure);
-        const ambientSeed = hashNumber(id);
-        if (ambientSeed % 3 === 0) {
-          const seatHeading = figure.rotation.y;
-          const destination =
-            memberWorldDestinations[
-              (ambientSeed >>> 5) % memberWorldDestinations.length
-            ];
-          figure.userData.ambientInteraction = {
-            kind: ["wave", "chat"][(ambientSeed >>> 4) % 2],
-            phase: ambientSeed % 54_000,
-            cycleMs: 54_000 + (ambientSeed % 31_000),
-            seatPosition: figure.position.clone(),
-            seatHeading,
-            destination,
-            destinationAngle: (ambientSeed % 628) / 100,
-            exploreRadius: 2.2 + ((ambientSeed >>> 9) % 30) / 10,
-            waveCycle: -1,
-          };
-        } else {
-          figure.userData.ambientInteraction = null;
-        }
+        figure.userData.ambientInteraction = null;
       });
     // Benches past the roster are the open guest seats.
     for (let index = roster.length; index < seats.length; index += 1) {
