@@ -6007,6 +6007,9 @@ class ForkMeshWorld extends HTMLElement {
         onReferralBoardSelect: () => void this.copyReferralLink(),
         onSiteReferrerOpen: (url) => this.openSiteReferrerLink(url),
         onInstanceBoothSelect: () => this.toggleInstanceLauncher(true),
+        onLaunchMirrorSelect: () => void this.launchVultrMirrorFromWorld(),
+        onDrinkWater: () =>
+          this.toast("Fresh garden water — hydration restored. 💧"),
         onFederatedWorldTravel: ({ origin, label }) => {
           const destination = safeHTTPURL(origin);
           if (!destination?.startsWith("https://")) return;
@@ -25101,6 +25104,55 @@ class ForkMeshWorld extends HTMLElement {
         .querySelector("#world-instance-launcher-title")
         ?.focus({ preventScroll: true });
     });
+  }
+
+  async launchVultrMirrorFromWorld() {
+    const token = String(
+      window.prompt(
+        "Enter your Vultr API token. It is copied directly to the ForkMesh desktop app and is never placed in a URL or shared World state.",
+        "",
+      ) || "",
+    ).trim();
+    if (!token) return;
+    if (!/^[A-Za-z0-9]{20,128}$/.test(token)) {
+      this.toast("That Vultr token format is not valid.");
+      return;
+    }
+    const requestedName = String(
+      window.prompt(
+        "Optional mirror name (leave blank to generate one):",
+        "",
+      ) || "",
+    )
+      .trim()
+      .toLowerCase();
+    if (
+      requestedName &&
+      !/^[a-z][a-z0-9-]{0,62}$/.test(requestedName)
+    ) {
+      this.toast("Mirror names start with a letter and use lowercase letters, digits, or hyphens.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(token);
+    } catch {
+      this.toast("Clipboard access is required to hand the token securely to ForkMesh Desktop.");
+      return;
+    }
+    const launchURL = new URL("forkmesh://control/cloudflare");
+    launchURL.searchParams.set("mode", "vultr");
+    if (requestedName) launchURL.searchParams.set("node", requestedName);
+    this.toast("Opening ForkMesh Desktop to create your Vultr mirror…");
+    window.location.assign(launchURL.href);
+    window.setTimeout(async () => {
+      try {
+        if ((await navigator.clipboard.readText()) === token) {
+          await navigator.clipboard.writeText("");
+        }
+      } catch {
+        // Desktop clears the handoff immediately; this is only a fallback.
+      }
+    }, 60_000);
   }
 
   validateInstanceLauncher(values) {

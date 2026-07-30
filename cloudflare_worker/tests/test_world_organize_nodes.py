@@ -185,8 +185,8 @@ def test_reward_pool_shows_a_live_mirror_count_above_the_orb():
     fountain_start = SCENE.index("function createFountain(")
     fountain = SCENE[fountain_start: SCENE.index("\n}\n", fountain_start)]
     assert 'mirrorCountSprite.name = "reward-pool-mirror-count";' in fountain
-    # Above the 1.15-radius orb sitting at y=5.15, clear of its geometry.
-    assert "mirrorCountSprite.position.y = 7.6;" in fountain
+    # Above the raised fireball, clear of its corona.
+    assert "mirrorCountSprite.position.y = 9.4;" in fountain
     assert "group.add(mirrorCountSprite);" in fountain
     # Hidden until the first signed catalog lands, so no placeholder zero.
     assert "mirrorCountSprite.visible = false;" in fountain

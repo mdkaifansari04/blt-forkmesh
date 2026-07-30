@@ -99,7 +99,11 @@ const JETPACK_HORIZONTAL_SPEED = 30;
 const JETPACK_VERTICAL_SPEED = 22;
 const JETPACK_MAX_ALTITUDE = 480;
 const JETPACK_FLYING_ACTIVITY = "flying with a jetpack";
-const GYM_POSITION = Object.freeze([42, 0.14, 17]);
+// Recreation now belongs to the Office campus garden instead of occupying the
+// Town Square lawn. Both fixtures remain on the same continuous walk surface.
+const GYM_POSITION = Object.freeze([66, 0.14, -137]);
+const SWING_SET_POSITION = Object.freeze([38, 0, -139]);
+const INSTANCE_GARDEN_POSITION = Object.freeze([-52, 0, -140]);
 const GYM_HEAVY_WEIGHT_LB = 315;
 const GYM_MAX_WEIGHT_LB = 1200;
 // Double-clicking the ground sends the avatar to that spot at a dash speed far
@@ -7952,7 +7956,7 @@ function createRewardTreasurySign(THREE) {
     }),
   );
   nodeButton.name = "reward-treasury-start-node-button";
-  nodeButton.position.set(1.68, 2.18, 0);
+  nodeButton.position.set(1.68, 1.66, 0);
   nodeButton.userData.interactive = "start-node-download";
   sign.add(nodeButton);
   for (const facing of [1, -1]) {
@@ -7972,6 +7976,37 @@ function createRewardTreasurySign(THREE) {
     face.rotation.y = facing > 0 ? 0 : Math.PI;
     face.userData.interactive = "start-node-download";
     nodeButton.add(face);
+  }
+  const mirrorButton = new THREE.Mesh(
+    new THREE.BoxGeometry(1.82, 0.92, 0.2),
+    makeMaterial(THREE, "#7849d6", {
+      emissive: "#4b22a3",
+      emissiveIntensity: 0.62,
+      metalness: 0.18,
+      roughness: 0.36,
+    }),
+  );
+  mirrorButton.name = "reward-treasury-launch-mirror-button";
+  mirrorButton.position.set(1.86, 2.82, 0);
+  mirrorButton.userData.interactive = "launch-vultr-mirror";
+  sign.add(mirrorButton);
+  for (const facing of [1, -1]) {
+    const face = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.68, 0.78),
+      new THREE.MeshBasicMaterial({
+        map: wordTexture(
+          THREE,
+          "LAUNCH MIRROR",
+          "VULTR  ↗",
+          "#d8c7ff",
+        ),
+        toneMapped: false,
+      }),
+    );
+    face.position.set(0, 0, facing * 0.105);
+    face.rotation.y = facing > 0 ? 0 : Math.PI;
+    face.userData.interactive = "launch-vultr-mirror";
+    mirrorButton.add(face);
   }
   sign.userData.treasurySignature = "";
   return sign;
@@ -7993,6 +8028,16 @@ function applyRewardTreasury(THREE, sign, state) {
 
 function createFountain(THREE, position, interactive, animated) {
   const group = new THREE.Group();
+  const nodeYardConcrete = new THREE.Mesh(
+    new THREE.CylinderGeometry(1, 1, 0.14, 72),
+    makeMaterial(THREE, "#b9b9b0", { roughness: 0.91 }),
+  );
+  nodeYardConcrete.name = "reward-node-concrete-plaza";
+  nodeYardConcrete.position.y = 0.07;
+  nodeYardConcrete.scale.set(14, 1, 14);
+  nodeYardConcrete.receiveShadow = true;
+  group.add(nodeYardConcrete);
+  group.userData.nodeYardConcrete = nodeYardConcrete;
   const darkStone = makeMaterial(THREE, "#1d3b31", { roughness: 0.74 });
   const water = makeMaterial(THREE, "#48d9b1", {
     roughness: 0.2,
@@ -8026,13 +8071,25 @@ function createFountain(THREE, position, interactive, animated) {
   const island = new THREE.Mesh(new THREE.CylinderGeometry(1.25, 1.65, 1.1, 28), darkStone);
   island.position.y = 1.05;
   group.add(island);
-  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.34, 3.4, 16), sunMat);
-  stem.position.y = 3.05;
-  group.add(stem);
   const sun = new THREE.Mesh(new THREE.IcosahedronGeometry(1.15, 2), sunMat);
-  sun.position.y = 5.15;
+  sun.name = "reward-pool-fireball-sun";
+  sun.position.y = 6.7;
   sun.userData.baseY = sun.position.y;
   group.add(sun);
+  const fireShell = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(1.58, 2),
+    new THREE.MeshBasicMaterial({
+      color: "#ff7a1a",
+      transparent: true,
+      opacity: 0.22,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  fireShell.name = "reward-pool-fireball-corona";
+  fireShell.position.copy(sun.position);
+  group.add(fireShell);
 
   // Hidden until the first signed catalog lands, so the pool never flashes a
   // placeholder "0 MIRRORS" before the node payload arrives.
@@ -8044,7 +8101,7 @@ function createFountain(THREE, position, interactive, animated) {
     }),
   );
   mirrorCountSprite.name = "reward-pool-mirror-count";
-  mirrorCountSprite.position.y = 7.6;
+  mirrorCountSprite.position.y = 9.4;
   mirrorCountSprite.scale.set(5, 2.5, 1);
   mirrorCountSprite.renderOrder = 12;
   mirrorCountSprite.visible = false;
@@ -8064,13 +8121,13 @@ function createFountain(THREE, position, interactive, animated) {
     group.add(ring);
   }
 
-  const particleCount = 190;
+  const particleCount = 230;
   const particlePositions = new Float32Array(particleCount * 3);
   const particleSeeds = [];
   for (let index = 0; index < particleCount; index += 1) {
     const angle = Math.random() * Math.PI * 2;
-    const radius = 0.35 + Math.random() * 3.7;
-    const height = 0.65 + Math.random() * 4.4;
+    const radius = 0.24 + Math.random() * 1.95;
+    const height = 4.8 + Math.random() * 3.6;
     particlePositions[index * 3] = Math.cos(angle) * radius;
     particlePositions[index * 3 + 1] = height;
     particlePositions[index * 3 + 2] = Math.sin(angle) * radius;
@@ -8091,14 +8148,14 @@ function createFountain(THREE, position, interactive, animated) {
   group.add(particles);
 
   const light = new THREE.PointLight("#ffd66e", 5.5, 24, 1.7);
-  light.position.y = 5.3;
+  light.position.y = 6.8;
   group.add(light);
 
   const treasurySign = createRewardTreasurySign(THREE);
   // The SOL board is the fixed centre of the service yard. Live node cabinets
   // form complete, evenly spaced rings around this point and are reflowed
   // whenever membership changes.
-  treasurySign.position.set(0, 0, 0);
+  treasurySign.position.set(0, 0, 5.2);
   treasurySign.rotation.y = 0;
   group.add(treasurySign);
   group.userData.treasurySign = treasurySign;
@@ -8116,6 +8173,11 @@ function createFountain(THREE, position, interactive, animated) {
     sun.rotation.y = time * 0.00045;
     sun.rotation.x = Math.sin(time * 0.0004) * 0.12;
     sun.position.y = sun.userData.baseY + Math.sin(time * 0.0012) * 0.16;
+    fireShell.position.copy(sun.position);
+    fireShell.rotation.y = -time * 0.00075;
+    fireShell.rotation.z = time * 0.00052;
+    const coronaPulse = 0.94 + Math.sin(time * 0.006) * 0.12;
+    fireShell.scale.setScalar(coronaPulse);
     const positions = particles.geometry.attributes.position.array;
     for (let index = 0; index < particleCount; index += 1) {
       const seed = particleSeeds[index];
@@ -8123,7 +8185,7 @@ function createFountain(THREE, position, interactive, animated) {
       const pulse = 0.78 + Math.sin(phase * 2.3 + index) * 0.18;
       positions[index * 3] = Math.cos(seed.angle + phase) * seed.radius * pulse;
       positions[index * 3 + 1] =
-        0.75 + ((seed.height + time * 0.00065 * seed.speed) % 4.5);
+        4.75 + ((seed.height + time * 0.00082 * seed.speed) % 3.8);
       positions[index * 3 + 2] = Math.sin(seed.angle + phase) * seed.radius * pulse;
     }
     particles.geometry.attributes.position.needsUpdate = true;
@@ -14336,6 +14398,8 @@ export function createWorldScene({
   onReferralBoardSelect = () => {},
   onSiteReferrerOpen = () => {},
   onInstanceBoothSelect = () => {},
+  onLaunchMirrorSelect = () => {},
+  onDrinkWater = () => {},
   onFederatedWorldTravel = () => {},
   onLobbyLinkKioskSelect = () => {},
   onLobbyFeedbackKioskSelect = () => {},
@@ -16223,7 +16287,6 @@ export function createWorldScene({
   // and clicking it again hops off; the shell's swing-speed slider scales the
   // pumping, and the regular camera toggle watches the ride in first or third
   // person because both camera modes follow the player's position.
-  const SWING_SET_POSITION = Object.freeze([-20, 0, 9]);
   const SWING_SEAT_COUNT = 3;
   const SWING_SEAT_SPACING = 2.3;
   const SWING_BEAM_HEIGHT = 4.6;
@@ -18753,63 +18816,96 @@ export function createWorldScene({
   });
   officeInterior.add(officeFloorWarpHub);
 
-  // Enclosed walk-in deployment booth. Three opaque walls and a roof shield
-  // the operator's screen from casual sight lines inside the lobby; the form
-  // itself remains device-local and never enters scene state or presence.
+  // The instance launcher is an outdoor garden portal: creating a world
+  // should feel celebratory, while credentials remain in the device-local UI.
   const instanceBooth = new THREE.Group();
   instanceBooth.name = "forkmesh-instance-launch-booth";
-  instanceBooth.position.set(-62, 0, 39);
-  const instanceBoothDark = makeMaterial(THREE, "#111923", {
-    metalness: 0.42,
-    roughness: 0.48,
+  instanceBooth.position.set(...INSTANCE_GARDEN_POSITION);
+  const instanceBoothDark = makeMaterial(THREE, "#5537a8", {
+    metalness: 0.22,
+    roughness: 0.42,
   });
-  const instanceBoothBlue = makeMaterial(THREE, "#1f6feb", {
-    emissive: "#123c72",
-    emissiveIntensity: 0.42,
-    metalness: 0.35,
-    roughness: 0.38,
+  const instanceBoothBlue = makeMaterial(THREE, "#27d9c4", {
+    emissive: "#0b827b",
+    emissiveIntensity: 0.75,
+    metalness: 0.18,
+    roughness: 0.3,
   });
   const boothFloor = new THREE.Mesh(
-    new THREE.BoxGeometry(21, 0.16, 18),
-    makeMaterial(THREE, "#182431", { roughness: 0.76 }),
+    new THREE.CylinderGeometry(10.8, 11.4, 0.38, 48),
+    makeMaterial(THREE, "#f2c94c", { roughness: 0.66 }),
   );
-  boothFloor.position.set(0, 0.08, 0);
+  boothFloor.position.set(0, 0.19, 0);
   instanceBooth.add(boothFloor);
-  for (const [name, width, height, depth, x, y, z] of [
-    ["back", 21, 9.6, 0.42, 0, 4.8, 8.8],
-    ["left", 0.42, 9.6, 18, -10.3, 4.8, 0],
-    ["right", 0.42, 9.6, 18, 10.3, 4.8, 0],
-    ["roof", 21, 0.34, 18, 0, 9.6, 0],
-    ["entry-left", 4.2, 9.6, 0.42, -8.35, 4.8, -8.8],
-    ["entry-right", 4.2, 9.6, 0.42, 8.35, 4.8, -8.8],
-  ]) {
-    const wall = new THREE.Mesh(
-      new THREE.BoxGeometry(width, height, depth),
-      instanceBoothDark,
+  for (const x of [-8.4, 8.4]) {
+    const tower = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.72, 0.92, 9.4, 16),
+      x < 0 ? instanceBoothDark : instanceBoothBlue,
     );
-    wall.name = `forkmesh-instance-booth-${name}`;
-    wall.position.set(x, y, z);
-    instanceBooth.add(wall);
-  }
-  for (const x of [-5.75, 5.75]) {
-    const entryLight = new THREE.Mesh(
-      new THREE.BoxGeometry(0.24, 8.4, 0.2),
-      instanceBoothBlue,
+    tower.position.set(x, 4.9, 1.2);
+    instanceBooth.add(tower);
+    const planet = new THREE.Mesh(
+      new THREE.SphereGeometry(1.15, 20, 14),
+      makeMaterial(THREE, x < 0 ? "#ff5f8f" : "#65e572", {
+        emissive: x < 0 ? "#812747" : "#257d38",
+        emissiveIntensity: 0.55,
+      }),
     );
-    entryLight.position.set(x, 4.8, -9.05);
-    instanceBooth.add(entryLight);
+    planet.position.set(x, 9.9, 1.2);
+    instanceBooth.add(planet);
   }
+  const boothRoof = new THREE.Mesh(
+    new THREE.BoxGeometry(19.2, 0.55, 6.4),
+    makeMaterial(THREE, "#ff5f8f", {
+      emissive: "#8b2647",
+      emissiveIntensity: 0.42,
+      roughness: 0.38,
+    }),
+  );
+  boothRoof.name = "forkmesh-instance-booth-colorful-roof";
+  boothRoof.position.set(0, 10.05, 1.2);
+  instanceBooth.add(boothRoof);
+  const portal = new THREE.Mesh(
+    new THREE.TorusGeometry(5.25, 0.52, 16, 64),
+    instanceBoothBlue,
+  );
+  portal.name = "forkmesh-instance-world-portal";
+  portal.position.set(0, 5.4, 3.6);
+  portal.userData.interactive = "instance-launch-booth";
+  instanceBooth.add(portal);
+  interactive.push(portal);
+  const portalCore = new THREE.Mesh(
+    new THREE.CircleGeometry(4.7, 64),
+    new THREE.MeshBasicMaterial({
+      color: "#7c5cff",
+      transparent: true,
+      opacity: 0.3,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    }),
+  );
+  portalCore.position.copy(portal.position);
+  portalCore.position.z += 0.04;
+  portalCore.userData.interactive = "instance-launch-booth";
+  instanceBooth.add(portalCore);
+  interactive.push(portalCore);
+  animated.push((time) => {
+    portal.rotation.z = time * 0.00022;
+    const portalPulse = 0.97 + Math.sin(time * 0.0035) * 0.045;
+    portalCore.scale.setScalar(portalPulse);
+    portalCore.material.opacity = 0.26 + Math.sin(time * 0.0042) * 0.08;
+  });
   const boothPrivacySign = makeOfficeWallPlacard(
     THREE,
-    "NEW INSTANCE",
-    "WALK IN · PRIVATE SETUP",
-    "#58a6ff",
-    11.1,
-    1.65,
+    "LAUNCH INSTANCE",
+    "CREATE A NEW WORLD",
+    "#ffd85a",
+    13.4,
+    2.1,
   );
-  boothPrivacySign.name = "forkmesh-instance-booth-entry-sign";
-  boothPrivacySign.position.set(0, 8.35, -9.08);
-  boothPrivacySign.userData.officeFloorId = "lobby";
+  boothPrivacySign.name = "forkmesh-instance-booth-roof-sign";
+  boothPrivacySign.position.set(0, 11.2, 1.2);
   boothPrivacySign.userData.interactive = "instance-launch-booth";
   instanceBooth.add(boothPrivacySign);
   interactive.push(boothPrivacySign);
@@ -18842,15 +18938,143 @@ export function createWorldScene({
     }),
   );
   instanceBoothScreen.name = "forkmesh-instance-launch-booth-screen";
-  instanceBoothScreen.position.set(0, 5.1, 8.55);
-  instanceBoothScreen.rotation.y = Math.PI;
-  instanceBoothScreen.userData.officeFloorId = "lobby";
+  instanceBoothScreen.position.set(0, 3.35, 3.5);
   instanceBoothScreen.userData.interactive = "instance-launch-booth";
   instanceBooth.add(instanceBoothScreen);
   interactive.push(instanceBoothScreen);
-  officeInterior.add(instanceBooth);
-  const instanceBoothLocalPosition = new THREE.Vector3();
+  setShadows(instanceBooth);
+  world.add(instanceBooth);
   let instanceBoothOccupied = false;
+
+  // Landscaped arrival garden between the bridge and glass office.
+  const officeFrontGarden = new THREE.Group();
+  officeFrontGarden.name = "forkmesh-office-front-garden";
+  const gardenPathMaterial = makeMaterial(THREE, "#d8d3c5", { roughness: 0.96 });
+  for (const [x, z, width, depth] of [
+    [0, -137, 9, 62],
+    [-31, -140, 49, 5],
+    [40, -140, 58, 5],
+  ]) {
+    const path = new THREE.Mesh(
+      new THREE.BoxGeometry(width, 0.14, depth),
+      gardenPathMaterial,
+    );
+    path.position.set(x, 0.07, z);
+    path.receiveShadow = true;
+    officeFrontGarden.add(path);
+  }
+  const gardenFlowerColors = ["#ff668d", "#ffd65a", "#8c6cff", "#64e88d"];
+  for (let index = 0; index < 34; index += 1) {
+    const side = index % 2 ? -1 : 1;
+    const x = side * (13 + (index % 6) * 5.1);
+    const z = -120 - Math.floor(index / 6) * 7.2;
+    const shrub = new THREE.Mesh(
+      new THREE.SphereGeometry(0.8 + (index % 3) * 0.12, 12, 8),
+      makeMaterial(
+        THREE,
+        index % 5 ? "#3d9b59" : gardenFlowerColors[index % 4],
+        {
+          roughness: 0.86,
+        },
+      ),
+    );
+    shrub.name = "office-garden-plant";
+    shrub.position.set(x, 0.72, z);
+    officeFrontGarden.add(shrub);
+  }
+
+  // A rock waterfall with translucent, animated water and a splash response.
+  const waterfall = new THREE.Group();
+  waterfall.name = "forkmesh-interactive-waterfall";
+  waterfall.position.set(73, 0, -157);
+  const rockMaterial = makeMaterial(THREE, "#5f655e", { roughness: 0.94 });
+  for (const [x, y, z, scale] of [
+    [0, 3.2, 0, 4.8],
+    [-3.2, 2.15, 0.6, 3.4],
+    [3.25, 1.75, 0.4, 3.1],
+  ]) {
+    const rock = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(1, 1),
+      rockMaterial,
+    );
+    rock.position.set(x, y, z);
+    rock.scale.set(scale, scale * 0.78, scale * 0.62);
+    waterfall.add(rock);
+  }
+  const cascadeMaterial = new THREE.MeshPhysicalMaterial({
+    color: "#72dfff",
+    roughness: 0.08,
+    metalness: 0,
+    transmission: 0.55,
+    thickness: 0.3,
+    transparent: true,
+    opacity: 0.78,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const cascades = [];
+  for (const x of [-1.65, 0, 1.65]) {
+    const cascade = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.85, 6.2, 8, 24),
+      cascadeMaterial.clone(),
+    );
+    cascade.name = "garden-waterfall-cascade";
+    cascade.position.set(x, 3.75, 3.15);
+    cascade.userData.interactive = "garden-waterfall";
+    waterfall.add(cascade);
+    interactive.push(cascade);
+    cascades.push(cascade);
+  }
+  const waterfallPool = new THREE.Mesh(
+    new THREE.CylinderGeometry(6.5, 6.8, 0.3, 48),
+    cascadeMaterial.clone(),
+  );
+  waterfallPool.name = "garden-waterfall-pool";
+  waterfallPool.position.set(0, 0.2, 4);
+  waterfallPool.scale.z = 0.58;
+  waterfallPool.userData.interactive = "garden-waterfall";
+  waterfall.add(waterfallPool);
+  interactive.push(waterfallPool);
+  let waterfallSplashUntil = 0;
+  animated.push((time) => {
+    const energized = time < waterfallSplashUntil;
+    cascades.forEach((cascade, index) => {
+      cascade.position.y = 3.75 - ((time * 0.0018 + index * 0.7) % 0.42);
+      cascade.material.opacity = (energized ? 0.92 : 0.72) +
+        Math.sin(time * 0.005 + index) * 0.06;
+    });
+    waterfallPool.scale.x = (energized ? 1.05 : 1) + Math.sin(time * 0.003) * 0.02;
+  });
+  officeFrontGarden.add(waterfall);
+
+  const drinkingFountain = new THREE.Group();
+  drinkingFountain.name = "forkmesh-drinking-fountain";
+  drinkingFountain.position.set(25, 0, -145);
+  const fountainBody = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.75, 0.92, 2.5, 16),
+    makeMaterial(THREE, "#9da8aa", { metalness: 0.72, roughness: 0.3 }),
+  );
+  fountainBody.position.y = 1.25;
+  fountainBody.userData.interactive = "drinking-fountain";
+  drinkingFountain.add(fountainBody);
+  interactive.push(fountainBody);
+  const drinkingStream = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.045, 0.045, 1.15, 10),
+    cascadeMaterial.clone(),
+  );
+  drinkingStream.name = "drinking-fountain-water-stream";
+  drinkingStream.position.set(0.42, 3.12, 0);
+  drinkingStream.rotation.z = -0.7;
+  drinkingStream.visible = false;
+  drinkingFountain.add(drinkingStream);
+  let drinkingUntil = 0;
+  animated.push((time) => {
+    drinkingStream.visible = time < drinkingUntil;
+    drinkingStream.scale.y = 0.94 + Math.sin(time * 0.02) * 0.06;
+  });
+  officeFrontGarden.add(drinkingFountain);
+  setShadows(officeFrontGarden);
+  world.add(officeFrontGarden);
 
   // Public lobby Link Lab: a physical, accessible entry point for members to
   // submit public campaign/community links and inspect the transparent reach
@@ -26043,12 +26267,12 @@ export function createWorldScene({
   // ring distributes its current members at equal angular intervals; a join
   // or deletion deliberately reflows that ring so gaps never accumulate.
   function rewardCircleSlots(centreX, centreZ, count) {
-    const minimumSpacing = 4.4;
-    const ringGap = 5.4;
+    const minimumSpacing = 3.65;
+    const ringGap = 4.25;
     const requested = Math.max(0, Math.min(64, Math.round(Number(count) || 0)));
     const slots = [];
     let remaining = requested;
-    let radius = 20.5;
+    let radius = 11.75;
     let ringIndex = 0;
     while (remaining > 0 && radius < Math.min(68, WORLD_RADIUS - 6)) {
       const capacity = Math.max(
@@ -26220,6 +26444,16 @@ export function createWorldScene({
       routingZ,
       usableNodes.length,
     );
+    const nodeYardConcrete = fountain?.userData?.nodeYardConcrete;
+    if (nodeYardConcrete) {
+      const farthestRadius = circleSlots.reduce(
+        (largest, slot) =>
+          Math.max(largest, Math.hypot(slot.x - routingX, slot.z - routingZ)),
+        0,
+      );
+      const plazaRadius = Math.max(14, farthestRadius + 4.2);
+      nodeYardConcrete.scale.set(plazaRadius, 1, plazaRadius);
+    }
     usableNodes.forEach(({ node, name: nodeName }, nodeIndex) => {
       const id = `node:${nodeName.toLowerCase()}`;
       const dataKey = nodeDataKey({ ...node, name: nodeName });
@@ -30348,6 +30582,19 @@ export function createWorldScene({
       onInstanceBoothSelect();
       return;
     }
+    if (hit?.object?.userData?.interactive === "launch-vultr-mirror") {
+      onLaunchMirrorSelect();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "garden-waterfall") {
+      waterfallSplashUntil = performance.now() + 2600;
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "drinking-fountain") {
+      drinkingUntil = performance.now() + 2200;
+      onDrinkWater();
+      return;
+    }
     if (hit?.object?.userData?.interactive === "federated-world-portal") {
       onFederatedWorldTravel({
         origin: String(hit.object.userData.origin || ""),
@@ -31433,14 +31680,10 @@ export function createWorldScene({
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
     }
-    if (
-      officeSceneMode === "lobby" &&
-      officeCurrentFloorId === "lobby"
-    ) {
-      officeAvatarLocalPosition(player, instanceBoothLocalPosition);
+    if (officeSceneMode === "town") {
       const insideInstanceBooth =
-        Math.abs(instanceBoothLocalPosition.x - instanceBooth.position.x) < 9.7 &&
-        Math.abs(instanceBoothLocalPosition.z - instanceBooth.position.z) < 8.3;
+        Math.abs(player.position.x - instanceBooth.position.x) < 9.7 &&
+        Math.abs(player.position.z - instanceBooth.position.z) < 8.3;
       if (insideInstanceBooth && !instanceBoothOccupied) {
         onInstanceBoothSelect();
       }
