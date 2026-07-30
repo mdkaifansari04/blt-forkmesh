@@ -74,6 +74,7 @@ const WORLD_PATH_SURFACE_Y = 0.105;
 const WORLD_PATH_CENTER_Y =
   WORLD_PATH_SURFACE_Y - WORLD_PATH_HEIGHT / 2;
 const DISTRICT_GROUND_RADIUS = 48;
+const REPOSITORY_GROUND_RADIUS = REPOSITORY_ISLAND_RING_RADIUS + 7;
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
 const PLAYER_SPEED = 6.4;
@@ -7485,7 +7486,9 @@ function concreteBrickMaterial(THREE) {
 function districtGroundMaterial(THREE, kind) {
   const repository = kind === "repositories";
   return new THREE.MeshStandardMaterial({
-    color: repository ? "#8099a0" : "#8a829b",
+    // Repository portals now sit on a neutral concrete apron. The former
+    // blue-gray circle read as a second, disconnected repository district.
+    color: repository ? "#c1bbb0" : "#8a829b",
     map: projectAssetTexture(
       THREE,
       "/world/assets/concrete-brick-path-v1.webp",
@@ -7500,9 +7503,13 @@ function districtGroundMaterial(THREE, kind) {
   });
 }
 
-function createDistrictGroundCircle(THREE, kind) {
+function createDistrictGroundCircle(
+  THREE,
+  kind,
+  radius = DISTRICT_GROUND_RADIUS,
+) {
   const ground = new THREE.Mesh(
-    new THREE.CircleGeometry(DISTRICT_GROUND_RADIUS, 96),
+    new THREE.CircleGeometry(radius, 96),
     districtGroundMaterial(THREE, kind),
   );
   ground.name = `forkmesh-${kind}-textured-ground`;
@@ -9645,7 +9652,15 @@ function repositoryWedgeGeometry(
 
 function createRepositoryDistrict(THREE, position, interactive, animated) {
   const group = new THREE.Group();
-  group.add(createDistrictGroundCircle(THREE, "repositories"));
+  // Match the concrete apron to the live repository ring instead of leaving
+  // an oversized blue foundation behind at the former landmark position.
+  group.add(
+    createDistrictGroundCircle(
+      THREE,
+      "repositories",
+      REPOSITORY_GROUND_RADIUS,
+    ),
+  );
   const ringMaterial = makeMaterial(THREE, "#77d9ff", {
     metalness: 0.2,
     roughness: 0.28,
@@ -15485,12 +15500,9 @@ export function createWorldScene({
     );
     landmarkObjects.set(landmark.id, object);
     world.add(object);
-    // The tower, island, bridge, admission boundary, and floor colliders form
-    // one structural campus. Letting the layout editor move only the tower
-    // would strand its entrance and is therefore deliberately unsupported.
-    if (landmark.id === "repositories") {
-      registerMovableObject("landmark-" + landmark.id, object);
-    }
+    // Repository portals and their import kiosk form one structural district.
+    // Keep its shared origin fixed so a stale saved landmark transform cannot
+    // split the kiosk and apron away from the live portal ring.
   });
   // Decorative landscaping lives on the Office island but owns no walkable
   // surface or collision metadata. The doorway and its full bridge-width
@@ -16318,14 +16330,17 @@ export function createWorldScene({
   );
   gymInset.position.y = 0.13;
   gym.add(gymInset);
-  const gymSign = makeLabelSprite(
+  // Keep wayfinding physically anchored to the scene. Floating labels are
+  // reserved for features that explicitly need screen-facing identification.
+  const gymSign = makeGroundPlaque(
     THREE,
     "WORLD GYM",
     "CLICK A STATION TO TRAIN",
     "#ff9b54",
   );
-  gymSign.position.set(0, 5.4, -8.15);
-  gymSign.scale.set(9.8, 3.25, 1);
+  gymSign.name = "world-gym-entrance-plaque";
+  gymSign.position.set(0, 0.14, -8.1);
+  gymSign.rotation.y = Math.PI;
   gym.add(gymSign);
   const gymSteel = makeMaterial(THREE, "#a8b3bf", {
     metalness: 0.82,
@@ -16524,16 +16539,17 @@ export function createWorldScene({
   gym.add(punchingStation);
 
   [
-    ["BENCH PRESS", "WEIGHT + REPS", -7.6, 4.15, -1.4],
-    ["TREADMILL", "CLICK TO RUN", 0, 3.45, -3.7],
-    ["EXERCISE BIKE", "CLICK TO RIDE", 6.9, 3.75, -3.4],
-    ["ROWER", "CLICK TO ROW", 6.6, 2.65, 3.7],
-    ["PUNCHING BAG", "CLICK TO TRAIN", -0.4, 5.15, 4.8],
-  ].forEach(([title, subtitle, x, y, z]) => {
-    const label = makeLabelSprite(THREE, title, subtitle, "#ffad8f");
-    label.position.set(x, y, z);
-    label.scale.set(5.1, 1.7, 1);
-    gym.add(label);
+    ["BENCH PRESS", "WEIGHT + REPS", -10.7, 0.14, -3.7, Math.PI / 2],
+    ["TREADMILL", "CLICK TO RUN", -3.35, 0.14, -6.35, Math.PI],
+    ["EXERCISE BIKE", "CLICK TO RIDE", 8.8, 0.14, -6.35, Math.PI],
+    ["ROWER", "CLICK TO ROW", 10.65, 0.14, 5.7, -Math.PI / 2],
+    ["PUNCHING BAG", "CLICK TO TRAIN", -3.35, 0.14, 7.0, 0],
+  ].forEach(([title, subtitle, x, y, z, rotation]) => {
+    const plaque = makeGroundPlaque(THREE, title, subtitle, "#ffad8f");
+    plaque.name = `world-gym-station-plaque:${worldLayoutId("", title)}`;
+    plaque.position.set(x, y, z);
+    plaque.rotation.y = rotation;
+    gym.add(plaque);
   });
 
   const gymState = {

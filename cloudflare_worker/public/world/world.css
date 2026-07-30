@@ -11363,6 +11363,307 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   font-size: 0.65rem;
 }
 
+/* Dense organization task catalog. Closed rows are spreadsheet-thin; opening
+   one reveals the rich task record as a private chat-style bubble underneath. */
+.world-task-table {
+  --world-task-columns:
+    minmax(250px, 2.4fr)
+    minmax(72px, 0.62fr)
+    48px
+    minmax(82px, 0.75fr)
+    minmax(145px, 1.25fr)
+    minmax(92px, 0.78fr)
+    62px
+    64px
+    minmax(118px, auto);
+  display: block;
+  overflow-x: auto;
+  overflow-y: visible;
+  border: 1px solid #273444;
+  border-radius: 11px;
+  background: #0a1118;
+  scrollbar-color: #34465a #0a1118;
+}
+
+.world-task-table-header,
+.world-task-table .world-task-row-summary {
+  display: grid;
+  grid-template-columns: var(--world-task-columns);
+  align-items: center;
+  min-width: 1080px;
+}
+
+.world-task-table-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  min-height: 29px;
+  border-bottom: 1px solid #324152;
+  background: #111923;
+  box-shadow: 0 2px 7px rgb(0 0 0 / 0.22);
+}
+
+.world-task-table-header > :is(button, span) {
+  overflow: hidden;
+  min-width: 0;
+  height: 29px;
+  border: 0;
+  border-right: 1px solid rgb(139 148 158 / 0.12);
+  border-radius: 0;
+  background: transparent;
+  color: #7f8c9a;
+  padding: 0 7px;
+  font: 800 0.52rem/29px "ForkMesh Mono", ui-monospace, monospace;
+  letter-spacing: 0.055em;
+  text-align: left;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.world-task-table-header > button {
+  cursor: pointer;
+}
+
+.world-task-table-header > button:hover,
+.world-task-table-header > button[aria-pressed="true"] {
+  background: rgb(88 166 255 / 0.09);
+  color: #79c0ff;
+}
+
+.world-task-table-header > button span {
+  margin-left: 4px;
+  color: #58a6ff;
+}
+
+.world-task-table .world-task-row {
+  position: relative;
+  display: block;
+  overflow: visible;
+  min-width: 1080px;
+  border: 0 !important;
+  border-bottom: 1px solid rgb(139 148 158 / 0.13) !important;
+  border-left: 3px solid #58a6ff !important;
+  border-radius: 0 !important;
+  background: #0e151d !important;
+  padding: 0 !important;
+  box-shadow: none;
+  transition: background 120ms ease;
+}
+
+.world-task-table .world-task-row:nth-of-type(odd) {
+  background: #101821 !important;
+}
+
+.world-task-table .world-task-row:last-child {
+  border-bottom: 0 !important;
+}
+
+.world-task-table .world-task-row:hover,
+.world-task-table .world-task-row[open] {
+  transform: none;
+  border-color: #58a6ff !important;
+  background: #14202b !important;
+  box-shadow: none;
+}
+
+.world-task-table .world-task-row[data-status="active"] {
+  border-left-color: #d2a8ff !important;
+}
+
+.world-task-table .world-task-row[data-status="done"] {
+  border-left-color: #56d364 !important;
+}
+
+.world-task-table .world-task-row[data-kind="bid"] {
+  border-left-color: #e3b341 !important;
+}
+
+.world-task-table .world-task-row--mine::after {
+  content: none;
+}
+
+.world-task-row-summary {
+  min-height: 34px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.world-task-row-summary::-webkit-details-marker {
+  display: none;
+}
+
+.world-task-row-summary > :is(span, time) {
+  display: flex;
+  min-width: 0;
+  height: 34px;
+  align-items: center;
+  overflow: hidden;
+  border-right: 1px solid rgb(139 148 158 / 0.085);
+  color: #aeb8c4;
+  padding: 0 7px;
+  font: 650 0.6rem/1 "ForkMesh Mono", ui-monospace, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-task-row-summary .world-task-cell-title {
+  gap: 7px;
+  color: #e6edf3;
+  font-family: system-ui, sans-serif;
+}
+
+.world-task-cell-title > strong,
+.world-task-cell-route,
+.world-task-cell-owner {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-task-cell-title > i {
+  flex: 0 0 auto;
+  color: #8b98a7;
+  font-size: 0.62rem;
+  font-style: normal;
+}
+
+.world-task-row-summary .world-task-avatar {
+  width: 23px;
+  height: 23px;
+  flex: 0 0 23px;
+  border-width: 1px;
+  border-radius: 7px;
+  font-size: 0.58rem;
+  box-shadow: none;
+}
+
+.world-task-row-summary .world-task-cell-status,
+.world-task-row-summary .world-task-cell-priority,
+.world-task-row-summary .world-task-cell-time,
+.world-task-row-summary .world-task-cell-qa {
+  justify-content: center;
+  text-align: center;
+}
+
+.world-task-cell-status[data-tone="active"] {
+  color: #d2a8ff;
+}
+
+.world-task-cell-status[data-tone="done"],
+.world-task-cell-qa[data-verdict="pass"] {
+  color: #56d364;
+}
+
+.world-task-cell-status[data-tone="ready"],
+.world-task-cell-qa[data-verdict="ready"] {
+  color: #79c0ff;
+}
+
+.world-task-cell-priority {
+  color: #e3b341 !important;
+}
+
+.world-task-cell-qa[data-verdict="fail"] {
+  color: #ff7b8a;
+}
+
+.world-task-cell-qa[data-verdict="unsure"] {
+  color: #e3b341;
+}
+
+.world-task-row-summary .world-task-cell-actions {
+  gap: 3px;
+  justify-content: flex-end;
+  overflow: visible;
+  padding: 0 5px;
+}
+
+.world-task-table .world-task-row-controls {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 3px;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+}
+
+.world-task-table .world-task-row-controls :is(button, time) {
+  display: inline-grid;
+  width: 23px;
+  min-width: 23px;
+  min-height: 23px;
+  height: 23px;
+  place-items: center;
+  border: 1px solid #344252;
+  border-radius: 6px;
+  background: #131c26;
+  padding: 0;
+  color: #b8c2cc;
+  font-size: 0.58rem;
+  line-height: 1;
+}
+
+.world-task-table .world-office-task-qa-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.world-task-table .world-task-detail-chevron {
+  display: inline-grid;
+  width: 17px;
+  flex: 0 0 17px;
+  place-items: center;
+  color: #6e7b89;
+  font-size: 1rem;
+  transition: transform 120ms ease;
+}
+
+.world-task-table .world-task-row[open] .world-task-detail-chevron {
+  transform: rotate(90deg);
+  color: #79c0ff;
+}
+
+.world-task-chat-bubble {
+  position: relative;
+  margin: 9px 12px 12px 38px;
+  border: 1px solid #34495e;
+  border-radius: 5px 14px 14px;
+  background:
+    linear-gradient(125deg, rgb(88 166 255 / 0.075), transparent 26%),
+    #111a24;
+  padding: 12px;
+  box-shadow: 0 10px 26px rgb(0 0 0 / 0.24);
+}
+
+.world-task-chat-bubble::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: -12px;
+  border-width: 0 12px 12px 0;
+  border-style: solid;
+  border-color: transparent #34495e transparent transparent;
+}
+
+.world-task-chat-bubble::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -9px;
+  border-width: 0 10px 10px 0;
+  border-style: solid;
+  border-color: transparent #14202b transparent transparent;
+}
+
+.world-task-chat-bubble .world-task-row-heading {
+  grid-template-columns: 40px minmax(180px, 1fr);
+}
+
+.world-task-chat-bubble .world-task-row-description {
+  margin-top: 10px;
+}
+
 .world-task-board-issues {
   margin-top: 12px;
   border-top: 1px solid #263240;

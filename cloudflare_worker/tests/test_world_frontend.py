@@ -150,7 +150,7 @@ def test_landmarks_use_stable_positions_inside_the_world_and_office_campus():
     positions = {
         "fountain": (0, 0),
         "campfire": (0, 130),
-        "repositories": (35, 38),
+        "repositories": (130, 0),
         "office": (0, -215),
     }
     for landmark, (x, z) in positions.items():

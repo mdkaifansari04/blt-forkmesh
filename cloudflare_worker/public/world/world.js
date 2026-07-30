@@ -4464,6 +4464,9 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                       <option value="updated">Recently updated</option>
                       <option value="assignee">Assignee</option>
                       <option value="department">Department</option>
+                      <option value="repository">Repository</option>
+                      <option value="tracked">Tracked time</option>
+                      <option value="qa">QA</option>
                       <option value="title">Title</option>
                     </select>
                   </label>
@@ -4477,9 +4480,9 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 <div><strong data-world-work-tracked>0:00</strong><span>Tracked</span></div>
               </div>
               <p class="world-office-panel-status" data-world-work-status role="status" aria-live="polite"></p>
-              <ol class="world-office-task-list world-task-table" data-world-organization-task-list aria-label="Sortable organization task table">
-                <li class="world-office-task-empty">Sign in to load organization tasks.</li>
-              </ol>
+              <div class="world-office-task-list world-task-table" data-world-organization-task-list aria-label="Sortable organization task table" role="table">
+                <div class="world-office-task-empty">Sign in to load organization tasks.</div>
+              </div>
               <details class="world-task-board-issues">
                 <summary>Recent issue assignments</summary>
                 <ol class="world-office-task-list" data-world-work-issue-list aria-label="Issues recently assigned to you">
