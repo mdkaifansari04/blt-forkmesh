@@ -463,8 +463,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // readout).
     connect(m_relayLatencyTimer, &QTimer::timeout, this,
             &MainWindow::updateNodeOnlineControls);
+    // …and keep the dish's node blips on the same tick, so the radar reports
+    // node status continuously instead of only while the Mirror nodes page is
+    // built and open (adhoc #44). Roster-derived, so this costs no git/network.
+    connect(m_relayLatencyTimer, &QTimer::timeout, this,
+            &MainWindow::refreshRelayRadarBlips);
     m_relayLatencyTimer->start(60 * 1000);
     QTimer::singleShot(2500, this, &MainWindow::probeRelayLatency);
+    QTimer::singleShot(2500, this, &MainWindow::refreshRelayRadarBlips);
     // React to the OS's own connectivity signal so the radar flips to
     // offline/online the moment the link changes, instead of lagging the
     // minute cadence (adhoc #41).

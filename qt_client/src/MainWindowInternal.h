@@ -1357,6 +1357,7 @@ public:
     void setBlips(const QVector<Blip> &blips)
     {
         m_blips = blips;
+        refreshTooltip(); // the tooltip counts the blips, so keep it in step
         update();
     }
 
@@ -1520,20 +1521,28 @@ private:
     }
     void refreshTooltip()
     {
-        if (m_unreachable) {
-            setToolTip(QStringLiteral(
-                "Relay not responding \xE2\x80\x94 last probe timed out\n"
-                "Click to open Mirror nodes"));
-        } else if (m_latencyMs < 0) {
-            setToolTip(QStringLiteral(
-                "Measuring relay latency\xE2\x80\xA6\n"
-                "Click to open Mirror nodes"));
-        } else {
-            setToolTip(QStringLiteral(
-                           "Relay round-trip latency: %1 ms\n"
-                           "Probed every minute\nClick to open Mirror nodes")
-                           .arg(m_latencyMs));
+        QString text;
+        if (m_unreachable)
+            text = QStringLiteral(
+                "Relay not responding \xE2\x80\x94 last probe timed out");
+        else if (m_latencyMs < 0)
+            text = QStringLiteral("Measuring relay latency\xE2\x80\xA6");
+        else
+            text = QStringLiteral("Relay round-trip latency: %1 ms\n"
+                                  "Probed every minute")
+                       .arg(m_latencyMs);
+        // The blips are live node status, so say what they add up to.
+        if (!m_blips.isEmpty()) {
+            int online = 0;
+            for (const Blip &b : m_blips)
+                if (b.online)
+                    ++online;
+            text += QStringLiteral("\n%1 of %2 node%3 online")
+                        .arg(online)
+                        .arg(m_blips.size())
+                        .arg(m_blips.size() == 1 ? "" : "s");
         }
+        setToolTip(text + QStringLiteral("\nClick to open Mirror nodes"));
     }
 
     static constexpr int kSide = 40; // matches ResourceSparkline's button-sized square

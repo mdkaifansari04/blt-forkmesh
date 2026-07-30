@@ -4137,13 +4137,7 @@ QWidget *MainWindow::buildBreadcrumb()
     // relay name (issue #144). The probe itself is driven by m_relayLatencyTimer.
     m_relayRadar = new RelayRadarWidget;
     static_cast<RelayRadarWidget *>(m_relayRadar)->onClicked = [this] {
-        if (!m_repoDetailStack || m_mirrorNodesTabIndex < 0 ||
-            !m_repoDetailTabs)
-            return;
-        showSection(0);
-        if (QAbstractButton *button =
-                m_repoDetailTabs->button(m_mirrorNodesTabIndex))
-            button->click();
+        openMirrorNodesPage();
     };
 
     // Node switcher, to the right of the relay switcher: "node ▾ count".
@@ -5154,6 +5148,122 @@ void MainWindow::onRelayLatencySampled(int ms)
     m_relayProbeFailures = 0;
     if (m_relayRadar)
         static_cast<RelayRadarWidget *>(m_relayRadar)->setLatency(ms);
+    refreshRelayRadarBlips();
+}
+
+// Keep the dish reporting node status at all times (adhoc #44). The blips used
+// to come only from loadMirrorNodesPanel, which lives on a deferred repo tab:
+// until that page had been opened at least once — and whenever no repository
+// detail is open at all — the radar swept over an empty scope. Derive the blips
+// straight from the live roster instead: no git reads, no panel, no repo
+// required, so every roster update and every radar tick refreshes them. The
+// panel still owns the blips while it is built and live, because it can also
+// report the per-repo "behind" / integrity-pin state this cheap pass cannot.
+void MainWindow::refreshRelayRadarBlips()
+{
+    if (!m_relayRadar)
+        return;
+    const bool repoOpen =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size();
+    if (m_mirrorNodesTable && repoOpen)
+        return; // loadMirrorNodesPanel is the live source; don't fight it
+
+    // With a repository open, blip the nodes mirroring *that* repo — the same
+    // set the Mirror nodes page lists. Otherwise blip the whole node roster.
+    QString source;
+    QString canonical;
+    if (repoOpen) {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        const QString name = repoSegment(repo.name, QStringLiteral("repository"));
+        source = repoSegment(repo.owner, QStringLiteral("owner")) + "/" + name;
+        canonical = catalogOwner(repo) + "/" + name;
+    }
+    const auto mirrorsRepo = [&source, &canonical](const MemberInfo &node) {
+        if (source.isEmpty())
+            return true;
+        for (const QString &advertised : node.mirrors) {
+            const QString mirror = advertised.trimmed();
+            if (mirror.compare(source, Qt::CaseInsensitive) == 0 ||
+                mirror.compare(canonical, Qt::CaseInsensitive) == 0)
+                return true;
+        }
+        return false;
+    };
+
+    QVector<RelayRadarWidget::Blip> blips;
+    QHash<QString, int> slotByKey;
+    // Our own node always has a blip: we are serving right now, whether or not
+    // the roster echoed us back yet (its `self` flag isn't always set).
+    const QString selfKey = machineNodeName().trimmed().toLower();
+    if (!selfKey.isEmpty()) {
+        slotByKey.insert(selfKey, blips.size());
+        blips.append(RelayRadarWidget::Blip{selfKey, true, false, false});
+    }
+    for (const MemberInfo &node : std::as_const(m_homeRoster)) {
+        // Users are not nodes: a plain user account (or a relayed bot) serves
+        // nothing, so it never earns a blip.
+        if (node.accountKind.compare(QLatin1String("user"), Qt::CaseInsensitive) == 0)
+            continue;
+        if (!node.self && !mirrorsRepo(node))
+            continue;
+        const QString name = node.nodeName.trimmed().isEmpty()
+                                 ? node.name.trimmed()
+                                 : node.nodeName.trimmed();
+        // One blip per node *name*, matching how the Mirror nodes table collapses
+        // a node that re-registered under a new key (adhoc #46).
+        const QString key = name.isEmpty() ? node.id.trimmed() : name.toLower();
+        if (key.isEmpty())
+            continue;
+        const auto slot = slotByKey.constFind(key);
+        if (slot != slotByKey.constEnd()) {
+            // Duplicate identity: online beats offline, so a live session isn't
+            // hidden behind the stale one it replaced.
+            blips[*slot].online = blips.at(*slot).online || node.online;
+            continue;
+        }
+        slotByKey.insert(key, blips.size());
+        blips.append(
+            RelayRadarWidget::Blip{key, node.self || node.online, false, false});
+    }
+    static_cast<RelayRadarWidget *>(m_relayRadar)->setBlips(blips);
+}
+
+// The radar's click target: the Mirror nodes page. That page is a repository
+// detail tab, so it needs a repo open — clicking the dish from the home/repos
+// view (nothing opened yet, or the last open repo was deleted) used to do
+// nothing at all. Fall back to the first real repository so the click always
+// lands on the page (adhoc #44).
+void MainWindow::openMirrorNodesPage()
+{
+    if (!m_repoDetailStack || !m_repoDetailTabs || m_mirrorNodesTabIndex < 0)
+        return;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        int fallback = -1;
+        for (const RepoMenuEntry &entry : std::as_const(m_repoMenuEntries))
+            if (entry.index >= 0 && entry.index < m_repositories.size()) {
+                fallback = entry.index;
+                break;
+            }
+        if (fallback < 0) {
+            for (int i = 0; i < m_repositories.size(); ++i)
+                if (!m_repositories.at(i).previewOnly) {
+                    fallback = i;
+                    break;
+                }
+        }
+        if (fallback < 0) {
+            logSystem(QStringLiteral(
+                "Mirror nodes: add or clone a repository to see which nodes "
+                "mirror it."));
+            return;
+        }
+        openRepoDetail(fallback); // pumps the event loop (git reads)
+        if (!m_repoDetailStack || !m_repoDetailTabs || m_mirrorNodesTabIndex < 0)
+            return;
+    }
+    showSection(0);
+    if (QAbstractButton *button = m_repoDetailTabs->button(m_mirrorNodesTabIndex))
+        button->click();
 }
 
 // Measure the round-trip latency to the active relay and feed it to the radar

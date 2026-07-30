@@ -1505,6 +1505,9 @@ void MainWindow::openRepoDetail(int repoIndex)
     // repo's uncommitted count now instead of leaving the previous repo's
     // number (or a blank icon) until the changes panel is first opened.
     refreshRepoChangeBadge();
+    // Re-key the top-bar radar's blips to this repo's mirror nodes right away,
+    // for as long as the Mirror nodes page itself is still unbuilt (adhoc #44).
+    refreshRelayRadarBlips();
     m_repoDetailLoading = false;
 }
 

@@ -1239,8 +1239,10 @@ void MainWindow::loadMirrorNodesPanel()
             m_mirrorNodesSummary->clear();
         if (m_mirrorResetPinButton)
             m_mirrorResetPinButton->hide();
-        if (m_relayRadar)
-            static_cast<RelayRadarWidget *>(m_relayRadar)->setBlips({});
+        // No repo to report on, but the radar still tracks the node roster
+        // (adhoc #44) — hand the blips back to the roster feed instead of
+        // blanking the dish.
+        refreshRelayRadarBlips();
         m_mirrorNodesTable->setSortingEnabled(true);
         updateMirrorNodeLightTimer(); // empty table: stops the beacon spinner
         return;
