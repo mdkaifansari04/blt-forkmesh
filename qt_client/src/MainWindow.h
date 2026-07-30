@@ -594,7 +594,7 @@ public:
     {
         m_agentSessions.append(session);
     }
-    void testRefreshAgentStatusRow() { refreshAgentStatusRow(); }
+    void testRefreshAgentDotMatrix() { refreshAgentDotMatrix(); }
     // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
     // the branches list names the issue/agent a branch is attached to (adhoc #191).
     QString testBranchAttachmentText(const QString &branch) const;
@@ -1928,6 +1928,10 @@ private:
     // rebuild — used by the live token/cost/run-summary update paths and the
     // running-row ticker (adhoc #42).
     void refreshAgentDetailMeta(int sessionId);
+    // PID of the process driving a running session (Claude stream, Codex
+    // app-server or the classic AgentRunner); 0 when the session isn't running
+    // here. Everything the agent shells out to lives under it (adhoc #57).
+    qint64 agentSessionProcessId(int sessionId) const;
     // Populate the raw-log QPlainTextEdit (m_agentLog) only when the content
     // actually changed. setPlainText()+moveCursor(End) forces a full document
     // layout, which for a large transcript blocks the GUI thread for seconds
@@ -2122,12 +2126,8 @@ private:
     void refreshAgentLimitLabel();
     void openAgentSessionFromIssue();
     void switchToAgentsTab(int sessionId);
-    // Was the footer "Agents:" status strip (adhoc #111); the strip above the
-    // composer is gone (adhoc #38) and this now only refreshes the top-bar agent
-    // matrix, which carries the same per-session state.
-    void refreshAgentStatusRow();
-    // Jumps to the most relevant session's Agents tab, falling back to the open
-    // repo's Agents tab if no session exists yet.
+    // Jumps to the most relevant session's Agents tab, falling back to the
+    // open repo's Agents tab if no session exists yet.
     void openAgentsOverview();
     // Refreshes the count badge on the top-bar Agents nav button from
     // m_agentSessions.size().
@@ -5508,9 +5508,8 @@ private:
     QTimer *m_openRepoRefreshTimer = nullptr;
     QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
     // Spinner angle in degrees, per session id (adhoc #50): each running session
-    // advances at its own tok/s-derived rate, so one shared frame counter won't
-    // do. The footer "Agents:" strip that had its own copy of this is gone
-    // (adhoc #38).
+    // advances at its own tok/s-derived rate, so the rows can't share one frame
+    // counter.
     QHash<int, double> m_agentRowSpinAngles;
     int m_agentSpinTicks = 0; // paces the detail header's run-stat refresh
     QTableWidget *m_actionsTable = nullptr;

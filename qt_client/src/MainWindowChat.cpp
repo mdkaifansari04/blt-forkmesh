@@ -631,9 +631,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_footerDock = dock;
     dock->setObjectName("logDock");
 
-    auto *card = new QWidget;
-    card->setObjectName("quickAddCard");
-
     // A three-line wrapping box (adhoc #12, #107), not a single-line edit, so the
     // typed prompt is actually visible on three lines. Enter sends / Shift+Enter
     // adds a newline (handled in the event filter); Up/Down walk prompt history.
@@ -647,13 +644,13 @@ QWidget *MainWindow::buildNetworkLogDock()
     // compact instead of stretching to fill the whole footer; longer prompts
     // scroll within it. Moving the send column out to the side (adhoc #115) freed
     // the vertical space the toolbar used to reserve for the stacked buttons, and
-    // dropping the "Agents:" strip above the prompt (adhoc #38) freed another row
-    // — so the box shows seven lines, which is also what the send column now
-    // needs to fit genie/add/new stacked down the right edge.
+    // dropping the surrounding card and the "Agents:" strip (adhoc #60) freed two
+    // more rows, so the box now shows six lines and the prompt frame fills the
+    // footer top to bottom the way the log panel beside it does.
     m_issueQuickAdd->document()->setDocumentMargin(3);
-    // 7 rows + the QSS vertical padding (8px top/bottom) + document margins.
+    // 6 rows + the QSS vertical padding (8px top/bottom) + document margins.
     const int kQuickAddRowH = m_issueQuickAdd->fontMetrics().lineSpacing();
-    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 7 + 16 + 6);
+    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 6 + 16 + 6);
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     // In "No issue" mode the typed text becomes a Claude agent's prompt, so the
     // field is capped at the same length as the Claude prompt / message input
@@ -1233,28 +1230,13 @@ QWidget *MainWindow::buildNetworkLogDock()
     promptLayout->addLayout(promptLeftCol, 1);
     promptLayout->addLayout(sendColumn, 0);
 
-    // The "Agents:" strip that used to sit above the prompt (the session dots
-    // plus the "N more" button, adhoc #111/#115) is gone (adhoc #38): the same
-    // per-session state is already in the top bar's agent matrix and the Agents
-    // tab, and the space it took is worth more as prompt room.
-    // refreshAgentStatusRow() still runs — it drives that matrix.
-
-    // Card (right half): just the prompt frame now, whose controls live inside it
-    // as the bottom bar.
-    auto *cardLayout = new QVBoxLayout(card);
-    cardLayout->setContentsMargins(12, 8, 12, 8);
-    cardLayout->setSpacing(4);
-    // A top stretch sinks the prompt group to the foot of the footer dock (adhoc
-    // #107): the prompt no longer stretches to fill the dock, so without this it
-    // would float at the top with dead space beneath. Anchoring it low keeps the
-    // whole log/prompt area down near the bottom edge.
-    cardLayout->addStretch(1);
-    cardLayout->addWidget(promptWrapper, 0);
-    card->setMinimumWidth(0);
-    // Expanding vertically so the card fills the whole fixed-height footer dock
-    // like the log pane beside it; the top stretch above absorbs the slack so the
-    // prompt group stays flush with the foot of the panel.
-    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    // The prompt frame is the right half of the footer on its own (adhoc #60):
+    // no surrounding card chrome and no "Agents:" status strip above it (that
+    // fleet state already lives on the window-chrome dot matrix beside the Agents
+    // nav button), so the bordered box reads exactly like the log and Background
+    // panels and fills the dock top to bottom and edge to edge.
+    promptWrapper->setMinimumWidth(0);
+    promptWrapper->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     // A scrollable strip below the quick-add bar: the always-on live log. It
     // fills as much height as the dock row allows (matching the prompt card
@@ -1438,13 +1420,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     dockRow->setSpacing(8);
     dockRow->addWidget(leftRegion, 1);
     dockRow->addWidget(footerDivider, 0);
-    dockRow->addWidget(card, 1);
+    dockRow->addWidget(promptWrapper, 1);
 
-    // Pin the footer to just the card's height (adhoc #107): margins + the
-    // prompt box + its controls. With the "Agents:" strip gone (adhoc #38) there
-    // is no toggling row left to reserve height for, so the dock is sized to the
-    // content alone.
-    dock->setFixedHeight(card->sizeHint().height() + cardLayout->spacing() + 16);
+    // Pin the footer to just the compact prompt's height (adhoc #107): the dock
+    // margins plus the six-line prompt and its controls. With the card padding
+    // and the "Agents:" strip gone (adhoc #60) the prompt frame is the tallest
+    // thing in the row, so the log panel beside it is exactly as tall as the
+    // prompt and nothing reflows.
+    dock->setFixedHeight(promptWrapper->sizeHint().height() + 16);
 
     // Enter sends (Shift+Enter inserts a newline) — handled in the event filter
     // since QPlainTextEdit has no returnPressed signal.
@@ -3921,15 +3904,8 @@ void MainWindow::killAllHighMemoryProcesses(const QString &name,
     auto *parent = m_highMemoryDialog
                        ? static_cast<QWidget *>(m_highMemoryDialog.data())
                        : this;
-    const auto answer = QMessageBox::warning(
-        parent, QStringLiteral("Kill all processes"),
-        QStringLiteral("Request that all %1 listed “%2” processes terminate?\n\n"
-                       "Unsaved work in those processes may be lost.")
-            .arg(targets.size())
-            .arg(name),
-        QMessageBox::Cancel | QMessageBox::Yes, QMessageBox::Cancel);
-    if (answer != QMessageBox::Yes)
-        return;
+    // No confirmation here (adhoc #58): "Kill all" is an explicit, already
+    // deliberate click, and the tooltip spells out how many processes it hits.
 
 #if defined(Q_OS_UNIX)
     int sent = 0;

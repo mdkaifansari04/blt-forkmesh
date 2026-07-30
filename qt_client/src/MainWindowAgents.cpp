@@ -4086,7 +4086,7 @@ void MainWindow::initAgents()
     }
     m_agentSessions = m_agentStore->loadAllSessions();
     seedSessionTokens();
-    refreshAgentStatusRow(); // footer "Agents:" strip reflects sessions from the start
+    refreshAgentDotMatrix(); // the top-bar fleet matrix reflects sessions from the start
     // The re-queued sessions are NOT started here: initAgents() runs inside the
     // MainWindow constructor, and draining the queue starts Claude transcripts
     // whose assign-time UI jump (switchToAgentsTab → openRepoDetail) fired a
@@ -4116,7 +4116,7 @@ void MainWindow::reloadAgents()
     if (m_selectedAgentSessionId > 0)
         showAgentSession(m_selectedAgentSessionId);
     updateAgentsTabIndicator();
-    refreshAgentStatusRow();
+    refreshAgentDotMatrix();
     updateAgentsNavBadge();
     // Every agent-completion path reaches this reload (adhoc #111: the process-exit
     // handler for stream/codex sessions, and the embedded-terminal path, both call
@@ -4958,6 +4958,41 @@ static QString agentDetailTableHtml(const QStringList &headers, const QStringLis
     return html;
 }
 
+qint64 MainWindow::agentSessionProcessId(int sessionId) const
+{
+    if (ClaudeStreamSession *stream = m_streamSessions.value(sessionId))
+        return stream->processId();
+    if (CodexAppServerSession *codex = m_codexStreams.value(sessionId))
+        return codex->processId();
+    for (AgentRunner *runner : m_agentRunners) {
+        if (runner && runner->busy() && runner->currentSessionId() == sessionId)
+            return runner->processId();
+    }
+    return 0;
+}
+
+// How many `cc1plus` compilers the selected session's own process tree is
+// running, and how much RAM they hold (adhoc #57): when an agent kicks off a big
+// C++ build the host's memory alert fills with cc1plus rows, and this answers
+// "are those mine?" from the detail header itself. Walking /proc is cheap but
+// refreshAgentDetailMeta() runs on every token/cost event and on the running-row
+// ticker, so the reading is memoised for a couple of seconds per root PID.
+static SystemStats::DescendantLoad agentCompilerLoad(qint64 rootPid)
+{
+    static qint64 cachedPid = 0;
+    static qint64 sampledAtMs = 0;
+    static SystemStats::DescendantLoad cached;
+    if (rootPid <= 0)
+        return {};
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (rootPid == cachedPid && now - sampledAtMs < 2000)
+        return cached;
+    cached = SystemStats::descendantsNamed(rootPid, QStringLiteral("cc1plus"));
+    cachedPid = rootPid;
+    sampledAtMs = now;
+    return cached;
+}
+
 // Rebuild only the detail header's key/value meta lines for a session — the
 // identity block, the issue/PR chips, Speed/Diff/Updated (adhoc #35) and the run
 // Stats (turns/time/cost/tokens) — plus the toolbar's Branch/Worktree buttons,
@@ -5124,6 +5159,18 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
         stats << QStringLiteral("%1 tokens").arg(formatCount(toks));
     headers << QStringLiteral("Stats");
     lines << stats.join(QStringLiteral(" &middot; "));
+    // cc1plus compilers running under this session's own process tree, so the
+    // host's "high memory" list can be attributed to this agent (adhoc #57).
+    // Only shown while the tree actually holds some.
+    const SystemStats::DescendantLoad compilers =
+        agentCompilerLoad(agentSessionProcessId(sessionId));
+    if (compilers.count > 0) {
+        headers << QStringLiteral("cc1plus");
+        lines << QStringLiteral("%1 &middot; %2")
+                     .arg(compilers.count)
+                     .arg(SystemStats::formatBytes(compilers.residentBytes)
+                              .toHtmlEscaped());
+    }
     QString meta = agentDetailTableHtml(headers, lines);
     if (!mergedMeta.isEmpty())
         meta += QStringLiteral("<br>") + mergedMeta;
@@ -6362,19 +6409,10 @@ void MainWindow::switchToAgentsTab(int sessionId)
     showAgentSession(sessionId);
 }
 
-// The footer "Agents:" status strip (adhoc #111/#114/#115) is gone (adhoc #38) —
-// its dots and "N more" button no longer sit above the composer. What is left of
-// this call is the top-bar agent matrix, which shows the same per-session state:
-// keep calling it from every path that touches session status, including bare
-// status flips that never reach updateAgentsNavBadge().
-void MainWindow::refreshAgentStatusRow()
-{
-    refreshAgentDotMatrix();
-}
-
-// Clicking the "Agents:" label (as opposed to one of its dots): jump to the
-// most relevant session's Agents tab, or just the open repo's Agents tab if
-// no session exists yet.
+// Jumping to the Agents view from the nav button (the footer "Agents:" strip
+// that used to offer the same shortcut was dropped in adhoc #60): open the most
+// relevant session's Agents tab, or just the open repo's Agents tab if no
+// session exists yet.
 void MainWindow::openAgentsOverview()
 {
     if (m_selectedAgentSessionId > 0 && findAgentSession(m_selectedAgentSessionId)) {
@@ -8705,10 +8743,10 @@ void MainWindow::updateAgentStatusCell(int sessionId)
         applyAgentStatusCell(idItem, *s, m_agentDiffStats.value(sessionId));
         break;
     }
-    // Keep the footer "Agents:" strip's per-session dot (the ones above the
-    // prompt) in step with every status flip, not just a full reloadAgents() —
-    // otherwise it only catches up once the user opens the Agents tab.
-    refreshAgentStatusRow();
+    // Keep the top-bar fleet matrix's per-session square in step with every
+    // status flip, not just a full reloadAgents() — otherwise it only catches up
+    // once the user opens the Agents tab.
+    refreshAgentDotMatrix();
     // A status flip back to Running (a follow-up prompt steering a still-live
     // process, an answered question, a resumed CLI's system/init) doesn't always
     // route through reloadAgents() — the only other caller of

@@ -171,12 +171,7 @@ QPushButton#logFilterChip:checked {
     background-color: #21262d; color: #e6edf3; border-color: #2ea043;
 }
 
-/* --- Quick-add issue bar: grey-bordered, centered card with social + donate --- */
-#quickAddCard {
-    background-color: #0d1117;
-    border: 1px solid #6e7681;
-    border-radius: 10px;
-}
+/* --- Quick-add bar extras: social + donate buttons --- */
 QPushButton#donateButton {
     background-color: #9945ff; border: 1px solid #b07bff; color: #ffffff;
     font-weight: 700;

@@ -31,6 +31,7 @@
 #include "../src/RepoSecurity.h"
 #include "../src/RoomCrypto.h"
 #include "../src/StrictGitReader.h"
+#include "../src/SystemStats.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -49,6 +50,7 @@
 #include <QProcessEnvironment>
 #include <QFileInfo>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTimer>
 #include <QUrl>
 
@@ -6829,6 +6831,44 @@ int main(int argc, char *argv[])
                   maskToken(QString()).isEmpty(),
               "masking hides the middle of the token");
     }
+
+#if defined(Q_OS_LINUX)
+    {
+        // Counting an agent's own compilers (adhoc #57): the /proc walk has to
+        // find a grandchild by command name and ignore everything outside the
+        // tree it was asked about.
+        using SystemStats::descendantsNamed;
+        check(descendantsNamed(0, QStringLiteral("sleep")).count == 0 &&
+                  descendantsNamed(QCoreApplication::applicationPid(), QString())
+                          .count == 0,
+              "an invalid root PID or empty name counts nothing");
+
+        QProcess child;
+        // `sh` execs the sleep, so the match is a grandchild of this process —
+        // the same shape as claude → bash → cc1plus.
+        child.start(QStringLiteral("/bin/sh"),
+                    {QStringLiteral("-c"), QStringLiteral("sleep 30")});
+        if (child.waitForStarted(5000)) {
+            SystemStats::DescendantLoad load;
+            QElapsedTimer waited;
+            waited.start();
+            while (waited.elapsed() < 5000 && load.count == 0) {
+                load = descendantsNamed(QCoreApplication::applicationPid(),
+                                        QStringLiteral("sleep"));
+                if (load.count == 0)
+                    QThread::msleep(50); // sh hasn't exec'd the sleep yet
+            }
+            check(load.count >= 1 && load.residentBytes > 0,
+                  "a descendant process is counted with its resident memory");
+            check(descendantsNamed(child.processId(),
+                                   QStringLiteral("forkmesh-tests"))
+                          .count == 0,
+                  "processes outside the subtree are not counted");
+            child.kill();
+            child.waitForFinished(5000);
+        }
+    }
+#endif
 
     if (failures) {
         qCritical("TESTS FAILED");

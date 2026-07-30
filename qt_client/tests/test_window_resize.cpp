@@ -1302,7 +1302,7 @@ int main(int argc, char *argv[])
                                           : AgentStatus::Running;
             window.testAddAgentSession(session);
         }
-        window.testRefreshAgentStatusRow();
+        window.testRefreshAgentDotMatrix();
         window.resize(900, 650);
         QApplication::processEvents();
         const int minHintWidth = window.minimumSizeHint().width();

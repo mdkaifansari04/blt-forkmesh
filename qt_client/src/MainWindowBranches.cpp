@@ -2524,6 +2524,16 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
     // the watchdog log).
     m_branchesTable->setRowCount(data.branches.size() +
                                  data.remoteBranches.size());
+    // setRowCount() only destroys the cell widgets of rows it trims, so the
+    // "Merged & deleted" widget the previous render put in column 0 survives into
+    // a surviving row and paints on top of that row's branch name — and every
+    // rebuild inside the flash window stacked another one (adhoc #56). Column 0 is
+    // the only column whose widget is conditional; the action column gets a fresh
+    // widget on every row below.
+    for (int r = 0, rows = m_branchesTable->rowCount(); r < rows; ++r) {
+        if (m_branchesTable->cellWidget(r, 0))
+            m_branchesTable->removeCellWidget(r, 0);
+    }
     int nextRow = 0;
     const QString &dir = data.dir;
     const QStringList &branches = data.branches;
