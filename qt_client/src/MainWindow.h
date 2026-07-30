@@ -3507,6 +3507,15 @@ private:
     QWidget *makeComposerIdentity(QLabel **outAvatar = nullptr,
                                   const QString &verb = QString());
     void logout();
+    // Tell the relay to drop the browser-visible account session minted by the
+    // last email/password login, so logging out here also logs out on the
+    // website. No-op when this desktop only ever authenticated with its key.
+    void revokeAccountSession();
+    // Immediately after a logout, ask for the account password and sign back in
+    // against the website. Password login (unlike the silent key-based auth) both
+    // mints a website session and re-registers this desktop's public key with the
+    // relay, so the site knows this device. Returns true once signed back in.
+    bool promptRelogin(const QString &previousAccount);
     // Sign in to an existing ForkMesh user account (email + password) from
     // Settings, without leaving the app. Prompts for the username, then runs the
     // email/password login flow. A user account can own many nodes.
