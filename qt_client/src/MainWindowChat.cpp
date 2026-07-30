@@ -631,9 +631,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_footerDock = dock;
     dock->setObjectName("logDock");
 
-    auto *card = new QWidget;
-    card->setObjectName("quickAddCard");
-
     // A three-line wrapping box (adhoc #12, #107), not a single-line edit, so the
     // typed prompt is actually visible on three lines. Enter sends / Shift+Enter
     // adds a newline (handled in the event filter); Up/Down walk prompt history.
@@ -646,12 +643,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Pin the field to a fixed number of prompt lines (adhoc #107) so it stays
     // compact instead of stretching to fill the whole footer; longer prompts
     // scroll within it. Moving the send column out to the side (adhoc #115) freed
-    // the vertical space the toolbar used to reserve for the stacked buttons, so
-    // the box now shows four lines rather than three.
+    // the vertical space the toolbar used to reserve for the stacked buttons, and
+    // dropping the surrounding card and the "Agents:" strip (adhoc #60) freed two
+    // more rows, so the box now shows six lines and the prompt frame fills the
+    // footer top to bottom the way the log panel beside it does.
     m_issueQuickAdd->document()->setDocumentMargin(3);
-    // 4 rows + the QSS vertical padding (8px top/bottom) + document margins.
+    // 6 rows + the QSS vertical padding (8px top/bottom) + document margins.
     const int kQuickAddRowH = m_issueQuickAdd->fontMetrics().lineSpacing();
-    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 4 + 16 + 6);
+    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 6 + 16 + 6);
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     // In "No issue" mode the typed text becomes a Claude agent's prompt, so the
     // field is capped at the same length as the Claude prompt / message input
@@ -1184,68 +1183,13 @@ QWidget *MainWindow::buildNetworkLogDock()
     promptLayout->addLayout(promptLeftCol, 1);
     promptLayout->addLayout(sendColumn, 0);
 
-    // "Agents:" status strip above the prompt input (adhoc #111): a clickable
-    // label plus one small colored dot per known agent session — a status
-    // dashboard at a glance. The label jumps to the most relevant session's
-    // Agents tab; each dot jumps straight to that one. Populated by
-    // refreshAgentStatusRow() (called from reloadAgents()), hidden until there
-    // is at least one session to show.
-    m_agentStatusLabel = new QPushButton("Agents:");
-    m_agentStatusLabel->setObjectName("agentStatusLabel");
-    m_agentStatusLabel->setFlat(true);
-    m_agentStatusLabel->setCursor(Qt::PointingHandCursor);
-    m_agentStatusLabel->setToolTip("Open the Agents tab");
-    connect(m_agentStatusLabel, &QPushButton::clicked, this,
-            &MainWindow::openAgentsOverview);
-
-    // The icon dots live directly in the row now (adhoc #115) — no scroll area.
-    // refreshAgentStatusRow() caps how many dots it packs in and hides the rest
-    // behind the "N more" button, so a horizontal scrollbar can never appear and
-    // steal height the way it used to inside the old fixed-height viewport.
-    m_agentStatusIconsHost = new QWidget;
-    m_agentStatusIconsLayout = new QHBoxLayout(m_agentStatusIconsHost);
-    m_agentStatusIconsLayout->setContentsMargins(0, 0, 0, 0);
-    m_agentStatusIconsLayout->setSpacing(4);
-
-    // "N more" button that opens the Agents tab (adhoc #115), shown on the right
-    // only when the session count exceeds what the capped icon row displays.
-    m_agentStatusMoreButton = new QPushButton;
-    m_agentStatusMoreButton->setObjectName("agentStatusMore");
-    m_agentStatusMoreButton->setFlat(true);
-    m_agentStatusMoreButton->setCursor(Qt::PointingHandCursor);
-    m_agentStatusMoreButton->setToolTip("Open the Agents tab");
-    m_agentStatusMoreButton->hide();
-    connect(m_agentStatusMoreButton, &QPushButton::clicked, this,
-            &MainWindow::openAgentsOverview);
-
-    m_agentStatusRow = new QWidget;
-    m_agentStatusRow->setObjectName("agentStatusRow");
-    auto *agentStatusRowLayout = new QHBoxLayout(m_agentStatusRow);
-    agentStatusRowLayout->setContentsMargins(2, 0, 2, 6);
-    agentStatusRowLayout->setSpacing(6);
-    agentStatusRowLayout->addWidget(m_agentStatusLabel);
-    agentStatusRowLayout->addWidget(m_agentStatusIconsHost, 0);
-    agentStatusRowLayout->addStretch(1);
-    agentStatusRowLayout->addWidget(m_agentStatusMoreButton, 0);
-    m_agentStatusRow->setVisible(false); // shown once refreshAgentStatusRow() finds sessions
-
-    // Card (right half): the "Agents:" strip on top of the prompt frame, whose
-    // controls live inside it as the bottom bar.
-    auto *cardLayout = new QVBoxLayout(card);
-    cardLayout->setContentsMargins(12, 8, 12, 8);
-    cardLayout->setSpacing(4);
-    // A top stretch sinks the compact "Agents:" strip + prompt group to the foot
-    // of the footer dock (adhoc #107): the prompt no longer stretches to fill the
-    // dock, so without this it would float at the top with dead space beneath.
-    // Anchoring it low keeps the whole log/prompt area down near the bottom edge.
-    cardLayout->addStretch(1);
-    cardLayout->addWidget(m_agentStatusRow);
-    cardLayout->addWidget(promptWrapper, 0);
-    card->setMinimumWidth(0);
-    // Expanding vertically so the card fills the whole fixed-height footer dock
-    // like the log pane beside it; the top stretch above absorbs the slack so the
-    // prompt group stays flush with the foot of the panel.
-    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    // The prompt frame is the right half of the footer on its own (adhoc #60):
+    // no surrounding card chrome and no "Agents:" status strip above it (that
+    // fleet state already lives on the window-chrome dot matrix beside the Agents
+    // nav button), so the bordered box reads exactly like the log and Background
+    // panels and fills the dock top to bottom and edge to edge.
+    promptWrapper->setMinimumWidth(0);
+    promptWrapper->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     // A scrollable strip below the quick-add bar: the always-on live log. It
     // fills as much height as the dock row allows (matching the prompt card
@@ -1429,16 +1373,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     dockRow->setSpacing(8);
     dockRow->addWidget(leftRegion, 1);
     dockRow->addWidget(footerDivider, 0);
-    dockRow->addWidget(card, 1);
+    dockRow->addWidget(promptWrapper, 1);
 
-    // Pin the footer to just the compact card's height (adhoc #107): margins +
-    // the (hidden-by-default) "Agents:" strip + the three-line prompt + its
-    // controls. Reserving the agents-strip height keeps the footer from reflowing
-    // when the strip toggles, exactly as the old fixed 240px did — only now the
-    // dock is sized to the content instead of stranding blank space above it.
-    dock->setFixedHeight(card->sizeHint().height() +
-                         m_agentStatusRow->sizeHint().height() +
-                         cardLayout->spacing() + 16);
+    // Pin the footer to just the compact prompt's height (adhoc #107): the dock
+    // margins plus the six-line prompt and its controls. With the card padding
+    // and the "Agents:" strip gone (adhoc #60) the prompt frame is the tallest
+    // thing in the row, so the log panel beside it is exactly as tall as the
+    // prompt and nothing reflows.
+    dock->setFixedHeight(promptWrapper->sizeHint().height() + 16);
 
     // Enter sends (Shift+Enter inserts a newline) — handled in the event filter
     // since QPlainTextEdit has no returnPressed signal.

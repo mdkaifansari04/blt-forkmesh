@@ -594,7 +594,7 @@ public:
     {
         m_agentSessions.append(session);
     }
-    void testRefreshAgentStatusRow() { refreshAgentStatusRow(); }
+    void testRefreshAgentDotMatrix() { refreshAgentDotMatrix(); }
     // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
     // the branches list names the issue/agent a branch is attached to (adhoc #191).
     QString testBranchAttachmentText(const QString &branch) const;
@@ -2126,12 +2126,7 @@ private:
     void refreshAgentLimitLabel();
     void openAgentSessionFromIssue();
     void switchToAgentsTab(int sessionId);
-    // Footer "Agents:" status strip (adhoc #111): one small status glyph per
-    // known agent session, rebuilt from m_agentSessions whenever it changes.
-    void refreshAgentStatusRow();
-    void animateAgentStatusIcons(); // spins the strip's running icons (adhoc #114)
-    // Clicking the "Agents:" label itself (as opposed to one of the dots):
-    // jumps to the most relevant session's Agents tab, falling back to the
+    // Jumps to the most relevant session's Agents tab, falling back to the
     // open repo's Agents tab if no session exists yet.
     void openAgentsOverview();
     // Refreshes the count badge on the top-bar Agents nav button from
@@ -4571,17 +4566,6 @@ private:
     bool m_claudeSlashCommandsLoaded = false;
     QProcess *m_claudeSlashProbe = nullptr;
     QByteArray m_claudeSlashProbeBuf;
-    // "Agents:" status strip above the footer prompt (adhoc #111): a clickable
-    // label plus one small colored dot per known agent session. The label opens
-    // the Agents tab; each dot opens that session directly.
-    QWidget *m_agentStatusRow = nullptr;
-    QPushButton *m_agentStatusLabel = nullptr;
-    QWidget *m_agentStatusIconsHost = nullptr;
-    QHBoxLayout *m_agentStatusIconsLayout = nullptr;
-    // "N more" button on the right of the strip (adhoc #115): replaces the old
-    // horizontal scrollbar. Shown only when there are more sessions than fit in
-    // the capped icon row; clicking it jumps to the Agents tab.
-    QPushButton *m_agentStatusMoreButton = nullptr;
     // Voice input (whisper.cpp): the mic button is hidden until whisper.cpp is
     // installed. While recording, m_voiceRecordProc captures a temp WAV which
     // m_voiceTranscribeProc transcribes — once when recording stops, and live on
@@ -5500,12 +5484,10 @@ private:
     // serially blocking the UI. The timer collapses a burst into one refresh.
     QTimer *m_openRepoRefreshTimer = nullptr;
     QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
-    QTimer *m_agentStatusSpinTimer = nullptr;    // animates the footer "Agents:" strip
-    // Spinner angle in degrees, per session id, for each of the two strips
-    // (adhoc #50). Each running session advances at its own tok/s-derived rate,
-    // so the two surfaces can't share one frame counter any more.
+    // Spinner angle in degrees, per session id (adhoc #50): each running session
+    // advances at its own tok/s-derived rate, so the rows can't share one frame
+    // counter.
     QHash<int, double> m_agentRowSpinAngles;
-    QHash<int, double> m_agentStatusSpinAngles;
     int m_agentSpinTicks = 0; // paces the detail header's run-stat refresh
     QTableWidget *m_actionsTable = nullptr;
     QLabel *m_actionRunTitle = nullptr;

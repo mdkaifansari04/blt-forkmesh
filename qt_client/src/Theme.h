@@ -166,12 +166,7 @@ QPushButton#logFilterChip:checked {
     background-color: #21262d; color: #e6edf3; border-color: #2ea043;
 }
 
-/* --- Quick-add issue bar: grey-bordered, centered card with social + donate --- */
-#quickAddCard {
-    background-color: #0d1117;
-    border: 1px solid #6e7681;
-    border-radius: 10px;
-}
+/* --- Quick-add bar extras: social + donate buttons --- */
 QPushButton#donateButton {
     background-color: #9945ff; border: 1px solid #b07bff; color: #ffffff;
     font-weight: 700;
@@ -1018,22 +1013,6 @@ QCheckBox#slashToggle::indicator {
     width: 28px; height: 16px; border-radius: 8px; border: none; background: #30363d;
 }
 QCheckBox#slashToggle::indicator:checked { background: #2ea043; }
-/* "Agents:" status strip above the footer prompt (adhoc #111): a plain
-   ghost-button label plus small borderless dot buttons, one per session. */
-QPushButton#agentStatusLabel {
-    background: transparent; border: none; color: #8b949e;
-    font-weight: 600; font-size: 12px; padding: 2px 0;
-}
-QPushButton#agentStatusLabel:hover { color: #e6edf3; }
-QPushButton#agentStatusDot {
-    background: transparent; border: none; padding: 0; border-radius: 3px;
-}
-QPushButton#agentStatusDot:hover { background: rgba(139,148,158,0.2); }
-QPushButton#agentStatusMore {
-    background: transparent; border: none; color: #8b949e;
-    font-weight: 600; font-size: 12px; padding: 2px 4px; border-radius: 4px;
-}
-QPushButton#agentStatusMore:hover { color: #e6edf3; background: rgba(139,148,158,0.2); }
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;
@@ -2289,22 +2268,6 @@ QCheckBox#slashToggle::indicator {
     width: 28px; height: 16px; border-radius: 8px; border: none; background: #d0d7de;
 }
 QCheckBox#slashToggle::indicator:checked { background: #1a7f37; }
-/* "Agents:" status strip above the footer prompt (adhoc #111): a plain
-   ghost-button label plus small borderless dot buttons, one per session. */
-QPushButton#agentStatusLabel {
-    background: transparent; border: none; color: #6e7781;
-    font-weight: 600; font-size: 12px; padding: 2px 0;
-}
-QPushButton#agentStatusLabel:hover { color: #1f2328; }
-QPushButton#agentStatusDot {
-    background: transparent; border: none; padding: 0; border-radius: 3px;
-}
-QPushButton#agentStatusDot:hover { background: rgba(110,119,129,0.2); }
-QPushButton#agentStatusMore {
-    background: transparent; border: none; color: #6e7781;
-    font-weight: 600; font-size: 12px; padding: 2px 4px; border-radius: 4px;
-}
-QPushButton#agentStatusMore:hover { color: #1f2328; background: rgba(110,119,129,0.2); }
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;
