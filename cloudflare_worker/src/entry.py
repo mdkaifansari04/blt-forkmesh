@@ -11148,6 +11148,10 @@ async def _chat_channel_signed_session(env, request):
 # Agents composer's Task toggle could never reach the board (adhoc #18).
 ORG_TASK_OPEN_PROOF = "forkmesh-org-task-open-v1"
 ORG_TASK_COMPLETE_PROOF = "forkmesh-org-task-complete-v1"
+# The same key, reading the board it can already write to. Without this the
+# desktop Tasks tab was empty for every operator who launched normally instead
+# of typing a password, because it had no session token to present (adhoc #52).
+ORG_TASK_LIST_PROOF = "forkmesh-org-task-list-v1"
 # The same key, signing for the one credential a desktop's "genie" button needs
 # (adhoc #49): a task-only remote-MCP bearer for the task board. An install that
 # can already open and close tasks with its key should not have to send its
@@ -11159,19 +11163,22 @@ ORG_TASK_COLLECTION_RE = re.compile(r"^/api/tasks/?$")
 
 
 async def _org_task_signed_session(env, request):
-    """Resolve the account behind a key-signed organization-task write.
+    """Resolve the account behind a key-signed organization-task request.
 
-    Deliberately narrow: only opening a task and reporting one finished, the
-    two writes a desktop performs for its own agent run. Editing, deleting,
-    starting/stopping another member's timer, and QA verdicts all still require
-    a real session. Membership and every other authorization check inside the
-    task API applies to a signed caller exactly as to a session-token one.
+    Deliberately narrow: listing the board, opening a task, and reporting one
+    finished — the reads and writes a desktop performs for its own agent run.
+    Editing, deleting, starting/stopping another member's timer, and QA verdicts
+    all still require a real session. Membership and every other authorization
+    check inside the task API applies to a signed caller exactly as to a
+    session-token one, so a signed list still returns nothing to a non-member.
 
-    The completion proof names the exact task it closes. The open proof can
-    only be replayed inside the five-minute skew window, and only to open one
-    more task as an account that was already entitled to open tasks.
+    The completion proof names the exact task it closes. The list and open
+    proofs can only be replayed inside the five-minute skew window, and only to
+    read the board, or open one more task, as an account that was already
+    entitled to do so.
     """
-    if method_name(request) != "POST":
+    method = method_name(request)
+    if method not in ("GET", "POST"):
         return "", None
     url = urlparse(request.url)
     params = parse_qs(url.query)
@@ -11181,12 +11188,21 @@ async def _org_task_signed_session(env, request):
     if not node or not sig or not _ts_ok(ts):
         return "", None
     complete = ORG_TASK_COMPLETE_RE.match(url.path)
-    if complete:
+    collection = ORG_TASK_COLLECTION_RE.match(url.path)
+    if method == "GET":
+        # Reads have no write proof to reuse: a GET signed with the open proof
+        # must not be replayable as a task creation, so listing gets its own.
+        if not collection:
+            return "", None
+        canonical = (
+            ORG_TASK_LIST_PROOF + "\n" + node + "\n" + str(ts)
+        ).encode()
+    elif complete:
         canonical = (
             ORG_TASK_COMPLETE_PROOF + "\n" + node + "\n"
             + complete.group(1) + "\n" + str(ts)
         ).encode()
-    elif ORG_TASK_COLLECTION_RE.match(url.path):
+    elif collection:
         canonical = (
             ORG_TASK_OPEN_PROOF + "\n" + node + "\n" + str(ts)
         ).encode()
