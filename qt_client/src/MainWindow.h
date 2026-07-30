@@ -1913,6 +1913,10 @@ private:
     // rebuild — used by the live token/cost/run-summary update paths and the
     // running-row ticker (adhoc #42).
     void refreshAgentDetailMeta(int sessionId);
+    // PID of the process driving a running session (Claude stream, Codex
+    // app-server or the classic AgentRunner); 0 when the session isn't running
+    // here. Everything the agent shells out to lives under it (adhoc #57).
+    qint64 agentSessionProcessId(int sessionId) const;
     // Populate the raw-log QPlainTextEdit (m_agentLog) only when the content
     // actually changed. setPlainText()+moveCursor(End) forces a full document
     // layout, which for a large transcript blocks the GUI thread for seconds

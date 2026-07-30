@@ -40,6 +40,9 @@ public:
     void interrupt();
     void stop();
     bool running() const;
+    // PID of the running app-server (0 when not running), so the UI can count
+    // the build processes the agent spawned below it (adhoc #57).
+    qint64 processId() const;
     // Whether a turn is actively executing right now. The app-server process
     // stays alive between turns, so running() alone can't tell "busy" from
     // "idle waiting for the next turn" — this flips true on turn/started and

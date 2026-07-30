@@ -308,6 +308,13 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
     launch(Phase::Worktree, QStringLiteral("git"), args);
 }
 
+qint64 AgentRunner::processId() const
+{
+    return m_process && m_process->state() != QProcess::NotRunning
+               ? m_process->processId()
+               : 0;
+}
+
 void AgentRunner::stop()
 {
     if (!m_busy)

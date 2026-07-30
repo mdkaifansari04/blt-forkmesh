@@ -402,6 +402,11 @@ bool CodexAppServerSession::running() const
     return m_proc && m_proc->state() != QProcess::NotRunning;
 }
 
+qint64 CodexAppServerSession::processId() const
+{
+    return running() ? m_proc->processId() : 0;
+}
+
 QString CodexAppServerSession::threadId() const
 {
     return m_threadId;

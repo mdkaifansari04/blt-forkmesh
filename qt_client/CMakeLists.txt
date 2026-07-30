@@ -527,6 +527,8 @@ if(FORKMESH_BUILD_TESTS)
         src/ReferenceLinks.h
         src/ChatHistoryLimits.h
         src/ChatVisitorPresence.h
+        src/SystemStats.h
+        src/SystemStats.cpp
     )
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
     if(APPLE)

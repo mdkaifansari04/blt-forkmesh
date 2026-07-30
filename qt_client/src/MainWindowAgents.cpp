@@ -4949,6 +4949,41 @@ static QString agentDetailTableHtml(const QStringList &headers, const QStringLis
     return html;
 }
 
+qint64 MainWindow::agentSessionProcessId(int sessionId) const
+{
+    if (ClaudeStreamSession *stream = m_streamSessions.value(sessionId))
+        return stream->processId();
+    if (CodexAppServerSession *codex = m_codexStreams.value(sessionId))
+        return codex->processId();
+    for (AgentRunner *runner : m_agentRunners) {
+        if (runner && runner->busy() && runner->currentSessionId() == sessionId)
+            return runner->processId();
+    }
+    return 0;
+}
+
+// How many `cc1plus` compilers the selected session's own process tree is
+// running, and how much RAM they hold (adhoc #57): when an agent kicks off a big
+// C++ build the host's memory alert fills with cc1plus rows, and this answers
+// "are those mine?" from the detail header itself. Walking /proc is cheap but
+// refreshAgentDetailMeta() runs on every token/cost event and on the running-row
+// ticker, so the reading is memoised for a couple of seconds per root PID.
+static SystemStats::DescendantLoad agentCompilerLoad(qint64 rootPid)
+{
+    static qint64 cachedPid = 0;
+    static qint64 sampledAtMs = 0;
+    static SystemStats::DescendantLoad cached;
+    if (rootPid <= 0)
+        return {};
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (rootPid == cachedPid && now - sampledAtMs < 2000)
+        return cached;
+    cached = SystemStats::descendantsNamed(rootPid, QStringLiteral("cc1plus"));
+    cachedPid = rootPid;
+    sampledAtMs = now;
+    return cached;
+}
+
 // Rebuild only the detail header's key/value meta lines for a session — the
 // identity block, the issue/PR chips, Speed/Diff/Updated (adhoc #35) and the run
 // Stats (turns/time/cost/tokens) — plus the toolbar's Branch/Worktree buttons,
@@ -5115,6 +5150,18 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
         stats << QStringLiteral("%1 tokens").arg(formatCount(toks));
     headers << QStringLiteral("Stats");
     lines << stats.join(QStringLiteral(" &middot; "));
+    // cc1plus compilers running under this session's own process tree, so the
+    // host's "high memory" list can be attributed to this agent (adhoc #57).
+    // Only shown while the tree actually holds some.
+    const SystemStats::DescendantLoad compilers =
+        agentCompilerLoad(agentSessionProcessId(sessionId));
+    if (compilers.count > 0) {
+        headers << QStringLiteral("cc1plus");
+        lines << QStringLiteral("%1 &middot; %2")
+                     .arg(compilers.count)
+                     .arg(SystemStats::formatBytes(compilers.residentBytes)
+                              .toHtmlEscaped());
+    }
     QString meta = agentDetailTableHtml(headers, lines);
     if (!mergedMeta.isEmpty())
         meta += QStringLiteral("<br>") + mergedMeta;
