@@ -95,23 +95,19 @@ def test_circle_keeps_a_walk_in_gap_instead_of_closing_the_ring():
     ring = SCENE.split("function rebuildCampfireCircle", 1)[1].split(
         "setShadows(ring);", 1
     )[0]
-    # The arc is reserved by the radius too, so widening the ring for a new
-    # member never closes the gap back up.
-    assert (
-        "(count * CAMPFIRE_SEAT_SPACING + CAMPFIRE_ENTRANCE_WIDTH) / (2 * Math.PI)"
-        in ring
-    )
+    # Members are split into concentric rows of at most 25. Every row computes
+    # its own entrance angle, so the walk-in gap stays aligned across them.
+    assert "const CAMPFIRE_MEMBERS_PER_ROW = 25;" in SCENE
+    assert "const CAMPFIRE_ROW_SPACING = 2.8;" in SCENE
+    assert "const row = Math.floor(index / CAMPFIRE_MEMBERS_PER_ROW);" in ring
     assert (
         "const entranceAngle = Math.min(\n"
-        "      CAMPFIRE_ENTRANCE_MAX_ANGLE,\n"
-        "      CAMPFIRE_ENTRANCE_WIDTH / radius,\n"
-        "    );" in ring
+        "        CAMPFIRE_ENTRANCE_MAX_ANGLE,\n"
+        "        CAMPFIRE_ENTRANCE_WIDTH / radius,\n"
+        "      );" in ring
     )
-    assert "const seatStep = (Math.PI * 2 - entranceAngle) / count;" in ring
-    assert (
-        "CAMPFIRE_ENTRANCE_ANGLE + entranceAngle / 2 + (index + 0.5) * seatStep"
-        in ring
-    )
+    assert "const seatStep = (Math.PI * 2 - entranceAngle) / seatsInRow;" in ring
+    assert "(positionInRow + 0.5) * seatStep" in ring
     # The old full-circle spacing is gone: it is what walled the fire in.
     assert "(index / count) * Math.PI * 2" not in ring
 
@@ -174,9 +170,9 @@ def test_the_face_is_a_flat_disc_on_a_flat_cut_head():
 
     radius = number("AVATAR_HEAD_RADIUS")
     depth = number("AVATAR_FACE_DEPTH")
-    # The cut has to leave a face worth looking at without shaving the head in
-    # half, and the disc radius is exactly where the plane meets the sphere.
-    assert 0.4 * radius < depth < 0.8 * radius
+    # The shallow cut makes the photo disc almost the full sphere diameter,
+    # leaving only a narrow patterned helmet rim.
+    assert 0 < depth < 0.25 * radius
     assert (
         "Math.sqrt(\n"
         "  AVATAR_HEAD_RADIUS * AVATAR_HEAD_RADIUS - AVATAR_FACE_DEPTH * AVATAR_FACE_DEPTH,\n"
@@ -320,30 +316,16 @@ def test_bench_height_is_derived_from_the_seated_pose():
     assert "leg.position.set(end, CAMPFIRE_BENCH_LEG_HEIGHT / 2, 0);" in ring
 
 
-def test_member_total_burns_as_a_number_in_the_fire():
-    # adhoc #347: the registered-account total is shown as a number hanging in
-    # the flames, painted from the same count that sizes the bench ring.
-    assert "function campfireMemberCountTexture(THREE, total, newest)" in SCENE
-    assert "campfire.add(memberCountSprite);" in SCENE
+def test_member_total_changes_fire_without_a_floating_center_label():
+    assert "campfireMemberCountTexture" not in SCENE
+    assert "memberCountSprite" not in SCENE
     lounge = SCENE.split("function updateMemberLounge", 1)[1]
     assert "setCampfireMemberCount(total, newestMemberName(members));" in lounge
-    # Hidden until the roster lands, so the fire never shows a placeholder 0.
-    assert "memberCountSprite.visible = false;" in SCENE
-    # Repainted only when the count moves; the roster refresh is on a timer.
+    assert "rebuildCampfireMemberLogs(count)" in SCENE
     assert "if (memberCountShown === key) return;" in SCENE
 
 
-def test_fire_credits_the_newest_member_under_the_total():
-    # adhoc #426: the count alone does not say who just arrived, so the most
-    # recently joined account is named under the "MEMBERS" line.
-    count_texture = SCENE.split(
-        "function campfireMemberCountTexture", 1
-    )[1].split("\nfunction ", 1)[0]
-    assert 'context.fillText("NEWEST", 256, 210);' in count_texture
-    assert "context.fillText(latest, 256, 240);" in count_texture
-    # No newest member known yet (empty roster): the old two-line layout stays.
-    assert "if (!latest) return;" in count_texture
-    assert "context.fillText(digits, 256, latest ? 84 : 104);" in count_texture
+def test_fire_tracks_newest_member_without_rendering_a_center_label():
     newest = SCENE.split("function newestMemberName(members) {", 1)[1].split(
         "\n}", 1
     )[0]

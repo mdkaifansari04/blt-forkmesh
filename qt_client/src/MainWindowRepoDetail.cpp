@@ -4987,7 +4987,7 @@ QWidget *MainWindow::createNavHistoryButtons()
     auto makeButton = [this](const QString &icon, const QString &tip,
                              void (MainWindow::*slot)()) {
         auto *b = new QPushButton;
-        b->setObjectName("relayOpenButton"); // transparent icon-button styling
+        b->setObjectName("navHistoryButton");
         b->setCursor(Qt::PointingHandCursor);
         b->setFixedSize(30, 30);
         setOcticon(b, icon, 16);

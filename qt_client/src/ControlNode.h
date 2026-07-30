@@ -412,13 +412,14 @@ QString validateVultrMirrorRequest(const QString &apiKey,
 bool vultrPlanHasIpv4(const QJsonObject &plan);
 
 // From GET /v2/plans: the cheapest plan that can actually run an encrypted
-// mirror (at least 1 GiB RAM, monthly_cost > 0, a location, and IPv4). Ties
+// mirror (at least 1 GiB RAM, monthly_cost > 0, a US location, and IPv4). Ties
 // break toward more RAM, then the lexicographically smallest id, so selection
 // is deterministic.
 QJsonObject cheapestVultrPlan(const QJsonArray &plans);
 
-// Deterministic region for a chosen plan: its lexicographically first
-// location. Empty when the plan has none.
+// Deterministic US region for a chosen plan: Newark/New Jersey first, Atlanta
+// second, then the remaining supported US locations. Empty means no US
+// location is available.
 QString vultrPlanRegion(const QJsonObject &plan);
 
 // From GET /v2/os: the newest x64 Debian image (highest version number in the

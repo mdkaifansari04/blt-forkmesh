@@ -6354,17 +6354,14 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                                              "push %1 to SSH mirror %2.")
                                   .arg(repoKey, gatewayHost));
                 });
-        // Push from the served bare mirror so the gateway receives exactly the
-        // refs this node serves; forced, because the source of truth wins over
-        // whatever state a mirror gateway holds. Heads + tags only — the same
-        // stable namespaces every mirror serves (issues/PRs live on heads).
-        // --prune, because clone admission compares the mirror's WHOLE
-        // heads+tags advertisement digest against this node's attested
-        // stateHash: a branch deleted here but left on the gateway keeps the
-        // digests unequal forever, and once the stale states age out of the
-        // relay's pin history every public read of the repo hard-fails with
-        // mirror_unavailable (the gateway hides its internal refs from the
-        // push, so prune can only drop refs this node stopped serving).
+        // Push from the served bare mirror, but never let an unattended desktop
+        // rewind or delete a branch that advanced on the gateway while this
+        // checkout was offline. Automatic propagation therefore uses ordinary
+        // fast-forward refspecs and explicitly disables force and prune, even
+        // when a machine carries old push configuration. An intentional rewrite
+        // or branch deletion must go through an explicit, reviewed Git
+        // operation; otherwise one stale three-minute sync can undo a clean main
+        // merge on every headless mirror.
         trackProcessActivity(process, QStringLiteral("push"),
                              QStringLiteral("Pushing %1/%2 to %3")
                                  .arg(repo.owner, repo.name, url));
@@ -6372,9 +6369,10 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                        {QStringLiteral("-C"), repo.mirrorPath,
                         QStringLiteral("push"), QStringLiteral("--porcelain"),
                         QStringLiteral("--atomic"),
-                        QStringLiteral("--prune"),
-                        url, QStringLiteral("+refs/heads/*:refs/heads/*"),
-                        QStringLiteral("+refs/tags/*:refs/tags/*")});
+                        QStringLiteral("--no-force"),
+                        QStringLiteral("--no-prune"),
+                        url, QStringLiteral("refs/heads/*:refs/heads/*"),
+                        QStringLiteral("refs/tags/*:refs/tags/*")});
     }
 }
 

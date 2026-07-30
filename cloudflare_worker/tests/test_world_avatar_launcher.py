@@ -56,7 +56,8 @@ def test_hud_controls_slide_out_without_resizing_and_latch_until_movement():
     assert "const hudHoverTargets = [topActions, rightRail].filter(Boolean);" in WORLD
     assert "target.addEventListener(\"pointerenter\", openHud);" in WORLD
     assert "this.setWorldRightRailExpanded(false);" in WORLD
-    assert "if (movement?.moving === true) this.setWorldRightRailExpanded(false);" in WORLD
+    assert "if (movement?.moving === true) {" in WORLD
+    assert 'this.$("[data-world-chat-terminal]")?.removeAttribute("open");' in WORLD
 
 
 def test_touch_first_tap_reveals_the_launcher_before_opening_settings():

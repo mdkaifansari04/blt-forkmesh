@@ -551,6 +551,18 @@ public:
     int testMirrorNodesTabIndex() const { return m_mirrorNodesTabIndex; }
     int testControlNodeSectionIndex() const { return kControlNodeSectionIndex; }
     void testShowControlNode() { showSection(kControlNodeSectionIndex); }
+    int testOrganizationTasksSectionIndex() const
+    {
+        return kOrganizationTasksSectionIndex;
+    }
+    void testShowOrganizationTasks()
+    {
+        showSection(kOrganizationTasksSectionIndex);
+    }
+    void testApplyOrganizationTasks(const QJsonObject &payload)
+    {
+        applyOrganizationTasks(payload);
+    }
     bool testReleasesTableHasKeyboardFocus() const;
     bool testMirrorNodesTableHasKeyboardFocus() const;
     // The Mirror nodes rows as "name-cell-text|node-id", so a test can prove a
@@ -688,6 +700,7 @@ private:
     static constexpr int kNetworkDiagnosticsSectionIndex = 12;
     static constexpr int kNodesSectionIndex = 13; // "Nodes" directory (adhoc #9)
     static constexpr int kControlNodeSectionIndex = 14;
+    static constexpr int kOrganizationTasksSectionIndex = 15;
 
     // Setup page
     QWidget *buildSetupPage();
@@ -1114,6 +1127,25 @@ private:
     // Fill the repositories column with the repos owned by the selected node.
     void selectNode(const QString &node);
     QWidget *buildIssuesSection();
+    QWidget *buildOrganizationTasksSection();
+    void refreshOrganizationTasks();
+    void applyOrganizationTasks(const QJsonObject &payload);
+    void renderOrganizationTaskDetail();
+    void updateOrganizationTaskActions();
+    void createOrganizationTask();
+    void createOrganizationTaskFollowUp();
+    void refreshOrganizationTaskQueue();
+    void moveQueuedAgentItemToTasks();
+    void editOrganizationTask();
+    void assignOrganizationTaskToAgent();
+    void queueOrganizationTaskAgent(const QJsonObject &task);
+    void runOrganizationTaskAction(const QString &action);
+    void deleteOrganizationTask();
+    using OrganizationTaskReplyHandler =
+        std::function<void(bool, const QJsonObject &, const QString &)>;
+    void requestOrganizationTasks(
+        const QByteArray &method, const QString &path, const QJsonObject &body,
+        OrganizationTaskReplyHandler handler);
     QWidget *buildChatSection();
     QWidget *buildSettingsSection();
     // Settings -> Security tab: private vulnerability reporting form.
@@ -3918,6 +3950,29 @@ private:
     qint64 m_webSolanaFetchedMs = 0;
     QTimer *m_webSolanaTimer = nullptr;
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
+    QPushButton *m_tasksNavButton = nullptr;
+    QTableWidget *m_organizationTasksTable = nullptr;
+    QTableWidget *m_organizationTaskQueueTable = nullptr;
+    QLineEdit *m_organizationTasksSearch = nullptr;
+    QTextBrowser *m_organizationTaskDetail = nullptr;
+    QLabel *m_organizationTasksStatus = nullptr;
+    QLabel *m_organizationTasksSummary = nullptr;
+    QPushButton *m_organizationTaskNewButton = nullptr;
+    QPushButton *m_organizationTaskFollowUpButton = nullptr;
+    QPushButton *m_organizationTaskQueueMoveButton = nullptr;
+    QPushButton *m_organizationTaskEditButton = nullptr;
+    QPushButton *m_organizationTaskAgentButton = nullptr;
+    QPushButton *m_organizationTaskStartButton = nullptr;
+    QPushButton *m_organizationTaskCompleteButton = nullptr;
+    QPushButton *m_organizationTaskQaButton = nullptr;
+    QPushButton *m_organizationTaskReturnButton = nullptr;
+    QPushButton *m_organizationTaskDeleteButton = nullptr;
+    QJsonArray m_organizationTasks;
+    QStringList m_organizationTaskMembers;
+    QStringList m_organizationTaskDepartments;
+    QString m_organizationTaskActor;
+    bool m_organizationTasksCanManage = false;
+    bool m_organizationTasksLoading = false;
     QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
     // "Agents (N)" and its live fleet matrix, both on the window-chrome line
     // immediately left of the Back/Forward buttons.

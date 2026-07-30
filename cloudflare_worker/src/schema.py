@@ -1740,8 +1740,8 @@ SCHEMA_STATEMENTS = [
             CHECK (qa_reviewed_at >= 0),
         qa_requested_at INTEGER NOT NULL DEFAULT 0
             CHECK (qa_requested_at >= 0),
-        priority INTEGER NOT NULL DEFAULT 500
-            CHECK (priority BETWEEN 1 AND 999),
+        priority INTEGER NOT NULL DEFAULT 50
+            CHECK (priority BETWEEN 1 AND 99),
         agent_session_id TEXT NOT NULL DEFAULT ''
             CHECK (length(agent_session_id) <= 64))""",
     "CREATE INDEX IF NOT EXISTS idx_organization_tasks_org_updated "
@@ -1754,6 +1754,7 @@ SCHEMA_STATEMENTS = [
     "ON organization_tasks(org_bi, qa_requested_at, qa_reviewed_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_organization_tasks_global_priority "
     "ON organization_tasks(org_bi, priority, completed_at, updated_at DESC)",
+    "UPDATE organization_tasks SET priority=99 WHERE priority>99",
     """CREATE UNIQUE INDEX IF NOT EXISTS
         idx_organization_tasks_one_active_assignee
         ON organization_tasks(org_bi, active_assignee_bi)

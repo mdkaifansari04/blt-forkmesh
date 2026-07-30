@@ -2255,9 +2255,12 @@ int main(int argc, char *argv[])
     // adhoc #442: UI stalls are their own log category, and the chip row always
     // offers a Stalls filter so a freeze can be pulled up on demand.
     {
-        window.testResetNetworkLog();
         window.testShowLogSection();
         QApplication::processEvents();
+        // Opening a deferred panel can itself trip the stall watchdog on a
+        // heavily loaded CI host. Reset after it is open so this assertion
+        // measures the empty-filter state, not test-machine startup latency.
+        window.testResetNetworkLog();
         check(window.testLogFilterChipLabels().contains(QStringLiteral("STALL")),
               QStringLiteral("the log filter row offers a Stalls chip before any "
                              "stall has been recorded"));

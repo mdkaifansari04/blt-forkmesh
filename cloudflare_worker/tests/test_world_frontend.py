@@ -365,7 +365,7 @@ def test_unified_chest_card_uses_public_profile_wallet_and_explicit_follow():
         "setAvatarFediverseProfile,",
         "queueMicrotask(() => onFediverseProfile(target))",
         '"FEDIVERSE · UNAVAILABLE"',
-        "const activityBorder =",
+        'activityRing.name = "avatar-activity-ring"',
         "new THREE.PlaneGeometry(0.88, 0.88)",
     ):
         assert contract in SCENE
@@ -901,9 +901,12 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
     assert "event.preventDefault();" in pull_guard
     assert "[data-world-thumbstick]" in pull_guard
     assert "[data-world-canvas-wrap]" in pull_guard
-    assert "if (touchPointers.size > 0)" in SCENE
     assert "pendingTouchResize = true;" in SCENE
-    assert "if (!touchPointers.size && pendingTouchResize)" in SCENE
+    assert "externalTouchInteractionActive" in SCENE
+    assert "setTouchInteractionActive" in SCENE
+    assert "touchPointers.size > 0 || externalTouchInteractionActive" in SCENE
+    assert "this.world?.setTouchInteractionActive?.(true);" in APP
+    assert "this.world?.setTouchInteractionActive?.(false);" in APP
     mobile = CSS[CSS.index("@media (max-width: 720px)"):]
     assert ".world-right-rail {" in mobile
     assert "display: grid;" in mobile
@@ -1016,7 +1019,7 @@ def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
     assert 'id="fullChatAction" type="hidden" value="chat"' in APP
     assert "Send to bot</option>" not in APP
     assert '<span data-dashboard-chat-send-label>Chat</span>' in APP
-    assert 'title="Send this task to the bot">Task</button>' in APP
+    assert 'title="Enter will send this task to the bot"' in APP
     assert "world-chat-terminal-channel" in APP
     assert "world-chat-terminal-connection" in APP
     chat_version = hashlib.sha256(DASHBOARD_CHAT.encode()).hexdigest()[:12]
@@ -1438,6 +1441,15 @@ def test_render_stalls_include_bounded_likely_component_attribution():
     assert 'component = "Three.js renderer workload";' in SCENE
     assert 'component = `office ${officeSceneMode} scene`;' in SCENE
     assert 'codeArea = "renderer.render(scene, camera)";' in SCENE
+    assert "const frameWorkStartedAt = performance.now();" in SCENE
+    assert "performance.now() - frameWorkStartedAt" in SCENE
+    assert "scheduleRenderStallWarning(frameWorkMs);" in SCENE
+    assert "scheduleRenderStallWarning(rawFrameMs);" not in SCENE
+    assert "renderer.shadowMap.autoUpdate = false;" in SCENE
+    assert "nextShadowMapUpdateAt = time + 500;" in SCENE
+    assert "function canvasReadableImageURL(value)" in SCENE
+    assert "url.origin !== window.location.origin" in SCENE
+    assert "const key = canvasReadableImageURL(url);" in SCENE
 
 
 def test_world_first_person_zoom_out_falls_back_to_third_person():
@@ -2289,11 +2301,10 @@ def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
     assert '"OUT AND ABOUT"' in SCENE
     assert "campfire.userData.seatByName" in SCENE
     assert "noteDirectoryMembers" in APP
-    # The ring's arc carries the seats plus the walk-in gap (adhoc #430).
-    assert (
-        "(count * CAMPFIRE_SEAT_SPACING + CAMPFIRE_ENTRANCE_WIDTH) / (2 * Math.PI)"
-        in SCENE
-    )
+    # Concentric rows hold 25 people each and preserve one aligned walk-in gap.
+    assert "const CAMPFIRE_MEMBERS_PER_ROW = 25;" in SCENE
+    assert "const rowCount = Math.ceil(count / CAMPFIRE_MEMBERS_PER_ROW);" in SCENE
+    assert "CAMPFIRE_ENTRANCE_WIDTH / radius" in SCENE
     assert '"sitting around the campfire"' in SCENE
     # Figures and idle live avatars both face the pit at the circle's centre.
     # Avatar fronts face local -Z, so the inward heading is atan2(x, z) — the

@@ -416,7 +416,7 @@ QPushButton#windowChromeCloseButton:hover {
 }
 /* Top-row switchers (relay / node / repo): dropdown (relay's shows its
    favicon inline) + open-in-browser */
-QPushButton#relayOpenButton {
+QPushButton#relayOpenButton, QPushButton#navHistoryButton {
     background: transparent; border: none; border-radius: 8px; color: #8b949e;
 }
 QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
@@ -429,7 +429,7 @@ QPushButton#relayMenuButton {
     background: transparent; border: none; border-radius: 8px;
     color: #e6edf3; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
-QPushButton#relayOpenButton:hover,
+QPushButton#relayOpenButton:hover, QPushButton#navHistoryButton:hover,
 QPushButton#relayMenuButton:hover,
 QPushButton#nodeMenuButton:hover,
 QPushButton#repoMenuButton:hover {
@@ -1699,7 +1699,7 @@ QPushButton#floatingLogButton {
 QPushButton#floatingLogButton:hover { background-color: #f3f4f6; color: #1f2328; }
 /* Top-row switchers (relay / node / repo): dropdown (relay's shows its
    favicon inline) + open-in-browser */
-QPushButton#relayOpenButton {
+QPushButton#relayOpenButton, QPushButton#navHistoryButton {
     background: transparent; border: none; border-radius: 8px; color: #656d76;
 }
 QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
@@ -1712,7 +1712,7 @@ QPushButton#relayMenuButton {
     background: transparent; border: none; border-radius: 8px;
     color: #1f2328; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
-QPushButton#relayOpenButton:hover,
+QPushButton#relayOpenButton:hover, QPushButton#navHistoryButton:hover,
 QPushButton#relayMenuButton:hover,
 QPushButton#nodeMenuButton:hover,
 QPushButton#repoMenuButton:hover {
