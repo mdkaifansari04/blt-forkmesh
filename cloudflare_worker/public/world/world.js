@@ -5058,6 +5058,7 @@ class ForkMeshWorld extends HTMLElement {
     this.positionKey = "";
     this.restoredPosition = null;
     this.spawnSelected = false;
+    this.freshArrivalCampfireSeated = false;
     // A server arrival cell may resolve a collision only during the first
     // welcome. Mobile radios routinely reconnect while somebody is walking;
     // treating every reconnect like a new arrival used to snap signed-in
@@ -6034,6 +6035,12 @@ class ForkMeshWorld extends HTMLElement {
           this.setInfrastructureConsoleEnabled(enabled),
         onBuildBoardNearby: () =>
           void this.refreshBuildBoard({ quiet: true }),
+        onBuildVideoSelect: () =>
+          window.open(
+            "/assets/video/forkmesh-forever.mp4",
+            "_blank",
+            "noopener,noreferrer",
+          ),
         onBuildBoardReorder: ({ order }) =>
           void this.reorderBuildBoard(order),
         onBuildIssueAssign: ({ key, title }) =>
@@ -6234,6 +6241,7 @@ class ForkMeshWorld extends HTMLElement {
       this.syncSocialBanners();
       this.startSocialBannersRefresh();
       this.syncMemberLounge();
+      this.seatFreshArrivalAtCampfire();
       void this.loadReferralLeaderboard();
       void this.loadLobbyLinkBoard();
       this.syncRepositoryScene();
@@ -15673,6 +15681,23 @@ class ForkMeshWorld extends HTMLElement {
   // The Campfire map spot seats you on the bench that carries your own name;
   // guests, and members the roster has not seated yet, land on one of the
   // benches the circle keeps open.
+  seatFreshArrivalAtCampfire() {
+    // A saved pose, shared view, or explicit regional destination always wins.
+    // Only a truly unplaced Town Square arrival starts at the social circle.
+    if (
+      this.restoredPosition ||
+      this.sharedView ||
+      this.spawnSelected ||
+      this.currentSpace !== "town-square"
+    ) {
+      return false;
+    }
+    const seated =
+      this.world?.returnToCampfireBench?.(this.identity?.name || "") === true;
+    if (seated) this.freshArrivalCampfireSeated = true;
+    return seated;
+  }
+
   returnToCampfireBench() {
     if (!this.world?.returnToCampfireBench?.(this.identity?.name || "")) {
       this.toast(
@@ -24452,6 +24477,9 @@ class ForkMeshWorld extends HTMLElement {
     if (!message || typeof message !== "object") return;
     let peersChanged = false;
     if (message.type === "welcome" && Array.isArray(message.peers)) {
+      const reseatFreshArrival =
+        this.initialPresenceWelcomePending &&
+        this.freshArrivalCampfireSeated;
       this.serverPeerId = String(message.id || "");
       const ownPresence = remotePlayer(message.self);
       // A restored spot may have been handed out as an arrival cell while
@@ -24513,6 +24541,14 @@ class ForkMeshWorld extends HTMLElement {
           this.remotePlayers.set(player.id, player);
         }
       });
+      // The welcome may have replaced a newly seated guest with a collision-
+      // free arrival cell. Rebuild the spare seats with the authoritative peer
+      // list, then put that first-time visitor back down before publishing the
+      // initial movement frame. Reconnects never repeat this.
+      if (reseatFreshArrival) {
+        this.syncMemberLounge();
+        this.world?.returnToCampfireBench?.(this.identity?.name || "");
+      }
       // Publishing starts only after the server has assigned this connection's
       // unique row/column arrival slot.
       window.clearTimeout(this.movementSendTimer);

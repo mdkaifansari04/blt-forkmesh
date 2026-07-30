@@ -7637,6 +7637,80 @@ test("the authenticated member appears immediately and active time advances loca
   expect(stillPaused).toBeCloseTo(paused.totalActiveMs, 3);
 });
 
+test("a fresh member spawns seated in the open Members Circle", async ({
+  page,
+}) => {
+  const session = {
+    nodeName: "newcomer",
+    sessionToken: "fresh-member-circle-session",
+  };
+  await prepareWorldPage(page, "fresh-member-circle", {
+    session,
+    directoryUsers: [
+      {
+        name: "newcomer",
+        nodes: [],
+        createdAt: FIXED_NOW - 1_000,
+      },
+    ],
+  });
+  await waitForWorld(page);
+
+  const arrival = await page.locator("forkmesh-world").evaluate((shell) => {
+    const player = shell.world.player;
+    const count = shell.world.scene.getObjectByName("campfire-member-count");
+    const sparkle = shell.world.scene.getObjectByName(
+      "campfire-newest-member-name-sparkles",
+    );
+    const flame = shell.world.scene.getObjectByName("campfire-primary-flame");
+    const dirt = shell.world.scene.getObjectByName(
+      "campfire-member-circle-dirt",
+    );
+    const startHere = shell.world.scene.getObjectByName(
+      "forkmesh-start-here-map",
+    );
+    return {
+      seated: shell.freshArrivalCampfireSeated,
+      activity: shell.lastMovement.activity,
+      x: player.position.x,
+      y: player.position.y,
+      z: player.position.z,
+      leftKnee: player.userData.leftKnee.rotation.x,
+      countScale: count.scale.toArray(),
+      countY: count.position.y,
+      sparkleVisible: sparkle.visible,
+      fireHeight: flame.scale.y,
+      dirtY: dirt.position.y,
+      signPresent: Boolean(
+        shell.world.scene.getObjectByName(
+          "forkmesh-members-circle-path-sign",
+        ),
+      ),
+      startHere: {
+        x: startHere.position.x,
+        z: startHere.position.z,
+        rotation: startHere.rotation.y,
+      },
+    };
+  });
+
+  expect(arrival.seated).toBe(true);
+  expect(arrival.activity).toBe("sitting beside the campfire");
+  expect(Math.hypot(arrival.x, arrival.z - 130)).toBeGreaterThan(5);
+  expect(Math.hypot(arrival.x, arrival.z - 130)).toBeLessThan(10);
+  expect(arrival.y).toBeLessThan(0.38);
+  expect(Math.abs(arrival.leftKnee)).toBeGreaterThan(0.5);
+  expect(arrival.countScale).toEqual([8, 4, 1]);
+  expect(arrival.countY).toBeGreaterThan(10);
+  expect(arrival.sparkleVisible).toBe(true);
+  expect(arrival.fireHeight).toBeGreaterThan(2.5);
+  expect(arrival.dirtY).toBeGreaterThan(0.105);
+  expect(arrival.signPresent).toBe(false);
+  expect(arrival.startHere.x).toBe(0);
+  expect(arrival.startHere.z).toBe(168);
+  expect(arrival.startHere.rotation).toBeCloseTo(Math.PI, 5);
+});
+
 test("Town Square placement is contextual, tracking-free, and collapses safely", async ({
   page,
 }) => {

@@ -63,7 +63,10 @@ const LEADERBOARD_ISLAND_CENTER_X = -130;
 const LEADERBOARD_CONNECTION_MIN_X = -103;
 const LEADERBOARD_CONNECTION_MAX_X = -78;
 const MEMBER_ISLAND_CENTER_Z = 130;
-const MEMBER_PATH_END_Z = MEMBER_ISLAND_CENTER_Z - 21;
+// Carry the south promenade beneath the Members Circle instead of stopping at
+// its edge. The slightly raised dirt disk hides the final stretch, so visitors
+// see one route meeting the clearing without a pavement/dirt seam.
+const MEMBER_PATH_END_Z = MEMBER_ISLAND_CENTER_Z;
 // Every town promenade is cut from the same slab. Keeping its width, depth,
 // and center plane in one place prevents adjacent segments from producing the
 // doubled edges and hairline height changes that are especially visible from
@@ -3117,7 +3120,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:avatar-hud-launcher", task: "Restore circular avatar HUD launcher", detail: "The account avatar is again a round launcher: hover or focus fans fixed-size tool boxes out without resizing the HUD, notification/error/task counts form a compact actionable row beside it and return to their matching icons when expanded, touch uses a first tap to reveal controls, and player movement or an outside click closes the launcher.", estimate: "ready to deploy · focused QA", done: true },
   { key: "task:fixed-square-hud-shortcuts", task: "Fixed square World HUD shortcuts", detail: "The avatar is clipped into a true circle. Its right rail is one non-expanding column with only Office, Campfire, Share view, Remember, and square saved thumbnails; reward-pool navigation stays in the World. Dashboard uses a globe, Tasks uses a list, Capture uses a crop frame, and Wave now sits beside chat.", estimate: "ready to deploy · focused QA", done: true },
   { key: "task:avatar-selection-runtime", task: "Reliable user HUD selection", detail: "Avatar clicks use a scoped frame timestamp, prefer the visible avatar hit over nearby geometry, and open the privacy-filtered member side panel without throwing.", estimate: "implemented · focused QA", done: true },
-  { key: "task:member-circle-fire", task: "Dirt Members Circle + growing fire", detail: "The complete member seating circle sits on detailed dirt; every member adds one visible log, the fire steps up a notch on every hundredth account, and the member total hangs large above the flames.", estimate: "implemented · focused QA", done: true },
+  { key: "task:member-circle-fire", task: "Dirt Members Circle + growing fire", detail: "Fresh arrivals spawn seated in the circle; pavement continues beneath its dirt, the fire is three times larger, and a much higher member total sparkles around the newest name.", estimate: "implemented · focused QA", done: true },
   { key: "task:aquarium-fixed-controls", task: "Tank-fixed reef controls", detail: "Feed, tap, backdrop, and light controls stay anchored to the aquarium's lower-right control point instead of floating with the player.", estimate: "implemented · focused QA", done: true },
   { key: "task:recent-public-chat-card", task: "Recent public chat on chest", detail: "Each avatar chest includes one sanitized line from that account's latest public-channel message; private and direct messages never enter the card.", estimate: "implemented · focused QA", done: true },
   { key: "task:verification-pin-state", task: "Green verified pin / red unverified X", detail: "Every signed-in avatar shows a green check when email-verified and a red X in the same front pin when unverified; guests remain neutral.", estimate: "implemented · focused QA", done: true },
@@ -3128,7 +3131,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:engineering-debug-panel", task: "Engineering live debug control panel", detail: "A full in-room panel samples FPS, longest frame, draw calls, triangles, geometries, textures, GPU programs, animation callbacks, interactive targets, members, heap, and pixel ratio with green, orange, or red optimization states.", estimate: "implemented · focused QA", done: true },
   { key: "task:leaderboard-grid", task: "One raised square 5×5 leaderboard", detail: "Every public leaderboard and statistic occupies its own cell in one square wall; the center marker and separate physical boards are gone, and every footing, post, frame, face, and label clears the terrain.", estimate: "verified · ready for QA", done: true },
   { key: "task:reward-node-download", task: "Front SOL sign + start-node action", detail: "The treasury QR now sits at the front midpoint of the first node ring, with a small Start a node control that opens the desktop download page in a new window.", estimate: "verified · ready for QA", done: true },
-  { key: "task:world-member-path", task: "One path to the Members Circle", detail: "The overlapping south path and member promenade are now one concrete-brick route terminating at a fire-marked Members Circle sign.", estimate: "implemented · focused QA", done: true },
+  { key: "task:world-member-path", task: "One path to the Members Circle", detail: "The overlapping south path and member promenade are one concrete-brick route that runs beneath the dirt; the entrance sign is gone and the START HERE map faces inward from the far side.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-office-path", task: "One path to the Office", detail: "The north town route, elevated bridge, and Office approach now meet edge-to-edge at one width; the stacked land promenade and doubled slabs are removed.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-circular-foundation", task: "Circular World foundation", detail: "The continuous visible grass and collision boundary now use one circular radius centered on the circular bike lane.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-frame-hot-loop", task: "Instant movement and lean frame loop", detail: "Keyboard input reaches selected speed on its first frame, camera/movement scratch values are reused, and non-motion DOM/proximity work is cadence bounded while WebGL stays full-rate.", estimate: "implemented · focused QA", done: true },
@@ -3139,7 +3142,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:agent-queue-reliability", task: "Durable unlimited agent queue + exact reasons", detail: "Rebase and deploy the arbitrary task-cap removal, durable offline desktop queue for owners, and exact safe rejection reasons without weakening provider authorization or safety preflight.", estimate: "implemented · integration and deployment QA", done: false },
   { key: "task:task-conversation-reopen", task: "Task replies, full compact context, and mark undone", detail: "Rebase and verify encrypted organization-private task replies, compact ownership/routing/QA context, completion notes, and Mark undone while retaining completion history.", estimate: "implemented · integration QA", done: false },
   { key: "task:private-task-screenshots", task: "Private screenshot evidence on tasks and agents", detail: "Rebase and deploy encrypted organization task attachments while preserving the distinct issue, chat, and Codex or Claude screenshot routes and bounded payload handling.", estimate: "implemented · integration QA", done: false },
-  { key: "task:member-node-plaza", task: "Compact growing node plaza + bench spawn", detail: "Rebase and verify evenly spaced node cabinets on one concrete-brick plaza that grows with the roster, plus a fresh-visitor Members Circle bench spawn that never overrides saved or shared positions.", estimate: "implemented · World integration QA", done: false },
+  { key: "task:member-node-plaza", task: "Compact growing node plaza + bench spawn", detail: "Rebase and verify evenly spaced node cabinets on one concrete-brick plaza that grows with the roster. Fresh visitors now spawn seated in the Members Circle without overriding saved or shared positions.", estimate: "implemented · World integration QA", done: false },
   { key: "task:d1-free-tier-visibility", task: "D1 free-tier visibility in admin", detail: "Rebase and verify the documented D1 free-tier thresholds and clearly labeled local estimates; exact account consumption remains external unless Cloudflare analytics is configured.", estimate: "implemented · admin integration QA", done: false },
   { key: "task:office-floor-visibility-guard", task: "Restore Office floors after every story change", detail: "The deployed visibility guard keeps the tower shell, floor and ceiling slabs, lights, furniture, boards, and repositories visible, then synchronizes the selected story immediately after doorway or elevator travel.", estimate: "deployed · ready for World QA", done: true },
   { key: "task:web-pull-workbench", task: "Full web Issue and PR workbench", detail: "Record clicks now open canonical same-origin web pages. Still open: proactive conflict/check readiness and a signed mirror capability for auditable update-from-main before protected merge.", estimate: "record routing done · lifecycle active", done: false },
@@ -14323,6 +14326,7 @@ export function createWorldScene({
   onSystemCapacityTableSelect = () => {},
   onInfrastructureConsoleToggle = () => {},
   onBuildBoardNearby = () => {},
+  onBuildVideoSelect = () => {},
   onBuildBoardReorder = () => {},
   onBuildIssueAssign = () => {},
   onBuildSendQa = () => {},
@@ -15262,50 +15266,9 @@ export function createWorldScene({
   // The south route used to be two overlapping slabs: the town path stopped
   // at z=88 while a second promenade began at z=78. Besides the visible color
   // seam, their different heights caused the large doubled rectangle seen
-  // from above. createTownLandscape now owns one continuous path all the way
-  // to the north edge of the Members Circle.
-  const memberPathSign = new THREE.Group();
-  memberPathSign.name = "forkmesh-members-circle-path-sign";
-  memberPathSign.position.set(6.6, 0, MEMBER_PATH_END_Z - 1.2);
-  memberPathSign.rotation.y = Math.PI;
-  const memberPathSignBacking = new THREE.Mesh(
-    new THREE.BoxGeometry(5.8, 2.55, 0.24),
-    makeMaterial(THREE, "#161b22", {
-      metalness: 0.18,
-      roughness: 0.58,
-    }),
-  );
-  memberPathSignBacking.position.y = 2.35;
-  memberPathSign.add(memberPathSignBacking);
-  const memberPathSignFace = new THREE.Mesh(
-    new THREE.PlaneGeometry(5.5, 2.25),
-    new THREE.MeshBasicMaterial({
-      map: wordTexture(
-        THREE,
-        "🔥  MEMBERS CIRCLE",
-        "members · followers · activity",
-        "#58a6ff",
-      ),
-      transparent: true,
-      toneMapped: false,
-    }),
-  );
-  memberPathSignFace.name = "forkmesh-members-circle-path-sign-face";
-  memberPathSignFace.position.set(0, 2.35, 0.13);
-  memberPathSign.add(memberPathSignFace);
-  for (const x of [-2.25, 2.25]) {
-    const post = new THREE.Mesh(
-      new THREE.BoxGeometry(0.2, 2.35, 0.2),
-      makeMaterial(THREE, "#30363d", {
-        metalness: 0.35,
-        roughness: 0.5,
-      }),
-    );
-    post.position.set(x, 1.17, 0);
-    memberPathSign.add(post);
-  }
-  setShadows(memberPathSign);
-  world.add(memberPathSign);
+  // from above. createTownLandscape now owns one continuous path beneath the
+  // circle dirt. The former entrance sign crowded that route, so the clearing
+  // and its much larger member total now provide the wayfinding on their own.
 
   // The first object encountered when walking from the Members Circle toward
   // the centered nodes is a persistent orientation board. Only bounded step
@@ -15329,8 +15292,10 @@ export function createWorldScene({
   ]);
   const startHereBoard = new THREE.Group();
   startHereBoard.name = "forkmesh-start-here-map";
-  startHereBoard.position.set(-15, 0, 96);
-  startHereBoard.rotation.y = 0;
+  // Keep the large orientation map on the far side of even the maximum-sized
+  // bench ring, facing back toward the fire and arriving visitors.
+  startHereBoard.position.set(0, 0, MEMBER_ISLAND_CENTER_Z + 38);
+  startHereBoard.rotation.y = Math.PI;
   const startHereBacking = new THREE.Mesh(
     new THREE.BoxGeometry(16.4, 10.5, 0.34),
     makeMaterial(THREE, "#161b22", {
@@ -15833,7 +15798,9 @@ export function createWorldScene({
   );
   campfireGround.name = "campfire-member-circle-dirt";
   campfireGround.rotation.x = -Math.PI / 2;
-  campfireGround.position.y = 0.025;
+  // The promenade surface is 0.105 high. Lift the dirt just above it so the
+  // extended pavement is physically present but disappears beneath the circle.
+  campfireGround.position.y = WORLD_PATH_SURFACE_Y + 0.01;
   campfireGround.receiveShadow = true;
   campfire.add(campfireGround);
   const firePit = new THREE.Mesh(
@@ -15917,6 +15884,7 @@ export function createWorldScene({
       opacity: 0.92,
     }),
   );
+  flame.name = "campfire-primary-flame";
   // Both cones are centred on their own geometry, so scaling them up would
   // sink the base into the ground. The animation re-pins each base to the logs
   // every frame (see FLAME_BASE_Y); these are just the resting spots.
@@ -15933,6 +15901,7 @@ export function createWorldScene({
       opacity: 0.94,
     }),
   );
+  innerFlame.name = "campfire-inner-flame";
   const INNER_FLAME_HEIGHT = 0.95;
   const INNER_FLAME_BASE_Y = 0.38;
   innerFlame.position.y = INNER_FLAME_BASE_Y + INNER_FLAME_HEIGHT / 2;
@@ -15940,10 +15909,19 @@ export function createWorldScene({
   // The blaze is a milestone marker rather than a per-member trickle: it holds
   // its size through a hundred accounts and steps up a notch when the next
   // century lands, bounded so a large community's fire stays welcoming.
-  const CAMPFIRE_BASE_FIRE_LEVEL = 1.45;
-  const CAMPFIRE_FIRE_LEVEL_PER_CENTURY = 0.3;
-  const CAMPFIRE_MAX_FIRE_LEVEL = 3.55;
+  const CAMPFIRE_BASE_FIRE_LEVEL = 3;
+  const CAMPFIRE_FIRE_LEVEL_PER_CENTURY = 0.35;
+  const CAMPFIRE_MAX_FIRE_LEVEL = 5.4;
   let fireLevel = CAMPFIRE_BASE_FIRE_LEVEL;
+  // Reduced-motion visitors skip animated callbacks entirely, so establish
+  // the full three-times-taller baseline here as well as in the flicker loop.
+  flame.scale.set(1, CAMPFIRE_BASE_FIRE_LEVEL, 1);
+  flame.position.y =
+    FLAME_BASE_Y + (FLAME_HEIGHT * CAMPFIRE_BASE_FIRE_LEVEL) / 2;
+  innerFlame.scale.set(0.82, CAMPFIRE_BASE_FIRE_LEVEL * 0.9, 0.82);
+  innerFlame.position.y =
+    INNER_FLAME_BASE_Y +
+    (INNER_FLAME_HEIGHT * CAMPFIRE_BASE_FIRE_LEVEL * 0.9) / 2;
   const fireLight = new THREE.PointLight("#ffa14d", 3.2, 14, 1.8);
   fireLight.position.y = FLAME_BASE_Y + FLAME_HEIGHT * CAMPFIRE_BASE_FIRE_LEVEL * 0.5;
   campfire.add(fireLight);
@@ -15957,14 +15935,40 @@ export function createWorldScene({
       depthWrite: false,
     }),
   );
+  memberCountSprite.name = "campfire-member-count";
   // Hangs clear above the (now much taller) flames rather than inside them, at
   // a size that stays readable from the bench ring — the number is the headline
   // of the whole clearing, so it is the first thing you can make out.
-  const MEMBER_COUNT_HOVER_Y = 3.9;
+  const MEMBER_COUNT_HOVER_Y = 10.5;
   memberCountSprite.position.y = MEMBER_COUNT_HOVER_Y;
-  memberCountSprite.scale.set(5.2, 2.6, 1);
+  memberCountSprite.scale.set(8, 4, 1);
   memberCountSprite.visible = false;
   campfire.add(memberCountSprite);
+  const newestMemberSparkles = new THREE.Points(
+    new THREE.BufferGeometry().setFromPoints(
+      Array.from({ length: 18 }, (_, index) => {
+        const angle = (index / 18) * Math.PI * 2;
+        const radius = index % 2 ? 2.85 : 3.35;
+        return new THREE.Vector3(
+          Math.cos(angle) * radius,
+          Math.sin(angle) * 0.52,
+          0,
+        );
+      }),
+    ),
+    new THREE.PointsMaterial({
+      color: "#fff4b8",
+      size: 0.2,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  newestMemberSparkles.name = "campfire-newest-member-name-sparkles";
+  newestMemberSparkles.position.y = MEMBER_COUNT_HOVER_Y - 1.55;
+  newestMemberSparkles.visible = false;
+  campfire.add(newestMemberSparkles);
   let memberCountShown = "";
   // Repaints only when the count or the newest member actually moved: the
   // roster refresh runs on a timer and would otherwise rebuild the canvas
@@ -15983,6 +15987,7 @@ export function createWorldScene({
     );
     memberCountSprite.material.needsUpdate = true;
     memberCountSprite.visible = true;
+    newestMemberSparkles.visible = Boolean(latest);
     // Each member contributes one visible log; the fire itself only grows on
     // the hundreds, so passing a century is a visible event around the circle.
     rebuildCampfireMemberLogs(count);
@@ -15993,6 +15998,23 @@ export function createWorldScene({
       CAMPFIRE_MAX_FIRE_LEVEL,
     );
     fireLight.distance = 16 + Math.min(fireCenturies, 7) * 2.4;
+    if (reducedMotion) {
+      const staticSize =
+        1 + (fireLevel - CAMPFIRE_BASE_FIRE_LEVEL) * 0.32;
+      flame.scale.set(staticSize, fireLevel, staticSize);
+      innerFlame.scale.set(
+        staticSize * 0.82,
+        fireLevel * 0.9,
+        staticSize * 0.82,
+      );
+      flame.position.y = FLAME_BASE_Y + (FLAME_HEIGHT * fireLevel) / 2;
+      innerFlame.position.y =
+        INNER_FLAME_BASE_Y + (INNER_FLAME_HEIGHT * fireLevel * 0.9) / 2;
+      memberCountSprite.position.y =
+        MEMBER_COUNT_HOVER_Y +
+        FLAME_HEIGHT * Math.max(0, fireLevel - CAMPFIRE_BASE_FIRE_LEVEL);
+      newestMemberSparkles.position.y = memberCountSprite.position.y - 1.55;
+    }
   }
   animated.push((time) => {
     const flicker = 1 + Math.sin(time * 0.011) * 0.12 + Math.sin(time * 0.023) * 0.06;
@@ -16001,12 +16023,12 @@ export function createWorldScene({
     const size = (1 + (fireLevel - CAMPFIRE_BASE_FIRE_LEVEL) * 0.32) * flicker;
     const height = fireLevel * (1 + Math.sin(time * 0.017) * 0.16);
     flame.scale.set(size, height, size);
-    innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
+    innerFlame.scale.set(size * 0.82, height * 0.9, size * 0.82);
     // Keep both cones standing on the logs as they grow, instead of letting a
     // taller flame sink half of its extra height under the pit.
     flame.position.y = FLAME_BASE_Y + (FLAME_HEIGHT * height) / 2;
     innerFlame.position.y =
-      INNER_FLAME_BASE_Y + (INNER_FLAME_HEIGHT * size * 0.9) / 2;
+      INNER_FLAME_BASE_Y + (INNER_FLAME_HEIGHT * height * 0.9) / 2;
     fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
     fireLight.position.y = FLAME_BASE_Y + FLAME_HEIGHT * fireLevel * 0.5;
     // Rides above the flames, rising with them so a bigger fire never reaches
@@ -16015,6 +16037,13 @@ export function createWorldScene({
       MEMBER_COUNT_HOVER_Y +
       FLAME_HEIGHT * Math.max(0, fireLevel - CAMPFIRE_BASE_FIRE_LEVEL) +
       Math.sin(time * 0.0017) * 0.12;
+    // Orbit and shimmer around the newest-name line at the bottom of the
+    // count sprite. Reduced-motion keeps the sparkle visible but still.
+    newestMemberSparkles.position.y = memberCountSprite.position.y - 1.55;
+    if (!reducedMotion) newestMemberSparkles.rotation.z = time * 0.0008;
+    newestMemberSparkles.material.opacity = reducedMotion
+      ? 0.9
+      : 0.72 + Math.sin(time * 0.009) * 0.24;
   });
   // The real bench count depends on the member roster, which is still an
   // in-flight network request when the scene first renders. Rather than
@@ -19097,6 +19126,23 @@ export function createWorldScene({
   officeTaskBulletinFace.position.z = 0.18;
   officeTaskBulletinFace.userData.interactive = "build-task-board";
   officeTaskBulletin.add(officeTaskBulletinFace);
+  const buildVideoLink = new THREE.Mesh(
+    new THREE.PlaneGeometry(2.25, 0.5),
+    new THREE.MeshBasicMaterial({
+      map: wordTexture(
+        THREE,
+        "▶ WATCH VIDEO",
+        "ForkMesh Forever",
+        "#9ef7c6",
+      ),
+      transparent: true,
+      toneMapped: false,
+    }),
+  );
+  buildVideoLink.name = "forkmesh-build-board-video-link";
+  buildVideoLink.position.set(4.55, 2.34, 0.22);
+  buildVideoLink.userData.interactive = "build-video-link";
+  officeTaskBulletin.add(buildVideoLink);
   const buildBoardSpinner = new THREE.Mesh(
     new THREE.TorusGeometry(0.2, 0.055, 10, 28, Math.PI * 1.55),
     new THREE.MeshBasicMaterial({
@@ -19105,7 +19151,7 @@ export function createWorldScene({
     }),
   );
   buildBoardSpinner.name = "forkmesh-build-board-updating-spinner";
-  buildBoardSpinner.position.set(5.28, 2.34, 0.27);
+  buildBoardSpinner.position.set(-5.28, 2.34, 0.27);
   buildBoardSpinner.visible = false;
   officeTaskBulletin.add(buildBoardSpinner);
   animated.push((time) => {
@@ -19162,7 +19208,7 @@ export function createWorldScene({
     post.position.set(x, -0.05, -0.08);
     officeTaskBulletin.add(post);
   }
-  interactive.push(officeTaskBulletinFace);
+  interactive.push(officeTaskBulletinFace, buildVideoLink);
   let humanTodoSessions = [];
   let humanTodoSystemItems = [];
   let buildBoardState = {
@@ -29742,7 +29788,10 @@ export function createWorldScene({
           onQaAction(qaAction);
         }
       }
-      const boardHit = pressHits.find(
+      const videoHit = pressHits.find(
+        ({ object }) => object === buildVideoLink,
+      );
+      const boardHit = !videoHit && pressHits.find(
         ({ object }) => object === officeTaskBulletinFace,
       );
       if (boardHit) {
@@ -30415,6 +30464,10 @@ export function createWorldScene({
         completed: startHereCompleted.size,
         total: START_HERE_STEPS.length,
       });
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "build-video-link") {
+      onBuildVideoSelect();
       return;
     }
     const chestControl = hit?.object ? chestControls.get(hit.object) : null;
