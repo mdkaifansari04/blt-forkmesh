@@ -163,16 +163,35 @@ def test_badge_has_large_qr_email_and_social_icons_without_activity_border():
     assert "[270, 294].forEach" in SCENE
     assert "[326, 350, 374].forEach" in SCENE
     assert "const activityBorder =" not in SCENE
-    assert "verifiedPin.position.set(-0.66, 2.92, -0.22);" in SCENE
+    assert "verifiedPin.position.set(-0.96, 3.04, -0.405);" in SCENE
 
 
 def test_mirror_lights_are_colored_and_warning_states_blink():
     assert "function mirrorNodeVisualState(node)" in SCENE
-    assert 'return { color: "#22e06a", blink: false };' in SCENE
-    assert 'return { color: "#ffd23f", blink: true };' in SCENE
-    assert 'return { color: "#ff4d57", blink: true };' in SCENE
+    assert 'return { color: "#00cc44", blink: false, state: "online" };' in SCENE
+    assert 'return { color: "#ffcc00", blink: true, state: "warning" };' in SCENE
+    assert 'return { color: "#ff0000", blink: true, state: "error" };' in SCENE
     assert "child.userData?.mirrorStatusLight" in SCENE
-    assert "mirrorByName" in APP
+    assert "function memberMirrorNodes(" in APP
+    assert "this.world?.updateIdentity?.(this.identity);" in APP
+    assert "new THREE.BoxGeometry(1.64, 0.22, 0.72)" in SCENE
+    assert "(index - (count - 1) / 2) * 0.22" in SCENE
+    assert "1.39,\n      -0.52," in SCENE
+    cabinet = SCENE.split("function createMirrorServerCabinet", 1)[1].split(
+        "\nfunction ", 1
+    )[0]
+    assert "const nodeVisual = mirrorNodeVisualState(node);" in cabinet
+    assert "const statusColor = nodeVisual.color;" in cabinet
+
+
+def test_profile_card_fills_avatar_front_without_covering_operator_belt():
+    avatar = SCENE.split(
+        "function createAvatar(THREE, identity, options = {})", 1
+    )[1].split("\nconst WORK_BADGE_ROWS", 1)[0]
+    assert "new THREE.PlaneGeometry(1.64, 1.64)" in avatar
+    assert "badge.position.set(0, 2.35, -0.39);" in avatar
+    assert "badge.scale.set(" not in avatar
+    assert "verifiedPin.position.set(-0.96, 3.04, -0.405);" in avatar
 
 
 def test_directory_members_stay_seated_at_the_campfire():

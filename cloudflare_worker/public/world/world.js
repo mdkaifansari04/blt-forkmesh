@@ -3516,6 +3516,59 @@ function liveNodeRecordsWithActions(
   });
 }
 
+function memberMirrorNodes(memberName, declaredNodes, liveNodes, limit = 6) {
+  const member = String(memberName || "").trim().toLowerCase();
+  const records = Array.isArray(liveNodes) ? liveNodes : [];
+  const aliases = new Map();
+  records.forEach((node) => {
+    [
+      node?.name,
+      node?.machineName,
+      node?.node,
+      node?.owner,
+    ].forEach((value) => {
+      const key = String(value || "").trim().toLowerCase();
+      if (key && !aliases.has(key)) aliases.set(key, node);
+    });
+  });
+  const selected = [];
+  const seen = new Set();
+  const add = (node, fallbackName = "") => {
+    if (!node || typeof node !== "object") return;
+    const name = String(
+      node.name || node.machineName || node.node || fallbackName,
+    ).trim().slice(0, 80);
+    const key = name.toLowerCase();
+    if (!key || seen.has(key) || selected.length >= limit) return;
+    seen.add(key);
+    selected.push({ ...node, name });
+  };
+  (Array.isArray(declaredNodes) ? declaredNodes : []).forEach((declared) => {
+    const name = String(
+      declared && typeof declared === "object"
+        ? declared.name || declared.node || declared.machineName || ""
+        : declared || "",
+    ).trim().slice(0, 80);
+    const live = aliases.get(name.toLowerCase());
+    if (live) add(live, name);
+    else if (name && name.toLowerCase() !== "node") {
+      add(
+        declared && typeof declared === "object"
+          ? declared
+          : { name, status: "unknown" },
+        name,
+      );
+    }
+  });
+  records.forEach((node) => {
+    const owner = String(
+      node?.ownerUser || node?.ownerAccount || "",
+    ).trim().toLowerCase();
+    if (member && owner === member) add(node);
+  });
+  return selected;
+}
+
 function normalizeMirrorActionRuns(payload) {
   const node = String(payload?.node || "").trim().toLowerCase();
   if (
@@ -8192,6 +8245,22 @@ class ForkMeshWorld extends HTMLElement {
       this.mirrorActionRunsByNode,
     );
     this.liveMirrorNodes = liveMirrors;
+    const ownDirectoryRecord = this.memberDirectory.find(
+      (member) =>
+        String(member?.name || "").trim().toLowerCase() ===
+        String(this.identity?.name || "").trim().toLowerCase(),
+    );
+    const ownMirrorNodes = memberMirrorNodes(
+      this.identity?.name,
+      ownDirectoryRecord?.nodes,
+      liveMirrors,
+    );
+    if (ownMirrorNodes.length) {
+      this.identity.nodes = ownMirrorNodes;
+      // The network poll owns cabinet truth. Repaint the local front and belt
+      // from the same records immediately after those records arrive.
+      this.world?.updateIdentity?.(this.identity);
+    }
     const rewardAddress = String(this.rewardState?.address || "").trim();
     this.landmarkCapabilities.fountain = {
       live:
@@ -26543,40 +26612,14 @@ class ForkMeshWorld extends HTMLElement {
       note(player?.name, player?.accountStatus),
     );
     this.noteDirectoryMembers(registered);
-    const mirrorByName = new Map();
-    (Array.isArray(this.liveMirrorNodes) ? this.liveMirrorNodes : []).forEach(
-      (node) => {
-        [
-          node?.name,
-          node?.machineName,
-          node?.node,
-          node?.owner,
-        ].forEach((value) => {
-          const key = String(value || "").trim().toLowerCase();
-          if (key && !mirrorByName.has(key)) mirrorByName.set(key, node);
-        });
-      },
-    );
     this.world.updateMemberLounge(
       this.memberDirectory.map((member) => ({
         ...member,
-        nodes: (Array.isArray(member.nodes) ? member.nodes : []).map((node) => {
-          const name = String(
-            node && typeof node === "object"
-              ? node.name || node.node || ""
-              : node || "",
-          ).slice(0, 80);
-          const live = mirrorByName.get(name.toLowerCase());
-          return live
-            ? {
-                name,
-                status:
-                  live.online === true || live.healthy === true
-                    ? "online"
-                    : String(live.status || live.health || "offline"),
-              }
-            : { name, status: "unknown" };
-        }),
+        nodes: memberMirrorNodes(
+          member.name,
+          member.nodes,
+          this.liveMirrorNodes,
+        ),
         // This assignment was derived from the authenticated viewer's
         // owner/admin organization roster. Hand it to the directory figure
         // too, so an administrator can manage a member who is offline just as

@@ -366,7 +366,7 @@ def test_unified_chest_card_uses_public_profile_wallet_and_explicit_follow():
         "queueMicrotask(() => onFediverseProfile(target))",
         '"FEDIVERSE · UNAVAILABLE"',
         'activityRing.name = "avatar-activity-ring"',
-        "new THREE.PlaneGeometry(0.88, 0.88)",
+        "new THREE.PlaneGeometry(1.64, 1.64)",
     ):
         assert contract in SCENE
     assert '"account-activity-light"' not in SCENE
