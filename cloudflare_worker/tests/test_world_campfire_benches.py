@@ -339,11 +339,12 @@ def test_fire_credits_the_newest_member_under_the_total():
     count_texture = SCENE.split(
         "function campfireMemberCountTexture", 1
     )[1].split("\nfunction ", 1)[0]
-    assert 'context.fillText("NEWEST", 256, 210);' in count_texture
-    assert "context.fillText(latest, 256, 240);" in count_texture
+    assert 'context.fillText("NEWEST", 256, 190);' in count_texture
+    assert "context.fillText(latest, 256, 232);" in count_texture
+    assert "const newestSize = latest.length > 13 ? 40 : latest.length > 9 ? 48 : 58;" in count_texture
     # No newest member known yet (empty roster): the old two-line layout stays.
     assert "if (!latest) return;" in count_texture
-    assert "context.fillText(digits, 256, latest ? 84 : 104);" in count_texture
+    assert "context.fillText(digits, 256, latest ? 76 : 104);" in count_texture
     newest = SCENE.split("function newestMemberName(members) {", 1)[1].split(
         "\n}", 1
     )[0]

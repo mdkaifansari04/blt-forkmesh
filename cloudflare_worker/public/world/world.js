@@ -112,6 +112,17 @@ const DETAIL_WIDTH_STEP = 48;
 const SETTINGS_WIDTH_KEY = "forkmesh.world.settingsWidth.v1";
 const SETTINGS_WIDTH_MIN = 360;
 const REFRESH_POSITION_KEY = "forkmesh.world.refresh-position.v1";
+// Before the roster finishes building the actual bench ring, start an
+// unplaced visitor beside the fire instead of briefly painting them at the old
+// central arrival grid. syncMemberLounge immediately replaces this preview
+// with their real seated bench pose.
+const FRESH_ARRIVAL_CAMPFIRE_PREVIEW = Object.freeze({
+  x: 0,
+  y: 0.38,
+  z: 137,
+  heading: 0,
+  space: "town-square",
+});
 const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1.";
 const SAVED_VIEWS_MAX = 5;
 const RENDERER_RECOVERY_DELAY_MS = 1500;
@@ -5921,7 +5932,11 @@ class ForkMeshWorld extends HTMLElement {
         container: this.$("[data-world-canvas-wrap]"),
         labelLayer: this.$("[data-world-label-layer]"),
         identity: publicIdentity(this.identity, this.settings),
-        initialSpawn: this.restoredPosition,
+        initialSpawn:
+          this.restoredPosition ||
+          (this.currentSpace === "town-square"
+            ? FRESH_ARRIVAL_CAMPFIRE_PREVIEW
+            : null),
         initialWorldLayout: mergedInitialLayout,
         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
         onLandmarkSelect: (id, meta = {}) => {
@@ -6280,18 +6295,31 @@ class ForkMeshWorld extends HTMLElement {
         this.syncRepositoryScene();
       }
       if (this.restoredPosition) {
-        this.world.setSpawn?.(this.restoredPosition);
+        // A reload only persists coordinates, not pose. If those coordinates
+        // are on the campfire bench ring, reconstruct the seated pose instead
+        // of restoring the same location with locked, standing knees.
+        const restoredCampfireSeat =
+          !this.sharedView &&
+          this.world.restoreCampfireSeatIfNearby?.(
+            this.restoredPosition,
+            this.identity?.name || "",
+          ) === true;
+        if (!restoredCampfireSeat) {
+          this.world.setSpawn?.(this.restoredPosition);
+        }
         if (this.sharedView?.camera) {
           this.world.setCameraView?.(this.sharedView.camera);
         }
-        this.lastMovement = {
-          ...this.lastMovement,
-          x: this.restoredPosition.x,
-          y: this.restoredPosition.y,
-          z: this.restoredPosition.z,
-          heading: this.restoredPosition.heading,
-          space: this.restoredPosition.space,
-        };
+        if (!restoredCampfireSeat) {
+          this.lastMovement = {
+            ...this.lastMovement,
+            x: this.restoredPosition.x,
+            y: this.restoredPosition.y,
+            z: this.restoredPosition.z,
+            heading: this.restoredPosition.heading,
+            space: this.restoredPosition.space,
+          };
+        }
         this.spawnSelected = true;
       } else if (this.currentSpace !== "town-square") {
         const traveled = this.world.travelToRegion?.(this.currentSpace);

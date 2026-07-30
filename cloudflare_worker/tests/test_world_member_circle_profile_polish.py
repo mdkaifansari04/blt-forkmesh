@@ -34,8 +34,8 @@ def test_member_circle_uses_dirt_and_tracks_firewood_per_member():
 def test_member_total_hangs_high_and_large_above_the_fire():
     # adhoc #427: the count reads as the clearing's headline, so it sits well
     # clear of the flames and rises further as the fire grows.
-    assert "const MEMBER_COUNT_HOVER_Y = 10.5;" in SCENE
-    assert "memberCountSprite.scale.set(8, 4, 1);" in SCENE
+    assert "const MEMBER_COUNT_HOVER_Y = 15;" in SCENE
+    assert "memberCountSprite.scale.set(9.5, 4.75, 1);" in SCENE
     assert (
         "FLAME_HEIGHT * Math.max(0, fireLevel - CAMPFIRE_BASE_FIRE_LEVEL)" in SCENE
     )
@@ -46,6 +46,21 @@ def test_newest_member_name_has_an_animated_sparkle_effect():
     assert "newestMemberSparkles.visible = Boolean(latest);" in SCENE
     assert "newestMemberSparkles.rotation.z = time * 0.0008;" in SCENE
     assert "newestMemberSparkles.position.y = memberCountSprite.position.y - 1.55;" in SCENE
+    assert '"campfire-newest-member-fire-sparks-left"' in SCENE
+    assert '"campfire-newest-member-fire-sparks-right"' in SCENE
+    assert "newestMemberFireSparks.forEach" in SCENE
+
+
+def test_campfire_is_three_times_large_not_only_three_times_tall():
+    assert (
+        "flame.scale.set(\n"
+        "    CAMPFIRE_BASE_FIRE_LEVEL,\n"
+        "    CAMPFIRE_BASE_FIRE_LEVEL,\n"
+        "    CAMPFIRE_BASE_FIRE_LEVEL,"
+    ) in SCENE
+    assert "const size = fireLevel * flicker;" in SCENE
+    assert "new THREE.CylinderGeometry(1.45, 1.65, 0.22, 16)" in SCENE
+    assert "Math.cos(stoneAngle) * 1.85" in SCENE
 
 
 def test_fresh_arrivals_spawn_seated_without_overriding_saved_views():
@@ -67,6 +82,9 @@ def test_fresh_arrivals_spawn_seated_without_overriding_saved_views():
     assert 'this.currentSpace !== "town-square"' in arrival
     assert 'this.world?.returnToCampfireBench?.(this.identity?.name || "")' in arrival
     assert "this.freshArrivalCampfireSeated = true;" in arrival
+    assert "FRESH_ARRIVAL_CAMPFIRE_PREVIEW" in APP
+    assert "restoreCampfireSeatIfNearby" in APP
+    assert "function restoreCampfireSeatIfNearby(spawn, name)" in SCENE
     welcome = APP.split(
         'if (message.type === "welcome" && Array.isArray(message.peers)) {', 1
     )[1].split(

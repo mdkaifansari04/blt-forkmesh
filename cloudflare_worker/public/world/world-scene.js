@@ -4587,20 +4587,21 @@ function campfireMemberCountTexture(THREE, total, newest) {
     context.shadowColor = "rgba(255,122,47,0.95)";
     context.shadowBlur = 36;
     context.fillStyle = ember;
-    context.font = '700 156px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText(digits, 256, latest ? 84 : 104);
+    context.font = '700 148px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText(digits, 256, latest ? 76 : 104);
     context.shadowBlur = 20;
     context.fillStyle = "#ffdcac";
-    context.font = '400 40px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(count === 1 ? "MEMBER" : "MEMBERS", 256, latest ? 172 : 198);
+    context.font = '400 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(count === 1 ? "MEMBER" : "MEMBERS", 256, latest ? 158 : 198);
     if (!latest) return;
     context.shadowBlur = 14;
     context.fillStyle = "#ffbd7a";
-    context.font = '400 24px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("NEWEST", 256, 210);
+    context.font = '400 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("NEWEST", 256, 190);
     context.fillStyle = "#fff1d2";
-    context.font = '700 30px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText(latest, 256, 240);
+    const newestSize = latest.length > 13 ? 40 : latest.length > 9 ? 48 : 58;
+    context.font = `700 ${newestSize}px "ForkMesh Favorit", system-ui, sans-serif`;
+    context.fillText(latest, 256, 232);
   });
 }
 
@@ -15851,23 +15852,23 @@ export function createWorldScene({
   campfireGround.receiveShadow = true;
   campfire.add(campfireGround);
   const firePit = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.85, 1.0, 0.22, 12),
+    new THREE.CylinderGeometry(1.45, 1.65, 0.22, 16),
     makeMaterial(THREE, "#4a4038", { roughness: 0.9 }),
   );
   firePit.position.y = 0.11;
   firePit.userData.campfirePit = true;
   interactive.push(firePit);
   campfire.add(firePit);
-  for (let index = 0; index < 8; index += 1) {
-    const stoneAngle = (index / 8) * Math.PI * 2;
+  for (let index = 0; index < 12; index += 1) {
+    const stoneAngle = (index / 12) * Math.PI * 2;
     const stone = new THREE.Mesh(
       new THREE.DodecahedronGeometry(0.22, 0),
       makeMaterial(THREE, "#7d766c", { roughness: 0.95 }),
     );
     stone.position.set(
-      Math.cos(stoneAngle) * 1.05,
+      Math.cos(stoneAngle) * 1.85,
       0.16,
-      Math.sin(stoneAngle) * 1.05,
+      Math.sin(stoneAngle) * 1.85,
     );
     campfire.add(stone);
   }
@@ -15961,11 +15962,21 @@ export function createWorldScene({
   const CAMPFIRE_MAX_FIRE_LEVEL = 5.4;
   let fireLevel = CAMPFIRE_BASE_FIRE_LEVEL;
   // Reduced-motion visitors skip animated callbacks entirely, so establish
-  // the full three-times-taller baseline here as well as in the flicker loop.
-  flame.scale.set(1, CAMPFIRE_BASE_FIRE_LEVEL, 1);
+  // the full three-times-larger baseline here as well as in the flicker loop.
+  // The earlier height-only cone read like a candle; the restored blaze is
+  // broad as well as tall.
+  flame.scale.set(
+    CAMPFIRE_BASE_FIRE_LEVEL,
+    CAMPFIRE_BASE_FIRE_LEVEL,
+    CAMPFIRE_BASE_FIRE_LEVEL,
+  );
   flame.position.y =
     FLAME_BASE_Y + (FLAME_HEIGHT * CAMPFIRE_BASE_FIRE_LEVEL) / 2;
-  innerFlame.scale.set(0.82, CAMPFIRE_BASE_FIRE_LEVEL * 0.9, 0.82);
+  innerFlame.scale.set(
+    CAMPFIRE_BASE_FIRE_LEVEL * 0.82,
+    CAMPFIRE_BASE_FIRE_LEVEL * 0.9,
+    CAMPFIRE_BASE_FIRE_LEVEL * 0.82,
+  );
   innerFlame.position.y =
     INNER_FLAME_BASE_Y +
     (INNER_FLAME_HEIGHT * CAMPFIRE_BASE_FIRE_LEVEL * 0.9) / 2;
@@ -15986,9 +15997,9 @@ export function createWorldScene({
   // Hangs clear above the (now much taller) flames rather than inside them, at
   // a size that stays readable from the bench ring — the number is the headline
   // of the whole clearing, so it is the first thing you can make out.
-  const MEMBER_COUNT_HOVER_Y = 10.5;
+  const MEMBER_COUNT_HOVER_Y = 15;
   memberCountSprite.position.y = MEMBER_COUNT_HOVER_Y;
-  memberCountSprite.scale.set(8, 4, 1);
+  memberCountSprite.scale.set(9.5, 4.75, 1);
   memberCountSprite.visible = false;
   campfire.add(memberCountSprite);
   const newestMemberSparkles = new THREE.Points(
@@ -16016,6 +16027,39 @@ export function createWorldScene({
   newestMemberSparkles.position.y = MEMBER_COUNT_HOVER_Y - 1.55;
   newestMemberSparkles.visible = false;
   campfire.add(newestMemberSparkles);
+  function newestMemberFireSpark(side) {
+    const points = Array.from({ length: 16 }, (_, index) => {
+      const progress = index / 15;
+      return new THREE.Vector3(
+        side * (3.25 + progress * 2.15),
+        (index % 4) * 0.18 + progress * 1.35,
+        0,
+      );
+    });
+    const sparks = new THREE.Points(
+      new THREE.BufferGeometry().setFromPoints(points),
+      new THREE.PointsMaterial({
+        color: side < 0 ? "#ff8a32" : "#ffd15c",
+        size: 0.28,
+        transparent: true,
+        opacity: 0.96,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    );
+    sparks.name =
+      side < 0
+        ? "campfire-newest-member-fire-sparks-left"
+        : "campfire-newest-member-fire-sparks-right";
+    sparks.position.y = MEMBER_COUNT_HOVER_Y - 1.55;
+    sparks.visible = false;
+    campfire.add(sparks);
+    return sparks;
+  }
+  const newestMemberFireSparks = [
+    newestMemberFireSpark(-1),
+    newestMemberFireSpark(1),
+  ];
   let memberCountShown = "";
   // Repaints only when the count or the newest member actually moved: the
   // roster refresh runs on a timer and would otherwise rebuild the canvas
@@ -16035,6 +16079,9 @@ export function createWorldScene({
     memberCountSprite.material.needsUpdate = true;
     memberCountSprite.visible = true;
     newestMemberSparkles.visible = Boolean(latest);
+    newestMemberFireSparks.forEach((sparks) => {
+      sparks.visible = Boolean(latest);
+    });
     // Each member contributes one visible log; the fire itself only grows on
     // the hundreds, so passing a century is a visible event around the circle.
     rebuildCampfireMemberLogs(count);
@@ -16046,8 +16093,7 @@ export function createWorldScene({
     );
     fireLight.distance = 16 + Math.min(fireCenturies, 7) * 2.4;
     if (reducedMotion) {
-      const staticSize =
-        1 + (fireLevel - CAMPFIRE_BASE_FIRE_LEVEL) * 0.32;
+      const staticSize = fireLevel;
       flame.scale.set(staticSize, fireLevel, staticSize);
       innerFlame.scale.set(
         staticSize * 0.82,
@@ -16061,13 +16107,16 @@ export function createWorldScene({
         MEMBER_COUNT_HOVER_Y +
         FLAME_HEIGHT * Math.max(0, fireLevel - CAMPFIRE_BASE_FIRE_LEVEL);
       newestMemberSparkles.position.y = memberCountSprite.position.y - 1.55;
+      newestMemberFireSparks.forEach((sparks) => {
+        sparks.position.y = memberCountSprite.position.y - 1.55;
+      });
     }
   }
   animated.push((time) => {
     const flicker = 1 + Math.sin(time * 0.011) * 0.12 + Math.sin(time * 0.023) * 0.06;
-    // A milestone fire grows mostly upward: widening it at the same rate would
-    // push the flames out past their own stone ring.
-    const size = (1 + (fireLevel - CAMPFIRE_BASE_FIRE_LEVEL) * 0.32) * flicker;
+    // Keep the restored fire broad and full; every axis begins at the same
+    // three-times baseline, then the two cones flicker independently.
+    const size = fireLevel * flicker;
     const height = fireLevel * (1 + Math.sin(time * 0.017) * 0.16);
     flame.scale.set(size, height, size);
     innerFlame.scale.set(size * 0.82, height * 0.9, size * 0.82);
@@ -16087,6 +16136,14 @@ export function createWorldScene({
     // Orbit and shimmer around the newest-name line at the bottom of the
     // count sprite. Reduced-motion keeps the sparkle visible but still.
     newestMemberSparkles.position.y = memberCountSprite.position.y - 1.55;
+    newestMemberFireSparks.forEach((sparks, index) => {
+      sparks.position.y = memberCountSprite.position.y - 1.55;
+      sparks.position.x =
+        Math.sin(time * 0.004 + index * Math.PI) * 0.16;
+      sparks.material.opacity = reducedMotion
+        ? 0.92
+        : 0.7 + Math.sin(time * 0.014 + index) * 0.28;
+    });
     if (!reducedMotion) newestMemberSparkles.rotation.z = time * 0.0008;
     newestMemberSparkles.material.opacity = reducedMotion
       ? 0.9
@@ -23947,6 +24004,26 @@ export function createWorldScene({
     focusedRepositoryKey = "";
     sitOnCampfireBench(seat);
     return true;
+  }
+
+  // Position persistence intentionally stores no activity label. Recover the
+  // seated pose on refresh by recognizing coordinates on the current bench
+  // ring, then reseating by member name so roster changes cannot strand the
+  // avatar on an obsolete plank.
+  function restoreCampfireSeatIfNearby(spawn, name) {
+    if (
+      officeSceneMode !== "town" ||
+      String(spawn?.space || "") !== "town-square"
+    ) {
+      return false;
+    }
+    const radius = Number(campfire.userData.seatRadius) || 0;
+    if (!radius) return false;
+    const dx = Number(spawn?.x) - campfire.position.x;
+    const dz = Number(spawn?.z) - campfire.position.z;
+    if (!Number.isFinite(dx) || !Number.isFinite(dz)) return false;
+    if (Math.abs(Math.hypot(dx, dz) - radius) > 1.25) return false;
+    return returnToCampfireBench(name);
   }
 
   // Clicking the flames is a camera interaction: bring the fire and the
@@ -32158,6 +32235,7 @@ export function createWorldScene({
     travelToRegion,
     visitNeighborhoodHome,
     returnToCampfireBench,
+    restoreCampfireSeatIfNearby,
     focusCampfireCircle,
     rideSwing,
     dismountSwing,
