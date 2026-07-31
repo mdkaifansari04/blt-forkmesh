@@ -3950,7 +3950,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </span>
             <span class="world-prompt-label">Prompt</span>
           </button>
-          <button class="world-notification-button" type="button" data-world-notifications-open aria-label="Open notifications" title="Show global and personal notifications">
+          <button class="world-notification-button" type="button" data-world-notifications-open aria-label="Open pings" title="Show global and personal pings">
             <span class="world-status-action-icon" aria-hidden="true">🔔</span>
             <span class="world-tool-count" data-world-notification-count>0</span>
           </button>
@@ -4159,7 +4159,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 <button type="button" data-world-quick-channel="direct" aria-label="Open direct messages in a new tab"><span>●</span> Direct messages</button>
                 <button type="button" data-world-quick-channel="errors"><span>△</span> Errors <output data-world-admin-error-count hidden>0</output></button>
                 <button type="button" data-world-quick-channel="tasks"><span>✓</span> Tasks <output data-world-task-count hidden>0</output></button>
-                <button type="button" data-world-quick-channel="notifications"><span>◇</span> Notifications <output data-world-notification-count hidden>0</output></button>
+                <button type="button" data-world-quick-channel="notifications"><span>◇</span> Pings <output data-world-notification-count hidden>0</output></button>
               </nav>
               <button class="world-quick-chat-close" type="button" data-world-chat-terminal-close aria-label="Close World chat">×</button>
             </header>
@@ -12855,17 +12855,17 @@ class ForkMeshWorld extends HTMLElement {
         ? {
             id: "events",
             color: "#77d9ff",
-            eyebrow: "WORLD NOTIFICATIONS",
-            label: "Notifications",
+            eyebrow: "WORLD PINGS",
+            label: "Pings",
             summary:
               "Your private account updates and public World announcements in one place.",
             status: "LIVE · PERSONAL + GLOBAL",
             metaphor:
               "A shared bulletin beside a private inbox that only you can open.",
             reality:
-              "Personal notifications use your signed-in session. Global announcements are public UTC event records.",
+              "Personal pings use your signed-in session. Global announcements are public UTC event records.",
             bullets: [
-              "Your notifications are account-scoped and never sent through multiplayer presence.",
+              "Your pings are account-scoped and never sent through multiplayer presence.",
               "Global announcements are visible to everyone in the World.",
             ],
             primary: null,
@@ -16217,30 +16217,30 @@ class ForkMeshWorld extends HTMLElement {
     const unreadCount = this.notifications.filter((item) => !item.readAt).length;
     return `
       <div data-world-events-panel-content>
-      <section class="world-activity-board world-activity-board--notifications" aria-label="Notifications and announcements">
+      <section class="world-activity-board world-activity-board--notifications" aria-label="Pings and announcements">
         <header class="world-activity-board-heading">
           <div>
             <p class="world-eyebrow">YOUR SIGNAL</p>
-            <h3>Notifications</h3>
+            <h3>Pings</h3>
             <span>${session?.sessionToken ? `${unreadCount} unread` : "Sign in for private updates"} · ${globalCount} global</span>
           </div>
           <div class="world-activity-tools">
-            <label><span class="world-visually-hidden">Search notifications</span><input type="search" value="${escapeHTML(
+            <label><span class="world-visually-hidden">Search pings</span><input type="search" value="${escapeHTML(
               this.notificationBoardSearch,
-            )}" placeholder="Search notifications…" data-world-activity-search="notifications" /></label>
-            <label><span class="world-visually-hidden">Filter notifications</span><select data-world-activity-filter="notifications" aria-label="Filter notifications">
+            )}" placeholder="Search pings…" data-world-activity-search="notifications" /></label>
+            <label><span class="world-visually-hidden">Filter pings</span><select data-world-activity-filter="notifications" aria-label="Filter pings">
               <option value="all"${filter === "all" ? " selected" : ""}>All activity</option>
               <option value="unread"${filter === "unread" ? " selected" : ""}>Unread</option>
               <option value="personal"${filter === "personal" ? " selected" : ""}>Personal</option>
               <option value="global"${filter === "global" ? " selected" : ""}>Global</option>
             </select></label>
-            <label><span class="world-visually-hidden">Sort notifications</span><select data-world-activity-sort="notifications" aria-label="Sort notifications">
+            <label><span class="world-visually-hidden">Sort pings</span><select data-world-activity-sort="notifications" aria-label="Sort pings">
               <option value="newest"${this.notificationBoardSort === "newest" ? " selected" : ""}>Newest</option>
               <option value="oldest"${this.notificationBoardSort === "oldest" ? " selected" : ""}>Oldest</option>
               <option value="title"${this.notificationBoardSort === "title" ? " selected" : ""}>Title</option>
               <option value="kind"${this.notificationBoardSort === "kind" ? " selected" : ""}>Type</option>
             </select></label>
-            <button type="button" data-world-notifications-refresh aria-label="Refresh notifications" title="Refresh notifications">↻</button>
+            <button type="button" data-world-notifications-refresh aria-label="Refresh pings" title="Refresh pings">↻</button>
           </div>
         </header>
         <div class="world-activity-stats">
@@ -16253,10 +16253,11 @@ class ForkMeshWorld extends HTMLElement {
           <span>Scope</span><span>Destination</span><span>Reference</span>
           <span>When</span><span>State</span><span>Actions</span>
         </div>
-        <ol class="world-activity-table world-notification-table" aria-label="Sortable notification table">
+        <ol class="world-activity-table world-notification-table" aria-label="Sortable ping table">
           ${
-            ["loading"].includes(this.notificationsState) &&
-            this.eventsState === "loading"
+            !rows.length &&
+            (this.notificationsState === "loading" ||
+              this.eventsState === "loading")
               ? '<li class="world-activity-loading"><i aria-hidden="true"></i><strong>Loading your activity…</strong></li>'
               : rows.length
                 ? rows
@@ -16300,13 +16301,13 @@ class ForkMeshWorld extends HTMLElement {
                     .join("")
                 : `<li class="world-activity-empty"><span aria-hidden="true">✦</span><strong>${
                     query || filter !== "all"
-                      ? "No notifications match these controls."
+                      ? "No pings match these controls."
                       : this.eventsState === "unavailable" &&
                           this.notificationsState === "unavailable"
                         ? "Activity is temporarily unavailable. No seeded or demo announcement is being presented as scheduled."
                       : this.notificationsState === "signed-out" && !globalCount
-                        ? "Sign in to receive private notifications."
-                        : "No notification activity yet."
+                        ? "Sign in to receive private pings."
+                        : "No ping activity yet."
                   }</strong></li>`
           }
         </ol>
@@ -16399,8 +16400,8 @@ class ForkMeshWorld extends HTMLElement {
       button.setAttribute(
         "aria-label",
         count
-          ? `Open World notifications, ${count} active`
-          : "Open World notifications",
+          ? `Open World pings, ${count} active`
+          : "Open World pings",
       );
     });
   }
@@ -16432,11 +16433,11 @@ class ForkMeshWorld extends HTMLElement {
       this.toast(`World announcement: +${globalEvents.length - 3} more events`);
     }
     personalNotifications.slice(0, 3).forEach((item) => {
-      this.toast(`New notification: ${item.title}`);
+      this.toast(`New ping: ${item.title}`);
     });
     if (personalNotifications.length > 3) {
       this.toast(
-        `New notification: +${personalNotifications.length - 3} more`,
+        `New ping: +${personalNotifications.length - 3} more`,
       );
     }
   }
@@ -16569,9 +16570,9 @@ class ForkMeshWorld extends HTMLElement {
       this.notificationsState = this.notifications.length ? "ready" : "empty";
       this.updateNotificationBadge();
       this.refreshOpenEventsPanel();
-      this.toast("World notifications marked read.");
+      this.toast("World pings marked read.");
     } catch (_) {
-      this.toast("World notifications could not be marked read.");
+      this.toast("World pings could not be marked read.");
     }
   }
 
@@ -16598,9 +16599,9 @@ class ForkMeshWorld extends HTMLElement {
       this.notificationsState = this.notifications.length ? "ready" : "empty";
       this.updateNotificationBadge();
       this.refreshOpenEventsPanel();
-      this.toast("Notification deleted.");
+      this.toast("Ping deleted.");
     } catch (_) {
-      this.toast("Notification could not be deleted.");
+      this.toast("Ping could not be deleted.");
     }
   }
 
@@ -25216,6 +25217,7 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       return false;
     }
+    const wasAuthenticated = this.sessionAuthenticated;
     this.sessionAuthenticated = true;
     this.identity.name = sanitizePresenceText(
       ticket.name,
@@ -25238,6 +25240,12 @@ class ForkMeshWorld extends HTMLElement {
     this.worldTicketExpires = Number(ticket.expiresAt || 0);
     void this.loadWorldPreferences();
     this.startAdminErrorPolling();
+    // The ticket usually authenticates after the initial loadContext() already
+    // gave up on personal pings ("signed-out"), which stranded the board empty
+    // until the next 60s poll. Fetch them the moment the session proves out.
+    if (!wasAuthenticated || this.notificationsState === "signed-out") {
+      void this.refreshPersonalNotifications(this.isEventsPanelOpen());
+    }
     return true;
   }
 
