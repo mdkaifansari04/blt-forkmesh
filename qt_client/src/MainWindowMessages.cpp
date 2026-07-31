@@ -90,6 +90,8 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
                     m_backend->sendReaction(m_currentConversation, messageId, emoji);
             });
     connect(row, &MessageRow::editRequested, this, &MainWindow::promptEditMessage);
+    connect(row, &MessageRow::sendToComposerRequested, this,
+            &MainWindow::sendMessageToComposer);
     connect(row, &MessageRow::deleteRequested, this, &MainWindow::confirmDeleteMessage);
     connect(row, &MessageRow::moderateDeleteRequested, this,
             &MainWindow::confirmAdminDeleteMessage);
@@ -1844,6 +1846,15 @@ void MainWindow::insertEmojiIntoComposer(const QString &emoji)
         return;
     m_messageInput->insert(emoji);
     m_messageInput->setFocus();
+}
+
+void MainWindow::sendMessageToComposer(const QString &text)
+{
+    if (!m_messageInput || text.isEmpty())
+        return;
+    m_messageInput->setText(text);
+    m_messageInput->setFocus();
+    m_messageInput->setCursorPosition(text.length());
 }
 
 void MainWindow::showEmojiPicker(QWidget *anchor)
