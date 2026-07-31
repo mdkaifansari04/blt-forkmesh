@@ -6791,11 +6791,18 @@ void MainWindow::openAgentsOverview()
         switchToAgentsTab(newest->id);
         return;
     }
-    if (m_repoDetailIndex >= 0 && m_repoDetailTabs && m_repoDetailTabs->button(3)) {
+    if (m_repoDetailIndex >= 0 && m_repoDetailStack) {
         showSection(0);
-        m_repoDetailTabs->button(3)->setChecked(true);
-        if (m_repoDetailStack)
-            m_repoDetailStack->setCurrentIndex(3);
+        // Agents lost its top-bar button when it moved to the nav strip (adhoc
+        // #178), so drive the stack directly — gating this on that button made the
+        // no-sessions case a silent no-op. It went unnoticed while Agents was also
+        // the tab every repo opened on; since adhoc #119 dropped that default, this
+        // is the only way in for a repo that has no sessions yet.
+        ensureRepoDetailTabBuilt(3);
+        m_repoDetailStack->setCurrentIndex(3);
+        if (m_agentsNavButton)
+            m_agentsNavButton->setChecked(true);
+        reloadAgents();
     }
 }
 

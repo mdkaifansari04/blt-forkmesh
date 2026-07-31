@@ -90,6 +90,8 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
                     m_backend->sendReaction(m_currentConversation, messageId, emoji);
             });
     connect(row, &MessageRow::editRequested, this, &MainWindow::promptEditMessage);
+    connect(row, &MessageRow::createIssueRequested, this,
+            &MainWindow::promptIssueFromChatMessage);
     connect(row, &MessageRow::sendToPromptRequested, this,
             &MainWindow::sendMessageToPrompt);
     connect(row, &MessageRow::deleteRequested, this, &MainWindow::confirmDeleteMessage);
