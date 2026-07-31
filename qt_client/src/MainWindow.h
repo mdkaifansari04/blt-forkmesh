@@ -1721,7 +1721,11 @@ private:
     // sizes. refreshSizeMapTab scans on a worker thread; force=false is the
     // lazy tab-click path that reuses the last scan of the same repo.
     QWidget *buildSizeMapTab();
-    void refreshSizeMapTab(bool force);
+    // allowElevation marks the refreshes a click asked for (Rescan, a new
+    // folder, a filesystem card): those may go straight to the password prompt
+    // when the folder needs root, rather than drawing a half-empty map first
+    // (adhoc #112). Automatic refreshes never prompt.
+    void refreshSizeMapTab(bool force, bool allowElevation = false);
     // Folder the size map scans: m_sizeMapRootOverride when the user picked one
     // with "Choose folder…", otherwise this repository's working copy.
     QString sizeMapRoot() const;
@@ -1739,7 +1743,14 @@ private:
     // were skipped (adhoc #76). pkexec — or a password prompt feeding
     // `sudo -S` where pkexec is missing — runs this same binary in its
     // --size-map-scan helper mode and streams the tree back.
-    void rescanSizeMapElevated();
+    // upfront distinguishes the prompt raised the moment a root-only folder is
+    // selected from the one behind the button: if that prompt is dismissed the
+    // map falls back to an unprivileged scan, so the tab is never left blank.
+    void rescanSizeMapElevated(bool upfront = false);
+    // Live "scanning <folder> · N files · M so far" line, driven from the walk
+    // itself (adhoc #112).
+    void showSizeMapScanProgress(const QString &current, qint64 bytes,
+                                 int files, bool elevated);
     void applySizeMapResult(const QString &path,
                             forkmesh::DirectorySizeScanResult result,
                             bool hideIgnored, bool elevated);

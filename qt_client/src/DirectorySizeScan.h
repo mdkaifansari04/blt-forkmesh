@@ -12,6 +12,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 class QByteArray;
 
 namespace forkmesh {
@@ -49,12 +51,30 @@ struct DirectorySizeScanResult {
     QStringList unreadableSample;
 };
 
+// "Where is it right now" callback for a running scan (adhoc #112): the
+// absolute directory being walked, plus the bytes and files counted so far.
+// Invoked on whichever thread is scanning, rate-limited to a few times a second
+// so a label can show it without relaying out on every folder.
+using DirectorySizeScanProgress =
+    std::function<void(const QString &path, qint64 bytes, int files)>;
+
 // Raw on-disk bytes, .git excluded, symlinks skipped so link cycles can't loop
 // or inflate the totals. Files become leaf children alongside subdirectories
 // (adhoc #262). Safe to call from a worker thread: touches nothing but the
 // filesystem.
-DirectorySizeScanResult scanDirectorySizes(const QString &path,
-                                           const DirectorySizeScanOptions &options);
+DirectorySizeScanResult
+scanDirectorySizes(const QString &path, const DirectorySizeScanOptions &options,
+                   const DirectorySizeScanProgress &progress = {});
+
+// True when a plain scan of this folder would visibly miss things: this user
+// cannot list something directly inside it, so the map would be drawn without
+// (say) /root and /var/lib. One level, no recursion, so it is cheap enough to
+// gate a password prompt on the click that selected the folder (adhoc #112);
+// anything unreadable deeper down still surfaces the after-the-fact rescan
+// offer. Always false when this process is already root — there is nothing left
+// to ask for. `pruned` is the scan's own prune set: paths it would skip anyway
+// never justify a prompt.
+bool scanNeedsElevation(const QString &path, const QSet<QString> &pruned);
 
 // Every mount point in a Linux mountinfo/mtab table. Qt's
 // QStorageInfo::mountedVolumes() hides the pseudo filesystems (/proc, /sys,
@@ -77,6 +97,15 @@ bool decodeScanRequest(const QByteArray &payload, QString *path,
                        DirectorySizeScanOptions *options);
 QByteArray encodeScanResult(const DirectorySizeScanResult &result);
 bool decodeScanResult(const QByteArray &payload, DirectorySizeScanResult *result);
+
+// One live-progress line from the elevated helper (adhoc #112). stdout carries
+// the binary tree, so these travel on stderr instead, each on its own line and
+// behind a sentinel so pkexec's and sudo's own chatter is never read as
+// progress. The path is percent-encoded because a filename may contain a
+// newline, which would otherwise split one update into two.
+QByteArray encodeScanProgress(const QString &path, qint64 bytes, int files);
+bool decodeScanProgress(const QByteArray &line, QString *path, qint64 *bytes,
+                        int *files);
 
 // True when this process already has root's view of the filesystem, so there
 // is nothing an elevated rescan could add.
