@@ -19,6 +19,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QFileInfo>
 #include <QPointer>
 #include <QProcess>
@@ -1085,7 +1086,7 @@ int main(int argc, char *argv[])
           QStringLiteral("reward settings cannot reserve or activate an account"));
 
     QCheckBox *nodeConnectAlertCheck =
-        findCheckBox(window, QStringLiteral("Show a system alert when a node connects"));
+        findCheckBox(window, QStringLiteral("Show a system ping when a node connects"));
     check(nodeConnectAlertCheck != nullptr,
           QStringLiteral("node-connect system alert checkbox exists"));
     if (nodeConnectAlertCheck) {
@@ -2532,6 +2533,97 @@ int main(int argc, char *argv[])
         check(leadsWithIcon(window.testFooterLogView()),
               QStringLiteral("the footer live-log strip renders the site favicon "
                              "inline too (adhoc #436)"));
+    }
+
+    // adhoc #114: every log entry leads, furthest left, with a plus that hands
+    // that entry to the footer prompt box — one click instead of a
+    // select-copy-paste round trip. Covered in both log surfaces.
+    {
+        window.testResetNetworkLog();
+        const QString entry = QStringLiteral("Pushed 3 commits to origin/main");
+        window.testLogSystem(entry);
+        window.testShowLogSection();
+        window.testRebuildNetworkLogView();
+        QApplication::processEvents();
+
+        const QString prefix = QStringLiteral("fmlogprompt:");
+        // The anchor carries the entry's own dated line, so a click needs no
+        // lookup back into the log buffer.
+        auto firstPromptHref = [&prefix](QTextEdit *view) {
+            if (!view)
+                return QString();
+            for (QTextBlock b = view->document()->firstBlock(); b.isValid();
+                 b = b.next()) {
+                for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) {
+                    const QString href =
+                        it.fragment().charFormat().anchorHref();
+                    if (href.startsWith(prefix))
+                        return href;
+                }
+            }
+            return QString();
+        };
+        const QString logHref = firstPromptHref(window.testNetworkLogView());
+        check(!logHref.isEmpty(),
+              QStringLiteral("the full Log view leads every entry with an "
+                             "add-to-prompt icon"));
+        check(!firstPromptHref(window.testFooterLogView()).isEmpty(),
+              QStringLiteral("the footer live-log strip leads every entry with "
+                             "one too"));
+        check(QUrl::fromPercentEncoding(logHref.mid(prefix.size()).toLatin1())
+                  .endsWith(entry),
+              QStringLiteral("the icon's anchor carries the log entry itself"));
+
+        // Click it where it actually paints (the leftmost strip of a row), not
+        // through a test-only shortcut, so the event-filter wiring is covered.
+        // Hit-testing is by anchor content, not by "first icon in the viewport":
+        // the footer strip keeps the lines it has already streamed, so its top
+        // visible row is some older entry, not the one logged just above.
+        auto clickPromptIcon = [&prefix, &entry](QTextEdit *view) {
+            if (!view)
+                return false;
+            for (int y = 0; y < view->viewport()->height(); ++y) {
+                for (int x = 0; x < 40; ++x) {
+                    const QPoint pos(x, y);
+                    const QString href = view->anchorAt(pos);
+                    if (!href.startsWith(prefix) ||
+                        !QUrl::fromPercentEncoding(
+                             href.mid(prefix.size()).toLatin1())
+                             .endsWith(entry))
+                        continue;
+                    const QPointF global = view->viewport()->mapToGlobal(pos);
+                    QMouseEvent press(QEvent::MouseButtonPress, QPointF(pos),
+                                      global, Qt::LeftButton, Qt::LeftButton,
+                                      Qt::NoModifier);
+                    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(pos),
+                                        global, Qt::LeftButton, Qt::NoButton,
+                                        Qt::NoModifier);
+                    QApplication::sendEvent(view->viewport(), &press);
+                    QApplication::sendEvent(view->viewport(), &release);
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        const QString beforeClick = window.testQuickAddText();
+        if (clickPromptIcon(window.testNetworkLogView())) {
+            const QString afterClick = window.testQuickAddText();
+            check(afterClick.endsWith(entry) && afterClick != beforeClick,
+                  QStringLiteral("clicking a Log entry's icon appends that entry "
+                                 "to the footer prompt"));
+        } else {
+            check(false, QStringLiteral("the Log entry's add-to-prompt icon is "
+                                        "hit-testable in the view"));
+        }
+        if (clickPromptIcon(window.testFooterLogView())) {
+            const QString afterFooter = window.testQuickAddText();
+            check(afterFooter.endsWith(entry) &&
+                      afterFooter.count(entry) == 2,
+                  QStringLiteral("the footer strip's icon appends to the prompt "
+                                 "instead of opening the full Log"));
+        }
+        window.testResetNetworkLog();
     }
 
     stopChildProcesses(window);
