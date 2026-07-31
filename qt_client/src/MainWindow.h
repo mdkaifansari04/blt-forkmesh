@@ -2419,6 +2419,10 @@ private:
     void updateNavRebuildButton();
     // Reposition the floating "Log" button to the live-log strip's corner.
     void positionFloatingLogButton();
+    // Keep the pause-scroll toggle in the live-log strip's bottom-right corner,
+    // clear of the scrollbar, and repaint its glyph for the current state.
+    void positionFooterLogPauseButton();
+    void updateFooterLogPauseButton();
     int pendingActionCount() const;
     void openActionRunFromNotification(int runId);
     // Show a desktop notification with both a title and body, using notify-send
@@ -4175,6 +4179,11 @@ private:
     // variant) so each line can lead with the site favicon <img> the full Log
     // view uses — QPlainTextEdit drops images (adhoc #436).
     QTextEdit *m_footerUpdateLog = nullptr;
+    // Tiny toggle floating in the strip's bottom-right corner: normally the log
+    // pins itself to the newest line, and this parks that follow so a line can
+    // be read while events keep streaming in (adhoc #92).
+    QPushButton *m_footerLogPauseButton = nullptr;
+    bool m_footerLogScrollPaused = false;
     // Whole mini-log/background/agent-prompt footer. The focused Git workspace
     // hides it to give the changes list and diff the full window height.
     QWidget *m_footerDock = nullptr;
