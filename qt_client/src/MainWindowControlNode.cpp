@@ -139,6 +139,20 @@ bool prepareOwnerDirectory(const QString &path, QString *error)
     return true;
 }
 
+// Current bytes of an owner-only file, or empty when it is absent or is not a
+// plain file. Used to tell a rewritten-but-identical configuration from a real
+// change, so a running gateway is only restarted when it must be.
+QByteArray readOwnerFileIfPresent(const QString &path)
+{
+    const QFileInfo info(path);
+    if (!info.isFile() || info.isSymLink())
+        return {};
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    return file.readAll();
+}
+
 bool writeOwnerJson(const QString &path, const QJsonObject &object,
                     QString *error)
 {
@@ -1623,8 +1637,20 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
         config.insert(QStringLiteral("privateReplicaStore"),
                       privateStoreInfo.absoluteFilePath());
     }
+    // Compare against what the gateway is already serving before rewriting it:
+    // every successful encrypted-mirror seal calls this with
+    // restartRunningGateway, and a seal happens every few minutes on an
+    // unattended mirror. Restarting unconditionally left the loopback origin
+    // down for a beat that often, so the relay's endpoint validation and health
+    // probes kept landing in the gap (502 -> invalid_manifest -> the node never
+    // registered a tunnel at all). An unchanged configuration needs no restart.
+    const QByteArray previousConfig = readOwnerFileIfPresent(
+        directGatewayConfigPath());
     if (!writeOwnerJson(directGatewayConfigPath(), config, error))
         return false;
+    const bool configChanged =
+        previousConfig !=
+        readOwnerFileIfPresent(directGatewayConfigPath());
 
     m_directMirrorHostname = hostname;
     m_directMirrorRouterPublicKey = routerKey;
@@ -1633,7 +1659,7 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
     settings.setValue(
         QStringLiteral("control/directMirrorRouterPublicKey"), routerKey);
 
-    if (restartRunningGateway &&
+    if (restartRunningGateway && configChanged &&
         ((m_mirrorGatewayProcess &&
           m_mirrorGatewayProcess->state() !=
               QProcess::NotRunning) ||
